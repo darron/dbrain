@@ -11,30 +11,15 @@ import (
 	neturl "net/url"
 	"path"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	"dbrain/internal/config"
 	"dbrain/internal/model"
+	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
 	"dbrain/internal/vault"
 )
-
-const SummaryPromptVersion = "dbrain-v1"
-
-const summaryPrompt = `Summarize this source for a local second-brain knowledge base.
-Focus on durable knowledge, concrete facts, named entities, tools, libraries, APIs, claims, and actionable takeaways.
-Use Markdown with exactly these headings:
-### What It Is
-### Key Ideas
-### Why It Matters
-### Entities
-### Follow-ups
-Keep it factual and concise.
-Use bullets only in Entities and Follow-ups.
-Do not mention ads, sponsors, or irrelevant boilerplate.`
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
@@ -79,8 +64,6 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 
 	stats := Stats{}
-	touchedSourceIDs := map[int64]struct{}{}
-	toolVersion := summarizecli.Version(ctx, "")
 
 	items, err := st.ListItemsForLinkDiscovery(ctx, opts.DiscoverLimit, opts.Force)
 	if err != nil {
@@ -107,7 +90,6 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			if result.LinkCreated {
 				stats.LinksCreated++
 			}
-			touchedSourceIDs[result.SourceID] = struct{}{}
 		}
 		if err := st.MarkItemLinkDiscovery(ctx, item.ID, time.Now().UTC()); err != nil {
 			return stats, err
@@ -115,146 +97,26 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		stats.ItemsMarked++
 	}
 
-	sources, err := st.ListSourcesForEnrichment(ctx, opts.Limit, opts.Force, opts.Summarize, SummaryPromptVersion, summarizecli.ToolName, toolVersion)
+	enrichStats, _, err := sourceenrich.RunPending(ctx, cfg, st, sourceenrich.Options{
+		Limit:     opts.Limit,
+		Force:     opts.Force,
+		Summarize: opts.Summarize,
+		Model:     opts.Model,
+		CLI:       opts.CLI,
+		Length:    opts.Length,
+		Timeout:   opts.Timeout,
+		Logger:    opts.Logger,
+	})
 	if err != nil {
 		return stats, err
 	}
-	stats.SourcesQueued = len(sources)
-	debugLog(opts.Logger, "source enrichment candidates loaded", "sources", len(sources), "limit", opts.Limit, "summarize", opts.Summarize)
 
-	for _, source := range sources {
-		debugLog(opts.Logger, "enriching source", "source_key", source.SourceKey, "url", source.CanonicalURL)
-		localExtract, hasLocalExtract, err := st.GetPreferredLocalSourceExtract(ctx, source.ID)
-		if err != nil {
-			return stats, err
-		}
-		if hasLocalExtract {
-			debugLog(opts.Logger, "using local cached extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(localExtract.Content))
-			contentHash := hashText(localExtract.Content)
-			if changed, err := st.SaveSourceExtraction(ctx, source.ID, localExtract, contentHash); err != nil {
-				return stats, err
-			} else if changed {
-				stats.SourcesExtracted++
-			} else {
-				stats.SourcesUnchanged++
-			}
-
-			if opts.Summarize {
-				runResult, err := summarizecli.Run(ctx, summarizecli.Options{
-					Input:     "-",
-					Stdin:     localExtract.Content,
-					Summarize: true,
-					Model:     opts.Model,
-					CLI:       opts.CLI,
-					Prompt:    buildSummaryPrompt(source, localExtract),
-					Length:    opts.Length,
-					Timeout:   opts.Timeout,
-				})
-				if err != nil {
-					stats.Errors++
-					debugLog(opts.Logger, "local source summarization failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
-					if _, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-						Status:        "error",
-						Error:         err.Error(),
-						Model:         opts.Model,
-						PromptVersion: SummaryPromptVersion,
-						Tool:          summarizecli.ToolName,
-						ToolVersion:   toolVersion,
-					}); saveErr != nil {
-						return stats, saveErr
-					}
-					touchedSourceIDs[source.ID] = struct{}{}
-					continue
-				}
-				runResult.Summary.PromptVersion = SummaryPromptVersion
-				if changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary); err != nil {
-					return stats, err
-				} else if changed && runResult.Summary.Status == "ok" {
-					stats.SourcesSummarized++
-				}
-			}
-
-			touchedSourceIDs[source.ID] = struct{}{}
-			continue
-		}
-
-		runResult, err := summarizecli.Run(ctx, summarizecli.Options{
-			Input:     source.CanonicalURL,
-			Summarize: opts.Summarize,
-			Model:     opts.Model,
-			CLI:       opts.CLI,
-			Prompt:    summaryPrompt,
-			Length:    opts.Length,
-			Timeout:   opts.Timeout,
-		})
-		if err != nil {
-			stats.Errors++
-			debugLog(opts.Logger, "source enrichment failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
-			if _, saveErr := st.SaveSourceExtraction(ctx, source.ID, model.ExtractResult{
-				Status:      "error",
-				Error:       err.Error(),
-				Tool:        summarizecli.ToolName,
-				ToolVersion: toolVersion,
-			}, source.ContentHash); saveErr != nil {
-				return stats, saveErr
-			}
-			if opts.Summarize {
-				if _, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-					Status:        "error",
-					Error:         err.Error(),
-					Model:         opts.Model,
-					PromptVersion: SummaryPromptVersion,
-					Tool:          summarizecli.ToolName,
-					ToolVersion:   toolVersion,
-				}); saveErr != nil {
-					return stats, saveErr
-				}
-			}
-			touchedSourceIDs[source.ID] = struct{}{}
-			continue
-		}
-
-		contentHash := hashText(runResult.Extract.Content)
-		if changed, err := st.SaveSourceExtraction(ctx, source.ID, runResult.Extract, contentHash); err != nil {
-			return stats, err
-		} else if changed {
-			stats.SourcesExtracted++
-		} else {
-			stats.SourcesUnchanged++
-		}
-
-		if opts.Summarize {
-			runResult.Summary.PromptVersion = SummaryPromptVersion
-			if changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary); err != nil {
-				return stats, err
-			} else if changed && runResult.Summary.Status == "ok" {
-				stats.SourcesSummarized++
-			}
-		}
-
-		touchedSourceIDs[source.ID] = struct{}{}
-	}
-
-	orderedSourceIDs := make([]int64, 0, len(touchedSourceIDs))
-	for sourceID := range touchedSourceIDs {
-		orderedSourceIDs = append(orderedSourceIDs, sourceID)
-	}
-	sort.Slice(orderedSourceIDs, func(i, j int) bool { return orderedSourceIDs[i] < orderedSourceIDs[j] })
-
-	for _, sourceID := range orderedSourceIDs {
-		source, err := st.GetSourceByID(ctx, sourceID)
-		if err != nil {
-			return stats, err
-		}
-		backlinks, err := st.ListBacklinksForSource(ctx, sourceID)
-		if err != nil {
-			return stats, err
-		}
-		if err := vault.WriteSource(cfg, source, backlinks); err != nil {
-			return stats, err
-		}
-		stats.SourcesRendered++
-	}
+	stats.SourcesQueued = enrichStats.SourcesQueued
+	stats.SourcesExtracted = enrichStats.SourcesExtracted
+	stats.SourcesSummarized = enrichStats.SourcesSummarized
+	stats.SourcesRendered = enrichStats.SourcesRendered
+	stats.SourcesUnchanged = enrichStats.SourcesUnchanged
+	stats.Errors = enrichStats.Errors
 
 	return stats, nil
 }
@@ -374,45 +236,6 @@ func classifySourceType(host, urlPath string) string {
 	return "web"
 }
 
-func buildSummaryPrompt(source model.SourceDocument, extract model.ExtractResult) string {
-	var b strings.Builder
-	b.WriteString(summaryPrompt)
-
-	contextLines := make([]string, 0, 3)
-	if value := strings.TrimSpace(source.CanonicalURL); value != "" {
-		contextLines = append(contextLines, "Source URL: "+value)
-	}
-	title := strings.TrimSpace(extract.Title)
-	if title == "" {
-		title = strings.TrimSpace(source.Title)
-	}
-	if title != "" {
-		contextLines = append(contextLines, "Source Title: "+title)
-	}
-	site := strings.TrimSpace(extract.SiteName)
-	if site == "" {
-		site = strings.TrimSpace(source.SiteName)
-	}
-	if site == "" {
-		site = strings.TrimSpace(source.Domain)
-	}
-	if site != "" {
-		contextLines = append(contextLines, "Source Site: "+site)
-	}
-
-	if len(contextLines) == 0 {
-		return b.String()
-	}
-
-	b.WriteString("\n\nAdditional context:\n")
-	for _, line := range contextLines {
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-
-	return strings.TrimSpace(b.String())
-}
-
 func filterQueryParams(raw, host string) neturl.Values {
 	u, err := neturl.Parse(raw)
 	if err != nil {
@@ -454,14 +277,6 @@ func trimGitHubURL(value string) string {
 func shortHash(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])[:12]
-}
-
-func hashText(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
-	return hex.EncodeToString(sum[:])
 }
 
 func slugify(value string) string {

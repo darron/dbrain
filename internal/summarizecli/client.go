@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -20,6 +21,8 @@ type Options struct {
 	Binary    string
 	Input     string
 	Stdin     string
+	Env       map[string]string
+	Args      []string
 	Summarize bool
 	Model     string
 	CLI       string
@@ -70,6 +73,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	} else {
 		args = append(args, "--extract")
 	}
+	args = append(args, opts.Args...)
 	if value := strings.TrimSpace(opts.Model); value != "" {
 		args = append(args, "--model", value)
 	}
@@ -86,6 +90,13 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if len(opts.Env) > 0 {
+		env := os.Environ()
+		for key, value := range opts.Env {
+			env = append(env, key+"="+value)
+		}
+		cmd.Env = env
+	}
 	if opts.Stdin != "" {
 		cmd.Stdin = strings.NewReader(opts.Stdin)
 	} else {
