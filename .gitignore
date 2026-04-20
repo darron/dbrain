@@ -1,0 +1,6 @@
+.gocache/
+.gomodcache/
+bin/
+data/
+vault/
+

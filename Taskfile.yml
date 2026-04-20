@@ -1,0 +1,21 @@
+version: "3"
+
+vars:
+  GOCACHE: "{{.ROOT_DIR}}/.gocache"
+  GOMODCACHE: "{{.ROOT_DIR}}/.gomodcache"
+
+tasks:
+  fmt:
+    desc: Format Go source files
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go fmt ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} golangci-lint run ./...
+
+  test:
+    desc: Run the Go test suite
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test ./...
