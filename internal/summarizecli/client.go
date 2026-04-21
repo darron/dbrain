@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,10 @@ type outputEnvelope struct {
 		Content     string `json:"content"`
 	} `json:"extracted"`
 	Summary *string `json:"summary"`
+}
+
+type cliState struct {
+	LastSuccessfulProvider string `json:"lastSuccessfulProvider"`
 }
 
 var (
@@ -112,7 +117,11 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 
 	var payload outputEnvelope
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
-		return Result{}, fmt.Errorf("parse summarize json: %w", err)
+		output := strings.TrimSpace(stdout.String())
+		if len(output) > 160 {
+			output = output[:160]
+		}
+		return Result{}, fmt.Errorf("parse summarize json: %w (stdout prefix: %q)", err, output)
 	}
 
 	now := time.Now().UTC()
@@ -158,6 +167,23 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func PreferredCLIProvider() string {
+	home, err := os.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		path := filepath.Join(home, ".summarize", "cli-state.json")
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			var state cliState
+			if err := json.Unmarshal(data, &state); err == nil {
+				if provider := strings.TrimSpace(state.LastSuccessfulProvider); provider != "" {
+					return provider
+				}
+			}
+		}
+	}
+	return "codex"
 }
 
 func Version(ctx context.Context, binary string) string {

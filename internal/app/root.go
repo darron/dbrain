@@ -37,14 +37,14 @@ func NewRootCommand() *cobra.Command {
 		Short: "Import source data into the brain",
 		RunE:  helpCommand,
 	}
-	importCmd.AddCommand(newImportFTCommand(opts), newImportYouTubeCommand(opts))
+	importCmd.AddCommand(newImportFTCommand(opts), newImportGitHubCommand(opts), newImportYouTubeCommand(opts))
 
 	extractCmd := &cobra.Command{
 		Use:   "extract",
 		Short: "Extract and summarize linked sources",
 		RunE:  helpCommand,
 	}
-	extractCmd.AddCommand(newExtractLinksCommand(opts))
+	extractCmd.AddCommand(newExtractLinksCommand(opts), newExtractSourcesCommand(opts))
 
 	hydrateCmd := &cobra.Command{
 		Use:   "hydrate",
@@ -57,6 +57,7 @@ func NewRootCommand() *cobra.Command {
 		importCmd,
 		extractCmd,
 		hydrateCmd,
+		newStatsCommand(opts),
 		newSearchCommand(opts),
 		newGetCommand(opts),
 	)

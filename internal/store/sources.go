@@ -251,19 +251,28 @@ func (s *Store) ListItemsForLinkDiscovery(ctx context.Context, limit int, force 
 }
 
 func (s *Store) MarkItemLinkDiscovery(ctx context.Context, itemID int64, at time.Time) error {
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE items
-		SET link_extract_synced_at = ?
-		WHERE id = ?`,
-		at.UTC().Format(time.RFC3339),
-		itemID,
-	); err != nil {
-		return fmt.Errorf("mark item link discovery %d: %w", itemID, err)
-	}
-	return nil
+	_, err := withBusyRetry(ctx, func() (struct{}, error) {
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE items
+			SET link_extract_synced_at = ?
+			WHERE id = ?`,
+			at.UTC().Format(time.RFC3339),
+			itemID,
+		); err != nil {
+			return struct{}{}, fmt.Errorf("mark item link discovery %d: %w", itemID, err)
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) UpsertSourceLink(ctx context.Context, itemID int64, candidate model.SourceCandidate) (model.SourceLinkUpsertResult, error) {
+	return withBusyRetry(ctx, func() (model.SourceLinkUpsertResult, error) {
+		return s.upsertSourceLink(ctx, itemID, candidate)
+	})
+}
+
+func (s *Store) upsertSourceLink(ctx context.Context, itemID int64, candidate model.SourceCandidate) (model.SourceLinkUpsertResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.SourceLinkUpsertResult{}, fmt.Errorf("begin source link tx: %w", err)
@@ -428,104 +437,106 @@ func (s *Store) ListSourcesForEnrichment(ctx context.Context, limit int, force b
 }
 
 func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result model.ExtractResult, contentHash string) (bool, error) {
-	current, err := s.GetSourceByID(ctx, sourceID)
-	if err != nil {
-		return false, err
-	}
+	return withBusyRetry(ctx, func() (bool, error) {
+		current, err := s.GetSourceByID(ctx, sourceID)
+		if err != nil {
+			return false, err
+		}
 
-	if result.Status == "error" {
-		changed := current.ExtractStatus != result.Status ||
+		if result.Status == "error" {
+			changed := current.ExtractStatus != result.Status ||
+				current.ExtractError != result.Error ||
+				current.ExtractTool != result.Tool ||
+				current.ExtractToolVersion != result.ToolVersion
+			if !changed {
+				return false, nil
+			}
+			if _, err := s.db.ExecContext(ctx, `
+				UPDATE sources
+				SET extract_status = ?,
+					extract_error = ?,
+					extract_tool = ?,
+					extract_tool_version = ?,
+					updated_at = ?
+				WHERE id = ?`,
+				result.Status,
+				result.Error,
+				result.Tool,
+				result.ToolVersion,
+				time.Now().UTC().Format(time.RFC3339),
+				sourceID,
+			); err != nil {
+				return false, fmt.Errorf("save source extraction error %d: %w", sourceID, err)
+			}
+			return true, nil
+		}
+
+		fetchedAt := ""
+		if !result.FetchedAt.IsZero() {
+			fetchedAt = result.FetchedAt.UTC().Format(time.RFC3339)
+		}
+		canonicalURL := current.CanonicalURL
+		if result.FinalURL != "" {
+			canonicalURL = result.FinalURL
+		}
+
+		changed := current.CanonicalURL != canonicalURL ||
+			current.Title != result.Title ||
+			current.Description != result.Description ||
+			current.SiteName != result.SiteName ||
+			current.ExtractedText != result.Content ||
+			current.ExtractJSON != result.RawJSON ||
+			current.ExtractStatus != result.Status ||
 			current.ExtractError != result.Error ||
 			current.ExtractTool != result.Tool ||
-			current.ExtractToolVersion != result.ToolVersion
+			current.ExtractToolVersion != result.ToolVersion ||
+			current.ContentHash != contentHash ||
+			current.ExtractedAt.UTC().Format(time.RFC3339) != fetchedAt
+
 		if !changed {
 			return false, nil
 		}
+
 		if _, err := s.db.ExecContext(ctx, `
 			UPDATE sources
-			SET extract_status = ?,
+			SET canonical_url = ?,
+				title = ?,
+				description = ?,
+				site_name = ?,
+				extracted_text = ?,
+				extract_json = ?,
+				extract_status = ?,
 				extract_error = ?,
+				extracted_at = ?,
 				extract_tool = ?,
 				extract_tool_version = ?,
+				content_hash = ?,
 				updated_at = ?
 			WHERE id = ?`,
+			canonicalURL,
+			result.Title,
+			result.Description,
+			result.SiteName,
+			result.Content,
+			result.RawJSON,
 			result.Status,
 			result.Error,
+			fetchedAt,
 			result.Tool,
 			result.ToolVersion,
+			contentHash,
 			time.Now().UTC().Format(time.RFC3339),
 			sourceID,
 		); err != nil {
-			return false, fmt.Errorf("save source extraction error %d: %w", sourceID, err)
+			return false, fmt.Errorf("save source extraction %d: %w", sourceID, err)
 		}
+
+		if err := s.syncSourceFTS(ctx, sourceID); err != nil {
+			return false, err
+		}
+
 		return true, nil
-	}
-
-	fetchedAt := ""
-	if !result.FetchedAt.IsZero() {
-		fetchedAt = result.FetchedAt.UTC().Format(time.RFC3339)
-	}
-	canonicalURL := current.CanonicalURL
-	if result.FinalURL != "" {
-		canonicalURL = result.FinalURL
-	}
-
-	changed := current.CanonicalURL != canonicalURL ||
-		current.Title != result.Title ||
-		current.Description != result.Description ||
-		current.SiteName != result.SiteName ||
-		current.ExtractedText != result.Content ||
-		current.ExtractJSON != result.RawJSON ||
-		current.ExtractStatus != result.Status ||
-		current.ExtractError != result.Error ||
-		current.ExtractTool != result.Tool ||
-		current.ExtractToolVersion != result.ToolVersion ||
-		current.ContentHash != contentHash ||
-		current.ExtractedAt.UTC().Format(time.RFC3339) != fetchedAt
-
-	if !changed {
-		return false, nil
-	}
-
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE sources
-		SET canonical_url = ?,
-			title = ?,
-			description = ?,
-			site_name = ?,
-			extracted_text = ?,
-			extract_json = ?,
-			extract_status = ?,
-			extract_error = ?,
-			extracted_at = ?,
-			extract_tool = ?,
-			extract_tool_version = ?,
-			content_hash = ?,
-			updated_at = ?
-		WHERE id = ?`,
-		canonicalURL,
-		result.Title,
-		result.Description,
-		result.SiteName,
-		result.Content,
-		result.RawJSON,
-		result.Status,
-		result.Error,
-		fetchedAt,
-		result.Tool,
-		result.ToolVersion,
-		contentHash,
-		time.Now().UTC().Format(time.RFC3339),
-		sourceID,
-	); err != nil {
-		return false, fmt.Errorf("save source extraction %d: %w", sourceID, err)
-	}
-
-	if err := s.syncSourceFTS(ctx, sourceID); err != nil {
-		return false, err
-	}
-
-	return true, nil
+	})
 }
 
 func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int64) (model.ExtractResult, bool, error) {
@@ -578,128 +589,130 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 }
 
 func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result model.SummaryResult) (bool, error) {
-	current, err := s.GetSourceByID(ctx, sourceID)
-	if err != nil {
-		return false, err
-	}
+	return withBusyRetry(ctx, func() (bool, error) {
+		current, err := s.GetSourceByID(ctx, sourceID)
+		if err != nil {
+			return false, err
+		}
 
-	if result.Status == "error" {
-		changed := current.SummaryStatus != result.Status ||
+		if result.Status == "error" {
+			changed := current.SummaryStatus != result.Status ||
+				current.SummaryError != result.Error ||
+				current.SummaryTool != result.Tool ||
+				current.SummaryToolVersion != result.ToolVersion
+			if !changed {
+				return false, nil
+			}
+			if _, err := s.db.ExecContext(ctx, `
+				UPDATE sources
+				SET summary_status = ?,
+					summary_error = ?,
+					summary_tool = ?,
+					summary_tool_version = ?,
+					updated_at = ?
+				WHERE id = ?`,
+				result.Status,
+				result.Error,
+				result.Tool,
+				result.ToolVersion,
+				time.Now().UTC().Format(time.RFC3339),
+				sourceID,
+			); err != nil {
+				return false, fmt.Errorf("save source summary error %d: %w", sourceID, err)
+			}
+			return true, nil
+		}
+
+		summarizedAt := ""
+		if !result.FetchedAt.IsZero() {
+			summarizedAt = result.FetchedAt.UTC().Format(time.RFC3339)
+		}
+
+		changed := current.SummaryText != result.Text ||
+			current.SummaryJSON != result.RawJSON ||
+			current.SummaryStatus != result.Status ||
 			current.SummaryError != result.Error ||
+			current.SummaryModel != result.Model ||
+			current.SummaryContentHash != current.ContentHash ||
+			current.SummaryPromptVersion != result.PromptVersion ||
 			current.SummaryTool != result.Tool ||
-			current.SummaryToolVersion != result.ToolVersion
+			current.SummaryToolVersion != result.ToolVersion ||
+			current.SummarizedAt.UTC().Format(time.RFC3339) != summarizedAt
+
 		if !changed {
 			return false, nil
 		}
-		if _, err := s.db.ExecContext(ctx, `
+
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return false, fmt.Errorf("begin source summary tx: %w", err)
+		}
+		defer func() {
+			if err != nil {
+				_ = tx.Rollback()
+			}
+		}()
+
+		if _, err := tx.ExecContext(ctx, `
 			UPDATE sources
-			SET summary_status = ?,
+			SET summary_text = ?,
+				summary_json = ?,
+				summary_status = ?,
 				summary_error = ?,
+				summary_model = ?,
+				summary_content_hash = ?,
+				summary_prompt_version = ?,
 				summary_tool = ?,
 				summary_tool_version = ?,
+				summarized_at = ?,
 				updated_at = ?
 			WHERE id = ?`,
+			result.Text,
+			result.RawJSON,
 			result.Status,
 			result.Error,
+			result.Model,
+			current.ContentHash,
+			result.PromptVersion,
 			result.Tool,
 			result.ToolVersion,
+			summarizedAt,
 			time.Now().UTC().Format(time.RFC3339),
 			sourceID,
 		); err != nil {
-			return false, fmt.Errorf("save source summary error %d: %w", sourceID, err)
+			return false, fmt.Errorf("update source summary %d: %w", sourceID, err)
 		}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO source_summary_versions (
+				source_id, content_hash, summary_text, summary_json, summary_status, summary_error,
+				summary_model, summary_prompt_version, summary_tool, summary_tool_version, summarized_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sourceID,
+			current.ContentHash,
+			result.Text,
+			result.RawJSON,
+			result.Status,
+			result.Error,
+			result.Model,
+			result.PromptVersion,
+			result.Tool,
+			result.ToolVersion,
+			summarizedAt,
+		); err != nil {
+			return false, fmt.Errorf("insert source summary version %d: %w", sourceID, err)
+		}
+
+		if commitErr := tx.Commit(); commitErr != nil {
+			return false, fmt.Errorf("commit source summary %d: %w", sourceID, commitErr)
+		}
+
+		if err := s.syncSourceFTS(ctx, sourceID); err != nil {
+			return false, err
+		}
+
 		return true, nil
-	}
-
-	summarizedAt := ""
-	if !result.FetchedAt.IsZero() {
-		summarizedAt = result.FetchedAt.UTC().Format(time.RFC3339)
-	}
-
-	changed := current.SummaryText != result.Text ||
-		current.SummaryJSON != result.RawJSON ||
-		current.SummaryStatus != result.Status ||
-		current.SummaryError != result.Error ||
-		current.SummaryModel != result.Model ||
-		current.SummaryContentHash != current.ContentHash ||
-		current.SummaryPromptVersion != result.PromptVersion ||
-		current.SummaryTool != result.Tool ||
-		current.SummaryToolVersion != result.ToolVersion ||
-		current.SummarizedAt.UTC().Format(time.RFC3339) != summarizedAt
-
-	if !changed {
-		return false, nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("begin source summary tx: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE sources
-		SET summary_text = ?,
-			summary_json = ?,
-			summary_status = ?,
-			summary_error = ?,
-			summary_model = ?,
-			summary_content_hash = ?,
-			summary_prompt_version = ?,
-			summary_tool = ?,
-			summary_tool_version = ?,
-			summarized_at = ?,
-			updated_at = ?
-		WHERE id = ?`,
-		result.Text,
-		result.RawJSON,
-		result.Status,
-		result.Error,
-		result.Model,
-		current.ContentHash,
-		result.PromptVersion,
-		result.Tool,
-		result.ToolVersion,
-		summarizedAt,
-		time.Now().UTC().Format(time.RFC3339),
-		sourceID,
-	); err != nil {
-		return false, fmt.Errorf("update source summary %d: %w", sourceID, err)
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO source_summary_versions (
-			source_id, content_hash, summary_text, summary_json, summary_status, summary_error,
-			summary_model, summary_prompt_version, summary_tool, summary_tool_version, summarized_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sourceID,
-		current.ContentHash,
-		result.Text,
-		result.RawJSON,
-		result.Status,
-		result.Error,
-		result.Model,
-		result.PromptVersion,
-		result.Tool,
-		result.ToolVersion,
-		summarizedAt,
-	); err != nil {
-		return false, fmt.Errorf("insert source summary version %d: %w", sourceID, err)
-	}
-
-	if commitErr := tx.Commit(); commitErr != nil {
-		return false, fmt.Errorf("commit source summary %d: %w", sourceID, commitErr)
-	}
-
-	if err := s.syncSourceFTS(ctx, sourceID); err != nil {
-		return false, err
-	}
-
-	return true, nil
+	})
 }
 
 func (s *Store) GetSourceByID(ctx context.Context, sourceID int64) (model.SourceDocument, error) {

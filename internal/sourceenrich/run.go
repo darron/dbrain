@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -32,17 +33,18 @@ Use bullets only in Entities and Follow-ups.
 Do not mention ads, sponsors, or irrelevant boilerplate.`
 
 type Options struct {
-	Limit     int
-	Force     bool
-	Summarize bool
-	Model     string
-	CLI       string
-	Length    string
-	Timeout   time.Duration
-	Logger    *slog.Logger
-	EnvFor    func(source model.SourceDocument) map[string]string
-	ArgsFor   func(source model.SourceDocument) []string
-	Binary    string
+	Limit              int
+	Force              bool
+	Summarize          bool
+	Model              string
+	CLI                string
+	Length             string
+	Timeout            time.Duration
+	Logger             *slog.Logger
+	EnvFor             func(source model.SourceDocument) map[string]string
+	ArgsFor            func(source model.SourceDocument) []string
+	FallbackExtractFor func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
+	Binary             string
 }
 
 type Stats struct {
@@ -75,19 +77,10 @@ func RunSourceIDs(ctx context.Context, cfg config.Config, st *store.Store, sourc
 		byID[source.ID] = source
 	}
 
-	filtered := make([]model.SourceDocument, 0, len(ordered))
-	for _, sourceID := range ordered {
-		source, ok := byID[sourceID]
-		if !ok {
-			continue
-		}
-		if !opts.Force && !needsEnrichment(source, opts, summarizecli.ToolName, summarizecli.Version(ctx, opts.Binary)) {
-			continue
-		}
-		filtered = append(filtered, source)
-	}
+	toolVersion := summarizecli.Version(ctx, opts.Binary)
+	filtered := selectSourceDocuments(ordered, byID, opts, toolVersion)
 
-	return runSources(ctx, cfg, st, filtered, opts, summarizecli.Version(ctx, opts.Binary))
+	return runSources(ctx, cfg, st, filtered, opts, toolVersion)
 }
 
 func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources []model.SourceDocument, opts Options, toolVersion string) (Stats, []int64, error) {
@@ -123,18 +116,7 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 			}
 
 			if opts.Summarize {
-				runResult, err := summarizecli.Run(ctx, summarizecli.Options{
-					Binary:    opts.Binary,
-					Input:     "-",
-					Stdin:     summaryInput(localExtract),
-					Summarize: true,
-					Model:     opts.Model,
-					CLI:       opts.CLI,
-					Prompt:    buildSummaryPrompt(source, localExtract),
-					Length:    opts.Length,
-					Timeout:   opts.Timeout,
-					Env:       sourceEnv,
-				})
+				runResult, err := summarizeExtract(ctx, source, localExtract, opts, sourceEnv)
 				if err != nil {
 					stats.Errors++
 					debugLog(opts.Logger, "local source summarization failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
@@ -159,6 +141,18 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 				}
 			}
 
+			touchedSourceIDs[source.ID] = struct{}{}
+			continue
+		}
+
+		if opts.Summarize && !opts.Force && canSummarizeStoredExtract(source) {
+			storedExtract := extractFromSource(source)
+			debugLog(opts.Logger, "using stored extract for summary", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(storedExtract.Content))
+			if changed, err := summarizeFromExtract(ctx, st, source, storedExtract, opts, toolVersion); err != nil {
+				return stats, nil, err
+			} else if changed {
+				stats.SourcesSummarized++
+			}
 			touchedSourceIDs[source.ID] = struct{}{}
 			continue
 		}
@@ -197,6 +191,11 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 				touchedSourceIDs[source.ID] = struct{}{}
 				continue
 			}
+			if fallback, changed, err := fallbackExtract(ctx, opts, source, extractResult.Extract); err != nil {
+				return stats, nil, err
+			} else if changed {
+				extractResult.Extract = fallback
+			}
 
 			contentHash := hashText(extractResult.Extract.Content)
 			if changed, err := st.SaveSourceExtraction(ctx, source.ID, extractResult.Extract, contentHash); err != nil {
@@ -217,12 +216,17 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 			continue
 		}
 
+		cli := opts.CLI
+		if opts.Summarize {
+			cli = summaryCLI(opts)
+		}
+
 		runResult, err := summarizecli.Run(ctx, summarizecli.Options{
 			Binary:    opts.Binary,
 			Input:     source.CanonicalURL,
 			Summarize: opts.Summarize,
 			Model:     opts.Model,
-			CLI:       opts.CLI,
+			CLI:       cli,
 			Prompt:    summaryPrompt,
 			Length:    opts.Length,
 			Timeout:   opts.Timeout,
@@ -338,6 +342,13 @@ func argsFor(opts Options, source model.SourceDocument) []string {
 	return opts.ArgsFor(source)
 }
 
+func fallbackExtract(ctx context.Context, opts Options, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
+	if opts.FallbackExtractFor == nil {
+		return model.ExtractResult{}, false, nil
+	}
+	return opts.FallbackExtractFor(ctx, source, extract)
+}
+
 func buildSummaryPrompt(source model.SourceDocument, extract model.ExtractResult) string {
 	var b strings.Builder
 	b.WriteString(summaryPrompt)
@@ -390,7 +401,18 @@ func summarizeFromExtract(ctx context.Context, st *store.Store, source model.Sou
 		})
 	}
 
-	input := summaryInput(extract)
+	input, cleanup, err := summaryInputFile(extract)
+	if err != nil {
+		return st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+			Status:        "error",
+			Error:         err.Error(),
+			Model:         opts.Model,
+			PromptVersion: SummaryPromptVersion,
+			Tool:          summarizecli.ToolName,
+			ToolVersion:   toolVersion,
+		})
+	}
+	defer cleanup()
 	if strings.TrimSpace(input) == "" {
 		return st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
 			Status:        "error",
@@ -404,11 +426,10 @@ func summarizeFromExtract(ctx context.Context, st *store.Store, source model.Sou
 
 	runResult, err := summarizecli.Run(ctx, summarizecli.Options{
 		Binary:    opts.Binary,
-		Input:     "-",
-		Stdin:     input,
+		Input:     input,
 		Summarize: true,
 		Model:     opts.Model,
-		CLI:       opts.CLI,
+		CLI:       summaryCLI(opts),
 		Prompt:    buildSummaryPrompt(source, extract),
 		Length:    opts.Length,
 		Timeout:   opts.Timeout,
@@ -428,6 +449,60 @@ func summarizeFromExtract(ctx context.Context, st *store.Store, source model.Sou
 	return st.SaveSourceSummary(ctx, source.ID, runResult.Summary)
 }
 
+func summarizeExtract(ctx context.Context, source model.SourceDocument, extract model.ExtractResult, opts Options, env map[string]string) (summarizecli.Result, error) {
+	input, cleanup, err := summaryInputFile(extract)
+	if err != nil {
+		return summarizecli.Result{}, err
+	}
+	defer cleanup()
+
+	return summarizecli.Run(ctx, summarizecli.Options{
+		Binary:    opts.Binary,
+		Input:     input,
+		Summarize: true,
+		Model:     opts.Model,
+		CLI:       summaryCLI(opts),
+		Prompt:    buildSummaryPrompt(source, extract),
+		Length:    opts.Length,
+		Timeout:   opts.Timeout,
+		Env:       env,
+	})
+}
+
+func summaryCLI(opts Options) string {
+	if value := strings.TrimSpace(opts.CLI); value != "" {
+		return value
+	}
+	if strings.TrimSpace(opts.Model) != "" {
+		return ""
+	}
+	return summarizecli.PreferredCLIProvider()
+}
+
+func summaryInputFile(extract model.ExtractResult) (string, func(), error) {
+	input := summaryInput(extract)
+	if strings.TrimSpace(input) == "" {
+		return "", func() {}, nil
+	}
+
+	file, err := os.CreateTemp("", "dbrain-summary-*.md")
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := file.WriteString(input); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return "", nil, err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", nil, err
+	}
+	return file.Name(), func() {
+		_ = os.Remove(file.Name())
+	}, nil
+}
+
 func summaryInput(extract model.ExtractResult) string {
 	parts := make([]string, 0, 4)
 	if title := strings.TrimSpace(extract.Title); title != "" {
@@ -443,6 +518,30 @@ func summaryInput(extract model.ExtractResult) string {
 		parts = append(parts, content)
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func canSummarizeStoredExtract(source model.SourceDocument) bool {
+	if source.ExtractStatus != "ok" {
+		return false
+	}
+	return strings.TrimSpace(source.ExtractedText) != ""
+}
+
+func extractFromSource(source model.SourceDocument) model.ExtractResult {
+	return model.ExtractResult{
+		CanonicalURL: source.CanonicalURL,
+		FinalURL:     source.CanonicalURL,
+		Title:        source.Title,
+		Description:  source.Description,
+		SiteName:     source.SiteName,
+		Content:      source.ExtractedText,
+		RawJSON:      source.ExtractJSON,
+		Status:       source.ExtractStatus,
+		Error:        source.ExtractError,
+		FetchedAt:    source.ExtractedAt,
+		Tool:         source.ExtractTool,
+		ToolVersion:  source.ExtractToolVersion,
+	}
 }
 
 type youtubeExtractEnvelope struct {
@@ -511,6 +610,24 @@ func uniqueSorted(values []int64) []int64 {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+func selectSourceDocuments(ordered []int64, byID map[int64]model.SourceDocument, opts Options, toolVersion string) []model.SourceDocument {
+	filtered := make([]model.SourceDocument, 0, len(ordered))
+	for _, sourceID := range ordered {
+		source, ok := byID[sourceID]
+		if !ok {
+			continue
+		}
+		if !opts.Force && !needsEnrichment(source, opts, summarizecli.ToolName, toolVersion) {
+			continue
+		}
+		filtered = append(filtered, source)
+		if opts.Limit > 0 && len(filtered) >= opts.Limit {
+			break
+		}
+	}
+	return filtered
 }
 
 func mapKeys(values map[int64]struct{}) []int64 {

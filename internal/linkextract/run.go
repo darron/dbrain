@@ -64,6 +64,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 
 	stats := Stats{}
+	touchedSourceIDs := map[int64]struct{}{}
 
 	items, err := st.ListItemsForLinkDiscovery(ctx, opts.DiscoverLimit, opts.Force)
 	if err != nil {
@@ -84,6 +85,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			if err != nil {
 				return stats, fmt.Errorf("upsert source link %s for %s: %w", candidate.CanonicalURL, item.SourceKey, err)
 			}
+			touchedSourceIDs[result.SourceID] = struct{}{}
 			if result.SourceCreated {
 				stats.SourcesCreated++
 			}
@@ -97,7 +99,11 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		stats.ItemsMarked++
 	}
 
-	enrichStats, _, err := sourceenrich.RunPending(ctx, cfg, st, sourceenrich.Options{
+	if len(touchedSourceIDs) == 0 {
+		return stats, nil
+	}
+
+	enrichStats, _, err := sourceenrich.RunSourceIDs(ctx, cfg, st, mapKeys(touchedSourceIDs), sourceenrich.Options{
 		Limit:     opts.Limit,
 		Force:     opts.Force,
 		Summarize: opts.Summarize,
@@ -130,7 +136,7 @@ func collectCandidates(item model.Item) ([]model.SourceCandidate, error) {
 	seen := map[string]struct{}{}
 	candidates := make([]model.SourceCandidate, 0, len(rawLinks))
 	for _, raw := range rawLinks {
-		candidate, ok := normalizeCandidate(raw)
+		candidate, ok := NormalizeCandidate(raw)
 		if !ok {
 			continue
 		}
@@ -144,7 +150,7 @@ func collectCandidates(item model.Item) ([]model.SourceCandidate, error) {
 	return candidates, nil
 }
 
-func normalizeCandidate(raw string) (model.SourceCandidate, bool) {
+func NormalizeCandidate(raw string) (model.SourceCandidate, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return model.SourceCandidate{}, false
@@ -155,15 +161,19 @@ func normalizeCandidate(raw string) (model.SourceCandidate, bool) {
 		return model.SourceCandidate{}, false
 	}
 
-	host := strings.ToLower(u.Hostname())
-	host = strings.TrimPrefix(host, "www.")
-	host = strings.TrimPrefix(host, "m.")
-	switch host {
+	hostName := strings.ToLower(u.Hostname())
+	hostName = strings.TrimPrefix(hostName, "www.")
+	hostName = strings.TrimPrefix(hostName, "m.")
+	switch hostName {
 	case "twitter.com", "mobile.twitter.com":
-		host = "x.com"
+		hostName = "x.com"
+	}
+	host := hostName
+	if port := strings.TrimSpace(u.Port()); port != "" {
+		host = hostName + ":" + port
 	}
 
-	sourceType := classifySourceType(host, u.Path)
+	sourceType := classifySourceType(hostName, u.Path)
 	if sourceType == "skip" {
 		return model.SourceCandidate{}, false
 	}
@@ -175,7 +185,7 @@ func normalizeCandidate(raw string) (model.SourceCandidate, bool) {
 	if scheme != "http" && scheme != "https" {
 		return model.SourceCandidate{}, false
 	}
-	if host != "localhost" && net.ParseIP(host) == nil {
+	if hostName != "localhost" && net.ParseIP(hostName) == nil {
 		scheme = "https"
 	}
 
@@ -189,17 +199,17 @@ func normalizeCandidate(raw string) (model.SourceCandidate, bool) {
 		Path:   cleanedPath,
 	}
 
-	query := filterQueryParams(trimmed, host)
+	query := filterQueryParams(trimmed, hostName)
 	u.RawQuery = query.Encode()
 	u.Fragment = ""
 
 	canonical := strings.TrimSuffix(u.String(), "?")
-	if host == "github.com" {
+	if hostName == "github.com" {
 		canonical = trimGitHubURL(canonical)
 	}
 
 	keyHash := shortHash(canonical)
-	slugBase := host
+	slugBase := hostName
 	if slugBase == "" {
 		slugBase = sourceType
 	}
@@ -210,7 +220,7 @@ func normalizeCandidate(raw string) (model.SourceCandidate, bool) {
 		CanonicalURL:  canonical,
 		NormalizedURL: canonical,
 		SourceType:    sourceType,
-		Domain:        host,
+		Domain:        hostName,
 		SourceKey:     "src:" + keyHash,
 		NotePath:      vault.SourceNoteRelativePath(sourceType, noteSlug),
 	}, true
@@ -277,6 +287,14 @@ func trimGitHubURL(value string) string {
 func shortHash(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+func mapKeys(values map[int64]struct{}) []int64 {
+	out := make([]int64, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	return out
 }
 
 func slugify(value string) string {

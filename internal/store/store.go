@@ -34,6 +34,8 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	st := &Store{db: db}
 	if err := st.init(); err != nil {
@@ -63,7 +65,7 @@ func (s *Store) init() error {
 		"PRAGMA journal_mode = WAL;",
 		"PRAGMA synchronous = NORMAL;",
 		"PRAGMA foreign_keys = ON;",
-		"PRAGMA busy_timeout = 5000;",
+		"PRAGMA busy_timeout = 60000;",
 	}
 	for _, stmt := range pragmas {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -197,6 +199,12 @@ func (s *Store) ensureItemColumns() error {
 }
 
 func (s *Store) UpsertItem(ctx context.Context, item model.Item) (model.UpsertResult, error) {
+	return withBusyRetry(ctx, func() (model.UpsertResult, error) {
+		return s.upsertItem(ctx, item)
+	})
+}
+
+func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.UpsertResult{}, fmt.Errorf("begin tx: %w", err)
@@ -545,58 +553,60 @@ func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force boo
 }
 
 func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration model.XHydration) (bool, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error
-		FROM items
-		WHERE id = ?`, itemID)
+	return withBusyRetry(ctx, func() (bool, error) {
+		row := s.db.QueryRowContext(ctx, `
+			SELECT x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error
+			FROM items
+			WHERE id = ?`, itemID)
 
-	var currentText, currentLang, currentJSON, currentFetchedAt, currentStatus, currentError string
-	if err := row.Scan(&currentText, &currentLang, &currentJSON, &currentFetchedAt, &currentStatus, &currentError); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, fmt.Errorf("item not found for hydration: %d", itemID)
+		var currentText, currentLang, currentJSON, currentFetchedAt, currentStatus, currentError string
+		if err := row.Scan(&currentText, &currentLang, &currentJSON, &currentFetchedAt, &currentStatus, &currentError); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, fmt.Errorf("item not found for hydration: %d", itemID)
+			}
+			return false, fmt.Errorf("load current hydration %d: %w", itemID, err)
 		}
-		return false, fmt.Errorf("load current hydration %d: %w", itemID, err)
-	}
 
-	newFetchedAt := ""
-	if !hydration.FetchedAt.IsZero() {
-		newFetchedAt = hydration.FetchedAt.UTC().Format(time.RFC3339)
-	}
+		newFetchedAt := ""
+		if !hydration.FetchedAt.IsZero() {
+			newFetchedAt = hydration.FetchedAt.UTC().Format(time.RFC3339)
+		}
 
-	changed := currentText != hydration.FullText ||
-		currentLang != hydration.Language ||
-		currentJSON != hydration.APIJSON ||
-		currentStatus != hydration.Status ||
-		currentError != hydration.Error ||
-		(currentFetchedAt == "" && newFetchedAt != "")
+		changed := currentText != hydration.FullText ||
+			currentLang != hydration.Language ||
+			currentJSON != hydration.APIJSON ||
+			currentStatus != hydration.Status ||
+			currentError != hydration.Error ||
+			(currentFetchedAt == "" && newFetchedAt != "")
 
-	if !changed {
-		return false, nil
-	}
+		if !changed {
+			return false, nil
+		}
 
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE items
-		SET x_post_text = ?,
-			x_post_lang = ?,
-			x_post_json = ?,
-			x_post_fetched_at = ?,
-			x_post_status = ?,
-			x_post_error = ?,
-			updated_at = ?
-		WHERE id = ?`,
-		hydration.FullText,
-		hydration.Language,
-		hydration.APIJSON,
-		newFetchedAt,
-		hydration.Status,
-		hydration.Error,
-		time.Now().UTC().Format(time.RFC3339),
-		itemID,
-	); err != nil {
-		return false, fmt.Errorf("save hydration %d: %w", itemID, err)
-	}
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE items
+			SET x_post_text = ?,
+				x_post_lang = ?,
+				x_post_json = ?,
+				x_post_fetched_at = ?,
+				x_post_status = ?,
+				x_post_error = ?,
+				updated_at = ?
+			WHERE id = ?`,
+			hydration.FullText,
+			hydration.Language,
+			hydration.APIJSON,
+			newFetchedAt,
+			hydration.Status,
+			hydration.Error,
+			time.Now().UTC().Format(time.RFC3339),
+			itemID,
+		); err != nil {
+			return false, fmt.Errorf("save hydration %d: %w", itemID, err)
+		}
 
-	return true, nil
+		return true, nil
+	})
 }
 
 func scanItem(scanner interface{ Scan(dest ...any) error }, item *model.Item) error {

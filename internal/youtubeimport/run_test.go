@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"dbrain/internal/config"
+	"dbrain/internal/model"
 	"dbrain/internal/store"
 )
 
@@ -134,6 +135,57 @@ func TestRunImportsYouTubeSignalsAndSummarizesCanonicalSource(t *testing.T) {
 	}
 }
 
+func TestFallbackExtractForUsesWhisperCLIWhenTranscriptUnavailable(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	modelPath := filepath.Join(root, "ggml-base.bin")
+	if err := os.WriteFile(modelPath, []byte("model"), 0o644); err != nil {
+		t.Fatalf("write fake model: %v", err)
+	}
+
+	ytDLPPath := installFallbackFakeYTDLP(t, root)
+	whisperPath := installFallbackFakeWhisper(t, root)
+
+	source := model.SourceDocument{
+		SourceType:   "youtube",
+		CanonicalURL: "https://www.youtube.com/watch?v=test123",
+		Title:        "Fallback title",
+		Description:  "Fallback description",
+	}
+	extract := model.ExtractResult{
+		Title:       "- YouTube",
+		Description: "",
+		SiteName:    "youtube.com",
+		Content:     "Enjoy the videos and music you love...",
+		RawJSON:     `{"extracted":{"transcriptSource":"unavailable","transcriptionProvider":null,"transcriptCharacters":null}}`,
+	}
+
+	fallback, changed, err := fallbackExtractFor(Options{
+		Browser:          "chrome",
+		Profile:          "Default",
+		YTDLPBinary:      ytDLPPath,
+		WhisperBinary:    whisperPath,
+		WhisperModelPath: modelPath,
+		Timeout:          5 * time.Second,
+	})(context.Background(), source, extract)
+	if err != nil {
+		t.Fatalf("fallbackExtractFor: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected whisper fallback to run")
+	}
+	if !strings.Contains(fallback.Content, "transcript from fake whisper") {
+		t.Fatalf("unexpected fallback transcript: %q", fallback.Content)
+	}
+	if fallback.Tool != "whisper.cpp" {
+		t.Fatalf("unexpected fallback tool: %q", fallback.Tool)
+	}
+	if !strings.Contains(fallback.RawJSON, `"transcriptionProvider":"whisper.cpp"`) {
+		t.Fatalf("unexpected fallback raw json: %q", fallback.RawJSON)
+	}
+}
+
 func installFakeYTDLP(t *testing.T, root string) string {
 	t.Helper()
 
@@ -182,12 +234,12 @@ for arg in "$@"; do
   last="$arg"
   prev="$arg"
 done
-if [ "$last" = "-" ]; then
-  input="$(cat)"
+if [ -f "$last" ]; then
+  input="$(cat "$last")"
   case "$input" in
     *"full transcript from fake summarize"*) ;;
     *)
-      echo "expected transcript on stdin during summary step" >&2
+      echo "expected transcript in summary file during summary step" >&2
       exit 1
       ;;
   esac
@@ -218,6 +270,49 @@ printf '%s\n' '{"input":{"model":"cli/test/youtube"},"extracted":{"url":"https:/
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)
+	}
+	return scriptPath
+}
+
+func installFallbackFakeYTDLP(t *testing.T, root string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-yt-dlp-fallback")
+	script := `#!/bin/sh
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out="$arg"
+  fi
+  prev="$arg"
+done
+audio="${out%\.*}.mp3"
+printf '%s\n' "fake audio" > "$audio"
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake yt-dlp fallback: %v", err)
+	}
+	return scriptPath
+}
+
+func installFallbackFakeWhisper(t *testing.T, root string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-whisper-cli")
+	script := `#!/bin/sh
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-of" ]; then
+    out="$arg"
+  fi
+  prev="$arg"
+done
+printf '%s\n' "transcript from fake whisper" > "${out}.txt"
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake whisper cli: %v", err)
 	}
 	return scriptPath
 }

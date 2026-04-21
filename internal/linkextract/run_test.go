@@ -102,6 +102,112 @@ func TestRunPrefersLocalArticleTextOverLiveFetch(t *testing.T) {
 	}
 }
 
+func TestRunOnlyEnrichesDiscoveredBookmarkSources(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	if err := installFakeSummarize(t, root); err != nil {
+		t.Fatalf("install fake summarize: %v", err)
+	}
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:           "x:67890",
+		SourceType:          "x_bookmark",
+		ExternalID:          "67890",
+		CanonicalURL:        "https://x.com/example/status/67890",
+		Title:               "Bookmark title",
+		ArticleTitle:        "Local cached article",
+		ArticleText:         "LOCAL ARTICLE TEXT FROM FT",
+		LinksJSON:           `["https://example.com/post"]`,
+		ContentHash:         "item-hash-67890",
+		NotePath:            vault.NoteRelativePath("x", "2026", "67890"),
+		RawJSON:             `{}`,
+		ImportedAt:          now,
+		UpdatedAt:           now,
+		LastSeenAt:          now,
+		LinkExtractSyncedAt: time.Time{},
+	}
+	if _, err := st.UpsertItem(context.Background(), item); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	otherItem := model.Item{
+		SourceKey:    "youtube:test-signal",
+		SourceType:   "youtube_history",
+		ExternalID:   "youtube:test-signal",
+		CanonicalURL: "https://www.youtube.com/watch?v=test-signal",
+		Title:        "Other signal",
+		ContentHash:  "other-signal-hash",
+		NotePath:     vault.NoteRelativePath("youtube", "2026", "test-signal"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	otherUpserted, err := st.UpsertItem(context.Background(), otherItem)
+	if err != nil {
+		t.Fatalf("upsert other item: %v", err)
+	}
+
+	if _, err := st.UpsertSourceLink(context.Background(), otherUpserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:unrelated",
+		OriginalURL:   "https://unrelated.example.com/post",
+		NormalizedURL: "https://unrelated.example.com/post",
+		CanonicalURL:  "https://unrelated.example.com/post",
+		SourceType:    "web",
+		Domain:        "unrelated.example.com",
+		NotePath:      vault.SourceNoteRelativePath("web", "unrelated"),
+	}); err != nil {
+		t.Fatalf("insert unrelated source: %v", err)
+	}
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		DiscoverLimit: 10,
+		Limit:         10,
+		Summarize:     true,
+		Length:        "short",
+		Timeout:       5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if stats.SourcesQueued != 1 {
+		t.Fatalf("expected 1 discovered source queued, got %d", stats.SourcesQueued)
+	}
+
+	discoveredSource, err := st.GetSource(context.Background(), "https://example.com/post")
+	if err != nil {
+		t.Fatalf("GetSource discovered: %v", err)
+	}
+	if discoveredSource.SummaryStatus != "ok" {
+		t.Fatalf("expected discovered source to be summarized, got %q", discoveredSource.SummaryStatus)
+	}
+
+	unrelatedSource, err := st.GetSource(context.Background(), "https://unrelated.example.com/post")
+	if err != nil {
+		t.Fatalf("GetSource unrelated: %v", err)
+	}
+	if unrelatedSource.SummaryStatus != "" {
+		t.Fatalf("expected unrelated pending source to remain untouched, got %q", unrelatedSource.SummaryStatus)
+	}
+}
+
 func installFakeSummarize(t *testing.T, root string) error {
 	t.Helper()
 
@@ -120,15 +226,15 @@ last=""
 for arg in "$@"; do
   last="$arg"
 done
-if [ "$last" != "-" ]; then
-  echo "expected stdin input mode" >&2
+if [ ! -f "$last" ]; then
+  echo "expected local summary file input" >&2
   exit 1
 fi
-input="$(cat)"
+input="$(cat "$last")"
 case "$input" in
   *"LOCAL ARTICLE TEXT FROM FT"*) ;;
   *)
-    echo "expected local cached article text on stdin" >&2
+    echo "expected local cached article text in summary file" >&2
     exit 1
     ;;
 esac
