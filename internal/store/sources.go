@@ -11,9 +11,12 @@ import (
 	"dbrain/internal/model"
 )
 
+const sourceExtractErrorRetryCooldown = 12 * time.Hour
+
 const sourceSelectColumns = `
 	id, source_key, canonical_url, normalized_url, source_type, domain, title, description, site_name,
-	extracted_text, extract_json, extract_status, extract_error, extracted_at,
+	extracted_text, extract_json, extract_status, extract_error, extract_failure_kind, extract_failure_count,
+	extract_first_failed_at, extract_last_failed_at, extracted_at,
 	extract_tool, extract_tool_version,
 	summary_text, summary_json, summary_status, summary_error, summary_model, summary_content_hash, summary_prompt_version,
 	summary_tool, summary_tool_version, summarized_at,
@@ -35,6 +38,10 @@ func (s *Store) ensureSourceTables() error {
 			extract_json TEXT NOT NULL DEFAULT '',
 			extract_status TEXT NOT NULL DEFAULT '',
 			extract_error TEXT NOT NULL DEFAULT '',
+			extract_failure_kind TEXT NOT NULL DEFAULT '',
+			extract_failure_count INTEGER NOT NULL DEFAULT 0,
+			extract_first_failed_at TEXT NOT NULL DEFAULT '',
+			extract_last_failed_at TEXT NOT NULL DEFAULT '',
 			extracted_at TEXT NOT NULL DEFAULT '',
 			extract_tool TEXT NOT NULL DEFAULT '',
 			extract_tool_version TEXT NOT NULL DEFAULT '',
@@ -119,28 +126,32 @@ func (s *Store) ensureSourceColumns() error {
 	}
 
 	required := map[string]string{
-		"domain":                 "TEXT NOT NULL DEFAULT ''",
-		"description":            "TEXT NOT NULL DEFAULT ''",
-		"site_name":              "TEXT NOT NULL DEFAULT ''",
-		"extracted_text":         "TEXT NOT NULL DEFAULT ''",
-		"extract_json":           "TEXT NOT NULL DEFAULT ''",
-		"extract_status":         "TEXT NOT NULL DEFAULT ''",
-		"extract_error":          "TEXT NOT NULL DEFAULT ''",
-		"extracted_at":           "TEXT NOT NULL DEFAULT ''",
-		"extract_tool":           "TEXT NOT NULL DEFAULT ''",
-		"extract_tool_version":   "TEXT NOT NULL DEFAULT ''",
-		"summary_text":           "TEXT NOT NULL DEFAULT ''",
-		"summary_json":           "TEXT NOT NULL DEFAULT ''",
-		"summary_status":         "TEXT NOT NULL DEFAULT ''",
-		"summary_error":          "TEXT NOT NULL DEFAULT ''",
-		"summary_model":          "TEXT NOT NULL DEFAULT ''",
-		"summary_content_hash":   "TEXT NOT NULL DEFAULT ''",
-		"summary_prompt_version": "TEXT NOT NULL DEFAULT ''",
-		"summary_tool":           "TEXT NOT NULL DEFAULT ''",
-		"summary_tool_version":   "TEXT NOT NULL DEFAULT ''",
-		"summarized_at":          "TEXT NOT NULL DEFAULT ''",
-		"content_hash":           "TEXT NOT NULL DEFAULT ''",
-		"note_path":              "TEXT NOT NULL DEFAULT ''",
+		"domain":                  "TEXT NOT NULL DEFAULT ''",
+		"description":             "TEXT NOT NULL DEFAULT ''",
+		"site_name":               "TEXT NOT NULL DEFAULT ''",
+		"extracted_text":          "TEXT NOT NULL DEFAULT ''",
+		"extract_json":            "TEXT NOT NULL DEFAULT ''",
+		"extract_status":          "TEXT NOT NULL DEFAULT ''",
+		"extract_error":           "TEXT NOT NULL DEFAULT ''",
+		"extract_failure_kind":    "TEXT NOT NULL DEFAULT ''",
+		"extract_failure_count":   "INTEGER NOT NULL DEFAULT 0",
+		"extract_first_failed_at": "TEXT NOT NULL DEFAULT ''",
+		"extract_last_failed_at":  "TEXT NOT NULL DEFAULT ''",
+		"extracted_at":            "TEXT NOT NULL DEFAULT ''",
+		"extract_tool":            "TEXT NOT NULL DEFAULT ''",
+		"extract_tool_version":    "TEXT NOT NULL DEFAULT ''",
+		"summary_text":            "TEXT NOT NULL DEFAULT ''",
+		"summary_json":            "TEXT NOT NULL DEFAULT ''",
+		"summary_status":          "TEXT NOT NULL DEFAULT ''",
+		"summary_error":           "TEXT NOT NULL DEFAULT ''",
+		"summary_model":           "TEXT NOT NULL DEFAULT ''",
+		"summary_content_hash":    "TEXT NOT NULL DEFAULT ''",
+		"summary_prompt_version":  "TEXT NOT NULL DEFAULT ''",
+		"summary_tool":            "TEXT NOT NULL DEFAULT ''",
+		"summary_tool_version":    "TEXT NOT NULL DEFAULT ''",
+		"summarized_at":           "TEXT NOT NULL DEFAULT ''",
+		"content_hash":            "TEXT NOT NULL DEFAULT ''",
+		"note_path":               "TEXT NOT NULL DEFAULT ''",
 	}
 
 	for name, definition := range required {
@@ -374,7 +385,9 @@ func (s *Store) ListSourcesForEnrichment(ctx context.Context, limit int, force b
 	args := make([]any, 0, 2)
 
 	if !force {
+		errorEligible, errorArgs := sourceExtractBacklogWhere(time.Now().UTC())
 		if summarize {
+			args = append(args, errorArgs...)
 			summaryStale := []string{
 				"summary_status = ''",
 				"summary_status = 'error'",
@@ -393,21 +406,24 @@ func (s *Store) ListSourcesForEnrichment(ctx context.Context, limit int, force b
 
 			query += `
 				AND (
-					(extract_status = '' OR extract_status = 'error')
+					` + errorEligible + `
 					OR (
 						extract_status IN ('ok', 'empty')
 						AND (` + strings.Join(summaryStale, ` OR `) + `)
 					)
 				)`
 		} else {
+			args = append(args, errorArgs...)
 			query += `
-				AND (extract_status = '' OR extract_status = 'error')`
+				AND ` + errorEligible
 		}
 	}
 
 	query += `
 		ORDER BY
 			CASE WHEN extract_status = '' THEN 0 WHEN extract_status = 'error' THEN 1 ELSE 2 END,
+			CASE WHEN extract_status = 'error' THEN extract_failure_count ELSE 0 END ASC,
+			extract_last_failed_at ASC,
 			extracted_at ASC,
 			id DESC
 		LIMIT ?`
@@ -443,9 +459,15 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 			return false, err
 		}
 
-		if result.Status == "error" {
+		if isExtractFailureStatus(result.Status) {
+			now := time.Now().UTC()
+			failureKind, failureCount, firstFailedAt, lastFailedAt := nextExtractFailureState(current, result.Status, result.Error, now)
 			changed := current.ExtractStatus != result.Status ||
 				current.ExtractError != result.Error ||
+				current.ExtractFailureKind != failureKind ||
+				current.ExtractFailureCount != failureCount ||
+				storedTimeString(current.ExtractFirstFailedAt) != firstFailedAt ||
+				storedTimeString(current.ExtractLastFailedAt) != lastFailedAt ||
 				current.ExtractTool != result.Tool ||
 				current.ExtractToolVersion != result.ToolVersion
 			if !changed {
@@ -455,15 +477,23 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 				UPDATE sources
 				SET extract_status = ?,
 					extract_error = ?,
+					extract_failure_kind = ?,
+					extract_failure_count = ?,
+					extract_first_failed_at = ?,
+					extract_last_failed_at = ?,
 					extract_tool = ?,
 					extract_tool_version = ?,
 					updated_at = ?
 				WHERE id = ?`,
 				result.Status,
 				result.Error,
+				failureKind,
+				failureCount,
+				firstFailedAt,
+				lastFailedAt,
 				result.Tool,
 				result.ToolVersion,
-				time.Now().UTC().Format(time.RFC3339),
+				now.Format(time.RFC3339),
 				sourceID,
 			); err != nil {
 				return false, fmt.Errorf("save source extraction error %d: %w", sourceID, err)
@@ -497,6 +527,11 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 			return false, nil
 		}
 
+		failureKind := ""
+		failureCount := 0
+		firstFailedAt := ""
+		lastFailedAt := ""
+
 		if _, err := s.db.ExecContext(ctx, `
 			UPDATE sources
 			SET canonical_url = ?,
@@ -507,6 +542,10 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 				extract_json = ?,
 				extract_status = ?,
 				extract_error = ?,
+				extract_failure_kind = ?,
+				extract_failure_count = ?,
+				extract_first_failed_at = ?,
+				extract_last_failed_at = ?,
 				extracted_at = ?,
 				extract_tool = ?,
 				extract_tool_version = ?,
@@ -521,6 +560,10 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 			result.RawJSON,
 			result.Status,
 			result.Error,
+			failureKind,
+			failureCount,
+			firstFailedAt,
+			lastFailedAt,
 			fetchedAt,
 			result.Tool,
 			result.ToolVersion,
@@ -731,6 +774,40 @@ func (s *Store) GetSourceByID(ctx context.Context, sourceID int64) (model.Source
 	return source, nil
 }
 
+func (s *Store) ListAllSources(ctx context.Context, limit int) ([]model.SourceDocument, error) {
+	query := `
+		SELECT ` + sourceSelectColumns + `
+		FROM sources
+		WHERE note_path != ''
+		ORDER BY id ASC`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list all sources: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var sources []model.SourceDocument
+	for rows.Next() {
+		var source model.SourceDocument
+		if err := scanSource(rows, &source); err != nil {
+			return nil, fmt.Errorf("scan source row: %w", err)
+		}
+		sources = append(sources, source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sources: %w", err)
+	}
+	return sources, nil
+}
+
 func (s *Store) GetSourcesByIDs(ctx context.Context, sourceIDs []int64) ([]model.SourceDocument, error) {
 	if len(sourceIDs) == 0 {
 		return nil, nil
@@ -790,6 +867,34 @@ func (s *Store) GetSource(ctx context.Context, lookup string) (model.SourceDocum
 	return source, nil
 }
 
+func (s *Store) ListSourcesForItem(ctx context.Context, itemID int64) ([]model.ItemSourceRef, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id, s.source_key, s.canonical_url, s.source_type, s.title, s.note_path, s.extract_status, s.summary_status
+		FROM item_source_links l
+		JOIN sources s ON s.id = l.source_id
+		WHERE l.item_id = ?
+		ORDER BY s.updated_at DESC, s.id DESC`, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("list item sources %d: %w", itemID, err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var refs []model.ItemSourceRef
+	for rows.Next() {
+		var ref model.ItemSourceRef
+		if err := rows.Scan(&ref.SourceID, &ref.SourceKey, &ref.CanonicalURL, &ref.SourceType, &ref.Title, &ref.NotePath, &ref.ExtractStatus, &ref.SummaryStatus); err != nil {
+			return nil, fmt.Errorf("scan item source ref %d: %w", itemID, err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate item source refs %d: %w", itemID, err)
+	}
+	return refs, nil
+}
+
 func (s *Store) ListBacklinksForSource(ctx context.Context, sourceID int64) ([]model.SourceBacklink, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT i.id, i.source_key, i.canonical_url, i.title, i.note_path, i.author_handle, i.author_name, i.published_at
@@ -820,6 +925,7 @@ func (s *Store) ListBacklinksForSource(ctx context.Context, sourceID int64) ([]m
 
 func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.SourceDocument) error {
 	var extractedAt, summarizedAt, createdAt, updatedAt string
+	var extractFirstFailedAt, extractLastFailedAt string
 	if err := scanner.Scan(
 		&source.ID,
 		&source.SourceKey,
@@ -834,6 +940,10 @@ func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.Sour
 		&source.ExtractJSON,
 		&source.ExtractStatus,
 		&source.ExtractError,
+		&source.ExtractFailureKind,
+		&source.ExtractFailureCount,
+		&extractFirstFailedAt,
+		&extractLastFailedAt,
 		&extractedAt,
 		&source.ExtractTool,
 		&source.ExtractToolVersion,
@@ -856,10 +966,92 @@ func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.Sour
 	}
 
 	source.ExtractedAt = parseStoredTime(extractedAt)
+	source.ExtractFirstFailedAt = parseStoredTime(extractFirstFailedAt)
+	source.ExtractLastFailedAt = parseStoredTime(extractLastFailedAt)
 	source.SummarizedAt = parseStoredTime(summarizedAt)
 	source.CreatedAt = parseStoredTime(createdAt)
 	source.UpdatedAt = parseStoredTime(updatedAt)
 	return nil
+}
+
+func isExtractFailureStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "error", "dead", "gone":
+		return true
+	default:
+		return false
+	}
+}
+
+func sourceExtractBacklogWhere(now time.Time) (string, []any) {
+	return `(extract_status = '' OR (extract_status = 'error' AND (extract_last_failed_at = '' OR extract_last_failed_at <= ?)))`, []any{
+		now.UTC().Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
+	}
+}
+
+func nextExtractFailureState(current model.SourceDocument, status string, errorText string, now time.Time) (string, int, string, string) {
+	if !isExtractFailureStatus(status) {
+		return "", 0, "", ""
+	}
+
+	kind := classifyStoredExtractFailureKind(status, errorText)
+	if kind == "" {
+		kind = "unknown"
+	}
+
+	count := 1
+	firstFailedAt := now.UTC().Format(time.RFC3339)
+	if isExtractFailureStatus(current.ExtractStatus) && current.ExtractFailureKind == kind {
+		count = current.ExtractFailureCount + 1
+		if !current.ExtractFirstFailedAt.IsZero() {
+			firstFailedAt = current.ExtractFirstFailedAt.UTC().Format(time.RFC3339)
+		}
+	}
+
+	return kind, count, firstFailedAt, now.UTC().Format(time.RFC3339)
+}
+
+func classifyStoredExtractFailureKind(status string, errorText string) string {
+	value := strings.ToLower(strings.TrimSpace(errorText))
+	switch {
+	case strings.TrimSpace(status) == "gone":
+		return "http_gone"
+	case strings.Contains(value, "host does not resolve"),
+		strings.Contains(value, "no such host"),
+		strings.Contains(value, "nxdomain"):
+		return "dns_nxdomain"
+	case strings.Contains(value, "self signed certificate"),
+		strings.Contains(value, "unable to verify the first certificate"),
+		strings.Contains(value, "err_tls_cert_altname_invalid"),
+		strings.Contains(value, "altname invalid"),
+		strings.Contains(value, "x509"),
+		strings.Contains(value, "certificate"):
+		return "tls_certificate"
+	case strings.Contains(value, "status 522"),
+		strings.Contains(value, "status 523"),
+		strings.Contains(value, "status 524"),
+		strings.Contains(value, "status 525"),
+		strings.Contains(value, "status 526"):
+		return "cloudflare_edge"
+	case strings.Contains(value, "unable to connect"),
+		strings.Contains(value, "connection refused"),
+		strings.Contains(value, "network is unreachable"),
+		strings.Contains(value, "no route to host"):
+		return "connectivity"
+	case strings.Contains(value, "status 502"),
+		strings.Contains(value, "status 503"),
+		strings.Contains(value, "status 504"):
+		return "http_5xx"
+	default:
+		return ""
+	}
+}
+
+func storedTimeString(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func (s *Store) syncSourceFTS(ctx context.Context, sourceID int64) error {

@@ -4,3 +4,4 @@ bin/
 data/
 vault/
 .envrc
+web/ui/node_modules/

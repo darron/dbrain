@@ -2,13 +2,16 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 )
 
 type rootOptions struct {
-	root string
+	root         string
+	caffeinate   bool
+	noCaffeinate bool
 }
 
 func Run(ctx context.Context, args []string) error {
@@ -28,9 +31,30 @@ func NewRootCommand() *cobra.Command {
 		Short:         "Local-first second-brain tooling",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          helpCommand,
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			debug := commandDebugEnabled(cmd)
+			if cmd.HasAvailableSubCommands() {
+				return nil
+			}
+			if opts.noCaffeinate {
+				logKeepAwakeStatus(cmd, debug, "disabled via --no-caffeinate")
+				return nil
+			}
+			if !opts.caffeinate && !keepAwakeAvailable() {
+				logKeepAwakeStatus(cmd, debug, "unavailable")
+				return nil
+			}
+			if err := startKeepAwake(os.Getpid()); err != nil {
+				return err
+			}
+			logKeepAwakeStatus(cmd, debug, fmt.Sprintf("started for pid %d", os.Getpid()))
+			return nil
+		},
+		RunE: helpCommand,
 	}
 	rootCmd.PersistentFlags().StringVar(&opts.root, "root", ".", "Brain root directory")
+	rootCmd.PersistentFlags().BoolVar(&opts.caffeinate, "caffeinate", false, "Force keep-awake behavior while the command is running")
+	rootCmd.PersistentFlags().BoolVar(&opts.noCaffeinate, "no-caffeinate", false, "Disable automatic keep-awake behavior for this command")
 
 	importCmd := &cobra.Command{
 		Use:   "import",
@@ -53,11 +77,32 @@ func NewRootCommand() *cobra.Command {
 	}
 	hydrateCmd.AddCommand(newHydrateXCommand(opts))
 
+	repairCmd := &cobra.Command{
+		Use:   "repair",
+		Short: "Repair derived local artifacts",
+		RunE:  helpCommand,
+	}
+	repairCmd.AddCommand(newRepairNotesCommand(opts))
+
+	serveCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Serve local interfaces",
+		RunE:  helpCommand,
+	}
+	serveCmd.AddCommand(newServeMCPCommand(opts), newServeWebCommand(opts))
+
 	rootCmd.AddCommand(
 		importCmd,
+		newSyncCommand(opts),
+		newEntityCommand(opts),
+		newTopicCommand(opts),
+		newWorkerCommand(opts),
 		extractCmd,
 		hydrateCmd,
+		repairCmd,
+		serveCmd,
 		newStatsCommand(opts),
+		newAskCommand(opts),
 		newSearchCommand(opts),
 		newGetCommand(opts),
 	)
@@ -67,4 +112,16 @@ func NewRootCommand() *cobra.Command {
 
 func helpCommand(cmd *cobra.Command, _ []string) error {
 	return cmd.Help()
+}
+
+func commandDebugEnabled(cmd *cobra.Command) bool {
+	value, err := cmd.Flags().GetBool("debug")
+	return err == nil && value
+}
+
+func logKeepAwakeStatus(cmd *cobra.Command, debug bool, status string) {
+	if !debug {
+		return
+	}
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "keep-awake: %s\n", status)
 }

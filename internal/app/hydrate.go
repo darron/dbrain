@@ -64,6 +64,11 @@ func newHydrateXCommand(root *rootOptions) *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Hydrated: %d\n", stats.Hydrated)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Missing: %d\n", stats.Missing)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "API errors: %d\n", stats.APIErrors)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media candidates: %d\n", stats.MediaCandidates)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media requested: %d\n", stats.MediaRequested)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media downloaded: %d\n", stats.MediaDownloaded)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media gone: %d\n", stats.MediaGone)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media errors: %d\n", stats.MediaErrors)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Rendered notes: %d\n", stats.Rendered)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Unchanged: %d\n", stats.Unchanged)
 			return nil

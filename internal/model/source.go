@@ -16,6 +16,10 @@ type SourceDocument struct {
 	ExtractJSON          string    `json:"extract_json"`
 	ExtractStatus        string    `json:"extract_status"`
 	ExtractError         string    `json:"extract_error"`
+	ExtractFailureKind   string    `json:"extract_failure_kind"`
+	ExtractFailureCount  int       `json:"extract_failure_count"`
+	ExtractFirstFailedAt time.Time `json:"extract_first_failed_at"`
+	ExtractLastFailedAt  time.Time `json:"extract_last_failed_at"`
 	ExtractedAt          time.Time `json:"extracted_at"`
 	ExtractTool          string    `json:"extract_tool"`
 	ExtractToolVersion   string    `json:"extract_tool_version"`

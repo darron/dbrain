@@ -201,8 +201,8 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 		stats.LinkDiscoveryPending = value
 	}
 
-	extractWhere := `extract_status = '' OR extract_status = 'error'`
-	extractBuckets, err := s.countGroupedWhere(ctx, "sources", "source_type", extractWhere)
+	extractWhere, extractArgs := sourceExtractBacklogWhere(time.Now().UTC())
+	extractBuckets, err := s.countGroupedWhere(ctx, "sources", "source_type", extractWhere, extractArgs...)
 	if err != nil {
 		return BacklogStats{}, err
 	}

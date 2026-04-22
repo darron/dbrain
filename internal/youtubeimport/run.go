@@ -29,7 +29,6 @@ type Options struct {
 	Profile          string
 	Limit            int
 	WatchLater       bool
-	History          bool
 	Liked            bool
 	Summarize        bool
 	Force            bool
@@ -49,6 +48,7 @@ type Stats struct {
 	FeedsProcessed    int `json:"feeds_processed"`
 	ItemsProcessed    int `json:"items_processed"`
 	ItemsCreated      int `json:"items_created"`
+	ItemsDeleted      int `json:"items_deleted"`
 	ItemsUpdated      int `json:"items_updated"`
 	ItemsUnchanged    int `json:"items_unchanged"`
 	ItemsRendered     int `json:"items_rendered"`
@@ -56,6 +56,7 @@ type Stats struct {
 	SourcesCreated    int `json:"sources_created"`
 	LinksCreated      int `json:"links_created"`
 	SourcesQueued     int `json:"sources_queued"`
+	SourcesDeleted    int `json:"sources_deleted"`
 	SourcesExtracted  int `json:"sources_extracted"`
 	SourcesSummarized int `json:"sources_summarized"`
 	SourcesRendered   int `json:"sources_rendered"`
@@ -111,15 +112,21 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if strings.TrimSpace(opts.Transcriber) == "" {
 		opts.Transcriber = "auto"
 	}
-	if !opts.WatchLater && !opts.History && !opts.Liked {
+	if !opts.WatchLater && !opts.Liked {
 		opts.WatchLater = true
-		opts.History = true
 		opts.Liked = true
 	}
 
 	stats := Stats{}
 	now := time.Now().UTC()
 	touchedSourceIDs := map[int64]struct{}{}
+
+	cleanupStats, err := pruneHistorySignals(ctx, cfg, st)
+	if err != nil {
+		return stats, err
+	}
+	stats.ItemsDeleted = cleanupStats.ItemsDeleted
+	stats.SourcesDeleted = cleanupStats.SourcesDeleted
 
 	for _, currentFeed := range selectedFeeds(opts) {
 		debugLog(opts.Logger, "loading youtube feed", "feed", currentFeed.name, "url", currentFeed.url)
@@ -209,19 +216,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 }
 
 func selectedFeeds(opts Options) []feed {
-	feeds := make([]feed, 0, 3)
+	feeds := make([]feed, 0, 2)
 	if opts.WatchLater {
 		feeds = append(feeds, feed{
 			name:       "watch_later",
 			sourceType: "youtube_watch_later",
 			url:        "https://www.youtube.com/playlist?list=WL",
-		})
-	}
-	if opts.History {
-		feeds = append(feeds, feed{
-			name:       "history",
-			sourceType: "youtube_history",
-			url:        "https://www.youtube.com/feed/history",
 		})
 	}
 	if opts.Liked {
@@ -232,6 +232,48 @@ func selectedFeeds(opts Options) []feed {
 		})
 	}
 	return feeds
+}
+
+type cleanupStats struct {
+	ItemsDeleted   int
+	SourcesDeleted int
+}
+
+func pruneHistorySignals(ctx context.Context, cfg config.Config, st *store.Store) (cleanupStats, error) {
+	itemResult, err := st.DeleteItemsBySourceType(ctx, "youtube_history")
+	if err != nil {
+		return cleanupStats{}, err
+	}
+	if err := removeNoteFiles(cfg, itemResult.NotePaths); err != nil {
+		return cleanupStats{}, err
+	}
+
+	sourceResult, err := st.DeleteOrphanSources(ctx, "youtube")
+	if err != nil {
+		return cleanupStats{}, err
+	}
+	if err := removeNoteFiles(cfg, sourceResult.NotePaths); err != nil {
+		return cleanupStats{}, err
+	}
+
+	return cleanupStats{
+		ItemsDeleted:   itemResult.Count,
+		SourcesDeleted: sourceResult.Count,
+	}, nil
+}
+
+func removeNoteFiles(cfg config.Config, notePaths []string) error {
+	for _, notePath := range notePaths {
+		notePath = strings.TrimSpace(notePath)
+		if notePath == "" {
+			continue
+		}
+		absolute := filepath.Join(cfg.VaultDir, filepath.FromSlash(notePath))
+		if err := os.Remove(absolute); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove note %s: %w", absolute, err)
+		}
+	}
+	return nil
 }
 
 func fetchFeed(ctx context.Context, currentFeed feed, opts Options) (playlistEnvelope, error) {

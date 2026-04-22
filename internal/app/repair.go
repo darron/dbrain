@@ -1,0 +1,69 @@
+package app
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"dbrain/internal/noterepair"
+	"dbrain/internal/store"
+)
+
+func newRepairNotesCommand(root *rootOptions) *cobra.Command {
+	var items bool
+	var sources bool
+	var missingOnly bool
+	var limit int
+	var jsonOut bool
+
+	cmd := &cobra.Command{
+		Use:   "notes",
+		Short: "Rebuild rendered Markdown notes from brain.db",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig(root.root)
+			if err != nil {
+				return err
+			}
+
+			st, err := store.Open(cfg.DBPath)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				_ = st.Close()
+			}()
+
+			stats, err := noterepair.Run(cmd.Context(), cfg, st, noterepair.Options{
+				Items:       items,
+				Sources:     sources,
+				MissingOnly: missingOnly,
+				Limit:       limit,
+			})
+			if err != nil {
+				return err
+			}
+
+			if jsonOut {
+				return writeJSON(cmd.OutOrStdout(), stats)
+			}
+
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items considered: %d\n", stats.ItemsConsidered)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items written: %d\n", stats.ItemsWritten)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items skipped existing: %d\n", stats.ItemsSkippedExisting)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources considered: %d\n", stats.SourcesConsidered)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources written: %d\n", stats.SourcesWritten)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources skipped existing: %d\n", stats.SourcesSkippedExisting)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Errors: %d\n", stats.Errors)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&items, "items", false, "Repair item notes only")
+	cmd.Flags().BoolVar(&sources, "sources", false, "Repair source notes only")
+	cmd.Flags().BoolVar(&missingOnly, "missing-only", true, "Only rewrite notes that are currently missing from the vault")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Optional limit per note kind for smoke testing")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print repair stats as JSON")
+
+	return cmd
+}

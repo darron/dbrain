@@ -73,7 +73,6 @@ func newImportYouTubeCommand(root *rootOptions) *cobra.Command {
 	var profile string
 	var limit int
 	var watchLater bool
-	var history bool
 	var liked bool
 	var summarize bool
 	var force bool
@@ -108,7 +107,6 @@ func newImportYouTubeCommand(root *rootOptions) *cobra.Command {
 				Profile:     profile,
 				Limit:       limit,
 				WatchLater:  watchLater,
-				History:     history,
 				Liked:       liked,
 				Summarize:   summarize,
 				Force:       force,
@@ -130,6 +128,7 @@ func newImportYouTubeCommand(root *rootOptions) *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Feeds processed: %d\n", stats.FeedsProcessed)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items processed: %d\n", stats.ItemsProcessed)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items created: %d\n", stats.ItemsCreated)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items deleted: %d\n", stats.ItemsDeleted)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items updated: %d\n", stats.ItemsUpdated)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items unchanged: %d\n", stats.ItemsUnchanged)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items rendered: %d\n", stats.ItemsRendered)
@@ -137,6 +136,7 @@ func newImportYouTubeCommand(root *rootOptions) *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources created: %d\n", stats.SourcesCreated)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Source links created: %d\n", stats.LinksCreated)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources queued: %d\n", stats.SourcesQueued)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources deleted: %d\n", stats.SourcesDeleted)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources extracted: %d\n", stats.SourcesExtracted)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources summarized: %d\n", stats.SourcesSummarized)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources rendered: %d\n", stats.SourcesRendered)
@@ -150,7 +150,6 @@ func newImportYouTubeCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "Browser profile override; requires --browser")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum videos to load from each selected YouTube feed")
 	cmd.Flags().BoolVar(&watchLater, "watch-later", false, "Import Watch Later")
-	cmd.Flags().BoolVar(&history, "history", false, "Import watch history")
 	cmd.Flags().BoolVar(&liked, "liked", false, "Import liked videos")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh extraction and summarization for canonical video sources")
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess imported signals and linked sources even if they were already seen")

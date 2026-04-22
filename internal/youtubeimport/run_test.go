@@ -186,6 +186,173 @@ func TestFallbackExtractForUsesWhisperCLIWhenTranscriptUnavailable(t *testing.T)
 	}
 }
 
+func TestRunPrunesYouTubeHistorySignalsAndOrphanSources(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	historyItem := model.Item{
+		SourceKey:    "yt:history:deadbeef123",
+		SourceType:   "youtube_history",
+		ExternalID:   "deadbeef123",
+		CanonicalURL: "https://www.youtube.com/watch?v=deadbeef123",
+		Title:        "History signal",
+		ContentHash:  "history-signal-hash",
+		NotePath:     filepath.ToSlash(filepath.Join("items", "youtube", "history", "2026", "deadbeef123.md")),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), historyItem)
+	if err != nil {
+		t.Fatalf("upsert history item: %v", err)
+	}
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:history-video",
+		OriginalURL:   historyItem.CanonicalURL,
+		CanonicalURL:  historyItem.CanonicalURL,
+		NormalizedURL: historyItem.CanonicalURL,
+		SourceType:    "youtube",
+		Domain:        "youtube.com",
+		NotePath:      filepath.ToSlash(filepath.Join("sources", "youtube", "history-video.md")),
+	})
+	if err != nil {
+		t.Fatalf("source link: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+		CanonicalURL: historyItem.CanonicalURL,
+		FinalURL:     historyItem.CanonicalURL,
+		Title:        "History video",
+		Content:      "history only content",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "youtube-test",
+		ToolVersion:  "test",
+	}, "history-source-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+
+	itemNotePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(historyItem.NotePath))
+	if err := os.MkdirAll(filepath.Dir(itemNotePath), 0o755); err != nil {
+		t.Fatalf("mkdir history item note dir: %v", err)
+	}
+	if err := os.WriteFile(itemNotePath, []byte("history note"), 0o644); err != nil {
+		t.Fatalf("write history item note: %v", err)
+	}
+
+	source, err := st.GetSource(context.Background(), historyItem.CanonicalURL)
+	if err != nil {
+		t.Fatalf("get history source: %v", err)
+	}
+	sourceNotePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath))
+	if err := os.MkdirAll(filepath.Dir(sourceNotePath), 0o755); err != nil {
+		t.Fatalf("mkdir history source note dir: %v", err)
+	}
+	if err := os.WriteFile(sourceNotePath, []byte("history source note"), 0o644); err != nil {
+		t.Fatalf("write history source note: %v", err)
+	}
+
+	ytDLPPath := installDualFeedFakeYTDLP(t, root)
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Browser:     "chrome",
+		Profile:     "Default",
+		WatchLater:  true,
+		Liked:       true,
+		Summarize:   false,
+		Limit:       5,
+		Timeout:     5 * time.Second,
+		YTDLPBinary: ytDLPPath,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if stats.ItemsDeleted != 1 {
+		t.Fatalf("expected one history item deleted, got %+v", stats)
+	}
+	if stats.SourcesDeleted != 1 {
+		t.Fatalf("expected one orphan history source deleted, got %+v", stats)
+	}
+	if _, err := st.GetItem(context.Background(), historyItem.SourceKey); err == nil {
+		t.Fatal("expected history item to be deleted")
+	}
+	if _, err := st.GetSource(context.Background(), historyItem.CanonicalURL); err == nil {
+		t.Fatal("expected orphan history source to be deleted")
+	}
+	if _, err := os.Stat(itemNotePath); !os.IsNotExist(err) {
+		t.Fatalf("expected history item note to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(sourceNotePath); !os.IsNotExist(err) {
+		t.Fatalf("expected history source note to be removed, got err=%v", err)
+	}
+}
+
+func TestRunDefaultsToWatchLaterAndLikedOnly(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	ytDLPPath := installDualFeedFakeYTDLP(t, root)
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Browser:     "chrome",
+		Profile:     "Default",
+		Summarize:   false,
+		Limit:       5,
+		Timeout:     5 * time.Second,
+		YTDLPBinary: ytDLPPath,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if stats.FeedsProcessed != 2 {
+		t.Fatalf("expected default run to process watch later and liked only, got %+v", stats)
+	}
+	if stats.ItemsProcessed != 2 {
+		t.Fatalf("expected two imported youtube signals, got %+v", stats)
+	}
+	if _, err := st.GetItem(context.Background(), "yt:watch_later:dualWatch12345"); err != nil {
+		t.Fatalf("expected watch later item: %v", err)
+	}
+	if _, err := st.GetItem(context.Background(), "yt:liked:dualLiked12345"); err != nil {
+		t.Fatalf("expected liked item: %v", err)
+	}
+}
+
 func installFakeYTDLP(t *testing.T, root string) string {
 	t.Helper()
 
@@ -203,6 +370,34 @@ printf '%s\n' '{"id":"WL","title":"Watch Later","entries":[{"id":"abc123XYZ99","
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake yt-dlp: %v", err)
+	}
+	return scriptPath
+}
+
+func installDualFeedFakeYTDLP(t *testing.T, root string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-yt-dlp-dual")
+	script := `#!/bin/sh
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+case "$last" in
+  "https://www.youtube.com/playlist?list=WL")
+    printf '%s\n' '{"id":"WL","title":"Watch Later","entries":[{"id":"dualWatch12345","title":"Watch Later video","url":"dualWatch12345","webpage_url":"https://youtu.be/dualWatch12345","description":"Watch Later description","uploader":"Channel One","uploader_id":"channel-one","channel":"Channel One","channel_id":"UC1","upload_date":"20260418"}]}'
+    ;;
+  "https://www.youtube.com/playlist?list=LL")
+    printf '%s\n' '{"id":"LL","title":"Liked videos","entries":[{"id":"dualLiked12345","title":"Liked video","url":"dualLiked12345","webpage_url":"https://youtu.be/dualLiked12345","description":"Liked description","uploader":"Channel Two","uploader_id":"channel-two","channel":"Channel Two","channel_id":"UC2","upload_date":"20260417"}]}'
+    ;;
+  *)
+    echo "unexpected yt-dlp url: $last" >&2
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake dual yt-dlp: %v", err)
 	}
 	return scriptPath
 }

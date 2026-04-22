@@ -14,6 +14,7 @@ import (
 func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 	var discoverLimit int
 	var limit int
+	var concurrency int
 	var force bool
 	var summarize bool
 	var model string
@@ -44,6 +45,7 @@ func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 			stats, err := linkextract.Run(cmd.Context(), cfg, st, linkextract.Options{
 				DiscoverLimit: discoverLimit,
 				Limit:         limit,
+				Concurrency:   concurrency,
 				Force:         force,
 				Summarize:     summarize,
 				Model:         model,
@@ -77,6 +79,7 @@ func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 
 	cmd.Flags().IntVar(&discoverLimit, "discover-limit", 500, "Maximum bookmark items to scan for outbound links")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum deduped sources to enrich")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of concurrent source extract/summarize jobs")
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess items and sources even if they were already discovered or enriched")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization after extraction")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
@@ -91,6 +94,7 @@ func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 
 func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 	var limit int
+	var concurrency int
 	var force bool
 	var summarize bool
 	var model string
@@ -119,14 +123,15 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 			}()
 
 			stats, _, err := sourceenrich.RunPending(cmd.Context(), cfg, st, sourceenrich.Options{
-				Limit:     limit,
-				Force:     force,
-				Summarize: summarize,
-				Model:     model,
-				CLI:       cliProvider,
-				Length:    length,
-				Timeout:   timeout,
-				Logger:    newLogger(debug, cmd.ErrOrStderr()),
+				Limit:       limit,
+				Concurrency: concurrency,
+				Force:       force,
+				Summarize:   summarize,
+				Model:       model,
+				CLI:         cliProvider,
+				Length:      length,
+				Timeout:     timeout,
+				Logger:      newLogger(debug, cmd.ErrOrStderr()),
 			})
 			if err != nil {
 				return err
@@ -147,6 +152,7 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum queued sources to enrich")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of concurrent source extract/summarize jobs")
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess sources even if they already look current")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization after extraction")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")

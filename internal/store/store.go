@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "modernc.org/sqlite"
 
@@ -126,6 +127,9 @@ func (s *Store) init() error {
 		return err
 	}
 	if err := s.ensureSourceTables(); err != nil {
+		return err
+	}
+	if err := s.ensureMediaTables(); err != nil {
 		return err
 	}
 
@@ -476,8 +480,17 @@ func buildFTSQuery(query string) string {
 
 	terms := make([]string, 0, len(parts))
 	for _, part := range parts {
+		part = strings.TrimFunc(part, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		})
+		if part == "" {
+			continue
+		}
 		part = strings.ReplaceAll(part, `"`, `""`)
 		terms = append(terms, fmt.Sprintf(`"%s"*`, part))
+	}
+	if len(terms) == 0 {
+		return `""`
 	}
 	return strings.Join(terms, " AND ")
 }
@@ -501,7 +514,47 @@ func (s *Store) GetItem(ctx context.Context, lookup string) (model.Item, error) 
 		return model.Item{}, fmt.Errorf("load item %s: %w", lookup, err)
 	}
 
+	media, err := s.ListItemMediaRefs(ctx, item.ID)
+	if err != nil {
+		return model.Item{}, err
+	}
+	item.Media = media
+
 	return item, nil
+}
+
+func (s *Store) ListAllItems(ctx context.Context, limit int) ([]model.Item, error) {
+	query := `
+		SELECT ` + itemSelectColumns + `
+		FROM items
+		WHERE note_path != ''
+		ORDER BY id ASC`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list all items: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var items []model.Item
+	for rows.Next() {
+		var item model.Item
+		if err := scanItem(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan item row: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate items: %w", err)
+	}
+	return items, nil
 }
 
 func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force bool) ([]model.Item, error) {
@@ -516,10 +569,34 @@ func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force boo
 			AND external_id != ''`
 	if !force {
 		query += `
-			AND (x_post_status = ''
+			AND (
+				x_post_status = ''
 				OR x_post_status = 'api_error'
 				OR x_post_status = 'error'
-				OR x_post_status = 'rate_limited')`
+				OR x_post_status = 'rate_limited'
+				OR (
+					x_post_status LIKE 'ok_%'
+					AND x_post_json LIKE '%"media_objects"%'
+					AND (
+						NOT EXISTS (
+							SELECT 1
+							FROM item_media_links l
+							WHERE l.item_id = items.id
+						)
+						OR EXISTS (
+							SELECT 1
+							FROM item_media_links l
+							JOIN media_assets a ON a.id = l.media_asset_id
+							WHERE l.item_id = items.id
+								AND (
+									a.download_status = ''
+									OR a.download_status = 'pending'
+									OR a.download_status = 'error'
+								)
+						)
+					)
+				)
+			)`
 	}
 	query += `
 		ORDER BY
@@ -554,7 +631,15 @@ func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force boo
 
 func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration model.XHydration) (bool, error) {
 	return withBusyRetry(ctx, func() (bool, error) {
-		row := s.db.QueryRowContext(ctx, `
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return false, fmt.Errorf("begin hydration tx: %w", err)
+		}
+		defer func() {
+			_ = tx.Rollback()
+		}()
+
+		row := tx.QueryRowContext(ctx, `
 			SELECT x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error
 			FROM items
 			WHERE id = ?`, itemID)
@@ -572,40 +657,58 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 			newFetchedAt = hydration.FetchedAt.UTC().Format(time.RFC3339)
 		}
 
-		changed := currentText != hydration.FullText ||
+		hydrationChanged := currentText != hydration.FullText ||
 			currentLang != hydration.Language ||
 			currentJSON != hydration.APIJSON ||
 			currentStatus != hydration.Status ||
 			currentError != hydration.Error ||
 			(currentFetchedAt == "" && newFetchedAt != "")
 
-		if !changed {
-			return false, nil
+		nowText := time.Now().UTC().Format(time.RFC3339)
+		if hydrationChanged {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE items
+				SET x_post_text = ?,
+					x_post_lang = ?,
+					x_post_json = ?,
+					x_post_fetched_at = ?,
+					x_post_status = ?,
+					x_post_error = ?,
+					updated_at = ?
+				WHERE id = ?`,
+				hydration.FullText,
+				hydration.Language,
+				hydration.APIJSON,
+				newFetchedAt,
+				hydration.Status,
+				hydration.Error,
+				nowText,
+				itemID,
+			); err != nil {
+				return false, fmt.Errorf("save hydration %d: %w", itemID, err)
+			}
 		}
 
-		if _, err := s.db.ExecContext(ctx, `
-			UPDATE items
-			SET x_post_text = ?,
-				x_post_lang = ?,
-				x_post_json = ?,
-				x_post_fetched_at = ?,
-				x_post_status = ?,
-				x_post_error = ?,
-				updated_at = ?
-			WHERE id = ?`,
-			hydration.FullText,
-			hydration.Language,
-			hydration.APIJSON,
-			newFetchedAt,
-			hydration.Status,
-			hydration.Error,
-			time.Now().UTC().Format(time.RFC3339),
-			itemID,
-		); err != nil {
-			return false, fmt.Errorf("save hydration %d: %w", itemID, err)
+		mediaChanged, err := s.syncXHydrationMediaTx(ctx, tx, itemID, hydration, time.Now().UTC())
+		if err != nil {
+			return false, err
+		}
+		if mediaChanged && !hydrationChanged {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE items
+				SET updated_at = ?
+				WHERE id = ?`,
+				nowText,
+				itemID,
+			); err != nil {
+				return false, fmt.Errorf("touch item after media sync %d: %w", itemID, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("commit hydration %d: %w", itemID, err)
 		}
 
-		return true, nil
+		return hydrationChanged || mediaChanged, nil
 	})
 }
 

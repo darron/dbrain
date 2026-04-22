@@ -16,6 +16,7 @@ import (
 	"github.com/steipete/sweetcookie"
 
 	"dbrain/internal/config"
+	"dbrain/internal/mediadownload"
 	"dbrain/internal/model"
 	"dbrain/internal/store"
 	"dbrain/internal/vault"
@@ -77,13 +78,18 @@ type Options struct {
 }
 
 type Stats struct {
-	Candidates int `json:"candidates"`
-	Requested  int `json:"requested"`
-	Hydrated   int `json:"hydrated"`
-	Missing    int `json:"missing"`
-	APIErrors  int `json:"api_errors"`
-	Rendered   int `json:"rendered"`
-	Unchanged  int `json:"unchanged"`
+	Candidates      int `json:"candidates"`
+	Requested       int `json:"requested"`
+	Hydrated        int `json:"hydrated"`
+	Missing         int `json:"missing"`
+	APIErrors       int `json:"api_errors"`
+	Rendered        int `json:"rendered"`
+	Unchanged       int `json:"unchanged"`
+	MediaCandidates int `json:"media_candidates"`
+	MediaRequested  int `json:"media_requested"`
+	MediaDownloaded int `json:"media_downloaded"`
+	MediaGone       int `json:"media_gone"`
+	MediaErrors     int `json:"media_errors"`
 }
 
 type Client struct {
@@ -117,6 +123,7 @@ type mediaObject struct {
 type fetchResult struct {
 	item      model.Item
 	hydration model.XHydration
+	requested bool
 	err       error
 }
 
@@ -129,11 +136,6 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	if opts.Concurrency > 16 {
 		opts.Concurrency = 16
-	}
-
-	client, err := newClient(ctx, opts)
-	if err != nil {
-		return Stats{}, err
 	}
 
 	items, err := st.ListItemsForXHydration(ctx, opts.Limit, opts.Force)
@@ -152,6 +154,14 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		return stats, nil
 	}
 
+	var client *Client
+	if requiresRemoteFetch(items, opts.Force) {
+		client, err = newClient(ctx, opts)
+		if err != nil {
+			return Stats{}, err
+		}
+	}
+
 	jobs := make(chan model.Item)
 	results := make(chan fetchResult, opts.Concurrency)
 
@@ -165,8 +175,8 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 					"source_key", item.SourceKey,
 					"tweet_id", item.ExternalID,
 				)
-				hydration, fetchErr := client.FetchPost(ctx, item.ExternalID)
-				results <- fetchResult{item: item, hydration: hydration, err: fetchErr}
+				hydration, requested, fetchErr := hydrateItem(ctx, client, item, opts.Force)
+				results <- fetchResult{item: item, hydration: hydration, requested: requested, err: fetchErr}
 			}
 		}()
 	}
@@ -180,16 +190,34 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		close(results)
 	}()
 
+	processed := 0
 	for result := range results {
 		if result.err != nil {
 			return stats, result.err
 		}
+		processed++
 
-		stats.Requested++
+		if result.requested {
+			stats.Requested++
+		}
 		changed, saveErr := st.SaveXHydration(ctx, result.item.ID, result.hydration)
 		if saveErr != nil {
 			return stats, saveErr
 		}
+
+		mediaStats, mediaErr := mediadownload.RunForItem(ctx, cfg, st, result.item.ID, mediadownload.Options{
+			Force:   opts.Force,
+			Timeout: opts.Timeout,
+			Logger:  opts.Logger,
+		})
+		if mediaErr != nil {
+			return stats, mediaErr
+		}
+		stats.MediaCandidates += mediaStats.Candidates
+		stats.MediaRequested += mediaStats.Requested
+		stats.MediaDownloaded += mediaStats.Downloaded
+		stats.MediaGone += mediaStats.Gone
+		stats.MediaErrors += mediaStats.Errors
 
 		switch result.hydration.Status {
 		case "ok_graphql", "ok_syndication":
@@ -200,13 +228,19 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			stats.APIErrors++
 		}
 
-		if changed {
+		mediaChanged := mediaStats.Changed > 0
+		if changed || mediaChanged {
 			result.item.XPostText = result.hydration.FullText
 			result.item.XPostLang = result.hydration.Language
 			result.item.XPostJSON = result.hydration.APIJSON
 			result.item.XPostFetchedAt = result.hydration.FetchedAt
 			result.item.XPostStatus = result.hydration.Status
 			result.item.XPostError = result.hydration.Error
+			mediaRefs, err := st.ListItemMediaRefs(ctx, result.item.ID)
+			if err != nil {
+				return stats, err
+			}
+			result.item.Media = mediaRefs
 			if err := vault.WriteItem(cfg, result.item); err != nil {
 				return stats, fmt.Errorf("render hydrated note %s: %w", result.item.SourceKey, err)
 			}
@@ -220,9 +254,13 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			"tweet_id", result.item.ExternalID,
 			"status", result.hydration.Status,
 			"changed", changed,
+			"media_changed", mediaChanged,
+			"media_requested", mediaStats.Requested,
+			"media_downloaded", mediaStats.Downloaded,
 		)
-		if opts.Logger != nil && (stats.Requested%25 == 0 || result.hydration.Status != "ok_graphql") {
+		if opts.Logger != nil && (processed%25 == 0 || result.hydration.Status != "ok_graphql" || mediaStats.Requested > 0) {
 			opts.Logger.Info("x hydration progress",
+				"processed", processed,
 				"requested", stats.Requested,
 				"candidates", stats.Candidates,
 				"hydrated", stats.Hydrated,
@@ -230,12 +268,56 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				"api_errors", stats.APIErrors,
 				"rendered", stats.Rendered,
 				"unchanged", stats.Unchanged,
-				"remaining", stats.Candidates-stats.Requested,
+				"media_candidates", stats.MediaCandidates,
+				"media_requested", stats.MediaRequested,
+				"media_downloaded", stats.MediaDownloaded,
+				"media_gone", stats.MediaGone,
+				"media_errors", stats.MediaErrors,
+				"remaining", stats.Candidates-processed,
 			)
 		}
 	}
 
 	return stats, nil
+}
+
+func requiresRemoteFetch(items []model.Item, force bool) bool {
+	for _, item := range items {
+		if shouldFetchItem(item, force) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldFetchItem(item model.Item, force bool) bool {
+	if force {
+		return true
+	}
+	switch item.XPostStatus {
+	case "", "api_error", "error", "rate_limited":
+		return true
+	default:
+		return false
+	}
+}
+
+func hydrateItem(ctx context.Context, client *Client, item model.Item, force bool) (model.XHydration, bool, error) {
+	if !shouldFetchItem(item, force) {
+		return model.XHydration{
+			FullText:  item.XPostText,
+			Language:  item.XPostLang,
+			APIJSON:   item.XPostJSON,
+			FetchedAt: item.XPostFetchedAt,
+			Status:    item.XPostStatus,
+			Error:     item.XPostError,
+		}, false, nil
+	}
+	if client == nil {
+		return model.XHydration{}, false, fmt.Errorf("x client is required to hydrate tweet %s", item.ExternalID)
+	}
+	hydration, err := client.FetchPost(ctx, item.ExternalID)
+	return hydration, true, err
 }
 
 func newClient(ctx context.Context, opts Options) (*Client, error) {
@@ -647,10 +729,11 @@ func parseGraphQLSnapshot(tweetID string, payload map[string]any) *postSnapshot 
 		URL:                   "https://x.com/" + firstNonEmpty(handle, "_") + "/status/" + resolvedID,
 	}
 	for _, media := range mediaEntities {
-		snapshot.Media = append(snapshot.Media, firstNonEmpty(stringValue(media["media_url_https"]), stringValue(media["media_url"])))
+		mediaURL := selectMediaURL(media)
+		snapshot.Media = append(snapshot.Media, mediaURL)
 		snapshot.MediaObjects = append(snapshot.MediaObjects, mediaObject{
 			Type:        stringValue(media["type"]),
-			URL:         firstNonEmpty(stringValue(media["media_url_https"]), stringValue(media["media_url"])),
+			URL:         mediaURL,
 			ExpandedURL: stringValue(media["expanded_url"]),
 			Width:       intValue(dig(media, "original_info")["width"]),
 			Height:      intValue(dig(media, "original_info")["height"]),
@@ -680,15 +763,47 @@ func parseSyndicationSnapshot(tweetID string, payload map[string]any) *postSnaps
 		URL:                   "https://x.com/" + firstNonEmpty(handle, "_") + "/status/" + resolvedID,
 	}
 	for _, media := range listValue(payload["mediaDetails"]) {
-		snapshot.Media = append(snapshot.Media, firstNonEmpty(stringValue(media["media_url_https"]), stringValue(media["media_url"])))
+		mediaURL := selectMediaURL(media)
+		snapshot.Media = append(snapshot.Media, mediaURL)
 		snapshot.MediaObjects = append(snapshot.MediaObjects, mediaObject{
 			Type:   stringValue(media["type"]),
-			URL:    firstNonEmpty(stringValue(media["media_url_https"]), stringValue(media["media_url"])),
+			URL:    mediaURL,
 			Width:  intValue(dig(media, "original_info")["width"]),
 			Height: intValue(dig(media, "original_info")["height"]),
 		})
 	}
 	return snapshot
+}
+
+func selectMediaURL(media map[string]any) string {
+	mediaType := stringValue(media["type"])
+	if mediaType == "video" || mediaType == "animated_gif" {
+		if variant := bestVideoVariantURL(media); variant != "" {
+			return variant
+		}
+	}
+	return firstNonEmpty(stringValue(media["media_url_https"]), stringValue(media["media_url"]))
+}
+
+func bestVideoVariantURL(media map[string]any) string {
+	var bestURL string
+	bestBitrate := -1
+	for _, variant := range listValue(dig(media, "video_info")["variants"]) {
+		url := stringValue(variant["url"])
+		contentType := strings.ToLower(stringValue(variant["content_type"]))
+		if url == "" {
+			continue
+		}
+		if contentType != "" && !strings.Contains(contentType, "mp4") {
+			continue
+		}
+		bitrate := intValue(variant["bitrate"])
+		if bitrate > bestBitrate {
+			bestBitrate = bitrate
+			bestURL = url
+		}
+	}
+	return bestURL
 }
 
 func dig(m map[string]any, keys ...string) map[string]any {

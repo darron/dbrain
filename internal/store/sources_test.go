@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"dbrain/internal/model"
 )
 
 func TestListSourcesForEnrichmentIgnoresExtractToolVersionMismatchWhenSummaryCurrent(t *testing.T) {
@@ -168,6 +170,114 @@ func TestGetPreferredLocalSourceExtractReturnsLongestCachedArticle(t *testing.T)
 	}
 }
 
+func TestSaveSourceExtractionTracksFailureCountsAndResetsOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:test-failure-counts", "https://example.com/post")
+
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
+		Status:      "error",
+		Error:       "Unable to connect. Is the computer able to access the url?",
+		Tool:        "summarize",
+		ToolVersion: "test-1.0.0",
+	}, ""); err != nil {
+		t.Fatalf("first SaveSourceExtraction error: %v", err)
+	}
+
+	firstFailure, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("get source after first failure: %v", err)
+	}
+	if firstFailure.ExtractFailureKind != "connectivity" {
+		t.Fatalf("expected connectivity failure kind, got %q", firstFailure.ExtractFailureKind)
+	}
+	if firstFailure.ExtractFailureCount != 1 {
+		t.Fatalf("expected failure count 1, got %d", firstFailure.ExtractFailureCount)
+	}
+	if firstFailure.ExtractFirstFailedAt.IsZero() || firstFailure.ExtractLastFailedAt.IsZero() {
+		t.Fatalf("expected failure timestamps to be set, got %+v", firstFailure)
+	}
+
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
+		Status:      "error",
+		Error:       "Unable to connect. Is the computer able to access the url?",
+		Tool:        "summarize",
+		ToolVersion: "test-1.0.0",
+	}, ""); err != nil {
+		t.Fatalf("second SaveSourceExtraction error: %v", err)
+	}
+
+	secondFailure, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("get source after second failure: %v", err)
+	}
+	if secondFailure.ExtractFailureCount != 2 {
+		t.Fatalf("expected failure count 2, got %d", secondFailure.ExtractFailureCount)
+	}
+	if !secondFailure.ExtractFirstFailedAt.Equal(firstFailure.ExtractFirstFailedAt) {
+		t.Fatalf("expected first failure timestamp to stay fixed, got %s -> %s", firstFailure.ExtractFirstFailedAt, secondFailure.ExtractFirstFailedAt)
+	}
+
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/post",
+		FinalURL:     "https://example.com/post",
+		Title:        "Example",
+		SiteName:     "Example",
+		Content:      "body",
+		Status:       "ok",
+		FetchedAt:    time.Now().UTC(),
+		Tool:         "summarize",
+		ToolVersion:  "test-1.0.0",
+	}, "hash-1"); err != nil {
+		t.Fatalf("SaveSourceExtraction success: %v", err)
+	}
+
+	recovered, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("get source after success: %v", err)
+	}
+	if recovered.ExtractFailureKind != "" || recovered.ExtractFailureCount != 0 {
+		t.Fatalf("expected failure metadata reset, got kind=%q count=%d", recovered.ExtractFailureKind, recovered.ExtractFailureCount)
+	}
+	if !recovered.ExtractFirstFailedAt.IsZero() || !recovered.ExtractLastFailedAt.IsZero() {
+		t.Fatalf("expected failure timestamps reset, got first=%s last=%s", recovered.ExtractFirstFailedAt, recovered.ExtractLastFailedAt)
+	}
+}
+
+func TestListSourcesForEnrichmentSkipsRecentErrorsAndOrdersOldRetries(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	recentFailure := now.Format(time.RFC3339)
+	oldFailure := now.Add(-13 * time.Hour).Format(time.RFC3339)
+
+	insertTestSourceRow(t, st, "src:fresh", "https://example.com/fresh", "", "", 0, "", "")
+	insertTestSourceRow(t, st, "src:recent-error", "https://example.com/recent", "error", "connectivity", 1, recentFailure, recentFailure)
+	insertTestSourceRow(t, st, "src:retry-low", "https://example.com/retry-low", "error", "tls_certificate", 1, oldFailure, oldFailure)
+	insertTestSourceRow(t, st, "src:retry-high", "https://example.com/retry-high", "error", "tls_certificate", 3, oldFailure, oldFailure)
+
+	sources, err := st.ListSourcesForEnrichment(ctx, 10, false, false, "", "", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(sources) != 3 {
+		t.Fatalf("expected 3 queued sources, got %d", len(sources))
+	}
+	if sources[0].SourceKey != "src:fresh" {
+		t.Fatalf("expected fresh source first, got %s", sources[0].SourceKey)
+	}
+	if sources[1].SourceKey != "src:retry-low" {
+		t.Fatalf("expected low retry count second, got %s", sources[1].SourceKey)
+	}
+	if sources[2].SourceKey != "src:retry-high" {
+		t.Fatalf("expected high retry count last, got %s", sources[2].SourceKey)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -180,6 +290,61 @@ func openTestStore(t *testing.T) *Store {
 		_ = st.Close()
 	})
 	return st
+}
+
+func insertTestSource(t *testing.T, st *Store, sourceKey string, canonicalURL string) int64 {
+	t.Helper()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := st.db.ExecContext(context.Background(), `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sourceKey,
+		canonicalURL,
+		canonicalURL,
+		"web",
+		"example.com",
+		"sources/web/example.md",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert source %s: %v", sourceKey, err)
+	}
+	sourceID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("source id %s: %v", sourceKey, err)
+	}
+	return sourceID
+}
+
+func insertTestSourceRow(t *testing.T, st *Store, sourceKey string, canonicalURL string, extractStatus string, failureKind string, failureCount int, firstFailedAt string, lastFailedAt string) {
+	t.Helper()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.db.ExecContext(context.Background(), `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, note_path,
+			extract_status, extract_failure_kind, extract_failure_count, extract_first_failed_at, extract_last_failed_at,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sourceKey,
+		canonicalURL,
+		canonicalURL,
+		"web",
+		"example.com",
+		"sources/web/example.md",
+		extractStatus,
+		failureKind,
+		failureCount,
+		firstFailedAt,
+		lastFailedAt,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert source row %s: %v", sourceKey, err)
+	}
 }
 
 func insertTestItem(t *testing.T, st *Store, sourceKey string, articleTitle string, articleText string, updatedAt time.Time) int64 {

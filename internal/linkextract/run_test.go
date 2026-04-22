@@ -148,7 +148,7 @@ func TestRunOnlyEnrichesDiscoveredBookmarkSources(t *testing.T) {
 
 	otherItem := model.Item{
 		SourceKey:    "youtube:test-signal",
-		SourceType:   "youtube_history",
+		SourceType:   "youtube_watch_later",
 		ExternalID:   "youtube:test-signal",
 		CanonicalURL: "https://www.youtube.com/watch?v=test-signal",
 		Title:        "Other signal",

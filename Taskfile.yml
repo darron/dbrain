@@ -5,10 +5,26 @@ vars:
   GOMODCACHE: "{{.ROOT_DIR}}/.gomodcache"
 
 tasks:
+  build:
+    desc: Build the dbrain CLI
+    cmds:
+      - mkdir -p bin
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go build -o ./bin/dbrain ./cmd/dbrain
+
   fmt:
     desc: Format Go source files
     cmds:
       - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go fmt ./...
+
+  web-install:
+    desc: Install the web UI dependencies
+    cmds:
+      - cd web/ui && npm install
+
+  web-build:
+    desc: Build the embedded web UI assets
+    cmds:
+      - cd web/ui && npm run build
 
   lint:
     desc: Run golangci-lint

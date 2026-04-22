@@ -245,6 +245,70 @@ func TestBacklogReportsPendingWorkByStage(t *testing.T) {
 	}
 }
 
+func TestBacklogSkipsRecentExtractErrorsDuringCooldown(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	recentItem, err := st.UpsertItem(ctx, testItem("gh-star:darron:test/recent-error", "github_star", "https://github.com/test/recent-error", now))
+	if err != nil {
+		t.Fatalf("upsert recent error item: %v", err)
+	}
+	recentLink, err := st.UpsertSourceLink(ctx, recentItem.ItemID, modelSourceCandidate("src:recent-error", "https://github.com/test/recent-error", "github"))
+	if err != nil {
+		t.Fatalf("recent error source link: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, recentLink.SourceID, model.ExtractResult{
+		Status:      "error",
+		Error:       "Unable to connect. Is the computer able to access the url?",
+		Tool:        "summarize",
+		ToolVersion: "test-version",
+	}, ""); err != nil {
+		t.Fatalf("save recent error extract: %v", err)
+	}
+
+	oldItem, err := st.UpsertItem(ctx, testItem("gh-star:darron:test/old-error", "github_star", "https://github.com/test/old-error", now))
+	if err != nil {
+		t.Fatalf("upsert old error item: %v", err)
+	}
+	oldLink, err := st.UpsertSourceLink(ctx, oldItem.ItemID, modelSourceCandidate("src:old-error", "https://github.com/test/old-error", "github"))
+	if err != nil {
+		t.Fatalf("old error source link: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, oldLink.SourceID, model.ExtractResult{
+		Status:      "error",
+		Error:       "Unable to connect. Is the computer able to access the url?",
+		Tool:        "summarize",
+		ToolVersion: "test-version",
+	}, ""); err != nil {
+		t.Fatalf("save old error extract: %v", err)
+	}
+	oldFailedAt := now.Add(-13 * time.Hour).Format(time.RFC3339)
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET extract_first_failed_at = ?, extract_last_failed_at = ?
+		WHERE id = ?`,
+		oldFailedAt,
+		oldFailedAt,
+		oldLink.SourceID,
+	); err != nil {
+		t.Fatalf("age old error timestamps: %v", err)
+	}
+
+	backlog, err := st.Backlog(ctx, "dbrain-v1", "summarize", "test-1.0.0")
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog.SourceExtractionPending != 1 {
+		t.Fatalf("expected only the cooled-down error to count, got %d", backlog.SourceExtractionPending)
+	}
+	if len(backlog.SourceExtractionPendingByType) != 1 || backlog.SourceExtractionPendingByType[0].Key != "github" || backlog.SourceExtractionPendingByType[0].Count != 1 {
+		t.Fatalf("unexpected extract backlog buckets: %+v", backlog.SourceExtractionPendingByType)
+	}
+}
+
 func testItem(sourceKey string, sourceType string, url string, now time.Time) model.Item {
 	return model.Item{
 		SourceKey:    sourceKey,

@@ -18,6 +18,12 @@ import (
 
 const ToolName = "summarize"
 
+const (
+	commandRetryAttempts = 4
+	commandRetryDelay    = 100 * time.Millisecond
+	commandRetryMaxDelay = 2 * time.Second
+)
+
 type Options struct {
 	Binary    string
 	Input     string
@@ -90,34 +96,15 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	args = append(args, opts.Input)
 
-	cmd := exec.CommandContext(ctx, opts.Binary, args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if len(opts.Env) > 0 {
-		env := os.Environ()
-		for key, value := range opts.Env {
-			env = append(env, key+"="+value)
-		}
-		cmd.Env = env
+	stdout, err := runCommand(ctx, opts, args)
+	if err != nil {
+		return Result{}, err
 	}
-	if opts.Stdin != "" {
-		cmd.Stdin = strings.NewReader(opts.Stdin)
-	} else {
-		cmd.Stdin = nil
-	}
-	if err := cmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg == "" {
-			errMsg = err.Error()
-		}
-		return Result{}, fmt.Errorf("run summarize: %s", errMsg)
-	}
+	stdoutText := strings.TrimSpace(string(stdout))
 
 	var payload outputEnvelope
-	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
-		output := strings.TrimSpace(stdout.String())
+	if err := json.Unmarshal(stdout, &payload); err != nil {
+		output := stdoutText
 		if len(output) > 160 {
 			output = output[:160]
 		}
@@ -133,7 +120,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 			Description:  strings.TrimSpace(payload.Extracted.Description),
 			SiteName:     strings.TrimSpace(payload.Extracted.SiteName),
 			Content:      strings.TrimSpace(payload.Extracted.Content),
-			RawJSON:      strings.TrimSpace(stdout.String()),
+			RawJSON:      stdoutText,
 			FetchedAt:    now,
 			Tool:         ToolName,
 			ToolVersion:  version,
@@ -158,7 +145,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		}
 		if payload.Summary != nil && strings.TrimSpace(*payload.Summary) != "" {
 			result.Summary.Text = strings.TrimSpace(*payload.Summary)
-			result.Summary.RawJSON = strings.TrimSpace(stdout.String())
+			result.Summary.RawJSON = stdoutText
 			result.Summary.Status = "ok"
 		} else {
 			result.Summary.Status = "error"
@@ -167,6 +154,67 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func runCommand(ctx context.Context, opts Options, args []string) ([]byte, error) {
+	delay := commandRetryDelay
+
+	for attempt := 0; ; attempt++ {
+		cmd := exec.CommandContext(ctx, opts.Binary, args...)
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if len(opts.Env) > 0 {
+			env := os.Environ()
+			for key, value := range opts.Env {
+				env = append(env, key+"="+value)
+			}
+			cmd.Env = env
+		}
+		if opts.Stdin != "" {
+			cmd.Stdin = strings.NewReader(opts.Stdin)
+		}
+
+		if err := cmd.Run(); err != nil {
+			errMsg := strings.TrimSpace(stderr.String())
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			if !isRetryableCommandError(errMsg) || attempt >= commandRetryAttempts-1 {
+				return nil, fmt.Errorf("run summarize: %s", errMsg)
+			}
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
+			}
+			delay *= 2
+			if delay > commandRetryMaxDelay {
+				delay = commandRetryMaxDelay
+			}
+			continue
+		}
+
+		return stdout.Bytes(), nil
+	}
+}
+
+func isRetryableCommandError(message string) bool {
+	value := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(value, "sqlite_busy") ||
+		strings.Contains(value, "sqlite_locked") ||
+		strings.Contains(value, "database is locked") ||
+		strings.Contains(value, "database table is locked")
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func PreferredCLIProvider() string {

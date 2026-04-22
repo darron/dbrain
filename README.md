@@ -7,29 +7,69 @@ imported corpus.
 ## Current Commands
 
 - `dbrain import ft`
+- `dbrain sync all`
 - `dbrain import github stars`
 - `dbrain import youtube`
+- `dbrain entity map [query]`
+- `dbrain entity generate <query>`
+- `dbrain entity index`
+- `dbrain topic map <topic>`
+- `dbrain topic generate <topic>`
+- `dbrain topic refresh [topic]`
+- `dbrain topic index`
+- `dbrain worker sources`
 - `dbrain hydrate x`
+- `dbrain repair notes`
+- `dbrain serve mcp`
+- `dbrain serve web`
 - `dbrain extract links`
 - `dbrain extract sources`
 - `dbrain stats items`
 - `dbrain stats sources`
 - `dbrain stats activity`
 - `dbrain stats backlog`
+- `dbrain ask <question>`
 - `dbrain search <query>`
 - `dbrain get <source-key-or-id>`
+
+On macOS, `dbrain` will automatically use `caffeinate` when the command is
+available, so long-running leaf commands keep the machine awake by default.
+Use `--no-caffeinate` to disable that behavior for a specific run. You can
+still pass `--caffeinate` to force it explicitly.
 
 ## Dev Tasks
 
 - `task fmt`
+- `task web-install`
+- `task web-build`
 - `task lint`
 - `task test`
+
+## TODO
+
+- Drain the current source backlog so the imported corpus is actually enriched end to end.
+- Continue improving topic/MOC synthesis quality and better periodic refresh workflows as the corpus fills out.
+- Integrate the current MCP server cleanly with agent workflows and extend it further as needed.
+- Add a Tailscale-reachable query surface, likely tsnet-backed MCP and/or a small web UI, so the brain can be queried remotely while away from the machine.
+- Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
+- Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
+- Add URL-backed state and deeper note-to-note navigation in the web UI so searches, selected notes, and related pivots survive refreshes and remote sessions.
+- Add a real operations/dashboard view in the web UI for backlog, recent successes, recent failures, and queue health while workers are running.
+- Add first-class filters and browsing controls in the web UI for source type, kind, status, and recency so the corpus is easier to slice than with one text box.
+- Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
+- Add a translation stage for non-English X content, storing both original and translated text.
+- Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
+- Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
+- Improve provider provenance so stored summaries always record the exact backend/model used.
+- Add a scheduler/launchd-style mode on top of the new worker loop so enrichment can resume automatically after terminal closure or reboot.
 
 ## Layout
 
 - `data/brain.db`: local SQLite state
 - `vault/items/...`: rendered Markdown notes for Obsidian
 - `vault/sources/...`: rendered Markdown notes for linked sources
+- `vault/entities/...`: derived entity notes and entity index
+- `vault/topics/...`: generated topic/MOC notes
 
 ## Prerequisites
 
@@ -80,6 +120,12 @@ For GitHub stars, use a fine-grained PAT with:
 
 - `dbrain import ft`
   Requires the FT bookmarks SQLite database. No external binary is invoked.
+- `dbrain sync all`
+  Runs the regular incremental refresh pipeline in one command: FT import, X
+  hydration, tweet-link discovery/enrichment, GitHub stars import, YouTube
+  import, and an optional source-backlog worker batch. It combines the
+  requirements of the enabled stages, defaults to Chrome for cookie-backed
+  flows, and supports `--skip-*` flags when you only want part of the pipeline.
 - `dbrain hydrate x`
   Requires a supported browser profile with valid X cookies. Chrome/Chromium is
   the best-tested path. On macOS you may see a Keychain prompt the first time
@@ -96,10 +142,43 @@ For GitHub stars, use a fine-grained PAT with:
   a normal GitHub API round trip.
 - `dbrain extract links`
   Requires `summarize`. It will prefer cached FT `article_text` when available,
-  but still uses `summarize` for normalization and summarization.
+  but still uses `summarize` for normalization and summarization. Use
+  `--concurrency` to run multiple source extract/summarize jobs in parallel
+  after discovery.
 - `dbrain extract sources`
   Requires `summarize`. This is the global source-backlog worker for already
-  known sources that still need extraction or summarization.
+  known sources that still need extraction or summarization. Use
+  `--concurrency` to run multiple source extract/summarize jobs in parallel.
+- `dbrain worker sources`
+  Requires `summarize`. This is the long-running source-backlog worker: it
+  repeatedly runs `extract sources`-style batches until the queue is drained,
+  and can optionally keep polling for new source work with `--watch`. It also
+  supports bounded parallelism via `--concurrency`. Use `--limit` to cap the
+  total number of sources processed in a single worker run, and `--batch-limit`
+  to control per-cycle batch size.
+- `dbrain topic map`
+  No external tools required. Builds a topic graph from the local brain using
+  search plus the item/source link graph.
+- `dbrain entity map`
+  No external tools required. Derives stable entities from local item/source
+  metadata and searches them by name, key, alias, or domain.
+- `dbrain entity generate`
+  No external tools required. Writes matching entity notes under
+  `vault/entities/...` and refreshes the entity index.
+- `dbrain entity index`
+  No external tools required. Re-derives all entities, writes their notes, and
+  rebuilds `vault/entities/index.md`.
+- `dbrain topic generate`
+  No external tools required. Writes a synthesized topic/MOC note under
+  `vault/topics/...` from the local brain, including sections like `Summary`,
+  `What This Topic Is`, `Main Angles`, entity pivots, open questions, and the
+  supporting note graph when that evidence exists.
+- `dbrain topic refresh`
+  No external tools required. Rebuilds generated topic notes from their stored
+  frontmatter settings and refreshes the topic index.
+- `dbrain topic index`
+  No external tools required. Rebuilds the browsable topic index note from the
+  generated topic note set.
 - `dbrain stats items`
   No external tools required. Reads item counts from `brain.db`.
 - `dbrain stats sources`
@@ -110,6 +189,27 @@ For GitHub stars, use a fine-grained PAT with:
 - `dbrain stats backlog`
   No external tools required. Shows remaining queued work by pipeline stage and
   whether the current queues are drained.
+- `dbrain ask`
+  Retrieval is read-only and works directly from `brain.db`. By default it also
+  synthesizes an answer through `summarize`; use `--retrieve-only` when you want
+  evidence only and no model call.
+- `dbrain repair notes`
+  No external tools required. Rebuilds rendered Markdown notes from `brain.db`,
+  which is useful if antivirus or sync tooling removed files from `vault/`.
+- `dbrain serve mcp`
+  No external tools required. Serves the local brain over MCP stdio with
+  read-only tools, resources, and prompts for search, note access, and pipeline
+  status.
+- `dbrain serve web`
+  No external tools required. Serves the local brain over HTTP with a read-only
+  JSON API and an embedded Svelte UI for search, evidence retrieval, and note
+  inspection.
+- `task web-install`
+  Requires `npm`. Installs the Svelte/Vite dependencies used to rebuild the web
+  UI source.
+- `task web-build`
+  Requires `npm`. Rebuilds the embedded `web/ui/dist` assets from the Svelte
+  source tree.
 - `task fmt`
   Requires `task` and `go`.
 - `task lint`
@@ -121,19 +221,43 @@ For GitHub stars, use a fine-grained PAT with:
 
 ```sh
 go run ./cmd/dbrain import ft
+go run ./cmd/dbrain sync all --cli codex --length short --timeout 5m --debug
+go run ./cmd/dbrain sync all --skip-sources --cli codex --length short --timeout 5m
+go run ./cmd/dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --cli codex --length short --timeout 5m --debug
 go run ./cmd/dbrain import github stars --debug
-go run ./cmd/dbrain import youtube --watch-later --browser chrome --profile Default --limit 10 --transcriber auto --debug
+go run ./cmd/dbrain import youtube --watch-later --liked --browser chrome --profile Default --limit 10 --transcriber auto --debug
+go run ./cmd/dbrain entity map "example"
+go run ./cmd/dbrain entity map "example/project" --kind project --json
+go run ./cmd/dbrain entity generate "example/project" --kind project
+go run ./cmd/dbrain entity index
+go run ./cmd/dbrain topic map "agent memory" --json
+go run ./cmd/dbrain topic generate "vector database"
+go run ./cmd/dbrain topic refresh
+go run ./cmd/dbrain topic refresh "vector database"
+go run ./cmd/dbrain topic index
+go run ./cmd/dbrain worker sources --limit 100 --concurrency 4
+go run ./cmd/dbrain worker sources --watch --poll-interval 1m --idle-exit-after 30m --concurrency 4 --cli codex --length short --timeout 5m --debug
 go run ./cmd/dbrain hydrate x --limit 50
 go run ./cmd/dbrain hydrate x --limit 5 --debug
-go run ./cmd/dbrain extract links --discover-limit 100 --limit 25 --summarize=false
-go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --cli codex --length short --debug
-go run ./cmd/dbrain extract sources --limit 50 --cli codex --length short --debug
+go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --cli codex --length short --timeout 5m --debug
+go run ./cmd/dbrain --no-caffeinate extract sources --limit 50 --cli codex --length short --timeout 5m --debug
+go run ./cmd/dbrain repair notes
+go run ./cmd/dbrain repair notes --missing-only=false --sources
+go run ./cmd/dbrain extract links --discover-limit 100 --limit 25 --concurrency 4 --summarize=false
+go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --cli codex --length short --debug
+go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --cli codex --length short --debug
 go run ./cmd/dbrain stats items
 go run ./cmd/dbrain stats items --source-type github_star --group-by none
 go run ./cmd/dbrain stats sources --source-type github --extract-tool github-api --group-by summary-status
 go run ./cmd/dbrain stats activity
 go run ./cmd/dbrain stats activity --window 30m
 go run ./cmd/dbrain stats backlog
+go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --retrieve-only
+go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --cli codex --timeout 30s
+go run ./cmd/dbrain ask "Show me GitHub repos about vector databases" --retrieve-only --source-type github
+go run ./cmd/dbrain ask "What is Agent Memory?" --retrieve-only --include-related --related-limit 2
+go run ./cmd/dbrain serve mcp
+go run ./cmd/dbrain serve web
 go run ./cmd/dbrain search kubernetes
 go run ./cmd/dbrain get x:2045912259210485815
 ```
@@ -157,13 +281,134 @@ source pipeline is still busy extracting and summarizing linked content. Use
 still moving, and `stats backlog` when you want to know how much queued work
 remains before the current pipeline is actually drained.
 
-`import youtube` pulls authenticated YouTube signals from `Watch Later`,
-history, and liked videos via `yt-dlp --cookies-from-browser`. Each feed entry
-is stored as a signal item under `vault/items/youtube/...`, while the canonical
-video URL is stored once in `sources` and enriched separately. Re-running the
-command is idempotent: unchanged signal items are touched in the DB but not
-rewritten, while linked sources are only re-extracted or re-summarized when you
-force a refresh or the source freshness rules say they are stale.
+`worker sources` is the safer long-running alternative to manually rerunning
+`extract sources`. By default it keeps batching until the current source queue
+is drained and then exits. With `--watch`, it stays alive, sleeps between idle
+polls, and can stop automatically after an idle window via
+`--idle-exit-after`.
+
+For source enrichment, start with `--concurrency 4` and increase carefully if
+your summarize backend and rate limits can handle it. Higher concurrency speeds
+up backlog draining, but it also increases provider usage and simultaneous
+external fetches.
+
+`ask` is the first query surface built on top of the imported brain. It pulls
+top matches from local search, assembles evidence from item/source rows, and
+can optionally synthesize a citation-bearing answer through `summarize`. Use
+`--retrieve-only` when you want the evidence pack without spending model usage.
+Use `--source-type` to narrow retrieval to specific kinds such as `github`,
+`web`, or `x_bookmark`, and `--include-related` to append linked evidence from
+the item/source graph. It also derives entity matches from the local corpus and
+uses them to boost and expand retrieval, so queries can pivot through X
+authors, GitHub owners/repos, and important sites even when the raw note text
+is weak.
+
+`serve web` is the browser-facing counterpart to the CLI query surface. It
+starts a local HTTP server with read-only JSON routes for `search`, `get`,
+`stats`, and retrieve-only `ask`, plus an embedded Svelte UI for browsing the
+same live `brain.db` while background workers continue running in other
+terminals.
+
+`entity map` derives stable entities from reliable local metadata instead of
+free-text NER. The current pass creates entity notes for X authors, GitHub
+owners, GitHub repos, and non-generic sites/domains. `entity generate` writes
+matching notes under `vault/entities/...`, and `entity index` materializes the
+full entity set plus a browsable `vault/entities/index.md`.
+
+`topic map` is the CLI mirror of the MCP topic-map surface. It builds a compact
+graph from local search seeds plus item/source graph expansion, then derives
+key entities from the mapped nodes. `topic generate` uses the same graph to
+write a browsable note under `vault/topics/...` with grouped entity pivots,
+suggested starting notes, related notes, relationships, and Obsidian links back
+into the corpus. Topic notes now persist their generation settings in
+frontmatter, so `topic refresh` can rebuild them later from the local corpus
+and `topic index` can regenerate a browsable directory note at
+`vault/topics/index.md`.
+
+`serve mcp` exposes the same local brain over MCP stdio. The current server is
+read-only and provides:
+
+- tools for `search`, `get`, `ask`, `entity map`, `related`, `stats items`,
+  `stats sources`, `stats activity`, `stats backlog`, `topic map`,
+  `topic brief`, and `research pack`
+- resources for `dbrain://mcp/overview`, `dbrain://stats/activity`,
+  `dbrain://stats/backlog`, `dbrain://stats/items`, and `dbrain://stats/sources`
+- resource templates for `dbrain://item/{lookup}`, `dbrain://source/{lookup}`,
+  `dbrain://search/{query}`, `dbrain://entity/{query}`,
+  `dbrain://topic/{query}`, `dbrain://topic-note/{query}`,
+  `dbrain://research/{query}`, and queryable `dbrain://stats/...` templates
+- prompts for `brain_research`, `brain_browse`, `brain_entity_browse`,
+  `brain_topic_map`, `brain_topic_brief`, and `brain_status`
+
+`ask` defaults to retrieval-only in the MCP surface so agent clients do not
+silently spend model usage unless they explicitly request answer synthesis.
+The tool list also includes `outputSchema` metadata so MCP clients can reason
+about the structured payloads without learning them from examples.
+
+`dbrain_research_pack` is the default MCP research entry point for broad
+questions. It always returns retrieve-only evidence and, when the question is
+conceptual enough to infer a topic phrase, it also attaches the same grouped
+topic brief used by `dbrain_topic_brief`. That lets an agent start from one
+read-only call instead of manually orchestrating `ask`, `topic brief`, and
+follow-up note fetches.
+
+The MCP additions are meant to support three common agent workflows:
+
+- research: `dbrain_research_pack` first, then `dbrain_get` and
+  `dbrain_related` for deeper inspection
+- graph browsing: `dbrain_get` plus `dbrain_related`
+- entity browsing: `dbrain_entity_map` or `brain_entity_browse`, then
+  `dbrain_get` on the most relevant entity note
+- topic mapping: `dbrain_topic_map` or `brain_topic_map`, plus `dbrain_get`
+  when you want to inspect individual nodes more closely
+- topic briefs: `dbrain_topic_brief` or `brain_topic_brief`, plus
+  `dbrain://topic-note/{query}` when a rendered note preview is useful
+- pipeline monitoring: `dbrain_stats_activity`, `dbrain_stats_backlog`, and
+  optionally `dbrain_stats_sources`
+
+If a client needs to discover the MCP surface from inside the protocol, start
+with:
+
+- resource: `dbrain://mcp/overview`
+- prompt: `brain_status` or `brain_research`
+
+A generic MCP client config looks like this:
+
+```json
+{
+  "mcpServers": {
+    "dbrain": {
+      "command": "go",
+      "args": ["run", "./cmd/dbrain", "serve", "mcp"],
+      "cwd": "/Users/darron/src/dbrain"
+    }
+  }
+}
+```
+
+If you prefer the compiled binary instead of `go run`, point the client at:
+
+```json
+{
+  "mcpServers": {
+    "dbrain": {
+      "command": "./bin/dbrain",
+      "args": ["serve", "mcp"],
+      "cwd": "/Users/darron/src/dbrain"
+    }
+  }
+}
+```
+
+`import youtube` pulls authenticated YouTube signals from `Watch Later` and
+liked videos via `yt-dlp --cookies-from-browser`. Existing `youtube_history`
+items are pruned on each run so watch-history noise does not pollute the brain.
+Each feed entry is stored as a signal item under `vault/items/youtube/...`,
+while the canonical video URL is stored once in `sources` and enriched
+separately. Re-running the command is idempotent: unchanged signal items are
+touched in the DB but not rewritten, while linked sources are only
+re-extracted or re-summarized when you force a refresh or the source freshness
+rules say they are stale.
 
 YouTube source enrichment is transcript-first. `dbrain` asks `summarize` to
 extract the transcript or caption text first, then performs summarization from
@@ -218,3 +463,8 @@ current summary, and the `summarize` tool version used for extraction and
 summarization. Successful summaries are also appended to
 `source_summary_versions`, so you can keep a history of summary outputs across
 content changes, prompt changes, and summarize upgrades.
+
+`repair notes` is a renderer-only recovery path. It does not re-import or
+re-extract anything. It reads items and sources from `brain.db` and recreates
+their Markdown notes under `vault/`. By default it only writes missing notes,
+which is the intended path after antivirus quarantine or accidental deletion.
