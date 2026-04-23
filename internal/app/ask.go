@@ -104,7 +104,7 @@ func newAskCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 8, "Maximum pieces of evidence to retrieve")
 	cmd.Flags().BoolVar(&retrieveOnly, "retrieve-only", false, "Skip synthesized answering and only return retrieved evidence")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
-	cmd.Flags().StringVar(&cliProvider, "cli", "", "Optional summarize CLI provider override")
+	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Answer length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for summarize.sh answer synthesis")
 	cmd.Flags().IntVar(&maxCharsPerDoc, "max-chars-per-doc", 1800, "Maximum summary/excerpt characters per retrieved document")

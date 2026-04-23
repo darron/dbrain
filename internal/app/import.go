@@ -155,7 +155,7 @@ func newImportYouTubeCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess imported signals and linked sources even if they were already seen")
 	cmd.Flags().StringVar(&transcriber, "transcriber", "auto", "Audio transcription backend for YouTube when captions are missing")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
-	cmd.Flags().StringVar(&cliProvider, "cli", "", "Optional summarize CLI provider override")
+	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for yt-dlp and summarize.sh")
 	cmd.Flags().BoolVar(&debug, "debug", false, "Enable structured debug logging to stderr")

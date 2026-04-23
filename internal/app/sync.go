@@ -149,7 +149,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess existing items and sources instead of only incrementally handling new or stale work")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization during import and enrichment stages")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
-	cmd.Flags().StringVar(&cliProvider, "cli", "", "Optional summarize CLI provider override")
+	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Timeout for summarize-backed extraction and summarization stages")
 	cmd.Flags().BoolVar(&skipFT, "skip-ft", false, "Skip fieldtheory bookmark import")

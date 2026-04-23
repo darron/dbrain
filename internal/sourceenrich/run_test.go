@@ -141,6 +141,47 @@ func TestSelectSourceDocumentsHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestSummaryInputFileUsesTempDirAndCleansUp(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	path, cleanup, err := summaryInputFile(cfg, model.ExtractResult{
+		Title:   "Example",
+		Content: "Body",
+	})
+	if err != nil {
+		t.Fatalf("summaryInputFile: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected summary input path")
+	}
+
+	rel, err := filepath.Rel(cfg.TempDir, path)
+	if err != nil {
+		t.Fatalf("Rel: %v", err)
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("expected summary input file under %s, got %s", cfg.TempDir, path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected summary input file to exist before cleanup: %v", err)
+	}
+
+	cleanup()
+
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected summary input file to be removed after cleanup, got %v", err)
+	}
+}
+
 func TestRunSourceIDsUsesStoredExtractForStaleSummary(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

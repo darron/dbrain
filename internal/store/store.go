@@ -594,6 +594,21 @@ func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force boo
 									OR a.download_status = 'error'
 								)
 						)
+						OR EXISTS (
+							SELECT 1
+							FROM item_media_links l
+							JOIN media_assets a ON a.id = l.media_asset_id
+							WHERE l.item_id = items.id
+								AND a.download_status = 'downloaded'
+								AND a.media_type IN ('video', 'animated_gif')
+								AND (
+									a.local_path GLOB '*.jpg'
+									OR a.local_path GLOB '*.jpeg'
+									OR a.local_path GLOB '*.png'
+									OR a.local_path GLOB '*.webp'
+									OR a.remote_url LIKE 'https://pbs.twimg.com/%'
+								)
+						)
 					)
 				)
 			)`

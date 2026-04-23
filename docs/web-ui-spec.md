@@ -24,6 +24,7 @@ process.
   - get item/source details
   - backlog stats
   - activity stats
+  - source activity with lightweight filters
   - evidence-only ask
 - Keep the first UI intentionally small and operationally safe.
 
@@ -70,6 +71,11 @@ process.
   Returns current backlog stats.
 - `GET /api/stats/activity?window=<duration>`
   Returns recent activity stats.
+- `GET /api/stats/source-activity?limit=<n>&source_type=<type>&domain=<domain>`
+  Returns recent source successes/failures plus repeated-failure hotspots,
+  failure facet buckets, and optionally filtered by source type, domain,
+  status, stored failure kind, message text, time window, failure-table sort,
+  and failure-table offset.
 - `POST /api/ask`
   Accepts a question and returns retrieval-only evidence.
 
@@ -132,6 +138,10 @@ Response:
 ## UI Shape
 
 - Header with app title and current backlog/activity cards.
+- Operations panel for recent source successes/failures with triage filters and
+  repeated-failure hotspot summaries, including click-through pivots into a
+  prefiltered failure view, facet chips for failure kind, status, and domain,
+  a paged failure table, and compact success/failure trend buckets.
 - Search panel for keyword search.
 - Ask panel for evidence-only retrieval.
 - Detail panel showing the selected note metadata and rendered markdown source.
@@ -156,4 +166,5 @@ Response:
 - `/api/search`, `/api/get`, `/api/stats/backlog`, `/api/stats/activity`, and
   `/api/ask` respond successfully against the local DB.
 - The embedded frontend can search, ask retrieval-only questions, inspect a
-  selected note, and show backlog/activity status.
+  selected note, and show backlog/activity plus recent source-activity status,
+  failure-table paging/sorting, and source trend buckets.

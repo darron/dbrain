@@ -45,6 +45,117 @@ func TestWebHandlerServesBootstrapSearchGetAndAsk(t *testing.T) {
 		if response.App.Name != "dbrain" {
 			t.Fatalf("expected app name dbrain, got %q", response.App.Name)
 		}
+		if len(response.SourceActivity.RecentSuccesses) == 0 {
+			t.Fatalf("expected bootstrap source activity successes")
+		}
+		if len(response.SourceActivity.RecentFailures) == 0 {
+			t.Fatalf("expected bootstrap source activity failures")
+		}
+		if response.SourceActivity.Window == "" {
+			t.Fatalf("expected bootstrap source activity window")
+		}
+	})
+
+	t.Run("source activity", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/stats/source-activity?limit=3", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response store.SourceActivityFeed
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode source activity: %v", err)
+		}
+		if len(response.RecentSuccesses) == 0 {
+			t.Fatalf("expected at least one recent success")
+		}
+		if len(response.RecentFailures) == 0 {
+			t.Fatalf("expected at least one recent failure")
+		}
+		if len(response.FailureKinds) == 0 {
+			t.Fatalf("expected source activity failure kind buckets")
+		}
+		if len(response.FailureDomains) == 0 {
+			t.Fatalf("expected source activity failure domain buckets")
+		}
+		if len(response.FailureTable) != 2 || response.FailureTableTotal != 2 {
+			t.Fatalf("expected source activity failure table, got total=%d rows=%+v", response.FailureTableTotal, response.FailureTable)
+		}
+		if response.FailureTableSort != "newest" {
+			t.Fatalf("expected default failure table sort newest, got %q", response.FailureTableSort)
+		}
+		if len(response.Trend) == 0 || response.TrendBucket == "" {
+			t.Fatalf("expected source activity trend data, got bucket=%q trend=%+v", response.TrendBucket, response.Trend)
+		}
+	})
+
+	t.Run("source activity filters", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/stats/source-activity?limit=5&source_type=web&domain=broken.example.com&status=error&failure_kind=connectivity&message=connect&window=24h", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response store.SourceActivityFeed
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode filtered source activity: %v", err)
+		}
+		if len(response.RecentSuccesses) != 0 {
+			t.Fatalf("expected no filtered successes, got %+v", response.RecentSuccesses)
+		}
+		if len(response.RecentFailures) != 2 {
+			t.Fatalf("expected 2 filtered failures, got %+v", response.RecentFailures)
+		}
+		if response.RecentFailures[0].SourceKey != "src:test-agent-memory-failure" {
+			t.Fatalf("unexpected filtered failure: %+v", response.RecentFailures[0])
+		}
+		if len(response.FailureHotspots) != 1 {
+			t.Fatalf("expected 1 failure hotspot, got %+v", response.FailureHotspots)
+		}
+		if response.FailureHotspots[0].Domain != "broken.example.com" || response.FailureHotspots[0].Count != 2 {
+			t.Fatalf("unexpected filtered hotspot: %+v", response.FailureHotspots[0])
+		}
+		if response.FailureHotspots[0].FailureKind != "connectivity" {
+			t.Fatalf("unexpected filtered hotspot failure kind: %+v", response.FailureHotspots[0])
+		}
+		if len(response.FailureKinds) != 1 || response.FailureKinds[0].Key != "connectivity" || response.FailureKinds[0].Count != 2 {
+			t.Fatalf("unexpected filtered failure kind buckets: %+v", response.FailureKinds)
+		}
+		if len(response.FailureStatuses) != 1 || response.FailureStatuses[0].Key != "error" || response.FailureStatuses[0].Count != 2 {
+			t.Fatalf("unexpected filtered failure status buckets: %+v", response.FailureStatuses)
+		}
+		if len(response.FailureDomains) != 1 || response.FailureDomains[0].Key != "broken.example.com" || response.FailureDomains[0].Count != 2 {
+			t.Fatalf("unexpected filtered failure domain buckets: %+v", response.FailureDomains)
+		}
+		if len(response.FailureTable) != 2 || response.FailureTableTotal != 2 {
+			t.Fatalf("unexpected filtered failure table: total=%d rows=%+v", response.FailureTableTotal, response.FailureTable)
+		}
+	})
+
+	t.Run("source activity failure table paging", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/stats/source-activity?limit=1&source_type=web&domain=broken.example.com&status=error&failure_sort=oldest&failure_offset=1&window=24h", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response store.SourceActivityFeed
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode paged source activity: %v", err)
+		}
+		if response.FailureTableTotal != 2 || response.FailureTableOffset != 1 || response.FailureTableSort != "oldest" {
+			t.Fatalf("unexpected paged failure table metadata: %+v", response)
+		}
+		if len(response.FailureTable) != 1 || response.FailureTable[0].SourceKey != "src:test-agent-memory-failure-two" {
+			t.Fatalf("unexpected paged failure rows: %+v", response.FailureTable)
+		}
 	})
 
 	t.Run("search", func(t *testing.T) {
@@ -152,15 +263,19 @@ func TestWebHandlerServesIndexHTML(t *testing.T) {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	handler.ServeHTTP(rec, req)
+	for _, path := range []string{"/", "/admin"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if body := rec.Body.String(); body == "" || !bytes.Contains(rec.Body.Bytes(), []byte("dbrain")) {
-		t.Fatalf("expected index html to mention dbrain, got %q", body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if body := rec.Body.String(); body == "" || !bytes.Contains(rec.Body.Bytes(), []byte("dbrain")) {
+				t.Fatalf("expected index html to mention dbrain, got %q", body)
+			}
+		})
 	}
 }
 
@@ -275,6 +390,55 @@ func seedTestData(t *testing.T, ctx context.Context, cfg config.Config, st *stor
 	sourceNotePath := filepath.Join(cfg.VaultDir, "sources", "test-agent-memory.md")
 	if err := os.WriteFile(sourceNotePath, []byte("# Agent Memory Article\n\nRendered source note.\n"), 0o644); err != nil {
 		t.Fatalf("write source note: %v", err)
+	}
+
+	failedLink, err := st.UpsertSourceLink(ctx, itemID, model.SourceCandidate{
+		OriginalURL:   "https://broken.example.com/agent-memory",
+		CanonicalURL:  "https://broken.example.com/agent-memory",
+		NormalizedURL: "https://broken.example.com/agent-memory",
+		SourceType:    "web",
+		Domain:        "broken.example.com",
+		SourceKey:     "src:test-agent-memory-failure",
+		NotePath:      "sources/test-agent-memory-failure.md",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink failed source: %v", err)
+	}
+	failureAt := now.Add(2 * time.Minute)
+	if _, err := st.SaveSourceExtraction(ctx, failedLink.SourceID, model.ExtractResult{
+		CanonicalURL: "https://broken.example.com/agent-memory",
+		FinalURL:     "https://broken.example.com/agent-memory",
+		Status:       "error",
+		Error:        "Unable to connect. Is the computer able to access the url?",
+		FetchedAt:    failureAt,
+		Tool:         "summarize",
+		ToolVersion:  "test",
+	}, ""); err != nil {
+		t.Fatalf("save failed source extraction: %v", err)
+	}
+
+	failedLinkTwo, err := st.UpsertSourceLink(ctx, itemID, model.SourceCandidate{
+		OriginalURL:   "https://broken.example.com/agent-memory-two",
+		CanonicalURL:  "https://broken.example.com/agent-memory-two",
+		NormalizedURL: "https://broken.example.com/agent-memory-two",
+		SourceType:    "web",
+		Domain:        "broken.example.com",
+		SourceKey:     "src:test-agent-memory-failure-two",
+		NotePath:      "sources/test-agent-memory-failure-two.md",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink second failed source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, failedLinkTwo.SourceID, model.ExtractResult{
+		CanonicalURL: "https://broken.example.com/agent-memory-two",
+		FinalURL:     "https://broken.example.com/agent-memory-two",
+		Status:       "error",
+		Error:        "Unable to connect. Is the computer able to access the url?",
+		FetchedAt:    failureAt.Add(-45 * time.Minute),
+		Tool:         "summarize",
+		ToolVersion:  "test",
+	}, ""); err != nil {
+		t.Fatalf("save second failed source extraction: %v", err)
 	}
 
 	return itemID, "src:test-agent-memory"

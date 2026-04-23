@@ -54,7 +54,7 @@ still pass `--caffeinate` to force it explicitly.
 - Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
 - Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
 - Add URL-backed state and deeper note-to-note navigation in the web UI so searches, selected notes, and related pivots survive refreshes and remote sessions.
-- Add a real operations/dashboard view in the web UI for backlog, recent successes, recent failures, and queue health while workers are running.
+- Expand the web operations/dashboard view with deeper worker drill-down, richer backlog trend views, and clearer source-level drill-ins so repeated failures are easier to triage.
 - Add first-class filters and browsing controls in the web UI for source type, kind, status, and recency so the corpus is easier to slice than with one text box.
 - Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
 - Add a translation stage for non-English X content, storing both original and translated text.
@@ -95,6 +95,8 @@ For GitHub stars, use a fine-grained PAT with:
 
 - `summarize`
   Required for `dbrain extract links` and YouTube source enrichment.
+  `dbrain` can also route summarize-backed work to a local Ollama daemon by
+  passing models like `--model ollama/qwen2.5:7b-instruct`.
 - `uv`
   Recommended for `summarize` environments that shell out to Python-backed
   helpers or transcriber setup flows.
@@ -132,7 +134,9 @@ For GitHub stars, use a fine-grained PAT with:
   cookie decryption is used.
 - `dbrain import youtube`
   Requires a browser profile with valid YouTube cookies, `yt-dlp`, and
-  `summarize`. A working local setup may also need `uv`. For transcriptless videos, the best current setup is also
+  `summarize`. When `--profile` is omitted, `dbrain` will try the bare browser
+  cookie source first and then retry discovered local Chromium-style profiles
+  such as `Default` and `Profile N`. A working local setup may also need `uv`. For transcriptless videos, the best current setup is also
   `deno` or `node`, plus `whisper-cli` and the `ggml-base.bin` model.
 - `dbrain import github stars`
   Requires `GITHUB_TOKEN`. It uses the GitHub API directly, imports the star as
@@ -202,8 +206,9 @@ For GitHub stars, use a fine-grained PAT with:
   status.
 - `dbrain serve web`
   No external tools required. Serves the local brain over HTTP with a read-only
-  JSON API and an embedded Svelte UI for search, evidence retrieval, and note
-  inspection.
+  JSON API and an embedded Svelte UI for search, evidence retrieval, note
+  inspection, and a filterable recent source-activity dashboard with failure
+  hotspots and failure-kind pivots while workers are running.
 - `task web-install`
   Requires `npm`. Installs the Svelte/Vite dependencies used to rebuild the web
   UI source.
@@ -221,9 +226,9 @@ For GitHub stars, use a fine-grained PAT with:
 
 ```sh
 go run ./cmd/dbrain import ft
-go run ./cmd/dbrain sync all --cli codex --length short --timeout 5m --debug
-go run ./cmd/dbrain sync all --skip-sources --cli codex --length short --timeout 5m
-go run ./cmd/dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --cli codex --length short --timeout 5m --debug
+go run ./cmd/dbrain sync all --length short --timeout 5m --debug
+go run ./cmd/dbrain sync all --skip-sources --length short --timeout 5m
+go run ./cmd/dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m --debug
 go run ./cmd/dbrain import github stars --debug
 go run ./cmd/dbrain import youtube --watch-later --liked --browser chrome --profile Default --limit 10 --transcriber auto --debug
 go run ./cmd/dbrain entity map "example"
@@ -236,16 +241,16 @@ go run ./cmd/dbrain topic refresh
 go run ./cmd/dbrain topic refresh "vector database"
 go run ./cmd/dbrain topic index
 go run ./cmd/dbrain worker sources --limit 100 --concurrency 4
-go run ./cmd/dbrain worker sources --watch --poll-interval 1m --idle-exit-after 30m --concurrency 4 --cli codex --length short --timeout 5m --debug
+go run ./cmd/dbrain worker sources --watch --poll-interval 1m --idle-exit-after 30m --concurrency 4 --length short --timeout 5m --debug
 go run ./cmd/dbrain hydrate x --limit 50
 go run ./cmd/dbrain hydrate x --limit 5 --debug
-go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --cli codex --length short --timeout 5m --debug
-go run ./cmd/dbrain --no-caffeinate extract sources --limit 50 --cli codex --length short --timeout 5m --debug
+go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short --timeout 5m --debug
+go run ./cmd/dbrain --no-caffeinate extract sources --limit 50 --length short --timeout 5m --debug
 go run ./cmd/dbrain repair notes
 go run ./cmd/dbrain repair notes --missing-only=false --sources
 go run ./cmd/dbrain extract links --discover-limit 100 --limit 25 --concurrency 4 --summarize=false
-go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --cli codex --length short --debug
-go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --cli codex --length short --debug
+go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --length short --debug
+go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short --debug
 go run ./cmd/dbrain stats items
 go run ./cmd/dbrain stats items --source-type github_star --group-by none
 go run ./cmd/dbrain stats sources --source-type github --extract-tool github-api --group-by summary-status
@@ -253,9 +258,11 @@ go run ./cmd/dbrain stats activity
 go run ./cmd/dbrain stats activity --window 30m
 go run ./cmd/dbrain stats backlog
 go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --retrieve-only
-go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --cli codex --timeout 30s
+go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --timeout 30s
+go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen2.5:7b-instruct --timeout 2m
 go run ./cmd/dbrain ask "Show me GitHub repos about vector databases" --retrieve-only --source-type github
 go run ./cmd/dbrain ask "What is Agent Memory?" --retrieve-only --include-related --related-limit 2
+go run ./cmd/dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen2.5:7b-instruct --timeout 10m --debug
 go run ./cmd/dbrain serve mcp
 go run ./cmd/dbrain serve web
 go run ./cmd/dbrain search kubernetes
@@ -292,6 +299,28 @@ your summarize backend and rate limits can handle it. Higher concurrency speeds
 up backlog draining, but it also increases provider usage and simultaneous
 external fetches.
 
+When you want to test local GPU-backed summarization, pass an Ollama model with
+`--model ollama/<name>`. `dbrain` translates that into summarize's
+OpenAI-compatible path automatically and defaults to
+`http://127.0.0.1:11434/v1`. Override the target with
+`DBRAIN_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, or `OLLAMA_HOST` if the daemon is
+elsewhere. If you already export `OPENAI_BASE_URL` or `OPENAI_API_KEY`,
+`dbrain` leaves those alone.
+
+For a new machine or GPU-backed A/B run, start with small scoped commands
+before pointing a whole sync at Ollama. A practical progression is:
+
+```sh
+go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen3.5:9b --timeout 2m
+go run ./cmd/dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen3.5:9b --timeout 10m --debug
+go run ./cmd/dbrain sync all --source-limit 25 --model ollama/qwen3.5:9b --timeout 10m --debug
+```
+
+Good starting local models to compare on a stronger Mac are `qwen3.5:9b`,
+`qwen2.5:7b-instruct`, and `gemma4:e4b`. Compare wall-clock time, summary
+quality, and whether long GitHub/web extracts stay coherent before switching
+the default workflow over.
+
 `ask` is the first query surface built on top of the imported brain. It pulls
 top matches from local search, assembles evidence from item/source rows, and
 can optionally synthesize a citation-bearing answer through `summarize`. Use
@@ -307,7 +336,10 @@ is weak.
 starts a local HTTP server with read-only JSON routes for `search`, `get`,
 `stats`, and retrieve-only `ask`, plus an embedded Svelte UI for browsing the
 same live `brain.db` while background workers continue running in other
-terminals.
+terminals. The homepage is intentionally retrieval-first now: two primary boxes
+for `Search` and `Ask`, with result panels and note detail below. Operational
+stats, recent failures, hotspots, and other backlog triage views live on
+`/admin` instead of competing with the main search flow.
 
 `entity map` derives stable entities from reliable local metadata instead of
 free-text NER. The current pass creates entity notes for X authors, GitHub
@@ -409,6 +441,10 @@ separately. Re-running the command is idempotent: unchanged signal items are
 touched in the DB but not rewritten, while linked sources are only
 re-extracted or re-summarized when you force a refresh or the source freshness
 rules say they are stale.
+
+If one authenticated feed is temporarily inaccessible, `dbrain` skips that
+feed, counts it as an error, and continues with any other selected YouTube
+feeds instead of aborting the whole sync run.
 
 YouTube source enrichment is transcript-first. `dbrain` asks `summarize` to
 extract the transcript or caption text first, then performs summarization from

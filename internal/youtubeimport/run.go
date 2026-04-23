@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,14 +129,20 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	stats.ItemsDeleted = cleanupStats.ItemsDeleted
 	stats.SourcesDeleted = cleanupStats.SourcesDeleted
+	resolvedCookiesArg := cookiesFromBrowserArg(opts.Browser, opts.Profile)
 
 	for _, currentFeed := range selectedFeeds(opts) {
 		debugLog(opts.Logger, "loading youtube feed", "feed", currentFeed.name, "url", currentFeed.url)
-		envelope, err := fetchFeed(ctx, currentFeed, opts)
+		envelope, cookiesArg, err := fetchFeed(ctx, currentFeed, opts)
 		if err != nil {
-			return stats, err
+			stats.Errors++
+			if opts.Logger != nil {
+				opts.Logger.Warn("youtube feed load failed", "feed", currentFeed.name, "url", currentFeed.url, "error", err.Error())
+			}
+			continue
 		}
 		stats.FeedsProcessed++
+		resolvedCookiesArg = cookiesArg
 
 		for _, entry := range envelope.Entries {
 			item, skip, err := toItem(entry, currentFeed, now)
@@ -188,6 +196,10 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 	}
 
+	if len(touchedSourceIDs) == 0 {
+		return stats, nil
+	}
+
 	enrichStats, _, err := sourceenrich.RunSourceIDs(ctx, cfg, st, mapKeys(touchedSourceIDs), sourceenrich.Options{
 		Force:              opts.Force,
 		Summarize:          opts.Summarize,
@@ -197,9 +209,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		Timeout:            opts.Timeout,
 		Logger:             opts.Logger,
 		Binary:             opts.SummarizeBinary,
-		EnvFor:             summarizeEnvFor(opts),
+		EnvFor:             summarizeEnvFor(resolvedCookiesArg),
 		ArgsFor:            summarizeArgsFor(opts),
-		FallbackExtractFor: fallbackExtractFor(opts),
+		FallbackExtractFor: fallbackExtractFor(cfg, opts, resolvedCookiesArg),
 	})
 	if err != nil {
 		return stats, err
@@ -210,7 +222,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	stats.SourcesSummarized = enrichStats.SourcesSummarized
 	stats.SourcesRendered = enrichStats.SourcesRendered
 	stats.SourcesUnchanged = enrichStats.SourcesUnchanged
-	stats.Errors = enrichStats.Errors
+	stats.Errors += enrichStats.Errors
 
 	return stats, nil
 }
@@ -276,35 +288,51 @@ func removeNoteFiles(cfg config.Config, notePaths []string) error {
 	return nil
 }
 
-func fetchFeed(ctx context.Context, currentFeed feed, opts Options) (playlistEnvelope, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-	defer cancel()
+func fetchFeed(ctx context.Context, currentFeed feed, opts Options) (playlistEnvelope, string, error) {
+	cookieArgs := cookiesFromBrowserArgs(opts.Browser, opts.Profile)
+	var lastErr error
 
-	args := []string{"--dump-single-json", "--flat-playlist", "--cookies-from-browser", cookiesFromBrowserArg(opts.Browser, opts.Profile)}
-	if opts.Limit > 0 {
-		args = append(args, "--playlist-end", fmt.Sprintf("%d", opts.Limit))
-	}
-	args = append(args, currentFeed.url)
+	for _, cookiesArg := range cookieArgs {
+		commandCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 
-	cmd := exec.CommandContext(commandCtx, opts.YTDLPBinary, args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
+		args := []string{"--dump-single-json", "--flat-playlist", "--cookies-from-browser", cookiesArg}
+		if opts.Limit > 0 {
+			args = append(args, "--playlist-end", fmt.Sprintf("%d", opts.Limit))
 		}
-		return playlistEnvelope{}, fmt.Errorf("run yt-dlp for %s: %s", currentFeed.name, msg)
+		args = append(args, currentFeed.url)
+
+		cmd := exec.CommandContext(commandCtx, opts.YTDLPBinary, args...)
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		cancel()
+		if err != nil {
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			lastErr = fmt.Errorf("run yt-dlp for %s with %s: %s", currentFeed.name, cookiesArg, msg)
+			debugLog(opts.Logger, "youtube feed load attempt failed", "feed", currentFeed.name, "url", currentFeed.url, "cookies", cookiesArg, "error", msg)
+			continue
+		}
+
+		var envelope playlistEnvelope
+		if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+			lastErr = fmt.Errorf("parse yt-dlp json for %s with %s: %w", currentFeed.name, cookiesArg, err)
+			debugLog(opts.Logger, "youtube feed parse failed", "feed", currentFeed.name, "url", currentFeed.url, "cookies", cookiesArg, "error", err.Error())
+			continue
+		}
+
+		debugLog(opts.Logger, "youtube feed loaded", "feed", currentFeed.name, "url", currentFeed.url, "cookies", cookiesArg, "entries", len(envelope.Entries))
+		return envelope, cookiesArg, nil
 	}
 
-	var envelope playlistEnvelope
-	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
-		return playlistEnvelope{}, fmt.Errorf("parse yt-dlp json for %s: %w", currentFeed.name, err)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("run yt-dlp for %s: no cookie candidates available", currentFeed.name)
 	}
-
-	return envelope, nil
+	return playlistEnvelope{}, "", lastErr
 }
 
 func toItem(entry videoEntry, currentFeed feed, now time.Time) (model.Item, bool, error) {
@@ -375,8 +403,7 @@ func sourceCandidateForVideo(rawURL string) model.SourceCandidate {
 	}
 }
 
-func summarizeEnvFor(opts Options) func(source model.SourceDocument) map[string]string {
-	cookies := cookiesFromBrowserArg(opts.Browser, opts.Profile)
+func summarizeEnvFor(cookies string) func(source model.SourceDocument) map[string]string {
 	return func(source model.SourceDocument) map[string]string {
 		if source.SourceType != "youtube" {
 			return nil
@@ -400,7 +427,7 @@ func summarizeArgsFor(opts Options) func(source model.SourceDocument) []string {
 	}
 }
 
-func fallbackExtractFor(opts Options) func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
+func fallbackExtractFor(cfg config.Config, opts Options, cookiesArg string) func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
 	return func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
 		if source.SourceType != "youtube" {
 			return model.ExtractResult{}, false, nil
@@ -409,7 +436,7 @@ func fallbackExtractFor(opts Options) func(ctx context.Context, source model.Sou
 			return model.ExtractResult{}, false, nil
 		}
 		debugLog(opts.Logger, "attempting whisper fallback for youtube source", "source_key", source.SourceKey, "url", source.CanonicalURL)
-		fallback, err := transcribeYouTubeWithWhisper(ctx, source, extract, opts)
+		fallback, err := transcribeYouTubeWithWhisper(ctx, cfg, source, extract, opts, cookiesArg)
 		if err != nil {
 			debugLog(opts.Logger, "whisper fallback failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
 			return model.ExtractResult{}, false, nil
@@ -449,7 +476,7 @@ func shouldUseWhisperFallback(extract model.ExtractResult) bool {
 	return source == "unavailable" && provider == "" && chars == 0
 }
 
-func transcribeYouTubeWithWhisper(ctx context.Context, source model.SourceDocument, extract model.ExtractResult, opts Options) (model.ExtractResult, error) {
+func transcribeYouTubeWithWhisper(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options, cookiesArg string) (model.ExtractResult, error) {
 	if strings.TrimSpace(opts.WhisperModelPath) == "" {
 		return model.ExtractResult{}, fmt.Errorf("whisper model path not configured")
 	}
@@ -464,7 +491,7 @@ func transcribeYouTubeWithWhisper(ctx context.Context, source model.SourceDocume
 	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	tempDir, err := os.MkdirTemp("", "dbrain-youtube-whisper-*")
+	tempDir, err := cfg.MkdirTemp("dbrain-youtube-whisper-*")
 	if err != nil {
 		return model.ExtractResult{}, fmt.Errorf("create temp dir: %w", err)
 	}
@@ -475,7 +502,7 @@ func transcribeYouTubeWithWhisper(ctx context.Context, source model.SourceDocume
 	audioTemplate := filepath.Join(tempDir, "audio.%(ext)s")
 	downloadArgs := []string{
 		"--no-playlist",
-		"--cookies-from-browser", cookiesFromBrowserArg(opts.Browser, opts.Profile),
+		"--cookies-from-browser", firstNonEmpty(strings.TrimSpace(cookiesArg), cookiesFromBrowserArg(opts.Browser, opts.Profile)),
 		"-f", "bestaudio/best",
 		"-o", audioTemplate,
 		source.CanonicalURL,
@@ -598,6 +625,123 @@ func cookiesFromBrowserArg(browser, profile string) string {
 		return browser
 	}
 	return browser + ":" + profile
+}
+
+func cookiesFromBrowserArgs(browser, profile string) []string {
+	primary := cookiesFromBrowserArg(browser, profile)
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 8)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+
+	add(primary)
+	if strings.TrimSpace(profile) != "" {
+		return out
+	}
+
+	for _, discovered := range discoverBrowserProfiles(browser) {
+		add(browser + ":" + discovered)
+	}
+	for _, fallback := range []string{"Default", "Profile 1", "Profile 2", "Profile 3", "Profile 4", "Profile 5", "Profile 6"} {
+		add(browser + ":" + fallback)
+	}
+	return out
+}
+
+func discoverBrowserProfiles(browser string) []string {
+	baseDir := browserProfileBaseDir(browser)
+	if baseDir == "" {
+		return nil
+	}
+
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return nil
+	}
+
+	profiles := make([]string, 0, 8)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if name == "Default" || strings.HasPrefix(name, "Profile ") {
+			profiles = append(profiles, name)
+		}
+	}
+	sort.Slice(profiles, func(i, j int) bool {
+		if profiles[i] == "Default" {
+			return true
+		}
+		if profiles[j] == "Default" {
+			return false
+		}
+		return profileSortKey(profiles[i]) < profileSortKey(profiles[j])
+	})
+	return profiles
+}
+
+func browserProfileBaseDir(browser string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	switch runtime.GOOS {
+	case "darwin":
+		switch strings.ToLower(strings.TrimSpace(browser)) {
+		case "chrome":
+			return filepath.Join(home, "Library", "Application Support", "Google", "Chrome")
+		case "chromium":
+			return filepath.Join(home, "Library", "Application Support", "Chromium")
+		case "brave":
+			return filepath.Join(home, "Library", "Application Support", "BraveSoftware", "Brave-Browser")
+		case "edge":
+			return filepath.Join(home, "Library", "Application Support", "Microsoft Edge")
+		case "vivaldi":
+			return filepath.Join(home, "Library", "Application Support", "Vivaldi")
+		case "opera":
+			return filepath.Join(home, "Library", "Application Support", "com.operasoftware.Opera")
+		}
+	case "linux":
+		switch strings.ToLower(strings.TrimSpace(browser)) {
+		case "chrome":
+			return filepath.Join(home, ".config", "google-chrome")
+		case "chromium":
+			return filepath.Join(home, ".config", "chromium")
+		case "brave":
+			return filepath.Join(home, ".config", "BraveSoftware", "Brave-Browser")
+		case "edge":
+			return filepath.Join(home, ".config", "microsoft-edge")
+		case "vivaldi":
+			return filepath.Join(home, ".config", "vivaldi")
+		case "opera":
+			return filepath.Join(home, ".config", "opera")
+		}
+	}
+
+	return ""
+}
+
+func profileSortKey(value string) int {
+	if value == "Default" {
+		return -1
+	}
+	trimmed := strings.TrimPrefix(value, "Profile ")
+	number, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return 1 << 30
+	}
+	return number
 }
 
 func canonicalVideoURL(entry videoEntry) string {

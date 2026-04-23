@@ -309,6 +309,338 @@ func TestBacklogSkipsRecentExtractErrorsDuringCooldown(t *testing.T) {
 	}
 }
 
+func TestSourceActivityFeedReturnsRecentSuccessesAndFailures(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	summarySuccessID := insertTestSource(t, st, "src:summary-success", "https://example.com/summary-success")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET title = ?, summary_status = ?, summarized_at = ?, updated_at = ?
+		WHERE id = ?`,
+		"Summary Success",
+		"ok",
+		now.Add(-1*time.Minute).Format(time.RFC3339),
+		now.Add(-1*time.Minute).Format(time.RFC3339),
+		summarySuccessID,
+	); err != nil {
+		t.Fatalf("update summary success source: %v", err)
+	}
+
+	extractSuccessID := insertTestSource(t, st, "src:extract-success", "https://example.com/extract-success")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET title = ?, extract_status = ?, extracted_at = ?, updated_at = ?
+		WHERE id = ?`,
+		"Extract Success",
+		"ok",
+		now.Add(-2*time.Minute).Format(time.RFC3339),
+		now.Add(-2*time.Minute).Format(time.RFC3339),
+		extractSuccessID,
+	); err != nil {
+		t.Fatalf("update extract success source: %v", err)
+	}
+
+	summaryFailureID := insertTestSource(t, st, "src:summary-failure", "https://example.com/summary-failure")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET title = ?, summary_status = ?, summary_error = ?, updated_at = ?
+		WHERE id = ?`,
+		"Summary Failure",
+		"error",
+		"model timed out",
+		now.Add(-30*time.Second).Format(time.RFC3339),
+		summaryFailureID,
+	); err != nil {
+		t.Fatalf("update summary failure source: %v", err)
+	}
+
+	extractFailureID := insertTestSource(t, st, "src:extract-failure", "https://example.com/extract-failure")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET title = ?, extract_status = ?, extract_error = ?, extract_last_failed_at = ?, updated_at = ?
+		WHERE id = ?`,
+		"Extract Failure",
+		"error",
+		"Unable to connect. Is the computer able to access the url?",
+		now.Add(-90*time.Second).Format(time.RFC3339),
+		now.Add(-90*time.Second).Format(time.RFC3339),
+		extractFailureID,
+	); err != nil {
+		t.Fatalf("update extract failure source: %v", err)
+	}
+
+	feed, err := st.SourceActivityFeed(ctx, 2)
+	if err != nil {
+		t.Fatalf("SourceActivityFeed: %v", err)
+	}
+
+	if len(feed.RecentSuccesses) != 2 {
+		t.Fatalf("expected 2 recent successes, got %d", len(feed.RecentSuccesses))
+	}
+	if feed.RecentSuccesses[0].SourceKey != "src:summary-success" || feed.RecentSuccesses[0].EventKind != "summary_ok" {
+		t.Fatalf("unexpected first success event: %+v", feed.RecentSuccesses[0])
+	}
+	if feed.RecentSuccesses[1].SourceKey != "src:extract-success" || feed.RecentSuccesses[1].EventKind != "extract_ok" {
+		t.Fatalf("unexpected second success event: %+v", feed.RecentSuccesses[1])
+	}
+
+	if len(feed.RecentFailures) != 2 {
+		t.Fatalf("expected 2 recent failures, got %d", len(feed.RecentFailures))
+	}
+	if feed.RecentFailures[0].SourceKey != "src:summary-failure" || feed.RecentFailures[0].EventKind != "summary_error" {
+		t.Fatalf("unexpected first failure event: %+v", feed.RecentFailures[0])
+	}
+	if feed.RecentFailures[1].SourceKey != "src:extract-failure" || feed.RecentFailures[1].EventKind != "extract_error" {
+		t.Fatalf("unexpected second failure event: %+v", feed.RecentFailures[1])
+	}
+	if feed.RecentFailures[1].Message == "" {
+		t.Fatalf("expected failure message to be preserved, got %+v", feed.RecentFailures[1])
+	}
+	if feed.RecentFailures[1].FailureKind != "extract_error" && feed.RecentFailures[1].FailureKind != "connectivity" {
+		t.Fatalf("expected extract failure kind to be preserved, got %+v", feed.RecentFailures[1])
+	}
+	if len(feed.FailureKinds) != 2 {
+		t.Fatalf("expected 2 failure kind buckets, got %+v", feed.FailureKinds)
+	}
+	if len(feed.FailureStatuses) != 1 || feed.FailureStatuses[0].Key != "error" || feed.FailureStatuses[0].Count != 2 {
+		t.Fatalf("unexpected failure status buckets: %+v", feed.FailureStatuses)
+	}
+	if len(feed.FailureDomains) != 1 || feed.FailureDomains[0].Key != "example.com" || feed.FailureDomains[0].Count != 2 {
+		t.Fatalf("unexpected failure domain buckets: %+v", feed.FailureDomains)
+	}
+	if len(feed.FailureTable) != 2 || feed.FailureTableTotal != 2 {
+		t.Fatalf("unexpected failure table: total=%d rows=%+v", feed.FailureTableTotal, feed.FailureTable)
+	}
+	if feed.FailureTableSort != "newest" {
+		t.Fatalf("expected default failure table sort newest, got %q", feed.FailureTableSort)
+	}
+	if len(feed.Trend) == 0 || feed.TrendBucket == "" {
+		t.Fatalf("expected trend points and trend bucket, got bucket=%q trend=%+v", feed.TrendBucket, feed.Trend)
+	}
+	if feed.Window != "24h0m0s" {
+		t.Fatalf("expected default window 24h0m0s, got %q", feed.Window)
+	}
+}
+
+func TestSourceActivityFeedSupportsFiltering(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	webSourceID := insertTestSource(t, st, "src:web-success", "https://web.example.com/post")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET source_type = ?, domain = ?, title = ?, extract_status = ?, extracted_at = ?, updated_at = ?
+		WHERE id = ?`,
+		"web",
+		"web.example.com",
+		"Web Success",
+		"ok",
+		now.Add(-2*time.Minute).Format(time.RFC3339),
+		now.Add(-2*time.Minute).Format(time.RFC3339),
+		webSourceID,
+	); err != nil {
+		t.Fatalf("update web success source: %v", err)
+	}
+
+	githubSourceID := insertTestSource(t, st, "src:github-failure", "https://github.com/test/repo")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET source_type = ?, domain = ?, title = ?, updated_at = ?
+		WHERE id = ?`,
+		"github",
+		"github.com",
+		"GitHub Failure",
+		now.Add(-1*time.Minute).Format(time.RFC3339),
+		githubSourceID,
+	); err != nil {
+		t.Fatalf("update github failure source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, githubSourceID, model.ExtractResult{
+		CanonicalURL: "https://github.com/test/repo",
+		FinalURL:     "https://github.com/test/repo",
+		Status:       "error",
+		Error:        "Unable to connect. Is the computer able to access the url?",
+		FetchedAt:    now.Add(-1 * time.Minute),
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, ""); err != nil {
+		t.Fatalf("save github failure source extraction: %v", err)
+	}
+
+	githubSourceIDTwo := insertTestSource(t, st, "src:github-failure-two", "https://github.com/test/repo-two")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET source_type = ?, domain = ?, title = ?, updated_at = ?
+		WHERE id = ?`,
+		"github",
+		"github.com",
+		"GitHub Failure Two",
+		now.Add(-30*time.Minute).Format(time.RFC3339),
+		githubSourceIDTwo,
+	); err != nil {
+		t.Fatalf("update second github failure source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, githubSourceIDTwo, model.ExtractResult{
+		CanonicalURL: "https://github.com/test/repo-two",
+		FinalURL:     "https://github.com/test/repo-two",
+		Status:       "error",
+		Error:        "Unable to connect. Is the computer able to access the url?",
+		FetchedAt:    now.Add(-30 * time.Minute),
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, ""); err != nil {
+		t.Fatalf("save second github failure source extraction: %v", err)
+	}
+
+	feed, err := st.SourceActivityFeedFiltered(ctx, SourceActivityFilter{
+		Limit:      10,
+		SourceType: "github",
+		Domain:     "github.com",
+		Status:     "error",
+		Message:    "connect",
+		Window:     2 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("SourceActivityFeedFiltered: %v", err)
+	}
+
+	if len(feed.RecentSuccesses) != 0 {
+		t.Fatalf("expected no github successes, got %+v", feed.RecentSuccesses)
+	}
+	if len(feed.RecentFailures) != 2 {
+		t.Fatalf("expected 2 github failures, got %d", len(feed.RecentFailures))
+	}
+	if feed.RecentFailures[0].SourceKey != "src:github-failure" {
+		t.Fatalf("unexpected filtered failure event: %+v", feed.RecentFailures[0])
+	}
+	if feed.RecentFailures[0].Domain != "github.com" {
+		t.Fatalf("expected domain github.com, got %+v", feed.RecentFailures[0])
+	}
+	if feed.RecentFailures[0].FailureKind != "connectivity" {
+		t.Fatalf("expected connectivity failure kind, got %+v", feed.RecentFailures[0])
+	}
+	if len(feed.FailureHotspots) != 1 {
+		t.Fatalf("expected 1 failure hotspot, got %+v", feed.FailureHotspots)
+	}
+	if feed.FailureHotspots[0].Domain != "github.com" || feed.FailureHotspots[0].Count != 2 {
+		t.Fatalf("unexpected failure hotspot: %+v", feed.FailureHotspots[0])
+	}
+	if feed.FailureHotspots[0].FailureKind != "connectivity" {
+		t.Fatalf("expected connectivity hotspot, got %+v", feed.FailureHotspots[0])
+	}
+	if len(feed.FailureKinds) != 1 || feed.FailureKinds[0].Key != "connectivity" || feed.FailureKinds[0].Count != 2 {
+		t.Fatalf("unexpected filtered failure kinds: %+v", feed.FailureKinds)
+	}
+	if len(feed.FailureStatuses) != 1 || feed.FailureStatuses[0].Key != "error" || feed.FailureStatuses[0].Count != 2 {
+		t.Fatalf("unexpected filtered failure statuses: %+v", feed.FailureStatuses)
+	}
+	if len(feed.FailureDomains) != 1 || feed.FailureDomains[0].Key != "github.com" || feed.FailureDomains[0].Count != 2 {
+		t.Fatalf("unexpected filtered failure domains: %+v", feed.FailureDomains)
+	}
+	if len(feed.FailureTable) != 2 || feed.FailureTableTotal != 2 {
+		t.Fatalf("unexpected filtered failure table: total=%d rows=%+v", feed.FailureTableTotal, feed.FailureTable)
+	}
+	if len(feed.Trend) == 0 {
+		t.Fatalf("expected filtered trend points, got %+v", feed.Trend)
+	}
+}
+
+func TestSourceActivityFeedFailureTableSupportsSortingAndPaging(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	oldestID := insertTestSource(t, st, "src:alpha-oldest", "https://alpha.example.com/oldest")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET source_type = ?, domain = ?, title = ?, updated_at = ?
+		WHERE id = ?`,
+		"web",
+		"alpha.example.com",
+		"Alpha Oldest",
+		now.Add(-90*time.Minute).Format(time.RFC3339),
+		oldestID,
+	); err != nil {
+		t.Fatalf("update oldest failure source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, oldestID, model.ExtractResult{
+		CanonicalURL: "https://alpha.example.com/oldest",
+		FinalURL:     "https://alpha.example.com/oldest",
+		Status:       "error",
+		Error:        "Unable to connect. Is the computer able to access the url?",
+		FetchedAt:    now.Add(-90 * time.Minute),
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, ""); err != nil {
+		t.Fatalf("save oldest failure extraction: %v", err)
+	}
+
+	newerID := insertTestSource(t, st, "src:beta-newer", "https://beta.example.com/newer")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET source_type = ?, domain = ?, title = ?, updated_at = ?
+		WHERE id = ?`,
+		"web",
+		"beta.example.com",
+		"Beta Newer",
+		now.Add(-30*time.Minute).Format(time.RFC3339),
+		newerID,
+	); err != nil {
+		t.Fatalf("update newer failure source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, newerID, model.ExtractResult{
+		CanonicalURL: "https://beta.example.com/newer",
+		FinalURL:     "https://beta.example.com/newer",
+		Status:       "error",
+		Error:        "Unable to connect. Is the computer able to access the url?",
+		FetchedAt:    now.Add(-30 * time.Minute),
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, ""); err != nil {
+		t.Fatalf("save newer failure extraction: %v", err)
+	}
+
+	feed, err := st.SourceActivityFeedFiltered(ctx, SourceActivityFilter{
+		Limit:         1,
+		FailureSort:   "oldest",
+		FailureOffset: 1,
+		Window:        4 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("SourceActivityFeedFiltered oldest/offset: %v", err)
+	}
+	if feed.FailureTableTotal != 2 {
+		t.Fatalf("expected 2 total failure rows, got %d", feed.FailureTableTotal)
+	}
+	if len(feed.FailureTable) != 1 || feed.FailureTable[0].SourceKey != "src:beta-newer" {
+		t.Fatalf("unexpected oldest/offset failure table rows: %+v", feed.FailureTable)
+	}
+
+	domainFeed, err := st.SourceActivityFeedFiltered(ctx, SourceActivityFilter{
+		Limit:       2,
+		FailureSort: "domain",
+		Window:      4 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("SourceActivityFeedFiltered domain sort: %v", err)
+	}
+	if len(domainFeed.FailureTable) != 2 {
+		t.Fatalf("expected 2 failure rows for domain sort, got %+v", domainFeed.FailureTable)
+	}
+	if domainFeed.FailureTable[0].Domain != "alpha.example.com" || domainFeed.FailureTable[1].Domain != "beta.example.com" {
+		t.Fatalf("unexpected domain sort order: %+v", domainFeed.FailureTable)
+	}
+}
+
 func testItem(sourceKey string, sourceType string, url string, now time.Time) model.Item {
 	return model.Item{
 		SourceKey:    sourceKey,

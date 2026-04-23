@@ -22,6 +22,8 @@ const (
 	commandRetryAttempts = 4
 	commandRetryDelay    = 100 * time.Millisecond
 	commandRetryMaxDelay = 2 * time.Second
+	defaultOllamaBaseURL = "http://127.0.0.1:11434/v1"
+	defaultOllamaAPIKey  = "ollama"
 )
 
 type Options struct {
@@ -76,6 +78,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Length) == "" {
 		opts.Length = "medium"
 	}
+	opts.Model, opts.Env = resolveModelAndEnv(opts.Model, opts.Env)
 
 	version := Version(ctx, opts.Binary)
 	args := []string{"--json", "--timeout", formatTimeout(opts.Timeout), "--format", "text"}
@@ -292,4 +295,91 @@ func formatTimeout(value time.Duration) string {
 		seconds = 1
 	}
 	return fmt.Sprintf("%ds", seconds)
+}
+
+func resolveModelAndEnv(model string, env map[string]string) (string, map[string]string) {
+	trimmedModel := strings.TrimSpace(model)
+	ollamaModel, ok := parseOllamaModel(trimmedModel)
+	if !ok {
+		return trimmedModel, env
+	}
+
+	out := cloneEnv(env)
+	if !hasEnvValue(out, "OPENAI_BASE_URL") {
+		out["OPENAI_BASE_URL"] = ollamaBaseURL()
+	}
+	if !hasEnvValue(out, "OPENAI_API_KEY") {
+		out["OPENAI_API_KEY"] = defaultOllamaAPIKey
+	}
+	if !hasEnvValue(out, "OPENAI_USE_CHAT_COMPLETIONS") {
+		out["OPENAI_USE_CHAT_COMPLETIONS"] = "1"
+	}
+
+	return "openai/" + ollamaModel, out
+}
+
+func parseOllamaModel(model string) (string, bool) {
+	value := strings.TrimSpace(model)
+	if value == "" {
+		return "", false
+	}
+
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "ollama/"):
+		resolved := strings.TrimSpace(value[len("ollama/"):])
+		return resolved, resolved != ""
+	case strings.HasPrefix(lower, "ollama:"):
+		resolved := strings.TrimSpace(value[len("ollama:"):])
+		return resolved, resolved != ""
+	default:
+		return "", false
+	}
+}
+
+func ollamaBaseURL() string {
+	value := strings.TrimSpace(os.Getenv("DBRAIN_OLLAMA_BASE_URL"))
+	if value == "" {
+		value = strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
+	}
+	if value == "" {
+		value = strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
+	}
+	if value == "" {
+		value = defaultOllamaBaseURL
+	}
+	return normalizeBaseURLWithV1(value)
+}
+
+func normalizeBaseURLWithV1(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return defaultOllamaBaseURL
+	}
+	if !strings.Contains(value, "://") {
+		value = "http://" + value
+	}
+	value = strings.TrimRight(value, "/")
+	if strings.HasSuffix(value, "/v1") {
+		return value
+	}
+	return value + "/v1"
+}
+
+func cloneEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(env))
+	for key, value := range env {
+		out[key] = value
+	}
+	return out
+}
+
+func hasEnvValue(env map[string]string, key string) bool {
+	if value := strings.TrimSpace(env[key]); value != "" {
+		return true
+	}
+	return strings.TrimSpace(os.Getenv(key)) != ""
 }

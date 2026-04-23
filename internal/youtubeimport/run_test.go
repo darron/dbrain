@@ -139,6 +139,14 @@ func TestFallbackExtractForUsesWhisperCLIWhenTranscriptUnavailable(t *testing.T)
 	t.Parallel()
 
 	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
 	modelPath := filepath.Join(root, "ggml-base.bin")
 	if err := os.WriteFile(modelPath, []byte("model"), 0o644); err != nil {
 		t.Fatalf("write fake model: %v", err)
@@ -161,14 +169,14 @@ func TestFallbackExtractForUsesWhisperCLIWhenTranscriptUnavailable(t *testing.T)
 		RawJSON:     `{"extracted":{"transcriptSource":"unavailable","transcriptionProvider":null,"transcriptCharacters":null}}`,
 	}
 
-	fallback, changed, err := fallbackExtractFor(Options{
+	fallback, changed, err := fallbackExtractFor(cfg, Options{
 		Browser:          "chrome",
 		Profile:          "Default",
 		YTDLPBinary:      ytDLPPath,
 		WhisperBinary:    whisperPath,
 		WhisperModelPath: modelPath,
 		Timeout:          5 * time.Second,
-	})(context.Background(), source, extract)
+	}, "chrome:Default")(context.Background(), source, extract)
 	if err != nil {
 		t.Fatalf("fallbackExtractFor: %v", err)
 	}
@@ -353,6 +361,109 @@ func TestRunDefaultsToWatchLaterAndLikedOnly(t *testing.T) {
 	}
 }
 
+func TestRunContinuesWhenOneFeedFails(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	ytDLPPath := installPartialFailureFakeYTDLP(t, root)
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Browser:     "chrome",
+		Profile:     "Default",
+		Summarize:   false,
+		Limit:       5,
+		Timeout:     5 * time.Second,
+		WatchLater:  true,
+		Liked:       true,
+		YTDLPBinary: ytDLPPath,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if stats.Errors != 1 {
+		t.Fatalf("expected one feed error, got %+v", stats)
+	}
+	if stats.FeedsProcessed != 1 {
+		t.Fatalf("expected one successful feed, got %+v", stats)
+	}
+	if stats.ItemsProcessed != 1 {
+		t.Fatalf("expected liked feed item to import, got %+v", stats)
+	}
+	if _, err := st.GetItem(context.Background(), "yt:liked:partialLiked123"); err != nil {
+		t.Fatalf("expected liked item to import after watch later failure: %v", err)
+	}
+	if _, err := st.GetItem(context.Background(), "yt:watch_later:partialWatch123"); err == nil {
+		t.Fatal("did not expect failed watch later feed item to exist")
+	}
+}
+
+func TestRunRetriesDiscoveredProfilesWhenProfileNotSpecified(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+
+	chromeDir := filepath.Join(root, "Library", "Application Support", "Google", "Chrome", "Profile 2")
+	if err := os.MkdirAll(chromeDir, 0o755); err != nil {
+		t.Fatalf("mkdir chrome profile: %v", err)
+	}
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	ytDLPPath := installDiscoveredProfileFakeYTDLP(t, root, "chrome:Profile 2")
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Browser:     "chrome",
+		Summarize:   false,
+		Limit:       5,
+		Timeout:     5 * time.Second,
+		WatchLater:  true,
+		YTDLPBinary: ytDLPPath,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if stats.Errors != 0 {
+		t.Fatalf("expected profile discovery to avoid feed errors, got %+v", stats)
+	}
+	if stats.FeedsProcessed != 1 || stats.ItemsProcessed != 1 {
+		t.Fatalf("expected watch later feed to import through discovered profile, got %+v", stats)
+	}
+	if _, err := st.GetItem(context.Background(), "yt:watch_later:profileRetry123"); err != nil {
+		t.Fatalf("expected imported item through discovered profile: %v", err)
+	}
+}
+
 func installFakeYTDLP(t *testing.T, root string) string {
 	t.Helper()
 
@@ -398,6 +509,67 @@ esac
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake dual yt-dlp: %v", err)
+	}
+	return scriptPath
+}
+
+func installPartialFailureFakeYTDLP(t *testing.T, root string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-yt-dlp-partial-failure")
+	script := `#!/bin/sh
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+case "$last" in
+  "https://www.youtube.com/playlist?list=WL")
+    echo "WARNING: [youtube:tab] YouTube said: The playlist does not exist." >&2
+    echo "ERROR: [youtube:tab] WL: YouTube said: The playlist does not exist." >&2
+    exit 1
+    ;;
+  "https://www.youtube.com/playlist?list=LL")
+    printf '%s\n' '{"id":"LL","title":"Liked videos","entries":[{"id":"partialLiked123","title":"Liked video after failure","url":"partialLiked123","webpage_url":"https://youtu.be/partialLiked123","description":"Liked description","uploader":"Channel Two","uploader_id":"channel-two","channel":"Channel Two","channel_id":"UC2","upload_date":"20260417"}]}'
+    ;;
+  *)
+    echo "unexpected yt-dlp url: $last" >&2
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake partial failure yt-dlp: %v", err)
+	}
+	return scriptPath
+}
+
+func installDiscoveredProfileFakeYTDLP(t *testing.T, root string, wantCookies string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-yt-dlp-discovered-profile")
+	script := `#!/bin/sh
+last=""
+cookies=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--cookies-from-browser" ]; then
+    cookies="$arg"
+  fi
+  last="$arg"
+  prev="$arg"
+done
+if [ "$cookies" != "` + wantCookies + `" ]; then
+  echo "ERROR: wrong cookies source: $cookies" >&2
+  exit 1
+fi
+if [ "$last" != "https://www.youtube.com/playlist?list=WL" ]; then
+  echo "unexpected yt-dlp url: $last" >&2
+  exit 1
+fi
+printf '%s\n' '{"id":"WL","title":"Watch Later","entries":[{"id":"profileRetry123","title":"Retried via discovered profile","url":"profileRetry123","webpage_url":"https://youtu.be/profileRetry123","description":"Recovered with profile discovery","uploader":"Channel Name","uploader_id":"channel-name","channel":"Channel Name","channel_id":"UC123","upload_date":"20260418"}]}'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake discovered profile yt-dlp: %v", err)
 	}
 	return scriptPath
 }

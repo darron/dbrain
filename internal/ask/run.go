@@ -189,7 +189,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 		return response, nil
 	}
 
-	inputPath, cleanup, err := writePromptInput(question, response.Evidence)
+	inputPath, cleanup, err := writePromptInput(cfg, question, response.Evidence)
 	if err != nil {
 		return Response{}, err
 	}
@@ -476,7 +476,7 @@ func sourceTypeFamily(value string) string {
 	return value
 }
 
-func writePromptInput(question string, evidence []Evidence) (string, func(), error) {
+func writePromptInput(cfg config.Config, question string, evidence []Evidence) (string, func(), error) {
 	var b strings.Builder
 	b.WriteString("# Question\n\n")
 	b.WriteString(question)
@@ -553,7 +553,7 @@ func writePromptInput(question string, evidence []Evidence) (string, func(), err
 		}
 	}
 
-	file, err := os.CreateTemp("", "dbrain-ask-*.md")
+	file, err := cfg.CreateTemp("dbrain-ask-*.md")
 	if err != nil {
 		return "", nil, err
 	}

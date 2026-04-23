@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,6 +184,54 @@ func TestWorkerCommandHelpIncludesSources(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, "sources") {
 		t.Fatalf("expected worker help output to contain %q, got %q", "sources", output)
+	}
+}
+
+func TestLoadConfigRemovesLegacyRootSummaryTempFiles(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "dbrain-summary-legacy.md")
+	if err := os.WriteFile(legacy, []byte("legacy summary temp"), 0o644); err != nil {
+		t.Fatalf("write legacy temp: %v", err)
+	}
+	preserved := filepath.Join(root, "keep-me.md")
+	if err := os.WriteFile(preserved, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write preserved file: %v", err)
+	}
+
+	cfg, err := loadConfig(root)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.TempDir == "" {
+		t.Fatal("expected temp dir")
+	}
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected legacy temp file to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(preserved); err != nil {
+		t.Fatalf("expected unrelated root file to remain: %v", err)
+	}
+}
+
+func TestLoadConfigKeepsSummaryTempFilesUnderTmp(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	tmpFile := filepath.Join(cfg.TempDir, "dbrain-summary-active.md")
+	if err := os.WriteFile(tmpFile, []byte("active summary temp"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	if _, err := loadConfig(root); err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if _, err := os.Stat(tmpFile); err != nil {
+		t.Fatalf("expected tmp summary file to remain, got %v", err)
 	}
 }
 
@@ -1683,4 +1732,30 @@ printf '%s\n' '{"input":{"model":"cli/test/ask"},"extracted":{"url":"","title":"
 	}
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestCLIFlagsDefaultToCodex(t *testing.T) {
+	cmd := NewRootCommand()
+
+	for _, path := range [][]string{
+		{"ask"},
+		{"extract", "links"},
+		{"extract", "sources"},
+		{"import", "github", "stars"},
+		{"import", "youtube"},
+		{"sync", "all"},
+		{"worker", "sources"},
+	} {
+		target, _, err := cmd.Find(path)
+		if err != nil {
+			t.Fatalf("find %v: %v", path, err)
+		}
+		flag := target.Flags().Lookup("cli")
+		if flag == nil {
+			t.Fatalf("expected --cli flag on %v", path)
+		}
+		if flag.DefValue != defaultCLIProvider {
+			t.Fatalf("expected default cli %q for %v, got %q", defaultCLIProvider, path, flag.DefValue)
+		}
+	}
 }

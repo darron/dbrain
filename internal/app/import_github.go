@@ -91,7 +91,7 @@ func newImportGitHubStarsCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization for repo and homepage sources")
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess existing stars and linked sources instead of stopping at the first already-seen star")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
-	cmd.Flags().StringVar(&cliProvider, "cli", "", "Optional summarize CLI provider override")
+	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for GitHub API requests and summarize.sh")
 	cmd.Flags().BoolVar(&debug, "debug", false, "Enable structured debug logging to stderr")

@@ -227,6 +227,77 @@ func TestSaveXHydrationBackfillsMediaWithoutChangingHydrationFields(t *testing.T
 	}
 }
 
+func TestSaveXHydrationBackfillsVideoMediaFromRawPayload(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 22, 3, 4, 5, 0, time.UTC)
+
+	itemID := insertTestItem(t, st, "x:cached-video", "", "", now)
+	hydration := model.XHydration{
+		FullText:  "video post",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"source":"graphql",
+			"snapshot":{
+				"media_objects":[
+					{"type":"video","url":"https://pbs.twimg.com/amplify_video_thumb/123/img/thumb.jpg","expanded_url":"https://x.com/example/status/123/video/1","width":1920,"height":1080}
+				]
+			},
+			"raw":{
+				"data":{
+					"tweetResult":{
+						"result":{
+							"legacy":{
+								"extended_entities":{
+									"media":[
+										{
+											"type":"video",
+											"expanded_url":"https://x.com/example/status/123/video/1",
+											"media_url_https":"https://pbs.twimg.com/amplify_video_thumb/123/img/thumb.jpg",
+											"original_info":{"width":1920,"height":1080},
+											"video_info":{
+												"variants":[
+													{"content_type":"application/x-mpegURL","url":"https://video.twimg.com/ext/playlist.m3u8"},
+													{"bitrate":832000,"content_type":"video/mp4","url":"https://video.twimg.com/ext/real.mp4"}
+												]
+											}
+										}
+									]
+								}
+							}
+						}
+					}
+				}
+			}
+		}`,
+	}
+	changed, err := st.SaveXHydration(ctx, itemID, hydration)
+	if err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected hydration to change row")
+	}
+
+	refs, err := st.ListItemMediaRefs(ctx, itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected one media ref, got %#v", refs)
+	}
+	if refs[0].MediaType != "video" {
+		t.Fatalf("expected video media ref, got %+v", refs[0])
+	}
+	if refs[0].RemoteURL != "https://video.twimg.com/ext/real.mp4" {
+		t.Fatalf("expected playable video url, got %+v", refs[0])
+	}
+}
+
 func TestListItemsForXHydrationIncludesCachedMediaPendingDownloads(t *testing.T) {
 	t.Parallel()
 
@@ -283,5 +354,82 @@ func TestListItemsForXHydrationIncludesCachedMediaPendingDownloads(t *testing.T)
 	}
 	if len(items) != 0 {
 		t.Fatalf("expected completed media item to drop out of hydration queue, got %#v", items)
+	}
+}
+
+func TestListItemsForXHydrationIncludesDownloadedVideoThumbsForRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 22, 3, 4, 5, 0, time.UTC)
+
+	itemID := insertTestItem(t, st, "x:video-thumb-repair", "", "", now)
+	hydration := model.XHydration{
+		FullText:  "video post",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"snapshot":{
+				"media_objects":[
+					{"type":"video","url":"https://pbs.twimg.com/amplify_video_thumb/123/img/thumb.jpg","expanded_url":"https://x.com/example/status/123/video/1","width":1920,"height":1080}
+				]
+			},
+			"raw":{
+				"data":{
+					"tweetResult":{
+						"result":{
+							"legacy":{
+								"extended_entities":{
+									"media":[
+										{
+											"type":"video",
+											"expanded_url":"https://x.com/example/status/123/video/1",
+											"media_url_https":"https://pbs.twimg.com/amplify_video_thumb/123/img/thumb.jpg",
+											"original_info":{"width":1920,"height":1080},
+											"video_info":{
+												"variants":[
+													{"bitrate":832000,"content_type":"video/mp4","url":"https://video.twimg.com/ext/real.mp4"}
+												]
+											}
+										}
+									]
+								}
+							}
+						}
+					}
+				}
+			}
+		}`,
+	}
+	if _, err := st.SaveXHydration(ctx, itemID, hydration); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+
+	refs, err := st.ListItemMediaRefs(ctx, itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected one media ref, got %#v", refs)
+	}
+	if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+		MIMEType:     "image/jpeg",
+		ByteSize:     123,
+		ContentHash:  "sha256:thumb",
+		LocalPath:    "media/x/video/ab/thumb.jpg",
+		Status:       "downloaded",
+		DownloadedAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload: %v", err)
+	}
+
+	items, err := st.ListItemsForXHydration(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXHydration: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != itemID {
+		t.Fatalf("expected downloaded video thumb item to be selected for repair, got %#v", items)
 	}
 }

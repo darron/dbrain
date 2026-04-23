@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
+
+const defaultCLIProvider = "codex"
 
 type rootOptions struct {
 	root         string
@@ -15,6 +19,9 @@ type rootOptions struct {
 }
 
 func Run(ctx context.Context, args []string) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	cmd := NewRootCommand()
 	cmd.SetArgs(args)
 	cmd.SetIn(os.Stdin)

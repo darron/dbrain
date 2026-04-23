@@ -113,7 +113,7 @@ func newWorkerSourcesCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess sources even if they already look current")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization after extraction")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
-	cmd.Flags().StringVar(&cliProvider, "cli", "", "Optional summarize CLI provider override")
+	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for summarize.sh extraction and summarization")
 	cmd.Flags().BoolVar(&watch, "watch", false, "Keep polling for new source backlog instead of exiting when drained")

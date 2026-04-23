@@ -26,9 +26,11 @@ const (
 	defaultAddr           = "127.0.0.1:8742"
 	defaultSearchLimit    = 10
 	defaultAskLimit       = 8
+	defaultEventLimit     = 8
 	defaultActivityWindow = 24 * time.Hour
 	maxSearchLimit        = 50
 	maxAskLimit           = 20
+	maxEventLimit         = 20
 )
 
 //go:embed all:ui/dist
@@ -43,9 +45,10 @@ type AppInfo struct {
 }
 
 type BootstrapResponse struct {
-	App      AppInfo             `json:"app"`
-	Backlog  store.BacklogStats  `json:"backlog"`
-	Activity store.ActivityStats `json:"activity"`
+	App            AppInfo                  `json:"app"`
+	Backlog        store.BacklogStats       `json:"backlog"`
+	Activity       store.ActivityStats      `json:"activity"`
+	SourceActivity store.SourceActivityFeed `json:"source_activity"`
 }
 
 type SearchResponse struct {
@@ -77,7 +80,9 @@ type AskRequest struct {
 type server struct {
 	cfg         config.Config
 	store       *store.Store
+	staticFS    fs.FS
 	static      http.Handler
+	indexHTML   []byte
 	toolVersion string
 }
 
@@ -137,11 +142,17 @@ func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load embedded ui: %w", err)
 	}
+	indexHTML, err := fs.ReadFile(staticFS, "index.html")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded ui index: %w", err)
+	}
 
 	s := &server{
 		cfg:         cfg,
 		store:       st,
+		staticFS:    staticFS,
 		static:      http.FileServerFS(staticFS),
+		indexHTML:   indexHTML,
 		toolVersion: summarizecli.Version(context.Background(), ""),
 	}
 
@@ -151,13 +162,64 @@ func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
 	mux.HandleFunc("/api/get", s.handleGet)
 	mux.HandleFunc("/api/stats/backlog", s.handleBacklog)
 	mux.HandleFunc("/api/stats/activity", s.handleActivity)
+	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
 	mux.HandleFunc("/api/ask", s.handleAsk)
-	mux.Handle("/", s.static)
+	mux.Handle("/", http.HandlerFunc(s.handleStatic))
 	return mux, nil
 }
 
 func DefaultAddr() string {
 	return defaultAddr
+}
+
+func (s *server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+
+	cleaned := strings.TrimPrefix(filepath.Clean(r.URL.Path), "/")
+	if cleaned == "." || cleaned == "" {
+		s.serveIndex(w, r)
+		return
+	}
+
+	if s.hasStaticAsset(cleaned) {
+		s.static.ServeHTTP(w, r)
+		return
+	}
+
+	if filepath.Ext(cleaned) != "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	s.serveIndex(w, r)
+}
+
+func (s *server) hasStaticAsset(name string) bool {
+	file, err := s.staticFS.Open(name)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+func (s *server) serveIndex(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(s.indexHTML)
 }
 
 func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +238,11 @@ func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	sourceActivity, err := s.sourceActivity(r.Context(), store.SourceActivityFilter{Limit: defaultEventLimit})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, BootstrapResponse{
 		App: AppInfo{
@@ -185,8 +252,9 @@ func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			DBPath:   s.cfg.DBPath,
 			HasFTS:   s.store.HasFTS(),
 		},
-		Backlog:  backlog,
-		Activity: activity,
+		Backlog:        backlog,
+		Activity:       activity,
+		SourceActivity: sourceActivity,
 	})
 }
 
@@ -342,12 +410,31 @@ func (s *server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *server) handleSourceActivity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	filter := parseSourceActivityFilter(r)
+	feed, err := s.sourceActivity(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, feed)
+}
+
 func (s *server) backlog(ctx context.Context) (store.BacklogStats, error) {
 	return s.store.Backlog(ctx, sourceenrich.SummaryPromptVersion, summarizecli.ToolName, s.toolVersion)
 }
 
 func (s *server) activity(ctx context.Context, window time.Duration) (store.ActivityStats, error) {
 	return s.store.Activity(ctx, time.Now().UTC(), window)
+}
+
+func (s *server) sourceActivity(ctx context.Context, filter store.SourceActivityFilter) (store.SourceActivityFeed, error) {
+	return s.store.SourceActivityFeedFiltered(ctx, filter)
 }
 
 func (s *server) loadNote(notePath string) (string, string) {
@@ -401,6 +488,33 @@ func clampLimit(value int, minValue int, maxValue int) int {
 	return value
 }
 
+func parseSourceActivityFilter(r *http.Request) store.SourceActivityFilter {
+	window := defaultActivityWindow
+	if raw := strings.TrimSpace(r.URL.Query().Get("window")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			window = parsed
+		}
+	}
+	return store.SourceActivityFilter{
+		Limit:         clampLimit(parseIntDefault(r.URL.Query().Get("limit"), defaultEventLimit), 1, maxEventLimit),
+		FailureOffset: maxInt(parseIntDefault(r.URL.Query().Get("failure_offset"), 0), 0),
+		FailureSort:   strings.TrimSpace(r.URL.Query().Get("failure_sort")),
+		SourceType:    strings.TrimSpace(r.URL.Query().Get("source_type")),
+		Domain:        strings.TrimSpace(r.URL.Query().Get("domain")),
+		Status:        strings.TrimSpace(r.URL.Query().Get("status")),
+		FailureKind:   strings.TrimSpace(r.URL.Query().Get("failure_kind")),
+		Message:       strings.TrimSpace(r.URL.Query().Get("message")),
+		Window:        window,
+	}
+}
+
+func maxInt(value int, minValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	return value
+}
+
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -417,7 +531,7 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	writeMessage(w, status, err.Error())
 }
 
-func writeMethodNotAllowed(w http.ResponseWriter, allowed string) {
-	w.Header().Set("Allow", allowed)
+func writeMethodNotAllowed(w http.ResponseWriter, allowed ...string) {
+	w.Header().Set("Allow", strings.Join(allowed, ", "))
 	writeMessage(w, http.StatusMethodNotAllowed, "method not allowed")
 }

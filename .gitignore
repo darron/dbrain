@@ -5,3 +5,5 @@ data/
 vault/
 .envrc
 web/ui/node_modules/
+.DS_Store
+tmp/
