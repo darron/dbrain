@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	neturl "net/url"
 	"os"
 	"os/exec"
@@ -30,6 +32,13 @@ const SummaryPromptVersion = "dbrain-v1"
 
 const summaryPrompt = `Summarize this source for a local second-brain knowledge base.
 Focus on durable knowledge, concrete facts, named entities, tools, libraries, APIs, claims, and actionable takeaways.
+Use only the provided extracted text and explicit source metadata below.
+If the extract is partial, teaser text, or truncated, say that plainly and summarize only what is actually present.
+Do not infer facts, timelines, citations, linked sources, or entities that are not explicitly stated in the extracted text.
+Do not use outside knowledge.
+Preserve source framing. If the piece is opinion, satire, irony, marketing, advocacy, or a personal essay, say so explicitly.
+Attribute subjective, speculative, promotional, or self-reported claims to the author or source. Do not rewrite claims as established fact.
+If the source is a walkthrough, guide, or pitch, summarize it as a walkthrough, guide, or pitch rather than as neutral documentation.
 Use Markdown with exactly these headings:
 ### What It Is
 ### Key Ideas
@@ -53,14 +62,17 @@ type Options struct {
 	EnvFor             func(source model.SourceDocument) map[string]string
 	ArgsFor            func(source model.SourceDocument) []string
 	ResolveHost        func(ctx context.Context, host string) error
+	ResolveRedirectURL func(ctx context.Context, rawURL string) (string, error)
 	FallbackExtractFor func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
 	Binary             string
 	YouTubeBrowser     string
 	YouTubeProfile     string
+	YouTubeCookiesArg  string
 	YouTubeTranscriber string
 	YTDLPBinary        string
 	WhisperBinary      string
 	WhisperModelPath   string
+	MacWhisperBinary   string
 }
 
 type Stats struct {
@@ -73,12 +85,14 @@ type Stats struct {
 }
 
 func RunPending(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, []int64, error) {
-	toolVersion := summarizecli.Version(ctx, opts.Binary)
-	sources, err := st.ListSourcesForEnrichment(ctx, opts.Limit, opts.Force, opts.Summarize, SummaryPromptVersion, summarizecli.ToolName, toolVersion)
+	summaryToolName := summarizecli.SummaryToolName(opts.Model)
+	extractToolVersion := summarizecli.Version(ctx, opts.Binary)
+	summaryToolVersion := summarizecli.SummaryToolVersion(ctx, opts.Binary, opts.Model)
+	sources, err := st.ListSourcesForEnrichment(ctx, opts.Limit, opts.Force, opts.Summarize, SummaryPromptVersion, summaryToolName, summaryToolVersion)
 	if err != nil {
 		return Stats{}, nil, err
 	}
-	return runSources(ctx, cfg, st, sources, opts, toolVersion)
+	return runSources(ctx, cfg, st, sources, opts, extractToolVersion, summaryToolVersion)
 }
 
 func RunSourceIDs(ctx context.Context, cfg config.Config, st *store.Store, sourceIDs []int64, opts Options) (Stats, []int64, error) {
@@ -93,13 +107,15 @@ func RunSourceIDs(ctx context.Context, cfg config.Config, st *store.Store, sourc
 		byID[source.ID] = source
 	}
 
-	toolVersion := summarizecli.Version(ctx, opts.Binary)
-	filtered := selectSourceDocuments(ordered, byID, opts, toolVersion)
+	summaryToolName := summarizecli.SummaryToolName(opts.Model)
+	extractToolVersion := summarizecli.Version(ctx, opts.Binary)
+	summaryToolVersion := summarizecli.SummaryToolVersion(ctx, opts.Binary, opts.Model)
+	filtered := selectSourceDocuments(ordered, byID, opts, summaryToolName, summaryToolVersion)
 
-	return runSources(ctx, cfg, st, filtered, opts, toolVersion)
+	return runSources(ctx, cfg, st, filtered, opts, extractToolVersion, summaryToolVersion)
 }
 
-func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources []model.SourceDocument, opts Options, toolVersion string) (Stats, []int64, error) {
+func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources []model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) (Stats, []int64, error) {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 2 * time.Minute
 	}
@@ -124,13 +140,16 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 	if strings.TrimSpace(opts.WhisperModelPath) == "" {
 		opts.WhisperModelPath = defaultWhisperModelPath()
 	}
+	if strings.TrimSpace(opts.MacWhisperBinary) == "" {
+		opts.MacWhisperBinary = "mw"
+	}
 
 	stats := Stats{SourcesQueued: len(sources)}
 	touchedSourceIDs := map[int64]struct{}{}
 
 	debugLog(opts.Logger, "source enrichment candidates loaded", "sources", len(sources), "limit", opts.Limit, "summarize", opts.Summarize, "concurrency", opts.Concurrency)
 
-	results, err := processSourcesConcurrently(ctx, cfg, st, sources, opts, toolVersion)
+	results, err := processSourcesConcurrently(ctx, cfg, st, sources, opts, extractToolVersion, summaryToolVersion)
 	for _, result := range results {
 		stats.SourcesExtracted += result.Stats.SourcesExtracted
 		stats.SourcesSummarized += result.Stats.SourcesSummarized
@@ -170,14 +189,14 @@ type sourceProcessResult struct {
 	Err             error
 }
 
-func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *store.Store, sources []model.SourceDocument, opts Options, toolVersion string) ([]sourceProcessResult, error) {
+func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *store.Store, sources []model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) ([]sourceProcessResult, error) {
 	if len(sources) == 0 {
 		return nil, nil
 	}
 	if opts.Concurrency <= 1 || len(sources) == 1 {
 		results := make([]sourceProcessResult, 0, len(sources))
 		for _, source := range sources {
-			result := processSingleSource(ctx, cfg, st, source, opts, toolVersion)
+			result := processSingleSource(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
 			results = append(results, result)
 			if result.Err != nil {
 				return results, result.Err
@@ -203,7 +222,7 @@ func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *stor
 		go func() {
 			defer wg.Done()
 			for source := range jobs {
-				result := processSingleSource(ctx, cfg, st, source, opts, toolVersion)
+				result := processSingleSource(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
 				select {
 				case results <- result:
 				case <-ctx.Done():
@@ -244,7 +263,7 @@ func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *stor
 	return out, firstErr
 }
 
-func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, toolVersion string) sourceProcessResult {
+func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) sourceProcessResult {
 	debugLog(opts.Logger, "enriching source", "source_key", source.SourceKey, "url", source.CanonicalURL)
 
 	result := sourceProcessResult{}
@@ -256,6 +275,19 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		return result
 	}
 	if hasLocalExtract {
+		if normalized, changed := normalizeExtract(source, localExtract); changed {
+			localExtract = normalized
+		}
+		if failure, invalid := rejectExtractFailure(source, localExtract); invalid {
+			result.Stats.Errors++
+			debugLog(opts.Logger, "local source extract rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
+			if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+				result.Err = err
+				return result
+			}
+			result.TouchedSourceID = source.ID
+			return result
+		}
 		debugLog(opts.Logger, "using local cached extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(localExtract.Content))
 		contentHash := hashText(localExtract.Content)
 		if changed, err := st.SaveSourceExtraction(ctx, source.ID, localExtract, contentHash); err != nil {
@@ -278,8 +310,8 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 					Error:         err.Error(),
 					Model:         opts.Model,
 					PromptVersion: SummaryPromptVersion,
-					Tool:          summarizecli.ToolName,
-					ToolVersion:   toolVersion,
+					Tool:          summarizecli.SummaryToolName(opts.Model),
+					ToolVersion:   summaryToolVersion,
 				}); saveErr != nil {
 					result.Err = saveErr
 					return result
@@ -303,8 +335,28 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 
 	if opts.Summarize && !opts.Force && canSummarizeStoredExtract(source) {
 		storedExtract := extractFromSource(source)
+		if normalized, changed := normalizeExtract(source, storedExtract); changed {
+			storedExtract = normalized
+			contentHash := hashText(storedExtract.Content)
+			if changed, err := st.SaveSourceExtraction(ctx, source.ID, storedExtract, contentHash); err != nil {
+				result.Err = err
+				return result
+			} else if changed {
+				result.Stats.SourcesExtracted++
+			}
+		}
+		if failure, invalid := rejectExtractFailure(source, storedExtract); invalid {
+			result.Stats.Errors++
+			debugLog(opts.Logger, "stored source extract rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
+			if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+				result.Err = err
+				return result
+			}
+			result.TouchedSourceID = source.ID
+			return result
+		}
 		debugLog(opts.Logger, "using stored extract for summary", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(storedExtract.Content))
-		if changed, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, toolVersion); err != nil {
+		if changed, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, summaryToolVersion); err != nil {
 			result.Err = err
 			return result
 		} else if changed {
@@ -314,10 +366,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		return result
 	}
 
-	if failure, terminal := preflightTerminalSourceFailure(ctx, source, opts, toolVersion); terminal {
+	if failure, terminal := preflightTerminalSourceFailure(ctx, source, opts, extractToolVersion); terminal {
 		result.Stats.Errors++
 		debugLog(opts.Logger, "source preflight failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "error", failure.Error)
-		if err := saveSourceFailure(ctx, st, source, failure, opts, toolVersion); err != nil {
+		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
 			result.Err = err
 			return result
 		}
@@ -325,8 +377,8 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		return result
 	}
 
-	if opts.Summarize && len(sourceArgs) > 0 {
-		extractResult, err := summarizecli.Run(ctx, summarizecli.Options{
+	if opts.Summarize && (len(sourceArgs) > 0 || summarizecli.UsesDirectSummary(opts.Model)) {
+		extractResult, err := runSummarizeWithRedirectRetry(ctx, source, opts, summarizecli.Options{
 			Binary:    opts.Binary,
 			Input:     source.CanonicalURL,
 			Summarize: false,
@@ -336,13 +388,29 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 			Args:      sourceArgs,
 		})
 		if err != nil {
+			if fallbackExtract, recovered, fallbackErr := fallbackExtractForFetchError(ctx, source, opts, err); fallbackErr != nil {
+				debugLog(opts.Logger, "source protected fetch recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", fallbackErr.Error())
+			} else if recovered {
+				debugLog(opts.Logger, "source extraction recovered via protected fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", fallbackExtract.FinalURL, "tool", fallbackExtract.Tool, "content_chars", len(fallbackExtract.Content))
+				fallbackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, fallbackExtract, opts, extractToolVersion, summaryToolVersion)
+				if err != nil {
+					result.Err = err
+					return result
+				}
+				result.Stats.SourcesExtracted += fallbackStats.SourcesExtracted
+				result.Stats.SourcesSummarized += fallbackStats.SourcesSummarized
+				result.Stats.SourcesUnchanged += fallbackStats.SourcesUnchanged
+				result.Stats.Errors += fallbackStats.Errors
+				result.TouchedSourceID = source.ID
+				return result
+			}
 			result.Stats.Errors++
 			debugLog(opts.Logger, "source extraction failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
 			failure := model.ExtractResult{
 				Status:      "error",
 				Error:       err.Error(),
 				Tool:        summarizecli.ToolName,
-				ToolVersion: toolVersion,
+				ToolVersion: extractToolVersion,
 			}
 			if status, errorText, terminal := classifyTerminalExtractError(source, err); terminal {
 				failure.Status = status
@@ -350,7 +418,7 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 					failure.Error = errorText
 				}
 			}
-			if err := saveSourceFailure(ctx, st, source, failure, opts, toolVersion); err != nil {
+			if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
 				result.Err = err
 				return result
 			}
@@ -363,24 +431,18 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		} else if changed {
 			extractResult.Extract = fallback
 		}
-
-		contentHash := hashText(extractResult.Extract.Content)
-		if changed, err := st.SaveSourceExtraction(ctx, source.ID, extractResult.Extract, contentHash); err != nil {
+		if normalized, changed := normalizeExtract(source, extractResult.Extract); changed {
+			extractResult.Extract = normalized
+		}
+		extractStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extractResult.Extract, opts, extractToolVersion, summaryToolVersion)
+		if err != nil {
 			result.Err = err
 			return result
-		} else if changed {
-			result.Stats.SourcesExtracted++
-			debugLog(opts.Logger, "source extraction saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", extractResult.Extract.Status, "content_chars", len(extractResult.Extract.Content), "tool", extractResult.Extract.Tool)
-		} else {
-			result.Stats.SourcesUnchanged++
 		}
-
-		if changed, err := summarizeFromExtract(ctx, cfg, st, source, extractResult.Extract, opts, toolVersion); err != nil {
-			result.Err = err
-			return result
-		} else if changed {
-			result.Stats.SourcesSummarized++
-		}
+		result.Stats.SourcesExtracted += extractStats.SourcesExtracted
+		result.Stats.SourcesSummarized += extractStats.SourcesSummarized
+		result.Stats.SourcesUnchanged += extractStats.SourcesUnchanged
+		result.Stats.Errors += extractStats.Errors
 
 		result.TouchedSourceID = source.ID
 		return result
@@ -391,7 +453,7 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		cli = summaryCLI(opts)
 	}
 
-	runResult, err := summarizecli.Run(ctx, summarizecli.Options{
+	runResult, err := runSummarizeWithRedirectRetry(ctx, source, opts, summarizecli.Options{
 		Binary:    opts.Binary,
 		Input:     source.CanonicalURL,
 		Summarize: opts.Summarize,
@@ -404,13 +466,29 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		Args:      sourceArgs,
 	})
 	if err != nil {
+		if fallbackExtract, recovered, fallbackErr := fallbackExtractForFetchError(ctx, source, opts, err); fallbackErr != nil {
+			debugLog(opts.Logger, "source protected fetch recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", fallbackErr.Error())
+		} else if recovered {
+			debugLog(opts.Logger, "source extraction recovered via protected fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", fallbackExtract.FinalURL, "tool", fallbackExtract.Tool, "content_chars", len(fallbackExtract.Content))
+			fallbackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, fallbackExtract, opts, extractToolVersion, summaryToolVersion)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			result.Stats.SourcesExtracted += fallbackStats.SourcesExtracted
+			result.Stats.SourcesSummarized += fallbackStats.SourcesSummarized
+			result.Stats.SourcesUnchanged += fallbackStats.SourcesUnchanged
+			result.Stats.Errors += fallbackStats.Errors
+			result.TouchedSourceID = source.ID
+			return result
+		}
 		result.Stats.Errors++
 		debugLog(opts.Logger, "source enrichment failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
 		failure := model.ExtractResult{
 			Status:      "error",
 			Error:       err.Error(),
 			Tool:        summarizecli.ToolName,
-			ToolVersion: toolVersion,
+			ToolVersion: extractToolVersion,
 		}
 		if status, errorText, terminal := classifyTerminalExtractError(source, err); terminal {
 			failure.Status = status
@@ -418,7 +496,17 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 				failure.Error = errorText
 			}
 		}
-		if err := saveSourceFailure(ctx, st, source, failure, opts, toolVersion); err != nil {
+		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+			result.Err = err
+			return result
+		}
+		result.TouchedSourceID = source.ID
+		return result
+	}
+	if failure, invalid := rejectExtractFailure(source, runResult.Extract); invalid {
+		result.Stats.Errors++
+		debugLog(opts.Logger, "source extraction rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
+		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
 			result.Err = err
 			return result
 		}
@@ -452,6 +540,90 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 	return result
 }
 
+func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, extractToolVersion string, summaryToolVersion string) (Stats, error) {
+	var stats Stats
+
+	if failure, invalid := rejectExtractFailure(source, extract); invalid {
+		stats.Errors++
+		debugLog(opts.Logger, "source extraction rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
+		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+			return stats, err
+		}
+		return stats, nil
+	}
+
+	contentHash := hashText(extract.Content)
+	if changed, err := st.SaveSourceExtraction(ctx, source.ID, extract, contentHash); err != nil {
+		return stats, err
+	} else if changed {
+		stats.SourcesExtracted++
+		debugLog(opts.Logger, "source extraction saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", extract.Status, "content_chars", len(extract.Content), "tool", extract.Tool)
+	} else {
+		stats.SourcesUnchanged++
+	}
+
+	if !opts.Summarize {
+		return stats, nil
+	}
+
+	if changed, err := summarizeFromExtract(ctx, cfg, st, source, extract, opts, summaryToolVersion); err != nil {
+		return stats, err
+	} else if changed {
+		stats.SourcesSummarized++
+	}
+
+	return stats, nil
+}
+
+func runSummarizeWithRedirectRetry(ctx context.Context, source model.SourceDocument, opts Options, runOpts summarizecli.Options) (summarizecli.Result, error) {
+	result, err := summarizecli.Run(ctx, runOpts)
+	if err == nil {
+		return result, nil
+	}
+	if !isRedirectFetchError(err) {
+		return summarizecli.Result{}, err
+	}
+	if _, ok := sourceHost(runOpts.Input); !ok {
+		return summarizecli.Result{}, err
+	}
+
+	resolveRedirectURL := opts.ResolveRedirectURL
+	if resolveRedirectURL == nil {
+		resolveRedirectURL = defaultResolveRedirectURL
+	}
+
+	resolveTimeout := 15 * time.Second
+	if opts.Timeout > 0 && opts.Timeout < resolveTimeout {
+		resolveTimeout = opts.Timeout
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
+	resolvedURL, resolveErr := resolveRedirectURL(resolveCtx, runOpts.Input)
+	if resolveErr != nil {
+		debugLog(opts.Logger, "source redirect resolution failed",
+			"source_key", source.SourceKey,
+			"url", source.CanonicalURL,
+			"error", resolveErr.Error(),
+		)
+		return summarizecli.Result{}, err
+	}
+	resolvedURL = strings.TrimSpace(resolvedURL)
+	if resolvedURL == "" || resolvedURL == runOpts.Input {
+		return summarizecli.Result{}, err
+	}
+
+	debugLog(opts.Logger, "retrying source extraction after redirect resolution",
+		"source_key", source.SourceKey,
+		"url", source.CanonicalURL,
+		"resolved_url", resolvedURL,
+	)
+
+	retryOpts := runOpts
+	retryOpts.Input = resolvedURL
+	return summarizecli.Run(ctx, retryOpts)
+}
+
 func needsEnrichment(source model.SourceDocument, opts Options, toolName string, toolVersion string) bool {
 	if source.ExtractStatus == "" || source.ExtractStatus == "error" {
 		return true
@@ -480,7 +652,13 @@ func needsEnrichment(source model.SourceDocument, opts Options, toolName string,
 	return false
 }
 
-func saveSourceFailure(ctx context.Context, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, toolVersion string) error {
+func saveSourceFailure(ctx context.Context, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, extractToolVersion string, summaryToolVersion string) error {
+	if strings.TrimSpace(extract.Tool) == "" {
+		extract.Tool = summarizecli.ToolName
+	}
+	if strings.TrimSpace(extract.ToolVersion) == "" {
+		extract.ToolVersion = extractToolVersion
+	}
 	if _, err := st.SaveSourceExtraction(ctx, source.ID, extract, source.ContentHash); err != nil {
 		return err
 	}
@@ -497,8 +675,8 @@ func saveSourceFailure(ctx context.Context, st *store.Store, source model.Source
 		Error:         extract.Error,
 		Model:         opts.Model,
 		PromptVersion: SummaryPromptVersion,
-		Tool:          summarizecli.ToolName,
-		ToolVersion:   toolVersion,
+		Tool:          summarizecli.SummaryToolName(opts.Model),
+		ToolVersion:   summaryToolVersion,
 	})
 	return err
 }
@@ -555,6 +733,28 @@ func defaultResolveHost(ctx context.Context, host string) error {
 	return err
 }
 
+func defaultResolveRedirectURL(ctx context.Context, rawURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("create redirect resolution request: %w", err)
+	}
+	req.Header.Set("user-agent", "dbrain/1.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("resolve redirect: %w", err)
+	}
+	defer func() {
+		_, _ = io.CopyN(io.Discard, resp.Body, 1024)
+		_ = resp.Body.Close()
+	}()
+
+	if resp.Request == nil || resp.Request.URL == nil {
+		return rawURL, nil
+	}
+	return resp.Request.URL.String(), nil
+}
+
 func isHostNotFoundError(err error) bool {
 	if err == nil {
 		return false
@@ -565,6 +765,19 @@ func isHostNotFoundError(err error) bool {
 	}
 	value := strings.ToLower(err.Error())
 	return strings.Contains(value, "no such host") || strings.Contains(value, "nxdomain")
+}
+
+func isRedirectFetchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	for _, status := range []string{"status 301", "status 302", "status 303", "status 307", "status 308"} {
+		if strings.Contains(value, status) {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyTerminalExtractError(source model.SourceDocument, err error) (string, string, bool) {
@@ -673,7 +886,7 @@ func envFor(opts Options, source model.SourceDocument) map[string]string {
 			return nil
 		}
 		return map[string]string{
-			"SUMMARIZE_YT_DLP_COOKIES_FROM_BROWSER": cookiesFromBrowserArg(opts.YouTubeBrowser, opts.YouTubeProfile),
+			"SUMMARIZE_YT_DLP_COOKIES_FROM_BROWSER": firstNonEmpty(strings.TrimSpace(opts.YouTubeCookiesArg), cookiesFromBrowserArg(opts.YouTubeBrowser, opts.YouTubeProfile)),
 		}
 	}
 	return opts.EnvFor(source)
@@ -695,20 +908,15 @@ func argsFor(opts Options, source model.SourceDocument) []string {
 
 func fallbackExtract(ctx context.Context, cfg config.Config, opts Options, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
 	if opts.FallbackExtractFor == nil {
-		if source.SourceType != "youtube" {
-			return model.ExtractResult{}, false, nil
-		}
-		if !shouldUseWhisperFallback(extract) {
-			return model.ExtractResult{}, false, nil
-		}
-		debugLog(opts.Logger, "attempting whisper fallback for youtube source", "source_key", source.SourceKey, "url", source.CanonicalURL)
-		fallback, err := transcribeYouTubeWithWhisper(ctx, cfg, source, extract, opts)
+		fallback, changed, err := MaybeTranscribeYouTubeAudioFallback(ctx, cfg, source, extract, opts)
 		if err != nil {
-			debugLog(opts.Logger, "whisper fallback failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
+			debugLog(opts.Logger, "youtube audio fallback failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
 			return model.ExtractResult{}, false, nil
 		}
-		debugLog(opts.Logger, "whisper fallback succeeded", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(fallback.Content))
-		return fallback, true, nil
+		if changed {
+			debugLog(opts.Logger, "youtube audio fallback succeeded", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(fallback.Content), "tool", fallback.Tool)
+		}
+		return fallback, changed, nil
 	}
 	return opts.FallbackExtractFor(ctx, source, extract)
 }
@@ -753,13 +961,14 @@ func buildSummaryPrompt(source model.SourceDocument, extract model.ExtractResult
 }
 
 func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, toolVersion string) (bool, error) {
+	summaryToolName := summarizecli.SummaryToolName(opts.Model)
 	if reason, ok := skipSummaryReason(source, extract); ok {
 		changed, err := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
 			Status:        "skipped",
 			Error:         reason,
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
-			Tool:          summarizecli.ToolName,
+			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 			FetchedAt:     time.Now().UTC(),
 		})
@@ -776,7 +985,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 			Error:         err.Error(),
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
-			Tool:          summarizecli.ToolName,
+			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 		})
 	}
@@ -787,7 +996,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 			Error:         "no extracted content available for summary",
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
-			Tool:          summarizecli.ToolName,
+			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 		})
 	}
@@ -808,7 +1017,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 			Error:         err.Error(),
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
-			Tool:          summarizecli.ToolName,
+			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 		})
 	}
@@ -842,13 +1051,7 @@ func summarizeExtract(ctx context.Context, cfg config.Config, source model.Sourc
 }
 
 func summaryCLI(opts Options) string {
-	if value := strings.TrimSpace(opts.CLI); value != "" {
-		return value
-	}
-	if strings.TrimSpace(opts.Model) != "" {
-		return ""
-	}
-	return summarizecli.PreferredCLIProvider()
+	return summarizecli.ResolveCLIProvider(opts.CLI, opts.Model)
 }
 
 func summaryInputFile(cfg config.Config, extract model.ExtractResult) (string, func(), error) {
@@ -899,6 +1102,110 @@ func canSummarizeStoredExtract(source model.SourceDocument) bool {
 	return strings.TrimSpace(source.ExtractedText) != ""
 }
 
+func rejectExtractFailure(source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool) {
+	if !isXArticleURL(firstNonEmpty(source.CanonicalURL, extract.CanonicalURL, extract.FinalURL)) {
+		if looksLikeSubstackSubscriptionShell(extract.Content) {
+			return model.ExtractResult{
+				Status:      "empty",
+				Error:       "substack returned subscription boilerplate instead of article content",
+				Tool:        extract.Tool,
+				ToolVersion: extract.ToolVersion,
+			}, true
+		}
+		if looksLikeSubstackInboxNavigationShell(extract.Content) {
+			return model.ExtractResult{
+				Status:      "empty",
+				Error:       "substack returned inbox/navigation chrome instead of article content",
+				Tool:        extract.Tool,
+				ToolVersion: extract.ToolVersion,
+			}, true
+		}
+		return model.ExtractResult{}, false
+	}
+	if looksLikeXArticleErrorShell(extract.Content) {
+		return model.ExtractResult{
+			Status:      "error",
+			Error:       "x article returned an X error shell instead of article content",
+			Tool:        extract.Tool,
+			ToolVersion: extract.ToolVersion,
+		}, true
+	}
+	return model.ExtractResult{}, false
+}
+
+func normalizeExtract(source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool) {
+	cleaned := stripKnownPaywallNoise(extract.Content)
+	if strings.TrimSpace(cleaned) == strings.TrimSpace(extract.Content) {
+		return extract, false
+	}
+	normalized := extract
+	normalized.Content = cleaned
+	return normalized, true
+}
+
+func stripKnownPaywallNoise(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return content
+	}
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if isKnownPaywallNoiseLine(trimmed) {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func isKnownPaywallNoiseLine(line string) bool {
+	value := strings.ToLower(strings.TrimSpace(line))
+	switch {
+	case strings.HasPrefix(value, "continue reading this post for free"):
+		return true
+	case strings.HasPrefix(value, "continue reading this post"):
+		return true
+	case strings.HasPrefix(value, "or purchase a paid subscription"):
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeSubstackSubscriptionShell(content string) bool {
+	value := strings.ToLower(strings.TrimSpace(content))
+	if value == "" || len(value) > 600 {
+		return false
+	}
+	return strings.Contains(value, "by subscribing, you agree substack's terms of use") &&
+		strings.Contains(value, "information collection notice") &&
+		strings.Contains(value, "privacy policy")
+}
+
+func looksLikeSubstackInboxNavigationShell(content string) bool {
+	value := strings.ToLower(strings.TrimSpace(content))
+	if value == "" || len(value) > 400 {
+		return false
+	}
+	compact := compactAlphaNumeric(value)
+	return strings.Contains(compact, "homesubscriptionschatactivityexploreprofilecreatealllistenpaidsavedhistorysortbypriorityrecentgetapp")
+}
+
+func compactAlphaNumeric(value string) string {
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func extractFromSource(source model.SourceDocument) model.ExtractResult {
 	return model.ExtractResult{
 		CanonicalURL: source.CanonicalURL,
@@ -924,7 +1231,7 @@ type youtubeExtractEnvelope struct {
 	} `json:"extracted"`
 }
 
-func shouldUseWhisperFallback(extract model.ExtractResult) bool {
+func shouldUseAudioTranscriptionFallback(extract model.ExtractResult) bool {
 	var payload youtubeExtractEnvelope
 	if err := json.Unmarshal([]byte(strings.TrimSpace(extract.RawJSON)), &payload); err != nil {
 		return false
@@ -946,12 +1253,27 @@ func shouldUseWhisperFallback(extract model.ExtractResult) bool {
 	return transcriptSource == "unavailable" && transcriptionProvider == "" && transcriptChars == 0
 }
 
-func transcribeYouTubeWithWhisper(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options) (model.ExtractResult, error) {
-	if strings.TrimSpace(opts.WhisperModelPath) == "" {
-		return model.ExtractResult{}, fmt.Errorf("whisper model path not configured")
+func MaybeTranscribeYouTubeAudioFallback(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options) (model.ExtractResult, bool, error) {
+	if source.SourceType != "youtube" {
+		return model.ExtractResult{}, false, nil
 	}
-	if _, err := os.Stat(opts.WhisperModelPath); err != nil {
-		return model.ExtractResult{}, fmt.Errorf("whisper model missing: %w", err)
+	if !shouldUseAudioTranscriptionFallback(extract) {
+		return model.ExtractResult{}, false, nil
+	}
+
+	fallback, err := transcribeYouTubeAudioFallback(ctx, cfg, source, extract, opts)
+	if err != nil {
+		return model.ExtractResult{}, false, err
+	}
+	return fallback, true, nil
+}
+
+func transcribeYouTubeAudioFallback(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options) (model.ExtractResult, error) {
+	if strings.TrimSpace(opts.WhisperModelPath) == "" {
+		opts.WhisperModelPath = defaultWhisperModelPath()
+	}
+	if strings.TrimSpace(opts.MacWhisperBinary) == "" {
+		opts.MacWhisperBinary = "mw"
 	}
 
 	timeout := opts.Timeout
@@ -972,7 +1294,7 @@ func transcribeYouTubeWithWhisper(ctx context.Context, cfg config.Config, source
 	audioTemplate := filepath.Join(tempDir, "audio.%(ext)s")
 	downloadArgs := []string{
 		"--no-playlist",
-		"--cookies-from-browser", cookiesFromBrowserArg(opts.YouTubeBrowser, opts.YouTubeProfile),
+		"--cookies-from-browser", firstNonEmpty(strings.TrimSpace(opts.YouTubeCookiesArg), cookiesFromBrowserArg(opts.YouTubeBrowser, opts.YouTubeProfile)),
 		"-f", "bestaudio/best",
 		"-o", audioTemplate,
 		source.CanonicalURL,
@@ -989,30 +1311,9 @@ func transcribeYouTubeWithWhisper(ctx context.Context, cfg config.Config, source
 		return model.ExtractResult{}, err
 	}
 
-	outputBase := filepath.Join(tempDir, "transcript")
-	whisperArgs := []string{
-		"-m", opts.WhisperModelPath,
-		"-l", "auto",
-		"-otxt",
-		"-of", outputBase,
-		"-f", audioPath,
-		"-np",
-		"-nt",
-	}
-	whisperCmd := exec.CommandContext(commandCtx, opts.WhisperBinary, whisperArgs...)
-	var whisperStderr bytes.Buffer
-	whisperCmd.Stderr = &whisperStderr
-	if err := whisperCmd.Run(); err != nil {
-		return model.ExtractResult{}, fmt.Errorf("whisper transcription: %s", strings.TrimSpace(whisperStderr.String()))
-	}
-
-	transcriptBytes, err := os.ReadFile(outputBase + ".txt")
+	transcript, provider, err := transcribeAudioFile(commandCtx, audioPath, opts)
 	if err != nil {
-		return model.ExtractResult{}, fmt.Errorf("read whisper transcript: %w", err)
-	}
-	transcript := strings.TrimSpace(string(transcriptBytes))
-	if transcript == "" {
-		return model.ExtractResult{}, fmt.Errorf("whisper transcript empty")
+		return model.ExtractResult{}, err
 	}
 
 	title := strings.TrimSpace(extract.Title)
@@ -1035,8 +1336,8 @@ func transcribeYouTubeWithWhisper(ctx context.Context, cfg config.Config, source
 			"description":           description,
 			"siteName":              siteName,
 			"content":               "Transcript:\n" + transcript,
-			"transcriptSource":      "whisper.cpp",
-			"transcriptionProvider": "whisper.cpp",
+			"transcriptSource":      provider,
+			"transcriptionProvider": provider,
 			"transcriptCharacters":  len(transcript),
 		},
 	})
@@ -1054,9 +1355,115 @@ func transcribeYouTubeWithWhisper(ctx context.Context, cfg config.Config, source
 		RawJSON:      string(rawJSONBytes),
 		Status:       "ok",
 		FetchedAt:    time.Now().UTC(),
-		Tool:         "whisper.cpp",
+		Tool:         provider,
 		ToolVersion:  "",
 	}, nil
+}
+
+func transcribeAudioFile(ctx context.Context, audioPath string, opts Options) (string, string, error) {
+	if shouldUseMacWhisper(opts.YouTubeTranscriber, opts.MacWhisperBinary) {
+		transcript, err := transcribeAudioWithMacWhisper(ctx, audioPath, opts)
+		if err == nil {
+			return transcript, "macwhisper", nil
+		}
+		if explicitMacWhisper(opts.YouTubeTranscriber) {
+			return "", "", err
+		}
+		debugLog(opts.Logger, "macwhisper transcription failed; falling back to whisper.cpp", "audio_path", audioPath, "error", err.Error())
+	}
+
+	transcript, err := transcribeAudioWithWhisperCLI(ctx, audioPath, opts)
+	if err != nil {
+		return "", "", err
+	}
+	return transcript, "whisper.cpp", nil
+}
+
+func transcribeAudioWithWhisperCLI(ctx context.Context, audioPath string, opts Options) (string, error) {
+	if strings.TrimSpace(opts.WhisperModelPath) == "" {
+		return "", fmt.Errorf("whisper model path not configured")
+	}
+	if _, err := os.Stat(opts.WhisperModelPath); err != nil {
+		return "", fmt.Errorf("whisper model missing: %w", err)
+	}
+
+	outputBase := filepath.Join(filepath.Dir(audioPath), "transcript")
+	whisperArgs := []string{
+		"-m", opts.WhisperModelPath,
+		"-l", "auto",
+		"-otxt",
+		"-of", outputBase,
+		"-f", audioPath,
+		"-np",
+		"-nt",
+	}
+	whisperCmd := exec.CommandContext(ctx, opts.WhisperBinary, whisperArgs...)
+	var whisperStderr bytes.Buffer
+	whisperCmd.Stderr = &whisperStderr
+	if err := whisperCmd.Run(); err != nil {
+		return "", fmt.Errorf("whisper transcription: %s", strings.TrimSpace(whisperStderr.String()))
+	}
+
+	transcriptBytes, err := os.ReadFile(outputBase + ".txt")
+	if err != nil {
+		return "", fmt.Errorf("read whisper transcript: %w", err)
+	}
+	transcript := strings.TrimSpace(string(transcriptBytes))
+	if transcript == "" {
+		return "", fmt.Errorf("whisper transcript empty")
+	}
+	return transcript, nil
+}
+
+func transcribeAudioWithMacWhisper(ctx context.Context, audioPath string, opts Options) (string, error) {
+	args := []string{"transcribe"}
+	if modelID := macWhisperModelOverride(opts.YouTubeTranscriber); modelID != "" {
+		args = append(args, "--model", modelID)
+	}
+	args = append(args, audioPath)
+
+	cmd := exec.CommandContext(ctx, opts.MacWhisperBinary, args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return "", fmt.Errorf("macwhisper transcription: %s", errMsg)
+	}
+
+	transcript := strings.TrimSpace(stdout.String())
+	if transcript == "" {
+		return "", fmt.Errorf("macwhisper transcript empty")
+	}
+	return transcript, nil
+}
+
+func shouldUseMacWhisper(transcriber string, binary string) bool {
+	if explicitMacWhisper(transcriber) {
+		return true
+	}
+	if value := strings.TrimSpace(transcriber); value != "" && !strings.EqualFold(value, "auto") {
+		return false
+	}
+	_, err := exec.LookPath(strings.TrimSpace(binary))
+	return err == nil
+}
+
+func explicitMacWhisper(transcriber string) bool {
+	value := strings.ToLower(strings.TrimSpace(transcriber))
+	return value == "macwhisper" || strings.HasPrefix(value, "macwhisper:")
+}
+
+func macWhisperModelOverride(transcriber string) string {
+	value := strings.TrimSpace(transcriber)
+	if !strings.HasPrefix(strings.ToLower(value), "macwhisper:") {
+		return ""
+	}
+	return strings.TrimSpace(value[len("macwhisper:"):])
 }
 
 func firstDownloadedAudio(dir string) (string, error) {
@@ -1095,6 +1502,37 @@ func cookiesFromBrowserArg(browser, profile string) string {
 		return browser
 	}
 	return browser + ":" + profile
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func isXArticleURL(rawURL string) bool {
+	parsed, err := neturl.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if host != "x.com" && host != "www.x.com" && host != "twitter.com" && host != "www.twitter.com" {
+		return false
+	}
+	path := strings.ToLower(strings.TrimSpace(parsed.EscapedPath()))
+	return strings.Contains(path, "/i/article/") || strings.Contains(path, "/article/")
+}
+
+func looksLikeXArticleErrorShell(content string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(content)), " "))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "something went wrong") &&
+		strings.Contains(normalized, "privacy related extensions may cause issues on x.com")
 }
 
 func skipSummaryReason(source model.SourceDocument, extract model.ExtractResult) (string, bool) {
@@ -1157,14 +1595,14 @@ func uniqueSorted(values []int64) []int64 {
 	return out
 }
 
-func selectSourceDocuments(ordered []int64, byID map[int64]model.SourceDocument, opts Options, toolVersion string) []model.SourceDocument {
+func selectSourceDocuments(ordered []int64, byID map[int64]model.SourceDocument, opts Options, toolName string, toolVersion string) []model.SourceDocument {
 	filtered := make([]model.SourceDocument, 0, len(ordered))
 	for _, sourceID := range ordered {
 		source, ok := byID[sourceID]
 		if !ok {
 			continue
 		}
-		if !opts.Force && !needsEnrichment(source, opts, summarizecli.ToolName, toolVersion) {
+		if !opts.Force && !needsEnrichment(source, opts, toolName, toolVersion) {
 			continue
 		}
 		filtered = append(filtered, source)

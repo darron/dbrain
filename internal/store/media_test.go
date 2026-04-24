@@ -227,6 +227,93 @@ func TestSaveXHydrationBackfillsMediaWithoutChangingHydrationFields(t *testing.T
 	}
 }
 
+func TestSaveXHydrationInvalidatesLinkedXArticleSources(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 24, 17, 0, 0, 0, time.UTC)
+
+	itemID := insertTestItem(t, st, "x:article-link", "", "", now)
+	sourceID := insertTestSource(t, st, "src:x-article-link", "https://x.com/example/article/2028710814601908224")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET source_type = 'x_article',
+			extracted_text = 'old extract',
+			extract_status = 'ok',
+			extract_error = 'old error',
+			extract_failure_kind = 'connectivity',
+			extract_failure_count = 3,
+			extract_first_failed_at = ?,
+			extract_last_failed_at = ?,
+			extracted_at = ?,
+			extract_tool = 'summarize',
+			extract_tool_version = '0.13.0',
+			summary_text = 'old summary',
+			summary_json = '{"ok":true}',
+			summary_status = 'ok',
+			summary_error = '',
+			summary_model = 'cli/codex/gpt-5.2',
+			summary_content_hash = 'old-hash',
+			summary_prompt_version = 'dbrain-v1',
+			summary_tool = 'summarize',
+			summary_tool_version = '0.13.0',
+			summarized_at = ?,
+			content_hash = 'old-content-hash',
+			updated_at = ?
+		WHERE id = ?`,
+		now.Add(-2*time.Hour).Format(time.RFC3339),
+		now.Add(-time.Hour).Format(time.RFC3339),
+		now.Add(-2*time.Hour).Format(time.RFC3339),
+		now.Add(-90*time.Minute).Format(time.RFC3339),
+		now.Add(-time.Hour).Format(time.RFC3339),
+		sourceID,
+	); err != nil {
+		t.Fatalf("seed x article source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_source_links (item_id, source_id, original_url, created_at)
+		VALUES (?, ?, ?, ?)`,
+		itemID,
+		sourceID,
+		"https://x.com/i/article/2028710814601908224",
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert source link: %v", err)
+	}
+
+	changed, err := st.SaveXHydration(ctx, itemID, model.XHydration{
+		FullText:  "tweet text",
+		Language:  "en",
+		APIJSON:   `{"raw":{"data":{"tweetResult":{"result":{"article":{"article_results":{"result":{"title":"Evals Skills for Coding Agents","rest_id":"2028710814601908224","plain_text":"Full article body"}}}}}}}}`,
+		FetchedAt: now,
+		Status:    "ok_graphql",
+	})
+	if err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected hydration change")
+	}
+
+	source, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractStatus != "" {
+		t.Fatalf("expected linked x article source to be re-queued, got %q", source.ExtractStatus)
+	}
+	if source.ExtractError != "" || source.ExtractFailureKind != "" || source.ExtractFailureCount != 0 {
+		t.Fatalf("expected linked x article failure state reset, got error=%q kind=%q count=%d", source.ExtractError, source.ExtractFailureKind, source.ExtractFailureCount)
+	}
+	if source.ExtractedText != "" || source.ExtractTool != "" || source.ExtractToolVersion != "" {
+		t.Fatalf("expected stale extract cleared, got text=%q tool=%q tool_version=%q", source.ExtractedText, source.ExtractTool, source.ExtractToolVersion)
+	}
+	if source.SummaryText != "" || source.SummaryStatus != "" || source.SummaryTool != "" {
+		t.Fatalf("expected stale summary cleared, got summary_text=%q status=%q tool=%q", source.SummaryText, source.SummaryStatus, source.SummaryTool)
+	}
+}
+
 func TestSaveXHydrationBackfillsVideoMediaFromRawPayload(t *testing.T) {
 	t.Parallel()
 

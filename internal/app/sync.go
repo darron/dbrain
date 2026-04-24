@@ -53,11 +53,11 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var timeout time.Duration
 	var skipFT bool
 	var skipX bool
+	var skipXMedia bool
 	var skipLinks bool
 	var skipGitHub bool
 	var skipYouTube bool
 	var skipSources bool
-	var debug bool
 	var jsonOut bool
 
 	cmd := &cobra.Command{
@@ -86,6 +86,8 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				XLimit:              xLimit,
 				XConcurrency:        xConcurrency,
 				XTimeout:            xTimeout,
+				XMediaEnabled:       !skipXMedia,
+				XMediaLimit:         xLimit,
 				LinksEnabled:        !skipLinks,
 				LinkDiscoverLimit:   linkDiscoverLimit,
 				LinkLimit:           linkLimit,
@@ -111,7 +113,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				CLI:                 cliProvider,
 				Length:              length,
 				Timeout:             timeout,
-				Logger:              newLogger(debug, cmd.ErrOrStderr()),
+				Logger:              newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
 				Progress:            cmd.ErrOrStderr(),
 			})
 			if err != nil {
@@ -154,11 +156,11 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Timeout for summarize-backed extraction and summarization stages")
 	cmd.Flags().BoolVar(&skipFT, "skip-ft", false, "Skip fieldtheory bookmark import")
 	cmd.Flags().BoolVar(&skipX, "skip-x", false, "Skip X hydration")
+	cmd.Flags().BoolVar(&skipXMedia, "skip-x-media", false, "Skip X media audio transcription")
 	cmd.Flags().BoolVar(&skipLinks, "skip-links", false, "Skip outbound link discovery and enrichment from imported items")
 	cmd.Flags().BoolVar(&skipGitHub, "skip-github", false, "Skip GitHub stars import")
 	cmd.Flags().BoolVar(&skipYouTube, "skip-youtube", false, "Skip YouTube signal import")
 	cmd.Flags().BoolVar(&skipSources, "skip-sources", false, "Skip the final source backlog worker stage")
-	cmd.Flags().BoolVar(&debug, "debug", false, "Enable structured debug logging to stderr")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print sync stats as JSON")
 
 	return cmd
@@ -182,6 +184,11 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 	}
 	if stats.X != nil {
 		if _, err := fmt.Fprintf(dst, "X: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d\n", stats.X.Stats.Hydrated, stats.X.Stats.Missing, stats.X.Stats.APIErrors, stats.X.Stats.MediaDownloaded, stats.X.Stats.MediaErrors, stats.X.Stats.Rendered); err != nil {
+			return err
+		}
+	}
+	if stats.XMedia != nil {
+		if _, err := fmt.Fprintf(dst, "X Media: items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d errors=%d\n", stats.XMedia.Stats.ItemsProcessed, stats.XMedia.Stats.ItemsUpdated, stats.XMedia.Stats.ItemsSkipped, stats.XMedia.Stats.MediaTranscribed, stats.XMedia.Stats.Errors); err != nil {
 			return err
 		}
 	}

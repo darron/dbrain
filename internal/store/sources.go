@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -583,52 +585,258 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 }
 
 func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int64) (model.ExtractResult, bool, error) {
-	row := s.db.QueryRowContext(ctx, `
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			s.canonical_url,
 			s.domain,
+			s.source_type,
 			COALESCE(NULLIF(i.article_title, ''), s.title, ''),
 			i.article_text,
+			i.author_handle,
+			i.x_post_json,
 			i.updated_at
 		FROM item_source_links l
 		JOIN items i ON i.id = l.item_id
 		JOIN sources s ON s.id = l.source_id
 		WHERE l.source_id = ?
-			AND i.article_text != ''
-		ORDER BY length(i.article_text) DESC, i.last_seen_at DESC, i.id DESC
-		LIMIT 1`, sourceID)
-
-	var canonicalURL string
-	var domain string
-	var title string
-	var content string
-	var updatedAt string
-	if err := row.Scan(&canonicalURL, &domain, &title, &content, &updatedAt); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return model.ExtractResult{}, false, nil
-		}
+		ORDER BY i.last_seen_at DESC, i.id DESC`, sourceID)
+	if err != nil {
 		return model.ExtractResult{}, false, fmt.Errorf("load local source extract %d: %w", sourceID, err)
 	}
+	defer func() {
+		_ = rows.Close()
+	}()
 
-	result := model.ExtractResult{
-		CanonicalURL: canonicalURL,
-		FinalURL:     canonicalURL,
-		Title:        title,
-		SiteName:     domain,
-		Content:      strings.TrimSpace(content),
-		Status:       "ok",
-		FetchedAt:    parseStoredTime(updatedAt),
-		Tool:         "ft-bookmarks",
-		ToolVersion:  "local-item-cache",
+	var best model.ExtractResult
+	bestRank := -1
+	bestContentLen := -1
+
+	for rows.Next() {
+		var canonicalURL string
+		var domain string
+		var sourceType string
+		var title string
+		var articleText string
+		var authorHandle string
+		var xPostJSON string
+		var updatedAt string
+		if err := rows.Scan(&canonicalURL, &domain, &sourceType, &title, &articleText, &authorHandle, &xPostJSON, &updatedAt); err != nil {
+			return model.ExtractResult{}, false, fmt.Errorf("scan local source extract %d: %w", sourceID, err)
+		}
+
+		var candidate model.ExtractResult
+		candidateRank := -1
+		if content := strings.TrimSpace(articleText); content != "" {
+			candidate = model.ExtractResult{
+				CanonicalURL: canonicalURL,
+				FinalURL:     canonicalURL,
+				Title:        title,
+				SiteName:     domain,
+				Content:      content,
+				Status:       "ok",
+				FetchedAt:    parseStoredTime(updatedAt),
+				Tool:         "ft-bookmarks",
+				ToolVersion:  "local-item-cache",
+			}
+			candidateRank = 2
+		} else if sourceType == "x_article" {
+			if preview, ok := parseXArticlePreview(xPostJSON, canonicalURL); ok {
+				finalURL := canonicalURL
+				if value := buildXArticlePublicURL(authorHandle, preview.RestID); value != "" {
+					finalURL = value
+				}
+				toolVersion := "local-article-preview-cache"
+				candidateRank = 1
+				if preview.HasFullText {
+					toolVersion = "local-article-body-cache"
+					candidateRank = 2
+				}
+				candidate = model.ExtractResult{
+					CanonicalURL: canonicalURL,
+					FinalURL:     finalURL,
+					Title:        firstNonEmpty(preview.Title, title),
+					SiteName:     firstNonEmpty(domain, "x.com"),
+					Content:      preview.Content,
+					Status:       "ok",
+					FetchedAt:    parseStoredTime(updatedAt),
+					Tool:         "x-hydration",
+					ToolVersion:  toolVersion,
+				}
+			}
+		}
+
+		if candidateRank < 0 || strings.TrimSpace(candidate.Content) == "" {
+			continue
+		}
+		contentLen := len(candidate.Content)
+		if candidateRank > bestRank || (candidateRank == bestRank && contentLen > bestContentLen) {
+			best = candidate
+			bestRank = candidateRank
+			bestContentLen = contentLen
+		}
 	}
-	if strings.TrimSpace(result.Content) == "" {
+	if err := rows.Err(); err != nil {
+		return model.ExtractResult{}, false, fmt.Errorf("iterate local source extract %d: %w", sourceID, err)
+	}
+	if bestRank < 0 || strings.TrimSpace(best.Content) == "" {
 		return model.ExtractResult{}, false, nil
 	}
-	if result.FetchedAt.IsZero() {
-		result.FetchedAt = time.Now().UTC()
+	if best.FetchedAt.IsZero() {
+		best.FetchedAt = time.Now().UTC()
 	}
 
-	return result, true, nil
+	return best, true, nil
+}
+
+type xArticlePreview struct {
+	Title       string
+	Content     string
+	PreviewText string
+	SummaryText string
+	PlainText   string
+	RestID      string
+	HasFullText bool
+}
+
+func parseXArticlePreview(rawJSON string, canonicalURL string) (xArticlePreview, bool) {
+	rawJSON = strings.TrimSpace(rawJSON)
+	if rawJSON == "" {
+		return xArticlePreview{}, false
+	}
+
+	expectedRestID := xArticleRestIDFromURL(canonicalURL)
+	if expectedRestID == "" {
+		return xArticlePreview{}, false
+	}
+
+	var payload any
+	if err := json.Unmarshal([]byte(rawJSON), &payload); err != nil {
+		return xArticlePreview{}, false
+	}
+
+	return findXArticlePreview(payload, expectedRestID)
+}
+
+func findXArticlePreview(value any, expectedRestID string) (xArticlePreview, bool) {
+	best := xArticlePreview{}
+	bestScore := 0
+
+	switch current := value.(type) {
+	case map[string]any:
+		restID, _ := current["rest_id"].(string)
+		if strings.TrimSpace(restID) == expectedRestID {
+			title, _ := current["title"].(string)
+			previewText, _ := current["preview_text"].(string)
+			summaryText, _ := current["summary_text"].(string)
+			plainText, _ := current["plain_text"].(string)
+			contentStateText := extractXArticleContentState(current["content_state"])
+			content := firstNonEmpty(
+				strings.TrimSpace(plainText),
+				contentStateText,
+				strings.TrimSpace(summaryText),
+				strings.TrimSpace(previewText),
+			)
+			candidate := xArticlePreview{
+				Title:       strings.TrimSpace(title),
+				Content:     content,
+				PreviewText: strings.TrimSpace(previewText),
+				SummaryText: strings.TrimSpace(summaryText),
+				PlainText:   strings.TrimSpace(plainText),
+				RestID:      strings.TrimSpace(restID),
+				HasFullText: strings.TrimSpace(plainText) != "" || contentStateText != "",
+			}
+			if score := xArticlePreviewScore(candidate); score > bestScore {
+				best = candidate
+				bestScore = score
+			}
+		}
+		for _, child := range current {
+			if preview, ok := findXArticlePreview(child, expectedRestID); ok {
+				if score := xArticlePreviewScore(preview); score > bestScore {
+					best = preview
+					bestScore = score
+				}
+			}
+		}
+	case []any:
+		for _, child := range current {
+			if preview, ok := findXArticlePreview(child, expectedRestID); ok {
+				if score := xArticlePreviewScore(preview); score > bestScore {
+					best = preview
+					bestScore = score
+				}
+			}
+		}
+	}
+
+	if bestScore == 0 || strings.TrimSpace(best.Content) == "" {
+		return xArticlePreview{}, false
+	}
+	return best, true
+}
+
+func xArticlePreviewScore(preview xArticlePreview) int {
+	contentLen := len(strings.TrimSpace(preview.Content))
+	switch {
+	case preview.HasFullText:
+		return 100000 + contentLen
+	case strings.TrimSpace(preview.SummaryText) != "":
+		return 10000 + contentLen
+	case strings.TrimSpace(preview.PreviewText) != "":
+		return 1000 + contentLen
+	default:
+		return 0
+	}
+}
+
+func extractXArticleContentState(value any) string {
+	state, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	blocks, ok := state["blocks"].([]any)
+	if !ok || len(blocks) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(blocks))
+	for _, blockValue := range blocks {
+		block, ok := blockValue.(map[string]any)
+		if !ok {
+			continue
+		}
+		text, _ := block["text"].(string)
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func xArticleRestIDFromURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "article" {
+			return strings.TrimSpace(parts[i+1])
+		}
+	}
+	return ""
+}
+
+func buildXArticlePublicURL(authorHandle string, restID string) string {
+	authorHandle = strings.TrimSpace(strings.TrimPrefix(authorHandle, "@"))
+	restID = strings.TrimSpace(restID)
+	if authorHandle == "" || restID == "" {
+		return ""
+	}
+	return "https://x.com/" + authorHandle + "/article/" + restID
 }
 
 func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result model.SummaryResult) (bool, error) {
@@ -987,6 +1195,23 @@ func sourceExtractBacklogWhere(now time.Time) (string, []any) {
 	return `(extract_status = '' OR (extract_status = 'error' AND (extract_last_failed_at = '' OR extract_last_failed_at <= ?)))`, []any{
 		now.UTC().Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
 	}
+}
+
+func sourceSummaryStaleWhere(promptVersion string, toolName string, toolVersion string) (string, []any) {
+	parts := []string{
+		"(summary_status = '' OR summary_status = 'error' OR summary_content_hash != content_hash OR summary_prompt_version != ?",
+	}
+	args := []any{promptVersion}
+	if strings.TrimSpace(toolName) != "" {
+		parts[0] += " OR summary_tool != ?"
+		args = append(args, toolName)
+	}
+	if strings.TrimSpace(toolVersion) != "" {
+		parts[0] += " OR summary_tool_version != ?"
+		args = append(args, toolVersion)
+	}
+	parts[0] += ")"
+	return strings.Join(parts, " AND "), args
 }
 
 func nextExtractFailureState(current model.SourceDocument, status string, errorText string, now time.Time) (string, int, string, string) {

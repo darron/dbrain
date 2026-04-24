@@ -23,7 +23,7 @@ const itemSelectColumns = `
 	like_count, repost_count, reply_count, quote_count, bookmark_count,
 	content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
 	x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error,
-	link_extract_synced_at`
+	link_extract_synced_at, x_media_transcript_status, x_media_transcript_error, x_media_transcript_at`
 
 type Store struct {
 	db     *sql.DB
@@ -180,13 +180,16 @@ func (s *Store) ensureItemColumns() error {
 	}
 
 	required := map[string]string{
-		"x_post_text":            "TEXT NOT NULL DEFAULT ''",
-		"x_post_lang":            "TEXT NOT NULL DEFAULT ''",
-		"x_post_json":            "TEXT NOT NULL DEFAULT ''",
-		"x_post_fetched_at":      "TEXT NOT NULL DEFAULT ''",
-		"x_post_status":          "TEXT NOT NULL DEFAULT ''",
-		"x_post_error":           "TEXT NOT NULL DEFAULT ''",
-		"link_extract_synced_at": "TEXT NOT NULL DEFAULT ''",
+		"x_post_text":               "TEXT NOT NULL DEFAULT ''",
+		"x_post_lang":               "TEXT NOT NULL DEFAULT ''",
+		"x_post_json":               "TEXT NOT NULL DEFAULT ''",
+		"x_post_fetched_at":         "TEXT NOT NULL DEFAULT ''",
+		"x_post_status":             "TEXT NOT NULL DEFAULT ''",
+		"x_post_error":              "TEXT NOT NULL DEFAULT ''",
+		"link_extract_synced_at":    "TEXT NOT NULL DEFAULT ''",
+		"x_media_transcript_status": "TEXT NOT NULL DEFAULT ''",
+		"x_media_transcript_error":  "TEXT NOT NULL DEFAULT ''",
+		"x_media_transcript_at":     "TEXT NOT NULL DEFAULT ''",
 	}
 
 	for name, definition := range required {
@@ -644,6 +647,87 @@ func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force boo
 	return items, nil
 }
 
+func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, force bool) ([]model.Item, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `
+		SELECT ` + itemSelectColumns + `
+		FROM items
+		WHERE source_type = 'x_bookmark'
+			AND external_id != ''
+			AND EXISTS (
+				SELECT 1
+				FROM item_media_links l
+				JOIN media_assets a ON a.id = l.media_asset_id
+				WHERE l.item_id = items.id
+					AND a.download_status = 'downloaded'
+					AND a.local_path != ''
+					AND a.media_type IN ('video', 'animated_gif')
+			)`
+	if !force {
+		query += `
+			AND NOT (
+				article_title = 'X Media Transcript'
+				AND article_text != ''
+			)`
+		query += `
+			AND x_media_transcript_status = ''`
+	}
+	query += `
+		ORDER BY last_seen_at DESC, id DESC
+		LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list x media transcription items: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var items []model.Item
+	for rows.Next() {
+		var item model.Item
+		if err := scanItem(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan x media transcription item: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate x media transcription items: %w", err)
+	}
+
+	return items, nil
+}
+
+func (s *Store) SaveXMediaTranscriptionState(ctx context.Context, itemID int64, status string, errorText string, at time.Time) error {
+	_, err := withBusyRetry(ctx, func() (struct{}, error) {
+		atText := ""
+		if !at.IsZero() {
+			atText = at.UTC().Format(time.RFC3339)
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE items
+			SET x_media_transcript_status = ?,
+				x_media_transcript_error = ?,
+				x_media_transcript_at = ?,
+				updated_at = ?
+			WHERE id = ?`,
+			strings.TrimSpace(status),
+			strings.TrimSpace(errorText),
+			atText,
+			time.Now().UTC().Format(time.RFC3339),
+			itemID,
+		); err != nil {
+			return struct{}{}, fmt.Errorf("save x media transcription state %d: %w", itemID, err)
+		}
+		return struct{}{}, nil
+	})
+	return err
+}
+
 func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration model.XHydration) (bool, error) {
 	return withBusyRetry(ctx, func() (bool, error) {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -702,6 +786,9 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 			); err != nil {
 				return false, fmt.Errorf("save hydration %d: %w", itemID, err)
 			}
+			if err := s.invalidateLinkedXArticleSourcesTx(ctx, tx, itemID, nowText); err != nil {
+				return false, err
+			}
 		}
 
 		mediaChanged, err := s.syncXHydrationMediaTx(ctx, tx, itemID, hydration, time.Now().UTC())
@@ -727,10 +814,52 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 	})
 }
 
+func (s *Store) invalidateLinkedXArticleSourcesTx(ctx context.Context, tx *sql.Tx, itemID int64, nowText string) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE sources
+		SET extracted_text = '',
+			extract_json = '',
+			extract_status = '',
+			extract_error = '',
+			extract_failure_kind = '',
+			extract_failure_count = 0,
+			extract_first_failed_at = '',
+			extract_last_failed_at = '',
+			extracted_at = '',
+			extract_tool = '',
+			extract_tool_version = '',
+			summary_text = '',
+			summary_json = '',
+			summary_status = '',
+			summary_error = '',
+			summary_model = '',
+			summary_content_hash = '',
+			summary_prompt_version = '',
+			summary_tool = '',
+			summary_tool_version = '',
+			summarized_at = '',
+			content_hash = '',
+			updated_at = ?
+		WHERE id IN (
+			SELECT l.source_id
+			FROM item_source_links l
+			JOIN sources s ON s.id = l.source_id
+			WHERE l.item_id = ?
+				AND s.source_type = 'x_article'
+		)`,
+		nowText,
+		itemID,
+	); err != nil {
+		return fmt.Errorf("invalidate linked x article sources for item %d: %w", itemID, err)
+	}
+	return nil
+}
+
 func scanItem(scanner interface{ Scan(dest ...any) error }, item *model.Item) error {
 	var importedAt, updatedAt, lastSeenAt string
 	var xPostFetchedAt string
 	var linkExtractSyncedAt string
+	var xMediaTranscriptAt string
 	if err := scanner.Scan(
 		&item.ID, &item.SourceKey, &item.SourceType, &item.ExternalID, &item.CanonicalURL, &item.Title, &item.AuthorHandle, &item.AuthorName,
 		&item.PublishedAt, &item.SavedAt, &item.SyncedAt, &item.Language, &item.Text, &item.ArticleTitle, &item.ArticleText,
@@ -738,7 +867,7 @@ func scanItem(scanner interface{ Scan(dest ...any) error }, item *model.Item) er
 		&item.LikeCount, &item.RepostCount, &item.ReplyCount, &item.QuoteCount, &item.BookmarkCount,
 		&item.ContentHash, &item.NotePath, &item.RawJSON, &importedAt, &updatedAt, &lastSeenAt,
 		&item.XPostText, &item.XPostLang, &item.XPostJSON, &xPostFetchedAt, &item.XPostStatus, &item.XPostError,
-		&linkExtractSyncedAt,
+		&linkExtractSyncedAt, &item.XMediaTranscriptStatus, &item.XMediaTranscriptError, &xMediaTranscriptAt,
 	); err != nil {
 		return err
 	}
@@ -748,6 +877,7 @@ func scanItem(scanner interface{ Scan(dest ...any) error }, item *model.Item) er
 	item.LastSeenAt = parseStoredTime(lastSeenAt)
 	item.XPostFetchedAt = parseStoredTime(xPostFetchedAt)
 	item.LinkExtractSyncedAt = parseStoredTime(linkExtractSyncedAt)
+	item.XMediaTranscriptAt = parseStoredTime(xMediaTranscriptAt)
 	return nil
 }
 

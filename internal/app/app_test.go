@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,7 +13,10 @@ import (
 
 	"dbrain/internal/config"
 	"dbrain/internal/model"
+	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
+	"dbrain/internal/syncjob"
+	"dbrain/internal/xmediatranscribe"
 )
 
 func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
@@ -30,7 +34,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "entity", "topic", "worker", "extract", "hydrate", "repair", "serve", "stats", "ask", "search", "get"} {
+	for _, value := range []string{"import", "sync", "entity", "topic", "worker", "extract", "hydrate", "transcribe", "repair", "serve", "stats", "ask", "search", "get"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -167,6 +171,26 @@ func TestExtractCommandHelpIncludesLinksAndSources(t *testing.T) {
 	}
 }
 
+func TestTranscribeCommandHelpIncludesXMedia(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"transcribe"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "x-media") {
+		t.Fatalf("expected transcribe help output to contain %q, got %q", "x-media", output)
+	}
+}
+
 func TestWorkerCommandHelpIncludesSources(t *testing.T) {
 	t.Parallel()
 
@@ -184,6 +208,35 @@ func TestWorkerCommandHelpIncludesSources(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, "sources") {
 		t.Fatalf("expected worker help output to contain %q, got %q", "sources", output)
+	}
+}
+
+func TestWriteSyncStatsIncludesXMediaStage(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:   time.Date(2026, time.April, 24, 15, 0, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, time.April, 24, 15, 2, 0, 0, time.UTC),
+		Duration:    2 * time.Minute,
+		XMedia: &syncjob.XMediaStage{
+			Stats: xmediatranscribe.Stats{
+				ItemsProcessed:   10,
+				ItemsUpdated:     6,
+				ItemsSkipped:     4,
+				MediaTranscribed: 6,
+				Errors:           1,
+			},
+		},
+	}
+
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	if !strings.Contains(output, "X Media: items_processed=10 items_updated=6 items_skipped=4 media_transcribed=6 errors=1") {
+		t.Fatalf("expected x media sync stats line, got %q", output)
 	}
 }
 
@@ -312,7 +365,7 @@ func TestNoCaffeinateDisablesAutomaticKeepAwake(t *testing.T) {
 	}
 }
 
-func TestCaffeinateDebugLogsStart(t *testing.T) {
+func TestCaffeinateDebugLogsEnabledByDefault(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -335,13 +388,46 @@ func TestCaffeinateDebugLogsStart(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "extract", "sources", "--limit", "1", "--debug"})
+	cmd.SetArgs([]string{"--root", root, "extract", "sources", "--limit", "1"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "keep-awake: started for pid") {
 		t.Fatalf("expected keep-awake debug log, got %q", stderr.String())
+	}
+}
+
+func TestNoDebugSuppressesKeepAwakeDebugLogs(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	original := startKeepAwake
+	defer func() { startKeepAwake = original }()
+	originalAvailable := keepAwakeAvailable
+	defer func() { keepAwakeAvailable = originalAvailable }()
+
+	startKeepAwake = func(int) error { return nil }
+	keepAwakeAvailable = func() bool { return true }
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "extract", "sources", "--limit", "1"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "keep-awake:") {
+		t.Fatalf("expected no keep-awake debug log, got %q", stderr.String())
 	}
 }
 
@@ -399,6 +485,92 @@ func TestExtractSourcesCommandOutputsZeroStatsForEmptyBacklog(t *testing.T) {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected extract sources output to contain %q, got %q", value, output)
 		}
+	}
+}
+
+func TestExtractSourcesCommandUsesTargetedSourceLookup(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "x:test-targeted-source",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-targeted-source",
+		CanonicalURL: "https://x.com/example/status/test-targeted-source",
+		Title:        "targeted source item",
+		ContentHash:  "item-hash-targeted-source",
+		NotePath:     "items/test-targeted-source.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:test-targeted-source",
+		OriginalURL:   "https://example.com/targeted-source",
+		CanonicalURL:  "https://example.com/targeted-source",
+		NormalizedURL: "https://example.com/targeted-source",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/test-targeted-source.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	oldRunPending := runSourceEnrichPending
+	oldRunSourceIDs := runSourceEnrichSourceIDs
+	defer func() {
+		runSourceEnrichPending = oldRunPending
+		runSourceEnrichSourceIDs = oldRunSourceIDs
+	}()
+
+	runSourceEnrichPending = func(context.Context, config.Config, *store.Store, sourceenrich.Options) (sourceenrich.Stats, []int64, error) {
+		t.Fatal("expected targeted source lookup to bypass backlog run")
+		return sourceenrich.Stats{}, nil, nil
+	}
+
+	var capturedIDs []int64
+	runSourceEnrichSourceIDs = func(_ context.Context, _ config.Config, _ *store.Store, sourceIDs []int64, _ sourceenrich.Options) (sourceenrich.Stats, []int64, error) {
+		capturedIDs = append([]int64(nil), sourceIDs...)
+		return sourceenrich.Stats{SourcesQueued: len(sourceIDs)}, sourceIDs, nil
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "extract", "sources", "--source", "src:test-targeted-source"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+
+	if len(capturedIDs) != 1 || capturedIDs[0] != link.SourceID {
+		t.Fatalf("unexpected targeted source ids: %v want [%d]", capturedIDs, link.SourceID)
+	}
+	if !strings.Contains(stdout.String(), "Sources queued: 1") {
+		t.Fatalf("expected targeted output to report one queued source, got %q", stdout.String())
 	}
 }
 
@@ -1677,6 +1849,256 @@ func TestStatsBacklogCommandOutputsPendingQueues(t *testing.T) {
 			t.Fatalf("expected backlog output to contain %q, got %q", value, output)
 		}
 	}
+}
+
+func TestStatsPipelineCommandJSON(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	hydratedItem, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:pipeline-hydrated",
+		SourceType:   "x_bookmark",
+		ExternalID:   "pipeline-hydrated",
+		CanonicalURL: "https://x.com/example/status/pipeline-hydrated",
+		Title:        "hydrated",
+		ContentHash:  "pipeline-hydrated-hash",
+		NotePath:     "items/x/pipeline-hydrated.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert hydrated x item: %v", err)
+	}
+	if _, err := st.SaveXHydration(context.Background(), hydratedItem.ItemID, model.XHydration{
+		Status:    "ok_graphql",
+		FullText:  "hydrated text",
+		FetchedAt: now,
+	}); err != nil {
+		t.Fatalf("save hydrated x item: %v", err)
+	}
+
+	videoPendingItem, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:pipeline-video-pending",
+		SourceType:   "x_bookmark",
+		ExternalID:   "pipeline-video-pending",
+		CanonicalURL: "https://x.com/example/status/pipeline-video-pending",
+		Title:        "video pending",
+		ContentHash:  "pipeline-video-pending-hash",
+		NotePath:     "items/x/pipeline-video-pending.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert pending x item: %v", err)
+	}
+	if _, err := st.SaveXHydration(context.Background(), videoPendingItem.ItemID, model.XHydration{
+		Status:    "error",
+		Error:     "boom",
+		APIJSON:   `{"snapshot":{"media_objects":[{"type":"video","url":"https://cdn.example.com/video.mp4","expanded_url":"https://x.com/example/status/pipeline-video-pending/video/1","width":1280,"height":720}]}}`,
+		FetchedAt: now,
+	}); err != nil {
+		t.Fatalf("save pending x item hydration: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), videoPendingItem.ItemID)
+	if err != nil {
+		t.Fatalf("list item media refs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected one media ref, got %d", len(refs))
+	}
+	if _, err := st.SaveMediaDownload(context.Background(), refs[0].MediaAssetID, model.MediaDownloadResult{
+		LocalPath:    "media/x/video/test.mp4",
+		ContentHash:  "video-download-hash",
+		Status:       "downloaded",
+		DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("save media download: %v", err)
+	}
+
+	webItem, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "ft:pipeline-web",
+		SourceType:   "ft_bookmark",
+		ExternalID:   "pipeline-web",
+		CanonicalURL: "https://example.com/items/pipeline-web",
+		Title:        "web source item",
+		ContentHash:  "pipeline-web-item-hash",
+		NotePath:     "items/ft/pipeline-web.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert web item: %v", err)
+	}
+	if _, err := st.UpsertSourceLink(context.Background(), webItem.ItemID, model.SourceCandidate{
+		SourceKey:     "src:pipeline-web",
+		OriginalURL:   "https://example.com/pipeline-web",
+		CanonicalURL:  "https://example.com/pipeline-web",
+		NormalizedURL: "https://example.com/pipeline-web",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/pipeline-web.md",
+	}); err != nil {
+		t.Fatalf("upsert web source: %v", err)
+	}
+
+	youtubeItem, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "youtube:pipeline-current",
+		SourceType:   "youtube_watch_later",
+		ExternalID:   "pipeline-current",
+		CanonicalURL: "https://www.youtube.com/watch?v=pipeline-current",
+		Title:        "youtube source item",
+		ContentHash:  "pipeline-youtube-item-hash",
+		NotePath:     "items/youtube/pipeline-current.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert youtube item: %v", err)
+	}
+	youtubeLink, err := st.UpsertSourceLink(context.Background(), youtubeItem.ItemID, model.SourceCandidate{
+		SourceKey:     "src:pipeline-youtube",
+		OriginalURL:   "https://www.youtube.com/watch?v=pipeline-current",
+		CanonicalURL:  "https://www.youtube.com/watch?v=pipeline-current",
+		NormalizedURL: "https://www.youtube.com/watch?v=pipeline-current",
+		SourceType:    "youtube",
+		Domain:        "youtube.com",
+		NotePath:      "sources/youtube/pipeline-current.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert youtube source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), youtubeLink.SourceID, model.ExtractResult{
+		CanonicalURL: "https://www.youtube.com/watch?v=pipeline-current",
+		FinalURL:     "https://www.youtube.com/watch?v=pipeline-current",
+		Title:        "pipeline current video",
+		Content:      "youtube transcript",
+		Status:       "ok",
+		Tool:         "youtube-test",
+		ToolVersion:  "1.0.0",
+		FetchedAt:    now,
+	}, "pipeline-youtube-source-hash"); err != nil {
+		t.Fatalf("save youtube extraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(context.Background(), youtubeLink.SourceID, model.SummaryResult{
+		Text:          "youtube summary",
+		Model:         "ollama/qwen3.6:35b",
+		PromptVersion: sourceenrich.SummaryPromptVersion,
+		Status:        "ok",
+		Tool:          "ollama-direct",
+		ToolVersion:   "ollama-direct-v1",
+		FetchedAt:     now,
+	}); err != nil {
+		t.Fatalf("save youtube summary: %v", err)
+	}
+
+	xArticleItem, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:pipeline-article",
+		SourceType:   "x_bookmark",
+		ExternalID:   "pipeline-article",
+		CanonicalURL: "https://x.com/example/status/pipeline-article",
+		Title:        "x article source item",
+		ContentHash:  "pipeline-x-article-item-hash",
+		NotePath:     "items/x/pipeline-article.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert x article item: %v", err)
+	}
+	xArticleLink, err := st.UpsertSourceLink(context.Background(), xArticleItem.ItemID, model.SourceCandidate{
+		SourceKey:     "src:pipeline-x-article",
+		OriginalURL:   "https://x.com/example/article/pipeline",
+		CanonicalURL:  "https://x.com/example/article/pipeline",
+		NormalizedURL: "https://x.com/example/article/pipeline",
+		SourceType:    "x_article",
+		Domain:        "x.com",
+		NotePath:      "sources/x_article/pipeline.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert x article source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), xArticleLink.SourceID, model.ExtractResult{
+		CanonicalURL: "https://x.com/example/article/pipeline",
+		FinalURL:     "https://x.com/example/article/pipeline",
+		Title:        "pipeline x article",
+		Content:      "x article content",
+		Status:       "ok",
+		Tool:         "x-hydration",
+		ToolVersion:  "x-hydration-test",
+		FetchedAt:    now,
+	}, "pipeline-x-article-source-hash"); err != nil {
+		t.Fatalf("save x article extraction: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"--root", root,
+		"stats", "pipeline",
+		"--model", "ollama/qwen3.6:35b",
+		"--json",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+
+	var stats store.PipelineStats
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("unmarshal pipeline stats: %v\n%s", err, stdout.String())
+	}
+
+	assertPipelineRowCounts(t, stats.Hydration, "x_bookmark", 3, 1, 2, 0, 0)
+	assertPipelineRowCounts(t, stats.Extraction, "web", 1, 0, 1, 0, 0)
+	assertPipelineRowCounts(t, stats.Extraction, "youtube", 1, 1, 0, 0, 0)
+	assertPipelineRowCounts(t, stats.Extraction, "x_article", 1, 1, 0, 0, 0)
+	assertPipelineRowCounts(t, stats.Summary, "web", 1, 0, 0, 1, 0)
+	assertPipelineRowCounts(t, stats.Summary, "youtube", 1, 1, 0, 0, 0)
+	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 0, 1, 0, 0)
+	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 1, 0, 1, 0, 0)
+}
+
+func assertPipelineRowCounts(t *testing.T, rows []store.PipelineStageRow, kind string, total int, current int, pending int, blocked int, failed int) {
+	t.Helper()
+
+	for _, row := range rows {
+		if row.Kind != kind {
+			continue
+		}
+		if row.Total != total || row.Current != current || row.Pending != pending || row.Blocked != blocked || row.Failed != failed {
+			t.Fatalf("unexpected pipeline row for %s: %+v", kind, row)
+		}
+		return
+	}
+	t.Fatalf("missing pipeline row for %s in %+v", kind, rows)
 }
 
 func installAskFakeSummarize(t *testing.T, root string) {

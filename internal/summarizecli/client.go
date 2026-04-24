@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 )
 
 const ToolName = "summarize"
+const DirectSummaryToolName = "ollama-direct"
 
 const (
 	commandRetryAttempts = 4
@@ -24,6 +27,7 @@ const (
 	commandRetryMaxDelay = 2 * time.Second
 	defaultOllamaBaseURL = "http://127.0.0.1:11434/v1"
 	defaultOllamaAPIKey  = "ollama"
+	directOllamaVersion  = "ollama-direct-v1"
 )
 
 type Options struct {
@@ -63,6 +67,24 @@ type cliState struct {
 	LastSuccessfulProvider string `json:"lastSuccessfulProvider"`
 }
 
+type chatCompletionsRequest struct {
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	Stream   bool          `json:"stream"`
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatCompletionsResponse struct {
+	Model   string `json:"model"`
+	Choices []struct {
+		Message chatMessage `json:"message"`
+	} `json:"choices"`
+}
+
 var (
 	versionMu    sync.Mutex
 	versionCache = map[string]string{}
@@ -78,7 +100,15 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Length) == "" {
 		opts.Length = "medium"
 	}
+
+	if inputText, ok, err := localSummaryInput(opts); err != nil {
+		return Result{}, err
+	} else if ok && opts.Summarize && UsesDirectSummary(opts.Model) {
+		return runDirectOllamaSummary(ctx, opts, inputText)
+	}
+
 	opts.Model, opts.Env = resolveModelAndEnv(opts.Model, opts.Env)
+	opts.CLI = ResolveCLIProvider(opts.CLI, opts.Model)
 
 	version := Version(ctx, opts.Binary)
 	args := []string{"--json", "--timeout", formatTimeout(opts.Timeout), "--format", "text"}
@@ -159,6 +189,145 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	return result, nil
 }
 
+func UsesDirectSummary(model string) bool {
+	_, ok := parseOllamaModel(model)
+	return ok
+}
+
+func SummaryToolName(model string) string {
+	if UsesDirectSummary(model) {
+		return DirectSummaryToolName
+	}
+	return ToolName
+}
+
+func SummaryToolVersion(ctx context.Context, binary string, model string) string {
+	if UsesDirectSummary(model) {
+		return directOllamaVersion
+	}
+	return Version(ctx, binary)
+}
+
+func localSummaryInput(opts Options) (string, bool, error) {
+	if !opts.Summarize {
+		return "", false, nil
+	}
+	if value := strings.TrimSpace(opts.Stdin); value != "" {
+		return value, true, nil
+	}
+	input := strings.TrimSpace(opts.Input)
+	if input == "" {
+		return "", false, nil
+	}
+	info, err := os.Stat(input)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("stat summary input: %w", err)
+	}
+	if info.IsDir() {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(input)
+	if err != nil {
+		return "", false, fmt.Errorf("read summary input: %w", err)
+	}
+	return string(data), true, nil
+}
+
+func runDirectOllamaSummary(ctx context.Context, opts Options, inputText string) (Result, error) {
+	ollamaModel, ok := parseOllamaModel(opts.Model)
+	if !ok {
+		return Result{}, fmt.Errorf("direct ollama summary requested without an ollama model")
+	}
+
+	messages := make([]chatMessage, 0, 2)
+	if prompt := strings.TrimSpace(promptWithLengthHint(opts.Prompt, opts.Length)); prompt != "" {
+		messages = append(messages, chatMessage{
+			Role:    "system",
+			Content: prompt,
+		})
+	}
+	messages = append(messages, chatMessage{
+		Role:    "user",
+		Content: strings.TrimSpace(inputText),
+	})
+
+	body, err := json.Marshal(chatCompletionsRequest{
+		Model:    ollamaModel,
+		Messages: messages,
+		Stream:   false,
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("marshal ollama summary request: %w", err)
+	}
+
+	baseURL := ollamaBaseURLWithEnv(opts.Env)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return Result{}, fmt.Errorf("create ollama summary request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+ollamaAPIKeyWithEnv(opts.Env))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Result{}, fmt.Errorf("run ollama summary: %w", err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return Result{}, fmt.Errorf("read ollama summary response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyText := strings.TrimSpace(string(respBody))
+		if len(bodyText) > 200 {
+			bodyText = bodyText[:200]
+		}
+		return Result{}, fmt.Errorf("run ollama summary: http %d: %s", resp.StatusCode, bodyText)
+	}
+
+	var payload chatCompletionsResponse
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		bodyText := strings.TrimSpace(string(respBody))
+		if len(bodyText) > 200 {
+			bodyText = bodyText[:200]
+		}
+		return Result{}, fmt.Errorf("parse ollama summary response: %w (body prefix: %q)", err, bodyText)
+	}
+	if len(payload.Choices) == 0 {
+		return Result{}, fmt.Errorf("run ollama summary: response contained no choices")
+	}
+
+	summaryText := strings.TrimSpace(payload.Choices[0].Message.Content)
+	if summaryText == "" {
+		return Result{}, fmt.Errorf("run ollama summary: response contained no summary text")
+	}
+
+	modelName := strings.TrimSpace(opts.Model)
+	if modelName == "" {
+		modelName = "ollama/" + ollamaModel
+	}
+
+	now := time.Now().UTC()
+	return Result{
+		Summary: model.SummaryResult{
+			Text:        summaryText,
+			RawJSON:     strings.TrimSpace(string(respBody)),
+			Model:       modelName,
+			Status:      "ok",
+			FetchedAt:   now,
+			Tool:        SummaryToolName(opts.Model),
+			ToolVersion: SummaryToolVersion(ctx, opts.Binary, opts.Model),
+		},
+	}, nil
+}
+
 func runCommand(ctx context.Context, opts Options, args []string) ([]byte, error) {
 	delay := commandRetryDelay
 
@@ -235,6 +404,16 @@ func PreferredCLIProvider() string {
 		}
 	}
 	return "codex"
+}
+
+func ResolveCLIProvider(cli, model string) string {
+	if strings.TrimSpace(model) != "" {
+		return ""
+	}
+	if value := strings.TrimSpace(cli); value != "" {
+		return value
+	}
+	return PreferredCLIProvider()
 }
 
 func Version(ctx context.Context, binary string) string {
@@ -318,6 +497,32 @@ func resolveModelAndEnv(model string, env map[string]string) (string, map[string
 	return "openai/" + ollamaModel, out
 }
 
+func promptWithLengthHint(prompt string, length string) string {
+	base := strings.TrimSpace(prompt)
+	hint := strings.TrimSpace(lengthHint(length))
+	switch {
+	case base == "":
+		return hint
+	case hint == "":
+		return base
+	default:
+		return base + "\n\n" + hint
+	}
+}
+
+func lengthHint(length string) string {
+	switch strings.ToLower(strings.TrimSpace(length)) {
+	case "short":
+		return "Target response length: short. Compress aggressively."
+	case "long":
+		return "Target response length: long. Preserve more detail while remaining meaningfully shorter than the source."
+	case "medium", "":
+		return "Target response length: medium. Keep the response meaningfully shorter than the source."
+	default:
+		return ""
+	}
+}
+
 func parseOllamaModel(model string) (string, bool) {
 	value := strings.TrimSpace(model)
 	if value == "" {
@@ -338,17 +543,23 @@ func parseOllamaModel(model string) (string, bool) {
 }
 
 func ollamaBaseURL() string {
-	value := strings.TrimSpace(os.Getenv("DBRAIN_OLLAMA_BASE_URL"))
-	if value == "" {
-		value = strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
-	}
-	if value == "" {
-		value = strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
-	}
+	return ollamaBaseURLWithEnv(nil)
+}
+
+func ollamaBaseURLWithEnv(env map[string]string) string {
+	value := firstEnvValue(env, "DBRAIN_OLLAMA_BASE_URL", "OLLAMA_BASE_URL", "OLLAMA_HOST", "OPENAI_BASE_URL")
 	if value == "" {
 		value = defaultOllamaBaseURL
 	}
 	return normalizeBaseURLWithV1(value)
+}
+
+func ollamaAPIKeyWithEnv(env map[string]string) string {
+	value := firstEnvValue(env, "DBRAIN_OLLAMA_API_KEY", "OPENAI_API_KEY")
+	if value == "" {
+		value = defaultOllamaAPIKey
+	}
+	return value
 }
 
 func normalizeBaseURLWithV1(raw string) string {
@@ -382,4 +593,16 @@ func hasEnvValue(env map[string]string, key string) bool {
 		return true
 	}
 	return strings.TrimSpace(os.Getenv(key)) != ""
+}
+
+func firstEnvValue(env map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(env[key]); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }

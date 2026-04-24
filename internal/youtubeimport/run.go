@@ -43,6 +43,7 @@ type Options struct {
 	YTDLPBinary      string
 	WhisperBinary    string
 	WhisperModelPath string
+	MacWhisperBinary string
 	SummarizeBinary  string
 }
 
@@ -104,6 +105,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	if opts.WhisperModelPath == "" {
 		opts.WhisperModelPath = defaultWhisperModelPath()
+	}
+	if strings.TrimSpace(opts.MacWhisperBinary) == "" {
+		opts.MacWhisperBinary = "mw"
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 2 * time.Minute
@@ -429,182 +433,27 @@ func summarizeArgsFor(opts Options) func(source model.SourceDocument) []string {
 
 func fallbackExtractFor(cfg config.Config, opts Options, cookiesArg string) func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
 	return func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
-		if source.SourceType != "youtube" {
-			return model.ExtractResult{}, false, nil
-		}
-		if !shouldUseWhisperFallback(extract) {
-			return model.ExtractResult{}, false, nil
-		}
-		debugLog(opts.Logger, "attempting whisper fallback for youtube source", "source_key", source.SourceKey, "url", source.CanonicalURL)
-		fallback, err := transcribeYouTubeWithWhisper(ctx, cfg, source, extract, opts, cookiesArg)
+		fallback, changed, err := sourceenrich.MaybeTranscribeYouTubeAudioFallback(ctx, cfg, source, extract, sourceenrich.Options{
+			Logger:             opts.Logger,
+			Timeout:            opts.Timeout,
+			YouTubeBrowser:     opts.Browser,
+			YouTubeProfile:     opts.Profile,
+			YouTubeCookiesArg:  cookiesArg,
+			YouTubeTranscriber: opts.Transcriber,
+			YTDLPBinary:        opts.YTDLPBinary,
+			WhisperBinary:      opts.WhisperBinary,
+			WhisperModelPath:   opts.WhisperModelPath,
+			MacWhisperBinary:   opts.MacWhisperBinary,
+		})
 		if err != nil {
-			debugLog(opts.Logger, "whisper fallback failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
+			debugLog(opts.Logger, "youtube audio fallback failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
 			return model.ExtractResult{}, false, nil
 		}
-		debugLog(opts.Logger, "whisper fallback succeeded", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(fallback.Content))
-		return fallback, true, nil
-	}
-}
-
-type youtubeExtractEnvelope struct {
-	Extracted struct {
-		TranscriptSource      *string `json:"transcriptSource"`
-		TranscriptionProvider *string `json:"transcriptionProvider"`
-		TranscriptCharacters  *int    `json:"transcriptCharacters"`
-	} `json:"extracted"`
-}
-
-func shouldUseWhisperFallback(extract model.ExtractResult) bool {
-	var payload youtubeExtractEnvelope
-	if err := json.Unmarshal([]byte(strings.TrimSpace(extract.RawJSON)), &payload); err != nil {
-		return false
-	}
-
-	source := ""
-	if payload.Extracted.TranscriptSource != nil {
-		source = strings.TrimSpace(*payload.Extracted.TranscriptSource)
-	}
-	provider := ""
-	if payload.Extracted.TranscriptionProvider != nil {
-		provider = strings.TrimSpace(*payload.Extracted.TranscriptionProvider)
-	}
-	chars := 0
-	if payload.Extracted.TranscriptCharacters != nil {
-		chars = *payload.Extracted.TranscriptCharacters
-	}
-
-	return source == "unavailable" && provider == "" && chars == 0
-}
-
-func transcribeYouTubeWithWhisper(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options, cookiesArg string) (model.ExtractResult, error) {
-	if strings.TrimSpace(opts.WhisperModelPath) == "" {
-		return model.ExtractResult{}, fmt.Errorf("whisper model path not configured")
-	}
-	if _, err := os.Stat(opts.WhisperModelPath); err != nil {
-		return model.ExtractResult{}, fmt.Errorf("whisper model missing: %w", err)
-	}
-
-	timeout := opts.Timeout
-	if timeout < 10*time.Minute {
-		timeout = 10 * time.Minute
-	}
-	commandCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	tempDir, err := cfg.MkdirTemp("dbrain-youtube-whisper-*")
-	if err != nil {
-		return model.ExtractResult{}, fmt.Errorf("create temp dir: %w", err)
-	}
-	defer func() {
-		_ = os.RemoveAll(tempDir)
-	}()
-
-	audioTemplate := filepath.Join(tempDir, "audio.%(ext)s")
-	downloadArgs := []string{
-		"--no-playlist",
-		"--cookies-from-browser", firstNonEmpty(strings.TrimSpace(cookiesArg), cookiesFromBrowserArg(opts.Browser, opts.Profile)),
-		"-f", "bestaudio/best",
-		"-o", audioTemplate,
-		source.CanonicalURL,
-	}
-	downloadCmd := exec.CommandContext(commandCtx, opts.YTDLPBinary, downloadArgs...)
-	var downloadStderr bytes.Buffer
-	downloadCmd.Stderr = &downloadStderr
-	if err := downloadCmd.Run(); err != nil {
-		return model.ExtractResult{}, fmt.Errorf("yt-dlp audio download: %s", strings.TrimSpace(downloadStderr.String()))
-	}
-
-	audioPath, err := firstDownloadedAudio(tempDir)
-	if err != nil {
-		return model.ExtractResult{}, err
-	}
-
-	outputBase := filepath.Join(tempDir, "transcript")
-	whisperArgs := []string{
-		"-m", opts.WhisperModelPath,
-		"-l", "auto",
-		"-otxt",
-		"-of", outputBase,
-		"-f", audioPath,
-		"-np",
-		"-nt",
-	}
-	whisperCmd := exec.CommandContext(commandCtx, opts.WhisperBinary, whisperArgs...)
-	var whisperStderr bytes.Buffer
-	whisperCmd.Stderr = &whisperStderr
-	if err := whisperCmd.Run(); err != nil {
-		return model.ExtractResult{}, fmt.Errorf("whisper transcription: %s", strings.TrimSpace(whisperStderr.String()))
-	}
-
-	transcriptBytes, err := os.ReadFile(outputBase + ".txt")
-	if err != nil {
-		return model.ExtractResult{}, fmt.Errorf("read whisper transcript: %w", err)
-	}
-	transcript := strings.TrimSpace(string(transcriptBytes))
-	if transcript == "" {
-		return model.ExtractResult{}, fmt.Errorf("whisper transcript empty")
-	}
-
-	title := strings.TrimSpace(extract.Title)
-	if title == "" || title == "- YouTube" {
-		title = strings.TrimSpace(source.Title)
-	}
-	description := strings.TrimSpace(extract.Description)
-	if description == "" {
-		description = strings.TrimSpace(source.Description)
-	}
-	siteName := strings.TrimSpace(extract.SiteName)
-	if siteName == "" || siteName == "youtube.com" {
-		siteName = "YouTube"
-	}
-
-	rawJSONBytes, err := json.Marshal(map[string]any{
-		"extracted": map[string]any{
-			"url":                   source.CanonicalURL,
-			"title":                 title,
-			"description":           description,
-			"siteName":              siteName,
-			"content":               "Transcript:\n" + transcript,
-			"transcriptSource":      "whisper.cpp",
-			"transcriptionProvider": "whisper.cpp",
-			"transcriptCharacters":  len(transcript),
-		},
-	})
-	if err != nil {
-		return model.ExtractResult{}, fmt.Errorf("marshal whisper transcript json: %w", err)
-	}
-
-	return model.ExtractResult{
-		CanonicalURL: source.CanonicalURL,
-		FinalURL:     source.CanonicalURL,
-		Title:        title,
-		Description:  description,
-		SiteName:     siteName,
-		Content:      "Transcript:\n" + transcript,
-		RawJSON:      string(rawJSONBytes),
-		Status:       "ok",
-		FetchedAt:    time.Now().UTC(),
-		Tool:         "whisper.cpp",
-		ToolVersion:  "",
-	}, nil
-}
-
-func firstDownloadedAudio(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", fmt.Errorf("read audio dir: %w", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+		if changed {
+			debugLog(opts.Logger, "youtube audio fallback succeeded", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(fallback.Content), "tool", fallback.Tool)
 		}
-		name := entry.Name()
-		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".ytdl") || strings.HasSuffix(name, ".txt") {
-			continue
-		}
-		return filepath.Join(dir, name), nil
+		return fallback, changed, nil
 	}
-	return "", fmt.Errorf("downloaded audio not found")
 }
 
 func defaultWhisperModelPath() string {

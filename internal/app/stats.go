@@ -18,7 +18,7 @@ func newStatsCommand(root *rootOptions) *cobra.Command {
 		Short: "Show database counts and import progress",
 		RunE:  helpCommand,
 	}
-	cmd.AddCommand(newStatsItemsCommand(root), newStatsSourcesCommand(root), newStatsActivityCommand(root), newStatsBacklogCommand(root))
+	cmd.AddCommand(newStatsItemsCommand(root), newStatsSourcesCommand(root), newStatsActivityCommand(root), newStatsBacklogCommand(root), newStatsPipelineCommand(root))
 	return cmd
 }
 
@@ -155,6 +155,7 @@ func newStatsActivityCommand(root *rootOptions) *cobra.Command {
 
 func newStatsBacklogCommand(root *rootOptions) *cobra.Command {
 	var jsonOut bool
+	var model string
 
 	cmd := &cobra.Command{
 		Use:   "backlog",
@@ -177,8 +178,8 @@ func newStatsBacklogCommand(root *rootOptions) *cobra.Command {
 			stats, err := st.Backlog(
 				cmd.Context(),
 				sourceenrich.SummaryPromptVersion,
-				summarizecli.ToolName,
-				summarizecli.Version(cmd.Context(), ""),
+				summarizecli.SummaryToolName(model),
+				summarizecli.SummaryToolVersion(cmd.Context(), "", model),
 			)
 			if err != nil {
 				return err
@@ -191,6 +192,50 @@ func newStatsBacklogCommand(root *rootOptions) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print backlog as JSON")
+	cmd.Flags().StringVar(&model, "model", "", "Optional summary model when evaluating summary freshness")
+	return cmd
+}
+
+func newStatsPipelineCommand(root *rootOptions) *cobra.Command {
+	var jsonOut bool
+	var model string
+
+	cmd := &cobra.Command{
+		Use:   "pipeline",
+		Short: "Show pipeline completion by stage and data type",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig(root.root)
+			if err != nil {
+				return err
+			}
+
+			st, err := store.Open(cfg.DBPath)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				_ = st.Close()
+			}()
+
+			stats, err := st.Pipeline(
+				cmd.Context(),
+				sourceenrich.SummaryPromptVersion,
+				summarizecli.SummaryToolName(model),
+				summarizecli.SummaryToolVersion(cmd.Context(), "", model),
+			)
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				return writeJSON(cmd.OutOrStdout(), stats)
+			}
+			return writePipelineStats(cmd.OutOrStdout(), stats, model)
+		},
+	}
+
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print pipeline stats as JSON")
+	cmd.Flags().StringVar(&model, "model", "", "Optional summary model when evaluating summary freshness")
 	return cmd
 }
 
@@ -306,4 +351,132 @@ func writeOptionalBucketSection(dst interface{ Write([]byte) (int, error) }, tit
 		}
 	}
 	return nil
+}
+
+func writePipelineStats(dst interface{ Write([]byte) (int, error) }, stats store.PipelineStats, model string) error {
+	if _, err := fmt.Fprintf(dst, "Hydration\n"); err != nil {
+		return err
+	}
+	if err := writePipelineTable(dst, stats.Hydration); err != nil {
+		return err
+	}
+
+	if _, err := fmt.Fprintf(dst, "\nExtraction\n"); err != nil {
+		return err
+	}
+	if err := writePipelineTable(dst, stats.Extraction); err != nil {
+		return err
+	}
+
+	if _, err := fmt.Fprintf(dst, "\nSummary\n"); err != nil {
+		return err
+	}
+	summaryTarget := strings.TrimSpace(model)
+	if summaryTarget == "" {
+		summaryTarget = "default"
+	}
+	if _, err := fmt.Fprintf(dst, "Model target: %s\n", summaryTarget); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(dst, "Freshness target: %s / %s / %s\n", stats.SummaryPromptVersion, fallbackDisplay(stats.SummaryTool, "summary"), fallbackDisplay(stats.SummaryToolVersion, "unknown")); err != nil {
+		return err
+	}
+	if err := writePipelineTable(dst, stats.Summary); err != nil {
+		return err
+	}
+
+	if len(stats.Transcription) > 0 {
+		if _, err := fmt.Fprintf(dst, "\nTranscription\n"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(dst, "X video items that still need transcript materialization before they are fully covered.\n"); err != nil {
+			return err
+		}
+		if err := writePipelineTable(dst, stats.Transcription); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func writePipelineTable(dst interface{ Write([]byte) (int, error) }, rows []store.PipelineStageRow) error {
+	if len(rows) == 0 {
+		_, err := fmt.Fprintf(dst, "(none)\n")
+		return err
+	}
+
+	headers := []string{"Type", "Total", "Current", "Pending", "Blocked", "Failed", "Current %"}
+	widths := make([]int, len(headers))
+	for i, header := range headers {
+		widths[i] = len(header)
+	}
+
+	values := make([][]string, 0, len(rows))
+	for _, row := range rows {
+		record := []string{
+			pipelineKindLabel(row.Kind),
+			fmt.Sprintf("%d", row.Total),
+			fmt.Sprintf("%d", row.Current),
+			fmt.Sprintf("%d", row.Pending),
+			fmt.Sprintf("%d", row.Blocked),
+			fmt.Sprintf("%d", row.Failed),
+			fmt.Sprintf("%.1f%%", row.PercentCurrent),
+		}
+		for i, value := range record {
+			if len(value) > widths[i] {
+				widths[i] = len(value)
+			}
+		}
+		values = append(values, record)
+	}
+
+	if _, err := fmt.Fprintf(dst, "%s\n", formatPipelineTableRow(headers, widths)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(dst, "%s\n", formatPipelineTableDivider(widths)); err != nil {
+		return err
+	}
+	for _, record := range values {
+		if _, err := fmt.Fprintf(dst, "%s\n", formatPipelineTableRow(record, widths)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatPipelineTableRow(values []string, widths []int) string {
+	parts := make([]string, 0, len(values))
+	for i, value := range values {
+		align := "%-*s"
+		if i > 0 {
+			align = "%*s"
+		}
+		parts = append(parts, fmt.Sprintf(align, widths[i], value))
+	}
+	return "| " + strings.Join(parts, " | ") + " |"
+}
+
+func formatPipelineTableDivider(widths []int) string {
+	parts := make([]string, 0, len(widths))
+	for _, width := range widths {
+		parts = append(parts, strings.Repeat("-", width))
+	}
+	return "|-" + strings.Join(parts, "-|-") + "-|"
+}
+
+func pipelineKindLabel(value string) string {
+	switch strings.TrimSpace(value) {
+	case "":
+		return "(empty)"
+	default:
+		return value
+	}
+}
+
+func fallbackDisplay(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }

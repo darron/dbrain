@@ -19,17 +19,19 @@ import (
 	"dbrain/internal/summarizecli"
 	"dbrain/internal/worker"
 	"dbrain/internal/xapi"
+	"dbrain/internal/xmediatranscribe"
 	"dbrain/internal/youtubeimport"
 )
 
 var (
-	runFTImport      = ftimport.Run
-	runXHydrate      = xapi.Run
-	runLinkExtract   = linkextract.Run
-	runGitHubImport  = githubimport.Run
-	runYouTubeImport = youtubeimport.Run
-	runSourceWorker  = worker.RunSources
-	summarizeVersion = summarizecli.Version
+	runFTImport        = ftimport.Run
+	runXHydrate        = xapi.Run
+	runXMediaStage     = xmediatranscribe.Run
+	runLinkExtract     = linkextract.Run
+	runGitHubImport    = githubimport.Run
+	runYouTubeImport   = youtubeimport.Run
+	runSourceWorker    = worker.RunSources
+	summaryToolVersion = summarizecli.SummaryToolVersion
 )
 
 type Options struct {
@@ -37,10 +39,12 @@ type Options struct {
 	FTSource  string
 	FTLimit   int
 
-	XEnabled     bool
-	XLimit       int
-	XConcurrency int
-	XTimeout     time.Duration
+	XEnabled      bool
+	XLimit        int
+	XConcurrency  int
+	XTimeout      time.Duration
+	XMediaEnabled bool
+	XMediaLimit   int
 
 	LinksEnabled      bool
 	LinkDiscoverLimit int
@@ -81,6 +85,7 @@ type Stats struct {
 	Duration    time.Duration `json:"duration"`
 	FT          *FTStage      `json:"ft,omitempty"`
 	X           *XStage       `json:"x,omitempty"`
+	XMedia      *XMediaStage  `json:"x_media,omitempty"`
 	Links       *LinksStage   `json:"links,omitempty"`
 	GitHub      *GitHubStage  `json:"github,omitempty"`
 	YouTube     *YouTubeStage `json:"youtube,omitempty"`
@@ -95,6 +100,11 @@ type FTStage struct {
 type XStage struct {
 	Duration time.Duration `json:"duration"`
 	Stats    xapi.Stats    `json:"stats"`
+}
+
+type XMediaStage struct {
+	Duration time.Duration          `json:"duration"`
+	Stats    xmediatranscribe.Stats `json:"stats"`
 }
 
 type LinksStage struct {
@@ -131,11 +141,14 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Minute
 	}
+	if opts.XLimit <= 0 {
+		opts.XLimit = 100
+	}
 	if opts.XTimeout <= 0 {
 		opts.XTimeout = 30 * time.Second
 	}
-	if opts.XLimit <= 0 {
-		opts.XLimit = 100
+	if opts.XMediaLimit <= 0 {
+		opts.XMediaLimit = opts.XLimit
 	}
 	if opts.XConcurrency <= 0 {
 		opts.XConcurrency = 4
@@ -195,6 +208,23 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			return finishStats(stats), fmt.Errorf("hydrate x: %w", err)
 		}
 		progressf(opts.Progress, "X hydration complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d (%s)\n", xStats.Hydrated, xStats.Missing, xStats.APIErrors, xStats.MediaDownloaded, xStats.MediaErrors, xStats.Rendered, stage.Duration)
+	}
+
+	if opts.XMediaEnabled {
+		progressf(opts.Progress, "==> transcribe x-media\n")
+		start := time.Now()
+		xMediaStats, err := runXMediaStage(ctx, cfg, st, xmediatranscribe.Options{
+			Limit:   opts.XMediaLimit,
+			Force:   opts.Force,
+			Timeout: opts.Timeout,
+			Logger:  opts.Logger,
+		})
+		stage := &XMediaStage{Duration: time.Since(start), Stats: xMediaStats}
+		stats.XMedia = stage
+		if err != nil {
+			return finishStats(stats), fmt.Errorf("transcribe x-media: %w", err)
+		}
+		progressf(opts.Progress, "X media transcription complete: items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d errors=%d (%s)\n", xMediaStats.ItemsProcessed, xMediaStats.ItemsUpdated, xMediaStats.ItemsSkipped, xMediaStats.MediaTranscribed, xMediaStats.Errors, stage.Duration)
 	}
 
 	if opts.LinksEnabled {
@@ -269,11 +299,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if opts.SourcesEnabled {
 		progressf(opts.Progress, "==> worker sources\n")
 		start := time.Now()
-		toolVersion := summarizeVersion(ctx, "")
+		toolName := summarizecli.SummaryToolName(opts.Model)
+		toolVersion := summaryToolVersion(ctx, "", opts.Model)
 		sourceStats, err := runSourceWorker(
 			ctx,
 			func(ctx context.Context) (store.BacklogStats, error) {
-				return st.Backlog(ctx, sourceenrich.SummaryPromptVersion, summarizecli.ToolName, toolVersion)
+				return st.Backlog(ctx, sourceenrich.SummaryPromptVersion, toolName, toolVersion)
 			},
 			func(ctx context.Context, _ int) (sourceenrich.Stats, error) {
 				batchStats, _, err := sourceenrich.RunPending(ctx, cfg, st, sourceenrich.Options{

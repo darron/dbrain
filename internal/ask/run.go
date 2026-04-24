@@ -570,13 +570,7 @@ func writePromptInput(cfg config.Config, question string, evidence []Evidence) (
 }
 
 func askCLI(opts Options) string {
-	if value := strings.TrimSpace(opts.CLI); value != "" {
-		return value
-	}
-	if strings.TrimSpace(opts.Model) != "" {
-		return ""
-	}
-	return summarizecli.PreferredCLIProvider()
+	return summarizecli.ResolveCLIProvider(opts.CLI, opts.Model)
 }
 
 func buildEntityMatchIndex(index []entities.Entity, question string, terms []string, limit int) map[string]entityMatch {

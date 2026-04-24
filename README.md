@@ -19,6 +19,7 @@ imported corpus.
 - `dbrain topic index`
 - `dbrain worker sources`
 - `dbrain hydrate x`
+- `dbrain transcribe x-media`
 - `dbrain repair notes`
 - `dbrain serve mcp`
 - `dbrain serve web`
@@ -28,6 +29,7 @@ imported corpus.
 - `dbrain stats sources`
 - `dbrain stats activity`
 - `dbrain stats backlog`
+- `dbrain stats pipeline`
 - `dbrain ask <question>`
 - `dbrain search <query>`
 - `dbrain get <source-key-or-id>`
@@ -36,6 +38,9 @@ On macOS, `dbrain` will automatically use `caffeinate` when the command is
 available, so long-running leaf commands keep the machine awake by default.
 Use `--no-caffeinate` to disable that behavior for a specific run. You can
 still pass `--caffeinate` to force it explicitly.
+
+Structured debug logging is enabled by default. Use `--no-debug` when you want
+quiet CLI output.
 
 ## Dev Tasks
 
@@ -60,8 +65,10 @@ still pass `--caffeinate` to force it explicitly.
 - Add a translation stage for non-English X content, storing both original and translated text.
 - Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
 - Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
+- Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
 - Improve provider provenance so stored summaries always record the exact backend/model used.
 - Add a scheduler/launchd-style mode on top of the new worker loop so enrichment can resume automatically after terminal closure or reboot.
+- Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.
 
 ## Layout
 
@@ -108,6 +115,18 @@ For GitHub stars, use a fine-grained PAT with:
 - `whisper-cli`
   Optional, but needed for local audio transcription fallback when a YouTube
   video has no usable captions or transcript.
+- `mw`
+  MacWhisper CLI. Required for `dbrain transcribe x-media`, and therefore also
+  required for `dbrain sync all` unless you pass `--skip-x-media`. When
+  installed, `dbrain` also prefers it over `whisper-cli` for local YouTube
+  audio transcription when `--transcriber auto` is in use. You can force it
+  explicitly with `--transcriber macwhisper` or
+  `--transcriber macwhisper:<engine:model>`.
+- `ffprobe`
+  Required for `dbrain transcribe x-media`, and therefore also required for
+  `dbrain sync all` unless you pass `--skip-x-media`. `dbrain` uses it to
+  detect whether a downloaded X video actually contains an audio stream.
+  `ffprobe` is usually installed as part of `ffmpeg`.
 - `~/.summarize/cache/whisper-cpp/models/ggml-base.bin`
   Optional, but required by the local `whisper.cpp` fallback. A working setup is
   `whisper-cli` plus this model path.
@@ -117,6 +136,9 @@ For GitHub stars, use a fine-grained PAT with:
   Required for `task lint`.
 - `sqlite3`
   Optional, but useful for inspecting `data/brain.db` during debugging.
+- `caffeinate`
+  Optional macOS helper. When available, `dbrain` uses it automatically for
+  long-running leaf commands unless you pass `--no-caffeinate`.
 
 ## Command Requirements
 
@@ -124,14 +146,24 @@ For GitHub stars, use a fine-grained PAT with:
   Requires the FT bookmarks SQLite database. No external binary is invoked.
 - `dbrain sync all`
   Runs the regular incremental refresh pipeline in one command: FT import, X
-  hydration, tweet-link discovery/enrichment, GitHub stars import, YouTube
-  import, and an optional source-backlog worker batch. It combines the
-  requirements of the enabled stages, defaults to Chrome for cookie-backed
-  flows, and supports `--skip-*` flags when you only want part of the pipeline.
+  hydration, X media audio transcription, tweet-link discovery/enrichment,
+  GitHub stars import, YouTube import, and an optional source-backlog worker
+  batch. The X media stage uses the same batch limit as `hydrate x`
+  (`--x-limit`). In the default configuration this combines the requirements of
+  X hydration, X media transcription, link/source enrichment, and YouTube
+  import, so a practical local setup usually includes a supported
+  Chrome/Chromium profile with valid cookies plus `mw`, `ffprobe`,
+  `summarize`, and `yt-dlp`. It supports `--skip-*` flags when you only want
+  part of the pipeline.
 - `dbrain hydrate x`
   Requires a supported browser profile with valid X cookies. Chrome/Chromium is
   the best-tested path. On macOS you may see a Keychain prompt the first time
   cookie decryption is used.
+- `dbrain transcribe x-media`
+  Requires `mw` and `ffprobe`. `mw` performs the transcription and `ffprobe`
+  checks whether a downloaded X video or animated GIF has an audio stream worth
+  transcribing. Normal runs skip already classified items; use `--force` when
+  you explicitly want to retry failures or reprocess existing transcript items.
 - `dbrain import youtube`
   Requires a browser profile with valid YouTube cookies, `yt-dlp`, and
   `summarize`. When `--profile` is omitted, `dbrain` will try the bare browser
@@ -226,11 +258,12 @@ For GitHub stars, use a fine-grained PAT with:
 
 ```sh
 go run ./cmd/dbrain import ft
-go run ./cmd/dbrain sync all --length short --timeout 5m --debug
+go run ./cmd/dbrain sync all --length short --timeout 5m
+go run ./cmd/dbrain sync all --skip-x-media --length short --timeout 5m
 go run ./cmd/dbrain sync all --skip-sources --length short --timeout 5m
-go run ./cmd/dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m --debug
-go run ./cmd/dbrain import github stars --debug
-go run ./cmd/dbrain import youtube --watch-later --liked --browser chrome --profile Default --limit 10 --transcriber auto --debug
+go run ./cmd/dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m
+go run ./cmd/dbrain import github stars
+go run ./cmd/dbrain import youtube --watch-later --liked --browser chrome --profile Default --limit 10 --transcriber auto
 go run ./cmd/dbrain entity map "example"
 go run ./cmd/dbrain entity map "example/project" --kind project --json
 go run ./cmd/dbrain entity generate "example/project" --kind project
@@ -241,16 +274,17 @@ go run ./cmd/dbrain topic refresh
 go run ./cmd/dbrain topic refresh "vector database"
 go run ./cmd/dbrain topic index
 go run ./cmd/dbrain worker sources --limit 100 --concurrency 4
-go run ./cmd/dbrain worker sources --watch --poll-interval 1m --idle-exit-after 30m --concurrency 4 --length short --timeout 5m --debug
+go run ./cmd/dbrain worker sources --watch --poll-interval 1m --idle-exit-after 30m --concurrency 4 --length short --timeout 5m
 go run ./cmd/dbrain hydrate x --limit 50
-go run ./cmd/dbrain hydrate x --limit 5 --debug
-go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short --timeout 5m --debug
-go run ./cmd/dbrain --no-caffeinate extract sources --limit 50 --length short --timeout 5m --debug
+go run ./cmd/dbrain hydrate x --limit 5
+go run ./cmd/dbrain transcribe x-media --limit 50
+go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short --timeout 5m
+go run ./cmd/dbrain --no-caffeinate extract sources --limit 50 --length short --timeout 5m
 go run ./cmd/dbrain repair notes
 go run ./cmd/dbrain repair notes --missing-only=false --sources
 go run ./cmd/dbrain extract links --discover-limit 100 --limit 25 --concurrency 4 --summarize=false
-go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --length short --debug
-go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short --debug
+go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --length short
+go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short
 go run ./cmd/dbrain stats items
 go run ./cmd/dbrain stats items --source-type github_star --group-by none
 go run ./cmd/dbrain stats sources --source-type github --extract-tool github-api --group-by summary-status
@@ -262,7 +296,7 @@ go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --timeout 30s
 go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen2.5:7b-instruct --timeout 2m
 go run ./cmd/dbrain ask "Show me GitHub repos about vector databases" --retrieve-only --source-type github
 go run ./cmd/dbrain ask "What is Agent Memory?" --retrieve-only --include-related --related-limit 2
-go run ./cmd/dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen2.5:7b-instruct --timeout 10m --debug
+go run ./cmd/dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen2.5:7b-instruct --timeout 10m
 go run ./cmd/dbrain serve mcp
 go run ./cmd/dbrain serve web
 go run ./cmd/dbrain search kubernetes
@@ -305,15 +339,17 @@ OpenAI-compatible path automatically and defaults to
 `http://127.0.0.1:11434/v1`. Override the target with
 `DBRAIN_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, or `OLLAMA_HOST` if the daemon is
 elsewhere. If you already export `OPENAI_BASE_URL` or `OPENAI_API_KEY`,
-`dbrain` leaves those alone.
+`dbrain` leaves those alone. When `--model` is set, it also takes precedence
+over `--cli`, so local-model runs do not accidentally inherit the default CLI
+provider.
 
 For a new machine or GPU-backed A/B run, start with small scoped commands
 before pointing a whole sync at Ollama. A practical progression is:
 
 ```sh
 go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen3.5:9b --timeout 2m
-go run ./cmd/dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen3.5:9b --timeout 10m --debug
-go run ./cmd/dbrain sync all --source-limit 25 --model ollama/qwen3.5:9b --timeout 10m --debug
+go run ./cmd/dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen3.5:9b --timeout 10m
+go run ./cmd/dbrain sync all --source-limit 25 --model ollama/qwen3.5:9b --timeout 10m
 ```
 
 Good starting local models to compare on a stronger Mac are `qwen3.5:9b`,
@@ -452,14 +488,23 @@ that extracted content via stdin. This keeps the summary grounded in the video
 content instead of the watch-page chrome. When no transcript is available, the
 stored extract may fall back to weaker metadata.
 
-Use `--transcriber auto` (the default) to let `summarize` fall back to audio
-transcription when captions are missing. If no transcription backend is
-configured yet, those videos will be marked as skipped instead of receiving a
-misleading metadata-only summary. To enable local or provider-backed audio
-transcription, start with:
+Use `--transcriber auto` (the default) to let `dbrain` try local audio
+transcription when captions are missing. On macOS, if the `mw` MacWhisper CLI
+is installed, `dbrain` prefers that first. If `mw` is not available, it falls
+back to the older `whisper-cli` + `ggml-base.bin` path. If no transcription
+backend is configured yet, those videos will be marked as skipped instead of
+receiving a misleading metadata-only summary. To enable local or
+provider-backed audio transcription, start with:
 
 ```sh
 summarize transcriber setup
+```
+
+If you want to force MacWhisper directly, use:
+
+```sh
+go run ./cmd/dbrain import youtube --watch-later --transcriber macwhisper
+go run ./cmd/dbrain import youtube --watch-later --transcriber macwhisper:mlx:large-v3-turbo
 ```
 
 `hydrate x` is a separate enrichment step. It uses the existing FT tweet IDs,
@@ -468,12 +513,19 @@ post data via X's web GraphQL endpoint, falls back to syndication when needed,
 caches the payload and canonical post text in `brain.db`, and rewrites notes
 when hydration materially changes what we know about a post.
 
+`sync all` now runs X media audio transcription immediately after `hydrate x`
+using the same X batch limit. That means freshly downloaded X MP4s can be
+transcribed into `X Media Transcript` item text during the same pipeline run.
+Use `--skip-x-media` when you want hydration and media downloads without the
+follow-up MacWhisper transcription stage.
+
 On macOS, the first cookie-backed run may trigger a Keychain prompt so Go can
 access Chrome's cookie decryption secret. Approve that prompt and re-run the
 command if needed.
 
-Use `--debug` on `hydrate x` to emit structured `slog` events for candidate
-loading, per-post fetches, fallbacks, and periodic progress.
+`hydrate x` emits structured `slog` events for candidate loading, per-post
+fetches, fallbacks, and periodic progress by default. Use `--no-debug` to
+quiet that output.
 
 `extract links` is the outbound-link enrichment step. It dedupes expanded URLs
 from imported X bookmarks into a separate `sources` table, extracts full text

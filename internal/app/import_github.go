@@ -28,7 +28,6 @@ func newImportGitHubStarsCommand(root *rootOptions) *cobra.Command {
 	var cliProvider string
 	var length string
 	var timeout time.Duration
-	var debug bool
 	var jsonOut bool
 
 	cmd := &cobra.Command{
@@ -57,7 +56,7 @@ func newImportGitHubStarsCommand(root *rootOptions) *cobra.Command {
 				CLI:       cliProvider,
 				Length:    length,
 				Timeout:   timeout,
-				Logger:    newLogger(debug, cmd.ErrOrStderr()),
+				Logger:    newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
 			})
 			if err != nil {
 				return err
@@ -94,7 +93,6 @@ func newImportGitHubStarsCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for GitHub API requests and summarize.sh")
-	cmd.Flags().BoolVar(&debug, "debug", false, "Enable structured debug logging to stderr")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print import stats as JSON")
 
 	return cmd

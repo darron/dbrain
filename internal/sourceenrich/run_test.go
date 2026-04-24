@@ -2,8 +2,11 @@ package sourceenrich
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +87,173 @@ func TestClassifyTerminalExtractErrorKeepsEarlyConnectivityFailuresRetryable(t *
 	}
 }
 
+func TestRejectExtractFailureFlagsXArticleErrorShellAsRetryableError(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		CanonicalURL: "https://x.com/i/article/2044276671923249152",
+	}
+	extract := model.ExtractResult{
+		Content: "Something went wrong, but don’t fret — let’s give it another shot. Try again Some privacy related extensions may cause issues on x.com. Please disable them and try again.",
+	}
+
+	failure, reject := rejectExtractFailure(source, extract)
+	if !reject {
+		t.Fatal("expected x article error shell to be rejected")
+	}
+	if failure.Status != "error" {
+		t.Fatalf("expected error failure, got %+v", failure)
+	}
+	if !strings.Contains(failure.Error, "x article returned") {
+		t.Fatalf("unexpected reject reason: %q", failure.Error)
+	}
+}
+
+func TestRejectExtractFailureFlagsSubstackSubscriptionShellAsEmpty(t *testing.T) {
+	t.Parallel()
+
+	extract := model.ExtractResult{
+		Content: "Irregular Republic Productions\n18 Series Army Veteran. Conservative. Geopolitics.\nBy subscribing, you agree Substack's Terms of Use, and acknowledge its Information Collection Notice and Privacy Policy.",
+	}
+
+	failure, reject := rejectExtractFailure(model.SourceDocument{}, extract)
+	if !reject {
+		t.Fatal("expected subscription boilerplate shell to be rejected")
+	}
+	if failure.Status != "empty" {
+		t.Fatalf("expected empty failure, got %+v", failure)
+	}
+	if !strings.Contains(failure.Error, "subscription boilerplate") {
+		t.Fatalf("unexpected reject reason: %q", failure.Error)
+	}
+}
+
+func TestRejectExtractFailureFlagsSubstackInboxNavigationShellAsEmpty(t *testing.T) {
+	t.Parallel()
+
+	extract := model.ExtractResult{
+		Content: "- Shanaka Anslem Perera\nHomeSubscriptionsChatActivityExploreProfileCreateAllListenPaidSavedHistorySort byPriorityRecentGet app",
+	}
+
+	failure, reject := rejectExtractFailure(model.SourceDocument{}, extract)
+	if !reject {
+		t.Fatal("expected inbox navigation shell to be rejected")
+	}
+	if failure.Status != "empty" {
+		t.Fatalf("expected empty failure, got %+v", failure)
+	}
+	if !strings.Contains(failure.Error, "inbox/navigation chrome") {
+		t.Fatalf("unexpected reject reason: %q", failure.Error)
+	}
+}
+
+func TestNormalizeExtractStripsKnownPaywallNoise(t *testing.T) {
+	t.Parallel()
+
+	extract := model.ExtractResult{
+		Content: "Lead sentence.\nSecond sentence.\nContinue reading this post for free, courtesy of Sam Cooper.\nOr purchase a paid subscription.",
+	}
+
+	normalized, changed := normalizeExtract(model.SourceDocument{}, extract)
+	if !changed {
+		t.Fatal("expected paywall noise to be stripped")
+	}
+	if normalized.Content != "Lead sentence.\nSecond sentence." {
+		t.Fatalf("unexpected normalized content: %q", normalized.Content)
+	}
+}
+
+func TestRunSourceIDsRejectsStoredXArticleErrorShell(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	candidate := model.SourceCandidate{
+		SourceKey:     "src:test-x-article-shell",
+		CanonicalURL:  "https://x.com/i/article/2044276671923249152",
+		NormalizedURL: "https://x.com/i/article/2044276671923249152",
+		SourceType:    "link",
+		Domain:        "x.com",
+		NotePath:      "sources/x/src-test-x-article-shell.md",
+		OriginalURL:   "https://x.com/i/article/2044276671923249152",
+	}
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-x-article-shell-item",
+		SourceType:   "x_bookmark",
+		ExternalID:   "2044276671923249152",
+		CanonicalURL: "https://x.com/example/status/2044276671923249152",
+		Title:        "test item",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/2044276671923249152.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+		CanonicalURL: candidate.CanonicalURL,
+		FinalURL:     candidate.CanonicalURL,
+		Content:      "Something went wrong, but don’t fret — let’s give it another shot. Try again Some privacy related extensions may cause issues on x.com. Please disable them and try again.",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test",
+	}, hashText("Something went wrong, but don’t fret — let’s give it another shot. Try again Some privacy related extensions may cause issues on x.com. Please disable them and try again.")); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Summarize: true,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesSummarized != 0 {
+		t.Fatalf("expected no summary for rejected x article shell, got %+v", stats)
+	}
+	if stats.Errors != 1 {
+		t.Fatalf("expected one error to be recorded, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractStatus != "error" {
+		t.Fatalf("expected extract status error, got %q", source.ExtractStatus)
+	}
+	if !strings.Contains(source.ExtractError, "x article returned an X error shell") {
+		t.Fatalf("unexpected extract error: %q", source.ExtractError)
+	}
+}
+
 func TestSelectSourceDocumentsHonorsLimit(t *testing.T) {
 	t.Parallel()
 
@@ -131,7 +301,7 @@ func TestSelectSourceDocumentsHonorsLimit(t *testing.T) {
 	selected := selectSourceDocuments(ordered, byID, Options{
 		Limit:     2,
 		Summarize: true,
-	}, "0.13.0")
+	}, summarizecli.ToolName, "0.13.0")
 
 	if len(selected) != 2 {
 		t.Fatalf("expected 2 selected sources, got %d", len(selected))
@@ -179,6 +349,60 @@ func TestSummaryInputFileUsesTempDirAndCleansUp(t *testing.T) {
 
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected summary input file to be removed after cleanup, got %v", err)
+	}
+}
+
+func TestMaybeTranscribeYouTubeAudioFallbackUsesMacWhisperWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	ytDLPPath := installSourceEnrichFallbackFakeYTDLP(t, root, "chrome:Default")
+	macWhisperPath := installSourceEnrichFallbackFakeMacWhisper(t, root, "", "transcript from fake macwhisper")
+
+	source := model.SourceDocument{
+		SourceType:   "youtube",
+		CanonicalURL: "https://www.youtube.com/watch?v=test123",
+		Title:        "Fallback title",
+		Description:  "Fallback description",
+	}
+	extract := model.ExtractResult{
+		Title:       "- YouTube",
+		Description: "",
+		SiteName:    "youtube.com",
+		Content:     "Enjoy the videos and music you love...",
+		RawJSON:     `{"extracted":{"transcriptSource":"unavailable","transcriptionProvider":null,"transcriptCharacters":null}}`,
+	}
+
+	fallback, changed, err := MaybeTranscribeYouTubeAudioFallback(context.Background(), cfg, source, extract, Options{
+		YouTubeBrowser:     "chrome",
+		YouTubeProfile:     "Default",
+		YouTubeTranscriber: "auto",
+		YTDLPBinary:        ytDLPPath,
+		MacWhisperBinary:   macWhisperPath,
+		Timeout:            5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("MaybeTranscribeYouTubeAudioFallback: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected audio transcription fallback to run")
+	}
+	if !strings.Contains(fallback.Content, "transcript from fake macwhisper") {
+		t.Fatalf("unexpected fallback transcript: %q", fallback.Content)
+	}
+	if fallback.Tool != "macwhisper" {
+		t.Fatalf("unexpected fallback tool: %q", fallback.Tool)
+	}
+	if !strings.Contains(fallback.RawJSON, `"transcriptionProvider":"macwhisper"`) {
+		t.Fatalf("unexpected fallback raw json: %q", fallback.RawJSON)
 	}
 }
 
@@ -370,6 +594,217 @@ func TestRunSourceIDsUsesPreferredCLIProviderForGenericSummary(t *testing.T) {
 	}
 }
 
+func TestRunSourceIDsRetriesRedirectingSourceWithResolvedURL(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	installSourceEnrichRedirectFakeSummarize(t, root)
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "x:test-redirect",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-redirect",
+		CanonicalURL: "https://x.com/example/status/test-redirect",
+		Title:        "test redirect",
+		ContentHash:  "item-hash-redirect",
+		NotePath:     vault.NoteRelativePath("x", "2026", "test-redirect"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:redirect-test",
+		OriginalURL:   "https://example.com/original",
+		CanonicalURL:  "https://example.com/original",
+		NormalizedURL: "https://example.com/original",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      vault.SourceNoteRelativePath("web", "redirect-test"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Limit:     10,
+		Summarize: true,
+		Length:    "short",
+		Timeout:   5 * time.Second,
+		ResolveRedirectURL: func(context.Context, string) (string, error) {
+			return "https://example.com/redirected", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesSummarized != 1 {
+		t.Fatalf("expected 1 summarized source, got %d", stats.SourcesSummarized)
+	}
+	if stats.Errors != 0 {
+		t.Fatalf("expected no errors, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if source.CanonicalURL != "https://example.com/redirected" {
+		t.Fatalf("expected canonical url to update to redirected target, got %q", source.CanonicalURL)
+	}
+	if source.ExtractStatus != "ok" {
+		t.Fatalf("expected extract status ok, got %q", source.ExtractStatus)
+	}
+	if source.SummaryStatus != "ok" {
+		t.Fatalf("expected summary status ok, got %q", source.SummaryStatus)
+	}
+	if source.SummaryText != "summary from redirected path" {
+		t.Fatalf("unexpected summary text: %q", source.SummaryText)
+	}
+}
+
+func TestRunSourceIDsUsesDirectOllamaSummaryAfterExtraction(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	installSourceEnrichDirectOllamaExtractFakeSummarize(t, root)
+
+	var captured summarizecliTestRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: sourceEnrichRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected ollama path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode ollama request: %v", err)
+		}
+		respBody := `{"model":"qwen3.6:35b","choices":[{"message":{"role":"assistant","content":"summary from direct ollama"}}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(respBody)),
+		}, nil
+	})}
+	t.Cleanup(func() {
+		http.DefaultClient = oldClient
+	})
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", "http://ollama.test")
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "x:test-direct-ollama",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-direct-ollama",
+		CanonicalURL: "https://x.com/example/status/test-direct-ollama",
+		Title:        "test direct ollama",
+		ContentHash:  "item-hash-direct-ollama",
+		NotePath:     vault.NoteRelativePath("x", "2026", "test-direct-ollama"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:direct-ollama-test",
+		OriginalURL:   "https://example.com/direct-ollama",
+		CanonicalURL:  "https://example.com/direct-ollama",
+		NormalizedURL: "https://example.com/direct-ollama",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      vault.SourceNoteRelativePath("web", "direct-ollama-test"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Limit:     10,
+		Summarize: true,
+		Model:     "ollama/qwen3.6:35b",
+		Length:    "medium",
+		Timeout:   5 * time.Second,
+		ResolveHost: func(context.Context, string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if stats.SourcesSummarized != 1 {
+		t.Fatalf("expected 1 summarized source, got %d (summary_status=%q summary_error=%q summary_text=%q)", stats.SourcesSummarized, source.SummaryStatus, source.SummaryError, source.SummaryText)
+	}
+	if source.ExtractStatus != "ok" {
+		t.Fatalf("expected extract status ok, got %q", source.ExtractStatus)
+	}
+	if source.SummaryStatus != "ok" {
+		t.Fatalf("expected summary status ok, got %q", source.SummaryStatus)
+	}
+	if source.SummaryText != "summary from direct ollama" {
+		t.Fatalf("unexpected summary text: %q", source.SummaryText)
+	}
+	if source.SummaryModel != "ollama/qwen3.6:35b" {
+		t.Fatalf("unexpected summary model: %q", source.SummaryModel)
+	}
+	if source.SummaryTool != summarizecli.DirectSummaryToolName {
+		t.Fatalf("unexpected summary tool: %q", source.SummaryTool)
+	}
+	if source.SummaryToolVersion != summarizecli.SummaryToolVersion(context.Background(), "summarize", "ollama/qwen3.6:35b") {
+		t.Fatalf("unexpected summary tool version: %q", source.SummaryToolVersion)
+	}
+	if captured.Model != "qwen3.6:35b" {
+		t.Fatalf("unexpected ollama model: %q", captured.Model)
+	}
+	if len(captured.Messages) < 2 {
+		t.Fatalf("expected prompt and user messages, got %+v", captured.Messages)
+	}
+	if !strings.Contains(captured.Messages[len(captured.Messages)-1].Content, "extracted body for direct ollama") {
+		t.Fatalf("expected extracted body in ollama user message, got %+v", captured.Messages[len(captured.Messages)-1])
+	}
+}
+
 func TestRunSourceIDsMarksDeadHostsTerminal(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -455,6 +890,99 @@ func TestRunSourceIDsMarksDeadHostsTerminal(t *testing.T) {
 	}
 	if backlog.SourceExtractionPending != 0 || backlog.SourceSummaryPending != 0 {
 		t.Fatalf("expected dead host to drop out of backlog, got %+v", backlog)
+	}
+}
+
+func TestRunSourceIDsRejectsStoredSubstackSubscriptionShell(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	candidate := model.SourceCandidate{
+		SourceKey:     "src:test-substack-shell",
+		CanonicalURL:  "https://gbnt1952.substack.com/p/civil-war-20",
+		NormalizedURL: "https://open.substack.com/pub/gbnt1952/p/civil-war-20",
+		SourceType:    "web",
+		Domain:        "open.substack.com",
+		NotePath:      "sources/web/src-test-substack-shell.md",
+		OriginalURL:   "https://gbnt1952.substack.com/p/civil-war-20",
+	}
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-substack-shell-item",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-substack-shell-item",
+		CanonicalURL: "https://x.com/example/status/test-substack-shell-item",
+		Title:        "test substack shell item",
+		ContentHash:  "item-hash-test-substack-shell-item",
+		NotePath:     "items/x/2026/test-substack-shell-item.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	content := "Irregular Republic Productions\n18 Series Army Veteran. Conservative. Geopolitics.\nBy subscribing, you agree Substack's Terms of Use, and acknowledge its Information Collection Notice and Privacy Policy."
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+		CanonicalURL: candidate.CanonicalURL,
+		FinalURL:     candidate.CanonicalURL,
+		Content:      content,
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test",
+	}, hashText(content)); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Summarize: true,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesSummarized != 0 {
+		t.Fatalf("expected no summary for rejected substack shell, got %+v", stats)
+	}
+	if stats.Errors != 1 {
+		t.Fatalf("expected one rejection to be recorded, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractStatus != "empty" {
+		t.Fatalf("expected extract status empty, got %q", source.ExtractStatus)
+	}
+	if source.SummaryStatus != "skipped" {
+		t.Fatalf("expected summary status skipped, got %q", source.SummaryStatus)
+	}
+	if !strings.Contains(source.ExtractError, "subscription boilerplate") {
+		t.Fatalf("unexpected extract error: %q", source.ExtractError)
 	}
 }
 
@@ -739,6 +1267,103 @@ printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+type summarizecliTestRequest struct {
+	Model    string `json:"model"`
+	Messages []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"messages"`
+}
+
+type sourceEnrichRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn sourceEnrichRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
+}
+
+func installSourceEnrichDirectOllamaExtractFakeSummarize(t *testing.T, root string) {
+	t.Helper()
+
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	scriptPath := filepath.Join(binDir, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+extract_mode=0
+model=""
+last=""
+prev=""
+for arg in "$@"; do
+  if [ "$arg" = "--extract" ]; then
+    extract_mode=1
+  fi
+  if [ "$prev" = "--model" ]; then
+    model="$arg"
+  fi
+  last="$arg"
+  prev="$arg"
+done
+if [ "$extract_mode" = "1" ]; then
+  if [ "$model" != "" ]; then
+    echo "did not expect --model during extract-only pass" >&2
+    exit 1
+  fi
+  if [ "$last" != "https://example.com/direct-ollama" ]; then
+    echo "unexpected extract input: $last" >&2
+    exit 1
+  fi
+  printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com/direct-ollama","title":"Direct Ollama","description":"desc","siteName":"Example","content":"extracted body for direct ollama"},"summary":null}'
+  exit 0
+fi
+echo "unexpected summarize invocation for direct ollama summary" >&2
+exit 1
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installSourceEnrichRedirectFakeSummarize(t *testing.T, root string) {
+	t.Helper()
+
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	scriptPath := filepath.Join(binDir, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+if [ "$last" = "https://example.com/original" ]; then
+  echo "Failed to fetch HTML document (status 307)" >&2
+  exit 1
+fi
+if [ "$last" != "https://example.com/redirected" ]; then
+  echo "unexpected summarize input: $last" >&2
+  exit 1
+fi
+printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com/redirected","title":"Redirected","description":"desc","siteName":"Example","content":"redirected body"},"summary":"summary from redirected path"}'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func installSourceEnrichYouTubeFakeSummarize(t *testing.T, root string) {
 	t.Helper()
 
@@ -821,4 +1446,77 @@ printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"","title"
 	}
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installSourceEnrichFallbackFakeYTDLP(t *testing.T, root string, wantCookies string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-yt-dlp-sourceenrich-fallback")
+	script := `#!/bin/sh
+out=""
+cookies=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out="$arg"
+  fi
+  if [ "$prev" = "--cookies-from-browser" ]; then
+    cookies="$arg"
+  fi
+  prev="$arg"
+done
+if [ "$cookies" != "` + wantCookies + `" ]; then
+  echo "unexpected cookies source: $cookies" >&2
+  exit 1
+fi
+audio="${out%\.*}.mp3"
+printf '%s\n' "fake audio" > "$audio"
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake yt-dlp fallback: %v", err)
+	}
+	return scriptPath
+}
+
+func installSourceEnrichFallbackFakeMacWhisper(t *testing.T, root string, wantModel string, transcript string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-mw-sourceenrich")
+	script := `#!/bin/sh
+model=""
+file=""
+prev=""
+first="$1"
+for arg in "$@"; do
+  if [ "$prev" = "--model" ]; then
+    model="$arg"
+  fi
+  file="$arg"
+  prev="$arg"
+done
+if [ "$first" != "transcribe" ]; then
+  echo "expected transcribe subcommand" >&2
+  exit 1
+fi
+if [ "` + wantModel + `" = "" ]; then
+  if [ "$model" != "" ]; then
+    echo "unexpected model: $model" >&2
+    exit 1
+  fi
+else
+  if [ "$model" != "` + wantModel + `" ]; then
+    echo "unexpected model: $model" >&2
+    exit 1
+  fi
+fi
+if [ ! -f "$file" ]; then
+  echo "expected audio file argument" >&2
+  exit 1
+fi
+printf '%s\n' "` + transcript + `"
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake mw: %v", err)
+	}
+	return scriptPath
 }

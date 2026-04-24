@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -38,6 +39,26 @@ type BacklogStats struct {
 	SourceExtractionPendingByType []CountBucket `json:"source_extraction_pending_by_type"`
 	SourceSummaryPendingByType    []CountBucket `json:"source_summary_pending_by_type"`
 	Drained                       bool          `json:"drained"`
+}
+
+type PipelineStageRow struct {
+	Kind           string  `json:"kind"`
+	Total          int     `json:"total"`
+	Current        int     `json:"current"`
+	Pending        int     `json:"pending"`
+	Blocked        int     `json:"blocked"`
+	Failed         int     `json:"failed"`
+	PercentCurrent float64 `json:"percent_current"`
+}
+
+type PipelineStats struct {
+	SummaryPromptVersion string             `json:"summary_prompt_version"`
+	SummaryTool          string             `json:"summary_tool"`
+	SummaryToolVersion   string             `json:"summary_tool_version"`
+	Hydration            []PipelineStageRow `json:"hydration"`
+	Extraction           []PipelineStageRow `json:"extraction"`
+	Summary              []PipelineStageRow `json:"summary"`
+	Transcription        []PipelineStageRow `json:"transcription"`
 }
 
 type SourceActivityEvent struct {
@@ -297,6 +318,80 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 	return stats, nil
 }
 
+func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName string, toolVersion string) (PipelineStats, error) {
+	stats := PipelineStats{
+		SummaryPromptVersion: strings.TrimSpace(promptVersion),
+		SummaryTool:          strings.TrimSpace(toolName),
+		SummaryToolVersion:   strings.TrimSpace(toolVersion),
+	}
+
+	hydrationTotal, err := s.countGroupedWhere(ctx, "items", "source_type", `source_type = 'x_bookmark' AND external_id != ''`)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	hydrationCurrent, err := s.countGroupedWhere(ctx, "items", "source_type", `source_type = 'x_bookmark' AND external_id != '' AND x_post_status LIKE 'ok_%'`)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	hydrationPending, err := s.countGroupedWhere(ctx, "items", "source_type", `source_type = 'x_bookmark' AND external_id != '' AND (x_post_status = '' OR x_post_status = 'api_error' OR x_post_status = 'error' OR x_post_status = 'rate_limited')`)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	stats.Hydration = buildPipelineStageRows(hydrationTotal, hydrationCurrent, hydrationPending, nil)
+
+	extractWhere, extractArgs := sourceExtractBacklogWhere(time.Now().UTC())
+	extractionTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	extractionCurrent, err := s.countGroupedWhere(ctx, "sources", "source_type", `extract_status IN ('ok', 'empty')`)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	extractionPending, err := s.countGroupedWhere(ctx, "sources", "source_type", extractWhere, extractArgs...)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	stats.Extraction = buildPipelineStageRows(extractionTotal, extractionCurrent, extractionPending, nil)
+
+	summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(promptVersion, toolName, toolVersion)
+	summaryTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	readyForSummaryWhere := `extract_status IN ('ok', 'empty')`
+	summaryCurrent, err := s.countGroupedWhere(
+		ctx,
+		"sources",
+		"source_type",
+		readyForSummaryWhere+` AND NOT `+summaryStaleWhere,
+		summaryArgs...,
+	)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	summaryPendingWhere, summaryPendingArgs := sourceSummaryBacklogWhere(promptVersion, toolName, toolVersion)
+	summaryPending, err := s.countGroupedWhere(ctx, "sources", "source_type", summaryPendingWhere, summaryPendingArgs...)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	summaryBlocked, err := s.countGroupedWhere(ctx, "sources", "source_type", `NOT (`+readyForSummaryWhere+`)`)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	stats.Summary = buildPipelineStageRows(summaryTotal, summaryCurrent, summaryPending, summaryBlocked)
+
+	transcriptionRow, ok, err := s.pipelineXMediaTranscriptionRow(ctx)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	if ok {
+		stats.Transcription = []PipelineStageRow{transcriptionRow}
+	}
+
+	return stats, nil
+}
+
 func (s *Store) SourceActivityFeed(ctx context.Context, limit int) (SourceActivityFeed, error) {
 	return s.SourceActivityFeedFiltered(ctx, SourceActivityFilter{Limit: limit})
 }
@@ -417,6 +512,124 @@ func (s *Store) countGroupedWhere(ctx context.Context, table string, groupBy str
 		_ = rows.Close()
 	}()
 	return scanCountBuckets(rows, true)
+}
+
+func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineStageRow, bool, error) {
+	const transcriptTitle = "X Media Transcript"
+
+	candidateWhere := `source_type = 'x_bookmark'
+		AND external_id != ''
+		AND EXISTS (
+			SELECT 1
+			FROM item_media_links l
+			JOIN media_assets a ON a.id = l.media_asset_id
+			WHERE l.item_id = items.id
+				AND a.download_status = 'downloaded'
+				AND a.local_path != ''
+				AND a.media_type IN ('video', 'animated_gif')
+		)
+		AND (
+			article_text = ''
+			OR article_title = ?
+			OR x_media_transcript_status != ''
+		)`
+
+	total, err := s.countWhere(ctx, "items", candidateWhere, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	if total == 0 {
+		return PipelineStageRow{}, false, nil
+	}
+
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND article_title = ? AND article_text != ''`, transcriptTitle, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status = ''`, transcriptTitle, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status != '' AND x_media_transcript_status != 'ok'`, transcriptTitle, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+
+	row := PipelineStageRow{
+		Kind:    "x_media_transcript",
+		Total:   total,
+		Current: current,
+		Pending: pending,
+		Failed:  failed,
+	}
+	finalizePipelineStageRow(&row)
+	return row, true, nil
+}
+
+func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending []CountBucket, blocked []CountBucket) []PipelineStageRow {
+	if len(total) == 0 {
+		return nil
+	}
+
+	currentByKind := countBucketMap(current)
+	pendingByKind := countBucketMap(pending)
+	blockedByKind := countBucketMap(blocked)
+
+	rows := make([]PipelineStageRow, 0, len(total)+1)
+	for _, bucket := range total {
+		row := PipelineStageRow{
+			Kind:    bucket.Key,
+			Total:   bucket.Count,
+			Current: currentByKind[bucket.Key],
+			Pending: pendingByKind[bucket.Key],
+			Blocked: blockedByKind[bucket.Key],
+		}
+		finalizePipelineStageRow(&row)
+		rows = append(rows, row)
+	}
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Total == rows[j].Total {
+			return rows[i].Kind < rows[j].Kind
+		}
+		return rows[i].Total > rows[j].Total
+	})
+
+	return append([]PipelineStageRow{aggregatePipelineStageRows(rows)}, rows...)
+}
+
+func aggregatePipelineStageRows(rows []PipelineStageRow) PipelineStageRow {
+	total := PipelineStageRow{Kind: "ALL"}
+	for _, row := range rows {
+		total.Total += row.Total
+		total.Current += row.Current
+		total.Pending += row.Pending
+		total.Blocked += row.Blocked
+		total.Failed += row.Failed
+	}
+	finalizePipelineStageRow(&total)
+	return total
+}
+
+func finalizePipelineStageRow(row *PipelineStageRow) {
+	if row == nil {
+		return
+	}
+	known := row.Current + row.Pending + row.Blocked + row.Failed
+	if row.Total > known {
+		row.Failed += row.Total - known
+	}
+	if row.Total > 0 {
+		row.PercentCurrent = (float64(row.Current) / float64(row.Total)) * 100
+	}
+}
+
+func countBucketMap(buckets []CountBucket) map[string]int {
+	out := make(map[string]int, len(buckets))
+	for _, bucket := range buckets {
+		out[bucket.Key] = bucket.Count
+	}
+	return out
 }
 
 func (s *Store) listSourceActivityEvents(ctx context.Context, query string, args ...any) ([]SourceActivityEvent, error) {
@@ -879,21 +1092,8 @@ const sourceActivityTrendUnionQuery = `
 	WHERE s.extract_status IN ('error', 'dead', 'gone')`
 
 func sourceSummaryBacklogWhere(promptVersion string, toolName string, toolVersion string) (string, []any) {
-	parts := []string{
-		"extract_status IN ('ok', 'empty')",
-		"(summary_status = '' OR summary_status = 'error' OR summary_content_hash != content_hash OR summary_prompt_version != ?",
-	}
-	args := []any{promptVersion}
-	if strings.TrimSpace(toolName) != "" {
-		parts[1] += " OR summary_tool != ?"
-		args = append(args, toolName)
-	}
-	if strings.TrimSpace(toolVersion) != "" {
-		parts[1] += " OR summary_tool_version != ?"
-		args = append(args, toolVersion)
-	}
-	parts[1] += ")"
-	return strings.Join(parts, " AND "), args
+	staleWhere, args := sourceSummaryStaleWhere(promptVersion, toolName, toolVersion)
+	return `extract_status IN ('ok', 'empty') AND ` + staleWhere, args
 }
 
 func scanCountBuckets(rows rowScanner, grouped bool) ([]CountBucket, error) {

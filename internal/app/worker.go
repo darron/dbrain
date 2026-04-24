@@ -37,7 +37,6 @@ func newWorkerSourcesCommand(root *rootOptions) *cobra.Command {
 	var pollInterval time.Duration
 	var idleExitAfter time.Duration
 	var maxCycles int
-	var debug bool
 	var jsonOut bool
 
 	cmd := &cobra.Command{
@@ -58,13 +57,14 @@ func newWorkerSourcesCommand(root *rootOptions) *cobra.Command {
 				_ = st.Close()
 			}()
 
-			logger := newLogger(debug, cmd.ErrOrStderr())
-			toolVersion := summarizecli.Version(cmd.Context(), "")
+			logger := newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr())
+			toolName := summarizecli.SummaryToolName(model)
+			toolVersion := summarizecli.SummaryToolVersion(cmd.Context(), "", model)
 
 			stats, err := worker.RunSources(
 				cmd.Context(),
 				func(ctx context.Context) (store.BacklogStats, error) {
-					return st.Backlog(ctx, sourceenrich.SummaryPromptVersion, summarizecli.ToolName, toolVersion)
+					return st.Backlog(ctx, sourceenrich.SummaryPromptVersion, toolName, toolVersion)
 				},
 				func(ctx context.Context, remainingLimit int) (sourceenrich.Stats, error) {
 					effectiveBatchLimit := batchLimit
@@ -111,16 +111,15 @@ func newWorkerSourcesCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&batchLimit, "batch-limit", 50, "Maximum queued sources to enrich per worker cycle")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of concurrent source extract/summarize jobs per batch")
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess sources even if they already look current")
-	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization after extraction")
-	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
+	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run source summarization after extraction")
+	cmd.Flags().StringVar(&model, "model", "", "Optional summary model override")
 	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
-	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
-	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for summarize.sh extraction and summarization")
+	cmd.Flags().StringVar(&length, "length", "medium", "Summary length target")
+	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for extraction and summarization")
 	cmd.Flags().BoolVar(&watch, "watch", false, "Keep polling for new source backlog instead of exiting when drained")
 	cmd.Flags().DurationVar(&pollInterval, "poll-interval", 30*time.Second, "How often to poll for new source backlog while watching")
 	cmd.Flags().DurationVar(&idleExitAfter, "idle-exit-after", 0, "Optional maximum idle watch duration before exiting")
 	cmd.Flags().IntVar(&maxCycles, "max-cycles", 0, "Optional maximum worker cycles before exiting")
-	cmd.Flags().BoolVar(&debug, "debug", false, "Enable structured debug logging to stderr")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print worker stats as JSON")
 
 	return cmd

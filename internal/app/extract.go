@@ -11,6 +11,11 @@ import (
 	"dbrain/internal/store"
 )
 
+var (
+	runSourceEnrichPending   = sourceenrich.RunPending
+	runSourceEnrichSourceIDs = sourceenrich.RunSourceIDs
+)
+
 func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 	var discoverLimit int
 	var limit int
@@ -21,7 +26,6 @@ func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 	var cliProvider string
 	var length string
 	var timeout time.Duration
-	var debug bool
 	var jsonOut bool
 
 	cmd := &cobra.Command{
@@ -52,7 +56,7 @@ func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 				CLI:           cliProvider,
 				Length:        length,
 				Timeout:       timeout,
-				Logger:        newLogger(debug, cmd.ErrOrStderr()),
+				Logger:        newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
 			})
 			if err != nil {
 				return err
@@ -86,7 +90,6 @@ func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for summarize.sh extraction and summarization")
-	cmd.Flags().BoolVar(&debug, "debug", false, "Enable structured debug logging to stderr")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print extraction stats as JSON")
 
 	return cmd
@@ -97,11 +100,11 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 	var concurrency int
 	var force bool
 	var summarize bool
+	var sourceLookups []string
 	var model string
 	var cliProvider string
 	var length string
 	var timeout time.Duration
-	var debug bool
 	var jsonOut bool
 
 	cmd := &cobra.Command{
@@ -122,7 +125,7 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 				_ = st.Close()
 			}()
 
-			stats, _, err := sourceenrich.RunPending(cmd.Context(), cfg, st, sourceenrich.Options{
+			opts := sourceenrich.Options{
 				Limit:       limit,
 				Concurrency: concurrency,
 				Force:       force,
@@ -131,10 +134,31 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 				CLI:         cliProvider,
 				Length:      length,
 				Timeout:     timeout,
-				Logger:      newLogger(debug, cmd.ErrOrStderr()),
-			})
-			if err != nil {
-				return err
+				Logger:      newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
+			}
+			if len(sourceLookups) > 0 && !cmd.Flags().Changed("limit") {
+				opts.Limit = 0
+			}
+
+			var (
+				stats  sourceenrich.Stats
+				runErr error
+			)
+			if len(sourceLookups) > 0 {
+				sourceIDs := make([]int64, 0, len(sourceLookups))
+				for _, lookup := range sourceLookups {
+					source, resolveErr := st.GetSource(cmd.Context(), lookup)
+					if resolveErr != nil {
+						return resolveErr
+					}
+					sourceIDs = append(sourceIDs, source.ID)
+				}
+				stats, _, runErr = runSourceEnrichSourceIDs(cmd.Context(), cfg, st, sourceIDs, opts)
+			} else {
+				stats, _, runErr = runSourceEnrichPending(cmd.Context(), cfg, st, opts)
+			}
+			if runErr != nil {
+				return runErr
 			}
 
 			if jsonOut {
@@ -155,11 +179,11 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of concurrent source extract/summarize jobs")
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess sources even if they already look current")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization after extraction")
+	cmd.Flags().StringSliceVar(&sourceLookups, "source", nil, "Specific source lookups to enrich; repeat or comma-separate source_key, canonical_url, normalized_url, or note_path values")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
 	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for summarize.sh extraction and summarization")
-	cmd.Flags().BoolVar(&debug, "debug", false, "Enable structured debug logging to stderr")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print enrichment stats as JSON")
 
 	return cmd

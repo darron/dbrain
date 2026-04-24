@@ -194,6 +194,60 @@ func TestFallbackExtractForUsesWhisperCLIWhenTranscriptUnavailable(t *testing.T)
 	}
 }
 
+func TestFallbackExtractForUsesMacWhisperWhenExplicitlyRequested(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	ytDLPPath := installFallbackFakeYTDLP(t, root)
+	macWhisperPath := installFallbackFakeMacWhisper(t, root, "mlx:large-v3-turbo", "transcript from fake macwhisper")
+
+	source := model.SourceDocument{
+		SourceType:   "youtube",
+		CanonicalURL: "https://www.youtube.com/watch?v=test123",
+		Title:        "Fallback title",
+		Description:  "Fallback description",
+	}
+	extract := model.ExtractResult{
+		Title:       "- YouTube",
+		Description: "",
+		SiteName:    "youtube.com",
+		Content:     "Enjoy the videos and music you love...",
+		RawJSON:     `{"extracted":{"transcriptSource":"unavailable","transcriptionProvider":null,"transcriptCharacters":null}}`,
+	}
+
+	fallback, changed, err := fallbackExtractFor(cfg, Options{
+		Browser:          "chrome",
+		Profile:          "Default",
+		Transcriber:      "macwhisper:mlx:large-v3-turbo",
+		YTDLPBinary:      ytDLPPath,
+		MacWhisperBinary: macWhisperPath,
+		Timeout:          5 * time.Second,
+	}, "chrome:Default")(context.Background(), source, extract)
+	if err != nil {
+		t.Fatalf("fallbackExtractFor: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected macwhisper fallback to run")
+	}
+	if !strings.Contains(fallback.Content, "transcript from fake macwhisper") {
+		t.Fatalf("unexpected fallback transcript: %q", fallback.Content)
+	}
+	if fallback.Tool != "macwhisper" {
+		t.Fatalf("unexpected fallback tool: %q", fallback.Tool)
+	}
+	if !strings.Contains(fallback.RawJSON, `"transcriptionProvider":"macwhisper"`) {
+		t.Fatalf("unexpected fallback raw json: %q", fallback.RawJSON)
+	}
+}
+
 func TestRunPrunesYouTubeHistorySignalsAndOrphanSources(t *testing.T) {
 	t.Parallel()
 
@@ -680,6 +734,49 @@ printf '%s\n' "transcript from fake whisper" > "${out}.txt"
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake whisper cli: %v", err)
+	}
+	return scriptPath
+}
+
+func installFallbackFakeMacWhisper(t *testing.T, root string, wantModel string, transcript string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-mw-cli")
+	script := `#!/bin/sh
+model=""
+file=""
+prev=""
+first="$1"
+for arg in "$@"; do
+  if [ "$prev" = "--model" ]; then
+    model="$arg"
+  fi
+  file="$arg"
+  prev="$arg"
+done
+if [ "$first" != "transcribe" ]; then
+  echo "expected transcribe subcommand" >&2
+  exit 1
+fi
+if [ "` + wantModel + `" = "" ]; then
+  if [ "$model" != "" ]; then
+    echo "unexpected model: $model" >&2
+    exit 1
+  fi
+else
+  if [ "$model" != "` + wantModel + `" ]; then
+    echo "unexpected model: $model" >&2
+    exit 1
+  fi
+fi
+if [ ! -f "$file" ]; then
+  echo "expected audio file argument" >&2
+  exit 1
+fi
+printf '%s\n' "` + transcript + `"
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake mw cli: %v", err)
 	}
 	return scriptPath
 }

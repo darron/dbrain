@@ -2,6 +2,9 @@ package summarizecli
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +85,84 @@ printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"https://e
 	}
 }
 
+func TestRunDirectOllamaSummaryForLocalFileInput(t *testing.T) {
+	var captured chatCompletionsRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer ollama" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `{"model":"qwen3.6:35b","choices":[{"message":{"role":"assistant","content":"direct local summary"}}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(respBody)),
+		}, nil
+	})}
+	t.Cleanup(func() {
+		http.DefaultClient = oldClient
+	})
+
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", "http://ollama.test")
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Title: Example\n\nBody content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "ollama/qwen3.6:35b",
+		Prompt:    "System prompt",
+		Length:    "medium",
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Status != "ok" {
+		t.Fatalf("expected summary status ok, got %q", result.Summary.Status)
+	}
+	if result.Summary.Text != "direct local summary" {
+		t.Fatalf("unexpected summary text: %q", result.Summary.Text)
+	}
+	if result.Summary.Model != "ollama/qwen3.6:35b" {
+		t.Fatalf("unexpected summary model: %q", result.Summary.Model)
+	}
+	if result.Summary.Tool != DirectSummaryToolName {
+		t.Fatalf("unexpected summary tool: %q", result.Summary.Tool)
+	}
+	if result.Summary.ToolVersion != directOllamaVersion {
+		t.Fatalf("unexpected summary tool version: %q", result.Summary.ToolVersion)
+	}
+	if captured.Model != "qwen3.6:35b" {
+		t.Fatalf("unexpected model sent to ollama: %q", captured.Model)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", len(captured.Messages))
+	}
+	if captured.Messages[0].Role != "system" || !strings.Contains(captured.Messages[0].Content, "System prompt") {
+		t.Fatalf("unexpected system prompt: %+v", captured.Messages[0])
+	}
+	if captured.Messages[1].Role != "user" || !strings.Contains(captured.Messages[1].Content, "Body content") {
+		t.Fatalf("unexpected user message: %+v", captured.Messages[1])
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
+}
+
 func TestRunTranslatesOllamaModelToOpenAICompatibleRequest(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "summarize")
@@ -135,6 +216,58 @@ printf '%s\n' '{"input":{"model":"openai/qwen2.5:7b-instruct"},"extracted":{"url
 	}
 	if result.Summary.Model != "openai/qwen2.5:7b-instruct" {
 		t.Fatalf("expected translated model, got %q", result.Summary.Model)
+	}
+}
+
+func TestRunSuppressesCLIWhenModelProvided(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+prev=""
+model=""
+for arg in "$@"; do
+  if [ "$arg" = "--cli" ]; then
+    echo "unexpected cli flag" >&2
+    exit 1
+  fi
+  if [ "$prev" = "--model" ]; then
+    model="$arg"
+  fi
+  prev="$arg"
+done
+if [ "$model" != "openai/qwen3.6:35b" ]; then
+  echo "unexpected model: $model" >&2
+  exit 1
+fi
+printf '%s\n' '{"input":{"model":"openai/qwen3.6:35b"},"extracted":{"url":"README.md","title":"Readme","description":"","siteName":"","content":"body"},"summary":"summary"}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Binary:    binary,
+		Input:     "README.md",
+		Summarize: true,
+		Model:     "ollama/qwen3.6:35b",
+		CLI:       "codex",
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Status != "ok" {
+		t.Fatalf("expected summary status ok, got %q", result.Summary.Status)
+	}
+}
+
+func TestResolveCLIProviderModelWins(t *testing.T) {
+	if got := ResolveCLIProvider("codex", "ollama/qwen3.6:35b"); got != "" {
+		t.Fatalf("expected empty cli when model is set, got %q", got)
 	}
 }
 

@@ -18,7 +18,6 @@ import (
 	"dbrain/internal/model"
 	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
 	"dbrain/internal/topics"
 	"dbrain/internal/vault"
 )
@@ -533,7 +532,7 @@ func (s *Server) toolStatsActivity(ctx context.Context, raw json.RawMessage) (ma
 }
 
 func (s *Server) toolStatsBacklog(ctx context.Context) (map[string]interface{}, error) {
-	stats, err := s.st.Backlog(ctx, sourceenrich.SummaryPromptVersion, summarizecli.ToolName, summarizecli.Version(ctx, ""))
+	stats, err := s.st.Backlog(ctx, sourceenrich.SummaryPromptVersion, "", "")
 	if err != nil {
 		return nil, err
 	}

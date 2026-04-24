@@ -170,6 +170,324 @@ func TestGetPreferredLocalSourceExtractReturnsLongestCachedArticle(t *testing.T)
 	}
 }
 
+func TestGetPreferredLocalSourceExtractUsesXArticlePreviewFromHydratedItem(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	articleID := "2047376179414421957"
+
+	sourceInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-x-article-preview",
+		"https://x.com/i/article/"+articleID,
+		"https://x.com/i/article/"+articleID,
+		"x_article",
+		"x.com",
+		"sources/x/article-preview.md",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert x article source: %v", err)
+	}
+	sourceID, err := sourceInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("source id: %v", err)
+	}
+
+	itemInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO items (
+			source_key, source_type, external_id, canonical_url, title, author_handle, author_name,
+			published_at, saved_at, synced_at, language, text, article_title, article_text,
+			primary_category, primary_domain, links_json, categories, domains, github_urls, folder_names,
+			like_count, repost_count, reply_count, quote_count, bookmark_count,
+			content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
+			x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error, link_extract_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '', '', '', '', '[]', '', '', '', '', 0, 0, 0, 0, 0, ?, '', '{}', ?, ?, ?, '', '', ?, ?, 'ok', '', '')`,
+		"x:test-article-preview",
+		"x_bookmark",
+		"x:test-article-preview",
+		"https://x.com/mattshumer_/status/2047377079352877534",
+		"linked x item",
+		"mattshumer_",
+		"x:test-article-preview-hash",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		`{"raw":{"article":{"title":"Synthetic Minds in the Loop","preview_text":"Preview body from hydrated x article metadata.","rest_id":"2047376179414421957"}}}`,
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert linked x item: %v", err)
+	}
+	itemID, err := itemInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("item id: %v", err)
+	}
+
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_source_links (item_id, source_id, original_url, created_at)
+		VALUES (?, ?, ?, ?)`,
+		itemID,
+		sourceID,
+		"https://x.com/i/article/"+articleID,
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert source link: %v", err)
+	}
+
+	result, ok, err := st.GetPreferredLocalSourceExtract(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetPreferredLocalSourceExtract: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected local x article preview extract to be found")
+	}
+	if result.FinalURL != "https://x.com/mattshumer_/article/"+articleID {
+		t.Fatalf("unexpected final url: %q", result.FinalURL)
+	}
+	if result.Title != "Synthetic Minds in the Loop" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+	if result.Content != "Preview body from hydrated x article metadata." {
+		t.Fatalf("unexpected preview content: %q", result.Content)
+	}
+	if result.Tool != "x-hydration" || result.ToolVersion != "local-article-preview-cache" {
+		t.Fatalf("unexpected tool metadata: %s %s", result.Tool, result.ToolVersion)
+	}
+}
+
+func TestGetPreferredLocalSourceExtractUsesFullXArticleBodyFromHydratedItem(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	articleID := "2028710814601908224"
+
+	sourceInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-x-article-body",
+		"https://x.com/i/article/"+articleID,
+		"https://x.com/i/article/"+articleID,
+		"x_article",
+		"x.com",
+		"sources/x/article-body.md",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert x article source: %v", err)
+	}
+	sourceID, err := sourceInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("source id: %v", err)
+	}
+
+	itemInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO items (
+			source_key, source_type, external_id, canonical_url, title, author_handle, author_name,
+			published_at, saved_at, synced_at, language, text, article_title, article_text,
+			primary_category, primary_domain, links_json, categories, domains, github_urls, folder_names,
+			like_count, repost_count, reply_count, quote_count, bookmark_count,
+			content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
+			x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error, link_extract_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '', '', '', '', '[]', '', '', '', '', 0, 0, 0, 0, 0, ?, '', '{}', ?, ?, ?, '', '', ?, ?, 'ok_graphql', '', '')`,
+		"x:test-article-body",
+		"x_bookmark",
+		"2028894099483578872",
+		"https://x.com/HamelHusain/status/2028894099483578872",
+		"linked x item",
+		"HamelHusain",
+		"x:test-article-body-hash",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		`{
+			"raw": {
+				"data": {
+					"tweetResult": {
+						"result": {
+							"article": {
+								"article_results": {
+									"result": {
+										"title": "Evals Skills for Coding Agents",
+										"rest_id": "2028710814601908224",
+										"preview_text": "Short preview text.",
+										"summary_text": "Summary line one.\nSummary line two.",
+										"plain_text": "Full article body line one.\n\nFull article body line two.",
+										"content_state": {
+											"blocks": [
+												{"text": "Block fallback one"},
+												{"text": "Block fallback two"}
+											]
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}`,
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert linked x item: %v", err)
+	}
+	itemID, err := itemInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("item id: %v", err)
+	}
+
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_source_links (item_id, source_id, original_url, created_at)
+		VALUES (?, ?, ?, ?)`,
+		itemID,
+		sourceID,
+		"https://x.com/i/article/"+articleID,
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert source link: %v", err)
+	}
+
+	result, ok, err := st.GetPreferredLocalSourceExtract(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetPreferredLocalSourceExtract: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected local x article body extract to be found")
+	}
+	if result.FinalURL != "https://x.com/HamelHusain/article/"+articleID {
+		t.Fatalf("unexpected final url: %q", result.FinalURL)
+	}
+	if result.Title != "Evals Skills for Coding Agents" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+	if result.Content != "Full article body line one.\n\nFull article body line two." {
+		t.Fatalf("unexpected body content: %q", result.Content)
+	}
+	if result.Tool != "x-hydration" || result.ToolVersion != "local-article-body-cache" {
+		t.Fatalf("unexpected tool metadata: %s %s", result.Tool, result.ToolVersion)
+	}
+}
+
+func TestGetPreferredLocalSourceExtractFallsBackToXArticleContentState(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	articleID := "2028328572272742401"
+
+	sourceInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-x-article-content-state",
+		"https://x.com/i/article/"+articleID,
+		"https://x.com/i/article/"+articleID,
+		"x_article",
+		"x.com",
+		"sources/x/article-content-state.md",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert x article source: %v", err)
+	}
+	sourceID, err := sourceInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("source id: %v", err)
+	}
+
+	itemInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO items (
+			source_key, source_type, external_id, canonical_url, title, author_handle, author_name,
+			published_at, saved_at, synced_at, language, text, article_title, article_text,
+			primary_category, primary_domain, links_json, categories, domains, github_urls, folder_names,
+			like_count, repost_count, reply_count, quote_count, bookmark_count,
+			content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
+			x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error, link_extract_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '', '', '', '', '[]', '', '', '', '', 0, 0, 0, 0, 0, ?, '', '{}', ?, ?, ?, '', '', ?, ?, 'ok_graphql', '', '')`,
+		"x:test-article-content-state",
+		"x_bookmark",
+		"2030439936437170176",
+		"https://x.com/example/status/2030439936437170176",
+		"linked x item",
+		"example",
+		"x:test-article-content-state-hash",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		`{
+			"raw": {
+				"data": {
+					"tweetResult": {
+						"result": {
+							"article": {
+								"article_results": {
+									"result": {
+										"title": "Grep Is Dead",
+										"rest_id": "2028328572272742401",
+										"preview_text": "Preview only.",
+										"content_state": {
+											"blocks": [
+												{"text": "First block text."},
+												{"text": "Second block text."},
+												{"text": ""}
+											]
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}`,
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert linked x item: %v", err)
+	}
+	itemID, err := itemInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("item id: %v", err)
+	}
+
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_source_links (item_id, source_id, original_url, created_at)
+		VALUES (?, ?, ?, ?)`,
+		itemID,
+		sourceID,
+		"https://x.com/i/article/"+articleID,
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert source link: %v", err)
+	}
+
+	result, ok, err := st.GetPreferredLocalSourceExtract(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetPreferredLocalSourceExtract: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected local x article content_state extract to be found")
+	}
+	if result.Content != "First block text.\n\nSecond block text." {
+		t.Fatalf("unexpected content_state content: %q", result.Content)
+	}
+	if result.ToolVersion != "local-article-body-cache" {
+		t.Fatalf("unexpected tool version: %q", result.ToolVersion)
+	}
+}
+
 func TestSaveSourceExtractionTracksFailureCountsAndResetsOnSuccess(t *testing.T) {
 	t.Parallel()
 

@@ -16,6 +16,8 @@ type rootOptions struct {
 	root         string
 	caffeinate   bool
 	noCaffeinate bool
+	debug        bool
+	noDebug      bool
 }
 
 func Run(ctx context.Context, args []string) error {
@@ -62,6 +64,8 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&opts.root, "root", ".", "Brain root directory")
 	rootCmd.PersistentFlags().BoolVar(&opts.caffeinate, "caffeinate", false, "Force keep-awake behavior while the command is running")
 	rootCmd.PersistentFlags().BoolVar(&opts.noCaffeinate, "no-caffeinate", false, "Disable automatic keep-awake behavior for this command")
+	rootCmd.PersistentFlags().BoolVar(&opts.debug, "debug", true, "Enable structured debug logging to stderr")
+	rootCmd.PersistentFlags().BoolVar(&opts.noDebug, "no-debug", false, "Disable structured debug logging to stderr")
 
 	importCmd := &cobra.Command{
 		Use:   "import",
@@ -106,6 +110,7 @@ func NewRootCommand() *cobra.Command {
 		newWorkerCommand(opts),
 		extractCmd,
 		hydrateCmd,
+		newTranscribeCommand(opts),
 		repairCmd,
 		serveCmd,
 		newStatsCommand(opts),
@@ -122,6 +127,10 @@ func helpCommand(cmd *cobra.Command, _ []string) error {
 }
 
 func commandDebugEnabled(cmd *cobra.Command) bool {
+	disabled, err := cmd.Flags().GetBool("no-debug")
+	if err == nil && disabled {
+		return false
+	}
 	value, err := cmd.Flags().GetBool("debug")
 	return err == nil && value
 }

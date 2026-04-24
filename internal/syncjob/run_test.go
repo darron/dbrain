@@ -1,119 +1,113 @@
 package syncjob
 
 import (
+	"bytes"
 	"context"
-	"reflect"
+	"slices"
 	"testing"
-	"time"
 
 	"dbrain/internal/config"
-	"dbrain/internal/ftimport"
-	"dbrain/internal/githubimport"
-	"dbrain/internal/linkextract"
 	"dbrain/internal/store"
-	"dbrain/internal/worker"
 	"dbrain/internal/xapi"
-	"dbrain/internal/youtubeimport"
+	"dbrain/internal/xmediatranscribe"
 )
 
-func TestRunStagesInOrder(t *testing.T) {
-	cfg, err := config.Load(t.TempDir())
-	if err != nil {
-		t.Fatalf("load config: %v", err)
+func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origX := runXHydrate
+	origXMedia := runXMediaStage
+	t.Cleanup(func() {
+		runXHydrate = origX
+		runXMediaStage = origXMedia
+	})
+
+	var calls []string
+	runXHydrate = func(_ context.Context, _ config.Config, _ *store.Store, opts xapi.Options) (xapi.Stats, error) {
+		calls = append(calls, "x")
+		if opts.Limit != 7 {
+			t.Fatalf("expected x limit 7, got %d", opts.Limit)
+		}
+		return xapi.Stats{Hydrated: 7, Rendered: 7}, nil
 	}
-	if err := cfg.EnsureDirs(); err != nil {
-		t.Fatalf("ensure dirs: %v", err)
+	runXMediaStage = func(_ context.Context, _ config.Config, _ *store.Store, opts xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+		calls = append(calls, "x-media")
+		if opts.Limit != 7 {
+			t.Fatalf("expected x media limit 7, got %d", opts.Limit)
+		}
+		return xmediatranscribe.Stats{ItemsProcessed: 3, ItemsUpdated: 2, MediaTranscribed: 2}, nil
 	}
 
-	originalFT := runFTImport
-	originalX := runXHydrate
-	originalLinks := runLinkExtract
-	originalGitHub := runGitHubImport
-	originalYouTube := runYouTubeImport
-	originalSources := runSourceWorker
-	originalVersion := summarizeVersion
-	defer func() {
-		runFTImport = originalFT
-		runXHydrate = originalX
-		runLinkExtract = originalLinks
-		runGitHubImport = originalGitHub
-		runYouTubeImport = originalYouTube
-		runSourceWorker = originalSources
-		summarizeVersion = originalVersion
-	}()
-
-	var order []string
-	runFTImport = func(ctx context.Context, cfg config.Config, st *store.Store, opts ftimport.Options) (ftimport.Stats, error) {
-		order = append(order, "ft")
-		return ftimport.Stats{Created: 2}, nil
-	}
-	runXHydrate = func(ctx context.Context, cfg config.Config, st *store.Store, opts xapi.Options) (xapi.Stats, error) {
-		order = append(order, "x")
-		return xapi.Stats{Hydrated: 3}, nil
-	}
-	runLinkExtract = func(ctx context.Context, cfg config.Config, st *store.Store, opts linkextract.Options) (linkextract.Stats, error) {
-		order = append(order, "links")
-		return linkextract.Stats{SourcesSummarized: 4}, nil
-	}
-	runGitHubImport = func(ctx context.Context, cfg config.Config, st *store.Store, opts githubimport.Options) (githubimport.Stats, error) {
-		order = append(order, "github")
-		return githubimport.Stats{StarsProcessed: 5}, nil
-	}
-	runYouTubeImport = func(ctx context.Context, cfg config.Config, st *store.Store, opts youtubeimport.Options) (youtubeimport.Stats, error) {
-		order = append(order, "youtube")
-		return youtubeimport.Stats{ItemsProcessed: 6}, nil
-	}
-	runSourceWorker = func(ctx context.Context, backlogFn worker.SourceBacklogFunc, runFn worker.SourceRunFunc, opts worker.SourceOptions) (worker.SourceStats, error) {
-		order = append(order, "sources")
-		return worker.SourceStats{WorkCycles: 1, StoppedReason: "queue_drained"}, nil
-	}
-	summarizeVersion = func(ctx context.Context, binary string) string {
-		return "test"
-	}
-
-	stats, err := Run(context.Background(), cfg, &store.Store{}, Options{
-		FTEnabled:         true,
-		XEnabled:          true,
-		LinksEnabled:      true,
-		GitHubEnabled:     true,
-		YouTubeEnabled:    true,
-		SourcesEnabled:    true,
-		WatchLater:        true,
-		Liked:             true,
-		Browser:           "chrome",
-		Length:            "short",
-		Timeout:           time.Second,
-		XTimeout:          time.Second,
-		LinkDiscoverLimit: 10,
-		LinkLimit:         10,
-		LinkConcurrency:   2,
-		SourceLimit:       10,
-		SourceConcurrency: 2,
+	var progress bytes.Buffer
+	stats, err := Run(context.Background(), cfg, st, Options{
+		XEnabled:      true,
+		XLimit:        7,
+		XMediaEnabled: true,
+		Progress:      &progress,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	wantOrder := []string{"ft", "x", "links", "github", "youtube", "sources"}
-	if !reflect.DeepEqual(order, wantOrder) {
-		t.Fatalf("unexpected order: got %v want %v", order, wantOrder)
+	if !slices.Equal(calls, []string{"x", "x-media"}) {
+		t.Fatalf("unexpected stage order: %v", calls)
 	}
-	if stats.FT == nil || stats.FT.Stats.Created != 2 {
-		t.Fatalf("expected ft stats to be recorded, got %+v", stats.FT)
+	if stats.X == nil {
+		t.Fatal("expected x stage stats")
 	}
-	if stats.X == nil || stats.X.Stats.Hydrated != 3 {
-		t.Fatalf("expected x stats to be recorded, got %+v", stats.X)
+	if stats.XMedia == nil {
+		t.Fatal("expected x media stage stats")
 	}
-	if stats.Links == nil || stats.Links.Stats.SourcesSummarized != 4 {
-		t.Fatalf("expected link stats to be recorded, got %+v", stats.Links)
+	output := progress.String()
+	if !bytes.Contains([]byte(output), []byte("==> transcribe x-media")) {
+		t.Fatalf("expected progress output to contain x media stage, got %q", output)
 	}
-	if stats.GitHub == nil || stats.GitHub.Stats.StarsProcessed != 5 {
-		t.Fatalf("expected github stats to be recorded, got %+v", stats.GitHub)
+	if !bytes.Contains([]byte(output), []byte("X media transcription complete")) {
+		t.Fatalf("expected completion output to contain x media summary, got %q", output)
 	}
-	if stats.YouTube == nil || stats.YouTube.Stats.ItemsProcessed != 6 {
-		t.Fatalf("expected youtube stats to be recorded, got %+v", stats.YouTube)
+}
+
+func TestRunSkipsXMediaStageWhenDisabled(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origXMedia := runXMediaStage
+	t.Cleanup(func() {
+		runXMediaStage = origXMedia
+	})
+
+	runXMediaStage = func(context.Context, config.Config, *store.Store, xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+		t.Fatal("x media stage should not be called when disabled")
+		return xmediatranscribe.Stats{}, nil
 	}
-	if stats.Sources == nil || stats.Sources.Stats.WorkCycles != 1 {
-		t.Fatalf("expected source worker stats to be recorded, got %+v", stats.Sources)
+
+	stats, err := Run(context.Background(), cfg, st, Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
+	if stats.XMedia != nil {
+		t.Fatalf("expected no x media stage stats, got %+v", stats.XMedia)
+	}
+}
+
+func testSyncStore(t *testing.T) (config.Config, *store.Store) {
+	t.Helper()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	return cfg, st
 }

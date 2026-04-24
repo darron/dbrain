@@ -19,7 +19,6 @@ func newHydrateXCommand(root *rootOptions) *cobra.Command {
 	var ct0 string
 	var authToken string
 	var timeout time.Duration
-	var debug bool
 	var jsonOut bool
 
 	cmd := &cobra.Command{
@@ -49,7 +48,7 @@ func newHydrateXCommand(root *rootOptions) *cobra.Command {
 				CT0:         ct0,
 				AuthToken:   authToken,
 				Timeout:     timeout,
-				Logger:      newLogger(debug, cmd.ErrOrStderr()),
+				Logger:      newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
 			})
 			if err != nil {
 				return err
@@ -83,7 +82,6 @@ func newHydrateXCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&ct0, "ct0", "", "Manual ct0 cookie override")
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "Manual auth_token cookie override")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for browser helpers and X HTTP requests")
-	cmd.Flags().BoolVar(&debug, "debug", false, "Enable structured debug logging to stderr")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print hydration stats as JSON")
 
 	return cmd

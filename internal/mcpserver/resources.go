@@ -13,7 +13,6 @@ import (
 	"dbrain/internal/entities"
 	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
 	"dbrain/internal/topics"
 	"dbrain/internal/vault"
 )
@@ -231,7 +230,7 @@ func (s *Server) readStatsResource(ctx context.Context, uri string, parsed *url.
 		}
 		return jsonResourceContents(uri, stats)
 	case "backlog":
-		stats, err := s.st.Backlog(ctx, sourceenrich.SummaryPromptVersion, summarizecli.ToolName, summarizecli.Version(ctx, ""))
+		stats, err := s.st.Backlog(ctx, sourceenrich.SummaryPromptVersion, "", "")
 		if err != nil {
 			return nil, err
 		}
