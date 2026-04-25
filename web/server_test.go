@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -15,6 +18,44 @@ import (
 	"dbrain/internal/model"
 	"dbrain/internal/store"
 )
+
+type fakeArchiveProxy struct {
+	body      []byte
+	signedURL string
+}
+
+func (f *fakeArchiveProxy) GetObject(_ context.Context, _, _ string, rangeHeader string) (archiveObject, error) {
+	if rangeHeader != "" {
+		return archiveObject{
+			Body:          io.NopCloser(bytes.NewReader(f.body[:4])),
+			ContentType:   "video/mp4",
+			ContentLength: 4,
+			ContentRange:  "bytes 0-3/12",
+			ETag:          "etag-1",
+			LastModified:  time.Date(2026, time.April, 25, 22, 0, 0, 0, time.UTC),
+		}, nil
+	}
+	return archiveObject{
+		Body:          io.NopCloser(bytes.NewReader(f.body)),
+		ContentType:   "video/mp4",
+		ContentLength: int64(len(f.body)),
+		ETag:          "etag-1",
+		LastModified:  time.Date(2026, time.April, 25, 22, 0, 0, 0, time.UTC),
+	}, nil
+}
+
+func (f *fakeArchiveProxy) HeadObject(_ context.Context, _, _ string) (archiveObject, error) {
+	return archiveObject{
+		ContentType:   "video/mp4",
+		ContentLength: int64(len(f.body)),
+		ETag:          "etag-1",
+		LastModified:  time.Date(2026, time.April, 25, 22, 0, 0, 0, time.UTC),
+	}, nil
+}
+
+func (f *fakeArchiveProxy) PresignGetObject(_ context.Context, _, _ string, ttl time.Duration) (string, time.Time, error) {
+	return f.signedURL, time.Date(2026, time.April, 25, 22, 5, 0, 0, time.UTC).Add(ttl), nil
+}
 
 func TestWebHandlerServesBootstrapSearchGetAndAsk(t *testing.T) {
 	t.Parallel()
@@ -277,6 +318,157 @@ func TestWebHandlerServesIndexHTML(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWebHandlerServesArchivedMediaAndSignedURL(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg, st := openTestStore(t)
+	itemID, _ := seedTestData(t, ctx, cfg, st)
+	now := time.Date(2026, time.April, 25, 22, 0, 0, 0, time.UTC)
+
+	if _, err := st.SaveXHydration(ctx, itemID, model.XHydration{
+		FullText:  "Video post",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"source":"graphql",
+			"fetched_at":"2026-04-25T22:00:00Z",
+			"snapshot":{
+				"id":"123",
+				"text":"Video post",
+				"media_objects":[
+					{"type":"video","url":"https://video.twimg.com/ext/test.mp4","expanded_url":"https://x.com/example/status/123/video/1","width":1280,"height":720}
+				]
+			},
+			"raw":{}
+		}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+
+	refs, err := st.ListItemMediaRefs(ctx, itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 media ref, got %+v", refs)
+	}
+
+	if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+		MIMEType:     "video/mp4",
+		ByteSize:     12,
+		ContentHash:  "video-hash",
+		LocalPath:    "media/x/video/ab/test.mp4",
+		Status:       "downloaded",
+		DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload: %v", err)
+	}
+	if _, err := st.SaveMediaArchive(ctx, refs[0].MediaAssetID, model.MediaArchiveResult{
+		Provider:   "cloudflare_r2",
+		Bucket:     "dbrain",
+		Key:        "media/x/video/ab/test.mp4",
+		Status:     "archived",
+		ArchivedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaArchive: %v", err)
+	}
+	if _, err := st.MarkMediaLocalPrunedByPath(ctx, "media/x/video/ab/test.mp4", now); err != nil {
+		t.Fatalf("MarkMediaLocalPrunedByPath: %v", err)
+	}
+
+	staticFS, err := fs.Sub(embeddedUI, "ui/dist")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	indexHTML, err := fs.ReadFile(staticFS, "index.html")
+	if err != nil {
+		t.Fatalf("ReadFile index: %v", err)
+	}
+
+	s := &server{
+		cfg:         cfg,
+		store:       st,
+		archive:     &fakeArchiveProxy{body: []byte("hello-video!"), signedURL: "https://signed.example.com/video.mp4"},
+		proxyBase:   "http://127.0.0.1:8742",
+		staticFS:    staticFS,
+		static:      http.FileServerFS(staticFS),
+		indexHTML:   indexHTML,
+		toolVersion: "test",
+	}
+	handler := s.newMux()
+
+	t.Run("media get", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/media/asset/"+strconv.FormatInt(refs[0].MediaAssetID, 10), nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "video/mp4" {
+			t.Fatalf("expected video/mp4 content type, got %q", got)
+		}
+		if got := rec.Header().Get("Accept-Ranges"); got != "bytes" {
+			t.Fatalf("expected bytes accept ranges, got %q", got)
+		}
+		if got := rec.Body.String(); got != "hello-video!" {
+			t.Fatalf("unexpected body %q", got)
+		}
+	})
+
+	t.Run("media head", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodHead, "/media/asset/"+strconv.FormatInt(refs[0].MediaAssetID, 10), nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		if rec.Body.Len() != 0 {
+			t.Fatalf("expected empty head body, got %q", rec.Body.String())
+		}
+	})
+
+	t.Run("media range", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/media/asset/"+strconv.FormatInt(refs[0].MediaAssetID, 10), nil)
+		req.Header.Set("Range", "bytes=0-3")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusPartialContent {
+			t.Fatalf("expected 206, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Range"); got != "bytes 0-3/12" {
+			t.Fatalf("unexpected content-range %q", got)
+		}
+		if got := rec.Body.String(); got != "hell" {
+			t.Fatalf("unexpected ranged body %q", got)
+		}
+	})
+
+	t.Run("signed url", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/media/signed-url?id="+strconv.FormatInt(refs[0].MediaAssetID, 10), nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response signedURLResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode signed url response: %v", err)
+		}
+		if response.URL != "https://signed.example.com/video.mp4" {
+			t.Fatalf("unexpected signed url response %+v", response)
+		}
+		if response.ProxyURL != "http://127.0.0.1:8742/media/asset/"+strconv.FormatInt(refs[0].MediaAssetID, 10) {
+			t.Fatalf("unexpected proxy url response %+v", response)
+		}
+	})
 }
 
 func openTestStore(t *testing.T) (config.Config, *store.Store) {

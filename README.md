@@ -59,6 +59,7 @@ quiet CLI output.
 - Add a Tailscale-reachable query surface, likely tsnet-backed MCP and/or a small web UI, so the brain can be queried remotely while away from the machine.
 - Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
 - Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
+- Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.
 - Add URL-backed state and deeper note-to-note navigation in the web UI so searches, selected notes, and related pivots survive refreshes and remote sessions.
 - Expand the web operations/dashboard view with deeper worker drill-down, richer backlog trend views, and clearer source-level drill-ins so repeated failures are easier to triage.
 - Add first-class filters and browsing controls in the web UI for source type, kind, status, and recency so the corpus is easier to slice than with one text box.
@@ -74,6 +75,7 @@ quiet CLI output.
 - Add an oversized-X-video policy for media download/transcription. Right now large or hour-long videos time out, land in `download_status='error'`, and remain retryable on future `hydrate x` / `sync all` runs. Add byte-size and/or duration gating, prefer lower-bitrate playable variants for transcription, and classify clearly-skipped assets as `too_large` / `too_long` instead of retrying forever.
 - Maybe reclassify non-actionable X media transcript outcomes like `no_audio`, `noise`, and `too_short` out of the generic failed bucket so transcription stats distinguish real pipeline errors from terminal no-content cases.
 - Add an optional X thread expansion path when a bookmarked post is clearly part of a longer thread. Prefer fetching the full thread from X/GraphQL when the upstream APIs expose it, so bookmarking the first tweet can still capture the whole series. If the APIs do not expose enough thread structure reliably, fall back to a best-effort linked-post crawl without breaking the normal single-post hydrate flow.
+- Add first-class quote-tweet / embedded-tweet context capture for X hydration. When a bookmarked post quotes another post (for example `x:2030852374739198197`), persist the quoted post as a linked X source or embedded post record, render that quoted context explicitly in the note, and include its text/media/link context in downstream summarization so the parent note is not interpreted in isolation.
 - Add a scheduler/launchd-style mode on top of the new worker loop so enrichment can resume automatically after terminal closure or reboot.
 - Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.
 
@@ -167,6 +169,10 @@ Optional:
 - `DBRAIN_R2_PUBLIC_BASE_URL=https://...` when archived media should render as
   anonymously readable URLs in notes. Leave this unset for authenticated-only
   buckets.
+- `DBRAIN_MEDIA_PROXY_BASE_URL=http://127.0.0.1:8742` when archived media
+  should render as links or playable embeds backed by the local web proxy.
+  This defaults to `http://127.0.0.1:8742` unless explicitly disabled with
+  `DBRAIN_MEDIA_PROXY_BASE_URL=off`.
 
 `sync all` only runs the archive stage automatically when
 `DBRAIN_AUTO_ARCHIVE_MEDIA=1` or `--archive-media` is set. The archive stage
@@ -200,6 +206,11 @@ sharing that same `local_path` is safely archived.
   Optional manual archive/prune pass for finalized media. It can either just
   mark/prune already-uploaded media or upload directly to an S3-compatible
   bucket first when `--upload` or archive-upload env vars are configured.
+- `dbrain serve web`
+  Serves the local UI plus authenticated archived-media helpers. When archive
+  credentials are configured, `/media/asset/<media-asset-id>` streams archived
+  objects through the local server and `/api/media/signed-url?id=<id>` returns
+  a short-lived direct URL for one-off access.
 - `dbrain hydrate x`
   Requires a supported browser profile with valid X cookies. Chrome/Chromium is
   the best-tested path. On macOS you may see a Keychain prompt the first time

@@ -21,6 +21,14 @@ type S3Uploader struct {
 }
 
 func NewS3Uploader(opts Options) (*S3Uploader, error) {
+	client, err := NewS3Client(opts)
+	if err != nil {
+		return nil, err
+	}
+	return &S3Uploader{client: client}, nil
+}
+
+func NewS3Client(opts Options) (*s3.Client, error) {
 	cfg := aws.Config{
 		Region: strings.TrimSpace(opts.Region),
 		Credentials: aws.NewCredentialsCache(
@@ -35,7 +43,7 @@ func NewS3Uploader(opts Options) (*S3Uploader, error) {
 		o.UsePathStyle = opts.PathStyle
 		o.BaseEndpoint = aws.String(strings.TrimSpace(opts.Endpoint))
 	})
-	return &S3Uploader{client: client}, nil
+	return client, nil
 }
 
 func (u *S3Uploader) Upload(ctx context.Context, cfg config.Config, asset model.MediaAsset, opts Options) (model.MediaArchiveResult, bool, error) {

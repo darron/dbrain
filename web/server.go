@@ -80,6 +80,8 @@ type AskRequest struct {
 type server struct {
 	cfg         config.Config
 	store       *store.Store
+	archive     archiveProxy
+	proxyBase   string
 	staticFS    fs.FS
 	static      http.Handler
 	indexHTML   []byte
@@ -138,6 +140,11 @@ func Serve(ctx context.Context, cfg config.Config, addr string) error {
 }
 
 func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
+	archive, err := newArchiveProxy(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("configure archive proxy: %w", err)
+	}
+
 	staticFS, err := fs.Sub(embeddedUI, "ui/dist")
 	if err != nil {
 		return nil, fmt.Errorf("load embedded ui: %w", err)
@@ -150,12 +157,18 @@ func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
 	s := &server{
 		cfg:         cfg,
 		store:       st,
+		archive:     archive,
+		proxyBase:   mediaProxyBaseURL(cfg),
 		staticFS:    staticFS,
 		static:      http.FileServerFS(staticFS),
 		indexHTML:   indexHTML,
 		toolVersion: summarizecli.Version(context.Background(), ""),
 	}
 
+	return s.newMux(), nil
+}
+
+func (s *server) newMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("/api/search", s.handleSearch)
@@ -164,8 +177,10 @@ func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
 	mux.HandleFunc("/api/stats/activity", s.handleActivity)
 	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
 	mux.HandleFunc("/api/ask", s.handleAsk)
+	mux.HandleFunc("/api/media/signed-url", s.handleMediaSignedURL)
+	mux.HandleFunc("/media/asset/", s.handleMediaAsset)
 	mux.Handle("/", http.HandlerFunc(s.handleStatic))
-	return mux, nil
+	return mux
 }
 
 func DefaultAddr() string {

@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -137,6 +139,22 @@ func (s *Store) ListMediaAssetsByLocalPath(ctx context.Context, localPath string
 		return nil, fmt.Errorf("iterate media assets by local path %q: %w", localPath, err)
 	}
 	return assets, nil
+}
+
+func (s *Store) GetMediaAsset(ctx context.Context, assetID int64) (model.MediaAsset, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+mediaSelectColumns+`
+		FROM media_assets
+		WHERE id = ?`, assetID)
+
+	var asset model.MediaAsset
+	if err := scanMediaAsset(row.Scan, &asset); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.MediaAsset{}, fmt.Errorf("media asset not found: %d", assetID)
+		}
+		return model.MediaAsset{}, fmt.Errorf("get media asset %d: %w", assetID, err)
+	}
+	return asset, nil
 }
 
 func (s *Store) SaveMediaArchive(ctx context.Context, assetID int64, result model.MediaArchiveResult) (bool, error) {

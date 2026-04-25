@@ -10,6 +10,7 @@ import (
 
 	"dbrain/internal/config"
 	"dbrain/internal/model"
+	"dbrain/internal/runtimeenv"
 	"dbrain/internal/store"
 	"dbrain/internal/vault"
 )
@@ -60,7 +61,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				stats.ItemsSkippedExisting++
 				continue
 			}
-			changed, err := writeItemNote(cfg, item)
+			fullItem, err := st.GetItem(ctx, item.SourceKey)
+			if err != nil {
+				stats.Errors++
+				continue
+			}
+			changed, err := writeItemNote(cfg, fullItem)
 			if err != nil {
 				stats.Errors++
 				continue
@@ -129,7 +135,9 @@ func shouldWriteNote(cfg config.Config, relPath string, missingOnly bool) (bool,
 }
 
 func writeItemNote(cfg config.Config, item model.Item) (bool, error) {
-	body, err := vault.RenderItem(item)
+	body, err := vault.RenderItemWithOptions(item, vault.RenderOptions{
+		MediaProxyBaseURL: mediaProxyBaseURLForConfig(cfg),
+	})
 	if err != nil {
 		return false, err
 	}
@@ -161,4 +169,16 @@ func writeNoteBody(cfg config.Config, relPath string, body string) (bool, error)
 		return false, fmt.Errorf("write note: %w", err)
 	}
 	return true, nil
+}
+
+func mediaProxyBaseURLForConfig(cfg config.Config) string {
+	baseURL := strings.TrimSpace(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_MEDIA_PROXY_BASE_URL", "DBRAIN_WEB_BASE_URL"))
+	switch strings.ToLower(baseURL) {
+	case "off", "none", "disabled":
+		return ""
+	}
+	if baseURL == "" {
+		return "http://127.0.0.1:8742"
+	}
+	return baseURL
 }
