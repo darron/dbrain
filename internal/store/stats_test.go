@@ -297,6 +297,145 @@ func TestBacklogAndPipelineTreatBlockedSummariesAsBlockedNotPending(t *testing.T
 	assertPipelineRowCounts(t, stats.Summary, "github", 1, 0, 0, 1, 0)
 }
 
+func TestBacklogAndPipelineRequeueInvalidCurrentSummariesForRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	emptyItem, err := st.UpsertItem(ctx, testItem("gh-star:darron:test/empty-summary-ok", "github_star", "https://github.com/test/empty-summary-ok", now))
+	if err != nil {
+		t.Fatalf("upsert empty summary item: %v", err)
+	}
+	emptyLink, err := st.UpsertSourceLink(ctx, emptyItem.ItemID, modelSourceCandidate("src:empty-summary-ok", "https://github.com/test/empty-summary-ok", "github"))
+	if err != nil {
+		t.Fatalf("empty summary source link: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, emptyLink.SourceID, model.ExtractResult{
+		CanonicalURL: "https://github.com/test/empty-summary-ok",
+		FinalURL:     "https://github.com/test/empty-summary-ok",
+		Status:       "empty",
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, ""); err != nil {
+		t.Fatalf("save empty extract: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(ctx, emptyLink.SourceID, model.SummaryResult{
+		Text:          "metadata-only summary",
+		Status:        "ok",
+		Model:         "openrouter/qwen/qwen3.5-27b",
+		PromptVersion: "dbrain-v1",
+		FetchedAt:     now,
+		Tool:          "openrouter-direct",
+		ToolVersion:   "openrouter-direct-v1",
+	}); err != nil {
+		t.Fatalf("save empty extract summary: %v", err)
+	}
+
+	placeholderItem, err := st.UpsertItem(ctx, testItem("gh-star:darron:test/placeholder-summary-ok", "github_star", "https://github.com/test/placeholder-summary-ok", now))
+	if err != nil {
+		t.Fatalf("upsert placeholder summary item: %v", err)
+	}
+	placeholderLink, err := st.UpsertSourceLink(ctx, placeholderItem.ItemID, modelSourceCandidate("src:placeholder-summary-ok", "https://github.com/test/placeholder-summary-ok", "github"))
+	if err != nil {
+		t.Fatalf("placeholder summary source link: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, placeholderLink.SourceID, model.ExtractResult{
+		CanonicalURL: "https://github.com/test/placeholder-summary-ok",
+		FinalURL:     "https://github.com/test/placeholder-summary-ok",
+		Content:      "Redirecting to latest/...",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, "redirect-hash"); err != nil {
+		t.Fatalf("save placeholder extract: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(ctx, placeholderLink.SourceID, model.SummaryResult{
+		Text:          "placeholder summary",
+		Status:        "ok",
+		Model:         "openrouter/qwen/qwen3.5-27b",
+		PromptVersion: "dbrain-v1",
+		FetchedAt:     now,
+		Tool:          "openrouter-direct",
+		ToolVersion:   "openrouter-direct-v1",
+	}); err != nil {
+		t.Fatalf("save placeholder extract summary: %v", err)
+	}
+
+	backlog, err := st.Backlog(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog.SourceSummaryPending != 2 {
+		t.Fatalf("expected 2 source summaries pending for repair, got %d", backlog.SourceSummaryPending)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	assertPipelineRowCounts(t, stats.Summary, "github", 2, 0, 2, 0, 0)
+}
+
+func TestBacklogAndPipelineKeepSubstantiveSignupTeaserCurrent(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	item, err := st.UpsertItem(ctx, testItem("gh-star:darron:test/substantive-signup-teaser", "github_star", "https://github.com/test/substantive-signup-teaser", now))
+	if err != nil {
+		t.Fatalf("upsert teaser item: %v", err)
+	}
+	link, err := st.UpsertSourceLink(ctx, item.ItemID, modelSourceCandidate("src:substantive-signup-teaser", "https://example.com/moltbook-like", "github"))
+	if err != nil {
+		t.Fatalf("teaser source link: %v", err)
+	}
+
+	content := "A Social Network for AI Agents Where AI agents share, discuss, and upvote. Humans welcome to observe. Send Your AI Agent to Moltbook. They sign up and send you a claim link. AI Agents Live Activity. Build for Agents. Let AI agents authenticate with your app using their Moltbook identity."
+
+	if _, err := st.SaveSourceExtraction(ctx, link.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/moltbook-like",
+		FinalURL:     "https://example.com/moltbook-like",
+		Content:      content,
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, testHashText(content)); err != nil {
+		t.Fatalf("save teaser extract: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(ctx, link.SourceID, model.SummaryResult{
+		Text:          "valid summary",
+		Status:        "ok",
+		Model:         "openrouter/qwen/qwen3.5-27b",
+		PromptVersion: "dbrain-v1",
+		FetchedAt:     now,
+		Tool:          "openrouter-direct",
+		ToolVersion:   "openrouter-direct-v1",
+	}); err != nil {
+		t.Fatalf("save teaser summary: %v", err)
+	}
+
+	backlog, err := st.Backlog(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog.SourceSummaryPending != 0 {
+		t.Fatalf("expected no source summaries pending, got %d", backlog.SourceSummaryPending)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	assertPipelineRowCounts(t, stats.Summary, "github", 1, 1, 0, 0, 0)
+}
+
 func TestBacklogSkipsRecentExtractErrorsDuringCooldown(t *testing.T) {
 	t.Parallel()
 

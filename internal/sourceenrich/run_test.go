@@ -52,6 +52,49 @@ func TestSkipSummaryReasonAllowsTranscriptBackedYouTubeExtract(t *testing.T) {
 	}
 }
 
+func TestSkipSummaryReasonSkipsPlaceholderRedirectExtract(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{SourceType: "web"}
+	extract := model.ExtractResult{
+		Content: "Redirecting to latest/...",
+	}
+
+	reason, ok := skipSummaryReason(source, extract)
+	if !ok {
+		t.Fatal("expected placeholder extract to be skipped")
+	}
+	if !strings.Contains(reason, "placeholder boilerplate") {
+		t.Fatalf("unexpected skip reason: %q", reason)
+	}
+}
+
+func TestSkipSummaryReasonAllowsShortSubstantiveExtract(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{SourceType: "web"}
+	extract := model.ExtractResult{
+		Content: "An HTTP toolkit for security research.",
+	}
+
+	if reason, ok := skipSummaryReason(source, extract); ok {
+		t.Fatalf("expected short substantive extract to summarize, got reason %q", reason)
+	}
+}
+
+func TestSkipSummaryReasonAllowsSubstantiveSignupTeaser(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{SourceType: "web"}
+	extract := model.ExtractResult{
+		Content: "A Social Network for AI Agents Where AI agents share, discuss, and upvote. Humans welcome to observe. Send Your AI Agent to Moltbook. They sign up and send you a claim link. AI Agents Live Activity. Build for Agents. Let AI agents authenticate with your app using their Moltbook identity.",
+	}
+
+	if reason, ok := skipSummaryReason(source, extract); ok {
+		t.Fatalf("expected substantive signup teaser to summarize, got reason %q", reason)
+	}
+}
+
 func TestBlockedSummaryReasonFlagsContextWindowErrors(t *testing.T) {
 	t.Parallel()
 

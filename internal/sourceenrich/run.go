@@ -1127,6 +1127,10 @@ func summaryInputFile(cfg config.Config, extract model.ExtractResult) (string, f
 }
 
 func summaryInput(extract model.ExtractResult) string {
+	content := strings.TrimSpace(extract.Content)
+	if content == "" {
+		return ""
+	}
 	parts := make([]string, 0, 4)
 	if title := strings.TrimSpace(extract.Title); title != "" {
 		parts = append(parts, "Title: "+title)
@@ -1137,9 +1141,7 @@ func summaryInput(extract model.ExtractResult) string {
 	if siteName := strings.TrimSpace(extract.SiteName); siteName != "" {
 		parts = append(parts, "Site: "+siteName)
 	}
-	if content := strings.TrimSpace(extract.Content); content != "" {
-		parts = append(parts, content)
-	}
+	parts = append(parts, content)
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
 }
 
@@ -1584,6 +1586,9 @@ func looksLikeXArticleErrorShell(content string) bool {
 }
 
 func skipSummaryReason(source model.SourceDocument, extract model.ExtractResult) (string, bool) {
+	if reason, ok := genericSkipSummaryReason(extract); ok {
+		return reason, true
+	}
 	if source.SourceType != "youtube" {
 		return "", false
 	}
@@ -1619,6 +1624,47 @@ func skipSummaryReason(source model.SourceDocument, extract model.ExtractResult)
 		return "youtube transcript unavailable and no audio transcription was produced", true
 	}
 	return "", false
+}
+
+func genericSkipSummaryReason(extract model.ExtractResult) (string, bool) {
+	content := strings.TrimSpace(extract.Content)
+	if content == "" {
+		return "", false
+	}
+	if looksLikePlaceholderExtractContent(content) {
+		return "extracted content appears to be redirect/login/placeholder boilerplate rather than substantive content", true
+	}
+	return "", false
+}
+
+func looksLikePlaceholderExtractContent(content string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(content)), " "))
+	if normalized == "" {
+		return false
+	}
+	switch {
+	case strings.Contains(normalized, "redirecting"),
+		strings.Contains(normalized, "you will be redirected"),
+		strings.Contains(normalized, "if you are not redirected automatically"),
+		strings.Contains(normalized, "loading..."),
+		strings.Contains(normalized, "coming soon"),
+		strings.Contains(normalized, "<div></div>"),
+		strings.Contains(normalized, "we use cookies to improve user experience"),
+		strings.Contains(normalized, "nothing to see here"),
+		strings.Contains(normalized, "google drive"):
+		return len(normalized) <= 160
+	case strings.Contains(normalized, "sign in or sign up"),
+		strings.Contains(normalized, "you are not logged in"),
+		strings.Contains(normalized, "manage account"),
+		strings.Contains(normalized, "your profile"),
+		strings.Contains(normalized, "continue with google"),
+		strings.Contains(normalized, "continue with github"),
+		strings.Contains(normalized, "open full screen to view more"),
+		strings.Contains(normalized, "google apps"):
+		return len(normalized) <= 300
+	default:
+		return false
+	}
 }
 
 func blockedSummaryReason(err error) (string, bool) {

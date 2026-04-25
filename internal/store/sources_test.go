@@ -112,6 +112,161 @@ func TestListSourcesForEnrichmentQueuesSummaryToolVersionMismatch(t *testing.T) 
 	}
 }
 
+func TestListSourcesForEnrichmentQueuesEmptyExtractCurrentSummaryForRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, title,
+			extracted_text, extract_status, extracted_at,
+			summary_text, summary_status, summary_model, summary_content_hash, summary_prompt_version, summary_tool, summary_tool_version, summarized_at,
+			content_hash, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-empty-summary-repair",
+		"https://example.com/empty",
+		"https://example.com/empty",
+		"web",
+		"example.com",
+		"Example",
+		"",
+		"empty",
+		now,
+		"metadata-only summary",
+		"ok",
+		"cli/test/model",
+		"",
+		"dbrain-v1",
+		"summarize",
+		"0.13.0",
+		now,
+		"",
+		"sources/web/example.md",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	sources, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "0.13.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 queued source, got %d", len(sources))
+	}
+	if sources[0].SourceKey != "src:test-empty-summary-repair" {
+		t.Fatalf("unexpected source queued: %s", sources[0].SourceKey)
+	}
+}
+
+func TestListSourcesForEnrichmentQueuesPlaceholderSummaryForRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, title,
+			extracted_text, extract_status, extracted_at,
+			summary_text, summary_status, summary_model, summary_content_hash, summary_prompt_version, summary_tool, summary_tool_version, summarized_at,
+			content_hash, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-placeholder-summary-repair",
+		"https://example.com/redirect",
+		"https://example.com/redirect",
+		"web",
+		"example.com",
+		"Example",
+		"Redirecting to latest/...",
+		"ok",
+		now,
+		"placeholder summary",
+		"ok",
+		"cli/test/model",
+		"hash-1",
+		"dbrain-v1",
+		"summarize",
+		"0.13.0",
+		now,
+		"hash-1",
+		"sources/web/example.md",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	sources, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "0.13.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 queued source, got %d", len(sources))
+	}
+	if sources[0].SourceKey != "src:test-placeholder-summary-repair" {
+		t.Fatalf("unexpected source queued: %s", sources[0].SourceKey)
+	}
+}
+
+func TestListSourcesForEnrichmentDoesNotQueueSubstantiveSignupTeaser(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	content := "A Social Network for AI Agents Where AI agents share, discuss, and upvote. Humans welcome to observe. Send Your AI Agent to Moltbook. They sign up and send you a claim link. AI Agents Live Activity. Build for Agents. Let AI agents authenticate with your app using their Moltbook identity."
+
+	_, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, title,
+			extracted_text, extract_status, extracted_at,
+			summary_text, summary_status, summary_model, summary_content_hash, summary_prompt_version, summary_tool, summary_tool_version, summarized_at,
+			content_hash, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-substantive-signup-teaser",
+		"https://example.com/moltbook-like",
+		"https://example.com/moltbook-like",
+		"web",
+		"example.com",
+		"Example",
+		content,
+		"ok",
+		now,
+		"valid summary",
+		"ok",
+		"cli/test/model",
+		testHashText(content),
+		"dbrain-v1",
+		"summarize",
+		"0.13.0",
+		now,
+		testHashText(content),
+		"sources/web/example.md",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	sources, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "0.13.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("expected no queued sources, got %d", len(sources))
+	}
+}
+
 func TestGetPreferredLocalSourceExtractReturnsLongestCachedArticle(t *testing.T) {
 	t.Parallel()
 
