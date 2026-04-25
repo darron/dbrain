@@ -301,6 +301,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		if opts.Summarize {
 			runResult, err := summarizeExtract(ctx, cfg, source, localExtract, opts, sourceEnv)
 			if err != nil {
+				if isUserCancellation(ctx, err) {
+					result.Err = context.Canceled
+					return result
+				}
 				result.Stats.Errors++
 				debugLog(opts.Logger, "local source summarization failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
 				if _, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
@@ -355,6 +359,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		}
 		debugLog(opts.Logger, "using stored extract for summary", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(storedExtract.Content))
 		if changed, status, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, summaryToolVersion); err != nil {
+			if isUserCancellation(ctx, err) {
+				result.Err = context.Canceled
+				return result
+			}
 			result.Err = err
 			return result
 		} else if changed && status == "ok" {
@@ -386,6 +394,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 			Args:      sourceArgs,
 		})
 		if err != nil {
+			if isUserCancellation(ctx, err) {
+				result.Err = context.Canceled
+				return result
+			}
 			if fallbackExtract, recovered, fallbackErr := fallbackExtractForFetchError(ctx, source, opts, err); fallbackErr != nil {
 				debugLog(opts.Logger, "source protected fetch recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", fallbackErr.Error())
 			} else if recovered {
@@ -464,6 +476,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		Args:      sourceArgs,
 	})
 	if err != nil {
+		if isUserCancellation(ctx, err) {
+			result.Err = context.Canceled
+			return result
+		}
 		if fallbackExtract, recovered, fallbackErr := fallbackExtractForFetchError(ctx, source, opts, err); fallbackErr != nil {
 			debugLog(opts.Logger, "source protected fetch recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", fallbackErr.Error())
 		} else if recovered {
@@ -1024,6 +1040,9 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 		Timeout:   opts.Timeout,
 	})
 	if err != nil {
+		if isUserCancellation(ctx, err) {
+			return false, "", context.Canceled
+		}
 		status := "error"
 		if reason, blocked := blockedSummaryReason(err); blocked {
 			status = "blocked"
@@ -1066,6 +1085,17 @@ func summarizeExtract(ctx context.Context, cfg config.Config, source model.Sourc
 		Timeout:   opts.Timeout,
 		Env:       env,
 	})
+}
+
+func isUserCancellation(ctx context.Context, err error) bool {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "signal: interrupt") || strings.Contains(message, "context canceled")
 }
 
 func summaryCLI(opts Options) string {

@@ -2,6 +2,7 @@ package xphotoocr
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -137,6 +138,44 @@ func TestRunFallsBackToTesseractAndPreservesOCRAcrossLaterBlankUpsert(t *testing
 	}
 	if refreshed.OCRStatus != "ok" || !strings.Contains(refreshed.OCRText, "Fallback OCR text") {
 		t.Fatalf("expected OCR preserved after refresh, got status=%q text=%q", refreshed.OCRStatus, refreshed.OCRText)
+	}
+}
+
+func TestRunCancellationDoesNotCountInterruptedOCRAsFailures(t *testing.T) {
+	t.Parallel()
+
+	cfg, st, item := seedDownloadedPhotoItem(t, "x:test-photo-cancel-ocr", "2049000000000000003")
+
+	tesseract := filepath.Join(t.TempDir(), "tesseract")
+	script := "#!/bin/sh\nsleep 5\nprintf 'late OCR text'\n"
+	if err := os.WriteFile(tesseract, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tesseract: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	stats, err := Run(ctx, cfg, st, Options{
+		Limit:           10,
+		TesseractBinary: tesseract,
+		Timeout:         10 * time.Second,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if stats.Errors != 0 {
+		t.Fatalf("expected no counted OCR errors on cancel, got %+v", stats)
+	}
+
+	refreshed, getErr := st.GetItem(context.Background(), item.SourceKey)
+	if getErr != nil {
+		t.Fatalf("GetItem after cancel: %v", getErr)
+	}
+	if refreshed.OCRStatus != "" || refreshed.OCRText != "" {
+		t.Fatalf("expected no OCR state persisted on cancel, got status=%q text=%q", refreshed.OCRStatus, refreshed.OCRText)
 	}
 }
 

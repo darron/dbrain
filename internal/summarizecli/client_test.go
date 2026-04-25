@@ -238,6 +238,43 @@ func TestRunDirectOpenRouterSummaryForLocalFileInput(t *testing.T) {
 	}
 }
 
+func TestRunDirectOpenRouterSummaryHonorsTimeout(t *testing.T) {
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	t.Cleanup(func() {
+		http.DefaultClient = oldClient
+	})
+
+	t.Setenv("DBRAIN_OPENROUTER_BASE_URL", "https://openrouter.test")
+	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "test-openrouter-key")
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Title: Example\n\nBody content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	start := time.Now()
+	_, err := Run(context.Background(), Options{
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "openrouter/qwen/qwen3.5-27b",
+		Timeout:   100 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected context timeout error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("expected direct summary to honor timeout quickly, took %s", elapsed)
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {

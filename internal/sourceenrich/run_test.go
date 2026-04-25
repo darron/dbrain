@@ -362,6 +362,90 @@ func TestRunSourceIDsBlocksEmptyExtractSummaryAndStopsRequeue(t *testing.T) {
 	}
 }
 
+func TestRunSourceIDsCancellationDoesNotPersistInterruptFailure(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	installSourceEnrichSlowFakeSummarize(t, root)
+
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-cancel-source-item",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-cancel-source-item",
+		CanonicalURL: "https://x.com/example/status/test-cancel-source-item",
+		Title:        "test cancel source item",
+		ContentHash:  "item-hash-test-cancel-source-item",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/test-cancel-source-item.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
+		SourceKey:     "src:test-cancel-source",
+		CanonicalURL:  "https://example.com/slow",
+		NormalizedURL: "https://example.com/slow",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/src-test-cancel-source.md",
+		OriginalURL:   "https://example.com/slow",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	stats, _, err := RunSourceIDs(ctx, cfg, st, []int64{link.SourceID}, Options{
+		Summarize: false,
+		Timeout:   5 * time.Second,
+		ResolveHost: func(context.Context, string) error {
+			return nil
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if stats.Errors != 0 {
+		t.Fatalf("expected no persisted extraction errors on cancel, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractStatus != "" || source.ExtractError != "" {
+		t.Fatalf("expected no extract failure persisted on cancel, got status=%q error=%q", source.ExtractStatus, source.ExtractError)
+	}
+	if source.SummaryStatus != "" || source.SummaryError != "" {
+		t.Fatalf("expected no summary failure persisted on cancel, got status=%q error=%q", source.SummaryStatus, source.SummaryError)
+	}
+}
+
 func TestSelectSourceDocumentsHonorsLimit(t *testing.T) {
 	t.Parallel()
 
@@ -1614,6 +1698,29 @@ if [ "$last" != "https://example.com/post" ]; then
   exit 1
 fi
 printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com/post","title":"Example","description":"desc","siteName":"Example","content":"body"},"summary":"summary from generic path"}'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installSourceEnrichSlowFakeSummarize(t *testing.T, root string) {
+	t.Helper()
+
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	scriptPath := filepath.Join(binDir, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+sleep 10
+printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com/slow","title":"Slow","description":"","siteName":"Example","content":"body"},"summary":null}'
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)

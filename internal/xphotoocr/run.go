@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -159,27 +160,43 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for item := range jobs {
-				outcome := processOCRItem(ctx, cfg, st, opts, item)
-				mu.Lock()
-				stats.ItemsUpdated += outcome.itemsUpdated
-				stats.ItemsUnchanged += outcome.itemsUnchanged
-				stats.ItemsSkipped += outcome.itemsSkipped
-				stats.PhotoCandidates += outcome.photoCandidates
-				stats.PhotosOCRed += outcome.photosOCRed
-				stats.HostedAttempts += outcome.hostedAttempts
-				stats.HostedFallbacks += outcome.hostedFallbacks
-				stats.Errors += outcome.errors
-				mu.Unlock()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case item, ok := <-jobs:
+					if !ok {
+						return
+					}
+					outcome := processOCRItem(ctx, cfg, st, opts, item)
+					mu.Lock()
+					stats.ItemsUpdated += outcome.itemsUpdated
+					stats.ItemsUnchanged += outcome.itemsUnchanged
+					stats.ItemsSkipped += outcome.itemsSkipped
+					stats.PhotoCandidates += outcome.photoCandidates
+					stats.PhotosOCRed += outcome.photosOCRed
+					stats.HostedAttempts += outcome.hostedAttempts
+					stats.HostedFallbacks += outcome.hostedFallbacks
+					stats.Errors += outcome.errors
+					mu.Unlock()
+				}
 			}
 		}()
 	}
+dispatchLoop:
 	for _, item := range items {
-		jobs <- item
+		select {
+		case <-ctx.Done():
+			break dispatchLoop
+		case jobs <- item:
+		}
 	}
 	close(jobs)
 	wg.Wait()
 
+	if err := ctx.Err(); err != nil {
+		return stats, err
+	}
 	return stats, nil
 }
 
@@ -196,9 +213,15 @@ type ocrItemOutcome struct {
 
 func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opts Options, item model.Item) ocrItemOutcome {
 	outcome := ocrItemOutcome{}
+	if err := ctx.Err(); err != nil {
+		return outcome
+	}
 
 	refs, err := st.ListItemMediaRefs(ctx, item.ID)
 	if err != nil {
+		if isContextCanceled(err) || ctx.Err() != nil {
+			return outcome
+		}
 		outcome.errors++
 		debugLog(opts.Logger, "x photo ocr refs failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
 		return outcome
@@ -215,6 +238,9 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 	toolsUsed := map[string]struct{}{}
 	modelsUsed := map[string]struct{}{}
 	for _, ref := range photos {
+		if err := ctx.Err(); err != nil {
+			return outcome
+		}
 		absolutePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(ref.LocalPath))
 		block, hostedAttempted, hostedFallback, err := ocrPhoto(ctx, absolutePath, ref, opts)
 		if hostedAttempted {
@@ -224,6 +250,9 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 			outcome.hostedFallbacks++
 		}
 		if err != nil {
+			if isContextCanceled(err) || ctx.Err() != nil {
+				return outcome
+			}
 			lastErr = err.Error()
 			debugLog(opts.Logger, "x photo ocr failed", "source_key", item.SourceKey, "item_id", item.ID, "local_path", ref.LocalPath, "error", err.Error())
 			continue
@@ -240,6 +269,9 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 	}
 
 	inputHash := hashPhotoInputs(photos)
+	if err := ctx.Err(); err != nil {
+		return outcome
+	}
 	if len(blocks) == 0 {
 		_, saveErr := st.SaveItemOCR(ctx, item.ID, model.OCRResult{
 			Status:      "error",
@@ -250,6 +282,9 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 			Model:       collapseSet(modelsUsed),
 		}, inputHash)
 		if saveErr != nil {
+			if isContextCanceled(saveErr) || ctx.Err() != nil {
+				return outcome
+			}
 			outcome.errors++
 			debugLog(opts.Logger, "x photo ocr state save failed", "source_key", item.SourceKey, "item_id", item.ID, "error", saveErr.Error())
 		} else {
@@ -270,17 +305,24 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 		ToolVersion: collapseToolVersion(toolsUsed),
 	}, inputHash)
 	if err != nil {
+		if isContextCanceled(err) || ctx.Err() != nil {
+			return outcome
+		}
 		outcome.errors++
 		debugLog(opts.Logger, "x photo ocr save failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
 		return outcome
 	}
 	if !changed {
 		outcome.itemsUnchanged++
+		debugLog(opts.Logger, "x photo ocr unchanged", "source_key", item.SourceKey, "item_id", item.ID)
 		return outcome
 	}
 
 	refreshed, err := st.GetItem(ctx, item.SourceKey)
 	if err != nil {
+		if isContextCanceled(err) || ctx.Err() != nil {
+			return outcome
+		}
 		outcome.errors++
 		debugLog(opts.Logger, "x photo ocr refresh failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
 		return outcome
@@ -291,6 +333,7 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 		return outcome
 	}
 	outcome.itemsUpdated++
+	debugLog(opts.Logger, "x photo ocr saved", "source_key", item.SourceKey, "item_id", item.ID, "ocr_chars", len(refreshed.OCRText), "tool", refreshed.OCRTool, "model", refreshed.OCRModel)
 	return outcome
 }
 
@@ -407,6 +450,9 @@ func ocrWithTesseract(ctx context.Context, absolutePath, binary string, timeout 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return "", context.Canceled
+		}
 		errMsg := strings.TrimSpace(stderr.String())
 		if errMsg == "" {
 			errMsg = err.Error()
@@ -493,6 +539,10 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func isContextCanceled(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 func debugLog(logger *slog.Logger, msg string, args ...any) {

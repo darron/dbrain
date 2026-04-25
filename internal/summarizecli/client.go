@@ -266,6 +266,9 @@ func runDirectSummary(ctx context.Context, opts Options, inputText string) (Resu
 		return Result{}, err
 	}
 
+	timeoutCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+
 	messages := make([]chatMessage, 0, 2)
 	if prompt := strings.TrimSpace(promptWithLengthHint(opts.Prompt, opts.Length)); prompt != "" {
 		messages = append(messages, chatMessage{
@@ -287,7 +290,7 @@ func runDirectSummary(ctx context.Context, opts Options, inputText string) (Resu
 		return Result{}, fmt.Errorf("marshal %s summary request: %w", target.label, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.baseURL+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(timeoutCtx, http.MethodPost, target.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return Result{}, fmt.Errorf("create %s summary request: %w", target.label, err)
 	}
