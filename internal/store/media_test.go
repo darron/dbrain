@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -518,5 +519,84 @@ func TestListItemsForXHydrationIncludesDownloadedVideoThumbsForRepair(t *testing
 	}
 	if len(items) != 1 || items[0].ID != itemID {
 		t.Fatalf("expected downloaded video thumb item to be selected for repair, got %#v", items)
+	}
+}
+
+func TestListMediaAssetsForArchiveRequiresTerminalCoverage(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 25, 20, 0, 0, 0, time.UTC)
+
+	photoReadyID := insertTestItem(t, st, "x:photo-ready", "", "", now)
+	photoPendingID := insertTestItem(t, st, "x:photo-pending", "", "", now)
+	videoReadyID := insertTestItem(t, st, "x:video-ready", "", "", now)
+	videoPendingID := insertTestItem(t, st, "x:video-pending", "", "", now)
+
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET ocr_status = 'ok', ocr_text = 'photo text', ocr_at = ? WHERE id = ?`, now.Format(time.RFC3339), photoReadyID); err != nil {
+		t.Fatalf("seed ready photo ocr: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET x_media_transcript_status = 'no_audio', x_media_transcript_at = ? WHERE id = ?`, now.Format(time.RFC3339), videoReadyID); err != nil {
+		t.Fatalf("seed ready video transcript: %v", err)
+	}
+
+	insertDownloadedAssetLink(t, st, photoReadyID, "https://example.com/photo-ready.jpg", "photo", "media/x/photo/ab/photo-ready.jpg", now)
+	insertDownloadedAssetLink(t, st, photoPendingID, "https://example.com/photo-pending.jpg", "photo", "media/x/photo/ab/photo-pending.jpg", now)
+	insertDownloadedAssetLink(t, st, videoReadyID, "https://example.com/video-ready.mp4", "video", "media/x/video/ab/video-ready.mp4", now)
+	insertDownloadedAssetLink(t, st, videoPendingID, "https://example.com/video-pending.mp4", "video", "media/x/video/ab/video-pending.mp4", now)
+
+	assets, err := st.ListMediaAssetsForArchive(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListMediaAssetsForArchive: %v", err)
+	}
+	got := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		got = append(got, asset.RemoteURL)
+	}
+	slices.Sort(got)
+	want := []string{
+		"https://example.com/photo-ready.jpg",
+		"https://example.com/video-ready.mp4",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected archive candidates: got=%#v want=%#v", got, want)
+	}
+}
+
+func insertDownloadedAssetLink(t *testing.T, st *Store, itemID int64, remoteURL string, mediaType string, localPath string, now time.Time) {
+	t.Helper()
+
+	result, err := st.db.ExecContext(context.Background(), `
+		INSERT INTO media_assets (
+			remote_url, media_type, mime_type, byte_size, content_hash, download_status, local_path, discovered_at, downloaded_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, 'downloaded', ?, ?, ?, ?)`,
+		remoteURL,
+		mediaType,
+		"application/octet-stream",
+		123,
+		"sha256:"+strings.TrimPrefix(remoteURL, "https://"),
+		localPath,
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert media asset %s: %v", remoteURL, err)
+	}
+	assetID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("asset id %s: %v", remoteURL, err)
+	}
+	if _, err := st.db.ExecContext(context.Background(), `
+		INSERT INTO item_media_links (item_id, media_asset_id, ordinal, expanded_url, created_at, updated_at)
+		VALUES (?, ?, 0, ?, ?, ?)`,
+		itemID,
+		assetID,
+		remoteURL,
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert item media link %s: %v", remoteURL, err)
 	}
 }

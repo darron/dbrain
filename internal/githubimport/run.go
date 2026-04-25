@@ -304,15 +304,16 @@ func summarizeGitHubSources(ctx context.Context, cfg config.Config, st *store.St
 		return sourceenrich.Stats{}, nil
 	}
 	stats, _, err := sourceenrich.RunSourceIDs(ctx, cfg, st, sourceIDs, sourceenrich.Options{
-		Limit:     len(sourceIDs),
-		Force:     false,
-		Summarize: opts.Summarize,
-		Model:     opts.Model,
-		CLI:       opts.CLI,
-		Length:    opts.Length,
-		Timeout:   opts.Timeout,
-		Logger:    opts.Logger,
-		Binary:    opts.Binary,
+		Limit:                len(sourceIDs),
+		Force:                false,
+		AcceptCurrentSummary: true,
+		Summarize:            opts.Summarize,
+		Model:                opts.Model,
+		CLI:                  opts.CLI,
+		Length:               opts.Length,
+		Timeout:              opts.Timeout,
+		Logger:               opts.Logger,
+		Binary:               opts.Binary,
 	})
 	return stats, err
 }
@@ -322,15 +323,16 @@ func summarizeHomepageSources(ctx context.Context, cfg config.Config, st *store.
 		return sourceenrich.Stats{}, nil
 	}
 	stats, _, err := sourceenrich.RunSourceIDs(ctx, cfg, st, sourceIDs, sourceenrich.Options{
-		Limit:     len(sourceIDs),
-		Force:     opts.Force,
-		Summarize: opts.Summarize,
-		Model:     opts.Model,
-		CLI:       opts.CLI,
-		Length:    opts.Length,
-		Timeout:   opts.Timeout,
-		Logger:    opts.Logger,
-		Binary:    opts.Binary,
+		Limit:                len(sourceIDs),
+		Force:                opts.Force,
+		AcceptCurrentSummary: true,
+		Summarize:            opts.Summarize,
+		Model:                opts.Model,
+		CLI:                  opts.CLI,
+		Length:               opts.Length,
+		Timeout:              opts.Timeout,
+		Logger:               opts.Logger,
+		Binary:               opts.Binary,
 	})
 	return stats, err
 }

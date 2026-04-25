@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"dbrain/internal/config"
+	"dbrain/internal/mediaarchive"
 	"dbrain/internal/store"
 	"dbrain/internal/xapi"
 	"dbrain/internal/xmediatranscribe"
@@ -100,6 +101,53 @@ func TestRunSkipsXMediaStageWhenDisabled(t *testing.T) {
 	}
 	if stats.XMedia != nil {
 		t.Fatalf("expected no x media stage stats, got %+v", stats.XMedia)
+	}
+}
+
+func TestRunExecutesArchiveStageAtEndWhenEnabled(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origArchive := runMediaArchive
+	t.Cleanup(func() {
+		runMediaArchive = origArchive
+	})
+
+	var called bool
+	runMediaArchive = func(_ context.Context, _ config.Config, _ *store.Store, opts mediaarchive.Options) (mediaarchive.Stats, error) {
+		called = true
+		if !opts.Upload || !opts.PruneLocal {
+			t.Fatalf("expected archive stage to upload and prune, got %+v", opts)
+		}
+		if opts.Bucket != "dbrain" {
+			t.Fatalf("expected bucket dbrain, got %q", opts.Bucket)
+		}
+		return mediaarchive.Stats{Candidates: 2, Uploaded: 2, Archived: 2, LocalFilesPruned: 2}, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(context.Background(), cfg, st, Options{
+		ArchiveMediaEnabled: true,
+		ArchiveBucket:       "dbrain",
+		ArchiveEndpoint:     "https://example.invalid",
+		ArchiveAccessKeyID:  "key",
+		ArchiveSecretKey:    "secret",
+		Progress:            &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !called {
+		t.Fatal("expected archive stage to run")
+	}
+	if stats.MediaArchive == nil {
+		t.Fatal("expected media archive stats")
+	}
+	output := progress.String()
+	if !bytes.Contains([]byte(output), []byte("==> archive media")) {
+		t.Fatalf("expected progress output to contain archive stage, got %q", output)
+	}
+	if !bytes.Contains([]byte(output), []byte("Media archive complete")) {
+		t.Fatalf("expected archive completion output, got %q", output)
 	}
 }
 

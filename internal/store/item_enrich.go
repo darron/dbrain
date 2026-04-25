@@ -70,6 +70,7 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 				WHERE l.item_id = items.id
 					AND a.download_status = 'downloaded'
 					AND a.local_path != ''
+					AND a.local_pruned_at = ''
 					AND a.media_type = 'photo'
 			)`
 	if !force {

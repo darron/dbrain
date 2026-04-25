@@ -132,6 +132,28 @@ func TestRunForItemMarksGoneMedia(t *testing.T) {
 	}
 }
 
+func TestShouldDownloadSkipsArchivedPrunedMedia(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	ref := model.ItemMediaRef{
+		DownloadStatus: "downloaded",
+		LocalPath:      "media/x/photo/ab/test.jpg",
+		ArchiveStatus:  "archived",
+		LocalPrunedAt:  time.Now().UTC(),
+	}
+	if shouldDownload(ref, cfg, false) {
+		t.Fatal("expected archived pruned media to skip re-download")
+	}
+}
+
 func openTestStore(t *testing.T, path string) *store.Store {
 	t.Helper()
 

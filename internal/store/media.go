@@ -14,7 +14,9 @@ import (
 
 const mediaSelectColumns = `
 	id, remote_url, media_type, mime_type, width, height, byte_size, content_hash,
-	download_status, download_error, local_path, discovered_at, downloaded_at, updated_at`
+	download_status, download_error, local_path,
+	archive_provider, archive_bucket, archive_key, archive_url, archive_etag, archive_status, archive_error,
+	discovered_at, downloaded_at, archived_at, local_pruned_at, updated_at`
 
 func (s *Store) ensureMediaTables() error {
 	schema := []string{
@@ -30,8 +32,17 @@ func (s *Store) ensureMediaTables() error {
 			download_status TEXT NOT NULL DEFAULT '',
 			download_error TEXT NOT NULL DEFAULT '',
 			local_path TEXT NOT NULL DEFAULT '',
+			archive_provider TEXT NOT NULL DEFAULT '',
+			archive_bucket TEXT NOT NULL DEFAULT '',
+			archive_key TEXT NOT NULL DEFAULT '',
+			archive_url TEXT NOT NULL DEFAULT '',
+			archive_etag TEXT NOT NULL DEFAULT '',
+			archive_status TEXT NOT NULL DEFAULT '',
+			archive_error TEXT NOT NULL DEFAULT '',
 			discovered_at TEXT NOT NULL DEFAULT '',
 			downloaded_at TEXT NOT NULL DEFAULT '',
+			archived_at TEXT NOT NULL DEFAULT '',
+			local_pruned_at TEXT NOT NULL DEFAULT '',
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_media_assets_download_status ON media_assets(download_status);`,
@@ -74,18 +85,27 @@ func (s *Store) ensureMediaAssetColumns() error {
 	}
 
 	required := map[string]string{
-		"media_type":      "TEXT NOT NULL DEFAULT ''",
-		"mime_type":       "TEXT NOT NULL DEFAULT ''",
-		"width":           "INTEGER NOT NULL DEFAULT 0",
-		"height":          "INTEGER NOT NULL DEFAULT 0",
-		"byte_size":       "INTEGER NOT NULL DEFAULT 0",
-		"content_hash":    "TEXT NOT NULL DEFAULT ''",
-		"download_status": "TEXT NOT NULL DEFAULT ''",
-		"download_error":  "TEXT NOT NULL DEFAULT ''",
-		"local_path":      "TEXT NOT NULL DEFAULT ''",
-		"discovered_at":   "TEXT NOT NULL DEFAULT ''",
-		"downloaded_at":   "TEXT NOT NULL DEFAULT ''",
-		"updated_at":      "TEXT NOT NULL DEFAULT ''",
+		"media_type":       "TEXT NOT NULL DEFAULT ''",
+		"mime_type":        "TEXT NOT NULL DEFAULT ''",
+		"width":            "INTEGER NOT NULL DEFAULT 0",
+		"height":           "INTEGER NOT NULL DEFAULT 0",
+		"byte_size":        "INTEGER NOT NULL DEFAULT 0",
+		"content_hash":     "TEXT NOT NULL DEFAULT ''",
+		"download_status":  "TEXT NOT NULL DEFAULT ''",
+		"download_error":   "TEXT NOT NULL DEFAULT ''",
+		"local_path":       "TEXT NOT NULL DEFAULT ''",
+		"archive_provider": "TEXT NOT NULL DEFAULT ''",
+		"archive_bucket":   "TEXT NOT NULL DEFAULT ''",
+		"archive_key":      "TEXT NOT NULL DEFAULT ''",
+		"archive_url":      "TEXT NOT NULL DEFAULT ''",
+		"archive_etag":     "TEXT NOT NULL DEFAULT ''",
+		"archive_status":   "TEXT NOT NULL DEFAULT ''",
+		"archive_error":    "TEXT NOT NULL DEFAULT ''",
+		"discovered_at":    "TEXT NOT NULL DEFAULT ''",
+		"downloaded_at":    "TEXT NOT NULL DEFAULT ''",
+		"archived_at":      "TEXT NOT NULL DEFAULT ''",
+		"local_pruned_at":  "TEXT NOT NULL DEFAULT ''",
+		"updated_at":       "TEXT NOT NULL DEFAULT ''",
 	}
 
 	for name, definition := range required {
@@ -314,8 +334,14 @@ func (s *Store) ListItemMediaRefs(ctx context.Context, itemID int64) ([]model.It
 			a.media_type,
 			a.download_status,
 			a.local_path,
+			a.archive_provider,
+			a.archive_bucket,
+			a.archive_key,
+			a.archive_url,
+			a.archive_status,
 			a.width,
-			a.height
+			a.height,
+			a.local_pruned_at
 		FROM item_media_links l
 		JOIN media_assets a ON a.id = l.media_asset_id
 		WHERE l.item_id = ?
@@ -330,18 +356,7 @@ func (s *Store) ListItemMediaRefs(ctx context.Context, itemID int64) ([]model.It
 	var refs []model.ItemMediaRef
 	for rows.Next() {
 		var ref model.ItemMediaRef
-		if err := rows.Scan(
-			&ref.ItemID,
-			&ref.MediaAssetID,
-			&ref.Ordinal,
-			&ref.ExpandedURL,
-			&ref.RemoteURL,
-			&ref.MediaType,
-			&ref.DownloadStatus,
-			&ref.LocalPath,
-			&ref.Width,
-			&ref.Height,
-		); err != nil {
+		if err := scanItemMediaRef(rows.Scan, &ref); err != nil {
 			return nil, fmt.Errorf("scan item media ref for item %d: %w", itemID, err)
 		}
 		refs = append(refs, ref)
@@ -390,30 +405,9 @@ func (s *Store) ListMediaAssetsForDownload(ctx context.Context, limit int, force
 	var assets []model.MediaAsset
 	for rows.Next() {
 		var asset model.MediaAsset
-		var discoveredAt string
-		var downloadedAt string
-		var updatedAt string
-		if err := rows.Scan(
-			&asset.ID,
-			&asset.RemoteURL,
-			&asset.MediaType,
-			&asset.MIMEType,
-			&asset.Width,
-			&asset.Height,
-			&asset.ByteSize,
-			&asset.ContentHash,
-			&asset.DownloadStatus,
-			&asset.DownloadError,
-			&asset.LocalPath,
-			&discoveredAt,
-			&downloadedAt,
-			&updatedAt,
-		); err != nil {
+		if err := scanMediaAsset(rows.Scan, &asset); err != nil {
 			return nil, fmt.Errorf("scan media asset: %w", err)
 		}
-		asset.DiscoveredAt = parseStoredTime(discoveredAt)
-		asset.DownloadedAt = parseStoredTime(downloadedAt)
-		asset.UpdatedAt = parseStoredTime(updatedAt)
 		assets = append(assets, asset)
 	}
 	if err := rows.Err(); err != nil {
@@ -426,7 +420,7 @@ func (s *Store) ListMediaAssetsForDownload(ctx context.Context, limit int, force
 func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result model.MediaDownloadResult) (bool, error) {
 	return withBusyRetry(ctx, func() (bool, error) {
 		row := s.db.QueryRowContext(ctx, `
-			SELECT mime_type, byte_size, content_hash, local_path, download_status, download_error, downloaded_at
+			SELECT mime_type, byte_size, content_hash, local_path, download_status, download_error, downloaded_at, local_pruned_at
 			FROM media_assets
 			WHERE id = ?`, assetID)
 
@@ -437,7 +431,8 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 		var currentStatus string
 		var currentError string
 		var currentDownloadedAt string
-		if err := row.Scan(&currentMIME, &currentByteSize, &currentHash, &currentPath, &currentStatus, &currentError, &currentDownloadedAt); err != nil {
+		var currentLocalPrunedAt string
+		if err := row.Scan(&currentMIME, &currentByteSize, &currentHash, &currentPath, &currentStatus, &currentError, &currentDownloadedAt, &currentLocalPrunedAt); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return false, fmt.Errorf("media asset not found: %d", assetID)
 			}
@@ -448,6 +443,10 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 		if !result.DownloadedAt.IsZero() {
 			downloadedAt = result.DownloadedAt.UTC().Format(time.RFC3339)
 		}
+		nextLocalPrunedAt := currentLocalPrunedAt
+		if result.Status == "downloaded" && strings.TrimSpace(result.LocalPath) != "" {
+			nextLocalPrunedAt = ""
+		}
 
 		changed := currentMIME != result.MIMEType ||
 			currentByteSize != result.ByteSize ||
@@ -455,7 +454,8 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 			currentPath != result.LocalPath ||
 			currentStatus != result.Status ||
 			currentError != result.Error ||
-			currentDownloadedAt != downloadedAt
+			currentDownloadedAt != downloadedAt ||
+			currentLocalPrunedAt != nextLocalPrunedAt
 		if !changed {
 			return false, nil
 		}
@@ -469,6 +469,7 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 				download_status = ?,
 				download_error = ?,
 				downloaded_at = ?,
+				local_pruned_at = ?,
 				updated_at = ?
 			WHERE id = ?`,
 			result.MIMEType,
@@ -478,6 +479,7 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 			result.Status,
 			result.Error,
 			downloadedAt,
+			nextLocalPrunedAt,
 			time.Now().UTC().Format(time.RFC3339),
 			assetID,
 		); err != nil {
@@ -808,8 +810,14 @@ func (s *Store) listItemMediaRefsTx(ctx context.Context, tx *sql.Tx, itemID int6
 			a.media_type,
 			a.download_status,
 			a.local_path,
+			a.archive_provider,
+			a.archive_bucket,
+			a.archive_key,
+			a.archive_url,
+			a.archive_status,
 			a.width,
-			a.height
+			a.height,
+			a.local_pruned_at
 		FROM item_media_links l
 		JOIN media_assets a ON a.id = l.media_asset_id
 		WHERE l.item_id = ?
@@ -824,18 +832,7 @@ func (s *Store) listItemMediaRefsTx(ctx context.Context, tx *sql.Tx, itemID int6
 	var refs []model.ItemMediaRef
 	for rows.Next() {
 		var ref model.ItemMediaRef
-		if err := rows.Scan(
-			&ref.ItemID,
-			&ref.MediaAssetID,
-			&ref.Ordinal,
-			&ref.ExpandedURL,
-			&ref.RemoteURL,
-			&ref.MediaType,
-			&ref.DownloadStatus,
-			&ref.LocalPath,
-			&ref.Width,
-			&ref.Height,
-		); err != nil {
+		if err := scanItemMediaRef(rows.Scan, &ref); err != nil {
 			return nil, fmt.Errorf("scan item media ref in tx for item %d: %w", itemID, err)
 		}
 		refs = append(refs, ref)
@@ -869,6 +866,73 @@ func desiredItemMediaRefs(itemID int64, media []xHydrationMedia) []model.ItemMed
 		})
 	}
 	return refs
+}
+
+func scanMediaAsset(scan func(dest ...any) error, asset *model.MediaAsset) error {
+	var discoveredAt string
+	var downloadedAt string
+	var archivedAt string
+	var localPrunedAt string
+	var updatedAt string
+	if err := scan(
+		&asset.ID,
+		&asset.RemoteURL,
+		&asset.MediaType,
+		&asset.MIMEType,
+		&asset.Width,
+		&asset.Height,
+		&asset.ByteSize,
+		&asset.ContentHash,
+		&asset.DownloadStatus,
+		&asset.DownloadError,
+		&asset.LocalPath,
+		&asset.ArchiveProvider,
+		&asset.ArchiveBucket,
+		&asset.ArchiveKey,
+		&asset.ArchiveURL,
+		&asset.ArchiveETag,
+		&asset.ArchiveStatus,
+		&asset.ArchiveError,
+		&discoveredAt,
+		&downloadedAt,
+		&archivedAt,
+		&localPrunedAt,
+		&updatedAt,
+	); err != nil {
+		return err
+	}
+	asset.DiscoveredAt = parseStoredTime(discoveredAt)
+	asset.DownloadedAt = parseStoredTime(downloadedAt)
+	asset.ArchivedAt = parseStoredTime(archivedAt)
+	asset.LocalPrunedAt = parseStoredTime(localPrunedAt)
+	asset.UpdatedAt = parseStoredTime(updatedAt)
+	return nil
+}
+
+func scanItemMediaRef(scan func(dest ...any) error, ref *model.ItemMediaRef) error {
+	var localPrunedAt string
+	if err := scan(
+		&ref.ItemID,
+		&ref.MediaAssetID,
+		&ref.Ordinal,
+		&ref.ExpandedURL,
+		&ref.RemoteURL,
+		&ref.MediaType,
+		&ref.DownloadStatus,
+		&ref.LocalPath,
+		&ref.ArchiveProvider,
+		&ref.ArchiveBucket,
+		&ref.ArchiveKey,
+		&ref.ArchiveURL,
+		&ref.ArchiveStatus,
+		&ref.Width,
+		&ref.Height,
+		&localPrunedAt,
+	); err != nil {
+		return err
+	}
+	ref.LocalPrunedAt = parseStoredTime(localPrunedAt)
+	return nil
 }
 
 func sameItemMediaRefs(current []model.ItemMediaRef, desired []model.ItemMediaRef) bool {

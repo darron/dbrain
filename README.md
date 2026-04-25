@@ -21,6 +21,7 @@ Markdown note rendering for Obsidian and local query over the imported corpus.
 - `dbrain worker sources`
 - `dbrain hydrate x`
 - `dbrain transcribe x-media`
+- `dbrain archive media`
 - `dbrain repair notes`
 - `dbrain serve mcp`
 - `dbrain serve web`
@@ -64,8 +65,6 @@ quiet CLI output.
 - Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
 - Add a translation stage for non-English X content, storing both original and translated text.
 - Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
-- Add a media archival tier for finalized assets (for example S3/R2/B2-compatible object storage) so large local X media can be offloaded after transcript/summary generation, while preserving durable URLs and keeping local-disk cleanup explicitly reference-aware.
-  Compare Cloudflare R2 vs Fly/Tigris specifically before implementing; R2 likely wins on price and existing vendor footprint, but both are viable S3-compatible archive targets.
 - Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
 - Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
 - Improve provider provenance so stored summaries always record the exact backend/model used.
@@ -149,6 +148,32 @@ For GitHub stars, use a fine-grained PAT with:
   Optional macOS helper. When available, `dbrain` uses it automatically for
   long-running leaf commands unless you pass `--no-caffeinate`.
 
+## Optional Media Archive Env
+
+To automatically offload finalized media to S3-compatible storage at the end of
+`dbrain sync all`, export:
+
+- `DBRAIN_AUTO_ARCHIVE_MEDIA=1`
+- `DBRAIN_R2_BUCKET=<bucket>`
+- `DBRAIN_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com`
+- `DBRAIN_R2_ACCESS_KEY_ID=<key>`
+- `DBRAIN_R2_SECRET_ACCESS_KEY=<secret>`
+
+Optional:
+
+- `DBRAIN_R2_REGION=auto`
+- `DBRAIN_R2_SESSION_TOKEN=<token>`
+- `DBRAIN_ARCHIVE_PROVIDER=cloudflare_r2`
+- `DBRAIN_R2_PUBLIC_BASE_URL=https://...` when archived media should render as
+  anonymously readable URLs in notes. Leave this unset for authenticated-only
+  buckets.
+
+`sync all` only runs the archive stage automatically when
+`DBRAIN_AUTO_ARCHIVE_MEDIA=1` or `--archive-media` is set. The archive stage
+uploads eligible media after OCR/transcription reaches a terminal state, marks
+the object as archived in the DB, and prunes the local file once every row
+sharing that same `local_path` is safely archived.
+
 ## Command Requirements
 
 - `dbrain import ft`
@@ -161,14 +186,20 @@ For GitHub stars, use a fine-grained PAT with:
   Runs the regular incremental refresh pipeline in one command: direct X
   bookmark import, X hydration, X media audio transcription, X photo OCR,
   tweet-link discovery/enrichment, GitHub stars import, YouTube import, and an
-  optional source-backlog worker batch. The X media and X photo OCR stages use
-  the same X batch limit as `hydrate x` (`--x-limit`). In the default
+  optional source-backlog worker batch. It can also optionally append a media
+  archive stage that uploads finalized local media to configured S3-compatible
+  storage and prunes local copies. The X media and X photo OCR stages use the
+  same X batch limit as `hydrate x` (`--x-limit`). In the default
   configuration this combines the requirements of X bookmark import, X
   hydration, X media transcription, X photo OCR, link/source enrichment, and
   YouTube import, so a practical local setup usually includes a supported
   Chrome/Chromium profile with valid cookies plus `mw`, `ffprobe`,
   `summarize`, and `yt-dlp`. It supports `--skip-*` flags when you only want
   part of the pipeline.
+- `dbrain archive media`
+  Optional manual archive/prune pass for finalized media. It can either just
+  mark/prune already-uploaded media or upload directly to an S3-compatible
+  bucket first when `--upload` or archive-upload env vars are configured.
 - `dbrain hydrate x`
   Requires a supported browser profile with valid X cookies. Chrome/Chromium is
   the best-tested path. On macOS you may see a Keychain prompt the first time

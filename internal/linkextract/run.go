@@ -105,15 +105,16 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 
 	enrichStats, _, err := sourceenrich.RunSourceIDs(ctx, cfg, st, mapKeys(touchedSourceIDs), sourceenrich.Options{
-		Limit:       opts.Limit,
-		Concurrency: opts.Concurrency,
-		Force:       opts.Force,
-		Summarize:   opts.Summarize,
-		Model:       opts.Model,
-		CLI:         opts.CLI,
-		Length:      opts.Length,
-		Timeout:     opts.Timeout,
-		Logger:      opts.Logger,
+		Limit:                opts.Limit,
+		Concurrency:          opts.Concurrency,
+		Force:                opts.Force,
+		AcceptCurrentSummary: true,
+		Summarize:            opts.Summarize,
+		Model:                opts.Model,
+		CLI:                  opts.CLI,
+		Length:               opts.Length,
+		Timeout:              opts.Timeout,
+		Logger:               opts.Logger,
 	})
 	if err != nil {
 		return stats, err

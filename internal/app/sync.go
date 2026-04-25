@@ -47,6 +47,8 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var cliProvider string
 	var length string
 	var timeout time.Duration
+	var archiveMedia bool
+	var archiveMediaLimit int
 	var skipXBookmarks bool
 	var skipFT bool
 	var skipX bool
@@ -67,6 +69,9 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if !archiveMedia {
+				archiveMedia = firstEnvBool(cfg.RootDir, "DBRAIN_AUTO_ARCHIVE_MEDIA", "DBRAIN_ARCHIVE_AUTO")
+			}
 
 			st, err := store.Open(cfg.DBPath)
 			if err != nil {
@@ -77,44 +82,54 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			}()
 
 			stats, err := syncjob.Run(cmd.Context(), cfg, st, syncjob.Options{
-				XBookmarksEnabled:   !skipXBookmarks && !skipFT,
-				XBookmarksLimit:     xBookmarksLimit,
-				XEnabled:            !skipX,
-				XLimit:              xLimit,
-				XConcurrency:        xConcurrency,
-				XTimeout:            xTimeout,
-				XMediaEnabled:       !skipXMedia,
-				XMediaLimit:         xLimit,
-				XPhotoOCREnabled:    !skipXPhotoOCR,
-				XPhotoOCRLimit:      xLimit,
-				LinksEnabled:        !skipLinks,
-				LinkDiscoverLimit:   linkDiscoverLimit,
-				LinkLimit:           linkLimit,
-				LinkConcurrency:     linkConcurrency,
-				GitHubEnabled:       !skipGitHub,
-				GitHubLimit:         githubLimit,
-				YouTubeEnabled:      !skipYouTube,
-				YouTubeLimit:        youtubeLimit,
-				WatchLater:          watchLater,
-				Liked:               liked,
-				SourcesEnabled:      !skipSources,
-				SourceLimit:         sourceLimit,
-				SourceConcurrency:   sourceConcurrency,
-				SourceWatch:         watch,
-				SourcePollInterval:  pollInterval,
-				SourceIdleExitAfter: idleExitAfter,
-				SourceMaxCycles:     maxCycles,
-				Browser:             browser,
-				Profile:             profile,
-				Force:               force,
-				Summarize:           summarize,
-				Model:               model,
-				OCRModel:            ocrModel,
-				CLI:                 cliProvider,
-				Length:              length,
-				Timeout:             timeout,
-				Logger:              newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
-				Progress:            cmd.ErrOrStderr(),
+				XBookmarksEnabled:    !skipXBookmarks && !skipFT,
+				XBookmarksLimit:      xBookmarksLimit,
+				XEnabled:             !skipX,
+				XLimit:               xLimit,
+				XConcurrency:         xConcurrency,
+				XTimeout:             xTimeout,
+				XMediaEnabled:        !skipXMedia,
+				XMediaLimit:          xLimit,
+				XPhotoOCREnabled:     !skipXPhotoOCR,
+				XPhotoOCRLimit:       xLimit,
+				LinksEnabled:         !skipLinks,
+				LinkDiscoverLimit:    linkDiscoverLimit,
+				LinkLimit:            linkLimit,
+				LinkConcurrency:      linkConcurrency,
+				GitHubEnabled:        !skipGitHub,
+				GitHubLimit:          githubLimit,
+				YouTubeEnabled:       !skipYouTube,
+				YouTubeLimit:         youtubeLimit,
+				WatchLater:           watchLater,
+				Liked:                liked,
+				SourcesEnabled:       !skipSources,
+				SourceLimit:          sourceLimit,
+				SourceConcurrency:    sourceConcurrency,
+				SourceWatch:          watch,
+				SourcePollInterval:   pollInterval,
+				SourceIdleExitAfter:  idleExitAfter,
+				SourceMaxCycles:      maxCycles,
+				Browser:              browser,
+				Profile:              profile,
+				Force:                force,
+				Summarize:            summarize,
+				Model:                model,
+				OCRModel:             ocrModel,
+				ArchiveMediaEnabled:  archiveMedia,
+				ArchiveMediaLimit:    archiveMediaLimit,
+				ArchiveProvider:      firstNonEmptyEnv(cfg.RootDir, "DBRAIN_ARCHIVE_PROVIDER", "DBRAIN_R2_PROVIDER"),
+				ArchiveBucket:        firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_BUCKET", "DBRAIN_ARCHIVE_BUCKET"),
+				ArchivePublicBaseURL: firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_PUBLIC_BASE_URL", "DBRAIN_MEDIA_PUBLIC_BASE_URL"),
+				ArchiveEndpoint:      firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"),
+				ArchiveRegion:        firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"),
+				ArchiveAccessKeyID:   firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
+				ArchiveSecretKey:     firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
+				ArchiveSessionToken:  firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
+				CLI:                  cliProvider,
+				Length:               length,
+				Timeout:              timeout,
+				Logger:               newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
+				Progress:             cmd.ErrOrStderr(),
 			})
 			if err != nil {
 				return err
@@ -154,6 +169,8 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Timeout for summarize-backed extraction and summarization stages")
+	cmd.Flags().BoolVar(&archiveMedia, "archive-media", false, "Upload finalized media to configured S3-compatible storage and prune local copies at the end of sync")
+	cmd.Flags().IntVar(&archiveMediaLimit, "archive-media-limit", 5000, "Maximum finalized media assets to archive at the end of sync")
 	cmd.Flags().BoolVar(&skipXBookmarks, "skip-x-bookmarks", false, "Skip direct X bookmark import")
 	cmd.Flags().BoolVar(&skipFT, "skip-ft", false, "Deprecated alias for --skip-x-bookmarks")
 	_ = cmd.Flags().MarkHidden("skip-ft")
@@ -217,6 +234,11 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 	}
 	if stats.Sources != nil {
 		if _, err := fmt.Fprintf(dst, "Sources: work_cycles=%d sources_summarized=%d errors=%d stopped=%s\n", stats.Sources.Stats.WorkCycles, stats.Sources.Stats.SourcesSummarized, stats.Sources.Stats.Errors, stats.Sources.Stats.StoppedReason); err != nil {
+			return err
+		}
+	}
+	if stats.MediaArchive != nil {
+		if _, err := fmt.Fprintf(dst, "Media Archive: candidates=%d uploaded=%d archived=%d unchanged=%d prune_skipped=%d local_files_pruned=%d local_rows_pruned=%d errors=%d\n", stats.MediaArchive.Stats.Candidates, stats.MediaArchive.Stats.Uploaded, stats.MediaArchive.Stats.Archived, stats.MediaArchive.Stats.Unchanged, stats.MediaArchive.Stats.PruneSkipped, stats.MediaArchive.Stats.LocalFilesPruned, stats.MediaArchive.Stats.LocalRowsPruned, stats.MediaArchive.Stats.Errors); err != nil {
 			return err
 		}
 	}

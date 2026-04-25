@@ -546,6 +546,37 @@ func TestSelectSourceDocumentsHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestSelectSourceDocumentsAcceptsCurrentSummaryCoverage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	ordered := []int64{1}
+	byID := map[int64]model.SourceDocument{
+		1: {
+			ID:                   1,
+			SourceKey:            "src:one",
+			ExtractStatus:        "ok",
+			SummaryStatus:        "ok",
+			ContentHash:          "hash-1",
+			SummaryContentHash:   "hash-1",
+			SummaryPromptVersion: "old-version",
+			SummaryTool:          "summarize",
+			SummaryToolVersion:   "0.10.0",
+			UpdatedAt:            now,
+		},
+	}
+
+	selected := selectSourceDocuments(ordered, byID, Options{
+		Limit:                1,
+		Summarize:            true,
+		AcceptCurrentSummary: true,
+	}, summarizecli.DirectOpenRouterToolName, "openrouter-direct-v1")
+
+	if len(selected) != 0 {
+		t.Fatalf("expected current covered source to be skipped, got %+v", selected)
+	}
+}
+
 func TestSummaryInputFileUsesTempDirAndCleansUp(t *testing.T) {
 	t.Parallel()
 

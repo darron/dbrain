@@ -50,29 +50,30 @@ Use bullets only in Entities and Follow-ups.
 Do not mention ads, sponsors, or irrelevant boilerplate.`
 
 type Options struct {
-	Limit              int
-	Concurrency        int
-	Force              bool
-	Summarize          bool
-	Model              string
-	CLI                string
-	Length             string
-	Timeout            time.Duration
-	Logger             *slog.Logger
-	EnvFor             func(source model.SourceDocument) map[string]string
-	ArgsFor            func(source model.SourceDocument) []string
-	ResolveHost        func(ctx context.Context, host string) error
-	ResolveRedirectURL func(ctx context.Context, rawURL string) (string, error)
-	FallbackExtractFor func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
-	Binary             string
-	YouTubeBrowser     string
-	YouTubeProfile     string
-	YouTubeCookiesArg  string
-	YouTubeTranscriber string
-	YTDLPBinary        string
-	WhisperBinary      string
-	WhisperModelPath   string
-	MacWhisperBinary   string
+	Limit                int
+	Concurrency          int
+	Force                bool
+	AcceptCurrentSummary bool
+	Summarize            bool
+	Model                string
+	CLI                  string
+	Length               string
+	Timeout              time.Duration
+	Logger               *slog.Logger
+	EnvFor               func(source model.SourceDocument) map[string]string
+	ArgsFor              func(source model.SourceDocument) []string
+	ResolveHost          func(ctx context.Context, host string) error
+	ResolveRedirectURL   func(ctx context.Context, rawURL string) (string, error)
+	FallbackExtractFor   func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
+	Binary               string
+	YouTubeBrowser       string
+	YouTubeProfile       string
+	YouTubeCookiesArg    string
+	YouTubeTranscriber   string
+	YTDLPBinary          string
+	WhisperBinary        string
+	WhisperModelPath     string
+	MacWhisperBinary     string
 }
 
 type Stats struct {
@@ -665,6 +666,9 @@ func needsEnrichment(source model.SourceDocument, opts Options, toolName string,
 	}
 	if source.SummaryContentHash != source.ContentHash {
 		return true
+	}
+	if opts.AcceptCurrentSummary {
+		return false
 	}
 	if source.SummaryPromptVersion != SummaryPromptVersion {
 		return true

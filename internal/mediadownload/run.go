@@ -105,6 +105,9 @@ func shouldDownload(ref model.ItemMediaRef, cfg config.Config, force bool) bool 
 		if strings.TrimSpace(ref.LocalPath) == "" {
 			return true
 		}
+		if !ref.LocalPrunedAt.IsZero() && strings.TrimSpace(ref.ArchiveStatus) == "archived" {
+			return false
+		}
 		fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(ref.LocalPath))
 		_, err := os.Stat(fullPath)
 		return err != nil

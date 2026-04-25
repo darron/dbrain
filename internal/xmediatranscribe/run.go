@@ -200,7 +200,7 @@ func transcribeItemMedia(ctx context.Context, cfg config.Config, refs []model.It
 	outcome := itemTranscriptOutcome{}
 
 	for _, ref := range refs {
-		if ref.DownloadStatus != "downloaded" || strings.TrimSpace(ref.LocalPath) == "" {
+		if ref.DownloadStatus != "downloaded" || strings.TrimSpace(ref.LocalPath) == "" || !ref.LocalPrunedAt.IsZero() {
 			continue
 		}
 		if ref.MediaType != "video" && ref.MediaType != "animated_gif" {

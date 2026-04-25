@@ -205,17 +205,18 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 
 	enrichStats, _, err := sourceenrich.RunSourceIDs(ctx, cfg, st, mapKeys(touchedSourceIDs), sourceenrich.Options{
-		Force:              opts.Force,
-		Summarize:          opts.Summarize,
-		Model:              opts.Model,
-		CLI:                opts.CLI,
-		Length:             opts.Length,
-		Timeout:            opts.Timeout,
-		Logger:             opts.Logger,
-		Binary:             opts.SummarizeBinary,
-		EnvFor:             summarizeEnvFor(resolvedCookiesArg),
-		ArgsFor:            summarizeArgsFor(opts),
-		FallbackExtractFor: fallbackExtractFor(cfg, opts, resolvedCookiesArg),
+		Force:                opts.Force,
+		AcceptCurrentSummary: true,
+		Summarize:            opts.Summarize,
+		Model:                opts.Model,
+		CLI:                  opts.CLI,
+		Length:               opts.Length,
+		Timeout:              opts.Timeout,
+		Logger:               opts.Logger,
+		Binary:               opts.SummarizeBinary,
+		EnvFor:               summarizeEnvFor(resolvedCookiesArg),
+		ArgsFor:              summarizeArgsFor(opts),
+		FallbackExtractFor:   fallbackExtractFor(cfg, opts, resolvedCookiesArg),
 	})
 	if err != nil {
 		return stats, err

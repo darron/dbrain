@@ -851,6 +851,7 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 				WHERE l.item_id = items.id
 					AND a.download_status = 'downloaded'
 					AND a.local_path != ''
+					AND a.local_pruned_at = ''
 					AND a.media_type IN ('video', 'animated_gif')
 			)`
 	if !force {

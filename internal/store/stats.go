@@ -554,6 +554,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 			WHERE l.item_id = items.id
 				AND a.download_status = 'downloaded'
 				AND a.local_path != ''
+				AND a.local_pruned_at = ''
 				AND a.media_type IN ('video', 'animated_gif')
 		)
 		AND (
@@ -654,6 +655,7 @@ func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, boo
 			WHERE l.item_id = items.id
 				AND a.download_status = 'downloaded'
 				AND a.local_path != ''
+				AND a.local_pruned_at = ''
 				AND a.media_type = 'photo'
 		)`
 

@@ -11,6 +11,7 @@ import (
 	"dbrain/internal/config"
 	"dbrain/internal/githubimport"
 	"dbrain/internal/linkextract"
+	"dbrain/internal/mediaarchive"
 	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
 	"dbrain/internal/summarizecli"
@@ -30,6 +31,7 @@ var (
 	runGitHubImport    = githubimport.Run
 	runYouTubeImport   = youtubeimport.Run
 	runSourceWorker    = worker.RunSources
+	runMediaArchive    = mediaarchive.Run
 	summaryToolVersion = summarizecli.SummaryToolVersion
 )
 
@@ -67,31 +69,42 @@ type Options struct {
 	SourceIdleExitAfter time.Duration
 	SourceMaxCycles     int
 
-	Browser   string
-	Profile   string
-	Force     bool
-	Summarize bool
-	Model     string
-	OCRModel  string
-	CLI       string
-	Length    string
-	Timeout   time.Duration
-	Logger    *slog.Logger
-	Progress  io.Writer
+	Browser              string
+	Profile              string
+	Force                bool
+	Summarize            bool
+	Model                string
+	OCRModel             string
+	ArchiveMediaEnabled  bool
+	ArchiveMediaLimit    int
+	ArchiveProvider      string
+	ArchiveBucket        string
+	ArchivePublicBaseURL string
+	ArchiveEndpoint      string
+	ArchiveRegion        string
+	ArchiveAccessKeyID   string
+	ArchiveSecretKey     string
+	ArchiveSessionToken  string
+	CLI                  string
+	Length               string
+	Timeout              time.Duration
+	Logger               *slog.Logger
+	Progress             io.Writer
 }
 
 type Stats struct {
-	StartedAt   time.Time        `json:"started_at"`
-	CompletedAt time.Time        `json:"completed_at,omitempty"`
-	Duration    time.Duration    `json:"duration"`
-	XBookmarks  *XBookmarksStage `json:"x_bookmarks,omitempty"`
-	X           *XStage          `json:"x,omitempty"`
-	XMedia      *XMediaStage     `json:"x_media,omitempty"`
-	XPhotoOCR   *XPhotoOCRStage  `json:"x_photo_ocr,omitempty"`
-	Links       *LinksStage      `json:"links,omitempty"`
-	GitHub      *GitHubStage     `json:"github,omitempty"`
-	YouTube     *YouTubeStage    `json:"youtube,omitempty"`
-	Sources     *SourcesStage    `json:"sources,omitempty"`
+	StartedAt    time.Time          `json:"started_at"`
+	CompletedAt  time.Time          `json:"completed_at,omitempty"`
+	Duration     time.Duration      `json:"duration"`
+	XBookmarks   *XBookmarksStage   `json:"x_bookmarks,omitempty"`
+	X            *XStage            `json:"x,omitempty"`
+	XMedia       *XMediaStage       `json:"x_media,omitempty"`
+	XPhotoOCR    *XPhotoOCRStage    `json:"x_photo_ocr,omitempty"`
+	Links        *LinksStage        `json:"links,omitempty"`
+	GitHub       *GitHubStage       `json:"github,omitempty"`
+	YouTube      *YouTubeStage      `json:"youtube,omitempty"`
+	Sources      *SourcesStage      `json:"sources,omitempty"`
+	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
 }
 
 type XBookmarksStage struct {
@@ -132,6 +145,11 @@ type YouTubeStage struct {
 type SourcesStage struct {
 	Duration time.Duration      `json:"duration"`
 	Stats    worker.SourceStats `json:"stats"`
+}
+
+type MediaArchiveStage struct {
+	Duration time.Duration      `json:"duration"`
+	Stats    mediaarchive.Stats `json:"stats"`
 }
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
@@ -176,6 +194,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	if opts.SourceConcurrency <= 0 {
 		opts.SourceConcurrency = 4
+	}
+	if opts.ArchiveMediaLimit <= 0 {
+		opts.ArchiveMediaLimit = 5000
 	}
 
 	stats := Stats{StartedAt: time.Now().UTC()}
@@ -368,6 +389,32 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			return finishStats(stats), fmt.Errorf("worker sources: %w", err)
 		}
 		progressf(opts.Progress, "Source worker complete: work_cycles=%d sources_summarized=%d errors=%d stopped=%s (%s)\n", sourceStats.WorkCycles, sourceStats.SourcesSummarized, sourceStats.Errors, sourceStats.StoppedReason, stage.Duration)
+	}
+
+	if opts.ArchiveMediaEnabled {
+		progressf(opts.Progress, "==> archive media\n")
+		start := time.Now()
+		archiveStats, err := runMediaArchive(ctx, cfg, st, mediaarchive.Options{
+			Limit:         opts.ArchiveMediaLimit,
+			Upload:        true,
+			PruneLocal:    true,
+			Provider:      opts.ArchiveProvider,
+			Bucket:        opts.ArchiveBucket,
+			PublicBaseURL: opts.ArchivePublicBaseURL,
+			Endpoint:      opts.ArchiveEndpoint,
+			Region:        opts.ArchiveRegion,
+			AccessKeyID:   opts.ArchiveAccessKeyID,
+			SecretKey:     opts.ArchiveSecretKey,
+			SessionToken:  opts.ArchiveSessionToken,
+			PathStyle:     true,
+			Logger:        opts.Logger,
+		})
+		stage := &MediaArchiveStage{Duration: time.Since(start), Stats: archiveStats}
+		stats.MediaArchive = stage
+		if err != nil {
+			return finishStats(stats), fmt.Errorf("archive media: %w", err)
+		}
+		progressf(opts.Progress, "Media archive complete: candidates=%d uploaded=%d archived=%d unchanged=%d prune_skipped=%d local_files_pruned=%d local_rows_pruned=%d errors=%d (%s)\n", archiveStats.Candidates, archiveStats.Uploaded, archiveStats.Archived, archiveStats.Unchanged, archiveStats.PruneSkipped, archiveStats.LocalFilesPruned, archiveStats.LocalRowsPruned, archiveStats.Errors, stage.Duration)
 	}
 
 	stats = finishStats(stats)

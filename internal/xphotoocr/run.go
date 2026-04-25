@@ -340,7 +340,7 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 func downloadedPhotoRefs(refs []model.ItemMediaRef) []model.ItemMediaRef {
 	photos := make([]model.ItemMediaRef, 0, len(refs))
 	for _, ref := range refs {
-		if ref.MediaType != "photo" || ref.DownloadStatus != "downloaded" || strings.TrimSpace(ref.LocalPath) == "" {
+		if ref.MediaType != "photo" || ref.DownloadStatus != "downloaded" || strings.TrimSpace(ref.LocalPath) == "" || !ref.LocalPrunedAt.IsZero() {
 			continue
 		}
 		photos = append(photos, ref)

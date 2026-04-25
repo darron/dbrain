@@ -3,33 +3,48 @@ package model
 import "time"
 
 type MediaAsset struct {
-	ID             int64     `json:"id"`
-	RemoteURL      string    `json:"remote_url"`
-	MediaType      string    `json:"media_type"`
-	MIMEType       string    `json:"mime_type"`
-	Width          int       `json:"width"`
-	Height         int       `json:"height"`
-	ByteSize       int64     `json:"byte_size"`
-	ContentHash    string    `json:"content_hash"`
-	DownloadStatus string    `json:"download_status"`
-	DownloadError  string    `json:"download_error"`
-	LocalPath      string    `json:"local_path"`
-	DiscoveredAt   time.Time `json:"discovered_at"`
-	DownloadedAt   time.Time `json:"downloaded_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID              int64     `json:"id"`
+	RemoteURL       string    `json:"remote_url"`
+	MediaType       string    `json:"media_type"`
+	MIMEType        string    `json:"mime_type"`
+	Width           int       `json:"width"`
+	Height          int       `json:"height"`
+	ByteSize        int64     `json:"byte_size"`
+	ContentHash     string    `json:"content_hash"`
+	DownloadStatus  string    `json:"download_status"`
+	DownloadError   string    `json:"download_error"`
+	LocalPath       string    `json:"local_path"`
+	ArchiveProvider string    `json:"archive_provider"`
+	ArchiveBucket   string    `json:"archive_bucket"`
+	ArchiveKey      string    `json:"archive_key"`
+	ArchiveURL      string    `json:"archive_url"`
+	ArchiveETag     string    `json:"archive_etag"`
+	ArchiveStatus   string    `json:"archive_status"`
+	ArchiveError    string    `json:"archive_error"`
+	DiscoveredAt    time.Time `json:"discovered_at"`
+	DownloadedAt    time.Time `json:"downloaded_at"`
+	ArchivedAt      time.Time `json:"archived_at"`
+	LocalPrunedAt   time.Time `json:"local_pruned_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type ItemMediaRef struct {
-	ItemID         int64  `json:"item_id"`
-	MediaAssetID   int64  `json:"media_asset_id"`
-	Ordinal        int    `json:"ordinal"`
-	ExpandedURL    string `json:"expanded_url"`
-	RemoteURL      string `json:"remote_url"`
-	MediaType      string `json:"media_type"`
-	DownloadStatus string `json:"download_status"`
-	LocalPath      string `json:"local_path"`
-	Width          int    `json:"width"`
-	Height         int    `json:"height"`
+	ItemID          int64     `json:"item_id"`
+	MediaAssetID    int64     `json:"media_asset_id"`
+	Ordinal         int       `json:"ordinal"`
+	ExpandedURL     string    `json:"expanded_url"`
+	RemoteURL       string    `json:"remote_url"`
+	MediaType       string    `json:"media_type"`
+	DownloadStatus  string    `json:"download_status"`
+	LocalPath       string    `json:"local_path"`
+	ArchiveProvider string    `json:"archive_provider"`
+	ArchiveBucket   string    `json:"archive_bucket"`
+	ArchiveKey      string    `json:"archive_key"`
+	ArchiveURL      string    `json:"archive_url"`
+	ArchiveStatus   string    `json:"archive_status"`
+	Width           int       `json:"width"`
+	Height          int       `json:"height"`
+	LocalPrunedAt   time.Time `json:"local_pruned_at"`
 }
 
 type MediaDownloadResult struct {
@@ -40,4 +55,15 @@ type MediaDownloadResult struct {
 	Status       string    `json:"status"`
 	Error        string    `json:"error"`
 	DownloadedAt time.Time `json:"downloaded_at"`
+}
+
+type MediaArchiveResult struct {
+	Provider   string    `json:"provider"`
+	Bucket     string    `json:"bucket"`
+	Key        string    `json:"key"`
+	URL        string    `json:"url"`
+	ETag       string    `json:"etag"`
+	Status     string    `json:"status"`
+	Error      string    `json:"error"`
+	ArchivedAt time.Time `json:"archived_at"`
 }

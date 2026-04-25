@@ -103,6 +103,7 @@ func NewRootCommand() *cobra.Command {
 	serveCmd.AddCommand(newServeMCPCommand(opts), newServeWebCommand(opts))
 
 	rootCmd.AddCommand(
+		newArchiveCommand(opts),
 		importCmd,
 		newSyncCommand(opts),
 		newEntityCommand(opts),
