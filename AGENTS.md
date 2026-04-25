@@ -174,6 +174,26 @@ Prefer implementations that keep behavior inside the `dbrain` binary.
 - small helper CLIs are acceptable when necessary, especially on macOS
 - if a helper is required, keep the orchestration and state transitions in Go
 
+### Add regression tests for bugs we fix
+
+When a real regression or production bug is fixed, add a test that would fail if
+the bug reappeared.
+
+- prefer the narrowest test that captures the broken behavior
+- if the bug crossed stage boundaries, add the smallest integration-style test
+  that proves the pipeline behavior stays fixed
+- do not rely on memory or chat history to keep regressions from returning
+
+### Prefer local models when practical
+
+`dbrain` should keep working with local inference whenever practical.
+
+- support local models through Ollama when the workload is reasonable
+- keep hosted inference as the burst/catch-up path when it materially improves
+  throughput
+- OpenRouter is the current preferred hosted LLM path
+- exact provider/model provenance should still be stored with derived outputs
+
 ### Always run the standard gates after code changes
 
 For code changes, run:
@@ -193,3 +213,16 @@ When changing workers, stats, or dashboards:
 - prefer outputs that explain what the system is actually doing
 - avoid merged counters that hide the real cause of work or failure
 - avoid stages that look "pending forever" because semantics are unclear
+
+## Content Handling
+
+`dbrain` is a research tool. The goal is to preserve and analyze source
+material, not to make moral or editorial judgments about what is worth
+collecting.
+
+- do not add product-layer filtering based on the substance or politics of the
+  content being gathered
+- if a hosted tool rejects material for policy or moderation reasons, prefer a
+  local fallback rather than silently losing coverage
+- when a hosted provider is brittle on a class of content, keep the raw local
+  input and route the enrichment through a local-capable path when possible
