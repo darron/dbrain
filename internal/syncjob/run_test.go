@@ -15,14 +15,23 @@ import (
 func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 	cfg, st := testSyncStore(t)
 
+	origBookmarks := runXBookmarkImport
 	origX := runXHydrate
 	origXMedia := runXMediaStage
 	t.Cleanup(func() {
+		runXBookmarkImport = origBookmarks
 		runXHydrate = origX
 		runXMediaStage = origXMedia
 	})
 
 	var calls []string
+	runXBookmarkImport = func(_ context.Context, _ config.Config, _ *store.Store, opts xapi.BookmarkOptions) (xapi.BookmarkStats, error) {
+		calls = append(calls, "x-bookmarks")
+		if opts.Limit != 9 {
+			t.Fatalf("expected x bookmark limit 9, got %d", opts.Limit)
+		}
+		return xapi.BookmarkStats{Created: 2, PagesFetched: 1, StoppedReason: "end of bookmarks"}, nil
+	}
 	runXHydrate = func(_ context.Context, _ config.Config, _ *store.Store, opts xapi.Options) (xapi.Stats, error) {
 		calls = append(calls, "x")
 		if opts.Limit != 7 {
@@ -40,6 +49,8 @@ func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 
 	var progress bytes.Buffer
 	stats, err := Run(context.Background(), cfg, st, Options{
+		XBookmarksEnabled: true,
+		XBookmarksLimit:   9,
 		XEnabled:      true,
 		XLimit:        7,
 		XMediaEnabled: true,
@@ -49,8 +60,11 @@ func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if !slices.Equal(calls, []string{"x", "x-media"}) {
+	if !slices.Equal(calls, []string{"x-bookmarks", "x", "x-media"}) {
 		t.Fatalf("unexpected stage order: %v", calls)
+	}
+	if stats.XBookmarks == nil {
+		t.Fatal("expected x bookmark stage stats")
 	}
 	if stats.X == nil {
 		t.Fatal("expected x stage stats")

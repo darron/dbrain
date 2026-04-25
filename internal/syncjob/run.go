@@ -5,13 +5,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"dbrain/internal/config"
-	"dbrain/internal/ftimport"
 	"dbrain/internal/githubimport"
 	"dbrain/internal/linkextract"
 	"dbrain/internal/sourceenrich"
@@ -24,7 +21,7 @@ import (
 )
 
 var (
-	runFTImport        = ftimport.Run
+	runXBookmarkImport = xapi.RunBookmarks
 	runXHydrate        = xapi.Run
 	runXMediaStage     = xmediatranscribe.Run
 	runLinkExtract     = linkextract.Run
@@ -35,9 +32,8 @@ var (
 )
 
 type Options struct {
-	FTEnabled bool
-	FTSource  string
-	FTLimit   int
+	XBookmarksEnabled bool
+	XBookmarksLimit   int
 
 	XEnabled      bool
 	XLimit        int
@@ -83,7 +79,7 @@ type Stats struct {
 	StartedAt   time.Time     `json:"started_at"`
 	CompletedAt time.Time     `json:"completed_at,omitempty"`
 	Duration    time.Duration `json:"duration"`
-	FT          *FTStage      `json:"ft,omitempty"`
+	XBookmarks  *XBookmarksStage `json:"x_bookmarks,omitempty"`
 	X           *XStage       `json:"x,omitempty"`
 	XMedia      *XMediaStage  `json:"x_media,omitempty"`
 	Links       *LinksStage   `json:"links,omitempty"`
@@ -92,9 +88,9 @@ type Stats struct {
 	Sources     *SourcesStage `json:"sources,omitempty"`
 }
 
-type FTStage struct {
-	Duration time.Duration  `json:"duration"`
-	Stats    ftimport.Stats `json:"stats"`
+type XBookmarksStage struct {
+	Duration time.Duration     `json:"duration"`
+	Stats    xapi.BookmarkStats `json:"stats"`
 }
 
 type XStage struct {
@@ -128,10 +124,6 @@ type SourcesStage struct {
 }
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
-	if strings.TrimSpace(opts.FTSource) == "" {
-		home, _ := os.UserHomeDir()
-		opts.FTSource = filepath.Join(home, ".ft-bookmarks", "bookmarks.db")
-	}
 	if strings.TrimSpace(opts.Browser) == "" {
 		opts.Browser = "chrome"
 	}
@@ -175,19 +167,23 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	stats := Stats{StartedAt: time.Now().UTC()}
 	progressf(opts.Progress, "Sync started at %s\n", stats.StartedAt.Format(time.RFC3339))
 
-	if opts.FTEnabled {
-		progressf(opts.Progress, "==> import ft\n")
+	if opts.XBookmarksEnabled {
+		progressf(opts.Progress, "==> import x-bookmarks\n")
 		start := time.Now()
-		ftStats, err := runFTImport(ctx, cfg, st, ftimport.Options{
-			SourcePath: opts.FTSource,
-			Limit:      opts.FTLimit,
+		bookmarkStats, err := runXBookmarkImport(ctx, cfg, st, xapi.BookmarkOptions{
+			Limit:   opts.XBookmarksLimit,
+			Browser: opts.Browser,
+			Profile: opts.Profile,
+			Force:   opts.Force,
+			Timeout: opts.XTimeout,
+			Logger:  opts.Logger,
 		})
-		stage := &FTStage{Duration: time.Since(start), Stats: ftStats}
-		stats.FT = stage
+		stage := &XBookmarksStage{Duration: time.Since(start), Stats: bookmarkStats}
+		stats.XBookmarks = stage
 		if err != nil {
-			return finishStats(stats), fmt.Errorf("import ft: %w", err)
+			return finishStats(stats), fmt.Errorf("import x-bookmarks: %w", err)
 		}
-		progressf(opts.Progress, "FT import complete: created=%d updated=%d unchanged=%d rendered=%d (%s)\n", ftStats.Created, ftStats.Updated, ftStats.Unchanged, ftStats.Rendered, stage.Duration)
+		progressf(opts.Progress, "X bookmarks import complete: created=%d updated=%d unchanged=%d rendered=%d pages=%d stopped=%s (%s)\n", bookmarkStats.Created, bookmarkStats.Updated, bookmarkStats.Unchanged, bookmarkStats.Rendered, bookmarkStats.PagesFetched, bookmarkStats.StoppedReason, stage.Duration)
 	}
 
 	if opts.XEnabled {

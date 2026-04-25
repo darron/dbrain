@@ -309,6 +309,116 @@ func TestBacklogSkipsRecentExtractErrorsDuringCooldown(t *testing.T) {
 	}
 }
 
+func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertVideoCandidate := func(sourceKey string) int64 {
+		t.Helper()
+
+		itemResult, err := st.UpsertItem(ctx, model.Item{
+			SourceKey:    sourceKey,
+			SourceType:   "x_bookmark",
+			ExternalID:   sourceKey,
+			CanonicalURL: "https://x.com/example/status/" + sourceKey,
+			Title:        sourceKey,
+			ContentHash:  sourceKey + "-hash",
+			LinksJSON:    "[]",
+			NotePath:     "items/x/test.md",
+			RawJSON:      `{}`,
+			ImportedAt:   now,
+			UpdatedAt:    now,
+			LastSeenAt:   now,
+		})
+		if err != nil {
+			t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+		}
+
+		hydration := model.XHydration{
+			FullText:  "hello",
+			Language:  "en",
+			Status:    "ok_graphql",
+			FetchedAt: now,
+			APIJSON: `{
+				"snapshot":{
+					"media_objects":[
+						{"type":"video","url":"https://video.twimg.com/ext/` + sourceKey + `.mp4","expanded_url":"https://x.com/example/status/` + sourceKey + `/video/1","width":1280,"height":720}
+					]
+				}
+			}`,
+		}
+		if _, err := st.SaveXHydration(ctx, itemResult.ItemID, hydration); err != nil {
+			t.Fatalf("SaveXHydration %s: %v", sourceKey, err)
+		}
+
+		refs, err := st.ListItemMediaRefs(ctx, itemResult.ItemID)
+		if err != nil {
+			t.Fatalf("ListItemMediaRefs %s: %v", sourceKey, err)
+		}
+		if len(refs) != 1 {
+			t.Fatalf("expected one media ref for %s, got %d", sourceKey, len(refs))
+		}
+		if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+			LocalPath:    "media/x/video/" + sourceKey + ".mp4",
+			ContentHash:  sourceKey + "-download-hash",
+			Status:       "downloaded",
+			DownloadedAt: now,
+		}); err != nil {
+			t.Fatalf("SaveMediaDownload %s: %v", sourceKey, err)
+		}
+
+		return itemResult.ItemID
+	}
+
+	currentID := insertVideoCandidate("x-media-current")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET article_title = 'X Media Transcript',
+			article_text = 'materialized transcript',
+			x_media_transcript_status = 'ok',
+			x_media_transcript_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		currentID,
+	); err != nil {
+		t.Fatalf("seed current transcript: %v", err)
+	}
+
+	blockedID := insertVideoCandidate("x-media-blocked")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET x_media_transcript_status = 'ok',
+			x_media_transcript_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		blockedID,
+	); err != nil {
+		t.Fatalf("seed blocked transcript: %v", err)
+	}
+
+	failedID := insertVideoCandidate("x-media-failed")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET x_media_transcript_status = 'no_audio',
+			x_media_transcript_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		failedID,
+	); err != nil {
+		t.Fatalf("seed failed transcript: %v", err)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+
+	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 3, 1, 0, 1, 1)
+}
+
 func TestSourceActivityFeedReturnsRecentSuccessesAndFailures(t *testing.T) {
 	t.Parallel()
 
@@ -698,4 +808,19 @@ func testSummary(text string, status string) model.SummaryResult {
 		Tool:          "summarize",
 		ToolVersion:   "test-1.0.0",
 	}
+}
+
+func assertPipelineRowCounts(t *testing.T, rows []PipelineStageRow, kind string, total int, current int, pending int, blocked int, failed int) {
+	t.Helper()
+
+	for _, row := range rows {
+		if row.Kind != kind {
+			continue
+		}
+		if row.Total != total || row.Current != current || row.Pending != pending || row.Blocked != blocked || row.Failed != failed {
+			t.Fatalf("unexpected pipeline row for %s: %+v", kind, row)
+		}
+		return
+	}
+	t.Fatalf("missing pipeline row for %s in %+v", kind, rows)
 }

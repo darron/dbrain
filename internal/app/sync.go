@@ -2,8 +2,6 @@ package app
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,10 +21,7 @@ func newSyncCommand(root *rootOptions) *cobra.Command {
 }
 
 func newSyncAllCommand(root *rootOptions) *cobra.Command {
-	home, _ := os.UserHomeDir()
-
-	var ftSource string
-	var ftLimit int
+	var xBookmarksLimit int
 	var xLimit int
 	var xConcurrency int
 	var xTimeout time.Duration
@@ -51,6 +46,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var cliProvider string
 	var length string
 	var timeout time.Duration
+	var skipXBookmarks bool
 	var skipFT bool
 	var skipX bool
 	var skipXMedia bool
@@ -79,9 +75,8 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			}()
 
 			stats, err := syncjob.Run(cmd.Context(), cfg, st, syncjob.Options{
-				FTEnabled:           !skipFT,
-				FTSource:            ftSource,
-				FTLimit:             ftLimit,
+				XBookmarksEnabled:   !skipXBookmarks && !skipFT,
+				XBookmarksLimit:     xBookmarksLimit,
 				XEnabled:            !skipX,
 				XLimit:              xLimit,
 				XConcurrency:        xConcurrency,
@@ -128,8 +123,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&ftSource, "ft-source", filepath.Join(home, ".ft-bookmarks", "bookmarks.db"), "Path to ft bookmarks.db")
-	cmd.Flags().IntVar(&ftLimit, "ft-limit", 0, "Optional bookmark import limit for smoke runs")
+	cmd.Flags().IntVar(&xBookmarksLimit, "x-bookmarks-limit", 0, "Optional direct X bookmark import limit for smoke runs")
 	cmd.Flags().IntVar(&xLimit, "x-limit", 100, "Maximum X items to hydrate per run")
 	cmd.Flags().IntVar(&xConcurrency, "x-concurrency", 4, "Number of concurrent X post fetches")
 	cmd.Flags().DurationVar(&xTimeout, "x-timeout", 30*time.Second, "Timeout for X browser helpers and HTTP requests")
@@ -154,7 +148,9 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
 	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Timeout for summarize-backed extraction and summarization stages")
-	cmd.Flags().BoolVar(&skipFT, "skip-ft", false, "Skip fieldtheory bookmark import")
+	cmd.Flags().BoolVar(&skipXBookmarks, "skip-x-bookmarks", false, "Skip direct X bookmark import")
+	cmd.Flags().BoolVar(&skipFT, "skip-ft", false, "Deprecated alias for --skip-x-bookmarks")
+	_ = cmd.Flags().MarkHidden("skip-ft")
 	cmd.Flags().BoolVar(&skipX, "skip-x", false, "Skip X hydration")
 	cmd.Flags().BoolVar(&skipXMedia, "skip-x-media", false, "Skip X media audio transcription")
 	cmd.Flags().BoolVar(&skipLinks, "skip-links", false, "Skip outbound link discovery and enrichment from imported items")
@@ -177,8 +173,8 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 		return err
 	}
 
-	if stats.FT != nil {
-		if _, err := fmt.Fprintf(dst, "FT: created=%d updated=%d unchanged=%d rendered=%d\n", stats.FT.Stats.Created, stats.FT.Stats.Updated, stats.FT.Stats.Unchanged, stats.FT.Stats.Rendered); err != nil {
+	if stats.XBookmarks != nil {
+		if _, err := fmt.Fprintf(dst, "X Bookmarks: created=%d updated=%d unchanged=%d rendered=%d pages=%d stopped=%s\n", stats.XBookmarks.Stats.Created, stats.XBookmarks.Stats.Updated, stats.XBookmarks.Stats.Unchanged, stats.XBookmarks.Stats.Rendered, stats.XBookmarks.Stats.PagesFetched, stats.XBookmarks.Stats.StoppedReason); err != nil {
 			return err
 		}
 	}

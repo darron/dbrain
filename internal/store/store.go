@@ -11,6 +11,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"dbrain/internal/itemhash"
 	"dbrain/internal/model"
 )
 
@@ -224,8 +225,10 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 
 	var existingID int64
 	var existingHash string
-	row := tx.QueryRowContext(ctx, `SELECT id, content_hash FROM items WHERE source_key = ?`, item.SourceKey)
-	switch scanErr := row.Scan(&existingID, &existingHash); {
+	var existingArticleTitle string
+	var existingArticleText string
+	row := tx.QueryRowContext(ctx, `SELECT id, content_hash, article_title, article_text FROM items WHERE source_key = ?`, item.SourceKey)
+	switch scanErr := row.Scan(&existingID, &existingHash, &existingArticleTitle, &existingArticleText); {
 	case errors.Is(scanErr, sql.ErrNoRows):
 		now := item.UpdatedAt.Format(time.RFC3339)
 		result, execErr := tx.ExecContext(ctx, `INSERT INTO items (
@@ -261,6 +264,10 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 		err = fmt.Errorf("load existing item %s: %w", item.SourceKey, scanErr)
 		return model.UpsertResult{}, err
 	default:
+	}
+
+	if preserveExistingItemArticleFields(&item, existingArticleTitle, existingArticleText) {
+		item.ContentHash = itemhash.Compute(item)
 	}
 
 	if existingHash == item.ContentHash {
@@ -302,6 +309,23 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 	}
 
 	return model.UpsertResult{Status: model.UpsertUpdated, ItemID: existingID, NotePath: item.NotePath}, nil
+}
+
+func preserveExistingItemArticleFields(item *model.Item, existingArticleTitle string, existingArticleText string) bool {
+	if item == nil {
+		return false
+	}
+
+	changed := false
+	if strings.TrimSpace(item.ArticleText) == "" && strings.TrimSpace(existingArticleText) != "" {
+		item.ArticleText = existingArticleText
+		changed = true
+	}
+	if strings.TrimSpace(item.ArticleTitle) == "" && strings.TrimSpace(existingArticleTitle) != "" {
+		item.ArticleTitle = existingArticleTitle
+		changed = true
+	}
+	return changed
 }
 
 func (s *Store) syncFTSTx(ctx context.Context, tx *sql.Tx, itemID int64, item model.Item) error {

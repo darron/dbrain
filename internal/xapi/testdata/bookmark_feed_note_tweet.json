@@ -1,0 +1,88 @@
+{
+  "data": {
+    "bookmark_timeline_v2": {
+      "timeline": {
+        "instructions": [
+          {
+            "type": "TimelineAddEntries",
+            "entries": [
+              {
+                "entryId": "tweet-2039805659525644595",
+                "sortIndex": "1825000000000000000",
+                "content": {
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "itemType": "TimelineTweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "rest_id": "2039805659525644595",
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "rest_id": "33836629",
+                              "core": {
+                                "created_at": "Tue Apr 21 06:49:15 +0000 2009",
+                                "name": "Andrej Karpathy",
+                                "screen_name": "karpathy"
+                              },
+                              "avatar": {
+                                "image_url": "https://pbs.twimg.com/profile_images/1296667294148382721/9Pr6XrPB_normal.jpg"
+                              },
+                              "legacy": {}
+                            }
+                          }
+                        },
+                        "note_tweet": {
+                          "is_expandable": true,
+                          "note_tweet_results": {
+                            "result": {
+                              "id": "Tm90ZVR3ZWV0OjIwMzk4MDU2NTkxOTg0MzUzMjg=",
+                              "text": "LLM Knowledge Bases\n\nSomething I'm finding very useful recently: using LLMs to build personal knowledge bases for various topics of research interest. In this way, a large fraction of my recent token throughput is going less into manipulating code, and more into manipulating knowledge.",
+                              "entity_set": {
+                                "hashtags": [],
+                                "symbols": [],
+                                "urls": [],
+                                "user_mentions": []
+                              }
+                            }
+                          }
+                        },
+                        "legacy": {
+                          "id_str": "2039805659525644595",
+                          "full_text": "LLM Knowledge Bases\n\nSomething I'm finding very useful recently: using LLMs to build personal knowledge bases for various topics of research interest. In this way, a large fraction of my recent token throughput is going less into manipulating",
+                          "created_at": "Thu Apr 02 20:42:21 +0000 2026",
+                          "lang": "en",
+                          "favorite_count": 56029,
+                          "retweet_count": 6674,
+                          "reply_count": 2759,
+                          "quote_count": 1966,
+                          "bookmark_count": 101751,
+                          "conversation_id_str": "2039805659525644595",
+                          "entities": {
+                            "urls": [],
+                            "user_mentions": []
+                          }
+                        },
+                        "views": {
+                          "count": "19897360",
+                          "state": "EnabledWithCount"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "cursor-bottom-xyz",
+                "content": {
+                  "value": "DAACCgACEgUT6sAAKgAA"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

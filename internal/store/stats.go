@@ -587,6 +587,10 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status = 'ok'`, transcriptTitle, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
 	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status != '' AND x_media_transcript_status != 'ok'`, transcriptTitle, transcriptTitle)
 	if err != nil {
 		return PipelineStageRow{}, false, err
@@ -597,6 +601,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 		Total:   total,
 		Current: current,
 		Pending: pending,
+		Blocked: blocked,
 		Failed:  failed,
 	}
 	finalizePipelineStageRow(&row)

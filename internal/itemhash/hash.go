@@ -9,7 +9,21 @@ import (
 )
 
 func Compute(item model.Item) string {
+	likeCount := item.LikeCount
+	repostCount := item.RepostCount
+	replyCount := item.ReplyCount
+	quoteCount := item.QuoteCount
+	bookmarkCount := item.BookmarkCount
+	if item.SourceType == "x_bookmark" {
+		likeCount = 0
+		repostCount = 0
+		replyCount = 0
+		quoteCount = 0
+		bookmarkCount = 0
+	}
+
 	payload := struct {
+		SourceType      string `json:"source_type"`
 		SourceKey       string `json:"source_key"`
 		CanonicalURL    string `json:"canonical_url"`
 		Title           string `json:"title"`
@@ -17,7 +31,6 @@ func Compute(item model.Item) string {
 		AuthorName      string `json:"author_name"`
 		PublishedAt     string `json:"published_at"`
 		SavedAt         string `json:"saved_at"`
-		SyncedAt        string `json:"synced_at"`
 		Language        string `json:"language"`
 		Text            string `json:"text"`
 		ArticleTitle    string `json:"article_title"`
@@ -35,6 +48,7 @@ func Compute(item model.Item) string {
 		QuoteCount      int    `json:"quote_count"`
 		BookmarkCount   int    `json:"bookmark_count"`
 	}{
+		SourceType:      item.SourceType,
 		SourceKey:       item.SourceKey,
 		CanonicalURL:    item.CanonicalURL,
 		Title:           item.Title,
@@ -42,7 +56,6 @@ func Compute(item model.Item) string {
 		AuthorName:      item.AuthorName,
 		PublishedAt:     item.PublishedAt,
 		SavedAt:         item.SavedAt,
-		SyncedAt:        item.SyncedAt,
 		Language:        item.Language,
 		Text:            item.Text,
 		ArticleTitle:    item.ArticleTitle,
@@ -54,11 +67,11 @@ func Compute(item model.Item) string {
 		Domains:         item.Domains,
 		GitHubURLs:      item.GitHubURLs,
 		FolderNames:     item.FolderNames,
-		LikeCount:       item.LikeCount,
-		RepostCount:     item.RepostCount,
-		ReplyCount:      item.ReplyCount,
-		QuoteCount:      item.QuoteCount,
-		BookmarkCount:   item.BookmarkCount,
+		LikeCount:       likeCount,
+		RepostCount:     repostCount,
+		ReplyCount:      replyCount,
+		QuoteCount:      quoteCount,
+		BookmarkCount:   bookmarkCount,
 	}
 	bytes, _ := json.Marshal(payload)
 	sum := sha256.Sum256(bytes)

@@ -69,6 +69,7 @@ quiet CLI output.
 - Improve provider provenance so stored summaries always record the exact backend/model used.
 - Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
 - Add explicit source-of-truth audit commands (for example `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`) so imports can be reconciled against upstream services with missing IDs and enrichment status clearly separated, while treating the local DB as append-only by default instead of auto-flagging removed upstream saves/stars/likes for deletion.
+- Replace the FT bookmark dependency with a native X bookmark importer that preserves bookmark-order metadata from GraphQL (for example timeline `sortIndex` or an equivalent rank/sequence) so new imports remain incrementally syncable even when X does not expose a reliable `bookmarked_at`, without faking `saved_at` from `synced_at`.
 - Add a pre-summary staging path for oversized extracts so giant PDFs and long documents can be chunked, pre-compressed, or locally preprocessed before hosted summary calls hit provider context limits.
 - Add a scheduler/launchd-style mode on top of the new worker loop so enrichment can resume automatically after terminal closure or reboot.
 - Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.
@@ -559,3 +560,7 @@ content changes, prompt changes, and summarize upgrades.
 re-extract anything. It reads items and sources from `brain.db` and recreates
 their Markdown notes under `vault/`. By default it only writes missing notes,
 which is the intended path after antivirus quarantine or accidental deletion.
+
+## TODO
+
+- Add a post-transcription enrichment step for X media that summarizes long video transcripts using the X post body as context and the transcript as primary evidence. Keep the raw `X Media Transcript` body intact; store any generated summary separately so the transcript remains recoverable and authoritative. OpenRouter should be a viable backend for this because the transcript-only follow-up summaries should be fast and cheap.
