@@ -103,3 +103,14 @@ type SummaryResult struct {
 	Tool          string
 	ToolVersion   string
 }
+
+type OCRResult struct {
+	Text        string
+	RawJSON     string
+	Model       string
+	Status      string
+	Error       string
+	FetchedAt   time.Time
+	Tool        string
+	ToolVersion string
+}

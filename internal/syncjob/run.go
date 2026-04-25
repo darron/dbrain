@@ -17,6 +17,7 @@ import (
 	"dbrain/internal/worker"
 	"dbrain/internal/xapi"
 	"dbrain/internal/xmediatranscribe"
+	"dbrain/internal/xphotoocr"
 	"dbrain/internal/youtubeimport"
 )
 
@@ -24,6 +25,7 @@ var (
 	runXBookmarkImport = xapi.RunBookmarks
 	runXHydrate        = xapi.Run
 	runXMediaStage     = xmediatranscribe.Run
+	runXPhotoOCRStage  = xphotoocr.Run
 	runLinkExtract     = linkextract.Run
 	runGitHubImport    = githubimport.Run
 	runYouTubeImport   = youtubeimport.Run
@@ -35,12 +37,14 @@ type Options struct {
 	XBookmarksEnabled bool
 	XBookmarksLimit   int
 
-	XEnabled      bool
-	XLimit        int
-	XConcurrency  int
-	XTimeout      time.Duration
-	XMediaEnabled bool
-	XMediaLimit   int
+	XEnabled         bool
+	XLimit           int
+	XConcurrency     int
+	XTimeout         time.Duration
+	XMediaEnabled    bool
+	XMediaLimit      int
+	XPhotoOCREnabled bool
+	XPhotoOCRLimit   int
 
 	LinksEnabled      bool
 	LinkDiscoverLimit int
@@ -68,6 +72,7 @@ type Options struct {
 	Force     bool
 	Summarize bool
 	Model     string
+	OCRModel  string
 	CLI       string
 	Length    string
 	Timeout   time.Duration
@@ -76,20 +81,21 @@ type Options struct {
 }
 
 type Stats struct {
-	StartedAt   time.Time     `json:"started_at"`
-	CompletedAt time.Time     `json:"completed_at,omitempty"`
-	Duration    time.Duration `json:"duration"`
+	StartedAt   time.Time        `json:"started_at"`
+	CompletedAt time.Time        `json:"completed_at,omitempty"`
+	Duration    time.Duration    `json:"duration"`
 	XBookmarks  *XBookmarksStage `json:"x_bookmarks,omitempty"`
-	X           *XStage       `json:"x,omitempty"`
-	XMedia      *XMediaStage  `json:"x_media,omitempty"`
-	Links       *LinksStage   `json:"links,omitempty"`
-	GitHub      *GitHubStage  `json:"github,omitempty"`
-	YouTube     *YouTubeStage `json:"youtube,omitempty"`
-	Sources     *SourcesStage `json:"sources,omitempty"`
+	X           *XStage          `json:"x,omitempty"`
+	XMedia      *XMediaStage     `json:"x_media,omitempty"`
+	XPhotoOCR   *XPhotoOCRStage  `json:"x_photo_ocr,omitempty"`
+	Links       *LinksStage      `json:"links,omitempty"`
+	GitHub      *GitHubStage     `json:"github,omitempty"`
+	YouTube     *YouTubeStage    `json:"youtube,omitempty"`
+	Sources     *SourcesStage    `json:"sources,omitempty"`
 }
 
 type XBookmarksStage struct {
-	Duration time.Duration     `json:"duration"`
+	Duration time.Duration      `json:"duration"`
 	Stats    xapi.BookmarkStats `json:"stats"`
 }
 
@@ -101,6 +107,11 @@ type XStage struct {
 type XMediaStage struct {
 	Duration time.Duration          `json:"duration"`
 	Stats    xmediatranscribe.Stats `json:"stats"`
+}
+
+type XPhotoOCRStage struct {
+	Duration time.Duration   `json:"duration"`
+	Stats    xphotoocr.Stats `json:"stats"`
 }
 
 type LinksStage struct {
@@ -141,6 +152,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	if opts.XMediaLimit <= 0 {
 		opts.XMediaLimit = opts.XLimit
+	}
+	if opts.XPhotoOCRLimit <= 0 {
+		opts.XPhotoOCRLimit = opts.XLimit
 	}
 	if opts.XConcurrency <= 0 {
 		opts.XConcurrency = 4
@@ -210,17 +224,41 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		progressf(opts.Progress, "==> transcribe x-media\n")
 		start := time.Now()
 		xMediaStats, err := runXMediaStage(ctx, cfg, st, xmediatranscribe.Options{
-			Limit:   opts.XMediaLimit,
-			Force:   opts.Force,
-			Timeout: opts.Timeout,
-			Logger:  opts.Logger,
+			Limit:         opts.XMediaLimit,
+			Force:         opts.Force,
+			Concurrency:   opts.XConcurrency,
+			Timeout:       opts.Timeout,
+			Summarize:     opts.Summarize,
+			SummaryModel:  opts.Model,
+			SummaryCLI:    opts.CLI,
+			SummaryLength: opts.Length,
+			Logger:        opts.Logger,
 		})
 		stage := &XMediaStage{Duration: time.Since(start), Stats: xMediaStats}
 		stats.XMedia = stage
 		if err != nil {
 			return finishStats(stats), fmt.Errorf("transcribe x-media: %w", err)
 		}
-		progressf(opts.Progress, "X media transcription complete: items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d errors=%d (%s)\n", xMediaStats.ItemsProcessed, xMediaStats.ItemsUpdated, xMediaStats.ItemsSkipped, xMediaStats.MediaTranscribed, xMediaStats.Errors, stage.Duration)
+		progressf(opts.Progress, "X media transcription complete: items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d items_summarized=%d errors=%d summary_errors=%d (%s)\n", xMediaStats.ItemsProcessed, xMediaStats.ItemsUpdated, xMediaStats.ItemsSkipped, xMediaStats.MediaTranscribed, xMediaStats.ItemsSummarized, xMediaStats.Errors, xMediaStats.SummaryErrors, stage.Duration)
+	}
+
+	if opts.XPhotoOCREnabled {
+		progressf(opts.Progress, "==> ocr x-photos\n")
+		start := time.Now()
+		ocrStats, err := runXPhotoOCRStage(ctx, cfg, st, xphotoocr.Options{
+			Limit:       opts.XPhotoOCRLimit,
+			Force:       opts.Force,
+			Concurrency: opts.XConcurrency,
+			Timeout:     opts.Timeout,
+			Model:       opts.OCRModel,
+			Logger:      opts.Logger,
+		})
+		stage := &XPhotoOCRStage{Duration: time.Since(start), Stats: ocrStats}
+		stats.XPhotoOCR = stage
+		if err != nil {
+			return finishStats(stats), fmt.Errorf("ocr x-photos: %w", err)
+		}
+		progressf(opts.Progress, "X photo OCR complete: items_processed=%d items_updated=%d items_skipped=%d photos_ocred=%d errors=%d (%s)\n", ocrStats.ItemsProcessed, ocrStats.ItemsUpdated, ocrStats.ItemsSkipped, ocrStats.PhotosOCRed, ocrStats.Errors, stage.Duration)
 	}
 
 	if opts.LinksEnabled {

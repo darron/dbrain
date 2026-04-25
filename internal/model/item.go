@@ -43,6 +43,25 @@ type Item struct {
 	XPostStatus            string         `json:"x_post_status"`
 	XPostError             string         `json:"x_post_error"`
 	LinkExtractSyncedAt    time.Time      `json:"link_extract_synced_at"`
+	SummaryText            string         `json:"summary_text"`
+	SummaryJSON            string         `json:"summary_json"`
+	SummaryStatus          string         `json:"summary_status"`
+	SummaryError           string         `json:"summary_error"`
+	SummaryModel           string         `json:"summary_model"`
+	SummaryPromptVersion   string         `json:"summary_prompt_version"`
+	SummaryTool            string         `json:"summary_tool"`
+	SummaryToolVersion     string         `json:"summary_tool_version"`
+	SummaryInputHash       string         `json:"summary_input_hash"`
+	SummarizedAt           time.Time      `json:"summarized_at"`
+	OCRText                string         `json:"ocr_text"`
+	OCRJSON                string         `json:"ocr_json"`
+	OCRStatus              string         `json:"ocr_status"`
+	OCRError               string         `json:"ocr_error"`
+	OCRModel               string         `json:"ocr_model"`
+	OCRTool                string         `json:"ocr_tool"`
+	OCRToolVersion         string         `json:"ocr_tool_version"`
+	OCRInputHash           string         `json:"ocr_input_hash"`
+	OCRAt                  time.Time      `json:"ocr_at"`
 	XMediaTranscriptStatus string         `json:"x_media_transcript_status"`
 	XMediaTranscriptError  string         `json:"x_media_transcript_error"`
 	XMediaTranscriptAt     time.Time      `json:"x_media_transcript_at"`

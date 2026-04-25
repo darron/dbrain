@@ -25,6 +25,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var xLimit int
 	var xConcurrency int
 	var xTimeout time.Duration
+	var ocrModel string
 	var linkDiscoverLimit int
 	var linkLimit int
 	var linkConcurrency int
@@ -50,6 +51,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var skipFT bool
 	var skipX bool
 	var skipXMedia bool
+	var skipXPhotoOCR bool
 	var skipLinks bool
 	var skipGitHub bool
 	var skipYouTube bool
@@ -83,6 +85,8 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				XTimeout:            xTimeout,
 				XMediaEnabled:       !skipXMedia,
 				XMediaLimit:         xLimit,
+				XPhotoOCREnabled:    !skipXPhotoOCR,
+				XPhotoOCRLimit:      xLimit,
 				LinksEnabled:        !skipLinks,
 				LinkDiscoverLimit:   linkDiscoverLimit,
 				LinkLimit:           linkLimit,
@@ -105,6 +109,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				Force:               force,
 				Summarize:           summarize,
 				Model:               model,
+				OCRModel:            ocrModel,
 				CLI:                 cliProvider,
 				Length:              length,
 				Timeout:             timeout,
@@ -127,6 +132,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&xLimit, "x-limit", 100, "Maximum X items to hydrate per run")
 	cmd.Flags().IntVar(&xConcurrency, "x-concurrency", 4, "Number of concurrent X post fetches")
 	cmd.Flags().DurationVar(&xTimeout, "x-timeout", 30*time.Second, "Timeout for X browser helpers and HTTP requests")
+	cmd.Flags().StringVar(&ocrModel, "ocr-model", "openrouter/google/gemini-3.1-flash-lite-preview", "Model override for X photo OCR")
 	cmd.Flags().IntVar(&linkDiscoverLimit, "link-discover-limit", 500, "Maximum imported items to scan for outbound links")
 	cmd.Flags().IntVar(&linkLimit, "link-limit", 100, "Maximum deduped discovered sources to enrich per link extraction run")
 	cmd.Flags().IntVar(&linkConcurrency, "link-concurrency", 4, "Number of concurrent link source extract/summarize jobs")
@@ -153,6 +159,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	_ = cmd.Flags().MarkHidden("skip-ft")
 	cmd.Flags().BoolVar(&skipX, "skip-x", false, "Skip X hydration")
 	cmd.Flags().BoolVar(&skipXMedia, "skip-x-media", false, "Skip X media audio transcription")
+	cmd.Flags().BoolVar(&skipXPhotoOCR, "skip-x-photo-ocr", false, "Skip X photo OCR / vision extraction")
 	cmd.Flags().BoolVar(&skipLinks, "skip-links", false, "Skip outbound link discovery and enrichment from imported items")
 	cmd.Flags().BoolVar(&skipGitHub, "skip-github", false, "Skip GitHub stars import")
 	cmd.Flags().BoolVar(&skipYouTube, "skip-youtube", false, "Skip YouTube signal import")
@@ -184,7 +191,12 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 		}
 	}
 	if stats.XMedia != nil {
-		if _, err := fmt.Fprintf(dst, "X Media: items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d errors=%d\n", stats.XMedia.Stats.ItemsProcessed, stats.XMedia.Stats.ItemsUpdated, stats.XMedia.Stats.ItemsSkipped, stats.XMedia.Stats.MediaTranscribed, stats.XMedia.Stats.Errors); err != nil {
+		if _, err := fmt.Fprintf(dst, "X Media: items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d items_summarized=%d errors=%d summary_errors=%d\n", stats.XMedia.Stats.ItemsProcessed, stats.XMedia.Stats.ItemsUpdated, stats.XMedia.Stats.ItemsSkipped, stats.XMedia.Stats.MediaTranscribed, stats.XMedia.Stats.ItemsSummarized, stats.XMedia.Stats.Errors, stats.XMedia.Stats.SummaryErrors); err != nil {
+			return err
+		}
+	}
+	if stats.XPhotoOCR != nil {
+		if _, err := fmt.Fprintf(dst, "X Photo OCR: items_processed=%d items_updated=%d items_skipped=%d photos_ocred=%d errors=%d\n", stats.XPhotoOCR.Stats.ItemsProcessed, stats.XPhotoOCR.Stats.ItemsUpdated, stats.XPhotoOCR.Stats.ItemsSkipped, stats.XPhotoOCR.Stats.PhotosOCRed, stats.XPhotoOCR.Stats.Errors); err != nil {
 			return err
 		}
 	}

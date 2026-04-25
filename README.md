@@ -64,6 +64,8 @@ quiet CLI output.
 - Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
 - Add a translation stage for non-English X content, storing both original and translated text.
 - Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
+- Add a media archival tier for finalized assets (for example S3/R2/B2-compatible object storage) so large local X media can be offloaded after transcript/summary generation, while preserving durable URLs and keeping local-disk cleanup explicitly reference-aware.
+  Compare Cloudflare R2 vs Fly/Tigris specifically before implementing; R2 likely wins on price and existing vendor footprint, but both are viable S3-compatible archive targets.
 - Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
 - Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
 - Improve provider provenance so stored summaries always record the exact backend/model used.
@@ -71,6 +73,9 @@ quiet CLI output.
 - Add explicit source-of-truth audit commands (for example `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`) so imports can be reconciled against upstream services with missing IDs and enrichment status clearly separated, while treating the local DB as append-only by default instead of auto-flagging removed upstream saves/stars/likes for deletion.
 - Replace the FT bookmark dependency with a native X bookmark importer that preserves bookmark-order metadata from GraphQL (for example timeline `sortIndex` or an equivalent rank/sequence) so new imports remain incrementally syncable even when X does not expose a reliable `bookmarked_at`, without faking `saved_at` from `synced_at`.
 - Add a pre-summary staging path for oversized extracts so giant PDFs and long documents can be chunked, pre-compressed, or locally preprocessed before hosted summary calls hit provider context limits.
+- Add an oversized-X-video policy for media download/transcription. Right now large or hour-long videos time out, land in `download_status='error'`, and remain retryable on future `hydrate x` / `sync all` runs. Add byte-size and/or duration gating, prefer lower-bitrate playable variants for transcription, and classify clearly-skipped assets as `too_large` / `too_long` instead of retrying forever.
+- Add a first-class X photo OCR / image-understanding stage. Build and compare three modes on a real sample set: Apple Vision OCR locally, Tesseract locally, and hosted OpenRouter vision for catch-up / semantic fallback. Measure cost, latency, OCR quality, moderation/failure rate on sensitive images, and whether the result is useful enough for search/summary before choosing the default steady-state path.
+- Add an optional X thread expansion path when a bookmarked post is clearly part of a longer thread. Prefer fetching the full thread from X/GraphQL when the upstream APIs expose it, so bookmarking the first tweet can still capture the whole series. If the APIs do not expose enough thread structure reliably, fall back to a best-effort linked-post crawl without breaking the normal single-post hydrate flow.
 - Add a scheduler/launchd-style mode on top of the new worker loop so enrichment can resume automatically after terminal closure or reboot.
 - Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.
 

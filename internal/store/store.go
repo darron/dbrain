@@ -24,7 +24,11 @@ const itemSelectColumns = `
 	like_count, repost_count, reply_count, quote_count, bookmark_count,
 	content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
 	x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error,
-	link_extract_synced_at, x_media_transcript_status, x_media_transcript_error, x_media_transcript_at`
+	link_extract_synced_at,
+	summary_text, summary_json, summary_status, summary_error, summary_model,
+	summary_prompt_version, summary_tool, summary_tool_version, summary_input_hash, summarized_at,
+	ocr_text, ocr_json, ocr_status, ocr_error, ocr_model, ocr_tool, ocr_tool_version, ocr_input_hash, ocr_at,
+	x_media_transcript_status, x_media_transcript_error, x_media_transcript_at`
 
 type Store struct {
 	db     *sql.DB
@@ -188,6 +192,25 @@ func (s *Store) ensureItemColumns() error {
 		"x_post_status":             "TEXT NOT NULL DEFAULT ''",
 		"x_post_error":              "TEXT NOT NULL DEFAULT ''",
 		"link_extract_synced_at":    "TEXT NOT NULL DEFAULT ''",
+		"summary_text":              "TEXT NOT NULL DEFAULT ''",
+		"summary_json":              "TEXT NOT NULL DEFAULT ''",
+		"summary_status":            "TEXT NOT NULL DEFAULT ''",
+		"summary_error":             "TEXT NOT NULL DEFAULT ''",
+		"summary_model":             "TEXT NOT NULL DEFAULT ''",
+		"summary_prompt_version":    "TEXT NOT NULL DEFAULT ''",
+		"summary_tool":              "TEXT NOT NULL DEFAULT ''",
+		"summary_tool_version":      "TEXT NOT NULL DEFAULT ''",
+		"summary_input_hash":        "TEXT NOT NULL DEFAULT ''",
+		"summarized_at":             "TEXT NOT NULL DEFAULT ''",
+		"ocr_text":                  "TEXT NOT NULL DEFAULT ''",
+		"ocr_json":                  "TEXT NOT NULL DEFAULT ''",
+		"ocr_status":                "TEXT NOT NULL DEFAULT ''",
+		"ocr_error":                 "TEXT NOT NULL DEFAULT ''",
+		"ocr_model":                 "TEXT NOT NULL DEFAULT ''",
+		"ocr_tool":                  "TEXT NOT NULL DEFAULT ''",
+		"ocr_tool_version":          "TEXT NOT NULL DEFAULT ''",
+		"ocr_input_hash":            "TEXT NOT NULL DEFAULT ''",
+		"ocr_at":                    "TEXT NOT NULL DEFAULT ''",
 		"x_media_transcript_status": "TEXT NOT NULL DEFAULT ''",
 		"x_media_transcript_error":  "TEXT NOT NULL DEFAULT ''",
 		"x_media_transcript_at":     "TEXT NOT NULL DEFAULT ''",
@@ -227,8 +250,19 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 	var existingHash string
 	var existingArticleTitle string
 	var existingArticleText string
-	row := tx.QueryRowContext(ctx, `SELECT id, content_hash, article_title, article_text FROM items WHERE source_key = ?`, item.SourceKey)
-	switch scanErr := row.Scan(&existingID, &existingHash, &existingArticleTitle, &existingArticleText); {
+	var existingSummary itemSummaryFields
+	var existingOCR itemOCRFields
+	row := tx.QueryRowContext(ctx, `SELECT
+		id, content_hash, article_title, article_text,
+		summary_text, summary_json, summary_status, summary_error, summary_model, summary_prompt_version, summary_tool, summary_tool_version, summary_input_hash, summarized_at,
+		ocr_text, ocr_json, ocr_status, ocr_error, ocr_model, ocr_tool, ocr_tool_version, ocr_input_hash, ocr_at
+		FROM items
+		WHERE source_key = ?`, item.SourceKey)
+	switch scanErr := row.Scan(
+		&existingID, &existingHash, &existingArticleTitle, &existingArticleText,
+		&existingSummary.Text, &existingSummary.JSON, &existingSummary.Status, &existingSummary.Error, &existingSummary.Model, &existingSummary.PromptVersion, &existingSummary.Tool, &existingSummary.ToolVersion, &existingSummary.InputHash, &existingSummary.At,
+		&existingOCR.Text, &existingOCR.JSON, &existingOCR.Status, &existingOCR.Error, &existingOCR.Model, &existingOCR.Tool, &existingOCR.ToolVersion, &existingOCR.InputHash, &existingOCR.At,
+	); {
 	case errors.Is(scanErr, sql.ErrNoRows):
 		now := item.UpdatedAt.Format(time.RFC3339)
 		result, execErr := tx.ExecContext(ctx, `INSERT INTO items (
@@ -236,13 +270,17 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 			published_at, saved_at, synced_at, language, text, article_title, article_text,
 			primary_category, primary_domain, links_json, categories, domains, github_urls, folder_names,
 			like_count, repost_count, reply_count, quote_count, bookmark_count,
-			content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
+			summary_text, summary_json, summary_status, summary_error, summary_model, summary_prompt_version, summary_tool, summary_tool_version, summary_input_hash, summarized_at,
+			ocr_text, ocr_json, ocr_status, ocr_error, ocr_model, ocr_tool, ocr_tool_version, ocr_input_hash, ocr_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			item.SourceKey, item.SourceType, item.ExternalID, item.CanonicalURL, item.Title, item.AuthorHandle, item.AuthorName,
 			item.PublishedAt, item.SavedAt, item.SyncedAt, item.Language, item.Text, item.ArticleTitle, item.ArticleText,
 			item.PrimaryCategory, item.PrimaryDomain, item.LinksJSON, item.Categories, item.Domains, item.GitHubURLs, item.FolderNames,
 			item.LikeCount, item.RepostCount, item.ReplyCount, item.QuoteCount, item.BookmarkCount,
-			item.ContentHash, item.NotePath, item.RawJSON, now, now, item.LastSeenAt.Format(time.RFC3339))
+			item.ContentHash, item.NotePath, item.RawJSON, now, now, item.LastSeenAt.Format(time.RFC3339),
+			item.SummaryText, item.SummaryJSON, item.SummaryStatus, item.SummaryError, item.SummaryModel, item.SummaryPromptVersion, item.SummaryTool, item.SummaryToolVersion, item.SummaryInputHash, formatTimeForDB(item.SummarizedAt),
+			item.OCRText, item.OCRJSON, item.OCRStatus, item.OCRError, item.OCRModel, item.OCRTool, item.OCRToolVersion, item.OCRInputHash, formatTimeForDB(item.OCRAt))
 		if execErr != nil {
 			err = fmt.Errorf("insert item %s: %w", item.SourceKey, execErr)
 			return model.UpsertResult{}, err
@@ -266,7 +304,7 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 	default:
 	}
 
-	if preserveExistingItemArticleFields(&item, existingArticleTitle, existingArticleText) {
+	if preserveExistingItemEnrichmentFields(&item, existingArticleTitle, existingArticleText, existingSummary, existingOCR) {
 		item.ContentHash = itemhash.Compute(item)
 	}
 
@@ -287,13 +325,17 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 		published_at = ?, saved_at = ?, synced_at = ?, language = ?, text = ?, article_title = ?, article_text = ?,
 		primary_category = ?, primary_domain = ?, links_json = ?, categories = ?, domains = ?, github_urls = ?, folder_names = ?,
 		like_count = ?, repost_count = ?, reply_count = ?, quote_count = ?, bookmark_count = ?,
-		content_hash = ?, note_path = ?, raw_json = ?, updated_at = ?, last_seen_at = ?
+		content_hash = ?, note_path = ?, raw_json = ?, updated_at = ?, last_seen_at = ?,
+		summary_text = ?, summary_json = ?, summary_status = ?, summary_error = ?, summary_model = ?, summary_prompt_version = ?, summary_tool = ?, summary_tool_version = ?, summary_input_hash = ?, summarized_at = ?,
+		ocr_text = ?, ocr_json = ?, ocr_status = ?, ocr_error = ?, ocr_model = ?, ocr_tool = ?, ocr_tool_version = ?, ocr_input_hash = ?, ocr_at = ?
 		WHERE id = ?`,
 		item.SourceType, item.ExternalID, item.CanonicalURL, item.Title, item.AuthorHandle, item.AuthorName,
 		item.PublishedAt, item.SavedAt, item.SyncedAt, item.Language, item.Text, item.ArticleTitle, item.ArticleText,
 		item.PrimaryCategory, item.PrimaryDomain, item.LinksJSON, item.Categories, item.Domains, item.GitHubURLs, item.FolderNames,
 		item.LikeCount, item.RepostCount, item.ReplyCount, item.QuoteCount, item.BookmarkCount,
 		item.ContentHash, item.NotePath, item.RawJSON, item.UpdatedAt.Format(time.RFC3339), item.LastSeenAt.Format(time.RFC3339),
+		item.SummaryText, item.SummaryJSON, item.SummaryStatus, item.SummaryError, item.SummaryModel, item.SummaryPromptVersion, item.SummaryTool, item.SummaryToolVersion, item.SummaryInputHash, formatTimeForDB(item.SummarizedAt),
+		item.OCRText, item.OCRJSON, item.OCRStatus, item.OCRError, item.OCRModel, item.OCRTool, item.OCRToolVersion, item.OCRInputHash, formatTimeForDB(item.OCRAt),
 		existingID); execErr != nil {
 		err = fmt.Errorf("update item %s: %w", item.SourceKey, execErr)
 		return model.UpsertResult{}, err
@@ -311,7 +353,32 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 	return model.UpsertResult{Status: model.UpsertUpdated, ItemID: existingID, NotePath: item.NotePath}, nil
 }
 
-func preserveExistingItemArticleFields(item *model.Item, existingArticleTitle string, existingArticleText string) bool {
+type itemSummaryFields struct {
+	Text          string
+	JSON          string
+	Status        string
+	Error         string
+	Model         string
+	PromptVersion string
+	Tool          string
+	ToolVersion   string
+	InputHash     string
+	At            string
+}
+
+type itemOCRFields struct {
+	Text        string
+	JSON        string
+	Status      string
+	Error       string
+	Model       string
+	Tool        string
+	ToolVersion string
+	InputHash   string
+	At          string
+}
+
+func preserveExistingItemEnrichmentFields(item *model.Item, existingArticleTitle string, existingArticleText string, existingSummary itemSummaryFields, existingOCR itemOCRFields) bool {
 	if item == nil {
 		return false
 	}
@@ -325,7 +392,90 @@ func preserveExistingItemArticleFields(item *model.Item, existingArticleTitle st
 		item.ArticleTitle = existingArticleTitle
 		changed = true
 	}
+	if strings.TrimSpace(item.SummaryText) == "" && strings.TrimSpace(existingSummary.Text) != "" {
+		item.SummaryText = existingSummary.Text
+		changed = true
+	}
+	if strings.TrimSpace(item.SummaryJSON) == "" && strings.TrimSpace(existingSummary.JSON) != "" {
+		item.SummaryJSON = existingSummary.JSON
+		changed = true
+	}
+	if strings.TrimSpace(item.SummaryStatus) == "" && strings.TrimSpace(existingSummary.Status) != "" {
+		item.SummaryStatus = existingSummary.Status
+		changed = true
+	}
+	if strings.TrimSpace(item.SummaryError) == "" && strings.TrimSpace(existingSummary.Error) != "" {
+		item.SummaryError = existingSummary.Error
+		changed = true
+	}
+	if strings.TrimSpace(item.SummaryModel) == "" && strings.TrimSpace(existingSummary.Model) != "" {
+		item.SummaryModel = existingSummary.Model
+		changed = true
+	}
+	if strings.TrimSpace(item.SummaryPromptVersion) == "" && strings.TrimSpace(existingSummary.PromptVersion) != "" {
+		item.SummaryPromptVersion = existingSummary.PromptVersion
+		changed = true
+	}
+	if strings.TrimSpace(item.SummaryTool) == "" && strings.TrimSpace(existingSummary.Tool) != "" {
+		item.SummaryTool = existingSummary.Tool
+		changed = true
+	}
+	if strings.TrimSpace(item.SummaryToolVersion) == "" && strings.TrimSpace(existingSummary.ToolVersion) != "" {
+		item.SummaryToolVersion = existingSummary.ToolVersion
+		changed = true
+	}
+	if strings.TrimSpace(item.SummaryInputHash) == "" && strings.TrimSpace(existingSummary.InputHash) != "" {
+		item.SummaryInputHash = existingSummary.InputHash
+		changed = true
+	}
+	if item.SummarizedAt.IsZero() && strings.TrimSpace(existingSummary.At) != "" {
+		item.SummarizedAt = parseStoredTime(existingSummary.At)
+		changed = true
+	}
+	if strings.TrimSpace(item.OCRText) == "" && strings.TrimSpace(existingOCR.Text) != "" {
+		item.OCRText = existingOCR.Text
+		changed = true
+	}
+	if strings.TrimSpace(item.OCRJSON) == "" && strings.TrimSpace(existingOCR.JSON) != "" {
+		item.OCRJSON = existingOCR.JSON
+		changed = true
+	}
+	if strings.TrimSpace(item.OCRStatus) == "" && strings.TrimSpace(existingOCR.Status) != "" {
+		item.OCRStatus = existingOCR.Status
+		changed = true
+	}
+	if strings.TrimSpace(item.OCRError) == "" && strings.TrimSpace(existingOCR.Error) != "" {
+		item.OCRError = existingOCR.Error
+		changed = true
+	}
+	if strings.TrimSpace(item.OCRModel) == "" && strings.TrimSpace(existingOCR.Model) != "" {
+		item.OCRModel = existingOCR.Model
+		changed = true
+	}
+	if strings.TrimSpace(item.OCRTool) == "" && strings.TrimSpace(existingOCR.Tool) != "" {
+		item.OCRTool = existingOCR.Tool
+		changed = true
+	}
+	if strings.TrimSpace(item.OCRToolVersion) == "" && strings.TrimSpace(existingOCR.ToolVersion) != "" {
+		item.OCRToolVersion = existingOCR.ToolVersion
+		changed = true
+	}
+	if strings.TrimSpace(item.OCRInputHash) == "" && strings.TrimSpace(existingOCR.InputHash) != "" {
+		item.OCRInputHash = existingOCR.InputHash
+		changed = true
+	}
+	if item.OCRAt.IsZero() && strings.TrimSpace(existingOCR.At) != "" {
+		item.OCRAt = parseStoredTime(existingOCR.At)
+		changed = true
+	}
 	return changed
+}
+
+func formatTimeForDB(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func (s *Store) syncFTSTx(ctx context.Context, tx *sql.Tx, itemID int64, item model.Item) error {
@@ -338,10 +488,21 @@ func (s *Store) syncFTSTx(ctx context.Context, tx *sql.Tx, itemID int64, item mo
 	if _, err := tx.ExecContext(ctx, `INSERT INTO items_fts (
 		rowid, source_key, title, text, article_title, article_text, author_handle, author_name, primary_category, primary_domain
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		itemID, item.SourceKey, item.Title, item.Text, item.ArticleTitle, item.ArticleText, item.AuthorHandle, item.AuthorName, item.PrimaryCategory, item.PrimaryDomain); err != nil {
+		itemID, item.SourceKey, item.Title, item.Text, item.ArticleTitle, indexedItemArticleText(item), item.AuthorHandle, item.AuthorName, item.PrimaryCategory, item.PrimaryDomain); err != nil {
 		return fmt.Errorf("insert fts row %s: %w", item.SourceKey, err)
 	}
 	return nil
+}
+
+func indexedItemArticleText(item model.Item) string {
+	parts := make([]string, 0, 3)
+	for _, value := range []string{strings.TrimSpace(item.ArticleText), strings.TrimSpace(item.SummaryText), strings.TrimSpace(item.OCRText)} {
+		if value == "" {
+			continue
+		}
+		parts = append(parts, value)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
@@ -433,7 +594,7 @@ func (s *Store) searchFTS(ctx context.Context, query string, limit int) ([]model
 			i.canonical_url,
 			i.primary_domain,
 			i.note_path,
-			substr(trim(replace(COALESCE(NULLIF(i.article_text, ''), i.text), char(10), ' ')), 1, 200) AS snippet
+			substr(trim(replace(COALESCE(NULLIF(i.summary_text, ''), NULLIF(i.ocr_text, ''), NULLIF(i.article_text, ''), i.text), char(10), ' ')), 1, 200) AS snippet
 		FROM items_fts f
 		JOIN items i ON i.id = f.rowid
 		WHERE items_fts MATCH ?
@@ -461,19 +622,21 @@ func (s *Store) searchLike(ctx context.Context, query string, limit int) ([]mode
 			canonical_url,
 			primary_domain,
 			note_path,
-			substr(trim(replace(COALESCE(NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet
+			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), NULLIF(ocr_text, ''), NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet
 		FROM items
 		WHERE title LIKE ?
 			OR text LIKE ?
 			OR x_post_text LIKE ?
 			OR article_title LIKE ?
 			OR article_text LIKE ?
+			OR summary_text LIKE ?
+			OR ocr_text LIKE ?
 			OR author_handle LIKE ?
 			OR author_name LIKE ?
 			OR primary_category LIKE ?
 			OR primary_domain LIKE ?
 		ORDER BY last_seen_at DESC
-		LIMIT ?`, like, like, like, like, like, like, like, like, like, limit)
+		LIMIT ?`, like, like, like, like, like, like, like, like, like, like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("like search: %w", err)
 	}
@@ -813,11 +976,19 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 			if err := s.invalidateLinkedXArticleSourcesTx(ctx, tx, itemID, nowText); err != nil {
 				return false, err
 			}
+			if _, err := s.invalidateItemSummaryTx(ctx, tx, itemID, nowText); err != nil {
+				return false, err
+			}
 		}
 
 		mediaChanged, err := s.syncXHydrationMediaTx(ctx, tx, itemID, hydration, time.Now().UTC())
 		if err != nil {
 			return false, err
+		}
+		if mediaChanged {
+			if _, err := s.invalidateItemOCRTx(ctx, tx, itemID, nowText); err != nil {
+				return false, err
+			}
 		}
 		if mediaChanged && !hydrationChanged {
 			if _, err := tx.ExecContext(ctx, `
@@ -883,6 +1054,8 @@ func scanItem(scanner interface{ Scan(dest ...any) error }, item *model.Item) er
 	var importedAt, updatedAt, lastSeenAt string
 	var xPostFetchedAt string
 	var linkExtractSyncedAt string
+	var summarizedAt string
+	var ocrAt string
 	var xMediaTranscriptAt string
 	if err := scanner.Scan(
 		&item.ID, &item.SourceKey, &item.SourceType, &item.ExternalID, &item.CanonicalURL, &item.Title, &item.AuthorHandle, &item.AuthorName,
@@ -891,7 +1064,11 @@ func scanItem(scanner interface{ Scan(dest ...any) error }, item *model.Item) er
 		&item.LikeCount, &item.RepostCount, &item.ReplyCount, &item.QuoteCount, &item.BookmarkCount,
 		&item.ContentHash, &item.NotePath, &item.RawJSON, &importedAt, &updatedAt, &lastSeenAt,
 		&item.XPostText, &item.XPostLang, &item.XPostJSON, &xPostFetchedAt, &item.XPostStatus, &item.XPostError,
-		&linkExtractSyncedAt, &item.XMediaTranscriptStatus, &item.XMediaTranscriptError, &xMediaTranscriptAt,
+		&linkExtractSyncedAt,
+		&item.SummaryText, &item.SummaryJSON, &item.SummaryStatus, &item.SummaryError, &item.SummaryModel,
+		&item.SummaryPromptVersion, &item.SummaryTool, &item.SummaryToolVersion, &item.SummaryInputHash, &summarizedAt,
+		&item.OCRText, &item.OCRJSON, &item.OCRStatus, &item.OCRError, &item.OCRModel, &item.OCRTool, &item.OCRToolVersion, &item.OCRInputHash, &ocrAt,
+		&item.XMediaTranscriptStatus, &item.XMediaTranscriptError, &xMediaTranscriptAt,
 	); err != nil {
 		return err
 	}
@@ -901,6 +1078,8 @@ func scanItem(scanner interface{ Scan(dest ...any) error }, item *model.Item) er
 	item.LastSeenAt = parseStoredTime(lastSeenAt)
 	item.XPostFetchedAt = parseStoredTime(xPostFetchedAt)
 	item.LinkExtractSyncedAt = parseStoredTime(linkExtractSyncedAt)
+	item.SummarizedAt = parseStoredTime(summarizedAt)
+	item.OCRAt = parseStoredTime(ocrAt)
 	item.XMediaTranscriptAt = parseStoredTime(xMediaTranscriptAt)
 	return nil
 }

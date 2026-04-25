@@ -26,16 +26,16 @@ func TestComputeIgnoresSyncedAt(t *testing.T) {
 
 func TestComputeIgnoresXBookmarkEngagementCounts(t *testing.T) {
 	base := model.Item{
-		SourceKey:      "x:123",
-		SourceType:     "x_bookmark",
-		CanonicalURL:   "https://x.com/example/status/123",
-		Title:          "Example",
-		Text:           "hello world",
-		LikeCount:      1,
-		RepostCount:    2,
-		ReplyCount:     3,
-		QuoteCount:     4,
-		BookmarkCount:  5,
+		SourceKey:     "x:123",
+		SourceType:    "x_bookmark",
+		CanonicalURL:  "https://x.com/example/status/123",
+		Title:         "Example",
+		Text:          "hello world",
+		LikeCount:     1,
+		RepostCount:   2,
+		ReplyCount:    3,
+		QuoteCount:    4,
+		BookmarkCount: 5,
 	}
 	other := base
 	other.LikeCount = 10

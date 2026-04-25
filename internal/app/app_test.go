@@ -34,7 +34,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "entity", "topic", "worker", "extract", "hydrate", "transcribe", "repair", "serve", "stats", "ask", "search", "get"} {
+	for _, value := range []string{"import", "sync", "entity", "topic", "worker", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -191,6 +191,26 @@ func TestTranscribeCommandHelpIncludesXMedia(t *testing.T) {
 	}
 }
 
+func TestOCRCommandHelpIncludesXPhotos(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"ocr"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "x-photos") {
+		t.Fatalf("expected ocr help output to contain %q, got %q", "x-photos", output)
+	}
+}
+
 func TestWorkerCommandHelpIncludesSources(t *testing.T) {
 	t.Parallel()
 
@@ -226,6 +246,7 @@ func TestWriteSyncStatsIncludesXMediaStage(t *testing.T) {
 				ItemsSkipped:     4,
 				MediaTranscribed: 6,
 				Errors:           1,
+				SummaryErrors:    2,
 			},
 		},
 	}
@@ -235,7 +256,7 @@ func TestWriteSyncStatsIncludesXMediaStage(t *testing.T) {
 	}
 
 	output := dst.String()
-	if !strings.Contains(output, "X Media: items_processed=10 items_updated=6 items_skipped=4 media_transcribed=6 errors=1") {
+	if !strings.Contains(output, "X Media: items_processed=10 items_updated=6 items_skipped=4 media_transcribed=6 items_summarized=0 errors=1 summary_errors=2") {
 		t.Fatalf("expected x media sync stats line, got %q", output)
 	}
 }

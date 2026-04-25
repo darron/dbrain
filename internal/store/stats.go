@@ -59,6 +59,7 @@ type PipelineStats struct {
 	Extraction           []PipelineStageRow `json:"extraction"`
 	Summary              []PipelineStageRow `json:"summary"`
 	Transcription        []PipelineStageRow `json:"transcription"`
+	OCR                  []PipelineStageRow `json:"ocr"`
 }
 
 type SourceActivityEvent struct {
@@ -412,7 +413,12 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 			return PipelineStats{}, err
 		}
 	}
-	summaryBlocked, err := s.countGroupedWhere(ctx, "sources", "source_type", `NOT (`+readyForSummaryWhere+`)`)
+	summaryBlocked, err := s.countGroupedWhere(
+		ctx,
+		"sources",
+		"source_type",
+		`NOT (`+readyForSummaryWhere+`) OR (`+readyForSummaryWhere+` AND summary_status IN ('blocked', 'skipped'))`,
+	)
 	if err != nil {
 		return PipelineStats{}, err
 	}
@@ -424,6 +430,20 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	}
 	if ok {
 		stats.Transcription = []PipelineStageRow{transcriptionRow}
+	}
+	xMediaSummaryRow, ok, err := s.pipelineXMediaSummaryRow(ctx)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	if ok {
+		stats.Summary = appendPipelineStageRow(stats.Summary, xMediaSummaryRow)
+	}
+	xPhotoOCRRow, ok, err := s.pipelineXPhotoOCRRow(ctx)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	if ok {
+		stats.OCR = []PipelineStageRow{xPhotoOCRRow}
 	}
 
 	return stats, nil
@@ -608,6 +628,101 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	return row, true, nil
 }
 
+func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow, bool, error) {
+	const transcriptTitle = "X Media Transcript"
+
+	candidateWhere := `source_type = 'x_bookmark'
+		AND article_title = ?
+		AND article_text != ''
+		AND x_media_transcript_status = 'ok'`
+
+	total, err := s.countWhere(ctx, "items", candidateWhere, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	if total == 0 {
+		return PipelineStageRow{}, false, nil
+	}
+
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status = 'ok' AND summary_text != ''`, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (summary_status = '' OR summary_status = 'error')`, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status IN ('blocked', 'skipped')`, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status != '' AND summary_status NOT IN ('ok', 'error', 'blocked', 'skipped')`, transcriptTitle)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+
+	row := PipelineStageRow{
+		Kind:    "x_media_summary",
+		Total:   total,
+		Current: current,
+		Pending: pending,
+		Blocked: blocked,
+		Failed:  failed,
+	}
+	finalizePipelineStageRow(&row)
+	return row, true, nil
+}
+
+func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, bool, error) {
+	candidateWhere := `source_type = 'x_bookmark'
+		AND external_id != ''
+		AND EXISTS (
+			SELECT 1
+			FROM item_media_links l
+			JOIN media_assets a ON a.id = l.media_asset_id
+			WHERE l.item_id = items.id
+				AND a.download_status = 'downloaded'
+				AND a.local_path != ''
+				AND a.media_type = 'photo'
+		)`
+
+	total, err := s.countWhere(ctx, "items", candidateWhere)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	if total == 0 {
+		return PipelineStageRow{}, false, nil
+	}
+
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status = 'ok' AND ocr_text != ''`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (ocr_status = '' OR ocr_status = 'error')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status IN ('blocked', 'skipped')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status != '' AND ocr_status NOT IN ('ok', 'error', 'blocked', 'skipped')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+
+	row := PipelineStageRow{
+		Kind:    "x_photo_ocr",
+		Total:   total,
+		Current: current,
+		Pending: pending,
+		Blocked: blocked,
+		Failed:  failed,
+	}
+	finalizePipelineStageRow(&row)
+	return row, true, nil
+}
+
 func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending []CountBucket, blocked []CountBucket) []PipelineStageRow {
 	if len(total) == 0 {
 		return nil
@@ -638,6 +753,37 @@ func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending 
 	})
 
 	return append([]PipelineStageRow{aggregatePipelineStageRows(rows)}, rows...)
+}
+
+func appendPipelineStageRow(rows []PipelineStageRow, extra PipelineStageRow) []PipelineStageRow {
+	if extra.Kind == "" {
+		return rows
+	}
+	if len(rows) == 0 {
+		return []PipelineStageRow{extra}
+	}
+
+	out := append([]PipelineStageRow(nil), rows...)
+	if out[0].Kind == "ALL" {
+		detailRows := append([]PipelineStageRow(nil), out[1:]...)
+		detailRows = append(detailRows, extra)
+		sort.SliceStable(detailRows, func(i, j int) bool {
+			if detailRows[i].Total == detailRows[j].Total {
+				return detailRows[i].Kind < detailRows[j].Kind
+			}
+			return detailRows[i].Total > detailRows[j].Total
+		})
+		return append([]PipelineStageRow{out[0]}, detailRows...)
+	}
+
+	out = append(out, extra)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Total == out[j].Total {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].Total > out[j].Total
+	})
+	return out
 }
 
 func aggregatePipelineStageRows(rows []PipelineStageRow) PipelineStageRow {

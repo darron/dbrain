@@ -245,6 +245,58 @@ func TestBacklogReportsPendingWorkByStage(t *testing.T) {
 	}
 }
 
+func TestBacklogAndPipelineTreatBlockedSummariesAsBlockedNotPending(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	upserted, err := st.UpsertItem(ctx, testItem("gh-star:darron:test/blocked-summary", "github_star", "https://github.com/test/blocked-summary", now))
+	if err != nil {
+		t.Fatalf("upsert blocked summary item: %v", err)
+	}
+	link, err := st.UpsertSourceLink(ctx, upserted.ItemID, modelSourceCandidate("src:blocked-summary", "https://github.com/test/blocked-summary", "github"))
+	if err != nil {
+		t.Fatalf("blocked summary source link: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, link.SourceID, model.ExtractResult{
+		CanonicalURL: "https://github.com/test/blocked-summary",
+		FinalURL:     "https://github.com/test/blocked-summary",
+		Status:       "empty",
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, ""); err != nil {
+		t.Fatalf("save blocked summary extract: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(ctx, link.SourceID, model.SummaryResult{
+		Status:        "blocked",
+		Error:         "no extracted content available for summary",
+		Model:         "openrouter/qwen/qwen3.5-27b",
+		PromptVersion: "dbrain-v1",
+		FetchedAt:     now,
+		Tool:          "openrouter-direct",
+		ToolVersion:   "openrouter-direct-v1",
+	}); err != nil {
+		t.Fatalf("save blocked summary: %v", err)
+	}
+
+	backlog, err := st.Backlog(ctx, "dbrain-v1", "openrouter-direct", "openrouter-direct-v1")
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog.SourceSummaryPending != 0 {
+		t.Fatalf("expected blocked summary to not count as pending, got %d", backlog.SourceSummaryPending)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	assertPipelineRowCounts(t, stats.Summary, "github", 1, 0, 0, 1, 0)
+}
+
 func TestBacklogSkipsRecentExtractErrorsDuringCooldown(t *testing.T) {
 	t.Parallel()
 
@@ -417,6 +469,202 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 	}
 
 	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 3, 1, 0, 1, 1)
+}
+
+func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertTranscriptItem := func(sourceKey string) int64 {
+		t.Helper()
+
+		itemResult, err := st.UpsertItem(ctx, model.Item{
+			SourceKey:    sourceKey,
+			SourceType:   "x_bookmark",
+			ExternalID:   sourceKey,
+			CanonicalURL: "https://x.com/example/status/" + sourceKey,
+			Title:        sourceKey,
+			ContentHash:  sourceKey + "-hash",
+			LinksJSON:    "[]",
+			NotePath:     "items/x/test.md",
+			RawJSON:      `{}`,
+			ImportedAt:   now,
+			UpdatedAt:    now,
+			LastSeenAt:   now,
+		})
+		if err != nil {
+			t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+		}
+		if _, err := st.db.ExecContext(ctx, `
+			UPDATE items
+			SET article_title = 'X Media Transcript',
+				article_text = 'materialized transcript',
+				x_media_transcript_status = 'ok',
+				x_media_transcript_at = ?
+			WHERE id = ?`,
+			now.Format(time.RFC3339),
+			itemResult.ItemID,
+		); err != nil {
+			t.Fatalf("seed transcript %s: %v", sourceKey, err)
+		}
+		return itemResult.ItemID
+	}
+
+	currentID := insertTranscriptItem("x-media-summary-current")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_status = 'ok',
+			summary_text = 'saved summary',
+			summarized_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		currentID,
+	); err != nil {
+		t.Fatalf("seed current x media summary: %v", err)
+	}
+
+	_ = insertTranscriptItem("x-media-summary-pending")
+
+	blockedID := insertTranscriptItem("x-media-summary-blocked")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_status = 'blocked',
+			summary_error = 'context limit'
+		WHERE id = ?`,
+		blockedID,
+	); err != nil {
+		t.Fatalf("seed blocked x media summary: %v", err)
+	}
+
+	failedID := insertTranscriptItem("x-media-summary-failed")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_status = 'fatal',
+			summary_error = 'unexpected parser failure'
+		WHERE id = ?`,
+		failedID,
+	); err != nil {
+		t.Fatalf("seed failed x media summary: %v", err)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+
+	assertPipelineRowCounts(t, stats.Summary, "x_media_summary", 4, 1, 1, 1, 1)
+}
+
+func TestPipelineXPhotoOCRClassifiesPendingBlockedAndFailed(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertPhotoCandidate := func(sourceKey string) int64 {
+		t.Helper()
+
+		itemResult, err := st.UpsertItem(ctx, model.Item{
+			SourceKey:    sourceKey,
+			SourceType:   "x_bookmark",
+			ExternalID:   sourceKey,
+			CanonicalURL: "https://x.com/example/status/" + sourceKey,
+			Title:        sourceKey,
+			ContentHash:  sourceKey + "-hash",
+			LinksJSON:    "[]",
+			NotePath:     "items/x/test.md",
+			RawJSON:      `{}`,
+			ImportedAt:   now,
+			UpdatedAt:    now,
+			LastSeenAt:   now,
+		})
+		if err != nil {
+			t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+		}
+
+		hydration := model.XHydration{
+			FullText:  "hello",
+			Language:  "en",
+			Status:    "ok_graphql",
+			FetchedAt: now,
+			APIJSON: `{
+				"snapshot":{
+					"media_objects":[
+						{"type":"photo","url":"https://pbs.twimg.com/media/` + sourceKey + `.png","expanded_url":"https://x.com/example/status/` + sourceKey + `/photo/1","width":1280,"height":720}
+					]
+				}
+			}`,
+		}
+		if _, err := st.SaveXHydration(ctx, itemResult.ItemID, hydration); err != nil {
+			t.Fatalf("SaveXHydration %s: %v", sourceKey, err)
+		}
+
+		refs, err := st.ListItemMediaRefs(ctx, itemResult.ItemID)
+		if err != nil {
+			t.Fatalf("ListItemMediaRefs %s: %v", sourceKey, err)
+		}
+		if len(refs) != 1 {
+			t.Fatalf("expected one media ref for %s, got %d", sourceKey, len(refs))
+		}
+		if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+			LocalPath:    "media/x/photo/" + sourceKey + ".png",
+			ContentHash:  sourceKey + "-download-hash",
+			Status:       "downloaded",
+			DownloadedAt: now,
+		}); err != nil {
+			t.Fatalf("SaveMediaDownload %s: %v", sourceKey, err)
+		}
+
+		return itemResult.ItemID
+	}
+
+	currentID := insertPhotoCandidate("x-photo-ocr-current")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET ocr_status = 'ok',
+			ocr_text = 'saved ocr text',
+			ocr_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		currentID,
+	); err != nil {
+		t.Fatalf("seed current ocr: %v", err)
+	}
+
+	_ = insertPhotoCandidate("x-photo-ocr-pending")
+
+	blockedID := insertPhotoCandidate("x-photo-ocr-blocked")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET ocr_status = 'blocked',
+			ocr_error = 'policy hold'
+		WHERE id = ?`,
+		blockedID,
+	); err != nil {
+		t.Fatalf("seed blocked ocr: %v", err)
+	}
+
+	failedID := insertPhotoCandidate("x-photo-ocr-failed")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET ocr_status = 'too_large',
+			ocr_error = 'image too large'
+		WHERE id = ?`,
+		failedID,
+	); err != nil {
+		t.Fatalf("seed failed ocr: %v", err)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+
+	assertPipelineRowCounts(t, stats.OCR, "x_photo_ocr", 4, 1, 1, 1, 1)
 }
 
 func TestSourceActivityFeedReturnsRecentSuccessesAndFailures(t *testing.T) {

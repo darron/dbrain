@@ -354,10 +354,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 			return result
 		}
 		debugLog(opts.Logger, "using stored extract for summary", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(storedExtract.Content))
-		if changed, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, summaryToolVersion); err != nil {
+		if changed, status, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, summaryToolVersion); err != nil {
 			result.Err = err
 			return result
-		} else if changed {
+		} else if changed && status == "ok" {
 			result.Stats.SourcesSummarized++
 		}
 		result.TouchedSourceID = source.ID
@@ -576,9 +576,9 @@ func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config,
 		return stats, nil
 	}
 
-	if changed, err := summarizeFromExtract(ctx, cfg, st, source, extract, opts, summaryToolVersion); err != nil {
+	if changed, status, err := summarizeFromExtract(ctx, cfg, st, source, extract, opts, summaryToolVersion); err != nil {
 		return stats, err
-	} else if changed {
+	} else if changed && status == "ok" {
 		stats.SourcesSummarized++
 	}
 
@@ -970,7 +970,7 @@ func buildSummaryPrompt(source model.SourceDocument, extract model.ExtractResult
 	return strings.TrimSpace(b.String())
 }
 
-func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, toolVersion string) (bool, error) {
+func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, toolVersion string) (bool, string, error) {
 	summaryToolName := summarizecli.SummaryToolName(opts.Model)
 	if reason, ok := skipSummaryReason(source, extract); ok {
 		changed, err := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
@@ -985,12 +985,12 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 		if err == nil && changed {
 			debugLog(opts.Logger, "source summary skipped", "source_key", source.SourceKey, "url", source.CanonicalURL, "reason", reason)
 		}
-		return changed, err
+		return changed, "skipped", err
 	}
 
 	input, cleanup, err := summaryInputFile(cfg, extract)
 	if err != nil {
-		return st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
 			Status:        "error",
 			Error:         err.Error(),
 			Model:         opts.Model,
@@ -998,17 +998,19 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 		})
+		return changed, "error", saveErr
 	}
 	defer cleanup()
 	if strings.TrimSpace(input) == "" {
-		return st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-			Status:        "error",
+		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+			Status:        "blocked",
 			Error:         "no extracted content available for summary",
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 		})
+		return changed, "blocked", saveErr
 	}
 
 	runResult, err := summarizecli.Run(ctx, summarizecli.Options{
@@ -1022,14 +1024,20 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 		Timeout:   opts.Timeout,
 	})
 	if err != nil {
-		return st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-			Status:        "error",
+		status := "error"
+		if reason, blocked := blockedSummaryReason(err); blocked {
+			status = "blocked"
+			err = errors.New(reason)
+		}
+		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+			Status:        status,
 			Error:         err.Error(),
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 		})
+		return changed, status, saveErr
 	}
 
 	runResult.Summary.PromptVersion = SummaryPromptVersion
@@ -1037,7 +1045,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 	if err == nil && changed && runResult.Summary.Status == "ok" {
 		debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
 	}
-	return changed, err
+	return changed, runResult.Summary.Status, err
 }
 
 func summarizeExtract(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options, env map[string]string) (summarizecli.Result, error) {
@@ -1581,6 +1589,22 @@ func skipSummaryReason(source model.SourceDocument, extract model.ExtractResult)
 		return "youtube transcript unavailable and no audio transcription was produced", true
 	}
 	return "", false
+}
+
+func blockedSummaryReason(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(value, "maximum context length"),
+		strings.Contains(value, "context length"),
+		strings.Contains(value, "too many tokens"),
+		strings.Contains(value, "input is too long"):
+		return err.Error(), true
+	default:
+		return "", false
+	}
 }
 
 func hashText(value string) string {

@@ -24,28 +24,28 @@ const (
 )
 
 var bookmarkTimelineFeatures = map[string]bool{
-	"graphql_timeline_v2_bookmark_timeline":                                 true,
-	"rweb_tipjar_consumption_enabled":                                       true,
-	"responsive_web_graphql_exclude_directive_enabled":                      true,
-	"verified_phone_label_enabled":                                          false,
-	"creator_subscriptions_tweet_preview_api_enabled":                       true,
-	"responsive_web_graphql_timeline_navigation_enabled":                    true,
-	"responsive_web_graphql_skip_user_profile_image_extensions_enabled":     false,
-	"communities_web_enable_tweet_community_results_fetch":                  true,
-	"c9s_tweet_anatomy_moderator_badge_enabled":                             true,
-	"articles_preview_enabled":                                              true,
-	"responsive_web_edit_tweet_api_enabled":                                 true,
-	"tweetypie_unmention_optimization_enabled":                              true,
-	"responsive_web_uc_gql_enabled":                                         true,
-	"vibe_api_enabled":                                                      true,
-	"responsive_web_text_conversations_enabled":                             false,
-	"freedom_of_speech_not_reach_fetch_enabled":                             true,
-	"longform_notetweets_consumption_enabled":                               true,
-	"longform_notetweets_rich_text_read_enabled":                            true,
-	"longform_notetweets_inline_media_enabled":                              true,
-	"responsive_web_enhance_cards_enabled":                                  false,
+	"graphql_timeline_v2_bookmark_timeline":                                   true,
+	"rweb_tipjar_consumption_enabled":                                         true,
+	"responsive_web_graphql_exclude_directive_enabled":                        true,
+	"verified_phone_label_enabled":                                            false,
+	"creator_subscriptions_tweet_preview_api_enabled":                         true,
+	"responsive_web_graphql_timeline_navigation_enabled":                      true,
+	"responsive_web_graphql_skip_user_profile_image_extensions_enabled":       false,
+	"communities_web_enable_tweet_community_results_fetch":                    true,
+	"c9s_tweet_anatomy_moderator_badge_enabled":                               true,
+	"articles_preview_enabled":                                                true,
+	"responsive_web_edit_tweet_api_enabled":                                   true,
+	"tweetypie_unmention_optimization_enabled":                                true,
+	"responsive_web_uc_gql_enabled":                                           true,
+	"vibe_api_enabled":                                                        true,
+	"responsive_web_text_conversations_enabled":                               false,
+	"freedom_of_speech_not_reach_fetch_enabled":                               true,
+	"longform_notetweets_consumption_enabled":                                 true,
+	"longform_notetweets_rich_text_read_enabled":                              true,
+	"longform_notetweets_inline_media_enabled":                                true,
+	"responsive_web_enhance_cards_enabled":                                    false,
 	"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": true,
-	"responsive_web_media_download_video_enabled":                           false,
+	"responsive_web_media_download_video_enabled":                             false,
 }
 
 var bookmarkGraphQLBaseURL = "https://x.com/i/api/graphql"
@@ -261,10 +261,10 @@ func (c *Client) FetchBookmarksPage(ctx context.Context, cursor string, count in
 			continue
 		}
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return bookmarkPage{}, fmt.Errorf("X bookmarks denied the request (status=%d)", resp.StatusCode)
+			return bookmarkPage{}, fmt.Errorf("x bookmarks denied the request (status=%d)", resp.StatusCode)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return bookmarkPage{}, fmt.Errorf("X bookmarks returned status=%d body=%s", resp.StatusCode, trimForError(string(body), 300))
+			return bookmarkPage{}, fmt.Errorf("x bookmarks returned status=%d body=%s", resp.StatusCode, trimForError(string(body), 300))
 		}
 
 		var payload map[string]any
@@ -274,7 +274,7 @@ func (c *Client) FetchBookmarksPage(ctx context.Context, cursor string, count in
 		return parseBookmarksResponse(payload, time.Now().UTC()), nil
 	}
 
-	return bookmarkPage{}, fmt.Errorf("X bookmarks rate limited after retries")
+	return bookmarkPage{}, fmt.Errorf("x bookmarks rate limited after retries")
 }
 
 func buildBookmarksURL(cursor string, count int) string {
@@ -405,32 +405,32 @@ func bookmarkRecordToItem(record bookmarkRecord, now time.Time) (model.Item, err
 	notePath := vault.NoteRelativePath("x", chooseBookmarkYear(savedAt, publishedAt, syncedAt), record.TweetID)
 	title := deriveBookmarkTitle(record)
 	item := model.Item{
-		SourceKey:       "x:" + record.TweetID,
-		SourceType:      "x_bookmark",
-		ExternalID:      record.TweetID,
-		CanonicalURL:    record.URL,
-		Title:           title,
-		AuthorHandle:    record.AuthorHandle,
-		AuthorName:      record.AuthorName,
-		PublishedAt:     publishedAt,
-		SavedAt:         savedAt,
-		SyncedAt:        syncedAt,
-		Language:        record.Language,
-		Text:            record.Text,
-		PrimaryDomain:   primaryDomain,
-		LinksJSON:       string(linksJSONBytes),
-		Domains:         strings.Join(domains, ","),
-		GitHubURLs:      strings.Join(githubURLs, ","),
-		LikeCount:       record.LikeCount,
-		RepostCount:     record.RepostCount,
-		ReplyCount:      record.ReplyCount,
-		QuoteCount:      record.QuoteCount,
-		BookmarkCount:   record.BookmarkCount,
-		NotePath:        notePath,
-		RawJSON:         string(rawJSONBytes),
-		ImportedAt:      now.UTC(),
-		UpdatedAt:       now.UTC(),
-		LastSeenAt:      now.UTC(),
+		SourceKey:     "x:" + record.TweetID,
+		SourceType:    "x_bookmark",
+		ExternalID:    record.TweetID,
+		CanonicalURL:  record.URL,
+		Title:         title,
+		AuthorHandle:  record.AuthorHandle,
+		AuthorName:    record.AuthorName,
+		PublishedAt:   publishedAt,
+		SavedAt:       savedAt,
+		SyncedAt:      syncedAt,
+		Language:      record.Language,
+		Text:          record.Text,
+		PrimaryDomain: primaryDomain,
+		LinksJSON:     string(linksJSONBytes),
+		Domains:       strings.Join(domains, ","),
+		GitHubURLs:    strings.Join(githubURLs, ","),
+		LikeCount:     record.LikeCount,
+		RepostCount:   record.RepostCount,
+		ReplyCount:    record.ReplyCount,
+		QuoteCount:    record.QuoteCount,
+		BookmarkCount: record.BookmarkCount,
+		NotePath:      notePath,
+		RawJSON:       string(rawJSONBytes),
+		ImportedAt:    now.UTC(),
+		UpdatedAt:     now.UTC(),
+		LastSeenAt:    now.UTC(),
 	}
 	item.ContentHash = itemhash.Compute(item)
 	return item, nil

@@ -51,10 +51,10 @@ func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 	stats, err := Run(context.Background(), cfg, st, Options{
 		XBookmarksEnabled: true,
 		XBookmarksLimit:   9,
-		XEnabled:      true,
-		XLimit:        7,
-		XMediaEnabled: true,
-		Progress:      &progress,
+		XEnabled:          true,
+		XLimit:            7,
+		XMediaEnabled:     true,
+		Progress:          &progress,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

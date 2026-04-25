@@ -23,23 +23,31 @@ const transcriptArticleTitle = "X Media Transcript"
 type Options struct {
 	Limit            int
 	Force            bool
+	Concurrency      int
 	Timeout          time.Duration
 	MacWhisperBinary string
 	MacWhisperModel  string
 	FFprobeBinary    string
+	Summarize        bool
+	SummaryModel     string
+	SummaryCLI       string
+	SummaryLength    string
 	Logger           *slog.Logger
 }
 
 type Stats struct {
-	ItemsQueued      int `json:"items_queued"`
-	ItemsProcessed   int `json:"items_processed"`
-	ItemsUpdated     int `json:"items_updated"`
-	ItemsUnchanged   int `json:"items_unchanged"`
-	ItemsSkipped     int `json:"items_skipped"`
-	MediaCandidates  int `json:"media_candidates"`
-	MediaWithAudio   int `json:"media_with_audio"`
-	MediaTranscribed int `json:"media_transcribed"`
-	Errors           int `json:"errors"`
+	ItemsQueued       int `json:"items_queued"`
+	ItemsProcessed    int `json:"items_processed"`
+	ItemsUpdated      int `json:"items_updated"`
+	ItemsUnchanged    int `json:"items_unchanged"`
+	ItemsSkipped      int `json:"items_skipped"`
+	MediaCandidates   int `json:"media_candidates"`
+	MediaWithAudio    int `json:"media_with_audio"`
+	MediaTranscribed  int `json:"media_transcribed"`
+	SummaryCandidates int `json:"summary_candidates"`
+	ItemsSummarized   int `json:"items_summarized"`
+	SummaryErrors     int `json:"summary_errors"`
+	Errors            int `json:"errors"`
 }
 
 type transcriptBlock struct {
@@ -64,6 +72,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if opts.Limit <= 0 {
 		opts.Limit = 100
 	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 1
+	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Minute
 	}
@@ -72,6 +83,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	if strings.TrimSpace(opts.FFprobeBinary) == "" {
 		opts.FFprobeBinary = "ffprobe"
+	}
+	if strings.TrimSpace(opts.SummaryLength) == "" {
+		opts.SummaryLength = "medium"
 	}
 
 	items, err := st.ListItemsForXMediaTranscription(ctx, opts.Limit, opts.Force)
@@ -133,6 +147,21 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			stats.ItemsUnchanged++
 		} else {
 			stats.ItemsUpdated++
+			if err := st.InvalidateItemSummary(ctx, result.ItemID); err != nil {
+				stats.Errors++
+				debugLog(opts.Logger, "x media summary invalidation failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
+				continue
+			}
+			item.SummaryText = ""
+			item.SummaryJSON = ""
+			item.SummaryStatus = ""
+			item.SummaryError = ""
+			item.SummaryModel = ""
+			item.SummaryPromptVersion = ""
+			item.SummaryTool = ""
+			item.SummaryToolVersion = ""
+			item.SummaryInputHash = ""
+			item.SummarizedAt = time.Time{}
 		}
 		if err := st.SaveXMediaTranscriptionState(ctx, item.ID, "ok", "", time.Now().UTC()); err != nil {
 			stats.Errors++
@@ -145,6 +174,13 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			debugLog(opts.Logger, "x media transcription note write failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
 			continue
 		}
+	}
+
+	if opts.Summarize {
+		summaryStats := summarizeTranscriptItems(ctx, cfg, st, opts)
+		stats.SummaryCandidates += summaryStats.SummaryCandidates
+		stats.ItemsSummarized += summaryStats.ItemsSummarized
+		stats.SummaryErrors += summaryStats.SummaryErrors
 	}
 
 	return stats, nil

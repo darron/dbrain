@@ -52,6 +52,18 @@ func TestSkipSummaryReasonAllowsTranscriptBackedYouTubeExtract(t *testing.T) {
 	}
 }
 
+func TestBlockedSummaryReasonFlagsContextWindowErrors(t *testing.T) {
+	t.Parallel()
+
+	reason, ok := blockedSummaryReason(errors.New(`run openrouter summary: http 400: {"error":{"message":"This endpoint's maximum context length is 262144 tokens."}}`))
+	if !ok {
+		t.Fatal("expected context window error to be blocked")
+	}
+	if !strings.Contains(reason, "maximum context length") {
+		t.Fatalf("unexpected blocked reason: %q", reason)
+	}
+}
+
 func TestClassifyTerminalExtractErrorMarksRepeatedTLSFailuresDead(t *testing.T) {
 	t.Parallel()
 
@@ -251,6 +263,102 @@ func TestRunSourceIDsRejectsStoredXArticleErrorShell(t *testing.T) {
 	}
 	if !strings.Contains(source.ExtractError, "x article returned an X error shell") {
 		t.Fatalf("unexpected extract error: %q", source.ExtractError)
+	}
+}
+
+func TestRunSourceIDsBlocksEmptyExtractSummaryAndStopsRequeue(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-empty-summary-item",
+		SourceType:   "x_bookmark",
+		ExternalID:   "2044276671923249999",
+		CanonicalURL: "https://x.com/example/status/2044276671923249999",
+		Title:        "test item",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/2044276671923249999.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
+		SourceKey:     "src:test-empty-summary",
+		CanonicalURL:  "https://youtube.com/live/example",
+		NormalizedURL: "https://youtube.com/live/example",
+		SourceType:    "youtube",
+		Domain:        "youtube.com",
+		NotePath:      "sources/youtube/src-test-empty-summary.md",
+		OriginalURL:   "https://youtube.com/live/example",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	emptyExtract := model.ExtractResult{
+		CanonicalURL: "https://youtube.com/live/example",
+		FinalURL:     "https://youtube.com/live/example",
+		Status:       "empty",
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test",
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, emptyExtract, ""); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Summarize: true,
+		Model:     "openrouter/qwen/qwen3.5-27b",
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesSummarized != 0 {
+		t.Fatalf("expected no successful summary for empty extract, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.SummaryStatus != "blocked" {
+		t.Fatalf("expected summary status blocked, got %q", source.SummaryStatus)
+	}
+	if source.SummaryError != "no extracted content available for summary" {
+		t.Fatalf("unexpected summary error: %q", source.SummaryError)
+	}
+
+	pending, err := st.ListSourcesForEnrichment(context.Background(), 50, false, true, SummaryPromptVersion, summarizecli.SummaryToolName("openrouter/qwen/qwen3.5-27b"), summarizecli.SummaryToolVersion(context.Background(), "", "openrouter/qwen/qwen3.5-27b"))
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected blocked summary source to drop out of enrichment selection, got %d candidates", len(pending))
 	}
 }
 
