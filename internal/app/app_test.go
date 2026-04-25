@@ -2054,6 +2054,17 @@ func TestStatsPipelineCommandJSON(t *testing.T) {
 	}, "pipeline-x-article-source-hash"); err != nil {
 		t.Fatalf("save x article extraction: %v", err)
 	}
+	if _, err := st.SaveSourceSummary(context.Background(), xArticleLink.SourceID, model.SummaryResult{
+		Text:          "x article summary",
+		Model:         "openrouter/qwen/qwen3.5-27b",
+		PromptVersion: sourceenrich.SummaryPromptVersion,
+		Status:        "ok",
+		Tool:          "openrouter-direct",
+		ToolVersion:   "openrouter-direct-v1",
+		FetchedAt:     now,
+	}); err != nil {
+		t.Fatalf("save x article summary: %v", err)
+	}
 
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
@@ -2084,6 +2095,29 @@ func TestStatsPipelineCommandJSON(t *testing.T) {
 	assertPipelineRowCounts(t, stats.Summary, "youtube", 1, 1, 0, 0, 0)
 	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 0, 1, 0, 0)
 	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 1, 0, 1, 0, 0)
+
+	cmd = NewRootCommand()
+	stdout.Reset()
+	stderr.Reset()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"--root", root,
+		"stats", "pipeline",
+		"--json",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext default pipeline: %v (stderr=%q)", err, stderr.String())
+	}
+
+	stats = store.PipelineStats{}
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("unmarshal default pipeline stats: %v\n%s", err, stdout.String())
+	}
+
+	assertPipelineRowCounts(t, stats.Summary, "youtube", 1, 1, 0, 0, 0)
+	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 1, 0, 0, 0)
 }
 
 func assertPipelineRowCounts(t *testing.T, rows []store.PipelineStageRow, kind string, total int, current int, pending int, blocked int, failed int) {

@@ -175,12 +175,16 @@ func newStatsBacklogCommand(root *rootOptions) *cobra.Command {
 				_ = st.Close()
 			}()
 
-			stats, err := st.Backlog(
-				cmd.Context(),
-				sourceenrich.SummaryPromptVersion,
-				summarizecli.SummaryToolName(model),
-				summarizecli.SummaryToolVersion(cmd.Context(), "", model),
-			)
+			promptVersion := ""
+			toolName := ""
+			toolVersion := ""
+			if strings.TrimSpace(model) != "" {
+				promptVersion = sourceenrich.SummaryPromptVersion
+				toolName = summarizecli.SummaryToolName(model)
+				toolVersion = summarizecli.SummaryToolVersion(cmd.Context(), "", model)
+			}
+
+			stats, err := st.Backlog(cmd.Context(), promptVersion, toolName, toolVersion)
 			if err != nil {
 				return err
 			}
@@ -218,12 +222,16 @@ func newStatsPipelineCommand(root *rootOptions) *cobra.Command {
 				_ = st.Close()
 			}()
 
-			stats, err := st.Pipeline(
-				cmd.Context(),
-				sourceenrich.SummaryPromptVersion,
-				summarizecli.SummaryToolName(model),
-				summarizecli.SummaryToolVersion(cmd.Context(), "", model),
-			)
+			promptVersion := ""
+			toolName := ""
+			toolVersion := ""
+			if strings.TrimSpace(model) != "" {
+				promptVersion = sourceenrich.SummaryPromptVersion
+				toolName = summarizecli.SummaryToolName(model)
+				toolVersion = summarizecli.SummaryToolVersion(cmd.Context(), "", model)
+			}
+
+			stats, err := st.Pipeline(cmd.Context(), promptVersion, toolName, toolVersion)
 			if err != nil {
 				return err
 			}
@@ -373,13 +381,16 @@ func writePipelineStats(dst interface{ Write([]byte) (int, error) }, stats store
 	}
 	summaryTarget := strings.TrimSpace(model)
 	if summaryTarget == "" {
-		summaryTarget = "default"
-	}
-	if _, err := fmt.Fprintf(dst, "Model target: %s\n", summaryTarget); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(dst, "Freshness target: %s / %s / %s\n", stats.SummaryPromptVersion, fallbackDisplay(stats.SummaryTool, "summary"), fallbackDisplay(stats.SummaryToolVersion, "unknown")); err != nil {
-		return err
+		if _, err := fmt.Fprintf(dst, "Coverage policy: any valid summary on current extracted content\n"); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintf(dst, "Model target: %s\n", summaryTarget); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(dst, "Freshness target: %s / %s / %s\n", stats.SummaryPromptVersion, fallbackDisplay(stats.SummaryTool, "summary"), fallbackDisplay(stats.SummaryToolVersion, "unknown")); err != nil {
+			return err
+		}
 	}
 	if err := writePipelineTable(dst, stats.Summary); err != nil {
 		return err

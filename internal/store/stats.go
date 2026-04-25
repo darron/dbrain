@@ -268,6 +268,10 @@ func (s *Store) Activity(ctx context.Context, now time.Time, window time.Duratio
 
 func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName string, toolVersion string) (BacklogStats, error) {
 	stats := BacklogStats{}
+	summaryPromptVersion := strings.TrimSpace(promptVersion)
+	summaryTool := strings.TrimSpace(toolName)
+	summaryToolVersion := strings.TrimSpace(toolVersion)
+	strictSummaryFreshness := summaryPromptVersion != "" || summaryTool != "" || summaryToolVersion != ""
 
 	xWhere := `source_type = 'x_bookmark'
 		AND external_id != ''
@@ -300,7 +304,11 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 		stats.SourceExtractionPending += bucket.Count
 	}
 
-	summaryWhere, args := sourceSummaryBacklogWhere(promptVersion, toolName, toolVersion)
+	summaryWhere := `extract_status IN ('ok', 'empty') AND (summary_status = '' OR summary_status = 'error' OR summary_content_hash != content_hash)`
+	args := []any{}
+	if strictSummaryFreshness {
+		summaryWhere, args = sourceSummaryBacklogWhere(summaryPromptVersion, summaryTool, summaryToolVersion)
+	}
 	summaryBuckets, err := s.countGroupedWhere(ctx, "sources", "source_type", summaryWhere, args...)
 	if err != nil {
 		return BacklogStats{}, err
@@ -319,10 +327,16 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 }
 
 func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName string, toolVersion string) (PipelineStats, error) {
-	stats := PipelineStats{
-		SummaryPromptVersion: strings.TrimSpace(promptVersion),
-		SummaryTool:          strings.TrimSpace(toolName),
-		SummaryToolVersion:   strings.TrimSpace(toolVersion),
+	summaryPromptVersion := strings.TrimSpace(promptVersion)
+	summaryTool := strings.TrimSpace(toolName)
+	summaryToolVersion := strings.TrimSpace(toolVersion)
+	strictSummaryFreshness := summaryPromptVersion != "" || summaryTool != "" || summaryToolVersion != ""
+
+	stats := PipelineStats{}
+	if strictSummaryFreshness {
+		stats.SummaryPromptVersion = summaryPromptVersion
+		stats.SummaryTool = summaryTool
+		stats.SummaryToolVersion = summaryToolVersion
 	}
 
 	hydrationTotal, err := s.countGroupedWhere(ctx, "items", "source_type", `source_type = 'x_bookmark' AND external_id != ''`)
@@ -354,26 +368,49 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	}
 	stats.Extraction = buildPipelineStageRows(extractionTotal, extractionCurrent, extractionPending, nil)
 
-	summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(promptVersion, toolName, toolVersion)
 	summaryTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
 	if err != nil {
 		return PipelineStats{}, err
 	}
 	readyForSummaryWhere := `extract_status IN ('ok', 'empty')`
-	summaryCurrent, err := s.countGroupedWhere(
-		ctx,
-		"sources",
-		"source_type",
-		readyForSummaryWhere+` AND NOT `+summaryStaleWhere,
-		summaryArgs...,
-	)
-	if err != nil {
-		return PipelineStats{}, err
-	}
-	summaryPendingWhere, summaryPendingArgs := sourceSummaryBacklogWhere(promptVersion, toolName, toolVersion)
-	summaryPending, err := s.countGroupedWhere(ctx, "sources", "source_type", summaryPendingWhere, summaryPendingArgs...)
-	if err != nil {
-		return PipelineStats{}, err
+	var summaryCurrent []CountBucket
+	var summaryPending []CountBucket
+	if strictSummaryFreshness {
+		summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(summaryPromptVersion, summaryTool, summaryToolVersion)
+		summaryCurrent, err = s.countGroupedWhere(
+			ctx,
+			"sources",
+			"source_type",
+			readyForSummaryWhere+` AND NOT `+summaryStaleWhere,
+			summaryArgs...,
+		)
+		if err != nil {
+			return PipelineStats{}, err
+		}
+		summaryPendingWhere, summaryPendingArgs := sourceSummaryBacklogWhere(summaryPromptVersion, summaryTool, summaryToolVersion)
+		summaryPending, err = s.countGroupedWhere(ctx, "sources", "source_type", summaryPendingWhere, summaryPendingArgs...)
+		if err != nil {
+			return PipelineStats{}, err
+		}
+	} else {
+		summaryCurrent, err = s.countGroupedWhere(
+			ctx,
+			"sources",
+			"source_type",
+			readyForSummaryWhere+` AND summary_status = 'ok' AND summary_content_hash = content_hash`,
+		)
+		if err != nil {
+			return PipelineStats{}, err
+		}
+		summaryPending, err = s.countGroupedWhere(
+			ctx,
+			"sources",
+			"source_type",
+			readyForSummaryWhere+` AND (summary_status = '' OR summary_status = 'error' OR summary_content_hash != content_hash)`,
+		)
+		if err != nil {
+			return PipelineStats{}, err
+		}
 	}
 	summaryBlocked, err := s.countGroupedWhere(ctx, "sources", "source_type", `NOT (`+readyForSummaryWhere+`)`)
 	if err != nil {

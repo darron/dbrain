@@ -67,6 +67,8 @@ quiet CLI output.
 - Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
 - Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
 - Improve provider provenance so stored summaries always record the exact backend/model used.
+- Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
+- Add explicit source-of-truth audit commands (for example `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`) so imports can be reconciled against upstream services with missing IDs and enrichment status clearly separated, while treating the local DB as append-only by default instead of auto-flagging removed upstream saves/stars/likes for deletion.
 - Add a pre-summary staging path for oversized extracts so giant PDFs and long documents can be chunked, pre-compressed, or locally preprocessed before hosted summary calls hit provider context limits.
 - Add a scheduler/launchd-style mode on top of the new worker loop so enrichment can resume automatically after terminal closure or reboot.
 - Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.
