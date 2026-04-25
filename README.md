@@ -1,12 +1,13 @@
 # dbrain
 
-`dbrain` is a local-first second-brain scaffold for incremental imports from
-`ft-bookmarks`, Markdown note rendering for Obsidian, and local query over the
-imported corpus.
+`dbrain` is a local-first second-brain scaffold for incremental imports from X
+bookmarks, GitHub stars, YouTube, and legacy `ft-bookmarks` archives, with
+Markdown note rendering for Obsidian and local query over the imported corpus.
 
 ## Current Commands
 
 - `dbrain import ft`
+- `dbrain import x-bookmarks`
 - `dbrain sync all`
 - `dbrain import github stars`
 - `dbrain import youtube`
@@ -52,7 +53,6 @@ quiet CLI output.
 
 ## TODO
 
-- Drain the current source backlog so the imported corpus is actually enriched end to end.
 - Continue improving topic/MOC synthesis quality and better periodic refresh workflows as the corpus fills out.
 - Integrate the current MCP server cleanly with agent workflows and extend it further as needed.
 - Add a Tailscale-reachable query surface, likely tsnet-backed MCP and/or a small web UI, so the brain can be queried remotely while away from the machine.
@@ -71,11 +71,9 @@ quiet CLI output.
 - Improve provider provenance so stored summaries always record the exact backend/model used.
 - Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
 - Add explicit source-of-truth audit commands (for example `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`) so imports can be reconciled against upstream services with missing IDs and enrichment status clearly separated, while treating the local DB as append-only by default instead of auto-flagging removed upstream saves/stars/likes for deletion.
-- Replace the FT bookmark dependency with a native X bookmark importer that preserves bookmark-order metadata from GraphQL (for example timeline `sortIndex` or an equivalent rank/sequence) so new imports remain incrementally syncable even when X does not expose a reliable `bookmarked_at`, without faking `saved_at` from `synced_at`.
 - Add a pre-summary staging path for oversized extracts so giant PDFs and long documents can be chunked, pre-compressed, or locally preprocessed before hosted summary calls hit provider context limits.
 - Add an oversized-X-video policy for media download/transcription. Right now large or hour-long videos time out, land in `download_status='error'`, and remain retryable on future `hydrate x` / `sync all` runs. Add byte-size and/or duration gating, prefer lower-bitrate playable variants for transcription, and classify clearly-skipped assets as `too_large` / `too_long` instead of retrying forever.
 - Maybe reclassify non-actionable X media transcript outcomes like `no_audio`, `noise`, and `too_short` out of the generic failed bucket so transcription stats distinguish real pipeline errors from terminal no-content cases.
-- Add a first-class X photo OCR / image-understanding stage. Build and compare three modes on a real sample set: Apple Vision OCR locally, Tesseract locally, and hosted OpenRouter vision for catch-up / semantic fallback. Measure cost, latency, OCR quality, moderation/failure rate on sensitive images, and whether the result is useful enough for search/summary before choosing the default steady-state path.
 - Add an optional X thread expansion path when a bookmarked post is clearly part of a longer thread. Prefer fetching the full thread from X/GraphQL when the upstream APIs expose it, so bookmarking the first tweet can still capture the whole series. If the APIs do not expose enough thread structure reliably, fall back to a best-effort linked-post crawl without breaking the normal single-post hydrate flow.
 - Add a scheduler/launchd-style mode on top of the new worker loop so enrichment can resume automatically after terminal closure or reboot.
 - Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.
@@ -91,16 +89,17 @@ quiet CLI output.
 ## Prerequisites
 
 - `go` `1.26` to build and run `dbrain`
-- a local FT archive at `~/.ft-bookmarks/bookmarks.db` or another path passed to `dbrain import ft --source ...`
 - a supported browser with active logged-in sessions for cookie-backed flows
 - `chrome` is the current recommended browser for both X and YouTube ingestion
 - `GITHUB_TOKEN` for `dbrain import github stars`
   `dbrain` will also fall back to `./.envrc` or `./.env` when the shell
   environment does not already export it.
 
-`dbrain` reads the FT SQLite archive directly. The `ft` CLI is not required at
-runtime, but you still need `fieldtheory-cli` or another process to keep
-`~/.ft-bookmarks/bookmarks.db` fresh.
+If you still use the legacy `dbrain import ft` path, you also need a local FT
+archive at `~/.ft-bookmarks/bookmarks.db` or another path passed to
+`dbrain import ft --source ...`. `dbrain` reads that SQLite archive directly.
+The `ft` CLI is not required at runtime, but you still need `fieldtheory-cli`
+or another process to keep `~/.ft-bookmarks/bookmarks.db` fresh.
 
 For GitHub stars, use a fine-grained PAT with:
 
@@ -153,15 +152,20 @@ For GitHub stars, use a fine-grained PAT with:
 ## Command Requirements
 
 - `dbrain import ft`
-  Requires the FT bookmarks SQLite database. No external binary is invoked.
+  Legacy import path. Requires the FT bookmarks SQLite database. No external
+  binary is invoked.
+- `dbrain import x-bookmarks`
+  Direct X bookmark import path. Requires a supported browser profile with
+  valid X cookies. Chrome/Chromium is the best-tested path.
 - `dbrain sync all`
-  Runs the regular incremental refresh pipeline in one command: FT import, X
-  hydration, X media audio transcription, tweet-link discovery/enrichment,
-  GitHub stars import, YouTube import, and an optional source-backlog worker
-  batch. The X media stage uses the same batch limit as `hydrate x`
-  (`--x-limit`). In the default configuration this combines the requirements of
-  X hydration, X media transcription, link/source enrichment, and YouTube
-  import, so a practical local setup usually includes a supported
+  Runs the regular incremental refresh pipeline in one command: direct X
+  bookmark import, X hydration, X media audio transcription, X photo OCR,
+  tweet-link discovery/enrichment, GitHub stars import, YouTube import, and an
+  optional source-backlog worker batch. The X media and X photo OCR stages use
+  the same X batch limit as `hydrate x` (`--x-limit`). In the default
+  configuration this combines the requirements of X bookmark import, X
+  hydration, X media transcription, X photo OCR, link/source enrichment, and
+  YouTube import, so a practical local setup usually includes a supported
   Chrome/Chromium profile with valid cookies plus `mw`, `ffprobe`,
   `summarize`, and `yt-dlp`. It supports `--skip-*` flags when you only want
   part of the pipeline.
@@ -268,6 +272,7 @@ For GitHub stars, use a fine-grained PAT with:
 
 ```sh
 go run ./cmd/dbrain import ft
+go run ./cmd/dbrain import x-bookmarks --limit 25
 go run ./cmd/dbrain sync all --length short --timeout 5m
 go run ./cmd/dbrain sync all --skip-x-media --length short --timeout 5m
 go run ./cmd/dbrain sync all --skip-sources --length short --timeout 5m
@@ -313,10 +318,10 @@ go run ./cmd/dbrain search kubernetes
 go run ./cmd/dbrain get x:2045912259210485815
 ```
 
-The importer is incremental and replayable. Re-running `import ft` scans the
-current `~/.ft-bookmarks/bookmarks.db`, upserts by stable source key, skips
-unchanged rows by content hash, and only rewrites notes when an item changed or
-its note is missing.
+The legacy FT importer is incremental and replayable. Re-running `import ft`
+scans the current `~/.ft-bookmarks/bookmarks.db`, upserts by stable source key,
+skips unchanged rows by content hash, and only rewrites notes when an item
+changed or its note is missing.
 
 `import github stars` uses the GitHub API instead of scraping the web UI. It
 imports one append-only `github_star` item per starred repository, stores the
@@ -566,7 +571,3 @@ content changes, prompt changes, and summarize upgrades.
 re-extract anything. It reads items and sources from `brain.db` and recreates
 their Markdown notes under `vault/`. By default it only writes missing notes,
 which is the intended path after antivirus quarantine or accidental deletion.
-
-## TODO
-
-- Add a post-transcription enrichment step for X media that summarizes long video transcripts using the X post body as context and the transcript as primary evidence. Keep the raw `X Media Transcript` body intact; store any generated summary separately so the transcript remains recoverable and authoritative. OpenRouter should be a viable backend for this because the transcript-only follow-up summaries should be fast and cheap.
