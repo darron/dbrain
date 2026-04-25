@@ -20,14 +20,17 @@ import (
 
 const ToolName = "summarize"
 const DirectSummaryToolName = "ollama-direct"
+const DirectOpenRouterToolName = "openrouter-direct"
 
 const (
-	commandRetryAttempts = 4
-	commandRetryDelay    = 100 * time.Millisecond
-	commandRetryMaxDelay = 2 * time.Second
-	defaultOllamaBaseURL = "http://127.0.0.1:11434/v1"
-	defaultOllamaAPIKey  = "ollama"
-	directOllamaVersion  = "ollama-direct-v1"
+	commandRetryAttempts     = 4
+	commandRetryDelay        = 100 * time.Millisecond
+	commandRetryMaxDelay     = 2 * time.Second
+	defaultOllamaBaseURL     = "http://127.0.0.1:11434/v1"
+	defaultOllamaAPIKey      = "ollama"
+	defaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+	directOllamaVersion      = "ollama-direct-v1"
+	directOpenRouterVersion  = "openrouter-direct-v1"
 )
 
 type Options struct {
@@ -85,6 +88,17 @@ type chatCompletionsResponse struct {
 	} `json:"choices"`
 }
 
+type directSummaryTarget struct {
+	model       string
+	displayName string
+	baseURL     string
+	apiKey      string
+	toolName    string
+	toolVersion string
+	headers     map[string]string
+	label       string
+}
+
 var (
 	versionMu    sync.Mutex
 	versionCache = map[string]string{}
@@ -104,7 +118,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if inputText, ok, err := localSummaryInput(opts); err != nil {
 		return Result{}, err
 	} else if ok && opts.Summarize && UsesDirectSummary(opts.Model) {
-		return runDirectOllamaSummary(ctx, opts, inputText)
+		return runDirectSummary(ctx, opts, inputText)
 	}
 
 	opts.Model, opts.Env = resolveModelAndEnv(opts.Model, opts.Env)
@@ -190,20 +204,30 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 }
 
 func UsesDirectSummary(model string) bool {
-	_, ok := parseOllamaModel(model)
-	return ok
+	_, ollama := parseOllamaModel(model)
+	if ollama {
+		return true
+	}
+	_, openrouter := parseOpenRouterModel(model)
+	return openrouter
 }
 
 func SummaryToolName(model string) string {
-	if UsesDirectSummary(model) {
+	if _, ok := parseOllamaModel(model); ok {
 		return DirectSummaryToolName
+	}
+	if _, ok := parseOpenRouterModel(model); ok {
+		return DirectOpenRouterToolName
 	}
 	return ToolName
 }
 
 func SummaryToolVersion(ctx context.Context, binary string, model string) string {
-	if UsesDirectSummary(model) {
+	if _, ok := parseOllamaModel(model); ok {
 		return directOllamaVersion
+	}
+	if _, ok := parseOpenRouterModel(model); ok {
+		return directOpenRouterVersion
 	}
 	return Version(ctx, binary)
 }
@@ -236,10 +260,10 @@ func localSummaryInput(opts Options) (string, bool, error) {
 	return string(data), true, nil
 }
 
-func runDirectOllamaSummary(ctx context.Context, opts Options, inputText string) (Result, error) {
-	ollamaModel, ok := parseOllamaModel(opts.Model)
-	if !ok {
-		return Result{}, fmt.Errorf("direct ollama summary requested without an ollama model")
+func runDirectSummary(ctx context.Context, opts Options, inputText string) (Result, error) {
+	target, err := resolveDirectSummaryTarget(ctx, opts)
+	if err != nil {
+		return Result{}, err
 	}
 
 	messages := make([]chatMessage, 0, 2)
@@ -255,25 +279,30 @@ func runDirectOllamaSummary(ctx context.Context, opts Options, inputText string)
 	})
 
 	body, err := json.Marshal(chatCompletionsRequest{
-		Model:    ollamaModel,
+		Model:    target.model,
 		Messages: messages,
 		Stream:   false,
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("marshal ollama summary request: %w", err)
+		return Result{}, fmt.Errorf("marshal %s summary request: %w", target.label, err)
 	}
 
-	baseURL := ollamaBaseURLWithEnv(opts.Env)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return Result{}, fmt.Errorf("create ollama summary request: %w", err)
+		return Result{}, fmt.Errorf("create %s summary request: %w", target.label, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+ollamaAPIKeyWithEnv(opts.Env))
+	req.Header.Set("Authorization", "Bearer "+target.apiKey)
+	for key, value := range target.headers {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return Result{}, fmt.Errorf("run ollama summary: %w", err)
+		return Result{}, fmt.Errorf("run %s summary: %w", target.label, err)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -282,14 +311,14 @@ func runDirectOllamaSummary(ctx context.Context, opts Options, inputText string)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Result{}, fmt.Errorf("read ollama summary response: %w", err)
+		return Result{}, fmt.Errorf("read %s summary response: %w", target.label, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyText := strings.TrimSpace(string(respBody))
 		if len(bodyText) > 200 {
 			bodyText = bodyText[:200]
 		}
-		return Result{}, fmt.Errorf("run ollama summary: http %d: %s", resp.StatusCode, bodyText)
+		return Result{}, fmt.Errorf("run %s summary: http %d: %s", target.label, resp.StatusCode, bodyText)
 	}
 
 	var payload chatCompletionsResponse
@@ -298,20 +327,15 @@ func runDirectOllamaSummary(ctx context.Context, opts Options, inputText string)
 		if len(bodyText) > 200 {
 			bodyText = bodyText[:200]
 		}
-		return Result{}, fmt.Errorf("parse ollama summary response: %w (body prefix: %q)", err, bodyText)
+		return Result{}, fmt.Errorf("parse %s summary response: %w (body prefix: %q)", target.label, err, bodyText)
 	}
 	if len(payload.Choices) == 0 {
-		return Result{}, fmt.Errorf("run ollama summary: response contained no choices")
+		return Result{}, fmt.Errorf("run %s summary: response contained no choices", target.label)
 	}
 
 	summaryText := strings.TrimSpace(payload.Choices[0].Message.Content)
 	if summaryText == "" {
-		return Result{}, fmt.Errorf("run ollama summary: response contained no summary text")
-	}
-
-	modelName := strings.TrimSpace(opts.Model)
-	if modelName == "" {
-		modelName = "ollama/" + ollamaModel
+		return Result{}, fmt.Errorf("run %s summary: response contained no summary text", target.label)
 	}
 
 	now := time.Now().UTC()
@@ -319,13 +343,59 @@ func runDirectOllamaSummary(ctx context.Context, opts Options, inputText string)
 		Summary: model.SummaryResult{
 			Text:        summaryText,
 			RawJSON:     strings.TrimSpace(string(respBody)),
-			Model:       modelName,
+			Model:       target.displayName,
 			Status:      "ok",
 			FetchedAt:   now,
-			Tool:        SummaryToolName(opts.Model),
-			ToolVersion: SummaryToolVersion(ctx, opts.Binary, opts.Model),
+			Tool:        target.toolName,
+			ToolVersion: target.toolVersion,
 		},
 	}, nil
+}
+
+func resolveDirectSummaryTarget(ctx context.Context, opts Options) (directSummaryTarget, error) {
+	if ollamaModel, ok := parseOllamaModel(opts.Model); ok {
+		return directSummaryTarget{
+			model:       ollamaModel,
+			displayName: defaultDirectDisplayName(opts.Model, "ollama/"+ollamaModel),
+			baseURL:     ollamaBaseURLWithEnv(opts.Env),
+			apiKey:      ollamaAPIKeyWithEnv(opts.Env),
+			toolName:    SummaryToolName(opts.Model),
+			toolVersion: SummaryToolVersion(ctx, opts.Binary, opts.Model),
+			label:       "ollama",
+		}, nil
+	}
+	if openrouterModel, ok := parseOpenRouterModel(opts.Model); ok {
+		apiKey := openRouterAPIKeyWithEnv(opts.Env)
+		if strings.TrimSpace(apiKey) == "" {
+			return directSummaryTarget{}, fmt.Errorf("direct openrouter summary requested without DBRAIN_OPENROUTER_API_KEY or OPENROUTER_API_KEY")
+		}
+		headers := map[string]string{}
+		if value := openRouterRefererWithEnv(opts.Env); value != "" {
+			headers["HTTP-Referer"] = value
+		}
+		if value := openRouterTitleWithEnv(opts.Env); value != "" {
+			headers["X-Title"] = value
+		}
+		return directSummaryTarget{
+			model:       openrouterModel,
+			displayName: defaultDirectDisplayName(opts.Model, "openrouter/"+openrouterModel),
+			baseURL:     openRouterBaseURLWithEnv(opts.Env),
+			apiKey:      apiKey,
+			toolName:    SummaryToolName(opts.Model),
+			toolVersion: SummaryToolVersion(ctx, opts.Binary, opts.Model),
+			headers:     headers,
+			label:       "openrouter",
+		}, nil
+	}
+	return directSummaryTarget{}, fmt.Errorf("direct summary requested without a supported direct model")
+}
+
+func defaultDirectDisplayName(current string, fallback string) string {
+	value := strings.TrimSpace(current)
+	if value != "" {
+		return value
+	}
+	return fallback
 }
 
 func runCommand(ctx context.Context, opts Options, args []string) ([]byte, error) {
@@ -542,6 +612,25 @@ func parseOllamaModel(model string) (string, bool) {
 	}
 }
 
+func parseOpenRouterModel(model string) (string, bool) {
+	value := strings.TrimSpace(model)
+	if value == "" {
+		return "", false
+	}
+
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "openrouter/"):
+		resolved := strings.TrimSpace(value[len("openrouter/"):])
+		return resolved, resolved != ""
+	case strings.HasPrefix(lower, "openrouter:"):
+		resolved := strings.TrimSpace(value[len("openrouter:"):])
+		return resolved, resolved != ""
+	default:
+		return "", false
+	}
+}
+
 func ollamaBaseURL() string {
 	return ollamaBaseURLWithEnv(nil)
 }
@@ -562,19 +651,43 @@ func ollamaAPIKeyWithEnv(env map[string]string) string {
 	return value
 }
 
+func openRouterBaseURLWithEnv(env map[string]string) string {
+	value := firstEnvValue(env, "DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL")
+	if value == "" {
+		value = defaultOpenRouterBaseURL
+	}
+	return normalizeBaseURLWithPath(value, "/api/v1", defaultOpenRouterBaseURL)
+}
+
+func openRouterAPIKeyWithEnv(env map[string]string) string {
+	return firstEnvValue(env, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
+}
+
+func openRouterRefererWithEnv(env map[string]string) string {
+	return firstEnvValue(env, "DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER")
+}
+
+func openRouterTitleWithEnv(env map[string]string) string {
+	return firstEnvValue(env, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE")
+}
+
 func normalizeBaseURLWithV1(raw string) string {
+	return normalizeBaseURLWithPath(raw, "/v1", defaultOllamaBaseURL)
+}
+
+func normalizeBaseURLWithPath(raw string, suffix string, fallback string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return defaultOllamaBaseURL
+		return fallback
 	}
 	if !strings.Contains(value, "://") {
 		value = "http://" + value
 	}
 	value = strings.TrimRight(value, "/")
-	if strings.HasSuffix(value, "/v1") {
+	if strings.HasSuffix(value, suffix) {
 		return value
 	}
-	return value + "/v1"
+	return value + suffix
 }
 
 func cloneEnv(env map[string]string) map[string]string {

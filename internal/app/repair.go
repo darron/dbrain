@@ -50,10 +50,12 @@ func newRepairNotesCommand(root *rootOptions) *cobra.Command {
 
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items considered: %d\n", stats.ItemsConsidered)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items written: %d\n", stats.ItemsWritten)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items skipped existing: %d\n", stats.ItemsSkippedExisting)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items already current: %d\n", stats.ItemsAlreadyCurrent)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Items skipped missing-only: %d\n", stats.ItemsSkippedMissingOnly)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources considered: %d\n", stats.SourcesConsidered)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources written: %d\n", stats.SourcesWritten)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources skipped existing: %d\n", stats.SourcesSkippedExisting)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources already current: %d\n", stats.SourcesAlreadyCurrent)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources skipped missing-only: %d\n", stats.SourcesSkippedMissingOnly)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Errors: %d\n", stats.Errors)
 			return nil
 		},

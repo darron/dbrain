@@ -157,6 +157,87 @@ func TestRunDirectOllamaSummaryForLocalFileInput(t *testing.T) {
 	}
 }
 
+func TestRunDirectOpenRouterSummaryForLocalFileInput(t *testing.T) {
+	var captured chatCompletionsRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/api/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-openrouter-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if got := r.Header.Get("HTTP-Referer"); got != "https://dbrain.test" {
+			t.Fatalf("unexpected referer header: %q", got)
+		}
+		if got := r.Header.Get("X-Title"); got != "dbrain" {
+			t.Fatalf("unexpected title header: %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `{"model":"qwen/qwen3.5-27b","choices":[{"message":{"role":"assistant","content":"direct openrouter summary"}}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(respBody)),
+		}, nil
+	})}
+	t.Cleanup(func() {
+		http.DefaultClient = oldClient
+	})
+
+	t.Setenv("DBRAIN_OPENROUTER_BASE_URL", "https://openrouter.test")
+	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "test-openrouter-key")
+	t.Setenv("DBRAIN_OPENROUTER_REFERER", "https://dbrain.test")
+	t.Setenv("DBRAIN_OPENROUTER_TITLE", "dbrain")
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Title: Example\n\nBody content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "openrouter/qwen/qwen3.5-27b",
+		Prompt:    "System prompt",
+		Length:    "medium",
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Status != "ok" {
+		t.Fatalf("expected summary status ok, got %q", result.Summary.Status)
+	}
+	if result.Summary.Text != "direct openrouter summary" {
+		t.Fatalf("unexpected summary text: %q", result.Summary.Text)
+	}
+	if result.Summary.Model != "openrouter/qwen/qwen3.5-27b" {
+		t.Fatalf("unexpected summary model: %q", result.Summary.Model)
+	}
+	if result.Summary.Tool != DirectOpenRouterToolName {
+		t.Fatalf("unexpected summary tool: %q", result.Summary.Tool)
+	}
+	if result.Summary.ToolVersion != directOpenRouterVersion {
+		t.Fatalf("unexpected summary tool version: %q", result.Summary.ToolVersion)
+	}
+	if captured.Model != "qwen/qwen3.5-27b" {
+		t.Fatalf("unexpected model sent to openrouter: %q", captured.Model)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", len(captured.Messages))
+	}
+	if captured.Messages[0].Role != "system" || !strings.Contains(captured.Messages[0].Content, "System prompt") {
+		t.Fatalf("unexpected system prompt: %+v", captured.Messages[0])
+	}
+	if captured.Messages[1].Role != "user" || !strings.Contains(captured.Messages[1].Content, "Body content") {
+		t.Fatalf("unexpected user message: %+v", captured.Messages[1])
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -269,6 +350,9 @@ func TestResolveCLIProviderModelWins(t *testing.T) {
 	if got := ResolveCLIProvider("codex", "ollama/qwen3.6:35b"); got != "" {
 		t.Fatalf("expected empty cli when model is set, got %q", got)
 	}
+	if got := ResolveCLIProvider("codex", "openrouter/qwen/qwen3.5-27b"); got != "" {
+		t.Fatalf("expected empty cli when model is set, got %q", got)
+	}
 }
 
 func TestResolveModelAndEnvUsesOLLAMAHost(t *testing.T) {
@@ -326,6 +410,23 @@ func TestNormalizeBaseURLWithV1(t *testing.T) {
 	}
 }
 
+func TestNormalizeBaseURLWithAPIPath(t *testing.T) {
+	cases := map[string]string{
+		"":                              defaultOpenRouterBaseURL,
+		"https://openrouter.ai":         "https://openrouter.ai/api/v1",
+		"https://openrouter.ai/":        "https://openrouter.ai/api/v1",
+		"https://openrouter.ai/api/v1":  "https://openrouter.ai/api/v1",
+		"https://openrouter.ai/api/v1/": "https://openrouter.ai/api/v1",
+		"openrouter.ai/api/v1":          "http://openrouter.ai/api/v1",
+	}
+
+	for input, want := range cases {
+		if got := normalizeBaseURLWithPath(input, "/api/v1", defaultOpenRouterBaseURL); got != want {
+			t.Fatalf("normalizeBaseURLWithPath(%q): got %q want %q", input, got, want)
+		}
+	}
+}
+
 func TestParseOllamaModel(t *testing.T) {
 	cases := []struct {
 		input string
@@ -342,6 +443,26 @@ func TestParseOllamaModel(t *testing.T) {
 		got, ok := parseOllamaModel(tc.input)
 		if ok != tc.ok || got != tc.want {
 			t.Fatalf("parseOllamaModel(%q): got (%q,%v) want (%q,%v)", tc.input, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestParseOpenRouterModel(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{input: "openrouter/qwen/qwen3.5-27b", want: "qwen/qwen3.5-27b", ok: true},
+		{input: "openrouter:qwen/qwen3.5-27b", want: "qwen/qwen3.5-27b", ok: true},
+		{input: "ollama/qwen3.6:27b", want: "", ok: false},
+		{input: "openrouter/", want: "", ok: false},
+	}
+
+	for _, tc := range cases {
+		got, ok := parseOpenRouterModel(tc.input)
+		if ok != tc.ok || got != tc.want {
+			t.Fatalf("parseOpenRouterModel(%q): got (%q,%v) want (%q,%v)", tc.input, got, ok, tc.want, tc.ok)
 		}
 	}
 }

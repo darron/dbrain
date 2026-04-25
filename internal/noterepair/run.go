@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"dbrain/internal/config"
+	"dbrain/internal/model"
 	"dbrain/internal/store"
 	"dbrain/internal/vault"
 )
@@ -20,13 +22,17 @@ type Options struct {
 }
 
 type Stats struct {
-	ItemsConsidered        int `json:"items_considered"`
-	ItemsWritten           int `json:"items_written"`
-	ItemsSkippedExisting   int `json:"items_skipped_existing"`
-	SourcesConsidered      int `json:"sources_considered"`
-	SourcesWritten         int `json:"sources_written"`
-	SourcesSkippedExisting int `json:"sources_skipped_existing"`
-	Errors                 int `json:"errors"`
+	ItemsConsidered           int `json:"items_considered"`
+	ItemsWritten              int `json:"items_written"`
+	ItemsAlreadyCurrent       int `json:"items_already_current"`
+	ItemsSkippedMissingOnly   int `json:"items_skipped_missing_only"`
+	ItemsSkippedExisting      int `json:"items_skipped_existing"`
+	SourcesConsidered         int `json:"sources_considered"`
+	SourcesWritten            int `json:"sources_written"`
+	SourcesAlreadyCurrent     int `json:"sources_already_current"`
+	SourcesSkippedMissingOnly int `json:"sources_skipped_missing_only"`
+	SourcesSkippedExisting    int `json:"sources_skipped_existing"`
+	Errors                    int `json:"errors"`
 }
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
@@ -50,14 +56,20 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				continue
 			}
 			if !shouldWrite {
+				stats.ItemsSkippedMissingOnly++
 				stats.ItemsSkippedExisting++
 				continue
 			}
-			if err := vault.WriteItem(cfg, item); err != nil {
+			changed, err := writeItemNote(cfg, item)
+			if err != nil {
 				stats.Errors++
 				continue
 			}
-			stats.ItemsWritten++
+			if changed {
+				stats.ItemsWritten++
+			} else {
+				stats.ItemsAlreadyCurrent++
+			}
 		}
 	}
 
@@ -74,6 +86,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				continue
 			}
 			if !shouldWrite {
+				stats.SourcesSkippedMissingOnly++
 				stats.SourcesSkippedExisting++
 				continue
 			}
@@ -82,11 +95,16 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				stats.Errors++
 				continue
 			}
-			if err := vault.WriteSource(cfg, source, backlinks); err != nil {
+			changed, err := writeSourceNote(cfg, source, backlinks)
+			if err != nil {
 				stats.Errors++
 				continue
 			}
-			stats.SourcesWritten++
+			if changed {
+				stats.SourcesWritten++
+			} else {
+				stats.SourcesAlreadyCurrent++
+			}
 		}
 	}
 
@@ -108,4 +126,39 @@ func shouldWriteNote(cfg config.Config, relPath string, missingOnly bool) (bool,
 		return true, nil
 	}
 	return false, err
+}
+
+func writeItemNote(cfg config.Config, item model.Item) (bool, error) {
+	body, err := vault.RenderItem(item)
+	if err != nil {
+		return false, err
+	}
+	return writeNoteBody(cfg, item.NotePath, body)
+}
+
+func writeSourceNote(cfg config.Config, source model.SourceDocument, backlinks []model.SourceBacklink) (bool, error) {
+	body, err := vault.RenderSource(source, backlinks)
+	if err != nil {
+		return false, err
+	}
+	return writeNoteBody(cfg, source.NotePath, body)
+}
+
+func writeNoteBody(cfg config.Config, relPath string, body string) (bool, error) {
+	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return false, fmt.Errorf("create note dir: %w", err)
+	}
+
+	existing, err := os.ReadFile(fullPath)
+	if err == nil && string(existing) == body {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read note %s: %w", fullPath, err)
+	}
+	if err := os.WriteFile(fullPath, []byte(body), 0o644); err != nil {
+		return false, fmt.Errorf("write note: %w", err)
+	}
+	return true, nil
 }

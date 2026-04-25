@@ -160,24 +160,9 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 			touchedSourceIDs[result.TouchedSourceID] = struct{}{}
 		}
 	}
-	if err != nil {
-		return stats, nil, err
-	}
-
 	orderedSourceIDs := uniqueSorted(mapKeys(touchedSourceIDs))
-	for _, sourceID := range orderedSourceIDs {
-		source, err := st.GetSourceByID(ctx, sourceID)
-		if err != nil {
-			return stats, nil, err
-		}
-		backlinks, err := st.ListBacklinksForSource(ctx, sourceID)
-		if err != nil {
-			return stats, nil, err
-		}
-		if err := vault.WriteSource(cfg, source, backlinks); err != nil {
-			return stats, nil, err
-		}
-		stats.SourcesRendered++
+	if err != nil {
+		return stats, orderedSourceIDs, err
 	}
 
 	return stats, orderedSourceIDs, nil
@@ -263,10 +248,23 @@ func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *stor
 	return out, firstErr
 }
 
-func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) sourceProcessResult {
+func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) (result sourceProcessResult) {
 	debugLog(opts.Logger, "enriching source", "source_key", source.SourceKey, "url", source.CanonicalURL)
 
-	result := sourceProcessResult{}
+	defer func() {
+		if result.TouchedSourceID <= 0 {
+			return
+		}
+		renderCtx := context.WithoutCancel(ctx)
+		if err := renderSourceNote(renderCtx, cfg, st, result.TouchedSourceID); err != nil {
+			if result.Err == nil {
+				result.Err = err
+			}
+			return
+		}
+		result.Stats.SourcesRendered++
+	}()
+
 	sourceArgs := argsFor(opts, source)
 	sourceEnv := envFor(opts, source)
 	localExtract, hasLocalExtract, err := st.GetPreferredLocalSourceExtract(ctx, source.ID)
@@ -538,6 +536,18 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 
 	result.TouchedSourceID = source.ID
 	return result
+}
+
+func renderSourceNote(ctx context.Context, cfg config.Config, st *store.Store, sourceID int64) error {
+	source, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		return err
+	}
+	backlinks, err := st.ListBacklinksForSource(ctx, sourceID)
+	if err != nil {
+		return err
+	}
+	return vault.WriteSource(cfg, source, backlinks)
 }
 
 func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, extractToolVersion string, summaryToolVersion string) (Stats, error) {

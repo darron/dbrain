@@ -805,6 +805,253 @@ func TestRunSourceIDsUsesDirectOllamaSummaryAfterExtraction(t *testing.T) {
 	}
 }
 
+func TestRunSourceIDsUsesDirectOpenRouterSummaryAfterExtraction(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	installSourceEnrichDirectOllamaExtractFakeSummarize(t, root)
+
+	var captured summarizecliTestRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: sourceEnrichRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/api/v1/chat/completions" {
+			t.Fatalf("unexpected openrouter path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-openrouter-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode openrouter request: %v", err)
+		}
+		respBody := `{"model":"qwen/qwen3.5-27b","choices":[{"message":{"role":"assistant","content":"summary from direct openrouter"}}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(respBody)),
+		}, nil
+	})}
+	t.Cleanup(func() {
+		http.DefaultClient = oldClient
+	})
+	t.Setenv("DBRAIN_OPENROUTER_BASE_URL", "https://openrouter.test")
+	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "test-openrouter-key")
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "x:test-direct-openrouter",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-direct-openrouter",
+		CanonicalURL: "https://x.com/example/status/test-direct-openrouter",
+		Title:        "test direct openrouter",
+		ContentHash:  "item-hash-direct-openrouter",
+		NotePath:     vault.NoteRelativePath("x", "2026", "test-direct-openrouter"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:direct-openrouter-test",
+		OriginalURL:   "https://example.com/direct-openrouter",
+		CanonicalURL:  "https://example.com/direct-openrouter",
+		NormalizedURL: "https://example.com/direct-openrouter",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      vault.SourceNoteRelativePath("web", "direct-openrouter-test"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Limit:     10,
+		Summarize: true,
+		Model:     "openrouter/qwen/qwen3.5-27b",
+		Length:    "medium",
+		Timeout:   5 * time.Second,
+		ResolveHost: func(context.Context, string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if stats.SourcesSummarized != 1 {
+		t.Fatalf("expected 1 summarized source, got %d (summary_status=%q summary_error=%q summary_text=%q)", stats.SourcesSummarized, source.SummaryStatus, source.SummaryError, source.SummaryText)
+	}
+	if source.ExtractStatus != "ok" {
+		t.Fatalf("expected extract status ok, got %q", source.ExtractStatus)
+	}
+	if source.SummaryStatus != "ok" {
+		t.Fatalf("expected summary status ok, got %q", source.SummaryStatus)
+	}
+	if source.SummaryText != "summary from direct openrouter" {
+		t.Fatalf("unexpected summary text: %q", source.SummaryText)
+	}
+	if source.SummaryModel != "openrouter/qwen/qwen3.5-27b" {
+		t.Fatalf("unexpected summary model: %q", source.SummaryModel)
+	}
+	if source.SummaryTool != summarizecli.DirectOpenRouterToolName {
+		t.Fatalf("unexpected summary tool: %q", source.SummaryTool)
+	}
+	if source.SummaryToolVersion != summarizecli.SummaryToolVersion(context.Background(), "summarize", "openrouter/qwen/qwen3.5-27b") {
+		t.Fatalf("unexpected summary tool version: %q", source.SummaryToolVersion)
+	}
+	if captured.Model != "qwen/qwen3.5-27b" {
+		t.Fatalf("unexpected openrouter model: %q", captured.Model)
+	}
+	if len(captured.Messages) < 2 {
+		t.Fatalf("expected prompt and user messages, got %+v", captured.Messages)
+	}
+	if !strings.Contains(captured.Messages[len(captured.Messages)-1].Content, "extracted body for direct ollama") {
+		t.Fatalf("expected extracted body in openrouter user message, got %+v", captured.Messages[len(captured.Messages)-1])
+	}
+}
+
+func TestProcessSingleSourceRendersSourceNoteImmediately(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	installSourceEnrichDirectOllamaExtractFakeSummarize(t, root)
+
+	var captured summarizecliTestRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: sourceEnrichRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected ollama path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode ollama request: %v", err)
+		}
+		respBody := `{"model":"qwen3.6:35b","choices":[{"message":{"role":"assistant","content":"summary from direct ollama"}}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(respBody)),
+		}, nil
+	})}
+	t.Cleanup(func() {
+		http.DefaultClient = oldClient
+	})
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", "http://ollama.test")
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "x:test-direct-ollama-note",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-direct-ollama-note",
+		CanonicalURL: "https://x.com/example/status/test-direct-ollama-note",
+		Title:        "test direct ollama note",
+		ContentHash:  "item-hash-direct-ollama-note",
+		NotePath:     vault.NoteRelativePath("x", "2026", "test-direct-ollama-note"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:direct-ollama-note-test",
+		OriginalURL:   "https://example.com/direct-ollama",
+		CanonicalURL:  "https://example.com/direct-ollama",
+		NormalizedURL: "https://example.com/direct-ollama",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      vault.SourceNoteRelativePath("web", "direct-ollama-note-test"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	notePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath))
+	if err := os.MkdirAll(filepath.Dir(notePath), 0o755); err != nil {
+		t.Fatalf("mkdir note dir: %v", err)
+	}
+	if err := os.WriteFile(notePath, []byte("stale note body"), 0o644); err != nil {
+		t.Fatalf("write stale note: %v", err)
+	}
+
+	result := processSingleSource(context.Background(), cfg, st, source, Options{
+		Limit:     10,
+		Summarize: true,
+		Model:     "ollama/qwen3.6:35b",
+		Length:    "medium",
+		Timeout:   5 * time.Second,
+		ResolveHost: func(context.Context, string) error {
+			return nil
+		},
+	}, summarizecli.Version(context.Background(), ""), summarizecli.SummaryToolVersion(context.Background(), "", "ollama/qwen3.6:35b"))
+	if result.Err != nil {
+		t.Fatalf("processSingleSource: %v", result.Err)
+	}
+	if result.Stats.SourcesRendered != 1 {
+		t.Fatalf("expected 1 rendered source note, got %+v", result.Stats)
+	}
+
+	noteBytes, err := os.ReadFile(notePath)
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	noteText := string(noteBytes)
+	if strings.Contains(noteText, "stale note body") {
+		t.Fatalf("expected stale note to be rewritten, got %q", noteText)
+	}
+	if !strings.Contains(noteText, "summary from direct ollama") {
+		t.Fatalf("expected rendered note to include summary, got %q", noteText)
+	}
+	if !strings.Contains(noteText, "extracted body for direct ollama") {
+		t.Fatalf("expected rendered note to include extract, got %q", noteText)
+	}
+	if captured.Model != "qwen3.6:35b" {
+		t.Fatalf("unexpected ollama model: %q", captured.Model)
+	}
+}
+
 func TestRunSourceIDsMarksDeadHostsTerminal(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -1313,10 +1560,13 @@ if [ "$extract_mode" = "1" ]; then
     echo "did not expect --model during extract-only pass" >&2
     exit 1
   fi
-  if [ "$last" != "https://example.com/direct-ollama" ]; then
+  case "$last" in
+    "https://example.com/direct-ollama"|"https://example.com/direct-openrouter") ;;
+    *)
     echo "unexpected extract input: $last" >&2
     exit 1
-  fi
+    ;;
+  esac
   printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com/direct-ollama","title":"Direct Ollama","description":"desc","siteName":"Example","content":"extracted body for direct ollama"},"summary":null}'
   exit 0
 fi
