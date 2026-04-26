@@ -65,6 +65,9 @@ Pipeline stats should reflect the real work the system performs.
 - avoid conflating operational/transcription errors with follow-on summary/OCR
   errors
 - keep admin/stats semantics policy-aware and easy to reason about
+- worker candidate selectors and backlog/pipeline stats must share the same
+  predicate so dashboards do not claim "pending=0" while a worker still scans
+  hundreds of rows
 
 ### Notes and search should reflect derived item enrichments
 
@@ -102,6 +105,25 @@ same thing.
 
 - keep that distinction clear in stats and UI
 - do not assume "post hydrated" means "all media complete"
+
+### Quoted post hydration is recursive graph repair
+
+Quoted tweets are not just nested JSON decoration on the parent post.
+
+- store quoted tweets as first-class `x_quote` items plus explicit
+  `quoted_post` links
+- expect one imported bookmark to create additional quoted children that then
+  need their own hydration, link extraction, OCR, transcription, and note
+  rendering
+- if a quoted child already has richer direct hydration than the parent's
+  snapshot, recurse from the preserved direct child hydration instead of the
+  shallower parent snapshot
+- do not let nested quoted-child media make the parent item look like it still
+  needs media hydration
+- when testing quote support, cover quote-of-quote, quoted photos, quoted
+  video, syndication fallback, and deleted/not-found quoted children
+- bounded follow-up hydrate passes in orchestrators are acceptable; unbounded
+  recursive loops are not
 
 ### X media transcription
 
@@ -144,6 +166,15 @@ Any future media GC or cleanup must be conservative.
   removed
 - only delete a local media path if no remaining asset/link records still rely
   on it
+
+### Archive only after terminal enrichment coverage
+
+Archive/prune should happen only after downstream local-media work is complete.
+
+- do not archive/prune local X media while OCR or transcription is still
+  pending for the owning item
+- if a restore/re-download path is added for pruned media, treat it as a repair
+  tool, not the normal steady-state path
 
 ### Large video policy
 
@@ -213,6 +244,9 @@ When changing workers, stats, or dashboards:
 - prefer outputs that explain what the system is actually doing
 - avoid merged counters that hide the real cause of work or failure
 - avoid stages that look "pending forever" because semantics are unclear
+- keep similarly named counters intentionally distinct and documented, for
+  example `requested` versus `hydrated`, or `items_scanned` versus
+  `sources_queued`
 
 ## Content Handling
 

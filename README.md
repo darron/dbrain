@@ -311,6 +311,37 @@ sharing that same `local_path` is safely archived.
 - `task test`
   Requires `task` and `go`.
 
+## Operational Notes
+
+### X hydration counters
+
+- `Requested` means remote X fetches were actually attempted.
+- `Hydrated` means items were processed and ended in an `ok_*` X hydration
+  state.
+- Those counters are intentionally different. A run can show a nonzero
+  `Hydrated` count with `Requested: 0` if it is only reconciling already-stored
+  local state.
+- New top-level bookmarks can legitimately cause more hydrated items than the
+  import count because quote children are stored and repaired as first-class
+  `x_quote` items.
+
+### Quoted X posts
+
+- Quoted posts are stored as first-class `x_quote` items linked through
+  `quoted_post`, not only as nested parent JSON.
+- `dbrain sync all` performs bounded quote-only follow-up hydrate passes after
+  the main X hydrate step so quote-of-quote tails can drain automatically
+  without a separate manual `hydrate x` run.
+
+### Link discovery counters
+
+- `items_scanned` means X items with non-empty `links_json` that still need a
+  discovery pass.
+- `sources_queued` means new canonical source rows actually created after URL
+  filtering and deduplication.
+- Those counters are intentionally different. Many scanned items can still
+  produce zero new sources.
+
 ## Examples
 
 ```sh
