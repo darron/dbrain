@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -256,8 +257,71 @@ func TestWriteSyncStatsIncludesXMediaStage(t *testing.T) {
 	}
 
 	output := dst.String()
-	if !strings.Contains(output, "X Media: items_processed=10 items_updated=6 items_skipped=4 media_transcribed=6 items_summarized=0 errors=1 summary_errors=2") {
-		t.Fatalf("expected x media sync stats line, got %q", output)
+	for _, value := range []string{"Sync Summary", "X Media", "processed=10 transcribed=6", "summarized=0 skipped=4", "3"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
+		}
+	}
+}
+
+func TestSyncProgressUIFormatsStageLines(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	ui := newSyncProgressUI(&dst)
+	_, _ = fmt.Fprintln(ui, "Sync started at 2026-04-26T21:01:56Z")
+	_, _ = fmt.Fprintln(ui, "==> hydrate x")
+	_, _ = fmt.Fprintln(ui, "X hydration complete: hydrated=4 missing=0 api_errors=0 media_downloaded=3 media_errors=0 rendered=4 (3s)")
+	ui.Close()
+
+	output := dst.String()
+	for _, value := range []string{"Sync started at", "Hydrating X posts and media", "X hydration complete"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync progress output to contain %q, got %q", value, output)
+		}
+	}
+	if strings.Contains(output, "==>") {
+		t.Fatalf("expected raw stage marker to be formatted, got %q", output)
+	}
+}
+
+func TestSyncProgressUILogWriterPreservesDebugLines(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	ui := newSyncProgressUI(&dst)
+	_, _ = fmt.Fprintln(ui, "==> import youtube")
+	_, _ = fmt.Fprintln(ui.LogWriter(), `time=2026-04-26T15:03:43.870-06:00 level=DEBUG msg="loading youtube feed"`)
+	_, _ = fmt.Fprintln(ui, "YouTube import complete: items_processed=100 sources_summarized=0 errors=0 (3s)")
+	ui.Close()
+
+	output := dst.String()
+	for _, value := range []string{"Importing YouTube feeds", "DEBUG", "15:03:43.870", "loading youtube feed", "YouTube import complete"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync progress output to contain %q, got %q", value, output)
+		}
+	}
+	if strings.Contains(output, "==>") {
+		t.Fatalf("expected raw stage marker to be formatted, got %q", output)
+	}
+}
+
+func TestSyncProgressUIFormatsStructuredLogFields(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	ui := newSyncProgressUI(&dst)
+	_, _ = fmt.Fprintln(ui.LogWriter(), `time=2026-04-26T15:02:01.505-06:00 level=DEBUG msg="source enrichment candidates loaded" sources=1 limit=5000 summarize=true`)
+	ui.Close()
+
+	output := dst.String()
+	for _, value := range []string{"DEBUG", "15:02:01.505", "source enrichment candidates loaded", "sources=1", "limit=5000", "summarize=true"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected formatted log output to contain %q, got %q", value, output)
+		}
+	}
+	if strings.Contains(output, `msg="source enrichment candidates loaded"`) {
+		t.Fatalf("expected msg field to be promoted, got %q", output)
 	}
 }
 

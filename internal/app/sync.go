@@ -2,8 +2,11 @@ package app
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/spf13/cobra"
 
 	"dbrain/internal/store"
@@ -81,6 +84,16 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				_ = st.Close()
 			}()
 
+			progress := cmd.ErrOrStderr()
+			logWriter := cmd.ErrOrStderr()
+			var syncUI *syncProgressUI
+			if !jsonOut {
+				syncUI = newSyncProgressUI(cmd.ErrOrStderr())
+				defer syncUI.Close()
+				progress = syncUI
+				logWriter = syncUI.LogWriter()
+			}
+
 			stats, err := syncjob.Run(cmd.Context(), cfg, st, syncjob.Options{
 				XBookmarksEnabled:    !skipXBookmarks && !skipFT,
 				XBookmarksLimit:      xBookmarksLimit,
@@ -128,8 +141,8 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				CLI:                  cliProvider,
 				Length:               length,
 				Timeout:              timeout,
-				Logger:               newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
-				Progress:             cmd.ErrOrStderr(),
+				Logger:               newLogger(commandDebugEnabled(cmd), logWriter),
+				Progress:             progress,
 			})
 			if err != nil {
 				return err
@@ -187,61 +200,82 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 }
 
 func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.Stats) error {
-	if _, err := fmt.Fprintf(dst, "Started: %s\n", stats.StartedAt.Format(time.RFC3339)); err != nil {
+	if _, err := fmt.Fprintf(dst, "\nSync Summary\n"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(dst, "Started:   %s\n", stats.StartedAt.Format(time.RFC3339)); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(dst, "Completed: %s\n", stats.CompletedAt.Format(time.RFC3339)); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(dst, "Duration: %s\n", stats.Duration); err != nil {
+	if _, err := fmt.Fprintf(dst, "Duration:  %s\n\n", stats.Duration); err != nil {
 		return err
 	}
 
+	rows := syncSummaryRows(stats)
+	t := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("240"))).
+		Headers("Stage", "Duration", "Primary", "Secondary", "Errors").
+		Rows(rows...).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			base := lipgloss.NewStyle().Padding(0, 1)
+			if row == table.HeaderRow {
+				return base.Bold(true).Foreground(lipgloss.Color("39"))
+			}
+			if col == 4 && row >= 0 && rows[row][4] != "0" {
+				return base.Foreground(lipgloss.Color("196"))
+			}
+			if col == 0 {
+				return base.Bold(true)
+			}
+			return base
+		})
+
+	if _, err := fmt.Fprintln(dst, t.String()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func syncSummaryRows(stats syncjob.Stats) [][]string {
+	rows := make([][]string, 0, 9)
 	if stats.XBookmarks != nil {
-		if _, err := fmt.Fprintf(dst, "X Bookmarks: created=%d updated=%d unchanged=%d rendered=%d pages=%d stopped=%s\n", stats.XBookmarks.Stats.Created, stats.XBookmarks.Stats.Updated, stats.XBookmarks.Stats.Unchanged, stats.XBookmarks.Stats.Rendered, stats.XBookmarks.Stats.PagesFetched, stats.XBookmarks.Stats.StoppedReason); err != nil {
-			return err
-		}
+		s := stats.XBookmarks.Stats
+		rows = append(rows, []string{"X Bookmarks", stats.XBookmarks.Duration.String(), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("unchanged=%d pages=%d stopped=%s", s.Unchanged, s.PagesFetched, s.StoppedReason), "0"})
 	}
 	if stats.X != nil {
-		if _, err := fmt.Fprintf(dst, "X: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d\n", stats.X.Stats.Hydrated, stats.X.Stats.Missing, stats.X.Stats.APIErrors, stats.X.Stats.MediaDownloaded, stats.X.Stats.MediaErrors, stats.X.Stats.Rendered); err != nil {
-			return err
-		}
+		s := stats.X.Stats
+		rows = append(rows, []string{"X Hydration", stats.X.Duration.String(), fmt.Sprintf("hydrated=%d rendered=%d", s.Hydrated, s.Rendered), fmt.Sprintf("media_downloaded=%d missing=%d", s.MediaDownloaded, s.Missing), strconv.Itoa(s.APIErrors + s.MediaErrors)})
 	}
 	if stats.XMedia != nil {
-		if _, err := fmt.Fprintf(dst, "X Media: items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d items_summarized=%d errors=%d summary_errors=%d\n", stats.XMedia.Stats.ItemsProcessed, stats.XMedia.Stats.ItemsUpdated, stats.XMedia.Stats.ItemsSkipped, stats.XMedia.Stats.MediaTranscribed, stats.XMedia.Stats.ItemsSummarized, stats.XMedia.Stats.Errors, stats.XMedia.Stats.SummaryErrors); err != nil {
-			return err
-		}
+		s := stats.XMedia.Stats
+		rows = append(rows, []string{"X Media", stats.XMedia.Duration.String(), fmt.Sprintf("processed=%d transcribed=%d", s.ItemsProcessed, s.MediaTranscribed), fmt.Sprintf("summarized=%d skipped=%d", s.ItemsSummarized, s.ItemsSkipped), strconv.Itoa(s.Errors + s.SummaryErrors)})
 	}
 	if stats.XPhotoOCR != nil {
-		if _, err := fmt.Fprintf(dst, "X Photo OCR: items_processed=%d items_updated=%d items_skipped=%d photos_ocred=%d errors=%d\n", stats.XPhotoOCR.Stats.ItemsProcessed, stats.XPhotoOCR.Stats.ItemsUpdated, stats.XPhotoOCR.Stats.ItemsSkipped, stats.XPhotoOCR.Stats.PhotosOCRed, stats.XPhotoOCR.Stats.Errors); err != nil {
-			return err
-		}
+		s := stats.XPhotoOCR.Stats
+		rows = append(rows, []string{"X Photo OCR", stats.XPhotoOCR.Duration.String(), fmt.Sprintf("processed=%d ocr=%d", s.ItemsProcessed, s.PhotosOCRed), fmt.Sprintf("updated=%d skipped=%d", s.ItemsUpdated, s.ItemsSkipped), strconv.Itoa(s.Errors)})
 	}
 	if stats.Links != nil {
-		if _, err := fmt.Fprintf(dst, "Links: items_scanned=%d sources_queued=%d sources_summarized=%d errors=%d\n", stats.Links.Stats.ItemsScanned, stats.Links.Stats.SourcesQueued, stats.Links.Stats.SourcesSummarized, stats.Links.Stats.Errors); err != nil {
-			return err
-		}
+		s := stats.Links.Stats
+		rows = append(rows, []string{"Links", stats.Links.Duration.String(), fmt.Sprintf("items_scanned=%d", s.ItemsScanned), fmt.Sprintf("queued=%d summarized=%d", s.SourcesQueued, s.SourcesSummarized), strconv.Itoa(s.Errors)})
 	}
 	if stats.GitHub != nil {
-		if _, err := fmt.Fprintf(dst, "GitHub: stars=%d items_created=%d sources_summarized=%d errors=%d\n", stats.GitHub.Stats.StarsProcessed, stats.GitHub.Stats.ItemsCreated, stats.GitHub.Stats.SourcesSummarized, stats.GitHub.Stats.Errors); err != nil {
-			return err
-		}
+		s := stats.GitHub.Stats
+		rows = append(rows, []string{"GitHub", stats.GitHub.Duration.String(), fmt.Sprintf("stars=%d created=%d", s.StarsProcessed, s.ItemsCreated), fmt.Sprintf("summarized=%d", s.SourcesSummarized), strconv.Itoa(s.Errors)})
 	}
 	if stats.YouTube != nil {
-		if _, err := fmt.Fprintf(dst, "YouTube: items_processed=%d sources_summarized=%d errors=%d\n", stats.YouTube.Stats.ItemsProcessed, stats.YouTube.Stats.SourcesSummarized, stats.YouTube.Stats.Errors); err != nil {
-			return err
-		}
+		s := stats.YouTube.Stats
+		rows = append(rows, []string{"YouTube", stats.YouTube.Duration.String(), fmt.Sprintf("items=%d", s.ItemsProcessed), fmt.Sprintf("summarized=%d", s.SourcesSummarized), strconv.Itoa(s.Errors)})
 	}
 	if stats.Sources != nil {
-		if _, err := fmt.Fprintf(dst, "Sources: work_cycles=%d sources_summarized=%d errors=%d stopped=%s\n", stats.Sources.Stats.WorkCycles, stats.Sources.Stats.SourcesSummarized, stats.Sources.Stats.Errors, stats.Sources.Stats.StoppedReason); err != nil {
-			return err
-		}
+		s := stats.Sources.Stats
+		rows = append(rows, []string{"Sources", stats.Sources.Duration.String(), fmt.Sprintf("cycles=%d summarized=%d", s.WorkCycles, s.SourcesSummarized), fmt.Sprintf("stopped=%s", s.StoppedReason), strconv.Itoa(s.Errors)})
 	}
 	if stats.MediaArchive != nil {
-		if _, err := fmt.Fprintf(dst, "Media Archive: candidates=%d uploaded=%d archived=%d unchanged=%d prune_skipped=%d local_files_pruned=%d local_rows_pruned=%d errors=%d\n", stats.MediaArchive.Stats.Candidates, stats.MediaArchive.Stats.Uploaded, stats.MediaArchive.Stats.Archived, stats.MediaArchive.Stats.Unchanged, stats.MediaArchive.Stats.PruneSkipped, stats.MediaArchive.Stats.LocalFilesPruned, stats.MediaArchive.Stats.LocalRowsPruned, stats.MediaArchive.Stats.Errors); err != nil {
-			return err
-		}
+		s := stats.MediaArchive.Stats
+		rows = append(rows, []string{"Media Archive", stats.MediaArchive.Duration.String(), fmt.Sprintf("uploaded=%d archived=%d", s.Uploaded, s.Archived), fmt.Sprintf("pruned_files=%d unchanged=%d", s.LocalFilesPruned, s.Unchanged), strconv.Itoa(s.Errors)})
 	}
-
-	return nil
+	return rows
 }
