@@ -164,6 +164,30 @@ func TestRejectExtractFailureFlagsXArticleErrorShellAsRetryableError(t *testing.
 	}
 }
 
+func TestRejectExtractFailureFlagsShortLocalXArticlePreviewAsRetryableError(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		CanonicalURL: "https://x.com/i/article/2044276671923249152",
+	}
+	extract := model.ExtractResult{
+		Content:     strings.Repeat("a", minXArticlePreviewExtractChars-1),
+		Tool:        "x-hydration",
+		ToolVersion: "local-article-preview-cache",
+	}
+
+	failure, reject := rejectExtractFailure(source, extract)
+	if !reject {
+		t.Fatal("expected short x article preview to be rejected")
+	}
+	if failure.Status != "error" {
+		t.Fatalf("expected error failure, got %+v", failure)
+	}
+	if !strings.Contains(failure.Error, "short preview snippet") {
+		t.Fatalf("unexpected reject reason: %q", failure.Error)
+	}
+}
+
 func TestRejectExtractFailureFlagsSubstackSubscriptionShellAsEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -306,6 +330,219 @@ func TestRunSourceIDsRejectsStoredXArticleErrorShell(t *testing.T) {
 	}
 	if !strings.Contains(source.ExtractError, "x article returned an X error shell") {
 		t.Fatalf("unexpected extract error: %q", source.ExtractError)
+	}
+}
+
+func TestRunSourceIDsMarksRepeatedXArticleShellTerminal(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	candidate := model.SourceCandidate{
+		SourceKey:     "src:test-x-article-shell-terminal",
+		CanonicalURL:  "https://x.com/i/article/2044276671923249152",
+		NormalizedURL: "https://x.com/i/article/2044276671923249152",
+		SourceType:    "x_article",
+		Domain:        "x.com",
+		NotePath:      "sources/x/article-shell-terminal.md",
+		OriginalURL:   "https://x.com/i/article/2044276671923249152",
+	}
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-x-article-shell-terminal-item",
+		SourceType:   "x_quote",
+		ExternalID:   "2044276671923249152",
+		CanonicalURL: "https://x.com/example/status/2044276671923249152",
+		Title:        "test item",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/2044276671923249152.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	shellText := "Something went wrong, but don’t fret — let’s give it another shot. Try again Some privacy related extensions may cause issues on x.com. Please disable them and try again."
+	hydration := model.XHydration{
+		FullText:  "quoted parent",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON:   `{"source":"graphql","snapshot":{"id":"2044276671923249152","text":"quoted parent"},"raw":{"article":{"rest_id":"2044276671923249152","title":"Quoted article","preview_text":"` + shellText + `"}}}`,
+	}
+	if _, err := st.SaveXHydration(context.Background(), itemResult.ItemID, hydration); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID first: %v", err)
+	}
+	failure := model.ExtractResult{
+		Status:      "error",
+		Error:       "x article returned an X error shell instead of article content",
+		Tool:        "summarize",
+		ToolVersion: "test",
+	}
+	if err := saveSourceFailure(context.Background(), st, source, failure, Options{Summarize: true}, "test", "test"); err != nil {
+		t.Fatalf("saveSourceFailure first: %v", err)
+	}
+	source, err = st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID second: %v", err)
+	}
+	if err := saveSourceFailure(context.Background(), st, source, failure, Options{Summarize: true}, "test", "test"); err != nil {
+		t.Fatalf("saveSourceFailure second: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Summarize: true,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.Errors != 1 {
+		t.Fatalf("expected one error to be recorded, got %+v", stats)
+	}
+
+	source, err = st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractStatus != "dead" {
+		t.Fatalf("expected extract status dead after repeated x article shell failures, got %q", source.ExtractStatus)
+	}
+	if !strings.Contains(source.ExtractError, "marking source dead after 3 consecutive x article shell failures") {
+		t.Fatalf("unexpected extract error: %q", source.ExtractError)
+	}
+	if source.SummaryStatus != "skipped" {
+		t.Fatalf("expected summary status skipped, got %q", source.SummaryStatus)
+	}
+}
+
+func TestRunSourceIDsFallsBackToRemoteFetchAfterShortLocalXArticlePreview(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	articleURL := "https://x.com/example/article/2044276671923249152"
+	installSourceEnrichXArticleExtractFakeSummarize(t, root, articleURL, strings.Repeat("remote article body ", 40))
+
+	now := time.Now().UTC()
+	candidate := model.SourceCandidate{
+		SourceKey:     "src:test-x-article-preview-fallback",
+		CanonicalURL:  articleURL,
+		NormalizedURL: articleURL,
+		SourceType:    "x_article",
+		Domain:        "x.com",
+		NotePath:      "sources/x/article-preview-fallback.md",
+		OriginalURL:   articleURL,
+	}
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-x-article-preview-fallback-item",
+		SourceType:   "x_quote",
+		ExternalID:   "2044276671923249152",
+		CanonicalURL: "https://x.com/example/status/2044276671923249152",
+		Title:        "test item",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/2044276671923249152.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	hydration := model.XHydration{
+		FullText:  "quoted parent",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON:   `{"source":"graphql","snapshot":{"id":"2044276671923249152","text":"quoted parent"},"raw":{"article":{"rest_id":"2044276671923249152","title":"Quoted article","preview_text":"` + strings.Repeat("x", minXArticlePreviewExtractChars-2) + `"}}}`,
+	}
+	if _, err := st.SaveXHydration(context.Background(), itemResult.ItemID, hydration); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Summarize: false,
+		Timeout:   5 * time.Second,
+		ResolveHost: func(context.Context, string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.Errors != 0 {
+		source, sourceErr := st.GetSourceByID(context.Background(), link.SourceID)
+		if sourceErr != nil {
+			t.Fatalf("expected no errors, got %+v (and failed to load source: %v)", stats, sourceErr)
+		}
+		t.Fatalf("expected no errors, got %+v; source status=%q tool=%q tool_version=%q error=%q extracted=%q", stats, source.ExtractStatus, source.ExtractTool, source.ExtractToolVersion, source.ExtractError, source.ExtractedText)
+	}
+	if stats.SourcesExtracted != 1 {
+		t.Fatalf("expected one extracted source, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractStatus != "ok" {
+		t.Fatalf("expected extract status ok, got %q", source.ExtractStatus)
+	}
+	if source.ExtractTool != "summarize" {
+		t.Fatalf("expected remote summarize extract tool, got %q", source.ExtractTool)
+	}
+	if len(strings.TrimSpace(source.ExtractedText)) < minXArticlePreviewExtractChars {
+		t.Fatalf("expected recovered article body to exceed preview threshold, got %d chars", len(strings.TrimSpace(source.ExtractedText)))
 	}
 }
 
@@ -1772,6 +2009,36 @@ if [ "$last" != "https://example.com/post" ]; then
   exit 1
 fi
 printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com/post","title":"Example","description":"desc","siteName":"Example","content":"body"},"summary":"summary from generic path"}'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installSourceEnrichXArticleExtractFakeSummarize(t *testing.T, root string, wantURL string, body string) {
+	t.Helper()
+
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	scriptPath := filepath.Join(binDir, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+if [ "$last" != "` + wantURL + `" ]; then
+  echo "unexpected summarize input: $last" >&2
+  exit 1
+fi
+printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"` + wantURL + `","title":"Recovered article","description":"","siteName":"x.com","content":"` + body + `"},"summary":null}'
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)

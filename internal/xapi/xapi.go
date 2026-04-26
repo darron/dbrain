@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -16,10 +17,12 @@ import (
 	"github.com/steipete/sweetcookie"
 
 	"dbrain/internal/config"
+	"dbrain/internal/itemhash"
 	"dbrain/internal/mediadownload"
 	"dbrain/internal/model"
 	"dbrain/internal/store"
 	"dbrain/internal/vault"
+	"dbrain/internal/xpost"
 )
 
 const (
@@ -86,6 +89,7 @@ var tweetResultFieldToggles = map[string]bool{
 type Options struct {
 	Limit       int
 	Force       bool
+	QuoteOnly   bool
 	Concurrency int
 	Browser     string
 	Profile     string
@@ -117,27 +121,6 @@ type Client struct {
 	logger       *slog.Logger
 }
 
-type postSnapshot struct {
-	ID                    string        `json:"id"`
-	Text                  string        `json:"text"`
-	Language              string        `json:"language"`
-	AuthorHandle          string        `json:"author_handle"`
-	AuthorName            string        `json:"author_name"`
-	AuthorProfileImageURL string        `json:"author_profile_image_url,omitempty"`
-	PostedAt              string        `json:"posted_at,omitempty"`
-	URL                   string        `json:"url,omitempty"`
-	Media                 []string      `json:"media,omitempty"`
-	MediaObjects          []mediaObject `json:"media_objects,omitempty"`
-}
-
-type mediaObject struct {
-	Type        string `json:"type,omitempty"`
-	URL         string `json:"url,omitempty"`
-	ExpandedURL string `json:"expanded_url,omitempty"`
-	Width       int    `json:"width,omitempty"`
-	Height      int    `json:"height,omitempty"`
-}
-
 type fetchResult struct {
 	item      model.Item
 	hydration model.XHydration
@@ -156,7 +139,15 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		opts.Concurrency = 16
 	}
 
-	items, err := st.ListItemsForXHydration(ctx, opts.Limit, opts.Force)
+	var (
+		items []model.Item
+		err   error
+	)
+	if opts.QuoteOnly {
+		items, err = st.ListItemsForXQuoteHydration(ctx, opts.Limit, opts.Force)
+	} else {
+		items, err = st.ListItemsForXHydration(ctx, opts.Limit, opts.Force)
+	}
 	if err != nil {
 		return Stats{}, err
 	}
@@ -215,6 +206,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 		processed++
 
+		normalizedHydration, snapshot, hydrationNormalized, err := normalizeHydration(result.hydration, result.item.ExternalID)
+		if err != nil {
+			return stats, err
+		}
+		result.hydration = normalizedHydration
+
 		if result.requested {
 			stats.Requested++
 		}
@@ -237,6 +234,17 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		stats.MediaGone += mediaStats.Gone
 		stats.MediaErrors += mediaStats.Errors
 
+		quoteStats, quoteChanged, quoteRendered, quoteErr := syncQuotedPosts(ctx, cfg, st, result.item, result.hydration, snapshot, opts)
+		if quoteErr != nil {
+			return stats, quoteErr
+		}
+		stats.MediaCandidates += quoteStats.Candidates
+		stats.MediaRequested += quoteStats.Requested
+		stats.MediaDownloaded += quoteStats.Downloaded
+		stats.MediaGone += quoteStats.Gone
+		stats.MediaErrors += quoteStats.Errors
+		stats.Rendered += quoteRendered
+
 		switch result.hydration.Status {
 		case "ok_graphql", "ok_syndication":
 			stats.Hydrated++
@@ -247,19 +255,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 
 		mediaChanged := mediaStats.Changed > 0
-		if changed || mediaChanged {
-			result.item.XPostText = result.hydration.FullText
-			result.item.XPostLang = result.hydration.Language
-			result.item.XPostJSON = result.hydration.APIJSON
-			result.item.XPostFetchedAt = result.hydration.FetchedAt
-			result.item.XPostStatus = result.hydration.Status
-			result.item.XPostError = result.hydration.Error
-			mediaRefs, err := st.ListItemMediaRefs(ctx, result.item.ID)
+		if changed || mediaChanged || quoteChanged || hydrationNormalized {
+			refreshed, err := st.GetItem(ctx, result.item.SourceKey)
 			if err != nil {
 				return stats, err
 			}
-			result.item.Media = mediaRefs
-			if err := vault.WriteItem(cfg, result.item); err != nil {
+			if err := vault.WriteItem(cfg, refreshed); err != nil {
 				return stats, fmt.Errorf("render hydrated note %s: %w", result.item.SourceKey, err)
 			}
 			stats.Rendered++
@@ -308,8 +309,17 @@ func requiresRemoteFetch(items []model.Item, force bool) bool {
 	return false
 }
 
+func needsQuotedSnapshotDirectFetch(item model.Item) bool {
+	return item.SourceType == "x_quote" &&
+		item.XPostStatus == "ok_graphql" &&
+		!strings.Contains(item.XPostJSON, `"tweetResult"`)
+}
+
 func shouldFetchItem(item model.Item, force bool) bool {
 	if force {
+		return true
+	}
+	if needsQuotedSnapshotDirectFetch(item) {
 		return true
 	}
 	switch item.XPostStatus {
@@ -336,6 +346,207 @@ func hydrateItem(ctx context.Context, client *Client, item model.Item, force boo
 	}
 	hydration, err := client.FetchPost(ctx, item.ExternalID)
 	return hydration, true, err
+}
+
+func normalizeHydration(hydration model.XHydration, fallbackTweetID string) (model.XHydration, *xpost.Snapshot, bool, error) {
+	rawJSON := strings.TrimSpace(hydration.APIJSON)
+	if rawJSON == "" {
+		return hydration, nil, false, nil
+	}
+
+	var envelope struct {
+		Source    string          `json:"source"`
+		FetchedAt string          `json:"fetched_at"`
+		Snapshot  *xpost.Snapshot `json:"snapshot"`
+		Raw       map[string]any  `json:"raw"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &envelope); err != nil {
+		return hydration, nil, false, fmt.Errorf("decode x hydration envelope for %s: %w", fallbackTweetID, err)
+	}
+
+	normalized := envelope.Snapshot
+	switch strings.TrimSpace(envelope.Source) {
+	case "graphql":
+		if rebuilt := parseGraphQLSnapshot(fallbackTweetID, envelope.Raw); rebuilt != nil {
+			normalized = rebuilt
+		}
+	case "syndication":
+		if rebuilt := parseSyndicationSnapshot(fallbackTweetID, envelope.Raw); rebuilt != nil {
+			normalized = rebuilt
+		}
+	}
+	if normalized == nil {
+		return hydration, nil, false, nil
+	}
+
+	hydration.FullText = strings.TrimSpace(normalized.Text)
+	hydration.Language = strings.TrimSpace(normalized.Language)
+	if reflect.DeepEqual(envelope.Snapshot, xpost.ForStorage(normalized)) {
+		return hydration, normalized, false, nil
+	}
+
+	envelope.Snapshot = xpost.ForStorage(normalized)
+	rewritten, err := json.Marshal(envelope)
+	if err != nil {
+		return hydration, nil, false, fmt.Errorf("marshal normalized x hydration for %s: %w", fallbackTweetID, err)
+	}
+	hydration.APIJSON = string(rewritten)
+	return hydration, normalized, true, nil
+}
+
+func syncQuotedPosts(ctx context.Context, cfg config.Config, st *store.Store, parent model.Item, hydration model.XHydration, snapshot *xpost.Snapshot, opts Options) (mediadownload.Stats, bool, int, error) {
+	if snapshot == nil || snapshot.QuotedPost == nil {
+		changed, err := st.ReplaceItemChildLinks(ctx, parent.ID, "quoted_post", nil)
+		return mediadownload.Stats{}, changed, 0, err
+	}
+
+	visited := map[string]struct{}{
+		strings.TrimSpace(parent.ExternalID): {},
+	}
+	childID, mediaStats, childRendered, err := upsertQuotedPostTree(ctx, cfg, st, snapshot.QuotedPost, hydration, opts, visited)
+	if err != nil {
+		return mediadownload.Stats{}, false, 0, err
+	}
+	if childID <= 0 {
+		changed, err := st.ReplaceItemChildLinks(ctx, parent.ID, "quoted_post", nil)
+		return mediadownload.Stats{}, changed, childRendered, err
+	}
+	linkChanged, err := st.ReplaceItemChildLinks(ctx, parent.ID, "quoted_post", []int64{childID})
+	if err != nil {
+		return mediadownload.Stats{}, false, 0, err
+	}
+	return mediaStats, linkChanged, childRendered, nil
+}
+
+func upsertQuotedPostTree(ctx context.Context, cfg config.Config, st *store.Store, snapshot *xpost.Snapshot, hydration model.XHydration, opts Options, visited map[string]struct{}) (int64, mediadownload.Stats, int, error) {
+	if snapshot == nil {
+		return 0, mediadownload.Stats{}, 0, nil
+	}
+	snapshotID := strings.TrimSpace(snapshot.ID)
+	if snapshotID == "" {
+		return 0, mediadownload.Stats{}, 0, nil
+	}
+	if _, exists := visited[snapshotID]; exists {
+		return 0, mediadownload.Stats{}, 0, nil
+	}
+	visited[snapshotID] = struct{}{}
+
+	item, err := quotedSnapshotToItem(snapshot, hydration.FetchedAt)
+	if err != nil {
+		return 0, mediadownload.Stats{}, 0, err
+	}
+	upsertResult, err := st.UpsertItem(ctx, item)
+	if err != nil {
+		return 0, mediadownload.Stats{}, 0, err
+	}
+
+	childHydration, err := buildSnapshotHydration(hydration.Status, snapshot, snapshot.Raw, hydration.FetchedAt)
+	if err != nil {
+		return 0, mediadownload.Stats{}, 0, err
+	}
+	hydrationChanged, err := st.SaveXHydration(ctx, upsertResult.ItemID, childHydration)
+	if err != nil {
+		return 0, mediadownload.Stats{}, 0, err
+	}
+
+	effectiveSnapshot := snapshot
+	refreshedItem, err := st.GetItem(ctx, item.SourceKey)
+	if err != nil {
+		return 0, mediadownload.Stats{}, 0, err
+	}
+	if storedSnapshot, err := snapshotFromHydrationJSON(refreshedItem.ExternalID, refreshedItem.XPostJSON); err != nil {
+		return 0, mediadownload.Stats{}, 0, err
+	} else if storedSnapshot != nil {
+		effectiveSnapshot = storedSnapshot
+	}
+
+	mediaStats, err := mediadownload.RunForItem(ctx, cfg, st, upsertResult.ItemID, mediadownload.Options{
+		Force:   opts.Force,
+		Timeout: opts.Timeout,
+		Logger:  opts.Logger,
+	})
+	if err != nil {
+		return 0, mediadownload.Stats{}, 0, err
+	}
+
+	var childIDs []int64
+	rendered := 0
+	if effectiveSnapshot.QuotedPost != nil {
+		childID, nestedMediaStats, nestedRendered, err := upsertQuotedPostTree(ctx, cfg, st, effectiveSnapshot.QuotedPost, hydration, opts, visited)
+		if err != nil {
+			return 0, mediadownload.Stats{}, 0, err
+		}
+		mediaStats.Candidates += nestedMediaStats.Candidates
+		mediaStats.Requested += nestedMediaStats.Requested
+		mediaStats.Downloaded += nestedMediaStats.Downloaded
+		mediaStats.Gone += nestedMediaStats.Gone
+		mediaStats.Errors += nestedMediaStats.Errors
+		mediaStats.Changed += nestedMediaStats.Changed
+		rendered += nestedRendered
+		if childID > 0 {
+			childIDs = append(childIDs, childID)
+		}
+	}
+
+	linkChanged, err := st.ReplaceItemChildLinks(ctx, upsertResult.ItemID, "quoted_post", childIDs)
+	if err != nil {
+		return 0, mediadownload.Stats{}, 0, err
+	}
+
+	if upsertResult.Status != model.UpsertUnchanged || hydrationChanged || mediaStats.Changed > 0 || linkChanged {
+		refreshed, err := st.GetItem(ctx, item.SourceKey)
+		if err != nil {
+			return 0, mediadownload.Stats{}, 0, err
+		}
+		if err := vault.WriteItem(cfg, refreshed); err != nil {
+			return 0, mediadownload.Stats{}, 0, fmt.Errorf("render quoted x note %s: %w", refreshed.SourceKey, err)
+		}
+		rendered++
+	}
+
+	return upsertResult.ItemID, mediaStats, rendered, nil
+}
+
+func snapshotFromHydrationJSON(fallbackTweetID, apiJSON string) (*xpost.Snapshot, error) {
+	if strings.TrimSpace(apiJSON) == "" {
+		return nil, nil
+	}
+	_, snapshot, _, err := normalizeHydration(model.XHydration{APIJSON: apiJSON}, fallbackTweetID)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func quotedSnapshotToItem(snapshot *xpost.Snapshot, fetchedAt time.Time) (model.Item, error) {
+	record := bookmarkRecord{
+		ID:           strings.TrimSpace(snapshot.ID),
+		TweetID:      strings.TrimSpace(snapshot.ID),
+		URL:          strings.TrimSpace(snapshot.URL),
+		Text:         strings.TrimSpace(snapshot.Text),
+		AuthorHandle: strings.TrimSpace(snapshot.AuthorHandle),
+		AuthorName:   strings.TrimSpace(snapshot.AuthorName),
+		PostedAt:     xpost.NormalizeTimestamp(snapshot.PostedAt),
+		BookmarkedAt: "",
+		SyncedAt:     fetchedAt.UTC().Format(time.RFC3339),
+		Language:     strings.TrimSpace(snapshot.Language),
+		Links:        append([]string(nil), snapshot.Links...),
+		IngestedVia:  "quoted-post",
+	}
+	item, err := bookmarkRecordToItem(record, fetchedAt.UTC())
+	if err != nil {
+		return model.Item{}, err
+	}
+	item.SourceType = "x_quote"
+	item.SavedAt = ""
+	item.RawJSON = string(mustJSON(snapshot))
+	item.ContentHash = itemhash.Compute(item)
+	return item, nil
+}
+
+func mustJSON(value any) []byte {
+	encoded, _ := json.Marshal(value)
+	return encoded
 }
 
 func newClient(ctx context.Context, opts Options) (*Client, error) {
@@ -652,11 +863,11 @@ func (c *Client) fetchViaSyndication(ctx context.Context, tweetID string) (model
 	return model.XHydration{FetchedAt: time.Now().UTC(), Status: "rate_limited", Error: "syndication rate limited after retries"}, nil
 }
 
-func buildSnapshotHydration(status string, snapshot *postSnapshot, payload map[string]any, fetchedAt time.Time) (model.XHydration, error) {
+func buildSnapshotHydration(status string, snapshot *xpost.Snapshot, payload map[string]any, fetchedAt time.Time) (model.XHydration, error) {
 	envelope := map[string]any{
 		"source":     strings.TrimPrefix(status, "ok_"),
 		"fetched_at": fetchedAt.Format(time.RFC3339),
-		"snapshot":   snapshot,
+		"snapshot":   xpost.ForStorage(snapshot),
 		"raw":        payload,
 	}
 	apiJSON, err := json.Marshal(envelope)
@@ -703,8 +914,12 @@ func buildHeaders(csrfToken, cookieHeader string) map[string]string {
 	}
 }
 
-func parseGraphQLSnapshot(tweetID string, payload map[string]any) *postSnapshot {
+func parseGraphQLSnapshot(tweetID string, payload map[string]any) *xpost.Snapshot {
 	result := dig(payload, "data", "tweetResult", "result")
+	return parseGraphQLSnapshotNode(result, tweetID)
+}
+
+func parseGraphQLSnapshotNode(result map[string]any, fallbackID string) *xpost.Snapshot {
 	if len(result) == 0 {
 		return nil
 	}
@@ -731,27 +946,29 @@ func parseGraphQLSnapshot(tweetID string, payload map[string]any) *postSnapshot 
 		stringValue(dig(tweet, "core", "user_results", "result", "avatar")["image_url"]),
 		stringValue(dig(tweet, "core", "user_results", "result", "legacy")["profile_image_url_https"]),
 	)
-	resolvedID := firstNonEmpty(stringValue(legacy["id_str"]), stringValue(tweet["rest_id"]), tweetID)
+	resolvedID := firstNonEmpty(stringValue(legacy["id_str"]), stringValue(tweet["rest_id"]), fallbackID)
 
 	mediaEntities := listValue(dig(legacy, "extended_entities")["media"])
 	if len(mediaEntities) == 0 {
 		mediaEntities = listValue(dig(legacy, "entities")["media"])
 	}
 
-	snapshot := &postSnapshot{
+	snapshot := &xpost.Snapshot{
 		ID:                    resolvedID,
 		Text:                  text,
 		Language:              stringValue(legacy["lang"]),
 		AuthorHandle:          handle,
 		AuthorName:            name,
 		AuthorProfileImageURL: profileImage,
-		PostedAt:              stringValue(legacy["created_at"]),
+		PostedAt:              xpost.NormalizeTimestamp(stringValue(legacy["created_at"])),
 		URL:                   "https://x.com/" + firstNonEmpty(handle, "_") + "/status/" + resolvedID,
+		Links:                 extractEntityExpandedURLs(dig(legacy, "entities")["urls"], mediaEntities),
+		Raw:                   tweet,
 	}
 	for _, media := range mediaEntities {
 		mediaURL := selectMediaURL(media)
 		snapshot.Media = append(snapshot.Media, mediaURL)
-		snapshot.MediaObjects = append(snapshot.MediaObjects, mediaObject{
+		snapshot.MediaObjects = append(snapshot.MediaObjects, xpost.MediaObject{
 			Type:        stringValue(media["type"]),
 			URL:         mediaURL,
 			ExpandedURL: stringValue(media["expanded_url"]),
@@ -759,10 +976,27 @@ func parseGraphQLSnapshot(tweetID string, payload map[string]any) *postSnapshot 
 			Height:      intValue(dig(media, "original_info")["height"]),
 		})
 	}
+	if quoted := parseGraphQLSnapshotNode(dig(tweet, "quoted_status_result", "result"), stringValue(legacy["quoted_status_id_str"])); quoted != nil {
+		snapshot.QuotedPost = quoted
+	} else if quotedID := stringValue(legacy["quoted_status_id_str"]); quotedID != "" {
+		snapshot.QuotedPost = &xpost.Snapshot{
+			ID:  quotedID,
+			URL: firstNonEmpty(stringValue(dig(legacy, "quoted_status_permalink")["expanded"]), "https://x.com/i/web/status/"+quotedID),
+			Raw: map[string]any{
+				"legacy": map[string]any{
+					"quoted_status_id_str": quotedID,
+				},
+			},
+		}
+	}
 	return snapshot
 }
 
-func parseSyndicationSnapshot(tweetID string, payload map[string]any) *postSnapshot {
+func parseSyndicationSnapshot(tweetID string, payload map[string]any) *xpost.Snapshot {
+	return parseSyndicationSnapshotNode(payload, tweetID)
+}
+
+func parseSyndicationSnapshotNode(payload map[string]any, fallbackID string) *xpost.Snapshot {
 	text := stringValue(payload["text"])
 	if text == "" {
 		return nil
@@ -770,29 +1004,61 @@ func parseSyndicationSnapshot(tweetID string, payload map[string]any) *postSnaps
 	handle := stringValue(dig(payload, "user")["screen_name"])
 	name := stringValue(dig(payload, "user")["name"])
 	profileImage := stringValue(dig(payload, "user")["profile_image_url_https"])
-	resolvedID := firstNonEmpty(stringValue(payload["id_str"]), tweetID)
+	resolvedID := firstNonEmpty(stringValue(payload["id_str"]), fallbackID)
+	mediaDetails := listValue(payload["mediaDetails"])
 
-	snapshot := &postSnapshot{
+	snapshot := &xpost.Snapshot{
 		ID:                    resolvedID,
 		Text:                  text,
 		Language:              "",
 		AuthorHandle:          handle,
 		AuthorName:            name,
 		AuthorProfileImageURL: profileImage,
-		PostedAt:              stringValue(payload["created_at"]),
+		PostedAt:              xpost.NormalizeTimestamp(stringValue(payload["created_at"])),
 		URL:                   "https://x.com/" + firstNonEmpty(handle, "_") + "/status/" + resolvedID,
+		Links:                 extractEntityExpandedURLs(dig(payload, "entities")["urls"], mediaDetails),
+		Raw:                   payload,
 	}
-	for _, media := range listValue(payload["mediaDetails"]) {
+	for _, media := range mediaDetails {
 		mediaURL := selectMediaURL(media)
 		snapshot.Media = append(snapshot.Media, mediaURL)
-		snapshot.MediaObjects = append(snapshot.MediaObjects, mediaObject{
+		snapshot.MediaObjects = append(snapshot.MediaObjects, xpost.MediaObject{
 			Type:   stringValue(media["type"]),
 			URL:    mediaURL,
 			Width:  intValue(dig(media, "original_info")["width"]),
 			Height: intValue(dig(media, "original_info")["height"]),
 		})
 	}
+	quotedPayload := mapValue(payload["quoted_tweet"])
+	if len(quotedPayload) == 0 {
+		quotedPayload = mapValue(mapValue(payload["parent"])["quoted_tweet"])
+	}
+	if quoted := parseSyndicationSnapshotNode(quotedPayload, ""); quoted != nil {
+		snapshot.QuotedPost = quoted
+	}
 	return snapshot
+}
+
+func extractEntityExpandedURLs(urlEntities any, mediaEntities []map[string]any) []string {
+	seen := map[string]struct{}{}
+	links := make([]string, 0, 4)
+	for _, entity := range listValue(urlEntities) {
+		if expanded := stringValue(entity["expanded_url"]); expanded != "" {
+			if _, exists := seen[expanded]; !exists {
+				seen[expanded] = struct{}{}
+				links = append(links, expanded)
+			}
+		}
+	}
+	for _, media := range mediaEntities {
+		if expanded := stringValue(media["expanded_url"]); expanded != "" {
+			if _, exists := seen[expanded]; !exists {
+				seen[expanded] = struct{}{}
+				links = append(links, expanded)
+			}
+		}
+	}
+	return links
 }
 
 func selectMediaURL(media map[string]any) string {

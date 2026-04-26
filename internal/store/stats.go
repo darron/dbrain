@@ -273,19 +273,16 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 	summaryTool := strings.TrimSpace(toolName)
 	summaryToolVersion := strings.TrimSpace(toolVersion)
 
-	xWhere := `source_type = 'x_bookmark'
+	xWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
-		AND (x_post_status = ''
-			OR x_post_status = 'api_error'
-			OR x_post_status = 'error'
-			OR x_post_status = 'rate_limited')`
+		AND ` + xHydrationCandidateWhere
 	if value, err := s.countWhere(ctx, "items", xWhere); err != nil {
 		return BacklogStats{}, err
 	} else {
 		stats.XHydrationPending = value
 	}
 
-	linkWhere := `source_type = 'x_bookmark'
+	linkWhere := xItemSourceTypeWhere + `
 		AND links_json != '[]'
 		AND (link_extract_synced_at = '' OR updated_at > link_extract_synced_at)`
 	if value, err := s.countWhere(ctx, "items", linkWhere); err != nil {
@@ -334,15 +331,15 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		stats.SummaryToolVersion = summaryToolVersion
 	}
 
-	hydrationTotal, err := s.countGroupedWhere(ctx, "items", "source_type", `source_type = 'x_bookmark' AND external_id != ''`)
+	hydrationTotal, err := s.countGroupedWhere(ctx, "items", "source_type", xItemSourceTypeWhere+` AND external_id != ''`)
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	hydrationCurrent, err := s.countGroupedWhere(ctx, "items", "source_type", `source_type = 'x_bookmark' AND external_id != '' AND x_post_status LIKE 'ok_%'`)
+	hydrationCurrent, err := s.countGroupedWhere(ctx, "items", "source_type", xItemSourceTypeWhere+` AND external_id != '' AND x_post_status LIKE 'ok_%' AND NOT (`+xMediaHydrationRepairWhere+` OR `+xHydrationRepairWhere+`)`)
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	hydrationPending, err := s.countGroupedWhere(ctx, "items", "source_type", `source_type = 'x_bookmark' AND external_id != '' AND (x_post_status = '' OR x_post_status = 'api_error' OR x_post_status = 'error' OR x_post_status = 'rate_limited')`)
+	hydrationPending, err := s.countGroupedWhere(ctx, "items", "source_type", xItemSourceTypeWhere+` AND external_id != '' AND `+xHydrationCandidateWhere)
 	if err != nil {
 		return PipelineStats{}, err
 	}
@@ -353,7 +350,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	extractionCurrent, err := s.countGroupedWhere(ctx, "sources", "source_type", `extract_status IN ('ok', 'empty')`)
+	extractionCurrent, err := s.countGroupedWhere(ctx, "sources", "source_type", `extract_status IN ('ok', 'empty') AND NOT `+sourceExtractCoverageRepairWhere())
 	if err != nil {
 		return PipelineStats{}, err
 	}
@@ -367,7 +364,8 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	readyForSummaryWhere := `extract_status IN ('ok', 'empty')`
+	readyForSummaryWhere := `extract_status IN ('ok', 'empty') AND NOT ` + sourceExtractCoverageRepairWhere()
+	extractPendingWhere, extractPendingArgs := sourceExtractBacklogWhere(time.Now().UTC())
 	summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(summaryPromptVersion, summaryTool, summaryToolVersion)
 	summaryCurrent, err := s.countGroupedWhere(
 		ctx,
@@ -380,7 +378,9 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		return PipelineStats{}, err
 	}
 	summaryPendingWhere, summaryPendingArgs := sourceSummaryBacklogWhere(summaryPromptVersion, summaryTool, summaryToolVersion)
-	summaryPending, err := s.countGroupedWhere(ctx, "sources", "source_type", summaryPendingWhere, summaryPendingArgs...)
+	summaryPendingCondition := `( (` + summaryPendingWhere + `) OR (` + extractPendingWhere + `) )`
+	summaryPendingArgs = append(summaryPendingArgs, extractPendingArgs...)
+	summaryPending, err := s.countGroupedWhere(ctx, "sources", "source_type", summaryPendingCondition, summaryPendingArgs...)
 	if err != nil {
 		return PipelineStats{}, err
 	}
@@ -388,7 +388,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		ctx,
 		"sources",
 		"source_type",
-		`NOT (`+readyForSummaryWhere+`) OR (`+readyForSummaryWhere+` AND summary_status IN ('blocked', 'skipped'))`,
+		`extract_status IN ('dead', 'gone') OR (`+readyForSummaryWhere+` AND summary_status IN ('blocked', 'skipped'))`,
 	)
 	if err != nil {
 		return PipelineStats{}, err
@@ -545,7 +545,7 @@ func (s *Store) countGroupedWhere(ctx context.Context, table string, groupBy str
 func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineStageRow, bool, error) {
 	const transcriptTitle = "X Media Transcript"
 
-	candidateWhere := `source_type = 'x_bookmark'
+	candidateWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
 		AND EXISTS (
 			SELECT 1
@@ -553,8 +553,6 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 			JOIN media_assets a ON a.id = l.media_asset_id
 			WHERE l.item_id = items.id
 				AND a.download_status = 'downloaded'
-				AND a.local_path != ''
-				AND a.local_pruned_at = ''
 				AND a.media_type IN ('video', 'animated_gif')
 		)
 		AND (
@@ -603,7 +601,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow, bool, error) {
 	const transcriptTitle = "X Media Transcript"
 
-	candidateWhere := `source_type = 'x_bookmark'
+	candidateWhere := xItemSourceTypeWhere + `
 		AND article_title = ?
 		AND article_text != ''
 		AND x_media_transcript_status = 'ok'`
@@ -646,7 +644,7 @@ func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow,
 }
 
 func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, bool, error) {
-	candidateWhere := `source_type = 'x_bookmark'
+	candidateWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
 		AND EXISTS (
 			SELECT 1
@@ -654,8 +652,6 @@ func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, boo
 			JOIN media_assets a ON a.id = l.media_asset_id
 			WHERE l.item_id = items.id
 				AND a.download_status = 'downloaded'
-				AND a.local_path != ''
-				AND a.local_pruned_at = ''
 				AND a.media_type = 'photo'
 		)`
 

@@ -35,6 +35,8 @@ var (
 	summaryToolVersion = summarizecli.SummaryToolVersion
 )
 
+const maxXQuoteDrainPasses = 8
+
 type Options struct {
 	XBookmarksEnabled bool
 	XBookmarksLimit   int
@@ -238,6 +240,35 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		if err != nil {
 			return finishStats(stats), fmt.Errorf("hydrate x: %w", err)
 		}
+		if !opts.Force && xStats.Candidates > 0 {
+			for pass := 1; pass <= maxXQuoteDrainPasses; pass++ {
+				quoteStats, quoteErr := runXHydrate(ctx, cfg, st, xapi.Options{
+					Limit:       opts.XLimit,
+					Force:       false,
+					QuoteOnly:   true,
+					Concurrency: opts.XConcurrency,
+					Browser:     opts.Browser,
+					Profile:     opts.Profile,
+					Timeout:     opts.XTimeout,
+					Logger:      opts.Logger,
+				})
+				mergeXStats(&xStats, quoteStats)
+				stage.Duration = time.Since(start)
+				stage.Stats = xStats
+				if quoteErr != nil {
+					return finishStats(stats), fmt.Errorf("hydrate x quote pass %d: %w", pass, quoteErr)
+				}
+				if quoteStats.Candidates == 0 {
+					break
+				}
+				progressf(opts.Progress, "X quote hydration pass %d complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d\n", pass, quoteStats.Hydrated, quoteStats.Missing, quoteStats.APIErrors, quoteStats.MediaDownloaded, quoteStats.MediaErrors, quoteStats.Rendered)
+				if pass == maxXQuoteDrainPasses {
+					progressf(opts.Progress, "X quote hydration drain stopped after %d extra passes with candidates still present\n", maxXQuoteDrainPasses)
+				}
+			}
+		}
+		stage.Duration = time.Since(start)
+		stage.Stats = xStats
 		progressf(opts.Progress, "X hydration complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d (%s)\n", xStats.Hydrated, xStats.Missing, xStats.APIErrors, xStats.MediaDownloaded, xStats.MediaErrors, xStats.Rendered, stage.Duration)
 	}
 
@@ -433,4 +464,22 @@ func progressf(dst io.Writer, format string, args ...any) {
 		return
 	}
 	_, _ = fmt.Fprintf(dst, format, args...)
+}
+
+func mergeXStats(dst *xapi.Stats, src xapi.Stats) {
+	if dst == nil {
+		return
+	}
+	dst.Candidates += src.Candidates
+	dst.Requested += src.Requested
+	dst.Hydrated += src.Hydrated
+	dst.Missing += src.Missing
+	dst.APIErrors += src.APIErrors
+	dst.Rendered += src.Rendered
+	dst.Unchanged += src.Unchanged
+	dst.MediaCandidates += src.MediaCandidates
+	dst.MediaRequested += src.MediaRequested
+	dst.MediaDownloaded += src.MediaDownloaded
+	dst.MediaGone += src.MediaGone
+	dst.MediaErrors += src.MediaErrors
 }

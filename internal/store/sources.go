@@ -230,7 +230,7 @@ func (s *Store) ListItemsForLinkDiscovery(ctx context.Context, limit int, force 
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
-		WHERE source_type = 'x_bookmark'
+		WHERE ` + xItemSourceTypeWhere + `
 			AND links_json != '[]'`
 	if !force {
 		query += `
@@ -573,20 +573,56 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 
 func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int64) (model.ExtractResult, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
+		WITH local_candidates AS (
+			SELECT
+				s.canonical_url AS canonical_url,
+				s.domain AS domain,
+				s.source_type AS source_type,
+				COALESCE(NULLIF(i.article_title, ''), s.title, '') AS title,
+				i.article_text AS article_text,
+				i.author_handle AS author_handle,
+				i.x_post_json AS x_post_json,
+				i.updated_at AS updated_at,
+				COALESCE(i.last_seen_at, i.updated_at, '') AS sort_time,
+				0 AS provider_priority,
+				i.id AS item_id
+			FROM item_source_links l
+			JOIN items i ON i.id = l.item_id
+			JOIN sources s ON s.id = l.source_id
+			WHERE l.source_id = ?
+
+			UNION ALL
+
+			SELECT
+				s.canonical_url AS canonical_url,
+				s.domain AS domain,
+				s.source_type AS source_type,
+				COALESCE(NULLIF(p.article_title, ''), NULLIF(i.article_title, ''), s.title, '') AS title,
+				COALESCE(NULLIF(p.article_text, ''), i.article_text, '') AS article_text,
+				p.author_handle AS author_handle,
+				p.x_post_json AS x_post_json,
+				p.updated_at AS updated_at,
+				COALESCE(p.last_seen_at, p.updated_at, '') AS sort_time,
+				1 AS provider_priority,
+				p.id AS item_id
+			FROM item_source_links l
+			JOIN items i ON i.id = l.item_id
+			JOIN item_item_links q ON q.child_item_id = i.id AND q.link_kind = 'quoted_post'
+			JOIN items p ON p.id = q.parent_item_id
+			JOIN sources s ON s.id = l.source_id
+			WHERE l.source_id = ?
+		)
 		SELECT
-			s.canonical_url,
-			s.domain,
-			s.source_type,
-			COALESCE(NULLIF(i.article_title, ''), s.title, ''),
-			i.article_text,
-			i.author_handle,
-			i.x_post_json,
-			i.updated_at
-		FROM item_source_links l
-		JOIN items i ON i.id = l.item_id
-		JOIN sources s ON s.id = l.source_id
-		WHERE l.source_id = ?
-		ORDER BY i.last_seen_at DESC, i.id DESC`, sourceID)
+			canonical_url,
+			domain,
+			source_type,
+			title,
+			article_text,
+			author_handle,
+			x_post_json,
+			updated_at
+		FROM local_candidates
+		ORDER BY sort_time DESC, provider_priority ASC, item_id DESC`, sourceID, sourceID)
 	if err != nil {
 		return model.ExtractResult{}, false, fmt.Errorf("load local source extract %d: %w", sourceID, err)
 	}
@@ -1179,9 +1215,24 @@ func isExtractFailureStatus(status string) bool {
 }
 
 func sourceExtractBacklogWhere(now time.Time) (string, []any) {
-	return `(extract_status = '' OR (extract_status = 'error' AND (extract_last_failed_at = '' OR extract_last_failed_at <= ?)))`, []any{
-		now.UTC().Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
-	}
+	return `(
+		extract_status = ''
+		OR ` + sourceExtractCoverageRepairWhere() + `
+		OR (extract_status = 'error' AND (extract_last_failed_at = '' OR extract_last_failed_at <= ?))
+	)`, []any{
+			now.UTC().Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
+		}
+}
+
+func sourceExtractCoverageRepairWhere() string {
+	return `(
+		source_type = 'x_article'
+		AND extract_status = 'ok'
+		AND extract_tool = 'x-hydration'
+		AND extract_tool_version = 'local-article-preview-cache'
+		AND length(trim(extracted_text)) > 0
+		AND length(trim(extracted_text)) < 300
+	)`
 }
 
 func sourceSummaryCoverageRepairWhere() string {
@@ -1279,6 +1330,8 @@ func classifyStoredExtractFailureKind(status string, errorText string) string {
 		strings.Contains(value, "status 525"),
 		strings.Contains(value, "status 526"):
 		return "cloudflare_edge"
+	case strings.Contains(value, "x article returned an x error shell"):
+		return "x_article_shell"
 	case strings.Contains(value, "unable to connect"),
 		strings.Contains(value, "connection refused"),
 		strings.Contains(value, "network is unreachable"),

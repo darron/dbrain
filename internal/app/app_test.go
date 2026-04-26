@@ -2112,7 +2112,7 @@ func TestStatsPipelineCommandJSON(t *testing.T) {
 	assertPipelineRowCounts(t, stats.Extraction, "web", 1, 0, 1, 0, 0)
 	assertPipelineRowCounts(t, stats.Extraction, "youtube", 1, 1, 0, 0, 0)
 	assertPipelineRowCounts(t, stats.Extraction, "x_article", 1, 1, 0, 0, 0)
-	assertPipelineRowCounts(t, stats.Summary, "web", 1, 0, 0, 1, 0)
+	assertPipelineRowCounts(t, stats.Summary, "web", 1, 0, 1, 0, 0)
 	assertPipelineRowCounts(t, stats.Summary, "youtube", 1, 1, 0, 0, 0)
 	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 0, 1, 0, 0)
 	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 1, 0, 1, 0, 0)

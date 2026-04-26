@@ -175,6 +175,60 @@ func TestSaveMediaDownloadRemovesCompletedAssetFromPendingList(t *testing.T) {
 	}
 }
 
+func TestSaveMediaDownloadClearsLocalPrunedAtOnRestore(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 25, 20, 0, 0, 0, time.UTC)
+
+	result, err := st.db.ExecContext(ctx, `
+		INSERT INTO media_assets (
+			remote_url, media_type, download_status, local_path, downloaded_at, local_pruned_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"https://video.twimg.com/ext_tw_video/restored.mp4",
+		"video",
+		"downloaded",
+		"media/x/video/ab/restored.mp4",
+		now.Add(-time.Hour).Format(time.RFC3339),
+		now.Add(-30*time.Minute).Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert media asset: %v", err)
+	}
+	assetID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("asset id: %v", err)
+	}
+
+	changed, err := st.SaveMediaDownload(ctx, assetID, model.MediaDownloadResult{
+		MIMEType:     "video/mp4",
+		ByteSize:     45678,
+		ContentHash:  "sha256:restored",
+		LocalPath:    "media/x/video/ab/restored.mp4",
+		Status:       "downloaded",
+		DownloadedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("SaveMediaDownload: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected restore update to change row")
+	}
+
+	asset, err := st.GetMediaAsset(ctx, assetID)
+	if err != nil {
+		t.Fatalf("GetMediaAsset: %v", err)
+	}
+	if !asset.LocalPrunedAt.IsZero() {
+		t.Fatalf("expected restore to clear local_pruned_at, got %v", asset.LocalPrunedAt)
+	}
+	if asset.LocalPath != "media/x/video/ab/restored.mp4" {
+		t.Fatalf("unexpected local path after restore: %+v", asset)
+	}
+}
+
 func TestSaveXHydrationBackfillsMediaWithoutChangingHydrationFields(t *testing.T) {
 	t.Parallel()
 
@@ -312,6 +366,91 @@ func TestSaveXHydrationInvalidatesLinkedXArticleSources(t *testing.T) {
 	}
 	if source.SummaryText != "" || source.SummaryStatus != "" || source.SummaryTool != "" {
 		t.Fatalf("expected stale summary cleared, got summary_text=%q status=%q tool=%q", source.SummaryText, source.SummaryStatus, source.SummaryTool)
+	}
+}
+
+func TestSaveXHydrationPreservesDirectQuotedHydrationOverSnapshotOnlyUpdate(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 26, 1, 30, 0, 0, time.UTC)
+
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:quoted-direct",
+		SourceType:   "x_quote",
+		ExternalID:   "2040464914855100670",
+		CanonicalURL: "https://x.com/example/status/2040464914855100670",
+		Title:        "Quoted child",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/quoted-direct.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	directHydration := model.XHydration{
+		FullText:  "Direct child full text",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"source":"graphql",
+			"fetched_at":"2026-04-26T01:30:00Z",
+			"snapshot":{"id":"2040464914855100670","text":"Direct child full text"},
+			"raw":{"data":{"tweetResult":{"result":{"rest_id":"2040464914855100670","legacy":{"full_text":"Direct child full text"}}}}}
+		}`,
+	}
+	changed, err := st.SaveXHydration(ctx, item.ItemID, directHydration)
+	if err != nil {
+		t.Fatalf("SaveXHydration direct: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected direct hydration to change row")
+	}
+
+	snapshotOnlyHydration := model.XHydration{
+		FullText:  "Snapshot preview text",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now.Add(time.Minute),
+		APIJSON: `{
+			"source":"graphql",
+			"fetched_at":"2026-04-26T01:31:00Z",
+			"snapshot":{"id":"2040464914855100670","text":"Snapshot preview text"},
+			"raw":{"__typename":"Tweet","rest_id":"2040464914855100670","legacy":{"full_text":"Snapshot preview text"}}
+		}`,
+	}
+	changed, err = st.SaveXHydration(ctx, item.ItemID, snapshotOnlyHydration)
+	if err != nil {
+		t.Fatalf("SaveXHydration snapshot-only: %v", err)
+	}
+	if changed {
+		t.Fatal("expected snapshot-only hydration to preserve direct quoted hydration")
+	}
+
+	refreshed, err := st.GetItem(ctx, "x:quoted-direct")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if refreshed.XPostText != "Direct child full text" {
+		t.Fatalf("expected direct hydration text to be preserved, got %q", refreshed.XPostText)
+	}
+	if !strings.Contains(refreshed.XPostJSON, `"tweetResult"`) {
+		t.Fatalf("expected direct graphql payload to be preserved, got %q", refreshed.XPostJSON)
+	}
+
+	items, err := st.ListItemsForXHydration(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXHydration: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected preserved direct quote hydration to stay out of repair backlog, got %#v", items)
 	}
 }
 
@@ -519,6 +658,195 @@ func TestListItemsForXHydrationIncludesDownloadedVideoThumbsForRepair(t *testing
 	}
 	if len(items) != 1 || items[0].ID != itemID {
 		t.Fatalf("expected downloaded video thumb item to be selected for repair, got %#v", items)
+	}
+}
+
+func TestListItemsForXHydrationIncludesQuotedPostBackfillRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 22, 3, 4, 5, 0, time.UTC)
+
+	itemID := insertTestItem(t, st, "x:quoted-backfill", "", "", now)
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET x_post_text = ?,
+			x_post_status = ?,
+			x_post_fetched_at = ?,
+			x_post_json = ?
+		WHERE id = ?`,
+		"Oh this is delicious...",
+		"ok_syndication",
+		now.Format(time.RFC3339),
+		`{
+			"source":"syndication",
+			"snapshot":{"id":"2030852374739198197","text":"Oh this is delicious..."},
+			"raw":{
+				"id_str":"2030852374739198197",
+				"text":"Oh this is delicious...",
+				"quoted_tweet":{
+					"id_str":"2030838203549184127",
+					"text":"Quoted context that should become a linked x quote item."
+				}
+			}
+		}`,
+		itemID,
+	); err != nil {
+		t.Fatalf("seed quoted hydration: %v", err)
+	}
+
+	items, err := st.ListItemsForXHydration(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXHydration: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != itemID {
+		t.Fatalf("expected quoted-backfill item to be selected for repair, got %#v", items)
+	}
+}
+
+func TestListItemsForXHydrationIncludesQuotedSnapshotDirectFetchRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 25, 3, 4, 5, 0, time.UTC)
+
+	item, err := st.UpsertItem(ctx, testItem("x:quoted-snapshot-repair", "x_quote", "https://x.com/example/status/2040448463540830705", now))
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET external_id = ?,
+			x_post_text = ?,
+			x_post_status = ?,
+			x_post_fetched_at = ?,
+			x_post_json = ?
+		WHERE id = ?`,
+		"2040448463540830705",
+		"https://t.co/example",
+		"ok_graphql",
+		now.Format(time.RFC3339),
+		`{
+			"source":"graphql",
+			"fetched_at":"2026-04-25T03:04:05Z",
+			"snapshot":{"id":"2040448463540830705","text":"https://t.co/example"},
+			"raw":{"__typename":"Tweet","rest_id":"2040448463540830705","legacy":{"full_text":"https://t.co/example"}}
+		}`,
+		item.ItemID,
+	); err != nil {
+		t.Fatalf("seed quoted snapshot hydration: %v", err)
+	}
+
+	items, err := st.ListItemsForXHydration(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXHydration: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != item.ItemID {
+		t.Fatalf("expected quoted snapshot item to be selected for direct hydration repair, got %#v", items)
+	}
+}
+
+func TestListItemsForXHydrationIgnoresNestedQuotedMediaNoise(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 25, 3, 4, 5, 0, time.UTC)
+
+	parent, err := st.UpsertItem(ctx, testItem("x:quoted-parent-media-noise", "x_quote", "https://x.com/example/status/2048185135015870852", now))
+	if err != nil {
+		t.Fatalf("UpsertItem parent: %v", err)
+	}
+	child, err := st.UpsertItem(ctx, testItem("x:quoted-child-media", "x_quote", "https://x.com/example/status/2047941621358928157", now))
+	if err != nil {
+		t.Fatalf("UpsertItem child: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET external_id = ?,
+			x_post_text = ?,
+			x_post_status = ?,
+			x_post_fetched_at = ?,
+			x_post_json = ?
+		WHERE id = ?`,
+		"2047941621358928157",
+		"quoted child text",
+		"ok_graphql",
+		now.Format(time.RFC3339),
+		`{
+			"source":"graphql",
+			"fetched_at":"2026-04-25T03:04:05Z",
+			"snapshot":{"id":"2047941621358928157","text":"quoted child text"},
+			"raw":{"data":{"tweetResult":{"result":{"rest_id":"2047941621358928157","legacy":{"full_text":"quoted child text"}}}}}
+		}`,
+		child.ItemID,
+	); err != nil {
+		t.Fatalf("seed child hydration: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET external_id = ?,
+			x_post_text = ?,
+			x_post_status = ?,
+			x_post_fetched_at = ?,
+			x_post_json = ?
+		WHERE id = ?`,
+		"2048185135015870852",
+		"parent quote text",
+		"ok_graphql",
+		now.Format(time.RFC3339),
+		`{
+			"source":"graphql",
+			"fetched_at":"2026-04-25T03:04:05Z",
+			"snapshot":{
+				"id":"2048185135015870852",
+				"text":"parent quote text",
+				"quoted_post":{
+					"id":"2047941621358928157",
+					"text":"quoted child text",
+					"media_objects":[
+						{"type":"photo","url":"https://pbs.twimg.com/media/noise.jpg","expanded_url":"https://x.com/example/status/2047941621358928157/photo/1","width":1200,"height":800}
+					]
+				}
+			},
+			"raw":{
+				"data":{
+					"tweetResult":{
+						"result":{
+							"rest_id":"2048185135015870852",
+							"legacy":{"full_text":"parent quote text"},
+							"quoted_status_result":{"result":{"rest_id":"2047941621358928157"}}
+						}
+					}
+				}
+			}
+		}`,
+		parent.ItemID,
+	); err != nil {
+		t.Fatalf("seed parent hydration: %v", err)
+	}
+	if changed, err := st.ReplaceItemChildLinks(ctx, parent.ItemID, "quoted_post", []int64{child.ItemID}); err != nil {
+		t.Fatalf("ReplaceItemChildLinks: %v", err)
+	} else if !changed {
+		t.Fatal("expected quoted child link to be created")
+	}
+
+	items, err := st.ListItemsForXHydration(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXHydration: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected generic hydration query to ignore nested media noise, got %#v", items)
+	}
+
+	quoteItems, err := st.ListItemsForXQuoteHydration(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXQuoteHydration: %v", err)
+	}
+	if len(quoteItems) != 0 {
+		t.Fatalf("expected quote-only hydration query to ignore nested media noise, got %#v", quoteItems)
 	}
 }
 

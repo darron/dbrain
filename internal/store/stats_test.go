@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -245,6 +246,105 @@ func TestBacklogReportsPendingWorkByStage(t *testing.T) {
 	}
 }
 
+func TestBacklogAndPipelineCountQuotedPostRepairAsHydrationPending(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 22, 3, 4, 5, 0, time.UTC)
+
+	itemID := insertTestItem(t, st, "x:quoted-pending", "", "", now)
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET x_post_text = ?,
+			x_post_status = ?,
+			x_post_fetched_at = ?,
+			x_post_json = ?
+		WHERE id = ?`,
+		"Oh this is delicious...",
+		"ok_syndication",
+		now.Format(time.RFC3339),
+		`{
+			"source":"syndication",
+			"snapshot":{"id":"2030852374739198197","text":"Oh this is delicious..."},
+			"raw":{
+				"id_str":"2030852374739198197",
+				"text":"Oh this is delicious...",
+				"quoted_tweet":{
+					"id_str":"2030838203549184127",
+					"text":"Quoted context that should become a linked x quote item."
+				}
+			}
+		}`,
+		itemID,
+	); err != nil {
+		t.Fatalf("seed quoted hydration: %v", err)
+	}
+
+	backlog, err := st.Backlog(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog.XHydrationPending != 1 {
+		t.Fatalf("expected 1 x hydration pending for quote repair, got %d", backlog.XHydrationPending)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	assertPipelineRowCounts(t, stats.Hydration, "x_bookmark", 1, 0, 1, 0, 0)
+}
+
+func TestBacklogAndPipelineCountQuotedSnapshotRepairAsHydrationPending(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 25, 3, 4, 5, 0, time.UTC)
+
+	item, err := st.UpsertItem(ctx, testItem("x:quoted-snapshot-pending", "x_quote", "https://x.com/example/status/2040448463540830705", now))
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET external_id = ?,
+			x_post_text = ?,
+			x_post_status = ?,
+			x_post_fetched_at = ?,
+			x_post_json = ?
+		WHERE id = ?`,
+		"2040448463540830705",
+		"https://t.co/example",
+		"ok_graphql",
+		now.Format(time.RFC3339),
+		`{
+			"source":"graphql",
+			"fetched_at":"2026-04-25T03:04:05Z",
+			"snapshot":{"id":"2040448463540830705","text":"https://t.co/example"},
+			"raw":{"__typename":"Tweet","rest_id":"2040448463540830705","legacy":{"full_text":"https://t.co/example"}}
+		}`,
+		item.ItemID,
+	); err != nil {
+		t.Fatalf("seed quoted snapshot hydration: %v", err)
+	}
+
+	backlog, err := st.Backlog(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog.XHydrationPending != 1 {
+		t.Fatalf("expected 1 x hydration pending for quoted snapshot repair, got %d", backlog.XHydrationPending)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	assertPipelineRowCounts(t, stats.Hydration, "x_quote", 1, 0, 1, 0, 0)
+}
+
 func TestBacklogAndPipelineTreatBlockedSummariesAsBlockedNotPending(t *testing.T) {
 	t.Parallel()
 
@@ -295,6 +395,67 @@ func TestBacklogAndPipelineTreatBlockedSummariesAsBlockedNotPending(t *testing.T
 		t.Fatalf("Pipeline: %v", err)
 	}
 	assertPipelineRowCounts(t, stats.Summary, "github", 1, 0, 0, 1, 0)
+}
+
+func TestPipelineSummaryTreatsPendingExtractionAsPendingNotBlocked(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	upserted, err := st.UpsertItem(ctx, testItem("x:pending-x-article", "x_bookmark", "https://x.com/i/article/pending", now))
+	if err != nil {
+		t.Fatalf("upsert x article item: %v", err)
+	}
+	if _, err := st.UpsertSourceLink(ctx, upserted.ItemID, modelSourceCandidate("src:pending-x-article", "https://x.com/i/article/pending", "x_article")); err != nil {
+		t.Fatalf("pending x article source link: %v", err)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 0, 1, 0, 0)
+}
+
+func TestPipelineTreatsShortLocalXArticlePreviewAsPendingExtraction(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	upserted, err := st.UpsertItem(ctx, testItem("x:short-x-article-preview", "x_quote", "https://x.com/i/article/preview", now))
+	if err != nil {
+		t.Fatalf("upsert x article item: %v", err)
+	}
+	link, err := st.UpsertSourceLink(ctx, upserted.ItemID, modelSourceCandidate("src:short-x-article-preview", "https://x.com/i/article/2040008490929037312", "x_article"))
+	if err != nil {
+		t.Fatalf("x article source link: %v", err)
+	}
+
+	content := strings.Repeat("x", 199)
+	if _, err := st.SaveSourceExtraction(ctx, link.SourceID, model.ExtractResult{
+		CanonicalURL: "https://x.com/i/article/2040008490929037312",
+		FinalURL:     "https://x.com/example/article/2040008490929037312",
+		Title:        "Example",
+		SiteName:     "x.com",
+		Content:      content,
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "x-hydration",
+		ToolVersion:  "local-article-preview-cache",
+	}, testHashText(content)); err != nil {
+		t.Fatalf("save short preview extract: %v", err)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	assertPipelineRowCounts(t, stats.Extraction, "x_article", 1, 0, 1, 0, 0)
+	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 0, 1, 0, 0)
 }
 
 func TestBacklogAndPipelineRequeueInvalidCurrentSummariesForRepair(t *testing.T) {
@@ -697,6 +858,92 @@ func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
 	assertPipelineRowCounts(t, stats.Summary, "x_media_summary", 4, 1, 1, 1, 1)
 }
 
+func TestPipelineXMediaTranscriptionCountsPrunedCurrentItems(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	itemResult, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x-media-pruned-current",
+		SourceType:   "x_bookmark",
+		ExternalID:   "x-media-pruned-current",
+		CanonicalURL: "https://x.com/example/status/x-media-pruned-current",
+		Title:        "x-media-pruned-current",
+		ContentHash:  "x-media-pruned-current-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/test.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	hydration := model.XHydration{
+		FullText:  "hello",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"snapshot":{
+				"media_objects":[
+					{"type":"video","url":"https://video.twimg.com/ext_tw_video/x-media-pruned-current.mp4","expanded_url":"https://x.com/example/status/x-media-pruned-current/video/1","width":1280,"height":720}
+				]
+			}
+		}`,
+	}
+	if _, err := st.SaveXHydration(ctx, itemResult.ItemID, hydration); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, itemResult.ItemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected one media ref, got %d", len(refs))
+	}
+	if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+		LocalPath:    "media/x/video/x-media-pruned-current.mp4",
+		ContentHash:  "x-media-pruned-current-download",
+		Status:       "downloaded",
+		DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET article_title = 'X Media Transcript',
+			article_text = 'materialized transcript',
+			x_media_transcript_status = 'ok',
+			x_media_transcript_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		itemResult.ItemID,
+	); err != nil {
+		t.Fatalf("seed current transcript: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE media_assets
+		SET local_pruned_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		refs[0].MediaAssetID,
+	); err != nil {
+		t.Fatalf("prune media asset: %v", err)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+
+	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 1, 1, 0, 0, 0)
+}
+
 func TestPipelineXPhotoOCRClassifiesPendingBlockedAndFailed(t *testing.T) {
 	t.Parallel()
 
@@ -804,6 +1051,91 @@ func TestPipelineXPhotoOCRClassifiesPendingBlockedAndFailed(t *testing.T) {
 	}
 
 	assertPipelineRowCounts(t, stats.OCR, "x_photo_ocr", 4, 1, 1, 1, 1)
+}
+
+func TestPipelineXPhotoOCRCountsPrunedCurrentItems(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	itemResult, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x-photo-pruned-current",
+		SourceType:   "x_bookmark",
+		ExternalID:   "x-photo-pruned-current",
+		CanonicalURL: "https://x.com/example/status/x-photo-pruned-current",
+		Title:        "x-photo-pruned-current",
+		ContentHash:  "x-photo-pruned-current-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/test.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	hydration := model.XHydration{
+		FullText:  "hello",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"snapshot":{
+				"media_objects":[
+					{"type":"photo","url":"https://pbs.twimg.com/media/x-photo-pruned-current.png","expanded_url":"https://x.com/example/status/x-photo-pruned-current/photo/1","width":1280,"height":720}
+				]
+			}
+		}`,
+	}
+	if _, err := st.SaveXHydration(ctx, itemResult.ItemID, hydration); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, itemResult.ItemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected one media ref, got %d", len(refs))
+	}
+	if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+		LocalPath:    "media/x/photo/x-photo-pruned-current.png",
+		ContentHash:  "x-photo-pruned-current-download",
+		Status:       "downloaded",
+		DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET ocr_status = 'ok',
+			ocr_text = 'saved ocr text',
+			ocr_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		itemResult.ItemID,
+	); err != nil {
+		t.Fatalf("seed current ocr: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE media_assets
+		SET local_pruned_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		refs[0].MediaAssetID,
+	); err != nil {
+		t.Fatalf("prune media asset: %v", err)
+	}
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+
+	assertPipelineRowCounts(t, stats.OCR, "x_photo_ocr", 1, 1, 0, 0, 0)
 }
 
 func TestSourceActivityFeedReturnsRecentSuccessesAndFailures(t *testing.T) {

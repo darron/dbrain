@@ -17,6 +17,68 @@ import (
 
 const driverName = "sqlite"
 
+const xItemSourceTypeWhere = "(source_type = 'x_bookmark' OR source_type = 'x_quote')"
+const xTopLevelMediaObjectsWhere = `(json_extract(x_post_json, '$.snapshot.media_objects[0].type') IS NOT NULL)`
+const xQuotedPostRepairWhere = `((x_post_json LIKE '%"quoted_tweet"%' OR x_post_json LIKE '%"quoted_status_result"%' OR x_post_json LIKE '%"quoted_post"%')
+	AND NOT EXISTS (
+		SELECT 1
+		FROM item_item_links q
+		WHERE q.parent_item_id = items.id
+			AND q.link_kind = 'quoted_post'
+	))`
+const xQuoteDirectHydrationRepairWhere = `(source_type = 'x_quote'
+	AND x_post_status = 'ok_graphql'
+	AND x_post_json NOT LIKE '%"tweetResult"%')`
+const xMediaHydrationRepairWhere = `(` + xTopLevelMediaObjectsWhere + `
+	AND (
+		NOT EXISTS (
+			SELECT 1
+			FROM item_media_links l
+			WHERE l.item_id = items.id
+		)
+		OR EXISTS (
+			SELECT 1
+			FROM item_media_links l
+			JOIN media_assets a ON a.id = l.media_asset_id
+			WHERE l.item_id = items.id
+				AND (
+					a.download_status = ''
+					OR a.download_status = 'pending'
+					OR a.download_status = 'error'
+				)
+		)
+		OR EXISTS (
+			SELECT 1
+			FROM item_media_links l
+			JOIN media_assets a ON a.id = l.media_asset_id
+			WHERE l.item_id = items.id
+				AND a.download_status = 'downloaded'
+				AND a.media_type IN ('video', 'animated_gif')
+				AND (
+					a.local_path GLOB '*.jpg'
+					OR a.local_path GLOB '*.jpeg'
+					OR a.local_path GLOB '*.png'
+					OR a.local_path GLOB '*.webp'
+					OR a.remote_url LIKE 'https://pbs.twimg.com/%'
+				)
+		)
+	))`
+const xHydrationRepairWhere = `(` + xQuotedPostRepairWhere + `
+	OR ` + xQuoteDirectHydrationRepairWhere + `)`
+const xHydrationCandidateWhere = `(
+	x_post_status = ''
+	OR x_post_status = 'api_error'
+	OR x_post_status = 'error'
+	OR x_post_status = 'rate_limited'
+	OR (
+		x_post_status LIKE 'ok_%'
+		AND (
+			` + xMediaHydrationRepairWhere + `
+			OR ` + xHydrationRepairWhere + `
+		)
+	)
+)`
+
 const itemSelectColumns = `
 	id, source_key, source_type, external_id, canonical_url, title, author_handle, author_name,
 	published_at, saved_at, synced_at, language, text, article_title, article_text,
@@ -135,6 +197,9 @@ func (s *Store) init() error {
 		return err
 	}
 	if err := s.ensureMediaTables(); err != nil {
+		return err
+	}
+	if err := s.ensureItemLinkTables(); err != nil {
 		return err
 	}
 
@@ -748,6 +813,10 @@ func (s *Store) ListAllItems(ctx context.Context, limit int) ([]model.Item, erro
 }
 
 func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force bool) ([]model.Item, error) {
+	return s.listItemsForXHydration(ctx, limit, force, xItemSourceTypeWhere)
+}
+
+func (s *Store) ListItemsForXQuoteHydration(ctx context.Context, limit int, force bool) ([]model.Item, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -755,7 +824,7 @@ func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force boo
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
-		WHERE source_type = 'x_bookmark'
+		WHERE source_type = 'x_quote'
 			AND external_id != ''`
 	if !force {
 		query += `
@@ -764,44 +833,53 @@ func (s *Store) ListItemsForXHydration(ctx context.Context, limit int, force boo
 				OR x_post_status = 'api_error'
 				OR x_post_status = 'error'
 				OR x_post_status = 'rate_limited'
-				OR (
-					x_post_status LIKE 'ok_%'
-					AND x_post_json LIKE '%"media_objects"%'
-					AND (
-						NOT EXISTS (
-							SELECT 1
-							FROM item_media_links l
-							WHERE l.item_id = items.id
-						)
-						OR EXISTS (
-							SELECT 1
-							FROM item_media_links l
-							JOIN media_assets a ON a.id = l.media_asset_id
-							WHERE l.item_id = items.id
-								AND (
-									a.download_status = ''
-									OR a.download_status = 'pending'
-									OR a.download_status = 'error'
-								)
-						)
-						OR EXISTS (
-							SELECT 1
-							FROM item_media_links l
-							JOIN media_assets a ON a.id = l.media_asset_id
-							WHERE l.item_id = items.id
-								AND a.download_status = 'downloaded'
-								AND a.media_type IN ('video', 'animated_gif')
-								AND (
-									a.local_path GLOB '*.jpg'
-									OR a.local_path GLOB '*.jpeg'
-									OR a.local_path GLOB '*.png'
-									OR a.local_path GLOB '*.webp'
-									OR a.remote_url LIKE 'https://pbs.twimg.com/%'
-								)
-						)
-					)
-				)
+				OR ` + xHydrationRepairWhere + `
 			)`
+	}
+	query += `
+		ORDER BY
+			CASE WHEN x_post_status = '' THEN 0 ELSE 1 END,
+			last_seen_at DESC,
+			x_post_fetched_at ASC,
+			id DESC
+		LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list x quote hydration items: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var items []model.Item
+	for rows.Next() {
+		var item model.Item
+		if err := scanItem(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan x quote hydration item: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate x quote hydration items: %w", err)
+	}
+
+	return items, nil
+}
+
+func (s *Store) listItemsForXHydration(ctx context.Context, limit int, force bool, sourceWhere string) ([]model.Item, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `
+		SELECT ` + itemSelectColumns + `
+		FROM items
+		WHERE ` + sourceWhere + `
+			AND external_id != ''`
+	if !force {
+		query += `
+				AND ` + xHydrationCandidateWhere
 	}
 	query += `
 		ORDER BY
@@ -842,7 +920,7 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
-		WHERE source_type = 'x_bookmark'
+		WHERE ` + xItemSourceTypeWhere + `
 			AND external_id != ''
 			AND EXISTS (
 				SELECT 1
@@ -927,16 +1005,24 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 		}()
 
 		row := tx.QueryRowContext(ctx, `
-			SELECT x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error
+			SELECT source_type, x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error
 			FROM items
 			WHERE id = ?`, itemID)
 
-		var currentText, currentLang, currentJSON, currentFetchedAt, currentStatus, currentError string
-		if err := row.Scan(&currentText, &currentLang, &currentJSON, &currentFetchedAt, &currentStatus, &currentError); err != nil {
+		var currentSourceType, currentText, currentLang, currentJSON, currentFetchedAt, currentStatus, currentError string
+		if err := row.Scan(&currentSourceType, &currentText, &currentLang, &currentJSON, &currentFetchedAt, &currentStatus, &currentError); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return false, fmt.Errorf("item not found for hydration: %d", itemID)
 			}
 			return false, fmt.Errorf("load current hydration %d: %w", itemID, err)
+		}
+
+		if shouldPreserveDirectQuotedHydration(currentSourceType, currentStatus, currentJSON, hydration.Status, hydration.APIJSON) {
+			hydration.FullText = currentText
+			hydration.Language = currentLang
+			hydration.APIJSON = currentJSON
+			hydration.Status = currentStatus
+			hydration.Error = currentError
 		}
 
 		newFetchedAt := ""
@@ -1008,6 +1094,14 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 
 		return hydrationChanged || mediaChanged, nil
 	})
+}
+
+func shouldPreserveDirectQuotedHydration(sourceType, currentStatus, currentJSON, newStatus, newJSON string) bool {
+	return sourceType == "x_quote" &&
+		currentStatus == "ok_graphql" &&
+		newStatus == "ok_graphql" &&
+		strings.Contains(currentJSON, `"tweetResult"`) &&
+		!strings.Contains(newJSON, `"tweetResult"`)
 }
 
 func (s *Store) invalidateLinkedXArticleSourcesTx(ctx context.Context, tx *sql.Tx, itemID int64, nowText string) error {

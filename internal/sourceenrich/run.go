@@ -268,6 +268,7 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 
 	sourceArgs := argsFor(opts, source)
 	sourceEnv := envFor(opts, source)
+	skipStoredExtract := false
 	localExtract, hasLocalExtract, err := st.GetPreferredLocalSourceExtract(ctx, source.ID)
 	if err != nil {
 		result.Err = err
@@ -278,65 +279,80 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 			localExtract = normalized
 		}
 		if failure, invalid := rejectExtractFailure(source, localExtract); invalid {
-			result.Stats.Errors++
-			debugLog(opts.Logger, "local source extract rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
-			if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
-				result.Err = err
-				return result
-			}
-			result.TouchedSourceID = source.ID
-			return result
-		}
-		debugLog(opts.Logger, "using local cached extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(localExtract.Content))
-		contentHash := hashText(localExtract.Content)
-		if changed, err := st.SaveSourceExtraction(ctx, source.ID, localExtract, contentHash); err != nil {
-			result.Err = err
-			return result
-		} else if changed {
-			result.Stats.SourcesExtracted++
-			debugLog(opts.Logger, "source extraction saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", localExtract.Status, "content_chars", len(localExtract.Content), "tool", localExtract.Tool)
-		} else {
-			result.Stats.SourcesUnchanged++
-		}
-
-		if opts.Summarize {
-			runResult, err := summarizeExtract(ctx, cfg, source, localExtract, opts, sourceEnv)
-			if err != nil {
-				if isUserCancellation(ctx, err) {
-					result.Err = context.Canceled
-					return result
+			if shouldRetryRemoteAfterLocalExtractReject(source, localExtract, failure) {
+				skipStoredExtract = true
+				debugLog(opts.Logger, "local source extract insufficient; falling back to remote fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "reason", failure.Error)
+			} else {
+				if failure.Status == "error" {
+					if status, errorText, terminal := classifyTerminalExtractError(source, errors.New(failure.Error)); terminal {
+						failure.Status = status
+						if errorText != "" {
+							failure.Error = errorText
+						}
+					}
 				}
 				result.Stats.Errors++
-				debugLog(opts.Logger, "local source summarization failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
-				if _, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-					Status:        "error",
-					Error:         err.Error(),
-					Model:         opts.Model,
-					PromptVersion: SummaryPromptVersion,
-					Tool:          summarizecli.SummaryToolName(opts.Model),
-					ToolVersion:   summaryToolVersion,
-				}); saveErr != nil {
-					result.Err = saveErr
+				debugLog(opts.Logger, "local source extract rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
+				if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+					result.Err = err
 					return result
 				}
 				result.TouchedSourceID = source.ID
 				return result
 			}
-			runResult.Summary.PromptVersion = SummaryPromptVersion
-			if changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary); err != nil {
+		}
+		if !skipStoredExtract {
+			debugLog(opts.Logger, "using local cached extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(localExtract.Content))
+			contentHash := hashText(localExtract.Content)
+			if changed, err := st.SaveSourceExtraction(ctx, source.ID, localExtract, contentHash); err != nil {
 				result.Err = err
 				return result
-			} else if changed && runResult.Summary.Status == "ok" {
-				result.Stats.SourcesSummarized++
-				debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
+			} else if changed {
+				result.Stats.SourcesExtracted++
+				debugLog(opts.Logger, "source extraction saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", localExtract.Status, "content_chars", len(localExtract.Content), "tool", localExtract.Tool)
+			} else {
+				result.Stats.SourcesUnchanged++
 			}
-		}
 
-		result.TouchedSourceID = source.ID
-		return result
+			if opts.Summarize {
+				runResult, err := summarizeExtract(ctx, cfg, source, localExtract, opts, sourceEnv)
+				if err != nil {
+					if isUserCancellation(ctx, err) {
+						result.Err = context.Canceled
+						return result
+					}
+					result.Stats.Errors++
+					debugLog(opts.Logger, "local source summarization failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
+					if _, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+						Status:        "error",
+						Error:         err.Error(),
+						Model:         opts.Model,
+						PromptVersion: SummaryPromptVersion,
+						Tool:          summarizecli.SummaryToolName(opts.Model),
+						ToolVersion:   summaryToolVersion,
+					}); saveErr != nil {
+						result.Err = saveErr
+						return result
+					}
+					result.TouchedSourceID = source.ID
+					return result
+				}
+				runResult.Summary.PromptVersion = SummaryPromptVersion
+				if changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary); err != nil {
+					result.Err = err
+					return result
+				} else if changed && runResult.Summary.Status == "ok" {
+					result.Stats.SourcesSummarized++
+					debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
+				}
+			}
+
+			result.TouchedSourceID = source.ID
+			return result
+		}
 	}
 
-	if opts.Summarize && !opts.Force && canSummarizeStoredExtract(source) {
+	if !skipStoredExtract && opts.Summarize && !opts.Force && canSummarizeStoredExtract(source) {
 		storedExtract := extractFromSource(source)
 		if normalized, changed := normalizeExtract(source, storedExtract); changed {
 			storedExtract = normalized
@@ -349,6 +365,14 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 			}
 		}
 		if failure, invalid := rejectExtractFailure(source, storedExtract); invalid {
+			if failure.Status == "error" {
+				if status, errorText, terminal := classifyTerminalExtractError(source, errors.New(failure.Error)); terminal {
+					failure.Status = status
+					if errorText != "" {
+						failure.Error = errorText
+					}
+				}
+			}
 			result.Stats.Errors++
 			debugLog(opts.Logger, "stored source extract rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
 			if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
@@ -519,6 +543,14 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		return result
 	}
 	if failure, invalid := rejectExtractFailure(source, runResult.Extract); invalid {
+		if failure.Status == "error" {
+			if status, errorText, terminal := classifyTerminalExtractError(source, errors.New(failure.Error)); terminal {
+				failure.Status = status
+				if errorText != "" {
+					failure.Error = errorText
+				}
+			}
+		}
 		result.Stats.Errors++
 		debugLog(opts.Logger, "source extraction rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
 		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
@@ -571,6 +603,14 @@ func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config,
 	var stats Stats
 
 	if failure, invalid := rejectExtractFailure(source, extract); invalid {
+		if failure.Status == "error" {
+			if status, errorText, terminal := classifyTerminalExtractError(source, errors.New(failure.Error)); terminal {
+				failure.Status = status
+				if errorText != "" {
+					failure.Error = errorText
+				}
+			}
+		}
 		stats.Errors++
 		debugLog(opts.Logger, "source extraction rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
 		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
@@ -856,6 +896,8 @@ func classifyExtractFailureKind(errorText string) string {
 		strings.Contains(value, "status 525"),
 		strings.Contains(value, "status 526"):
 		return "cloudflare_edge"
+	case strings.Contains(value, "x article returned an x error shell"):
+		return "x_article_shell"
 	case strings.Contains(value, "unable to connect"),
 		strings.Contains(value, "connection refused"),
 		strings.Contains(value, "network is unreachable"),
@@ -875,6 +917,8 @@ func deadThresholdForFailureKind(kind string) int {
 	case "dns_nxdomain":
 		return 1
 	case "tls_certificate", "cloudflare_edge", "connectivity":
+		return 3
+	case "x_article_shell":
 		return 3
 	case "http_5xx":
 		return 5
@@ -903,6 +947,8 @@ func failureKindLabel(kind string) string {
 		return "cloudflare edge"
 	case "connectivity":
 		return "connectivity"
+	case "x_article_shell":
+		return "x article shell"
 	case "http_5xx":
 		return "http 5xx"
 	default:
@@ -1156,6 +1202,27 @@ func canSummarizeStoredExtract(source model.SourceDocument) bool {
 	return strings.TrimSpace(source.ExtractedText) != ""
 }
 
+const minXArticlePreviewExtractChars = 300
+
+func isShortXArticlePreviewExtract(extract model.ExtractResult) bool {
+	return extract.Tool == "x-hydration" &&
+		extract.ToolVersion == "local-article-preview-cache" &&
+		len(strings.TrimSpace(extract.Content)) < minXArticlePreviewExtractChars
+}
+
+func shouldRetryRemoteAfterLocalExtractReject(source model.SourceDocument, extract model.ExtractResult, failure model.ExtractResult) bool {
+	if !isXArticleURL(firstNonEmpty(source.CanonicalURL, extract.CanonicalURL, extract.FinalURL)) {
+		return false
+	}
+	if failure.Status != "error" {
+		return false
+	}
+	if looksLikeXArticleErrorShell(extract.Content) {
+		return false
+	}
+	return isShortXArticlePreviewExtract(extract)
+}
+
 func rejectExtractFailure(source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool) {
 	if !isXArticleURL(firstNonEmpty(source.CanonicalURL, extract.CanonicalURL, extract.FinalURL)) {
 		if looksLikeSubstackSubscriptionShell(extract.Content) {
@@ -1180,6 +1247,14 @@ func rejectExtractFailure(source model.SourceDocument, extract model.ExtractResu
 		return model.ExtractResult{
 			Status:      "error",
 			Error:       "x article returned an X error shell instead of article content",
+			Tool:        extract.Tool,
+			ToolVersion: extract.ToolVersion,
+		}, true
+	}
+	if isShortXArticlePreviewExtract(extract) {
+		return model.ExtractResult{
+			Status:      "error",
+			Error:       fmt.Sprintf("x article hydration only exposed a short preview snippet (%d chars) instead of article content", len(strings.TrimSpace(extract.Content))),
 			Tool:        extract.Tool,
 			ToolVersion: extract.ToolVersion,
 		}, true

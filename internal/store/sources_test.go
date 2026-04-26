@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,6 +265,52 @@ func TestListSourcesForEnrichmentDoesNotQueueSubstantiveSignupTeaser(t *testing.
 	}
 	if len(sources) != 0 {
 		t.Fatalf("expected no queued sources, got %d", len(sources))
+	}
+}
+
+func TestListSourcesForEnrichmentQueuesShortLocalXArticlePreviewForRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	content := strings.Repeat("x", 199)
+	_, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, title,
+			extracted_text, extract_status, extracted_at, extract_tool, extract_tool_version,
+			content_hash, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-short-x-article-preview",
+		"https://x.com/i/article/2040008490929037312",
+		"https://x.com/i/article/2040008490929037312",
+		"x_article",
+		"x.com",
+		"Example",
+		content,
+		"ok",
+		now,
+		"x-hydration",
+		"local-article-preview-cache",
+		testHashText(content),
+		"sources/x/example.md",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	sources, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "0.13.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 queued source, got %d", len(sources))
+	}
+	if sources[0].SourceKey != "src:test-short-x-article-preview" {
+		t.Fatalf("unexpected source queued: %s", sources[0].SourceKey)
 	}
 }
 
@@ -640,6 +687,138 @@ func TestGetPreferredLocalSourceExtractFallsBackToXArticleContentState(t *testin
 	}
 	if result.ToolVersion != "local-article-body-cache" {
 		t.Fatalf("unexpected tool version: %q", result.ToolVersion)
+	}
+}
+
+func TestGetPreferredLocalSourceExtractUsesQuotedParentHydrationForStaleQuoteChild(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	articleID := "2013912039379648512"
+
+	sourceInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-x-article-quoted-parent-fallback",
+		"https://x.com/i/article/"+articleID,
+		"https://x.com/i/article/"+articleID,
+		"x_article",
+		"x.com",
+		"sources/x/article-quoted-parent.md",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert x article source: %v", err)
+	}
+	sourceID, err := sourceInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("source id: %v", err)
+	}
+
+	childInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO items (
+			source_key, source_type, external_id, canonical_url, title, author_handle, author_name,
+			published_at, saved_at, synced_at, language, text, article_title, article_text,
+			primary_category, primary_domain, links_json, categories, domains, github_urls, folder_names,
+			like_count, repost_count, reply_count, quote_count, bookmark_count,
+			content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
+			x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error, link_extract_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '', '', '', '', '[]', '', '', '', '', 0, 0, 0, 0, 0, ?, '', '{}', ?, ?, ?, '', '', ?, ?, 'ok_syndication', '', '')`,
+		"x:test-stale-quoted-child",
+		"x_quote",
+		"2013919970414272669",
+		"https://x.com/acoyne/status/2013919970414272669",
+		"stale quoted child",
+		"acoyne",
+		"x:test-stale-quoted-child-hash",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		`{"fetched_at":"2026-04-20T19:16:46Z","raw":null,"snapshot":{"id":"2013919970414272669","text":"https://t.co/ndNKPLvafJ"}}`,
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert stale quoted child: %v", err)
+	}
+	childItemID, err := childInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("child item id: %v", err)
+	}
+
+	parentInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO items (
+			source_key, source_type, external_id, canonical_url, title, author_handle, author_name,
+			published_at, saved_at, synced_at, language, text, article_title, article_text,
+			primary_category, primary_domain, links_json, categories, domains, github_urls, folder_names,
+			like_count, repost_count, reply_count, quote_count, bookmark_count,
+			content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
+			x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error, link_extract_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '', '', '', '', '[]', '', '', '', '', 0, 0, 0, 0, 0, ?, '', '{}', ?, ?, ?, '', '', ?, ?, 'ok_syndication', '', '')`,
+		"x:test-quoted-parent",
+		"x_bookmark",
+		"2018139486333595761",
+		"https://x.com/example/status/2018139486333595761",
+		"quoted parent",
+		"parentauthor",
+		"x:test-quoted-parent-hash",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		`{"source":"syndication","fetched_at":"2026-04-20T19:16:46Z","snapshot":{"id":"2018139486333595761","text":"parent text","quoted_post":{"id":"2013919970414272669","text":"https://t.co/ndNKPLvafJ"}},"raw":{"id_str":"2018139486333595761","text":"parent text","user":{"screen_name":"parentauthor"},"quoted_tweet":{"id_str":"2013919970414272669","text":"https://t.co/ndNKPLvafJ","user":{"screen_name":"acoyne"},"article":{"title":"Quoted article title","preview_text":"Quoted preview from parent raw payload.","rest_id":"2013912039379648512"}}}}`,
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert quoted parent: %v", err)
+	}
+	parentItemID, err := parentInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("parent item id: %v", err)
+	}
+
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_source_links (item_id, source_id, original_url, created_at)
+		VALUES (?, ?, ?, ?)`,
+		childItemID,
+		sourceID,
+		"https://x.com/i/article/"+articleID,
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert source link: %v", err)
+	}
+
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_item_links (parent_item_id, child_item_id, link_kind, ordinal, created_at, updated_at)
+		VALUES (?, ?, 'quoted_post', 0, ?, ?)`,
+		parentItemID,
+		childItemID,
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert quoted parent link: %v", err)
+	}
+
+	result, ok, err := st.GetPreferredLocalSourceExtract(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetPreferredLocalSourceExtract: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected local x article extract to be recovered from quoted parent hydration")
+	}
+	if result.FinalURL != "https://x.com/parentauthor/article/"+articleID {
+		t.Fatalf("unexpected final url: %q", result.FinalURL)
+	}
+	if result.Title != "Quoted article title" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+	if result.Content != "Quoted preview from parent raw payload." {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+	if result.Tool != "x-hydration" || result.ToolVersion != "local-article-preview-cache" {
+		t.Fatalf("unexpected tool metadata: %s %s", result.Tool, result.ToolVersion)
 	}
 }
 
