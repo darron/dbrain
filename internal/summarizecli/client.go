@@ -402,10 +402,14 @@ func defaultDirectDisplayName(current string, fallback string) string {
 }
 
 func runCommand(ctx context.Context, opts Options, args []string) ([]byte, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+
 	delay := commandRetryDelay
 
 	for attempt := 0; ; attempt++ {
-		cmd := exec.CommandContext(ctx, opts.Binary, args...)
+		cmd := exec.CommandContext(timeoutCtx, opts.Binary, args...)
+		configureCommandForCancellation(cmd)
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 		cmd.Stdout = &stdout
@@ -429,7 +433,7 @@ func runCommand(ctx context.Context, opts Options, args []string) ([]byte, error
 			if !isRetryableCommandError(errMsg) || attempt >= commandRetryAttempts-1 {
 				return nil, fmt.Errorf("run summarize: %s", errMsg)
 			}
-			if err := sleepWithContext(ctx, delay); err != nil {
+			if err := sleepWithContext(timeoutCtx, delay); err != nil {
 				return nil, err
 			}
 			delay *= 2
@@ -516,6 +520,7 @@ func detectVersion(ctx context.Context, binary string) string {
 
 	for _, args := range [][]string{{"--version"}, {"version"}} {
 		cmd := exec.CommandContext(timeoutCtx, binary, args...)
+		configureCommandForCancellation(cmd)
 		output, err := cmd.Output()
 		if err != nil {
 			var exitErr *exec.ExitError

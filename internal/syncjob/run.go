@@ -36,6 +36,7 @@ var (
 )
 
 const maxXQuoteDrainPasses = 8
+const maxXFrontierSettlePasses = 3
 
 type Options struct {
 	XBookmarksEnabled bool
@@ -204,7 +205,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	stats := Stats{StartedAt: time.Now().UTC()}
 	progressf(opts.Progress, "Sync started at %s\n", stats.StartedAt.Format(time.RFC3339))
 
-	if opts.XBookmarksEnabled {
+	runXBookmarksPass := func() (xapi.BookmarkStats, time.Duration, error) {
 		progressf(opts.Progress, "==> import x-bookmarks\n")
 		start := time.Now()
 		bookmarkStats, err := runXBookmarkImport(ctx, cfg, st, xapi.BookmarkOptions{
@@ -215,15 +216,14 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			Timeout: opts.XTimeout,
 			Logger:  opts.Logger,
 		})
-		stage := &XBookmarksStage{Duration: time.Since(start), Stats: bookmarkStats}
-		stats.XBookmarks = stage
-		if err != nil {
-			return finishStats(stats), fmt.Errorf("import x-bookmarks: %w", err)
+		duration := time.Since(start)
+		if err == nil {
+			progressf(opts.Progress, "X bookmarks import complete: created=%d updated=%d unchanged=%d rendered=%d pages=%d stopped=%s (%s)\n", bookmarkStats.Created, bookmarkStats.Updated, bookmarkStats.Unchanged, bookmarkStats.Rendered, bookmarkStats.PagesFetched, bookmarkStats.StoppedReason, duration)
 		}
-		progressf(opts.Progress, "X bookmarks import complete: created=%d updated=%d unchanged=%d rendered=%d pages=%d stopped=%s (%s)\n", bookmarkStats.Created, bookmarkStats.Updated, bookmarkStats.Unchanged, bookmarkStats.Rendered, bookmarkStats.PagesFetched, bookmarkStats.StoppedReason, stage.Duration)
+		return bookmarkStats, duration, err
 	}
 
-	if opts.XEnabled {
+	runXHydratePass := func() (xapi.Stats, time.Duration, error) {
 		progressf(opts.Progress, "==> hydrate x\n")
 		start := time.Now()
 		xStats, err := runXHydrate(ctx, cfg, st, xapi.Options{
@@ -235,10 +235,8 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			Timeout:     opts.XTimeout,
 			Logger:      opts.Logger,
 		})
-		stage := &XStage{Duration: time.Since(start), Stats: xStats}
-		stats.X = stage
 		if err != nil {
-			return finishStats(stats), fmt.Errorf("hydrate x: %w", err)
+			return xStats, time.Since(start), err
 		}
 		if !opts.Force && xStats.Candidates > 0 {
 			for pass := 1; pass <= maxXQuoteDrainPasses; pass++ {
@@ -253,10 +251,8 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 					Logger:      opts.Logger,
 				})
 				mergeXStats(&xStats, quoteStats)
-				stage.Duration = time.Since(start)
-				stage.Stats = xStats
 				if quoteErr != nil {
-					return finishStats(stats), fmt.Errorf("hydrate x quote pass %d: %w", pass, quoteErr)
+					return xStats, time.Since(start), fmt.Errorf("hydrate x quote pass %d: %w", pass, quoteErr)
 				}
 				if quoteStats.Candidates == 0 {
 					break
@@ -267,9 +263,99 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				}
 			}
 		}
-		stage.Duration = time.Since(start)
-		stage.Stats = xStats
-		progressf(opts.Progress, "X hydration complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d (%s)\n", xStats.Hydrated, xStats.Missing, xStats.APIErrors, xStats.MediaDownloaded, xStats.MediaErrors, xStats.Rendered, stage.Duration)
+		duration := time.Since(start)
+		progressf(opts.Progress, "X hydration complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d (%s)\n", xStats.Hydrated, xStats.Missing, xStats.APIErrors, xStats.MediaDownloaded, xStats.MediaErrors, xStats.Rendered, duration)
+		return xStats, duration, nil
+	}
+
+	runLinksPass := func() (linkextract.Stats, time.Duration, error) {
+		progressf(opts.Progress, "==> extract links\n")
+		start := time.Now()
+		linkStats, err := runLinkExtract(ctx, cfg, st, linkextract.Options{
+			DiscoverLimit: opts.LinkDiscoverLimit,
+			Limit:         opts.LinkLimit,
+			Concurrency:   opts.LinkConcurrency,
+			Force:         opts.Force,
+			Summarize:     opts.Summarize,
+			Model:         opts.Model,
+			CLI:           opts.CLI,
+			Length:        opts.Length,
+			Timeout:       opts.Timeout,
+			Logger:        opts.Logger,
+		})
+		duration := time.Since(start)
+		if err == nil {
+			progressf(opts.Progress, "Link extraction complete: items_scanned=%d sources_queued=%d sources_summarized=%d errors=%d (%s)\n", linkStats.ItemsScanned, linkStats.SourcesQueued, linkStats.SourcesSummarized, linkStats.Errors, duration)
+		}
+		return linkStats, duration, err
+	}
+
+	if shouldSettleXFrontier(opts) {
+		for pass := 1; pass <= maxXFrontierSettlePasses; pass++ {
+			if pass > 1 {
+				progressf(opts.Progress, "==> x settle pass %d\n", pass)
+			}
+
+			frontierActive := false
+
+			bookmarkStats, bookmarkDuration, err := runXBookmarksPass()
+			mergeXBookmarkStage(&stats.XBookmarks, bookmarkDuration, bookmarkStats)
+			if err != nil {
+				return finishStats(stats), fmt.Errorf("import x-bookmarks: %w", err)
+			}
+			if bookmarkStats.Created > 0 || bookmarkStats.Updated > 0 {
+				frontierActive = true
+			}
+
+			xStats, xDuration, err := runXHydratePass()
+			mergeXStage(&stats.X, xDuration, xStats)
+			if err != nil {
+				return finishStats(stats), fmt.Errorf("hydrate x: %w", err)
+			}
+			if xStats.Candidates > 0 {
+				frontierActive = true
+			}
+
+			linkStats, linkDuration, err := runLinksPass()
+			mergeLinksStage(&stats.Links, linkDuration, linkStats)
+			if err != nil {
+				return finishStats(stats), fmt.Errorf("extract links: %w", err)
+			}
+			if linkStats.ItemsScanned > 0 {
+				frontierActive = true
+			}
+
+			if !frontierActive {
+				break
+			}
+			if pass == maxXFrontierSettlePasses {
+				progressf(opts.Progress, "X frontier settle stopped after %d passes with activity still present\n", maxXFrontierSettlePasses)
+			}
+		}
+	} else {
+		if opts.XBookmarksEnabled {
+			bookmarkStats, bookmarkDuration, err := runXBookmarksPass()
+			mergeXBookmarkStage(&stats.XBookmarks, bookmarkDuration, bookmarkStats)
+			if err != nil {
+				return finishStats(stats), fmt.Errorf("import x-bookmarks: %w", err)
+			}
+		}
+
+		if opts.XEnabled {
+			xStats, xDuration, err := runXHydratePass()
+			mergeXStage(&stats.X, xDuration, xStats)
+			if err != nil {
+				return finishStats(stats), fmt.Errorf("hydrate x: %w", err)
+			}
+		}
+
+		if opts.LinksEnabled {
+			linkStats, linkDuration, err := runLinksPass()
+			mergeLinksStage(&stats.Links, linkDuration, linkStats)
+			if err != nil {
+				return finishStats(stats), fmt.Errorf("extract links: %w", err)
+			}
+		}
 	}
 
 	if opts.XMediaEnabled {
@@ -311,29 +397,6 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			return finishStats(stats), fmt.Errorf("ocr x-photos: %w", err)
 		}
 		progressf(opts.Progress, "X photo OCR complete: items_processed=%d items_updated=%d items_skipped=%d photos_ocred=%d errors=%d (%s)\n", ocrStats.ItemsProcessed, ocrStats.ItemsUpdated, ocrStats.ItemsSkipped, ocrStats.PhotosOCRed, ocrStats.Errors, stage.Duration)
-	}
-
-	if opts.LinksEnabled {
-		progressf(opts.Progress, "==> extract links\n")
-		start := time.Now()
-		linkStats, err := runLinkExtract(ctx, cfg, st, linkextract.Options{
-			DiscoverLimit: opts.LinkDiscoverLimit,
-			Limit:         opts.LinkLimit,
-			Concurrency:   opts.LinkConcurrency,
-			Force:         opts.Force,
-			Summarize:     opts.Summarize,
-			Model:         opts.Model,
-			CLI:           opts.CLI,
-			Length:        opts.Length,
-			Timeout:       opts.Timeout,
-			Logger:        opts.Logger,
-		})
-		stage := &LinksStage{Duration: time.Since(start), Stats: linkStats}
-		stats.Links = stage
-		if err != nil {
-			return finishStats(stats), fmt.Errorf("extract links: %w", err)
-		}
-		progressf(opts.Progress, "Link extraction complete: items_scanned=%d sources_queued=%d sources_summarized=%d errors=%d (%s)\n", linkStats.ItemsScanned, linkStats.SourcesQueued, linkStats.SourcesSummarized, linkStats.Errors, stage.Duration)
 	}
 
 	if opts.GitHubEnabled {
@@ -482,4 +545,71 @@ func mergeXStats(dst *xapi.Stats, src xapi.Stats) {
 	dst.MediaDownloaded += src.MediaDownloaded
 	dst.MediaGone += src.MediaGone
 	dst.MediaErrors += src.MediaErrors
+}
+
+func mergeXBookmarkStage(dst **XBookmarksStage, duration time.Duration, src xapi.BookmarkStats) {
+	if *dst == nil {
+		*dst = &XBookmarksStage{Duration: duration, Stats: src}
+		return
+	}
+	(*dst).Duration += duration
+	mergeXBookmarkStats(&(*dst).Stats, src)
+}
+
+func mergeXBookmarkStats(dst *xapi.BookmarkStats, src xapi.BookmarkStats) {
+	if dst == nil {
+		return
+	}
+	dst.PagesFetched += src.PagesFetched
+	dst.Processed += src.Processed
+	dst.Created += src.Created
+	dst.Updated += src.Updated
+	dst.Unchanged += src.Unchanged
+	dst.Rendered += src.Rendered
+	dst.StalePages += src.StalePages
+	if strings.TrimSpace(src.StoppedReason) != "" {
+		dst.StoppedReason = src.StoppedReason
+	}
+}
+
+func mergeXStage(dst **XStage, duration time.Duration, src xapi.Stats) {
+	if *dst == nil {
+		*dst = &XStage{Duration: duration, Stats: src}
+		return
+	}
+	(*dst).Duration += duration
+	mergeXStats(&(*dst).Stats, src)
+}
+
+func mergeLinksStage(dst **LinksStage, duration time.Duration, src linkextract.Stats) {
+	if *dst == nil {
+		*dst = &LinksStage{Duration: duration, Stats: src}
+		return
+	}
+	(*dst).Duration += duration
+	mergeLinkStats(&(*dst).Stats, src)
+}
+
+func mergeLinkStats(dst *linkextract.Stats, src linkextract.Stats) {
+	if dst == nil {
+		return
+	}
+	dst.ItemsScanned += src.ItemsScanned
+	dst.ItemsMarked += src.ItemsMarked
+	dst.LinksFound += src.LinksFound
+	dst.SourcesCreated += src.SourcesCreated
+	dst.LinksCreated += src.LinksCreated
+	dst.SourcesQueued += src.SourcesQueued
+	dst.SourcesExtracted += src.SourcesExtracted
+	dst.SourcesSummarized += src.SourcesSummarized
+	dst.SourcesRendered += src.SourcesRendered
+	dst.SourcesUnchanged += src.SourcesUnchanged
+	dst.Errors += src.Errors
+}
+
+func shouldSettleXFrontier(opts Options) bool {
+	return !opts.Force &&
+		opts.XBookmarksEnabled &&
+		opts.XEnabled &&
+		opts.LinksEnabled
 }

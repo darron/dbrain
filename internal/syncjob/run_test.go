@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"dbrain/internal/config"
+	"dbrain/internal/linkextract"
 	"dbrain/internal/mediaarchive"
 	"dbrain/internal/store"
 	"dbrain/internal/xapi"
@@ -138,6 +139,90 @@ func TestRunDrainsQuoteHydrationTailBeforeXMediaStage(t *testing.T) {
 	output := progress.String()
 	if !bytes.Contains([]byte(output), []byte("X quote hydration pass 1 complete")) {
 		t.Fatalf("expected progress output to contain quote drain pass, got %q", output)
+	}
+}
+
+func TestRunSettlesXFrontierBeforeDownstreamStages(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origBookmarks := runXBookmarkImport
+	origX := runXHydrate
+	origLinks := runLinkExtract
+	origXMedia := runXMediaStage
+	t.Cleanup(func() {
+		runXBookmarkImport = origBookmarks
+		runXHydrate = origX
+		runLinkExtract = origLinks
+		runXMediaStage = origXMedia
+	})
+
+	var calls []string
+	bookmarkPasses := 0
+	runXBookmarkImport = func(_ context.Context, _ config.Config, _ *store.Store, _ xapi.BookmarkOptions) (xapi.BookmarkStats, error) {
+		calls = append(calls, "x-bookmarks")
+		bookmarkPasses++
+		if bookmarkPasses == 1 {
+			return xapi.BookmarkStats{Created: 1, Rendered: 1, PagesFetched: 1, StoppedReason: "overlap"}, nil
+		}
+		return xapi.BookmarkStats{Unchanged: 10, PagesFetched: 1, StoppedReason: "overlap"}, nil
+	}
+
+	hydratePasses := 0
+	runXHydrate = func(_ context.Context, _ config.Config, _ *store.Store, opts xapi.Options) (xapi.Stats, error) {
+		if opts.QuoteOnly {
+			calls = append(calls, "x-quote")
+			return xapi.Stats{}, nil
+		}
+		calls = append(calls, "x")
+		hydratePasses++
+		if hydratePasses == 1 {
+			return xapi.Stats{Candidates: 2, Hydrated: 2, Rendered: 2}, nil
+		}
+		return xapi.Stats{}, nil
+	}
+
+	linkPasses := 0
+	runLinkExtract = func(_ context.Context, _ config.Config, _ *store.Store, _ linkextract.Options) (linkextract.Stats, error) {
+		calls = append(calls, "links")
+		linkPasses++
+		if linkPasses == 1 {
+			return linkextract.Stats{ItemsScanned: 2, SourcesQueued: 1, SourcesSummarized: 1}, nil
+		}
+		return linkextract.Stats{}, nil
+	}
+
+	runXMediaStage = func(_ context.Context, _ config.Config, _ *store.Store, _ xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+		calls = append(calls, "x-media")
+		return xmediatranscribe.Stats{}, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(context.Background(), cfg, st, Options{
+		XBookmarksEnabled: true,
+		XEnabled:          true,
+		LinksEnabled:      true,
+		XMediaEnabled:     true,
+		Progress:          &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !slices.Equal(calls, []string{"x-bookmarks", "x", "x-quote", "links", "x-bookmarks", "x", "links", "x-media"}) {
+		t.Fatalf("unexpected stage order: %v", calls)
+	}
+	if stats.XBookmarks == nil || stats.XBookmarks.Stats.Created != 1 {
+		t.Fatalf("expected aggregated x bookmark stats, got %+v", stats.XBookmarks)
+	}
+	if stats.X == nil || stats.X.Stats.Hydrated != 2 {
+		t.Fatalf("expected aggregated x hydrate stats, got %+v", stats.X)
+	}
+	if stats.Links == nil || stats.Links.Stats.SourcesQueued != 1 {
+		t.Fatalf("expected aggregated link stats, got %+v", stats.Links)
+	}
+	output := progress.String()
+	if !bytes.Contains([]byte(output), []byte("==> x settle pass 2")) {
+		t.Fatalf("expected progress output to contain x settle pass, got %q", output)
 	}
 }
 

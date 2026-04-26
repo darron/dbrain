@@ -59,6 +59,7 @@ type Options struct {
 	CLI                  string
 	Length               string
 	Timeout              time.Duration
+	ProgressInterval     time.Duration
 	Logger               *slog.Logger
 	EnvFor               func(source model.SourceDocument) map[string]string
 	ArgsFor              func(source model.SourceDocument) []string
@@ -120,6 +121,9 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 	if opts.Timeout <= 0 {
 		opts.Timeout = 2 * time.Minute
 	}
+	if opts.ProgressInterval == 0 {
+		opts.ProgressInterval = 15 * time.Second
+	}
 	if opts.Length == "" {
 		opts.Length = "medium"
 	}
@@ -148,7 +152,7 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 	stats := Stats{SourcesQueued: len(sources)}
 	touchedSourceIDs := map[int64]struct{}{}
 
-	debugLog(opts.Logger, "source enrichment candidates loaded", "sources", len(sources), "limit", opts.Limit, "summarize", opts.Summarize, "concurrency", opts.Concurrency)
+	debugLog(opts.Logger, "source enrichment candidates loaded", "sources", len(sources), "limit", opts.Limit, "summarize", opts.Summarize, "concurrency", opts.Concurrency, "timeout", opts.Timeout, "progress_interval", opts.ProgressInterval)
 
 	results, err := processSourcesConcurrently(ctx, cfg, st, sources, opts, extractToolVersion, summaryToolVersion)
 	for _, result := range results {
@@ -175,14 +179,139 @@ type sourceProcessResult struct {
 	Err             error
 }
 
+type sourceProgressEntry struct {
+	SourceKey string
+	URL       string
+	StartedAt time.Time
+}
+
+type sourceProgressSnapshot struct {
+	Total           int
+	Processed       int
+	Remaining       int
+	Errors          int
+	Active          int
+	OldestElapsed   time.Duration
+	OldestSourceKey string
+	OldestURL       string
+}
+
+type sourceProgressTracker struct {
+	mu        sync.Mutex
+	total     int
+	processed int
+	errors    int
+	active    map[string]sourceProgressEntry
+}
+
+func newSourceProgressTracker(total int) *sourceProgressTracker {
+	return &sourceProgressTracker{
+		total:  total,
+		active: make(map[string]sourceProgressEntry, total),
+	}
+}
+
+func (t *sourceProgressTracker) start(source model.SourceDocument, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.active[sourceProgressKey(source)] = sourceProgressEntry{
+		SourceKey: source.SourceKey,
+		URL:       source.CanonicalURL,
+		StartedAt: now,
+	}
+}
+
+func (t *sourceProgressTracker) finish(source model.SourceDocument, result sourceProcessResult) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	delete(t.active, sourceProgressKey(source))
+	t.processed++
+	t.errors += result.Stats.Errors
+}
+
+func (t *sourceProgressTracker) snapshot(now time.Time) sourceProgressSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	snapshot := sourceProgressSnapshot{
+		Total:     t.total,
+		Processed: t.processed,
+		Remaining: t.total - t.processed,
+		Errors:    t.errors,
+		Active:    len(t.active),
+	}
+	for _, entry := range t.active {
+		elapsed := now.Sub(entry.StartedAt)
+		if snapshot.OldestSourceKey == "" || elapsed > snapshot.OldestElapsed {
+			snapshot.OldestElapsed = elapsed
+			snapshot.OldestSourceKey = entry.SourceKey
+			snapshot.OldestURL = entry.URL
+		}
+	}
+	return snapshot
+}
+
+func sourceProgressKey(source model.SourceDocument) string {
+	if source.SourceKey != "" {
+		return source.SourceKey
+	}
+	if source.CanonicalURL != "" {
+		return source.CanonicalURL
+	}
+	return fmt.Sprintf("source:%d", source.ID)
+}
+
+func startSourceProgressLogger(ctx context.Context, logger *slog.Logger, interval time.Duration, tracker *sourceProgressTracker) func() {
+	if logger == nil || interval <= 0 || tracker == nil {
+		return func() {}
+	}
+
+	progressCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-progressCtx.Done():
+				return
+			case tickTime := <-ticker.C:
+				snapshot := tracker.snapshot(tickTime)
+				if snapshot.Active == 0 {
+					continue
+				}
+				debugLog(logger, "source enrichment progress",
+					"processed", snapshot.Processed,
+					"total", snapshot.Total,
+					"remaining", snapshot.Remaining,
+					"active", snapshot.Active,
+					"errors", snapshot.Errors,
+					"oldest_elapsed", snapshot.OldestElapsed,
+					"oldest_source_key", snapshot.OldestSourceKey,
+					"oldest_url", snapshot.OldestURL,
+				)
+			}
+		}
+	}()
+	return cancel
+}
+
 func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *store.Store, sources []model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) ([]sourceProcessResult, error) {
 	if len(sources) == 0 {
 		return nil, nil
 	}
+	tracker := newSourceProgressTracker(len(sources))
+	stopProgress := startSourceProgressLogger(ctx, opts.Logger, opts.ProgressInterval, tracker)
+	defer stopProgress()
+
 	if opts.Concurrency <= 1 || len(sources) == 1 {
 		results := make([]sourceProcessResult, 0, len(sources))
 		for _, source := range sources {
+			tracker.start(source, time.Now())
 			result := processSingleSource(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
+			tracker.finish(source, result)
 			results = append(results, result)
 			if result.Err != nil {
 				return results, result.Err
@@ -208,7 +337,9 @@ func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *stor
 		go func() {
 			defer wg.Done()
 			for source := range jobs {
+				tracker.start(source, time.Now())
 				result := processSingleSource(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
+				tracker.finish(source, result)
 				select {
 				case results <- result:
 				case <-ctx.Done():

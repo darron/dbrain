@@ -85,6 +85,40 @@ printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"https://e
 	}
 }
 
+func TestRunCLIHonorsTimeout(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+sleep 10
+printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"https://example.com","title":"Example","description":"","siteName":"Example","content":"body"},"summary":null}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	start := time.Now()
+	_, err := Run(context.Background(), Options{
+		Binary:  binary,
+		Input:   "https://example.com",
+		Timeout: 100 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") &&
+		!strings.Contains(err.Error(), "context canceled") &&
+		!strings.Contains(err.Error(), "signal: killed") {
+		t.Fatalf("expected process timeout error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("expected cli summarize to honor timeout quickly, took %s", elapsed)
+	}
+}
+
 func TestRunDirectOllamaSummaryForLocalFileInput(t *testing.T) {
 	var captured chatCompletionsRequest
 	oldClient := http.DefaultClient

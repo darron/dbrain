@@ -1,10 +1,13 @@
 package sourceenrich
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -723,6 +726,92 @@ func TestRunSourceIDsCancellationDoesNotPersistInterruptFailure(t *testing.T) {
 	}
 	if source.SummaryStatus != "" || source.SummaryError != "" {
 		t.Fatalf("expected no summary failure persisted on cancel, got status=%q error=%q", source.SummaryStatus, source.SummaryError)
+	}
+}
+
+func TestRunSourceIDsLogsProgressForSlowSources(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	installSourceEnrichSlowFakeSummarize(t, root)
+
+	now := time.Now().UTC()
+	sourceIDs := make([]int64, 0, 2)
+	for i := 0; i < 2; i++ {
+		itemResult, err := st.UpsertItem(context.Background(), model.Item{
+			SourceKey:    fmt.Sprintf("x:test-progress-source-item-%d", i),
+			SourceType:   "x_bookmark",
+			ExternalID:   fmt.Sprintf("test-progress-source-item-%d", i),
+			CanonicalURL: fmt.Sprintf("https://x.com/example/status/test-progress-source-item-%d", i),
+			Title:        fmt.Sprintf("test progress source item %d", i),
+			ContentHash:  fmt.Sprintf("item-hash-test-progress-source-item-%d", i),
+			LinksJSON:    "[]",
+			NotePath:     fmt.Sprintf("items/x/2026/test-progress-source-item-%d.md", i),
+			RawJSON:      `{}`,
+			ImportedAt:   now,
+			UpdatedAt:    now,
+			LastSeenAt:   now,
+		})
+		if err != nil {
+			t.Fatalf("UpsertItem(%d): %v", i, err)
+		}
+
+		link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
+			SourceKey:     fmt.Sprintf("src:test-progress-source-%d", i),
+			CanonicalURL:  fmt.Sprintf("https://example.com/slow/%d", i),
+			NormalizedURL: fmt.Sprintf("https://example.com/slow/%d", i),
+			SourceType:    "web",
+			Domain:        "example.com",
+			NotePath:      fmt.Sprintf("sources/web/src-test-progress-source-%d.md", i),
+			OriginalURL:   fmt.Sprintf("https://example.com/slow/%d", i),
+		})
+		if err != nil {
+			t.Fatalf("UpsertSourceLink(%d): %v", i, err)
+		}
+		sourceIDs = append(sourceIDs, link.SourceID)
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, sourceIDs, Options{
+		Summarize:        false,
+		Concurrency:      2,
+		Timeout:          200 * time.Millisecond,
+		ProgressInterval: 20 * time.Millisecond,
+		Logger:           logger,
+		ResolveHost: func(context.Context, string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.Errors != 2 {
+		t.Fatalf("expected 2 extraction errors from timed out slow sources, got %+v", stats)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, `msg="source enrichment progress"`) {
+		t.Fatalf("expected source enrichment progress log, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "oldest_source_key=src:test-progress-source-0") &&
+		!strings.Contains(logOutput, "oldest_source_key=src:test-progress-source-1") {
+		t.Fatalf("expected progress log to include an active source key, got:\n%s", logOutput)
 	}
 }
 
