@@ -64,7 +64,6 @@ quiet CLI output.
 - Expand the web operations/dashboard view with deeper worker drill-down, richer backlog trend views, and clearer source-level drill-ins so repeated failures are easier to triage.
 - Add first-class filters and browsing controls in the web UI for source type, kind, status, and recency so the corpus is easier to slice than with one text box.
 - Tighten X link-discovery candidate selection so items whose only links are X self-links like `/photo/1` or `/video/1` do not get rescanned and inflate `items_scanned` without producing real source candidates.
-- Add a command to create a compressed database backup and upload it to R2 under a `data/` prefix, so the live SQLite state can be snapshotted off-machine without a manual copy step.
 - Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
 - Add a translation stage for non-English X content, storing both original and translated text.
 - Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
@@ -181,6 +180,10 @@ uploads eligible media after OCR/transcription reaches a terminal state, marks
 the object as archived in the DB, and prunes the local file once every row
 sharing that same `local_path` is safely archived.
 
+The same S3-compatible credentials are used by `dbrain sqlite archive` and
+`dbrain sqlite restore` for compressed database snapshots. SQLite archives are
+stored under `archive/db/` by default; override with `--prefix` if needed.
+
 ## Command Requirements
 
 - `dbrain import ft`
@@ -207,6 +210,14 @@ sharing that same `local_path` is safely archived.
   Optional manual archive/prune pass for finalized media. It can either just
   mark/prune already-uploaded media or upload directly to an S3-compatible
   bucket first when `--upload` or archive-upload env vars are configured.
+- `dbrain sqlite archive`
+  Creates a consistent SQLite snapshot with SQLite itself, compresses it as
+  gzip, and uploads it to the configured S3-compatible bucket under
+  `archive/db/brain-<timestamp>.db.gz`.
+- `dbrain sqlite restore`
+  Finds the newest archived SQLite snapshot under `archive/db`, asks for
+  confirmation, moves any local `brain.db`, `brain.db-wal`, and `brain.db-shm`
+  files aside with a timestamped suffix, then installs the restored database.
 - `dbrain serve web`
   Serves the local UI plus authenticated archived-media helpers. When archive
   credentials are configured, `/media/asset/<media-asset-id>` streams archived

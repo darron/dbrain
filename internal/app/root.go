@@ -104,6 +104,7 @@ func NewRootCommand() *cobra.Command {
 
 	rootCmd.AddCommand(
 		newArchiveCommand(opts),
+		newSQLiteCommand(opts),
 		importCmd,
 		newSyncCommand(opts),
 		newEntityCommand(opts),
