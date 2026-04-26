@@ -35,7 +35,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "entity", "topic", "worker", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get"} {
+	for _, value := range []string{"import", "sync", "sqlite", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -229,6 +229,66 @@ func TestWorkerCommandHelpIncludesSources(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, "sources") {
 		t.Fatalf("expected worker help output to contain %q, got %q", "sources", output)
+	}
+}
+
+func TestLinkCommandHelpIncludesAdd(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"link"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "add") {
+		t.Fatalf("expected link help output to contain add, got %q", output)
+	}
+}
+
+func TestLinkAddQueuesManualSource(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "link", "add", "https://example.com/manual?utm_source=test"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v stderr=%s", err, stderr.String())
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "Queued: 1") || !strings.Contains(output, "created src:") || !strings.Contains(output, "https://example.com/manual") {
+		t.Fatalf("unexpected link add output %q", output)
+	}
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+	pending, err := st.ListSourcesForEnrichment(context.Background(), 10, false, true, "dbrain-v1", "summarize", "0.1.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(pending) != 1 || pending[0].CanonicalURL != "https://example.com/manual" {
+		t.Fatalf("expected pending normalized manual source, got %+v", pending)
 	}
 }
 
@@ -2284,6 +2344,7 @@ func TestCLIFlagsDefaultToCodex(t *testing.T) {
 		{"extract", "sources"},
 		{"import", "github", "stars"},
 		{"import", "youtube"},
+		{"link", "add"},
 		{"sync", "all"},
 		{"worker", "sources"},
 	} {

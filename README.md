@@ -18,6 +18,7 @@ Markdown note rendering for Obsidian and local query over the imported corpus.
 - `dbrain topic generate <topic>`
 - `dbrain topic refresh [topic]`
 - `dbrain topic index`
+- `dbrain link add <url>`
 - `dbrain worker sources`
 - `dbrain hydrate x`
 - `dbrain transcribe x-media`
@@ -249,6 +250,11 @@ stored under `archive/db/` by default; override with `--prefix` if needed.
   but still uses `summarize` for normalization and summarization. Use
   `--concurrency` to run multiple source extract/summarize jobs in parallel
   after discovery.
+- `dbrain link add`
+  Adds one or more manually submitted URLs to the same source backlog used by
+  discovered links. By default it queues the source for the normal
+  `extract sources`, `worker sources`, or `sync all` flow; pass `--enrich` to
+  extract and summarize immediately.
 - `dbrain extract sources`
   Requires `summarize`. This is the global source-backlog worker for already
   known sources that still need extraction or summarization. Use
@@ -384,6 +390,8 @@ go run ./cmd/dbrain repair notes
 go run ./cmd/dbrain repair notes --missing-only=false --sources
 go run ./cmd/dbrain extract links --discover-limit 100 --limit 25 --concurrency 4 --summarize=false
 go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --length short
+go run ./cmd/dbrain link add "https://example.com/article"
+go run ./cmd/dbrain link add "https://example.com/article" --enrich --length short
 go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short
 go run ./cmd/dbrain stats items
 go run ./cmd/dbrain stats items --source-type github_star --group-by none

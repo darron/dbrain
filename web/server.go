@@ -16,6 +16,7 @@ import (
 
 	"dbrain/internal/ask"
 	"dbrain/internal/config"
+	"dbrain/internal/linkadd"
 	"dbrain/internal/model"
 	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
@@ -28,6 +29,7 @@ const (
 	defaultAskLimit       = 8
 	defaultEventLimit     = 8
 	defaultActivityWindow = 24 * time.Hour
+	defaultWebCLI         = "codex"
 	maxSearchLimit        = 50
 	maxAskLimit           = 20
 	maxEventLimit         = 20
@@ -75,6 +77,12 @@ type AskRequest struct {
 	IncludeRelated bool     `json:"include_related"`
 	RelatedLimit   int      `json:"related_limit"`
 	MaxCharsPerDoc int      `json:"max_chars_per_doc"`
+}
+
+type LinkAddRequest struct {
+	URL    string   `json:"url"`
+	URLs   []string `json:"urls"`
+	Enrich bool     `json:"enrich"`
 }
 
 type server struct {
@@ -177,6 +185,7 @@ func (s *server) newMux() http.Handler {
 	mux.HandleFunc("/api/stats/activity", s.handleActivity)
 	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
 	mux.HandleFunc("/api/ask", s.handleAsk)
+	mux.HandleFunc("/api/links", s.handleLinks)
 	mux.HandleFunc("/api/media/signed-url", s.handleMediaSignedURL)
 	mux.HandleFunc("/media/asset/", s.handleMediaAsset)
 	mux.Handle("/", http.HandlerFunc(s.handleStatic))
@@ -423,6 +432,44 @@ func (s *server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	var req LinkAddRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeMessage(w, http.StatusBadRequest, "request body must be valid JSON")
+		return
+	}
+	urls := append([]string{}, req.URLs...)
+	if strings.TrimSpace(req.URL) != "" {
+		urls = append(urls, req.URL)
+	}
+	if len(urls) == 0 {
+		writeMessage(w, http.StatusBadRequest, "url is required")
+		return
+	}
+
+	stats, err := linkadd.Run(r.Context(), s.cfg, s.store, urls, linkadd.Options{
+		Enrich:    req.Enrich,
+		Summarize: true,
+		CLI:       defaultWebCLI,
+		Length:    "medium",
+		Timeout:   2 * time.Minute,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if stats.Errors > 0 && stats.Queued == 0 {
+		writeJSON(w, http.StatusBadRequest, stats)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func (s *server) handleSourceActivity(w http.ResponseWriter, r *http.Request) {

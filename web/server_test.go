@@ -293,6 +293,51 @@ func TestWebHandlerServesBootstrapSearchGetAndAsk(t *testing.T) {
 			t.Fatalf("expected evidence array, got %#v", response["evidence"])
 		}
 	})
+
+	t.Run("add link", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"url":"https://example.com/manual?utm_source=test"}`)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/links", body)
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var response struct {
+			Queued  int `json:"queued"`
+			Results []struct {
+				CanonicalURL string `json:"canonical_url"`
+				SourceType   string `json:"source_type"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode add link response: %v", err)
+		}
+		if response.Queued != 1 || len(response.Results) != 1 || response.Results[0].CanonicalURL != "https://example.com/manual" || response.Results[0].SourceType != "web" {
+			t.Fatalf("unexpected add link response %+v", response)
+		}
+	})
+}
+
+func TestWebHandlerAddLinkRejectsInvalidURL(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := openTestStore(t)
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"url":"not a url"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/links", body)
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestWebHandlerServesIndexHTML(t *testing.T) {

@@ -65,3 +65,17 @@ export function askEvidence(question, options = {}) {
     })
   });
 }
+
+export function addLink(url, options = {}) {
+  return fetchJSON("/api/links", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      url,
+      enrich: false,
+      ...options
+    })
+  });
+}

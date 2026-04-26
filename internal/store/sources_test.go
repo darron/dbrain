@@ -61,6 +61,46 @@ func TestListSourcesForEnrichmentIgnoresExtractToolVersionMismatchWhenSummaryCur
 	}
 }
 
+func TestUpsertSourceQueuesManualSourceForEnrichment(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	candidate := model.SourceCandidate{
+		OriginalURL:   "https://example.com/manual",
+		CanonicalURL:  "https://example.com/manual",
+		NormalizedURL: "https://example.com/manual",
+		SourceType:    "web",
+		Domain:        "example.com",
+		SourceKey:     "src:manual",
+		NotePath:      "sources/web/example-manual.md",
+	}
+
+	result, err := st.UpsertSource(ctx, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSource: %v", err)
+	}
+	if !result.SourceCreated || result.SourceID == 0 {
+		t.Fatalf("unexpected upsert result %+v", result)
+	}
+
+	pending, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "0.1.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(pending) != 1 || pending[0].SourceKey != candidate.SourceKey {
+		t.Fatalf("expected manual source pending, got %+v", pending)
+	}
+
+	again, err := st.UpsertSource(ctx, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSource again: %v", err)
+	}
+	if again.SourceCreated || again.SourceID != result.SourceID {
+		t.Fatalf("expected existing source result, got %+v", again)
+	}
+}
+
 func TestListSourcesForEnrichmentQueuesSummaryToolVersionMismatch(t *testing.T) {
 	t.Parallel()
 

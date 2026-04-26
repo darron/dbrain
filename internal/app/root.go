@@ -110,6 +110,7 @@ func NewRootCommand() *cobra.Command {
 		newEntityCommand(opts),
 		newTopicCommand(opts),
 		newWorkerCommand(opts),
+		newLinkCommand(opts),
 		extractCmd,
 		hydrateCmd,
 		newTranscribeCommand(opts),

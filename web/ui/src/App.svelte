@@ -1,13 +1,14 @@
 <script>
   import { onMount } from "svelte";
 
+  import AddLinkPanel from "./components/AddLinkPanel.svelte";
   import AskPanel from "./components/AskPanel.svelte";
   import DetailPanel from "./components/DetailPanel.svelte";
   import OperationsPanel from "./components/OperationsPanel.svelte";
   import ResultList from "./components/ResultList.svelte";
   import SearchPanel from "./components/SearchPanel.svelte";
   import StatsBar from "./components/StatsBar.svelte";
-  import { askEvidence, getBootstrap, getLookup, getSourceActivity, searchBrain } from "./lib/api.js";
+  import { addLink, askEvidence, getBootstrap, getLookup, getSourceActivity, searchBrain } from "./lib/api.js";
   import { pageHref, readRouteState, writeRouteState } from "./lib/urlState.js";
 
   const defaultBacklog = {
@@ -85,6 +86,11 @@
   let askError = "";
   let askResponse = { question: "", answer: "", evidence: [] };
 
+  let linkURL = "";
+  let linkState = "idle";
+  let linkError = "";
+  let linkResponse = null;
+
   let selectedLookup = "";
   let detailState = "idle";
   let detailError = "";
@@ -92,8 +98,9 @@
 
   $: showSearchResults = searchState !== "idle";
   $: showAskResults = askState !== "idle";
+  $: showLinkResults = linkState !== "idle";
   $: showDetailPanel = detailState !== "idle" || Boolean(detailError) || Boolean(detail);
-  $: showHomeGuide = currentPage === "home" && !showSearchResults && !showAskResults && !showDetailPanel;
+  $: showHomeGuide = currentPage === "home" && !showSearchResults && !showAskResults && !showLinkResults && !showDetailPanel;
 
   onMount(async () => {
     const route = readRouteState();
@@ -268,6 +275,30 @@
     }
   }
 
+  async function runAddLink() {
+    const url = linkURL.trim();
+    linkState = "loading";
+    linkError = "";
+    linkResponse = null;
+    if (!url) {
+      linkState = "idle";
+      return;
+    }
+
+    try {
+      linkResponse = await addLink(url);
+      linkState = "ready";
+      await loadBootstrap();
+      const first = linkResponse?.results?.find((item) => item.source_key);
+      if (first) {
+        await loadDetail(first.source_key);
+      }
+    } catch (error) {
+      linkError = error.message;
+      linkState = "error";
+    }
+  }
+
   async function loadDetail(lookup) {
     selectedLookup = lookup;
     detailState = "loading";
@@ -420,6 +451,15 @@
           <SearchPanel bind:query={searchQuery} state={searchState} onSearch={runSearch} />
 
           <AskPanel bind:question={askQuestion} state={askState} onAsk={runAsk} />
+
+          <AddLinkPanel
+            bind:url={linkURL}
+            state={linkState}
+            error={linkError}
+            result={linkResponse}
+            onAdd={runAddLink}
+            onSelect={loadDetail}
+          />
         </div>
 
         {#if showHomeGuide}

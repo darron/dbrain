@@ -77,6 +77,11 @@ type SourceLinkUpsertResult struct {
 	LinkCreated   bool
 }
 
+type SourceUpsertResult struct {
+	SourceID      int64 `json:"source_id"`
+	SourceCreated bool  `json:"source_created"`
+}
+
 type ExtractResult struct {
 	CanonicalURL string
 	FinalURL     string

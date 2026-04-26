@@ -177,7 +177,7 @@ h3 {
 .focus-grid {
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .focus-panel {
@@ -203,6 +203,51 @@ h3 {
   background: rgba(247, 241, 228, 0.92);
   border: 1px solid rgba(34, 67, 57, 0.08);
   color: #45564e;
+}
+
+.add-link-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.add-link-panel::after {
+  content: "";
+  position: absolute;
+  right: -3rem;
+  bottom: -3rem;
+  width: 10rem;
+  height: 10rem;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(38, 87, 73, 0.18), transparent 68%);
+  pointer-events: none;
+}
+
+.queued-links {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.queued-link-card {
+  display: grid;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0.85rem;
+  border: 1px solid rgba(34, 67, 57, 0.1);
+  border-radius: 0.95rem;
+  background: rgba(247, 241, 228, 0.8);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.queued-link-card strong {
+  overflow-wrap: anywhere;
+}
+
+.queued-link-card.failed {
+  border-color: rgba(139, 46, 29, 0.18);
+  color: #8b2e1d;
+  cursor: default;
 }
 
 .panel {
