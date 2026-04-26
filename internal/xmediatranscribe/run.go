@@ -14,6 +14,7 @@ import (
 	"dbrain/internal/config"
 	"dbrain/internal/itemhash"
 	"dbrain/internal/model"
+	"dbrain/internal/runtimeenv"
 	"dbrain/internal/store"
 	"dbrain/internal/vault"
 )
@@ -32,6 +33,7 @@ type Options struct {
 	SummaryModel     string
 	SummaryCLI       string
 	SummaryLength    string
+	SummaryLanguage  string
 	Logger           *slog.Logger
 }
 
@@ -86,6 +88,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	if strings.TrimSpace(opts.SummaryLength) == "" {
 		opts.SummaryLength = "medium"
+	}
+	if strings.TrimSpace(opts.SummaryLanguage) == "" {
+		opts.SummaryLanguage = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE")
 	}
 
 	items, err := st.ListItemsForXMediaTranscription(ctx, opts.Limit, opts.Force)

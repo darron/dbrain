@@ -23,6 +23,7 @@ import (
 
 	"dbrain/internal/config"
 	"dbrain/internal/model"
+	"dbrain/internal/runtimeenv"
 	"dbrain/internal/store"
 	"dbrain/internal/summarizecli"
 	"dbrain/internal/vault"
@@ -58,6 +59,7 @@ type Options struct {
 	Model                string
 	CLI                  string
 	Length               string
+	Language             string
 	Timeout              time.Duration
 	ProgressInterval     time.Duration
 	Logger               *slog.Logger
@@ -126,6 +128,9 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 	}
 	if opts.Length == "" {
 		opts.Length = "medium"
+	}
+	if strings.TrimSpace(opts.Language) == "" {
+		opts.Language = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE")
 	}
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 1
@@ -545,6 +550,7 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 			Input:     source.CanonicalURL,
 			Summarize: false,
 			Length:    opts.Length,
+			Language:  opts.Language,
 			Timeout:   opts.Timeout,
 			Env:       sourceEnv,
 			Args:      sourceArgs,
@@ -627,6 +633,7 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		CLI:       cli,
 		Prompt:    summaryPrompt,
 		Length:    opts.Length,
+		Language:  opts.Language,
 		Timeout:   opts.Timeout,
 		Env:       sourceEnv,
 		Args:      sourceArgs,
@@ -1218,6 +1225,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 		CLI:       summaryCLI(opts),
 		Prompt:    buildSummaryPrompt(source, extract),
 		Length:    opts.Length,
+		Language:  opts.Language,
 		Timeout:   opts.Timeout,
 	})
 	if err != nil {
@@ -1263,6 +1271,7 @@ func summarizeExtract(ctx context.Context, cfg config.Config, source model.Sourc
 		CLI:       summaryCLI(opts),
 		Prompt:    buildSummaryPrompt(source, extract),
 		Length:    opts.Length,
+		Language:  opts.Language,
 		Timeout:   opts.Timeout,
 		Env:       env,
 	})

@@ -76,6 +76,7 @@ func summarizeTranscriptItem(ctx context.Context, cfg config.Config, st *store.S
 		Model:     opts.SummaryModel,
 		CLI:       opts.SummaryCLI,
 		Length:    opts.SummaryLength,
+		Language:  opts.SummaryLanguage,
 		Timeout:   opts.Timeout,
 		Prompt:    xMediaSummaryPrompt,
 	})

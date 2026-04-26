@@ -115,6 +115,9 @@ For GitHub stars, use a fine-grained PAT with:
   Required for `dbrain extract links` and YouTube source enrichment.
   `dbrain` can also route summarize-backed work to a local Ollama daemon by
   passing models like `--model ollama/qwen2.5:7b-instruct`.
+  Summary output defaults to English. Override with
+  `DBRAIN_SUMMARY_LANGUAGE=<language>` or `DBRAIN_OUTPUT_LANGUAGE=<language>`;
+  use `auto` to match the source language.
 - `uv`
   Recommended for `summarize` environments that shell out to Python-backed
   helpers or transcriber setup flows.

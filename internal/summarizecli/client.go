@@ -26,6 +26,7 @@ const (
 	commandRetryAttempts     = 4
 	commandRetryDelay        = 100 * time.Millisecond
 	commandRetryMaxDelay     = 2 * time.Second
+	defaultSummaryLanguage   = "en"
 	defaultOllamaBaseURL     = "http://127.0.0.1:11434/v1"
 	defaultOllamaAPIKey      = "ollama"
 	defaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
@@ -44,6 +45,7 @@ type Options struct {
 	CLI       string
 	Prompt    string
 	Length    string
+	Language  string
 	Timeout   time.Duration
 }
 
@@ -114,6 +116,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Length) == "" {
 		opts.Length = "medium"
 	}
+	if strings.TrimSpace(opts.Language) == "" {
+		opts.Language = summaryLanguageWithEnv(opts.Env)
+	}
 
 	if inputText, ok, err := localSummaryInput(opts); err != nil {
 		return Result{}, err
@@ -128,6 +133,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	args := []string{"--json", "--timeout", formatTimeout(opts.Timeout), "--format", "text"}
 	if opts.Summarize {
 		args = append(args, "--length", opts.Length)
+		if value := strings.TrimSpace(opts.Language); value != "" {
+			args = append(args, "--language", value)
+		}
 	} else {
 		args = append(args, "--extract")
 	}
@@ -270,7 +278,7 @@ func runDirectSummary(ctx context.Context, opts Options, inputText string) (Resu
 	defer cancel()
 
 	messages := make([]chatMessage, 0, 2)
-	if prompt := strings.TrimSpace(promptWithLengthHint(opts.Prompt, opts.Length)); prompt != "" {
+	if prompt := strings.TrimSpace(promptWithLengthAndLanguageHints(opts.Prompt, opts.Length, opts.Language)); prompt != "" {
 		messages = append(messages, chatMessage{
 			Role:    "system",
 			Content: prompt,
@@ -575,9 +583,16 @@ func resolveModelAndEnv(model string, env map[string]string) (string, map[string
 	return "openai/" + ollamaModel, out
 }
 
-func promptWithLengthHint(prompt string, length string) string {
+func promptWithLengthAndLanguageHints(prompt string, length string, language string) string {
 	base := strings.TrimSpace(prompt)
-	hint := strings.TrimSpace(lengthHint(length))
+	hints := make([]string, 0, 2)
+	if hint := strings.TrimSpace(lengthHint(length)); hint != "" {
+		hints = append(hints, hint)
+	}
+	if hint := strings.TrimSpace(languageHint(language)); hint != "" {
+		hints = append(hints, hint)
+	}
+	hint := strings.Join(hints, "\n")
 	switch {
 	case base == "":
 		return hint
@@ -586,6 +601,14 @@ func promptWithLengthHint(prompt string, length string) string {
 	default:
 		return base + "\n\n" + hint
 	}
+}
+
+func languageHint(language string) string {
+	value := strings.TrimSpace(language)
+	if value == "" || strings.EqualFold(value, "auto") {
+		return ""
+	}
+	return "Write the summary in this output language: " + value + "."
 }
 
 func lengthHint(length string) string {
@@ -677,6 +700,13 @@ func openRouterRefererWithEnv(env map[string]string) string {
 
 func openRouterTitleWithEnv(env map[string]string) string {
 	return firstEnvValue(env, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE")
+}
+
+func summaryLanguageWithEnv(env map[string]string) string {
+	if value := firstEnvValue(env, "DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE"); value != "" {
+		return value
+	}
+	return defaultSummaryLanguage
 }
 
 func normalizeBaseURLWithV1(raw string) string {

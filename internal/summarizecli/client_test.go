@@ -371,6 +371,87 @@ printf '%s\n' '{"input":{"model":"openai/qwen2.5:7b-instruct"},"extracted":{"url
 	}
 }
 
+func TestRunDefaultsSummaryLanguageToEnglish(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+prev=""
+language=""
+for arg in "$@"; do
+  if [ "$prev" = "--language" ]; then
+    language="$arg"
+  fi
+  prev="$arg"
+done
+if [ "$language" != "en" ]; then
+  echo "unexpected language: $language" >&2
+  exit 1
+fi
+printf '%s\n' '{"input":{"model":"test"},"extracted":{"url":"README.md","title":"Readme","description":"","siteName":"","content":"body"},"summary":"summary"}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Binary:    binary,
+		Input:     "README.md",
+		Summarize: true,
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Status != "ok" {
+		t.Fatalf("expected summary status ok, got %q", result.Summary.Status)
+	}
+}
+
+func TestRunAllowsSummaryLanguageOverride(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+prev=""
+language=""
+for arg in "$@"; do
+  if [ "$prev" = "--language" ]; then
+    language="$arg"
+  fi
+  prev="$arg"
+done
+if [ "$language" != "auto" ]; then
+  echo "unexpected language: $language" >&2
+  exit 1
+fi
+printf '%s\n' '{"input":{"model":"test"},"extracted":{"url":"README.md","title":"Readme","description":"","siteName":"","content":"body"},"summary":"summary"}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Binary:    binary,
+		Input:     "README.md",
+		Summarize: true,
+		Language:  "auto",
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Status != "ok" {
+		t.Fatalf("expected summary status ok, got %q", result.Summary.Status)
+	}
+}
+
 func TestRunSuppressesCLIWhenModelProvided(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "summarize")
