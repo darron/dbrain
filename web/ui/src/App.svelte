@@ -193,6 +193,22 @@
     }
   }
 
+  function urlToLookup(query) {
+    try {
+      const u = new URL(query);
+      const host = u.hostname.replace(/^www\./, "");
+      if (host === "x.com" || host === "twitter.com") {
+        const m = u.pathname.match(/\/status\/(\d+)/);
+        if (m) return "x:" + m[1];
+      }
+      if (host === "github.com") return query;
+      if (host === "youtube.com" || host === "youtu.be") return query;
+      return query; // generic URL — try as lookup
+    } catch {
+      return null; // not a URL
+    }
+  }
+
   async function runSearch() {
     const query = searchQuery.trim();
     searchState = "loading";
@@ -208,6 +224,15 @@
       graphEdges = [];
       return;
     }
+
+    // If the query looks like a URL, try a direct lookup first
+    const lookup = urlToLookup(query);
+    if (lookup) {
+      await loadDetail(lookup);
+      searchState = "ready";
+      return;
+    }
+
     try {
       const response = await searchBrain(query);
       searchResults = response.results ?? [];

@@ -771,8 +771,10 @@ func (s *Store) searchLike(ctx context.Context, query string, limit int) ([]mode
 			OR author_name LIKE ?
 			OR primary_category LIKE ?
 			OR primary_domain LIKE ?
+			OR canonical_url LIKE ?
+			OR external_id LIKE ?
 		ORDER BY last_seen_at DESC
-		LIMIT ?`, like, like, like, like, like, like, like, like, like, like, like, limit)
+		LIMIT ?`, like, like, like, like, like, like, like, like, like, like, like, like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("like search: %w", err)
 	}

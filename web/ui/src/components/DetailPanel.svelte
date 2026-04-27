@@ -22,8 +22,9 @@
 
   $: summaryText = rec?.summary_text ?? "";
   $: postText = item?.x_post_text ?? "";
-  $: bodyText = item?.article_text || item?.text || source?.extracted_text || "";
-  $: description = source?.description ?? item?.article_title ?? "";
+  $: transcriptText = (isX && item?.article_title === "X Media Transcript") ? (item?.article_text ?? "") : "";
+  $: bodyText = (!isX || !transcriptText) ? (item?.article_text || item?.text || source?.extracted_text || "") : "";
+  $: description = source?.description ?? (!isX ? item?.article_title ?? "" : "");
   $: ocrText = item?.ocr_text ?? "";
 
   $: authorHandle = item?.author_handle ?? "";
@@ -53,6 +54,16 @@
   $: folderNames = parseList(item?.folder_names);
   $: githubURLs = parseList(item?.github_urls);
   $: language = (item?.language || item?.x_post_lang || "").trim();
+
+  function extractTranscriptText(raw) {
+    if (!raw) return "";
+    // Split on "Transcript:" markers (one per video block) and join the actual speech
+    const parts = raw.split(/\nTranscript:\n+/);
+    if (parts.length <= 1) return raw.trim();
+    return parts.slice(1).map(p => p.trim()).join("\n\n").trim();
+  }
+
+  $: transcriptDisplay = extractTranscriptText(transcriptText);
 
   function parseList(s) {
     if (!s) return [];
@@ -208,6 +219,17 @@
       </div>
     {/if}
 
+    <!-- Video transcript (X media) -->
+    {#if transcriptText}
+      <div class="detail-section">
+        <h3>Transcript</h3>
+        <details class="transcript-details">
+          <summary>Show full transcript</summary>
+          <p class="body-excerpt" style="margin-top:0.6rem">{transcriptDisplay}</p>
+        </details>
+      </div>
+    {/if}
+
     <!-- Quoted posts -->
     {#if detail?.quoted_posts?.length}
       <div class="detail-section">
@@ -270,7 +292,10 @@
     {#if ocrText}
       <div class="detail-section">
         <h3>Image text</h3>
-        <p class="body-excerpt">{truncate(ocrText, 400)}</p>
+        <details class="transcript-details">
+          <summary>Show full OCR text</summary>
+          <p class="body-excerpt" style="margin-top:0.6rem">{ocrText}</p>
+        </details>
       </div>
     {/if}
 
@@ -384,6 +409,14 @@
     margin: 0;
     opacity: 0.85;
   }
+
+  .transcript-details summary {
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 0.82rem;
+    user-select: none;
+  }
+  .transcript-details summary:hover { opacity: 0.8; }
 
   .quoted-post-card {
     background: rgba(74, 222, 128, 0.03);
