@@ -652,6 +652,7 @@ func (s *Store) searchFTS(ctx context.Context, query string, limit int) ([]model
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			i.source_key,
+			i.source_type,
 			i.external_id,
 			i.title,
 			i.author_handle,
@@ -680,6 +681,7 @@ func (s *Store) searchLike(ctx context.Context, query string, limit int) ([]mode
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			source_key,
+			source_type,
 			external_id,
 			title,
 			author_handle,
@@ -716,7 +718,7 @@ func scanSearchResults(rows *sql.Rows) ([]model.SearchResult, error) {
 	var results []model.SearchResult
 	for rows.Next() {
 		var result model.SearchResult
-		if err := rows.Scan(&result.SourceKey, &result.ExternalID, &result.Title, &result.AuthorHandle, &result.AuthorName, &result.CanonicalURL, &result.PrimaryDomain, &result.NotePath, &result.Snippet); err != nil {
+		if err := rows.Scan(&result.SourceKey, &result.SourceType, &result.ExternalID, &result.Title, &result.AuthorHandle, &result.AuthorName, &result.CanonicalURL, &result.PrimaryDomain, &result.NotePath, &result.Snippet); err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
 		results = append(results, result)

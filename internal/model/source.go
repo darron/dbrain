@@ -53,6 +53,7 @@ type ItemSourceRef struct {
 type SourceBacklink struct {
 	ItemID       int64  `json:"item_id"`
 	SourceKey    string `json:"source_key"`
+	SourceType   string `json:"source_type"`
 	CanonicalURL string `json:"canonical_url"`
 	Title        string `json:"title"`
 	NotePath     string `json:"note_path"`

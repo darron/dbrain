@@ -6,93 +6,104 @@
   export let detail = null;
   export let onSelect = () => {};
 
-  function detailTitle() {
-    if (!detail) {
-      return "Pick a note";
-    }
-    if (detail.kind === "item") {
-      return detail.item?.title || detail.item?.source_key || "Item";
-    }
-    return detail.source?.title || detail.source?.source_key || "Source";
-  }
+  $: titleText = !detail
+    ? "Select a node"
+    : detail.kind === "item"
+      ? (detail.item?.title || detail.item?.source_key || "Item")
+      : (detail.source?.title || detail.source?.source_key || "Source");
 
-  function canonicalURL() {
-    if (!detail) {
-      return "";
-    }
-    return detail.kind === "item" ? detail.item?.canonical_url : detail.source?.canonical_url;
-  }
+  $: canonURL = !detail
+    ? ""
+    : detail.kind === "item"
+      ? detail.item?.canonical_url
+      : detail.source?.canonical_url;
 
-  function notePath() {
-    if (!detail) {
-      return "";
-    }
-    return detail.kind === "item" ? detail.item?.note_path : detail.source?.note_path;
-  }
+  $: npath = !detail
+    ? ""
+    : detail.kind === "item"
+      ? detail.item?.note_path
+      : detail.source?.note_path;
+
+  $: stype = !detail
+    ? ""
+    : detail.kind === "item"
+      ? detail.item?.source_type
+      : detail.source?.source_type;
+
+  $: linkedCount = !detail
+    ? 0
+    : detail.kind === "item"
+      ? (detail.linked_sources?.length || 0)
+      : (detail.backlinks?.length || 0);
 </script>
 
-<section class="panel detail-panel">
+<div class="detail-panel">
   <div class="panel-header">
-    <div>
+    <div style="min-width:0">
       <p class="panel-kicker">Detail</p>
-      <h2>{detailTitle()}</h2>
+      <h2 style="overflow-wrap:anywhere">{titleText}</h2>
     </div>
   </div>
 
   {#if detailState === "loading"}
-    <p class="message muted">Loading note...</p>
+    <p class="message muted">Loading…</p>
   {:else if detailError}
     <p class="message error">{detailError}</p>
   {:else if detail}
     <div class="detail-meta">
-      {#if detail.kind === "item"}
-        <span>{detail.item?.source_type}</span>
-        <span>{detail.item?.canonical_url}</span>
-        <span>{detail.linked_sources?.length || 0} linked sources</span>
-      {:else}
-        <span>{detail.source?.source_type}</span>
-        <span>{detail.source?.canonical_url}</span>
-        <span>{detail.backlinks?.length || 0} backlinks</span>
+      {#if stype}
+        <span class="meta-chip type-badge type-{stype}">{stype}</span>
+      {/if}
+      {#if linkedCount > 0}
+        <span class="meta-chip">
+          {detail.kind === "item" ? linkedCount + " sources" : linkedCount + " backlinks"}
+        </span>
       {/if}
     </div>
 
     <div class="detail-actions">
-      {#if canonicalURL()}
-        <a class="link-chip" href={canonicalURL()} rel="noreferrer" target="_blank">Open original</a>
+      {#if canonURL}
+        <a class="link-chip" href={canonURL} rel="noopener noreferrer" target="_blank">
+          ↗ Open original
+        </a>
       {/if}
-      {#if notePath()}
-        <span class="link-chip muted-chip">{notePath()}</span>
+      {#if npath}
+        <span class="link-chip muted-chip" title={npath}>
+          {npath.split("/").slice(-1)[0]}
+        </span>
       {/if}
     </div>
 
     {#if detail.kind === "item" && detail.linked_sources?.length}
-      <section class="detail-section">
-        <h3>Linked Sources</h3>
+      <div class="detail-section">
+        <h3>Linked Sources ({detail.linked_sources.length})</h3>
         <div class="relation-grid">
           {#each detail.linked_sources as ref}
             <button class="relation-card" on:click={() => onSelect(ref.source_key)} type="button">
-              <span class="result-key">{ref.source_key}</span>
+              <span class="result-key">{ref.source_type || "source"}</span>
               <strong>{ref.title || ref.canonical_url}</strong>
               <small>{ref.canonical_url}</small>
             </button>
           {/each}
         </div>
-      </section>
+      </div>
     {/if}
 
     {#if detail.kind === "source" && detail.backlinks?.length}
-      <section class="detail-section">
-        <h3>Backlinks</h3>
+      <div class="detail-section">
+        <h3>Referenced by ({detail.backlinks.length})</h3>
         <div class="relation-grid">
           {#each detail.backlinks as ref}
             <button class="relation-card" on:click={() => onSelect(ref.source_key)} type="button">
-              <span class="result-key">{ref.source_key}</span>
+              <span class="result-key">{ref.source_type || "item"}</span>
               <strong>{ref.title || ref.canonical_url}</strong>
-              <small>{ref.canonical_url}</small>
+              {#if ref.author_handle}
+                <small>@{ref.author_handle}</small>
+              {/if}
             </button>
           {/each}
         </div>
-      </section>
+      </div>
     {/if}
 
     {#if detail.note_error}
@@ -102,11 +113,9 @@
     {#if detail.note_content}
       <MarkdownView markdown={detail.note_content} />
     {:else}
-      <p class="message muted">No rendered note content for this record yet.</p>
+      <p class="message muted">No rendered note for this record yet.</p>
     {/if}
   {:else}
-    <p class="message muted">
-      Select a search result or retrieved evidence card to inspect the stored note.
-    </p>
+    <p class="message muted">Select a result or graph node to inspect it.</p>
   {/if}
-</section>
+</div>

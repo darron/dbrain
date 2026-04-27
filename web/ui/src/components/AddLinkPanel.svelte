@@ -7,27 +7,21 @@
   export let onSelect = () => {};
 </script>
 
-<section class="panel stack focus-panel add-link-panel">
-  <div class="panel-header">
-    <div>
-      <p class="panel-kicker">Add Link</p>
-      <h2>Queue a URL for extraction.</h2>
-    </div>
-  </div>
-
-  <p class="message muted">
-    Adds a source directly to the same backlog used by discovered links. Run the worker or sync
-    pipeline to extract and summarize it.
+<div class="stack">
+  <p class="message muted" style="font-size:0.82rem">
+    Queue a URL for extraction. Run the worker or sync pipeline to extract and summarize it.
   </p>
 
   <form class="form" on:submit|preventDefault={onAdd}>
-    <label>
-      <span>URL</span>
-      <input bind:value={url} placeholder="https://example.com/article" />
-    </label>
-    <button disabled={state === "loading"} type="submit">
-      {state === "loading" ? "Queueing..." : "Queue Link"}
-    </button>
+    <div style="display:flex;gap:0.5rem;align-items:flex-end">
+      <label style="flex:1;margin:0">
+        <span>URL</span>
+        <input bind:value={url} placeholder="https://example.com/article" />
+      </label>
+      <button class="btn-primary" disabled={state === "loading"} type="submit" style="flex-shrink:0;border-radius:var(--radius-sm)">
+        {state === "loading" ? "…" : "Queue"}
+      </button>
+    </div>
   </form>
 
   {#if error}
@@ -47,10 +41,10 @@
           <button class="queued-link-card" type="button" on:click={() => onSelect(item.source_key)}>
             <span class="result-key">{item.source_key}</span>
             <strong>{item.canonical_url}</strong>
-            <small>{item.source_created ? "new source" : "existing source"} · {item.source_type}</small>
+            <small>{item.source_created ? "new" : "existing"} · {item.source_type}</small>
           </button>
         {/if}
       {/each}
     </div>
   {/if}
-</section>
+</div>

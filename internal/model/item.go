@@ -70,6 +70,7 @@ type Item struct {
 
 type SearchResult struct {
 	SourceKey     string `json:"source_key"`
+	SourceType    string `json:"source_type"`
 	ExternalID    string `json:"external_id"`
 	Title         string `json:"title"`
 	AuthorHandle  string `json:"author_handle"`

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(task build *)",
+      "Bash(task web-build *)",
+      "Bash(pkill -f \"dbrain serve web\")",
+      "Bash(/Users/darron/src/dbrain/bin/dbrain serve *)",
+      "mcp__plugin_chrome-devtools-mcp_chrome-devtools__navigate_page",
+      "mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot",
+      "mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot",
+      "mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill",
+      "mcp__plugin_chrome-devtools-mcp_chrome-devtools__press_key",
+      "mcp__plugin_chrome-devtools-mcp_chrome-devtools__evaluate_script"
+    ]
+  }
+}
