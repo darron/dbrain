@@ -160,7 +160,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&xLimit, "x-limit", 100, "Maximum X items to hydrate per run")
 	cmd.Flags().IntVar(&xConcurrency, "x-concurrency", 4, "Number of concurrent X post fetches")
 	cmd.Flags().DurationVar(&xTimeout, "x-timeout", 30*time.Second, "Timeout for X browser helpers and HTTP requests")
-	cmd.Flags().StringVar(&ocrModel, "ocr-model", "openrouter/google/gemini-3.1-flash-lite-preview", "Model override for X photo OCR")
+	cmd.Flags().StringVar(&ocrModel, "ocr-model", "", "Model override for X photo OCR; supports ollama/<name> and openrouter/<provider>/<model>")
 	cmd.Flags().IntVar(&linkDiscoverLimit, "link-discover-limit", 500, "Maximum imported items to scan for outbound links")
 	cmd.Flags().IntVar(&linkLimit, "link-limit", 100, "Maximum deduped discovered sources to enrich per link extraction run")
 	cmd.Flags().IntVar(&linkConcurrency, "link-concurrency", 4, "Number of concurrent link source extract/summarize jobs")

@@ -22,6 +22,7 @@ import (
 
 	"dbrain/internal/config"
 	"dbrain/internal/model"
+	"dbrain/internal/runtimeenv"
 	"dbrain/internal/store"
 	"dbrain/internal/vault"
 )
@@ -29,10 +30,15 @@ import (
 const (
 	defaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
 	defaultOCRModel          = "openrouter/google/gemini-3.1-flash-lite-preview"
+	defaultOllamaBaseURL     = "http://127.0.0.1:11434"
+	defaultOllamaAPIKey      = "ollama"
 	openRouterVisionTool     = "openrouter-vision"
 	openRouterVisionVersion  = "openrouter-vision-v1"
+	ollamaVisionTool         = "ollama-vision"
+	ollamaVisionVersion      = "ollama-vision-v1"
 	tesseractTool            = "tesseract"
 	tesseractVersion         = "tesseract-v1"
+	ocrPrompt                = "Extract readable text from this image. Return only the visible text, preserving obvious line breaks. If there is no readable text, return one concise factual sentence describing the image. Do not add markdown, labels, commentary, or object descriptions when readable text is present."
 )
 
 type Options struct {
@@ -46,6 +52,8 @@ type Options struct {
 	OpenRouterKey   string
 	OpenRouterTitle string
 	OpenRouterRef   string
+	OllamaBase      string
+	OllamaKey       string
 	Logger          *slog.Logger
 }
 
@@ -92,6 +100,26 @@ type ocrResponse struct {
 	} `json:"choices"`
 }
 
+type ollamaOCRRequest struct {
+	Model    string             `json:"model"`
+	Messages []ollamaOCRMessage `json:"messages"`
+	Stream   bool               `json:"stream"`
+	Think    *bool              `json:"think,omitempty"`
+}
+
+type ollamaOCRMessage struct {
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Images  []string `json:"images,omitempty"`
+}
+
+type ollamaOCRResponse struct {
+	Model   string `json:"model"`
+	Message struct {
+		Content string `json:"content"`
+	} `json:"message"`
+}
+
 type ocrBlock struct {
 	Heading     string `json:"heading"`
 	LocalPath   string `json:"local_path"`
@@ -113,22 +141,28 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		opts.Timeout = 2 * time.Minute
 	}
 	if strings.TrimSpace(opts.Model) == "" {
-		opts.Model = defaultOCRModel
+		opts.Model = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OCR_MODEL", "DBRAIN_X_PHOTO_OCR_MODEL"), defaultOCRModel)
 	}
 	if strings.TrimSpace(opts.TesseractBinary) == "" {
 		opts.TesseractBinary = "tesseract"
 	}
 	if strings.TrimSpace(opts.OpenRouterBase) == "" {
-		opts.OpenRouterBase = firstNonEmpty(strings.TrimSpace(os.Getenv("DBRAIN_OPENROUTER_BASE_URL")), defaultOpenRouterBaseURL)
+		opts.OpenRouterBase = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"), defaultOpenRouterBaseURL)
 	}
 	if strings.TrimSpace(opts.OpenRouterKey) == "" {
-		opts.OpenRouterKey = firstNonEmpty(strings.TrimSpace(os.Getenv("DBRAIN_OPENROUTER_API_KEY")), strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")))
+		opts.OpenRouterKey = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
 	}
 	if strings.TrimSpace(opts.OpenRouterTitle) == "" {
-		opts.OpenRouterTitle = firstNonEmpty(strings.TrimSpace(os.Getenv("DBRAIN_OPENROUTER_TITLE")), "dbrain X photo OCR")
+		opts.OpenRouterTitle = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE"), "dbrain X photo OCR")
 	}
 	if strings.TrimSpace(opts.OpenRouterRef) == "" {
-		opts.OpenRouterRef = firstNonEmpty(strings.TrimSpace(os.Getenv("DBRAIN_OPENROUTER_REFERER")), "https://local.dbrain")
+		opts.OpenRouterRef = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER"), "https://local.dbrain")
+	}
+	if strings.TrimSpace(opts.OllamaBase) == "" {
+		opts.OllamaBase = ollamaBaseURL(cfg.RootDir)
+	}
+	if strings.TrimSpace(opts.OllamaKey) == "" {
+		opts.OllamaKey = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY"), defaultOllamaAPIKey)
 	}
 
 	items, err := st.ListItemsForXPhotoOCR(ctx, opts.Limit, opts.Force)
@@ -352,7 +386,22 @@ func ocrPhoto(ctx context.Context, absolutePath string, ref model.ItemMediaRef, 
 	heading := fmt.Sprintf("Photo %d", ref.Ordinal+1)
 	hostedAttempted := false
 	hostedFallback := false
-	if strings.TrimSpace(opts.OpenRouterKey) != "" {
+	if ollamaModel, ok := parseOllamaModel(opts.Model); ok {
+		text, modelName, err := ocrWithOllama(ctx, absolutePath, opts, ollamaModel)
+		if err == nil && strings.TrimSpace(text) != "" {
+			return ocrBlock{
+				Heading:     heading,
+				LocalPath:   ref.LocalPath,
+				RemoteURL:   ref.RemoteURL,
+				ExpandedURL: ref.ExpandedURL,
+				Tool:        ollamaVisionTool,
+				Model:       modelName,
+				Text:        text,
+			}, hostedAttempted, hostedFallback, nil
+		}
+	}
+
+	if _, ok := parseOpenRouterModel(opts.Model); ok && strings.TrimSpace(opts.OpenRouterKey) != "" {
 		hostedAttempted = true
 		text, modelName, err := ocrWithOpenRouter(ctx, absolutePath, opts)
 		if err == nil && strings.TrimSpace(text) != "" {
@@ -384,6 +433,61 @@ func ocrPhoto(ctx context.Context, absolutePath string, ref model.ItemMediaRef, 
 	}, hostedAttempted, hostedFallback, nil
 }
 
+func ocrWithOllama(ctx context.Context, absolutePath string, opts Options, ollamaModel string) (string, string, error) {
+	data, err := os.ReadFile(absolutePath)
+	if err != nil {
+		return "", "", fmt.Errorf("read image: %w", err)
+	}
+	think := false
+	payload, err := json.Marshal(ollamaOCRRequest{
+		Model:  ollamaModel,
+		Stream: false,
+		Think:  &think,
+		Messages: []ollamaOCRMessage{{
+			Role:    "user",
+			Content: ocrPrompt,
+			Images:  []string{base64.StdEncoding.EncodeToString(data)},
+		}},
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("marshal ollama ocr request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(opts.OllamaBase, "/")+"/api/chat", bytes.NewReader(payload))
+	if err != nil {
+		return "", "", fmt.Errorf("build ollama ocr request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(opts.OllamaKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(opts.OllamaKey))
+	}
+
+	client := &http.Client{Timeout: opts.Timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("ollama ocr request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", "", fmt.Errorf("read ollama ocr response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("ollama ocr %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var out ollamaOCRResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", "", fmt.Errorf("decode ollama ocr response: %w", err)
+	}
+	if strings.TrimSpace(out.Message.Content) == "" {
+		return "", "", fmt.Errorf("ollama ocr returned no text")
+	}
+	return strings.TrimSpace(out.Message.Content), firstNonEmpty(strings.TrimSpace(opts.Model), "ollama/"+ollamaModel), nil
+}
+
 func ocrWithOpenRouter(ctx context.Context, absolutePath string, opts Options) (string, string, error) {
 	data, err := os.ReadFile(absolutePath)
 	if err != nil {
@@ -396,7 +500,7 @@ func ocrWithOpenRouter(ctx context.Context, absolutePath string, opts Options) (
 		Messages: []ocrMessage{{
 			Role: "user",
 			Content: []ocrMsgPart{
-				{Type: "text", Text: "Extract all readable text from this image. Return plain text only. Preserve obvious line breaks. If the image contains very little readable text, return a concise factual description instead. Do not add markdown fences or commentary."},
+				{Type: "text", Text: ocrPrompt},
 				{Type: "image_url", ImageURL: &ocrImageURL{URL: "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)}},
 			},
 		}},
@@ -484,6 +588,56 @@ func stripOpenRouterPrefix(model string) string {
 	return strings.TrimPrefix(model, "openrouter/")
 }
 
+func parseOpenRouterModel(model string) (string, bool) {
+	value := strings.TrimSpace(model)
+	if value == "" {
+		return "", false
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "openrouter/"):
+		resolved := strings.TrimSpace(value[len("openrouter/"):])
+		return resolved, resolved != ""
+	case strings.HasPrefix(lower, "openrouter:"):
+		resolved := strings.TrimSpace(value[len("openrouter:"):])
+		return resolved, resolved != ""
+	default:
+		return "", false
+	}
+}
+
+func parseOllamaModel(model string) (string, bool) {
+	value := strings.TrimSpace(model)
+	if value == "" {
+		return "", false
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "ollama/"):
+		resolved := strings.TrimSpace(value[len("ollama/"):])
+		return resolved, resolved != ""
+	case strings.HasPrefix(lower, "ollama:"):
+		resolved := strings.TrimSpace(value[len("ollama:"):])
+		return resolved, resolved != ""
+	default:
+		return "", false
+	}
+}
+
+func ollamaBaseURL(rootDir string) string {
+	value := runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_OLLAMA_BASE_URL", "OLLAMA_BASE_URL", "OLLAMA_HOST")
+	if value == "" {
+		value = defaultOllamaBaseURL
+	}
+	if !strings.Contains(value, "://") {
+		value = "http://" + value
+	}
+	value = strings.TrimRight(value, "/")
+	value = strings.TrimSuffix(value, "/v1")
+	value = strings.TrimSuffix(value, "/api")
+	return value
+}
+
 func hashPhotoInputs(refs []model.ItemMediaRef) string {
 	parts := make([]string, 0, len(refs))
 	for _, ref := range refs {
@@ -521,6 +675,8 @@ func collapseToolVersion(values map[string]struct{}) string {
 		switch value {
 		case openRouterVisionTool:
 			versions = append(versions, openRouterVisionVersion)
+		case ollamaVisionTool:
+			versions = append(versions, ollamaVisionVersion)
 		case tesseractTool:
 			versions = append(versions, tesseractVersion)
 		}

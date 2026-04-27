@@ -2,6 +2,7 @@ package xphotoocr
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +75,61 @@ func TestRunHostedOCRWritesItemOCRAndNote(t *testing.T) {
 	note := string(noteBytes)
 	if !strings.Contains(note, "## OCR / Vision Extract") || !strings.Contains(note, "Captured OCR text") {
 		t.Fatalf("expected OCR section in note, got %q", note)
+	}
+}
+
+func TestRunOllamaOCRWritesItemOCRAndNote(t *testing.T) {
+	t.Parallel()
+
+	cfg, st, item := seedDownloadedPhotoItem(t, "x:test-photo-ollama-ocr", "2049000000000000101")
+
+	var captured ollamaOCRRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen3.6:35b-a3b-nvfp4","message":{"role":"assistant","content":"Local Ollama OCR text."},"done":true}`))
+	}))
+	defer server.Close()
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Limit:      10,
+		Model:      "ollama/qwen3.6:35b-a3b-nvfp4",
+		OllamaBase: server.URL,
+		Timeout:    2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.ItemsUpdated != 1 || stats.PhotosOCRed != 1 || stats.HostedAttempts != 0 || stats.HostedFallbacks != 0 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+	if captured.Model != "qwen3.6:35b-a3b-nvfp4" {
+		t.Fatalf("unexpected ollama model: %q", captured.Model)
+	}
+	if captured.Think == nil || *captured.Think {
+		t.Fatalf("expected ollama OCR to disable thinking, got %#v", captured.Think)
+	}
+	if len(captured.Messages) != 1 || len(captured.Messages[0].Images) != 1 {
+		t.Fatalf("expected one message with one image, got %+v", captured.Messages)
+	}
+
+	refreshed, err := st.GetItem(context.Background(), item.SourceKey)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if refreshed.OCRTool != ollamaVisionTool {
+		t.Fatalf("expected ollama OCR tool, got %q", refreshed.OCRTool)
+	}
+	if refreshed.OCRModel != "ollama/qwen3.6:35b-a3b-nvfp4" {
+		t.Fatalf("expected ollama OCR model, got %q", refreshed.OCRModel)
+	}
+	if !strings.Contains(refreshed.OCRText, "Local Ollama OCR text") {
+		t.Fatalf("expected Ollama OCR text, got %q", refreshed.OCRText)
 	}
 }
 

@@ -70,6 +70,8 @@ quiet CLI output.
 - Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
 - Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
 - Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
+- Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends (for example Ollama vision, OpenRouter/Gemini, and Tesseract), report side-by-side output quality and timings, and avoid changing persisted item OCR state.
+- Add a summary bakeoff/audit command that can run the same source extract or media transcript through multiple summary models/backends, report side-by-side outputs and timings, and avoid changing persisted summary state.
 - Improve provider provenance so stored summaries always record the exact backend/model used.
 - Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
 - Add explicit source-of-truth audit commands (for example `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`) so imports can be reconciled against upstream services with missing IDs and enrichment status clearly separated, while treating the local DB as append-only by default instead of auto-flagging removed upstream saves/stars/likes for deletion.
@@ -207,7 +209,7 @@ stored under `archive/db/` by default; override with `--prefix` if needed.
   configuration this combines the requirements of X bookmark import, X
   hydration, X media transcription, X photo OCR, link/source enrichment, and
   YouTube import, so a practical local setup usually includes a supported
-  Chrome/Chromium profile with valid cookies plus `mw`, `ffprobe`,
+  Chrome/Chromium profile with valid cookies plus Ollama, `mw`, `ffprobe`,
   `summarize`, and `yt-dlp`. It supports `--skip-*` flags when you only want
   part of the pipeline.
 - `dbrain archive media`
@@ -452,7 +454,10 @@ hosted catch-up run. `dbrain` sends direct Ollama summaries to the native
 Ollama chat API with thinking disabled, and defaults to
 `http://127.0.0.1:11434`. Override the target with
 `DBRAIN_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, or `OLLAMA_HOST` if the daemon is
-elsewhere. If you already export `OPENAI_BASE_URL` or `OPENAI_API_KEY`,
+elsewhere. The X photo OCR stage also honors `DBRAIN_OCR_MODEL`; the current
+local default is the same qwen vision model. Use
+`--ocr-model openrouter/google/gemini-3.1-flash-lite-preview` for a hosted
+catch-up OCR run. If you already export `OPENAI_BASE_URL` or `OPENAI_API_KEY`,
 `dbrain` leaves those alone. When `--model` is set, it also takes precedence
 over `--cli`, so local-model runs do not accidentally inherit the default CLI
 provider.
