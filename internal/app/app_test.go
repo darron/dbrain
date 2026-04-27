@@ -292,6 +292,93 @@ func TestLinkAddQueuesManualSource(t *testing.T) {
 	}
 }
 
+func TestRepairSourcesRequiresConfirmationAndResetsDomain(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store open: %v", err)
+	}
+	sourceResult, err := st.UpsertSource(context.Background(), model.SourceCandidate{
+		SourceKey:     "src:repair-canada",
+		OriginalURL:   "https://canada.ca/en/news",
+		CanonicalURL:  "https://canada.ca/en/news",
+		NormalizedURL: "https://canada.ca/en/news",
+		SourceType:    "web",
+		Domain:        "canada.ca",
+		NotePath:      "sources/web/repair-canada.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://canada.ca/en/news",
+		FinalURL:     "https://canada.ca/en/news",
+		Title:        "Canada source",
+		Content:      "Canada source text",
+		Status:       "ok",
+		FetchedAt:    time.Now().UTC(),
+		Tool:         "summarize",
+		ToolVersion:  "test-version",
+	}, "hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(context.Background(), sourceResult.SourceID, model.SummaryResult{
+		Text:          "Canada source summary",
+		Status:        "ok",
+		Model:         "test-model",
+		PromptVersion: "dbrain-v1",
+		Tool:          "summarize",
+		ToolVersion:   "test-version",
+		FetchedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("save source summary: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetIn(strings.NewReader("yes\n"))
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "repair", "sources", "--domain", "canada.ca"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v stderr=%s", err, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "This will reset extraction and summary state for 1 sources") ||
+		!strings.Contains(output, "Sources reset: 1") {
+		t.Fatalf("unexpected repair sources output %q", output)
+	}
+
+	st, err = store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+	source, err := st.GetSourceByID(context.Background(), sourceResult.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if source.ExtractStatus != "" || source.SummaryStatus != "" || source.ExtractedText != "" || source.SummaryText != "" {
+		t.Fatalf("expected source enrichment reset, got %+v", source)
+	}
+}
+
 func TestWriteSyncStatsIncludesXMediaStage(t *testing.T) {
 	t.Parallel()
 

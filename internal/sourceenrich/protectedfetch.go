@@ -21,7 +21,9 @@ import (
 const (
 	protectedFetchToolName    = "http-fallback"
 	protectedFetchToolVersion = "sucuri-js-v1"
+	httpReaderToolVersion     = "http-reader-v1"
 	protectedFetchUserAgent   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+	httpReaderUserAgent       = "curl/8.7.1"
 	maxProtectedBodyBytes     = 8 << 20
 )
 
@@ -64,11 +66,7 @@ type renderedHTML struct {
 	Rendered string `json:"rendered"`
 }
 
-func fallbackExtractForFetchError(ctx context.Context, source model.SourceDocument, opts Options, fetchErr error) (model.ExtractResult, bool, error) {
-	if !isRedirectFetchError(fetchErr) {
-		return model.ExtractResult{}, false, nil
-	}
-
+func fallbackExtractForSourceError(ctx context.Context, source model.SourceDocument, opts Options, fetchErr error) (model.ExtractResult, bool, error) {
 	sourceURL := firstNonEmpty(source.CanonicalURL, source.NormalizedURL)
 	if strings.TrimSpace(sourceURL) == "" {
 		return model.ExtractResult{}, false, nil
@@ -81,7 +79,13 @@ func fallbackExtractForFetchError(ctx context.Context, source model.SourceDocume
 	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	return extractProtectedSource(fetchCtx, sourceURL)
+	if isRedirectFetchError(fetchErr) {
+		return extractProtectedSource(fetchCtx, sourceURL)
+	}
+	if !isHTTPReaderFallbackCandidate(source, opts, fetchErr) {
+		return model.ExtractResult{}, false, nil
+	}
+	return extractHTTPReadableSource(fetchCtx, sourceURL)
 }
 
 func extractProtectedSource(ctx context.Context, rawURL string) (model.ExtractResult, bool, error) {
@@ -123,7 +127,170 @@ func extractProtectedSource(ctx context.Context, rawURL string) (model.ExtractRe
 		}
 	}
 
-	return extractHTMLProtectedSource(rawURL, protectedResp, protectedBody), true, nil
+	return extractHTMLSource(rawURL, protectedResp, protectedBody, "sucuri-html", protectedFetchToolVersion, "sucuri"), true, nil
+}
+
+func extractHTTPReadableSource(ctx context.Context, rawURL string) (model.ExtractResult, bool, error) {
+	client := &http.Client{}
+	resp, body, err := fetchHTTPText(ctx, client, rawURL)
+	if err != nil {
+		return model.ExtractResult{}, false, fmt.Errorf("fetch readable source: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return model.ExtractResult{}, false, fmt.Errorf("fetch readable source: unexpected status %d", resp.StatusCode)
+	}
+	return extractHTMLSource(rawURL, resp, body, "http-html", httpReaderToolVersion, ""), true, nil
+}
+
+func extractConfiguredHTTPReaderSource(ctx context.Context, source model.SourceDocument, opts Options) (model.ExtractResult, bool, error) {
+	sourceURL := firstNonEmpty(source.CanonicalURL, source.NormalizedURL)
+	readerURL := buildHTTPReaderURL(opts.HTTPReaderBaseURL, sourceURL)
+	if readerURL == "" {
+		return model.ExtractResult{}, false, nil
+	}
+
+	timeout := 30 * time.Second
+	if opts.Timeout > 0 && opts.Timeout < timeout {
+		timeout = opts.Timeout
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	return extractHTTPReaderSource(fetchCtx, sourceURL, readerURL)
+}
+
+func extractHTTPReaderSource(ctx context.Context, sourceURL string, readerURL string) (model.ExtractResult, bool, error) {
+	client := &http.Client{}
+	resp, body, err := fetchHTTPReaderText(ctx, client, readerURL)
+	if err != nil {
+		return model.ExtractResult{}, false, fmt.Errorf("fetch reader source: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return model.ExtractResult{}, false, fmt.Errorf("fetch reader source: unexpected status %d", resp.StatusCode)
+	}
+
+	snippetLen := len(body)
+	if snippetLen > 512 {
+		snippetLen = 512
+	}
+	contentType := strings.ToLower(resp.Header.Get("content-type"))
+	if strings.Contains(contentType, "html") || strings.Contains(strings.ToLower(body[:snippetLen]), "<html") {
+		return extractHTMLSource(sourceURL, resp, body, "reader-html", httpReaderToolVersion, ""), true, nil
+	}
+
+	content := normalizeExtractedText(body)
+	title := firstMarkdownTitle(content)
+	return model.ExtractResult{
+		CanonicalURL: sourceURL,
+		FinalURL:     sourceURL,
+		Title:        title,
+		SiteName:     siteNameFromURL(sourceURL),
+		Content:      content,
+		RawJSON:      buildProtectedRawJSON("reader-text", sourceURL, readerURL, title, "", siteNameFromURL(sourceURL), content, ""),
+		Status:       extractStatusForContent(content),
+		FetchedAt:    time.Now().UTC(),
+		Tool:         protectedFetchToolName,
+		ToolVersion:  httpReaderToolVersion,
+	}, true, nil
+}
+
+func extractKnownReaderDomainSource(ctx context.Context, source model.SourceDocument, opts Options) (model.ExtractResult, bool, error) {
+	sourceURL := firstNonEmpty(source.CanonicalURL, source.NormalizedURL)
+	if strings.TrimSpace(sourceURL) == "" {
+		return model.ExtractResult{}, false, nil
+	}
+
+	timeout := 30 * time.Second
+	if opts.Timeout > 0 && opts.Timeout < timeout {
+		timeout = opts.Timeout
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	readerExtract, recovered, readerErr := extractConfiguredHTTPReaderSource(fetchCtx, source, opts)
+	if readerErr == nil && recovered {
+		return readerExtract, true, nil
+	}
+
+	directExtract, directRecovered, directErr := extractHTTPReadableSource(fetchCtx, sourceURL)
+	if directErr == nil && directRecovered {
+		return directExtract, true, readerErr
+	}
+	if readerErr != nil && directErr != nil {
+		return model.ExtractResult{}, false, fmt.Errorf("reader fetch failed: %v; direct fetch failed: %w", readerErr, directErr)
+	}
+	if readerErr != nil {
+		return model.ExtractResult{}, false, readerErr
+	}
+	if directErr != nil {
+		return model.ExtractResult{}, false, directErr
+	}
+	return model.ExtractResult{}, false, nil
+}
+
+func firstMarkdownTitle(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			return strings.TrimSpace(strings.TrimLeft(line, "#"))
+		}
+		if line != "" {
+			return ""
+		}
+	}
+	return ""
+}
+
+func isHTTPReaderFallbackCandidate(source model.SourceDocument, opts Options, fetchErr error) bool {
+	if !isKilledOrTimeoutExtractError(fetchErr) {
+		return false
+	}
+	return sourceMatchesHTTPReaderFallbackDomain(source, opts)
+}
+
+func sourceMatchesHTTPReaderFallbackDomain(source model.SourceDocument, opts Options) bool {
+	host, ok := sourceHost(firstNonEmpty(source.CanonicalURL, source.NormalizedURL))
+	if !ok {
+		return false
+	}
+	host = strings.ToLower(strings.TrimPrefix(host, "www."))
+	for _, domain := range opts.HTTPReaderFallbackDomains {
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		domain = strings.TrimPrefix(domain, "www.")
+		if domain == "" {
+			continue
+		}
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildHTTPReaderURL(baseURL string, sourceURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	sourceURL = strings.TrimSpace(sourceURL)
+	if baseURL == "" || sourceURL == "" {
+		return ""
+	}
+	if strings.Contains(baseURL, "{url}") {
+		return strings.ReplaceAll(baseURL, "{url}", sourceURL)
+	}
+	if strings.Contains(baseURL, "{escaped_url}") {
+		return strings.ReplaceAll(baseURL, "{escaped_url}", neturl.QueryEscape(sourceURL))
+	}
+	return strings.TrimRight(baseURL, "/") + "/" + sourceURL
+}
+
+func isKilledOrTimeoutExtractError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "signal: killed") ||
+		strings.Contains(value, "context deadline exceeded") ||
+		strings.Contains(value, "timeout") ||
+		strings.Contains(value, "timed out")
 }
 
 func fetchHTTPText(ctx context.Context, client *http.Client, rawURL string) (*http.Response, string, error) {
@@ -133,6 +300,30 @@ func fetchHTTPText(ctx context.Context, client *http.Client, rawURL string) (*ht
 	}
 	req.Header.Set("user-agent", protectedFetchUserAgent)
 	req.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("accept-language", "en-US,en;q=0.9")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("perform request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProtectedBodyBytes))
+	if err != nil {
+		return nil, "", fmt.Errorf("read response body: %w", err)
+	}
+	return resp, string(body), nil
+}
+
+func fetchHTTPReaderText(ctx context.Context, client *http.Client, rawURL string) (*http.Response, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("user-agent", httpReaderUserAgent)
+	req.Header.Set("accept", "text/plain,text/markdown,*/*;q=0.8")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
 
 	resp, err := client.Do(req)
@@ -447,7 +638,7 @@ func fetchWordPressJSONExtract(ctx context.Context, client *http.Client, sourceU
 		Description:  description,
 		SiteName:     siteName,
 		Content:      content,
-		RawJSON:      buildProtectedRawJSON("wordpress-json", sourceURL, finalURL, title, description, siteName, content),
+		RawJSON:      buildProtectedRawJSON("wordpress-json", sourceURL, finalURL, title, description, siteName, content, "sucuri"),
 		Status:       extractStatusForContent(content),
 		FetchedAt:    time.Now().UTC(),
 		Tool:         protectedFetchToolName,
@@ -455,7 +646,7 @@ func fetchWordPressJSONExtract(ctx context.Context, client *http.Client, sourceU
 	}, true, nil
 }
 
-func extractHTMLProtectedSource(sourceURL string, resp *http.Response, body string) model.ExtractResult {
+func extractHTMLSource(sourceURL string, resp *http.Response, body string, method string, toolVersion string, challenge string) model.ExtractResult {
 	finalURL := sourceURL
 	if resp != nil && resp.Request != nil && resp.Request.URL != nil {
 		finalURL = resp.Request.URL.String()
@@ -493,11 +684,11 @@ func extractHTMLProtectedSource(sourceURL string, resp *http.Response, body stri
 		Description:  description,
 		SiteName:     siteName,
 		Content:      content,
-		RawJSON:      buildProtectedRawJSON("sucuri-html", sourceURL, finalURL, title, description, siteName, content),
+		RawJSON:      buildProtectedRawJSON(method, sourceURL, finalURL, title, description, siteName, content, challenge),
 		Status:       extractStatusForContent(content),
 		FetchedAt:    time.Now().UTC(),
 		Tool:         protectedFetchToolName,
-		ToolVersion:  protectedFetchToolVersion,
+		ToolVersion:  toolVersion,
 	}
 }
 
@@ -590,7 +781,7 @@ func extractStatusForContent(content string) string {
 	return "ok"
 }
 
-func buildProtectedRawJSON(method string, sourceURL string, finalURL string, title string, description string, siteName string, content string) string {
+func buildProtectedRawJSON(method string, sourceURL string, finalURL string, title string, description string, siteName string, content string, challenge string) string {
 	payload := protectedExtractEnvelope{
 		Method:    method,
 		URL:       sourceURL,
@@ -599,7 +790,7 @@ func buildProtectedRawJSON(method string, sourceURL string, finalURL string, tit
 		SiteName:  siteName,
 		Content:   content,
 		Summary:   description,
-		Challenge: "sucuri",
+		Challenge: challenge,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {

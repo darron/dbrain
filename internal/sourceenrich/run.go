@@ -52,33 +52,35 @@ Use bullets only in Entities and Follow-ups.
 Do not mention ads, sponsors, or irrelevant boilerplate.`
 
 type Options struct {
-	Limit                 int
-	Concurrency           int
-	Force                 bool
-	AcceptCurrentSummary  bool
-	Summarize             bool
-	Model                 string
-	CLI                   string
-	Length                string
-	Language              string
-	Timeout               time.Duration
-	ProgressInterval      time.Duration
-	Logger                *slog.Logger
-	ExactSummaryFreshness bool
-	EnvFor                func(source model.SourceDocument) map[string]string
-	ArgsFor               func(source model.SourceDocument) []string
-	ResolveHost           func(ctx context.Context, host string) error
-	ResolveRedirectURL    func(ctx context.Context, rawURL string) (string, error)
-	FallbackExtractFor    func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
-	Binary                string
-	YouTubeBrowser        string
-	YouTubeProfile        string
-	YouTubeCookiesArg     string
-	YouTubeTranscriber    string
-	YTDLPBinary           string
-	WhisperBinary         string
-	WhisperModelPath      string
-	MacWhisperBinary      string
+	Limit                     int
+	Concurrency               int
+	Force                     bool
+	AcceptCurrentSummary      bool
+	Summarize                 bool
+	Model                     string
+	CLI                       string
+	Length                    string
+	Language                  string
+	Timeout                   time.Duration
+	ProgressInterval          time.Duration
+	Logger                    *slog.Logger
+	ExactSummaryFreshness     bool
+	EnvFor                    func(source model.SourceDocument) map[string]string
+	ArgsFor                   func(source model.SourceDocument) []string
+	ResolveHost               func(ctx context.Context, host string) error
+	ResolveRedirectURL        func(ctx context.Context, rawURL string) (string, error)
+	FallbackExtractFor        func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
+	HTTPReaderFallbackDomains []string
+	HTTPReaderBaseURL         string
+	Binary                    string
+	YouTubeBrowser            string
+	YouTubeProfile            string
+	YouTubeCookiesArg         string
+	YouTubeTranscriber        string
+	YTDLPBinary               string
+	WhisperBinary             string
+	WhisperModelPath          string
+	MacWhisperBinary          string
 }
 
 type Stats struct {
@@ -163,6 +165,12 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 	}
 	if strings.TrimSpace(opts.MacWhisperBinary) == "" {
 		opts.MacWhisperBinary = "mw"
+	}
+	if opts.HTTPReaderFallbackDomains == nil {
+		opts.HTTPReaderFallbackDomains = parseCommaList(firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_SOURCE_READER_DOMAINS", "DBRAIN_HTTP_READER_DOMAINS"), "canada.ca"))
+	}
+	if strings.TrimSpace(opts.HTTPReaderBaseURL) == "" {
+		opts.HTTPReaderBaseURL = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_HTTP_READER_BASE_URL"), "https://r.jina.ai/")
 	}
 
 	stats := Stats{SourcesQueued: len(sources)}
@@ -555,10 +563,51 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		return result
 	}
 
+	if sourceMatchesHTTPReaderFallbackDomain(source, opts) {
+		readerExtract, recovered, readerErr := extractKnownReaderDomainSource(ctx, source, opts)
+		if readerErr != nil && !recovered {
+			result.Stats.Errors++
+			debugLog(opts.Logger, "source reader extraction failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", readerErr.Error())
+			failure := model.ExtractResult{
+				Status:      "error",
+				Error:       readerErr.Error(),
+				Tool:        protectedFetchToolName,
+				ToolVersion: httpReaderToolVersion,
+			}
+			if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+				result.Err = err
+				return result
+			}
+			result.TouchedSourceID = source.ID
+			return result
+		}
+		if recovered {
+			if readerErr != nil {
+				debugLog(opts.Logger, "source reader extraction failed; using direct http fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", readerErr.Error(), "content_chars", len(readerExtract.Content))
+			} else {
+				readerURL := buildHTTPReaderURL(opts.HTTPReaderBaseURL, firstNonEmpty(source.CanonicalURL, source.NormalizedURL))
+				debugLog(opts.Logger, "source extraction using reader fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "reader_url", readerURL, "content_chars", len(readerExtract.Content))
+			}
+			readerExtract = normalizeReaderExtract(source, readerExtract)
+			readerStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, readerExtract, opts, extractToolVersion, summaryToolVersion)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			result.Stats.SourcesExtracted += readerStats.SourcesExtracted
+			result.Stats.SourcesSummarized += readerStats.SourcesSummarized
+			result.Stats.SourcesUnchanged += readerStats.SourcesUnchanged
+			result.Stats.Errors += readerStats.Errors
+			result.TouchedSourceID = source.ID
+			return result
+		}
+	}
+
 	if opts.Summarize && (len(sourceArgs) > 0 || summarizecli.UsesDirectSummary(opts.Model)) {
+		inputURL, usingReaderInput := sourceExtractionInput(source, opts)
 		extractResult, err := runSummarizeWithRedirectRetry(ctx, source, opts, summarizecli.Options{
 			Binary:    opts.Binary,
-			Input:     source.CanonicalURL,
+			Input:     inputURL,
 			Summarize: false,
 			Length:    opts.Length,
 			Language:  opts.Language,
@@ -571,10 +620,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 				result.Err = context.Canceled
 				return result
 			}
-			if fallbackExtract, recovered, fallbackErr := fallbackExtractForFetchError(ctx, source, opts, err); fallbackErr != nil {
+			if fallbackExtract, recovered, fallbackErr := fallbackExtractForSourceError(ctx, source, opts, err); fallbackErr != nil {
 				debugLog(opts.Logger, "source protected fetch recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", fallbackErr.Error())
 			} else if recovered {
-				debugLog(opts.Logger, "source extraction recovered via protected fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", fallbackExtract.FinalURL, "tool", fallbackExtract.Tool, "content_chars", len(fallbackExtract.Content))
+				debugLog(opts.Logger, "source extraction recovered via fallback fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", fallbackExtract.FinalURL, "tool", fallbackExtract.Tool, "content_chars", len(fallbackExtract.Content))
 				fallbackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, fallbackExtract, opts, extractToolVersion, summaryToolVersion)
 				if err != nil {
 					result.Err = err
@@ -614,6 +663,9 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		} else if changed {
 			extractResult.Extract = fallback
 		}
+		if usingReaderInput {
+			extractResult.Extract = normalizeReaderExtract(source, extractResult.Extract)
+		}
 		if normalized, changed := normalizeExtract(source, extractResult.Extract); changed {
 			extractResult.Extract = normalized
 		}
@@ -636,9 +688,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		cli = summaryCLI(opts)
 	}
 
+	inputURL, usingReaderInput := sourceExtractionInput(source, opts)
 	runResult, err := runSummarizeWithRedirectRetry(ctx, source, opts, summarizecli.Options{
 		Binary:    opts.Binary,
-		Input:     source.CanonicalURL,
+		Input:     inputURL,
 		Summarize: opts.Summarize,
 		Model:     opts.Model,
 		CLI:       cli,
@@ -654,10 +707,10 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 			result.Err = context.Canceled
 			return result
 		}
-		if fallbackExtract, recovered, fallbackErr := fallbackExtractForFetchError(ctx, source, opts, err); fallbackErr != nil {
+		if fallbackExtract, recovered, fallbackErr := fallbackExtractForSourceError(ctx, source, opts, err); fallbackErr != nil {
 			debugLog(opts.Logger, "source protected fetch recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", fallbackErr.Error())
 		} else if recovered {
-			debugLog(opts.Logger, "source extraction recovered via protected fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", fallbackExtract.FinalURL, "tool", fallbackExtract.Tool, "content_chars", len(fallbackExtract.Content))
+			debugLog(opts.Logger, "source extraction recovered via fallback fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", fallbackExtract.FinalURL, "tool", fallbackExtract.Tool, "content_chars", len(fallbackExtract.Content))
 			fallbackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, fallbackExtract, opts, extractToolVersion, summaryToolVersion)
 			if err != nil {
 				result.Err = err
@@ -690,6 +743,9 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		}
 		result.TouchedSourceID = source.ID
 		return result
+	}
+	if usingReaderInput {
+		runResult.Extract = normalizeReaderExtract(source, runResult.Extract)
 	}
 	if failure, invalid := rejectExtractFailure(source, runResult.Extract); invalid {
 		if failure.Status == "error" {
@@ -1129,6 +1185,39 @@ func argsFor(opts Options, source model.SourceDocument) []string {
 		return args
 	}
 	return opts.ArgsFor(source)
+}
+
+func sourceExtractionInput(source model.SourceDocument, opts Options) (string, bool) {
+	sourceURL := firstNonEmpty(source.CanonicalURL, source.NormalizedURL)
+	return sourceURL, false
+}
+
+func parseCommaList(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func normalizeReaderExtract(source model.SourceDocument, extract model.ExtractResult) model.ExtractResult {
+	sourceURL := firstNonEmpty(source.CanonicalURL, source.NormalizedURL)
+	if sourceURL == "" {
+		return extract
+	}
+	extract.CanonicalURL = sourceURL
+	extract.FinalURL = sourceURL
+	if strings.TrimSpace(extract.Title) == "" {
+		extract.Title = source.Title
+	}
+	if strings.TrimSpace(extract.SiteName) == "" {
+		extract.SiteName = firstNonEmpty(source.SiteName, source.Domain, siteNameFromURL(sourceURL))
+	}
+	return extract
 }
 
 func fallbackExtract(ctx context.Context, cfg config.Config, opts Options, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {

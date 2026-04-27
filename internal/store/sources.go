@@ -748,6 +748,164 @@ type xArticlePreview struct {
 	HasFullText bool
 }
 
+type ResetSourceEnrichmentOptions struct {
+	Domains   []string
+	SourceIDs []int64
+	DryRun    bool
+}
+
+type ResetSourceEnrichmentStats struct {
+	Matched int  `json:"matched"`
+	Reset   int  `json:"reset"`
+	DryRun  bool `json:"dry_run"`
+}
+
+func (s *Store) ResetSourceEnrichment(ctx context.Context, opts ResetSourceEnrichmentOptions) (ResetSourceEnrichmentStats, error) {
+	stats := ResetSourceEnrichmentStats{DryRun: opts.DryRun}
+	where, args := resetSourceEnrichmentWhere(opts)
+	if where == "" {
+		return stats, fmt.Errorf("at least one source domain or source id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sources WHERE `+where+` ORDER BY id ASC`, args...)
+	if err != nil {
+		return stats, fmt.Errorf("select sources for enrichment reset: %w", err)
+	}
+	var sourceIDs []int64
+	for rows.Next() {
+		var sourceID int64
+		if err := rows.Scan(&sourceID); err != nil {
+			_ = rows.Close()
+			return stats, fmt.Errorf("scan source reset id: %w", err)
+		}
+		sourceIDs = append(sourceIDs, sourceID)
+	}
+	if err := rows.Close(); err != nil {
+		return stats, fmt.Errorf("close source reset rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return stats, fmt.Errorf("iterate source reset ids: %w", err)
+	}
+
+	stats.Matched = len(sourceIDs)
+	if opts.DryRun || len(sourceIDs) == 0 {
+		return stats, nil
+	}
+
+	placeholders := make([]string, 0, len(sourceIDs))
+	updateArgs := make([]any, 0, len(sourceIDs)+1)
+	updateArgs = append(updateArgs, time.Now().UTC().Format(time.RFC3339))
+	for _, sourceID := range sourceIDs {
+		placeholders = append(placeholders, "?")
+		updateArgs = append(updateArgs, sourceID)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE sources
+		SET title = '',
+			description = '',
+			site_name = '',
+			extracted_text = '',
+			extract_json = '',
+			extract_status = '',
+			extract_error = '',
+			extract_failure_kind = '',
+			extract_failure_count = 0,
+			extract_first_failed_at = '',
+			extract_last_failed_at = '',
+			extracted_at = '',
+			extract_tool = '',
+			extract_tool_version = '',
+			summary_text = '',
+			summary_json = '',
+			summary_status = '',
+			summary_error = '',
+			summary_model = '',
+			summary_content_hash = '',
+			summary_prompt_version = '',
+			summary_tool = '',
+			summary_tool_version = '',
+			summarized_at = '',
+			content_hash = '',
+			updated_at = ?
+		WHERE id IN (`+strings.Join(placeholders, ",")+`)`, updateArgs...); err != nil {
+		return stats, fmt.Errorf("reset source enrichment: %w", err)
+	}
+
+	for _, sourceID := range sourceIDs {
+		if err := s.syncSourceFTS(ctx, sourceID); err != nil {
+			return stats, err
+		}
+	}
+
+	stats.Reset = len(sourceIDs)
+	return stats, nil
+}
+
+func resetSourceEnrichmentWhere(opts ResetSourceEnrichmentOptions) (string, []any) {
+	parts := make([]string, 0, 2)
+	args := make([]any, 0, len(opts.Domains)*2+len(opts.SourceIDs))
+
+	domains := uniqueSourceResetDomains(opts.Domains)
+	if len(domains) > 0 {
+		domainParts := make([]string, 0, len(domains))
+		for _, domain := range domains {
+			domainParts = append(domainParts, `(lower(domain) = ? OR lower(domain) LIKE ?)`)
+			args = append(args, domain, "%."+domain)
+		}
+		parts = append(parts, "("+strings.Join(domainParts, " OR ")+")")
+	}
+
+	sourceIDs := uniquePositiveInt64s(opts.SourceIDs)
+	if len(sourceIDs) > 0 {
+		placeholders := make([]string, 0, len(sourceIDs))
+		for _, sourceID := range sourceIDs {
+			placeholders = append(placeholders, "?")
+			args = append(args, sourceID)
+		}
+		parts = append(parts, "id IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
+}
+
+func uniqueSourceResetDomains(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		value = strings.TrimPrefix(value, "www.")
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func uniquePositiveInt64s(values []int64) []int64 {
+	seen := map[int64]struct{}{}
+	out := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func parseXArticlePreview(rawJSON string, canonicalURL string) (xArticlePreview, bool) {
 	rawJSON = strings.TrimSpace(rawJSON)
 	if rawJSON == "" {

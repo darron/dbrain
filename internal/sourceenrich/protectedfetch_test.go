@@ -171,6 +171,283 @@ func TestRunSourceIDsRecoversSucuriProtectedSource(t *testing.T) {
 	}
 }
 
+func TestRunSourceIDsUsesGoReaderFetchForKnownKilledDomains(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	var readerRequested bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/reader/") {
+			readerRequested = true
+			if strings.Contains(r.UserAgent(), "Mozilla") {
+				t.Fatalf("reader fetch used browser user-agent: %q", r.UserAgent())
+			}
+			if !strings.Contains(r.Header.Get("Accept"), "text/plain") {
+				t.Fatalf("reader fetch did not prefer text/plain: %q", r.Header.Get("Accept"))
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = fmt.Fprint(w, "# Government of Canada reader extract\n\nThe Government of Canada announced renewed funding for the Global Innovation Clusters.")
+			return
+		}
+		if r.URL.Path != "/news" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<!doctype html>
+<html>
+<head>
+  <title>Government of Canada announces renewed funding</title>
+  <meta property="og:site_name" content="Government of Canada">
+  <meta name="description" content="Renewed funding announcement.">
+</head>
+<body>
+  <main>
+    <h1>Government of Canada announces renewed funding</h1>
+    <p>The Government of Canada announced renewed funding for the Global Innovation Clusters.</p>
+    <p>The program supports collaboration across Canadian industry, researchers, and partners.</p>
+  </main>
+</body>
+</html>`)
+	}))
+	defer server.Close()
+
+	installSourceEnrichSummaryOnlyFakeSummarize(t, root, server.URL+"/news")
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "x:test-http-reader-fallback",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-http-reader-fallback",
+		CanonicalURL: "https://x.com/example/status/test-http-reader-fallback",
+		Title:        "http reader fallback",
+		ContentHash:  "item-hash-http-reader-fallback",
+		NotePath:     vault.NoteRelativePath("x", "2026", "test-http-reader-fallback"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:http-reader-fallback-test",
+		OriginalURL:   server.URL + "/news",
+		CanonicalURL:  server.URL + "/news",
+		NormalizedURL: server.URL + "/news",
+		SourceType:    "web",
+		Domain:        "127.0.0.1",
+		NotePath:      vault.SourceNoteRelativePath("web", "http-reader-fallback-test"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Limit:                     10,
+		Summarize:                 true,
+		Timeout:                   5 * time.Second,
+		HTTPReaderFallbackDomains: []string{"127.0.0.1"},
+		HTTPReaderBaseURL:         server.URL + "/reader/",
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesExtracted != 1 {
+		t.Fatalf("expected 1 extracted source, got %+v", stats)
+	}
+	if stats.SourcesSummarized != 1 {
+		t.Fatalf("expected 1 summarized source, got %+v", stats)
+	}
+	if stats.Errors != 0 {
+		t.Fatalf("expected no errors, got %+v", stats)
+	}
+	if !readerRequested {
+		t.Fatal("expected Go reader endpoint to be requested")
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if source.ExtractStatus != "ok" {
+		t.Fatalf("expected extract status ok, got %q", source.ExtractStatus)
+	}
+	if source.CanonicalURL != server.URL+"/news" {
+		t.Fatalf("expected original canonical url to be preserved, got %q", source.CanonicalURL)
+	}
+	if source.ExtractTool != protectedFetchToolName {
+		t.Fatalf("expected extract tool %q, got %q", protectedFetchToolName, source.ExtractTool)
+	}
+	if source.ExtractToolVersion != httpReaderToolVersion {
+		t.Fatalf("expected extract tool version %q, got %q", httpReaderToolVersion, source.ExtractToolVersion)
+	}
+	if source.Title != "Government of Canada reader extract" {
+		t.Fatalf("unexpected title: %q", source.Title)
+	}
+	if !strings.Contains(source.ExtractedText, "Global Innovation Clusters") {
+		t.Fatalf("unexpected extracted text: %q", source.ExtractedText)
+	}
+	if source.SummaryStatus != "ok" {
+		t.Fatalf("expected summary status ok, got %q", source.SummaryStatus)
+	}
+	if source.SummaryText != "summary from http reader fallback" {
+		t.Fatalf("unexpected summary text: %q", source.SummaryText)
+	}
+}
+
+func TestRunSourceIDsFallsBackToDirectFetchWhenReaderRejectsHeaders(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	var readerRequested bool
+	var directRequested bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/reader/") {
+			readerRequested = true
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, "blocked")
+			return
+		}
+		if r.URL.Path != "/news" {
+			http.NotFound(w, r)
+			return
+		}
+		directRequested = true
+		if !strings.Contains(r.UserAgent(), "Mozilla") {
+			t.Fatalf("direct fetch did not use browser user-agent: %q", r.UserAgent())
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<!doctype html>
+<html>
+<head>
+  <title>Government of Canada announces renewed funding</title>
+  <meta property="og:site_name" content="Government of Canada">
+  <meta name="description" content="Renewed funding announcement.">
+</head>
+<body>
+  <main>
+    <h1>Government of Canada announces renewed funding</h1>
+    <p>The Government of Canada announced renewed funding for the Global Innovation Clusters.</p>
+    <p>The program supports collaboration across Canadian industry, researchers, and partners.</p>
+  </main>
+</body>
+</html>`)
+	}))
+	defer server.Close()
+
+	installSourceEnrichSummaryOnlyFakeSummarize(t, root, server.URL+"/news")
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "x:test-reader-direct-fallback",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-reader-direct-fallback",
+		CanonicalURL: "https://x.com/example/status/test-reader-direct-fallback",
+		Title:        "reader direct fallback",
+		ContentHash:  "item-hash-reader-direct-fallback",
+		NotePath:     vault.NoteRelativePath("x", "2026", "test-reader-direct-fallback"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:reader-direct-fallback-test",
+		OriginalURL:   server.URL + "/news",
+		CanonicalURL:  server.URL + "/news",
+		NormalizedURL: server.URL + "/news",
+		SourceType:    "web",
+		Domain:        "127.0.0.1",
+		NotePath:      vault.SourceNoteRelativePath("web", "reader-direct-fallback-test"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Limit:                     10,
+		Summarize:                 true,
+		Timeout:                   5 * time.Second,
+		HTTPReaderFallbackDomains: []string{"127.0.0.1"},
+		HTTPReaderBaseURL:         server.URL + "/reader/",
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesExtracted != 1 {
+		t.Fatalf("expected 1 extracted source, got %+v", stats)
+	}
+	if stats.SourcesSummarized != 1 {
+		t.Fatalf("expected 1 summarized source, got %+v", stats)
+	}
+	if stats.Errors != 0 {
+		t.Fatalf("expected no errors, got %+v", stats)
+	}
+	if !readerRequested {
+		t.Fatal("expected reader endpoint to be requested")
+	}
+	if !directRequested {
+		t.Fatal("expected original URL to be fetched after reader rejection")
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if source.ExtractStatus != "ok" {
+		t.Fatalf("expected extract status ok, got %q", source.ExtractStatus)
+	}
+	if source.ExtractTool != protectedFetchToolName {
+		t.Fatalf("expected extract tool %q, got %q", protectedFetchToolName, source.ExtractTool)
+	}
+	if source.ExtractToolVersion != httpReaderToolVersion {
+		t.Fatalf("expected extract tool version %q, got %q", httpReaderToolVersion, source.ExtractToolVersion)
+	}
+	if source.Title != "Government of Canada announces renewed funding" {
+		t.Fatalf("unexpected title: %q", source.Title)
+	}
+	if !strings.Contains(source.ExtractedText, "Global Innovation Clusters") {
+		t.Fatalf("unexpected extracted text: %q", source.ExtractedText)
+	}
+}
+
 func installSourceEnrichProtectedFetchFakeSummarize(t *testing.T, root string, sourceURL string) {
 	t.Helper()
 
@@ -193,6 +470,43 @@ if [ "$last" = "` + sourceURL + `" ]; then
   exit 1
 fi
 printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"Protected Article\nFirst paragraph.\nSecond paragraph."},"summary":"summary from protected fetch"}'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installSourceEnrichSummaryOnlyFakeSummarize(t *testing.T, root string, sourceURL string) {
+	t.Helper()
+
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	scriptPath := filepath.Join(binDir, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+if [ "$last" = "` + sourceURL + `" ]; then
+  echo "unexpected direct source extraction" >&2
+  exit 1
+fi
+case "$last" in
+  /*) ;;
+  *)
+    echo "expected local summary input, got $last" >&2
+    exit 1
+    ;;
+esac
+printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"","title":"Government of Canada reader extract","description":"","siteName":"","content":"Government of Canada announces renewed funding\nThe Government of Canada announced renewed funding for the Global Innovation Clusters."},"summary":"summary from http reader fallback"}'
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)

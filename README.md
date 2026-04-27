@@ -24,6 +24,7 @@ Markdown note rendering for Obsidian and local query over the imported corpus.
 - `dbrain transcribe x-media`
 - `dbrain archive media`
 - `dbrain repair notes`
+- `dbrain repair sources`
 - `dbrain serve mcp`
 - `dbrain serve web`
 - `dbrain extract links`
@@ -191,6 +192,29 @@ The same S3-compatible credentials are used by `dbrain sqlite archive` and
 `dbrain sqlite restore` for compressed database snapshots. SQLite archives are
 stored under `archive/db/` by default; override with `--prefix` if needed.
 
+## Optional Source Reader Env
+
+Some sites are known to behave badly when handed directly to `summarize
+--extract`, either because they hang, block automation, or need a textified
+reader view. `dbrain` can route selected domains through a short Go fetch path
+before summarization so those sources do not spend the full extraction timeout
+in an external helper.
+
+- `DBRAIN_SOURCE_READER_DOMAINS=canada.ca`
+  Comma-separated domains that should bypass direct `summarize --extract`.
+  Subdomains are included, so `canada.ca` also covers `open.canada.ca` and
+  `fintrac-canafe.canada.ca`.
+- `DBRAIN_SOURCE_READER_BASE_URL=https://r.jina.ai/`
+  Reader/textifier base URL. The default is `https://r.jina.ai/`. A base URL
+  may also include `{url}` or `{escaped_url}` placeholders for services that
+  need a different URL shape.
+
+For reader domains, `dbrain` first fetches the reader URL with text-oriented
+headers. If the reader service rejects the request, it falls back to fetching
+the original page directly with browser-style headers and extracting readable
+HTML locally. Only the extracted raw text is then passed to `summarize` for the
+derived summary.
+
 ## Command Requirements
 
 - `dbrain import ft`
@@ -312,6 +336,12 @@ stored under `archive/db/` by default; override with `--prefix` if needed.
 - `dbrain repair notes`
   No external tools required. Rebuilds rendered Markdown notes from `brain.db`,
   which is useful if antivirus or sync tooling removed files from `vault/`.
+- `dbrain repair sources`
+  No external tools required. Clears extraction and summary state for selected
+  sources so they can be reprocessed. Use `--domain <domain>` for a whole
+  domain or `--source <id>` for specific rows. The command prints the number of
+  matched sources first and asks for confirmation unless `--dry-run` or `--yes`
+  is passed.
 - `dbrain serve mcp`
   No external tools required. Serves the local brain over MCP stdio with
   read-only tools, resources, and prompts for search, note access, and pipeline
@@ -394,6 +424,8 @@ go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short --
 go run ./cmd/dbrain --no-caffeinate extract sources --limit 50 --length short --timeout 5m
 go run ./cmd/dbrain repair notes
 go run ./cmd/dbrain repair notes --missing-only=false --sources
+go run ./cmd/dbrain repair sources --domain canada.ca --dry-run
+go run ./cmd/dbrain repair sources --domain canada.ca --yes
 go run ./cmd/dbrain extract links --discover-limit 100 --limit 25 --concurrency 4 --summarize=false
 go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --length short
 go run ./cmd/dbrain link add "https://example.com/article"

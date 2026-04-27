@@ -101,6 +101,107 @@ func TestUpsertSourceQueuesManualSourceForEnrichment(t *testing.T) {
 	}
 }
 
+func TestResetSourceEnrichmentByDomainClearsCurrentState(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	insert := func(sourceKey string, canonicalURL string, domain string) int64 {
+		t.Helper()
+		result, err := st.db.ExecContext(ctx, `
+			INSERT INTO sources (
+				source_key, canonical_url, normalized_url, source_type, domain, title, description, site_name,
+				extracted_text, extract_json, extract_status, extract_error, extract_failure_kind, extract_failure_count,
+				extract_first_failed_at, extract_last_failed_at, extracted_at, extract_tool, extract_tool_version,
+				summary_text, summary_json, summary_status, summary_error, summary_model, summary_content_hash,
+				summary_prompt_version, summary_tool, summary_tool_version, summarized_at, content_hash, note_path,
+				created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sourceKey,
+			canonicalURL,
+			canonicalURL,
+			"web",
+			domain,
+			"Title",
+			"Description",
+			"Site",
+			"Extracted text",
+			`{"extract":true}`,
+			"ok",
+			"old error",
+			"http_5xx",
+			2,
+			now,
+			now,
+			now,
+			"summarize",
+			"test-version",
+			"Summary",
+			`{"summary":true}`,
+			"ok",
+			"summary error",
+			"model",
+			"hash",
+			"dbrain-v1",
+			"summarize",
+			"summary-version",
+			now,
+			"hash",
+			"sources/web/"+sourceKey+".md",
+			now,
+			now,
+		)
+		if err != nil {
+			t.Fatalf("insert source %s: %v", sourceKey, err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("source id: %v", err)
+		}
+		return id
+	}
+
+	canadaID := insert("src:canada", "https://canada.ca/en/news", "canada.ca")
+	subID := insert("src:sub-canada", "https://foo.canada.ca/en/news", "foo.canada.ca")
+	otherID := insert("src:other", "https://example.com/news", "example.com")
+
+	dryRun, err := st.ResetSourceEnrichment(ctx, ResetSourceEnrichmentOptions{Domains: []string{"canada.ca"}, DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run reset source enrichment: %v", err)
+	}
+	if dryRun.Matched != 2 || dryRun.Reset != 0 || !dryRun.DryRun {
+		t.Fatalf("unexpected dry-run stats: %+v", dryRun)
+	}
+
+	stats, err := st.ResetSourceEnrichment(ctx, ResetSourceEnrichmentOptions{Domains: []string{"canada.ca"}})
+	if err != nil {
+		t.Fatalf("reset source enrichment: %v", err)
+	}
+	if stats.Matched != 2 || stats.Reset != 2 || stats.DryRun {
+		t.Fatalf("unexpected reset stats: %+v", stats)
+	}
+
+	for _, sourceID := range []int64{canadaID, subID} {
+		source, err := st.GetSourceByID(ctx, sourceID)
+		if err != nil {
+			t.Fatalf("get reset source: %v", err)
+		}
+		if source.ExtractStatus != "" || source.ExtractedText != "" || source.SummaryStatus != "" || source.SummaryText != "" || source.ContentHash != "" {
+			t.Fatalf("expected reset source enrichment state, got %+v", source)
+		}
+	}
+
+	other, err := st.GetSourceByID(ctx, otherID)
+	if err != nil {
+		t.Fatalf("get other source: %v", err)
+	}
+	if other.ExtractStatus != "ok" || other.SummaryStatus != "ok" || other.ExtractedText == "" || other.SummaryText == "" {
+		t.Fatalf("expected unrelated source unchanged, got %+v", other)
+	}
+}
+
 func TestListSourcesForEnrichmentQueuesSummaryToolVersionMismatch(t *testing.T) {
 	t.Parallel()
 
