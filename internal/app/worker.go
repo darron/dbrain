@@ -9,7 +9,6 @@ import (
 
 	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
 	"dbrain/internal/worker"
 )
 
@@ -58,13 +57,11 @@ func newWorkerSourcesCommand(root *rootOptions) *cobra.Command {
 			}()
 
 			logger := newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr())
-			toolName := summarizecli.SummaryToolName(model)
-			toolVersion := summarizecli.SummaryToolVersion(cmd.Context(), "", model)
 
 			stats, err := worker.RunSources(
 				cmd.Context(),
 				func(ctx context.Context) (store.BacklogStats, error) {
-					return st.Backlog(ctx, sourceenrich.SummaryPromptVersion, toolName, toolVersion)
+					return st.Backlog(ctx, "", "", "")
 				},
 				func(ctx context.Context, remainingLimit int) (sourceenrich.Stats, error) {
 					effectiveBatchLimit := batchLimit

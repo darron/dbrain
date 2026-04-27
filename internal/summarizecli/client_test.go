@@ -120,10 +120,10 @@ printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"https://e
 }
 
 func TestRunDirectOllamaSummaryForLocalFileInput(t *testing.T) {
-	var captured chatCompletionsRequest
+	var captured ollamaChatRequest
 	oldClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != "/api/chat" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer ollama" {
@@ -132,7 +132,7 @@ func TestRunDirectOllamaSummaryForLocalFileInput(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		respBody := `{"model":"qwen3.6:35b","choices":[{"message":{"role":"assistant","content":"direct local summary"}}]}`
+		respBody := `{"model":"qwen3.6:35b","message":{"role":"assistant","content":"direct local summary"},"done":true}`
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -179,6 +179,9 @@ func TestRunDirectOllamaSummaryForLocalFileInput(t *testing.T) {
 	}
 	if captured.Model != "qwen3.6:35b" {
 		t.Fatalf("unexpected model sent to ollama: %q", captured.Model)
+	}
+	if captured.Think == nil || *captured.Think {
+		t.Fatalf("expected direct ollama request to disable thinking, got %#v", captured.Think)
 	}
 	if len(captured.Messages) != 2 {
 		t.Fatalf("expected 2 chat messages, got %d", len(captured.Messages))
@@ -476,7 +479,7 @@ if [ "$model" != "openai/qwen3.6:35b" ]; then
   echo "unexpected model: $model" >&2
   exit 1
 fi
-printf '%s\n' '{"input":{"model":"openai/qwen3.6:35b"},"extracted":{"url":"README.md","title":"Readme","description":"","siteName":"","content":"body"},"summary":"summary"}'
+printf '%s\n' '{"input":{"model":"openai/qwen3.6:35b"},"extracted":{"url":"https://example.com","title":"Example","description":"","siteName":"","content":"body"},"summary":"summary"}'
 `
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)
@@ -484,7 +487,7 @@ printf '%s\n' '{"input":{"model":"openai/qwen3.6:35b"},"extracted":{"url":"READM
 
 	result, err := Run(context.Background(), Options{
 		Binary:    binary,
-		Input:     "README.md",
+		Input:     "https://example.com",
 		Summarize: true,
 		Model:     "ollama/qwen3.6:35b",
 		CLI:       "codex",

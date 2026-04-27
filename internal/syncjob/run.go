@@ -14,7 +14,6 @@ import (
 	"dbrain/internal/mediaarchive"
 	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
 	"dbrain/internal/worker"
 	"dbrain/internal/xapi"
 	"dbrain/internal/xmediatranscribe"
@@ -32,7 +31,6 @@ var (
 	runYouTubeImport   = youtubeimport.Run
 	runSourceWorker    = worker.RunSources
 	runMediaArchive    = mediaarchive.Run
-	summaryToolVersion = summarizecli.SummaryToolVersion
 )
 
 const maxXQuoteDrainPasses = 8
@@ -448,12 +446,10 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if opts.SourcesEnabled {
 		progressf(opts.Progress, "==> worker sources\n")
 		start := time.Now()
-		toolName := summarizecli.SummaryToolName(opts.Model)
-		toolVersion := summaryToolVersion(ctx, "", opts.Model)
 		sourceStats, err := runSourceWorker(
 			ctx,
 			func(ctx context.Context) (store.BacklogStats, error) {
-				return st.Backlog(ctx, sourceenrich.SummaryPromptVersion, toolName, toolVersion)
+				return st.Backlog(ctx, "", "", "")
 			},
 			func(ctx context.Context, _ int) (sourceenrich.Stats, error) {
 				batchStats, _, err := sourceenrich.RunPending(ctx, cfg, st, sourceenrich.Options{

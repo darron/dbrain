@@ -26,6 +26,7 @@ import (
 	"dbrain/internal/runtimeenv"
 	"dbrain/internal/store"
 	"dbrain/internal/summarizecli"
+	"dbrain/internal/summaryconfig"
 	"dbrain/internal/vault"
 )
 
@@ -51,32 +52,33 @@ Use bullets only in Entities and Follow-ups.
 Do not mention ads, sponsors, or irrelevant boilerplate.`
 
 type Options struct {
-	Limit                int
-	Concurrency          int
-	Force                bool
-	AcceptCurrentSummary bool
-	Summarize            bool
-	Model                string
-	CLI                  string
-	Length               string
-	Language             string
-	Timeout              time.Duration
-	ProgressInterval     time.Duration
-	Logger               *slog.Logger
-	EnvFor               func(source model.SourceDocument) map[string]string
-	ArgsFor              func(source model.SourceDocument) []string
-	ResolveHost          func(ctx context.Context, host string) error
-	ResolveRedirectURL   func(ctx context.Context, rawURL string) (string, error)
-	FallbackExtractFor   func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
-	Binary               string
-	YouTubeBrowser       string
-	YouTubeProfile       string
-	YouTubeCookiesArg    string
-	YouTubeTranscriber   string
-	YTDLPBinary          string
-	WhisperBinary        string
-	WhisperModelPath     string
-	MacWhisperBinary     string
+	Limit                 int
+	Concurrency           int
+	Force                 bool
+	AcceptCurrentSummary  bool
+	Summarize             bool
+	Model                 string
+	CLI                   string
+	Length                string
+	Language              string
+	Timeout               time.Duration
+	ProgressInterval      time.Duration
+	Logger                *slog.Logger
+	ExactSummaryFreshness bool
+	EnvFor                func(source model.SourceDocument) map[string]string
+	ArgsFor               func(source model.SourceDocument) []string
+	ResolveHost           func(ctx context.Context, host string) error
+	ResolveRedirectURL    func(ctx context.Context, rawURL string) (string, error)
+	FallbackExtractFor    func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
+	Binary                string
+	YouTubeBrowser        string
+	YouTubeProfile        string
+	YouTubeCookiesArg     string
+	YouTubeTranscriber    string
+	YTDLPBinary           string
+	WhisperBinary         string
+	WhisperModelPath      string
+	MacWhisperBinary      string
 }
 
 type Stats struct {
@@ -89,10 +91,11 @@ type Stats struct {
 }
 
 func RunPending(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, []int64, error) {
-	summaryToolName := summarizecli.SummaryToolName(opts.Model)
+	opts.Model = summaryconfig.Model(cfg.RootDir, opts.Model)
+	summaryPromptVersion, summaryToolName, freshnessSummaryToolVersion := summaryFreshnessTarget(ctx, opts)
 	extractToolVersion := summarizecli.Version(ctx, opts.Binary)
 	summaryToolVersion := summarizecli.SummaryToolVersion(ctx, opts.Binary, opts.Model)
-	sources, err := st.ListSourcesForEnrichment(ctx, opts.Limit, opts.Force, opts.Summarize, SummaryPromptVersion, summaryToolName, summaryToolVersion)
+	sources, err := st.ListSourcesForEnrichment(ctx, opts.Limit, opts.Force, opts.Summarize, summaryPromptVersion, summaryToolName, freshnessSummaryToolVersion)
 	if err != nil {
 		return Stats{}, nil, err
 	}
@@ -100,6 +103,7 @@ func RunPending(ctx context.Context, cfg config.Config, st *store.Store, opts Op
 }
 
 func RunSourceIDs(ctx context.Context, cfg config.Config, st *store.Store, sourceIDs []int64, opts Options) (Stats, []int64, error) {
+	opts.Model = summaryconfig.Model(cfg.RootDir, opts.Model)
 	ordered := uniqueSorted(sourceIDs)
 	sources, err := st.GetSourcesByIDs(ctx, ordered)
 	if err != nil {
@@ -111,12 +115,19 @@ func RunSourceIDs(ctx context.Context, cfg config.Config, st *store.Store, sourc
 		byID[source.ID] = source
 	}
 
-	summaryToolName := summarizecli.SummaryToolName(opts.Model)
+	summaryPromptVersion, summaryToolName, freshnessSummaryToolVersion := summaryFreshnessTarget(ctx, opts)
 	extractToolVersion := summarizecli.Version(ctx, opts.Binary)
 	summaryToolVersion := summarizecli.SummaryToolVersion(ctx, opts.Binary, opts.Model)
-	filtered := selectSourceDocuments(ordered, byID, opts, summaryToolName, summaryToolVersion)
+	filtered := selectSourceDocuments(ordered, byID, opts, summaryPromptVersion, summaryToolName, freshnessSummaryToolVersion)
 
 	return runSources(ctx, cfg, st, filtered, opts, extractToolVersion, summaryToolVersion)
+}
+
+func summaryFreshnessTarget(ctx context.Context, opts Options) (string, string, string) {
+	if !opts.ExactSummaryFreshness {
+		return "", "", ""
+	}
+	return SummaryPromptVersion, summarizecli.SummaryToolName(opts.Model), summarizecli.SummaryToolVersion(ctx, opts.Binary, opts.Model)
 }
 
 func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources []model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) (Stats, []int64, error) {
@@ -829,7 +840,7 @@ func runSummarizeWithRedirectRetry(ctx context.Context, source model.SourceDocum
 	return summarizecli.Run(ctx, retryOpts)
 }
 
-func needsEnrichment(source model.SourceDocument, opts Options, toolName string, toolVersion string) bool {
+func needsEnrichment(source model.SourceDocument, opts Options, promptVersion string, toolName string, toolVersion string) bool {
 	if source.ExtractStatus == "" || source.ExtractStatus == "error" {
 		return true
 	}
@@ -848,7 +859,7 @@ func needsEnrichment(source model.SourceDocument, opts Options, toolName string,
 	if opts.AcceptCurrentSummary {
 		return false
 	}
-	if source.SummaryPromptVersion != SummaryPromptVersion {
+	if promptVersion != "" && source.SummaryPromptVersion != promptVersion {
 		return true
 	}
 	if toolName != "" && source.SummaryTool != toolName {
@@ -1924,14 +1935,14 @@ func uniqueSorted(values []int64) []int64 {
 	return out
 }
 
-func selectSourceDocuments(ordered []int64, byID map[int64]model.SourceDocument, opts Options, toolName string, toolVersion string) []model.SourceDocument {
+func selectSourceDocuments(ordered []int64, byID map[int64]model.SourceDocument, opts Options, promptVersion string, toolName string, toolVersion string) []model.SourceDocument {
 	filtered := make([]model.SourceDocument, 0, len(ordered))
 	for _, sourceID := range ordered {
 		source, ok := byID[sourceID]
 		if !ok {
 			continue
 		}
-		if !opts.Force && !needsEnrichment(source, opts, toolName, toolVersion) {
+		if !opts.Force && !needsEnrichment(source, opts, promptVersion, toolName, toolVersion) {
 			continue
 		}
 		filtered = append(filtered, source)

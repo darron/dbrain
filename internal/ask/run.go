@@ -15,6 +15,7 @@ import (
 	"dbrain/internal/model"
 	"dbrain/internal/store"
 	"dbrain/internal/summarizecli"
+	"dbrain/internal/summaryconfig"
 )
 
 const defaultMaxCharsPerDoc = 1800
@@ -66,6 +67,7 @@ type Response struct {
 }
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, question string, opts Options) (Response, error) {
+	opts.Model = summaryconfig.Model(cfg.RootDir, opts.Model)
 	question = strings.TrimSpace(question)
 	if question == "" {
 		return Response{}, fmt.Errorf("question cannot be empty")

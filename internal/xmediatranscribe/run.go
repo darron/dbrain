@@ -16,6 +16,7 @@ import (
 	"dbrain/internal/model"
 	"dbrain/internal/runtimeenv"
 	"dbrain/internal/store"
+	"dbrain/internal/summaryconfig"
 	"dbrain/internal/vault"
 )
 
@@ -89,6 +90,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if strings.TrimSpace(opts.SummaryLength) == "" {
 		opts.SummaryLength = "medium"
 	}
+	opts.SummaryModel = summaryconfig.Model(cfg.RootDir, opts.SummaryModel)
 	if strings.TrimSpace(opts.SummaryLanguage) == "" {
 		opts.SummaryLanguage = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE")
 	}

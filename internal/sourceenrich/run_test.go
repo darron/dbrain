@@ -862,7 +862,7 @@ func TestSelectSourceDocumentsHonorsLimit(t *testing.T) {
 	selected := selectSourceDocuments(ordered, byID, Options{
 		Limit:     2,
 		Summarize: true,
-	}, summarizecli.ToolName, "0.13.0")
+	}, "", summarizecli.ToolName, "0.13.0")
 
 	if len(selected) != 2 {
 		t.Fatalf("expected 2 selected sources, got %d", len(selected))
@@ -896,7 +896,7 @@ func TestSelectSourceDocumentsAcceptsCurrentSummaryCoverage(t *testing.T) {
 		Limit:                1,
 		Summarize:            true,
 		AcceptCurrentSummary: true,
-	}, summarizecli.DirectOpenRouterToolName, "openrouter-direct-v1")
+	}, "", summarizecli.DirectOpenRouterToolName, "openrouter-direct-v1")
 
 	if len(selected) != 0 {
 		t.Fatalf("expected current covered source to be skipped, got %+v", selected)
@@ -1079,10 +1079,11 @@ func TestRunSourceIDsUsesStoredExtractForStaleSummary(t *testing.T) {
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Limit:     10,
-		Summarize: true,
-		Length:    "short",
-		Timeout:   5 * time.Second,
+		Limit:                 10,
+		Summarize:             true,
+		Length:                "short",
+		Timeout:               5 * time.Second,
+		ExactSummaryFreshness: true,
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)
@@ -1298,13 +1299,16 @@ func TestRunSourceIDsUsesDirectOllamaSummaryAfterExtraction(t *testing.T) {
 	var captured summarizecliTestRequest
 	oldClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: sourceEnrichRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != "/api/chat" {
 			t.Fatalf("unexpected ollama path: %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode ollama request: %v", err)
 		}
-		respBody := `{"model":"qwen3.6:35b","choices":[{"message":{"role":"assistant","content":"summary from direct ollama"}}]}`
+		if captured.Think == nil || *captured.Think {
+			t.Fatalf("expected direct ollama request to disable thinking, got %#v", captured.Think)
+		}
+		respBody := `{"model":"qwen3.6:35b","message":{"role":"assistant","content":"summary from direct ollama"},"done":true}`
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -1546,13 +1550,16 @@ func TestProcessSingleSourceRendersSourceNoteImmediately(t *testing.T) {
 	var captured summarizecliTestRequest
 	oldClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: sourceEnrichRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != "/api/chat" {
 			t.Fatalf("unexpected ollama path: %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode ollama request: %v", err)
 		}
-		respBody := `{"model":"qwen3.6:35b","choices":[{"message":{"role":"assistant","content":"summary from direct ollama"}}]}`
+		if captured.Think == nil || *captured.Think {
+			t.Fatalf("expected direct ollama request to disable thinking, got %#v", captured.Think)
+		}
+		respBody := `{"model":"qwen3.6:35b","message":{"role":"assistant","content":"summary from direct ollama"},"done":true}`
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -1927,11 +1934,12 @@ func TestRunSourceIDsProcessesStoredExtractsWithConcurrency(t *testing.T) {
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, sourceIDs, Options{
-		Limit:       10,
-		Concurrency: 2,
-		Summarize:   true,
-		Length:      "short",
-		Timeout:     5 * time.Second,
+		Limit:                 10,
+		Concurrency:           2,
+		Summarize:             true,
+		Length:                "short",
+		Timeout:               5 * time.Second,
+		ExactSummaryFreshness: true,
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)
@@ -2165,6 +2173,7 @@ type summarizecliTestRequest struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"messages"`
+	Think *bool `json:"think"`
 }
 
 type sourceEnrichRoundTripperFunc func(*http.Request) (*http.Response, error)

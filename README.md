@@ -444,10 +444,13 @@ your summarize backend and rate limits can handle it. Higher concurrency speeds
 up backlog draining, but it also increases provider usage and simultaneous
 external fetches.
 
-When you want to test local GPU-backed summarization, pass an Ollama model with
-`--model ollama/<name>`. `dbrain` translates that into summarize's
-OpenAI-compatible path automatically and defaults to
-`http://127.0.0.1:11434/v1`. Override the target with
+By default, this repo uses `DBRAIN_SUMMARY_MODEL` when no `--model` flag is
+provided. The current local default is
+`ollama/qwen3.6:35b-a3b-nvfp4`. Pass `--model ollama/<name>` to test another
+local GPU-backed model, or `--model openrouter/<provider>/<model>` for a
+hosted catch-up run. `dbrain` sends direct Ollama summaries to the native
+Ollama chat API with thinking disabled, and defaults to
+`http://127.0.0.1:11434`. Override the target with
 `DBRAIN_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, or `OLLAMA_HOST` if the daemon is
 elsewhere. If you already export `OPENAI_BASE_URL` or `OPENAI_API_KEY`,
 `dbrain` leaves those alone. When `--model` is set, it also takes precedence

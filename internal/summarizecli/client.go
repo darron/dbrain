@@ -78,6 +78,13 @@ type chatCompletionsRequest struct {
 	Stream   bool          `json:"stream"`
 }
 
+type ollamaChatRequest struct {
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	Stream   bool          `json:"stream"`
+	Think    *bool         `json:"think,omitempty"`
+}
+
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -90,15 +97,21 @@ type chatCompletionsResponse struct {
 	} `json:"choices"`
 }
 
+type ollamaChatResponse struct {
+	Model   string      `json:"model"`
+	Message chatMessage `json:"message"`
+}
+
 type directSummaryTarget struct {
-	model       string
-	displayName string
-	baseURL     string
-	apiKey      string
-	toolName    string
-	toolVersion string
-	headers     map[string]string
-	label       string
+	model        string
+	displayName  string
+	baseURL      string
+	apiKey       string
+	toolName     string
+	toolVersion  string
+	headers      map[string]string
+	label        string
+	nativeOllama bool
 }
 
 var (
@@ -289,16 +302,29 @@ func runDirectSummary(ctx context.Context, opts Options, inputText string) (Resu
 		Content: strings.TrimSpace(inputText),
 	})
 
-	body, err := json.Marshal(chatCompletionsRequest{
+	endpoint := target.baseURL + "/chat/completions"
+	requestBody := any(chatCompletionsRequest{
 		Model:    target.model,
 		Messages: messages,
 		Stream:   false,
 	})
+	if target.nativeOllama {
+		think := false
+		endpoint = target.baseURL + "/api/chat"
+		requestBody = ollamaChatRequest{
+			Model:    target.model,
+			Messages: messages,
+			Stream:   false,
+			Think:    &think,
+		}
+	}
+
+	body, err := json.Marshal(requestBody)
 	if err != nil {
 		return Result{}, fmt.Errorf("marshal %s summary request: %w", target.label, err)
 	}
 
-	req, err := http.NewRequestWithContext(timeoutCtx, http.MethodPost, target.baseURL+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(timeoutCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return Result{}, fmt.Errorf("create %s summary request: %w", target.label, err)
 	}
@@ -332,19 +358,10 @@ func runDirectSummary(ctx context.Context, opts Options, inputText string) (Resu
 		return Result{}, fmt.Errorf("run %s summary: http %d: %s", target.label, resp.StatusCode, bodyText)
 	}
 
-	var payload chatCompletionsResponse
-	if err := json.Unmarshal(respBody, &payload); err != nil {
-		bodyText := strings.TrimSpace(string(respBody))
-		if len(bodyText) > 200 {
-			bodyText = bodyText[:200]
-		}
-		return Result{}, fmt.Errorf("parse %s summary response: %w (body prefix: %q)", target.label, err, bodyText)
+	summaryText, err := directSummaryText(target, respBody)
+	if err != nil {
+		return Result{}, err
 	}
-	if len(payload.Choices) == 0 {
-		return Result{}, fmt.Errorf("run %s summary: response contained no choices", target.label)
-	}
-
-	summaryText := strings.TrimSpace(payload.Choices[0].Message.Content)
 	if summaryText == "" {
 		return Result{}, fmt.Errorf("run %s summary: response contained no summary text", target.label)
 	}
@@ -363,16 +380,44 @@ func runDirectSummary(ctx context.Context, opts Options, inputText string) (Resu
 	}, nil
 }
 
+func directSummaryText(target directSummaryTarget, respBody []byte) (string, error) {
+	if target.nativeOllama {
+		var payload ollamaChatResponse
+		if err := json.Unmarshal(respBody, &payload); err != nil {
+			bodyText := strings.TrimSpace(string(respBody))
+			if len(bodyText) > 200 {
+				bodyText = bodyText[:200]
+			}
+			return "", fmt.Errorf("parse %s summary response: %w (body prefix: %q)", target.label, err, bodyText)
+		}
+		return strings.TrimSpace(payload.Message.Content), nil
+	}
+
+	var payload chatCompletionsResponse
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		bodyText := strings.TrimSpace(string(respBody))
+		if len(bodyText) > 200 {
+			bodyText = bodyText[:200]
+		}
+		return "", fmt.Errorf("parse %s summary response: %w (body prefix: %q)", target.label, err, bodyText)
+	}
+	if len(payload.Choices) == 0 {
+		return "", fmt.Errorf("run %s summary: response contained no choices", target.label)
+	}
+	return strings.TrimSpace(payload.Choices[0].Message.Content), nil
+}
+
 func resolveDirectSummaryTarget(ctx context.Context, opts Options) (directSummaryTarget, error) {
 	if ollamaModel, ok := parseOllamaModel(opts.Model); ok {
 		return directSummaryTarget{
-			model:       ollamaModel,
-			displayName: defaultDirectDisplayName(opts.Model, "ollama/"+ollamaModel),
-			baseURL:     ollamaBaseURLWithEnv(opts.Env),
-			apiKey:      ollamaAPIKeyWithEnv(opts.Env),
-			toolName:    SummaryToolName(opts.Model),
-			toolVersion: SummaryToolVersion(ctx, opts.Binary, opts.Model),
-			label:       "ollama",
+			model:        ollamaModel,
+			displayName:  defaultDirectDisplayName(opts.Model, "ollama/"+ollamaModel),
+			baseURL:      ollamaNativeBaseURLWithEnv(opts.Env),
+			apiKey:       ollamaAPIKeyWithEnv(opts.Env),
+			toolName:     SummaryToolName(opts.Model),
+			toolVersion:  SummaryToolVersion(ctx, opts.Binary, opts.Model),
+			label:        "ollama",
+			nativeOllama: true,
 		}, nil
 	}
 	if openrouterModel, ok := parseOpenRouterModel(opts.Model); ok {
@@ -672,6 +717,10 @@ func ollamaBaseURLWithEnv(env map[string]string) string {
 		value = defaultOllamaBaseURL
 	}
 	return normalizeBaseURLWithV1(value)
+}
+
+func ollamaNativeBaseURLWithEnv(env map[string]string) string {
+	return strings.TrimSuffix(ollamaBaseURLWithEnv(env), "/v1")
 }
 
 func ollamaAPIKeyWithEnv(env map[string]string) string {
