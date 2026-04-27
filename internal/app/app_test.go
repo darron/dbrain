@@ -17,6 +17,7 @@ import (
 	"dbrain/internal/sourceenrich"
 	"dbrain/internal/store"
 	"dbrain/internal/syncjob"
+	"dbrain/internal/version"
 	"dbrain/internal/xmediatranscribe"
 )
 
@@ -35,10 +36,85 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get"} {
+	for _, value := range []string{"import", "sync", "sqlite", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"version"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	current := version.Current()
+	for _, expected := range []string{
+		"commit: " + current.Commit,
+		"short: " + current.Short,
+		"build_time: " + current.BuildTime,
+		"git_status: " + current.GitStatus,
+		"go_version: " + current.GoVersion,
+		"git_version: " + current.GitVersion,
+		"build_platform: " + current.BuildPlatform,
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("expected output to contain %q, got %q", expected, stdout.String())
+		}
+	}
+	if current.ModulePath != "" && !strings.Contains(stdout.String(), "module_path: "+current.ModulePath) {
+		t.Fatalf("expected module_path in output, got %q", stdout.String())
+	}
+	if current.ModuleVersion != "" && !strings.Contains(stdout.String(), "module_version: "+current.ModuleVersion) {
+		t.Fatalf("expected module_version in output, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestVersionCommandJSON(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"version", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload version.Details
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	current := version.Current()
+	if payload.Commit != current.Commit {
+		t.Fatalf("Commit = %q, want %q", payload.Commit, current.Commit)
+	}
+	if payload.Short != current.Short {
+		t.Fatalf("Short = %q, want %q", payload.Short, current.Short)
+	}
+	if payload.GitStatus != current.GitStatus {
+		t.Fatalf("GitStatus = %q, want %q", payload.GitStatus, current.GitStatus)
+	}
+	if payload.GoVersion != current.GoVersion {
+		t.Fatalf("GoVersion = %q, want %q", payload.GoVersion, current.GoVersion)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 )
 
 const defaultCLIProvider = "codex"
+const skipKeepAwakeAnnotation = "dbrain.skip_keep_awake"
 
 type rootOptions struct {
 	root         string
@@ -43,6 +44,9 @@ func NewRootCommand() *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			debug := commandDebugEnabled(cmd)
 			if cmd.HasAvailableSubCommands() {
+				return nil
+			}
+			if cmd.Annotations[skipKeepAwakeAnnotation] == "true" {
 				return nil
 			}
 			if opts.noCaffeinate {
@@ -121,6 +125,7 @@ func NewRootCommand() *cobra.Command {
 		newAskCommand(opts),
 		newSearchCommand(opts),
 		newGetCommand(opts),
+		newVersionCommand(),
 	)
 
 	return rootCmd

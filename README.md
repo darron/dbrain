@@ -34,6 +34,7 @@ Markdown note rendering for Obsidian and local query over the imported corpus.
 - `dbrain stats activity`
 - `dbrain stats backlog`
 - `dbrain stats pipeline`
+- `dbrain version`
 - `dbrain ask <question>`
 - `dbrain search <query>`
 - `dbrain get <source-key-or-id>`
@@ -329,6 +330,10 @@ derived summary.
 - `dbrain stats backlog`
   No external tools required. Shows remaining queued work by pipeline stage and
   whether the current queues are drained.
+- `dbrain version`
+  No external tools required. Prints build metadata including commit, build
+  time, git status, Go version, git version, build platform, and module info.
+  Use `--json` for structured output.
 - `dbrain ask`
   Retrieval is read-only and works directly from `brain.db`. By default it also
   synthesizes an answer through `summarize`; use `--retrieve-only` when you want
@@ -437,6 +442,8 @@ go run ./cmd/dbrain stats sources --source-type github --extract-tool github-api
 go run ./cmd/dbrain stats activity
 go run ./cmd/dbrain stats activity --window 30m
 go run ./cmd/dbrain stats backlog
+go run ./cmd/dbrain version
+go run ./cmd/dbrain version --json
 go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --retrieve-only
 go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --timeout 30s
 go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen2.5:7b-instruct --timeout 2m
