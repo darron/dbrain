@@ -104,9 +104,9 @@
   $: if (mounted) {
     const onAdminPage = currentPage === "admin";
     writeRouteState({
-      q: searchQuery,
+      q: inputMode === "search" ? searchQuery : "",
       lookup: selectedLookup,
-      ask: askQuestion,
+      ask: inputMode === "ask" ? askQuestion : "",
       activityDomain: onAdminPage ? sourceActivityFilters.domain : "",
       activityType: onAdminPage ? sourceActivityFilters.sourceType : "",
       activityStatus: onAdminPage ? sourceActivityFilters.status : "",
@@ -198,6 +198,10 @@
     searchState = "loading";
     searchError = "";
     searchResults = [];
+    selectedLookup = "";
+    detail = null;
+    detailState = "idle";
+    detailError = "";
     if (!query) {
       searchState = "idle";
       graphNodes = [];
@@ -205,17 +209,10 @@
       return;
     }
     try {
-      const response = await searchBrain(query, 16);
+      const response = await searchBrain(query);
       searchResults = response.results ?? [];
       searchState = "ready";
       buildGraphFromResults(searchResults);
-      // Clear detail if query changed
-      if (selectedLookup && !searchResults.find(r => r.source_key === selectedLookup)) {
-        selectedLookup = "";
-        detail = null;
-        detailState = "idle";
-        detailError = "";
-      }
     } catch (error) {
       searchError = error.message;
       searchState = "error";
@@ -227,6 +224,10 @@
     askState = "loading";
     askError = "";
     askResponse = { question, answer: "", evidence: [] };
+    selectedLookup = "";
+    detail = null;
+    detailState = "idle";
+    detailError = "";
     if (!question) {
       askState = "idle";
       graphNodes = [];

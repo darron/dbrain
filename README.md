@@ -69,6 +69,7 @@ quiet CLI output.
 - Add a translation stage for non-English X content, storing both original and translated text.
 - Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
 - Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
+- Audit X media transcription throughput by recording per-video duration/bytes/transcript chars and testing cautious MacWhisper parallelism; avoid raising default concurrency until local GPU/CPU contention is understood.
 - Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
 - Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends (for example Ollama vision, OpenRouter/Gemini, and Tesseract), report side-by-side output quality and timings, and avoid changing persisted item OCR state.
 - Add a summary bakeoff/audit command that can run the same source extract or media transcript through multiple summary models/backends, report side-by-side outputs and timings, and avoid changing persisted summary state.

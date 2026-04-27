@@ -25,13 +25,13 @@ import (
 
 const (
 	defaultAddr           = "127.0.0.1:8742"
-	defaultSearchLimit    = 10
-	defaultAskLimit       = 8
+	defaultSearchLimit    = 25
+	defaultAskLimit       = 25
 	defaultEventLimit     = 8
 	defaultActivityWindow = 24 * time.Hour
 	defaultWebCLI         = "codex"
 	maxSearchLimit        = 50
-	maxAskLimit           = 20
+	maxAskLimit           = 50
 	maxEventLimit         = 20
 )
 

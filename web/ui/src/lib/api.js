@@ -37,11 +37,9 @@ export function getSourceActivity(filters = {}) {
   return fetchJSON(`/api/stats/source-activity?${params.toString()}`);
 }
 
-export function searchBrain(query, limit = 12) {
-  const params = new URLSearchParams({
-    q: query,
-    limit: String(limit)
-  });
+export function searchBrain(query, limit) {
+  const params = new URLSearchParams({ q: query });
+  if (limit != null) params.set("limit", String(limit));
   return fetchJSON(`/api/search?${params.toString()}`);
 }
 
