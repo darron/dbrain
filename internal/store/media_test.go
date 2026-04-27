@@ -115,6 +115,80 @@ func TestSaveXHydrationPersistsMediaAssetsAndLinks(t *testing.T) {
 	}
 }
 
+func TestSaveXHydrationPersistsSnapshotLinks(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 27, 3, 4, 5, 0, time.UTC)
+
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-links",
+		SourceType:   "x_bookmark",
+		ExternalID:   "2048567034506838416",
+		CanonicalURL: "https://x.com/example/status/2048567034506838416",
+		Title:        "Long note post",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/2048567034506838416.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	hydration := model.XHydration{
+		FullText:  "Please read https://t.co/example",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"source":"graphql",
+			"fetched_at":"2026-04-27T03:04:05Z",
+			"snapshot":{
+				"id":"2048567034506838416",
+				"text":"Please read https://t.co/example",
+				"links":[
+					"https://example.com/note",
+					"https://github.com/example/repo",
+					"https://example.com/note"
+				]
+			},
+			"raw":{}
+		}`,
+	}
+	changed, err := st.SaveXHydration(ctx, item.ItemID, hydration)
+	if err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected snapshot links to change row")
+	}
+
+	refreshed, err := st.GetItem(ctx, "x:test-links")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if got, want := refreshed.LinksJSON, `["https://example.com/note","https://github.com/example/repo"]`; got != want {
+		t.Fatalf("links_json = %q, want %q", got, want)
+	}
+	if got, want := refreshed.PrimaryDomain, "example.com"; got != want {
+		t.Fatalf("primary_domain = %q, want %q", got, want)
+	}
+	if got, want := refreshed.Domains, "example.com,github.com"; got != want {
+		t.Fatalf("domains = %q, want %q", got, want)
+	}
+	if got, want := refreshed.GitHubURLs, "https://github.com/example/repo"; got != want {
+		t.Fatalf("github_urls = %q, want %q", got, want)
+	}
+	if !refreshed.LinkExtractSyncedAt.IsZero() {
+		t.Fatalf("expected link extraction marker to be cleared, got %s", refreshed.LinkExtractSyncedAt)
+	}
+}
+
 func TestSaveMediaDownloadRemovesCompletedAssetFromPendingList(t *testing.T) {
 	t.Parallel()
 
@@ -745,6 +819,81 @@ func TestListItemsForXHydrationIncludesQuotedSnapshotDirectFetchRepair(t *testin
 	}
 	if len(items) != 1 || items[0].ID != item.ItemID {
 		t.Fatalf("expected quoted snapshot item to be selected for direct hydration repair, got %#v", items)
+	}
+}
+
+func TestListItemsForXHydrationIncludesNoteTweetLinkRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 27, 3, 4, 5, 0, time.UTC)
+
+	missingLinkID := insertTestItem(t, st, "x:note-link-repair", "", "", now)
+	currentLinkID := insertTestItem(t, st, "x:note-link-current", "", "", now)
+	hydrationJSON := `{
+		"source":"graphql",
+		"fetched_at":"2026-04-27T03:04:05Z",
+		"snapshot":{"id":"2048567034506838416","text":"Please read https://t.co/example"},
+		"raw":{
+			"data":{
+				"tweetResult":{
+					"result":{
+						"rest_id":"2048567034506838416",
+						"note_tweet":{
+							"note_tweet_results":{
+								"result":{
+									"text":"Please read https://t.co/example",
+									"entity_set":{
+										"urls":[{
+											"url":"https://t.co/example",
+											"expanded_url":"https://example.com/note",
+											"display_url":"example.com/note"
+										}]
+									}
+								}
+							}
+						},
+						"legacy":{
+							"id_str":"2048567034506838416",
+							"full_text":"Please read",
+							"created_at":"Mon Apr 27 00:00:00 +0000 2026",
+							"entities":{"urls":[]}
+						}
+					}
+				}
+			}
+		}
+	}`
+	for _, itemID := range []int64{missingLinkID, currentLinkID} {
+		if _, err := st.db.ExecContext(ctx, `
+			UPDATE items
+			SET external_id = ?,
+				x_post_text = ?,
+				x_post_status = ?,
+				x_post_fetched_at = ?,
+				x_post_json = ?
+			WHERE id = ?`,
+			"2048567034506838416",
+			"Please read https://t.co/example",
+			"ok_graphql",
+			now.Format(time.RFC3339),
+			hydrationJSON,
+			itemID,
+		); err != nil {
+			t.Fatalf("seed note tweet hydration: %v", err)
+		}
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET links_json = ? WHERE id = ?`, `["https://example.com/note"]`, currentLinkID); err != nil {
+		t.Fatalf("seed current link: %v", err)
+	}
+
+	items, err := st.ListItemsForXHydration(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXHydration: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != missingLinkID {
+		t.Fatalf("expected only missing note link item to be selected for repair, got %#v", items)
 	}
 }
 

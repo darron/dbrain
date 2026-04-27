@@ -64,6 +64,66 @@ func TestBuildTweetResultByRestIDURLIncludesArticleFieldToggles(t *testing.T) {
 	}
 }
 
+func TestParseGraphQLSnapshotIncludesNoteTweetLinks(t *testing.T) {
+	t.Parallel()
+
+	payload := map[string]any{
+		"data": map[string]any{
+			"tweetResult": map[string]any{
+				"result": map[string]any{
+					"rest_id": "2048567034506838416",
+					"core": map[string]any{
+						"user_results": map[string]any{
+							"result": map[string]any{
+								"core": map[string]any{
+									"screen_name": "BillboardChris",
+									"name":        "Billboard Chris",
+								},
+							},
+						},
+					},
+					"note_tweet": map[string]any{
+						"note_tweet_results": map[string]any{
+							"result": map[string]any{
+								"text": "Please read https://t.co/ZF83vL2QsR",
+								"entity_set": map[string]any{
+									"urls": []any{
+										map[string]any{
+											"url":          "https://t.co/ZF83vL2QsR",
+											"expanded_url": "https://example.com/cass-review",
+											"display_url":  "example.com/cass-review",
+										},
+									},
+								},
+							},
+						},
+					},
+					"legacy": map[string]any{
+						"id_str":     "2048567034506838416",
+						"full_text":  "Please read",
+						"created_at": "Mon Apr 27 00:00:00 +0000 2026",
+						"lang":       "en",
+						"entities": map[string]any{
+							"urls": []any{},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	snapshot := parseGraphQLSnapshot("2048567034506838416", payload)
+	if snapshot == nil {
+		t.Fatal("expected snapshot")
+	}
+	if snapshot.Text != "Please read https://t.co/ZF83vL2QsR" {
+		t.Fatalf("text = %q", snapshot.Text)
+	}
+	if got, want := snapshot.Links, []string{"https://example.com/cass-review"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("links = %#v, want %#v", got, want)
+	}
+}
+
 func TestShouldFetchItemRepairsQuotedSnapshotOnlyHydration(t *testing.T) {
 	t.Parallel()
 

@@ -66,6 +66,7 @@ type GetResponse struct {
 	Source        *model.SourceDocument  `json:"source,omitempty"`
 	LinkedSources []model.ItemSourceRef  `json:"linked_sources,omitempty"`
 	Backlinks     []model.SourceBacklink `json:"backlinks,omitempty"`
+	QuotedPosts   []model.Item           `json:"quoted_posts,omitempty"`
 	NoteContent   string                 `json:"note_content,omitempty"`
 	NoteError     string                 `json:"note_error,omitempty"`
 }
@@ -328,11 +329,13 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		quotedPosts := s.loadQuotedPosts(r.Context(), item.ID)
 		writeJSON(w, http.StatusOK, GetResponse{
 			Lookup:        lookup,
 			Kind:          "item",
 			Item:          &item,
 			LinkedSources: linkedSources,
+			QuotedPosts:   quotedPosts,
 			NoteContent:   noteContent,
 			NoteError:     noteError,
 		})
@@ -360,6 +363,21 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 		NoteContent: noteContent,
 		NoteError:   noteError,
 	})
+}
+
+func (s *server) loadQuotedPosts(ctx context.Context, itemID int64) []model.Item {
+	childIDs, err := s.store.ListItemChildLinks(ctx, itemID, "quoted_post")
+	if err != nil || len(childIDs) == 0 {
+		return nil
+	}
+	posts := make([]model.Item, 0, len(childIDs))
+	for _, id := range childIDs {
+		child, err := s.store.GetItemByID(ctx, id)
+		if err == nil {
+			posts = append(posts, child)
+		}
+	}
+	return posts
 }
 
 func (s *server) handleBacklog(w http.ResponseWriter, r *http.Request) {

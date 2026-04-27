@@ -44,6 +44,12 @@ func TestParseBookmarksResponse(t *testing.T) {
 	if !strings.HasPrefix(record.Text, "LLM Knowledge Bases") {
 		t.Fatalf("expected note_tweet text, got %q", record.Text)
 	}
+	if !strings.Contains(record.Text, "example.com/note") {
+		t.Fatalf("expected note_tweet display URL replacement, got %q", record.Text)
+	}
+	if got, want := record.Links, []string{"https://example.com/note"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("links = %#v, want %#v", got, want)
+	}
 	if got, want := record.SortIndex, "1825000000000000000"; got != want {
 		t.Fatalf("sort index = %q, want %q", got, want)
 	}
@@ -106,6 +112,9 @@ func TestRunBookmarksImportsAndStopsOnOverlap(t *testing.T) {
 	}
 	if !strings.Contains(item.RawJSON, `"sort_index":"1825000000000000000"`) {
 		t.Fatalf("expected sort_index in raw json, got %q", item.RawJSON)
+	}
+	if !strings.Contains(item.LinksJSON, "https://example.com/note") {
+		t.Fatalf("expected note_tweet link in links_json, got %q", item.LinksJSON)
 	}
 
 	second, err := RunBookmarks(context.Background(), cfg, st, BookmarkOptions{

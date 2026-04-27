@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 	"unicode"
@@ -13,6 +15,7 @@ import (
 
 	"dbrain/internal/itemhash"
 	"dbrain/internal/model"
+	"dbrain/internal/xpost"
 )
 
 const driverName = "sqlite"
@@ -29,6 +32,21 @@ const xQuotedPostRepairWhere = `((x_post_json LIKE '%"quoted_tweet"%' OR x_post_
 const xQuoteDirectHydrationRepairWhere = `(source_type = 'x_quote'
 	AND x_post_status = 'ok_graphql'
 	AND x_post_json NOT LIKE '%"tweetResult"%')`
+const xNoteTweetLinkRepairWhere = `(json_valid(x_post_json)
+	AND EXISTS (
+		SELECT 1
+		FROM json_tree(
+			CASE WHEN json_valid(items.x_post_json) THEN items.x_post_json ELSE '{}' END,
+			'$.raw.data.tweetResult.result.note_tweet.note_tweet_results.result.entity_set.urls'
+		) note_url
+		WHERE note_url.key = 'expanded_url'
+			AND COALESCE(note_url.value, '') != ''
+			AND NOT EXISTS (
+				SELECT 1
+				FROM json_each(CASE WHEN json_valid(items.links_json) THEN items.links_json ELSE '[]' END) existing_link
+				WHERE existing_link.value = note_url.value
+			)
+	))`
 const xMediaHydrationRepairWhere = `(` + xTopLevelMediaObjectsWhere + `
 	AND (
 		NOT EXISTS (
@@ -64,7 +82,8 @@ const xMediaHydrationRepairWhere = `(` + xTopLevelMediaObjectsWhere + `
 		)
 	))`
 const xHydrationRepairWhere = `(` + xQuotedPostRepairWhere + `
-	OR ` + xQuoteDirectHydrationRepairWhere + `)`
+	OR ` + xQuoteDirectHydrationRepairWhere + `
+	OR ` + xNoteTweetLinkRepairWhere + `)`
 const xHydrationCandidateWhere = `(
 	x_post_status = ''
 	OR x_post_status = 'api_error'
@@ -559,9 +578,59 @@ func (s *Store) syncFTSTx(ctx context.Context, tx *sql.Tx, itemID int64, item mo
 	return nil
 }
 
+type RebuildFTSStats struct {
+	Rebuilt int
+	Skipped int
+	Errors  int
+}
+
+func (s *Store) RebuildFTS(ctx context.Context) (RebuildFTSStats, error) {
+	if !s.hasFTS {
+		return RebuildFTSStats{}, fmt.Errorf("FTS is not enabled")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RebuildFTSStats{}, fmt.Errorf("begin fts rebuild tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM items_fts`); err != nil {
+		return RebuildFTSStats{}, fmt.Errorf("clear fts table: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT `+itemSelectColumns+` FROM items ORDER BY id ASC`)
+	if err != nil {
+		return RebuildFTSStats{}, fmt.Errorf("list items for fts rebuild: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var stats RebuildFTSStats
+	for rows.Next() {
+		var item model.Item
+		if err := scanItem(rows, &item); err != nil {
+			stats.Errors++
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO items_fts (
+			rowid, source_key, title, text, article_title, article_text, author_handle, author_name, primary_category, primary_domain
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			item.ID, item.SourceKey, item.Title, item.Text, item.ArticleTitle, indexedItemArticleText(item),
+			item.AuthorHandle, item.AuthorName, item.PrimaryCategory, item.PrimaryDomain); err != nil {
+			stats.Errors++
+			continue
+		}
+		stats.Rebuilt++
+	}
+	if err := rows.Err(); err != nil {
+		return stats, err
+	}
+	return stats, tx.Commit()
+}
+
 func indexedItemArticleText(item model.Item) string {
-	parts := make([]string, 0, 3)
-	for _, value := range []string{strings.TrimSpace(item.ArticleText), strings.TrimSpace(item.SummaryText), strings.TrimSpace(item.OCRText)} {
+	parts := make([]string, 0, 4)
+	for _, value := range []string{strings.TrimSpace(item.XPostText), strings.TrimSpace(item.ArticleText), strings.TrimSpace(item.SummaryText), strings.TrimSpace(item.OCRText)} {
 		if value == "" {
 			continue
 		}
@@ -777,6 +846,23 @@ func (s *Store) GetItem(ctx context.Context, lookup string) (model.Item, error) 
 	}
 	item.Media = media
 
+	return item, nil
+}
+
+func (s *Store) GetItemByID(ctx context.Context, id int64) (model.Item, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+itemSelectColumns+` FROM items WHERE id = ?`, id)
+	var item model.Item
+	if err := scanItem(row, &item); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.Item{}, fmt.Errorf("item not found: %d", id)
+		}
+		return model.Item{}, fmt.Errorf("load item %d: %w", id, err)
+	}
+	media, err := s.ListItemMediaRefs(ctx, item.ID)
+	if err != nil {
+		return model.Item{}, err
+	}
+	item.Media = media
 	return item, nil
 }
 
@@ -1007,12 +1093,12 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 		}()
 
 		row := tx.QueryRowContext(ctx, `
-			SELECT source_type, x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error
+			SELECT source_type, x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error, links_json
 			FROM items
 			WHERE id = ?`, itemID)
 
-		var currentSourceType, currentText, currentLang, currentJSON, currentFetchedAt, currentStatus, currentError string
-		if err := row.Scan(&currentSourceType, &currentText, &currentLang, &currentJSON, &currentFetchedAt, &currentStatus, &currentError); err != nil {
+		var currentSourceType, currentText, currentLang, currentJSON, currentFetchedAt, currentStatus, currentError, currentLinksJSON string
+		if err := row.Scan(&currentSourceType, &currentText, &currentLang, &currentJSON, &currentFetchedAt, &currentStatus, &currentError, &currentLinksJSON); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return false, fmt.Errorf("item not found for hydration: %d", itemID)
 			}
@@ -1090,11 +1176,15 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 				return false, fmt.Errorf("touch item after media sync %d: %w", itemID, err)
 			}
 		}
+		linksChanged, err := syncXHydrationLinksTx(ctx, tx, itemID, currentLinksJSON, hydration.APIJSON, nowText)
+		if err != nil {
+			return false, err
+		}
 		if err := tx.Commit(); err != nil {
 			return false, fmt.Errorf("commit hydration %d: %w", itemID, err)
 		}
 
-		return hydrationChanged || mediaChanged, nil
+		return hydrationChanged || mediaChanged || linksChanged, nil
 	})
 }
 
@@ -1104,6 +1194,93 @@ func shouldPreserveDirectQuotedHydration(sourceType, currentStatus, currentJSON,
 		newStatus == "ok_graphql" &&
 		strings.Contains(currentJSON, `"tweetResult"`) &&
 		!strings.Contains(newJSON, `"tweetResult"`)
+}
+
+func syncXHydrationLinksTx(ctx context.Context, tx *sql.Tx, itemID int64, currentLinksJSON string, apiJSON string, nowText string) (bool, error) {
+	snapshot, ok, err := xpost.DecodeSnapshot(apiJSON)
+	if err != nil {
+		return false, fmt.Errorf("decode hydration snapshot links %d: %w", itemID, err)
+	}
+	if !ok || len(snapshot.Links) == 0 {
+		return false, nil
+	}
+
+	links := uniqueNonEmptyStrings(snapshot.Links)
+	if len(links) == 0 {
+		return false, nil
+	}
+	linksJSONBytes, err := json.Marshal(links)
+	if err != nil {
+		return false, fmt.Errorf("marshal hydration links %d: %w", itemID, err)
+	}
+	linksJSON := string(linksJSONBytes)
+	if currentLinksJSON == linksJSON {
+		return false, nil
+	}
+
+	primaryDomain, domains, githubURLs := deriveItemLinkMetadata(links)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE items
+		SET links_json = ?,
+			primary_domain = ?,
+			domains = ?,
+			github_urls = ?,
+			link_extract_synced_at = '',
+			updated_at = ?
+		WHERE id = ?`,
+		linksJSON,
+		primaryDomain,
+		strings.Join(domains, ","),
+		strings.Join(githubURLs, ","),
+		nowText,
+		itemID,
+	); err != nil {
+		return false, fmt.Errorf("sync hydration links %d: %w", itemID, err)
+	}
+
+	return true, nil
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
+}
+
+func deriveItemLinkMetadata(links []string) (string, []string, []string) {
+	domains := make([]string, 0, len(links))
+	githubURLs := make([]string, 0)
+	seenDomains := map[string]struct{}{}
+	for _, link := range links {
+		parsed, err := url.Parse(link)
+		if err != nil || parsed.Hostname() == "" {
+			continue
+		}
+		host := strings.ToLower(parsed.Hostname())
+		if _, ok := seenDomains[host]; !ok {
+			seenDomains[host] = struct{}{}
+			domains = append(domains, host)
+		}
+		if host == "github.com" {
+			githubURLs = append(githubURLs, link)
+		}
+	}
+	primary := ""
+	if len(domains) > 0 {
+		primary = domains[0]
+	}
+	return primary, domains, githubURLs
 }
 
 func (s *Store) invalidateLinkedXArticleSourcesTx(ctx context.Context, tx *sql.Tx, itemID int64, nowText string) error {

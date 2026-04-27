@@ -962,7 +962,7 @@ func parseGraphQLSnapshotNode(result map[string]any, fallbackID string) *xpost.S
 		AuthorProfileImageURL: profileImage,
 		PostedAt:              xpost.NormalizeTimestamp(stringValue(legacy["created_at"])),
 		URL:                   "https://x.com/" + firstNonEmpty(handle, "_") + "/status/" + resolvedID,
-		Links:                 extractEntityExpandedURLs(dig(legacy, "entities")["urls"], mediaEntities),
+		Links:                 extractEntityExpandedURLs(mediaEntities, tweetURLEntitySets(tweet, legacy)...),
 		Raw:                   tweet,
 	}
 	for _, media := range mediaEntities {
@@ -1016,7 +1016,7 @@ func parseSyndicationSnapshotNode(payload map[string]any, fallbackID string) *xp
 		AuthorProfileImageURL: profileImage,
 		PostedAt:              xpost.NormalizeTimestamp(stringValue(payload["created_at"])),
 		URL:                   "https://x.com/" + firstNonEmpty(handle, "_") + "/status/" + resolvedID,
-		Links:                 extractEntityExpandedURLs(dig(payload, "entities")["urls"], mediaDetails),
+		Links:                 extractEntityExpandedURLs(mediaDetails, dig(payload, "entities")["urls"]),
 		Raw:                   payload,
 	}
 	for _, media := range mediaDetails {
@@ -1039,14 +1039,25 @@ func parseSyndicationSnapshotNode(payload map[string]any, fallbackID string) *xp
 	return snapshot
 }
 
-func extractEntityExpandedURLs(urlEntities any, mediaEntities []map[string]any) []string {
+func tweetURLEntitySets(tweet, legacy map[string]any) []any {
+	sets := []any{dig(legacy, "entities")["urls"]}
+	noteResult := dig(tweet, "note_tweet", "note_tweet_results", "result")
+	if len(noteResult) > 0 {
+		sets = append(sets, dig(noteResult, "entity_set")["urls"], dig(noteResult, "entities")["urls"])
+	}
+	return sets
+}
+
+func extractEntityExpandedURLs(mediaEntities []map[string]any, urlEntitySets ...any) []string {
 	seen := map[string]struct{}{}
 	links := make([]string, 0, 4)
-	for _, entity := range listValue(urlEntities) {
-		if expanded := stringValue(entity["expanded_url"]); expanded != "" {
-			if _, exists := seen[expanded]; !exists {
-				seen[expanded] = struct{}{}
-				links = append(links, expanded)
+	for _, urlEntities := range urlEntitySets {
+		for _, entity := range listValue(urlEntities) {
+			if expanded := stringValue(entity["expanded_url"]); expanded != "" {
+				if _, exists := seen[expanded]; !exists {
+					seen[expanded] = struct{}{}
+					links = append(links, expanded)
+				}
 			}
 		}
 	}

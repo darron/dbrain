@@ -9,6 +9,34 @@ import (
 	"dbrain/internal/store"
 )
 
+func newRepairFTSCommand(root *rootOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "fts",
+		Short: "Rebuild the full-text search index from brain.db",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig(root.root)
+			if err != nil {
+				return err
+			}
+			st, err := store.Open(cfg.DBPath)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = st.Close() }()
+
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Rebuilding FTS index…")
+			stats, err := st.RebuildFTS(cmd.Context())
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Rebuilt: %d\n", stats.Rebuilt)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Errors:  %d\n", stats.Errors)
+			return nil
+		},
+	}
+}
+
 func newRepairNotesCommand(root *rootOptions) *cobra.Command {
 	var items bool
 	var sources bool

@@ -38,11 +38,21 @@
                           "note_tweet_results": {
                             "result": {
                               "id": "Tm90ZVR3ZWV0OjIwMzk4MDU2NTkxOTg0MzUzMjg=",
-                              "text": "LLM Knowledge Bases\n\nSomething I'm finding very useful recently: using LLMs to build personal knowledge bases for various topics of research interest. In this way, a large fraction of my recent token throughput is going less into manipulating code, and more into manipulating knowledge.",
+                              "text": "LLM Knowledge Bases\n\nSomething I'm finding very useful recently: using LLMs to build personal knowledge bases for various topics of research interest. In this way, a large fraction of my recent token throughput is going less into manipulating code, and more into manipulating knowledge. See https://t.co/example",
                               "entity_set": {
                                 "hashtags": [],
                                 "symbols": [],
-                                "urls": [],
+                                "urls": [
+                                  {
+                                    "display_url": "example.com/note",
+                                    "expanded_url": "https://example.com/note",
+                                    "indices": [
+                                      278,
+                                      298
+                                    ],
+                                    "url": "https://t.co/example"
+                                  }
+                                ],
                                 "user_mentions": []
                               }
                             }

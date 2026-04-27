@@ -350,15 +350,22 @@ func parseBookmarkRecord(result map[string]any, sortIndex string, fetchedAt time
 		stringValue(dig(dig(dig(tweet, "core"), "user_results"), "result", "legacy")["name"]),
 	)
 
+	seenLinks := map[string]struct{}{}
 	links := make([]string, 0)
-	for _, entity := range listValue(dig(legacy, "entities")["urls"]) {
-		shortURL := stringValue(entity["url"])
-		displayURL := stringValue(entity["display_url"])
-		if shortURL != "" && displayURL != "" {
-			text = strings.ReplaceAll(text, shortURL, displayURL)
-		}
-		if expanded := stringValue(entity["expanded_url"]); expanded != "" {
-			links = append(links, expanded)
+	for _, urlEntities := range tweetURLEntitySets(tweet, legacy) {
+		for _, entity := range listValue(urlEntities) {
+			shortURL := stringValue(entity["url"])
+			displayURL := stringValue(entity["display_url"])
+			if shortURL != "" && displayURL != "" {
+				text = strings.ReplaceAll(text, shortURL, displayURL)
+			}
+			if expanded := stringValue(entity["expanded_url"]); expanded != "" {
+				if _, exists := seenLinks[expanded]; exists {
+					continue
+				}
+				seenLinks[expanded] = struct{}{}
+				links = append(links, expanded)
+			}
 		}
 	}
 

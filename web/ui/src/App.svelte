@@ -332,6 +332,12 @@
     }
   }
 
+  async function searchFor(term) {
+    inputMode = "search";
+    searchQuery = term;
+    await runSearch();
+  }
+
   async function runAddLink() {
     const url = linkURL.trim();
     linkState = "loading";
@@ -549,6 +555,7 @@
                 {detailError}
                 {detail}
                 onSelect={loadDetail}
+                onSearch={searchFor}
               />
             </div>
           {/if}
