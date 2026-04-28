@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"dbrain/internal/categoryvocab"
 	"dbrain/internal/config"
 	"dbrain/internal/mediaarchive"
 	"dbrain/internal/model"
@@ -39,17 +40,20 @@ Analyze the provided content and respond with ONLY valid JSON — no markdown, n
 
 Required format:
 {
-  "categories": ["Category Name"],
-  "tags": ["tag-name"],
-  "primary_category": "Most Relevant Category"
+  "categories": ["broad-theme"],
+  "tags": ["specific-tag"],
+  "primary_category": "most-relevant-category"
 }
 
 Rules:
-- categories: 2-5 broad topical themes, Title Case, 1-3 words each (e.g. "Canadian Politics", "Economic Policy")
-- tags: 5-10 specific concepts, people, places, or events; ALL lowercase, ALL spaces replaced with hyphens, no exceptions
-  Good tags: "matt-gurney", "sovereign-wealth-fund", "canadian-economy"
-  Bad tags:  "Matt Gurney", "sovereign wealth fund", "Canadian Economy"
-- primary_category: single best match from the categories list
+- ALL values must be lowercase with hyphens replacing spaces — no exceptions
+- categories: 2-5 broad topical themes, 1-3 words each
+  Good: "canadian-politics", "economic-policy", "software-development"
+  Bad:  "Canadian Politics", "Economic Policy", "Software Development"
+- tags: 5-10 specific concepts, people, places, or events
+  Good: "matt-gurney", "sovereign-wealth-fund", "canadian-economy"
+  Bad:  "Matt Gurney", "sovereign wealth fund", "Canadian Economy"
+- primary_category: single best match from the categories list, same lowercase-hyphen format
 - Be specific and accurate based on the actual content, not generic`
 
 // Options configures a categorize run.
@@ -72,6 +76,8 @@ type Options struct {
 	S3Region    string
 	S3AccessKey string
 	S3SecretKey string
+	// Vocab is the optional canonical vocabulary loaded from categories.yaml.
+	Vocab categoryvocab.Vocab
 	// OnStart is called after item selection, before worker goroutines start.
 	OnStart func(total int)
 	// OnResult is called from worker goroutines as each item completes.
@@ -410,6 +416,14 @@ type ollamaResponse struct {
 	} `json:"message"`
 }
 
+func effectiveSystemPrompt(opts Options) string {
+	vocab := opts.Vocab.PromptSection()
+	if vocab == "" {
+		return systemPrompt
+	}
+	return systemPrompt + "\n\n" + vocab
+}
+
 func callLLM(ctx context.Context, bundle string, photoData [][]byte, opts Options) (Result, error) {
 	if ollamaModel, ok := parseOllamaModel(opts.Model); ok {
 		return callOllama(ctx, bundle, photoData, ollamaModel, opts)
@@ -423,7 +437,7 @@ func callLLM(ctx context.Context, bundle string, photoData [][]byte, opts Option
 
 func callOllama(ctx context.Context, bundle string, photoData [][]byte, ollamaModel string, opts Options) (Result, error) {
 	think := false
-	sysMsg := ollamaMessage{Role: "system", Content: systemPrompt}
+	sysMsg := ollamaMessage{Role: "system", Content: effectiveSystemPrompt(opts)}
 	userMsg := ollamaMessage{Role: "user", Content: bundle}
 	for _, data := range photoData {
 		userMsg.Images = append(userMsg.Images, base64.StdEncoding.EncodeToString(data))
@@ -447,7 +461,7 @@ func callOllama(ctx context.Context, bundle string, photoData [][]byte, ollamaMo
 		return Result{}, fmt.Errorf("parse ollama response: %w", err)
 	}
 
-	return parseCategorizationJSON(resp.Message.Content, ollamaModel)
+	return parseCategorizationJSON(resp.Message.Content, ollamaModel, opts.Vocab)
 }
 
 func callOpenRouter(ctx context.Context, bundle string, photoData [][]byte, openrouterModel string, opts Options) (Result, error) {
@@ -455,7 +469,7 @@ func callOpenRouter(ctx context.Context, bundle string, photoData [][]byte, open
 		return Result{}, fmt.Errorf("OPENROUTER_API_KEY / DBRAIN_OPENROUTER_API_KEY not set")
 	}
 
-	sysMsg := chatMessage{Role: "system", Content: systemPrompt}
+	sysMsg := chatMessage{Role: "system", Content: effectiveSystemPrompt(opts)}
 
 	var userContent any
 	if len(photoData) > 0 {
@@ -500,7 +514,7 @@ func callOpenRouter(ctx context.Context, bundle string, photoData [][]byte, open
 		return Result{}, fmt.Errorf("openrouter categorize: no choices returned")
 	}
 
-	return parseCategorizationJSON(resp.Choices[0].Message.Content, openrouterModel)
+	return parseCategorizationJSON(resp.Choices[0].Message.Content, openrouterModel, opts.Vocab)
 }
 
 func doPost(ctx context.Context, endpoint, apiKey string, headers map[string]string, body any, timeout time.Duration) ([]byte, error) {
@@ -550,8 +564,9 @@ func doPost(ctx context.Context, endpoint, apiKey string, headers map[string]str
 	return raw, nil
 }
 
-// parseCategorizationJSON strips optional markdown fences and parses the JSON.
-func parseCategorizationJSON(content string, modelName string) (Result, error) {
+// parseCategorizationJSON strips optional markdown fences, parses the JSON,
+// and applies canonical vocab rules if provided.
+func parseCategorizationJSON(content string, modelName string, vocab categoryvocab.Vocab) (Result, error) {
 	text := strings.TrimSpace(content)
 
 	// Strip markdown code fences if the model wrapped the output
@@ -579,61 +594,29 @@ func parseCategorizationJSON(content string, modelName string) (Result, error) {
 		return Result{}, fmt.Errorf("parse categorization JSON: %w (content: %q)", err, truncate(content, 300))
 	}
 
-	// Normalize regardless of whether the model followed the prompt rules.
-	for i, t := range result.Tags {
-		result.Tags[i] = normalizeTag(t)
+	// Normalise and apply vocab to tags, categories, and primary_category.
+	// ApplyToTokens always normalises to lowercase-hyphenated form, then
+	// applies alias resolution and drops.
+	result.Tags = vocab.ApplyToTokens(result.Tags)
+	result.Categories = vocab.ApplyToTokens(result.Categories)
+	if pc := vocab.ApplyToTokens([]string{result.PrimaryCategory}); len(pc) > 0 {
+		result.PrimaryCategory = pc[0]
+	} else {
+		result.PrimaryCategory = ""
 	}
-	result.Tags = dedupeStrings(result.Tags)
-
-	for i, c := range result.Categories {
-		result.Categories[i] = strings.TrimSpace(c)
-	}
-	result.PrimaryCategory = strings.TrimSpace(result.PrimaryCategory)
 
 	result.Model = modelName
 	result.RawResponse = content
 	return result, nil
 }
 
-// normalizeTag lowercases a tag and replaces every run of non-alphanumeric
-// characters with a single hyphen, matching the "lowercase-hyphenated" rule.
-func normalizeTag(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	var b strings.Builder
-	prevHyphen := false
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			prevHyphen = false
-		} else {
-			if !prevHyphen && b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			prevHyphen = true
-		}
-	}
-	return strings.TrimRight(b.String(), "-")
-}
-
-func dedupeStrings(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if s == "" {
-			continue
-		}
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
-}
-
 // ---- helpers ------------------------------------------------------------------
 
 func resolveOpts(cfg config.Config, opts *Options) {
+	if opts.Vocab.Empty() {
+		vocab, _ := categoryvocab.Load(filepath.Join(cfg.RootDir, "categories.yaml"))
+		opts.Vocab = vocab
+	}
 	if strings.TrimSpace(opts.Model) == "" {
 		opts.Model = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_CATEGORIZE_MODEL"), defaultModel)
 	}

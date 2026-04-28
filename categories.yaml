@@ -1,0 +1,68 @@
+# categories.yaml
+# All forms are normalised to lowercase-hyphen automatically.
+# Only list non-obvious synonyms that normalisation alone can't resolve.
+# Run: dbrain categorize repair --dry-run  (preview)
+#      dbrain categorize repair             (apply)
+
+aliases:
+  # === Go programming language ===
+  go-language: golang
+  go-lang: golang
+  go-programming: golang
+  go-programming-language: golang
+  go: golang
+
+  # === Other known synonyms ===
+  argocd: argo-cd
+  flux-cd: fluxcd
+  huggingface: hugging-face
+  nodejs: node-js
+  vuejs: vue-js
+  letsencrypt: lets-encrypt
+  let-s-encrypt: lets-encrypt
+  http-2: http2
+  autoscaling: auto-scaling
+  copytrading: copy-trading
+  devsecops: devsecops
+  j-d-vance: jd-vance
+  jdvance: jd-vance
+  usa-id: usaid
+  data-dog: datadog
+  git-hub: github
+  mattpocock: matt-pocock
+  nousresearch: nous-research
+  spikesguides: spikes-guides
+  yossi-benyakar: yossi-ben-yakar
+  badlogic-games: badlogicgames
+  open-code: opencode
+  open-telemetry: opentelemetry
+  neo-ai-forecast: neo-aiforecast
+  sub-agents: subagents
+  antisemitism: anti-semitism
+  counterterrorism: counter-terrorism
+  mac-os: macos
+  firearm-regulation: firearms-regulation
+  tom-s-hardware: toms-hardware
+  liberal-party-of-canada: liberal-party
+
+drop:
+  # Source import noise — describes how item arrived, not what it's about
+  - github-star
+  - github-stars
+  - github-repository
+  - github-project
+  - x-bookmark
+  - x-quote
+  - x-com
+  # Generic catch-alls with no signal
+  - bookmark
+  - bookmarks
+  - link-sharing
+  - links
+  - external-links
+  - digital-links
+  - media-links
+  - web-links
+  - social-media-links
+  - user-content
+  - unknown-content

@@ -16,7 +16,10 @@
       "Bash(./bin/dbrain ocr *)",
       "Bash(./bin/dbrain transcribe *)",
       "Bash(go build *)",
-      "Bash(./bin/dbrain categorize *)"
+      "Bash(./bin/dbrain categorize *)",
+      "Bash(go get *)",
+      "Bash(bin/dbrain categorize *)",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }

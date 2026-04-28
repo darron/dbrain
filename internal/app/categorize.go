@@ -18,7 +18,7 @@ func newCategorizeCommand(root *rootOptions) *cobra.Command {
 		Short: "Categorize items with an LLM using all available content",
 		RunE:  helpCommand,
 	}
-	cmd.AddCommand(newCategorizeItemCommand(root), newCategorizeBatchCommand(root))
+	cmd.AddCommand(newCategorizeItemCommand(root), newCategorizeBatchCommand(root), newCategorizeRepairCommand(root), newCategorizeAnalyzeCommand(root))
 	return cmd
 }
 
