@@ -607,23 +607,45 @@ silently spend model usage unless they explicitly request answer synthesis.
 The tool list also includes `outputSchema` metadata so MCP clients can reason
 about the structured payloads without learning them from examples.
 
+`dbrain_get` is DB-first. By default it returns slim item/source metadata and
+capped `content_sections` from the SQLite row, not the rendered Markdown file.
+Use `content_mode=brief` for metadata only, `content_mode=evidence` for normal
+research context, `content_mode=raw` for raw DB extracts/transcripts/OCR/JSON,
+and `content_mode=rendered` only when a client specifically needs the rendered
+Markdown note shape. `max_chars_per_section` controls per-section output size,
+with a hard cap to avoid accidental huge MCP responses. Evidence mode also
+includes a small capped DB graph expansion for context such as quoted X posts,
+linked sources, and source backlinks, so agents do not have to read rendered
+Markdown just to see immediate neighboring evidence. X media enrichments are
+exposed as first-class evidence sections: image OCR appears as `ocr_text`, and
+video/audio transcript text stored by the X media transcription stage appears
+as `x_media_transcript` instead of generic article text. Related item context
+also includes distinct media transcript and image OCR blocks when present.
+
 `dbrain_research_pack` is the default MCP research entry point for broad
 questions. It always returns retrieve-only evidence, a compact query plan
 showing the text query and tag aliases used, coverage counts by kind/source
-type/tag, suggested follow-up tools, and, when the question is broad enough to
-infer a topic phrase, the same grouped topic brief used by
-`dbrain_topic_brief`. That lets an agent start from one read-only call instead
-of manually orchestrating `ask`, `search`, `topic brief`, and follow-up note
-fetches. `topic`, `include_topic_brief`, `include_related`, and
-`max_chars_per_doc` are exposed as controls for clients that need more or less
-context.
+type/tag, exact user-tag match counts, broad item/source text-match counts,
+suggested follow-up tools, and, when the question is broad enough to infer a
+topic phrase, the same grouped topic brief used by `dbrain_topic_brief`. The
+`coverage.recall_note` field intentionally warns when the returned evidence is
+only a capped working set relative to the larger matching corpus. That lets an
+agent start from one read-only call instead of manually orchestrating `ask`,
+`search`, `topic brief`, and follow-up note fetches. `topic`,
+`include_topic_brief`, `include_related`, and `max_chars_per_doc` are exposed as
+controls for clients that need more or less context. Source documents are
+searched as their own candidate stream, so `source_types=["web"]` or
+`["youtube"]` can return direct `src:...` evidence even when item hits would
+otherwise fill the candidate window.
 
 Item `user_tags` are indexed for search and returned in MCP search and evidence
 payloads. They are useful research hints: agents can search by tag names, use
 tags to disambiguate broad questions, and treat tag matches as stronger
 retrieval signals without replacing the underlying source text. Multi-word
 research questions also check the matching hyphenated tag alias, for example
-`Mark Carney` checks `mark-carney`.
+`Mark Carney` checks `mark-carney`. `dbrain_search` reports the tag aliases it
+checked plus exact tag counts, and `dbrain_search` / `dbrain_research_pack`
+append exact-tag hits to normal text-search evidence before deduping.
 
 MCP research should answer from the collector's saved corpus. The corpus will
 reflect what that person found valuable, interesting, or noteworthy, including

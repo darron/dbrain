@@ -118,12 +118,22 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 	if err != nil {
 		return Response{}, err
 	}
+	sourceResults, err := st.SearchSources(ctx, hints.TextQuery, searchLimit)
+	if err != nil {
+		return Response{}, err
+	}
+	results = append(results, sourceResults...)
 	for _, tagQuery := range hints.TagQueries {
 		tagResults, err := st.SearchUserTags(ctx, tagQuery, searchLimit)
 		if err != nil {
 			return Response{}, err
 		}
 		results = append(results, tagResults...)
+		exactTagResults, err := st.SearchExactUserTag(ctx, tagQuery, searchLimit)
+		if err != nil {
+			return Response{}, err
+		}
+		results = append(results, exactTagResults...)
 	}
 
 	entityIndex, err := entities.BuildIndex(ctx, st)
@@ -262,13 +272,13 @@ type weightedQuery struct {
 func queryTerms(question string) []string {
 	stopwords := map[string]struct{}{
 		"a": {}, "an": {}, "and": {}, "are": {}, "can": {}, "did": {}, "do": {}, "does": {},
-		"about": {}, "brain": {}, "dbrain": {}, "find": {}, "for": {}, "from": {}, "github": {}, "how": {}, "i": {}, "in": {}, "is": {}, "know": {}, "local": {}, "me": {}, "memory": {}, "my": {}, "of": {}, "on": {}, "or": {}, "the": {},
+		"about": {}, "brain": {}, "dbrain": {}, "evidence": {}, "find": {}, "for": {}, "from": {}, "github": {}, "have": {}, "how": {}, "i": {}, "if": {}, "in": {}, "include": {}, "is": {}, "know": {}, "local": {}, "me": {}, "memory": {}, "my": {}, "of": {}, "on": {}, "or": {}, "present": {}, "related": {}, "saved": {}, "the": {},
 		"repo": {}, "repos": {}, "repository": {}, "repositories": {},
-		"show": {}, "source": {}, "sources": {}, "tell": {}, "tweet": {}, "tweets": {},
-		"to": {}, "we": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {},
+		"show": {}, "source": {}, "sources": {}, "tag": {}, "tags": {}, "tell": {}, "tweet": {}, "tweets": {},
+		"to": {}, "use": {}, "using": {}, "we": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {},
 	}
 
-	parts := strings.Fields(strings.TrimSpace(question))
+	parts := strings.Fields(strings.NewReplacer("-", " ", "_", " ").Replace(strings.TrimSpace(question)))
 	if len(parts) == 0 {
 		return nil
 	}

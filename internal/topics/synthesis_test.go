@@ -79,6 +79,28 @@ func TestBuildSignalClustersPrefersRepeatedPhrases(t *testing.T) {
 	}
 }
 
+func TestExtractSignalPhrasesSkipsPossessiveFragmentsAndSingleBoilerplate(t *testing.T) {
+	t.Parallel()
+
+	phrases := extractSignalPhrases(
+		"mark carney",
+		"Terry Newman: Mark Carney's long, deceitful quest for the Liberal crown",
+		"National Newswatch article about national security and climate finance",
+		"Another article says national security policy and climate finance remain linked.",
+	)
+
+	for _, unwanted := range []string{"s long", "s", "article", "national", "news"} {
+		if containsString(phrases, unwanted) {
+			t.Fatalf("unexpected noisy phrase %q in %#v", unwanted, phrases)
+		}
+	}
+	for _, wanted := range []string{"national security", "climate finance"} {
+		if !containsString(phrases, wanted) {
+			t.Fatalf("expected phrase %q in %#v", wanted, phrases)
+		}
+	}
+}
+
 func TestSynthesizeAnglesUsesTopicPivots(t *testing.T) {
 	t.Parallel()
 

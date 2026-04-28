@@ -109,6 +109,11 @@ func Build(ctx context.Context, st *store.Store, topic string, opts Options) (To
 	if err != nil {
 		return TopicMap{}, err
 	}
+	sourceResults, err := st.SearchSources(ctx, topic, max(opts.SeedLimit*4, opts.SeedLimit))
+	if err != nil {
+		return TopicMap{}, err
+	}
+	results = append(results, sourceResults...)
 	results = filterSearchResults(ctx, st, results, opts.SourceTypes)
 
 	graph := TopicMap{

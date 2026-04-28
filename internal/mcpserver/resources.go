@@ -516,13 +516,13 @@ The local dbrain MCP server is read-only.
 
 ## Tools
 
-- ` + "`dbrain_search`" + `: search the local corpus
-- ` + "`dbrain_get`" + `: load a rendered item or source note
+- ` + "`dbrain_search`" + `: search the local corpus, including exact user-tag aliases for multi-word entity queries
+- ` + "`dbrain_get`" + `: load DB-backed item/source metadata, capped content sections, and limited linked/quoted context; use ` + "`content_mode=rendered`" + ` only when rendered Markdown is needed
 - ` + "`dbrain_ask`" + `: retrieve evidence and optionally synthesize an answer
 - ` + "`dbrain_entity_map`" + `: browse derived entities across the local brain
 - ` + "`dbrain_topic_map`" + `: build a compact topic graph around a concept
 - ` + "`dbrain_topic_brief`" + `: build a richer topic brief with grouped pivots and markdown preview
-- ` + "`dbrain_research_pack`" + `: bundle retrieve-only evidence, query/tag hints, coverage counts, suggested follow-ups, and an optional topic brief
+- ` + "`dbrain_research_pack`" + `: bundle retrieve-only evidence, query/tag hints, exact tag and corpus coverage counts, suggested follow-ups, and an optional topic brief
 - ` + "`dbrain_related`" + `: follow item-to-source links or source backlinks
 - ` + "`dbrain_stats_items`" + `: count item signals
 - ` + "`dbrain_stats_sources`" + `: count sources by filters or status
@@ -555,8 +555,8 @@ The local dbrain MCP server is read-only.
 
 ## Suggested workflows
 
-1. Research: call ` + "`dbrain_research_pack`" + ` first, then inspect the strongest hits with ` + "`dbrain_get`" + ` or ` + "`dbrain_related`" + `. Answer from the collector's saved corpus; do not add outside balance unless asked.
-2. Browse: call ` + "`dbrain_get`" + ` on a known item or source, then expand with ` + "`dbrain_related`" + `.
+1. Research: call ` + "`dbrain_research_pack`" + ` first, check ` + "`coverage.recall_note`" + ` and exact tag counts, then inspect the strongest hits with ` + "`dbrain_get`" + ` using ` + "`content_mode=evidence`" + ` or expand with ` + "`dbrain_related`" + `. Answer from the collector's saved corpus; do not add outside balance unless asked.
+2. Browse: call ` + "`dbrain_get`" + ` on a known item or source, then expand with ` + "`dbrain_related`" + `. Prefer DB-backed modes (` + "`brief`" + `, ` + "`evidence`" + `, ` + "`raw`" + `); media enrichments appear as ` + "`x_media_transcript`" + ` and ` + "`ocr_text`" + ` sections. Use ` + "`rendered`" + ` for note shape only.
 3. Entity browse: call ` + "`dbrain_entity_map`" + ` or read ` + "`dbrain://entity/{query}`" + ` to find people, repos, orgs, and sites connected to the corpus.
 4. Topic map: call ` + "`dbrain_topic_map`" + ` or read ` + "`dbrain://topic/{query}`" + ` for a compact graph around a concept.
 5. Topic brief: call ` + "`dbrain_topic_brief`" + ` or read ` + "`dbrain://topic-note/{query}`" + ` for grouped pivots and a rendered note preview.

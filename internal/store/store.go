@@ -891,6 +891,158 @@ func (s *Store) SearchUserTags(ctx context.Context, tagQuery string, limit int) 
 	return scanSearchResults(rows)
 }
 
+func (s *Store) SearchExactUserTag(ctx context.Context, tag string, limit int) ([]model.SearchResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	tag = normalizeUserTagQuery(tag)
+	if tag == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			source_key,
+			source_type,
+			external_id,
+			title,
+			author_handle,
+			author_name,
+			canonical_url,
+			primary_domain,
+			note_path,
+			user_tags,
+			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), NULLIF(ocr_text, ''), NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet
+		FROM items
+		WHERE instr(',' || replace(replace(lower(user_tags), ', ', ','), ' ,', ',') || ',', ',' || ? || ',') > 0
+		ORDER BY last_seen_at DESC, id DESC
+		LIMIT ?`, tag, limit)
+	if err != nil {
+		return nil, fmt.Errorf("exact tag search: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	return scanSearchResults(rows)
+}
+
+func (s *Store) CountExactUserTag(ctx context.Context, tag string, sourceTypes []string) (int, error) {
+	tag = normalizeUserTagQuery(tag)
+	if tag == "" {
+		return 0, nil
+	}
+	query := `SELECT COUNT(*) FROM items WHERE instr(',' || replace(replace(lower(user_tags), ', ', ','), ' ,', ',') || ',', ',' || ? || ',') > 0`
+	args := []any{tag}
+	if len(sourceTypes) > 0 {
+		placeholders := make([]string, 0, len(sourceTypes))
+		for _, sourceType := range sourceTypes {
+			sourceType = strings.TrimSpace(sourceType)
+			if sourceType == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, sourceType)
+		}
+		if len(placeholders) > 0 {
+			query += ` AND source_type IN (` + strings.Join(placeholders, ",") + `)`
+		}
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count exact tag %q: %w", tag, err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountItemTextMatches(ctx context.Context, query string, sourceTypes []string) (int, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return 0, nil
+	}
+	like := "%" + query + "%"
+	sqlQuery := `
+		SELECT COUNT(*)
+		FROM items
+		WHERE (
+			lower(title) LIKE ?
+			OR lower(text) LIKE ?
+			OR lower(x_post_text) LIKE ?
+			OR lower(article_title) LIKE ?
+			OR lower(article_text) LIKE ?
+			OR lower(summary_text) LIKE ?
+			OR lower(ocr_text) LIKE ?
+			OR lower(author_handle) LIKE ?
+			OR lower(author_name) LIKE ?
+			OR lower(canonical_url) LIKE ?
+			OR lower(user_tags) LIKE ?
+		)`
+	args := []any{like, like, like, like, like, like, like, like, like, like, like}
+	if len(sourceTypes) > 0 {
+		placeholders := make([]string, 0, len(sourceTypes))
+		for _, sourceType := range sourceTypes {
+			sourceType = strings.TrimSpace(sourceType)
+			if sourceType == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, sourceType)
+		}
+		if len(placeholders) > 0 {
+			sqlQuery += ` AND source_type IN (` + strings.Join(placeholders, ",") + `)`
+		}
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, sqlQuery, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count item text matches %q: %w", query, err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountSourceTextMatches(ctx context.Context, query string, sourceTypes []string) (int, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return 0, nil
+	}
+	like := "%" + query + "%"
+	sqlQuery := `
+		SELECT COUNT(*)
+		FROM sources
+		WHERE (
+			lower(title) LIKE ?
+			OR lower(description) LIKE ?
+			OR lower(extracted_text) LIKE ?
+			OR lower(summary_text) LIKE ?
+			OR lower(canonical_url) LIKE ?
+			OR lower(domain) LIKE ?
+		)`
+	args := []any{like, like, like, like, like, like}
+	if len(sourceTypes) > 0 {
+		placeholders := make([]string, 0, len(sourceTypes))
+		for _, sourceType := range sourceTypes {
+			sourceType = strings.TrimSpace(sourceType)
+			if sourceType == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, sourceType)
+		}
+		if len(placeholders) > 0 {
+			sqlQuery += ` AND source_type IN (` + strings.Join(placeholders, ",") + `)`
+		}
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, sqlQuery, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count source text matches %q: %w", query, err)
+	}
+	return count, nil
+}
+
+func normalizeUserTagQuery(tag string) string {
+	tag = strings.TrimSpace(strings.ToLower(tag))
+	tag = strings.Trim(tag, ", ")
+	return tag
+}
+
 func scanSearchResults(rows *sql.Rows) ([]model.SearchResult, error) {
 	var results []model.SearchResult
 	for rows.Next() {

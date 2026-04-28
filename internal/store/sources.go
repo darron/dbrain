@@ -1566,6 +1566,23 @@ func (s *Store) syncSourceFTS(ctx context.Context, sourceID int64) error {
 	return nil
 }
 
+func (s *Store) SearchSources(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if s.hasFTS {
+		results, err := s.searchSourcesFTS(ctx, query, limit)
+		if err == nil {
+			return results, nil
+		}
+	}
+	return s.searchSourcesLike(ctx, query, limit)
+}
+
 func (s *Store) searchSourcesFTS(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
 	ftsQuery := buildFTSQuery(query)
 	rows, err := s.db.QueryContext(ctx, `

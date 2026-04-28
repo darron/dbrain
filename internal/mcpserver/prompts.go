@@ -116,10 +116,10 @@ Question: %s
 Recommended workflow:
 1. Call dbrain_research_pack first with limit=8 and include_related=%t.
 2. If source_types are provided, pass them through as source_types: [%s].
-3. Use the returned query_plan, coverage, top tags, and next_steps to decide whether follow-up calls are needed.
+3. Use the returned query_plan, coverage.recall_note, exact_tag_matches, top tags, and next_steps to decide whether follow-up calls are needed.
 4. If the returned pack used_topic_brief=true, use the topic brief pivots and summary as the primary overview surface.
 5. Use dbrain_related on the most relevant item or source when you need to follow supporting links or backlinks.
-6. Review the strongest evidence with dbrain_get or the item/source resources before making detailed claims.
+6. Review the strongest evidence with dbrain_get using content_mode=evidence before making detailed claims. Use content_mode=raw only when the raw extract/transcript/OCR is needed, and content_mode=rendered only when the rendered Markdown shape is useful.
 7. Return a concise answer with citations to source keys and note paths.
 8. Answer from the collector's saved corpus; do not add outside balance or model-background viewpoints unless the user asks.
 9. Only call dbrain_ask with retrieve_only=false if the user explicitly wants synthesized prose and spending model usage is acceptable.
@@ -134,9 +134,9 @@ Recommended workflow:
 Lookup: %s
 
 Recommended workflow:
-1. Call dbrain_get for the starting lookup.
+1. Call dbrain_get for the starting lookup with content_mode=evidence.
 2. Call dbrain_related for the same lookup.
-3. Open the most relevant linked notes with dbrain_get or the item/source resources.
+3. Open the most relevant linked notes with dbrain_get content_mode=evidence, or content_mode=rendered if the rendered note shape matters.
 4. Summarize what the starting note connects to and why those links matter.
 `, lookup)), nil
 	case "brain_entity_browse":
@@ -151,7 +151,7 @@ Query: %s
 
 Recommended workflow:
 1. Call dbrain_entity_map with the query, optional kind=%q, and limit=10.
-2. Inspect the most relevant entity notes with dbrain_get when you need more detail.
+2. Inspect the most relevant entity notes with dbrain_get content_mode=evidence when you need more detail.
 3. Summarize the strongest matching entities, why they matter, and which notes reference them.
 4. Cite entity keys, note paths, and any especially useful supporting item/source notes.
 `, query, kind)), nil
@@ -168,7 +168,7 @@ Topic: %s
 
 Recommended workflow:
 1. Call dbrain_topic_map with the topic, optional source_types [%s], seed_limit=%d, and related_limit=2.
-2. Inspect the most important nodes with dbrain_get when you need more detail.
+2. Inspect the most important nodes with dbrain_get content_mode=evidence when you need more detail.
 3. Return a compact topic map with:
    - key nodes
    - what each node contributes
@@ -190,7 +190,7 @@ Topic: %s
 Recommended workflow:
 1. Call dbrain_topic_brief with the topic, optional source_types [%s], seed_limit=%d, and related_limit=2.
 2. Inspect the grouped pivots for projects, orgs, sites, and people.
-3. Use dbrain_get on the most relevant seed notes or pivot note paths when you need supporting detail.
+3. Use dbrain_get content_mode=evidence on the most relevant seed notes or pivot note paths when you need supporting detail.
 4. Return:
    - a short synthesis of what the topic is about in this corpus
    - the most useful entity pivots

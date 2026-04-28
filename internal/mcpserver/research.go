@@ -50,10 +50,18 @@ type researchQueryPlan struct {
 }
 
 type researchCoverage struct {
-	EvidenceCount int              `json:"evidence_count"`
-	ByKind        []researchBucket `json:"by_kind"`
-	BySourceType  []researchBucket `json:"by_source_type"`
-	TopUserTags   []researchBucket `json:"top_user_tags,omitempty"`
+	EvidenceCount     int              `json:"evidence_count"`
+	ByKind            []researchBucket `json:"by_kind"`
+	BySourceType      []researchBucket `json:"by_source_type"`
+	TopUserTags       []researchBucket `json:"top_user_tags,omitempty"`
+	ExactTagMatches   []researchBucket `json:"exact_tag_matches,omitempty"`
+	ItemTextMatches   int              `json:"item_text_matches,omitempty"`
+	SourceTextMatches int              `json:"source_text_matches,omitempty"`
+	TopicNodeCount    int              `json:"topic_node_count,omitempty"`
+	TopicEdgeCount    int              `json:"topic_edge_count,omitempty"`
+	DisplayedLimit    int              `json:"displayed_limit"`
+	RelatedLimit      int              `json:"related_limit,omitempty"`
+	RecallNote        string           `json:"recall_note,omitempty"`
 }
 
 type researchBucket struct {
@@ -138,6 +146,11 @@ func (s *Server) buildResearchPack(ctx context.Context, opts researchPackOptions
 		return researchPack{}, err
 	}
 
+	corpusCoverage, err := s.buildResearchCorpusCoverage(ctx, topic, hints, opts.SourceTypes, limit, opts.RelatedLimit)
+	if err != nil {
+		return researchPack{}, err
+	}
+
 	pack := researchPack{
 		Question: question,
 		Mode:     "evidence_only",
@@ -155,7 +168,7 @@ func (s *Server) buildResearchPack(ctx context.Context, opts researchPackOptions
 			IncludeTopicBrief: includeTopic,
 		},
 		Evidence:  resp.Evidence,
-		Coverage:  buildResearchCoverage(resp.Evidence),
+		Coverage:  mergeResearchCoverage(buildResearchCoverage(resp.Evidence), corpusCoverage),
 		NextSteps: buildResearchNextSteps(resp.Evidence),
 	}
 
@@ -182,7 +195,10 @@ func (s *Server) buildResearchPack(ctx context.Context, opts researchPackOptions
 			"nodes":         graph.Nodes,
 			"edges":         graph.Edges,
 		}
+		pack.Coverage.TopicNodeCount = len(graph.Nodes)
+		pack.Coverage.TopicEdgeCount = len(graph.Edges)
 	}
+	pack.Coverage.RecallNote = researchRecallNote(pack.Coverage)
 
 	return pack, nil
 }
@@ -217,6 +233,16 @@ func formatResearchPack(pack researchPack) string {
 	}
 	b.WriteString("Coverage: ")
 	_, _ = fmt.Fprintf(&b, "%d evidence", pack.Coverage.EvidenceCount)
+	if len(pack.Coverage.ExactTagMatches) > 0 {
+		b.WriteString("; exact tags ")
+		b.WriteString(formatResearchBuckets(pack.Coverage.ExactTagMatches, 4))
+	}
+	if pack.Coverage.ItemTextMatches > 0 || pack.Coverage.SourceTextMatches > 0 {
+		_, _ = fmt.Fprintf(&b, "; text matches items=%d sources=%d", pack.Coverage.ItemTextMatches, pack.Coverage.SourceTextMatches)
+	}
+	if pack.Coverage.TopicNodeCount > 0 {
+		_, _ = fmt.Fprintf(&b, "; topic nodes=%d", pack.Coverage.TopicNodeCount)
+	}
 	if len(pack.Coverage.BySourceType) > 0 {
 		b.WriteString("; source types ")
 		b.WriteString(formatResearchBuckets(pack.Coverage.BySourceType, 4))
@@ -226,6 +252,11 @@ func formatResearchPack(pack researchPack) string {
 		b.WriteString(formatResearchBuckets(pack.Coverage.TopUserTags, 5))
 	}
 	b.WriteString("\n")
+	if pack.Coverage.RecallNote != "" {
+		b.WriteString("Recall: ")
+		b.WriteString(pack.Coverage.RecallNote)
+		b.WriteString("\n")
+	}
 	if pack.TopicBrief != nil {
 		if summary, ok := pack.TopicBrief["summary"].(string); ok && strings.TrimSpace(summary) != "" {
 			b.WriteString("\nTopic brief:\n")
@@ -291,9 +322,17 @@ func inferResearchTopic(question string) (string, bool) {
 	lower := strings.ToLower(q)
 	switch {
 	case hasAnyPrefix(lower,
+		"what do i have in my brain about ",
+		"what do we have in my brain about ",
+		"what do i have saved about ",
+		"what do we have saved about ",
+		"what do i have about ",
+		"what do we have about ",
 		"what do i know about ",
 		"what do we know about ",
 		"what do you know about ",
+		"what is in my brain about ",
+		"what's in my brain about ",
 		"what does my brain know about ",
 		"what does dbrain know about ",
 		"what does the brain know about ",
@@ -302,9 +341,17 @@ func inferResearchTopic(question string) (string, bool) {
 		"use my brain for ",
 		"research "):
 		return normalizeTopicPhrase(trimQuestionPrefix(lower,
+			"what do i have in my brain about ",
+			"what do we have in my brain about ",
+			"what do i have saved about ",
+			"what do we have saved about ",
+			"what do i have about ",
+			"what do we have about ",
 			"what do i know about ",
 			"what do we know about ",
 			"what do you know about ",
+			"what is in my brain about ",
+			"what's in my brain about ",
 			"what does my brain know about ",
 			"what does dbrain know about ",
 			"what does the brain know about ",
@@ -382,6 +429,86 @@ func buildResearchCoverage(evidence []ask.Evidence) researchCoverage {
 	}
 }
 
+func (s *Server) buildResearchCorpusCoverage(ctx context.Context, topic string, hints ask.QueryHints, sourceTypes []string, limit int, relatedLimit int) (researchCoverage, error) {
+	coverage := researchCoverage{
+		DisplayedLimit: limit,
+		RelatedLimit:   relatedLimit,
+	}
+	tagQueries := append([]string(nil), hints.TagQueries...)
+	if topicAlias := tagAlias(topic); topicAlias != "" {
+		tagQueries = append(tagQueries, topicAlias)
+	}
+	tagQueries = uniqueStrings(tagQueries)
+	for _, tagQuery := range tagQueries {
+		count, err := s.st.CountExactUserTag(ctx, tagQuery, sourceTypes)
+		if err != nil {
+			return researchCoverage{}, err
+		}
+		if count > 0 {
+			coverage.ExactTagMatches = append(coverage.ExactTagMatches, researchBucket{Key: tagQuery, Count: count})
+		}
+	}
+	sort.Slice(coverage.ExactTagMatches, func(i, j int) bool {
+		if coverage.ExactTagMatches[i].Count != coverage.ExactTagMatches[j].Count {
+			return coverage.ExactTagMatches[i].Count > coverage.ExactTagMatches[j].Count
+		}
+		return coverage.ExactTagMatches[i].Key < coverage.ExactTagMatches[j].Key
+	})
+
+	textQuery := strings.TrimSpace(topic)
+	if textQuery == "" {
+		textQuery = strings.TrimSpace(hints.TextQuery)
+	}
+	if textQuery != "" {
+		itemCount, err := s.st.CountItemTextMatches(ctx, textQuery, sourceTypes)
+		if err != nil {
+			return researchCoverage{}, err
+		}
+		sourceCount, err := s.st.CountSourceTextMatches(ctx, textQuery, sourceTypes)
+		if err != nil {
+			return researchCoverage{}, err
+		}
+		coverage.ItemTextMatches = itemCount
+		coverage.SourceTextMatches = sourceCount
+	}
+	return coverage, nil
+}
+
+func mergeResearchCoverage(base researchCoverage, corpus researchCoverage) researchCoverage {
+	base.ExactTagMatches = corpus.ExactTagMatches
+	base.ItemTextMatches = corpus.ItemTextMatches
+	base.SourceTextMatches = corpus.SourceTextMatches
+	base.TopicNodeCount = corpus.TopicNodeCount
+	base.TopicEdgeCount = corpus.TopicEdgeCount
+	base.DisplayedLimit = corpus.DisplayedLimit
+	base.RelatedLimit = corpus.RelatedLimit
+	base.RecallNote = corpus.RecallNote
+	return base
+}
+
+func researchRecallNote(coverage researchCoverage) string {
+	var parts []string
+	if len(coverage.ExactTagMatches) > 0 {
+		total := 0
+		labels := make([]string, 0, len(coverage.ExactTagMatches))
+		for _, bucket := range coverage.ExactTagMatches {
+			total += bucket.Count
+			labels = append(labels, fmt.Sprintf("%s=%d", bucket.Key, bucket.Count))
+		}
+		parts = append(parts, fmt.Sprintf("exact user-tag matches: %s (sum=%d)", strings.Join(labels, ", "), total))
+	}
+	if coverage.ItemTextMatches > 0 || coverage.SourceTextMatches > 0 {
+		parts = append(parts, fmt.Sprintf("phrase/text matches: items=%d sources=%d", coverage.ItemTextMatches, coverage.SourceTextMatches))
+	}
+	if coverage.TopicNodeCount > 0 {
+		parts = append(parts, fmt.Sprintf("topic brief shows %d nodes and %d edges", coverage.TopicNodeCount, coverage.TopicEdgeCount))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ") + ". Returned evidence is a capped working set, not the full corpus."
+}
+
 func countResearchValues(evidence []ask.Evidence, keyFn func(ask.Evidence) string, limit int) []researchBucket {
 	counts := map[string]int{}
 	for _, doc := range evidence {
@@ -434,8 +561,8 @@ func buildResearchNextSteps(evidence []ask.Evidence) []researchSuggestedAction {
 			Tool:   "dbrain_get",
 			Reason: "Inspect the strongest evidence note before making detailed claims.",
 			Arguments: map[string]interface{}{
-				"lookup":          evidence[0].SourceKey,
-				"include_content": true,
+				"lookup":       evidence[0].SourceKey,
+				"content_mode": "evidence",
 			},
 		},
 	}
@@ -479,11 +606,11 @@ func trimResearchText(value string, maxChars int) string {
 
 func researchQuestionTerms(value string) []string {
 	stopwords := map[string]struct{}{
-		"a": {}, "an": {}, "and": {}, "are": {}, "can": {}, "do": {}, "does": {}, "for": {},
-		"find": {}, "give": {}, "how": {}, "i": {}, "is": {}, "me": {}, "of": {}, "on": {},
-		"overview": {}, "show": {}, "tell": {}, "the": {}, "to": {}, "what": {}, "why": {},
+		"a": {}, "about": {}, "an": {}, "and": {}, "are": {}, "brain": {}, "can": {}, "dbrain": {}, "do": {}, "does": {}, "for": {},
+		"evidence": {}, "find": {}, "give": {}, "have": {}, "how": {}, "i": {}, "if": {}, "in": {}, "include": {}, "is": {}, "know": {}, "me": {}, "my": {}, "of": {}, "on": {},
+		"overview": {}, "present": {}, "related": {}, "saved": {}, "show": {}, "tag": {}, "tags": {}, "tell": {}, "the": {}, "to": {}, "use": {}, "using": {}, "we": {}, "what": {}, "why": {}, "you": {}, "your": {},
 	}
-	replacer := strings.NewReplacer("?", " ", ".", " ", ",", " ", ":", " ", ";", " ", "\"", " ", "'", " ")
+	replacer := strings.NewReplacer("-", " ", "_", " ", "?", " ", ".", " ", ",", " ", ":", " ", ";", " ", "\"", " ", "'", " ")
 	parts := strings.Fields(replacer.Replace(strings.ToLower(strings.TrimSpace(value))))
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(parts))
@@ -499,6 +626,31 @@ func researchQuestionTerms(value string) []string {
 		}
 		seen[part] = struct{}{}
 		out = append(out, part)
+	}
+	return out
+}
+
+func tagAlias(value string) string {
+	terms := researchQuestionTerms(value)
+	if len(terms) < 2 {
+		return ""
+	}
+	return strings.Join(terms, "-")
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }

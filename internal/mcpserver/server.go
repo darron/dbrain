@@ -289,49 +289,64 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (map[strin
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("decode search args: %w", err)
 	}
-	results, err := s.st.Search(ctx, strings.TrimSpace(args.Query), defaultInt(args.Limit, 10))
+	query := strings.TrimSpace(args.Query)
+	limit := defaultInt(args.Limit, 10)
+	results, err := s.st.Search(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}
+	sourceResults, err := s.st.SearchSources(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, sourceResults...)
+	tagAliases := searchTagAliases(query)
+	exactTagMatches := make([]researchBucket, 0, len(tagAliases))
+	for _, alias := range tagAliases {
+		count, err := s.st.CountExactUserTag(ctx, alias, args.SourceTypes)
+		if err != nil {
+			return nil, err
+		}
+		if count > 0 {
+			exactTagMatches = append(exactTagMatches, researchBucket{Key: alias, Count: count})
+			tagResults, err := s.st.SearchExactUserTag(ctx, alias, limit)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, tagResults...)
+		}
+	}
 	results = filterSearchResults(ctx, s.st, results, args.SourceTypes)
+	results = dedupeSearchResults(results, limit)
 	content := formatSearchResults(s.cfg, results)
 	return toolOKResult(content, map[string]interface{}{
-		"results": results,
-		"count":   len(results),
+		"results":           results,
+		"count":             len(results),
+		"tag_aliases":       tagAliases,
+		"exact_tag_matches": exactTagMatches,
 	}), nil
 }
 
 func (s *Server) toolGet(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
 	var args struct {
-		Lookup         string `json:"lookup"`
-		IncludeContent *bool  `json:"include_content"`
+		Lookup             string `json:"lookup"`
+		ContentMode        string `json:"content_mode"`
+		MaxCharsPerSection int    `json:"max_chars_per_section"`
+		IncludeContent     *bool  `json:"include_content"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("decode get args: %w", err)
 	}
-	includeContent := true
-	if args.IncludeContent != nil {
-		includeContent = *args.IncludeContent
+	contentMode, err := resolveGetContentMode(args.ContentMode, args.IncludeContent)
+	if err != nil {
+		return nil, err
 	}
+	maxChars := maxGetSectionChars(args.MaxCharsPerSection)
 
 	if item, err := s.st.GetItem(ctx, args.Lookup); err == nil {
-		payload := map[string]interface{}{
-			"kind":  "item",
-			"item":  item,
-			"note":  filepath.Join(s.cfg.VaultDir, filepath.FromSlash(item.NotePath)),
-			"title": item.Title,
-		}
-		text := fmt.Sprintf("[%s] %s\nURL: %s\nNote: %s", item.SourceKey, item.Title, item.CanonicalURL, payload["note"])
-		if strings.TrimSpace(item.UserTags) != "" {
-			text += "\nUser tags: " + strings.TrimSpace(item.UserTags)
-		}
-		if includeContent {
-			content, err := readNote(filepath.Join(s.cfg.VaultDir, filepath.FromSlash(item.NotePath)))
-			if err != nil {
-				return nil, err
-			}
-			payload["content"] = content
-			text += "\n\n" + content
+		payload, text, err := s.getItemPayload(ctx, item, contentMode, maxChars)
+		if err != nil {
+			return nil, err
 		}
 		return toolOKResult(text, payload), nil
 	}
@@ -340,20 +355,9 @@ func (s *Server) toolGet(ctx context.Context, raw json.RawMessage) (map[string]i
 	if err != nil {
 		return nil, err
 	}
-	payload := map[string]interface{}{
-		"kind":   "source",
-		"source": source,
-		"note":   filepath.Join(s.cfg.VaultDir, filepath.FromSlash(source.NotePath)),
-		"title":  firstNonEmpty(source.Title, source.CanonicalURL),
-	}
-	text := fmt.Sprintf("[%s] %s\nURL: %s\nNote: %s", source.SourceKey, payload["title"], source.CanonicalURL, payload["note"])
-	if includeContent {
-		content, err := readNote(filepath.Join(s.cfg.VaultDir, filepath.FromSlash(source.NotePath)))
-		if err != nil {
-			return nil, err
-		}
-		payload["content"] = content
-		text += "\n\n" + content
+	payload, text, err := s.getSourcePayload(ctx, source, contentMode, maxChars)
+	if err != nil {
+		return nil, err
 	}
 	return toolOKResult(text, payload), nil
 }
@@ -491,14 +495,27 @@ func (s *Server) toolRelated(ctx context.Context, raw json.RawMessage) (map[stri
 		if err != nil {
 			return nil, err
 		}
+		childIDs, err := s.st.ListItemChildLinks(ctx, item.ID, "quoted_post")
+		if err != nil {
+			return nil, err
+		}
+		relatedItems := make([]map[string]interface{}, 0, len(childIDs))
+		for _, childID := range childIDs {
+			child, err := s.st.GetItemByID(ctx, childID)
+			if err != nil {
+				continue
+			}
+			relatedItems = append(relatedItems, slimItem(child))
+		}
 		payload := map[string]interface{}{
 			"kind":            "item",
 			"lookup":          lookup,
-			"item":            item,
+			"item":            slimItem(item),
 			"related_sources": related,
-			"count":           len(related),
+			"related_items":   relatedItems,
+			"count":           len(related) + len(relatedItems),
 		}
-		return toolOKResult(formatRelatedSources(item.SourceKey, related), payload), nil
+		return toolOKResult(formatRelatedItemGraph(item.SourceKey, related, relatedItems), payload), nil
 	}
 
 	source, err := s.st.GetSource(ctx, lookup)
@@ -512,7 +529,7 @@ func (s *Server) toolRelated(ctx context.Context, raw json.RawMessage) (map[stri
 	payload := map[string]interface{}{
 		"kind":      "source",
 		"lookup":    lookup,
-		"source":    source,
+		"source":    slimSource(source),
 		"backlinks": backlinks,
 		"count":     len(backlinks),
 	}
@@ -619,12 +636,14 @@ func toolDefinitions() []map[string]interface{} {
 		},
 		{
 			"name":        "dbrain_get",
-			"description": "Load a specific item or source from the local brain by source key, URL, external id, or note path.",
+			"description": "Load a specific item or source from the local brain by source key, URL, external id, or note path. Defaults to capped DB-backed evidence sections; rendered Markdown is available with content_mode=rendered.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"lookup":          map[string]interface{}{"type": "string", "description": "Source key, external id, URL, or note path."},
-					"include_content": map[string]interface{}{"type": "boolean", "description": "Whether to include full note content.", "default": true},
+					"lookup":                map[string]interface{}{"type": "string", "description": "Source key, external id, URL, or note path."},
+					"content_mode":          map[string]interface{}{"type": "string", "enum": []string{"brief", "evidence", "raw", "rendered"}, "description": "Content to return: brief metadata only, capped DB evidence sections, capped raw DB sections, or rendered Markdown note.", "default": "evidence"},
+					"max_chars_per_section": map[string]interface{}{"type": "integer", "description": "Maximum characters per returned content section. Hard-capped to prevent accidental huge context.", "default": defaultGetSectionChars},
+					"include_content":       map[string]interface{}{"type": "boolean", "description": "Deprecated compatibility flag. false maps to content_mode=brief; true maps to content_mode=evidence unless content_mode is set.", "default": true},
 				},
 				"required": []string{"lookup"},
 			},
@@ -790,20 +809,43 @@ func toolDefinitions() []map[string]interface{} {
 
 func searchOutputSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
-		"count":   scalarSchema("integer", "Number of search hits returned."),
-		"results": arraySchema(searchResultSchema()),
+		"count":             scalarSchema("integer", "Number of search hits returned."),
+		"results":           arraySchema(searchResultSchema()),
+		"tag_aliases":       arraySchema(scalarSchema("string", "Hyphenated tag aliases checked for exact user_tags matches.")),
+		"exact_tag_matches": arraySchema(researchBucketSchema()),
 	}, "count", "results")
 }
 
 func getOutputSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
-		"kind":    enumSchema("item or source", "item", "source"),
-		"title":   scalarSchema("string", "Resolved title for the note."),
-		"note":    scalarSchema("string", "Absolute path to the rendered note."),
-		"content": scalarSchema("string", "Rendered markdown note content when include_content is true."),
-		"item":    genericObjectSchema("Item row when the lookup resolved to an item."),
-		"source":  genericObjectSchema("Source row when the lookup resolved to a source."),
-	}, "kind", "title", "note")
+		"kind":                  enumSchema("item or source", "item", "source"),
+		"title":                 scalarSchema("string", "Resolved title."),
+		"source_key":            scalarSchema("string", "Resolved source key."),
+		"url":                   scalarSchema("string", "Canonical URL when available."),
+		"note":                  scalarSchema("string", "Absolute path to the rendered note."),
+		"note_path":             scalarSchema("string", "Relative rendered note path."),
+		"content_mode":          enumSchema("Returned content mode.", "brief", "evidence", "raw", "rendered"),
+		"max_chars_per_section": scalarSchema("integer", "Maximum characters returned per content section."),
+		"available_sections":    arraySchema(getSectionSchema()),
+		"content_sections":      arraySchema(getSectionSchema()),
+		"content":               scalarSchema("string", "Rendered markdown note content when content_mode is rendered."),
+		"item":                  genericObjectSchema("Slim item metadata when the lookup resolved to an item."),
+		"source":                genericObjectSchema("Slim source metadata when the lookup resolved to a source."),
+	}, "kind", "title", "source_key", "note", "content_mode", "available_sections", "content_sections")
+}
+
+func getSectionSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"name":      scalarSchema("string", "Section name, for example summary_text, extracted_text, x_post_text, or rendered_note."),
+		"role":      scalarSchema("string", "Section role such as raw, derived, metadata, raw_json, or rendered."),
+		"status":    scalarSchema("string", "Pipeline status for this section when applicable."),
+		"model":     scalarSchema("string", "Model provenance for derived sections when applicable."),
+		"tool":      scalarSchema("string", "Tool provenance when applicable."),
+		"at":        scalarSchema("string", "Timestamp for the section when applicable."),
+		"chars":     scalarSchema("integer", "Original section character count before truncation."),
+		"text":      scalarSchema("string", "Section text when returned by the selected content_mode."),
+		"truncated": scalarSchema("boolean", "Whether text was truncated to max_chars_per_section."),
+	}, "name", "role", "chars", "truncated")
 }
 
 func askOutputSchema() map[string]interface{} {
@@ -846,10 +888,18 @@ func researchQueryPlanSchema() map[string]interface{} {
 
 func researchCoverageSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
-		"evidence_count": scalarSchema("integer", "Number of evidence rows returned."),
-		"by_kind":        arraySchema(researchBucketSchema()),
-		"by_source_type": arraySchema(researchBucketSchema()),
-		"top_user_tags":  arraySchema(researchBucketSchema()),
+		"evidence_count":      scalarSchema("integer", "Number of evidence rows returned."),
+		"by_kind":             arraySchema(researchBucketSchema()),
+		"by_source_type":      arraySchema(researchBucketSchema()),
+		"top_user_tags":       arraySchema(researchBucketSchema()),
+		"exact_tag_matches":   arraySchema(researchBucketSchema()),
+		"item_text_matches":   scalarSchema("integer", "Total item rows matching the topic/text phrase."),
+		"source_text_matches": scalarSchema("integer", "Total source rows matching the topic/text phrase."),
+		"topic_node_count":    scalarSchema("integer", "Number of nodes included in the attached topic brief."),
+		"topic_edge_count":    scalarSchema("integer", "Number of edges included in the attached topic brief."),
+		"displayed_limit":     scalarSchema("integer", "Requested evidence limit for this pack."),
+		"related_limit":       scalarSchema("integer", "Requested related-evidence limit for this pack."),
+		"recall_note":         scalarSchema("string", "Human-readable reminder that returned evidence is capped and how much matching corpus exists."),
 	}, "evidence_count", "by_kind", "by_source_type")
 }
 
@@ -907,7 +957,11 @@ func entityMapOutputSchema() map[string]interface{} {
 func relatedOutputSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
 		"kind":            enumSchema("Whether the lookup resolved to an item or a source.", "item", "source"),
+		"lookup":          scalarSchema("string", "Lookup value used."),
+		"item":            genericObjectSchema("Slim item metadata when lookup resolved to an item."),
+		"source":          genericObjectSchema("Slim source metadata when lookup resolved to a source."),
 		"count":           scalarSchema("integer", "Number of related rows returned."),
+		"related_items":   arraySchema(genericObjectSchema("Slim child item metadata, for example quoted posts.")),
 		"related_sources": arraySchema(itemSourceRefSchema()),
 		"backlinks":       arraySchema(sourceBacklinkSchema()),
 	}, "kind", "count")
@@ -1212,6 +1266,40 @@ func formatSearchResults(cfg config.Config, results []model.SearchResult) string
 	return strings.TrimSpace(b.String())
 }
 
+func searchTagAliases(query string) []string {
+	aliases := []string{}
+	if alias := tagAlias(query); alias != "" {
+		aliases = append(aliases, alias)
+	}
+	trimmed := strings.TrimSpace(strings.ToLower(query))
+	if strings.Contains(trimmed, "-") && !strings.ContainsAny(trimmed, " \t\n\r") {
+		aliases = append(aliases, trimmed)
+	}
+	return uniqueStrings(aliases)
+}
+
+func dedupeSearchResults(results []model.SearchResult, limit int) []model.SearchResult {
+	if limit <= 0 {
+		limit = len(results)
+	}
+	seen := map[string]struct{}{}
+	out := make([]model.SearchResult, 0, min(len(results), limit))
+	for _, result := range results {
+		if strings.TrimSpace(result.SourceKey) == "" {
+			continue
+		}
+		if _, exists := seen[result.SourceKey]; exists {
+			continue
+		}
+		seen[result.SourceKey] = struct{}{}
+		out = append(out, result)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 func formatAskResponse(resp ask.Response) string {
 	var b strings.Builder
 	if strings.TrimSpace(resp.Answer) != "" {
@@ -1271,6 +1359,44 @@ func formatRelatedSources(lookup string, refs []model.ItemSourceRef) string {
 		b.WriteString("  Note: ")
 		b.WriteString(ref.NotePath)
 		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatRelatedItemGraph(lookup string, refs []model.ItemSourceRef, childItems []map[string]interface{}) string {
+	if len(refs) == 0 && len(childItems) == 0 {
+		return fmt.Sprintf("No linked sources or child items found for %s.", lookup)
+	}
+	var b strings.Builder
+	if len(childItems) > 0 {
+		b.WriteString("Related child items:\n")
+		for _, child := range childItems {
+			sourceKey, _ := child["source_key"].(string)
+			title, _ := child["title"].(string)
+			url, _ := child["canonical_url"].(string)
+			notePath, _ := child["note_path"].(string)
+			sourceType, _ := child["source_type"].(string)
+			b.WriteString("- [")
+			b.WriteString(sourceKey)
+			b.WriteString("] ")
+			b.WriteString(firstNonEmpty(title, url))
+			b.WriteString("\n")
+			b.WriteString("  Type: ")
+			b.WriteString(sourceType)
+			b.WriteString("\n")
+			b.WriteString("  URL: ")
+			b.WriteString(url)
+			b.WriteString("\n")
+			b.WriteString("  Note: ")
+			b.WriteString(notePath)
+			b.WriteString("\n")
+		}
+	}
+	if len(refs) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(formatRelatedSources(lookup, refs))
 	}
 	return strings.TrimSpace(b.String())
 }

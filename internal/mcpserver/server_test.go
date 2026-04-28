@@ -251,6 +251,614 @@ func TestServerSearchTool(t *testing.T) {
 	}
 }
 
+func TestServerSearchToolReportsExactTagCoverage(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-search-tag",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-search-tag",
+		CanonicalURL: "https://x.com/example/status/test-mcp-search-tag",
+		Title:        "Tagged Search Item",
+		Text:         "saved material",
+		ContentHash:  "mcp-search-tag-hash",
+		NotePath:     "items/x/2026/test-mcp-search-tag.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	if err := st.SaveItemUserTags(context.Background(), itemResult.ItemID, "mark-carney, canadian-politics"); err != nil {
+		t.Fatalf("save user tags: %v", err)
+	}
+	secondResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-search-tag-second",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-search-tag-second",
+		CanonicalURL: "https://x.com/example/status/test-mcp-search-tag-second",
+		Title:        "Tagged Search Item Second",
+		Text:         "second saved material",
+		ContentHash:  "mcp-search-tag-hash-second",
+		NotePath:     "items/x/2026/test-mcp-search-tag-second.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("upsert second item: %v", err)
+	}
+	if err := st.SaveItemUserTags(context.Background(), secondResult.ItemID, "canadian-politics, mark-carney"); err != nil {
+		t.Fatalf("save second user tags: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_search","arguments":{"query":"Mark Carney","limit":5}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	aliases := structured["tag_aliases"].([]interface{})
+	if len(aliases) != 1 || aliases[0] != "mark-carney" {
+		t.Fatalf("expected mark-carney tag alias, got %#v", aliases)
+	}
+	exact := structured["exact_tag_matches"].([]interface{})
+	if len(exact) != 1 {
+		t.Fatalf("expected exact tag coverage, got %#v", structured)
+	}
+	bucket := exact[0].(map[string]interface{})
+	if bucket["key"] != "mark-carney" || int(bucket["count"].(float64)) != 2 {
+		t.Fatalf("unexpected exact tag bucket: %#v", bucket)
+	}
+	results := structured["results"].([]interface{})
+	var foundFirst, foundSecond bool
+	for _, result := range results {
+		sourceKey, _ := result.(map[string]interface{})["source_key"].(string)
+		if sourceKey == "x:test-mcp-search-tag" {
+			foundFirst = true
+		}
+		if sourceKey == "x:test-mcp-search-tag-second" {
+			foundSecond = true
+		}
+	}
+	if !foundFirst || !foundSecond {
+		t.Fatalf("expected tagged result, got %#v", results)
+	}
+}
+
+func TestServerSearchToolSurfacesSourceEvidenceWithSourceTypeFilter(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-search-source-filter-noise",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-search-source-filter-noise",
+		CanonicalURL: "https://x.com/example/status/test-mcp-search-source-filter-noise",
+		Title:        "Mark Carney item noise",
+		Text:         "Mark Carney item evidence that should be filtered out for web-only search.",
+		ContentHash:  "mcp-search-source-filter-noise",
+		NotePath:     "items/x/2026/test-mcp-search-source-filter-noise.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	sourceResult, err := st.UpsertSource(context.Background(), model.SourceCandidate{
+		SourceKey:     "src:test-mcp-search-source-filter",
+		OriginalURL:   "https://example.com/mark-carney-source",
+		CanonicalURL:  "https://example.com/mark-carney-source",
+		NormalizedURL: "https://example.com/mark-carney-source",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-mcp-search-source-filter.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/mark-carney-source",
+		FinalURL:     "https://example.com/mark-carney-source",
+		Title:        "Mark Carney Source Evidence",
+		Content:      "Mark Carney source text from a web article.",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "test-extractor",
+		ToolVersion:  "test",
+	}, "mcp-search-source-filter-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_search","arguments":{"query":"Mark Carney","limit":1,"source_types":["web"]}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	results := structured["results"].([]interface{})
+	if len(results) != 1 {
+		t.Fatalf("expected one web source result, got %#v", structured)
+	}
+	first := results[0].(map[string]interface{})
+	if first["source_key"] != "src:test-mcp-search-source-filter" {
+		t.Fatalf("expected source evidence after web filter, got %#v", first)
+	}
+}
+
+func TestServerGetToolDefaultsToDBEvidence(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	notePath := "items/x/2026/test-mcp-get.md"
+	noteFile := filepath.Join(cfg.VaultDir, filepath.FromSlash(notePath))
+	if err := os.MkdirAll(filepath.Dir(noteFile), 0o755); err != nil {
+		t.Fatalf("mkdir note: %v", err)
+	}
+	if err := os.WriteFile(noteFile, []byte("STALE MARKDOWN CONTENT"), 0o644); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-get",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-get",
+		CanonicalURL: "https://x.com/example/status/test-mcp-get",
+		Title:        "MCP Get Item",
+		Text:         strings.Repeat("fresh db evidence ", 20),
+		ContentHash:  "mcp-get-hash",
+		NotePath:     notePath,
+		RawJSON:      strings.Repeat(`{"raw":true}`, 20),
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	if err := st.SaveItemUserTags(context.Background(), itemResult.ItemID, "mark-carney, mcp-test"); err != nil {
+		t.Fatalf("save user tags: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"x:test-mcp-get","max_chars_per_section":80}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	if structured["content_mode"] != "evidence" {
+		t.Fatalf("expected evidence mode, got %#v", structured)
+	}
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "fresh db evidence") {
+		t.Fatalf("expected DB evidence in response text, got %q", text)
+	}
+	if strings.Contains(text, "STALE MARKDOWN CONTENT") {
+		t.Fatalf("default get should not read rendered markdown: %q", text)
+	}
+	item := structured["item"].(map[string]interface{})
+	if _, ok := item["raw_json"]; ok {
+		t.Fatalf("expected slim item without raw_json, got %#v", item)
+	}
+	available := structured["available_sections"].([]interface{})
+	if _, ok := available[0].(map[string]interface{})["text"]; ok {
+		t.Fatalf("available_sections should not carry section text, got %#v", available[0])
+	}
+	sections := structured["content_sections"].([]interface{})
+	if len(sections) == 0 {
+		t.Fatalf("expected content sections, got %#v", structured)
+	}
+	first := sections[0].(map[string]interface{})
+	if first["text"] == "" || !first["truncated"].(bool) {
+		t.Fatalf("expected capped section text, got %#v", first)
+	}
+}
+
+func TestServerGetToolIncludesMediaTranscriptAndOCRSections(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:              "x:test-mcp-get-media-enrichments",
+		SourceType:             "x_bookmark",
+		ExternalID:             "test-mcp-get-media-enrichments",
+		CanonicalURL:           "https://x.com/example/status/test-mcp-get-media-enrichments",
+		Title:                  "MCP Get Media Enrichments",
+		ArticleTitle:           "X Media Transcript",
+		ArticleText:            "raw video transcript evidence",
+		OCRText:                "raw image OCR evidence",
+		OCRStatus:              "ok",
+		OCRModel:               "test-vision",
+		OCRTool:                "test-ocr",
+		OCRAt:                  now,
+		XMediaTranscriptStatus: "ok",
+		XMediaTranscriptAt:     now,
+		ContentHash:            "mcp-get-media-enrichments-hash",
+		NotePath:               "items/x/2026/test-mcp-get-media-enrichments.md",
+		RawJSON:                `{}`,
+		ImportedAt:             now,
+		UpdatedAt:              now,
+		LastSeenAt:             now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"x:test-mcp-get-media-enrichments","content_mode":"evidence","max_chars_per_section":500}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	sections := structured["content_sections"].([]interface{})
+	var foundTranscript, foundOCR bool
+	for _, raw := range sections {
+		section := raw.(map[string]interface{})
+		switch section["name"] {
+		case "x_media_transcript":
+			foundTranscript = section["role"] == "raw_transcript" && strings.Contains(section["text"].(string), "raw video transcript evidence")
+		case "ocr_text":
+			foundOCR = section["role"] == "raw_ocr" && strings.Contains(section["text"].(string), "raw image OCR evidence")
+		case "article_text":
+			t.Fatalf("transcript-backed article_text should be exposed as x_media_transcript, got %#v", section)
+		}
+	}
+	if !foundTranscript || !foundOCR {
+		t.Fatalf("expected transcript and OCR evidence sections, got %#v", sections)
+	}
+}
+
+func TestServerGetToolExpandsQuotedPostFromDB(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	parent, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:      "x:test-mcp-get-quote-parent",
+		SourceType:     "x_bookmark",
+		ExternalID:     "test-mcp-get-quote-parent",
+		CanonicalURL:   "https://x.com/example/status/test-mcp-get-quote-parent",
+		Title:          "Parent post",
+		XPostText:      "parent only mentions the thread",
+		XPostStatus:    "ok_graphql",
+		XPostFetchedAt: now,
+		ContentHash:    "mcp-get-quote-parent",
+		NotePath:       "items/x/2026/test-mcp-get-quote-parent.md",
+		RawJSON:        `{}`,
+		ImportedAt:     now,
+		UpdatedAt:      now,
+		LastSeenAt:     now,
+	})
+	if err != nil {
+		t.Fatalf("upsert parent: %v", err)
+	}
+	if _, err := st.SaveXHydration(context.Background(), parent.ItemID, model.XHydration{
+		FullText:  "parent only mentions the thread",
+		FetchedAt: now,
+		Status:    "ok_graphql",
+	}); err != nil {
+		t.Fatalf("save parent hydration: %v", err)
+	}
+	child, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:      "x:test-mcp-get-quote-child",
+		SourceType:     "x_quote",
+		ExternalID:     "test-mcp-get-quote-child",
+		CanonicalURL:   "https://x.com/example/status/test-mcp-get-quote-child",
+		Title:          "Quoted post",
+		AuthorHandle:   "quotedauthor",
+		XPostText:      "quoted post has the important Carney GFANZ context",
+		ArticleTitle:   "X Media Transcript",
+		ArticleText:    "video transcript mentions Carney climate banking testimony",
+		OCRText:        "image OCR mentions GFANZ report title",
+		OCRStatus:      "ok",
+		XPostStatus:    "ok_graphql",
+		XPostFetchedAt: now,
+		ContentHash:    "mcp-get-quote-child",
+		NotePath:       "items/x/2026/test-mcp-get-quote-child.md",
+		RawJSON:        `{}`,
+		ImportedAt:     now,
+		UpdatedAt:      now,
+		LastSeenAt:     now,
+	})
+	if err != nil {
+		t.Fatalf("upsert child: %v", err)
+	}
+	if _, err := st.SaveXHydration(context.Background(), child.ItemID, model.XHydration{
+		FullText:  "quoted post has the important Carney GFANZ context",
+		FetchedAt: now,
+		Status:    "ok_graphql",
+	}); err != nil {
+		t.Fatalf("save child hydration: %v", err)
+	}
+	if _, err := st.ReplaceItemChildLinks(context.Background(), parent.ItemID, "quoted_post", []int64{child.ItemID}); err != nil {
+		t.Fatalf("replace quoted link: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"x:test-mcp-get-quote-parent","content_mode":"evidence","max_chars_per_section":1200}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	relatedItems := structured["related_items"].([]interface{})
+	if len(relatedItems) != 1 {
+		t.Fatalf("expected one related quoted item, got %#v", structured)
+	}
+	sections := structured["content_sections"].([]interface{})
+	var found bool
+	for _, section := range sections {
+		entry := section.(map[string]interface{})
+		if entry["name"] == "quoted_post:x:test-mcp-get-quote-child" {
+			text := entry["text"].(string)
+			found = strings.Contains(text, "important Carney GFANZ context") &&
+				strings.Contains(text, "Media transcript:") &&
+				strings.Contains(text, "video transcript mentions Carney climate banking testimony") &&
+				strings.Contains(text, "Image OCR:") &&
+				strings.Contains(text, "image OCR mentions GFANZ report title")
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected quoted post DB evidence section, got %#v", sections)
+	}
+}
+
+func TestServerGetToolRenderedModeReadsMarkdown(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	notePath := "items/x/2026/test-mcp-get-rendered.md"
+	noteFile := filepath.Join(cfg.VaultDir, filepath.FromSlash(notePath))
+	if err := os.MkdirAll(filepath.Dir(noteFile), 0o755); err != nil {
+		t.Fatalf("mkdir note: %v", err)
+	}
+	if err := os.WriteFile(noteFile, []byte("# Rendered Note\n\nrendered markdown evidence"), 0o644); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-get-rendered",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-get-rendered",
+		CanonicalURL: "https://x.com/example/status/test-mcp-get-rendered",
+		Title:        "MCP Rendered Get Item",
+		Text:         "fresh db text",
+		ContentHash:  "mcp-get-rendered-hash",
+		NotePath:     notePath,
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"x:test-mcp-get-rendered","content_mode":"rendered"}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	if structured["content_mode"] != "rendered" {
+		t.Fatalf("expected rendered mode, got %#v", structured)
+	}
+	if structured["content"] != "# Rendered Note\n\nrendered markdown evidence" {
+		t.Fatalf("expected rendered content, got %#v", structured["content"])
+	}
+	sections := structured["content_sections"].([]interface{})
+	first := sections[0].(map[string]interface{})
+	if first["name"] != "rendered_note" || !strings.Contains(first["text"].(string), "rendered markdown evidence") {
+		t.Fatalf("expected rendered note section, got %#v", first)
+	}
+}
+
+func TestServerGetToolUsesSlimSourceProjection(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	sourceResult, err := st.UpsertSource(context.Background(), model.SourceCandidate{
+		SourceKey:     "src:test-mcp-get-source",
+		OriginalURL:   "https://example.com/source",
+		CanonicalURL:  "https://example.com/source",
+		NormalizedURL: "https://example.com/source",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-mcp-get-source.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/source",
+		FinalURL:     "https://example.com/source",
+		Title:        "MCP Get Source",
+		Description:  "source description",
+		SiteName:     "Example",
+		Content:      strings.Repeat("fresh source extract ", 20),
+		RawJSON:      strings.Repeat(`{"extract":true}`, 20),
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "test-extractor",
+		ToolVersion:  "test",
+	}, "mcp-get-source-hash"); err != nil {
+		t.Fatalf("save extraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(context.Background(), sourceResult.SourceID, model.SummaryResult{
+		Text:          "short source summary",
+		RawJSON:       `{"summary":true}`,
+		Model:         "test-model",
+		PromptVersion: "test",
+		Status:        "ok",
+		FetchedAt:     now,
+		Tool:          "test-summarizer",
+		ToolVersion:   "test",
+	}); err != nil {
+		t.Fatalf("save summary: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"src:test-mcp-get-source","max_chars_per_section":90}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	source := structured["source"].(map[string]interface{})
+	if _, ok := source["extracted_text"]; ok {
+		t.Fatalf("expected slim source without extracted_text, got %#v", source)
+	}
+	if _, ok := source["extract_json"]; ok {
+		t.Fatalf("expected slim source without extract_json, got %#v", source)
+	}
+	available := structured["available_sections"].([]interface{})
+	if _, ok := available[0].(map[string]interface{})["text"]; ok {
+		t.Fatalf("available_sections should not carry section text, got %#v", available[0])
+	}
+	sections := structured["content_sections"].([]interface{})
+	var foundSummary, foundExtract bool
+	for _, raw := range sections {
+		section := raw.(map[string]interface{})
+		switch section["name"] {
+		case "summary_text":
+			foundSummary = strings.Contains(section["text"].(string), "short source summary")
+		case "extracted_text":
+			foundExtract = strings.Contains(section["text"].(string), "fresh source extract") && section["truncated"].(bool)
+		case "extract_json":
+			t.Fatalf("default evidence mode should not include JSON sections: %#v", section)
+		}
+	}
+	if !foundSummary || !foundExtract {
+		t.Fatalf("expected summary and capped extract sections, got %#v", sections)
+	}
+}
+
 func TestServerAskRetrieveOnlyTool(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -434,6 +1042,25 @@ func TestServerRelatedToolForItem(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("source link: %v", err)
 	}
+	childResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-related-quote",
+		SourceType:   "x_quote",
+		ExternalID:   "test-mcp-related-quote",
+		CanonicalURL: "https://x.com/example/status/test-mcp-related-quote",
+		Title:        "MCP Related Quote",
+		ContentHash:  "mcp-related-quote-hash",
+		NotePath:     "items/x/2026/test-mcp-related-quote.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert quoted child: %v", err)
+	}
+	if _, err := st.ReplaceItemChildLinks(context.Background(), itemResult.ItemID, "quoted_post", []int64{childResult.ItemID}); err != nil {
+		t.Fatalf("replace quoted child: %v", err)
+	}
 
 	server := New(cfg, st)
 	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_related","arguments":{"lookup":"x:test-mcp-related"}}}`
@@ -452,6 +1079,22 @@ func TestServerRelatedToolForItem(t *testing.T) {
 	related := structured["related_sources"].([]interface{})
 	if len(related) != 1 {
 		t.Fatalf("expected 1 related source, got %#v", related)
+	}
+	relatedItems := structured["related_items"].([]interface{})
+	if len(relatedItems) != 1 {
+		t.Fatalf("expected 1 related quoted item, got %#v", structured)
+	}
+	if int(structured["count"].(float64)) != 2 {
+		t.Fatalf("expected total related count to include sources and child items, got %#v", structured)
+	}
+	item := structured["item"].(map[string]interface{})
+	if _, ok := item["raw_json"]; ok {
+		t.Fatalf("expected slim related item without raw_json, got %#v", item)
+	}
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Related child items") || !strings.Contains(text, "x:test-mcp-related-quote") {
+		t.Fatalf("expected related child in output text, got %q", text)
 	}
 }
 
@@ -822,13 +1465,13 @@ func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
-	longText := strings.Repeat("Mark Carney central banking and climate finance evidence. ", 40)
+	longText := strings.Repeat("central banking and climate finance evidence. ", 40)
 	itemResult, err := st.UpsertItem(context.Background(), model.Item{
 		SourceKey:    "x:test-mcp-research-carney",
 		SourceType:   "x_bookmark",
 		ExternalID:   "test-mcp-research-carney",
 		CanonicalURL: "https://x.com/example/status/test-mcp-research-carney",
-		Title:        "Mark Carney Saved Evidence",
+		Title:        "Tagged Saved Evidence",
 		Text:         longText,
 		ContentHash:  "mcp-research-carney-item",
 		NotePath:     "items/x/2026/test-mcp-research-carney.md",
@@ -845,7 +1488,7 @@ func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {
 	}
 
 	server := New(cfg, st)
-	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_research_pack","arguments":{"question":"What do I know about Mark Carney?","limit":4,"max_chars_per_doc":120}}}`
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_research_pack","arguments":{"question":"What do I have in my brain about Mark Carney? Include related evidence and use the mark-carney tag if present.","limit":4,"max_chars_per_doc":120}}}`
 
 	var out bytes.Buffer
 	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
@@ -874,6 +1517,17 @@ func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {
 	if len(topTags) == 0 {
 		t.Fatalf("expected top user tags in coverage, got %#v", coverage)
 	}
+	exactTags := coverage["exact_tag_matches"].([]interface{})
+	if len(exactTags) != 1 {
+		t.Fatalf("expected exact tag matches in coverage, got %#v", coverage)
+	}
+	exact := exactTags[0].(map[string]interface{})
+	if exact["key"] != "mark-carney" || int(exact["count"].(float64)) != 1 {
+		t.Fatalf("unexpected exact tag coverage: %#v", exact)
+	}
+	if !strings.Contains(coverage["recall_note"].(string), "Returned evidence is a capped working set") {
+		t.Fatalf("expected recall note, got %#v", coverage)
+	}
 	evidence := structured["evidence"].([]interface{})
 	if len(evidence) == 0 {
 		t.Fatalf("expected evidence, got %#v", structured)
@@ -885,6 +1539,104 @@ func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {
 	excerpt := first["excerpt"].(string)
 	if len([]rune(excerpt)) > 123 {
 		t.Fatalf("expected excerpt capped near max_chars_per_doc, got %d chars: %q", len([]rune(excerpt)), excerpt)
+	}
+}
+
+func TestServerResearchPackSurfacesSourceEvidenceWithSourceTypeFilter(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i := 0; i < 13; i++ {
+		if _, err := st.UpsertItem(ctx, model.Item{
+			SourceKey:    fmt.Sprintf("x:test-mcp-research-source-filter-noise-%02d", i),
+			SourceType:   "x_bookmark",
+			ExternalID:   fmt.Sprintf("test-mcp-research-source-filter-noise-%02d", i),
+			CanonicalURL: fmt.Sprintf("https://x.com/example/status/test-mcp-research-source-filter-noise-%02d", i),
+			Title:        "Mark Carney item noise",
+			Text:         "Mark Carney item evidence that should not satisfy web-only research.",
+			ContentHash:  fmt.Sprintf("mcp-research-source-filter-noise-%02d", i),
+			NotePath:     fmt.Sprintf("items/x/2026/test-mcp-research-source-filter-noise-%02d.md", i),
+			RawJSON:      `{}`,
+			ImportedAt:   now,
+			UpdatedAt:    now,
+			LastSeenAt:   now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("upsert item %d: %v", i, err)
+		}
+	}
+
+	sourceResult, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:test-mcp-research-source-filter",
+		OriginalURL:   "https://example.com/mark-carney-research-source",
+		CanonicalURL:  "https://example.com/mark-carney-research-source",
+		NormalizedURL: "https://example.com/mark-carney-research-source",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-mcp-research-source-filter.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/mark-carney-research-source",
+		FinalURL:     "https://example.com/mark-carney-research-source",
+		Title:        "Mark Carney Research Source",
+		Content:      "Mark Carney source evidence from a web article about central banking.",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "test-extractor",
+		ToolVersion:  "test",
+	}, "mcp-research-source-filter-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_research_pack","arguments":{"question":"What do I have in my brain about Mark Carney? Include related evidence.","limit":2,"source_types":["web"],"max_chars_per_doc":160}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(ctx, strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	if structured["topic"] != "mark carney" {
+		t.Fatalf("expected collector question to infer mark carney topic, got %#v", structured["topic"])
+	}
+	evidence := structured["evidence"].([]interface{})
+	if len(evidence) == 0 {
+		t.Fatalf("expected web source evidence, got %#v", structured)
+	}
+	first := evidence[0].(map[string]interface{})
+	if first["source_key"] != "src:test-mcp-research-source-filter" || first["kind"] != "source" {
+		t.Fatalf("expected direct source evidence after web filter, got %#v", first)
+	}
+	coverage := structured["coverage"].(map[string]interface{})
+	if int(coverage["source_text_matches"].(float64)) == 0 {
+		t.Fatalf("expected source text match coverage, got %#v", coverage)
+	}
+	if int(coverage["topic_node_count"].(float64)) == 0 {
+		t.Fatalf("expected source-filtered topic brief to include source nodes, got %#v", coverage)
+	}
+	topicBrief := structured["topic_brief"].(map[string]interface{})
+	nodes := topicBrief["nodes"].([]interface{})
+	if len(nodes) == 0 || nodes[0].(map[string]interface{})["source_key"] != "src:test-mcp-research-source-filter" {
+		t.Fatalf("expected direct source node in topic brief, got %#v", topicBrief)
 	}
 }
 
