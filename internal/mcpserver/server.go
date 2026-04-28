@@ -255,6 +255,8 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (map[s
 		return s.toolSearch(ctx, params.Arguments)
 	case "dbrain_get":
 		return s.toolGet(ctx, params.Arguments)
+	case "dbrain_get_many":
+		return s.toolGetMany(ctx, params.Arguments)
 	case "dbrain_ask":
 		return s.toolAsk(ctx, params.Arguments)
 	case "dbrain_research_pack":
@@ -343,23 +345,60 @@ func (s *Server) toolGet(ctx context.Context, raw json.RawMessage) (map[string]i
 	}
 	maxChars := maxGetSectionChars(args.MaxCharsPerSection)
 
-	if item, err := s.st.GetItem(ctx, args.Lookup); err == nil {
-		payload, text, err := s.getItemPayload(ctx, item, contentMode, maxChars)
-		if err != nil {
-			return nil, err
-		}
-		return toolOKResult(text, payload), nil
-	}
-
-	source, err := s.st.GetSource(ctx, args.Lookup)
-	if err != nil {
-		return nil, err
-	}
-	payload, text, err := s.getSourcePayload(ctx, source, contentMode, maxChars)
+	payload, text, err := s.getPayloadForLookup(ctx, args.Lookup, contentMode, maxChars)
 	if err != nil {
 		return nil, err
 	}
 	return toolOKResult(text, payload), nil
+}
+
+func (s *Server) toolGetMany(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
+	var args struct {
+		Lookups            []string `json:"lookups"`
+		ContentMode        string   `json:"content_mode"`
+		MaxCharsPerSection int      `json:"max_chars_per_section"`
+		IncludeContent     *bool    `json:"include_content"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, fmt.Errorf("decode get_many args: %w", err)
+	}
+	contentMode, err := resolveGetContentMode(args.ContentMode, args.IncludeContent)
+	if err != nil {
+		return nil, err
+	}
+	maxChars := maxGetSectionChars(args.MaxCharsPerSection)
+
+	lookups := uniqueGetLookups(args.Lookups)
+	if len(lookups) == 0 {
+		return nil, fmt.Errorf("lookups is required")
+	}
+	if len(lookups) > maxGetManyLookups {
+		return nil, fmt.Errorf("too many lookups: got %d, maximum is %d", len(lookups), maxGetManyLookups)
+	}
+
+	results := make([]map[string]interface{}, 0, len(lookups))
+	errors := make([]getManyError, 0)
+	texts := make([]string, 0, len(lookups))
+	for _, lookup := range lookups {
+		payload, text, err := s.getPayloadForLookup(ctx, lookup, contentMode, maxChars)
+		if err != nil {
+			errors = append(errors, getManyError{Lookup: lookup, Error: err.Error()})
+			continue
+		}
+		payload["lookup"] = lookup
+		results = append(results, payload)
+		texts = append(texts, text)
+	}
+
+	payload := map[string]interface{}{
+		"lookups":               lookups,
+		"content_mode":          contentMode,
+		"max_chars_per_section": maxChars,
+		"count":                 len(results),
+		"results":               results,
+		"errors":                errors,
+	}
+	return toolOKResult(formatGetManyPayload(payload, texts), payload), nil
 }
 
 func (s *Server) toolAsk(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
@@ -651,6 +690,22 @@ func toolDefinitions() []map[string]interface{} {
 			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
 		},
 		{
+			"name":        "dbrain_get_many",
+			"description": "Batch-load several specific items or sources from the local brain. Use after search/research_pack when inspecting multiple evidence rows; returns per-lookup payloads and partial errors without failing the whole batch.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"lookups":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Source keys, external ids, URLs, or note paths. Maximum 20."},
+					"content_mode":          map[string]interface{}{"type": "string", "enum": []string{"brief", "evidence", "raw", "rendered"}, "description": "Content to return for each lookup.", "default": "evidence"},
+					"max_chars_per_section": map[string]interface{}{"type": "integer", "description": "Maximum characters per returned content section. Hard-capped to prevent accidental huge context.", "default": defaultGetSectionChars},
+					"include_content":       map[string]interface{}{"type": "boolean", "description": "Deprecated compatibility flag. false maps to content_mode=brief; true maps to content_mode=evidence unless content_mode is set.", "default": true},
+				},
+				"required": []string{"lookups"},
+			},
+			"outputSchema": getManyOutputSchema(),
+			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
+		},
+		{
 			"name":        "dbrain_ask",
 			"description": "Retrieve evidence for a question from the local brain and optionally synthesize an answer. Defaults to retrieval-only to avoid spending model usage unintentionally.",
 			"inputSchema": map[string]interface{}{
@@ -832,6 +887,24 @@ func getOutputSchema() map[string]interface{} {
 		"item":                  genericObjectSchema("Slim item metadata when the lookup resolved to an item."),
 		"source":                genericObjectSchema("Slim source metadata when the lookup resolved to a source."),
 	}, "kind", "title", "source_key", "note", "content_mode", "available_sections", "content_sections")
+}
+
+func getManyOutputSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"lookups":               arraySchema(scalarSchema("string", "Lookup values requested.")),
+		"content_mode":          enumSchema("Returned content mode.", "brief", "evidence", "raw", "rendered"),
+		"max_chars_per_section": scalarSchema("integer", "Maximum characters returned per content section."),
+		"count":                 scalarSchema("integer", "Number of lookups successfully resolved."),
+		"results":               arraySchema(getOutputSchema()),
+		"errors":                arraySchema(getManyErrorSchema()),
+	}, "lookups", "content_mode", "max_chars_per_section", "count", "results", "errors")
+}
+
+func getManyErrorSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"lookup": scalarSchema("string", "Lookup value that failed."),
+		"error":  scalarSchema("string", "Error returned while resolving the lookup."),
+	}, "lookup", "error")
 }
 
 func getSectionSchema() map[string]interface{} {
@@ -1034,7 +1107,23 @@ func evidenceSchema() map[string]interface{} {
 		"entity_matches": arraySchema(scalarSchema("string", "Derived entities that matched the query and reference this note.")),
 		"related_to":     scalarSchema("string", "Parent source key when added as related evidence."),
 		"relationship":   scalarSchema("string", "How this evidence relates to another node."),
+		"retrieval":      retrievalInfoSchema(),
 	}, "source_key", "kind", "title", "url", "note_path", "summary", "excerpt")
+}
+
+func retrievalInfoSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"score":   scalarSchema("integer", "Final retrieval score used to rank this evidence row."),
+		"signals": arraySchema(retrievalSignalSchema()),
+	}, "score")
+}
+
+func retrievalSignalSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"name":   scalarSchema("string", "Name of the ranking signal, for example query_term_title or exact_phrase_user_tags."),
+		"detail": scalarSchema("string", "Matched term, phrase, entity, or relationship detail when available."),
+		"weight": scalarSchema("integer", "Score contribution from this signal."),
+	}, "name", "weight")
 }
 
 func entitySchema() map[string]interface{} {

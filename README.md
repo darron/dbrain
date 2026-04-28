@@ -590,7 +590,7 @@ and `topic index` can regenerate a browsable directory note at
 `serve mcp` exposes the same local brain over MCP stdio. The current server is
 read-only and provides:
 
-- tools for `search`, `get`, `ask`, `entity map`, `related`, `stats items`,
+- tools for `search`, `get`, `get many`, `ask`, `entity map`, `related`, `stats items`,
   `stats sources`, `stats activity`, `stats backlog`, `topic map`,
   `topic brief`, and `research pack`
 - resources for `dbrain://mcp/overview`, `dbrain://stats/activity`,
@@ -621,13 +621,18 @@ exposed as first-class evidence sections: image OCR appears as `ocr_text`, and
 video/audio transcript text stored by the X media transcription stage appears
 as `x_media_transcript` instead of generic article text. Related item context
 also includes distinct media transcript and image OCR blocks when present.
+Use `dbrain_get_many` after a search or research pack when an agent needs to
+inspect several evidence rows in one MCP round trip. It uses the same
+DB-backed content modes and section caps as `dbrain_get`, and returns partial
+per-lookup errors without failing the whole batch.
 
 `dbrain_research_pack` is the default MCP research entry point for broad
 questions. It always returns retrieve-only evidence, a compact query plan
 showing the text query and tag aliases used, coverage counts by kind/source
 type/tag, exact user-tag match counts, broad item/source text-match counts,
-suggested follow-up tools, and, when the question is broad enough to infer a
-topic phrase, the same grouped topic brief used by `dbrain_topic_brief`. The
+suggested follow-up tools, retrieval score explanations for each evidence row,
+and, when the question is broad enough to infer a topic phrase, the same grouped
+topic brief used by `dbrain_topic_brief`. The
 `coverage.recall_note` field intentionally warns when the returned evidence is
 only a capped working set relative to the larger matching corpus. That lets an
 agent start from one read-only call instead of manually orchestrating `ask`,
@@ -660,7 +665,7 @@ name when present, status, and duration.
 
 The MCP additions are meant to support these common agent workflows:
 
-- research: `dbrain_research_pack` first, then `dbrain_get` and
+- research: `dbrain_research_pack` first, then `dbrain_get_many` or `dbrain_get` and
   `dbrain_related` for deeper inspection
 - graph browsing: `dbrain_get` plus `dbrain_related`
 - entity browsing: `dbrain_entity_map` or `brain_entity_browse`, then

@@ -556,15 +556,37 @@ func buildResearchNextSteps(evidence []ask.Evidence) []researchSuggestedAction {
 	if len(evidence) == 0 {
 		return nil
 	}
-	steps := []researchSuggestedAction{
-		{
+	steps := make([]researchSuggestedAction, 0, 2)
+	if len(evidence) > 1 {
+		lookups := make([]string, 0, min(len(evidence), 5))
+		for _, doc := range evidence {
+			if strings.TrimSpace(doc.SourceKey) == "" {
+				continue
+			}
+			lookups = append(lookups, doc.SourceKey)
+			if len(lookups) >= 5 {
+				break
+			}
+		}
+		if len(lookups) > 0 {
+			steps = append(steps, researchSuggestedAction{
+				Tool:   "dbrain_get_many",
+				Reason: "Inspect the strongest evidence notes in one MCP call before making detailed claims.",
+				Arguments: map[string]interface{}{
+					"lookups":      lookups,
+					"content_mode": "evidence",
+				},
+			})
+		}
+	} else {
+		steps = append(steps, researchSuggestedAction{
 			Tool:   "dbrain_get",
 			Reason: "Inspect the strongest evidence note before making detailed claims.",
 			Arguments: map[string]interface{}{
 				"lookup":       evidence[0].SourceKey,
 				"content_mode": "evidence",
 			},
-		},
+		})
 	}
 	for _, doc := range evidence {
 		if doc.Kind == "item" || doc.Kind == "source" {

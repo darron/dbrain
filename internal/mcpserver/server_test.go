@@ -72,16 +72,21 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 	if _, ok := firstTool["outputSchema"]; !ok {
 		t.Fatalf("expected tool output schema, got %#v", firstTool)
 	}
-	var foundResearchPack bool
+	var foundResearchPack, foundGetMany bool
 	for _, entry := range tools {
 		tool := entry.(map[string]interface{})
-		if tool["name"] == "dbrain_research_pack" {
+		switch tool["name"] {
+		case "dbrain_research_pack":
 			foundResearchPack = true
-			break
+		case "dbrain_get_many":
+			foundGetMany = true
 		}
 	}
 	if !foundResearchPack {
 		t.Fatalf("expected dbrain_research_pack in tools list: %#v", tools)
+	}
+	if !foundGetMany {
+		t.Fatalf("expected dbrain_get_many in tools list: %#v", tools)
 	}
 }
 
@@ -859,6 +864,93 @@ func TestServerGetToolUsesSlimSourceProjection(t *testing.T) {
 	}
 }
 
+func TestServerGetManyToolReturnsBatchPayloadAndPartialErrors(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-mcp-get-many-item",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-get-many-item",
+		CanonicalURL: "https://x.com/example/status/test-mcp-get-many-item",
+		Title:        "Get Many Item",
+		Text:         "item batch evidence",
+		ContentHash:  "mcp-get-many-item",
+		NotePath:     "items/x/2026/test-mcp-get-many-item.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	sourceResult, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:test-mcp-get-many-source",
+		OriginalURL:   "https://example.com/get-many-source",
+		CanonicalURL:  "https://example.com/get-many-source",
+		NormalizedURL: "https://example.com/get-many-source",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-mcp-get-many-source.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/get-many-source",
+		FinalURL:     "https://example.com/get-many-source",
+		Title:        "Get Many Source",
+		Content:      "source batch evidence",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "test-extractor",
+		ToolVersion:  "test",
+	}, "mcp-get-many-source-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get_many","arguments":{"lookups":["x:test-mcp-get-many-item","src:test-mcp-get-many-source","missing:key"],"content_mode":"evidence","max_chars_per_section":200}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(ctx, strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	if got := int(structured["count"].(float64)); got != 2 {
+		t.Fatalf("expected 2 successful get_many results, got %#v", structured)
+	}
+	results := structured["results"].([]interface{})
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %#v", results)
+	}
+	errors := structured["errors"].([]interface{})
+	if len(errors) != 1 || errors[0].(map[string]interface{})["lookup"] != "missing:key" {
+		t.Fatalf("expected one partial error for missing lookup, got %#v", errors)
+	}
+	text := result["content"].([]interface{})[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "item batch evidence") || !strings.Contains(text, "source batch evidence") || !strings.Contains(text, "missing:key") {
+		t.Fatalf("expected combined batch text and partial error, got %q", text)
+	}
+}
+
 func TestServerAskRetrieveOnlyTool(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -938,6 +1030,22 @@ func TestServerAskRetrieveOnlyTool(t *testing.T) {
 	first := evidence[0].(map[string]interface{})
 	if first["user_tags"] != "asktagmcp, knowledge-base" {
 		t.Fatalf("expected ask evidence user tags, got %#v", first)
+	}
+	retrieval := first["retrieval"].(map[string]interface{})
+	if int(retrieval["score"].(float64)) <= 0 {
+		t.Fatalf("expected positive retrieval score, got %#v", retrieval)
+	}
+	signals := retrieval["signals"].([]interface{})
+	var foundTagSignal bool
+	for _, raw := range signals {
+		signal := raw.(map[string]interface{})
+		if signal["name"] == "query_term_user_tags" && signal["detail"] == "asktagmcp" {
+			foundTagSignal = true
+			break
+		}
+	}
+	if !foundTagSignal {
+		t.Fatalf("expected user tag retrieval signal, got %#v", signals)
 	}
 }
 

@@ -43,22 +43,34 @@ type Options struct {
 }
 
 type Evidence struct {
-	SourceKey     string   `json:"source_key"`
-	Kind          string   `json:"kind"`
-	Title         string   `json:"title"`
-	URL           string   `json:"url"`
-	NotePath      string   `json:"note_path"`
-	Summary       string   `json:"summary"`
-	Excerpt       string   `json:"excerpt"`
-	Author        string   `json:"author,omitempty"`
-	SourceType    string   `json:"source_type,omitempty"`
-	PublishedAt   string   `json:"published_at,omitempty"`
-	ExtractedAt   string   `json:"extracted_at,omitempty"`
-	SummarizedAt  string   `json:"summarized_at,omitempty"`
-	UserTags      string   `json:"user_tags,omitempty"`
-	EntityMatches []string `json:"entity_matches,omitempty"`
-	RelatedTo     string   `json:"related_to,omitempty"`
-	Relationship  string   `json:"relationship,omitempty"`
+	SourceKey     string         `json:"source_key"`
+	Kind          string         `json:"kind"`
+	Title         string         `json:"title"`
+	URL           string         `json:"url"`
+	NotePath      string         `json:"note_path"`
+	Summary       string         `json:"summary"`
+	Excerpt       string         `json:"excerpt"`
+	Author        string         `json:"author,omitempty"`
+	SourceType    string         `json:"source_type,omitempty"`
+	PublishedAt   string         `json:"published_at,omitempty"`
+	ExtractedAt   string         `json:"extracted_at,omitempty"`
+	SummarizedAt  string         `json:"summarized_at,omitempty"`
+	UserTags      string         `json:"user_tags,omitempty"`
+	EntityMatches []string       `json:"entity_matches,omitempty"`
+	RelatedTo     string         `json:"related_to,omitempty"`
+	Relationship  string         `json:"relationship,omitempty"`
+	Retrieval     *RetrievalInfo `json:"retrieval,omitempty"`
+}
+
+type RetrievalInfo struct {
+	Score   int               `json:"score"`
+	Signals []RetrievalSignal `json:"signals,omitempty"`
+}
+
+type RetrievalSignal struct {
+	Name   string `json:"name"`
+	Detail string `json:"detail,omitempty"`
+	Weight int    `json:"weight"`
 }
 
 type Response struct {
@@ -156,7 +168,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 			continue
 		}
 		seen[candidate.SourceKey] = struct{}{}
-		candidate.Score = scoreEvidence(question, searchTerms, candidate.Evidence)
+		scoreCandidate(&candidate, question, searchTerms)
 		applyEntityMatches(&candidate, entityMatches)
 		candidates = append(candidates, candidate)
 	}
@@ -437,7 +449,8 @@ func collectRelatedEvidence(ctx context.Context, cfg config.Config, st *store.St
 				}
 				rel.RelatedTo = candidate.SourceKey
 				rel.Relationship = "linked source"
-				rel.Score = scoreEvidence(question, terms, rel.Evidence) + 1
+				scoreCandidate(&rel, question, terms)
+				addRetrievalSignal(&rel, "graph_related", "linked source from "+candidate.SourceKey, 1)
 				applyEntityMatches(&rel, entityMatches)
 				related = append(related, rel)
 			}
@@ -465,7 +478,8 @@ func collectRelatedEvidence(ctx context.Context, cfg config.Config, st *store.St
 				}
 				rel.RelatedTo = candidate.SourceKey
 				rel.Relationship = "referenced by"
-				rel.Score = scoreEvidence(question, terms, rel.Evidence) + 1
+				scoreCandidate(&rel, question, terms)
+				addRetrievalSignal(&rel, "graph_related", "referencing item for "+candidate.SourceKey, 1)
 				applyEntityMatches(&rel, entityMatches)
 				related = append(related, rel)
 			}
@@ -487,8 +501,39 @@ func rankCandidates(candidates []evidenceCandidate) {
 	})
 }
 
-func scoreEvidence(question string, terms []string, evidence Evidence) int {
+func scoreCandidate(candidate *evidenceCandidate, question string, terms []string) {
+	score, signals := explainEvidenceScore(question, terms, candidate.Evidence)
+	candidate.Score = score
+	candidate.Retrieval = &RetrievalInfo{Score: score, Signals: signals}
+}
+
+func addRetrievalSignal(candidate *evidenceCandidate, name string, detail string, weight int) {
+	if weight == 0 {
+		return
+	}
+	if candidate.Retrieval == nil {
+		candidate.Retrieval = &RetrievalInfo{}
+	}
+	candidate.Score += weight
+	candidate.Retrieval.Score = candidate.Score
+	candidate.Retrieval.Signals = append(candidate.Retrieval.Signals, RetrievalSignal{
+		Name:   name,
+		Detail: detail,
+		Weight: weight,
+	})
+}
+
+func explainEvidenceScore(question string, terms []string, evidence Evidence) (int, []RetrievalSignal) {
 	score := 0
+	signals := make([]RetrievalSignal, 0, len(terms)+4)
+	add := func(name string, weight int, detail string) {
+		if weight == 0 {
+			return
+		}
+		score += weight
+		signals = append(signals, RetrievalSignal{Name: name, Detail: detail, Weight: weight})
+	}
+
 	title := strings.ToLower(evidence.Title)
 	summary := strings.ToLower(evidence.Summary)
 	excerpt := strings.ToLower(evidence.Excerpt)
@@ -497,37 +542,39 @@ func scoreEvidence(question string, terms []string, evidence Evidence) int {
 
 	joined := strings.ToLower(strings.Join(terms, " "))
 	if joined != "" && strings.Contains(title, joined) {
-		score += 15
+		add("exact_phrase_title", 15, joined)
 	}
 	if joined != "" && strings.Contains(tags, joined) {
-		score += 12
+		add("exact_phrase_user_tags", 12, joined)
 	}
 
 	for _, term := range terms {
 		switch {
 		case strings.Contains(title, term):
-			score += 12
+			add("query_term_title", 12, term)
 		case strings.Contains(tags, term):
-			score += 10
+			add("query_term_user_tags", 10, term)
 		case strings.Contains(summary, term):
-			score += 8
+			add("query_term_summary", 8, term)
 		case strings.Contains(excerpt, term):
-			score += 5
+			add("query_term_excerpt", 5, term)
 		case strings.Contains(url, term):
-			score += 2
+			add("query_term_url", 2, term)
 		}
 	}
 	if strings.TrimSpace(evidence.Summary) != "" {
-		score += 3
+		add("has_summary", 3, "")
 	}
 	if evidence.Kind == "source" {
-		score += 1
+		add("source_document", 1, "")
 	}
 	if matchesSourceTypes([]string{"github"}, evidence.SourceType) && strings.Contains(strings.ToLower(question), "repo") {
-		score += 2
+		add("github_repo_query", 2, "")
 	}
-	score += minInt(len(evidence.EntityMatches)*3, 9)
-	return score
+	if len(evidence.EntityMatches) > 0 {
+		add("entity_matches", minInt(len(evidence.EntityMatches)*3, 9), strings.Join(evidence.EntityMatches, ", "))
+	}
+	return score, signals
 }
 
 func matchesSourceTypes(filters []string, sourceType string) bool {
@@ -808,7 +855,7 @@ func collectEntityCandidates(ctx context.Context, cfg config.Config, st *store.S
 			continue
 		}
 		candidate.Relationship = "entity match"
-		candidate.Score = scoreEvidence(question, terms, candidate.Evidence)
+		scoreCandidate(&candidate, question, terms)
 		applyEntityMatches(&candidate, entityMatches)
 		candidates = append(candidates, candidate)
 	}
@@ -821,7 +868,7 @@ func applyEntityMatches(candidate *evidenceCandidate, matches map[string]entityM
 		return
 	}
 	candidate.EntityMatches = append([]string(nil), match.Labels...)
-	candidate.Score += match.Boost
+	addRetrievalSignal(candidate, "entity_reference", strings.Join(match.Labels, ", "), match.Boost)
 }
 
 func firstNonEmpty(values ...string) string {

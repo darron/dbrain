@@ -19,6 +19,7 @@ const (
 	defaultGetSectionChars = 4000
 	maxGetSectionCharsHard = 50000
 	maxGetRelatedSections  = 5
+	maxGetManyLookups      = 20
 )
 
 type getSection struct {
@@ -31,6 +32,11 @@ type getSection struct {
 	Chars     int    `json:"chars"`
 	Text      string `json:"text,omitempty"`
 	Truncated bool   `json:"truncated"`
+}
+
+type getManyError struct {
+	Lookup string `json:"lookup"`
+	Error  string `json:"error"`
 }
 
 func resolveGetContentMode(value string, includeContent *bool) (string, error) {
@@ -47,6 +53,21 @@ func resolveGetContentMode(value string, includeContent *bool) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported content_mode %q; expected brief, evidence, raw, or rendered", value)
 	}
+}
+
+func (s *Server) getPayloadForLookup(ctx context.Context, lookup string, mode string, maxChars int) (map[string]interface{}, string, error) {
+	lookup = strings.TrimSpace(lookup)
+	if lookup == "" {
+		return nil, "", fmt.Errorf("lookup is required")
+	}
+	if item, err := s.st.GetItem(ctx, lookup); err == nil {
+		return s.getItemPayload(ctx, item, mode, maxChars)
+	}
+	source, err := s.st.GetSource(ctx, lookup)
+	if err != nil {
+		return nil, "", err
+	}
+	return s.getSourcePayload(ctx, source, mode, maxChars)
 }
 
 func maxGetSectionChars(value int) int {
@@ -540,4 +561,51 @@ func formatGetPayload(payload map[string]interface{}) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func formatGetManyPayload(payload map[string]interface{}, texts []string) string {
+	var b strings.Builder
+	_, _ = fmt.Fprintf(&b, "Fetched %d of %d lookups", payload["count"], len(payload["lookups"].([]string)))
+	if errors, ok := payload["errors"].([]getManyError); ok && len(errors) > 0 {
+		_, _ = fmt.Fprintf(&b, " (%d errors)", len(errors))
+	}
+	b.WriteString(".\n")
+	if len(texts) > 0 {
+		for i, text := range texts {
+			if i > 0 {
+				b.WriteString("\n---\n")
+			}
+			b.WriteString(strings.TrimSpace(text))
+			b.WriteString("\n")
+		}
+	}
+	if errors, ok := payload["errors"].([]getManyError); ok && len(errors) > 0 {
+		b.WriteString("\nErrors:\n")
+		for _, entry := range errors {
+			b.WriteString("- ")
+			b.WriteString(entry.Lookup)
+			b.WriteString(": ")
+			b.WriteString(entry.Error)
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func uniqueGetLookups(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
