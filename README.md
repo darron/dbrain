@@ -654,7 +654,10 @@ only a capped working set relative to the larger matching corpus. That lets an
 agent start from one read-only call instead of manually orchestrating `ask`,
 `search`, `topic brief`, and follow-up note fetches. `topic`,
 `include_topic_brief`, `include_related`, and `max_chars_per_doc` are exposed as
-controls for clients that need more or less context. Source documents are
+controls for clients that need more or less context. Each evidence row's
+`retrieval` block includes `matched_terms` and `missing_terms`; multi-term
+queries penalize rows that miss focused terms, so broad tag matches do not
+outrank direct matches on rarer query terms. Source documents are
 searched as their own candidate stream, so `source_types=["web"]` or
 `["youtube"]` can return direct `src:...` evidence even when item hits would
 otherwise fill the candidate window.
@@ -696,16 +699,20 @@ The MCP additions are meant to support these common agent workflows:
 For local retrieval quality checks, create a corpus-specific eval file:
 
 ```sh
-./bin/dbrain eval mcp --write-example evals/mcp.json
-./bin/dbrain eval mcp --file evals/mcp.json
+./bin/dbrain eval mcp --write-example evals/local/mcp.json
+./bin/dbrain eval mcp --file evals/local/mcp.json
 ```
 
-Eval cases can require specific source keys, any source key from an acceptable
-set, minimum evidence counts, expected text, forbidden source keys or noisy
-text, source-type filters, related-evidence expansion, and rough latency
-budgets. This is intentionally corpus-local: open-source users should encode
-their own known-good queries rather than relying on project-specific fixture
-data.
+`evals/mcp.example.json` is a checked-in template. Keep real corpus-specific
+files under `evals/local/*.json`; those files are ignored because source keys,
+saved URLs, and expected text are specific to one person's brain database.
+Eval cases can require a specific top source key, any top key from an
+acceptable set, specific source keys anywhere in the evidence, minimum evidence
+counts, expected text, expected top-result text, forbidden source keys or noisy
+text, source-type filters, related-evidence expansion, top-result matched or
+missing terms, and rough latency budgets. This is intentionally corpus-local:
+open-source users should encode their own known-good queries rather than
+relying on project-specific fixture data.
 
 If a client needs to discover the MCP surface from inside the protocol, start
 with:

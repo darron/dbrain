@@ -1047,7 +1047,7 @@ func TestServerGetManyToolUsesQueryWindowForEvidenceSections(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Now().UTC()
-	itemText := strings.Repeat("item boilerplate ", 25) + "batch query needle evidence" + strings.Repeat(" more tail", 15)
+	itemText := strings.Repeat("Mark Carney policy context ", 25) + strings.Repeat("item boilerplate ", 20) + "GFANZ climate finance evidence" + strings.Repeat(" more tail", 15)
 	if _, err := st.UpsertItem(ctx, model.Item{
 		SourceKey:    "x:test-mcp-get-many-query-window",
 		SourceType:   "x_bookmark",
@@ -1066,7 +1066,7 @@ func TestServerGetManyToolUsesQueryWindowForEvidenceSections(t *testing.T) {
 	}
 
 	server := New(cfg, st)
-	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get_many","arguments":{"lookups":["x:test-mcp-get-many-query-window"],"query":"needle evidence","content_mode":"evidence","max_chars_per_section":90}}}`
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get_many","arguments":{"lookups":["x:test-mcp-get-many-query-window"],"query":"mark carney gfanz","content_mode":"evidence","max_chars_per_section":90}}}`
 
 	var out bytes.Buffer
 	if err := server.Serve(ctx, strings.NewReader(framedJSON(req)), &out); err != nil {
@@ -1076,7 +1076,7 @@ func TestServerGetManyToolUsesQueryWindowForEvidenceSections(t *testing.T) {
 	responses := parseResponses(t, out.Bytes())
 	result := responses[0]["result"].(map[string]interface{})
 	structured := result["structuredContent"].(map[string]interface{})
-	if structured["query"] != "needle evidence" {
+	if structured["query"] != "mark carney gfanz" {
 		t.Fatalf("expected query echoed in get_many payload, got %#v", structured)
 	}
 	results := structured["results"].([]interface{})
@@ -1090,11 +1090,11 @@ func TestServerGetManyToolUsesQueryWindowForEvidenceSections(t *testing.T) {
 			break
 		}
 	}
-	if !strings.Contains(textSection, "batch query needle evidence") {
+	if !strings.Contains(textSection, "GFANZ climate finance evidence") {
 		t.Fatalf("expected get_many query-windowed text section, got %q", textSection)
 	}
-	if strings.HasPrefix(strings.TrimPrefix(textSection, "..."), "item boilerplate item boilerplate") {
-		t.Fatalf("expected get_many query window to skip leading boilerplate, got %q", textSection)
+	if strings.HasPrefix(strings.TrimPrefix(textSection, "..."), "Mark Carney policy context Mark Carney policy context") {
+		t.Fatalf("expected get_many query window to prefer the rarer matched term, got %q", textSection)
 	}
 }
 
@@ -1181,6 +1181,10 @@ func TestServerAskRetrieveOnlyTool(t *testing.T) {
 	retrieval := first["retrieval"].(map[string]interface{})
 	if int(retrieval["score"].(float64)) <= 0 {
 		t.Fatalf("expected positive retrieval score, got %#v", retrieval)
+	}
+	matchedTerms := retrieval["matched_terms"].([]interface{})
+	if len(matchedTerms) != 1 || matchedTerms[0] != "asktagmcp" {
+		t.Fatalf("expected matched query term in retrieval info, got %#v", retrieval)
 	}
 	signals := retrieval["signals"].([]interface{})
 	var foundTagSignal bool

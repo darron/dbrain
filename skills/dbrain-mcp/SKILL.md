@@ -59,7 +59,7 @@ Use absolute paths so the MCP server starts correctly from any agent working dir
 - Answer from the collector's saved corpus. The saved items reflect what the person found valuable, interesting, or noteworthy; do not inject external balance, alternate viewpoints, or model-background knowledge unless the user asks for it.
 - Treat MCP evidence as pointers into the local memory, not as complete global truth. Read `coverage.recall_note`, `coverage.exact_tag_matches`, and item/source text match counts before deciding whether the returned evidence is enough.
 - Fetch details with `dbrain_get_many` or `dbrain_get` before making specific claims. `content_mode="evidence"` includes capped DB sections and limited linked context such as quoted posts and linked sources; pass the original `query` so long extracts, OCR text, transcripts, and linked context are windowed around matches instead of leading boilerplate. Image OCR appears as `ocr_text`, X video/audio transcripts appear as `x_media_transcript`, and related item snippets include distinct transcript/OCR blocks when present. Use `content_mode="brief"` for metadata only, `content_mode="raw"` when raw extracts/transcripts/OCR/JSON are needed, and `content_mode="rendered"` only when the rendered Markdown note shape matters.
-- Read each evidence row's `retrieval` block when judging relevance. The score is heuristic, but the signals explain whether a result matched title text, summaries/excerpts, exact user tags, entities, or graph-related evidence. Excerpts are query-windowed when possible, so a raw extract excerpt should usually start near the term match instead of at site boilerplate.
+- Read each evidence row's `retrieval` block when judging relevance. The score is heuristic, but the signals explain whether a result matched title text, summaries/excerpts, exact user tags, entities, or graph-related evidence. `matched_terms` and `missing_terms` show whether a row covers all query terms or only broad tags. Excerpts are query-windowed when possible, so a raw extract excerpt should usually start near the term match instead of at site boilerplate.
 - Source documents are first-class evidence. If a question asks for web, YouTube, or linked-source material, use `source_types` and expect direct `src:...` results rather than only item backlinks.
 - Use `user_tags` as retrieval hints. Tags can match searches, disambiguate broad topics, and indicate the user's own categorization, but they do not replace source text.
 - For named entities, search the likely hyphenated tag alias too, for example `Mark Carney` should include `mark-carney`. `dbrain_search` and `dbrain_research_pack` report exact tag aliases/counts so you can see whether the tag path hit.
@@ -82,8 +82,8 @@ If the MCP config was just installed, a new Codex session may be required before
 When improving dbrain MCP retrieval, use corpus-local eval cases instead of hard-coding private fixture data:
 
 ```bash
-./bin/dbrain eval mcp --write-example evals/mcp.json
-./bin/dbrain eval mcp --file evals/mcp.json
+./bin/dbrain eval mcp --write-example evals/local/mcp.json
+./bin/dbrain eval mcp --file evals/local/mcp.json
 ```
 
-Eval cases can assert expected source keys, acceptable source-key alternatives, minimum evidence count, expected/forbidden evidence text, source-type filters, related-evidence expansion, and a rough latency budget.
+Use `evals/mcp.example.json` as the shareable template and keep private corpus cases under ignored `evals/local/*.json`. Eval cases can assert expected source keys, acceptable source-key alternatives, expected top source keys, minimum evidence count, expected/forbidden evidence text, expected top-result text, source-type filters, related-evidence expansion, top-result matched/missing terms, and a rough latency budget.

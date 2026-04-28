@@ -52,14 +52,18 @@ func TestRunEvaluatesExpectedRetrieval(t *testing.T) {
 	}
 
 	report, err := Run(context.Background(), cfg, st, Options{Cases: []Case{{
-		Name:             "carney",
-		Question:         "What does my brain know about Mark Carney?",
-		Limit:            5,
-		MinEvidence:      1,
-		ExpectSourceKeys: []string{"x:carney-eval"},
-		ExpectText:       []string{"fiscal policy"},
-		ForbidText:       []string{"unrelated boilerplate"},
-		MaxLatencyMS:     5000,
+		Name:                   "carney",
+		Question:               "What does my brain know about Mark Carney?",
+		Limit:                  5,
+		MinEvidence:            1,
+		ExpectSourceKeys:       []string{"x:carney-eval"},
+		ExpectTopSourceKeys:    []string{"x:carney-eval"},
+		ExpectText:             []string{"fiscal policy"},
+		ExpectTopText:          []string{"fiscal policy"},
+		ForbidText:             []string{"unrelated boilerplate"},
+		RequireTopMatchedTerms: []string{"mark", "carney"},
+		ForbidTopMissingTerms:  []string{"mark", "carney"},
+		MaxLatencyMS:           5000,
 	}}})
 	if err != nil {
 		t.Fatalf("run eval: %v", err)

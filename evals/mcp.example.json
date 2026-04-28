@@ -1,0 +1,38 @@
+[
+  {
+    "name": "entity plus focused term retrieves direct evidence",
+    "question": "What does my brain know about Example Person and Specific Project?",
+    "limit": 8,
+    "max_chars_per_doc": 500,
+    "min_evidence": 2,
+    "expect_top_source_keys": ["src:replace-with-direct-source", "x:replace-with-direct-item"],
+    "expect_any_source_keys": ["src:replace-with-direct-source", "x:replace-with-direct-item"],
+    "expect_text": ["replace with a phrase from the known-good evidence"],
+    "expect_top_text": ["replace with a phrase from the strongest evidence row"],
+    "require_top_matched_terms": ["example", "specific"],
+    "forbid_top_missing_terms": ["specific"],
+    "max_latency_ms": 3000
+  },
+  {
+    "name": "ocr evidence is discoverable",
+    "question": "Text that only appears in an image OCR result",
+    "limit": 8,
+    "max_chars_per_doc": 500,
+    "expect_top_source_keys": ["x:replace-with-ocr-item"],
+    "expect_text": ["replace with visible OCR text"],
+    "expect_top_text": ["replace with visible OCR text"],
+    "forbid_text": ["replace with known unrelated boilerplate"],
+    "max_latency_ms": 3000
+  },
+  {
+    "name": "source type filter returns source documents",
+    "question": "A known GitHub project or web article title",
+    "limit": 6,
+    "max_chars_per_doc": 500,
+    "source_types": ["github"],
+    "expect_top_source_keys": ["src:replace-with-github-source"],
+    "expect_text": ["replace with repository or README phrase"],
+    "require_top_matched_terms": ["replace", "term"],
+    "max_latency_ms": 3000
+  }
+]

@@ -109,6 +109,27 @@ func TestEvidenceFromSourceUsesQueryWindowForExcerpt(t *testing.T) {
 	}
 }
 
+func TestEvidenceFromSourcePrefersRarerQueryTermForExcerpt(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		SourceKey:     "src:carney-gfanz",
+		CanonicalURL:  "https://example.com/carney-gfanz",
+		Title:         "Long extracted source",
+		SourceType:    "web",
+		NotePath:      "sources/carney-gfanz.md",
+		ExtractedText: strings.Repeat("Mark Carney policy context ", 25) + strings.Repeat("navigation menu footer cookie settings ", 12) + "GFANZ appears in the substantive paragraph about bank climate commitments.",
+	}
+
+	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, model.SearchResult{}, 120, []string{"mark", "carney", "gfanz"})
+	if !strings.Contains(candidate.Excerpt, "GFANZ") {
+		t.Fatalf("expected excerpt to include rarer query term, got %q", candidate.Excerpt)
+	}
+	if strings.HasPrefix(strings.TrimPrefix(candidate.Excerpt, "..."), "Mark Carney policy context Mark Carney") {
+		t.Fatalf("expected excerpt to skip repeated broad terms, got %q", candidate.Excerpt)
+	}
+}
+
 func TestEvidenceFromItemIncludesDerivedSummaryAndOCRExcerpt(t *testing.T) {
 	t.Parallel()
 
@@ -129,5 +150,66 @@ func TestEvidenceFromItemIncludesDerivedSummaryAndOCRExcerpt(t *testing.T) {
 	}
 	if !strings.Contains(candidate.Excerpt, "Mark Carney") {
 		t.Fatalf("expected OCR query match in excerpt, got %q", candidate.Excerpt)
+	}
+}
+
+func TestEvidenceFromItemChoosesStrongestQueryWindowAcrossFields(t *testing.T) {
+	t.Parallel()
+
+	item := model.Item{
+		SourceKey:    "x:photo-gfanz",
+		SourceType:   "x_bookmark",
+		CanonicalURL: "https://x.com/example/status/photo-gfanz",
+		Title:        "Carney cabinet thread",
+		NotePath:     "items/x/photo-gfanz.md",
+		XPostText:    "Here are posts from people in Mark Carney's cabinet including Carney himself.",
+		OCRText:      strings.Repeat("policy screenshot text ", 8) + "Mark Carney referenced the Net Zero Banking Alliance and GFANZ.",
+	}
+
+	candidate := evidenceFromItem(config.Config{VaultDir: "/vault"}, item, model.SearchResult{}, 120, []string{"mark", "carney", "gfanz"})
+	if !strings.Contains(candidate.Excerpt, "GFANZ") {
+		t.Fatalf("expected excerpt to include strongest matching OCR evidence, got %q", candidate.Excerpt)
+	}
+}
+
+func TestExplainEvidenceScoreReportsTermCoverageAndDemotesMissingFocusedTerms(t *testing.T) {
+	t.Parallel()
+
+	terms := []string{"mark", "carney", "gfanz"}
+	broad := Evidence{
+		Title:    "Introducing the Canada Strong Fund",
+		Summary:  "Mark Carney announced a sovereign wealth fund.",
+		UserTags: "mark-carney,canadian-politics",
+	}
+	focused := Evidence{
+		Title:    "Carney climate organization GFANZ loses banks",
+		Summary:  "Banks left the Glasgow Financial Alliance for Net Zero.",
+		UserTags: "mark-carney,gfanz,climate-policy",
+	}
+
+	broadInfo := explainEvidenceScore("What about Mark Carney GFANZ?", terms, broad, strings.Join([]string{broad.Title, broad.Summary, broad.UserTags}, "\n"))
+	focusedInfo := explainEvidenceScore("What about Mark Carney GFANZ?", terms, focused, strings.Join([]string{focused.Title, focused.Summary, focused.UserTags}, "\n"))
+
+	if !reflect.DeepEqual(broadInfo.MatchedTerms, []string{"mark", "carney"}) {
+		t.Fatalf("unexpected broad matched terms: %#v", broadInfo)
+	}
+	if !reflect.DeepEqual(broadInfo.MissingTerms, []string{"gfanz"}) {
+		t.Fatalf("expected broad result to miss gfanz: %#v", broadInfo)
+	}
+	var foundPenalty bool
+	for _, signal := range broadInfo.Signals {
+		if signal.Name == "missing_query_terms" && signal.Detail == "gfanz" && signal.Weight < 0 {
+			foundPenalty = true
+			break
+		}
+	}
+	if !foundPenalty {
+		t.Fatalf("expected missing query term penalty, got %#v", broadInfo.Signals)
+	}
+	if focusedInfo.Score <= broadInfo.Score {
+		t.Fatalf("expected focused result to outrank broad tag-only result: focused=%#v broad=%#v", focusedInfo, broadInfo)
+	}
+	if !reflect.DeepEqual(focusedInfo.MatchedTerms, terms) || len(focusedInfo.MissingTerms) != 0 {
+		t.Fatalf("expected focused result to cover all terms, got %#v", focusedInfo)
 	}
 }

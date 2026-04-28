@@ -63,8 +63,10 @@ type Evidence struct {
 }
 
 type RetrievalInfo struct {
-	Score   int               `json:"score"`
-	Signals []RetrievalSignal `json:"signals,omitempty"`
+	Score        int               `json:"score"`
+	Signals      []RetrievalSignal `json:"signals,omitempty"`
+	MatchedTerms []string          `json:"matched_terms,omitempty"`
+	MissingTerms []string          `json:"missing_terms,omitempty"`
 }
 
 type RetrievalSignal struct {
@@ -266,9 +268,10 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 
 type evidenceCandidate struct {
 	Evidence
-	ItemID   int64
-	SourceID int64
-	Score    int
+	ItemID    int64
+	SourceID  int64
+	Score     int
+	MatchText string
 }
 
 type entityMatch struct {
@@ -401,6 +404,18 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 			UserTags:    item.UserTags,
 		},
 		ItemID: item.ID,
+		MatchText: strings.Join([]string{
+			item.Title,
+			item.CanonicalURL,
+			item.AuthorName,
+			item.AuthorHandle,
+			item.UserTags,
+			item.SummaryText,
+			item.XPostText,
+			item.ArticleText,
+			item.Text,
+			item.OCRText,
+		}, "\n"),
 	}
 }
 
@@ -419,6 +434,13 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 			SummarizedAt: formatTime(source.SummarizedAt),
 		},
 		SourceID: source.ID,
+		MatchText: strings.Join([]string{
+			source.Title,
+			source.CanonicalURL,
+			source.Description,
+			source.SummaryText,
+			source.ExtractedText,
+		}, "\n"),
 	}
 }
 
@@ -504,9 +526,9 @@ func rankCandidates(candidates []evidenceCandidate) {
 }
 
 func scoreCandidate(candidate *evidenceCandidate, question string, terms []string) {
-	score, signals := explainEvidenceScore(question, terms, candidate.Evidence)
-	candidate.Score = score
-	candidate.Retrieval = &RetrievalInfo{Score: score, Signals: signals}
+	info := explainEvidenceScore(question, terms, candidate.Evidence, candidate.MatchText)
+	candidate.Score = info.Score
+	candidate.Retrieval = &info
 }
 
 func addRetrievalSignal(candidate *evidenceCandidate, name string, detail string, weight int) {
@@ -525,7 +547,7 @@ func addRetrievalSignal(candidate *evidenceCandidate, name string, detail string
 	})
 }
 
-func explainEvidenceScore(question string, terms []string, evidence Evidence) (int, []RetrievalSignal) {
+func explainEvidenceScore(question string, terms []string, evidence Evidence, matchText string) RetrievalInfo {
 	score := 0
 	signals := make([]RetrievalSignal, 0, len(terms)+4)
 	add := func(name string, weight int, detail string) {
@@ -541,6 +563,8 @@ func explainEvidenceScore(question string, terms []string, evidence Evidence) (i
 	excerpt := strings.ToLower(evidence.Excerpt)
 	url := strings.ToLower(evidence.URL)
 	tags := strings.ToLower(evidence.UserTags)
+	author := strings.ToLower(evidence.Author)
+	fullText := strings.ToLower(matchText)
 
 	joined := strings.ToLower(strings.Join(terms, " "))
 	if joined != "" && strings.Contains(title, joined) {
@@ -550,19 +574,41 @@ func explainEvidenceScore(question string, terms []string, evidence Evidence) (i
 		add("exact_phrase_user_tags", 12, joined)
 	}
 
-	for _, term := range terms {
+	queryTerms := uniqueTerms(terms)
+	matchedTerms := make([]string, 0, len(queryTerms))
+	missingTerms := make([]string, 0)
+	for _, term := range queryTerms {
 		switch {
 		case strings.Contains(title, term):
 			add("query_term_title", 12, term)
+			matchedTerms = append(matchedTerms, term)
 		case strings.Contains(tags, term):
 			add("query_term_user_tags", 10, term)
+			matchedTerms = append(matchedTerms, term)
 		case strings.Contains(summary, term):
 			add("query_term_summary", 8, term)
+			matchedTerms = append(matchedTerms, term)
+		case strings.Contains(author, term):
+			add("query_term_author", 6, term)
+			matchedTerms = append(matchedTerms, term)
 		case strings.Contains(excerpt, term):
 			add("query_term_excerpt", 5, term)
+			matchedTerms = append(matchedTerms, term)
 		case strings.Contains(url, term):
 			add("query_term_url", 2, term)
+			matchedTerms = append(matchedTerms, term)
+		case strings.Contains(fullText, term):
+			add("query_term_full_text", 4, term)
+			matchedTerms = append(matchedTerms, term)
+		default:
+			missingTerms = append(missingTerms, term)
 		}
+	}
+	if len(queryTerms) > 1 && len(matchedTerms) == len(queryTerms) {
+		add("all_query_terms_matched", 12, strings.Join(matchedTerms, ", "))
+	}
+	if len(queryTerms) >= 3 && len(missingTerms) > 0 {
+		add("missing_query_terms", -8*len(missingTerms), strings.Join(missingTerms, ", "))
 	}
 	if strings.TrimSpace(evidence.Summary) != "" {
 		add("has_summary", 3, "")
@@ -576,7 +622,29 @@ func explainEvidenceScore(question string, terms []string, evidence Evidence) (i
 	if len(evidence.EntityMatches) > 0 {
 		add("entity_matches", minInt(len(evidence.EntityMatches)*3, 9), strings.Join(evidence.EntityMatches, ", "))
 	}
-	return score, signals
+	return RetrievalInfo{
+		Score:        score,
+		Signals:      signals,
+		MatchedTerms: matchedTerms,
+		MissingTerms: missingTerms,
+	}
+}
+
+func uniqueTerms(terms []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" {
+			continue
+		}
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		out = append(out, term)
+	}
+	return out
 }
 
 func matchesSourceTypes(filters []string, sourceType string) bool {
@@ -883,10 +951,16 @@ func firstNonEmpty(values ...string) string {
 }
 
 func evidenceExcerpt(maxChars int, terms []string, values ...string) string {
+	var best queryWindowResult
+	scoreText := collapseWhitespace(strings.Join(values, "\n"))
 	for _, value := range values {
-		if excerpt := queryWindow(value, terms, maxChars); excerpt != "" {
-			return excerpt
+		result := queryWindowCandidate(value, terms, maxChars, scoreText)
+		if result.Matched && (!best.Matched || result.Score > best.Score) {
+			best = result
 		}
+	}
+	if best.Matched {
+		return best.Text
 	}
 	for _, value := range values {
 		if excerpt := trimTo(collapseWhitespace(value), maxChars); excerpt != "" {
@@ -896,62 +970,110 @@ func evidenceExcerpt(maxChars int, terms []string, values ...string) string {
 	return ""
 }
 
-func queryWindow(value string, terms []string, maxChars int) string {
+type queryWindowResult struct {
+	Text    string
+	Score   int
+	Matched bool
+}
+
+func queryWindowCandidate(value string, terms []string, maxChars int, scoreText string) queryWindowResult {
 	value = collapseWhitespace(value)
 	if value == "" || maxChars <= 0 {
-		return value
+		return queryWindowResult{Text: value}
 	}
 
 	candidates := queryWindowTerms(terms)
 	if len(candidates) == 0 {
-		return ""
+		return queryWindowResult{}
 	}
 
 	lower := strings.ToLower(value)
-	bestIndex := -1
-	bestLength := 0
+	lowerScoreText := strings.ToLower(collapseWhitespace(scoreText))
+	if lowerScoreText == "" {
+		lowerScoreText = lower
+	}
+	type candidateWindow struct {
+		start int
+		end   int
+		score int
+	}
+	best := candidateWindow{start: -1}
 	for _, candidate := range candidates {
-		idx := strings.Index(lower, candidate)
-		if idx < 0 {
-			continue
-		}
-		candidateLength := len([]rune(candidate))
-		if bestIndex < 0 || candidateLength > bestLength || (candidateLength == bestLength && idx < bestIndex) {
-			bestIndex = idx
-			bestLength = candidateLength
+		searchFrom := 0
+		for {
+			idx := strings.Index(lower[searchFrom:], candidate)
+			if idx < 0 {
+				break
+			}
+			idx += searchFrom
+			window := queryWindowBounds(lower, idx, maxChars)
+			windowText := lower[window.start:window.end]
+			score := queryWindowScore(windowText, lowerScoreText, terms, candidate)
+			if best.start < 0 || score > best.score || (score == best.score && window.start < best.start) {
+				best = candidateWindow{start: window.start, end: window.end, score: score}
+			}
+			searchFrom = idx + len(candidate)
+			if searchFrom >= len(lower) {
+				break
+			}
 		}
 	}
-	if bestIndex < 0 {
-		return ""
+	if best.start < 0 {
+		return queryWindowResult{}
 	}
 
 	runes := []rune(value)
 	if len(runes) <= maxChars {
-		return value
+		return queryWindowResult{Text: value, Score: best.score, Matched: true}
 	}
 
-	matchRune := len([]rune(lower[:bestIndex]))
-	start := matchRune - maxChars/4
-	if start < 0 {
-		start = 0
-	}
-	end := start + maxChars
-	if end > len(runes) {
-		end = len(runes)
-		start = end - maxChars
-		if start < 0 {
-			start = 0
-		}
-	}
-
-	excerpt := strings.TrimSpace(string(runes[start:end]))
-	if start > 0 {
+	startRune := len([]rune(lower[:best.start]))
+	endRune := len([]rune(lower[:best.end]))
+	excerpt := strings.TrimSpace(string(runes[startRune:endRune]))
+	if startRune > 0 {
 		excerpt = "..." + excerpt
 	}
-	if end < len(runes) {
+	if endRune < len(runes) {
 		excerpt += "..."
 	}
-	return excerpt
+	return queryWindowResult{Text: excerpt, Score: best.score, Matched: true}
+}
+
+func queryWindowBounds(value string, matchByteIndex int, maxChars int) struct{ start, end int } {
+	runes := []rune(value)
+	if len(runes) <= maxChars {
+		return struct{ start, end int }{start: 0, end: len(value)}
+	}
+	matchRune := len([]rune(value[:matchByteIndex]))
+	startRune := matchRune - maxChars/4
+	if startRune < 0 {
+		startRune = 0
+	}
+	endRune := startRune + maxChars
+	if endRune > len(runes) {
+		endRune = len(runes)
+		startRune = endRune - maxChars
+		if startRune < 0 {
+			startRune = 0
+		}
+	}
+	startByte := len(string(runes[:startRune]))
+	endByte := len(string(runes[:endRune]))
+	return struct{ start, end int }{start: startByte, end: endByte}
+}
+
+func queryWindowScore(window string, fullText string, terms []string, matchedCandidate string) int {
+	score := len([]rune(matchedCandidate))
+	for _, term := range uniqueTerms(terms) {
+		if strings.Contains(window, term) {
+			occurrences := strings.Count(fullText, term)
+			if occurrences <= 0 {
+				occurrences = 1
+			}
+			score += 100 + 1000/occurrences + len([]rune(term))
+		}
+	}
+	return score
 }
 
 func queryWindowTerms(terms []string) []string {

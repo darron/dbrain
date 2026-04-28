@@ -7,3 +7,5 @@ vault/
 web/ui/node_modules/
 .DS_Store
 tmp/
+evals/local/*.json
+!evals/local/.gitkeep

@@ -15,20 +15,24 @@ import (
 )
 
 type Case struct {
-	Name                string   `json:"name"`
-	Question            string   `json:"question"`
-	Limit               int      `json:"limit,omitempty"`
-	MaxCharsPerDoc      int      `json:"max_chars_per_doc,omitempty"`
-	SourceTypes         []string `json:"source_types,omitempty"`
-	IncludeRelated      bool     `json:"include_related,omitempty"`
-	RelatedLimit        int      `json:"related_limit,omitempty"`
-	MinEvidence         int      `json:"min_evidence,omitempty"`
-	ExpectSourceKeys    []string `json:"expect_source_keys,omitempty"`
-	ExpectAnySourceKeys []string `json:"expect_any_source_keys,omitempty"`
-	ForbidSourceKeys    []string `json:"forbid_source_keys,omitempty"`
-	ExpectText          []string `json:"expect_text,omitempty"`
-	ForbidText          []string `json:"forbid_text,omitempty"`
-	MaxLatencyMS        int64    `json:"max_latency_ms,omitempty"`
+	Name                   string   `json:"name"`
+	Question               string   `json:"question"`
+	Limit                  int      `json:"limit,omitempty"`
+	MaxCharsPerDoc         int      `json:"max_chars_per_doc,omitempty"`
+	SourceTypes            []string `json:"source_types,omitempty"`
+	IncludeRelated         bool     `json:"include_related,omitempty"`
+	RelatedLimit           int      `json:"related_limit,omitempty"`
+	MinEvidence            int      `json:"min_evidence,omitempty"`
+	ExpectSourceKeys       []string `json:"expect_source_keys,omitempty"`
+	ExpectTopSourceKeys    []string `json:"expect_top_source_keys,omitempty"`
+	ExpectAnySourceKeys    []string `json:"expect_any_source_keys,omitempty"`
+	ForbidSourceKeys       []string `json:"forbid_source_keys,omitempty"`
+	ExpectText             []string `json:"expect_text,omitempty"`
+	ExpectTopText          []string `json:"expect_top_text,omitempty"`
+	ForbidText             []string `json:"forbid_text,omitempty"`
+	RequireTopMatchedTerms []string `json:"require_top_matched_terms,omitempty"`
+	ForbidTopMissingTerms  []string `json:"forbid_top_missing_terms,omitempty"`
+	MaxLatencyMS           int64    `json:"max_latency_ms,omitempty"`
 }
 
 type Options struct {
@@ -55,11 +59,13 @@ type CaseResult struct {
 }
 
 type EvidenceSummary struct {
-	SourceKey string `json:"source_key"`
-	Kind      string `json:"kind"`
-	Title     string `json:"title"`
-	Score     int    `json:"score,omitempty"`
-	Signals   int    `json:"signals,omitempty"`
+	SourceKey    string   `json:"source_key"`
+	Kind         string   `json:"kind"`
+	Title        string   `json:"title"`
+	Score        int      `json:"score,omitempty"`
+	Signals      int      `json:"signals,omitempty"`
+	MatchedTerms []string `json:"matched_terms,omitempty"`
+	MissingTerms []string `json:"missing_terms,omitempty"`
 }
 
 func LoadCases(path string) ([]Case, error) {
@@ -130,30 +136,32 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	}
 	sourceKeys := map[string]struct{}{}
 	var evidenceText strings.Builder
+	var topEvidenceText string
 	for _, ev := range response.Evidence {
 		sourceKeys[ev.SourceKey] = struct{}{}
 		result.SourceKeys = append(result.SourceKeys, ev.SourceKey)
+		evText := strings.Join([]string{ev.SourceKey, ev.Title, ev.Summary, ev.Excerpt, ev.UserTags}, "\n")
+		if topEvidenceText == "" {
+			topEvidenceText = evText
+		}
 		score, signals := 0, 0
+		var matchedTerms, missingTerms []string
 		if ev.Retrieval != nil {
 			score = ev.Retrieval.Score
 			signals = len(ev.Retrieval.Signals)
+			matchedTerms = append([]string(nil), ev.Retrieval.MatchedTerms...)
+			missingTerms = append([]string(nil), ev.Retrieval.MissingTerms...)
 		}
 		result.TopEvidence = append(result.TopEvidence, EvidenceSummary{
-			SourceKey: ev.SourceKey,
-			Kind:      ev.Kind,
-			Title:     ev.Title,
-			Score:     score,
-			Signals:   signals,
+			SourceKey:    ev.SourceKey,
+			Kind:         ev.Kind,
+			Title:        ev.Title,
+			Score:        score,
+			Signals:      signals,
+			MatchedTerms: matchedTerms,
+			MissingTerms: missingTerms,
 		})
-		evidenceText.WriteString(ev.SourceKey)
-		evidenceText.WriteByte('\n')
-		evidenceText.WriteString(ev.Title)
-		evidenceText.WriteByte('\n')
-		evidenceText.WriteString(ev.Summary)
-		evidenceText.WriteByte('\n')
-		evidenceText.WriteString(ev.Excerpt)
-		evidenceText.WriteByte('\n')
-		evidenceText.WriteString(ev.UserTags)
+		evidenceText.WriteString(evText)
 		evidenceText.WriteByte('\n')
 	}
 	sort.Strings(result.SourceKeys)
@@ -169,6 +177,13 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	if len(tc.ExpectAnySourceKeys) > 0 && !containsAnySourceKey(sourceKeys, tc.ExpectAnySourceKeys) {
 		result.Failures = append(result.Failures, "missing any expected source_key from "+strings.Join(tc.ExpectAnySourceKeys, ", "))
 	}
+	if len(tc.ExpectTopSourceKeys) > 0 {
+		if len(response.Evidence) == 0 {
+			result.Failures = append(result.Failures, "missing top evidence for expected top source_key check")
+		} else if !containsString(tc.ExpectTopSourceKeys, response.Evidence[0].SourceKey) {
+			result.Failures = append(result.Failures, "top source_key "+response.Evidence[0].SourceKey+" not in expected set "+strings.Join(tc.ExpectTopSourceKeys, ", "))
+		}
+	}
 	for _, sourceKey := range tc.ForbidSourceKeys {
 		if _, ok := sourceKeys[sourceKey]; ok {
 			result.Failures = append(result.Failures, "forbidden source_key returned "+sourceKey)
@@ -182,6 +197,13 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 			result.Failures = append(result.Failures, "missing expected text "+value)
 		}
 	}
+	topText := strings.ToLower(topEvidenceText)
+	for _, value := range tc.ExpectTopText {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" && !strings.Contains(topText, value) {
+			result.Failures = append(result.Failures, "missing expected top text "+value)
+		}
+	}
 	for _, value := range tc.ForbidText {
 		value = strings.ToLower(strings.TrimSpace(value))
 		if value != "" && strings.Contains(text, value) {
@@ -191,9 +213,43 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	if tc.MaxLatencyMS > 0 && result.DurationMS > tc.MaxLatencyMS {
 		result.Failures = append(result.Failures, fmt.Sprintf("duration_ms=%d above max_latency_ms=%d", result.DurationMS, tc.MaxLatencyMS))
 	}
+	if len(response.Evidence) > 0 {
+		topRetrieval := response.Evidence[0].Retrieval
+		for _, term := range tc.RequireTopMatchedTerms {
+			term = strings.ToLower(strings.TrimSpace(term))
+			if term != "" && (topRetrieval == nil || !containsStringFold(topRetrieval.MatchedTerms, term)) {
+				result.Failures = append(result.Failures, "top evidence missing required matched term "+term)
+			}
+		}
+		for _, term := range tc.ForbidTopMissingTerms {
+			term = strings.ToLower(strings.TrimSpace(term))
+			if term != "" && topRetrieval != nil && containsStringFold(topRetrieval.MissingTerms, term) {
+				result.Failures = append(result.Failures, "top evidence has forbidden missing term "+term)
+			}
+		}
+	}
 
 	result.Passed = len(result.Failures) == 0
 	return result, nil
+}
+
+func containsStringFold(values []string, target string) bool {
+	target = strings.ToLower(strings.TrimSpace(target))
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func containsAnySourceKey(keys map[string]struct{}, candidates []string) bool {
@@ -207,16 +263,20 @@ func containsAnySourceKey(keys map[string]struct{}, candidates []string) bool {
 
 func ExampleCases() []Case {
 	return []Case{{
-		Name:                "known topic retrieves expected saved evidence",
-		Question:            "What does my brain know about Example Topic?",
-		Limit:               8,
-		SourceTypes:         []string{"web"},
-		IncludeRelated:      true,
-		RelatedLimit:        2,
-		MinEvidence:         3,
-		ExpectAnySourceKeys: []string{"src:replace-with-a-known-good-source"},
-		ExpectText:          []string{"replace with a phrase that should appear in retrieved evidence"},
-		ForbidText:          []string{"replace with known boilerplate or noisy phrase"},
-		MaxLatencyMS:        3000,
+		Name:                   "known topic retrieves expected saved evidence",
+		Question:               "What does my brain know about Example Topic?",
+		Limit:                  8,
+		SourceTypes:            []string{"web"},
+		IncludeRelated:         true,
+		RelatedLimit:           2,
+		MinEvidence:            3,
+		ExpectTopSourceKeys:    []string{"src:replace-with-a-known-good-source"},
+		ExpectAnySourceKeys:    []string{"src:replace-with-a-known-good-source"},
+		ExpectText:             []string{"replace with a phrase that should appear in retrieved evidence"},
+		ExpectTopText:          []string{"replace with a phrase that should appear in the strongest evidence row"},
+		ForbidText:             []string{"replace with known boilerplate or noisy phrase"},
+		RequireTopMatchedTerms: []string{"replace-with-important-term"},
+		ForbidTopMissingTerms:  []string{"replace-with-important-term"},
+		MaxLatencyMS:           3000,
 	}}
 }

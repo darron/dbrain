@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -471,34 +472,58 @@ func queryWindowWithFlag(value string, query string, maxChars int) (string, bool
 	if len(terms) == 0 {
 		return "", false, false
 	}
-	lowerText := strings.ToLower(text)
-	bestByteIndex := -1
-	bestRuneIndex := 0
-	bestRuneLen := 0
+	lower := strings.ToLower(text)
+	type candidateWindow struct {
+		start int
+		end   int
+		score int
+	}
+	best := candidateWindow{start: -1}
 	for _, term := range terms {
-		if term == "" {
-			continue
-		}
-		idx := strings.Index(lowerText, term)
-		if idx < 0 {
-			continue
-		}
-		runeLen := len([]rune(term))
-		if bestByteIndex == -1 || runeLen > bestRuneLen || (runeLen == bestRuneLen && idx < bestByteIndex) {
-			bestByteIndex = idx
-			bestRuneIndex = len([]rune(lowerText[:idx]))
-			bestRuneLen = runeLen
+		searchFrom := 0
+		for {
+			idx := strings.Index(lower[searchFrom:], term)
+			if idx < 0 {
+				break
+			}
+			idx += searchFrom
+			window := queryWindowBounds(lower, idx, maxChars)
+			windowText := lower[window.start:window.end]
+			score := queryWindowScore(windowText, lower, terms, term)
+			if best.start < 0 || score > best.score || (score == best.score && window.start < best.start) {
+				best = candidateWindow{start: window.start, end: window.end, score: score}
+			}
+			searchFrom = idx + len(term)
+			if searchFrom >= len(lower) {
+				break
+			}
 		}
 	}
-	if bestByteIndex < 0 {
+	if best.start < 0 {
 		return "", false, false
 	}
 	runes := []rune(text)
 	if maxChars <= 0 || len(runes) <= maxChars {
 		return text, false, true
 	}
-	matchRune := bestRuneIndex
-	matchRuneLen := bestRuneLen
+
+	startRune := len([]rune(lower[:best.start]))
+	endRune := len([]rune(lower[:best.end]))
+	snippet := strings.TrimSpace(string(runes[startRune:endRune]))
+	if startRune > 0 {
+		snippet = "..." + snippet
+	}
+	if endRune < len(runes) {
+		snippet += "..."
+	}
+	return snippet, startRune > 0 || endRune < len(runes), true
+}
+
+func queryWindowBounds(value string, matchByteIndex int, maxChars int) struct{ start, end int } {
+	runes := []rune(value)
+	if maxChars <= 0 || len(runes) <= maxChars {
+		return struct{ start, end int }{start: 0, end: len(value)}
+	}
 	bodyMax := maxChars - 6
 	if bodyMax < 40 {
 		bodyMax = maxChars
@@ -506,39 +531,52 @@ func queryWindowWithFlag(value string, query string, maxChars int) (string, bool
 	if bodyMax <= 0 {
 		bodyMax = maxChars
 	}
-	contextBefore := bodyMax / 3
-	start := matchRune - contextBefore
-	if start < 0 {
-		start = 0
+	matchRune := len([]rune(value[:matchByteIndex]))
+	startRune := matchRune - bodyMax/3
+	if startRune < 0 {
+		startRune = 0
 	}
-	if start+bodyMax > len(runes) {
-		start = len(runes) - bodyMax
-		if start < 0 {
-			start = 0
+	endRune := startRune + bodyMax
+	if endRune > len(runes) {
+		endRune = len(runes)
+		startRune = endRune - bodyMax
+		if startRune < 0 {
+			startRune = 0
 		}
 	}
-	end := start + bodyMax
-	if minEnd := matchRune + matchRuneLen; end < minEnd {
-		end = minEnd
-		if end > len(runes) {
-			end = len(runes)
+	startByte := len(string(runes[:startRune]))
+	endByte := len(string(runes[:endRune]))
+	return struct{ start, end int }{start: startByte, end: endByte}
+}
+
+func queryWindowScore(window string, fullText string, terms []string, matchedTerm string) int {
+	score := len([]rune(matchedTerm))
+	for _, term := range queryWindowCoverageTerms(terms) {
+		if strings.Contains(window, term) {
+			occurrences := strings.Count(fullText, term)
+			if occurrences <= 0 {
+				occurrences = 1
+			}
+			score += 100 + 1000/occurrences + len([]rune(term))
 		}
-		start = end - bodyMax
-		if start < 0 {
-			start = 0
+	}
+	return score
+}
+
+func queryWindowCoverageTerms(terms []string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, term := range terms {
+		if strings.ContainsAny(term, " -") {
+			continue
 		}
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		out = append(out, term)
 	}
-	if end > len(runes) {
-		end = len(runes)
-	}
-	snippet := strings.TrimSpace(string(runes[start:end]))
-	if start > 0 {
-		snippet = "..." + snippet
-	}
-	if end < len(runes) {
-		snippet += "..."
-	}
-	return snippet, start > 0 || end < len(runes), true
+	return out
 }
 
 func queryWindowTerms(query string) []string {
@@ -587,6 +625,9 @@ func queryWindowTerms(query string) []string {
 		seen[term] = struct{}{}
 		terms = append(terms, term)
 	}
+	sort.SliceStable(terms, func(i, j int) bool {
+		return len([]rune(terms[i])) > len([]rune(terms[j]))
+	})
 	return terms
 }
 
