@@ -1081,6 +1081,7 @@ func TestRunSourceIDsUsesStoredExtractForStaleSummary(t *testing.T) {
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
 		Limit:                 10,
 		Summarize:             true,
+		Model:                 "cli/test/sourceenrich",
 		Length:                "short",
 		Timeout:               5 * time.Second,
 		ExactSummaryFreshness: true,
@@ -1122,6 +1123,8 @@ func TestRunSourceIDsUsesPreferredCLIProviderForGenericSummary(t *testing.T) {
 		t.Fatalf("write cli-state: %v", err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_SUMMARY_MODEL", "")
+	t.Setenv("SUMMARIZE_MODEL", "")
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -1242,6 +1245,7 @@ func TestRunSourceIDsRetriesRedirectingSourceWithResolvedURL(t *testing.T) {
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
 		Limit:     10,
 		Summarize: true,
+		Model:     "cli/test/sourceenrich",
 		Length:    "short",
 		Timeout:   5 * time.Second,
 		ResolveRedirectURL: func(context.Context, string) (string, error) {
@@ -1937,6 +1941,7 @@ func TestRunSourceIDsProcessesStoredExtractsWithConcurrency(t *testing.T) {
 		Limit:                 10,
 		Concurrency:           2,
 		Summarize:             true,
+		Model:                 "cli/test/sourceenrich",
 		Length:                "short",
 		Timeout:               5 * time.Second,
 		ExactSummaryFreshness: true,
@@ -2005,6 +2010,7 @@ func TestRunSourceIDsUsesYouTubeTranscriptPathForGenericSources(t *testing.T) {
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
 		Limit:     10,
 		Summarize: true,
+		Model:     "cli/test/sourceenrich-youtube",
 		Length:    "short",
 		Timeout:   5 * time.Second,
 	})

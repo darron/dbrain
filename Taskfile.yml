@@ -39,3 +39,8 @@ tasks:
     desc: Run the Go test suite
     cmds:
       - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test ./...
+
+  test-mcp:
+    desc: Run deterministic MCP retrieval and server tests
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test ./internal/ask ./internal/mcpeval ./internal/mcpserver

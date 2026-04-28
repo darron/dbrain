@@ -1674,6 +1674,8 @@ func TestAskCommandSynthesizesAnswer(t *testing.T) {
 	}
 
 	installAskFakeSummarize(t, root)
+	t.Setenv("DBRAIN_SUMMARY_MODEL", "")
+	t.Setenv("SUMMARIZE_MODEL", "")
 
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer

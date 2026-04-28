@@ -714,6 +714,50 @@ missing terms, and rough latency budgets. This is intentionally corpus-local:
 open-source users should encode their own known-good queries rather than
 relying on project-specific fixture data.
 
+### MCP TODO
+
+- [x] Add deterministic fixture coverage for MCP retrieval tests covering tags,
+  OCR text, transcript text, linked sources, and source-type filters.
+- [x] Add a `task test-mcp` command so CI and open-source users can validate MCP
+  retrieval behavior without a private corpus.
+- [x] Keep model-backed summary tests deterministic when local summary-model
+  environment variables are set.
+- [x] Document the importer contract for new data sources: when importers
+  populate the common item/source/text/tag/enrichment fields, MCP should
+  discover them without source-specific code.
+- [x] Add example local eval recipes for entity/tag, OCR, transcript, difficult
+  domain, and broad-topic/noisy-result retrieval cases.
+
+### MCP Importer Contract
+
+MCP retrieval is intentionally source-agnostic. New importers such as Bluesky,
+Apple Podcasts, RSS feeds, or read-it-later tools should become visible to MCP
+without custom MCP code when they write into the shared data model:
+
+- Create an `items` row for each saved signal with a stable `source_key`,
+  `source_type`, `external_id`, canonical URL, title, source text, author
+  metadata, timestamps, note path, raw JSON, and content hash.
+- Store collector-assigned or model-assigned tags in `user_tags`; multi-word
+  entity tags should use the shared hyphenated form, for example
+  `mark-carney`.
+- Store raw extracted linked-source text in `sources.extracted_text` and
+  derived source summaries in `sources.summary_text`; do not replace raw text
+  with summaries.
+- Link items to sources through source-link records so MCP graph expansion can
+  move from a post/bookmark/episode to the referenced article, repository,
+  paper, or transcript source.
+- Store media-derived text in the existing item enrichment fields where
+  possible: image text in `ocr_text`, short-form video/audio transcripts in
+  `article_text` with `article_title = "X Media Transcript"` until a generic
+  transcript field exists, and derived item summaries in `summary_text`.
+- Keep source-specific metadata in raw JSON or source-specific columns, but make
+  the durable searchable evidence available through the common text, summary,
+  tag, and link fields.
+
+After adding a new importer, add at least one MCP eval case that proves its
+strongest evidence is discoverable by text query, tag query, source-type filter,
+and any important derived text such as OCR or transcript content.
+
 If a client needs to discover the MCP surface from inside the protocol, start
 with:
 

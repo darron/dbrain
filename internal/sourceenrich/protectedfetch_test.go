@@ -129,6 +129,7 @@ func TestRunSourceIDsRecoversSucuriProtectedSource(t *testing.T) {
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
 		Limit:     10,
 		Summarize: true,
+		Model:     "cli/test/protected-fetch",
 		Timeout:   5 * time.Second,
 	})
 	if err != nil {
@@ -263,6 +264,7 @@ func TestRunSourceIDsUsesGoReaderFetchForKnownKilledDomains(t *testing.T) {
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
 		Limit:                     10,
 		Summarize:                 true,
+		Model:                     "cli/test/http-reader",
 		Timeout:                   5 * time.Second,
 		HTTPReaderFallbackDomains: []string{"127.0.0.1"},
 		HTTPReaderBaseURL:         server.URL + "/reader/",
@@ -404,6 +406,7 @@ func TestRunSourceIDsFallsBackToDirectFetchWhenReaderRejectsHeaders(t *testing.T
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
 		Limit:                     10,
 		Summarize:                 true,
+		Model:                     "cli/test/http-reader",
 		Timeout:                   5 * time.Second,
 		HTTPReaderFallbackDomains: []string{"127.0.0.1"},
 		HTTPReaderBaseURL:         server.URL + "/reader/",

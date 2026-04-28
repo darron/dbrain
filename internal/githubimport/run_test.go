@@ -40,6 +40,7 @@ func TestRunImportsStarsAndHomepageSources(t *testing.T) {
 
 	stats, err := Run(context.Background(), cfg, st, Options{
 		Summarize: true,
+		Model:     "cli/test/github",
 		Token:     "test-token",
 		APIBase:   server.URL,
 		Timeout:   5 * time.Second,
@@ -106,6 +107,7 @@ func TestRunStopsAtFirstExistingStar(t *testing.T) {
 
 	first, err := Run(context.Background(), cfg, st, Options{
 		Summarize: true,
+		Model:     "cli/test/github",
 		Token:     "test-token",
 		APIBase:   server.URL,
 		Timeout:   5 * time.Second,
@@ -120,6 +122,7 @@ func TestRunStopsAtFirstExistingStar(t *testing.T) {
 
 	second, err := Run(context.Background(), cfg, st, Options{
 		Summarize: true,
+		Model:     "cli/test/github",
 		Token:     "test-token",
 		APIBase:   server.URL,
 		Timeout:   5 * time.Second,
@@ -166,6 +169,7 @@ func TestRunLoadsTokenFromEnvrc(t *testing.T) {
 
 	stats, err := Run(context.Background(), cfg, st, Options{
 		Summarize: true,
+		Model:     "cli/test/github",
 		APIBase:   server.URL,
 		Timeout:   5 * time.Second,
 		Length:    "short",

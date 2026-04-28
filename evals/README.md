@@ -31,6 +31,19 @@ Useful case types:
 - Known difficult source domains should continue returning summarized source rows.
 - Broad topic queries should return a minimum amount of evidence and avoid known noisy rows.
 
+Example local recipes:
+
+- Entity/tag: query a named person or project and assert the exact hyphenated
+  user tag count plus one or more known source keys.
+- OCR: query a phrase that only exists in image OCR and assert the OCR item is
+  the top result with `expect_top_text`.
+- Transcript: query a phrase from a video/audio transcript and assert the
+  transcript-backed item or source appears before loosely related text hits.
+- Difficult domain: query a known recovered source from a blocked or reader
+  fallback domain and assert the summarized `src:...` row is returned.
+- Broad topic/noise: query a broad topic, require `min_evidence`, and use
+  `forbid_source_keys` or `forbid_text` for known boilerplate/noisy rows.
+
 Useful assertions:
 
 - `expect_top_source_keys` catches cases where the right evidence exists but is ranked too low.

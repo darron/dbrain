@@ -61,6 +61,7 @@ func TestRunPrefersLocalArticleTextOverLiveFetch(t *testing.T) {
 		DiscoverLimit: 10,
 		Limit:         10,
 		Summarize:     true,
+		Model:         "cli/test/linkextract",
 		Length:        "short",
 		Timeout:       5 * time.Second,
 	})
@@ -180,6 +181,7 @@ func TestRunOnlyEnrichesDiscoveredBookmarkSources(t *testing.T) {
 		DiscoverLimit: 10,
 		Limit:         10,
 		Summarize:     true,
+		Model:         "cli/test/linkextract",
 		Length:        "short",
 		Timeout:       5 * time.Second,
 	})
