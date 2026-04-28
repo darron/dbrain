@@ -157,7 +157,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 	candidates := make([]evidenceCandidate, 0, len(results))
 	seen := map[string]struct{}{}
 	for _, result := range results {
-		candidate, ok, err := buildEvidence(ctx, cfg, st, result, opts.MaxCharsPerDoc)
+		candidate, ok, err := buildEvidence(ctx, cfg, st, result, opts.MaxCharsPerDoc, searchTerms)
 		if err != nil {
 			return Response{}, err
 		}
@@ -356,19 +356,19 @@ func tagQueries(terms []string) []string {
 	return queries
 }
 
-func buildEvidence(ctx context.Context, cfg config.Config, st *store.Store, result model.SearchResult, maxChars int) (evidenceCandidate, bool, error) {
+func buildEvidence(ctx context.Context, cfg config.Config, st *store.Store, result model.SearchResult, maxChars int, terms []string) (evidenceCandidate, bool, error) {
 	if item, err := st.GetItem(ctx, result.SourceKey); err == nil {
-		return evidenceFromItem(cfg, item, result, maxChars), true, nil
+		return evidenceFromItem(cfg, item, result, maxChars, terms), true, nil
 	}
 
 	source, err := st.GetSource(ctx, result.SourceKey)
 	if err != nil {
 		return evidenceCandidate{}, false, nil
 	}
-	return evidenceFromSource(cfg, source, result, maxChars), true, nil
+	return evidenceFromSource(cfg, source, result, maxChars, terms), true, nil
 }
 
-func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchResult, maxChars int) evidenceCandidate {
+func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchResult, maxChars int, terms []string) evidenceCandidate {
 	author := strings.TrimSpace(item.AuthorName)
 	if strings.TrimSpace(item.AuthorHandle) != "" {
 		handle := "@" + strings.TrimSpace(item.AuthorHandle)
@@ -378,11 +378,12 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 		author += handle
 	}
 
-	excerpt := firstNonEmpty(
-		trimTo(item.XPostText, maxChars),
-		trimTo(item.ArticleText, maxChars),
-		trimTo(item.Text, maxChars),
-		trimTo(result.Snippet, maxChars),
+	excerpt := evidenceExcerpt(maxChars, terms,
+		item.XPostText,
+		item.ArticleText,
+		item.Text,
+		item.OCRText,
+		result.Snippet,
 	)
 
 	return evidenceCandidate{
@@ -392,6 +393,7 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 			Title:       item.Title,
 			URL:         item.CanonicalURL,
 			NotePath:    filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath)),
+			Summary:     trimTo(item.SummaryText, maxChars),
 			Excerpt:     excerpt,
 			Author:      author,
 			SourceType:  item.SourceType,
@@ -402,7 +404,7 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 	}
 }
 
-func evidenceFromSource(cfg config.Config, source model.SourceDocument, result model.SearchResult, maxChars int) evidenceCandidate {
+func evidenceFromSource(cfg config.Config, source model.SourceDocument, result model.SearchResult, maxChars int, terms []string) evidenceCandidate {
 	return evidenceCandidate{
 		Evidence: Evidence{
 			SourceKey:    source.SourceKey,
@@ -411,7 +413,7 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 			URL:          source.CanonicalURL,
 			NotePath:     filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath)),
 			Summary:      trimTo(source.SummaryText, maxChars),
-			Excerpt:      firstNonEmpty(trimTo(source.ExtractedText, maxChars), trimTo(result.Snippet, maxChars)),
+			Excerpt:      evidenceExcerpt(maxChars, terms, source.ExtractedText, result.Snippet),
 			SourceType:   source.SourceType,
 			ExtractedAt:  formatTime(source.ExtractedAt),
 			SummarizedAt: formatTime(source.SummarizedAt),
@@ -443,7 +445,7 @@ func collectRelatedEvidence(ctx context.Context, cfg config.Config, st *store.St
 				if err != nil {
 					continue
 				}
-				rel := evidenceFromSource(cfg, source, model.SearchResult{}, opts.MaxCharsPerDoc)
+				rel := evidenceFromSource(cfg, source, model.SearchResult{}, opts.MaxCharsPerDoc, terms)
 				if !matchesSourceTypes(opts.SourceTypes, rel.SourceType) {
 					continue
 				}
@@ -472,7 +474,7 @@ func collectRelatedEvidence(ctx context.Context, cfg config.Config, st *store.St
 				if err != nil {
 					continue
 				}
-				rel := evidenceFromItem(cfg, item, model.SearchResult{}, opts.MaxCharsPerDoc)
+				rel := evidenceFromItem(cfg, item, model.SearchResult{}, opts.MaxCharsPerDoc, terms)
 				if !matchesSourceTypes(opts.SourceTypes, rel.SourceType) {
 					continue
 				}
@@ -847,7 +849,7 @@ func collectEntityCandidates(ctx context.Context, cfg config.Config, st *store.S
 
 	candidates := make([]evidenceCandidate, 0, len(keys))
 	for _, sourceKey := range keys {
-		candidate, ok, err := buildEvidence(ctx, cfg, st, model.SearchResult{SourceKey: sourceKey}, opts.MaxCharsPerDoc)
+		candidate, ok, err := buildEvidence(ctx, cfg, st, model.SearchResult{SourceKey: sourceKey}, opts.MaxCharsPerDoc, terms)
 		if err != nil {
 			return nil, err
 		}
@@ -878,6 +880,106 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func evidenceExcerpt(maxChars int, terms []string, values ...string) string {
+	for _, value := range values {
+		if excerpt := queryWindow(value, terms, maxChars); excerpt != "" {
+			return excerpt
+		}
+	}
+	for _, value := range values {
+		if excerpt := trimTo(collapseWhitespace(value), maxChars); excerpt != "" {
+			return excerpt
+		}
+	}
+	return ""
+}
+
+func queryWindow(value string, terms []string, maxChars int) string {
+	value = collapseWhitespace(value)
+	if value == "" || maxChars <= 0 {
+		return value
+	}
+
+	candidates := queryWindowTerms(terms)
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	lower := strings.ToLower(value)
+	bestIndex := -1
+	bestLength := 0
+	for _, candidate := range candidates {
+		idx := strings.Index(lower, candidate)
+		if idx < 0 {
+			continue
+		}
+		candidateLength := len([]rune(candidate))
+		if bestIndex < 0 || candidateLength > bestLength || (candidateLength == bestLength && idx < bestIndex) {
+			bestIndex = idx
+			bestLength = candidateLength
+		}
+	}
+	if bestIndex < 0 {
+		return ""
+	}
+
+	runes := []rune(value)
+	if len(runes) <= maxChars {
+		return value
+	}
+
+	matchRune := len([]rune(lower[:bestIndex]))
+	start := matchRune - maxChars/4
+	if start < 0 {
+		start = 0
+	}
+	end := start + maxChars
+	if end > len(runes) {
+		end = len(runes)
+		start = end - maxChars
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	excerpt := strings.TrimSpace(string(runes[start:end]))
+	if start > 0 {
+		excerpt = "..." + excerpt
+	}
+	if end < len(runes) {
+		excerpt += "..."
+	}
+	return excerpt
+}
+
+func queryWindowTerms(terms []string) []string {
+	seen := map[string]struct{}{}
+	candidates := make([]string, 0, len(terms)+1)
+	add := func(value string) {
+		value = strings.ToLower(collapseWhitespace(value))
+		if value == "" || len([]rune(value)) < 2 {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		candidates = append(candidates, value)
+	}
+	add(strings.Join(terms, " "))
+	for _, term := range terms {
+		add(term)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return len([]rune(candidates[i])) > len([]rune(candidates[j]))
+	})
+	return candidates
+}
+
+func collapseWhitespace(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
 func trimTo(value string, maxChars int) string {

@@ -864,6 +864,84 @@ func TestServerGetToolUsesSlimSourceProjection(t *testing.T) {
 	}
 }
 
+func TestServerGetToolUsesQueryWindowForEvidenceSections(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	sourceResult, err := st.UpsertSource(context.Background(), model.SourceCandidate{
+		SourceKey:     "src:test-mcp-get-query-window",
+		OriginalURL:   "https://example.com/query-window",
+		CanonicalURL:  "https://example.com/query-window",
+		NormalizedURL: "https://example.com/query-window",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-mcp-get-query-window.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	target := "Mark Carney GFANZ banking context appears here"
+	content := strings.Repeat("navigation boilerplate ", 30) + target + " " + strings.Repeat("tail content ", 20)
+	if _, err := st.SaveSourceExtraction(context.Background(), sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/query-window",
+		FinalURL:     "https://example.com/query-window",
+		Title:        "Query Window Source",
+		Content:      content,
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "test-extractor",
+		ToolVersion:  "test",
+	}, "mcp-get-query-window-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"src:test-mcp-get-query-window","query":"Mark Carney","content_mode":"evidence","max_chars_per_section":120}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	if structured["query"] != "Mark Carney" {
+		t.Fatalf("expected query echoed in structured payload, got %#v", structured)
+	}
+	sections := structured["content_sections"].([]interface{})
+	var extractText string
+	for _, raw := range sections {
+		section := raw.(map[string]interface{})
+		if section["name"] == "extracted_text" {
+			extractText = section["text"].(string)
+			if section["truncated"] != true {
+				t.Fatalf("expected query-windowed section to be marked truncated, got %#v", section)
+			}
+			break
+		}
+	}
+	if !strings.Contains(extractText, target) {
+		t.Fatalf("expected query window around target, got %q", extractText)
+	}
+	if strings.HasPrefix(strings.TrimPrefix(extractText, "..."), "navigation boilerplate navigation boilerplate") {
+		t.Fatalf("expected query window to skip leading boilerplate, got %q", extractText)
+	}
+}
+
 func TestServerGetManyToolReturnsBatchPayloadAndPartialErrors(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -948,6 +1026,75 @@ func TestServerGetManyToolReturnsBatchPayloadAndPartialErrors(t *testing.T) {
 	text := result["content"].([]interface{})[0].(map[string]interface{})["text"].(string)
 	if !strings.Contains(text, "item batch evidence") || !strings.Contains(text, "source batch evidence") || !strings.Contains(text, "missing:key") {
 		t.Fatalf("expected combined batch text and partial error, got %q", text)
+	}
+}
+
+func TestServerGetManyToolUsesQueryWindowForEvidenceSections(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	itemText := strings.Repeat("item boilerplate ", 25) + "batch query needle evidence" + strings.Repeat(" more tail", 15)
+	if _, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-mcp-get-many-query-window",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-get-many-query-window",
+		CanonicalURL: "https://x.com/example/status/test-mcp-get-many-query-window",
+		Title:        "Get Many Query Window Item",
+		Text:         itemText,
+		ContentHash:  "mcp-get-many-query-window-item",
+		NotePath:     "items/x/2026/test-mcp-get-many-query-window.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get_many","arguments":{"lookups":["x:test-mcp-get-many-query-window"],"query":"needle evidence","content_mode":"evidence","max_chars_per_section":90}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(ctx, strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	if structured["query"] != "needle evidence" {
+		t.Fatalf("expected query echoed in get_many payload, got %#v", structured)
+	}
+	results := structured["results"].([]interface{})
+	first := results[0].(map[string]interface{})
+	sections := first["content_sections"].([]interface{})
+	var textSection string
+	for _, raw := range sections {
+		section := raw.(map[string]interface{})
+		if section["name"] == "text" {
+			textSection = section["text"].(string)
+			break
+		}
+	}
+	if !strings.Contains(textSection, "batch query needle evidence") {
+		t.Fatalf("expected get_many query-windowed text section, got %q", textSection)
+	}
+	if strings.HasPrefix(strings.TrimPrefix(textSection, "..."), "item boilerplate item boilerplate") {
+		t.Fatalf("expected get_many query window to skip leading boilerplate, got %q", textSection)
 	}
 }
 

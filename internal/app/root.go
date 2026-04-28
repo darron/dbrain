@@ -111,6 +111,7 @@ func NewRootCommand() *cobra.Command {
 		newSQLiteCommand(opts),
 		importCmd,
 		newSyncCommand(opts),
+		newEvalCommand(opts),
 		newEntityCommand(opts),
 		newTopicCommand(opts),
 		newWorkerCommand(opts),

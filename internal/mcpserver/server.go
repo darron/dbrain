@@ -332,6 +332,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (map[strin
 func (s *Server) toolGet(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
 	var args struct {
 		Lookup             string `json:"lookup"`
+		Query              string `json:"query"`
 		ContentMode        string `json:"content_mode"`
 		MaxCharsPerSection int    `json:"max_chars_per_section"`
 		IncludeContent     *bool  `json:"include_content"`
@@ -345,7 +346,7 @@ func (s *Server) toolGet(ctx context.Context, raw json.RawMessage) (map[string]i
 	}
 	maxChars := maxGetSectionChars(args.MaxCharsPerSection)
 
-	payload, text, err := s.getPayloadForLookup(ctx, args.Lookup, contentMode, maxChars)
+	payload, text, err := s.getPayloadForLookup(ctx, args.Lookup, contentMode, maxChars, args.Query)
 	if err != nil {
 		return nil, err
 	}
@@ -355,6 +356,7 @@ func (s *Server) toolGet(ctx context.Context, raw json.RawMessage) (map[string]i
 func (s *Server) toolGetMany(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
 	var args struct {
 		Lookups            []string `json:"lookups"`
+		Query              string   `json:"query"`
 		ContentMode        string   `json:"content_mode"`
 		MaxCharsPerSection int      `json:"max_chars_per_section"`
 		IncludeContent     *bool    `json:"include_content"`
@@ -380,7 +382,7 @@ func (s *Server) toolGetMany(ctx context.Context, raw json.RawMessage) (map[stri
 	errors := make([]getManyError, 0)
 	texts := make([]string, 0, len(lookups))
 	for _, lookup := range lookups {
-		payload, text, err := s.getPayloadForLookup(ctx, lookup, contentMode, maxChars)
+		payload, text, err := s.getPayloadForLookup(ctx, lookup, contentMode, maxChars, args.Query)
 		if err != nil {
 			errors = append(errors, getManyError{Lookup: lookup, Error: err.Error()})
 			continue
@@ -397,6 +399,9 @@ func (s *Server) toolGetMany(ctx context.Context, raw json.RawMessage) (map[stri
 		"count":                 len(results),
 		"results":               results,
 		"errors":                errors,
+	}
+	if query := strings.TrimSpace(args.Query); query != "" {
+		payload["query"] = query
 	}
 	return toolOKResult(formatGetManyPayload(payload, texts), payload), nil
 }
@@ -680,6 +685,7 @@ func toolDefinitions() []map[string]interface{} {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"lookup":                map[string]interface{}{"type": "string", "description": "Source key, external id, URL, or note path."},
+					"query":                 map[string]interface{}{"type": "string", "description": "Optional query used to window evidence sections around matching text. Applies to content_mode=evidence."},
 					"content_mode":          map[string]interface{}{"type": "string", "enum": []string{"brief", "evidence", "raw", "rendered"}, "description": "Content to return: brief metadata only, capped DB evidence sections, capped raw DB sections, or rendered Markdown note.", "default": "evidence"},
 					"max_chars_per_section": map[string]interface{}{"type": "integer", "description": "Maximum characters per returned content section. Hard-capped to prevent accidental huge context.", "default": defaultGetSectionChars},
 					"include_content":       map[string]interface{}{"type": "boolean", "description": "Deprecated compatibility flag. false maps to content_mode=brief; true maps to content_mode=evidence unless content_mode is set.", "default": true},
@@ -696,6 +702,7 @@ func toolDefinitions() []map[string]interface{} {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"lookups":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Source keys, external ids, URLs, or note paths. Maximum 20."},
+					"query":                 map[string]interface{}{"type": "string", "description": "Optional query used to window evidence sections around matching text. Applies to content_mode=evidence."},
 					"content_mode":          map[string]interface{}{"type": "string", "enum": []string{"brief", "evidence", "raw", "rendered"}, "description": "Content to return for each lookup.", "default": "evidence"},
 					"max_chars_per_section": map[string]interface{}{"type": "integer", "description": "Maximum characters per returned content section. Hard-capped to prevent accidental huge context.", "default": defaultGetSectionChars},
 					"include_content":       map[string]interface{}{"type": "boolean", "description": "Deprecated compatibility flag. false maps to content_mode=brief; true maps to content_mode=evidence unless content_mode is set.", "default": true},
@@ -879,6 +886,7 @@ func getOutputSchema() map[string]interface{} {
 		"url":                   scalarSchema("string", "Canonical URL when available."),
 		"note":                  scalarSchema("string", "Absolute path to the rendered note."),
 		"note_path":             scalarSchema("string", "Relative rendered note path."),
+		"query":                 scalarSchema("string", "Optional query used to window evidence sections around matches."),
 		"content_mode":          enumSchema("Returned content mode.", "brief", "evidence", "raw", "rendered"),
 		"max_chars_per_section": scalarSchema("integer", "Maximum characters returned per content section."),
 		"available_sections":    arraySchema(getSectionSchema()),
@@ -892,6 +900,7 @@ func getOutputSchema() map[string]interface{} {
 func getManyOutputSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
 		"lookups":               arraySchema(scalarSchema("string", "Lookup values requested.")),
+		"query":                 scalarSchema("string", "Optional query used to window evidence sections around matches."),
 		"content_mode":          enumSchema("Returned content mode.", "brief", "evidence", "raw", "rendered"),
 		"max_chars_per_section": scalarSchema("integer", "Maximum characters returned per content section."),
 		"count":                 scalarSchema("integer", "Number of lookups successfully resolved."),

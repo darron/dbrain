@@ -34,6 +34,7 @@ Markdown note rendering for Obsidian and local query over the imported corpus.
 - `dbrain stats activity`
 - `dbrain stats backlog`
 - `dbrain stats pipeline`
+- `dbrain eval mcp`
 - `dbrain version`
 - `dbrain ask <question>`
 - `dbrain search <query>`
@@ -336,6 +337,11 @@ derived summary.
 - `dbrain stats backlog`
   No external tools required. Shows remaining queued work by pipeline stage and
   whether the current queues are drained.
+- `dbrain eval mcp`
+  No external tools required. Runs read-only retrieval regression checks against
+  a JSON case file using the same retrieval path exposed through MCP research
+  tools. Use `--write-example <path>` to generate a starter case file and
+  `--json` for structured CI-friendly output.
 - `dbrain version`
   No external tools required. Prints build metadata including commit, build
   time, git status, Go version, git version, build platform, and module info.
@@ -606,6 +612,12 @@ read-only and provides:
 silently spend model usage unless they explicitly request answer synthesis.
 The tool list also includes `outputSchema` metadata so MCP clients can reason
 about the structured payloads without learning them from examples.
+Evidence excerpts are query-aware: when a match appears deep in a raw source
+extract, item OCR text, or media transcript stored as article text, the
+retrieved evidence window is centered near the match instead of blindly
+returning the beginning of the raw document. Item-level derived summaries are
+also surfaced as summaries in retrieval evidence while raw OCR/transcript/text
+remain available through `dbrain_get`.
 
 `dbrain_get` is DB-first. By default it returns slim item/source metadata and
 capped `content_sections` from the SQLite row, not the rendered Markdown file.
@@ -613,7 +625,9 @@ Use `content_mode=brief` for metadata only, `content_mode=evidence` for normal
 research context, `content_mode=raw` for raw DB extracts/transcripts/OCR/JSON,
 and `content_mode=rendered` only when a client specifically needs the rendered
 Markdown note shape. `max_chars_per_section` controls per-section output size,
-with a hard cap to avoid accidental huge MCP responses. Evidence mode also
+with a hard cap to avoid accidental huge MCP responses. Pass `query` with
+`content_mode=evidence` to window each text section around matching terms
+instead of returning the beginning of long extracts. Evidence mode also
 includes a small capped DB graph expansion for context such as quoted X posts,
 linked sources, and source backlinks, so agents do not have to read rendered
 Markdown just to see immediate neighboring evidence. X media enrichments are
@@ -624,7 +638,9 @@ also includes distinct media transcript and image OCR blocks when present.
 Use `dbrain_get_many` after a search or research pack when an agent needs to
 inspect several evidence rows in one MCP round trip. It uses the same
 DB-backed content modes and section caps as `dbrain_get`, and returns partial
-per-lookup errors without failing the whole batch.
+per-lookup errors without failing the whole batch. Suggested follow-up
+arguments from `dbrain_research_pack` include the research query so detail
+fetches keep the same query-windowing behavior.
 
 `dbrain_research_pack` is the default MCP research entry point for broad
 questions. It always returns retrieve-only evidence, a compact query plan
@@ -676,6 +692,20 @@ The MCP additions are meant to support these common agent workflows:
   `dbrain://topic-note/{query}` when a rendered note preview is useful
 - pipeline monitoring: `dbrain_stats_activity`, `dbrain_stats_backlog`, and
   optionally `dbrain_stats_sources`
+
+For local retrieval quality checks, create a corpus-specific eval file:
+
+```sh
+./bin/dbrain eval mcp --write-example evals/mcp.json
+./bin/dbrain eval mcp --file evals/mcp.json
+```
+
+Eval cases can require specific source keys, any source key from an acceptable
+set, minimum evidence counts, expected text, forbidden source keys or noisy
+text, source-type filters, related-evidence expansion, and rough latency
+budgets. This is intentionally corpus-local: open-source users should encode
+their own known-good queries rather than relying on project-specific fixture
+data.
 
 If a client needs to discover the MCP surface from inside the protocol, start
 with:

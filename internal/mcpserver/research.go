@@ -169,7 +169,7 @@ func (s *Server) buildResearchPack(ctx context.Context, opts researchPackOptions
 		},
 		Evidence:  resp.Evidence,
 		Coverage:  mergeResearchCoverage(buildResearchCoverage(resp.Evidence), corpusCoverage),
-		NextSteps: buildResearchNextSteps(resp.Evidence),
+		NextSteps: buildResearchNextSteps(resp.Evidence, hints.TextQuery),
 	}
 
 	if includeTopic {
@@ -552,10 +552,11 @@ func orderedResearchBuckets(counts map[string]int, limit int) []researchBucket {
 	return buckets
 }
 
-func buildResearchNextSteps(evidence []ask.Evidence) []researchSuggestedAction {
+func buildResearchNextSteps(evidence []ask.Evidence, query string) []researchSuggestedAction {
 	if len(evidence) == 0 {
 		return nil
 	}
+	query = strings.TrimSpace(query)
 	steps := make([]researchSuggestedAction, 0, 2)
 	if len(evidence) > 1 {
 		lookups := make([]string, 0, min(len(evidence), 5))
@@ -569,23 +570,31 @@ func buildResearchNextSteps(evidence []ask.Evidence) []researchSuggestedAction {
 			}
 		}
 		if len(lookups) > 0 {
+			args := map[string]interface{}{
+				"lookups":      lookups,
+				"content_mode": "evidence",
+			}
+			if query != "" {
+				args["query"] = query
+			}
 			steps = append(steps, researchSuggestedAction{
-				Tool:   "dbrain_get_many",
-				Reason: "Inspect the strongest evidence notes in one MCP call before making detailed claims.",
-				Arguments: map[string]interface{}{
-					"lookups":      lookups,
-					"content_mode": "evidence",
-				},
+				Tool:      "dbrain_get_many",
+				Reason:    "Inspect the strongest evidence notes in one MCP call before making detailed claims.",
+				Arguments: args,
 			})
 		}
 	} else {
+		args := map[string]interface{}{
+			"lookup":       evidence[0].SourceKey,
+			"content_mode": "evidence",
+		}
+		if query != "" {
+			args["query"] = query
+		}
 		steps = append(steps, researchSuggestedAction{
-			Tool:   "dbrain_get",
-			Reason: "Inspect the strongest evidence note before making detailed claims.",
-			Arguments: map[string]interface{}{
-				"lookup":       evidence[0].SourceKey,
-				"content_mode": "evidence",
-			},
+			Tool:      "dbrain_get",
+			Reason:    "Inspect the strongest evidence note before making detailed claims.",
+			Arguments: args,
 		})
 	}
 	for _, doc := range evidence {

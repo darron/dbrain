@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"dbrain/internal/model"
 )
@@ -55,19 +56,20 @@ func resolveGetContentMode(value string, includeContent *bool) (string, error) {
 	}
 }
 
-func (s *Server) getPayloadForLookup(ctx context.Context, lookup string, mode string, maxChars int) (map[string]interface{}, string, error) {
+func (s *Server) getPayloadForLookup(ctx context.Context, lookup string, mode string, maxChars int, query string) (map[string]interface{}, string, error) {
 	lookup = strings.TrimSpace(lookup)
 	if lookup == "" {
 		return nil, "", fmt.Errorf("lookup is required")
 	}
+	query = strings.TrimSpace(query)
 	if item, err := s.st.GetItem(ctx, lookup); err == nil {
-		return s.getItemPayload(ctx, item, mode, maxChars)
+		return s.getItemPayload(ctx, item, mode, maxChars, query)
 	}
 	source, err := s.st.GetSource(ctx, lookup)
 	if err != nil {
 		return nil, "", err
 	}
-	return s.getSourcePayload(ctx, source, mode, maxChars)
+	return s.getSourcePayload(ctx, source, mode, maxChars, query)
 }
 
 func maxGetSectionChars(value int) int {
@@ -80,21 +82,21 @@ func maxGetSectionChars(value int) int {
 	return value
 }
 
-func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode string, maxChars int) (map[string]interface{}, string, error) {
+func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode string, maxChars int, query string) (map[string]interface{}, string, error) {
 	note := filepath.Join(s.cfg.VaultDir, filepath.FromSlash(item.NotePath))
 	available := itemAvailableSections(item)
-	relatedItems, relatedItemSections, err := s.itemRelatedItemSections(ctx, item, maxChars)
+	relatedItems, relatedItemSections, err := s.itemRelatedItemSections(ctx, item)
 	if err != nil {
 		return nil, "", err
 	}
-	relatedSources, relatedSourceSections, err := s.itemRelatedSourceSections(ctx, item, maxChars)
+	relatedSources, relatedSourceSections, err := s.itemRelatedSourceSections(ctx, item)
 	if err != nil {
 		return nil, "", err
 	}
 	available = append(available, relatedItemSections...)
 	available = append(available, relatedSourceSections...)
 
-	sections := sectionsForMode(available, mode, maxChars)
+	sections := sectionsForMode(available, mode, maxChars, query)
 	if mode == getModeRendered {
 		content, err := readNote(note)
 		if err != nil {
@@ -116,6 +118,9 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 		"content_sections":      sections,
 		"item":                  slimItem(item),
 	}
+	if query != "" {
+		payload["query"] = query
+	}
 	if len(relatedItems) > 0 {
 		payload["related_items"] = relatedItems
 	}
@@ -128,16 +133,16 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 	return payload, formatGetPayload(payload), nil
 }
 
-func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocument, mode string, maxChars int) (map[string]interface{}, string, error) {
+func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocument, mode string, maxChars int, query string) (map[string]interface{}, string, error) {
 	note := filepath.Join(s.cfg.VaultDir, filepath.FromSlash(source.NotePath))
 	available := sourceAvailableSections(source)
-	backlinks, backlinkSections, err := s.sourceBacklinkSections(ctx, source, maxChars)
+	backlinks, backlinkSections, err := s.sourceBacklinkSections(ctx, source)
 	if err != nil {
 		return nil, "", err
 	}
 	available = append(available, backlinkSections...)
 
-	sections := sectionsForMode(available, mode, maxChars)
+	sections := sectionsForMode(available, mode, maxChars, query)
 	if mode == getModeRendered {
 		content, err := readNote(note)
 		if err != nil {
@@ -160,6 +165,9 @@ func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocume
 		"content_sections":      sections,
 		"source":                slimSource(source),
 	}
+	if query != "" {
+		payload["query"] = query
+	}
 	if len(backlinks) > 0 {
 		payload["backlinks"] = backlinks
 	}
@@ -169,7 +177,7 @@ func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocume
 	return payload, formatGetPayload(payload), nil
 }
 
-func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item, maxChars int) ([]map[string]interface{}, []getSection, error) {
+func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item) ([]map[string]interface{}, []getSection, error) {
 	childIDs, err := s.st.ListItemChildLinks(ctx, item.ID, "quoted_post")
 	if err != nil {
 		return nil, nil, err
@@ -192,12 +200,12 @@ func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item, m
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		sections = append(sections, makeGetSection("quoted_post:"+child.SourceKey, "related_item", child.XPostStatus, child.SummaryModel, child.SummaryTool, child.XPostFetchedAt, text, maxChars))
+		sections = append(sections, makeGetSection("quoted_post:"+child.SourceKey, "related_item", child.XPostStatus, child.SummaryModel, child.SummaryTool, child.XPostFetchedAt, text, 0))
 	}
 	return related, sections, nil
 }
 
-func (s *Server) itemRelatedSourceSections(ctx context.Context, item model.Item, maxChars int) ([]model.ItemSourceRef, []getSection, error) {
+func (s *Server) itemRelatedSourceSections(ctx context.Context, item model.Item) ([]model.ItemSourceRef, []getSection, error) {
 	refs, err := s.st.ListSourcesForItem(ctx, item.ID)
 	if err != nil {
 		return nil, nil, err
@@ -218,12 +226,12 @@ func (s *Server) itemRelatedSourceSections(ctx context.Context, item model.Item,
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		sections = append(sections, makeGetSection("linked_source:"+source.SourceKey, "related_source", firstNonEmpty(source.SummaryStatus, source.ExtractStatus), source.SummaryModel, firstNonEmpty(source.SummaryTool, source.ExtractTool), firstNonZeroTime(source.SummarizedAt, source.ExtractedAt), text, maxChars))
+		sections = append(sections, makeGetSection("linked_source:"+source.SourceKey, "related_source", firstNonEmpty(source.SummaryStatus, source.ExtractStatus), source.SummaryModel, firstNonEmpty(source.SummaryTool, source.ExtractTool), firstNonZeroTime(source.SummarizedAt, source.ExtractedAt), text, 0))
 	}
 	return refs, sections, nil
 }
 
-func (s *Server) sourceBacklinkSections(ctx context.Context, source model.SourceDocument, maxChars int) ([]model.SourceBacklink, []getSection, error) {
+func (s *Server) sourceBacklinkSections(ctx context.Context, source model.SourceDocument) ([]model.SourceBacklink, []getSection, error) {
 	refs, err := s.st.ListBacklinksForSource(ctx, source.ID)
 	if err != nil {
 		return nil, nil, err
@@ -244,7 +252,7 @@ func (s *Server) sourceBacklinkSections(ctx context.Context, source model.Source
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		sections = append(sections, makeGetSection("referencing_item:"+item.SourceKey, "related_item", item.XPostStatus, item.SummaryModel, item.SummaryTool, item.XPostFetchedAt, text, maxChars))
+		sections = append(sections, makeGetSection("referencing_item:"+item.SourceKey, "related_item", item.XPostStatus, item.SummaryModel, item.SummaryTool, item.XPostFetchedAt, text, 0))
 	}
 	return refs, sections, nil
 }
@@ -354,7 +362,7 @@ func sourceAvailableSections(source model.SourceDocument) []getSection {
 	return sections
 }
 
-func sectionsForMode(available []getSection, mode string, maxChars int) []getSection {
+func sectionsForMode(available []getSection, mode string, maxChars int, query string) []getSection {
 	if mode == getModeBrief {
 		return nil
 	}
@@ -372,10 +380,25 @@ func sectionsForMode(available []getSection, mode string, maxChars int) []getSec
 		if mode == getModeRaw && strings.HasPrefix(section.Role, "related_") {
 			continue
 		}
-		section.Text, section.Truncated = truncateWithFlag(section.Text, maxChars)
+		if mode == getModeEvidence {
+			section.Text, section.Truncated = evidenceSectionText(section, maxChars, query)
+		} else {
+			section.Text, section.Truncated = truncateWithFlag(section.Text, maxChars)
+		}
 		appendUniqueSection(&sections, section)
 	}
 	return sections
+}
+
+func evidenceSectionText(section getSection, maxChars int, query string) (string, bool) {
+	if strings.TrimSpace(query) == "" {
+		return truncateWithFlag(section.Text, maxChars)
+	}
+	text, truncated, matched := queryWindowWithFlag(section.Text, query, maxChars)
+	if matched {
+		return text, truncated
+	}
+	return truncateWithFlag(section.Text, maxChars)
 }
 
 func makeGetSection(name, role, status, modelName, tool string, at time.Time, text string, maxChars int) getSection {
@@ -437,6 +460,134 @@ func truncateWithFlag(value string, maxChars int) (string, bool) {
 		return value, false
 	}
 	return strings.TrimSpace(string(runes[:maxChars])), true
+}
+
+func queryWindowWithFlag(value string, query string, maxChars int) (string, bool, bool) {
+	text := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if text == "" {
+		return "", false, false
+	}
+	terms := queryWindowTerms(query)
+	if len(terms) == 0 {
+		return "", false, false
+	}
+	lowerText := strings.ToLower(text)
+	bestByteIndex := -1
+	bestRuneIndex := 0
+	bestRuneLen := 0
+	for _, term := range terms {
+		if term == "" {
+			continue
+		}
+		idx := strings.Index(lowerText, term)
+		if idx < 0 {
+			continue
+		}
+		runeLen := len([]rune(term))
+		if bestByteIndex == -1 || runeLen > bestRuneLen || (runeLen == bestRuneLen && idx < bestByteIndex) {
+			bestByteIndex = idx
+			bestRuneIndex = len([]rune(lowerText[:idx]))
+			bestRuneLen = runeLen
+		}
+	}
+	if bestByteIndex < 0 {
+		return "", false, false
+	}
+	runes := []rune(text)
+	if maxChars <= 0 || len(runes) <= maxChars {
+		return text, false, true
+	}
+	matchRune := bestRuneIndex
+	matchRuneLen := bestRuneLen
+	bodyMax := maxChars - 6
+	if bodyMax < 40 {
+		bodyMax = maxChars
+	}
+	if bodyMax <= 0 {
+		bodyMax = maxChars
+	}
+	contextBefore := bodyMax / 3
+	start := matchRune - contextBefore
+	if start < 0 {
+		start = 0
+	}
+	if start+bodyMax > len(runes) {
+		start = len(runes) - bodyMax
+		if start < 0 {
+			start = 0
+		}
+	}
+	end := start + bodyMax
+	if minEnd := matchRune + matchRuneLen; end < minEnd {
+		end = minEnd
+		if end > len(runes) {
+			end = len(runes)
+		}
+		start = end - bodyMax
+		if start < 0 {
+			start = 0
+		}
+	}
+	if end > len(runes) {
+		end = len(runes)
+	}
+	snippet := strings.TrimSpace(string(runes[start:end]))
+	if start > 0 {
+		snippet = "..." + snippet
+	}
+	if end < len(runes) {
+		snippet += "..."
+	}
+	return snippet, start > 0 || end < len(runes), true
+}
+
+func queryWindowTerms(query string) []string {
+	query = strings.TrimSpace(strings.ToLower(query))
+	if query == "" {
+		return nil
+	}
+	stopwords := map[string]struct{}{
+		"a": {}, "about": {}, "an": {}, "and": {}, "are": {}, "brain": {}, "can": {}, "dbrain": {}, "do": {}, "does": {}, "for": {},
+		"evidence": {}, "find": {}, "give": {}, "have": {}, "how": {}, "i": {}, "if": {}, "in": {}, "include": {}, "is": {}, "know": {}, "me": {}, "my": {}, "of": {}, "on": {},
+		"overview": {}, "present": {}, "related": {}, "saved": {}, "show": {}, "tag": {}, "tags": {}, "tell": {}, "the": {}, "to": {}, "use": {}, "using": {}, "we": {}, "what": {}, "why": {}, "you": {}, "your": {},
+	}
+	parts := strings.FieldsFunc(query, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if len([]rune(part)) < 2 {
+			continue
+		}
+		if _, skip := stopwords[part]; skip {
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	candidates := make([]string, 0, len(filtered)+3)
+	if len(filtered) > 1 {
+		candidates = append(candidates, strings.Join(filtered, " "), strings.Join(filtered, "-"))
+	}
+	if len([]rune(query)) <= 120 {
+		candidates = append(candidates, query)
+	}
+	candidates = append(candidates, filtered...)
+
+	seen := map[string]struct{}{}
+	terms := make([]string, 0, len(candidates))
+	for _, term := range candidates {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		terms = append(terms, term)
+	}
+	return terms
 }
 
 func slimItem(item model.Item) map[string]interface{} {
@@ -533,6 +684,11 @@ func formatGetPayload(payload map[string]interface{}) string {
 	b.WriteString("Content mode: ")
 	b.WriteString(payload["content_mode"].(string))
 	b.WriteString("\n")
+	if query, _ := payload["query"].(string); strings.TrimSpace(query) != "" {
+		b.WriteString("Query: ")
+		b.WriteString(strings.TrimSpace(query))
+		b.WriteString("\n")
+	}
 
 	if item, ok := payload["item"].(map[string]interface{}); ok {
 		if tags, _ := item["user_tags"].(string); strings.TrimSpace(tags) != "" {
@@ -570,6 +726,11 @@ func formatGetManyPayload(payload map[string]interface{}, texts []string) string
 		_, _ = fmt.Fprintf(&b, " (%d errors)", len(errors))
 	}
 	b.WriteString(".\n")
+	if query, _ := payload["query"].(string); strings.TrimSpace(query) != "" {
+		b.WriteString("Query: ")
+		b.WriteString(strings.TrimSpace(query))
+		b.WriteString("\n")
+	}
 	if len(texts) > 0 {
 		for i, text := range texts {
 			if i > 0 {
