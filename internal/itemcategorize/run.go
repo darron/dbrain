@@ -25,13 +25,13 @@ import (
 )
 
 const (
-	defaultModel        = "openrouter/google/gemini-2.5-flash"
-	defaultOllamaBase   = "http://127.0.0.1:11434"
-	defaultOllamaKey    = "ollama"
+	defaultModel          = "openrouter/google/gemini-2.5-flash"
+	defaultOllamaBase     = "http://127.0.0.1:11434"
+	defaultOllamaKey      = "ollama"
 	defaultOpenRouterBase = "https://openrouter.ai/api/v1"
-	defaultTimeout      = 90 * time.Second
-	maxArticleChars     = 3000
-	maxTranscriptChars  = 3000
+	defaultTimeout        = 90 * time.Second
+	maxArticleChars       = 3000
+	maxTranscriptChars    = 3000
 )
 
 const systemPrompt = `You are categorizing items for a personal knowledge base.
@@ -72,6 +72,8 @@ type Options struct {
 	S3Region    string
 	S3AccessKey string
 	S3SecretKey string
+	// OnStart is called after item selection, before worker goroutines start.
+	OnStart func(total int)
 	// OnResult is called from worker goroutines as each item completes.
 	// It must be safe to call concurrently. Leave nil to skip streaming output.
 	OnResult func(ItemResult)
@@ -120,7 +122,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, item model.Ite
 	}
 
 	if opts.Apply {
-		tags := joinTags(result)
+		tags := MergeUserTags(item.UserTags, result)
 		if err := st.SaveItemUserTags(ctx, item.ID, tags); err != nil {
 			return result, fmt.Errorf("save user_tags: %w", err)
 		}
@@ -139,6 +141,9 @@ func Batch(ctx context.Context, cfg config.Config, st *store.Store, opts Options
 	}
 
 	stats := Stats{Queued: len(items)}
+	if opts.OnStart != nil {
+		opts.OnStart(len(items))
+	}
 	if len(items) == 0 {
 		return stats, nil, nil
 	}
@@ -670,10 +675,14 @@ func resolveOpts(cfg config.Config, opts *Options) {
 	}
 }
 
-func joinTags(r Result) string {
+// MergeUserTags appends categorizer output to existing comma-separated
+// user_tags while preserving the existing order and removing duplicates.
+func MergeUserTags(existing string, r Result) string {
 	seen := map[string]struct{}{}
 	var parts []string
-	for _, t := range append(r.Tags, r.Categories...) {
+	candidates := append(splitTags(existing), r.Tags...)
+	candidates = append(candidates, r.Categories...)
+	for _, t := range candidates {
 		t = strings.TrimSpace(t)
 		if t == "" {
 			continue
@@ -685,6 +694,19 @@ func joinTags(r Result) string {
 		parts = append(parts, t)
 	}
 	return strings.Join(parts, ",")
+}
+
+func splitTags(value string) []string {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if trimmed := strings.TrimSpace(field); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func parseOllamaModel(model string) (string, bool) {

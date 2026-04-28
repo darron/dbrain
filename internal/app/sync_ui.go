@@ -267,6 +267,8 @@ func syncStageLabel(stage string) string {
 		return "Draining source backlog"
 	case "archive media":
 		return "Archiving finalized media"
+	case "categorize items":
+		return "Categorizing items"
 	default:
 		if strings.HasPrefix(stage, "x settle pass") {
 			return "Settling X frontier"

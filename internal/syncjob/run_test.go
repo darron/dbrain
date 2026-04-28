@@ -3,12 +3,15 @@ package syncjob
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"slices"
 	"testing"
 
 	"dbrain/internal/config"
+	"dbrain/internal/itemcategorize"
 	"dbrain/internal/linkextract"
 	"dbrain/internal/mediaarchive"
+	"dbrain/internal/model"
 	"dbrain/internal/store"
 	"dbrain/internal/xapi"
 	"dbrain/internal/xmediatranscribe"
@@ -321,6 +324,112 @@ func TestRunExecutesArchiveStageAtEndWhenEnabled(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(output), []byte("Media archive complete")) {
 		t.Fatalf("expected archive completion output, got %q", output)
+	}
+}
+
+func TestRunExecutesCategorizeStageAtEndWhenEnabled(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origArchive := runMediaArchive
+	origCategorize := runItemCategorize
+	t.Cleanup(func() {
+		runMediaArchive = origArchive
+		runItemCategorize = origCategorize
+	})
+
+	var calls []string
+	var logs bytes.Buffer
+	runMediaArchive = func(context.Context, config.Config, *store.Store, mediaarchive.Options) (mediaarchive.Stats, error) {
+		calls = append(calls, "archive")
+		return mediaarchive.Stats{Candidates: 1, Uploaded: 1, Archived: 1}, nil
+	}
+	runItemCategorize = func(_ context.Context, _ config.Config, _ *store.Store, opts itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.ItemResult, error) {
+		calls = append(calls, "categorize")
+		if !opts.Apply {
+			t.Fatal("expected sync categorization to apply tags")
+		}
+		if opts.Force {
+			t.Fatal("did not expect forced categorization")
+		}
+		if opts.Limit != 12 {
+			t.Fatalf("expected categorize limit 12, got %d", opts.Limit)
+		}
+		if opts.Concurrency != 3 {
+			t.Fatalf("expected categorize concurrency 3, got %d", opts.Concurrency)
+		}
+		if opts.OnStart == nil {
+			t.Fatal("expected categorize progress start callback")
+		}
+		if opts.OnResult == nil {
+			t.Fatal("expected categorize progress result callback")
+		}
+		opts.OnStart(2)
+		opts.OnResult(itemcategorize.ItemResult{
+			Item: model.Item{ID: 101, SourceKey: "x:101"},
+			Result: itemcategorize.Result{
+				Tags:       []string{"canada"},
+				Categories: []string{"Canadian Politics"},
+			},
+		})
+		return itemcategorize.Stats{Queued: 2, Succeeded: 2, Applied: 2}, nil, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(context.Background(), cfg, st, Options{
+		ArchiveMediaEnabled:   true,
+		CategorizeEnabled:     true,
+		CategorizeLimit:       12,
+		CategorizeConcurrency: 3,
+		Logger:                slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Progress:              &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Equal(calls, []string{"archive", "categorize"}) {
+		t.Fatalf("unexpected stage order: %v", calls)
+	}
+	if stats.Categorize == nil {
+		t.Fatal("expected categorize stage stats")
+	}
+	output := progress.String()
+	if !bytes.Contains([]byte(output), []byte("==> categorize items")) {
+		t.Fatalf("expected progress output to contain categorize stage, got %q", output)
+	}
+	if !bytes.Contains([]byte(output), []byte("Item categorization complete")) {
+		t.Fatalf("expected categorize completion output, got %q", output)
+	}
+	logOutput := logs.String()
+	if !bytes.Contains([]byte(logOutput), []byte("item categorization candidates loaded")) {
+		t.Fatalf("expected categorize candidate progress log, got %q", logOutput)
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("item categorized")) {
+		t.Fatalf("expected per-item categorize progress log, got %q", logOutput)
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("processed=1")) || !bytes.Contains([]byte(logOutput), []byte("total=2")) {
+		t.Fatalf("expected categorize progress counters, got %q", logOutput)
+	}
+}
+
+func TestRunSkipsCategorizeStageWhenDisabled(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origCategorize := runItemCategorize
+	t.Cleanup(func() {
+		runItemCategorize = origCategorize
+	})
+
+	runItemCategorize = func(context.Context, config.Config, *store.Store, itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.ItemResult, error) {
+		t.Fatal("categorize stage should not be called when disabled")
+		return itemcategorize.Stats{}, nil, nil
+	}
+
+	stats, err := Run(context.Background(), cfg, st, Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.Categorize != nil {
+		t.Fatalf("expected no categorize stage stats, got %+v", stats.Categorize)
 	}
 }
 

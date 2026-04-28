@@ -6,10 +6,12 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"dbrain/internal/config"
 	"dbrain/internal/githubimport"
+	"dbrain/internal/itemcategorize"
 	"dbrain/internal/linkextract"
 	"dbrain/internal/mediaarchive"
 	"dbrain/internal/sourceenrich"
@@ -31,6 +33,7 @@ var (
 	runYouTubeImport   = youtubeimport.Run
 	runSourceWorker    = worker.RunSources
 	runMediaArchive    = mediaarchive.Run
+	runItemCategorize  = itemcategorize.Batch
 )
 
 const maxXQuoteDrainPasses = 8
@@ -70,27 +73,33 @@ type Options struct {
 	SourceIdleExitAfter time.Duration
 	SourceMaxCycles     int
 
-	Browser              string
-	Profile              string
-	Force                bool
-	Summarize            bool
-	Model                string
-	OCRModel             string
-	ArchiveMediaEnabled  bool
-	ArchiveMediaLimit    int
-	ArchiveProvider      string
-	ArchiveBucket        string
-	ArchivePublicBaseURL string
-	ArchiveEndpoint      string
-	ArchiveRegion        string
-	ArchiveAccessKeyID   string
-	ArchiveSecretKey     string
-	ArchiveSessionToken  string
-	CLI                  string
-	Length               string
-	Timeout              time.Duration
-	Logger               *slog.Logger
-	Progress             io.Writer
+	Browser               string
+	Profile               string
+	Force                 bool
+	Summarize             bool
+	Model                 string
+	OCRModel              string
+	ArchiveMediaEnabled   bool
+	ArchiveMediaLimit     int
+	ArchiveProvider       string
+	ArchiveBucket         string
+	ArchivePublicBaseURL  string
+	ArchiveEndpoint       string
+	ArchiveRegion         string
+	ArchiveAccessKeyID    string
+	ArchiveSecretKey      string
+	ArchiveSessionToken   string
+	CategorizeEnabled     bool
+	CategorizeLimit       int
+	CategorizeConcurrency int
+	CategorizeModel       string
+	CategorizeTimeout     time.Duration
+	CategorizeImages      bool
+	CLI                   string
+	Length                string
+	Timeout               time.Duration
+	Logger                *slog.Logger
+	Progress              io.Writer
 }
 
 type Stats struct {
@@ -106,6 +115,7 @@ type Stats struct {
 	YouTube      *YouTubeStage      `json:"youtube,omitempty"`
 	Sources      *SourcesStage      `json:"sources,omitempty"`
 	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
+	Categorize   *CategorizeStage   `json:"categorize,omitempty"`
 }
 
 type XBookmarksStage struct {
@@ -151,6 +161,11 @@ type SourcesStage struct {
 type MediaArchiveStage struct {
 	Duration time.Duration      `json:"duration"`
 	Stats    mediaarchive.Stats `json:"stats"`
+}
+
+type CategorizeStage struct {
+	Duration time.Duration        `json:"duration"`
+	Stats    itemcategorize.Stats `json:"stats"`
 }
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
@@ -505,6 +520,82 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			return finishStats(stats), fmt.Errorf("archive media: %w", err)
 		}
 		progressf(opts.Progress, "Media archive complete: candidates=%d uploaded=%d archived=%d unchanged=%d prune_skipped=%d local_files_pruned=%d local_rows_pruned=%d errors=%d (%s)\n", archiveStats.Candidates, archiveStats.Uploaded, archiveStats.Archived, archiveStats.Unchanged, archiveStats.PruneSkipped, archiveStats.LocalFilesPruned, archiveStats.LocalRowsPruned, archiveStats.Errors, stage.Duration)
+	}
+
+	if opts.CategorizeEnabled {
+		progressf(opts.Progress, "==> categorize items\n")
+		start := time.Now()
+		var categorizeProcessed atomic.Int64
+		var categorizeErrors atomic.Int64
+		var categorizeTotal atomic.Int64
+		categorizeStats, _, err := runItemCategorize(ctx, cfg, st, itemcategorize.Options{
+			Model:           opts.CategorizeModel,
+			Timeout:         opts.CategorizeTimeout,
+			Concurrency:     opts.CategorizeConcurrency,
+			Limit:           opts.CategorizeLimit,
+			Force:           opts.Force,
+			Apply:           true,
+			IncludeImages:   opts.CategorizeImages,
+			S3Endpoint:      opts.ArchiveEndpoint,
+			S3Region:        opts.ArchiveRegion,
+			S3AccessKey:     opts.ArchiveAccessKeyID,
+			S3SecretKey:     opts.ArchiveSecretKey,
+			OpenRouterTitle: "dbrain sync categorize",
+			OnStart: func(total int) {
+				categorizeTotal.Store(int64(total))
+				if opts.Logger != nil {
+					opts.Logger.Debug("item categorization candidates loaded",
+						"processed", 0,
+						"total", total,
+						"remaining", total,
+						"items", total,
+						"limit", opts.CategorizeLimit,
+						"force", opts.Force,
+						"concurrency", opts.CategorizeConcurrency,
+					)
+				}
+			},
+			OnResult: func(ir itemcategorize.ItemResult) {
+				processed := categorizeProcessed.Add(1)
+				total := categorizeTotal.Load()
+				remaining := total - processed
+				if remaining < 0 {
+					remaining = 0
+				}
+				if opts.Logger == nil {
+					return
+				}
+				if ir.Error != "" {
+					errors := categorizeErrors.Add(1)
+					opts.Logger.Debug("item categorization failed",
+						"source_key", ir.Item.SourceKey,
+						"item_id", ir.Item.ID,
+						"processed", processed,
+						"total", total,
+						"remaining", remaining,
+						"errors", errors,
+						"error", ir.Error,
+					)
+					return
+				}
+				opts.Logger.Debug("item categorized",
+					"source_key", ir.Item.SourceKey,
+					"item_id", ir.Item.ID,
+					"processed", processed,
+					"total", total,
+					"remaining", remaining,
+					"errors", categorizeErrors.Load(),
+					"tags", strings.Join(ir.Result.Tags, ","),
+					"categories", strings.Join(ir.Result.Categories, ","),
+				)
+			},
+		})
+		stage := &CategorizeStage{Duration: time.Since(start), Stats: categorizeStats}
+		stats.Categorize = stage
+		if err != nil {
+			return finishStats(stats), fmt.Errorf("categorize items: %w", err)
+		}
+		progressf(opts.Progress, "Item categorization complete: queued=%d succeeded=%d applied=%d skipped=%d errors=%d (%s)\n", categorizeStats.Queued, categorizeStats.Succeeded, categorizeStats.Applied, categorizeStats.Skipped, categorizeStats.Errors, stage.Duration)
 	}
 
 	stats = finishStats(stats)

@@ -52,6 +52,11 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var timeout time.Duration
 	var archiveMedia bool
 	var archiveMediaLimit int
+	var categorizeLimit int
+	var categorizeConcurrency int
+	var categorizeModel string
+	var categorizeTimeout time.Duration
+	var categorizeImages bool
 	var skipXBookmarks bool
 	var skipFT bool
 	var skipX bool
@@ -61,6 +66,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var skipGitHub bool
 	var skipYouTube bool
 	var skipSources bool
+	var skipCategorize bool
 	var jsonOut bool
 
 	cmd := &cobra.Command{
@@ -95,54 +101,60 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			}
 
 			stats, err := syncjob.Run(cmd.Context(), cfg, st, syncjob.Options{
-				XBookmarksEnabled:    !skipXBookmarks && !skipFT,
-				XBookmarksLimit:      xBookmarksLimit,
-				XEnabled:             !skipX,
-				XLimit:               xLimit,
-				XConcurrency:         xConcurrency,
-				XTimeout:             xTimeout,
-				XMediaEnabled:        !skipXMedia,
-				XMediaLimit:          xLimit,
-				XPhotoOCREnabled:     !skipXPhotoOCR,
-				XPhotoOCRLimit:       xLimit,
-				LinksEnabled:         !skipLinks,
-				LinkDiscoverLimit:    linkDiscoverLimit,
-				LinkLimit:            linkLimit,
-				LinkConcurrency:      linkConcurrency,
-				GitHubEnabled:        !skipGitHub,
-				GitHubLimit:          githubLimit,
-				YouTubeEnabled:       !skipYouTube,
-				YouTubeLimit:         youtubeLimit,
-				WatchLater:           watchLater,
-				Liked:                liked,
-				SourcesEnabled:       !skipSources,
-				SourceLimit:          sourceLimit,
-				SourceConcurrency:    sourceConcurrency,
-				SourceWatch:          watch,
-				SourcePollInterval:   pollInterval,
-				SourceIdleExitAfter:  idleExitAfter,
-				SourceMaxCycles:      maxCycles,
-				Browser:              browser,
-				Profile:              profile,
-				Force:                force,
-				Summarize:            summarize,
-				Model:                model,
-				OCRModel:             ocrModel,
-				ArchiveMediaEnabled:  archiveMedia,
-				ArchiveMediaLimit:    archiveMediaLimit,
-				ArchiveProvider:      firstNonEmptyEnv(cfg.RootDir, "DBRAIN_ARCHIVE_PROVIDER", "DBRAIN_R2_PROVIDER"),
-				ArchiveBucket:        firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_BUCKET", "DBRAIN_ARCHIVE_BUCKET"),
-				ArchivePublicBaseURL: firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_PUBLIC_BASE_URL", "DBRAIN_MEDIA_PUBLIC_BASE_URL"),
-				ArchiveEndpoint:      firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"),
-				ArchiveRegion:        firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"),
-				ArchiveAccessKeyID:   firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
-				ArchiveSecretKey:     firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
-				ArchiveSessionToken:  firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
-				CLI:                  cliProvider,
-				Length:               length,
-				Timeout:              timeout,
-				Logger:               newLogger(commandDebugEnabled(cmd), logWriter),
-				Progress:             progress,
+				XBookmarksEnabled:     !skipXBookmarks && !skipFT,
+				XBookmarksLimit:       xBookmarksLimit,
+				XEnabled:              !skipX,
+				XLimit:                xLimit,
+				XConcurrency:          xConcurrency,
+				XTimeout:              xTimeout,
+				XMediaEnabled:         !skipXMedia,
+				XMediaLimit:           xLimit,
+				XPhotoOCREnabled:      !skipXPhotoOCR,
+				XPhotoOCRLimit:        xLimit,
+				LinksEnabled:          !skipLinks,
+				LinkDiscoverLimit:     linkDiscoverLimit,
+				LinkLimit:             linkLimit,
+				LinkConcurrency:       linkConcurrency,
+				GitHubEnabled:         !skipGitHub,
+				GitHubLimit:           githubLimit,
+				YouTubeEnabled:        !skipYouTube,
+				YouTubeLimit:          youtubeLimit,
+				WatchLater:            watchLater,
+				Liked:                 liked,
+				SourcesEnabled:        !skipSources,
+				SourceLimit:           sourceLimit,
+				SourceConcurrency:     sourceConcurrency,
+				SourceWatch:           watch,
+				SourcePollInterval:    pollInterval,
+				SourceIdleExitAfter:   idleExitAfter,
+				SourceMaxCycles:       maxCycles,
+				Browser:               browser,
+				Profile:               profile,
+				Force:                 force,
+				Summarize:             summarize,
+				Model:                 model,
+				OCRModel:              ocrModel,
+				ArchiveMediaEnabled:   archiveMedia,
+				ArchiveMediaLimit:     archiveMediaLimit,
+				ArchiveProvider:       firstNonEmptyEnv(cfg.RootDir, "DBRAIN_ARCHIVE_PROVIDER", "DBRAIN_R2_PROVIDER"),
+				ArchiveBucket:         firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_BUCKET", "DBRAIN_ARCHIVE_BUCKET"),
+				ArchivePublicBaseURL:  firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_PUBLIC_BASE_URL", "DBRAIN_MEDIA_PUBLIC_BASE_URL"),
+				ArchiveEndpoint:       firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"),
+				ArchiveRegion:         firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"),
+				ArchiveAccessKeyID:    firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
+				ArchiveSecretKey:      firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
+				ArchiveSessionToken:   firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
+				CategorizeEnabled:     !skipCategorize,
+				CategorizeLimit:       categorizeLimit,
+				CategorizeConcurrency: categorizeConcurrency,
+				CategorizeModel:       categorizeModel,
+				CategorizeTimeout:     categorizeTimeout,
+				CategorizeImages:      categorizeImages,
+				CLI:                   cliProvider,
+				Length:                length,
+				Timeout:               timeout,
+				Logger:                newLogger(commandDebugEnabled(cmd), logWriter),
+				Progress:              progress,
 			})
 			if err != nil {
 				return err
@@ -184,6 +196,11 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Timeout for summarize-backed extraction and summarization stages")
 	cmd.Flags().BoolVar(&archiveMedia, "archive-media", false, "Upload finalized media to configured S3-compatible storage and prune local copies at the end of sync")
 	cmd.Flags().IntVar(&archiveMediaLimit, "archive-media-limit", 5000, "Maximum finalized media assets to archive at the end of sync")
+	cmd.Flags().IntVar(&categorizeLimit, "categorize-limit", 0, "Maximum uncategorized items to categorize at the end of sync; 0 means all queued items")
+	cmd.Flags().IntVar(&categorizeConcurrency, "categorize-concurrency", 2, "Number of concurrent item categorization requests")
+	cmd.Flags().StringVar(&categorizeModel, "categorize-model", "", "Categorization model override; defaults to DBRAIN_CATEGORIZE_MODEL or the categorizer default")
+	cmd.Flags().DurationVar(&categorizeTimeout, "categorize-timeout", 90*time.Second, "Per-item categorization request timeout")
+	cmd.Flags().BoolVar(&categorizeImages, "categorize-images", false, "Embed item photos as base64 for vision-capable categorization models")
 	cmd.Flags().BoolVar(&skipXBookmarks, "skip-x-bookmarks", false, "Skip direct X bookmark import")
 	cmd.Flags().BoolVar(&skipFT, "skip-ft", false, "Deprecated alias for --skip-x-bookmarks")
 	_ = cmd.Flags().MarkHidden("skip-ft")
@@ -194,6 +211,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&skipGitHub, "skip-github", false, "Skip GitHub stars import")
 	cmd.Flags().BoolVar(&skipYouTube, "skip-youtube", false, "Skip YouTube signal import")
 	cmd.Flags().BoolVar(&skipSources, "skip-sources", false, "Skip the final source backlog worker stage")
+	cmd.Flags().BoolVar(&skipCategorize, "skip-categorize", false, "Skip final item categorization")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print sync stats as JSON")
 
 	return cmd
@@ -276,6 +294,10 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 	if stats.MediaArchive != nil {
 		s := stats.MediaArchive.Stats
 		rows = append(rows, []string{"Media Archive", stats.MediaArchive.Duration.String(), fmt.Sprintf("uploaded=%d archived=%d", s.Uploaded, s.Archived), fmt.Sprintf("pruned_files=%d unchanged=%d", s.LocalFilesPruned, s.Unchanged), strconv.Itoa(s.Errors)})
+	}
+	if stats.Categorize != nil {
+		s := stats.Categorize.Stats
+		rows = append(rows, []string{"Categorize", stats.Categorize.Duration.String(), fmt.Sprintf("queued=%d applied=%d", s.Queued, s.Applied), fmt.Sprintf("succeeded=%d skipped=%d", s.Succeeded, s.Skipped), strconv.Itoa(s.Errors)})
 	}
 	return rows
 }

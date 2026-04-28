@@ -232,14 +232,16 @@ derived summary.
   tweet-link discovery/enrichment, GitHub stars import, YouTube import, and an
   optional source-backlog worker batch. It can also optionally append a media
   archive stage that uploads finalized local media to configured S3-compatible
-  storage and prunes local copies. The X media and X photo OCR stages use the
+  storage and prunes local copies. The final stage categorizes uncategorized
+  items with the same item categorizer used by `dbrain categorize batch`, unless
+  `--skip-categorize` is passed. The X media and X photo OCR stages use the
   same X batch limit as `hydrate x` (`--x-limit`). In the default
   configuration this combines the requirements of X bookmark import, X
   hydration, X media transcription, X photo OCR, link/source enrichment, and
-  YouTube import, so a practical local setup usually includes a supported
-  Chrome/Chromium profile with valid cookies plus Ollama, `mw`, `ffprobe`,
-  `summarize`, and `yt-dlp`. It supports `--skip-*` flags when you only want
-  part of the pipeline.
+  YouTube import, plus categorization. A practical local setup usually includes
+  a supported Chrome/Chromium profile with valid cookies plus Ollama or an
+  OpenRouter key, `mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports
+  `--skip-*` flags when you only want part of the pipeline.
 - `dbrain archive media`
   Optional manual archive/prune pass for finalized media. It can either just
   mark/prune already-uploaded media or upload directly to an S3-compatible
@@ -353,7 +355,10 @@ derived summary.
   By default only items with an empty `user_tags` field are selected; use
   `--force` to re-categorize everything. `--limit` (default 50) and
   `--concurrency` (default 2) control throughput. Use `--apply` to save results
-  and `--json` for structured output.
+  and `--json` for structured output. Saved categorizer tags are merged with
+  existing `user_tags` without duplicate entries; existing tags are not
+  overwritten. `dbrain sync all` runs this same apply path at the end of the
+  sync pipeline unless `--skip-categorize` is passed.
 - `dbrain repair notes`
   No external tools required. Rebuilds rendered Markdown notes from `brain.db`,
   which is useful if antivirus or sync tooling removed files from `vault/`.
@@ -422,6 +427,8 @@ derived summary.
 go run ./cmd/dbrain import ft
 go run ./cmd/dbrain import x-bookmarks --limit 25
 go run ./cmd/dbrain sync all --length short --timeout 5m
+go run ./cmd/dbrain sync all --skip-categorize --length short --timeout 5m
+go run ./cmd/dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m
 go run ./cmd/dbrain sync all --skip-x-media --length short --timeout 5m
 go run ./cmd/dbrain sync all --skip-sources --length short --timeout 5m
 go run ./cmd/dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m
