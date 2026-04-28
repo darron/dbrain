@@ -1,0 +1,3 @@
+display_name: dbrain MCP
+short_description: Query the local dbrain second-brain memory through MCP.
+default_prompt: Use my brain to research this question and cite the strongest local evidence.

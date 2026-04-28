@@ -134,6 +134,34 @@ func Open(path string) (*Store, error) {
 	return st, nil
 }
 
+// OpenReadOnly opens an existing store for read-only consumers such as MCP.
+// It intentionally skips schema creation/migrations so startup cannot block
+// behind a long-running writer before the MCP initialize response is sent.
+func OpenReadOnly(path string) (*Store, error) {
+	db, err := sql.Open(driverName, readOnlyDSN(path))
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	st := &Store{db: db}
+	if err := st.initReadOnly(path); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	return st, nil
+}
+
+func readOnlyDSN(path string) string {
+	uri := url.URL{Scheme: "file", Path: path}
+	query := uri.Query()
+	query.Set("mode", "ro")
+	uri.RawQuery = query.Encode()
+	return uri.String()
+}
+
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -146,6 +174,43 @@ func (s *Store) HasFTS() bool {
 		return false
 	}
 	return s.hasFTS
+}
+
+func (s *Store) initReadOnly(path string) error {
+	pragmas := []string{
+		"PRAGMA busy_timeout = 1000;",
+		"PRAGMA foreign_keys = ON;",
+		"PRAGMA query_only = ON;",
+	}
+	for _, stmt := range pragmas {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("apply read-only pragma %q: %w", stmt, err)
+		}
+	}
+
+	hasItems, err := s.tableExists("items")
+	if err != nil {
+		return err
+	}
+	if !hasItems {
+		return fmt.Errorf("items table not found in %s", path)
+	}
+	s.hasFTS, err = s.tableExists("items_fts")
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) tableExists(name string) (bool, error) {
+	var found int
+	if err := s.db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1`, name).Scan(&found); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check table %s: %w", name, err)
+	}
+	return true, nil
 }
 
 func (s *Store) init() error {
@@ -731,6 +796,7 @@ func (s *Store) searchFTS(ctx context.Context, query string, limit int) ([]model
 			i.canonical_url,
 			i.primary_domain,
 			i.note_path,
+			i.user_tags,
 			substr(trim(replace(COALESCE(NULLIF(i.summary_text, ''), NULLIF(i.ocr_text, ''), NULLIF(i.article_text, ''), i.text), char(10), ' ')), 1, 200) AS snippet
 		FROM items_fts f
 		JOIN items i ON i.id = f.rowid
@@ -760,6 +826,7 @@ func (s *Store) searchLike(ctx context.Context, query string, limit int) ([]mode
 			canonical_url,
 			primary_domain,
 			note_path,
+			user_tags,
 			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), NULLIF(ocr_text, ''), NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet
 		FROM items
 		WHERE title LIKE ?
@@ -775,10 +842,47 @@ func (s *Store) searchLike(ctx context.Context, query string, limit int) ([]mode
 			OR primary_domain LIKE ?
 			OR canonical_url LIKE ?
 			OR external_id LIKE ?
+			OR user_tags LIKE ?
 		ORDER BY last_seen_at DESC
-		LIMIT ?`, like, like, like, like, like, like, like, like, like, like, like, like, like, limit)
+		LIMIT ?`, like, like, like, like, like, like, like, like, like, like, like, like, like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("like search: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	return scanSearchResults(rows)
+}
+
+func (s *Store) SearchUserTags(ctx context.Context, tagQuery string, limit int) ([]model.SearchResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	tagQuery = strings.TrimSpace(strings.ToLower(tagQuery))
+	if tagQuery == "" {
+		return nil, nil
+	}
+	like := "%" + tagQuery + "%"
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			source_key,
+			source_type,
+			external_id,
+			title,
+			author_handle,
+			author_name,
+			canonical_url,
+			primary_domain,
+			note_path,
+			user_tags,
+			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), NULLIF(ocr_text, ''), NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet
+		FROM items
+		WHERE lower(user_tags) LIKE ?
+		ORDER BY last_seen_at DESC
+		LIMIT ?`, like, limit)
+	if err != nil {
+		return nil, fmt.Errorf("tag search: %w", err)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -791,7 +895,7 @@ func scanSearchResults(rows *sql.Rows) ([]model.SearchResult, error) {
 	var results []model.SearchResult
 	for rows.Next() {
 		var result model.SearchResult
-		if err := rows.Scan(&result.SourceKey, &result.SourceType, &result.ExternalID, &result.Title, &result.AuthorHandle, &result.AuthorName, &result.CanonicalURL, &result.PrimaryDomain, &result.NotePath, &result.Snippet); err != nil {
+		if err := rows.Scan(&result.SourceKey, &result.SourceType, &result.ExternalID, &result.Title, &result.AuthorHandle, &result.AuthorName, &result.CanonicalURL, &result.PrimaryDomain, &result.NotePath, &result.UserTags, &result.Snippet); err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
 		results = append(results, result)

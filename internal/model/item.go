@@ -79,6 +79,7 @@ type SearchResult struct {
 	CanonicalURL  string `json:"canonical_url"`
 	PrimaryDomain string `json:"primary_domain"`
 	NotePath      string `json:"note_path"`
+	UserTags      string `json:"user_tags"`
 	Snippet       string `json:"snippet"`
 }
 

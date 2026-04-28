@@ -34,16 +34,34 @@ func New(cfg config.Config, st *store.Store) *Server {
 }
 
 func Serve(ctx context.Context, cfg config.Config, in io.Reader, out io.Writer) error {
-	st, err := store.Open(cfg.DBPath)
+	start := time.Now()
+	logMCPServer("starting", "db_path", cfg.DBPath, "pid", fmt.Sprintf("%d", os.Getpid()))
+	st, err := store.OpenReadOnly(cfg.DBPath)
 	if err != nil {
+		logMCPServer("store_open_failed", "duration", time.Since(start).String(), "error", err.Error())
 		return err
 	}
+	logMCPServer("store_opened", "duration", time.Since(start).String())
 	defer func() {
 		_ = st.Close()
 	}()
 
 	server := New(cfg, st)
-	return server.Serve(ctx, in, out)
+	logMCPServer("ready")
+	if err := server.Serve(ctx, in, out); err != nil {
+		logMCPServer("exiting", "duration", time.Since(start).String(), "error", err.Error())
+		return err
+	}
+	logMCPServer("exiting", "duration", time.Since(start).String(), "error", "")
+	return nil
+}
+
+func logMCPServer(event string, fields ...string) {
+	_, _ = fmt.Fprintf(os.Stderr, "DEBUG %s mcp server event=%s", time.Now().Format("15:04:05.000"), event)
+	for i := 0; i+1 < len(fields); i += 2 {
+		_, _ = fmt.Fprintf(os.Stderr, " %s=%q", fields[i], fields[i+1])
+	}
+	_, _ = fmt.Fprintln(os.Stderr)
 }
 
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
@@ -54,12 +72,16 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		payload, err := readFrame(reader)
 		if err != nil {
 			if err == io.EOF {
+				logMCPServer("stdin_eof")
 				return nil
 			}
+			logMCPServer("read_failed", "error", err.Error())
 			return err
 		}
 
+		start := time.Now()
 		response, ok := s.handle(ctx, payload)
+		logMCPRequest(payload, response, ok, time.Since(start))
 		if !ok {
 			continue
 		}
@@ -67,6 +89,41 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
+}
+
+func logMCPRequest(payload []byte, resp response, responded bool, duration time.Duration) {
+	var req request
+	if err := json.Unmarshal(payload, &req); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "DEBUG %s mcp request method=parse_error status=error duration=%s\n", time.Now().Format("15:04:05.000"), duration)
+		return
+	}
+
+	tool := ""
+	if req.Method == "tools/call" {
+		var params struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err == nil {
+			tool = strings.TrimSpace(params.Name)
+		}
+	}
+
+	status := "ok"
+	if !responded {
+		status = "notification"
+	} else if resp.Error != nil {
+		status = "error"
+	} else if result, ok := resp.Result.(map[string]interface{}); ok {
+		if isError, ok := result["isError"].(bool); ok && isError {
+			status = "tool_error"
+		}
+	}
+
+	if tool != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "DEBUG %s mcp request method=%s tool=%s status=%s duration=%s\n", time.Now().Format("15:04:05.000"), req.Method, tool, status, duration)
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "DEBUG %s mcp request method=%s status=%s duration=%s\n", time.Now().Format("15:04:05.000"), req.Method, status, duration)
 }
 
 type request struct {
@@ -265,6 +322,9 @@ func (s *Server) toolGet(ctx context.Context, raw json.RawMessage) (map[string]i
 			"title": item.Title,
 		}
 		text := fmt.Sprintf("[%s] %s\nURL: %s\nNote: %s", item.SourceKey, item.Title, item.CanonicalURL, payload["note"])
+		if strings.TrimSpace(item.UserTags) != "" {
+			text += "\nUser tags: " + strings.TrimSpace(item.UserTags)
+		}
 		if includeContent {
 			content, err := readNote(filepath.Join(s.cfg.VaultDir, filepath.FromSlash(item.NotePath)))
 			if err != nil {
@@ -596,16 +656,19 @@ func toolDefinitions() []map[string]interface{} {
 		},
 		{
 			"name":        "dbrain_research_pack",
-			"description": "Build a read-only research pack for a question. It always returns retrieve-only evidence and will attach an inferred topic brief for broad conceptual questions.",
+			"description": "Build a compact read-only research pack for a question. Expands text queries, hyphenated tag aliases, entity matches, optional graph links, and an optional topic brief so agents can answer broad corpus questions with one call.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"question":        map[string]interface{}{"type": "string", "description": "Question to investigate from the local brain."},
-					"limit":           map[string]interface{}{"type": "integer", "description": "Maximum evidence documents.", "default": 8},
-					"source_types":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source type filters."},
-					"include_related": map[string]interface{}{"type": "boolean", "description": "Whether to append linked related evidence.", "default": false},
-					"related_limit":   map[string]interface{}{"type": "integer", "description": "Maximum related evidence documents.", "default": 2},
-					"seed_limit":      map[string]interface{}{"type": "integer", "description": "Maximum primary topic nodes when a topic brief is inferred.", "default": 6},
+					"question":            map[string]interface{}{"type": "string", "description": "Question to investigate from the local brain."},
+					"topic":               map[string]interface{}{"type": "string", "description": "Optional explicit topic for the topic brief. If omitted, broad questions infer one."},
+					"limit":               map[string]interface{}{"type": "integer", "description": "Maximum evidence documents.", "default": 8},
+					"source_types":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source type filters."},
+					"include_related":     map[string]interface{}{"type": "boolean", "description": "Whether to append linked related evidence.", "default": false},
+					"related_limit":       map[string]interface{}{"type": "integer", "description": "Maximum related evidence documents.", "default": 2},
+					"seed_limit":          map[string]interface{}{"type": "integer", "description": "Maximum primary topic nodes when a topic brief is included.", "default": 6},
+					"include_topic_brief": map[string]interface{}{"type": "boolean", "description": "Force topic brief on or off. Defaults to on only when a broad topic can be inferred."},
+					"max_chars_per_doc":   map[string]interface{}{"type": "integer", "description": "Maximum summary/excerpt characters per evidence document.", "default": 700},
 				},
 				"required": []string{"question"},
 			},
@@ -755,11 +818,54 @@ func researchPackOutputSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
 		"question":         scalarSchema("string", "Original research question."),
 		"mode":             scalarSchema("string", "Whether this pack contains evidence only or a topic brief plus evidence."),
+		"query_plan":       researchQueryPlanSchema(),
+		"coverage":         researchCoverageSchema(),
 		"topic":            scalarSchema("string", "Inferred topic phrase when a topic brief was attached."),
 		"used_topic_brief": scalarSchema("boolean", "Whether a topic brief was inferred and attached."),
 		"evidence":         arraySchema(evidenceSchema()),
 		"topic_brief":      topicBriefOutputSchema(),
-	}, "question", "mode", "used_topic_brief", "evidence")
+		"next_steps":       arraySchema(researchNextStepSchema()),
+	}, "question", "mode", "query_plan", "coverage", "used_topic_brief", "evidence")
+}
+
+func researchQueryPlanSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"text_query":          scalarSchema("string", "Text query submitted to corpus search after stopword removal."),
+		"query_terms":         arraySchema(scalarSchema("string", "Normalized query term.")),
+		"tag_queries":         arraySchema(scalarSchema("string", "Hyphenated user_tag aliases searched in addition to text search.")),
+		"source_types":        arraySchema(scalarSchema("string", "Optional source type filters.")),
+		"limit":               scalarSchema("integer", "Maximum evidence documents requested."),
+		"max_chars_per_doc":   scalarSchema("integer", "Maximum summary/excerpt characters per evidence document."),
+		"include_related":     scalarSchema("boolean", "Whether graph-related evidence was requested."),
+		"related_limit":       scalarSchema("integer", "Maximum related evidence documents."),
+		"topic":               scalarSchema("string", "Topic used for the topic brief when present."),
+		"topic_source":        scalarSchema("string", "How the topic was selected: explicit, inferred, or normalized_question."),
+		"include_topic_brief": scalarSchema("boolean", "Whether a topic brief was requested for this pack."),
+	}, "text_query", "query_terms", "tag_queries", "limit", "max_chars_per_doc", "include_related", "include_topic_brief")
+}
+
+func researchCoverageSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"evidence_count": scalarSchema("integer", "Number of evidence rows returned."),
+		"by_kind":        arraySchema(researchBucketSchema()),
+		"by_source_type": arraySchema(researchBucketSchema()),
+		"top_user_tags":  arraySchema(researchBucketSchema()),
+	}, "evidence_count", "by_kind", "by_source_type")
+}
+
+func researchBucketSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"key":   scalarSchema("string", "Bucket key."),
+		"count": scalarSchema("integer", "Bucket count."),
+	}, "key", "count")
+}
+
+func researchNextStepSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"tool":      scalarSchema("string", "Suggested MCP tool name."),
+		"reason":    scalarSchema("string", "Why this follow-up helps."),
+		"arguments": genericObjectSchema("Suggested tool arguments."),
+	}, "tool", "reason", "arguments")
 }
 
 func topicMapOutputSchema() map[string]interface{} {
@@ -843,6 +949,7 @@ func backlogOutputSchema() map[string]interface{} {
 func searchResultSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
 		"source_key":     scalarSchema("string", "Stable key for the item or source."),
+		"source_type":    scalarSchema("string", "Underlying source type."),
 		"external_id":    scalarSchema("string", "External source id when present."),
 		"title":          scalarSchema("string", "Best available title."),
 		"author_handle":  scalarSchema("string", "Author handle when present."),
@@ -850,6 +957,7 @@ func searchResultSchema() map[string]interface{} {
 		"canonical_url":  scalarSchema("string", "Canonical URL."),
 		"primary_domain": scalarSchema("string", "Primary domain for item rows."),
 		"note_path":      scalarSchema("string", "Relative rendered note path."),
+		"user_tags":      scalarSchema("string", "Comma-separated user tags for item rows."),
 		"snippet":        scalarSchema("string", "Search snippet."),
 	}, "source_key", "title", "canonical_url", "note_path")
 }
@@ -868,6 +976,7 @@ func evidenceSchema() map[string]interface{} {
 		"published_at":   scalarSchema("string", "Published timestamp when present."),
 		"extracted_at":   scalarSchema("string", "Extraction timestamp when present."),
 		"summarized_at":  scalarSchema("string", "Summary timestamp when present."),
+		"user_tags":      scalarSchema("string", "Comma-separated user tags for item evidence."),
 		"entity_matches": arraySchema(scalarSchema("string", "Derived entities that matched the query and reference this note.")),
 		"related_to":     scalarSchema("string", "Parent source key when added as related evidence."),
 		"relationship":   scalarSchema("string", "How this evidence relates to another node."),
@@ -1089,6 +1198,11 @@ func formatSearchResults(cfg config.Config, results []model.SearchResult) string
 		b.WriteString("  Note: ")
 		b.WriteString(filepath.Join(cfg.VaultDir, filepath.FromSlash(result.NotePath)))
 		b.WriteString("\n")
+		if strings.TrimSpace(result.UserTags) != "" {
+			b.WriteString("  User tags: ")
+			b.WriteString(strings.TrimSpace(result.UserTags))
+			b.WriteString("\n")
+		}
 		if strings.TrimSpace(result.Snippet) != "" {
 			b.WriteString("  Snippet: ")
 			b.WriteString(strings.TrimSpace(result.Snippet))
@@ -1127,6 +1241,11 @@ func formatAskResponse(resp ask.Response) string {
 		b.WriteString("  Note: ")
 		b.WriteString(doc.NotePath)
 		b.WriteString("\n")
+		if strings.TrimSpace(doc.UserTags) != "" {
+			b.WriteString("  User tags: ")
+			b.WriteString(strings.TrimSpace(doc.UserTags))
+			b.WriteString("\n")
+		}
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -1314,24 +1433,41 @@ func firstNonEmpty(values ...string) string {
 }
 
 func readFrame(reader *bufio.Reader) ([]byte, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		if err == io.EOF && line == "" {
+			return nil, err
+		}
+		if err != io.EOF {
+			return nil, err
+		}
+	}
+	line = strings.TrimRight(line, "\r\n")
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return nil, io.EOF
+	}
+
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return []byte(trimmed), nil
+	}
+
 	contentLength := -1
 	for {
-		line, err := reader.ReadString('\n')
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 && strings.EqualFold(strings.TrimSpace(parts[0]), "Content-Length") {
+			if _, err := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &contentLength); err != nil {
+				return nil, fmt.Errorf("parse content length: %w", err)
+			}
+		}
+
+		line, err = reader.ReadString('\n')
 		if err != nil {
 			return nil, err
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			break
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(parts[0]), "Content-Length") {
-			if _, err := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &contentLength); err != nil {
-				return nil, fmt.Errorf("parse content length: %w", err)
-			}
 		}
 	}
 	if contentLength < 0 {
@@ -1349,11 +1485,7 @@ func writeFrame(writer *bufio.Writer, value interface{}) error {
 	if err := json.NewEncoder(&buf).Encode(value); err != nil {
 		return err
 	}
-	payload := bytes.TrimRight(buf.Bytes(), "\n")
-	if _, err := fmt.Fprintf(writer, "Content-Length: %d\r\n\r\n", len(payload)); err != nil {
-		return err
-	}
-	if _, err := writer.Write(payload); err != nil {
+	if _, err := writer.Write(buf.Bytes()); err != nil {
 		return err
 	}
 	return writer.Flush()

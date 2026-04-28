@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -34,8 +35,8 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 
 	server := New(cfg, st)
 
-	input := framedJSON(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`) +
-		framedJSON(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	input := lineJSON(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`) +
+		lineJSON(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 
 	var out bytes.Buffer
 	if err := server.Serve(context.Background(), strings.NewReader(input), &out); err != nil {
@@ -45,6 +46,9 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 	responses := parseResponses(t, out.Bytes())
 	if len(responses) != 2 {
 		t.Fatalf("expected 2 responses, got %d", len(responses))
+	}
+	if bytes.Contains(out.Bytes(), []byte("Content-Length:")) {
+		t.Fatalf("stdio MCP responses should be newline-delimited JSON, got %q", out.String())
 	}
 
 	initResult := responses[0]["result"].(map[string]interface{})
@@ -190,7 +194,7 @@ func TestServerSearchTool(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
-	_, err = st.UpsertItem(context.Background(), model.Item{
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
 		SourceKey:    "x:test-mcp-search",
 		SourceType:   "x_bookmark",
 		ExternalID:   "test-mcp-search",
@@ -207,9 +211,12 @@ func TestServerSearchTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert item: %v", err)
 	}
+	if err := st.SaveItemUserTags(context.Background(), itemResult.ItemID, "tagmcp, research"); err != nil {
+		t.Fatalf("save user tags: %v", err)
+	}
 
 	server := New(cfg, st)
-	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_search","arguments":{"query":"special mcp search phrase","limit":5}}}`
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_search","arguments":{"query":"tagmcp","limit":5}}}`
 
 	var out bytes.Buffer
 	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
@@ -233,6 +240,14 @@ func TestServerSearchTool(t *testing.T) {
 	text := content[0].(map[string]interface{})["text"].(string)
 	if !strings.Contains(text, "x:test-mcp-search") {
 		t.Fatalf("expected search result text to contain source key, got %q", text)
+	}
+	if !strings.Contains(text, "tagmcp, research") {
+		t.Fatalf("expected search result text to contain user tags, got %q", text)
+	}
+	results := structured["results"].([]interface{})
+	first := results[0].(map[string]interface{})
+	if first["user_tags"] != "tagmcp, research" {
+		t.Fatalf("expected structured user tags, got %#v", first)
 	}
 }
 
@@ -269,6 +284,9 @@ func TestServerAskRetrieveOnlyTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert item: %v", err)
 	}
+	if err := st.SaveItemUserTags(context.Background(), itemResult.ItemID, "asktagmcp, knowledge-base"); err != nil {
+		t.Fatalf("save user tags: %v", err)
+	}
 	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
 		SourceKey:     "src:test-mcp-ask",
 		OriginalURL:   "https://github.com/test/mcp-ask",
@@ -295,7 +313,7 @@ func TestServerAskRetrieveOnlyTool(t *testing.T) {
 	}
 
 	server := New(cfg, st)
-	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_ask","arguments":{"question":"knowledge base questions","retrieve_only":true,"limit":3}}}`
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_ask","arguments":{"question":"asktagmcp","retrieve_only":true,"limit":3}}}`
 
 	var out bytes.Buffer
 	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
@@ -308,6 +326,10 @@ func TestServerAskRetrieveOnlyTool(t *testing.T) {
 	evidence := structured["evidence"].([]interface{})
 	if len(evidence) == 0 {
 		t.Fatalf("expected evidence in ask response: %#v", structured)
+	}
+	first := evidence[0].(map[string]interface{})
+	if first["user_tags"] != "asktagmcp, knowledge-base" {
+		t.Fatalf("expected ask evidence user tags, got %#v", first)
 	}
 }
 
@@ -780,6 +802,89 @@ func TestServerResearchPackTool(t *testing.T) {
 	}
 	if _, ok := structured["topic_brief"].(map[string]interface{}); !ok {
 		t.Fatalf("expected topic_brief payload, got %#v", structured)
+	}
+}
+
+func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	longText := strings.Repeat("Mark Carney central banking and climate finance evidence. ", 40)
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-research-carney",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-research-carney",
+		CanonicalURL: "https://x.com/example/status/test-mcp-research-carney",
+		Title:        "Mark Carney Saved Evidence",
+		Text:         longText,
+		ContentHash:  "mcp-research-carney-item",
+		NotePath:     "items/x/2026/test-mcp-research-carney.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	if err := st.SaveItemUserTags(context.Background(), itemResult.ItemID, "mark-carney, climate-finance"); err != nil {
+		t.Fatalf("save user tags: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_research_pack","arguments":{"question":"What do I know about Mark Carney?","limit":4,"max_chars_per_doc":120}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	if structured["mode"] != "topic_brief_and_evidence" {
+		t.Fatalf("expected topic brief mode, got %#v", structured)
+	}
+	if structured["topic"] != "mark carney" {
+		t.Fatalf("expected inferred mark carney topic, got %#v", structured["topic"])
+	}
+	queryPlan := structured["query_plan"].(map[string]interface{})
+	if queryPlan["text_query"] != "mark carney" {
+		t.Fatalf("expected text query mark carney, got %#v", queryPlan)
+	}
+	tags := queryPlan["tag_queries"].([]interface{})
+	if len(tags) != 1 || tags[0] != "mark-carney" {
+		t.Fatalf("expected mark-carney tag query, got %#v", tags)
+	}
+	coverage := structured["coverage"].(map[string]interface{})
+	topTags := coverage["top_user_tags"].([]interface{})
+	if len(topTags) == 0 {
+		t.Fatalf("expected top user tags in coverage, got %#v", coverage)
+	}
+	evidence := structured["evidence"].([]interface{})
+	if len(evidence) == 0 {
+		t.Fatalf("expected evidence, got %#v", structured)
+	}
+	first := evidence[0].(map[string]interface{})
+	if first["user_tags"] != "mark-carney, climate-finance" {
+		t.Fatalf("expected user tags in evidence, got %#v", first)
+	}
+	excerpt := first["excerpt"].(string)
+	if len([]rune(excerpt)) > 123 {
+		t.Fatalf("expected excerpt capped near max_chars_per_doc, got %d chars: %q", len([]rune(excerpt)), excerpt)
 	}
 }
 
@@ -1278,7 +1383,42 @@ func framedJSON(payload string) string {
 	return fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(payload), payload)
 }
 
+func lineJSON(payload string) string {
+	return payload + "\n"
+}
+
 func parseResponses(t *testing.T, data []byte) []map[string]interface{} {
+	t.Helper()
+
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil
+	}
+	if bytes.HasPrefix(data, []byte("Content-Length:")) {
+		return parseHeaderResponses(t, data)
+	}
+
+	var responses []map[string]interface{}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var decoded map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		responses = append(responses, decoded)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan responses: %v", err)
+	}
+	return responses
+}
+
+func parseHeaderResponses(t *testing.T, data []byte) []map[string]interface{} {
 	t.Helper()
 
 	var responses []map[string]interface{}

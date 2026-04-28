@@ -404,11 +404,14 @@ func (s *Server) readTopicNoteResource(ctx context.Context, uri string, parsed *
 func (s *Server) readResearchResource(ctx context.Context, uri string, parsed *url.URL, query string) ([]map[string]string, error) {
 	pack, err := s.buildResearchPack(ctx, researchPackOptions{
 		Question:       query,
+		Topic:          firstQueryValue(parsed.Query(), "topic"),
 		Limit:          intFromQuery(parsed.Query(), "limit"),
 		SourceTypes:    listFromQuery(parsed.Query(), "source_type"),
 		IncludeRelated: boolFromQuery(parsed.Query(), "include_related"),
 		RelatedLimit:   intFromQuery(parsed.Query(), "related_limit"),
 		SeedLimit:      intFromQuery(parsed.Query(), "seed_limit"),
+		IncludeTopic:   boolPtrFromQuery(parsed.Query(), "include_topic_brief"),
+		MaxCharsPerDoc: intFromQuery(parsed.Query(), "max_chars_per_doc"),
 	})
 	if err != nil {
 		return nil, err
@@ -472,6 +475,23 @@ func boolFromQuery(values url.Values, key string) bool {
 	}
 }
 
+func boolPtrFromQuery(values url.Values, key string) *bool {
+	raw := strings.TrimSpace(values.Get(key))
+	if raw == "" {
+		return nil
+	}
+	value := false
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		value = true
+	}
+	return &value
+}
+
+func firstQueryValue(values url.Values, key string) string {
+	return strings.TrimSpace(values.Get(key))
+}
+
 func listFromQuery(values url.Values, key string) []string {
 	rawValues := values[key]
 	if len(rawValues) == 0 {
@@ -502,7 +522,7 @@ The local dbrain MCP server is read-only.
 - ` + "`dbrain_entity_map`" + `: browse derived entities across the local brain
 - ` + "`dbrain_topic_map`" + `: build a compact topic graph around a concept
 - ` + "`dbrain_topic_brief`" + `: build a richer topic brief with grouped pivots and markdown preview
-- ` + "`dbrain_research_pack`" + `: bundle retrieve-only evidence with an inferred topic brief for broad conceptual questions
+- ` + "`dbrain_research_pack`" + `: bundle retrieve-only evidence, query/tag hints, coverage counts, suggested follow-ups, and an optional topic brief
 - ` + "`dbrain_related`" + `: follow item-to-source links or source backlinks
 - ` + "`dbrain_stats_items`" + `: count item signals
 - ` + "`dbrain_stats_sources`" + `: count sources by filters or status
@@ -535,7 +555,7 @@ The local dbrain MCP server is read-only.
 
 ## Suggested workflows
 
-1. Research: call ` + "`dbrain_research_pack`" + ` first, then inspect the strongest hits with ` + "`dbrain_get`" + ` or ` + "`dbrain_related`" + `.
+1. Research: call ` + "`dbrain_research_pack`" + ` first, then inspect the strongest hits with ` + "`dbrain_get`" + ` or ` + "`dbrain_related`" + `. Answer from the collector's saved corpus; do not add outside balance unless asked.
 2. Browse: call ` + "`dbrain_get`" + ` on a known item or source, then expand with ` + "`dbrain_related`" + `.
 3. Entity browse: call ` + "`dbrain_entity_map`" + ` or read ` + "`dbrain://entity/{query}`" + ` to find people, repos, orgs, and sites connected to the corpus.
 4. Topic map: call ` + "`dbrain_topic_map`" + ` or read ` + "`dbrain://topic/{query}`" + ` for a compact graph around a concept.

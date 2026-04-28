@@ -608,13 +608,35 @@ The tool list also includes `outputSchema` metadata so MCP clients can reason
 about the structured payloads without learning them from examples.
 
 `dbrain_research_pack` is the default MCP research entry point for broad
-questions. It always returns retrieve-only evidence and, when the question is
-conceptual enough to infer a topic phrase, it also attaches the same grouped
-topic brief used by `dbrain_topic_brief`. That lets an agent start from one
-read-only call instead of manually orchestrating `ask`, `topic brief`, and
-follow-up note fetches.
+questions. It always returns retrieve-only evidence, a compact query plan
+showing the text query and tag aliases used, coverage counts by kind/source
+type/tag, suggested follow-up tools, and, when the question is broad enough to
+infer a topic phrase, the same grouped topic brief used by
+`dbrain_topic_brief`. That lets an agent start from one read-only call instead
+of manually orchestrating `ask`, `search`, `topic brief`, and follow-up note
+fetches. `topic`, `include_topic_brief`, `include_related`, and
+`max_chars_per_doc` are exposed as controls for clients that need more or less
+context.
 
-The MCP additions are meant to support three common agent workflows:
+Item `user_tags` are indexed for search and returned in MCP search and evidence
+payloads. They are useful research hints: agents can search by tag names, use
+tags to disambiguate broad questions, and treat tag matches as stronger
+retrieval signals without replacing the underlying source text. Multi-word
+research questions also check the matching hyphenated tag alias, for example
+`Mark Carney` checks `mark-carney`.
+
+MCP research should answer from the collector's saved corpus. The corpus will
+reflect what that person found valuable, interesting, or noteworthy, including
+their own selection bias. Agents should characterize the saved evidence
+faithfully and cite it; they should not inject external balance, alternate
+viewpoints, or "what the model knows" unless the user explicitly asks for that.
+
+MCP protocol responses are written to stdout, and operational request logs are
+written to stderr so they do not corrupt the stdio protocol. A running server
+should emit one short debug line per request, including the MCP method, tool
+name when present, status, and duration.
+
+The MCP additions are meant to support these common agent workflows:
 
 - research: `dbrain_research_pack` first, then `dbrain_get` and
   `dbrain_related` for deeper inspection
@@ -661,6 +683,13 @@ If you prefer the compiled binary instead of `go run`, point the client at:
   }
 }
 ```
+
+This repo also includes a Codex skill for agents at
+`skills/dbrain-mcp/SKILL.md`. To install it locally for Codex, copy the
+`skills/dbrain-mcp` directory into your Codex skills directory, for example
+`~/.codex/skills/dbrain-mcp`. The skill includes the recommended Codex MCP
+`~/.codex/config.toml` stanza; use absolute paths for both the binary and
+`--root`, then restart Codex so the `dbrain_*` tools are discovered.
 
 `import youtube` pulls authenticated YouTube signals from `Watch Later` and
 liked videos via `yt-dlp --cookies-from-browser`. Existing `youtube_history`

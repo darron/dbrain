@@ -116,11 +116,13 @@ Question: %s
 Recommended workflow:
 1. Call dbrain_research_pack first with limit=8 and include_related=%t.
 2. If source_types are provided, pass them through as source_types: [%s].
-3. If the returned pack used_topic_brief=true, use the topic brief pivots and summary as the primary overview surface.
-4. Use dbrain_related on the most relevant item or source when you need to follow supporting links or backlinks.
-5. Review the strongest evidence with dbrain_get or the item/source resources.
-6. Return a concise answer with citations to source keys and note paths.
-7. Only call dbrain_ask with retrieve_only=false if the user explicitly wants synthesized prose and spending model usage is acceptable.
+3. Use the returned query_plan, coverage, top tags, and next_steps to decide whether follow-up calls are needed.
+4. If the returned pack used_topic_brief=true, use the topic brief pivots and summary as the primary overview surface.
+5. Use dbrain_related on the most relevant item or source when you need to follow supporting links or backlinks.
+6. Review the strongest evidence with dbrain_get or the item/source resources before making detailed claims.
+7. Return a concise answer with citations to source keys and note paths.
+8. Answer from the collector's saved corpus; do not add outside balance or model-background viewpoints unless the user asks.
+9. Only call dbrain_ask with retrieve_only=false if the user explicitly wants synthesized prose and spending model usage is acceptable.
 `, question, includeRelated, quotedCSV(sourceTypes))), nil
 	case "brain_browse":
 		lookup := strings.TrimSpace(argumentString(args, "lookup"))

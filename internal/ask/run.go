@@ -55,6 +55,7 @@ type Evidence struct {
 	PublishedAt   string   `json:"published_at,omitempty"`
 	ExtractedAt   string   `json:"extracted_at,omitempty"`
 	SummarizedAt  string   `json:"summarized_at,omitempty"`
+	UserTags      string   `json:"user_tags,omitempty"`
 	EntityMatches []string `json:"entity_matches,omitempty"`
 	RelatedTo     string   `json:"related_to,omitempty"`
 	Relationship  string   `json:"relationship,omitempty"`
@@ -64,6 +65,21 @@ type Response struct {
 	Question string     `json:"question"`
 	Answer   string     `json:"answer"`
 	Evidence []Evidence `json:"evidence"`
+}
+
+type QueryHints struct {
+	TextQuery  string   `json:"text_query"`
+	Terms      []string `json:"terms"`
+	TagQueries []string `json:"tag_queries"`
+}
+
+func Hints(question string) QueryHints {
+	terms := queryTerms(question)
+	return QueryHints{
+		TextQuery:  strings.Join(terms, " "),
+		Terms:      terms,
+		TagQueries: tagQueries(terms),
+	}
 }
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, question string, opts Options) (Response, error) {
@@ -88,7 +104,8 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 		opts.RelatedLimit = 0
 	}
 
-	searchTerms := queryTerms(question)
+	hints := Hints(question)
+	searchTerms := hints.Terms
 	searchLimit := opts.Limit * 4
 	if searchLimit < opts.Limit {
 		searchLimit = opts.Limit
@@ -97,9 +114,16 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 		searchLimit = 12
 	}
 
-	results, err := st.Search(ctx, strings.Join(searchTerms, " "), searchLimit)
+	results, err := st.Search(ctx, hints.TextQuery, searchLimit)
 	if err != nil {
 		return Response{}, err
+	}
+	for _, tagQuery := range hints.TagQueries {
+		tagResults, err := st.SearchUserTags(ctx, tagQuery, searchLimit)
+		if err != nil {
+			return Response{}, err
+		}
+		results = append(results, tagResults...)
 	}
 
 	entityIndex, err := entities.BuildIndex(ctx, st)
@@ -238,10 +262,10 @@ type weightedQuery struct {
 func queryTerms(question string) []string {
 	stopwords := map[string]struct{}{
 		"a": {}, "an": {}, "and": {}, "are": {}, "can": {}, "did": {}, "do": {}, "does": {},
-		"about": {}, "find": {}, "for": {}, "github": {}, "how": {}, "in": {}, "is": {}, "me": {}, "of": {}, "on": {}, "or": {}, "the": {},
+		"about": {}, "brain": {}, "dbrain": {}, "find": {}, "for": {}, "from": {}, "github": {}, "how": {}, "i": {}, "in": {}, "is": {}, "know": {}, "local": {}, "me": {}, "memory": {}, "my": {}, "of": {}, "on": {}, "or": {}, "the": {},
 		"repo": {}, "repos": {}, "repository": {}, "repositories": {},
 		"show": {}, "source": {}, "sources": {}, "tell": {}, "tweet": {}, "tweets": {},
-		"to": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {},
+		"to": {}, "we": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {},
 	}
 
 	parts := strings.Fields(strings.TrimSpace(question))
@@ -272,6 +296,42 @@ func queryTerms(question string) []string {
 		return strings.Fields(strings.ToLower(strings.TrimSpace(question)))
 	}
 	return terms
+}
+
+func tagQueries(terms []string) []string {
+	if len(terms) < 2 {
+		return nil
+	}
+	parts := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" || len([]rune(term)) < 3 {
+			continue
+		}
+		parts = append(parts, term)
+	}
+	if len(parts) < 2 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var queries []string
+	add := func(query string) {
+		if query == "" {
+			return
+		}
+		if _, ok := seen[query]; ok {
+			return
+		}
+		seen[query] = struct{}{}
+		queries = append(queries, query)
+	}
+	add(strings.Join(parts, "-"))
+	if len(parts) > 2 {
+		for i := 0; i < len(parts)-1; i++ {
+			add(parts[i] + "-" + parts[i+1])
+		}
+	}
+	return queries
 }
 
 func buildEvidence(ctx context.Context, cfg config.Config, st *store.Store, result model.SearchResult, maxChars int) (evidenceCandidate, bool, error) {
@@ -314,6 +374,7 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 			Author:      author,
 			SourceType:  item.SourceType,
 			PublishedAt: item.PublishedAt,
+			UserTags:    item.UserTags,
 		},
 		ItemID: item.ID,
 	}
@@ -422,16 +483,22 @@ func scoreEvidence(question string, terms []string, evidence Evidence) int {
 	summary := strings.ToLower(evidence.Summary)
 	excerpt := strings.ToLower(evidence.Excerpt)
 	url := strings.ToLower(evidence.URL)
+	tags := strings.ToLower(evidence.UserTags)
 
 	joined := strings.ToLower(strings.Join(terms, " "))
 	if joined != "" && strings.Contains(title, joined) {
 		score += 15
+	}
+	if joined != "" && strings.Contains(tags, joined) {
+		score += 12
 	}
 
 	for _, term := range terms {
 		switch {
 		case strings.Contains(title, term):
 			score += 12
+		case strings.Contains(tags, term):
+			score += 10
 		case strings.Contains(summary, term):
 			score += 8
 		case strings.Contains(excerpt, term):
@@ -505,6 +572,11 @@ func writePromptInput(cfg config.Config, question string, evidence []Evidence) (
 		if doc.Author != "" {
 			b.WriteString("- Author: ")
 			b.WriteString(doc.Author)
+			b.WriteString("\n")
+		}
+		if doc.UserTags != "" {
+			b.WriteString("- User tags: ")
+			b.WriteString(doc.UserTags)
 			b.WriteString("\n")
 		}
 		if doc.PublishedAt != "" {
@@ -609,6 +681,9 @@ func buildEntityMatchIndex(index []entities.Entity, question string, terms []str
 	scored := map[string]*scoredEntity{}
 	for _, query := range queries {
 		for _, entity := range index {
+			if !entityMatchesResearchQuery(entity, joined, terms) {
+				continue
+			}
 			matchScore := scoreEntityForQuery(entity, query.Value)
 			if matchScore == 0 {
 				continue
@@ -650,6 +725,43 @@ func buildEntityMatchIndex(index []entities.Entity, question string, terms []str
 		}
 	}
 	return matches
+}
+
+func entityMatchesResearchQuery(entity entities.Entity, joined string, terms []string) bool {
+	joined = strings.ToLower(strings.TrimSpace(joined))
+	if len(terms) <= 1 || joined == "" {
+		return true
+	}
+
+	candidates := entitySearchCandidates(entity)
+	for _, candidate := range candidates {
+		if candidate != "" && strings.Contains(candidate, joined) {
+			return true
+		}
+	}
+
+	matched := 0
+	seen := map[string]struct{}{}
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" || len([]rune(term)) < 3 {
+			continue
+		}
+		if _, exists := seen[term]; exists {
+			continue
+		}
+		for _, candidate := range candidates {
+			if strings.Contains(candidate, term) {
+				seen[term] = struct{}{}
+				matched++
+				break
+			}
+		}
+		if matched >= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 func collectEntityCandidates(ctx context.Context, cfg config.Config, st *store.Store, opts Options, question string, terms []string, entityMatches map[string]entityMatch, seen map[string]struct{}) ([]evidenceCandidate, error) {
@@ -749,17 +861,8 @@ func scoreEntityForQuery(entity entities.Entity, query string) int {
 		return 0
 	}
 
-	candidates := []string{
-		strings.ToLower(strings.TrimSpace(entity.Name)),
-		strings.ToLower(strings.TrimSpace(entity.Domain)),
-		strings.ToLower(strings.TrimSpace(entityKeySearchValue(entity.Key))),
-	}
-	for _, alias := range entity.Aliases {
-		candidates = append(candidates, strings.ToLower(strings.TrimSpace(alias)))
-	}
-
 	score := 0
-	for _, candidate := range candidates {
+	for _, candidate := range entitySearchCandidates(entity) {
 		if candidate == "" {
 			continue
 		}
@@ -773,6 +876,18 @@ func scoreEntityForQuery(entity entities.Entity, query string) int {
 		}
 	}
 	return score
+}
+
+func entitySearchCandidates(entity entities.Entity) []string {
+	candidates := []string{
+		strings.ToLower(strings.TrimSpace(entity.Name)),
+		strings.ToLower(strings.TrimSpace(entity.Domain)),
+		strings.ToLower(strings.TrimSpace(entityKeySearchValue(entity.Key))),
+	}
+	for _, alias := range entity.Aliases {
+		candidates = append(candidates, strings.ToLower(strings.TrimSpace(alias)))
+	}
+	return candidates
 }
 
 func entityKeySearchValue(key string) string {

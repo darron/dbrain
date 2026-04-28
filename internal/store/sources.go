@@ -1579,6 +1579,7 @@ func (s *Store) searchSourcesFTS(ctx context.Context, query string, limit int) (
 			s.canonical_url,
 			s.domain,
 			s.note_path,
+			'' AS user_tags,
 			substr(trim(replace(COALESCE(NULLIF(s.summary_text, ''), s.extracted_text), char(10), ' ')), 1, 200) AS snippet
 		FROM sources_fts f
 		JOIN sources s ON s.id = f.rowid
@@ -1608,6 +1609,7 @@ func (s *Store) searchSourcesLike(ctx context.Context, query string, limit int) 
 			canonical_url,
 			domain,
 			note_path,
+			'' AS user_tags,
 			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), extracted_text), char(10), ' ')), 1, 200) AS snippet
 		FROM sources
 		WHERE title LIKE ?
