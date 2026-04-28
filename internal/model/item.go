@@ -65,6 +65,7 @@ type Item struct {
 	XMediaTranscriptStatus string         `json:"x_media_transcript_status"`
 	XMediaTranscriptError  string         `json:"x_media_transcript_error"`
 	XMediaTranscriptAt     time.Time      `json:"x_media_transcript_at"`
+	UserTags               string         `json:"user_tags"`
 	Media                  []ItemMediaRef `json:"media,omitempty"`
 }
 

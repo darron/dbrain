@@ -1,4 +1,6 @@
 <script>
+  import { tagItem } from "../lib/api.js";
+
   export let detailState = "idle";
   export let detailError = "";
   export let detail = null;
@@ -87,6 +89,44 @@
     if (!text || text.length <= max) return text;
     return text.slice(0, max).trimEnd() + "…";
   }
+
+  $: userTags = parseList(item?.user_tags);
+  let newTag = "";
+  let tagSaving = false;
+  let tagEditMode = false;
+
+  // Reset edit mode whenever the viewed item changes
+  $: if (item?.id) { tagEditMode = false; newTag = ""; }
+
+  async function saveTagsForItem(tags) {
+    if (!item) return;
+    tagSaving = true;
+    try {
+      const updated = await tagItem(item.source_key, tags.join(","));
+      if (detail?.item) {
+        detail = { ...detail, item: { ...detail.item, user_tags: updated.user_tags ?? "" } };
+      }
+    } catch (e) {
+      console.error("tag save failed", e);
+    } finally {
+      tagSaving = false;
+    }
+  }
+
+  async function addTag() {
+    const t = newTag.trim();
+    if (!t || userTags.includes(t)) { newTag = ""; return; }
+    newTag = "";
+    await saveTagsForItem([...userTags, t]);
+  }
+
+  async function removeTag(tag) {
+    await saveTagsForItem(userTags.filter(t => t !== tag));
+  }
+
+  function onTagKeydown(e) {
+    if (e.key === "Enter") { e.preventDefault(); addTag(); }
+  }
 </script>
 
 <div class="detail-panel">
@@ -161,6 +201,40 @@
         {#if language && language !== "en"}
           <span class="pivot-chip pivot-chip--lang">{language}</span>
         {/if}
+      </div>
+    {/if}
+
+    <!-- User tags -->
+    {#if item}
+      <div class="detail-section tag-section">
+        <div class="tag-chips">
+          {#each userTags as tag}
+            {#if tagEditMode}
+              <span class="tag-chip tag-chip--editing">
+                <button class="tag-chip-label" on:click={() => onSearch(tag)} type="button">{tag}</button>
+                <button class="tag-chip-remove" on:click={() => removeTag(tag)} type="button" aria-label="Remove {tag}" disabled={tagSaving}>×</button>
+              </span>
+            {:else}
+              <button class="tag-chip tag-chip--plain" on:click={() => onSearch(tag)} type="button">{tag}</button>
+            {/if}
+          {/each}
+          {#if tagEditMode}
+            <span class="tag-input-row">
+              <input
+                class="tag-input"
+                type="text"
+                placeholder="Add tag…"
+                bind:value={newTag}
+                on:keydown={onTagKeydown}
+                disabled={tagSaving}
+              />
+              <button class="tag-add-btn" on:click={addTag} type="button" disabled={tagSaving || !newTag.trim()}>+</button>
+            </span>
+          {/if}
+          <button class="tag-edit-toggle" on:click={() => tagEditMode = !tagEditMode} type="button">
+            {tagEditMode ? "Done" : "Edit tags"}
+          </button>
+        </div>
       </div>
     {/if}
 
@@ -493,4 +567,100 @@
     object-fit: contain;
     background: #000;
   }
+
+  .tag-section { padding-top: 0; }
+
+  .tag-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  /* Plain (read-only) tag — just like a meta-chip but clickable */
+  .tag-chip--plain {
+    background: var(--s2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-lo);
+    cursor: pointer;
+    font-size: 0.78rem;
+    padding: 0.2rem 0.5rem;
+  }
+  .tag-chip--plain:hover { color: var(--text-hi); border-color: var(--border-hi); }
+
+  /* Editing mode — chip with label + × button */
+  .tag-chip--editing {
+    display: inline-flex;
+    align-items: center;
+    background: var(--s2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    overflow: hidden;
+  }
+
+  .tag-chip-label {
+    color: var(--text-lo);
+    cursor: pointer;
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 0.2rem 0.25rem 0.2rem 0.5rem;
+  }
+  .tag-chip-label:hover { color: var(--text-hi); text-decoration: underline; }
+
+  .tag-chip-remove {
+    color: var(--text-lo);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    font-size: 0.75rem;
+    line-height: 1;
+    opacity: 0.55;
+    padding: 0.2rem 0.45rem 0.2rem 0.15rem;
+  }
+  .tag-chip-remove:hover { opacity: 1; color: var(--text-hi); }
+
+  .tag-edit-toggle {
+    background: transparent;
+    border: none;
+    color: var(--text-lo);
+    cursor: pointer;
+    font-size: 0.73rem;
+    opacity: 0.6;
+    padding: 0.1rem 0.2rem;
+  }
+  .tag-edit-toggle:hover { opacity: 1; color: var(--text-hi); }
+
+  .tag-input-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .tag-input {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 0.75rem;
+    outline: none;
+    padding: 0.2rem 0.65rem;
+    width: 8rem;
+  }
+  .tag-input:focus { border-color: var(--border-hi); }
+  .tag-input::placeholder { color: var(--text-lo); }
+
+  .tag-add-btn {
+    background: var(--s2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-lo);
+    cursor: pointer;
+    font-size: 0.8rem;
+    line-height: 1;
+    padding: 0.2rem 0.5rem;
+  }
+  .tag-add-btn:hover:not(:disabled) { color: var(--text-hi); border-color: var(--border-hi); }
+  .tag-add-btn:disabled { opacity: 0.35; cursor: default; }
 </style>

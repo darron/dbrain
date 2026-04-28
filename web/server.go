@@ -187,6 +187,7 @@ func (s *server) newMux() http.Handler {
 	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
 	mux.HandleFunc("/api/ask", s.handleAsk)
 	mux.HandleFunc("/api/links", s.handleLinks)
+	mux.HandleFunc("/api/tag", s.handleTag)
 	mux.HandleFunc("/api/media/signed-url", s.handleMediaSignedURL)
 	mux.HandleFunc("/media/asset/", s.handleMediaAsset)
 	mux.Handle("/", http.HandlerFunc(s.handleStatic))
@@ -363,6 +364,38 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 		NoteContent: noteContent,
 		NoteError:   noteError,
 	})
+}
+
+type TagRequest struct {
+	Lookup string `json:"lookup"`
+	Tags   string `json:"tags"`
+}
+
+func (s *server) handleTag(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var req TagRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeMessage(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Lookup == "" {
+		writeMessage(w, http.StatusBadRequest, "lookup is required")
+		return
+	}
+	item, err := s.store.GetItem(r.Context(), req.Lookup)
+	if err != nil {
+		writeMessage(w, http.StatusNotFound, fmt.Sprintf("item not found: %s", req.Lookup))
+		return
+	}
+	if err := s.store.SaveItemUserTags(r.Context(), item.ID, req.Tags); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	item.UserTags = req.Tags
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *server) loadQuotedPosts(ctx context.Context, itemID int64) []model.Item {

@@ -64,6 +64,14 @@ export function askEvidence(question, options = {}) {
   });
 }
 
+export function tagItem(lookup, tags) {
+  return fetchJSON("/api/tag", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lookup, tags })
+  });
+}
+
 export function addLink(url, options = {}) {
   return fetchJSON("/api/links", {
     method: "POST",

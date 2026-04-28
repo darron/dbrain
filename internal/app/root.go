@@ -125,6 +125,7 @@ func NewRootCommand() *cobra.Command {
 		newAskCommand(opts),
 		newSearchCommand(opts),
 		newGetCommand(opts),
+		newCategorizeCommand(opts),
 		newVersionCommand(),
 	)
 

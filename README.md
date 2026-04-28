@@ -38,6 +38,8 @@ Markdown note rendering for Obsidian and local query over the imported corpus.
 - `dbrain ask <question>`
 - `dbrain search <query>`
 - `dbrain get <source-key-or-id>`
+- `dbrain categorize item`
+- `dbrain categorize batch`
 
 On macOS, `dbrain` will automatically use `caffeinate` when the command is
 available, so long-running leaf commands keep the machine awake by default.
@@ -338,6 +340,20 @@ derived summary.
   Retrieval is read-only and works directly from `brain.db`. By default it also
   synthesizes an answer through `summarize`; use `--retrieve-only` when you want
   evidence only and no model call.
+- `dbrain categorize item`
+  No external tools required. Sends a single item's full content bundle (post
+  text, summary, transcript, OCR text, article body) to a local Ollama or
+  OpenRouter LLM and returns suggested categories and tags. Use `--apply` to
+  save the result directly to the item's `user_tags` field (also re-indexes
+  FTS). Use `--images` to embed locally archived or R2-stored photos as base64
+  for vision-capable models. The model is resolved from `--model`,
+  `DBRAIN_CATEGORIZE_MODEL`, or the default `openrouter/google/gemini-2.5-flash`.
+- `dbrain categorize batch`
+  Same as `dbrain categorize item` but processes multiple items in one pass.
+  By default only items with an empty `user_tags` field are selected; use
+  `--force` to re-categorize everything. `--limit` (default 50) and
+  `--concurrency` (default 2) control throughput. Use `--apply` to save results
+  and `--json` for structured output.
 - `dbrain repair notes`
   No external tools required. Rebuilds rendered Markdown notes from `brain.db`,
   which is useful if antivirus or sync tooling removed files from `vault/`.
@@ -454,6 +470,15 @@ go run ./cmd/dbrain serve mcp
 go run ./cmd/dbrain serve web
 go run ./cmd/dbrain search kubernetes
 go run ./cmd/dbrain get x:2045912259210485815
+go run ./cmd/dbrain categorize item --lookup x:1844700656625406274
+go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply
+go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply --images --model ollama/llama3.2-vision
+go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply --model ollama/qwen2.5:7b-instruct
+go run ./cmd/dbrain categorize batch --limit 50 --concurrency 4 --model ollama/qwen2.5:7b-instruct --apply
+go run ./cmd/dbrain categorize batch --limit 200 --concurrency 4 --model ollama/qwen2.5:7b-instruct --apply
+go run ./cmd/dbrain categorize batch --force --limit 100 --concurrency 2 --model ollama/qwen2.5:7b-instruct --apply
+go run ./cmd/dbrain categorize batch --limit 50 --concurrency 2 --model openrouter/google/gemini-2.5-flash --apply
+go run ./cmd/dbrain categorize batch --limit 50 --json
 ```
 
 The legacy FT importer is incremental and replayable. Re-running `import ft`

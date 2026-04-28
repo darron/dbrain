@@ -14,7 +14,9 @@
       "Bash(./bin/dbrain repair *)",
       "Bash(wait)",
       "Bash(./bin/dbrain ocr *)",
-      "Bash(./bin/dbrain transcribe *)"
+      "Bash(./bin/dbrain transcribe *)",
+      "Bash(go build *)",
+      "Bash(./bin/dbrain categorize *)"
     ]
   }
 }

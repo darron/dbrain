@@ -109,7 +109,8 @@ const itemSelectColumns = `
 	summary_text, summary_json, summary_status, summary_error, summary_model,
 	summary_prompt_version, summary_tool, summary_tool_version, summary_input_hash, summarized_at,
 	ocr_text, ocr_json, ocr_status, ocr_error, ocr_model, ocr_tool, ocr_tool_version, ocr_input_hash, ocr_at,
-	x_media_transcript_status, x_media_transcript_error, x_media_transcript_at`
+	x_media_transcript_status, x_media_transcript_error, x_media_transcript_at,
+	user_tags`
 
 type Store struct {
 	db     *sql.DB
@@ -298,6 +299,7 @@ func (s *Store) ensureItemColumns() error {
 		"x_media_transcript_status": "TEXT NOT NULL DEFAULT ''",
 		"x_media_transcript_error":  "TEXT NOT NULL DEFAULT ''",
 		"x_media_transcript_at":     "TEXT NOT NULL DEFAULT ''",
+		"user_tags":                 "TEXT NOT NULL DEFAULT ''",
 	}
 
 	for name, definition := range required {
@@ -630,7 +632,7 @@ func (s *Store) RebuildFTS(ctx context.Context) (RebuildFTSStats, error) {
 
 func indexedItemArticleText(item model.Item) string {
 	parts := make([]string, 0, 4)
-	for _, value := range []string{strings.TrimSpace(item.XPostText), strings.TrimSpace(item.ArticleText), strings.TrimSpace(item.SummaryText), strings.TrimSpace(item.OCRText)} {
+	for _, value := range []string{strings.TrimSpace(item.XPostText), strings.TrimSpace(item.ArticleText), strings.TrimSpace(item.SummaryText), strings.TrimSpace(item.OCRText), strings.TrimSpace(item.UserTags)} {
 		if value == "" {
 			continue
 		}
@@ -866,6 +868,25 @@ func (s *Store) GetItemByID(ctx context.Context, id int64) (model.Item, error) {
 	}
 	item.Media = media
 	return item, nil
+}
+
+func (s *Store) SaveItemUserTags(ctx context.Context, itemID int64, tags string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, `UPDATE items SET user_tags = ? WHERE id = ?`, tags, itemID); err != nil {
+		return fmt.Errorf("update user_tags for item %d: %w", itemID, err)
+	}
+	if err = s.syncItemFTSByIDTx(ctx, tx, itemID); err != nil {
+		return fmt.Errorf("sync fts for item %d: %w", itemID, err)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListAllItems(ctx context.Context, limit int) ([]model.Item, error) {
@@ -1345,6 +1366,7 @@ func scanItem(scanner interface{ Scan(dest ...any) error }, item *model.Item) er
 		&item.SummaryPromptVersion, &item.SummaryTool, &item.SummaryToolVersion, &item.SummaryInputHash, &summarizedAt,
 		&item.OCRText, &item.OCRJSON, &item.OCRStatus, &item.OCRError, &item.OCRModel, &item.OCRTool, &item.OCRToolVersion, &item.OCRInputHash, &ocrAt,
 		&item.XMediaTranscriptStatus, &item.XMediaTranscriptError, &xMediaTranscriptAt,
+		&item.UserTags,
 	); err != nil {
 		return err
 	}
