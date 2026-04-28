@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -72,22 +73,177 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 	if _, ok := firstTool["outputSchema"]; !ok {
 		t.Fatalf("expected tool output schema, got %#v", firstTool)
 	}
-	var foundResearchPack, foundGetMany bool
+	requiredTools := map[string]bool{
+		"dbrain_search":        false,
+		"dbrain_get":           false,
+		"dbrain_get_many":      false,
+		"dbrain_ask":           false,
+		"dbrain_research_pack": false,
+		"dbrain_related":       false,
+		"dbrain_topic_map":     false,
+		"dbrain_topic_brief":   false,
+		"dbrain_entity_map":    false,
+	}
 	for _, entry := range tools {
 		tool := entry.(map[string]interface{})
-		switch tool["name"] {
-		case "dbrain_research_pack":
-			foundResearchPack = true
-		case "dbrain_get_many":
-			foundGetMany = true
+		name, _ := tool["name"].(string)
+		if _, ok := requiredTools[name]; ok {
+			requiredTools[name] = true
 		}
 	}
-	if !foundResearchPack {
-		t.Fatalf("expected dbrain_research_pack in tools list: %#v", tools)
+	var missing []string
+	for name, found := range requiredTools {
+		if !found {
+			missing = append(missing, name)
+		}
 	}
-	if !foundGetMany {
-		t.Fatalf("expected dbrain_get_many in tools list: %#v", tools)
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Fatalf("expected core research workflow tools in tools list, missing %v: %#v", missing, tools)
 	}
+}
+
+func TestServerAgentResearchWorkflowOverProtocol(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-mcp-agent-workflow",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-agent-workflow",
+		CanonicalURL: "https://x.com/example/status/test-mcp-agent-workflow",
+		Title:        "Mark Carney Saved Evidence",
+		Text:         "Mark Carney fiscal policy saved corpus evidence for the MCP agent workflow.",
+		ContentHash:  "mcp-agent-workflow-item",
+		NotePath:     "items/x/2026/test-mcp-agent-workflow.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	if err := st.SaveItemUserTags(ctx, itemResult.ItemID, "mark-carney, canadian-politics"); err != nil {
+		t.Fatalf("save user tags: %v", err)
+	}
+	link, err := st.UpsertSourceLink(ctx, itemResult.ItemID, model.SourceCandidate{
+		SourceKey:     "src:test-mcp-agent-workflow",
+		OriginalURL:   "https://example.com/mark-carney-workflow",
+		CanonicalURL:  "https://example.com/mark-carney-workflow",
+		NormalizedURL: "https://example.com/mark-carney-workflow",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-mcp-agent-workflow.md",
+	})
+	if err != nil {
+		t.Fatalf("source link: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, link.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/mark-carney-workflow",
+		FinalURL:     "https://example.com/mark-carney-workflow",
+		Title:        "Mark Carney Workflow Source",
+		Content:      "Linked source evidence about Mark Carney and Canadian fiscal policy.",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "test-fetch",
+		ToolVersion:  "test",
+	}, "mcp-agent-workflow-source"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+
+	server := New(cfg, st)
+	input := framedJSON(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`) +
+		framedJSON(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`) +
+		framedJSON(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dbrain_research_pack","arguments":{"question":"What do I have in my brain about Mark Carney?","limit":2,"include_related":true,"max_chars_per_doc":140}}}`) +
+		framedJSON(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"x:test-mcp-agent-workflow","query":"mark carney","content_mode":"evidence","max_chars_per_section":200}}}`) +
+		framedJSON(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"dbrain_related","arguments":{"lookup":"x:test-mcp-agent-workflow"}}}`)
+
+	var out bytes.Buffer
+	if err := server.Serve(ctx, strings.NewReader(input), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	if len(responses) != 5 {
+		t.Fatalf("expected 5 MCP responses, got %d", len(responses))
+	}
+	research := responses[2]["result"].(map[string]interface{})["structuredContent"].(map[string]interface{})
+	queryPlan := research["query_plan"].(map[string]interface{})
+	tagQueries := queryPlan["tag_queries"].([]interface{})
+	if len(tagQueries) != 1 || tagQueries[0] != "mark-carney" {
+		t.Fatalf("expected Mark Carney tag alias in research pack, got %#v", queryPlan)
+	}
+	coverage := research["coverage"].(map[string]interface{})
+	exactTags := coverage["exact_tag_matches"].([]interface{})
+	if len(exactTags) != 1 {
+		t.Fatalf("expected exact tag coverage in research pack, got %#v", coverage)
+	}
+	exactTag := exactTags[0].(map[string]interface{})
+	if exactTag["key"] != "mark-carney" || int(exactTag["count"].(float64)) != 1 {
+		t.Fatalf("expected mark-carney exact tag coverage, got %#v", exactTag)
+	}
+	evidence := research["evidence"].([]interface{})
+	if len(evidence) == 0 {
+		t.Fatalf("expected research evidence, got %#v", research)
+	}
+	getResult := responses[3]["result"].(map[string]interface{})
+	getText := getResult["content"].([]interface{})[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(getText, "fiscal policy saved corpus evidence") {
+		t.Fatalf("expected DB-backed get evidence, got %q", getText)
+	}
+	related := responses[4]["result"].(map[string]interface{})["structuredContent"].(map[string]interface{})
+	relatedSources := related["related_sources"].([]interface{})
+	if len(relatedSources) != 1 {
+		t.Fatalf("expected one linked source from related lookup, got %#v", related)
+	}
+}
+
+func TestServerToolErrorsAreStructuredAndActionable(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	server := New(cfg, st)
+	input := framedJSON(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_missing_tool","arguments":{}}}`) +
+		framedJSON(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"missing:lookup"}}}`)
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	if len(responses) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(responses))
+	}
+	assertToolError(t, responses[0], "unknown tool", "tools/list")
+	assertToolError(t, responses[1], "lookup not found", "dbrain_search")
 }
 
 func TestServerListsResourcesTemplatesAndPrompts(t *testing.T) {
@@ -1799,6 +1955,26 @@ func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {
 	if len([]rune(excerpt)) > 123 {
 		t.Fatalf("expected excerpt capped near max_chars_per_doc, got %d chars: %q", len([]rune(excerpt)), excerpt)
 	}
+	nextSteps := structured["next_steps"].([]interface{})
+	if len(nextSteps) != 2 {
+		t.Fatalf("expected get and related next steps, got %#v", nextSteps)
+	}
+	getStep := nextSteps[0].(map[string]interface{})
+	if getStep["tool"] != "dbrain_get" {
+		t.Fatalf("expected dbrain_get next step, got %#v", getStep)
+	}
+	getArgs := getStep["arguments"].(map[string]interface{})
+	if getArgs["lookup"] != "x:test-mcp-research-carney" || getArgs["query"] != "mark carney" || getArgs["content_mode"] != "evidence" {
+		t.Fatalf("expected query-windowed dbrain_get arguments, got %#v", getArgs)
+	}
+	relatedStep := nextSteps[1].(map[string]interface{})
+	if relatedStep["tool"] != "dbrain_related" {
+		t.Fatalf("expected dbrain_related next step, got %#v", relatedStep)
+	}
+	relatedArgs := relatedStep["arguments"].(map[string]interface{})
+	if relatedArgs["lookup"] != "x:test-mcp-research-carney" {
+		t.Fatalf("expected related lookup for top evidence, got %#v", relatedArgs)
+	}
 }
 
 func TestServerResearchPackSurfacesSourceEvidenceWithSourceTypeFilter(t *testing.T) {
@@ -2396,6 +2572,40 @@ func framedJSON(payload string) string {
 
 func lineJSON(payload string) string {
 	return payload + "\n"
+}
+
+func assertToolError(t *testing.T, response map[string]interface{}, wantMessage string, wantSuggestion string) {
+	t.Helper()
+
+	result := response["result"].(map[string]interface{})
+	if result["isError"] != true {
+		t.Fatalf("expected error tool result, got %#v", result)
+	}
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, wantMessage) {
+		t.Fatalf("expected error text containing %q, got %q", wantMessage, text)
+	}
+	structured := result["structuredContent"].(map[string]interface{})
+	errorPayload := structured["error"].(map[string]interface{})
+	message := errorPayload["message"].(string)
+	if !strings.Contains(message, wantMessage) {
+		t.Fatalf("expected structured error message containing %q, got %q", wantMessage, message)
+	}
+	suggestions := errorPayload["suggestions"].([]interface{})
+	if len(suggestions) == 0 {
+		t.Fatalf("expected actionable suggestions, got %#v", errorPayload)
+	}
+	var found bool
+	for _, raw := range suggestions {
+		if strings.Contains(raw.(string), wantSuggestion) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected suggestion containing %q, got %#v", wantSuggestion, suggestions)
+	}
 }
 
 func parseResponses(t *testing.T, data []byte) []map[string]interface{} {

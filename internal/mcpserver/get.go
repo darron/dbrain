@@ -66,11 +66,14 @@ func (s *Server) getPayloadForLookup(ctx context.Context, lookup string, mode st
 	if item, err := s.st.GetItem(ctx, lookup); err == nil {
 		return s.getItemPayload(ctx, item, mode, maxChars, query)
 	}
-	source, err := s.st.GetSource(ctx, lookup)
-	if err != nil {
-		return nil, "", err
+	if source, err := s.st.GetSource(ctx, lookup); err == nil {
+		return s.getSourcePayload(ctx, source, mode, maxChars, query)
 	}
-	return s.getSourcePayload(ctx, source, mode, maxChars, query)
+	return nil, "", lookupNotFoundError(lookup)
+}
+
+func lookupNotFoundError(lookup string) error {
+	return fmt.Errorf("lookup not found: %s (searched items and sources by source key, external id, URL, and note path)", lookup)
 }
 
 func maxGetSectionChars(value int) int {

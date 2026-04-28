@@ -718,6 +718,11 @@ relying on project-specific fixture data.
 
 - [x] Add deterministic fixture coverage for MCP retrieval tests covering tags,
   OCR text, transcript text, linked sources, and source-type filters.
+- [x] Add protocol-level tool-surface coverage so the core agent workflow tools
+  (`dbrain_research_pack`, `dbrain_get`, `dbrain_get_many`, `dbrain_related`,
+  `dbrain_ask`, maps, and search) stay advertised by `tools/list`.
+- [x] Return structured, actionable MCP tool errors so clients and agents can
+  recover from missing lookups, unsupported modes, or unknown tools.
 - [x] Add a `task test-mcp` command so CI and open-source users can validate MCP
   retrieval behavior without a private corpus.
 - [x] Keep model-backed summary tests deterministic when local summary-model
