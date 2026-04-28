@@ -230,13 +230,15 @@ derived summary.
   Runs the regular incremental refresh pipeline in one command: direct X
   bookmark import, X hydration, X media audio transcription, X photo OCR,
   tweet-link discovery/enrichment, GitHub stars import, YouTube import, and an
-  optional source-backlog worker batch. It can also optionally append a media
-  archive stage that uploads finalized local media to configured S3-compatible
-  storage and prunes local copies. The final stage categorizes uncategorized
-  items with the same item categorizer used by `dbrain categorize batch`, unless
-  `--skip-categorize` is passed. The X media and X photo OCR stages use the
-  same X batch limit as `hydrate x` (`--x-limit`). In the default
-  configuration this combines the requirements of X bookmark import, X
+  optional source-backlog worker batch. It then categorizes uncategorized items
+  with the same item categorizer used by `dbrain categorize batch`, unless
+  `--skip-categorize` is passed. If enabled, the media archive stage runs after
+  categorization so image categorization can still use local photo files before
+  they are uploaded/pruned. Image categorization is enabled by default; use
+  `--categorize-images=false` to disable it for text-only models. The X media
+  and X photo OCR stages use the same X batch limit as `hydrate x`
+  (`--x-limit`). In the default configuration this combines the requirements of
+  X bookmark import, X
   hydration, X media transcription, X photo OCR, link/source enrichment, and
   YouTube import, plus categorization. A practical local setup usually includes
   a supported Chrome/Chromium profile with valid cookies plus Ollama or an
@@ -347,8 +349,9 @@ derived summary.
   text, summary, transcript, OCR text, article body) to a local Ollama or
   OpenRouter LLM and returns suggested categories and tags. Use `--apply` to
   save the result directly to the item's `user_tags` field (also re-indexes
-  FTS). Use `--images` to embed locally archived or R2-stored photos as base64
-  for vision-capable models. The model is resolved from `--model`,
+  FTS). Image categorization is enabled by default and embeds local or R2-stored
+  photos as base64 for vision-capable models; use `--images=false` to disable
+  it. The model is resolved from `--model`,
   `DBRAIN_CATEGORIZE_MODEL`, or the default `openrouter/google/gemini-2.5-flash`.
 - `dbrain categorize batch`
   Same as `dbrain categorize item` but processes multiple items in one pass.
@@ -479,8 +482,8 @@ go run ./cmd/dbrain search kubernetes
 go run ./cmd/dbrain get x:2045912259210485815
 go run ./cmd/dbrain categorize item --lookup x:1844700656625406274
 go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply
-go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply --images --model ollama/llama3.2-vision
-go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply --model ollama/qwen2.5:7b-instruct
+go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply --model ollama/llama3.2-vision
+go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply --images=false --model ollama/qwen2.5:7b-instruct
 go run ./cmd/dbrain categorize batch --limit 50 --concurrency 4 --model ollama/qwen2.5:7b-instruct --apply
 go run ./cmd/dbrain categorize batch --limit 200 --concurrency 4 --model ollama/qwen2.5:7b-instruct --apply
 go run ./cmd/dbrain categorize batch --force --limit 100 --concurrency 2 --model ollama/qwen2.5:7b-instruct --apply

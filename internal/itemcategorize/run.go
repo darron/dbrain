@@ -64,7 +64,7 @@ type Options struct {
 	Limit           int
 	Force           bool
 	Apply           bool // save result back to user_tags
-	IncludeImages   bool // embed archived photos as base64 for vision models
+	IncludeImages   bool // embed local or archived photos as base64 for vision models
 	OpenRouterBase  string
 	OpenRouterKey   string
 	OpenRouterRef   string

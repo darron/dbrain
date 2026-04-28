@@ -496,32 +496,6 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		progressf(opts.Progress, "Source worker complete: work_cycles=%d sources_summarized=%d errors=%d stopped=%s (%s)\n", sourceStats.WorkCycles, sourceStats.SourcesSummarized, sourceStats.Errors, sourceStats.StoppedReason, stage.Duration)
 	}
 
-	if opts.ArchiveMediaEnabled {
-		progressf(opts.Progress, "==> archive media\n")
-		start := time.Now()
-		archiveStats, err := runMediaArchive(ctx, cfg, st, mediaarchive.Options{
-			Limit:         opts.ArchiveMediaLimit,
-			Upload:        true,
-			PruneLocal:    true,
-			Provider:      opts.ArchiveProvider,
-			Bucket:        opts.ArchiveBucket,
-			PublicBaseURL: opts.ArchivePublicBaseURL,
-			Endpoint:      opts.ArchiveEndpoint,
-			Region:        opts.ArchiveRegion,
-			AccessKeyID:   opts.ArchiveAccessKeyID,
-			SecretKey:     opts.ArchiveSecretKey,
-			SessionToken:  opts.ArchiveSessionToken,
-			PathStyle:     true,
-			Logger:        opts.Logger,
-		})
-		stage := &MediaArchiveStage{Duration: time.Since(start), Stats: archiveStats}
-		stats.MediaArchive = stage
-		if err != nil {
-			return finishStats(stats), fmt.Errorf("archive media: %w", err)
-		}
-		progressf(opts.Progress, "Media archive complete: candidates=%d uploaded=%d archived=%d unchanged=%d prune_skipped=%d local_files_pruned=%d local_rows_pruned=%d errors=%d (%s)\n", archiveStats.Candidates, archiveStats.Uploaded, archiveStats.Archived, archiveStats.Unchanged, archiveStats.PruneSkipped, archiveStats.LocalFilesPruned, archiveStats.LocalRowsPruned, archiveStats.Errors, stage.Duration)
-	}
-
 	if opts.CategorizeEnabled {
 		progressf(opts.Progress, "==> categorize items\n")
 		start := time.Now()
@@ -596,6 +570,32 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			return finishStats(stats), fmt.Errorf("categorize items: %w", err)
 		}
 		progressf(opts.Progress, "Item categorization complete: queued=%d succeeded=%d applied=%d skipped=%d errors=%d (%s)\n", categorizeStats.Queued, categorizeStats.Succeeded, categorizeStats.Applied, categorizeStats.Skipped, categorizeStats.Errors, stage.Duration)
+	}
+
+	if opts.ArchiveMediaEnabled {
+		progressf(opts.Progress, "==> archive media\n")
+		start := time.Now()
+		archiveStats, err := runMediaArchive(ctx, cfg, st, mediaarchive.Options{
+			Limit:         opts.ArchiveMediaLimit,
+			Upload:        true,
+			PruneLocal:    true,
+			Provider:      opts.ArchiveProvider,
+			Bucket:        opts.ArchiveBucket,
+			PublicBaseURL: opts.ArchivePublicBaseURL,
+			Endpoint:      opts.ArchiveEndpoint,
+			Region:        opts.ArchiveRegion,
+			AccessKeyID:   opts.ArchiveAccessKeyID,
+			SecretKey:     opts.ArchiveSecretKey,
+			SessionToken:  opts.ArchiveSessionToken,
+			PathStyle:     true,
+			Logger:        opts.Logger,
+		})
+		stage := &MediaArchiveStage{Duration: time.Since(start), Stats: archiveStats}
+		stats.MediaArchive = stage
+		if err != nil {
+			return finishStats(stats), fmt.Errorf("archive media: %w", err)
+		}
+		progressf(opts.Progress, "Media archive complete: candidates=%d uploaded=%d archived=%d unchanged=%d prune_skipped=%d local_files_pruned=%d local_rows_pruned=%d errors=%d (%s)\n", archiveStats.Candidates, archiveStats.Uploaded, archiveStats.Archived, archiveStats.Unchanged, archiveStats.PruneSkipped, archiveStats.LocalFilesPruned, archiveStats.LocalRowsPruned, archiveStats.Errors, stage.Duration)
 	}
 
 	stats = finishStats(stats)

@@ -26,7 +26,7 @@ func newCategorizeItemCommand(root *rootOptions) *cobra.Command {
 	var lookup string
 	var model string
 	var apply bool
-	var includeImages bool
+	var includeImages = true
 	var timeout time.Duration
 	var jsonOut bool
 
@@ -79,7 +79,7 @@ func newCategorizeItemCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&lookup, "lookup", "", "Item to categorize (source_key, external_id, canonical_url)")
 	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, or auto from DBRAIN_CATEGORIZE_MODEL)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Save categories and tags back to the item's user_tags")
-	cmd.Flags().BoolVar(&includeImages, "images", false, "Embed archived photos as base64 for vision-capable models")
+	cmd.Flags().BoolVar(&includeImages, "images", true, "Embed local or archived photos as base64 for vision-capable models; use --images=false to disable")
 	cmd.Flags().DurationVar(&timeout, "timeout", 90*time.Second, "LLM request timeout")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print result as JSON")
 
@@ -89,7 +89,7 @@ func newCategorizeItemCommand(root *rootOptions) *cobra.Command {
 func newCategorizeBatchCommand(root *rootOptions) *cobra.Command {
 	var model string
 	var apply bool
-	var includeImages bool
+	var includeImages = true
 	var force bool
 	var limit int
 	var concurrency int
@@ -159,7 +159,7 @@ func newCategorizeBatchCommand(root *rootOptions) *cobra.Command {
 
 	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, or auto from DBRAIN_CATEGORIZE_MODEL)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Save categories and tags back to each item's user_tags")
-	cmd.Flags().BoolVar(&includeImages, "images", false, "Embed archived photos as base64 for vision-capable models")
+	cmd.Flags().BoolVar(&includeImages, "images", true, "Embed local or archived photos as base64 for vision-capable models; use --images=false to disable")
 	cmd.Flags().BoolVar(&force, "force", false, "Re-categorize items even if they already have user_tags")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of items to process")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 2, "Number of concurrent LLM requests")

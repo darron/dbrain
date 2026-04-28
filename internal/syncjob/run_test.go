@@ -327,7 +327,7 @@ func TestRunExecutesArchiveStageAtEndWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestRunExecutesCategorizeStageAtEndWhenEnabled(t *testing.T) {
+func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 	cfg, st := testSyncStore(t)
 
 	origArchive := runMediaArchive
@@ -386,7 +386,7 @@ func TestRunExecutesCategorizeStageAtEndWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !slices.Equal(calls, []string{"archive", "categorize"}) {
+	if !slices.Equal(calls, []string{"categorize", "archive"}) {
 		t.Fatalf("unexpected stage order: %v", calls)
 	}
 	if stats.Categorize == nil {

@@ -56,7 +56,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var categorizeConcurrency int
 	var categorizeModel string
 	var categorizeTimeout time.Duration
-	var categorizeImages bool
+	var categorizeImages = true
 	var skipXBookmarks bool
 	var skipFT bool
 	var skipX bool
@@ -200,7 +200,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&categorizeConcurrency, "categorize-concurrency", 2, "Number of concurrent item categorization requests")
 	cmd.Flags().StringVar(&categorizeModel, "categorize-model", "", "Categorization model override; defaults to DBRAIN_CATEGORIZE_MODEL or the categorizer default")
 	cmd.Flags().DurationVar(&categorizeTimeout, "categorize-timeout", 90*time.Second, "Per-item categorization request timeout")
-	cmd.Flags().BoolVar(&categorizeImages, "categorize-images", false, "Embed item photos as base64 for vision-capable categorization models")
+	cmd.Flags().BoolVar(&categorizeImages, "categorize-images", true, "Embed item photos as base64 for vision-capable categorization models; use --categorize-images=false to disable")
 	cmd.Flags().BoolVar(&skipXBookmarks, "skip-x-bookmarks", false, "Skip direct X bookmark import")
 	cmd.Flags().BoolVar(&skipFT, "skip-ft", false, "Deprecated alias for --skip-x-bookmarks")
 	_ = cmd.Flags().MarkHidden("skip-ft")
@@ -291,13 +291,13 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 		s := stats.Sources.Stats
 		rows = append(rows, []string{"Sources", stats.Sources.Duration.String(), fmt.Sprintf("cycles=%d summarized=%d", s.WorkCycles, s.SourcesSummarized), fmt.Sprintf("stopped=%s", s.StoppedReason), strconv.Itoa(s.Errors)})
 	}
-	if stats.MediaArchive != nil {
-		s := stats.MediaArchive.Stats
-		rows = append(rows, []string{"Media Archive", stats.MediaArchive.Duration.String(), fmt.Sprintf("uploaded=%d archived=%d", s.Uploaded, s.Archived), fmt.Sprintf("pruned_files=%d unchanged=%d", s.LocalFilesPruned, s.Unchanged), strconv.Itoa(s.Errors)})
-	}
 	if stats.Categorize != nil {
 		s := stats.Categorize.Stats
 		rows = append(rows, []string{"Categorize", stats.Categorize.Duration.String(), fmt.Sprintf("queued=%d applied=%d", s.Queued, s.Applied), fmt.Sprintf("succeeded=%d skipped=%d", s.Succeeded, s.Skipped), strconv.Itoa(s.Errors)})
+	}
+	if stats.MediaArchive != nil {
+		s := stats.MediaArchive.Stats
+		rows = append(rows, []string{"Media Archive", stats.MediaArchive.Duration.String(), fmt.Sprintf("uploaded=%d archived=%d", s.Uploaded, s.Archived), fmt.Sprintf("pruned_files=%d unchanged=%d", s.LocalFilesPruned, s.Unchanged), strconv.Itoa(s.Errors)})
 	}
 	return rows
 }
