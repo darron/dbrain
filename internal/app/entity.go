@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/entities"
-	"dbrain/internal/store"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 func newEntityCommand(root *rootOptions) *cobra.Command {

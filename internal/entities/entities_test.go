@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/model"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func TestBuildIndexDerivesStableEntities(t *testing.T) {

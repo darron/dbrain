@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/githubimport"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/githubimport"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newImportGitHubCommand(root *rootOptions) *cobra.Command {

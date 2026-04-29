@@ -16,13 +16,13 @@ import (
 
 	"github.com/steipete/sweetcookie"
 
-	"dbrain/internal/config"
-	"dbrain/internal/itemhash"
-	"dbrain/internal/mediadownload"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
-	"dbrain/internal/vault"
-	"dbrain/internal/xpost"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/itemhash"
+	"github.com/darron/dbrain/internal/mediadownload"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/xpost"
 )
 
 const (

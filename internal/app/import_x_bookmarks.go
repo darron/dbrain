@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/store"
-	"dbrain/internal/xapi"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/xapi"
 )
 
 func newImportXBookmarksCommand(root *rootOptions) *cobra.Command {

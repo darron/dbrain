@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/version"
+	"github.com/darron/dbrain/internal/version"
 )
 
 func newVersionCommand() *cobra.Command {

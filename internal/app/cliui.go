@@ -13,7 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-isatty"
 
-	"dbrain/internal/sqlitearchive"
+	"github.com/darron/dbrain/internal/sqlitearchive"
 )
 
 type cliProgressUI struct {

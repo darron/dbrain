@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestSearchMatchesAndReturnsUserTags(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/mcpserver"
-	"dbrain/web"
+	"github.com/darron/dbrain/internal/mcpserver"
+	"github.com/darron/dbrain/web"
 )
 
 func newServeMCPCommand(root *rootOptions) *cobra.Command {

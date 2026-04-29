@@ -3,7 +3,7 @@ package itemhash
 import (
 	"testing"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestComputeIgnoresSyncedAt(t *testing.T) {

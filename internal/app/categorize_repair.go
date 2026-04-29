@@ -2,13 +2,12 @@ package app
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/categoryvocab"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/categoryvocab"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
@@ -24,8 +23,7 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 
-			vocabPath := filepath.Join(cfg.RootDir, "categories.yaml")
-			vocab, err := categoryvocab.Load(vocabPath)
+			vocab, err := categoryvocab.Load(cfg.CategoriesPath)
 			if err != nil {
 				return fmt.Errorf("load categories.yaml: %w", err)
 			}

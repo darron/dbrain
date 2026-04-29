@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/mediaarchive"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newArchiveCommand(root *rootOptions) *cobra.Command {

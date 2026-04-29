@@ -549,6 +549,62 @@ func TestResolveModelAndEnvRespectsExistingOverrides(t *testing.T) {
 	}
 }
 
+func TestEnvWithRuntimeConfigSeparatesOllamaAndOpenAIKeys(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+ollama:
+  base_url: http://10.0.0.6:11434
+  api_key: local-key
+openai:
+  base_url: https://openai-compatible.example/v1
+  api_key: hosted-key
+  use_chat_completions: true
+openrouter:
+  api_key: router-key
+summary:
+  language: English
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("DBRAIN_OLLAMA_API_KEY", "")
+	t.Setenv("OLLAMA_API_KEY", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_USE_CHAT_COMPLETIONS", "")
+	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("DBRAIN_SUMMARY_LANGUAGE", "")
+	t.Setenv("DBRAIN_OUTPUT_LANGUAGE", "")
+	t.Setenv("SUMMARIZE_LANGUAGE", "")
+
+	env := envWithRuntimeConfig(root, nil)
+	if got := env["DBRAIN_OLLAMA_BASE_URL"]; got != "http://10.0.0.6:11434" {
+		t.Fatalf("expected Ollama base URL from config, got %q", got)
+	}
+	if got := env["DBRAIN_OLLAMA_API_KEY"]; got != "local-key" {
+		t.Fatalf("expected Ollama API key from config, got %q", got)
+	}
+	if got := env["OPENAI_BASE_URL"]; got != "https://openai-compatible.example/v1" {
+		t.Fatalf("expected OpenAI base URL from config, got %q", got)
+	}
+	if got := env["OPENAI_API_KEY"]; got != "hosted-key" {
+		t.Fatalf("expected OpenAI API key from config, got %q", got)
+	}
+	if got := env["OPENAI_USE_CHAT_COMPLETIONS"]; got != "true" {
+		t.Fatalf("expected OpenAI chat-completions flag from config, got %q", got)
+	}
+	if got := env["DBRAIN_OPENROUTER_API_KEY"]; got != "router-key" {
+		t.Fatalf("expected OpenRouter API key from config, got %q", got)
+	}
+	if got := env["DBRAIN_SUMMARY_LANGUAGE"]; got != "English" {
+		t.Fatalf("expected summary language from config, got %q", got)
+	}
+}
+
 func TestNormalizeBaseURLWithV1(t *testing.T) {
 	cases := map[string]string{
 		"":                          defaultOllamaBaseURL,

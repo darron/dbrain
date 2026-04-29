@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestBuildTranscriptSummaryInputIncludesQuotedPostContext(t *testing.T) {

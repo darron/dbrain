@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
 )
 
 type SourceBacklogFunc func(context.Context) (store.BacklogStats, error)

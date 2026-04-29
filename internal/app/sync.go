@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/store"
-	"dbrain/internal/syncjob"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/syncjob"
 )
 
 func newSyncCommand(root *rootOptions) *cobra.Command {
@@ -58,7 +58,6 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var categorizeTimeout time.Duration
 	var categorizeImages = true
 	var skipXBookmarks bool
-	var skipFT bool
 	var skipX bool
 	var skipXMedia bool
 	var skipXPhotoOCR bool
@@ -101,7 +100,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			}
 
 			stats, err := syncjob.Run(cmd.Context(), cfg, st, syncjob.Options{
-				XBookmarksEnabled:     !skipXBookmarks && !skipFT,
+				XBookmarksEnabled:     !skipXBookmarks,
 				XBookmarksLimit:       xBookmarksLimit,
 				XEnabled:              !skipX,
 				XLimit:                xLimit,
@@ -202,8 +201,6 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().DurationVar(&categorizeTimeout, "categorize-timeout", 90*time.Second, "Per-item categorization request timeout")
 	cmd.Flags().BoolVar(&categorizeImages, "categorize-images", true, "Embed item photos as base64 for vision-capable categorization models; use --categorize-images=false to disable")
 	cmd.Flags().BoolVar(&skipXBookmarks, "skip-x-bookmarks", false, "Skip direct X bookmark import")
-	cmd.Flags().BoolVar(&skipFT, "skip-ft", false, "Deprecated alias for --skip-x-bookmarks")
-	_ = cmd.Flags().MarkHidden("skip-ft")
 	cmd.Flags().BoolVar(&skipX, "skip-x", false, "Skip X hydration")
 	cmd.Flags().BoolVar(&skipXMedia, "skip-x-media", false, "Skip X media audio transcription")
 	cmd.Flags().BoolVar(&skipXPhotoOCR, "skip-x-photo-ocr", false, "Skip X photo OCR / vision extraction")

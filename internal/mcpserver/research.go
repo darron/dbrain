@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"dbrain/internal/ask"
-	"dbrain/internal/model"
-	"dbrain/internal/topics"
+	"github.com/darron/dbrain/internal/ask"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/topics"
 )
 
 const maxResearchExactTagEvidence = 3

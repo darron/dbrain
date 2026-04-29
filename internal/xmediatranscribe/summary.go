@@ -7,12 +7,12 @@ import (
 	"strings"
 	"sync"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
-	"dbrain/internal/vault"
-	"dbrain/internal/xpost"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/summarizecli"
+	"github.com/darron/dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/xpost"
 )
 
 const (
@@ -79,6 +79,7 @@ func summarizeTranscriptItem(ctx context.Context, cfg config.Config, st *store.S
 		Language:  opts.SummaryLanguage,
 		Timeout:   opts.Timeout,
 		Prompt:    xMediaSummaryPrompt,
+		RootDir:   cfg.RootDir,
 	})
 
 	summary := model.SummaryResult{

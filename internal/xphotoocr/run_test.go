@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/itemhash"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/itemhash"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func TestRunHostedOCRWritesItemOCRAndNote(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 const sourceExtractErrorRetryCooldown = 12 * time.Hour
@@ -685,7 +685,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				Content:      content,
 				Status:       "ok",
 				FetchedAt:    parseStoredTime(updatedAt),
-				Tool:         "ft-bookmarks",
+				Tool:         "item-cache",
 				ToolVersion:  "local-item-cache",
 			}
 			candidateRank = 2

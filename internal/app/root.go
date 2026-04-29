@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -39,6 +40,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:           "dbrain",
 		Short:         "Local-first second-brain tooling",
+		Long:          "Local-first second-brain tooling for importing, enriching, searching, and serving a personal research corpus.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
@@ -65,7 +67,7 @@ func NewRootCommand() *cobra.Command {
 		},
 		RunE: helpCommand,
 	}
-	rootCmd.PersistentFlags().StringVar(&opts.root, "root", ".", "Brain root directory")
+	rootCmd.PersistentFlags().StringVar(&opts.root, "root", "", "Brain root directory override (defaults to DBRAIN_ROOT, then ~/.config/dbrain and ~/.local/share/dbrain)")
 	rootCmd.PersistentFlags().BoolVar(&opts.caffeinate, "caffeinate", false, "Force keep-awake behavior while the command is running")
 	rootCmd.PersistentFlags().BoolVar(&opts.noCaffeinate, "no-caffeinate", false, "Disable automatic keep-awake behavior for this command")
 	rootCmd.PersistentFlags().BoolVar(&opts.debug, "debug", true, "Enable structured debug logging to stderr")
@@ -76,7 +78,7 @@ func NewRootCommand() *cobra.Command {
 		Short: "Import source data into the brain",
 		RunE:  helpCommand,
 	}
-	importCmd.AddCommand(newImportFTCommand(opts), newImportXBookmarksCommand(opts), newImportGitHubCommand(opts), newImportYouTubeCommand(opts))
+	importCmd.AddCommand(newImportXBookmarksCommand(opts), newImportGitHubCommand(opts), newImportYouTubeCommand(opts))
 
 	extractCmd := &cobra.Command{
 		Use:   "extract",
@@ -108,6 +110,7 @@ func NewRootCommand() *cobra.Command {
 
 	rootCmd.AddCommand(
 		newArchiveCommand(opts),
+		newConfigCommand(opts),
 		newSQLiteCommand(opts),
 		importCmd,
 		newSyncCommand(opts),
@@ -130,7 +133,26 @@ func NewRootCommand() *cobra.Command {
 		newVersionCommand(),
 	)
 
+	applyEnvHelpTemplate(rootCmd)
+
 	return rootCmd
+}
+
+func applyEnvHelpTemplate(cmd *cobra.Command) {
+	template := cmd.HelpTemplate()
+	if !strings.Contains(template, "Environment:") {
+		template += `
+Environment:
+  --root wins over DBRAIN_ROOT.
+  Defaults: config in ~/.config/dbrain, state in ~/.local/share/dbrain.
+  Runtime values resolve from shell env, then .envrc/.env, then config.yaml.
+  Run "dbrain config env" for the full environment/config key table.
+`
+	}
+	cmd.SetHelpTemplate(template)
+	for _, child := range cmd.Commands() {
+		applyEnvHelpTemplate(child)
+	}
 }
 
 func helpCommand(cmd *cobra.Command, _ []string) error {

@@ -7,6 +7,123 @@ import (
 	"testing"
 )
 
+func TestLoadDefaultUsesXDGLayout(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, "xdg-config")
+	dataHome := filepath.Join(home, "xdg-data")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	configDir := filepath.Join(configHome, "dbrain")
+	dataDir := filepath.Join(dataHome, "dbrain")
+	want := map[string]string{
+		"RootDir":        configDir,
+		"ConfigDir":      configDir,
+		"ConfigPath":     filepath.Join(configDir, "config.yaml"),
+		"CategoriesPath": filepath.Join(configDir, "categories.yaml"),
+		"DataDir":        dataDir,
+		"TempDir":        filepath.Join(dataDir, "tmp"),
+		"CacheDir":       filepath.Join(dataDir, "cache"),
+		"LogDir":         filepath.Join(dataDir, "logs"),
+		"VaultDir":       filepath.Join(dataDir, "vault"),
+		"MediaDir":       filepath.Join(dataDir, "vault", "media"),
+		"DBPath":         filepath.Join(dataDir, "brain.db"),
+	}
+	got := map[string]string{
+		"RootDir":        cfg.RootDir,
+		"ConfigDir":      cfg.ConfigDir,
+		"ConfigPath":     cfg.ConfigPath,
+		"CategoriesPath": cfg.CategoriesPath,
+		"DataDir":        cfg.DataDir,
+		"TempDir":        cfg.TempDir,
+		"CacheDir":       cfg.CacheDir,
+		"LogDir":         cfg.LogDir,
+		"VaultDir":       cfg.VaultDir,
+		"MediaDir":       cfg.MediaDir,
+		"DBPath":         cfg.DBPath,
+	}
+	for name, wantValue := range want {
+		if got[name] != wantValue {
+			t.Fatalf("%s = %q, want %q", name, got[name], wantValue)
+		}
+	}
+}
+
+func TestLoadExplicitRootKeepsRepoLayout(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	want := map[string]string{
+		"RootDir":        root,
+		"ConfigDir":      root,
+		"ConfigPath":     filepath.Join(root, "config.yaml"),
+		"CategoriesPath": filepath.Join(root, "categories.yaml"),
+		"DataDir":        filepath.Join(root, "data"),
+		"TempDir":        filepath.Join(root, "tmp"),
+		"CacheDir":       filepath.Join(root, "cache"),
+		"LogDir":         filepath.Join(root, "logs"),
+		"VaultDir":       filepath.Join(root, "vault"),
+		"MediaDir":       filepath.Join(root, "vault", "media"),
+		"DBPath":         filepath.Join(root, "data", "brain.db"),
+	}
+	got := map[string]string{
+		"RootDir":        cfg.RootDir,
+		"ConfigDir":      cfg.ConfigDir,
+		"ConfigPath":     cfg.ConfigPath,
+		"CategoriesPath": cfg.CategoriesPath,
+		"DataDir":        cfg.DataDir,
+		"TempDir":        cfg.TempDir,
+		"CacheDir":       cfg.CacheDir,
+		"LogDir":         cfg.LogDir,
+		"VaultDir":       cfg.VaultDir,
+		"MediaDir":       cfg.MediaDir,
+		"DBPath":         cfg.DBPath,
+	}
+	for name, wantValue := range want {
+		if got[name] != wantValue {
+			t.Fatalf("%s = %q, want %q", name, got[name], wantValue)
+		}
+	}
+}
+
+func TestEnsureDirsCreatesConfigAndDataDirs(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, "xdg-config")
+	dataHome := filepath.Join(home, "xdg-data")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	for _, dir := range []string{cfg.ConfigDir, cfg.DataDir, cfg.TempDir, cfg.CacheDir, cfg.LogDir, cfg.VaultDir, cfg.MediaDir, filepath.Join(cfg.VaultDir, "items")} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("Stat(%s): %v", dir, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("%s is not a directory", dir)
+		}
+	}
+}
+
 func TestCreateTempUsesConfigTempDir(t *testing.T) {
 	t.Parallel()
 

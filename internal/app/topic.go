@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/config"
-	"dbrain/internal/store"
-	"dbrain/internal/topics"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/topics"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 func newTopicCommand(root *rootOptions) *cobra.Command {

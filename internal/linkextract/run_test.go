@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 func TestRunPrefersLocalArticleTextOverLiveFetch(t *testing.T) {
@@ -43,7 +43,7 @@ func TestRunPrefersLocalArticleTextOverLiveFetch(t *testing.T) {
 		CanonicalURL:        "https://x.com/example/status/12345",
 		Title:               "Bookmark title",
 		ArticleTitle:        "Local cached article",
-		ArticleText:         "LOCAL ARTICLE TEXT FROM FT",
+		ArticleText:         "LOCAL ARTICLE TEXT FROM ITEM CACHE",
 		LinksJSON:           `["https://example.com/post"]`,
 		ContentHash:         "item-hash-12345",
 		NotePath:            vault.NoteRelativePath("x", "2026", "12345"),
@@ -84,10 +84,10 @@ func TestRunPrefersLocalArticleTextOverLiveFetch(t *testing.T) {
 		t.Fatalf("GetSource: %v", err)
 	}
 
-	if source.ExtractedText != "LOCAL ARTICLE TEXT FROM FT" {
+	if source.ExtractedText != "LOCAL ARTICLE TEXT FROM ITEM CACHE" {
 		t.Fatalf("expected local cached article text, got %q", source.ExtractedText)
 	}
-	if source.ExtractTool != "ft-bookmarks" || source.ExtractToolVersion != "local-item-cache" {
+	if source.ExtractTool != "item-cache" || source.ExtractToolVersion != "local-item-cache" {
 		t.Fatalf("unexpected extract tool metadata: %s %s", source.ExtractTool, source.ExtractToolVersion)
 	}
 	if source.SummaryText != "summary from fake summarize" {
@@ -133,7 +133,7 @@ func TestRunOnlyEnrichesDiscoveredBookmarkSources(t *testing.T) {
 		CanonicalURL:        "https://x.com/example/status/67890",
 		Title:               "Bookmark title",
 		ArticleTitle:        "Local cached article",
-		ArticleText:         "LOCAL ARTICLE TEXT FROM FT",
+		ArticleText:         "LOCAL ARTICLE TEXT FROM ITEM CACHE",
 		LinksJSON:           `["https://example.com/post"]`,
 		ContentHash:         "item-hash-67890",
 		NotePath:            vault.NoteRelativePath("x", "2026", "67890"),
@@ -234,13 +234,13 @@ if [ ! -f "$last" ]; then
 fi
 input="$(cat "$last")"
 case "$input" in
-  *"LOCAL ARTICLE TEXT FROM FT"*) ;;
+  *"LOCAL ARTICLE TEXT FROM ITEM CACHE"*) ;;
   *)
     echo "expected local cached article text in summary file" >&2
     exit 1
     ;;
 esac
-printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"LOCAL ARTICLE TEXT FROM FT"},"summary":"summary from fake summarize"}'
+printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"LOCAL ARTICLE TEXT FROM ITEM CACHE"},"summary":"summary from fake summarize"}'
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		return err

@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
-	"dbrain/internal/runtimeenv"
-	"dbrain/internal/store"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 type Options struct {

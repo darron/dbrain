@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/mediaarchive"
 )
 
 type S3Options struct {

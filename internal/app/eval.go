@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/mcpeval"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/mcpeval"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newEvalCommand(root *rootOptions) *cobra.Command {

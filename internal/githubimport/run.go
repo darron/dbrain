@@ -1,7 +1,6 @@
 package githubimport
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -11,19 +10,18 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/itemhash"
-	"dbrain/internal/linkextract"
-	"dbrain/internal/model"
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/itemhash"
+	"github.com/darron/dbrain/internal/linkextract"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 const (
@@ -131,10 +129,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		opts.APIBase = defaultAPIBaseURL
 	}
 	if strings.TrimSpace(opts.Token) == "" {
-		opts.Token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
-	}
-	if strings.TrimSpace(opts.Token) == "" {
-		opts.Token = loadTokenFromEnvFiles(cfg.RootDir, "GITHUB_TOKEN")
+		opts.Token = runtimeenv.FirstNonEmpty(cfg.RootDir, "GITHUB_TOKEN")
 	}
 	if strings.TrimSpace(opts.Token) == "" {
 		return Stats{}, fmt.Errorf("GITHUB_TOKEN is required")
@@ -697,53 +692,4 @@ func debugLog(logger *slog.Logger, msg string, args ...any) {
 		return
 	}
 	logger.Debug(msg, args...)
-}
-
-func loadTokenFromEnvFiles(rootDir string, key string) string {
-	if strings.TrimSpace(rootDir) == "" || strings.TrimSpace(key) == "" {
-		return ""
-	}
-
-	for _, name := range []string{".envrc", ".env"} {
-		path := filepath.Join(rootDir, name)
-		value, ok := loadEnvValue(path, key)
-		if ok {
-			return value
-		}
-	}
-	return ""
-}
-
-func loadEnvValue(path string, key string) (string, bool) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", false
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		line = strings.TrimPrefix(line, "export ")
-		name, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(name) != key {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
-		if value == "" {
-			return "", false
-		}
-		return value, true
-	}
-
-	return "", false
 }

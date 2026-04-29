@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/summarizecli"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 func TestSkipSummaryReasonSkipsTranscriptUnavailableYouTubeMetadataOnly(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/noterepair"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/noterepair"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newRepairFTSCommand(root *rootOptions) *cobra.Command {

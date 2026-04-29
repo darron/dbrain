@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/linkadd"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/linkadd"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newLinkCommand(root *rootOptions) *cobra.Command {

@@ -7,14 +7,14 @@ import (
 	"slices"
 	"testing"
 
-	"dbrain/internal/config"
-	"dbrain/internal/itemcategorize"
-	"dbrain/internal/linkextract"
-	"dbrain/internal/mediaarchive"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
-	"dbrain/internal/xapi"
-	"dbrain/internal/xmediatranscribe"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/itemcategorize"
+	"github.com/darron/dbrain/internal/linkextract"
+	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/xapi"
+	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
 
 func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {

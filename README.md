@@ -1,46 +1,95 @@
 # dbrain
 
 `dbrain` is a local-first second-brain scaffold for incremental imports from X
-bookmarks, GitHub stars, YouTube, and legacy `ft-bookmarks` archives, with
+bookmarks, GitHub stars, YouTube, and manually submitted web links, with
 Markdown note rendering for Obsidian and local query over the imported corpus.
 
-## Current Commands
+## Requirements
 
-- `dbrain import ft`
-- `dbrain import x-bookmarks`
-- `dbrain sync all`
-- `dbrain import github stars`
-- `dbrain import youtube`
-- `dbrain entity map [query]`
+Install the common local toolchain with Homebrew:
+
+```sh
+brew install go go-task/tap/go-task golangci-lint sqlite yt-dlp ffmpeg node deno ollama tesseract
+brew install --cask google-chrome
+```
+
+Runtime tools and services:
+
+- **Chrome or Chromium**: recommended for cookie-backed X and YouTube imports.
+- **`summarize`**: required for source extraction and summary-backed answer synthesis. Verify with `summarize --help`.
+- **`mw`**: MacWhisper CLI, required for `dbrain transcribe x-media` and the default X media step in `sync all`.
+- **`ffprobe`**: required for X media transcription. It is installed by Homebrew's `ffmpeg` package.
+- **`yt-dlp`**: required for `dbrain import youtube`.
+- **`deno` or `node`**: recommended for YouTube challenge solving through `yt-dlp`.
+- **`uv`**: recommended for `summarize` helper environments and transcriber setup flows.
+- **`whisper-cli`**: optional fallback for YouTube audio transcription when captions are unavailable.
+- **`~/.summarize/cache/whisper-cpp/models/ggml-base.bin`**: optional model file used by the `whisper-cli` fallback.
+- **`ollama`**: optional local model runtime for source summaries, answer synthesis, OCR, and categorization.
+- **`tesseract`**: optional local fallback for OCR.
+- **`sqlite3`**: optional, but useful for inspecting `brain.db`.
+- **`task`**: required for the top-level development tasks.
+- **`golangci-lint`**: required for `task lint`.
+- **`npm`**: required for `task web-install` and `task web-build`.
+- **`caffeinate`**: optional macOS helper used automatically for long-running leaf commands when available.
+
+Optional hosted services:
+
+- **GitHub token**: `GITHUB_TOKEN` for `dbrain import github stars`.
+- **OpenRouter**: `DBRAIN_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` for hosted categorization, OCR, and model calls.
+- **S3-compatible storage / Cloudflare R2**: R2/S3 env or config values for media and SQLite archives.
+
+For development in this checkout without touching installed state:
+
+```sh
+export DBRAIN_ROOT=.
+task build
+dbrain config paths
+dbrain config env
+```
+
+## Command Index
+
+- `dbrain archive media`
+- `dbrain ask <question>`
+- `dbrain categorize batch`
+- `dbrain categorize item`
+- `dbrain categorize repair`
+- `dbrain config env`
+- `dbrain config paths`
 - `dbrain entity generate <query>`
 - `dbrain entity index`
-- `dbrain topic map <topic>`
-- `dbrain topic generate <topic>`
-- `dbrain topic refresh [topic]`
-- `dbrain topic index`
-- `dbrain link add <url>`
-- `dbrain worker sources`
-- `dbrain hydrate x`
-- `dbrain transcribe x-media`
-- `dbrain archive media`
-- `dbrain repair notes`
-- `dbrain repair sources`
-- `dbrain serve mcp`
-- `dbrain serve web`
+- `dbrain entity map [query]`
+- `dbrain eval mcp`
 - `dbrain extract links`
 - `dbrain extract sources`
-- `dbrain stats items`
-- `dbrain stats sources`
+- `dbrain get <source-key-or-id>`
+- `dbrain hydrate x`
+- `dbrain import github stars`
+- `dbrain import x-bookmarks`
+- `dbrain import youtube`
+- `dbrain link add <url>`
+- `dbrain ocr x-photos`
+- `dbrain repair fts`
+- `dbrain repair notes`
+- `dbrain repair sources`
+- `dbrain search <query>`
+- `dbrain serve mcp`
+- `dbrain serve web`
+- `dbrain sqlite archive`
+- `dbrain sqlite restore`
 - `dbrain stats activity`
 - `dbrain stats backlog`
+- `dbrain stats items`
 - `dbrain stats pipeline`
-- `dbrain eval mcp`
+- `dbrain stats sources`
+- `dbrain sync all`
+- `dbrain topic generate <topic>`
+- `dbrain topic index`
+- `dbrain topic map <topic>`
+- `dbrain topic refresh [topic]`
+- `dbrain transcribe x-media`
 - `dbrain version`
-- `dbrain ask <question>`
-- `dbrain search <query>`
-- `dbrain get <source-key-or-id>`
-- `dbrain categorize item`
-- `dbrain categorize batch`
+- `dbrain worker sources`
 
 On macOS, `dbrain` will automatically use `caffeinate` when the command is
 available, so long-running leaf commands keep the machine awake by default.
@@ -52,64 +101,139 @@ quiet CLI output.
 
 ## Dev Tasks
 
+- `task build`
 - `task fmt`
-- `task web-install`
-- `task web-build`
 - `task lint`
 - `task test`
+- `task test-mcp`
+- `task web-build`
+- `task web-install`
 
-## TODO
+## Configuration And Layout
 
-- Continue improving topic/MOC synthesis quality and better periodic refresh workflows as the corpus fills out.
-- Integrate the current MCP server cleanly with agent workflows and extend it further as needed.
-- Add a Tailscale-reachable query surface, likely tsnet-backed MCP and/or a small web UI, so the brain can be queried remotely while away from the machine.
-- Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
-- Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
-- Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.
-- Add URL-backed state and deeper note-to-note navigation in the web UI so searches, selected notes, and related pivots survive refreshes and remote sessions.
-- Expand the web operations/dashboard view with deeper worker drill-down, richer backlog trend views, and clearer source-level drill-ins so repeated failures are easier to triage.
-- Add first-class filters and browsing controls in the web UI for source type, kind, status, and recency so the corpus is easier to slice than with one text box.
-- Tighten X link-discovery candidate selection so items whose only links are X self-links like `/photo/1` or `/video/1` do not get rescanned and inflate `items_scanned` without producing real source candidates.
-- Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
-- Add a translation stage for non-English X content, storing both original and translated text.
-- Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
-- Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
-- Audit X media transcription throughput by recording per-video duration/bytes/transcript chars and testing cautious MacWhisper parallelism; avoid raising default concurrency until local GPU/CPU contention is understood.
-- Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
-- Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends (for example Ollama vision, OpenRouter/Gemini, and Tesseract), report side-by-side output quality and timings, and avoid changing persisted item OCR state.
-- Add a summary bakeoff/audit command that can run the same source extract or media transcript through multiple summary models/backends, report side-by-side outputs and timings, and avoid changing persisted summary state.
-- Improve provider provenance so stored summaries always record the exact backend/model used.
-- Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
-- Add explicit source-of-truth audit commands (for example `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`) so imports can be reconciled against upstream services with missing IDs and enrichment status clearly separated, while treating the local DB as append-only by default instead of auto-flagging removed upstream saves/stars/likes for deletion.
-- Add a pre-summary staging path for oversized extracts so giant PDFs and long documents can be chunked, pre-compressed, or locally preprocessed before hosted summary calls hit provider context limits.
-- Add an oversized-X-video policy for media download/transcription. Right now large or hour-long videos time out, land in `download_status='error'`, and remain retryable on future `hydrate x` / `sync all` runs. Add byte-size and/or duration gating, prefer lower-bitrate playable variants for transcription, and classify clearly-skipped assets as `too_large` / `too_long` instead of retrying forever.
-- Maybe reclassify non-actionable X media transcript outcomes like `no_audio`, `noise`, and `too_short` out of the generic failed bucket so transcription stats distinguish real pipeline errors from terminal no-content cases.
-- Add an optional X thread expansion path when a bookmarked post is clearly part of a longer thread. Prefer fetching the full thread from X/GraphQL when the upstream APIs expose it, so bookmarking the first tweet can still capture the whole series. If the APIs do not expose enough thread structure reliably, fall back to a best-effort linked-post crawl without breaking the normal single-post hydrate flow.
-- Add a scheduler/launchd-style mode on top of the new worker loop so enrichment can resume automatically after terminal closure or reboot.
-- Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.
+Installed/default layout:
 
-## Layout
+- `~/.config/dbrain/config.yaml`: optional configuration file
+- `~/.config/dbrain/categories.yaml`: tag rewrite/category vocabulary
+- `~/.local/share/dbrain/brain.db`: local SQLite state
+- `~/.local/share/dbrain/vault/items/...`: rendered Markdown notes for Obsidian
+- `~/.local/share/dbrain/vault/sources/...`: rendered Markdown notes for linked sources
+- `~/.local/share/dbrain/vault/entities/...`: derived entity notes and entity index
+- `~/.local/share/dbrain/vault/topics/...`: generated topic/MOC notes
+- `~/.local/share/dbrain/tmp`: temporary working files
+- `~/.local/share/dbrain/cache`: cache files
+- `~/.local/share/dbrain/logs`: log files
 
-- `data/brain.db`: local SQLite state
-- `vault/items/...`: rendered Markdown notes for Obsidian
-- `vault/sources/...`: rendered Markdown notes for linked sources
-- `vault/entities/...`: derived entity notes and entity index
-- `vault/topics/...`: generated topic/MOC notes
+`dbrain` honors `XDG_CONFIG_HOME` and `XDG_DATA_HOME`; if set, the same
+`dbrain` subdirectories are created under those bases.
 
-## Prerequisites
+For local development or isolated runs, pass `--root <dir>` or set
+`DBRAIN_ROOT=<dir>`. Explicit roots keep the original self-contained layout:
 
-- `go` `1.26` to build and run `dbrain`
-- a supported browser with active logged-in sessions for cookie-backed flows
-- `chrome` is the current recommended browser for both X and YouTube ingestion
-- `GITHUB_TOKEN` for `dbrain import github stars`
-  `dbrain` will also fall back to `./.envrc` or `./.env` when the shell
-  environment does not already export it.
+- `<dir>/config.yaml`
+- `<dir>/categories.yaml`
+- `<dir>/data/brain.db`
+- `<dir>/vault/...`
+- `<dir>/tmp`, `<dir>/cache`, and `<dir>/logs`
 
-If you still use the legacy `dbrain import ft` path, you also need a local FT
-archive at `~/.ft-bookmarks/bookmarks.db` or another path passed to
-`dbrain import ft --source ...`. `dbrain` reads that SQLite archive directly.
-The `ft` CLI is not required at runtime, but you still need `fieldtheory-cli`
-or another process to keep `~/.ft-bookmarks/bookmarks.db` fresh.
+For repo-local development, this keeps commands pointed at the checkout:
+
+```sh
+export DBRAIN_ROOT=.
+```
+
+If both are present, `--root` wins over `DBRAIN_ROOT`.
+
+Configuration currently resolves in this order: shell environment, `.envrc` or
+`.env` in the config/root directory, then `config.yaml`. The YAML file can use
+exact environment-style keys under `env`, or cleaner grouped keys:
+
+```yaml
+summary:
+  model: ollama/qwen3.6:35b-a3b
+  language: English
+
+openrouter:
+  api_key: op://Private/OpenRouter/credential
+  base_url: https://openrouter.ai/api/v1
+
+ollama:
+  base_url: http://127.0.0.1:11434
+
+source:
+  reader:
+    base_url: https://r.jina.ai/
+    domains: canada.ca,open.canada.ca,fintrac-canafe.canada.ca
+
+archive:
+  provider: r2
+  bucket: dbrain-media
+  upload: true
+
+env:
+  GITHUB_TOKEN: ghp_example
+```
+
+Secret references such as `op://...` are not dereferenced yet; put concrete
+values in the environment or `.env` files until password-manager resolution is
+implemented.
+
+`config.yaml.sample` contains every currently supported grouped config value
+with its matching environment variable comment on the same line:
+
+```sh
+cp config.yaml.sample ~/.config/dbrain/config.yaml
+```
+
+Every command help screen includes the effective configuration lookup summary.
+Use this command for the authoritative env/config mapping:
+
+```sh
+dbrain config env
+```
+
+Use `dbrain config env --markdown` when you want a Markdown table for
+docs or issue comments.
+
+## Environment Variables
+
+Lookup order is shell environment, `.envrc` or `.env` in the active config/root
+directory, then `config.yaml`. `--root` wins over `DBRAIN_ROOT`.
+
+| Environment variable(s) | config.yaml key | Default | Purpose |
+| --- | --- | --- | --- |
+| `DBRAIN_ROOT` | `(env only)` | `` | CLI root override. `--root` wins when both are set. |
+| `XDG_CONFIG_HOME` | `(env only)` | `~/.config` | Base directory for default config files. |
+| `XDG_DATA_HOME` | `(env only)` | `~/.local/share` | Base directory for default database, vault, cache, tmp, and logs. |
+| `GITHUB_TOKEN` | `github.token` or `env.GITHUB_TOKEN` | `` | GitHub API token for importing stars. |
+| `DBRAIN_SUMMARY_MODEL` / `SUMMARIZE_MODEL` | `summary.model` | `` | Default model for summarize-backed source and answer synthesis. |
+| `DBRAIN_SUMMARY_LANGUAGE` / `DBRAIN_OUTPUT_LANGUAGE` / `SUMMARIZE_LANGUAGE` | `summary.language` | `en` | Output language for summaries; use `auto` to match source language. |
+| `DBRAIN_CATEGORIZE_MODEL` | `categorize.model` | `openrouter/google/gemini-2.5-flash` | Default LLM model for item categorization. |
+| `DBRAIN_OCR_MODEL` / `DBRAIN_X_PHOTO_OCR_MODEL` | `ocr.model` | `openrouter/google/gemini-3.1-flash-lite-preview` | Default model for X photo OCR. |
+| `DBRAIN_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | `ollama.base_url` | `http://127.0.0.1:11434` | Ollama endpoint for local model calls. |
+| `DBRAIN_OLLAMA_API_KEY` / `OLLAMA_API_KEY` | `ollama.api_key` | `ollama` | API key label used for Ollama-compatible local calls. |
+| `OPENAI_BASE_URL` | `openai.base_url` or `env.OPENAI_BASE_URL` | `` | OpenAI-compatible base URL used by the summarize adapter when already exported. |
+| `OPENAI_API_KEY` | `openai.api_key` or `env.OPENAI_API_KEY` | `` | OpenAI-compatible API key used by the summarize adapter when already exported. |
+| `OPENAI_USE_CHAT_COMPLETIONS` | `openai.use_chat_completions` or `env.OPENAI_USE_CHAT_COMPLETIONS` | `` | Forces summarize/OpenAI-compatible calls onto chat completions when set. |
+| `DBRAIN_OPENROUTER_BASE_URL` / `OPENROUTER_BASE_URL` | `openrouter.base_url` | `https://openrouter.ai/api/v1` | OpenRouter API endpoint. |
+| `DBRAIN_OPENROUTER_API_KEY` / `OPENROUTER_API_KEY` | `openrouter.api_key` | `` | OpenRouter API key for hosted LLM/OCR/categorization calls. |
+| `DBRAIN_OPENROUTER_REFERER` / `OPENROUTER_HTTP_REFERER` | `openrouter.referer` | `https://local.dbrain` | HTTP referer sent to OpenRouter for direct calls. |
+| `DBRAIN_OPENROUTER_TITLE` / `OPENROUTER_X_TITLE` | `openrouter.title` | `dbrain` | HTTP title sent to OpenRouter for direct calls. |
+| `DBRAIN_SOURCE_READER_DOMAINS` / `DBRAIN_HTTP_READER_DOMAINS` | `source.reader.domains` | `canada.ca` | Comma-separated domains routed through the reader/textifier path before summarize. |
+| `DBRAIN_SOURCE_READER_BASE_URL` / `DBRAIN_HTTP_READER_BASE_URL` | `source.reader.base_url` | `https://r.jina.ai/` | Reader/textifier base URL for difficult domains. |
+| `DBRAIN_MEDIA_PROXY_BASE_URL` / `DBRAIN_WEB_BASE_URL` | `media.proxy.base_url` | `http://127.0.0.1:8742` | Base URL for local archived-media proxy links in rendered notes. |
+| `DBRAIN_AUTO_ARCHIVE_MEDIA` / `DBRAIN_ARCHIVE_AUTO` | `archive.auto` | `false` | Run media archive automatically at the end of `sync all`. |
+| `DBRAIN_ARCHIVE_UPLOAD` / `DBRAIN_R2_UPLOAD` | `archive.upload` | `false` | Upload eligible media before marking/pruning in `archive media`. |
+| `DBRAIN_ARCHIVE_PROVIDER` / `DBRAIN_R2_PROVIDER` | `archive.provider` | `cloudflare_r2` | Archive provider label. |
+| `DBRAIN_R2_BUCKET` / `DBRAIN_ARCHIVE_BUCKET` / `DBRAIN_S3_BUCKET` | `r2.bucket` or `archive.bucket` | `` | S3-compatible bucket for media and SQLite archives. |
+| `DBRAIN_R2_PUBLIC_BASE_URL` / `DBRAIN_MEDIA_PUBLIC_BASE_URL` | `r2.public_base_url` or `media.public_base_url` | `` | Public base URL for archived media links. |
+| `DBRAIN_R2_ENDPOINT` / `DBRAIN_S3_ENDPOINT` | `r2.endpoint` | `` | S3-compatible endpoint, such as a Cloudflare R2 account endpoint. |
+| `DBRAIN_R2_REGION` / `DBRAIN_S3_REGION` / `AWS_REGION` / `AWS_DEFAULT_REGION` | `r2.region` | `auto` | S3-compatible region. |
+| `DBRAIN_R2_ACCESS_KEY_ID` / `DBRAIN_S3_ACCESS_KEY_ID` / `AWS_ACCESS_KEY_ID` | `r2.access_key_id` | `` | S3-compatible access key ID. |
+| `DBRAIN_R2_SECRET_ACCESS_KEY` / `DBRAIN_S3_SECRET_ACCESS_KEY` / `AWS_SECRET_ACCESS_KEY` | `r2.secret_access_key` | `` | S3-compatible secret access key. |
+| `DBRAIN_R2_SESSION_TOKEN` / `DBRAIN_S3_SESSION_TOKEN` / `AWS_SESSION_TOKEN` | `r2.session_token` | `` | Optional S3-compatible session token. |
+
+## Authentication
 
 For GitHub stars, use a fine-grained PAT with:
 
@@ -117,50 +241,9 @@ For GitHub stars, use a fine-grained PAT with:
 - `Repository permissions`: `Metadata: Read`
 - `Repository permissions`: `Contents: Read`
 
-## External Tools
-
-- `summarize`
-  Required for `dbrain extract links` and YouTube source enrichment.
-  `dbrain` can also route summarize-backed work to a local Ollama daemon by
-  passing models like `--model ollama/qwen2.5:7b-instruct`.
-  Summary output defaults to English. Override with
-  `DBRAIN_SUMMARY_LANGUAGE=<language>` or `DBRAIN_OUTPUT_LANGUAGE=<language>`;
-  use `auto` to match the source language.
-- `uv`
-  Recommended for `summarize` environments that shell out to Python-backed
-  helpers or transcriber setup flows.
-- `yt-dlp`
-  Required for `dbrain import youtube`.
-- `deno` or `node`
-  Recommended for `yt-dlp` YouTube challenge solving. Some videos will not
-  expose downloadable audio cleanly without a working JS runtime.
-- `whisper-cli`
-  Optional, but needed for local audio transcription fallback when a YouTube
-  video has no usable captions or transcript.
-- `mw`
-  MacWhisper CLI. Required for `dbrain transcribe x-media`, and therefore also
-  required for `dbrain sync all` unless you pass `--skip-x-media`. When
-  installed, `dbrain` also prefers it over `whisper-cli` for local YouTube
-  audio transcription when `--transcriber auto` is in use. You can force it
-  explicitly with `--transcriber macwhisper` or
-  `--transcriber macwhisper:<engine:model>`.
-- `ffprobe`
-  Required for `dbrain transcribe x-media`, and therefore also required for
-  `dbrain sync all` unless you pass `--skip-x-media`. `dbrain` uses it to
-  detect whether a downloaded X video actually contains an audio stream.
-  `ffprobe` is usually installed as part of `ffmpeg`.
-- `~/.summarize/cache/whisper-cpp/models/ggml-base.bin`
-  Optional, but required by the local `whisper.cpp` fallback. A working setup is
-  `whisper-cli` plus this model path.
-- `task`
-  Required for the top-level dev tasks: `task fmt`, `task lint`, `task test`.
-- `golangci-lint`
-  Required for `task lint`.
-- `sqlite3`
-  Optional, but useful for inspecting `data/brain.db` during debugging.
-- `caffeinate`
-  Optional macOS helper. When available, `dbrain` uses it automatically for
-  long-running leaf commands unless you pass `--no-caffeinate`.
+`dbrain` reads `GITHUB_TOKEN` from the shell, `.envrc`, `.env`, or
+`config.yaml`. Cookie-backed X and YouTube flows require a supported browser
+profile with an active logged-in session; Chrome is the best-tested option.
 
 ## Optional Media Archive Env
 
@@ -219,185 +302,516 @@ the original page directly with browser-style headers and extracting readable
 HTML locally. Only the extracted raw text is then passed to `summarize` for the
 derived summary.
 
-## Command Requirements
+## Command Reference
 
-- `dbrain import ft`
-  Legacy import path. Requires the FT bookmarks SQLite database. No external
-  binary is invoked.
-- `dbrain import x-bookmarks`
-  Direct X bookmark import path. Requires a supported browser profile with
-  valid X cookies. Chrome/Chromium is the best-tested path.
-- `dbrain sync all`
-  Runs the regular incremental refresh pipeline in one command: direct X
-  bookmark import, X hydration, X media audio transcription, X photo OCR,
-  tweet-link discovery/enrichment, GitHub stars import, YouTube import, and an
-  optional source-backlog worker batch. It then categorizes uncategorized items
-  with the same item categorizer used by `dbrain categorize batch`, unless
-  `--skip-categorize` is passed. If enabled, the media archive stage runs after
-  categorization so image categorization can still use local photo files before
-  they are uploaded/pruned. Image categorization is enabled by default; use
-  `--categorize-images=false` to disable it for text-only models. The X media
-  and X photo OCR stages use the same X batch limit as `hydrate x`
-  (`--x-limit`). In the default configuration this combines the requirements of
-  X bookmark import, X
-  hydration, X media transcription, X photo OCR, link/source enrichment, and
-  YouTube import, plus categorization. A practical local setup usually includes
-  a supported Chrome/Chromium profile with valid cookies plus Ollama or an
-  OpenRouter key, `mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports
-  `--skip-*` flags when you only want part of the pipeline.
-- `dbrain archive media`
-  Optional manual archive/prune pass for finalized media. It can either just
-  mark/prune already-uploaded media or upload directly to an S3-compatible
-  bucket first when `--upload` or archive-upload env vars are configured.
-- `dbrain sqlite archive`
-  Creates a consistent SQLite snapshot with SQLite itself, compresses it as
-  gzip, and uploads it to the configured S3-compatible bucket under
-  `archive/db/brain-<timestamp>.db.gz`.
-- `dbrain sqlite restore`
-  Finds the newest archived SQLite snapshot under `archive/db`, asks for
-  confirmation, moves any local `brain.db`, `brain.db-wal`, and `brain.db-shm`
-  files aside with a timestamped suffix, then installs the restored database.
-- `dbrain serve web`
-  Serves the local UI plus authenticated archived-media helpers. When archive
-  credentials are configured, `/media/asset/<media-asset-id>` streams archived
-  objects through the local server and `/api/media/signed-url?id=<id>` returns
-  a short-lived direct URL for one-off access.
-- `dbrain hydrate x`
-  Requires a supported browser profile with valid X cookies. Chrome/Chromium is
-  the best-tested path. On macOS you may see a Keychain prompt the first time
-  cookie decryption is used.
-- `dbrain transcribe x-media`
-  Requires `mw` and `ffprobe`. `mw` performs the transcription and `ffprobe`
-  checks whether a downloaded X video or animated GIF has an audio stream worth
-  transcribing. Normal runs skip already classified items; use `--force` when
-  you explicitly want to retry failures or reprocess existing transcript items.
-- `dbrain import youtube`
-  Requires a browser profile with valid YouTube cookies, `yt-dlp`, and
-  `summarize`. When `--profile` is omitted, `dbrain` will try the bare browser
-  cookie source first and then retry discovered local Chromium-style profiles
-  such as `Default` and `Profile N`. A working local setup may also need `uv`. For transcriptless videos, the best current setup is also
-  `deno` or `node`, plus `whisper-cli` and the `ggml-base.bin` model.
-- `dbrain import github stars`
-  Requires `GITHUB_TOKEN`. It uses the GitHub API directly, imports the star as
-  an append-only signal, stores the repo as a canonical `github` source, and
-  optionally creates and summarizes a linked homepage `web` source. The default
-  timeout is `2m` because local CLI-backed repo summaries can take longer than
-  a normal GitHub API round trip.
-- `dbrain extract links`
-  Requires `summarize`. It will prefer cached FT `article_text` when available,
-  but still uses `summarize` for normalization and summarization. Use
-  `--concurrency` to run multiple source extract/summarize jobs in parallel
-  after discovery.
-- `dbrain link add`
-  Adds one or more manually submitted URLs to the same source backlog used by
-  discovered links. By default it queues the source for the normal
-  `extract sources`, `worker sources`, or `sync all` flow; pass `--enrich` to
-  extract and summarize immediately.
-- `dbrain extract sources`
-  Requires `summarize`. This is the global source-backlog worker for already
-  known sources that still need extraction or summarization. Use
-  `--concurrency` to run multiple source extract/summarize jobs in parallel.
-- `dbrain worker sources`
-  Requires `summarize`. This is the long-running source-backlog worker: it
-  repeatedly runs `extract sources`-style batches until the queue is drained,
-  and can optionally keep polling for new source work with `--watch`. It also
-  supports bounded parallelism via `--concurrency`. Use `--limit` to cap the
-  total number of sources processed in a single worker run, and `--batch-limit`
-  to control per-cycle batch size.
-- `dbrain topic map`
-  No external tools required. Builds a topic graph from the local brain using
-  search plus the item/source link graph.
-- `dbrain entity map`
-  No external tools required. Derives stable entities from local item/source
-  metadata and searches them by name, key, alias, or domain.
-- `dbrain entity generate`
-  No external tools required. Writes matching entity notes under
-  `vault/entities/...` and refreshes the entity index.
-- `dbrain entity index`
-  No external tools required. Re-derives all entities, writes their notes, and
-  rebuilds `vault/entities/index.md`.
-- `dbrain topic generate`
-  No external tools required. Writes a synthesized topic/MOC note under
-  `vault/topics/...` from the local brain, including sections like `Summary`,
-  `What This Topic Is`, `Main Angles`, entity pivots, open questions, and the
-  supporting note graph when that evidence exists.
-- `dbrain topic refresh`
-  No external tools required. Rebuilds generated topic notes from their stored
-  frontmatter settings and refreshes the topic index.
-- `dbrain topic index`
-  No external tools required. Rebuilds the browsable topic index note from the
-  generated topic note set.
-- `dbrain stats items`
-  No external tools required. Reads item counts from `brain.db`.
-- `dbrain stats sources`
-  No external tools required. Reads source counts from `brain.db`.
-- `dbrain stats activity`
-  No external tools required. Shows the latest item/source write timestamps plus
-  recent write counts inside a configurable time window.
-- `dbrain stats backlog`
-  No external tools required. Shows remaining queued work by pipeline stage and
-  whether the current queues are drained.
-- `dbrain eval mcp`
-  No external tools required. Runs read-only retrieval regression checks against
-  a JSON case file using the same retrieval path exposed through MCP research
-  tools. Use `--write-example <path>` to generate a starter case file and
-  `--json` for structured CI-friendly output.
-- `dbrain version`
-  No external tools required. Prints build metadata including commit, build
-  time, git status, Go version, git version, build platform, and module info.
-  Use `--json` for structured output.
-- `dbrain ask`
-  Retrieval is read-only and works directly from `brain.db`. By default it also
-  synthesizes an answer through `summarize`; use `--retrieve-only` when you want
-  evidence only and no model call.
-- `dbrain categorize item`
-  No external tools required. Sends a single item's full content bundle (post
-  text, summary, transcript, OCR text, article body) to a local Ollama or
-  OpenRouter LLM and returns suggested categories and tags. Use `--apply` to
-  save the result directly to the item's `user_tags` field (also re-indexes
-  FTS). Image categorization is enabled by default and embeds local or R2-stored
-  photos as base64 for vision-capable models; use `--images=false` to disable
-  it. The model is resolved from `--model`,
-  `DBRAIN_CATEGORIZE_MODEL`, or the default `openrouter/google/gemini-2.5-flash`.
-- `dbrain categorize batch`
-  Same as `dbrain categorize item` but processes multiple items in one pass.
-  By default only items with an empty `user_tags` field are selected; use
-  `--force` to re-categorize everything. `--limit` (default 50) and
-  `--concurrency` (default 2) control throughput. Use `--apply` to save results
-  and `--json` for structured output. Saved categorizer tags are merged with
-  existing `user_tags` without duplicate entries; existing tags are not
-  overwritten. `dbrain sync all` runs this same apply path at the end of the
-  sync pipeline unless `--skip-categorize` is passed.
-- `dbrain repair notes`
-  No external tools required. Rebuilds rendered Markdown notes from `brain.db`,
-  which is useful if antivirus or sync tooling removed files from `vault/`.
-- `dbrain repair sources`
-  No external tools required. Clears extraction and summary state for selected
-  sources so they can be reprocessed. Use `--domain <domain>` for a whole
-  domain or `--source <id>` for specific rows. The command prints the number of
-  matched sources first and asks for confirmation unless `--dry-run` or `--yes`
-  is passed.
-- `dbrain serve mcp`
-  No external tools required. Serves the local brain over MCP stdio with
-  read-only tools, resources, and prompts for search, note access, and pipeline
-  status.
-- `dbrain serve web`
-  No external tools required. Serves the local brain over HTTP with a read-only
-  JSON API and an embedded Svelte UI for search, evidence retrieval, note
-  inspection, and a filterable recent source-activity dashboard with failure
-  hotspots and failure-kind pivots while workers are running.
-- `task web-install`
-  Requires `npm`. Installs the Svelte/Vite dependencies used to rebuild the web
-  UI source.
-- `task web-build`
-  Requires `npm`. Rebuilds the embedded `web/ui/dist` assets from the Svelte
-  source tree.
-- `task fmt`
-  Requires `task` and `go`.
-- `task lint`
-  Requires `task`, `go`, and `golangci-lint`.
-- `task test`
-  Requires `task` and `go`.
+Every command supports `--help`; the help screen includes usage, command flags,
+global flags, and the environment/config lookup footer. The root help currently
+looks like:
+
+```text
+Usage:
+  dbrain [flags]
+  dbrain [command]
+
+Available Commands:
+  archive     Manage archived media and other durable storage tiers
+  ask         Answer a question from the local brain with retrieved evidence
+  categorize  Categorize items with an LLM using all available content
+  config      Show active configuration and storage paths
+  entity      Derive and render entities from the local brain
+  eval        Run local retrieval quality checks
+  extract     Extract and summarize linked sources
+  get         Load an item or source note
+  hydrate     Hydrate canonical source data
+  import      Import source data into the brain
+  link        Add and manage manually submitted links
+  ocr         Extract text from downloaded images
+  repair      Repair derived local artifacts
+  search      Search items and sources
+  serve       Serve local interfaces
+  sqlite      Manage the local SQLite database
+  stats       Show database counts and import progress
+  sync        Run multi-stage refresh flows
+  topic       Build and write topic maps from the local brain
+  transcribe  Transcribe downloaded local media
+  version     Print build and version information
+  worker      Run long-lived background-style worker loops
+
+Environment:
+  --root wins over DBRAIN_ROOT.
+  Defaults: config in ~/.config/dbrain, state in ~/.local/share/dbrain.
+  Runtime values resolve from shell env, then .envrc/.env, then config.yaml.
+  Run "dbrain config env" for the full environment/config key table.
+```
+
+### `dbrain config paths`
+
+Prints the active config, categories, data, database, vault, media, temp, cache,
+and log paths. Use `--json` for automation.
+
+```sh
+dbrain config paths
+```
+
+### `dbrain config env`
+
+Prints the supported environment variables and matching `config.yaml` keys. Use
+`--json` for automation. This command is the authoritative source for the table
+in this README.
+
+```sh
+dbrain config env
+dbrain config env --markdown
+```
+
+### `dbrain import x-bookmarks`
+
+Direct X bookmark import path. Requires a supported browser profile with valid
+X cookies. Chrome/Chromium is the best-tested path.
+
+```sh
+dbrain import x-bookmarks --limit 25
+```
+
+### `dbrain sync all`
+
+Runs the regular incremental refresh pipeline in one command: direct X bookmark
+import, X hydration, X media audio transcription, X photo OCR, tweet-link
+discovery/enrichment, GitHub stars import, YouTube import, and an optional
+source-backlog worker batch. It then categorizes uncategorized items with the
+same item categorizer used by `dbrain categorize batch`, unless
+`--skip-categorize` is passed. If enabled, the media archive stage runs after
+categorization so image categorization can still use local photo files before
+they are uploaded/pruned. Image categorization is enabled by default; use
+`--categorize-images=false` to disable it for text-only models.
+
+The X media and X photo OCR stages use the same X batch limit as `hydrate x`
+(`--x-limit`). In the default configuration this combines the requirements of
+X bookmark import, X hydration, X media transcription, X photo OCR, link/source
+enrichment, YouTube import, and categorization. A practical local setup usually
+includes a supported Chrome/Chromium profile with valid cookies plus Ollama or
+an OpenRouter key, `mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports
+`--skip-*` flags when you only want part of the pipeline.
+
+```sh
+dbrain sync all --length short --timeout 5m
+dbrain sync all --skip-categorize --length short --timeout 5m
+dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m
+dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m
+```
+
+### `dbrain archive media`
+
+Optional manual archive/prune pass for finalized media. It can either just
+mark/prune already-uploaded media or upload directly to an S3-compatible bucket
+first when `--upload` or archive-upload env vars are configured.
+
+### `dbrain sqlite archive`
+
+Creates a consistent SQLite snapshot with SQLite itself, compresses it as gzip,
+and uploads it to the configured S3-compatible bucket under
+`archive/db/brain-<timestamp>.db.gz`.
+
+### `dbrain sqlite restore`
+
+Finds the newest archived SQLite snapshot under `archive/db`, asks for
+confirmation, moves any local `brain.db`, `brain.db-wal`, and `brain.db-shm`
+files aside with a timestamped suffix, then installs the restored database.
+
+### `dbrain serve web`
+
+Serves the local UI plus authenticated archived-media helpers. When archive
+credentials are configured, `/media/asset/<media-asset-id>` streams archived
+objects through the local server and `/api/media/signed-url?id=<id>` returns a
+short-lived direct URL for one-off access.
+
+```sh
+dbrain serve web
+```
+
+### `dbrain serve mcp`
+
+Serves the local brain over MCP stdio with read-only tools, resources, and
+prompts for search, note access, research packs, topic maps, and pipeline
+status.
+
+```sh
+dbrain serve mcp
+```
+
+### `dbrain hydrate x`
+
+Requires a supported browser profile with valid X cookies. Chrome/Chromium is
+the best-tested path. On macOS you may see a Keychain prompt the first time
+cookie decryption is used. Structured hydrate progress is logged by default;
+use `--no-debug` to quiet operational debug output.
+
+```sh
+dbrain hydrate x --limit 50
+```
+
+### `dbrain transcribe x-media`
+
+Requires `mw` and `ffprobe`. `mw` performs the transcription and `ffprobe`
+checks whether a downloaded X video or animated GIF has an audio stream worth
+transcribing. Normal runs skip already classified items; use `--force` when you
+explicitly want to retry failures or reprocess existing transcript items.
+
+```sh
+dbrain transcribe x-media --limit 50
+```
+
+### `dbrain ocr x-photos`
+
+Extracts text from downloaded X photos. Hosted OCR defaults to the configured
+OpenRouter/Gemini model, with local fallback support where configured.
+
+```sh
+dbrain ocr x-photos --limit 50
+```
+
+### `dbrain import youtube`
+
+Requires a browser profile with valid YouTube cookies, `yt-dlp`, and
+`summarize`. When `--profile` is omitted, `dbrain` will try the bare browser
+cookie source first and then retry discovered local Chromium-style profiles
+such as `Default` and `Profile N`. A working local setup may also need `uv`.
+For transcriptless videos, the best current setup is also `deno` or `node`,
+plus `whisper-cli` and the `ggml-base.bin` model.
+
+The importer pulls authenticated `Watch Later` and liked-video signals, stores
+each feed entry as an item, stores the canonical video URL once as a source, and
+keeps re-runs idempotent. YouTube source enrichment is transcript-first; when
+captions are missing, `--transcriber auto` tries local audio transcription
+before falling back to a skipped/no-content outcome.
+
+```sh
+dbrain import youtube --watch-later --liked --browser chrome --profile Default --limit 10 --transcriber auto
+dbrain import youtube --watch-later --transcriber macwhisper
+dbrain import youtube --watch-later --transcriber macwhisper:mlx:large-v3-turbo
+summarize transcriber setup
+```
+
+### `dbrain import github stars`
+
+Requires `GITHUB_TOKEN`. It uses the GitHub API directly, imports the star as
+an append-only signal, stores the repo as a canonical `github` source, and
+optionally creates and summarizes a linked homepage `web` source. The default
+timeout is `2m` because local CLI-backed repo summaries can take longer than a
+normal GitHub API round trip.
+
+```sh
+dbrain import github stars
+```
+
+### `dbrain extract links`
+
+Requires `summarize`. It will prefer cached item `article_text` when
+available, but still uses `summarize` for normalization and summarization. Use
+`--concurrency` to run multiple source extract/summarize jobs in parallel after
+discovery.
+
+```sh
+dbrain extract links --discover-limit 100 --limit 25 --concurrency 4 --summarize=false
+dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --length short
+```
+
+### `dbrain link add`
+
+Adds one or more manually submitted URLs to the same source backlog used by
+discovered links. By default it queues the source for the normal
+`extract sources`, `worker sources`, or `sync all` flow; pass `--enrich` to
+extract and summarize immediately.
+
+```sh
+dbrain link add "https://example.com/article"
+dbrain link add "https://example.com/article" --enrich --length short
+```
+
+### `dbrain extract sources`
+
+Requires `summarize`. This is the global source-backlog worker for already
+known sources that still need extraction or summarization. Use `--concurrency`
+to run multiple source extract/summarize jobs in parallel. Source freshness is
+tracked with extract timestamps, summary timestamps, prompt versions, content
+hashes, and summarize tool versions so refreshes can be policy-aware.
+
+```sh
+dbrain extract sources --limit 50 --concurrency 4 --length short
+dbrain --no-caffeinate extract sources --limit 50 --length short --timeout 5m
+```
+
+### `dbrain worker sources`
+
+Requires `summarize`. This is the long-running source-backlog worker: it
+repeatedly runs `extract sources`-style batches until the queue is drained, and
+can optionally keep polling for new source work with `--watch`. It supports
+bounded parallelism via `--concurrency`. Use `--limit` to cap the total number
+of sources processed in a single worker run, and `--batch-limit` to control
+per-cycle batch size.
+
+```sh
+dbrain worker sources --limit 100 --concurrency 4
+dbrain worker sources --watch --poll-interval 1m --idle-exit-after 30m --concurrency 4 --length short --timeout 5m
+```
+
+### `dbrain topic map`
+
+No external tools required. Builds a topic graph from the local brain using
+search plus the item/source link graph.
+
+```sh
+dbrain topic map "agent memory" --json
+```
+
+### `dbrain topic generate`
+
+No external tools required. Writes a synthesized topic/MOC note under
+`vault/topics/...` from the local brain, including sections like `Summary`,
+`What This Topic Is`, `Main Angles`, entity pivots, open questions, and the
+supporting note graph when that evidence exists.
+
+```sh
+dbrain topic generate "vector database"
+```
+
+### `dbrain topic refresh`
+
+No external tools required. Rebuilds generated topic notes from their stored
+frontmatter settings and refreshes the topic index.
+
+```sh
+dbrain topic refresh
+dbrain topic refresh "vector database"
+```
+
+### `dbrain topic index`
+
+No external tools required. Rebuilds the browsable topic index note from the
+generated topic note set.
+
+```sh
+dbrain topic index
+```
+
+### `dbrain entity map`
+
+No external tools required. Derives stable entities from local item/source
+metadata and searches them by name, key, alias, or domain.
+
+```sh
+dbrain entity map "example"
+dbrain entity map "example/project" --kind project --json
+```
+
+### `dbrain entity generate`
+
+No external tools required. Writes matching entity notes under
+`vault/entities/...` and refreshes the entity index.
+
+```sh
+dbrain entity generate "example/project" --kind project
+```
+
+### `dbrain entity index`
+
+No external tools required. Re-derives all entities, writes their notes, and
+rebuilds `vault/entities/index.md`.
+
+```sh
+dbrain entity index
+```
+
+### `dbrain stats items`
+
+No external tools required. Reads item counts from `brain.db`.
+
+```sh
+dbrain stats items
+dbrain stats items --source-type github_star --group-by none
+```
+
+### `dbrain stats sources`
+
+No external tools required. Reads source counts from `brain.db`.
+
+```sh
+dbrain stats sources --source-type github --extract-tool github-api --group-by summary-status
+```
+
+### `dbrain stats activity`
+
+No external tools required. Shows the latest item/source write timestamps plus
+recent write counts inside a configurable time window.
+
+```sh
+dbrain stats activity
+dbrain stats activity --window 30m
+```
+
+### `dbrain stats backlog`
+
+No external tools required. Shows remaining queued work by pipeline stage and
+whether the current queues are drained.
+
+```sh
+dbrain stats backlog
+```
+
+### `dbrain stats pipeline`
+
+No external tools required. Shows policy-aware enrichment coverage across the
+main pipeline stages.
+
+### `dbrain eval mcp`
+
+No external tools required. Runs read-only retrieval regression checks against
+a JSON case file using the same retrieval path exposed through MCP research
+tools. Use `--write-example <path>` to generate a starter case file and
+`--json` for structured CI-friendly output.
+
+```sh
+dbrain eval mcp --write-example evals/local/mcp.json
+dbrain eval mcp --file evals/local/mcp.json
+```
+
+### `dbrain version`
+
+No external tools required. Prints build metadata including commit, build time,
+git status, Go version, git version, build platform, and module info. Use
+`--json` for structured output.
+
+```sh
+dbrain version
+dbrain version --json
+```
+
+### `dbrain ask`
+
+Retrieval is read-only and works directly from `brain.db`. By default it also
+synthesizes an answer through `summarize`; use `--retrieve-only` when you want
+evidence only and no model call.
+
+```sh
+dbrain ask "What validates Kubernetes manifests?" --retrieve-only
+dbrain ask "Show me GitHub repos about vector databases" --retrieve-only --source-type github
+dbrain ask "What is Agent Memory?" --retrieve-only --include-related --related-limit 2
+```
+
+### `dbrain search`
+
+No external tools required. Searches items and sources from local SQLite/FTS,
+including indexed user tags and derived item text.
+
+```sh
+dbrain search kubernetes
+```
+
+### `dbrain get`
+
+No external tools required. Loads an item or source by source key or numeric
+ID, with DB-first evidence sections used by MCP and CLI research flows.
+
+```sh
+dbrain get x:2045912259210485815
+```
+
+### `dbrain categorize item`
+
+Sends a single item's full content bundle (post text, summary, transcript, OCR
+text, article body, and images when enabled) to a local Ollama or OpenRouter
+LLM and returns suggested categories and tags. Use `--apply` to save the result
+directly to the item's `user_tags` field and re-index FTS. Image categorization
+is enabled by default and embeds local or R2-stored photos as base64 for
+vision-capable models; use `--images=false` to disable it. The model is
+resolved from `--model`, `DBRAIN_CATEGORIZE_MODEL`, or the default
+`openrouter/google/gemini-2.5-flash`.
+
+```sh
+dbrain categorize item --lookup x:1844700656625406274
+dbrain categorize item --lookup x:1844700656625406274 --apply
+dbrain categorize item --lookup x:1844700656625406274 --apply --images=false --model ollama/qwen2.5:7b-instruct
+```
+
+### `dbrain categorize batch`
+
+Same as `dbrain categorize item` but processes multiple items in one pass. By
+default only items with an empty `user_tags` field are selected; use `--force`
+to re-categorize everything. `--limit` and `--concurrency` control throughput.
+Use `--apply` to save results and `--json` for structured output. Saved
+categorizer tags are merged with existing `user_tags` without duplicate
+entries; existing tags are not overwritten. `dbrain sync all` runs this same
+apply path at the end of the sync pipeline unless `--skip-categorize` is
+passed.
+
+```sh
+dbrain categorize batch --limit 50 --concurrency 4 --model ollama/qwen2.5:7b-instruct --apply
+dbrain categorize batch --force --limit 100 --concurrency 2 --model ollama/qwen2.5:7b-instruct --apply
+dbrain categorize batch --limit 50 --json
+```
+
+### `dbrain categorize repair`
+
+Repairs existing `user_tags` using the configured category rewrite vocabulary.
+This is useful after adding aliases or normalizing tag forms.
+
+```sh
+dbrain categorize repair
+```
+
+### `dbrain repair notes`
+
+No external tools required. Rebuilds rendered Markdown notes from `brain.db`,
+which is useful if antivirus or sync tooling removed files from `vault/`.
+
+```sh
+dbrain repair notes
+dbrain repair notes --missing-only=false --sources
+```
+
+### `dbrain repair sources`
+
+No external tools required. Clears extraction and summary state for selected
+sources so they can be reprocessed. Use `--domain <domain>` for a whole domain
+or `--source <id>` for specific rows. The command prints the number of matched
+sources first and asks for confirmation unless `--dry-run` or `--yes` is
+passed.
+
+```sh
+dbrain repair sources --domain canada.ca --dry-run
+dbrain repair sources --domain canada.ca --yes
+```
+
+### `dbrain repair fts`
+
+No external tools required. Rebuilds the SQLite full-text search index from the
+current item/source/enrichment rows.
+
+```sh
+dbrain repair fts
+```
+
+### `task web-install`
+
+Requires `npm`. Installs the Svelte/Vite dependencies used to rebuild the web
+UI source.
+
+### `task web-build`
+
+Requires `npm`. Rebuilds the embedded `web/ui/dist` assets from the Svelte
+source tree.
+
+### `task fmt`
+
+Requires `task` and `go`.
+
+### `task lint`
+
+Requires `task`, `go`, and `golangci-lint`.
+
+### `task test`
+
+Requires `task` and `go`.
 
 ## Operational Notes
 
@@ -430,126 +844,30 @@ derived summary.
 - Those counters are intentionally different. Many scanned items can still
   produce zero new sources.
 
-## Examples
+## Model Backends
 
-```sh
-go run ./cmd/dbrain import ft
-go run ./cmd/dbrain import x-bookmarks --limit 25
-go run ./cmd/dbrain sync all --length short --timeout 5m
-go run ./cmd/dbrain sync all --skip-categorize --length short --timeout 5m
-go run ./cmd/dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m
-go run ./cmd/dbrain sync all --skip-x-media --length short --timeout 5m
-go run ./cmd/dbrain sync all --skip-sources --length short --timeout 5m
-go run ./cmd/dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m
-go run ./cmd/dbrain import github stars
-go run ./cmd/dbrain import youtube --watch-later --liked --browser chrome --profile Default --limit 10 --transcriber auto
-go run ./cmd/dbrain entity map "example"
-go run ./cmd/dbrain entity map "example/project" --kind project --json
-go run ./cmd/dbrain entity generate "example/project" --kind project
-go run ./cmd/dbrain entity index
-go run ./cmd/dbrain topic map "agent memory" --json
-go run ./cmd/dbrain topic generate "vector database"
-go run ./cmd/dbrain topic refresh
-go run ./cmd/dbrain topic refresh "vector database"
-go run ./cmd/dbrain topic index
-go run ./cmd/dbrain worker sources --limit 100 --concurrency 4
-go run ./cmd/dbrain worker sources --watch --poll-interval 1m --idle-exit-after 30m --concurrency 4 --length short --timeout 5m
-go run ./cmd/dbrain hydrate x --limit 50
-go run ./cmd/dbrain hydrate x --limit 5
-go run ./cmd/dbrain transcribe x-media --limit 50
-go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short --timeout 5m
-go run ./cmd/dbrain --no-caffeinate extract sources --limit 50 --length short --timeout 5m
-go run ./cmd/dbrain repair notes
-go run ./cmd/dbrain repair notes --missing-only=false --sources
-go run ./cmd/dbrain repair sources --domain canada.ca --dry-run
-go run ./cmd/dbrain repair sources --domain canada.ca --yes
-go run ./cmd/dbrain extract links --discover-limit 100 --limit 25 --concurrency 4 --summarize=false
-go run ./cmd/dbrain extract links --discover-limit 25 --limit 10 --concurrency 4 --length short
-go run ./cmd/dbrain link add "https://example.com/article"
-go run ./cmd/dbrain link add "https://example.com/article" --enrich --length short
-go run ./cmd/dbrain extract sources --limit 50 --concurrency 4 --length short
-go run ./cmd/dbrain stats items
-go run ./cmd/dbrain stats items --source-type github_star --group-by none
-go run ./cmd/dbrain stats sources --source-type github --extract-tool github-api --group-by summary-status
-go run ./cmd/dbrain stats activity
-go run ./cmd/dbrain stats activity --window 30m
-go run ./cmd/dbrain stats backlog
-go run ./cmd/dbrain version
-go run ./cmd/dbrain version --json
-go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --retrieve-only
-go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --timeout 30s
-go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen2.5:7b-instruct --timeout 2m
-go run ./cmd/dbrain ask "Show me GitHub repos about vector databases" --retrieve-only --source-type github
-go run ./cmd/dbrain ask "What is Agent Memory?" --retrieve-only --include-related --related-limit 2
-go run ./cmd/dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen2.5:7b-instruct --timeout 10m
-go run ./cmd/dbrain serve mcp
-go run ./cmd/dbrain serve web
-go run ./cmd/dbrain search kubernetes
-go run ./cmd/dbrain get x:2045912259210485815
-go run ./cmd/dbrain categorize item --lookup x:1844700656625406274
-go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply
-go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply --model ollama/llama3.2-vision
-go run ./cmd/dbrain categorize item --lookup x:1844700656625406274 --apply --images=false --model ollama/qwen2.5:7b-instruct
-go run ./cmd/dbrain categorize batch --limit 50 --concurrency 4 --model ollama/qwen2.5:7b-instruct --apply
-go run ./cmd/dbrain categorize batch --limit 200 --concurrency 4 --model ollama/qwen2.5:7b-instruct --apply
-go run ./cmd/dbrain categorize batch --force --limit 100 --concurrency 2 --model ollama/qwen2.5:7b-instruct --apply
-go run ./cmd/dbrain categorize batch --limit 50 --concurrency 2 --model openrouter/google/gemini-2.5-flash --apply
-go run ./cmd/dbrain categorize batch --limit 50 --json
-```
-
-The legacy FT importer is incremental and replayable. Re-running `import ft`
-scans the current `~/.ft-bookmarks/bookmarks.db`, upserts by stable source key,
-skips unchanged rows by content hash, and only rewrites notes when an item
-changed or its note is missing.
-
-`import github stars` uses the GitHub API instead of scraping the web UI. It
-imports one append-only `github_star` item per starred repository, stores the
-canonical repo as a `github` source with repo metadata plus README content, and
-links the repo homepage as a separate `web` source when one exists. Re-running
-the command is incremental: it fetches newest-first and stops at the first
-already-seen star unless you pass `--force`. Unstars are intentionally ignored;
-if a repo was starred at some point, that signal is preserved.
-
-`stats items` only tracks imported signal items, so it can stay flat while the
-source pipeline is still busy extracting and summarizing linked content. Use
-`stats activity` when you want to know whether the background source work is
-still moving, and `stats backlog` when you want to know how much queued work
-remains before the current pipeline is actually drained.
-
-`worker sources` is the safer long-running alternative to manually rerunning
-`extract sources`. By default it keeps batching until the current source queue
-is drained and then exits. With `--watch`, it stays alive, sleeps between idle
-polls, and can stop automatically after an idle window via
-`--idle-exit-after`.
-
-For source enrichment, start with `--concurrency 4` and increase carefully if
-your summarize backend and rate limits can handle it. Higher concurrency speeds
-up backlog draining, but it also increases provider usage and simultaneous
-external fetches.
-
-By default, this repo uses `DBRAIN_SUMMARY_MODEL` when no `--model` flag is
-provided. The current local default is
-`ollama/qwen3.6:35b-a3b-nvfp4`. Pass `--model ollama/<name>` to test another
-local GPU-backed model, or `--model openrouter/<provider>/<model>` for a
+When no `--model` flag is provided, `dbrain` checks `DBRAIN_SUMMARY_MODEL` /
+`SUMMARIZE_MODEL` or `summary.model` in `config.yaml`; otherwise the external
+`summarize` tool chooses its own default. Pass `--model ollama/<name>` to test
+a local GPU-backed model, or `--model openrouter/<provider>/<model>` for a
 hosted catch-up run. `dbrain` sends direct Ollama summaries to the native
 Ollama chat API with thinking disabled, and defaults to
 `http://127.0.0.1:11434`. Override the target with
 `DBRAIN_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, or `OLLAMA_HOST` if the daemon is
-elsewhere. The X photo OCR stage also honors `DBRAIN_OCR_MODEL`; the current
-local default is the same qwen vision model. Use
-`--ocr-model openrouter/google/gemini-3.1-flash-lite-preview` for a hosted
-catch-up OCR run. If you already export `OPENAI_BASE_URL` or `OPENAI_API_KEY`,
-`dbrain` leaves those alone. When `--model` is set, it also takes precedence
-over `--cli`, so local-model runs do not accidentally inherit the default CLI
-provider.
+elsewhere. The X photo OCR stage also honors `DBRAIN_OCR_MODEL` /
+`DBRAIN_X_PHOTO_OCR_MODEL`; the current default is
+`openrouter/google/gemini-3.1-flash-lite-preview`. If you already export
+`OPENAI_BASE_URL` or `OPENAI_API_KEY`, `dbrain` leaves those alone. When
+`--model` is set, it also takes precedence over `--cli`, so local-model runs do
+not accidentally inherit the default CLI provider.
 
 For a new machine or GPU-backed A/B run, start with small scoped commands
 before pointing a whole sync at Ollama. A practical progression is:
 
 ```sh
-go run ./cmd/dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen3.5:9b --timeout 2m
-go run ./cmd/dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen3.5:9b --timeout 10m
-go run ./cmd/dbrain sync all --source-limit 25 --model ollama/qwen3.5:9b --timeout 10m
+dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen3.5:9b --timeout 2m
+dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen3.5:9b --timeout 10m
+dbrain sync all --source-limit 25 --model ollama/qwen3.5:9b --timeout 10m
 ```
 
 Good starting local models to compare on a stronger Mac are `qwen3.5:9b`,
@@ -557,166 +875,23 @@ Good starting local models to compare on a stronger Mac are `qwen3.5:9b`,
 quality, and whether long GitHub/web extracts stay coherent before switching
 the default workflow over.
 
-`ask` is the first query surface built on top of the imported brain. It pulls
-top matches from local search, assembles evidence from item/source rows, and
-can optionally synthesize a citation-bearing answer through `summarize`. Use
-`--retrieve-only` when you want the evidence pack without spending model usage.
-Use `--source-type` to narrow retrieval to specific kinds such as `github`,
-`web`, or `x_bookmark`, and `--include-related` to append linked evidence from
-the item/source graph. It also derives entity matches from the local corpus and
-uses them to boost and expand retrieval, so queries can pivot through X
-authors, GitHub owners/repos, and important sites even when the raw note text
-is weak.
+## MCP
 
-`serve web` is the browser-facing counterpart to the CLI query surface. It
-starts a local HTTP server with read-only JSON routes for `search`, `get`,
-`stats`, and retrieve-only `ask`, plus an embedded Svelte UI for browsing the
-same live `brain.db` while background workers continue running in other
-terminals. The homepage is intentionally retrieval-first now: two primary boxes
-for `Search` and `Ask`, with result panels and note detail below. Operational
-stats, recent failures, hotspots, and other backlog triage views live on
-`/admin` instead of competing with the main search flow.
+`dbrain serve mcp` exposes the local corpus over read-only MCP stdio for agent
+research, browsing, topic maps, retrieval packs, and operational stats. The
+server is DB-first by default, tag-aware, and includes OCR/transcript evidence
+when those enrichments exist.
 
-`entity map` derives stable entities from reliable local metadata instead of
-free-text NER. The current pass creates entity notes for X authors, GitHub
-owners, GitHub repos, and non-generic sites/domains. `entity generate` writes
-matching notes under `vault/entities/...`, and `entity index` materializes the
-full entity set plus a browsable `vault/entities/index.md`.
+See [MCP.md](MCP.md) for the full agent workflow, tool contract, eval setup,
+client configuration, importer contract, logging behavior, and skill setup.
 
-`topic map` is the CLI mirror of the MCP topic-map surface. It builds a compact
-graph from local search seeds plus item/source graph expansion, then derives
-key entities from the mapped nodes. `topic generate` uses the same graph to
-write a browsable note under `vault/topics/...` with grouped entity pivots,
-suggested starting notes, related notes, relationships, and Obsidian links back
-into the corpus. Topic notes now persist their generation settings in
-frontmatter, so `topic refresh` can rebuild them later from the local corpus
-and `topic index` can regenerate a browsable directory note at
-`vault/topics/index.md`.
+## Skill
 
-`serve mcp` exposes the same local brain over MCP stdio. The current server is
-read-only and provides:
+This repo includes a Codex skill for agents at `skills/dbrain-mcp/SKILL.md`.
+See [MCP.md](MCP.md#skill) for installation notes and the recommended Codex MCP
+configuration.
 
-- tools for `search`, `get`, `get many`, `ask`, `entity map`, `related`, `stats items`,
-  `stats sources`, `stats activity`, `stats backlog`, `topic map`,
-  `topic brief`, and `research pack`
-- resources for `dbrain://mcp/overview`, `dbrain://stats/activity`,
-  `dbrain://stats/backlog`, `dbrain://stats/items`, and `dbrain://stats/sources`
-- resource templates for `dbrain://item/{lookup}`, `dbrain://source/{lookup}`,
-  `dbrain://search/{query}`, `dbrain://entity/{query}`,
-  `dbrain://topic/{query}`, `dbrain://topic-note/{query}`,
-  `dbrain://research/{query}`, and queryable `dbrain://stats/...` templates
-- prompts for `brain_research`, `brain_browse`, `brain_entity_browse`,
-  `brain_topic_map`, `brain_topic_brief`, and `brain_status`
-
-`ask` defaults to retrieval-only in the MCP surface so agent clients do not
-silently spend model usage unless they explicitly request answer synthesis.
-The tool list also includes `outputSchema` metadata so MCP clients can reason
-about the structured payloads without learning them from examples.
-Evidence excerpts are query-aware: when a match appears deep in a raw source
-extract, item OCR text, or media transcript stored as article text, the
-retrieved evidence window is centered near the match instead of blindly
-returning the beginning of the raw document. Item-level derived summaries are
-also surfaced as summaries in retrieval evidence while raw OCR/transcript/text
-remain available through `dbrain_get`.
-
-`dbrain_get` is DB-first. By default it returns slim item/source metadata and
-capped `content_sections` from the SQLite row, not the rendered Markdown file.
-Use `content_mode=brief` for metadata only, `content_mode=evidence` for normal
-research context, `content_mode=raw` for raw DB extracts/transcripts/OCR/JSON,
-and `content_mode=rendered` only when a client specifically needs the rendered
-Markdown note shape. `max_chars_per_section` controls per-section output size,
-with a hard cap to avoid accidental huge MCP responses. Pass `query` with
-`content_mode=evidence` to window each text section around matching terms
-instead of returning the beginning of long extracts. Evidence mode also
-includes a small capped DB graph expansion for context such as quoted X posts,
-linked sources, and source backlinks, so agents do not have to read rendered
-Markdown just to see immediate neighboring evidence. X media enrichments are
-exposed as first-class evidence sections: image OCR appears as `ocr_text`, and
-video/audio transcript text stored by the X media transcription stage appears
-as `x_media_transcript` instead of generic article text. Related item context
-also includes distinct media transcript and image OCR blocks when present.
-Use `dbrain_get_many` after a search or research pack when an agent needs to
-inspect several evidence rows in one MCP round trip. It uses the same
-DB-backed content modes and section caps as `dbrain_get`, and returns partial
-per-lookup errors without failing the whole batch. Suggested follow-up
-arguments from `dbrain_research_pack` include the research query so detail
-fetches keep the same query-windowing behavior.
-
-`dbrain_research_pack` is the default MCP research entry point for broad
-questions. It always returns retrieve-only evidence, a compact query plan
-showing the text query and tag aliases used, coverage counts by kind/source
-type/tag, exact user-tag match counts, broad item/source text-match counts,
-representative `exact_tag_evidence` examples from saved items carrying those
-tags, suggested follow-up tools, retrieval score explanations for each evidence
-row, and, when the question is broad enough to infer a topic phrase, the same
-grouped topic brief used by `dbrain_topic_brief`. The
-`coverage.recall_note` field intentionally warns when the returned evidence is
-only a capped working set relative to the larger matching corpus. That lets an
-agent start from one read-only call instead of manually orchestrating `ask`,
-`search`, `topic brief`, and follow-up note fetches. `topic`,
-`include_topic_brief`, `include_related`, and `max_chars_per_doc` are exposed as
-controls for clients that need more or less context. Each evidence row's
-`retrieval` block includes `matched_terms` and `missing_terms`; multi-term
-queries penalize rows that miss focused terms, so broad tag matches do not
-outrank direct matches on rarer query terms. Source documents are
-searched as their own candidate stream, so `source_types=["web"]` or
-`["youtube"]` can return direct `src:...` evidence even when item hits would
-otherwise fill the candidate window.
-
-Item `user_tags` are indexed for search and returned in MCP search and evidence
-payloads. They are useful research hints: agents can search by tag names, use
-tags to disambiguate broad questions, and treat tag matches as stronger
-retrieval signals without replacing the underlying source text. Multi-word
-research questions also check the matching hyphenated tag alias, for example
-`Mark Carney` checks `mark-carney`. `dbrain_search` reports the tag aliases it
-checked plus exact tag counts, and `dbrain_search` / `dbrain_research_pack`
-append exact-tag hits to normal text-search evidence before deduping.
-
-MCP research should answer from the collector's saved corpus. The corpus will
-reflect what that person found valuable, interesting, or noteworthy, including
-their own selection bias. Agents should characterize the saved evidence
-faithfully and cite it; they should not inject external balance, alternate
-viewpoints, or "what the model knows" unless the user explicitly asks for that.
-
-MCP protocol responses are written to stdout, and operational request logs are
-written to stderr so they do not corrupt the stdio protocol. A running server
-should emit one short debug line per request, including the MCP method, tool
-name when present, status, and duration.
-
-The MCP additions are meant to support these common agent workflows:
-
-- research: `dbrain_research_pack` first, then `dbrain_get_many` or `dbrain_get` and
-  `dbrain_related` for deeper inspection
-- graph browsing: `dbrain_get` plus `dbrain_related`
-- entity browsing: `dbrain_entity_map` or `brain_entity_browse`, then
-  `dbrain_get` on the most relevant entity note
-- topic mapping: `dbrain_topic_map` or `brain_topic_map`, plus `dbrain_get`
-  when you want to inspect individual nodes more closely
-- topic briefs: `dbrain_topic_brief` or `brain_topic_brief`, plus
-  `dbrain://topic-note/{query}` when a rendered note preview is useful
-- pipeline monitoring: `dbrain_stats_activity`, `dbrain_stats_backlog`, and
-  optionally `dbrain_stats_sources`
-
-For local retrieval quality checks, create a corpus-specific eval file:
-
-```sh
-./bin/dbrain eval mcp --write-example evals/local/mcp.json
-./bin/dbrain eval mcp --file evals/local/mcp.json
-```
-
-`evals/mcp.example.json` is a checked-in template. Keep real corpus-specific
-files under `evals/local/*.json`; those files are ignored because source keys,
-saved URLs, and expected text are specific to one person's brain database.
-Eval cases can require a specific top source key, any top key from an
-acceptable set, specific source keys anywhere in the evidence, minimum evidence
-counts, expected text, expected top-result text, representative
-`exact_tag_evidence` saved-item examples, forbidden source keys or noisy text,
-source-type filters, related-evidence expansion, top-result matched or missing
-terms, and rough latency budgets. Exact-tag assertions exercise the same
-`dbrain_research_pack` path exposed to MCP clients; other cases use the
-lighter retrieval-only path. This is intentionally corpus-local: open-source
-users should encode their own known-good queries rather than relying on
-project-specific fixture data.
+## TODO
 
 ### MCP TODO
 
@@ -743,162 +918,35 @@ project-specific fixture data.
 - [x] Show tags from saved-item backlinks when inspecting source nodes, so a
   selected `src:...` result exposes the user's tags from items that reference it.
 
-### MCP Importer Contract
+### Product TODO
 
-MCP retrieval is intentionally source-agnostic. New importers such as Bluesky,
-Apple Podcasts, RSS feeds, or read-it-later tools should become visible to MCP
-without custom MCP code when they write into the shared data model:
+- [ ] Continue improving topic/MOC synthesis quality and better periodic refresh workflows as the corpus fills out.
+- [ ] Add a Tailscale-reachable query surface, likely tsnet-backed MCP and/or a small web UI, so the brain can be queried remotely while away from the machine.
+- [ ] Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
+- [ ] Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
+- [ ] Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.
+- [ ] Add URL-backed state and deeper note-to-note navigation in the web UI so searches, selected notes, and related pivots survive refreshes and remote sessions.
+- [ ] Improve web UI tag visibility in search, graph, list, and detail views so selected items and linked sources show their own tags plus backlink tags without extra discovery.
+- [ ] Expand the web operations/dashboard view with deeper worker drill-down, richer backlog trend views, and clearer source-level drill-ins so repeated failures are easier to triage.
+- [ ] Add first-class filters and browsing controls in the web UI for source type, kind, status, tag, and recency so the corpus is easier to slice than with one text box.
+- [ ] Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
+- [ ] Add a translation stage for non-English X content, storing both original and translated text.
+- [ ] Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
+- [ ] Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
 
-- Create an `items` row for each saved signal with a stable `source_key`,
-  `source_type`, `external_id`, canonical URL, title, source text, author
-  metadata, timestamps, note path, raw JSON, and content hash.
-- Store collector-assigned or model-assigned tags in `user_tags`; multi-word
-  entity tags should use the shared hyphenated form, for example
-  `mark-carney`.
-- Store raw extracted linked-source text in `sources.extracted_text` and
-  derived source summaries in `sources.summary_text`; do not replace raw text
-  with summaries.
-- Link items to sources through source-link records so MCP graph expansion can
-  move from a post/bookmark/episode to the referenced article, repository,
-  paper, or transcript source.
-- Store media-derived text in the existing item enrichment fields where
-  possible: image text in `ocr_text`, short-form video/audio transcripts in
-  `article_text` with `article_title = "X Media Transcript"` until a generic
-  transcript field exists, and derived item summaries in `summary_text`.
-- Keep source-specific metadata in raw JSON or source-specific columns, but make
-  the durable searchable evidence available through the common text, summary,
-  tag, and link fields.
+### Pipeline TODO
 
-After adding a new importer, add at least one MCP eval case that proves its
-strongest evidence is discoverable by text query, tag query, source-type filter,
-and any important derived text such as OCR or transcript content.
-
-If a client needs to discover the MCP surface from inside the protocol, start
-with:
-
-- resource: `dbrain://mcp/overview`
-- prompt: `brain_status` or `brain_research`
-
-A generic MCP client config looks like this:
-
-```json
-{
-  "mcpServers": {
-    "dbrain": {
-      "command": "go",
-      "args": ["run", "./cmd/dbrain", "serve", "mcp"],
-      "cwd": "/Users/darron/src/dbrain"
-    }
-  }
-}
-```
-
-If you prefer the compiled binary instead of `go run`, point the client at:
-
-```json
-{
-  "mcpServers": {
-    "dbrain": {
-      "command": "./bin/dbrain",
-      "args": ["serve", "mcp"],
-      "cwd": "/Users/darron/src/dbrain"
-    }
-  }
-}
-```
-
-This repo also includes a Codex skill for agents at
-`skills/dbrain-mcp/SKILL.md`. To install it locally for Codex, copy the
-`skills/dbrain-mcp` directory into your Codex skills directory, for example
-`~/.codex/skills/dbrain-mcp`. The skill includes the recommended Codex MCP
-`~/.codex/config.toml` stanza; use absolute paths for both the binary and
-`--root`, then restart Codex so the `dbrain_*` tools are discovered.
-
-`import youtube` pulls authenticated YouTube signals from `Watch Later` and
-liked videos via `yt-dlp --cookies-from-browser`. Existing `youtube_history`
-items are pruned on each run so watch-history noise does not pollute the brain.
-Each feed entry is stored as a signal item under `vault/items/youtube/...`,
-while the canonical video URL is stored once in `sources` and enriched
-separately. Re-running the command is idempotent: unchanged signal items are
-touched in the DB but not rewritten, while linked sources are only
-re-extracted or re-summarized when you force a refresh or the source freshness
-rules say they are stale.
-
-If one authenticated feed is temporarily inaccessible, `dbrain` skips that
-feed, counts it as an error, and continues with any other selected YouTube
-feeds instead of aborting the whole sync run.
-
-YouTube source enrichment is transcript-first. `dbrain` asks `summarize` to
-extract the transcript or caption text first, then performs summarization from
-that extracted content via stdin. This keeps the summary grounded in the video
-content instead of the watch-page chrome. When no transcript is available, the
-stored extract may fall back to weaker metadata.
-
-Use `--transcriber auto` (the default) to let `dbrain` try local audio
-transcription when captions are missing. On macOS, if the `mw` MacWhisper CLI
-is installed, `dbrain` prefers that first. If `mw` is not available, it falls
-back to the older `whisper-cli` + `ggml-base.bin` path. If no transcription
-backend is configured yet, those videos will be marked as skipped instead of
-receiving a misleading metadata-only summary. To enable local or
-provider-backed audio transcription, start with:
-
-```sh
-summarize transcriber setup
-```
-
-If you want to force MacWhisper directly, use:
-
-```sh
-go run ./cmd/dbrain import youtube --watch-later --transcriber macwhisper
-go run ./cmd/dbrain import youtube --watch-later --transcriber macwhisper:mlx:large-v3-turbo
-```
-
-`hydrate x` is a separate enrichment step. It uses the existing FT tweet IDs,
-loads your local X session cookies from a browser profile, fetches canonical
-post data via X's web GraphQL endpoint, falls back to syndication when needed,
-caches the payload and canonical post text in `brain.db`, and rewrites notes
-when hydration materially changes what we know about a post.
-
-`sync all` now runs X media audio transcription immediately after `hydrate x`
-using the same X batch limit. That means freshly downloaded X MP4s can be
-transcribed into `X Media Transcript` item text during the same pipeline run.
-Use `--skip-x-media` when you want hydration and media downloads without the
-follow-up MacWhisper transcription stage.
-
-On macOS, the first cookie-backed run may trigger a Keychain prompt so Go can
-access Chrome's cookie decryption secret. Approve that prompt and re-run the
-command if needed.
-
-`hydrate x` emits structured `slog` events for candidate loading, per-post
-fetches, fallbacks, and periodic progress by default. Use `--no-debug` to
-quiet that output.
-
-`extract links` is the outbound-link enrichment step. It dedupes expanded URLs
-from imported X bookmarks into a separate `sources` table, extracts full text
-through `summarize`, optionally creates summaries, and writes source notes under
-`vault/sources/...` with backlinks to the bookmarks that referenced them.
-It only enriches the sources discovered from the current bookmark scan; use
-`--force` when you want to rescan older bookmarks and requeue their linked
-sources in a controlled batch.
-
-`extract sources` is the global enrichment worker for the existing `sources`
-queue. Use it when `stats backlog` shows pending source extraction or summary
-work but `extract links` itself has no more bookmark-link discovery to do.
-
-When a linked source already has cached FT `article_text`, `extract links`
-prefers that local content instead of live-fetching the URL again. The cached
-body is stored as the source extract, then summarized through `summarize` as a
-local file so the local copy stays authoritative until you explicitly refresh
-it.
-
-Source freshness is tracked explicitly. Each source row stores `extracted_at`,
-`summarized_at`, the summary prompt version, the content hash used for the
-current summary, and the `summarize` tool version used for extraction and
-summarization. Successful summaries are also appended to
-`source_summary_versions`, so you can keep a history of summary outputs across
-content changes, prompt changes, and summarize upgrades.
-
-`repair notes` is a renderer-only recovery path. It does not re-import or
-re-extract anything. It reads items and sources from `brain.db` and recreates
-their Markdown notes under `vault/`. By default it only writes missing notes,
-which is the intended path after antivirus quarantine or accidental deletion.
+- [ ] Tighten X link-discovery candidate selection so items whose only links are X self-links like `/photo/1` or `/video/1` do not get rescanned and inflate `items_scanned` without producing real source candidates.
+- [ ] Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
+- [ ] Audit X media transcription throughput by recording per-video duration/bytes/transcript chars and testing cautious MacWhisper parallelism; avoid raising default concurrency until local GPU/CPU contention is understood.
+- [ ] Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends, report side-by-side output quality and timings, and avoid changing persisted item OCR state.
+- [ ] Add a summary bakeoff/audit command that can run the same source extract or media transcript through multiple summary models/backends, report side-by-side outputs and timings, and avoid changing persisted summary state.
+- [ ] Improve provider provenance so stored summaries always record the exact backend/model used.
+- [ ] Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
+- [ ] Add explicit source-of-truth audit commands such as `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`, while treating the local DB as append-only by default.
+- [ ] Add a pre-summary staging path for oversized extracts so giant PDFs and long documents can be chunked, pre-compressed, or locally preprocessed before hosted summary calls hit provider context limits.
+- [ ] Add an oversized-X-video policy for media download/transcription with byte-size and/or duration gating, lower-bitrate transcription variants, and terminal `too_large` / `too_long` states instead of endless retry.
+- [ ] Maybe reclassify non-actionable X media transcript outcomes like `no_audio`, `noise`, and `too_short` out of the generic failed bucket so transcription stats distinguish real pipeline errors from terminal no-content cases.
+- [ ] Add an optional X thread expansion path when a bookmarked post is clearly part of a longer thread.
+- [ ] Add a scheduler/launchd-style mode on top of the worker loop so enrichment can resume automatically after terminal closure or reboot.
+- [ ] Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.

@@ -1,0 +1,63 @@
+# dbrain config file.
+# Lookup order: shell environment > .envrc/.env in config/root dir > config.yaml.
+# Install default: ~/.config/dbrain/config.yaml
+# Dev override: export DBRAIN_ROOT=.  # DBRAIN_ROOT (env only; --root wins)
+# XDG config base: ~/.config          # XDG_CONFIG_HOME (env only)
+# XDG data base: ~/.local/share       # XDG_DATA_HOME (env only)
+
+github:
+  token: "" # GITHUB_TOKEN
+
+summary:
+  model: "" # DBRAIN_SUMMARY_MODEL, SUMMARIZE_MODEL
+  language: "en" # DBRAIN_SUMMARY_LANGUAGE, DBRAIN_OUTPUT_LANGUAGE, SUMMARIZE_LANGUAGE
+
+categorize:
+  model: "openrouter/google/gemini-2.5-flash" # DBRAIN_CATEGORIZE_MODEL
+
+ocr:
+  model: "openrouter/google/gemini-3.1-flash-lite-preview" # DBRAIN_OCR_MODEL, DBRAIN_X_PHOTO_OCR_MODEL
+
+ollama:
+  base_url: "http://127.0.0.1:11434" # DBRAIN_OLLAMA_BASE_URL, OLLAMA_BASE_URL, OLLAMA_HOST
+  api_key: "ollama" # DBRAIN_OLLAMA_API_KEY, OLLAMA_API_KEY
+
+openai:
+  base_url: "" # OPENAI_BASE_URL
+  api_key: "" # OPENAI_API_KEY
+  use_chat_completions: "" # OPENAI_USE_CHAT_COMPLETIONS
+
+openrouter:
+  base_url: "https://openrouter.ai/api/v1" # DBRAIN_OPENROUTER_BASE_URL, OPENROUTER_BASE_URL
+  api_key: "" # DBRAIN_OPENROUTER_API_KEY, OPENROUTER_API_KEY
+  referer: "https://local.dbrain" # DBRAIN_OPENROUTER_REFERER, OPENROUTER_HTTP_REFERER
+  title: "dbrain" # DBRAIN_OPENROUTER_TITLE, OPENROUTER_X_TITLE
+
+source:
+  reader:
+    domains: "canada.ca" # DBRAIN_SOURCE_READER_DOMAINS, DBRAIN_HTTP_READER_DOMAINS
+    base_url: "https://r.jina.ai/" # DBRAIN_SOURCE_READER_BASE_URL, DBRAIN_HTTP_READER_BASE_URL
+
+media:
+  proxy:
+    base_url: "http://127.0.0.1:8742" # DBRAIN_MEDIA_PROXY_BASE_URL, DBRAIN_WEB_BASE_URL
+  public_base_url: "" # DBRAIN_R2_PUBLIC_BASE_URL, DBRAIN_MEDIA_PUBLIC_BASE_URL
+
+archive:
+  auto: false # DBRAIN_AUTO_ARCHIVE_MEDIA, DBRAIN_ARCHIVE_AUTO
+  upload: false # DBRAIN_ARCHIVE_UPLOAD, DBRAIN_R2_UPLOAD
+  provider: "cloudflare_r2" # DBRAIN_ARCHIVE_PROVIDER, DBRAIN_R2_PROVIDER
+  bucket: "" # DBRAIN_ARCHIVE_BUCKET, DBRAIN_S3_BUCKET
+
+r2:
+  bucket: "" # DBRAIN_R2_BUCKET, DBRAIN_ARCHIVE_BUCKET, DBRAIN_S3_BUCKET
+  public_base_url: "" # DBRAIN_R2_PUBLIC_BASE_URL, DBRAIN_MEDIA_PUBLIC_BASE_URL
+  endpoint: "" # DBRAIN_R2_ENDPOINT, DBRAIN_S3_ENDPOINT
+  region: "auto" # DBRAIN_R2_REGION, DBRAIN_S3_REGION, AWS_REGION, AWS_DEFAULT_REGION
+  access_key_id: "" # DBRAIN_R2_ACCESS_KEY_ID, DBRAIN_S3_ACCESS_KEY_ID, AWS_ACCESS_KEY_ID
+  secret_access_key: "" # DBRAIN_R2_SECRET_ACCESS_KEY, DBRAIN_S3_SECRET_ACCESS_KEY, AWS_SECRET_ACCESS_KEY
+  session_token: "" # DBRAIN_R2_SESSION_TOKEN, DBRAIN_S3_SESSION_TOKEN, AWS_SESSION_TOKEN
+
+env:
+  GITHUB_TOKEN: "" # GITHUB_TOKEN exact-key fallback form
+  DBRAIN_OPENROUTER_API_KEY: "" # DBRAIN_OPENROUTER_API_KEY exact-key fallback form

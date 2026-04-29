@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
 )
 
 type Options struct {

@@ -18,10 +18,10 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	"dbrain/internal/config"
-	"dbrain/internal/mediaarchive"
-	"dbrain/internal/model"
-	"dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/runtimeenv"
 )
 
 const defaultSignedURLTTL = 5 * time.Minute
