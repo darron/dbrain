@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 const (

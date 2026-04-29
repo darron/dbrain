@@ -8,11 +8,17 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"dbrain/internal/config"
+	"github.com/darron/dbrain/internal/config"
 )
 
+const rootEnvVar = "DBRAIN_ROOT"
+
 func loadConfig(root string) (config.Config, error) {
+	if strings.TrimSpace(root) == "" {
+		root = strings.TrimSpace(os.Getenv(rootEnvVar))
+	}
 	cfg, err := config.Load(root)
 	if err != nil {
 		return config.Config{}, err

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestSaveXHydrationPersistsMediaAssetsAndLinks(t *testing.T) {

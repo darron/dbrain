@@ -3,7 +3,7 @@ package summaryconfig
 import (
 	"strings"
 
-	"dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/runtimeenv"
 )
 
 const (

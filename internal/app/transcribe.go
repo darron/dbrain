@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/store"
-	"dbrain/internal/xmediatranscribe"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
 
 func newTranscribeCommand(root *rootOptions) *cobra.Command {

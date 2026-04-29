@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestListSourcesForEnrichmentIgnoresExtractToolVersionMismatchWhenSummaryCurrent(t *testing.T) {
@@ -508,7 +508,7 @@ func TestGetPreferredLocalSourceExtractReturnsLongestCachedArticle(t *testing.T)
 	if result.Content != "this is the longer cached article body" {
 		t.Fatalf("unexpected local content: %q", result.Content)
 	}
-	if result.Tool != "ft-bookmarks" || result.ToolVersion != "local-item-cache" {
+	if result.Tool != "item-cache" || result.ToolVersion != "local-item-cache" {
 		t.Fatalf("unexpected tool metadata: %s %s", result.Tool, result.ToolVersion)
 	}
 }

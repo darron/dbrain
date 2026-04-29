@@ -1,4 +1,4 @@
-module dbrain
+module github.com/darron/dbrain
 
 go 1.26
 

@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
 )
 
 type S3Uploader struct {

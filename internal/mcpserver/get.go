@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 const (

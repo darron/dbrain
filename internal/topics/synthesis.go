@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/store"
 )
 
 type topicEvidence struct {

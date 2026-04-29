@@ -1,6 +1,6 @@
 package app
 
-import "dbrain/internal/runtimeenv"
+import "github.com/darron/dbrain/internal/runtimeenv"
 
 func firstNonEmptyEnv(rootDir string, keys ...string) string {
 	return runtimeenv.FirstNonEmpty(rootDir, keys...)

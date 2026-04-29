@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/ask"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/ask"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newAskCommand(root *rootOptions) *cobra.Command {

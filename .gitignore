@@ -1,11 +1,11 @@
-.gocache/
-.gomodcache/
-bin/
-data/
-vault/
+/.gocache/
+/.gomodcache/
+/bin/
+/data/
+/vault/
 .envrc
 web/ui/node_modules/
 .DS_Store
-tmp/
+/tmp/
 evals/local/*.json
 !evals/local/.gitkeep

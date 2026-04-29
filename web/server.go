@@ -14,13 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"dbrain/internal/ask"
-	"dbrain/internal/config"
-	"dbrain/internal/linkadd"
-	"dbrain/internal/model"
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
+	"github.com/darron/dbrain/internal/ask"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/linkadd"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/summarizecli"
 )
 
 const (

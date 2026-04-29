@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"dbrain/internal/entities"
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
-	"dbrain/internal/topics"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/topics"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 func (s *Server) handleResourcesList() map[string]interface{} {

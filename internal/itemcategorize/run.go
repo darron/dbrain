@@ -17,12 +17,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"dbrain/internal/categoryvocab"
-	"dbrain/internal/config"
-	"dbrain/internal/mediaarchive"
-	"dbrain/internal/model"
-	"dbrain/internal/runtimeenv"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/categoryvocab"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/store"
 )
 
 const (
@@ -614,7 +614,7 @@ func parseCategorizationJSON(content string, modelName string, vocab categoryvoc
 
 func resolveOpts(cfg config.Config, opts *Options) {
 	if opts.Vocab.Empty() {
-		vocab, _ := categoryvocab.Load(filepath.Join(cfg.RootDir, "categories.yaml"))
+		vocab, _ := categoryvocab.Load(cfg.CategoriesPath)
 		opts.Vocab = vocab
 	}
 	if strings.TrimSpace(opts.Model) == "" {

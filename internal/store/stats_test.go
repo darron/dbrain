@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestCountItemsBySourceType(t *testing.T) {

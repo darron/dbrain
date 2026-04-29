@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/itemcategorize"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/itemcategorize"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newCategorizeCommand(root *rootOptions) *cobra.Command {

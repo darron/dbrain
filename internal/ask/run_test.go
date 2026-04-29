@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"dbrain/internal/config"
-	"dbrain/internal/entities"
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestQueryTermsBuildTagAlias(t *testing.T) {

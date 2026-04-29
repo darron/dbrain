@@ -13,7 +13,7 @@ tasks:
     desc: Build the dbrain CLI
     cmds:
       - mkdir -p bin
-      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go build -buildvcs=true -ldflags "-X dbrain/internal/version.GitVersion={{.GIT_VERSION}} -X dbrain/internal/version.BuildPlatform={{.BUILD_PLATFORM}}" -o ./bin/dbrain ./cmd/dbrain
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go build -buildvcs=true -ldflags "-X github.com/darron/dbrain/internal/version.GitVersion={{.GIT_VERSION}} -X github.com/darron/dbrain/internal/version.BuildPlatform={{.BUILD_PLATFORM}}" -o ./bin/dbrain ./cmd/dbrain
 
   fmt:
     desc: Format Go source files
@@ -38,7 +38,7 @@ tasks:
   test:
     desc: Run the Go test suite
     cmds:
-      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test ./...
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test -cover -race ./...
 
   test-mcp:
     desc: Run deterministic MCP retrieval and server tests

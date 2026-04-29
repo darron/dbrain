@@ -15,7 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/runtimeenv"
 )
 
 const ToolName = "summarize"
@@ -47,6 +48,7 @@ type Options struct {
 	Length    string
 	Language  string
 	Timeout   time.Duration
+	RootDir   string
 }
 
 type Result struct {
@@ -129,6 +131,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Length) == "" {
 		opts.Length = "medium"
 	}
+	opts.Env = envWithRuntimeConfig(opts.RootDir, opts.Env)
 	if strings.TrimSpace(opts.Language) == "" {
 		opts.Language = summaryLanguageWithEnv(opts.Env)
 	}
@@ -616,10 +619,10 @@ func resolveModelAndEnv(model string, env map[string]string) (string, map[string
 
 	out := cloneEnv(env)
 	if !hasEnvValue(out, "OPENAI_BASE_URL") {
-		out["OPENAI_BASE_URL"] = ollamaBaseURL()
+		out["OPENAI_BASE_URL"] = ollamaBaseURLWithEnv(out)
 	}
 	if !hasEnvValue(out, "OPENAI_API_KEY") {
-		out["OPENAI_API_KEY"] = defaultOllamaAPIKey
+		out["OPENAI_API_KEY"] = ollamaAPIKeyWithEnv(out)
 	}
 	if !hasEnvValue(out, "OPENAI_USE_CHAT_COMPLETIONS") {
 		out["OPENAI_USE_CHAT_COMPLETIONS"] = "1"
@@ -707,10 +710,6 @@ func parseOpenRouterModel(model string) (string, bool) {
 	}
 }
 
-func ollamaBaseURL() string {
-	return ollamaBaseURLWithEnv(nil)
-}
-
 func ollamaBaseURLWithEnv(env map[string]string) string {
 	value := firstEnvValue(env, "DBRAIN_OLLAMA_BASE_URL", "OLLAMA_BASE_URL", "OLLAMA_HOST", "OPENAI_BASE_URL")
 	if value == "" {
@@ -724,7 +723,7 @@ func ollamaNativeBaseURLWithEnv(env map[string]string) string {
 }
 
 func ollamaAPIKeyWithEnv(env map[string]string) string {
-	value := firstEnvValue(env, "DBRAIN_OLLAMA_API_KEY", "OPENAI_API_KEY")
+	value := firstEnvValue(env, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY", "OPENAI_API_KEY")
 	if value == "" {
 		value = defaultOllamaAPIKey
 	}
@@ -784,6 +783,37 @@ func cloneEnv(env map[string]string) map[string]string {
 	out := make(map[string]string, len(env))
 	for key, value := range env {
 		out[key] = value
+	}
+	return out
+}
+
+func envWithRuntimeConfig(rootDir string, env map[string]string) map[string]string {
+	if strings.TrimSpace(rootDir) == "" {
+		return env
+	}
+	out := cloneEnv(env)
+	for _, keys := range [][]string{
+		{"DBRAIN_OLLAMA_BASE_URL", "OLLAMA_BASE_URL", "OLLAMA_HOST"},
+		{"DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY"},
+		{"OPENAI_BASE_URL"},
+		{"OPENAI_API_KEY"},
+		{"OPENAI_USE_CHAT_COMPLETIONS"},
+		{"DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"},
+		{"DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"},
+		{"DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER"},
+		{"DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE"},
+		{"DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE"},
+	} {
+		value := runtimeenv.FirstNonEmpty(rootDir, keys...)
+		if value == "" {
+			continue
+		}
+		for _, key := range keys {
+			if strings.TrimSpace(out[key]) == "" {
+				out[key] = value
+				break
+			}
+		}
 	}
 	return out
 }

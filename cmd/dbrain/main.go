@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"dbrain/internal/app"
+	"github.com/darron/dbrain/internal/app"
 )
 
 func main() {

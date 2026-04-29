@@ -81,8 +81,7 @@ When item-level summary/OCR is added:
 
 ### Native X bookmarks
 
-Prefer the native cookie-backed X bookmark importer over the legacy FT import
-path whenever possible.
+Use the native cookie-backed X bookmark importer for X bookmark ingestion.
 
 - use cookie-backed GraphQL/session flows, not OAuth-only assumptions
 - incremental sync should be overlap-based on known tweet IDs/source keys
@@ -214,6 +213,19 @@ the bug reappeared.
 - if the bug crossed stage boundaries, add the smallest integration-style test
   that proves the pipeline behavior stays fixed
 - do not rely on memory or chat history to keep regressions from returning
+
+### Keep the changelog current
+
+When adding, fixing, or materially changing user-visible behavior, update
+`CHANGELOG.md` in the same change.
+
+- include features, bug fixes, CLI/config changes, schema/pipeline changes,
+  operational behavior changes, MCP/tooling changes, and notable documentation
+  changes
+- use the existing dated heading style and keep entries short but specific
+- mention important verification or affected areas when it helps future readers
+- if a change intentionally does not need a changelog entry, be ready to explain
+  why in the final response or PR notes
 
 ### Prefer local models when practical
 

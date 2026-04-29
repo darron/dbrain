@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
-	"dbrain/internal/syncjob"
-	"dbrain/internal/version"
-	"dbrain/internal/xmediatranscribe"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/syncjob"
+	"github.com/darron/dbrain/internal/version"
+	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
 
 func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
@@ -36,7 +36,12 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "eval", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get", "categorize", "version"} {
+	for _, value := range []string{"import", "sync", "sqlite", "config", "eval", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get", "categorize", "version"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected help output to contain %q, got %q", value, output)
+		}
+	}
+	for _, value := range []string{"DBRAIN_ROOT", "dbrain config env"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -118,6 +123,163 @@ func TestVersionCommandJSON(t *testing.T) {
 	}
 }
 
+func TestConfigPathsCommandJSON(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "config", "paths", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	for key, want := range map[string]string{
+		"config_dir":      cfg.ConfigDir,
+		"config_file":     cfg.ConfigPath,
+		"categories_file": cfg.CategoriesPath,
+		"data_dir":        cfg.DataDir,
+		"database":        cfg.DBPath,
+		"vault_dir":       cfg.VaultDir,
+		"temp_dir":        cfg.TempDir,
+		"cache_dir":       cfg.CacheDir,
+		"log_dir":         cfg.LogDir,
+	} {
+		if payload[key] != want {
+			t.Fatalf("%s = %q, want %q", key, payload[key], want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestConfigPathsCommandUsesRootEnv(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Setenv(rootEnvVar, root)
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--no-debug", "config", "paths", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	if payload["database"] != cfg.DBPath {
+		t.Fatalf("database = %q, want %q", payload["database"], cfg.DBPath)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestConfigPathsCommandRootFlagOverridesRootEnv(t *testing.T) {
+	envRoot := t.TempDir()
+	flagRoot := t.TempDir()
+	cfg, err := config.Load(flagRoot)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Setenv(rootEnvVar, envRoot)
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", flagRoot, "--no-debug", "config", "paths", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	if payload["database"] != cfg.DBPath {
+		t.Fatalf("database = %q, want %q", payload["database"], cfg.DBPath)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestConfigEnvCommandIncludesKnownEnvVars(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--no-debug", "config", "env"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	for _, value := range []string{"DBRAIN_ROOT", "DBRAIN_OPENROUTER_API_KEY", "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_R2_SECRET_ACCESS_KEY", "config.yaml"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected config env output to contain %q, got %q", value, output)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestConfigEnvCommandMarkdownOutput(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--no-debug", "config", "env", "--markdown"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	for _, value := range []string{"| Environment variable(s) | config.yaml key | Default | Purpose |", "`DBRAIN_ROOT`", "`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected markdown config env output to contain %q, got %q", value, output)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
 func TestEvalMCPWriteExample(t *testing.T) {
 	t.Parallel()
 
@@ -174,7 +336,7 @@ func TestImportCommandHelpIncludesYouTubeImporter(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"ft", "youtube"} {
+	for _, value := range []string{"github", "x-bookmarks", "youtube"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected import help output to contain %q, got %q", value, output)
 		}
@@ -2266,13 +2428,13 @@ func TestStatsPipelineCommandJSON(t *testing.T) {
 	}
 
 	webItem, err := st.UpsertItem(context.Background(), model.Item{
-		SourceKey:    "ft:pipeline-web",
-		SourceType:   "ft_bookmark",
+		SourceKey:    "manual:pipeline-web",
+		SourceType:   "manual_link",
 		ExternalID:   "pipeline-web",
 		CanonicalURL: "https://example.com/items/pipeline-web",
 		Title:        "web source item",
 		ContentHash:  "pipeline-web-item-hash",
-		NotePath:     "items/ft/pipeline-web.md",
+		NotePath:     "items/manual/pipeline-web.md",
 		RawJSON:      `{}`,
 		ImportedAt:   now,
 		UpdatedAt:    now,

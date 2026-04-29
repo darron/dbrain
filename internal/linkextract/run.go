@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)

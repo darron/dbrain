@@ -13,9 +13,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"dbrain/internal/itemhash"
-	"dbrain/internal/model"
-	"dbrain/internal/xpost"
+	"github.com/darron/dbrain/internal/itemhash"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/xpost"
 )
 
 const driverName = "sqlite"

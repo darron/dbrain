@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/sqlitearchive"
+	"github.com/darron/dbrain/internal/sqlitearchive"
 )
 
 func newSQLiteCommand(root *rootOptions) *cobra.Command {

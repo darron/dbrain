@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func TestRunSourcesDrainsQueueAndStops(t *testing.T) {

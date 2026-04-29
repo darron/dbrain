@@ -21,13 +21,13 @@ import (
 	"sync"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/model"
-	"dbrain/internal/runtimeenv"
-	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
-	"dbrain/internal/summaryconfig"
-	"dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/summarizecli"
+	"github.com/darron/dbrain/internal/summaryconfig"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 const SummaryPromptVersion = "dbrain-v1"
@@ -612,6 +612,7 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 			Length:    opts.Length,
 			Language:  opts.Language,
 			Timeout:   opts.Timeout,
+			RootDir:   cfg.RootDir,
 			Env:       sourceEnv,
 			Args:      sourceArgs,
 		})
@@ -699,6 +700,7 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		Length:    opts.Length,
 		Language:  opts.Language,
 		Timeout:   opts.Timeout,
+		RootDir:   cfg.RootDir,
 		Env:       sourceEnv,
 		Args:      sourceArgs,
 	})
@@ -1327,6 +1329,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 		Length:    opts.Length,
 		Language:  opts.Language,
 		Timeout:   opts.Timeout,
+		RootDir:   cfg.RootDir,
 	})
 	if err != nil {
 		if isUserCancellation(ctx, err) {
@@ -1373,6 +1376,7 @@ func summarizeExtract(ctx context.Context, cfg config.Config, source model.Sourc
 		Length:    opts.Length,
 		Language:  opts.Language,
 		Timeout:   opts.Timeout,
+		RootDir:   cfg.RootDir,
 		Env:       env,
 	})
 }

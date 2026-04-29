@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/linkextract"
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/linkextract"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
 )
 
 type Options struct {

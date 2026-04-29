@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 func (s *Store) ListMediaAssetsForArchive(ctx context.Context, limit int, force bool) ([]model.MediaAsset, error) {

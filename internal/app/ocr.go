@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/store"
-	"dbrain/internal/xphotoocr"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/xphotoocr"
 )
 
 func newOCRCommand(root *rootOptions) *cobra.Command {

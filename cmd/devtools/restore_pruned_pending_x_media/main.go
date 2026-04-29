@@ -13,9 +13,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"dbrain/internal/config"
-	"dbrain/internal/mediadownload"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mediadownload"
+	"github.com/darron/dbrain/internal/store"
 )
 
 const pendingTranscriptQuery = `

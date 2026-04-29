@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newGetCommand(root *rootOptions) *cobra.Command {

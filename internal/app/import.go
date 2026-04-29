@@ -2,71 +2,13 @@ package app
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/ftimport"
-	"dbrain/internal/store"
-	"dbrain/internal/youtubeimport"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/youtubeimport"
 )
-
-func newImportFTCommand(root *rootOptions) *cobra.Command {
-	home, _ := os.UserHomeDir()
-
-	var source string
-	var limit int
-	var jsonOut bool
-
-	cmd := &cobra.Command{
-		Use:   "ft",
-		Short: "Import fieldtheory bookmarks",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
-			if err != nil {
-				return err
-			}
-
-			st, err := store.Open(cfg.DBPath)
-			if err != nil {
-				return err
-			}
-			defer func() {
-				_ = st.Close()
-			}()
-
-			stats, err := ftimport.Run(cmd.Context(), cfg, st, ftimport.Options{
-				SourcePath: source,
-				Limit:      limit,
-			})
-			if err != nil {
-				return err
-			}
-
-			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), stats)
-			}
-
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Imported %d bookmarks\n", stats.Processed)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created: %d\n", stats.Created)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updated: %d\n", stats.Updated)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Unchanged: %d\n", stats.Unchanged)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Rendered notes: %d\n", stats.Rendered)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Brain DB: %s\n", cfg.DBPath)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Vault: %s\n", cfg.VaultDir)
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&source, "source", filepath.Join(home, ".ft-bookmarks", "bookmarks.db"), "Path to ft bookmarks.db")
-	cmd.Flags().IntVar(&limit, "limit", 0, "Limit imported rows for smoke testing")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print import stats as JSON")
-
-	return cmd
-}
 
 func newImportYouTubeCommand(root *rootOptions) *cobra.Command {
 	var browser string

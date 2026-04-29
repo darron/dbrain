@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"dbrain/internal/entities"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
 )
 
 type Options struct {

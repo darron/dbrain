@@ -1,0 +1,244 @@
+# dbrain MCP
+
+`dbrain serve mcp` exposes the local `dbrain` corpus over MCP stdio so agents
+can search, inspect, and research against the collector's saved material.
+
+The MCP server is read-only. SQLite remains the working source of truth, and
+the server returns DB-backed evidence by default instead of relying on rendered
+Markdown freshness.
+
+## Surface
+
+The server provides:
+
+- **Tools**: `search`, `get`, `get many`, `ask`, `entity map`, `related`,
+  `stats items`, `stats sources`, `stats activity`, `stats backlog`,
+  `topic map`, `topic brief`, and `research pack`.
+- **Resources**: `dbrain://mcp/overview`, `dbrain://stats/activity`,
+  `dbrain://stats/backlog`, `dbrain://stats/items`, and
+  `dbrain://stats/sources`.
+- **Resource templates**: `dbrain://item/{lookup}`,
+  `dbrain://source/{lookup}`, `dbrain://search/{query}`,
+  `dbrain://entity/{query}`, `dbrain://topic/{query}`,
+  `dbrain://topic-note/{query}`, `dbrain://research/{query}`, and queryable
+  `dbrain://stats/...` templates.
+- **Prompts**: `brain_research`, `brain_browse`, `brain_entity_browse`,
+  `brain_topic_map`, `brain_topic_brief`, and `brain_status`.
+
+If a client needs to discover the MCP surface from inside the protocol, start
+with:
+
+- Resource: `dbrain://mcp/overview`
+- Prompt: `brain_status` or `brain_research`
+
+## Research Semantics
+
+MCP research should answer from the collector's saved corpus. The corpus
+reflects what that person found valuable, interesting, or noteworthy, including
+their own selection bias. Agents should characterize the saved evidence
+faithfully and cite it. They should not inject external balance, alternate
+viewpoints, or model prior knowledge unless the user explicitly asks for that.
+
+`ask` defaults to retrieval-only in the MCP surface so agent clients do not
+silently spend model usage unless they explicitly request answer synthesis. The
+tool list includes `outputSchema` metadata so MCP clients can reason about the
+structured payloads without learning them from examples.
+
+Evidence excerpts are query-aware. When a match appears deep in a raw source
+extract, item OCR text, or media transcript stored as article text, the
+retrieved evidence window is centered near the match instead of blindly
+returning the start of the raw document. Item-level derived summaries are also
+surfaced as summaries in retrieval evidence, while raw OCR, transcript, and text
+remain available through `dbrain_get`.
+
+## Core Tools
+
+### `dbrain_research_pack`
+
+Use `dbrain_research_pack` first for broad questions. It returns retrieve-only
+evidence plus:
+
+- a compact query plan with the text query and tag aliases used
+- coverage counts by kind, source type, and tag
+- exact user-tag match counts
+- broad item/source text-match counts
+- representative `exact_tag_evidence` examples from saved items carrying those
+  tags
+- suggested follow-up tools
+- retrieval score explanations for each evidence row
+- a grouped topic brief when the question is broad enough to infer a topic
+
+The `coverage.recall_note` field warns when returned evidence is only a capped
+working set relative to the larger matching corpus. That lets an agent start
+from one read-only call instead of manually orchestrating `ask`, `search`,
+`topic brief`, and follow-up note fetches.
+
+`topic`, `include_topic_brief`, `include_related`, and `max_chars_per_doc`
+control how much context the pack returns. Each evidence row's `retrieval`
+block includes `matched_terms` and `missing_terms`; multi-term queries penalize
+rows that miss focused terms, so broad tag matches do not outrank direct
+matches on rarer query terms.
+
+Source documents are searched as their own candidate stream, so
+`source_types=["web"]` or `["youtube"]` can return direct `src:...` evidence
+even when item hits would otherwise fill the candidate window.
+
+### `dbrain_get`
+
+`dbrain_get` is DB-first. By default it returns slim item/source metadata and
+capped `content_sections` from SQLite, not rendered Markdown.
+
+Supported content modes:
+
+- `brief`: metadata only
+- `evidence`: normal research context
+- `raw`: raw DB extracts, transcripts, OCR, and JSON
+- `rendered`: rendered Markdown note shape for clients that specifically need
+  it
+
+`max_chars_per_section` controls per-section output size, with a hard cap to
+avoid accidental huge MCP responses. Pass `query` with `content_mode=evidence`
+to window each text section around matching terms instead of returning the
+beginning of long extracts.
+
+Evidence mode includes a capped DB graph expansion for context such as quoted X
+posts, linked sources, and source backlinks. X media enrichments are exposed as
+first-class evidence sections: image OCR appears as `ocr_text`, and video/audio
+transcript text stored by the X media transcription stage appears as
+`x_media_transcript` instead of generic article text.
+
+### `dbrain_get_many`
+
+Use `dbrain_get_many` after a search or research pack when an agent needs to
+inspect several evidence rows in one MCP round trip. It uses the same
+DB-backed content modes and section caps as `dbrain_get`, and returns partial
+per-lookup errors without failing the whole batch.
+
+Suggested follow-up arguments from `dbrain_research_pack` include the research
+query so detail fetches keep the same query-windowing behavior.
+
+## Tags
+
+Item `user_tags` are indexed for search and returned in MCP search and evidence
+payloads. They are research hints: agents can search by tag names, use tags to
+disambiguate broad questions, and treat tag matches as stronger retrieval
+signals without replacing the underlying source text.
+
+Multi-word research questions also check the matching hyphenated tag alias. For
+example, `Mark Carney` checks `mark-carney`. `dbrain_search` reports the tag
+aliases it checked plus exact tag counts, and `dbrain_search` /
+`dbrain_research_pack` append exact-tag hits to normal text-search evidence
+before deduping.
+
+## Workflows
+
+- **Research**: `dbrain_research_pack` first, then `dbrain_get_many`,
+  `dbrain_get`, or `dbrain_related` for deeper inspection.
+- **Graph browsing**: `dbrain_get` plus `dbrain_related`.
+- **Entity browsing**: `dbrain_entity_map` or `brain_entity_browse`, then
+  `dbrain_get` on the most relevant entity note.
+- **Topic mapping**: `dbrain_topic_map` or `brain_topic_map`, plus
+  `dbrain_get` when you want to inspect individual nodes more closely.
+- **Topic briefs**: `dbrain_topic_brief` or `brain_topic_brief`, plus
+  `dbrain://topic-note/{query}` when a rendered note preview is useful.
+- **Pipeline monitoring**: `dbrain_stats_activity`, `dbrain_stats_backlog`, and
+  optionally `dbrain_stats_sources`.
+
+## Eval
+
+For local retrieval quality checks, create a corpus-specific eval file:
+
+```sh
+dbrain eval mcp --write-example evals/local/mcp.json
+dbrain eval mcp --file evals/local/mcp.json
+```
+
+`evals/mcp.example.json` is a checked-in template. Keep real corpus-specific
+files under `evals/local/*.json`; those files are ignored because source keys,
+saved URLs, and expected text are specific to one person's brain database.
+
+Eval cases can require a specific top source key, any top key from an
+acceptable set, specific source keys anywhere in the evidence, minimum evidence
+counts, expected text, expected top-result text, representative
+`exact_tag_evidence` saved-item examples, forbidden source keys or noisy text,
+source-type filters, related-evidence expansion, top-result matched or missing
+terms, and rough latency budgets.
+
+Exact-tag assertions exercise the same `dbrain_research_pack` path exposed to
+MCP clients; other cases use the lighter retrieval-only path. This is
+intentionally corpus-local: open-source users should encode their own
+known-good queries rather than relying on project-specific fixture data.
+
+## Importer Contract
+
+MCP retrieval is intentionally source-agnostic. New importers such as Bluesky,
+Apple Podcasts, RSS feeds, or read-it-later tools should become visible to MCP
+without custom MCP code when they write into the shared data model:
+
+- Create an `items` row for each saved signal with a stable `source_key`,
+  `source_type`, `external_id`, canonical URL, title, source text, author
+  metadata, timestamps, note path, raw JSON, and content hash.
+- Store collector-assigned or model-assigned tags in `user_tags`; multi-word
+  entity tags should use the shared hyphenated form, for example
+  `mark-carney`.
+- Store raw extracted linked-source text in `sources.extracted_text` and
+  derived source summaries in `sources.summary_text`; do not replace raw text
+  with summaries.
+- Link items to sources through source-link records so MCP graph expansion can
+  move from a post/bookmark/episode to the referenced article, repository,
+  paper, or transcript source.
+- Store media-derived text in the existing item enrichment fields where
+  possible: image text in `ocr_text`, short-form video/audio transcripts in
+  `article_text` with `article_title = "X Media Transcript"` until a generic
+  transcript field exists, and derived item summaries in `summary_text`.
+- Keep source-specific metadata in raw JSON or source-specific columns, but make
+  the durable searchable evidence available through the common text, summary,
+  tag, and link fields.
+
+After adding a new importer, add at least one MCP eval case that proves its
+strongest evidence is discoverable by text query, tag query, source-type
+filter, and any important derived text such as OCR or transcript content.
+
+## Client Config
+
+A generic MCP client config looks like this:
+
+```json
+{
+  "mcpServers": {
+    "dbrain": {
+      "command": "dbrain",
+      "args": ["serve", "mcp"],
+      "cwd": "/Users/darron/src/dbrain"
+    }
+  }
+}
+```
+
+For local development, use an absolute binary path and an explicit root:
+
+```json
+{
+  "mcpServers": {
+    "dbrain": {
+      "command": "/Users/darron/src/dbrain/bin/dbrain",
+      "args": ["--root", "/Users/darron/src/dbrain", "serve", "mcp"]
+    }
+  }
+}
+```
+
+MCP protocol responses are written to stdout. Operational request logs are
+written to stderr so they do not corrupt the stdio protocol. A running server
+should emit one short debug line per request, including the MCP method, tool
+name when present, status, and duration.
+
+## Skill
+
+This repo includes a Codex skill for agents at `skills/dbrain-mcp/SKILL.md`.
+To install it locally for Codex, copy the `skills/dbrain-mcp` directory into
+your Codex skills directory, for example `~/.codex/skills/dbrain-mcp`.
+
+The skill includes the recommended Codex MCP `~/.codex/config.toml` stanza. Use
+absolute paths for both the binary and `--root`, then restart Codex so the
+`dbrain_*` tools are discovered.

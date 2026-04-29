@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"dbrain/internal/config"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func TestParseBookmarksResponse(t *testing.T) {

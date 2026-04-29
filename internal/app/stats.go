@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/summarizecli"
 )
 
 func newStatsCommand(root *rootOptions) *cobra.Command {

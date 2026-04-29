@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"dbrain/internal/ask"
-	"dbrain/internal/config"
-	"dbrain/internal/mcpserver"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/ask"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mcpserver"
+	"github.com/darron/dbrain/internal/store"
 )
 
 type Case struct {

@@ -14,7 +14,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"dbrain/internal/config"
+	"github.com/darron/dbrain/internal/config"
 )
 
 const (

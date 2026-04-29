@@ -2,14 +2,13 @@ package app
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/categoryvocab"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/categoryvocab"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func newCategorizeAnalyzeCommand(root *rootOptions) *cobra.Command {
@@ -49,8 +48,7 @@ func newCategorizeAnalyzeCommand(root *rootOptions) *cobra.Command {
 			}
 
 			// Apply existing vocab so analysis reflects current state.
-			vocabPath := filepath.Join(cfg.RootDir, "categories.yaml")
-			vocab, _ := categoryvocab.Load(vocabPath)
+			vocab, _ := categoryvocab.Load(cfg.CategoriesPath)
 
 			if draft {
 				return writeDraftYAML(cmd, counts, vocab, minCount)

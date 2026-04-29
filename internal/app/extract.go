@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dbrain/internal/linkextract"
-	"dbrain/internal/sourceenrich"
-	"dbrain/internal/store"
+	"github.com/darron/dbrain/internal/linkextract"
+	"github.com/darron/dbrain/internal/sourceenrich"
+	"github.com/darron/dbrain/internal/store"
 )
 
 var (

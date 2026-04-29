@@ -10,12 +10,12 @@ import (
 	"time"
 	"unicode"
 
-	"dbrain/internal/config"
-	"dbrain/internal/entities"
-	"dbrain/internal/model"
-	"dbrain/internal/store"
-	"dbrain/internal/summarizecli"
-	"dbrain/internal/summaryconfig"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/summarizecli"
+	"github.com/darron/dbrain/internal/summaryconfig"
 )
 
 const defaultMaxCharsPerDoc = 1800
@@ -254,6 +254,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 		Prompt:    answerPrompt,
 		Length:    opts.Length,
 		Timeout:   opts.Timeout,
+		RootDir:   cfg.RootDir,
 	})
 	if err != nil {
 		return Response{}, err

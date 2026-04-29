@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"dbrain/internal/model"
+	"github.com/darron/dbrain/internal/model"
 )
 
 // ListCategorizedItems returns all items that have a non-empty user_tags field.
