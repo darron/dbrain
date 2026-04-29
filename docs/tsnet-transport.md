@@ -1,6 +1,6 @@
 # tsnet Remote Transport Proposal
 
-Status: proposal
+Status: implementation in progress
 Date: 2026-04-29
 
 ## Summary
@@ -660,7 +660,7 @@ Add these after the basic transport works:
 
 ```sh
 dbrain tsnet status
-dbrain tsnet reset --hostname dbrain
+dbrain tsnet reset --tsnet-hostname dbrain
 ```
 
 `--hostname dbrain` is a default-hostname shortcut. The command still resolves

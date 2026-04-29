@@ -106,12 +106,13 @@ func NewRootCommand() *cobra.Command {
 		Short: "Serve local interfaces",
 		RunE:  helpCommand,
 	}
-	serveCmd.AddCommand(newServeMCPCommand(opts), newServeWebCommand(opts))
+	serveCmd.AddCommand(newServeMCPCommand(opts), newServeRemoteCommand(opts), newServeWebCommand(opts))
 
 	rootCmd.AddCommand(
 		newArchiveCommand(opts),
 		newConfigCommand(opts),
 		newSQLiteCommand(opts),
+		newTSNetCommand(opts),
 		importCmd,
 		newSyncCommand(opts),
 		newEvalCommand(opts),

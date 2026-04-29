@@ -2,6 +2,7 @@ package runtimeenv
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,46 +13,99 @@ import (
 
 func FirstNonEmpty(rootDir string, keys ...string) string {
 	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			return value
-		}
-		if value := loadEnvValueFromFiles(rootDir, key); value != "" {
-			return value
-		}
-		if value := loadConfigValue(rootDir, key); value != "" {
+		if value, ok := Lookup(rootDir, key); ok {
 			return value
 		}
 	}
 	return ""
 }
 
+func Lookup(rootDir string, key string) (string, bool) {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value, true
+	}
+	if value := loadEnvValueFromFiles(rootDir, key); value != "" {
+		return value, true
+	}
+	if value, ok := loadConfigValueOK(rootDir, key); ok && strings.TrimSpace(value) != "" {
+		return value, true
+	}
+	return "", false
+}
+
 func FirstBool(rootDir string, keys ...string) bool {
 	for _, key := range keys {
-		value := strings.TrimSpace(os.Getenv(key))
-		if value == "" {
-			if fileValue := loadEnvValueFromFiles(rootDir, key); fileValue != "" {
-				value = fileValue
-			}
-		}
-		if value == "" {
-			if configValue := loadConfigValue(rootDir, key); configValue != "" {
-				value = configValue
-			}
-		}
-		if value == "" {
-			continue
-		}
-		if parsed, err := strconv.ParseBool(value); err == nil {
+		if parsed, ok := LookupBool(rootDir, key); ok {
 			return parsed
-		}
-		switch strings.ToLower(value) {
-		case "yes", "on":
-			return true
-		case "no", "off":
-			return false
 		}
 	}
 	return false
+}
+
+func FirstBoolDefault(rootDir string, fallback bool, keys ...string) bool {
+	for _, key := range keys {
+		if parsed, ok := LookupBool(rootDir, key); ok {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func LookupBool(rootDir string, key string) (bool, bool) {
+	value, ok := Lookup(rootDir, key)
+	if !ok {
+		return false, false
+	}
+	if parsed, err := strconv.ParseBool(value); err == nil {
+		return parsed, true
+	}
+	switch strings.ToLower(value) {
+	case "yes", "on":
+		return true, true
+	case "no", "off":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func FirstList(rootDir string, keys ...string) []string {
+	for _, key := range keys {
+		if values := LookupList(rootDir, key); len(values) > 0 {
+			return values
+		}
+	}
+	return nil
+}
+
+func LookupList(rootDir string, key string) []string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return splitList(value)
+	}
+	if value := loadEnvValueFromFiles(rootDir, key); value != "" {
+		return splitList(value)
+	}
+	values, ok := loadConfigList(rootDir, key)
+	if !ok {
+		return nil
+	}
+	return values
+}
+
+func ConfigList(rootDir string, key string) []string {
+	values, _ := loadConfigList(rootDir, key)
+	return values
+}
+
+func splitList(value string) []string {
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
 }
 
 func loadEnvValueFromFiles(rootDir string, key string) string {
@@ -68,9 +122,9 @@ func loadEnvValueFromFiles(rootDir string, key string) string {
 	return ""
 }
 
-func loadConfigValue(rootDir string, key string) string {
+func loadConfigValueOK(rootDir string, key string) (string, bool) {
 	if strings.TrimSpace(rootDir) == "" || strings.TrimSpace(key) == "" {
-		return ""
+		return "", false
 	}
 
 	cfg, ok := loadConfigFile(filepath.Join(rootDir, "config.yaml"))
@@ -78,15 +132,39 @@ func loadConfigValue(rootDir string, key string) string {
 		cfg, ok = loadConfigFile(filepath.Join(rootDir, "config.yml"))
 	}
 	if !ok {
-		return ""
+		return "", false
 	}
 
 	for _, path := range configValuePaths(key) {
-		if value := configPathValue(cfg, path); value != "" {
-			return value
+		if value, ok := configPathValueOK(cfg, path); ok && value != "" {
+			return value, true
 		}
 	}
-	return ""
+	return "", false
+}
+
+func loadConfigList(rootDir string, key string) ([]string, bool) {
+	if strings.TrimSpace(rootDir) == "" || strings.TrimSpace(key) == "" {
+		return nil, false
+	}
+
+	cfg, ok := loadConfigFile(filepath.Join(rootDir, "config.yaml"))
+	if !ok {
+		cfg, ok = loadConfigFile(filepath.Join(rootDir, "config.yml"))
+	}
+	if !ok {
+		return nil, false
+	}
+
+	for _, path := range configValuePaths(key) {
+		if values, ok := configPathList(cfg, path); ok {
+			return values, true
+		}
+		if value, ok := configPathValueOK(cfg, path); ok && value != "" {
+			return splitList(value), true
+		}
+	}
+	return nil, false
 }
 
 func loadConfigFile(path string) (map[string]any, bool) {
@@ -149,34 +227,61 @@ func shortKeyPaths(key string) [][]string {
 	return paths
 }
 
-func configPathValue(cfg map[string]any, path []string) string {
+func configPathValueOK(cfg map[string]any, path []string) (string, bool) {
 	var current any = cfg
 	for _, part := range path {
 		m, ok := current.(map[string]any)
 		if !ok {
-			return ""
+			return "", false
 		}
 		next, ok := lookupMapValue(m, part)
 		if !ok {
-			return ""
+			return "", false
 		}
 		current = next
 	}
 
 	switch value := current.(type) {
 	case string:
-		return strings.TrimSpace(value)
+		return strings.TrimSpace(value), true
 	case bool:
-		return strconv.FormatBool(value)
+		return strconv.FormatBool(value), true
 	case int:
-		return strconv.Itoa(value)
+		return strconv.Itoa(value), true
 	case int64:
-		return strconv.FormatInt(value, 10)
+		return strconv.FormatInt(value, 10), true
 	case float64:
-		return strconv.FormatFloat(value, 'f', -1, 64)
+		return strconv.FormatFloat(value, 'f', -1, 64), true
 	default:
-		return ""
+		return "", false
 	}
+}
+
+func configPathList(cfg map[string]any, path []string) ([]string, bool) {
+	var current any = cfg
+	for _, part := range path {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		next, ok := lookupMapValue(m, part)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+
+	raw, ok := current.([]any)
+	if !ok {
+		return nil, false
+	}
+	values := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		if value := strings.TrimSpace(fmt.Sprint(entry)); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values, true
 }
 
 func lookupMapValue(m map[string]any, key string) (any, bool) {

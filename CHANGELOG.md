@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Built-In tsnet Remote Serving (2026-04-29)
+
+- **Remote web and MCP**: Added `dbrain serve remote` to expose the existing read/write web UI and read-only MCP endpoint from one built-in Tailscale `tsnet` node.
+- **MCP compatibility**: Added `dbrain serve mcp --transport tsnet` for MCP-only tailnet serving while keeping stdio as the default local-agent transport.
+- **State safety**: Added durable tsnet state under `<data_dir>/tsnet/<hostname>`, 0700 state-dir validation, advisory locking, sync-folder warnings, and guarded `dbrain tsnet status` / `dbrain tsnet reset` commands.
+- **Security**: Added typed bootstrap secret refs (`env:`, `op://`, `keychain://`), YAML-only command escape hatch with explicit opt-in, remote-only Origin checks, security headers, first-run auth URL logging, and best-effort Tailscale identity logging through `WhoIs`.
+- **Operator UX**: Browser `GET /mcp` now returns a clear JSON-RPC POST diagnostic, and repeated tsnet auth log lines are deduped while preserving the login URL.
+- **Location**: `internal/remote/`, `internal/app/serve.go`, `internal/app/tsnet.go`, `config.yaml.sample`, `docs/tsnet-transport.md`, `README.md`
+
 ### Streamable HTTP MCP Transport (2026-04-29)
 
 - **MCP transport**: Added `dbrain serve mcp --transport http` as a parallel stateless Streamable HTTP transport while keeping stdio as the default local-agent path.

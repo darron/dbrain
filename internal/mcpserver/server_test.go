@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -201,6 +202,15 @@ func TestHTTPHandlerStreamableJSONTransport(t *testing.T) {
 	defer func() { _ = getResp.Body.Close() }()
 	if getResp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("expected GET 405, got %d", getResp.StatusCode)
+	}
+	getBody, err := io.ReadAll(getResp.Body)
+	if err != nil {
+		t.Fatalf("read GET body: %v", err)
+	}
+	for _, expected := range []string{"dbrain MCP endpoint is reachable", "JSON-RPC over HTTP POST", httpServer.URL + "/mcp", "tools/list"} {
+		if !strings.Contains(string(getBody), expected) {
+			t.Fatalf("expected GET body to contain %q, got %q", expected, string(getBody))
+		}
 	}
 }
 
