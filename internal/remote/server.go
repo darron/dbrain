@@ -10,13 +10,13 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mcpserver"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/web"
-	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
@@ -34,7 +34,43 @@ type whoIsClient interface {
 	WhoIs(ctx context.Context, remoteAddr string) (*apitype.WhoIsResponse, error)
 }
 
+type remoteNode interface {
+	Up(ctx context.Context) (*ipnstate.Status, error)
+	LocalClient() (whoIsClient, error)
+	Listen(network string, addr string) (net.Listener, error)
+	ListenTLS(network string, addr string) (net.Listener, error)
+	Close() error
+}
+
+type stateLock interface {
+	Close() error
+}
+
+type remoteDeps struct {
+	prepareStateDir  func(string) (string, error)
+	acquireStateLock func(string) (stateLock, error)
+	resolveAuthKey   func(context.Context, Options) (SecretResult, error)
+	newNode          func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode
+	buildHandler     func(config.Config, Options, whoIsClient) (http.Handler, func(), error)
+}
+
 func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer) error {
+	return serveWithDeps(ctx, cfg, opts, logOut, defaultRemoteDeps())
+}
+
+func defaultRemoteDeps() remoteDeps {
+	return remoteDeps{
+		prepareStateDir: PrepareStateDir,
+		acquireStateLock: func(stateDir string) (stateLock, error) {
+			return AcquireStateLock(stateDir)
+		},
+		resolveAuthKey: ResolveAuthKey,
+		newNode:        newTSNetNode,
+		buildHandler:   buildHandler,
+	}
+}
+
+func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer, deps remoteDeps) error {
 	if logOut == nil {
 		logOut = os.Stderr
 	}
@@ -42,7 +78,7 @@ func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Write
 		return err
 	}
 
-	stateDir, err := PrepareStateDir(opts.StateDir)
+	stateDir, err := deps.prepareStateDir(opts.StateDir)
 	if err != nil {
 		return err
 	}
@@ -51,7 +87,7 @@ func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Write
 		_, _ = fmt.Fprintf(logOut, "WARNING tsnet state dir appears to be under a sync folder: %s\n", stateDir)
 	}
 
-	lock, err := AcquireStateLock(stateDir)
+	lock, err := deps.acquireStateLock(stateDir)
 	if err != nil {
 		return err
 	}
@@ -62,7 +98,7 @@ func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Write
 		}
 	}()
 
-	auth, err := ResolveAuthKey(ctx, opts)
+	auth, err := deps.resolveAuthKey(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -71,45 +107,33 @@ func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Write
 	}
 
 	userLogf := newUserLogger(logOut)
-	ts := &tsnet.Server{
-		Dir:           stateDir,
-		Hostname:      opts.Hostname,
-		AuthKey:       auth.Value,
-		AdvertiseTags: opts.AdvertiseTags,
-		ControlURL:    opts.ControlURL,
-		UserLogf:      userLogf,
-	}
-	if opts.Verbose {
-		ts.Logf = func(format string, args ...any) {
-			_, _ = fmt.Fprintf(logOut, "tsnet debug: "+format+"\n", args...)
-		}
-	}
-	tsClosed := false
+	node := deps.newNode(opts, auth, userLogf, logOut)
+	nodeClosed := false
 	defer func() {
-		if !tsClosed {
-			_ = ts.Close()
+		if !nodeClosed {
+			_ = node.Close()
 		}
 	}()
 
 	upCtx, cancel := context.WithTimeout(ctx, opts.StartupTimeout)
-	status, err := ts.Up(upCtx)
+	status, err := node.Up(upCtx)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("start tsnet: %w", err)
 	}
 
-	lc, err := ts.LocalClient()
+	lc, err := node.LocalClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(logOut, "WARNING tsnet LocalClient unavailable; request identity logging will use remote addresses: %v\n", err)
 	}
 
-	handler, cleanup, err := buildHandler(cfg, opts, lc)
+	handler, cleanup, err := deps.buildHandler(cfg, opts, lc)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	listener, err := listen(ts, opts)
+	listener, err := listen(node, opts)
 	if err != nil {
 		return err
 	}
@@ -139,14 +163,14 @@ func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Write
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		shutdownErr := httpServer.Shutdown(shutdownCtx)
-		closeErr := ts.Close()
-		tsClosed = true
+		closeErr := node.Close()
+		nodeClosed = true
 		lockErr := lock.Close()
 		lockHeld = false
 		return firstErr(shutdownErr, closeErr, lockErr, ctx.Err())
 	case err := <-errCh:
-		closeErr := ts.Close()
-		tsClosed = true
+		closeErr := node.Close()
+		nodeClosed = true
 		lockErr := lock.Close()
 		lockHeld = false
 		if errors.Is(err, http.ErrServerClosed) {
@@ -156,7 +180,7 @@ func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Write
 	}
 }
 
-func buildHandler(cfg config.Config, opts Options, lc *local.Client) (http.Handler, func(), error) {
+func buildHandler(cfg config.Config, opts Options, lc whoIsClient) (http.Handler, func(), error) {
 	var closers []io.Closer
 	cleanup := func() {
 		for i := len(closers) - 1; i >= 0; i-- {
@@ -208,11 +232,52 @@ func buildHandler(cfg config.Config, opts Options, lc *local.Client) (http.Handl
 	return handler, cleanup, nil
 }
 
-func listen(ts *tsnet.Server, opts Options) (net.Listener, error) {
+func listen(ts remoteNode, opts Options) (net.Listener, error) {
 	if opts.TLS {
 		return ts.ListenTLS("tcp", opts.Listen)
 	}
 	return ts.Listen("tcp", opts.Listen)
+}
+
+type tsnetNode struct {
+	server *tsnet.Server
+}
+
+func newTSNetNode(opts Options, auth SecretResult, userLogf func(string, ...any), logOut io.Writer) remoteNode {
+	ts := &tsnet.Server{
+		Dir:           opts.StateDir,
+		Hostname:      opts.Hostname,
+		AuthKey:       auth.Value,
+		AdvertiseTags: opts.AdvertiseTags,
+		ControlURL:    opts.ControlURL,
+		UserLogf:      userLogf,
+	}
+	if opts.Verbose {
+		ts.Logf = func(format string, args ...any) {
+			_, _ = fmt.Fprintf(logOut, "tsnet debug: "+format+"\n", args...)
+		}
+	}
+	return tsnetNode{server: ts}
+}
+
+func (n tsnetNode) Up(ctx context.Context) (*ipnstate.Status, error) {
+	return n.server.Up(ctx)
+}
+
+func (n tsnetNode) LocalClient() (whoIsClient, error) {
+	return n.server.LocalClient()
+}
+
+func (n tsnetNode) Listen(network string, addr string) (net.Listener, error) {
+	return n.server.Listen(network, addr)
+}
+
+func (n tsnetNode) ListenTLS(network string, addr string) (net.Listener, error) {
+	return n.server.ListenTLS(network, addr)
+}
+
+func (n tsnetNode) Close() error {
+	return n.server.Close()
 }
 
 func identityLogger(client whoIsClient, next http.Handler) http.Handler {
@@ -249,11 +314,14 @@ func logRemoteRequest(r *http.Request, identity string) {
 }
 
 func newUserLogger(out io.Writer) func(string, ...any) {
+	var mu sync.Mutex
 	seenLines := map[string]bool{}
 	seenURLs := map[string]bool{}
 	return func(format string, args ...any) {
 		line := fmt.Sprintf(format, args...)
 		lineKey := strings.TrimSpace(line)
+		mu.Lock()
+		defer mu.Unlock()
 		if seenLines[lineKey] {
 			return
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
@@ -414,6 +416,285 @@ tsnet:
 	}
 }
 
+func TestTSNetStatusReportsLockedState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+tsnet:
+  web: false
+  mcp: false
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	stateDir, err := remote.PrepareStateDir(filepath.Join(root, "data", "tsnet", "dbrain"))
+	if err != nil {
+		t.Fatalf("PrepareStateDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lock, err := remote.AcquireStateLock(stateDir)
+	if err != nil {
+		t.Fatalf("AcquireStateLock: %v", err)
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "status", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	if payload["exists"] != true {
+		t.Fatalf("exists = %#v, want true", payload["exists"])
+	}
+	if payload["locked"] != true {
+		t.Fatalf("locked = %#v, want true", payload["locked"])
+	}
+	if payload["running"] != true {
+		t.Fatalf("running = %#v, want true", payload["running"])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStateStatusReportsHealthyRunningNode(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, errors.New("state dir is already locked by another dbrain process")
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: true, StatusCode: 200, EffectiveURL: rawURL, CertHealth: "ok"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return []string{"100.64.0.10"}
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "healthy" || !status.Running || !status.Reachable || !status.WebReachable || !status.MCPReachable {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+	if status.WebURL != "https://dbrain.tailnet.ts.net/" {
+		t.Fatalf("WebURL = %q", status.WebURL)
+	}
+	if status.MCPURL != "https://dbrain.tailnet.ts.net/mcp" {
+		t.Fatalf("MCPURL = %q", status.MCPURL)
+	}
+	if status.CertHealth != "ok" {
+		t.Fatalf("CertHealth = %q", status.CertHealth)
+	}
+	if status.NeedsLogin {
+		t.Fatalf("NeedsLogin = true, want false")
+	}
+}
+
+func TestTSNetStateStatusFallsBackToShortHostWithTLSServerName(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	var alternateProbes int
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, errors.New("state dir is already locked by another dbrain process")
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, tlsServerName string) tsnetEndpointProbe {
+			if strings.Contains(rawURL, "dbrain.tailnet.ts.net") {
+				return tsnetEndpointProbe{Reachable: false, Error: "no such host", CertHealth: "ok"}
+			}
+			if strings.Contains(rawURL, "https://dbrain/") && tlsServerName == "dbrain.tailnet.ts.net" {
+				alternateProbes++
+				return tsnetEndpointProbe{Reachable: true, StatusCode: 200, EffectiveURL: rawURL, CertHealth: "ok"}
+			}
+			return tsnetEndpointProbe{Reachable: false, Error: "unexpected probe", CertHealth: "unknown"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "healthy" || !status.Reachable || !status.WebReachable || !status.MCPReachable {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+	if status.WebURL != "https://dbrain.tailnet.ts.net/" || status.MCPURL != "https://dbrain.tailnet.ts.net/mcp" {
+		t.Fatalf("unexpected URLs: web=%q mcp=%q", status.WebURL, status.MCPURL)
+	}
+	if alternateProbes != 2 {
+		t.Fatalf("alternateProbes = %d, want 2", alternateProbes)
+	}
+}
+
+func TestTSNetStateStatusFallsBackToPeerIPWithTLSServerName(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	var ipProbes int
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, errors.New("state dir is already locked by another dbrain process")
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, tlsServerName string) tsnetEndpointProbe {
+			if strings.Contains(rawURL, "100.64.0.10") && tlsServerName == "dbrain.tailnet.ts.net" {
+				ipProbes++
+				return tsnetEndpointProbe{Reachable: true, StatusCode: 200, EffectiveURL: rawURL, CertHealth: "ok"}
+			}
+			return tsnetEndpointProbe{Reachable: false, Error: "no such host", CertHealth: "unknown"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return []string{"100.64.0.10"}
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "healthy" || !status.Reachable || !status.WebReachable || !status.MCPReachable {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+	if ipProbes != 2 {
+		t.Fatalf("ipProbes = %d, want 2", ipProbes)
+	}
+}
+
+func TestTSNetStateStatusReportsDownWhenLockedButUnreachable(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, errors.New("state dir is already locked by another dbrain process")
+		},
+		probeEndpoint: func(context.Context, string, string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: false, Error: "connection refused", CertHealth: "unknown"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "down" || !status.Running || status.Reachable || status.WebReachable || status.MCPReachable {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+	if status.WebError == "" || status.MCPError == "" {
+		t.Fatalf("expected probe errors, status = %#v", status)
+	}
+}
+
+func TestTSNetStateStatusReportsNeedsLogin(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, errors.New("state dir is already locked by another dbrain process")
+		},
+		probeEndpoint: func(context.Context, string, string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: false, Error: "not listening", CertHealth: "unknown"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "missing"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "needs_login" || !status.NeedsLogin {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+}
+
 func TestTSNetResetRequiresConfirmation(t *testing.T) {
 	t.Parallel()
 
@@ -446,6 +727,45 @@ func TestTSNetResetRequiresConfirmation(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetResetRefusesLockedState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stateDir, err := remote.PrepareStateDir(filepath.Join(root, "data", "tsnet", "dbrain"))
+	if err != nil {
+		t.Fatalf("PrepareStateDir: %v", err)
+	}
+	stateFile := filepath.Join(stateDir, "state.json")
+	if err := os.WriteFile(stateFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lock, err := remote.AcquireStateLock(stateDir)
+	if err != nil {
+		t.Fatalf("AcquireStateLock: %v", err)
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset", "--yes"})
+
+	err = cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already locked") {
+		t.Fatalf("expected locked-state error, got %v", err)
+	}
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf("expected state file to remain after locked reset: %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no output, stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 

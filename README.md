@@ -511,8 +511,13 @@ Important flags:
 
 ### `dbrain tsnet status`
 
-Prints the resolved tsnet hostname, state directory, lock path, existence, and
-lock status using the same config/env/flag resolution as `serve remote`.
+Prints the resolved tsnet hostname, state directory, lock path, local state,
+and active health using the same config/env/flag resolution as `serve remote`.
+When a running `dbrain` process holds the state lock, status probes the
+configured web and MCP URLs by default and reports `running`, `reachable`,
+`web_reachable`, `mcp_reachable`, `cert_health`, and `needs_login`. If MagicDNS
+lookup is unavailable to Go, status can use local Tailscale peer status as a
+best-effort tailnet IP fallback while preserving TLS certificate validation.
 
 ```sh
 dbrain tsnet status

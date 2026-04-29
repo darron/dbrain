@@ -236,7 +236,8 @@ The HTTP endpoint supports MCP Streamable HTTP POST requests and returns
 `application/json` responses. GET requests return `405 Method Not Allowed`
 because dbrain does not currently provide unsolicited SSE messages.
 
-For Tailscale, bind dbrain to localhost and expose it with Tailscale Serve:
+For Tailscale Serve, bind dbrain to localhost and expose it with Tailscale
+Serve:
 
 ```sh
 tailscale serve --bg 8743
@@ -245,6 +246,33 @@ tailscale serve --bg 8743
 Then configure remote MCP clients with the Tailscale HTTPS URL plus `/mcp`.
 Use Tailscale Serve, not Funnel, unless you intentionally want a public
 internet endpoint.
+
+The built-in tailnet option is usually simpler when you want `dbrain` itself to
+own the tailnet node:
+
+```sh
+dbrain serve remote --web --mcp
+```
+
+This exposes the read/write web UI at `https://<hostname>.<tailnet>.ts.net/`
+and read-only MCP at `https://<hostname>.<tailnet>.ts.net/mcp` from one
+persistent `tsnet` node. For MCP-only tailnet serving:
+
+```sh
+dbrain serve mcp --transport tsnet --tsnet-hostname dbrain
+```
+
+Smoke test either HTTP-over-Tailscale or built-in `tsnet` with:
+
+```sh
+curl -s https://dbrain.<tailnet>.ts.net/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Browser `GET /mcp` returns a short diagnostic and a copyable curl example. MCP
+clients should use JSON-RPC over HTTP POST with
+`Content-Type: application/json`.
 
 Security defaults:
 
@@ -258,6 +286,62 @@ Do not configure both stdio and HTTP transports for the same agent unless you
 want duplicate dbrain tools. It is fine to run one long-lived HTTP daemon for
 remote agents while local Codex/Claude instances launch their own stdio
 processes.
+
+## First-Run Tailnet Setup
+
+The simplest first run is interactive:
+
+```sh
+dbrain serve remote
+```
+
+If the tsnet node has not authenticated yet, `dbrain` prints a Tailscale login
+URL. Authenticate once; the node identity is then stored under
+`<data_dir>/tsnet/<hostname>`, usually
+`~/.local/share/dbrain/tsnet/dbrain`.
+
+For unattended startup, use a Tailscale auth key through a typed secret ref
+instead of putting the key directly in config:
+
+```yaml
+tsnet:
+  hostname: dbrain
+  auth_key_ref: "op://Private/dbrain/tsnet-auth-key"
+```
+
+`op://` refs execute `op read <ref>` without a shell. A macOS Keychain ref is
+also supported:
+
+```sh
+security add-generic-password \
+  -s dbrain \
+  -a tsnet-auth-key \
+  -w 'tskey-auth-...'
+```
+
+```yaml
+tsnet:
+  auth_key_ref: "keychain://dbrain/tsnet-auth-key"
+```
+
+`env:NAME` refs are supported when an environment-managed secret is the right
+fit:
+
+```yaml
+tsnet:
+  auth_key_ref: "env:TS_AUTHKEY"
+```
+
+`tsnet.auth_key_command` exists for custom secret managers, but it is
+config-file-only and requires `tsnet.allow_secret_command: true`. There is no
+environment-variable equivalent because command arrays should not be shell-split
+from a single string.
+
+Keep the tsnet state directory out of iCloud, Dropbox, OneDrive, and similar
+sync folders. The directory contains Tailscale node and certificate state; if it
+is deleted or inconsistently synced, `dbrain` may need to authenticate again or
+appear as a new tailnet machine. Use `dbrain tsnet status` to inspect the
+resolved hostname, state directory, and lock status.
 
 ## Client Config
 
@@ -288,8 +372,37 @@ For local development, use an absolute binary path and an explicit root:
 }
 ```
 
-For clients that support remote Streamable HTTP MCP servers, use the Tailscale
-Serve URL for the HTTP endpoint. Exact config shape varies by client.
+For clients that support remote Streamable HTTP MCP servers, use the tailnet
+HTTPS URL for the MCP endpoint. Exact config shape varies by client, but the
+important values are the transport and URL:
+
+```json
+{
+  "mcpServers": {
+    "dbrain": {
+      "transport": "streamable-http",
+      "url": "https://dbrain.<tailnet>.ts.net/mcp"
+    }
+  }
+}
+```
+
+Some clients use `type` instead of `transport`:
+
+```json
+{
+  "mcpServers": {
+    "dbrain": {
+      "type": "streamable-http",
+      "url": "https://dbrain.<tailnet>.ts.net/mcp"
+    }
+  }
+}
+```
+
+Use the same URL whether it is backed by `dbrain serve remote`, `dbrain serve
+mcp --transport tsnet`, or localhost `dbrain serve mcp --transport http`
+fronted by Tailscale Serve.
 
 ## Skill
 

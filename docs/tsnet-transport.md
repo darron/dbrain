@@ -1,6 +1,6 @@
 # tsnet Remote Transport Proposal
 
-Status: implementation in progress
+Status: v1 implemented
 Date: 2026-04-29
 
 ## Summary
@@ -88,6 +88,9 @@ handling.
 - `--tsnet-control-url` is experimental. Custom control servers, including
   Headscale, may not provide the same `.ts.net` DNS and `ListenTLS` certificate
   behavior as Tailscale SaaS.
+- dbrain-side allowlists, custom `ipn.StateStore`, and service-mode listeners
+  are out of scope for the current product direction. Revisit only if a clear
+  multi-user or operational need appears.
 
 ## Background
 
@@ -480,9 +483,9 @@ Fallback implementation if native keyring support proves brittle:
   `security find-generic-password ... -w`.
 - Keep it explicit through `allow_secret_command: true`.
 
-Do not put full tsnet state into Keychain in the first pass. tsnet has a state
-store abstraction, but replacing the file store means implementing and
-maintaining an `ipn.StateStore`. That is a separate hardening project.
+Do not put full tsnet state into Keychain. Use file-backed `tsnet.Server.Dir`
+for node state; a custom `ipn.StateStore` is out of scope unless the file
+store becomes a concrete operational problem.
 
 ## 1Password Option
 
@@ -570,8 +573,6 @@ The v1 Origin rule assumes current write endpoints such as `/api/tag` and
 `/api/links` are JSON POSTs without cookie auth or browser session state. If a
 future endpoint accepts form posts, multipart uploads, cookies, or browser
 sessions, revisit the guard.
-- Preserve a future path for optional dbrain-side allowlists if multi-user
-  deployments need them.
 
 Tailscale Serve and related proxy paths can include user identity headers, but
 a direct `tsnet` server does not receive injected identity headers. Direct
@@ -585,9 +586,9 @@ Recommended tsnet access controls:
   `tag:dbrain`.
 - Log requested versus actual tags when available. `AdvertiseTags` is a request
   to the control plane, not proof that the node is actually tagged.
-- Use request-level WhoIs logging for direct tsnet requests. Defer dbrain-side
-  allowlists to hardening work unless there is a clear multi-user
-  authorization need.
+- Use request-level WhoIs logging for direct tsnet requests. Do not add
+  dbrain-side allowlists unless the product direction changes toward broader
+  multi-user authorization.
 
 ## Certificate Behavior
 
@@ -676,13 +677,40 @@ Possible status output:
 ```text
 hostname: dbrain
 state_dir: /Users/alice/.local/share/dbrain/tsnet/dbrain
+exists: true
+locked: true
+running: true
+reachable: true
+web_reachable: true
+mcp_reachable: true
 tailnet_ips: 100.x.y.z, fd7a:...
 web_url: https://dbrain.example.ts.net/
 mcp_url: https://dbrain.example.ts.net/mcp
 tls: true
 state: authenticated
+cert_health: ok
+needs_login: false
 control_url:
 ```
+
+Status reports resolved local state, lock status, and active health for the
+configured node:
+
+- Whether a dbrain process currently holds the state lock.
+- Whether the node appears to be running, not only whether state files exist.
+- If the node is running, probe both the web URL and MCP URL by default.
+- Report a running-but-unreachable node as `state: down`.
+- Check HTTPS certificate health with both a real HTTPS request and any local
+  listener/certificate state that is practical to inspect.
+- If Go DNS cannot resolve the MagicDNS name, use the local Tailscale daemon's
+  peer status as a best-effort IP fallback and still validate HTTPS with the
+  certificate hostname.
+- Include machine-readable JSON fields for `running`, `reachable`,
+  `web_reachable`, `mcp_reachable`, `cert_health`, and `needs_login`.
+- Set `needs_login` when the tsnet node is not authenticated yet or startup
+  would require an interactive Tailscale login URL.
+- A clear distinction between `not configured`, `needs login`, `running but
+  unreachable`, and `healthy`.
 
 Reset should be explicit and guarded:
 
@@ -785,13 +813,14 @@ by a running daemon.
 - Refuse reset when the state-dir advisory lock is held.
 - Add tests for state-dir validation and reset confirmation.
 
-### Phase 5: Hardening
+### Phase 5: Deferred Or Discarded
 
-- Add optional dbrain-side allowlists only when there is a clear multi-user
-  authorization need.
-- Evaluate custom `ipn.StateStore` only if file-backed state is unacceptable.
-- Add optional service-mode behavior if normal tsnet node behavior is not
-  enough for users.
+- Do not implement dbrain-side allowlists now. Tailscale ACLs/tags remain the
+  access-control boundary for the intended setup.
+- Do not evaluate custom `ipn.StateStore` now. File-backed `tsnet.Server.Dir`
+  is the intended persistence mechanism.
+- Do not add service-mode behavior now. A normal tsnet node is enough for the
+  current product direction.
 
 ## Testing Strategy
 
@@ -877,8 +906,7 @@ dbrain serve remote \
   dependency footprint.
 - Some MCP clients may not support remote Streamable HTTP yet.
 - Web UI remote exposure is read/write and has no separate dbrain login in the
-  first pass; access relies on Tailscale ACLs/tags unless optional dbrain-side
-  allowlists are added later.
+  first pass; access relies on Tailscale ACLs/tags.
 - Remote web mutating routes need browser-origin/CSRF guardrails because
   Tailscale ACLs do not protect against every browser-origin scenario.
 - The concrete v1 CSRF guard only checks browser `Origin`; it is not a
@@ -895,17 +923,13 @@ dbrain serve remote \
   instant; first-use certificate provisioning and device approval can still
   create visible latency.
 
-## Open Questions
+## Remaining Work
 
-- Should HTTPS certificate preflight/status be part of `dbrain tsnet status`,
-  or is listener startup enough?
-- Should `tsnet` support service-mode listeners later, or is a normal tsnet node
-  enough for the product?
-- Should `serve remote` eventually supervise background sync/status widgets, or
-  should it remain only a remote access surface?
-- Does the web UI need dbrain-side authentication or allowlists before broader
-  multi-user use, or are Tailscale ACLs/tags sufficient for the intended
-  single-user/local-first setup?
+No near-term open implementation questions remain for v1.
+
+Questions about dbrain-side allowlists, custom `ipn.StateStore`, and
+service-mode listeners are closed for now: they are not part of the current
+roadmap.
 
 ## Recommended Decision
 
@@ -930,13 +954,14 @@ Implement the first pass with:
 - `--tsnet-control-url` as experimental custom-control support only
 - clear first-run auth URL output through `UserLogf`
 - explicit `Up(ctx)` startup before listening
-- actual FQDN/URL logging from tsnet status where available
+- actual FQDN/URL logging from tsnet startup status where available
 - `serve remote` guard when both web and MCP are disabled
 - outer MCP dispatcher plus route tests proving `/mcp` paths are not swallowed
   by the web handler
 - strict `mcp_path` validation
 - `status` / `reset` target resolution through the same config pipeline as
   `serve remote`, using the resolved state dir as the primary identity
+- `dbrain tsnet status` health checks for running/reachable/certificate state
 - remote web startup warning plus best-effort `LocalClient.WhoIs` identity
   logging
 - remote-only HTTP hardening headers and concrete Origin checks for mutating
