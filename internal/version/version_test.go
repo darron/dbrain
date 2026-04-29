@@ -98,3 +98,55 @@ func TestShortCommit(t *testing.T) {
 		}
 	}
 }
+
+func TestUserAgentFromDetails(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		details Details
+		want    string
+	}{
+		{
+			name: "clean short sha",
+			details: Details{
+				Short:     "cbf18e1",
+				GitStatus: "clean",
+			},
+			want: "dbrain/cbf18e1",
+		},
+		{
+			name: "dirty short sha",
+			details: Details{
+				Short:     "cbf18e1",
+				GitStatus: "modified",
+			},
+			want: "dbrain/cbf18e1+dirty",
+		},
+		{
+			name: "unknown fallback",
+			details: Details{
+				Short:     "",
+				GitStatus: "unknown",
+			},
+			want: "dbrain/unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := userAgentFromDetails(tt.details); got != tt.want {
+				t.Fatalf("userAgentFromDetails() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUserAgentOverride(t *testing.T) {
+	t.Parallel()
+
+	if got := UserAgent("custom-agent/1.0"); got != "custom-agent/1.0" {
+		t.Fatalf("UserAgent override = %q", got)
+	}
+}

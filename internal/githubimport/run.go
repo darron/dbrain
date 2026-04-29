@@ -22,6 +22,7 @@ import (
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/version"
 )
 
 const (
@@ -42,6 +43,7 @@ type Options struct {
 	Token     string
 	APIBase   string
 	Binary    string
+	UserAgent string
 }
 
 type Stats struct {
@@ -66,6 +68,7 @@ type Stats struct {
 type client struct {
 	baseURL    string
 	token      string
+	userAgent  string
 	httpClient *http.Client
 }
 
@@ -134,10 +137,14 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if strings.TrimSpace(opts.Token) == "" {
 		return Stats{}, fmt.Errorf("GITHUB_TOKEN is required")
 	}
+	if strings.TrimSpace(opts.UserAgent) == "" {
+		opts.UserAgent = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_USER_AGENT")
+	}
 
 	c := &client{
-		baseURL: strings.TrimRight(opts.APIBase, "/"),
-		token:   opts.Token,
+		baseURL:   strings.TrimRight(opts.APIBase, "/"),
+		token:     opts.Token,
+		userAgent: version.UserAgent(opts.UserAgent),
 		httpClient: &http.Client{
 			Timeout: opts.Timeout,
 		},
@@ -614,7 +621,7 @@ func (c *client) request(ctx context.Context, method string, path string, accept
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", apiVersion)
-	req.Header.Set("User-Agent", "dbrain")
+	req.Header.Set("User-Agent", c.userAgent)
 	return req, nil
 }
 

@@ -27,6 +27,9 @@ openai:
   api_key: "" # OPENAI_API_KEY
   use_chat_completions: "" # OPENAI_USE_CHAT_COMPLETIONS
 
+http:
+  user_agent: "" # DBRAIN_USER_AGENT; default is dbrain/<short-sha> for outbound API calls
+
 openrouter:
   base_url: "https://openrouter.ai/api/v1" # DBRAIN_OPENROUTER_BASE_URL, OPENROUTER_BASE_URL
   api_key: "" # DBRAIN_OPENROUTER_API_KEY, OPENROUTER_API_KEY

@@ -17,6 +17,7 @@ import (
 
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/version"
 )
 
 const ToolName = "summarize"
@@ -435,6 +436,7 @@ func resolveDirectSummaryTarget(ctx context.Context, opts Options) (directSummar
 		if value := openRouterTitleWithEnv(opts.Env); value != "" {
 			headers["X-Title"] = value
 		}
+		headers["User-Agent"] = version.UserAgent(userAgentWithEnv(opts.Env))
 		return directSummaryTarget{
 			model:       openrouterModel,
 			displayName: defaultDirectDisplayName(opts.Model, "openrouter/"+openrouterModel),
@@ -750,6 +752,10 @@ func openRouterTitleWithEnv(env map[string]string) string {
 	return firstEnvValue(env, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE")
 }
 
+func userAgentWithEnv(env map[string]string) string {
+	return firstEnvValue(env, "DBRAIN_USER_AGENT")
+}
+
 func summaryLanguageWithEnv(env map[string]string) string {
 	if value := firstEnvValue(env, "DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE"); value != "" {
 		return value
@@ -802,6 +808,7 @@ func envWithRuntimeConfig(rootDir string, env map[string]string) map[string]stri
 		{"DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"},
 		{"DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER"},
 		{"DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE"},
+		{"DBRAIN_USER_AGENT"},
 		{"DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE"},
 	} {
 		value := runtimeenv.FirstNonEmpty(rootDir, keys...)

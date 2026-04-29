@@ -23,6 +23,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/version"
 )
 
 const (
@@ -69,6 +70,7 @@ type Options struct {
 	OpenRouterKey   string
 	OpenRouterRef   string
 	OpenRouterTitle string
+	UserAgent       string
 	OllamaBase      string
 	OllamaKey       string
 	// R2/S3 credentials for fetching archived photos not present locally.
@@ -500,6 +502,7 @@ func callOpenRouter(ctx context.Context, bundle string, photoData [][]byte, open
 	if opts.OpenRouterTitle != "" {
 		headers["X-Title"] = opts.OpenRouterTitle
 	}
+	headers["User-Agent"] = version.UserAgent(opts.UserAgent)
 
 	raw, err := doPost(ctx, endpoint, opts.OpenRouterKey, headers, reqBody, opts.Timeout)
 	if err != nil {
@@ -637,6 +640,9 @@ func resolveOpts(cfg config.Config, opts *Options) {
 	}
 	if strings.TrimSpace(opts.OpenRouterTitle) == "" {
 		opts.OpenRouterTitle = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE"), "dbrain categorize")
+	}
+	if strings.TrimSpace(opts.UserAgent) == "" {
+		opts.UserAgent = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_USER_AGENT")
 	}
 	if strings.TrimSpace(opts.OllamaBase) == "" {
 		opts.OllamaBase = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OLLAMA_BASE_URL", "OLLAMA_BASE_URL", "OLLAMA_HOST"), defaultOllamaBase)

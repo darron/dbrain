@@ -210,6 +210,9 @@ func TestRunDirectOpenRouterSummaryForLocalFileInput(t *testing.T) {
 		if got := r.Header.Get("X-Title"); got != "dbrain" {
 			t.Fatalf("unexpected title header: %q", got)
 		}
+		if got := r.Header.Get("User-Agent"); got != "dbrain/test-sha" {
+			t.Fatalf("unexpected user-agent header: %q", got)
+		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -228,6 +231,7 @@ func TestRunDirectOpenRouterSummaryForLocalFileInput(t *testing.T) {
 	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "test-openrouter-key")
 	t.Setenv("DBRAIN_OPENROUTER_REFERER", "https://dbrain.test")
 	t.Setenv("DBRAIN_OPENROUTER_TITLE", "dbrain")
+	t.Setenv("DBRAIN_USER_AGENT", "dbrain/test-sha")
 
 	inputDir := t.TempDir()
 	inputPath := filepath.Join(inputDir, "summary-input.md")

@@ -24,8 +24,10 @@ func TestRunHostedOCRWritesItemOCRAndNote(t *testing.T) {
 	cfg, st, item := seedDownloadedPhotoItem(t, "x:test-photo-hosted-ocr", "2049000000000000001")
 
 	var capturedAuth string
+	var capturedUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuth = r.Header.Get("Authorization")
+		capturedUserAgent = r.Header.Get("User-Agent")
 		if r.URL.Path != "/chat/completions" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -41,6 +43,7 @@ func TestRunHostedOCRWritesItemOCRAndNote(t *testing.T) {
 		OpenRouterKey:   "test-openrouter-key",
 		OpenRouterRef:   "https://dbrain.test",
 		OpenRouterTitle: "dbrain-test",
+		UserAgent:       "dbrain/test-sha",
 		Timeout:         2 * time.Second,
 	})
 	if err != nil {
@@ -49,6 +52,9 @@ func TestRunHostedOCRWritesItemOCRAndNote(t *testing.T) {
 
 	if capturedAuth != "Bearer test-openrouter-key" {
 		t.Fatalf("unexpected auth header: %q", capturedAuth)
+	}
+	if capturedUserAgent != "dbrain/test-sha" {
+		t.Fatalf("unexpected user-agent header: %q", capturedUserAgent)
 	}
 	if stats.ItemsUpdated != 1 || stats.PhotosOCRed != 1 || stats.HostedAttempts != 1 || stats.HostedFallbacks != 0 {
 		t.Fatalf("unexpected stats: %+v", stats)

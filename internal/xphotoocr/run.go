@@ -25,6 +25,7 @@ import (
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/version"
 )
 
 const (
@@ -52,6 +53,7 @@ type Options struct {
 	OpenRouterKey   string
 	OpenRouterTitle string
 	OpenRouterRef   string
+	UserAgent       string
 	OllamaBase      string
 	OllamaKey       string
 	Logger          *slog.Logger
@@ -157,6 +159,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	if strings.TrimSpace(opts.OpenRouterRef) == "" {
 		opts.OpenRouterRef = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER"), "https://local.dbrain")
+	}
+	if strings.TrimSpace(opts.UserAgent) == "" {
+		opts.UserAgent = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_USER_AGENT")
 	}
 	if strings.TrimSpace(opts.OllamaBase) == "" {
 		opts.OllamaBase = ollamaBaseURL(cfg.RootDir)
@@ -517,6 +522,7 @@ func ocrWithOpenRouter(ctx context.Context, absolutePath string, opts Options) (
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("HTTP-Referer", opts.OpenRouterRef)
 	req.Header.Set("X-Title", opts.OpenRouterTitle)
+	req.Header.Set("User-Agent", version.UserAgent(opts.UserAgent))
 
 	client := &http.Client{Timeout: opts.Timeout}
 	resp, err := client.Do(req)

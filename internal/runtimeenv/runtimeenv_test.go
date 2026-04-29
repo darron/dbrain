@@ -68,6 +68,21 @@ test:
 	}
 }
 
+func TestFirstNonEmptyReadsHTTPUserAgentConfigValue(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeConfig(t, root, `
+http:
+  user_agent: dbrain/test-agent
+`)
+
+	got := FirstNonEmpty(root, "DBRAIN_USER_AGENT")
+	if got != "dbrain/test-agent" {
+		t.Fatalf("FirstNonEmpty = %q, want %q", got, "dbrain/test-agent")
+	}
+}
+
 func TestEnvironmentOverridesConfig(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, `

@@ -114,6 +114,9 @@ func configValuePaths(key string) [][]string {
 		{lowerKey},
 		{"env", lowerKey},
 	}
+	if strings.EqualFold(key, "DBRAIN_USER_AGENT") {
+		paths = append(paths, []string{"http", "user_agent"})
+	}
 
 	for _, prefix := range []string{"DBRAIN_", "OPENROUTER_", "OLLAMA_", "SUMMARIZE_", "AWS_"} {
 		if short, ok := strings.CutPrefix(key, prefix); ok {

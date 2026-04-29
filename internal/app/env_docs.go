@@ -22,6 +22,7 @@ func configEnvSpecs() []envSpec {
 		{Key: "OPENAI_BASE_URL", ConfigPath: "openai.base_url or env.OPENAI_BASE_URL", Default: "", Description: "OpenAI-compatible base URL used by summarize adapter when already exported."},
 		{Key: "OPENAI_API_KEY", ConfigPath: "openai.api_key or env.OPENAI_API_KEY", Default: "", Description: "OpenAI-compatible API key used by summarize adapter when already exported."},
 		{Key: "OPENAI_USE_CHAT_COMPLETIONS", ConfigPath: "openai.use_chat_completions or env.OPENAI_USE_CHAT_COMPLETIONS", Default: "", Description: "Forces summarize/OpenAI-compatible calls onto chat completions when set."},
+		{Key: "DBRAIN_USER_AGENT", ConfigPath: "http.user_agent", Default: "dbrain/<short-sha>", Description: "User-Agent header for outbound API calls; source/web fetching keeps its own fetch headers."},
 		{Key: "DBRAIN_OPENROUTER_BASE_URL / OPENROUTER_BASE_URL", ConfigPath: "openrouter.base_url", Default: "https://openrouter.ai/api/v1", Description: "OpenRouter API endpoint."},
 		{Key: "DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY", ConfigPath: "openrouter.api_key", Default: "", Description: "OpenRouter API key for hosted LLM/OCR/categorization calls."},
 		{Key: "DBRAIN_OPENROUTER_REFERER / OPENROUTER_HTTP_REFERER", ConfigPath: "openrouter.referer", Default: "https://local.dbrain", Description: "HTTP referer sent to OpenRouter for direct calls."},

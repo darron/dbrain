@@ -43,6 +43,14 @@ func ShortCommit() string {
 	return Current().Short
 }
 
+// UserAgent returns the HTTP user agent used for outbound API calls.
+func UserAgent(override string) string {
+	if value := strings.TrimSpace(override); value != "" {
+		return value
+	}
+	return userAgentFromDetails(Current())
+}
+
 // Info returns version information as a map for API-style payloads.
 func Info() map[string]interface{} {
 	current := Current()
@@ -126,6 +134,17 @@ func gitStatus(modified string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func userAgentFromDetails(details Details) string {
+	version := strings.TrimSpace(details.Short)
+	if version == "" {
+		version = "unknown"
+	}
+	if strings.TrimSpace(strings.ToLower(details.GitStatus)) == "modified" && !strings.Contains(version, "+dirty") {
+		version += "+dirty"
+	}
+	return "dbrain/" + version
 }
 
 func defaultValue(value string) string {

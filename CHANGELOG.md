@@ -9,8 +9,9 @@ development date for the change set.
 
 - **Removed**: Dropped the obsolete `dbrain import ft` command and the legacy FT importer package.
 - **Source cache naming**: Cached item article text used for source extraction is now recorded as `item-cache` instead of `ft-bookmarks`.
+- **API attribution**: Outbound API calls now send a versioned `User-Agent` header such as `dbrain/<short-sha>`; override with `DBRAIN_USER_AGENT` or `http.user_agent`.
 - **Docs**: Split detailed MCP agent guidance into `MCP.md`, kept README focused on requirements and command reference, and moved examples under their command sections.
-- **Location**: `internal/app/`, `internal/store/`, `internal/linkextract/`, `MCP.md`, `README.md`
+- **Location**: `internal/app/`, `internal/version/`, `internal/summarizecli/`, `internal/itemcategorize/`, `internal/xphotoocr/`, `internal/githubimport/`, `internal/store/`, `internal/linkextract/`, `MCP.md`, `README.md`
 
 ### Configuration Layout, Config File Support, And Env Documentation (2026-04-28)
 
