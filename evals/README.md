@@ -26,6 +26,9 @@ files should include exact source keys and short phrases from your own database.
 Useful case types:
 
 - A specific entity or tag query should return a known source key near the top.
+- Exact tag examples should include at least one known saved item carrying the
+  hyphenated user tag, especially for broad entity questions where linked
+  source documents may outrank saved items.
 - OCR-only evidence should surface text that exists in image OCR, not only post text.
 - Video/audio evidence should surface transcript text when that is the strongest match.
 - Known difficult source domains should continue returning summarized source rows.
@@ -33,8 +36,9 @@ Useful case types:
 
 Example local recipes:
 
-- Entity/tag: query a named person or project and assert the exact hyphenated
-  user tag count plus one or more known source keys.
+- Entity/tag: query a named person or project and assert one or more known
+  source keys plus `min_exact_tag_evidence` and
+  `expect_any_exact_tag_evidence_source_keys` for representative tagged items.
 - OCR: query a phrase that only exists in image OCR and assert the OCR item is
   the top result with `expect_top_text`.
 - Transcript: query a phrase from a video/audio transcript and assert the
@@ -49,6 +53,10 @@ Useful assertions:
 - `expect_top_source_keys` catches cases where the right evidence exists but is ranked too low.
 - `expect_any_source_keys` allows acceptable alternatives for evolving corpora.
 - `expect_text` and `expect_top_text` verify that excerpts contain the actual supporting text.
+- `min_exact_tag_evidence`, `expect_exact_tag_evidence_source_keys`,
+  `expect_any_exact_tag_evidence_source_keys`, and
+  `expect_exact_tag_evidence_text` verify the `dbrain_research_pack`
+  exact-tag evidence lane.
 - `require_top_matched_terms` and `forbid_top_missing_terms` guard multi-term query quality.
 
 Cases intentionally assert the collector's own corpus, not global truth.

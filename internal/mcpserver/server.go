@@ -940,15 +940,16 @@ func askOutputSchema() map[string]interface{} {
 
 func researchPackOutputSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
-		"question":         scalarSchema("string", "Original research question."),
-		"mode":             scalarSchema("string", "Whether this pack contains evidence only or a topic brief plus evidence."),
-		"query_plan":       researchQueryPlanSchema(),
-		"coverage":         researchCoverageSchema(),
-		"topic":            scalarSchema("string", "Inferred topic phrase when a topic brief was attached."),
-		"used_topic_brief": scalarSchema("boolean", "Whether a topic brief was inferred and attached."),
-		"evidence":         arraySchema(evidenceSchema()),
-		"topic_brief":      topicBriefOutputSchema(),
-		"next_steps":       arraySchema(researchNextStepSchema()),
+		"question":           scalarSchema("string", "Original research question."),
+		"mode":               scalarSchema("string", "Whether this pack contains evidence only or a topic brief plus evidence."),
+		"query_plan":         researchQueryPlanSchema(),
+		"coverage":           researchCoverageSchema(),
+		"topic":              scalarSchema("string", "Inferred topic phrase when a topic brief was attached."),
+		"used_topic_brief":   scalarSchema("boolean", "Whether a topic brief was inferred and attached."),
+		"evidence":           arraySchema(evidenceSchema()),
+		"exact_tag_evidence": arraySchema(evidenceSchema()),
+		"topic_brief":        topicBriefOutputSchema(),
+		"next_steps":         arraySchema(researchNextStepSchema()),
 	}, "question", "mode", "query_plan", "coverage", "used_topic_brief", "evidence")
 }
 

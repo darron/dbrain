@@ -44,6 +44,8 @@ aliases:
   firearm-regulation: firearms-regulation
   tom-s-hardware: toms-hardware
   liberal-party-of-canada: liberal-party
+  nic-rh: nic-roberts-huntley
+  nick-roberts-huntley: nic-roberts-huntley
 
 drop:
   # Source import noise — describes how item arrived, not what it's about

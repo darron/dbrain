@@ -9,6 +9,9 @@
     "expect_any_source_keys": ["src:replace-with-direct-source", "x:replace-with-direct-item"],
     "expect_text": ["replace with a phrase from the known-good evidence"],
     "expect_top_text": ["replace with a phrase from the strongest evidence row"],
+    "min_exact_tag_evidence": 1,
+    "expect_any_exact_tag_evidence_source_keys": ["x:replace-with-tagged-item", "yt:replace-with-tagged-video"],
+    "expect_exact_tag_evidence_text": ["replace with phrase from a tagged saved item"],
     "require_top_matched_terms": ["example", "specific"],
     "forbid_top_missing_terms": ["specific"],
     "max_latency_ms": 3000

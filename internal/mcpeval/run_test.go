@@ -52,18 +52,23 @@ func TestRunEvaluatesExpectedRetrieval(t *testing.T) {
 	}
 
 	report, err := Run(context.Background(), cfg, st, Options{Cases: []Case{{
-		Name:                   "carney",
-		Question:               "What does my brain know about Mark Carney?",
-		Limit:                  5,
-		MinEvidence:            1,
-		ExpectSourceKeys:       []string{"x:carney-eval"},
-		ExpectTopSourceKeys:    []string{"x:carney-eval"},
-		ExpectText:             []string{"fiscal policy"},
-		ExpectTopText:          []string{"fiscal policy"},
-		ForbidText:             []string{"unrelated boilerplate"},
-		RequireTopMatchedTerms: []string{"mark", "carney"},
-		ForbidTopMissingTerms:  []string{"mark", "carney"},
-		MaxLatencyMS:           5000,
+		Name:                "carney",
+		Question:            "What does my brain know about Mark Carney?",
+		Limit:               5,
+		MinEvidence:         1,
+		ExpectSourceKeys:    []string{"x:carney-eval"},
+		ExpectTopSourceKeys: []string{"x:carney-eval"},
+		ExpectText:          []string{"fiscal policy"},
+		ExpectTopText:       []string{"fiscal policy"},
+		ForbidText:          []string{"unrelated boilerplate"},
+		MinExactTagEvidence: 1,
+		ExpectExactTagEvidenceSourceKeys: []string{
+			"x:carney-eval",
+		},
+		ExpectExactTagEvidenceText: []string{"local corpus"},
+		RequireTopMatchedTerms:     []string{"mark", "carney"},
+		ForbidTopMissingTerms:      []string{"mark", "carney"},
+		MaxLatencyMS:               5000,
 	}}})
 	if err != nil {
 		t.Fatalf("run eval: %v", err)
@@ -76,6 +81,9 @@ func TestRunEvaluatesExpectedRetrieval(t *testing.T) {
 	}
 	if report.Cases[0].EvidenceCount == 0 {
 		t.Fatalf("expected evidence in report: %+v", report.Cases[0])
+	}
+	if report.Cases[0].ExactTagEvidenceCount == 0 {
+		t.Fatalf("expected exact tag evidence in report: %+v", report.Cases[0])
 	}
 }
 
@@ -101,16 +109,21 @@ func TestRunFixtureCoversMCPRetrievalSurfaces(t *testing.T) {
 
 	report, err := Run(context.Background(), cfg, st, Options{Cases: []Case{
 		{
-			Name:                   "tagged entity query",
-			Question:               "Example Person Specific Project",
-			Limit:                  5,
-			MinEvidence:            1,
-			ExpectTopSourceKeys:    []string{"x:fixture-tagged"},
-			ExpectText:             []string{"specific project budget memo"},
-			ExpectTopText:          []string{"specific project budget memo"},
-			RequireTopMatchedTerms: []string{"example", "person", "specific", "project"},
-			ForbidTopMissingTerms:  []string{"project"},
-			MaxLatencyMS:           5000,
+			Name:                "tagged entity query",
+			Question:            "Example Person Specific Project",
+			Limit:               5,
+			MinEvidence:         1,
+			ExpectTopSourceKeys: []string{"x:fixture-tagged"},
+			ExpectText:          []string{"specific project budget memo"},
+			ExpectTopText:       []string{"specific project budget memo"},
+			MinExactTagEvidence: 1,
+			ExpectExactTagEvidenceSourceKeys: []string{
+				"x:fixture-tagged",
+			},
+			ExpectExactTagEvidenceText: []string{"specific project budget memo"},
+			RequireTopMatchedTerms:     []string{"example", "person", "specific", "project"},
+			ForbidTopMissingTerms:      []string{"project"},
+			MaxLatencyMS:               5000,
 		},
 		{
 			Name:                   "ocr text query",

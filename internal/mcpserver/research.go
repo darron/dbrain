@@ -4,23 +4,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"dbrain/internal/ask"
+	"dbrain/internal/model"
 	"dbrain/internal/topics"
 )
 
+const maxResearchExactTagEvidence = 3
+
 type researchPack struct {
-	Question       string                    `json:"question"`
-	Mode           string                    `json:"mode"`
-	QueryPlan      researchQueryPlan         `json:"query_plan"`
-	Coverage       researchCoverage          `json:"coverage"`
-	Topic          string                    `json:"topic,omitempty"`
-	UsedTopicBrief bool                      `json:"used_topic_brief"`
-	Evidence       []ask.Evidence            `json:"evidence"`
-	TopicBrief     map[string]interface{}    `json:"topic_brief,omitempty"`
-	NextSteps      []researchSuggestedAction `json:"next_steps,omitempty"`
+	Question         string                    `json:"question"`
+	Mode             string                    `json:"mode"`
+	QueryPlan        researchQueryPlan         `json:"query_plan"`
+	Coverage         researchCoverage          `json:"coverage"`
+	Topic            string                    `json:"topic,omitempty"`
+	UsedTopicBrief   bool                      `json:"used_topic_brief"`
+	Evidence         []ask.Evidence            `json:"evidence"`
+	ExactTagEvidence []ask.Evidence            `json:"exact_tag_evidence,omitempty"`
+	TopicBrief       map[string]interface{}    `json:"topic_brief,omitempty"`
+	NextSteps        []researchSuggestedAction `json:"next_steps,omitempty"`
 }
 
 type researchPackOptions struct {
@@ -34,6 +39,9 @@ type researchPackOptions struct {
 	IncludeTopic   *bool
 	MaxCharsPerDoc int
 }
+
+type ResearchPack = researchPack
+type ResearchPackOptions = researchPackOptions
 
 type researchQueryPlan struct {
 	TextQuery         string   `json:"text_query"`
@@ -109,6 +117,10 @@ func (s *Server) toolResearchPack(ctx context.Context, raw json.RawMessage) (map
 	return toolOKResult(formatResearchPack(pack), pack), nil
 }
 
+func (s *Server) BuildResearchPack(ctx context.Context, opts ResearchPackOptions) (ResearchPack, error) {
+	return s.buildResearchPack(ctx, opts)
+}
+
 func (s *Server) buildResearchPack(ctx context.Context, opts researchPackOptions) (researchPack, error) {
 	question := strings.TrimSpace(opts.Question)
 	if question == "" {
@@ -150,6 +162,10 @@ func (s *Server) buildResearchPack(ctx context.Context, opts researchPackOptions
 	if err != nil {
 		return researchPack{}, err
 	}
+	exactTagEvidence, err := s.buildResearchExactTagEvidence(ctx, topic, hints, opts.SourceTypes, maxChars)
+	if err != nil {
+		return researchPack{}, err
+	}
 
 	pack := researchPack{
 		Question: question,
@@ -167,9 +183,10 @@ func (s *Server) buildResearchPack(ctx context.Context, opts researchPackOptions
 			TopicSource:       topicSource,
 			IncludeTopicBrief: includeTopic,
 		},
-		Evidence:  resp.Evidence,
-		Coverage:  mergeResearchCoverage(buildResearchCoverage(resp.Evidence), corpusCoverage),
-		NextSteps: buildResearchNextSteps(resp.Evidence, hints.TextQuery),
+		Evidence:         resp.Evidence,
+		ExactTagEvidence: exactTagEvidence,
+		Coverage:         mergeResearchCoverage(buildResearchCoverage(resp.Evidence), corpusCoverage),
+		NextSteps:        buildResearchNextSteps(resp.Evidence, hints.TextQuery),
 	}
 
 	if includeTopic {
@@ -289,6 +306,24 @@ func formatResearchPack(pack researchPack) string {
 				b.WriteString(text)
 				b.WriteString("\n")
 			}
+		}
+	}
+	if len(pack.ExactTagEvidence) > 0 {
+		b.WriteString("\nExact tag examples:\n")
+		for _, doc := range pack.ExactTagEvidence {
+			b.WriteString("- [")
+			b.WriteString(doc.SourceKey)
+			b.WriteString("] ")
+			b.WriteString(doc.Title)
+			if strings.TrimSpace(doc.UserTags) != "" {
+				b.WriteString("\n  User tags: ")
+				b.WriteString(strings.TrimSpace(doc.UserTags))
+			}
+			if text := trimResearchText(firstNonEmpty(doc.Summary, doc.Excerpt), 220); text != "" {
+				b.WriteString("\n  Evidence: ")
+				b.WriteString(text)
+			}
+			b.WriteString("\n")
 		}
 	}
 	if len(pack.NextSteps) > 0 {
@@ -484,6 +519,118 @@ func mergeResearchCoverage(base researchCoverage, corpus researchCoverage) resea
 	base.RelatedLimit = corpus.RelatedLimit
 	base.RecallNote = corpus.RecallNote
 	return base
+}
+
+func (s *Server) buildResearchExactTagEvidence(ctx context.Context, topic string, hints ask.QueryHints, sourceTypes []string, maxChars int) ([]ask.Evidence, error) {
+	tagQueries := append([]string(nil), hints.TagQueries...)
+	if topicAlias := tagAlias(topic); topicAlias != "" {
+		tagQueries = append(tagQueries, topicAlias)
+	}
+	tagQueries = uniqueStrings(tagQueries)
+	if len(tagQueries) == 0 {
+		return nil, nil
+	}
+
+	examples := make([]ask.Evidence, 0, maxResearchExactTagEvidence)
+	seen := map[string]struct{}{}
+	for _, tagQuery := range tagQueries {
+		results, err := s.st.SearchExactUserTag(ctx, tagQuery, maxResearchExactTagEvidence*3)
+		if err != nil {
+			return nil, err
+		}
+		results = filterSearchResults(ctx, s.st, results, sourceTypes)
+		for _, result := range results {
+			if len(examples) >= maxResearchExactTagEvidence {
+				return examples, nil
+			}
+			if _, exists := seen[result.SourceKey]; exists {
+				continue
+			}
+			item, err := s.st.GetItem(ctx, result.SourceKey)
+			if err != nil {
+				continue
+			}
+			seen[result.SourceKey] = struct{}{}
+			examples = append(examples, exactTagEvidenceFromItem(s.cfg.VaultDir, item, result, tagQuery, maxChars, hints.Terms))
+		}
+	}
+	return examples, nil
+}
+
+func exactTagEvidenceFromItem(vaultDir string, item model.Item, result model.SearchResult, tag string, maxChars int, terms []string) ask.Evidence {
+	author := strings.TrimSpace(item.AuthorName)
+	if handle := strings.TrimSpace(item.AuthorHandle); handle != "" {
+		if author != "" {
+			author += " "
+		}
+		author += "@" + strings.TrimPrefix(handle, "@")
+	}
+	excerpt := trimResearchText(firstNonEmpty(
+		item.SummaryText,
+		item.XPostText,
+		item.ArticleText,
+		item.Text,
+		item.OCRText,
+		result.Snippet,
+	), maxChars)
+	matchText := strings.ToLower(strings.Join([]string{
+		item.Title,
+		item.CanonicalURL,
+		item.AuthorName,
+		item.AuthorHandle,
+		item.UserTags,
+		item.SummaryText,
+		item.XPostText,
+		item.ArticleText,
+		item.Text,
+		item.OCRText,
+	}, "\n"))
+	retrieval := exactTagExampleRetrieval(tag, terms, matchText)
+	return ask.Evidence{
+		SourceKey:   item.SourceKey,
+		Kind:        "item",
+		Title:       item.Title,
+		URL:         item.CanonicalURL,
+		NotePath:    filepath.Join(vaultDir, filepath.FromSlash(item.NotePath)),
+		Summary:     trimResearchText(item.SummaryText, maxChars),
+		Excerpt:     excerpt,
+		Author:      author,
+		SourceType:  item.SourceType,
+		PublishedAt: item.PublishedAt,
+		UserTags:    item.UserTags,
+		Retrieval:   &retrieval,
+	}
+}
+
+func exactTagExampleRetrieval(tag string, terms []string, matchText string) ask.RetrievalInfo {
+	info := ask.RetrievalInfo{
+		Score: 12,
+		Signals: []ask.RetrievalSignal{{
+			Name:   "exact_user_tag_example",
+			Detail: tag,
+			Weight: 12,
+		}},
+	}
+	for _, term := range uniqueStrings(terms) {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" {
+			continue
+		}
+		if strings.Contains(matchText, term) {
+			info.MatchedTerms = append(info.MatchedTerms, term)
+		} else {
+			info.MissingTerms = append(info.MissingTerms, term)
+		}
+	}
+	if len(info.MatchedTerms) > 0 {
+		info.Score += 2 * len(info.MatchedTerms)
+		info.Signals = append(info.Signals, ask.RetrievalSignal{
+			Name:   "exact_tag_example_matched_terms",
+			Detail: strings.Join(info.MatchedTerms, ", "),
+			Weight: 2 * len(info.MatchedTerms),
+		})
+	}
+	return info
 }
 
 func researchRecallNote(coverage researchCoverage) string {

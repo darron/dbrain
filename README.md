@@ -646,9 +646,10 @@ fetches keep the same query-windowing behavior.
 questions. It always returns retrieve-only evidence, a compact query plan
 showing the text query and tag aliases used, coverage counts by kind/source
 type/tag, exact user-tag match counts, broad item/source text-match counts,
-suggested follow-up tools, retrieval score explanations for each evidence row,
-and, when the question is broad enough to infer a topic phrase, the same grouped
-topic brief used by `dbrain_topic_brief`. The
+representative `exact_tag_evidence` examples from saved items carrying those
+tags, suggested follow-up tools, retrieval score explanations for each evidence
+row, and, when the question is broad enough to infer a topic phrase, the same
+grouped topic brief used by `dbrain_topic_brief`. The
 `coverage.recall_note` field intentionally warns when the returned evidence is
 only a capped working set relative to the larger matching corpus. That lets an
 agent start from one read-only call instead of manually orchestrating `ask`,
@@ -708,11 +709,14 @@ files under `evals/local/*.json`; those files are ignored because source keys,
 saved URLs, and expected text are specific to one person's brain database.
 Eval cases can require a specific top source key, any top key from an
 acceptable set, specific source keys anywhere in the evidence, minimum evidence
-counts, expected text, expected top-result text, forbidden source keys or noisy
-text, source-type filters, related-evidence expansion, top-result matched or
-missing terms, and rough latency budgets. This is intentionally corpus-local:
-open-source users should encode their own known-good queries rather than
-relying on project-specific fixture data.
+counts, expected text, expected top-result text, representative
+`exact_tag_evidence` saved-item examples, forbidden source keys or noisy text,
+source-type filters, related-evidence expansion, top-result matched or missing
+terms, and rough latency budgets. Exact-tag assertions exercise the same
+`dbrain_research_pack` path exposed to MCP clients; other cases use the
+lighter retrieval-only path. This is intentionally corpus-local: open-source
+users should encode their own known-good queries rather than relying on
+project-specific fixture data.
 
 ### MCP TODO
 
@@ -723,6 +727,10 @@ relying on project-specific fixture data.
   `dbrain_ask`, maps, and search) stay advertised by `tools/list`.
 - [x] Return structured, actionable MCP tool errors so clients and agents can
   recover from missing lookups, unsupported modes, or unknown tools.
+- [x] Add a representative exact-tag evidence lane so broad entity questions
+  expose saved tagged items even when linked source documents dominate ranking.
+- [x] Add exact-tag evidence assertions to local MCP eval cases so users can
+  catch regressions in the representative tagged-item lane.
 - [x] Add a `task test-mcp` command so CI and open-source users can validate MCP
   retrieval behavior without a private corpus.
 - [x] Keep model-backed summary tests deterministic when local summary-model

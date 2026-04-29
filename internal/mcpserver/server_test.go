@@ -201,6 +201,19 @@ func TestServerAgentResearchWorkflowOverProtocol(t *testing.T) {
 	if len(evidence) == 0 {
 		t.Fatalf("expected research evidence, got %#v", research)
 	}
+	tagEvidence := research["exact_tag_evidence"].([]interface{})
+	if len(tagEvidence) != 1 {
+		t.Fatalf("expected representative exact tag evidence, got %#v", research)
+	}
+	tagExample := tagEvidence[0].(map[string]interface{})
+	if tagExample["source_key"] != "x:test-mcp-agent-workflow" || tagExample["user_tags"] != "mark-carney, canadian-politics" {
+		t.Fatalf("expected tagged saved item example, got %#v", tagExample)
+	}
+	tagRetrieval := tagExample["retrieval"].(map[string]interface{})
+	signals := tagRetrieval["signals"].([]interface{})
+	if len(signals) == 0 || signals[0].(map[string]interface{})["name"] != "exact_user_tag_example" {
+		t.Fatalf("expected exact tag retrieval signal, got %#v", tagRetrieval)
+	}
 	getResult := responses[3]["result"].(map[string]interface{})
 	getText := getResult["content"].([]interface{})[0].(map[string]interface{})["text"].(string)
 	if !strings.Contains(getText, "fiscal policy saved corpus evidence") {

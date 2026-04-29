@@ -11,28 +11,34 @@ import (
 
 	"dbrain/internal/ask"
 	"dbrain/internal/config"
+	"dbrain/internal/mcpserver"
 	"dbrain/internal/store"
 )
 
 type Case struct {
-	Name                   string   `json:"name"`
-	Question               string   `json:"question"`
-	Limit                  int      `json:"limit,omitempty"`
-	MaxCharsPerDoc         int      `json:"max_chars_per_doc,omitempty"`
-	SourceTypes            []string `json:"source_types,omitempty"`
-	IncludeRelated         bool     `json:"include_related,omitempty"`
-	RelatedLimit           int      `json:"related_limit,omitempty"`
-	MinEvidence            int      `json:"min_evidence,omitempty"`
-	ExpectSourceKeys       []string `json:"expect_source_keys,omitempty"`
-	ExpectTopSourceKeys    []string `json:"expect_top_source_keys,omitempty"`
-	ExpectAnySourceKeys    []string `json:"expect_any_source_keys,omitempty"`
-	ForbidSourceKeys       []string `json:"forbid_source_keys,omitempty"`
-	ExpectText             []string `json:"expect_text,omitempty"`
-	ExpectTopText          []string `json:"expect_top_text,omitempty"`
-	ForbidText             []string `json:"forbid_text,omitempty"`
-	RequireTopMatchedTerms []string `json:"require_top_matched_terms,omitempty"`
-	ForbidTopMissingTerms  []string `json:"forbid_top_missing_terms,omitempty"`
-	MaxLatencyMS           int64    `json:"max_latency_ms,omitempty"`
+	Name                                string   `json:"name"`
+	Question                            string   `json:"question"`
+	Limit                               int      `json:"limit,omitempty"`
+	MaxCharsPerDoc                      int      `json:"max_chars_per_doc,omitempty"`
+	SourceTypes                         []string `json:"source_types,omitempty"`
+	IncludeRelated                      bool     `json:"include_related,omitempty"`
+	RelatedLimit                        int      `json:"related_limit,omitempty"`
+	MinEvidence                         int      `json:"min_evidence,omitempty"`
+	ExpectSourceKeys                    []string `json:"expect_source_keys,omitempty"`
+	ExpectTopSourceKeys                 []string `json:"expect_top_source_keys,omitempty"`
+	ExpectAnySourceKeys                 []string `json:"expect_any_source_keys,omitempty"`
+	ForbidSourceKeys                    []string `json:"forbid_source_keys,omitempty"`
+	ExpectText                          []string `json:"expect_text,omitempty"`
+	ExpectTopText                       []string `json:"expect_top_text,omitempty"`
+	ForbidText                          []string `json:"forbid_text,omitempty"`
+	MinExactTagEvidence                 int      `json:"min_exact_tag_evidence,omitempty"`
+	ExpectExactTagEvidenceSourceKeys    []string `json:"expect_exact_tag_evidence_source_keys,omitempty"`
+	ExpectAnyExactTagEvidenceSourceKeys []string `json:"expect_any_exact_tag_evidence_source_keys,omitempty"`
+	ExpectExactTagEvidenceText          []string `json:"expect_exact_tag_evidence_text,omitempty"`
+	ForbidExactTagEvidenceText          []string `json:"forbid_exact_tag_evidence_text,omitempty"`
+	RequireTopMatchedTerms              []string `json:"require_top_matched_terms,omitempty"`
+	ForbidTopMissingTerms               []string `json:"forbid_top_missing_terms,omitempty"`
+	MaxLatencyMS                        int64    `json:"max_latency_ms,omitempty"`
 }
 
 type Options struct {
@@ -48,14 +54,17 @@ type Report struct {
 }
 
 type CaseResult struct {
-	Name          string            `json:"name"`
-	Question      string            `json:"question"`
-	Passed        bool              `json:"passed"`
-	DurationMS    int64             `json:"duration_ms"`
-	EvidenceCount int               `json:"evidence_count"`
-	SourceKeys    []string          `json:"source_keys"`
-	TopEvidence   []EvidenceSummary `json:"top_evidence,omitempty"`
-	Failures      []string          `json:"failures,omitempty"`
+	Name                  string            `json:"name"`
+	Question              string            `json:"question"`
+	Passed                bool              `json:"passed"`
+	DurationMS            int64             `json:"duration_ms"`
+	EvidenceCount         int               `json:"evidence_count"`
+	ExactTagEvidenceCount int               `json:"exact_tag_evidence_count,omitempty"`
+	SourceKeys            []string          `json:"source_keys"`
+	ExactTagSourceKeys    []string          `json:"exact_tag_source_keys,omitempty"`
+	TopEvidence           []EvidenceSummary `json:"top_evidence,omitempty"`
+	ExactTagEvidence      []EvidenceSummary `json:"exact_tag_evidence,omitempty"`
+	Failures              []string          `json:"failures,omitempty"`
 }
 
 type EvidenceSummary struct {
@@ -116,14 +125,7 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	}
 
 	started := time.Now()
-	response, err := ask.Run(ctx, cfg, st, tc.Question, ask.Options{
-		Limit:          tc.Limit,
-		RetrieveOnly:   true,
-		MaxCharsPerDoc: tc.MaxCharsPerDoc,
-		SourceTypes:    tc.SourceTypes,
-		IncludeRelated: tc.IncludeRelated,
-		RelatedLimit:   tc.RelatedLimit,
-	})
+	response, exactTagEvidence, err := runRetrievalCase(ctx, cfg, st, tc)
 	if err != nil {
 		return CaseResult{}, fmt.Errorf("run eval case %q: %w", name, err)
 	}
@@ -166,6 +168,35 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	}
 	sort.Strings(result.SourceKeys)
 
+	exactTagSourceKeys := map[string]struct{}{}
+	var exactTagEvidenceText strings.Builder
+	for _, ev := range exactTagEvidence {
+		exactTagSourceKeys[ev.SourceKey] = struct{}{}
+		result.ExactTagSourceKeys = append(result.ExactTagSourceKeys, ev.SourceKey)
+		evText := strings.Join([]string{ev.SourceKey, ev.Title, ev.Summary, ev.Excerpt, ev.UserTags}, "\n")
+		score, signals := 0, 0
+		var matchedTerms, missingTerms []string
+		if ev.Retrieval != nil {
+			score = ev.Retrieval.Score
+			signals = len(ev.Retrieval.Signals)
+			matchedTerms = append([]string(nil), ev.Retrieval.MatchedTerms...)
+			missingTerms = append([]string(nil), ev.Retrieval.MissingTerms...)
+		}
+		result.ExactTagEvidence = append(result.ExactTagEvidence, EvidenceSummary{
+			SourceKey:    ev.SourceKey,
+			Kind:         ev.Kind,
+			Title:        ev.Title,
+			Score:        score,
+			Signals:      signals,
+			MatchedTerms: matchedTerms,
+			MissingTerms: missingTerms,
+		})
+		exactTagEvidenceText.WriteString(evText)
+		exactTagEvidenceText.WriteByte('\n')
+	}
+	result.ExactTagEvidenceCount = len(exactTagEvidence)
+	sort.Strings(result.ExactTagSourceKeys)
+
 	if tc.MinEvidence > 0 && len(response.Evidence) < tc.MinEvidence {
 		result.Failures = append(result.Failures, fmt.Sprintf("evidence_count=%d below min_evidence=%d", len(response.Evidence), tc.MinEvidence))
 	}
@@ -189,6 +220,17 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 			result.Failures = append(result.Failures, "forbidden source_key returned "+sourceKey)
 		}
 	}
+	if tc.MinExactTagEvidence > 0 && len(exactTagEvidence) < tc.MinExactTagEvidence {
+		result.Failures = append(result.Failures, fmt.Sprintf("exact_tag_evidence_count=%d below min_exact_tag_evidence=%d", len(exactTagEvidence), tc.MinExactTagEvidence))
+	}
+	for _, sourceKey := range tc.ExpectExactTagEvidenceSourceKeys {
+		if _, ok := exactTagSourceKeys[sourceKey]; !ok {
+			result.Failures = append(result.Failures, "missing expected exact_tag_evidence source_key "+sourceKey)
+		}
+	}
+	if len(tc.ExpectAnyExactTagEvidenceSourceKeys) > 0 && !containsAnySourceKey(exactTagSourceKeys, tc.ExpectAnyExactTagEvidenceSourceKeys) {
+		result.Failures = append(result.Failures, "missing any expected exact_tag_evidence source_key from "+strings.Join(tc.ExpectAnyExactTagEvidenceSourceKeys, ", "))
+	}
 
 	text := strings.ToLower(evidenceText.String())
 	for _, value := range tc.ExpectText {
@@ -208,6 +250,19 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 		value = strings.ToLower(strings.TrimSpace(value))
 		if value != "" && strings.Contains(text, value) {
 			result.Failures = append(result.Failures, "forbidden text present "+value)
+		}
+	}
+	exactTagText := strings.ToLower(exactTagEvidenceText.String())
+	for _, value := range tc.ExpectExactTagEvidenceText {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" && !strings.Contains(exactTagText, value) {
+			result.Failures = append(result.Failures, "missing expected exact_tag_evidence text "+value)
+		}
+	}
+	for _, value := range tc.ForbidExactTagEvidenceText {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" && strings.Contains(exactTagText, value) {
+			result.Failures = append(result.Failures, "forbidden exact_tag_evidence text present "+value)
 		}
 	}
 	if tc.MaxLatencyMS > 0 && result.DurationMS > tc.MaxLatencyMS {
@@ -231,6 +286,44 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 
 	result.Passed = len(result.Failures) == 0
 	return result, nil
+}
+
+func runRetrievalCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (ask.Response, []ask.Evidence, error) {
+	if caseNeedsResearchPack(tc) {
+		pack, err := mcpserver.New(cfg, st).BuildResearchPack(ctx, mcpserver.ResearchPackOptions{
+			Question:       tc.Question,
+			Limit:          tc.Limit,
+			SourceTypes:    tc.SourceTypes,
+			IncludeRelated: tc.IncludeRelated,
+			RelatedLimit:   tc.RelatedLimit,
+			MaxCharsPerDoc: tc.MaxCharsPerDoc,
+		})
+		if err != nil {
+			return ask.Response{}, nil, err
+		}
+		return ask.Response{
+			Question: pack.Question,
+			Evidence: pack.Evidence,
+		}, pack.ExactTagEvidence, nil
+	}
+
+	response, err := ask.Run(ctx, cfg, st, tc.Question, ask.Options{
+		Limit:          tc.Limit,
+		RetrieveOnly:   true,
+		MaxCharsPerDoc: tc.MaxCharsPerDoc,
+		SourceTypes:    tc.SourceTypes,
+		IncludeRelated: tc.IncludeRelated,
+		RelatedLimit:   tc.RelatedLimit,
+	})
+	return response, nil, err
+}
+
+func caseNeedsResearchPack(tc Case) bool {
+	return tc.MinExactTagEvidence > 0 ||
+		len(tc.ExpectExactTagEvidenceSourceKeys) > 0 ||
+		len(tc.ExpectAnyExactTagEvidenceSourceKeys) > 0 ||
+		len(tc.ExpectExactTagEvidenceText) > 0 ||
+		len(tc.ForbidExactTagEvidenceText) > 0
 }
 
 func containsStringFold(values []string, target string) bool {
@@ -262,21 +355,36 @@ func containsAnySourceKey(keys map[string]struct{}, candidates []string) bool {
 }
 
 func ExampleCases() []Case {
-	return []Case{{
-		Name:                   "known topic retrieves expected saved evidence",
-		Question:               "What does my brain know about Example Topic?",
-		Limit:                  8,
-		SourceTypes:            []string{"web"},
-		IncludeRelated:         true,
-		RelatedLimit:           2,
-		MinEvidence:            3,
-		ExpectTopSourceKeys:    []string{"src:replace-with-a-known-good-source"},
-		ExpectAnySourceKeys:    []string{"src:replace-with-a-known-good-source"},
-		ExpectText:             []string{"replace with a phrase that should appear in retrieved evidence"},
-		ExpectTopText:          []string{"replace with a phrase that should appear in the strongest evidence row"},
-		ForbidText:             []string{"replace with known boilerplate or noisy phrase"},
-		RequireTopMatchedTerms: []string{"replace-with-important-term"},
-		ForbidTopMissingTerms:  []string{"replace-with-important-term"},
-		MaxLatencyMS:           3000,
-	}}
+	return []Case{
+		{
+			Name:                   "known topic retrieves expected saved evidence",
+			Question:               "What does my brain know about Example Topic?",
+			Limit:                  8,
+			SourceTypes:            []string{"web"},
+			IncludeRelated:         true,
+			RelatedLimit:           2,
+			MinEvidence:            3,
+			ExpectTopSourceKeys:    []string{"src:replace-with-a-known-good-source"},
+			ExpectAnySourceKeys:    []string{"src:replace-with-a-known-good-source"},
+			ExpectText:             []string{"replace with a phrase that should appear in retrieved evidence"},
+			ExpectTopText:          []string{"replace with a phrase that should appear in the strongest evidence row"},
+			ForbidText:             []string{"replace with known boilerplate or noisy phrase"},
+			RequireTopMatchedTerms: []string{"replace-with-important-term"},
+			ForbidTopMissingTerms:  []string{"replace-with-important-term"},
+			MaxLatencyMS:           3000,
+		},
+		{
+			Name:                "known tag exposes representative saved items",
+			Question:            "What does my brain know about Example Person?",
+			Limit:               8,
+			MinEvidence:         1,
+			MinExactTagEvidence: 1,
+			ExpectAnyExactTagEvidenceSourceKeys: []string{
+				"x:replace-with-tagged-item",
+				"yt:replace-with-tagged-video",
+			},
+			ExpectExactTagEvidenceText: []string{"replace with phrase from a tagged saved item"},
+			MaxLatencyMS:               3000,
+		},
+	}
 }
