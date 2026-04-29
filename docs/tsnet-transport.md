@@ -60,8 +60,9 @@ handling.
   exposing both surfaces. `dbrain serve mcp --transport tsnet` remains
   available for MCP-only compatibility.
 - Tailscale ACLs and tags are the primary access-control boundary. dbrain logs
-  direct tsnet caller identity with `LocalClient.WhoIs`, but it does not try to
-  validate organization-specific ACL policy.
+  direct tsnet caller identity with `LocalClient.WhoIs`, cached briefly by
+  remote tailnet address, but it does not try to validate organization-specific
+  ACL policy.
 - First-run auth URLs must be surfaced through `tsnet.Server.UserLogf`, which
   is always wired to stderr. `tsnet.Server.Logf` remains debug-only behind a
   verbose flag.
@@ -85,6 +86,13 @@ handling.
   configured.
 - macOS `keychain://` uses Go keyring first in v1. The `security` CLI is only a
   user-configured command escape hatch.
+- `dbrain serve mcp --transport tsnet` accepts `--mcp-path` as an alias for
+  `--path` so MCP-only tsnet and combined remote serving use the same naming.
+- State-dir lock failures use a typed already-running error internally so
+  status/reset behavior does not depend on string matching.
+- State-dir advisory locking is implemented for Unix-like platforms first.
+  Windows should fail with a clear unsupported-lock error until a `LockFileEx`
+  implementation is added.
 - `--tsnet-control-url` is experimental. Custom control servers, including
   Headscale, may not provide the same `.ts.net` DNS and `ListenTLS` certificate
   behavior as Tailscale SaaS.
@@ -256,7 +264,7 @@ path.
 `serve remote --web=false --mcp=false` should fail fast with a clear error
 instead of starting a tsnet node that serves no routes.
 
-If `--mcp-path` remains configurable, validate it strictly:
+Because `--mcp-path` is configurable, validate it strictly:
 
 - Must start with `/`.
 - Must not be `/`.
@@ -264,6 +272,10 @@ If `--mcp-path` remains configurable, validate it strictly:
 - Must not contain `..`.
 - Must be cleaned/canonicalized with trailing slashes normalized away, so
   `/mcp/` becomes `/mcp`.
+
+For MCP-only tsnet compatibility, `dbrain serve mcp --transport tsnet` also
+accepts `--mcp-path` as an alias for `--path`. If both flags are passed,
+Cobra's normal last-flag-wins behavior applies.
 
 `dbrain serve web` and `dbrain serve mcp` should continue to exist as local or
 single-surface commands. `dbrain serve remote` is the preferred command for
@@ -371,6 +383,11 @@ canonical resolved state-dir path after symlink resolution. If the lock is
 already held, fail with a clear message that includes the state directory and
 hostname. Release the lock only after `http.Server.Shutdown(ctx)` and
 `tsnet.Server.Close()` complete.
+
+Use a typed internal already-running error for lock contention so callers such
+as `dbrain tsnet status` do not parse error strings. Unix-like platforms use
+advisory locking in v1. Windows should return a clear unsupported-lock error
+until a native `LockFileEx` implementation exists.
 
 ## Secrets Design
 
@@ -557,7 +574,8 @@ dbrain should still provide local guardrails:
 - Print a startup warning when mounting the web UI remotely, including the
   hostname/tag and a reminder that Tailscale ACLs govern access.
 - For direct tsnet requests, call `tsnet.Server.LocalClient().WhoIs` with the
-  request context and remote address, then log the resolved caller identity.
+  request context and remote address, cache the resolved identity briefly by
+  remote tailnet address, then log the resolved caller identity.
 - Add remote-only HTTP hardening headers, including HSTS when TLS is enabled,
   `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` or equivalent
   CSP `frame-ancestors 'none'`, and `Referrer-Policy: no-referrer`.
@@ -573,6 +591,10 @@ The v1 Origin rule assumes current write endpoints such as `/api/tag` and
 `/api/links` are JSON POSTs without cookie auth or browser session state. If a
 future endpoint accepts form posts, multipart uploads, cookies, or browser
 sessions, revisit the guard.
+
+Set HTTP server timeouts on the remote listener: `ReadHeaderTimeout=10s`,
+`ReadTimeout=60s`, and `WriteTimeout=60s`. v1 does not support long-lived MCP
+SSE streams on this endpoint, so bounded read/write timeouts are acceptable.
 
 Tailscale Serve and related proxy paths can include user identity headers, but
 a direct `tsnet` server does not receive injected identity headers. Direct
@@ -739,6 +761,8 @@ by a running daemon.
   URL, web enablement, MCP enablement, MCP path, and verbosity.
 - Make `serve remote` tsnet-only in v1, while `serve mcp` keeps `stdio` as its
   default and accepts `--transport tsnet` for MCP-only remote compatibility.
+- Add `--mcp-path` as an alias for `serve mcp --transport tsnet --path`; if
+  both aliases are set, the last flag wins.
 - Fail fast if both web and MCP are disabled.
 - Print a clear startup warning when remote web is enabled because the web UI is
   read/write.
@@ -794,6 +818,7 @@ by a running daemon.
 - Emit a remote web startup warning that Tailscale ACLs govern access.
 - Add remote-only security headers and concrete Origin checks for mutating web
   requests on the tsnet listener.
+- Set bounded HTTP read-header, read, and write timeouts on the remote server.
 - For direct tsnet requests, use `tsnet.Server.LocalClient().WhoIs` against the
   request remote address for caller identity logging; fall back to remote
   address on lookup failure.
@@ -811,6 +836,10 @@ by a running daemon.
 - Resolve state-dir identity through the same config/flag/env pipeline as
   `serve remote`.
 - Refuse reset when the state-dir advisory lock is held.
+- Hold the advisory lock while deleting the state directory. After deletion, a
+  new process can recreate the directory and obtain a fresh lock; that is
+  acceptable because reset is an explicit destructive operation and the held
+  lock only proves no current process owns the old state.
 - Add tests for state-dir validation and reset confirmation.
 
 ### Phase 5: Deferred Or Discarded
@@ -821,6 +850,8 @@ by a running daemon.
   is the intended persistence mechanism.
 - Do not add service-mode behavior now. A normal tsnet node is enough for the
   current product direction.
+- Do not implement native Windows `LockFileEx` support now. Windows returns a
+  clear unsupported-lock error for tsnet serve/status/reset until that exists.
 
 ## Testing Strategy
 
@@ -838,18 +869,23 @@ Unit tests:
 - Command timeout and single-call behavior.
 - State-dir creation mode and unsafe-permission rejection.
 - State-dir advisory lock acquisition and already-running failure behavior.
+- Typed already-running lock errors instead of string matching.
 - iCloud/sync-root warning helper.
 - `Up(ctx)` uses the configured startup timeout and fails clearly on timeout.
 - First-run URL surfacing and dedupe from `UserLogf`; `Logf` stays
   verbose-only.
+- Remote request identity logging writes through the injected command log
+  writer.
 - Web handler and MCP handler reuse remains transport-neutral.
 - Mux ordering: `/mcp`, `/mcp/`, and `/mcp/foo` must reach MCP or MCP-specific
   responses even when web is mounted at `/`.
 - Strict `mcp_path` validation.
+- `serve mcp --transport tsnet --mcp-path` aliases `--path`.
 - `serve remote --web=false --mcp=false` fails fast.
 - Remote web startup warning is emitted.
 - Direct tsnet request logging uses `LocalClient.WhoIs`, not injected headers.
 - `LocalClient` / `WhoIs` failures fall back to remote-address logging.
+- `WhoIs` identity logging is short-TTL cached by remote tailnet address.
 - Shutdown ordering is `http.Server.Shutdown(ctx)` before
   `tsnet.Server.Close()`.
 - Startup failures unwind by closing tsnet and releasing the state-dir lock.
@@ -942,7 +978,9 @@ Implement the first pass with:
 - durable state under `~/.local/share/dbrain/tsnet/<hostname>`
 - `0700` state-dir permissions
 - exclusive `<state-dir>/dbrain.lock` held for the process lifetime
-- OS-level advisory locking on the canonical resolved state-dir lock file
+- OS-level advisory locking on the canonical resolved state-dir lock file on
+  Unix-like platforms, with clear unsupported-lock errors on Windows until a
+  native implementation is added
 - no iCloud/sync path by default
 - HTTPS by default through `ListenTLS`
 - `45s` default `Up(ctx)` startup timeout with `--tsnet-startup-timeout`
@@ -956,6 +994,8 @@ Implement the first pass with:
 - explicit `Up(ctx)` startup before listening
 - actual FQDN/URL logging from tsnet startup status where available
 - `serve remote` guard when both web and MCP are disabled
+- `serve mcp --transport tsnet --mcp-path` alias for MCP-only compatibility;
+  if `--path` and `--mcp-path` are both set, the last flag wins
 - outer MCP dispatcher plus route tests proving `/mcp` paths are not swallowed
   by the web handler
 - strict `mcp_path` validation
@@ -963,9 +1003,10 @@ Implement the first pass with:
   `serve remote`, using the resolved state dir as the primary identity
 - `dbrain tsnet status` health checks for running/reachable/certificate state
 - remote web startup warning plus best-effort `LocalClient.WhoIs` identity
-  logging
+  logging with short-TTL caching by remote tailnet address
 - remote-only HTTP hardening headers and concrete Origin checks for mutating
   web requests
+- bounded remote HTTP server timeouts
 - graceful shutdown through `http.Server.Shutdown(ctx)` followed by
   `tsnet.Server.Close()`
 - no custom `ipn.StateStore` initially

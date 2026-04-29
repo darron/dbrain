@@ -120,9 +120,6 @@ func ValidateMCPPath(value string) (string, error) {
 	if cleaned != trimmed && strings.TrimRight(trimmed, "/") != cleaned {
 		return "", fmt.Errorf("mcp path must be clean")
 	}
-	if strings.Contains(cleaned, "/../") || strings.HasSuffix(cleaned, "/..") || strings.Contains(cleaned, "../") {
-		return "", fmt.Errorf("mcp path must not contain parent path segments")
-	}
 	return cleaned, nil
 }
 

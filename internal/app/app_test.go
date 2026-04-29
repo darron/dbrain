@@ -322,7 +322,7 @@ func TestServeMCPHelpIncludesTSNetTransport(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"stdio, http, or tsnet", "--tsnet-hostname", "--tsnet-auth-key-ref"} {
+	for _, value := range []string{"stdio, http, or tsnet", "--mcp-path", "--tsnet-hostname", "--tsnet-auth-key-ref"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected serve mcp help to contain %q, got %q", value, output)
 		}
@@ -489,7 +489,7 @@ func TestTSNetStateStatusReportsHealthyRunningNode(t *testing.T) {
 	}
 	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
 		acquireStateLock: func(string) (io.Closer, error) {
-			return nil, errors.New("state dir is already locked by another dbrain process")
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
 		},
 		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
 			return tsnetEndpointProbe{Reachable: true, StatusCode: 200, EffectiveURL: rawURL, CertHealth: "ok"}
@@ -540,7 +540,7 @@ func TestTSNetStateStatusFallsBackToShortHostWithTLSServerName(t *testing.T) {
 	var alternateProbes int
 	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
 		acquireStateLock: func(string) (io.Closer, error) {
-			return nil, errors.New("state dir is already locked by another dbrain process")
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
 		},
 		probeEndpoint: func(_ context.Context, rawURL string, tlsServerName string) tsnetEndpointProbe {
 			if strings.Contains(rawURL, "dbrain.tailnet.ts.net") {
@@ -592,7 +592,7 @@ func TestTSNetStateStatusFallsBackToPeerIPWithTLSServerName(t *testing.T) {
 	var ipProbes int
 	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
 		acquireStateLock: func(string) (io.Closer, error) {
-			return nil, errors.New("state dir is already locked by another dbrain process")
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
 		},
 		probeEndpoint: func(_ context.Context, rawURL string, tlsServerName string) tsnetEndpointProbe {
 			if strings.Contains(rawURL, "100.64.0.10") && tlsServerName == "dbrain.tailnet.ts.net" {
@@ -637,7 +637,7 @@ func TestTSNetStateStatusReportsDownWhenLockedButUnreachable(t *testing.T) {
 	}
 	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
 		acquireStateLock: func(string) (io.Closer, error) {
-			return nil, errors.New("state dir is already locked by another dbrain process")
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
 		},
 		probeEndpoint: func(context.Context, string, string) tsnetEndpointProbe {
 			return tsnetEndpointProbe{Reachable: false, Error: "connection refused", CertHealth: "unknown"}
@@ -675,7 +675,7 @@ func TestTSNetStateStatusReportsNeedsLogin(t *testing.T) {
 	}
 	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
 		acquireStateLock: func(string) (io.Closer, error) {
-			return nil, errors.New("state dir is already locked by another dbrain process")
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
 		},
 		probeEndpoint: func(context.Context, string, string) tsnetEndpointProbe {
 			return tsnetEndpointProbe{Reachable: false, Error: "not listening", CertHealth: "unknown"}

@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,8 +61,8 @@ func TestAcquireStateLockRejectsSecondHolder(t *testing.T) {
 		_ = lock.Close()
 	}()
 
-	if _, err := AcquireStateLock(dir); err == nil {
-		t.Fatalf("second AcquireStateLock succeeded, want already locked error")
+	if _, err := AcquireStateLock(dir); !errors.Is(err, ErrAlreadyLocked) {
+		t.Fatalf("second AcquireStateLock error = %v, want ErrAlreadyLocked", err)
 	}
 	if lock.Path() != filepath.Join(dir, StateLockName) {
 		t.Fatalf("lock path = %q", lock.Path())

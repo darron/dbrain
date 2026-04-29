@@ -24,6 +24,8 @@ import (
 
 var urlPattern = regexp.MustCompile(`https?://[^\s]+`)
 
+const identityCacheTTL = 30 * time.Second
+
 type ServeResult struct {
 	StateDir string
 	WebURL   string
@@ -51,7 +53,7 @@ type remoteDeps struct {
 	acquireStateLock func(string) (stateLock, error)
 	resolveAuthKey   func(context.Context, Options) (SecretResult, error)
 	newNode          func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode
-	buildHandler     func(config.Config, Options, whoIsClient) (http.Handler, func(), error)
+	buildHandler     func(config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error)
 }
 
 func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer) error {
@@ -127,7 +129,7 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 		_, _ = fmt.Fprintf(logOut, "WARNING tsnet LocalClient unavailable; request identity logging will use remote addresses: %v\n", err)
 	}
 
-	handler, cleanup, err := deps.buildHandler(cfg, opts, lc)
+	handler, cleanup, err := deps.buildHandler(cfg, opts, lc, logOut)
 	if err != nil {
 		return err
 	}
@@ -141,6 +143,8 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	httpServer := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
 	}
 	errCh := make(chan error, 1)
 	go func() {
@@ -180,7 +184,7 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	}
 }
 
-func buildHandler(cfg config.Config, opts Options, lc whoIsClient) (http.Handler, func(), error) {
+func buildHandler(cfg config.Config, opts Options, lc whoIsClient, logOut io.Writer) (http.Handler, func(), error) {
 	var closers []io.Closer
 	cleanup := func() {
 		for i := len(closers) - 1; i >= 0; i-- {
@@ -227,7 +231,7 @@ func buildHandler(cfg config.Config, opts Options, lc whoIsClient) (http.Handler
 		return nil, nil, err
 	}
 	if lc != nil {
-		handler = identityLogger(lc, handler)
+		handler = identityLogger(lc, handler, logOut)
 	}
 	return handler, cleanup, nil
 }
@@ -280,15 +284,43 @@ func (n tsnetNode) Close() error {
 	return n.server.Close()
 }
 
-func identityLogger(client whoIsClient, next http.Handler) http.Handler {
+func identityLogger(client whoIsClient, next http.Handler, logOut io.Writer) http.Handler {
+	var mu sync.Mutex
+	cache := map[string]identityCacheEntry{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity := r.RemoteAddr
-		if who, err := client.WhoIs(r.Context(), r.RemoteAddr); err == nil {
-			identity = whoIsLabel(who, r.RemoteAddr)
+		cacheKey := identityCacheKey(r.RemoteAddr)
+		now := time.Now()
+		mu.Lock()
+		cached, ok := cache[cacheKey]
+		if ok && now.Before(cached.expires) {
+			identity = cached.identity
 		}
-		logRemoteRequest(r, identity)
+		mu.Unlock()
+		if !ok || !now.Before(cached.expires) {
+			if who, err := client.WhoIs(r.Context(), r.RemoteAddr); err == nil {
+				identity = whoIsLabel(who, r.RemoteAddr)
+				mu.Lock()
+				cache[cacheKey] = identityCacheEntry{identity: identity, expires: now.Add(identityCacheTTL)}
+				mu.Unlock()
+			}
+		}
+		logRemoteRequest(logOut, r, identity)
 		next.ServeHTTP(w, r)
 	})
+}
+
+type identityCacheEntry struct {
+	identity string
+	expires  time.Time
+}
+
+func identityCacheKey(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil || strings.TrimSpace(host) == "" {
+		return remoteAddr
+	}
+	return host
 }
 
 func whoIsLabel(who *apitype.WhoIsResponse, fallback string) string {
@@ -309,8 +341,11 @@ func whoIsLabel(who *apitype.WhoIsResponse, fallback string) string {
 	return fallback
 }
 
-func logRemoteRequest(r *http.Request, identity string) {
-	_, _ = fmt.Fprintf(os.Stderr, "DEBUG %s remote request method=%s path=%s identity=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, identity, r.RemoteAddr)
+func logRemoteRequest(out io.Writer, r *http.Request, identity string) {
+	if out == nil {
+		out = os.Stderr
+	}
+	_, _ = fmt.Fprintf(out, "DEBUG %s remote request method=%s path=%s identity=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, identity, r.RemoteAddr)
 }
 
 func newUserLogger(out io.Writer) func(string, ...any) {

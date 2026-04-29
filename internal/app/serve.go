@@ -95,6 +95,7 @@ read-only MCP directly from the built-in tailnet node.`,
 	cmd.Flags().StringVar(&transport, "transport", "stdio", "MCP transport: stdio, http, or tsnet")
 	cmd.Flags().StringVar(&addr, "addr", mcpserver.DefaultHTTPAddr, "HTTP listen address for --transport http")
 	cmd.Flags().StringVar(&path, "path", mcpserver.DefaultHTTPPath, "HTTP MCP endpoint path for --transport http or tsnet")
+	cmd.Flags().StringVar(&path, "mcp-path", mcpserver.DefaultHTTPPath, "Alias for --path; if both are set, the last flag wins")
 	cmd.Flags().StringArrayVar(&allowOrigins, "allow-origin", nil, "additional allowed HTTP Origin for --transport http; repeatable, exact match, use only with trusted origins")
 	cmd.Flags().StringVar(&tsnetHostname, "tsnet-hostname", remote.DefaultHostname, "Stable tailnet machine name for --transport tsnet")
 	cmd.Flags().StringVar(&tsnetStateDir, "tsnet-state-dir", "", "Durable tsnet state directory for --transport tsnet")
@@ -128,7 +129,7 @@ type serveMCPRemoteFlags struct {
 
 func applyServeMCPRemoteFlagOverrides(cmd *cobra.Command, dataDir string, opts *remote.Options, flags serveMCPRemoteFlags) {
 	changed := cmd.Flags().Changed
-	if changed("path") {
+	if changed("path") || changed("mcp-path") {
 		opts.MCPPath = flags.path
 	}
 	if changed("tsnet-hostname") {

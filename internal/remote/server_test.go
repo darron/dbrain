@@ -107,6 +107,61 @@ func TestWhoIsLabelPrefersUserThenNodeThenFallback(t *testing.T) {
 	}
 }
 
+func TestIdentityLoggerWritesToProvidedOutput(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	nextCalled := false
+	handler := identityLogger(fakeWhoIsClient{
+		response: &apitype.WhoIsResponse{UserProfile: &tailcfg.UserProfile{LoginName: "alice@example.com"}},
+	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}), &out)
+
+	req, err := http.NewRequest(http.MethodGet, "/mcp", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.RemoteAddr = "100.64.0.1:1234"
+	handler.ServeHTTP(noopResponseWriter{}, req)
+
+	if !nextCalled {
+		t.Fatalf("expected next handler to be called")
+	}
+	output := out.String()
+	for _, value := range []string{"remote request", "method=GET", "path=/mcp", `identity="alice@example.com"`} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected log output to contain %q, got %q", value, output)
+		}
+	}
+}
+
+func TestIdentityLoggerCachesWhoIsByRemoteHost(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	handler := identityLogger(fakeWhoIsClient{
+		response: &apitype.WhoIsResponse{UserProfile: &tailcfg.UserProfile{LoginName: "alice@example.com"}},
+		calls:    &calls,
+	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), io.Discard)
+
+	for _, remoteAddr := range []string{"100.64.0.1:1111", "100.64.0.1:2222"} {
+		req, err := http.NewRequest(http.MethodGet, "/mcp", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.RemoteAddr = remoteAddr
+		handler.ServeHTTP(noopResponseWriter{}, req)
+	}
+
+	if calls != 1 {
+		t.Fatalf("WhoIs calls = %d, want 1", calls)
+	}
+}
+
 func TestServeWithDepsUsesStartupTimeoutAndUnwinds(t *testing.T) {
 	t.Parallel()
 
@@ -128,6 +183,24 @@ func TestServeWithDepsUsesStartupTimeoutAndUnwinds(t *testing.T) {
 		t.Fatalf("unexpected startup deadline delta %s", got)
 	}
 	assertEventOrder(t, events, "up", "node-close", "lock-close")
+}
+
+func TestServeWithDepsRejectsNoSurfacesBeforeStartingNode(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	node := &fakeRemoteNode{events: &events}
+	opts := testServeOptions(t)
+	opts.Web = false
+	opts.MCP = false
+
+	err := serveWithDeps(context.Background(), config.Config{}, opts, &bytes.Buffer{}, testRemoteDeps(node, &events))
+	if err == nil || !strings.Contains(err.Error(), "at least one surface") {
+		t.Fatalf("expected at-least-one-surface error, got %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no node or lock activity, got %v", events)
+	}
 }
 
 func TestServeWithDepsSelectsListenMode(t *testing.T) {
@@ -267,7 +340,7 @@ func testRemoteDeps(node *fakeRemoteNode, events *[]string) remoteDeps {
 		newNode: func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode {
 			return node
 		},
-		buildHandler: func(config.Config, Options, whoIsClient) (http.Handler, func(), error) {
+		buildHandler: func(config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte("ok"))
 			})
@@ -352,6 +425,34 @@ func (n *fakeRemoteNode) Close() error {
 	*n.events = append(*n.events, "node-close")
 	return nil
 }
+
+type fakeWhoIsClient struct {
+	response *apitype.WhoIsResponse
+	err      error
+	calls    *int
+}
+
+func (c fakeWhoIsClient) WhoIs(context.Context, string) (*apitype.WhoIsResponse, error) {
+	if c.calls != nil {
+		(*c.calls)++
+	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.response, nil
+}
+
+type noopResponseWriter struct{}
+
+func (noopResponseWriter) Header() http.Header {
+	return http.Header{}
+}
+
+func (noopResponseWriter) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (noopResponseWriter) WriteHeader(int) {}
 
 type blockingListener struct {
 	events     *[]string

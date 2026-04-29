@@ -168,6 +168,9 @@ func newTSNetResetCommand(root *rootOptions) *cobra.Command {
 				}
 			}
 
+			// The advisory lock proves no running dbrain owns the current state
+			// directory. On Unix, RemoveAll unlinks the locked file while this FD
+			// stays open; a later process may recreate a fresh state dir/lock.
 			if err := os.RemoveAll(prepared); err != nil {
 				return fmt.Errorf("remove tsnet state dir %s: %w", prepared, err)
 			}
@@ -281,7 +284,7 @@ func tsnetStateStatusWithDeps(ctx context.Context, opts remote.Options, deps tsn
 
 	lock, err := deps.acquireStateLock(resolved)
 	if err != nil {
-		if strings.Contains(err.Error(), "already locked") {
+		if errors.Is(err, remote.ErrAlreadyLocked) {
 			info.Locked = true
 			info.Running = true
 			applyTSNetHealth(ctx, opts, &info, certState, deps)
@@ -537,7 +540,7 @@ func probeTSNetEndpoint(ctx context.Context, rawURL string, tlsServerName string
 	if err != nil {
 		return tsnetEndpointProbe{Error: err.Error(), CertHealth: "unknown"}
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := cloneDefaultHTTPTransport()
 	if strings.TrimSpace(tlsServerName) != "" {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: tlsServerName}
 	}
@@ -563,6 +566,14 @@ func probeTSNetEndpoint(ctx context.Context, rawURL string, tlsServerName string
 		CertHealth:   certHealth,
 		CertError:    certError,
 	}
+}
+
+func cloneDefaultHTTPTransport() *http.Transport {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Transport{}
+	}
+	return base.Clone()
 }
 
 func certDNSNamesFromError(err error) []string {
