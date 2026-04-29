@@ -894,6 +894,9 @@ func getOutputSchema() map[string]interface{} {
 		"content":               scalarSchema("string", "Rendered markdown note content when content_mode is rendered."),
 		"item":                  genericObjectSchema("Slim item metadata when the lookup resolved to an item."),
 		"source":                genericObjectSchema("Slim source metadata when the lookup resolved to a source."),
+		"related_items":         arraySchema(genericObjectSchema("Slim child item metadata, for example quoted posts.")),
+		"related_sources":       arraySchema(itemSourceRefSchema()),
+		"backlinks":             arraySchema(sourceBacklinkSchema()),
 	}, "kind", "title", "source_key", "note", "content_mode", "available_sections", "content_sections")
 }
 
@@ -1193,12 +1196,14 @@ func sourceBacklinkSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
 		"item_id":       scalarSchema("integer", "Internal item id."),
 		"source_key":    scalarSchema("string", "Stable item source key."),
+		"source_type":   scalarSchema("string", "Underlying item source type."),
 		"canonical_url": scalarSchema("string", "Canonical item URL."),
 		"title":         scalarSchema("string", "Best available title."),
 		"note_path":     scalarSchema("string", "Relative rendered note path."),
 		"author_handle": scalarSchema("string", "Author handle when present."),
 		"author_name":   scalarSchema("string", "Author display name when present."),
 		"published_at":  scalarSchema("string", "Published timestamp when present."),
+		"user_tags":     scalarSchema("string", "Comma-separated user tags from the saved item that references the source."),
 	}, "item_id", "source_key", "canonical_url", "title", "note_path")
 }
 
@@ -1564,6 +1569,11 @@ func formatBacklinks(lookup string, refs []model.SourceBacklink) string {
 		if ref.AuthorHandle != "" || ref.AuthorName != "" {
 			b.WriteString("  Author: ")
 			b.WriteString(firstNonEmpty(ref.AuthorName, ref.AuthorHandle))
+			b.WriteString("\n")
+		}
+		if strings.TrimSpace(ref.UserTags) != "" {
+			b.WriteString("  User tags: ")
+			b.WriteString(strings.TrimSpace(ref.UserTags))
 			b.WriteString("\n")
 		}
 		b.WriteString("  URL: ")

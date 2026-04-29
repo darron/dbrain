@@ -266,6 +266,9 @@ func TestWebHandlerServesBootstrapSearchGetAndAsk(t *testing.T) {
 		if len(response.Backlinks) == 0 {
 			t.Fatalf("expected backlinks")
 		}
+		if response.Backlinks[0].UserTags != "agent-memory, retrieval" {
+			t.Fatalf("expected backlink tags, got %+v", response.Backlinks[0])
+		}
 	})
 
 	t.Run("ask retrieve only", func(t *testing.T) {
@@ -578,6 +581,9 @@ func seedTestData(t *testing.T, ctx context.Context, cfg config.Config, st *stor
 		t.Fatalf("UpsertItem: %v", err)
 	}
 	itemID := upsert.ItemID
+	if err := st.SaveItemUserTags(ctx, itemID, "agent-memory, retrieval"); err != nil {
+		t.Fatalf("SaveItemUserTags: %v", err)
+	}
 
 	itemNotePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath))
 	if err := os.WriteFile(itemNotePath, []byte("# Agent Memory Notes\n\nLocal note content.\n"), 0o644); err != nil {

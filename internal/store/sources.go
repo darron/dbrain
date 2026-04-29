@@ -1313,7 +1313,7 @@ func (s *Store) ListSourcesForItem(ctx context.Context, itemID int64) ([]model.I
 
 func (s *Store) ListBacklinksForSource(ctx context.Context, sourceID int64) ([]model.SourceBacklink, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT i.id, i.source_key, i.source_type, i.canonical_url, i.title, i.note_path, i.author_handle, i.author_name, i.published_at
+		SELECT i.id, i.source_key, i.source_type, i.canonical_url, i.title, i.note_path, i.author_handle, i.author_name, i.published_at, i.user_tags
 		FROM item_source_links l
 		JOIN items i ON i.id = l.item_id
 		WHERE l.source_id = ?
@@ -1328,7 +1328,7 @@ func (s *Store) ListBacklinksForSource(ctx context.Context, sourceID int64) ([]m
 	var refs []model.SourceBacklink
 	for rows.Next() {
 		var ref model.SourceBacklink
-		if err := rows.Scan(&ref.ItemID, &ref.SourceKey, &ref.SourceType, &ref.CanonicalURL, &ref.Title, &ref.NotePath, &ref.AuthorHandle, &ref.AuthorName, &ref.PublishedAt); err != nil {
+		if err := rows.Scan(&ref.ItemID, &ref.SourceKey, &ref.SourceType, &ref.CanonicalURL, &ref.Title, &ref.NotePath, &ref.AuthorHandle, &ref.AuthorName, &ref.PublishedAt, &ref.UserTags); err != nil {
 			return nil, fmt.Errorf("scan source backlink %d: %w", sourceID, err)
 		}
 		refs = append(refs, ref)

@@ -992,9 +992,39 @@ func TestServerGetToolUsesSlimSourceProjection(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save summary: %v", err)
 	}
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-get-source-backlink",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-get-source-backlink",
+		CanonicalURL: "https://x.com/example/status/test-mcp-get-source-backlink",
+		Title:        "MCP Get Source Backlink",
+		ContentHash:  "mcp-get-source-backlink-hash",
+		NotePath:     "items/x/2026/test-mcp-get-source-backlink.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert backlink item: %v", err)
+	}
+	if err := st.SaveItemUserTags(context.Background(), itemResult.ItemID, "agent-memory, source-backlink"); err != nil {
+		t.Fatalf("save backlink tags: %v", err)
+	}
+	if _, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
+		SourceKey:     "src:test-mcp-get-source",
+		OriginalURL:   "https://example.com/source",
+		CanonicalURL:  "https://example.com/source",
+		NormalizedURL: "https://example.com/source",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-mcp-get-source.md",
+	}); err != nil {
+		t.Fatalf("link backlink item: %v", err)
+	}
 
 	server := New(cfg, st)
-	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"src:test-mcp-get-source","max_chars_per_section":90}}}`
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"src:test-mcp-get-source","max_chars_per_section":240}}}`
 
 	var out bytes.Buffer
 	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
@@ -1010,6 +1040,19 @@ func TestServerGetToolUsesSlimSourceProjection(t *testing.T) {
 	}
 	if _, ok := source["extract_json"]; ok {
 		t.Fatalf("expected slim source without extract_json, got %#v", source)
+	}
+	backlinks := structured["backlinks"].([]interface{})
+	if len(backlinks) != 1 {
+		t.Fatalf("expected source backlink, got %#v", backlinks)
+	}
+	backlink := backlinks[0].(map[string]interface{})
+	if backlink["user_tags"] != "agent-memory, source-backlink" {
+		t.Fatalf("expected backlink tags, got %#v", backlink)
+	}
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "User tags: agent-memory, source-backlink") {
+		t.Fatalf("expected backlink tags in text output, got %q", text)
 	}
 	available := structured["available_sections"].([]interface{})
 	if _, ok := available[0].(map[string]interface{})["text"]; ok {

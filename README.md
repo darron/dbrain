@@ -740,6 +740,8 @@ project-specific fixture data.
   discover them without source-specific code.
 - [x] Add example local eval recipes for entity/tag, OCR, transcript, difficult
   domain, and broad-topic/noisy-result retrieval cases.
+- [x] Show tags from saved-item backlinks when inspecting source nodes, so a
+  selected `src:...` result exposes the user's tags from items that reference it.
 
 ### MCP Importer Contract
 

@@ -91,6 +91,11 @@
   }
 
   $: userTags = parseList(item?.user_tags);
+  $: taggedBacklinks = detail?.kind === "source"
+    ? (detail.backlinks || [])
+        .map(ref => ({ ...ref, tags: parseList(ref.user_tags) }))
+        .filter(ref => ref.tags.length)
+    : [];
   let newTag = "";
   let tagSaving = false;
   let tagEditMode = false;
@@ -234,6 +239,27 @@
           <button class="tag-edit-toggle" on:click={() => tagEditMode = !tagEditMode} type="button">
             {tagEditMode ? "Done" : "Edit tags"}
           </button>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Tags from saved items that reference this source -->
+    {#if taggedBacklinks.length}
+      <div class="detail-section tag-section">
+        <h3>Tagged backlinks</h3>
+        <div class="tagged-backlinks">
+          {#each taggedBacklinks as ref}
+            <div class="tagged-backlink-card">
+              <button class="tagged-backlink-title" on:click={() => onSelect(ref.source_key)} type="button">
+                {ref.title || ref.canonical_url || ref.source_key}
+              </button>
+              <div class="tag-chips">
+                {#each ref.tags as tag}
+                  <button class="tag-chip tag-chip--plain" on:click={() => onSearch(tag)} type="button">{tag}</button>
+                {/each}
+              </div>
+            </div>
+          {/each}
         </div>
       </div>
     {/if}
@@ -569,6 +595,32 @@
   }
 
   .tag-section { padding-top: 0; }
+
+  .tagged-backlinks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .tagged-backlink-card {
+    background: rgba(74, 222, 128, 0.025);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.65rem;
+  }
+
+  .tagged-backlink-title {
+    color: var(--text);
+    cursor: pointer;
+    display: block;
+    font-size: 0.82rem;
+    font-weight: 600;
+    margin-bottom: 0.45rem;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+  .tagged-backlink-title:hover { color: var(--text-hi); text-decoration: underline; }
 
   .tag-chips {
     display: flex;

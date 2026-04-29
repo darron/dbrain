@@ -60,6 +60,7 @@ type SourceBacklink struct {
 	AuthorHandle string `json:"author_handle"`
 	AuthorName   string `json:"author_name"`
 	PublishedAt  string `json:"published_at"`
+	UserTags     string `json:"user_tags"`
 }
 
 type SourceCandidate struct {
