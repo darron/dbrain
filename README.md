@@ -435,13 +435,26 @@ dbrain serve web
 
 ### `dbrain serve mcp`
 
-Serves the local brain over MCP stdio with read-only tools, resources, and
-prompts for search, note access, research packs, topic maps, and pipeline
-status.
+Serves the local brain over MCP with read-only tools, resources, and prompts
+for search, note access, research packs, topic maps, and pipeline status.
+Stdio is the default local-agent transport. Stateless Streamable HTTP is
+available as a parallel daemon transport for remote agents, usually behind
+Tailscale Serve.
 
 ```sh
 dbrain serve mcp
+dbrain serve mcp --transport http --addr 127.0.0.1:8743 --path /mcp
+tailscale serve --bg 8743
 ```
+
+Important flags:
+
+- `--transport`: `stdio` or `http`; default `stdio`.
+- `--addr`: HTTP listen address for `--transport http`; default
+  `127.0.0.1:8743`.
+- `--path`: Streamable HTTP MCP endpoint path; default `/mcp`.
+- `--allow-origin`: additional trusted HTTP `Origin`; repeatable. Empty
+  `Origin` and same-host `Origin` requests are accepted by default.
 
 ### `dbrain hydrate x`
 
@@ -921,11 +934,15 @@ configuration.
   domain, and broad-topic/noisy-result retrieval cases.
 - [x] Show tags from saved-item backlinks when inspecting source nodes, so a
   selected `src:...` result exposes the user's tags from items that reference it.
+- [x] Add stateless Streamable HTTP as a parallel MCP transport so remote agents
+  can query the same read-only brain over a Tailscale-protected endpoint.
 
 ### Product TODO
 
 - [ ] Continue improving topic/MOC synthesis quality and better periodic refresh workflows as the corpus fills out.
-- [ ] Add a Tailscale-reachable query surface, likely tsnet-backed MCP and/or a small web UI, so the brain can be queried remotely while away from the machine.
+- [ ] Add optional embedded `tsnet` serving and/or a small remote web UI, so the
+  brain can be queried remotely without requiring users to configure
+  `tailscale serve` themselves.
 - [ ] Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
 - [ ] Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
 - [ ] Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.

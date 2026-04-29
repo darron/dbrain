@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Streamable HTTP MCP Transport (2026-04-29)
+
+- **MCP transport**: Added `dbrain serve mcp --transport http` as a parallel stateless Streamable HTTP transport while keeping stdio as the default local-agent path.
+- **Remote access**: Documented the Tailscale Serve pattern for exposing the localhost MCP HTTP endpoint to remote agents without granting SSH access.
+- **Security**: HTTP mode binds to `127.0.0.1:8743` by default, rejects untrusted browser `Origin` headers, and stays read-only with no MCP session state.
+- **Location**: `internal/mcpserver/`, `internal/app/serve.go`, `MCP.md`, `README.md`, `skills/dbrain-mcp/SKILL.md`
+
 ### Legacy Import Cleanup And MCP Docs Split (2026-04-28)
 
 - **Removed**: Dropped the obsolete `dbrain import ft` command and the legacy FT importer package.

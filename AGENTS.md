@@ -217,13 +217,16 @@ the bug reappeared.
 ### Keep the changelog current
 
 When adding, fixing, or materially changing user-visible behavior, update
-`CHANGELOG.md` in the same change.
+`CHANGELOG.md` before the change is considered complete.
 
 - include features, bug fixes, CLI/config changes, schema/pipeline changes,
   operational behavior changes, MCP/tooling changes, and notable documentation
   changes
 - use the existing dated heading style and keep entries short but specific
 - mention important verification or affected areas when it helps future readers
+- avoid churn while design docs or proposals are still being actively iterated;
+  add or finalize the changelog entry once the plan is accepted or the
+  implementation is built and tested
 - if a change intentionally does not need a changelog entry, be ready to explain
   why in the final response or PR notes
 

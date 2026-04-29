@@ -79,9 +79,7 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			return err
 		}
 
-		start := time.Now()
-		response, ok := s.handle(ctx, payload)
-		logMCPRequest(payload, response, ok, time.Since(start))
+		response, ok := s.processPayload(ctx, payload)
 		if !ok {
 			continue
 		}
@@ -89,6 +87,41 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
+}
+
+func (s *Server) processPayload(ctx context.Context, payload []byte) (interface{}, bool) {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return rpcError(nil, -32700, "parse error"), true
+	}
+	if trimmed[0] != '[' {
+		start := time.Now()
+		resp, ok := s.handle(ctx, trimmed)
+		logMCPRequest(trimmed, resp, ok, time.Since(start))
+		return resp, ok
+	}
+
+	var batch []json.RawMessage
+	if err := json.Unmarshal(trimmed, &batch); err != nil {
+		return rpcError(nil, -32700, "parse error"), true
+	}
+	if len(batch) == 0 {
+		return rpcError(nil, -32600, "invalid request"), true
+	}
+
+	responses := make([]response, 0, len(batch))
+	for _, raw := range batch {
+		start := time.Now()
+		resp, ok := s.handle(ctx, raw)
+		logMCPRequest(raw, resp, ok, time.Since(start))
+		if ok {
+			responses = append(responses, resp)
+		}
+	}
+	if len(responses) == 0 {
+		return nil, false
+	}
+	return responses, true
 }
 
 func logMCPRequest(payload []byte, resp response, responded bool, duration time.Duration) {
@@ -152,6 +185,12 @@ func (s *Server) handle(ctx context.Context, payload []byte) (response, bool) {
 	}
 
 	isNotification := len(req.ID) == 0
+	if req.Method == "" {
+		return response{}, false
+	}
+	if isNotification {
+		return response{}, false
+	}
 	switch req.Method {
 	case "initialize":
 		result := map[string]interface{}{
@@ -179,33 +218,18 @@ func (s *Server) handle(ctx context.Context, payload []byte) (response, bool) {
 	case "ping":
 		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]interface{}{}}, true
 	case "resources/list":
-		if isNotification {
-			return response{}, false
-		}
 		return response{JSONRPC: "2.0", ID: req.ID, Result: s.handleResourcesList()}, true
 	case "resources/templates/list":
-		if isNotification {
-			return response{}, false
-		}
 		return response{JSONRPC: "2.0", ID: req.ID, Result: s.handleResourceTemplatesList()}, true
 	case "resources/read":
-		if isNotification {
-			return response{}, false
-		}
 		result, err := s.handleResourceRead(ctx, req.Params)
 		if err != nil {
 			return rpcError(req.ID, -32000, err.Error()), true
 		}
 		return response{JSONRPC: "2.0", ID: req.ID, Result: result}, true
 	case "prompts/list":
-		if isNotification {
-			return response{}, false
-		}
 		return response{JSONRPC: "2.0", ID: req.ID, Result: s.handlePromptsList()}, true
 	case "prompts/get":
-		if isNotification {
-			return response{}, false
-		}
 		result, err := s.handlePromptGet(req.Params)
 		if err != nil {
 			return rpcError(req.ID, -32000, err.Error()), true
@@ -214,9 +238,6 @@ func (s *Server) handle(ctx context.Context, payload []byte) (response, bool) {
 	case "tools/list":
 		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]interface{}{"tools": toolDefinitions()}}, true
 	case "tools/call":
-		if isNotification {
-			return response{}, false
-		}
 		result, err := s.handleToolCall(ctx, req.Params)
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Result: toolErrorResult(err)}, true

@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -100,6 +102,159 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("expected core research workflow tools in tools list, missing %v: %#v", missing, tools)
+	}
+}
+
+func TestHTTPHandlerStreamableJSONTransport(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	server := New(cfg, st)
+	httpServer := httptest.NewServer(server.HTTPHandler(HTTPOptions{Path: "/mcp"}))
+	defer httpServer.Close()
+
+	initReq, err := http.NewRequest(http.MethodPost, httpServer.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatalf("post initialize: %v", err)
+	}
+	defer func() { _ = initResp.Body.Close() }()
+	if initResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", initResp.StatusCode)
+	}
+	if got := initResp.Header.Get("Mcp-Session-Id"); got != "" {
+		t.Fatalf("stateless transport should not return session id, got %q", got)
+	}
+	var initBody map[string]interface{}
+	if err := json.NewDecoder(initResp.Body).Decode(&initBody); err != nil {
+		t.Fatalf("decode initialize response: %v", err)
+	}
+	result := initBody["result"].(map[string]interface{})
+	if result["protocolVersion"] != protocolVersion {
+		t.Fatalf("unexpected protocol version: %#v", result["protocolVersion"])
+	}
+
+	batchReq, err := http.NewRequest(http.MethodPost, httpServer.URL+"/mcp", strings.NewReader(`[
+		{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}},
+		{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+	]`))
+	if err != nil {
+		t.Fatalf("new batch request: %v", err)
+	}
+	batchReq.Header.Set("Content-Type", "application/json")
+	batchReq.Header.Set("Accept", "application/json, text/event-stream")
+	batchResp, err := http.DefaultClient.Do(batchReq)
+	if err != nil {
+		t.Fatalf("post batch: %v", err)
+	}
+	defer func() { _ = batchResp.Body.Close() }()
+	if batchResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected batch 200, got %d", batchResp.StatusCode)
+	}
+	var batchBody []map[string]interface{}
+	if err := json.NewDecoder(batchResp.Body).Decode(&batchBody); err != nil {
+		t.Fatalf("decode batch response: %v", err)
+	}
+	if len(batchBody) != 1 {
+		t.Fatalf("expected only request response in batch, got %#v", batchBody)
+	}
+	if batchBody[0]["id"].(float64) != 2 {
+		t.Fatalf("unexpected batch response id: %#v", batchBody[0])
+	}
+
+	notifyReq, err := http.NewRequest(http.MethodPost, httpServer.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`))
+	if err != nil {
+		t.Fatalf("new notification request: %v", err)
+	}
+	notifyReq.Header.Set("Content-Type", "application/json")
+	notifyReq.Header.Set("Accept", "application/json, text/event-stream")
+	notifyResp, err := http.DefaultClient.Do(notifyReq)
+	if err != nil {
+		t.Fatalf("post notification: %v", err)
+	}
+	defer func() { _ = notifyResp.Body.Close() }()
+	if notifyResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected notification 202, got %d", notifyResp.StatusCode)
+	}
+
+	getResp, err := http.Get(httpServer.URL + "/mcp")
+	if err != nil {
+		t.Fatalf("get mcp endpoint: %v", err)
+	}
+	defer func() { _ = getResp.Body.Close() }()
+	if getResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected GET 405, got %d", getResp.StatusCode)
+	}
+}
+
+func TestHTTPHandlerRejectsUntrustedOrigin(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	server := New(cfg, st)
+	httpServer := httptest.NewServer(server.HTTPHandler(HTTPOptions{
+		Path:           "/mcp",
+		AllowedOrigins: []string{"https://trusted.example"},
+	}))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post with untrusted origin: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected forbidden for untrusted origin, got %d", resp.StatusCode)
+	}
+
+	trustedReq, err := http.NewRequest(http.MethodPost, httpServer.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	if err != nil {
+		t.Fatalf("new trusted request: %v", err)
+	}
+	trustedReq.Header.Set("Content-Type", "application/json")
+	trustedReq.Header.Set("Origin", "https://trusted.example")
+	trustedResp, err := http.DefaultClient.Do(trustedReq)
+	if err != nil {
+		t.Fatalf("post with trusted origin: %v", err)
+	}
+	defer func() { _ = trustedResp.Body.Close() }()
+	if trustedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected trusted origin 200, got %d", trustedResp.StatusCode)
 	}
 }
 

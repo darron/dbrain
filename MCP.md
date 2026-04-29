@@ -1,11 +1,16 @@
 # dbrain MCP
 
-`dbrain serve mcp` exposes the local `dbrain` corpus over MCP stdio so agents
-can search, inspect, and research against the collector's saved material.
+`dbrain serve mcp` exposes the local `dbrain` corpus over MCP so agents can
+search, inspect, and research against the collector's saved material.
 
 The MCP server is read-only. SQLite remains the working source of truth, and
 the server returns DB-backed evidence by default instead of relying on rendered
 Markdown freshness.
+
+The default transport is stdio for local clients that launch `dbrain` as a
+subprocess. A parallel stateless Streamable HTTP transport is available for
+long-running local daemon use, especially when fronted by Tailscale Serve for
+remote agents.
 
 ## Surface
 
@@ -199,6 +204,61 @@ After adding a new importer, add at least one MCP eval case that proves its
 strongest evidence is discoverable by text query, tag query, source-type
 filter, and any important derived text such as OCR or transcript content.
 
+## Transports
+
+### Stdio
+
+Stdio is the default and remains the recommended local setup for Codex, Claude,
+and other agents running on the same machine. The client starts `dbrain` as a
+subprocess and communicates over stdin/stdout.
+
+```sh
+dbrain serve mcp
+```
+
+MCP protocol responses are written to stdout. Operational request logs are
+written to stderr so they do not corrupt the stdio protocol. A running server
+should emit one short debug line per request, including the MCP method, tool
+name when present, status, and duration.
+
+### Streamable HTTP
+
+Use HTTP when `dbrain` should run continuously and remote agents should connect
+over a private network such as Tailscale. The implementation is stateless:
+there is no `Mcp-Session-Id`, no server-side session memory, and no
+server-to-client notification stream.
+
+```sh
+dbrain serve mcp --transport http --addr 127.0.0.1:8743 --path /mcp
+```
+
+The HTTP endpoint supports MCP Streamable HTTP POST requests and returns
+`application/json` responses. GET requests return `405 Method Not Allowed`
+because dbrain does not currently provide unsolicited SSE messages.
+
+For Tailscale, bind dbrain to localhost and expose it with Tailscale Serve:
+
+```sh
+tailscale serve --bg 8743
+```
+
+Then configure remote MCP clients with the Tailscale HTTPS URL plus `/mcp`.
+Use Tailscale Serve, not Funnel, unless you intentionally want a public
+internet endpoint.
+
+Security defaults:
+
+- HTTP binds to `127.0.0.1:8743` by default.
+- Empty `Origin` requests are accepted for non-browser MCP clients.
+- Same-host `Origin` requests are accepted.
+- Other browser origins are rejected unless passed with repeatable
+  `--allow-origin`.
+
+Do not configure both stdio and HTTP transports for the same agent unless you
+want duplicate dbrain tools. It is fine to run one long-lived HTTP daemon for
+remote agents while local Codex/Claude instances launch their own stdio
+processes.
+
 ## Client Config
 
 A generic MCP client config looks like this:
@@ -228,10 +288,8 @@ For local development, use an absolute binary path and an explicit root:
 }
 ```
 
-MCP protocol responses are written to stdout. Operational request logs are
-written to stderr so they do not corrupt the stdio protocol. A running server
-should emit one short debug line per request, including the MCP method, tool
-name when present, status, and duration.
+For clients that support remote Streamable HTTP MCP servers, use the Tailscale
+Serve URL for the HTTP endpoint. Exact config shape varies by client.
 
 ## Skill
 

@@ -44,6 +44,18 @@ Use absolute paths so the MCP server starts correctly from any agent working dir
 ./bin/dbrain --no-caffeinate --no-debug --root "$(pwd)" serve mcp
 ```
 
+For remote agents that support Streamable HTTP MCP, run a long-lived local HTTP
+transport and expose it through a private network such as Tailscale:
+
+```bash
+./bin/dbrain --no-caffeinate --no-debug --root "$(pwd)" serve mcp --transport http --addr 127.0.0.1:8743 --path /mcp
+tailscale serve --bg 8743
+```
+
+Do not configure both stdio and HTTP for the same agent unless duplicate
+`dbrain_*` tools are intentional. Local Codex/Claude sessions can keep using
+stdio while remote agents use the Tailscale HTTP endpoint.
+
 ## Default Workflow
 
 1. For broad research questions, call `dbrain_research_pack` first. It returns retrieve-only evidence, the text/tag query plan, exact tag coverage, representative `exact_tag_evidence` saved-item examples, corpus match counts, per-evidence retrieval score signals, suggested next tools, and may include a topic brief.
