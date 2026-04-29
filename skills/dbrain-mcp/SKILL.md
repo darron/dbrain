@@ -44,17 +44,64 @@ Use absolute paths so the MCP server starts correctly from any agent working dir
 ./bin/dbrain --no-caffeinate --no-debug --root "$(pwd)" serve mcp
 ```
 
-For remote agents that support Streamable HTTP MCP, run a long-lived local HTTP
-transport and expose it through a private network such as Tailscale:
+For remote agents that support Streamable HTTP MCP, prefer the built-in
+Tailscale transport when the user has enabled it:
 
 ```bash
-./bin/dbrain --no-caffeinate --no-debug --root "$(pwd)" serve mcp --transport http --addr 127.0.0.1:8743 --path /mcp
+dbrain --no-caffeinate --no-debug --root "$(pwd)" serve remote --web --mcp
+```
+
+Use the printed MCP URL in the remote agent config:
+
+```json
+{
+  "mcpServers": {
+    "dbrain": {
+      "transport": "streamable-http",
+      "url": "https://dbrain.<tailnet>.ts.net/mcp"
+    }
+  }
+}
+```
+
+For MCP-only tailnet serving, use:
+
+```bash
+dbrain --no-caffeinate --no-debug --root "$(pwd)" serve mcp --transport tsnet --tsnet-hostname dbrain
+```
+
+Check the built-in tailnet node before debugging client config:
+
+```bash
+dbrain --root "$(pwd)" tsnet status --json
+```
+
+Important fields are `running`, `reachable`, `web_reachable`,
+`mcp_reachable`, `cert_health`, `needs_login`, and `state`. `needs_login=true`
+means the tsnet node has not authenticated yet; start `dbrain serve remote` and
+complete the Tailscale login URL or configure an auth-key ref in dbrain config.
+`state=down` with `running=true` means a dbrain process holds the state lock but
+the status probes could not reach the exposed web/MCP endpoints.
+
+If built-in tsnet is not available, run a long-lived local HTTP transport and
+expose it through Tailscale Serve:
+
+```bash
+dbrain --no-caffeinate --no-debug --root "$(pwd)" serve mcp --transport http --addr 127.0.0.1:8743 --path /mcp
 tailscale serve --bg 8743
 ```
 
-Do not configure both stdio and HTTP for the same agent unless duplicate
+Smoke-test any Streamable HTTP endpoint with JSON-RPC POST:
+
+```bash
+curl -s https://dbrain.<tailnet>.ts.net/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Do not configure both stdio and remote HTTP for the same agent unless duplicate
 `dbrain_*` tools are intentional. Local Codex/Claude sessions can keep using
-stdio while remote agents use the Tailscale HTTP endpoint.
+stdio while remote agents use the tailnet Streamable HTTP endpoint.
 
 ## Default Workflow
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
@@ -36,7 +38,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "config", "eval", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get", "categorize", "version"} {
+	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "eval", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get", "categorize", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -245,7 +247,7 @@ func TestConfigEnvCommandIncludesKnownEnvVars(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"DBRAIN_ROOT", "DBRAIN_OPENROUTER_API_KEY", "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_R2_SECRET_ACCESS_KEY", "config.yaml"} {
+	for _, value := range []string{"DBRAIN_ROOT", "DBRAIN_OPENROUTER_API_KEY", "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_TSNET_AUTH_KEY_REF", "DBRAIN_R2_SECRET_ACCESS_KEY", "config.yaml"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected config env output to contain %q, got %q", value, output)
 		}
@@ -270,10 +272,530 @@ func TestConfigEnvCommandMarkdownOutput(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"| Environment variable(s) | config.yaml key | Default | Purpose |", "`DBRAIN_ROOT`", "`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`"} {
+	for _, value := range []string{"| Environment variable(s) | config.yaml key | Default | Purpose |", "`DBRAIN_ROOT`", "`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`", "`DBRAIN_TSNET_MCP_PATH`"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected markdown config env output to contain %q, got %q", value, output)
 		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestServeRemoteHelpIncludesTSNetFlags(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"serve", "remote", "--help"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	for _, value := range []string{"--tsnet-hostname", "--tsnet-state-dir", "--mcp-path", "read/write web UI"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected serve remote help to contain %q, got %q", value, output)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestServeMCPHelpIncludesTSNetTransport(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"serve", "mcp", "--help"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	for _, value := range []string{"stdio, http, or tsnet", "--mcp-path", "--tsnet-hostname", "--tsnet-auth-key-ref"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected serve mcp help to contain %q, got %q", value, output)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestServeRemoteRequiresAtLeastOneSurface(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "serve", "remote", "--web=false", "--mcp=false"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "at least one surface") {
+		t.Fatalf("expected at least-one-surface error, got %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no output, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestTSNetStatusReportsResolvedState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "status", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	wantStateDir := filepath.Join(root, "data", "tsnet", "dbrain")
+	if payload["state_dir"] != wantStateDir {
+		t.Fatalf("state_dir = %#v, want %q", payload["state_dir"], wantStateDir)
+	}
+	if payload["exists"] != false {
+		t.Fatalf("exists = %#v, want false", payload["exists"])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStatusIgnoresDisabledServeSurfaces(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+tsnet:
+  web: false
+  mcp: false
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "status"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "state_dir:") {
+		t.Fatalf("expected status output, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStatusReportsLockedState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+tsnet:
+  web: false
+  mcp: false
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	stateDir, err := remote.PrepareStateDir(filepath.Join(root, "data", "tsnet", "dbrain"))
+	if err != nil {
+		t.Fatalf("PrepareStateDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lock, err := remote.AcquireStateLock(stateDir)
+	if err != nil {
+		t.Fatalf("AcquireStateLock: %v", err)
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "status", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	if payload["exists"] != true {
+		t.Fatalf("exists = %#v, want true", payload["exists"])
+	}
+	if payload["locked"] != true {
+		t.Fatalf("locked = %#v, want true", payload["locked"])
+	}
+	if payload["running"] != true {
+		t.Fatalf("running = %#v, want true", payload["running"])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStateStatusReportsHealthyRunningNode(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: true, StatusCode: 200, EffectiveURL: rawURL, CertHealth: "ok"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return []string{"100.64.0.10"}
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "healthy" || !status.Running || !status.Reachable || !status.WebReachable || !status.MCPReachable {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+	if status.WebURL != "https://dbrain.tailnet.ts.net/" {
+		t.Fatalf("WebURL = %q", status.WebURL)
+	}
+	if status.MCPURL != "https://dbrain.tailnet.ts.net/mcp" {
+		t.Fatalf("MCPURL = %q", status.MCPURL)
+	}
+	if status.CertHealth != "ok" {
+		t.Fatalf("CertHealth = %q", status.CertHealth)
+	}
+	if status.NeedsLogin {
+		t.Fatalf("NeedsLogin = true, want false")
+	}
+}
+
+func TestTSNetStateStatusFallsBackToShortHostWithTLSServerName(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	var alternateProbes int
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, tlsServerName string) tsnetEndpointProbe {
+			if strings.Contains(rawURL, "dbrain.tailnet.ts.net") {
+				return tsnetEndpointProbe{Reachable: false, Error: "no such host", CertHealth: "ok"}
+			}
+			if strings.Contains(rawURL, "https://dbrain/") && tlsServerName == "dbrain.tailnet.ts.net" {
+				alternateProbes++
+				return tsnetEndpointProbe{Reachable: true, StatusCode: 200, EffectiveURL: rawURL, CertHealth: "ok"}
+			}
+			return tsnetEndpointProbe{Reachable: false, Error: "unexpected probe", CertHealth: "unknown"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "healthy" || !status.Reachable || !status.WebReachable || !status.MCPReachable {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+	if status.WebURL != "https://dbrain.tailnet.ts.net/" || status.MCPURL != "https://dbrain.tailnet.ts.net/mcp" {
+		t.Fatalf("unexpected URLs: web=%q mcp=%q", status.WebURL, status.MCPURL)
+	}
+	if alternateProbes != 2 {
+		t.Fatalf("alternateProbes = %d, want 2", alternateProbes)
+	}
+}
+
+func TestTSNetStateStatusFallsBackToPeerIPWithTLSServerName(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	var ipProbes int
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, tlsServerName string) tsnetEndpointProbe {
+			if strings.Contains(rawURL, "100.64.0.10") && tlsServerName == "dbrain.tailnet.ts.net" {
+				ipProbes++
+				return tsnetEndpointProbe{Reachable: true, StatusCode: 200, EffectiveURL: rawURL, CertHealth: "ok"}
+			}
+			return tsnetEndpointProbe{Reachable: false, Error: "no such host", CertHealth: "unknown"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return []string{"100.64.0.10"}
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "healthy" || !status.Reachable || !status.WebReachable || !status.MCPReachable {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+	if ipProbes != 2 {
+		t.Fatalf("ipProbes = %d, want 2", ipProbes)
+	}
+}
+
+func TestTSNetStateStatusReportsDownWhenLockedButUnreachable(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(context.Context, string, string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: false, Error: "connection refused", CertHealth: "unknown"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "down" || !status.Running || status.Reachable || status.WebReachable || status.MCPReachable {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+	if status.WebError == "" || status.MCPError == "" {
+		t.Fatalf("expected probe errors, status = %#v", status)
+	}
+}
+
+func TestTSNetStateStatusReportsNeedsLogin(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(context.Context, string, string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: false, Error: "not listening", CertHealth: "unknown"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "missing"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.State != "needs_login" || !status.NeedsLogin {
+		t.Fatalf("unexpected status = %#v", status)
+	}
+}
+
+func TestTSNetResetRequiresConfirmation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "data", "tsnet", "dbrain")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	stateFile := filepath.Join(stateDir, "state.json")
+	if err := os.WriteFile(stateFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetIn(strings.NewReader("no\n"))
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf("expected state file to remain after abort: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Aborted.") {
+		t.Fatalf("expected aborted output, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetResetRefusesLockedState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stateDir, err := remote.PrepareStateDir(filepath.Join(root, "data", "tsnet", "dbrain"))
+	if err != nil {
+		t.Fatalf("PrepareStateDir: %v", err)
+	}
+	stateFile := filepath.Join(stateDir, "state.json")
+	if err := os.WriteFile(stateFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lock, err := remote.AcquireStateLock(stateDir)
+	if err != nil {
+		t.Fatalf("AcquireStateLock: %v", err)
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset", "--yes"})
+
+	err = cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already locked") {
+		t.Fatalf("expected locked-state error, got %v", err)
+	}
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf("expected state file to remain after locked reset: %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no output, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestTSNetResetRemovesStateWithYes(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "data", "tsnet", "dbrain")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset", "--yes"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if _, err := os.Stat(stateDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected state dir removed, stat err=%v", err)
+	}
+	if !strings.Contains(stdout.String(), "Removed tsnet state directory") {
+		t.Fatalf("expected removal output, got %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())

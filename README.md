@@ -74,6 +74,7 @@ dbrain config env
 - `dbrain repair sources`
 - `dbrain search <query>`
 - `dbrain serve mcp`
+- `dbrain serve remote`
 - `dbrain serve web`
 - `dbrain sqlite archive`
 - `dbrain sqlite restore`
@@ -88,6 +89,8 @@ dbrain config env
 - `dbrain topic map <topic>`
 - `dbrain topic refresh [topic]`
 - `dbrain transcribe x-media`
+- `dbrain tsnet reset`
+- `dbrain tsnet status`
 - `dbrain version`
 - `dbrain worker sources`
 
@@ -439,22 +442,97 @@ Serves the local brain over MCP with read-only tools, resources, and prompts
 for search, note access, research packs, topic maps, and pipeline status.
 Stdio is the default local-agent transport. Stateless Streamable HTTP is
 available as a parallel daemon transport for remote agents, usually behind
-Tailscale Serve.
+Tailscale Serve. MCP-only built-in tsnet serving is also available when you
+want the binary to expose MCP directly on the tailnet.
 
 ```sh
 dbrain serve mcp
 dbrain serve mcp --transport http --addr 127.0.0.1:8743 --path /mcp
+dbrain serve mcp --transport tsnet --tsnet-hostname dbrain
 tailscale serve --bg 8743
 ```
 
 Important flags:
 
-- `--transport`: `stdio` or `http`; default `stdio`.
+- `--transport`: `stdio`, `http`, or `tsnet`; default `stdio`.
 - `--addr`: HTTP listen address for `--transport http`; default
   `127.0.0.1:8743`.
-- `--path`: Streamable HTTP MCP endpoint path; default `/mcp`.
+- `--path`: Streamable HTTP MCP endpoint path for `http` or `tsnet`; default
+  `/mcp`.
 - `--allow-origin`: additional trusted HTTP `Origin`; repeatable. Empty
   `Origin` and same-host `Origin` requests are accepted by default.
+- `--tsnet-*`: same state, auth, TLS, tag, and timeout settings as
+  `dbrain serve remote`, used only with `--transport tsnet`.
+
+### `dbrain serve remote`
+
+Serves the existing read/write web UI and/or the read-only MCP endpoint on a
+built-in Tailscale `tsnet` node. This is parallel to local stdio and localhost
+HTTP transports; it does not require SSH access to the machine and does not
+replace `dbrain serve web`.
+
+The default state directory is `<data_dir>/tsnet/<hostname>`, usually
+`~/.local/share/dbrain/tsnet/dbrain`. Keep this directory out of iCloud,
+Dropbox, and other sync folders. It holds durable Tailscale node state so
+restarts do not repeatedly create new nodes or certificates.
+
+```sh
+dbrain serve remote --web --mcp
+dbrain serve remote --web --mcp=false
+dbrain serve remote --web=false --mcp
+dbrain serve remote --tsnet-hostname dbrain-dev --tsnet-tls=false --tsnet-listen :80
+```
+
+MCP smoke test after startup:
+
+```sh
+curl -s https://dbrain.<tailnet>.ts.net/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Important flags:
+
+- `--web`: mount the full read/write web UI at `/`; default `true`.
+- `--mcp`: mount read-only MCP Streamable HTTP at `/mcp`; default `true`.
+- `--mcp-path`: MCP endpoint path; default `/mcp`.
+- `--tsnet-hostname`: stable tailnet machine name; default `dbrain`.
+- `--tsnet-state-dir`: durable tsnet state directory; default
+  `<data_dir>/tsnet/<hostname>`.
+- `--tsnet-tls`: use Tailscale HTTPS through `ListenTLS`; default `true`.
+- `--tsnet-startup-timeout`: maximum time to wait for `tsnet.Up`; default
+  `45s`.
+- `--tsnet-auth-key-ref`: typed bootstrap secret ref, such as `env:NAME`,
+  `op://Private/dbrain/tsnet-auth-key`, or `keychain://dbrain/tsnet-auth-key`.
+- `--tsnet-allow-secret-command`: opt in to YAML-only
+  `tsnet.auth_key_command` execution.
+- `--tsnet-advertise-tags`: comma-separated Tailscale tags to request.
+- `--tsnet-control-url`: experimental alternate Tailscale control server URL.
+
+### `dbrain tsnet status`
+
+Prints the resolved tsnet hostname, state directory, lock path, local state,
+and active health using the same config/env/flag resolution as `serve remote`.
+When a running `dbrain` process holds the state lock, status probes the
+configured web and MCP URLs by default and reports `running`, `reachable`,
+`web_reachable`, `mcp_reachable`, `cert_health`, and `needs_login`. If MagicDNS
+lookup is unavailable to Go, status can use local Tailscale peer status as a
+best-effort tailnet IP fallback while preserving TLS certificate validation.
+
+```sh
+dbrain tsnet status
+dbrain tsnet status --json
+```
+
+### `dbrain tsnet reset`
+
+Removes the resolved tsnet state directory after confirmation. It refuses to
+run if another `dbrain` process holds the state lock.
+
+```sh
+dbrain tsnet reset
+dbrain tsnet reset --yes
+```
 
 ### `dbrain hydrate x`
 
@@ -936,13 +1014,15 @@ configuration.
   selected `src:...` result exposes the user's tags from items that reference it.
 - [x] Add stateless Streamable HTTP as a parallel MCP transport so remote agents
   can query the same read-only brain over a Tailscale-protected endpoint.
+- [x] Add built-in `tsnet` serving for read-only MCP and the read/write web UI,
+  including persistent state, lock protection, typed bootstrap secrets, and
+  guarded state reset/status commands.
 
 ### Product TODO
 
 - [ ] Continue improving topic/MOC synthesis quality and better periodic refresh workflows as the corpus fills out.
-- [ ] Add optional embedded `tsnet` serving and/or a small remote web UI, so the
-  brain can be queried remotely without requiring users to configure
-  `tailscale serve` themselves.
+- [x] Add optional embedded `tsnet` serving for remote web and MCP access
+  without requiring users to configure `tailscale serve` themselves.
 - [ ] Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
 - [ ] Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
 - [ ] Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.

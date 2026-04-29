@@ -99,7 +99,14 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 			s.handleHTTPPost(w, r, maxBodyBytes)
 		case http.MethodGet:
 			w.Header().Set("Allow", "POST, GET")
-			http.Error(w, "SSE streams are not supported by this stateless dbrain MCP endpoint", http.StatusMethodNotAllowed)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_, _ = fmt.Fprintln(w, "dbrain MCP endpoint is reachable.")
+			_, _ = fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w, "This endpoint does not serve a browser UI and does not support SSE streams.")
+			_, _ = fmt.Fprintln(w, "Use JSON-RPC over HTTP POST with Content-Type: application/json.")
+			_, _ = fmt.Fprintf(w, "\nExample:\n")
+			_, _ = fmt.Fprintf(w, `curl -s %s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`+"\n", requestEndpointURL(r))
 		case http.MethodOptions:
 			w.Header().Set("Allow", "POST, GET, OPTIONS")
 			w.WriteHeader(http.StatusNoContent)
@@ -134,6 +141,20 @@ func (s *Server) handleHTTPPost(w http.ResponseWriter, r *http.Request, maxBodyB
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		logMCPServer("http_write_failed", "error", err.Error())
 	}
+}
+
+func requestEndpointURL(r *http.Request) string {
+	if r == nil {
+		return DefaultHTTPPath
+	}
+	if strings.TrimSpace(r.Host) == "" {
+		return r.URL.Path
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host + r.URL.Path
 }
 
 func normalizeHTTPPath(path string) string {
