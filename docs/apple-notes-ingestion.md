@@ -13,9 +13,17 @@ before they become structured enough for a vault.
 The best architecture is not necessarily "import every Apple Note into the
 `dbrain` item store". The more general product goal is to retrieve from all of
 the user's brains: the dbrain SQLite/vault corpus, Apple Notes, and future local
-apps or stores. Apple Notes should therefore start as a live local memory
-provider that can be queried through dbrain's MCP/retrieval path, with optional
-materialization into the dbrain DB only when the user opts in.
+apps or stores. Apple Notes should therefore be modeled as a local memory
+provider, even if the first shippable implementation materializes selected
+notes into dbrain items to reuse the existing FTS, MCP, web, link extraction,
+summary, and categorization pipeline.
+
+The recommended implementation path is:
+
+1. Prove read-only direct SQLite access and note body decoding.
+2. Ship an opt-in materialized importer for allowlisted folders/accounts.
+3. Add provider-index/live retrieval later if we want Apple Notes searchable
+   through dbrain without copying note bodies into the main item store.
 
 The implementation should keep the integration private-by-default:
 
@@ -90,16 +98,17 @@ Reference: https://lifecontext.vip/guide/intro/second-brain
 
 ## Goals
 
-- Expose Apple Notes as a local memory provider behind dbrain retrieval and MCP.
-- Let `dbrain ask`, MCP search/research tools, and the web UI retrieve Apple
-  Notes alongside DB-backed dbrain items and sources.
-- Avoid storing Apple Notes content in the dbrain DB by default.
+- Import selected Apple Notes as materialized `apple_note` items first, while
+  preserving a provider seam for future live/provider-indexed retrieval.
+- Let `dbrain ask`, MCP search/research tools, and the web UI retrieve
+  materialized Apple Notes alongside DB-backed dbrain items and sources.
+- Avoid storing any Apple Notes content until the user explicitly opts into a
+  scoped import.
 - Offer opt-in materialization into local SQLite/rendered Markdown for users who
   want durable indexing, topic mapping, backlinks, categorization, or offline
   search over notes.
-- Keep raw note text available for local reprocessing only when the user
-  explicitly opts into materialized Apple Notes storage; otherwise treat note
-  content as query-time evidence.
+- Keep raw note text available for local reprocessing only for notes the user
+  has explicitly materialized.
 - Preserve enough metadata to detect updates without reprocessing every note.
 - Extract links from materialized notes so URLs in Apple Notes can become normal
   linked source rows.
@@ -112,8 +121,9 @@ Reference: https://lifecontext.vip/guide/intro/second-brain
 
 - Do not sync through iCloud web APIs.
 - Do not require exported Markdown/HTML files as the steady-state integration.
-- Do not require Apple Notes content to be copied into the dbrain DB for basic
-  retrieval.
+- Do not import Apple Notes content unless the user explicitly opts in. The v1
+  implementation may use opt-in materialization for selected folders/accounts,
+  but it should not assume the whole Notes library belongs in dbrain.
 - Do not make direct private Notes SQLite/CloudKit access the only supported
   path until its schema risk and permission UX are validated.
 - Do not require Full Disk Access unless the user explicitly selects the
@@ -129,10 +139,10 @@ Reference: https://lifecontext.vip/guide/intro/second-brain
 
 | Option | Feasibility | Recommendation | Notes |
 | --- | --- | --- | --- |
-| Live Apple Events adapter via `osascript` or JXA | High | Good baseline | Local, supported by the app scripting dictionary, enough metadata for live search/get and incremental materialization. Requires Automation permission for the terminal/binary to control Notes. |
-| Swift helper using `NSAppleScript` or ScriptingBridge | High | Strong candidate | Keeps the Notes bridge small and typed enough to inspect. Xcode command line tools can generate references from `sdef`; still uses Apple Events under the hood. |
-| Go helper invoking Apple Events scripts | High | Acceptable first cut | Keeps orchestration in Go while isolating macOS scripting. Easier than a native bridge for v1, but string escaping and AppleScript error handling need care. |
-| Direct Notes SQLite/CloudKit store | Medium to high risk | Experimental adapter | Best non-AppleScript live path. Requires Full Disk Access and tracks private schema details such as `NoteStore.sqlite`, compressed note data, deletion markers, and attachment records. |
+| Direct Notes SQLite/CloudKit store | Medium to high risk | Recommended v1 spike | Best non-AppleScript path and best fit for batch materialization. Requires Full Disk Access and tracks private schema details such as `NoteStore.sqlite`, compressed note data, deletion markers, and attachment records. |
+| Live Apple Events adapter via `osascript` or JXA | High | Fallback adapter | Local, supported by the app scripting dictionary, enough metadata for live search/get and incremental materialization. Requires Automation permission for the terminal/binary to control Notes. |
+| Swift helper using `NSAppleScript` or ScriptingBridge | High | Possible fallback helper | Keeps the Notes bridge small and typed enough to inspect. Xcode command line tools can generate references from `sdef`; still uses Apple Events under the hood. |
+| Go helper invoking Apple Events scripts | High | Acceptable fallback | Keeps orchestration in Go while isolating macOS scripting. Easier than a native bridge, but string escaping and AppleScript error handling need care. |
 | External Apple Notes MCP server | Medium | Reference/prototype | Useful proof that Notes can be exposed as a live tool surface. dbrain should prefer an internal provider interface over depending on a second MCP server for core retrieval. |
 | Shortcuts CLI | Medium | Not default | Could work if users maintain a Shortcut, but too indirect and hard to test as the primary importer. |
 | Spotlight/metadata search | Low | Avoid as source of truth | Useful for discovery/debugging, not reliable for full-fidelity note ingestion. |
@@ -140,10 +150,12 @@ Reference: https://lifecontext.vip/guide/intro/second-brain
 
 ## Existing Project Survey
 
-No obvious Go-native Apple Notes library surfaced. The useful projects fall into
-two groups: Apple Events bridges and direct database readers. Both are portable
-as ideas, but neither should be copied wholesale without checking license and
-maintenance risk.
+No obvious reusable Go-native Apple Notes library surfaced. A Swift/C exporter
+does exist, but it is export-oriented and GPL-licensed, so it is reference
+material rather than a runtime dependency. The useful projects otherwise fall
+into two groups: Apple Events bridges and direct database readers. Both are
+portable as ideas, but neither should be copied wholesale without checking
+license and maintenance risk.
 
 | Project | Approach | Language | Takeaway |
 | --- | --- | --- | --- |
@@ -151,8 +163,9 @@ maintenance risk.
 | [`angelespejo/apple-notes-cli`](https://github.com/angelespejo/apple-notes-cli) | Bash wrapper around `osascript` | Shell | Useful as a minimal CRUD/permission reference only. It is GPL-3.0 and not an ingestion-quality data path. |
 | [`more-io/claude-apple-bridges`](https://github.com/more-io/claude-apple-bridges) | Swift CLI using `NSAppleScript` | Swift | Good model for a small compiled bridge binary. MIT licensed, but still Apple Events/AppleScript-family access. |
 | [`cardmagic/notes`](https://github.com/cardmagic/notes) | Reads `~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite` and builds its own index | TypeScript | Best reference for a non-AppleScript live adapter. It requires Full Disk Access and private-schema handling. It also demonstrates incremental indexing and PDF attachment extraction. |
-| [`kzaremski/apple-notes-exporter`](https://github.com/kzaremski/apple-notes-exporter) | Direct DB exporter to HTML/Markdown/JSONL/Text | Go | Useful because it is Go and handles the Notes database, but it is export-oriented and GPL-3.0. Treat as a reference, not vendored code. |
-| [`threeplanetssoftware/apple_cloud_notes_parser`](https://github.com/threeplanetssoftware/apple_cloud_notes_parser) | Direct database/parser tooling | Python | Mature forensic-style parser reference for schema behavior and attachments. Better as validation material than as a runtime dependency. |
+| [`kzaremski/apple-notes-exporter`](https://github.com/kzaremski/apple-notes-exporter) | Direct DB exporter to HTML/Markdown/JSONL/Text | Swift/C | Useful because it handles the Notes database, but it is export-oriented and GPL-3.0. Treat as a reference, not vendored code. |
+| [`threeplanetssoftware/apple_cloud_notes_parser`](https://github.com/threeplanetssoftware/apple_cloud_notes_parser) | Direct database/parser tooling | Ruby | Mature forensic-style parser reference for schema behavior, protobuf decoding, version drift, attachments, and encrypted notes. Better as validation material than as a runtime dependency. MIT licensed. |
+| [`ydkhatri/mac_apt`](https://github.com/ydkhatri/mac_apt) | macOS/iOS forensic parser suite | Python | Useful validation reference for Apple Notes protobuf/body parsing and damaged-data edge cases. Too broad to be a runtime dependency. Apache-2.0. |
 | [`dogsheep/apple-notes-to-sqlite`](https://github.com/dogsheep/apple-notes-to-sqlite) | Direct DB to SQLite | Python | Good historical reference for Dogsheep-style import shape, but it is archived/read-only and still export/index oriented. |
 | [`sirmews/apple-notes-mcp`](https://github.com/sirmews/apple-notes-mcp) | MCP server for Apple Notes | Python | Useful for agent-facing command semantics. dbrain should not depend on a second MCP server for core retrieval, but the tool shape is relevant. |
 | [`RafalWilinski/mcp-apple-notes`](https://github.com/RafalWilinski/mcp-apple-notes) | MCP server using JXA, LanceDB, local MiniLM embeddings, and full-text search | TypeScript/Bun | Strong proof of the federated-memory pattern. It is not file-export based, but it does maintain its own local index under `~/.mcp-apple-notes`. Good reference for MCP tool shape and local embeddings. |
@@ -219,7 +232,10 @@ This project is closest to the `direct_db` model:
 - Filters rows where note/folder `ZMARKEDFORDELETION != 1`.
 - Tracks metadata such as title, folder, account, snippet, locked, pinned, and
   checklist flags.
-- Decodes `ZICNOTEDATA.ZDATA` by gzip/zlib decompression plus protobuf parsing.
+- Includes a `read-note` body decode path for `ZICNOTEDATA.ZDATA` using
+  gzip/zlib decompression plus protobuf parsing.
+- Its list/search metadata path still relies on `ZSNIPPET` and SQL `LIKE`
+  against raw `ZDATA`, so it is not a working full-text indexing model.
 - The protobuf schema is copied from prior Apple Notes parser/liberator work and
   exposes note text, formatting runs, links, checklist details, and attachment
   markers.
@@ -229,9 +245,9 @@ This project is closest to the `direct_db` model:
 Useful lessons:
 
 - Direct SQLite is feasible and is the strongest non-AppleScript path.
-- The core body decode is portable to Go: read blob, gzip/zlib decompress,
-  parse protobuf, take `document.note.note_text`, optionally inspect
-  `attribute_run` for links/checklists/attachments.
+- The read-note body decode is portable to Go: read blob, gzip/zlib
+  decompress, parse protobuf, take `document.note.note_text`, optionally
+  inspect `attribute_run` for links/checklists/attachments.
 - Stable IDs should use database/cloud identifiers rather than titles.
 - Direct DB makes batch indexing and changed-note reindexing much easier than
   JXA because metadata can be queried in bulk.
@@ -243,18 +259,18 @@ Gaps to avoid in dbrain:
   and write support.
 - SQL `LIKE` against `ZICNOTEDATA.ZDATA` is not a good content search strategy
   because the body is compressed/protobuf. dbrain should decode first and index
-  normalized plaintext into its own FTS/provider index.
+  normalized plaintext into its own FTS or future provider index.
 - It does not implement provider-local indexing, content hashes, upsert,
   privacy markers, or materialization into a durable corpus.
 - Direct schema ownership becomes dbrain's responsibility; Apple can change
   private Notes tables/columns across macOS releases.
 
 The strongest non-export direction is therefore an adapter interface with two
-live implementations:
+read adapters:
 
 - `apple_events`: lower permission blast radius, uses Notes'
   scriptable interface.
-- `direct_db`: experimental candidate, non-AppleScript, likely higher fidelity
+- `direct_db`: recommended v1 spike, non-AppleScript, likely higher fidelity
   and faster incremental scans, requires Full Disk Access and private schema
   ownership.
 
@@ -265,82 +281,180 @@ Given the desire to avoid operating on exports and avoid AppleScript if
 possible, the next implementation decision should be a focused `direct_db`
 feasibility spike. If it can reliably enumerate folders/accounts, decode note
 body text, identify locked/shared/deleted notes, and detect changes on the
-current macOS version, then `direct_db` can be the first real provider. If that
-spike is brittle, an Apple Events provider remains the safer baseline while the
-direct parser matures.
+current macOS version, then `direct_db` can be the first real importer adapter.
+If that spike is brittle, an Apple Events adapter remains the safer baseline
+while the direct parser matures.
 
 ## Dbrain Implementation Shape
 
 The right reimplementation is not "run one of these MCP servers next to
-dbrain". The right shape is to absorb the useful pieces behind dbrain's own
-retrieval/MCP surface:
+dbrain". The right shape is to absorb the useful pieces into dbrain, but the v1
+implementation should be materialization-first.
 
-- A read-only `apple_notes` provider implements `Probe`, `Search`, `Get`, and
-  optional `Index`.
-- The provider returns evidence with `provider=apple_notes`, stable provider
-  IDs, title, snippet, folder/account path, modification dates, and storage
-  mode.
-- dbrain MCP tools fan out to DB-backed items/sources plus configured providers,
-  merge results, and preserve provenance.
-- `dbrain_get` or an equivalent retrieval path can resolve an Apple Notes
-  provider ID back through the provider without requiring the note to be a
-  dbrain item.
-- Write operations such as creating or editing Notes should be out of scope for
-  v1. Retrieval and indexing are enough, and write access increases permission
-  and safety risk.
+That is a pragmatic choice, not a rejection of provider architecture:
 
-Suggested internal interface:
+- Materialized `apple_note` items immediately reuse existing dbrain behavior:
+  SQLite FTS, MCP search, `ask`, rendered Markdown, source link extraction,
+  summaries, categorization, topics, and web UI detail pages.
+- A separate `provider_index` requires new tables, search merge logic, MCP
+  provenance plumbing, web provider detail views, and privacy-purge behavior
+  before any user-visible Notes retrieval works.
+- The privacy risk is real, but the right v1 mitigation is explicit opt-in,
+  folder/account allowlists, dry-run, local-only defaults, and purge-on-ignore.
+  Users who enable Apple Notes materialization are already choosing to copy
+  selected note content into dbrain.
+
+Keep the internal seams clean enough that a future provider index can exist,
+but do not build the full provider abstraction before the first importer.
+
+Suggested package shape:
 
 ```go
-type Provider interface {
-    Probe(context.Context) (ProviderStatus, error)
-    Search(context.Context, ProviderQuery) ([]ProviderResult, error)
-    Get(context.Context, ProviderID) (ProviderDocument, error)
+package applenotes
+
+type Adapter interface {
+    Probe(context.Context) (ProbeResult, error)
+    List(context.Context, Scope) ([]NoteMeta, error)
+    Read(context.Context, NoteID) (NoteDocument, error)
 }
 
-type Indexer interface {
-    Index(context.Context, ProviderIndexOptions) (ProviderIndexStats, error)
-}
+func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error)
 ```
 
-The Apple Notes provider can have two adapters behind that interface:
+The first adapter should be:
 
-- `direct_db`: reads the local Notes database, decodes note bodies, and indexes
-  normalized plaintext. This is the preferred spike because it avoids
-  AppleScript and supports efficient batch/change detection, but it requires
-  Full Disk Access and private schema ownership.
-- `apple_events`: uses the Notes scripting dictionary through JXA/`osascript`
-  or a small Swift helper. This is the safer fallback when Full Disk Access is
-  undesirable or the private schema changes.
+- `direct_db`: read Apple's local Notes database in read-only mode, decode
+  bodies, and materialize selected notes. This avoids AppleScript and is best
+  for batch and incremental scans, but it requires Full Disk Access and private
+  schema ownership.
 
-### Batch Indexing And Materialization
+The fallback adapter should be:
 
-Batch indexing should be distinct from materialization.
+- `apple_events`: use the Notes scripting dictionary through JXA/`osascript` or
+  a small Swift helper if direct DB access is unavailable or breaks on a future
+  macOS release.
 
-For `provider_index`, dbrain should create a provider-local index/cache rather
-than normal item rows. A first SQLite-backed schema is enough:
+Write operations such as creating or editing Notes should stay out of scope for
+v1. Retrieval and indexing are enough, and write access increases permission and
+safety risk.
 
-- `provider_documents`: provider, provider document ID, external ID, title,
-  account, folder path, created/modified timestamps, content hash, flags,
-  last-seen time, deleted/excluded status, and optional normalized text.
-- `provider_documents_fts`: SQLite FTS table over title, snippet, folder path,
-  and normalized text when that privacy level is enabled.
-- `provider_sync_state`: provider, adapter, scope/config hash, last full scan,
-  last high-water timestamp, parser version, and last error.
+### Direct SQLite Shape
+
+The direct DB adapter should open the source database read-only. If a live
+read-only connection is blocked by SQLite locking or WAL behavior, it may copy
+`NoteStore.sqlite` plus its WAL/SHM sidecars to a temporary dbrain-owned
+snapshot and read the snapshot. It should never write to Apple's database.
+
+Known core path:
+
+- Database: `~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite`
+- Main table: `ZICCLOUDSYNCINGOBJECT`
+- Body table: `ZICNOTEDATA`
+- Metadata table: `Z_METADATA`
+- Stable note UUID: `ZICCLOUDSYNCINGOBJECT.ZIDENTIFIER`
+- Note title: `ZTITLE1`
+- Folder title: `ZTITLE2`
+- Account name: `ZNAME`
+- Deletion marker: `ZMARKEDFORDELETION`
+- Password flag: `ZISPASSWORDPROTECTED`
+- Body blob: `ZICNOTEDATA.ZDATA`
+
+The adapter should not hard-code every column name blindly. It should probe
+`PRAGMA table_info` at startup and choose the best available account and date
+columns. Existing reverse-engineered readers show account joins drifting across
+columns such as `ZACCOUNT2`, `ZACCOUNT3`, `ZACCOUNT4`, and later variants.
+Creation/modification date columns also vary, so queries should use probed
+columns or `COALESCE` over known variants.
+
+Known account-column observations include `ZACCOUNT4` in existing direct-DB
+readers and `ZACCOUNT7` on current Sequoia-era schemas. Treat those as probes,
+not fixed truth.
+
+Representative metadata query shape:
+
+```sql
+SELECT
+  note.Z_PK AS pk,
+  note.ZIDENTIFIER AS external_id,
+  note.ZTITLE1 AS title,
+  folder.ZTITLE2 AS folder,
+  acc.ZNAME AS account,
+  note.ZSNIPPET AS snippet,
+  note.ZCREATIONDATE1 AS created_at_mac,
+  note.ZMODIFICATIONDATE1 AS modified_at_mac,
+  note.ZISPASSWORDPROTECTED AS password_protected,
+  note.ZMARKEDFORDELETION AS note_deleted,
+  folder.ZMARKEDFORDELETION AS folder_deleted,
+  notedata.ZDATA AS body_blob
+FROM ZICCLOUDSYNCINGOBJECT AS note
+JOIN ZICCLOUDSYNCINGOBJECT AS folder
+  ON note.ZFOLDER = folder.Z_PK
+LEFT JOIN ZICCLOUDSYNCINGOBJECT AS acc
+  ON note.<probed_account_column> = acc.Z_PK
+LEFT JOIN ZICNOTEDATA AS notedata
+  ON note.ZNOTEDATA = notedata.Z_PK
+WHERE note.ZTITLE1 IS NOT NULL
+  AND COALESCE(note.ZMARKEDFORDELETION, 0) != 1
+  AND COALESCE(folder.ZMARKEDFORDELETION, 0) != 1;
+```
+
+Use `ZIDENTIFIER` as the materialized `external_id` when present. Avoid title
+or local integer primary key as source identity; titles are mutable and local
+integer IDs may be device-specific.
+
+Apple Notes timestamps are Mac Absolute Time. Add `978307200` seconds to
+convert to Unix epoch.
+
+### Body Decode Pipeline
+
+The body decode path is:
+
+```text
+ZICNOTEDATA.ZDATA -> gzip/zlib decompress -> protobuf parse -> note_text
+```
+
+The `threeplanetssoftware/apple_cloud_notes_parser` proto defines the core
+plaintext path:
+
+```text
+NoteStoreProto.document.note.note_text
+```
+
+That schema also exposes formatting runs, links, checklist metadata, and
+attachment markers. V1 should extract plaintext first. Formatting, tables,
+checklist state, and attachment content can be later phases.
+
+Do not search or index `ZICNOTEDATA.ZDATA` directly. It is compressed/protobuf
+data. Decode it first, normalize plaintext, then write the selected content to
+dbrain's own item fields and FTS.
+
+### Batch Materialization
 
 The batch command should support a dry-run first:
 
 ```sh
 dbrain providers apple-notes probe
-dbrain providers apple-notes index --mode provider_index --folder Research --dry-run
-dbrain providers apple-notes index --mode provider_index --folder Research --apply
+dbrain import apple-notes --folder Research --dry-run
 dbrain import apple-notes --folder Research --apply
 ```
 
-`provider_index` gives the MCP/web/search layers a fast Notes retrieval surface
-without copying Notes into the main item store. `materialized` import is still
-useful, but it should remain a separate opt-in path that creates `apple_note`
-items, rendered Markdown, links, summaries, categories, and normal dbrain FTS.
+Materialized notes should become normal items:
+
+- `source_type`: `apple_note`
+- `source_key`: `apple-note:<ZIDENTIFIER>`
+- `external_id`: `ZIDENTIFIER`
+- `title`: `ZTITLE1`
+- `text`: decoded plaintext
+- `folder_names`: account/folder path
+- `published_at`: creation date when available
+- `updated_at`: modification date
+- `content_hash`: hash over decoded plaintext plus relevant metadata
+- `raw_json`: adapter metadata, DB path fingerprint, folder/account IDs, flags,
+  parser version, and optional HTML/formatting metadata if later supported
+
+Once these rows exist, existing dbrain FTS, MCP, web UI, link extraction,
+categorization, summaries, and topics should work with normal source-type
+plumbing.
 
 ### Incremental Re-indexing
 
@@ -352,15 +466,14 @@ For `direct_db`:
 - Track the Notes database mtime as a cheap "anything changed?" guard.
 - Track a high-water mark from Apple Notes modification timestamps.
 - Query changed candidate notes by modification timestamp, then decode and hash
-  body content before rewriting provider index rows.
-- Still perform a lightweight full metadata scan on each run or periodically,
-  because deletions, folder moves, shared/locked status changes, and ignore
-  markers may not be captured safely by a simple `modified_at > high_water`
-  query.
+  body content before upserting.
+- Still perform a lightweight full metadata scan each run or periodically,
+  because deletions, folder moves, shared/locked status changes, and exclusion
+  changes are not safely captured by a simple `modified_at > high_water` query.
 - Store parser/schema version in sync state so parser fixes can force a full
-  re-index.
-- Keep a manual `--force`/`repair` path that clears provider state and rebuilds
-  from the source database.
+  re-import.
+- Keep a manual `--force`/`repair` path that clears Apple Notes import state and
+  rebuilds selected notes from the source database.
 
 For `apple_events`:
 
@@ -370,9 +483,9 @@ For `apple_events`:
 - Treat title as display metadata only; it is not stable identity.
 
 If a note gains `#dbrain-ignore`, enters an excluded folder, becomes locked, or
-is otherwise excluded, privacy rules should purge provider-index text/FTS rows
-and materialized item content. This is more important than preserving raw data
-for this source type.
+is otherwise excluded, privacy rules should purge materialized item content,
+derived summaries, rendered Markdown, and FTS rows. This source type should
+prefer privacy revocation over the usual "preserve raw data" rule.
 
 ### Go Feasibility
 
@@ -383,16 +496,21 @@ owned by dbrain.
   already uses SQLite FTS5 for item/source search.
 - gzip/zlib decompression is available in the Go standard library.
 - protobuf decoding is available through `google.golang.org/protobuf`; direct
-  DB support would need generated Go from the Notes `notestore.proto` schema or
-  a deliberately minimal handwritten decoder. Generated code is the more
-  maintainable choice.
+  DB support can use generated Go from `notestore.proto` or a deliberately
+  minimal `protowire` decoder for plaintext. Generated code is more
+  maintainable once we care about formatting, links, checklists, or
+  attachments.
 - Apple Events can be reached without a third-party Go package by invoking
   `/usr/bin/osascript -l JavaScript` from Go. A Swift helper using
   `NSAppleScript` or ScriptingBridge is also viable if stronger typing or
   better permission UX is needed.
-- There is no need for LanceDB or local transformer embeddings in v1. SQLite
-  FTS gives a much smaller dependency surface, and embeddings can be added later
-  through the same provider index if needed.
+- There is no need for LanceDB or local transformer embeddings in v1. SQLite FTS
+  gives a much smaller dependency surface.
+
+There is no obvious reusable Go library to vendor. Existing direct-DB exporter
+references are in other languages, including the Swift/C
+`kzaremski/apple-notes-exporter`, and should stay references rather than
+dependencies.
 
 The main implementation risk is not library availability. It is the private
 Notes schema: table names, column names, compressed payload layout, timestamp
@@ -400,40 +518,19 @@ fields, and attachment relationships are not a stable public API.
 
 ### Web Interface Exposure
 
-If Apple Notes are materialized as `source_type=apple_note`, the existing web
-interface can expose them through the same item/search/detail paths once the
-renderer and filters know the new source type.
+Materialized notes are the easiest web path. Once `apple_note` items exist, the
+existing web interface can expose them through normal item/search/detail paths
+after the renderer and filters know the new source type.
 
-If Apple Notes stay in `provider_index`, the web interface needs a provider
-search/detail path instead:
+A future `provider_index` mode would need provider search/detail routes:
 
-- search results can include `provider=apple_notes`, `materialized=false`, and
-  an opaque provider document ID;
-- opening a result calls the provider `Get` path or reads the provider index,
-  depending on privacy mode;
-- the UI should visibly distinguish live/provider-indexed notes from
-  materialized dbrain items.
+- search results would include `provider=apple_notes`, `materialized=false`,
+  and an opaque provider document ID;
+- opening a result would call provider `Get` or read the provider index;
+- the UI would visibly distinguish provider-indexed notes from materialized
+  dbrain items.
 
-Both paths are feasible. Materialization is simpler for the current web UI, but
-provider-indexed Notes better match the privacy model.
-
-### Direct SQLite Recommendation
-
-Directly reading the Notes SQLite database is worth pursuing, but only as a
-read-only adapter with clear guardrails:
-
-- Do not write to Apple's Notes database.
-- Do not search `ZICNOTEDATA.ZDATA` directly; decode gzip/protobuf payloads and
-  index normalized plaintext into dbrain's own provider index.
-- Do not make direct DB the only adapter until the probe handles permissions,
-  locked notes, shared notes, deleted notes, folder/account mapping, and schema
-  drift diagnostics.
-- Keep Apple Events as a fallback adapter because it uses the app's scriptable
-  surface and has a lower permission blast radius.
-
-So the recommended first build is: `direct_db` feasibility spike, then a
-read-only provider index, then MCP/ask/web fan-out, then optional
-materialization.
+That is useful later, but it should not block v1.
 
 ## Recommended Architecture
 
@@ -452,14 +549,15 @@ Provider capabilities:
 
 For Apple Notes, that means:
 
-- The first user-visible integration can be `dbrain ask` and MCP retrieval
-  fanning out to the local dbrain corpus plus Apple Notes.
-- Query-time Apple Notes evidence should be marked as `provider=apple_notes`,
-  `materialized=false`, and should not be persisted unless configured.
-- Optional materialization can later store selected notes as `apple_note` items
-  using the data model below.
-- The same allowlist/exclusion/ignore-marker policy must apply to both live
-  retrieval and materialization.
+- The first user-visible integration should be an opt-in materialized importer
+  for selected folders/accounts.
+- Materialized Apple Notes evidence should be marked with
+  `source_type=apple_note` and clear account/folder provenance.
+- A later provider-index/live retrieval mode can return
+  `provider=apple_notes`, `materialized=false` evidence if we want searchable
+  Notes without copying bodies into the main item store.
+- The same allowlist/exclusion/ignore-marker policy must apply to
+  materialization and any future provider mode.
 
 This preserves the important product goal: answers can use all available memory
 surfaces without forcing every surface into the same storage model.
@@ -480,12 +578,15 @@ index under its own data directory, then serves search results through MCP. A
 dbrain-native version can use the same idea without requiring exported files or
 promoting Apple Notes into normal item rows.
 
-Recommended default:
+Recommended implementation order:
 
-- Start with `live_only` for probing and correctness.
-- Add `provider_index` when query latency or recall requires it.
-- Keep `materialized` as an explicit user choice for users who want Apple Notes
-  to participate in all dbrain corpus features.
+- Start with dry-run/probe without storing content.
+- Ship `materialized` for explicitly selected folders/accounts because it
+  reuses existing dbrain infrastructure and is the shortest path to value.
+- Add `provider_index` later only if we need Apple Notes retrieval without
+  copying note bodies into the main item store.
+- Keep `live_only` as a diagnostic or fallback mode, not the main v1 product
+  path.
 
 If `provider_index` stores full note text or snippets, the same privacy purge
 rules as materialized notes must apply. If it stores embeddings only, still
@@ -499,7 +600,16 @@ Instead of requiring users to connect both `dbrain` and an Apple Notes MCP
 server to every client, dbrain can fan out internally and return unified
 evidence.
 
-Possible MCP additions:
+For materialized v1, the existing MCP surface should mostly work after search
+and item rendering know `source_type=apple_note`:
+
+- `dbrain_search` can return materialized Apple Notes as normal item hits.
+- `dbrain_research` can include them with clear provenance.
+- `dbrain_get` can read their rendered item content.
+- backlog/stats can report Apple Notes import state if the integration is
+  enabled.
+
+Future provider-mode MCP additions:
 
 - `dbrain_search` accepts `source_types: ["apple_note"]` and/or
   `providers: ["apple_notes"]`.
@@ -510,11 +620,11 @@ Possible MCP additions:
 - `dbrain_stats_backlog` or a new health tool can report provider permission
   state without exposing content.
 
-The agent-facing response should distinguish three evidence classes:
+The agent-facing response should eventually distinguish three evidence classes:
 
 - DB-backed dbrain item/source evidence.
-- Live Apple Notes evidence that was not stored.
 - Materialized Apple Notes evidence that now exists as normal dbrain items.
+- Live/provider-indexed Apple Notes evidence that was not stored.
 
 An external MCP server such as `mcp-apple-notes` is useful as a prototype, but
 making dbrain an MCP client of another local MCP server adds process management,
@@ -526,29 +636,30 @@ provider can be added later for arbitrary third-party memory servers.
 
 ```sh
 dbrain providers apple-notes probe
-dbrain ask --include-provider apple_notes "What do all my notes and saved sources say about X?"
 dbrain import apple-notes --dry-run
 dbrain import apple-notes --folder "dbrain" --apply
 dbrain import apple-notes --folder "Projects" --folder "Research" --apply
 dbrain import apple-notes --account "iCloud" --folder "Research" --apply
-dbrain import apple-notes --adapter apple_events --folder "Research" --apply
 dbrain import apple-notes --adapter direct_db --folder "Research" --dry-run
+dbrain import apple-notes --adapter apple_events --folder "Research" --apply
 dbrain import apple-notes --all --dry-run
 dbrain import apple-notes --all --apply
+dbrain ask "What do my notes and saved sources say about X?"
 ```
 
 Suggested first flags:
 
 - `--include-provider apple_notes`
-  Query Apple Notes live alongside the normal dbrain corpus for commands that
-  support provider fan-out.
+  Future provider-mode flag for querying Apple Notes without materialization.
+  Not required for v1 materialized notes because they are normal dbrain items.
 - `--dry-run`
   Print counts, accounts/folders matched, skipped counts, and sample titles
   without storing note bodies.
 - `--adapter`
-  Select the live Notes adapter. Suggested values: `auto`, `apple_events`, and
-  `direct_db`. Default `auto` should prefer the lowest-permission working
-  adapter unless config says otherwise.
+  Select the Notes adapter. Suggested values: `auto`, `apple_events`, and
+  `direct_db`. Default `auto` should prefer configured policy, use `direct_db`
+  for imports when Full Disk Access is available, and fall back to
+  `apple_events` if the direct parser is unavailable or broken.
 - `--apply`
   Required for content import unless `sync all` is running with the integration
   enabled in config.
@@ -577,16 +688,15 @@ Suggested first flags:
   Machine-readable stats.
 
 `sync all` should not import Apple Notes by default. The integration should be
-enabled with config. Live retrieval and materialization should be configured
-separately:
+enabled with config. The v1 config should make materialization explicit:
 
 ```yaml
 apple_notes:
   enabled: true
-  adapter: apple_events
-  live_retrieval: true
-  index_mode: live_only
-  materialize: false
+  adapter: direct_db
+  materialize: true
+  live_retrieval: false
+  index_mode: materialized
   include_accounts:
     - iCloud
   include_folders:
@@ -631,12 +741,14 @@ create normal `sources` rows.
 
 Suggested item mapping:
 
-- `source_key`: `apple-note:<stable-hash>`
+- `source_key`: `apple-note:<external-id-or-hash>`. For `direct_db`, prefer
+  `apple-note:<ZIDENTIFIER>` when available.
 - `external_id`: adapter-specific stable note ID. For `apple_events`, this is
   the Notes scripting `id`; for `direct_db`, use the best stable database/cloud
   identifier available rather than a title/path.
-- `canonical_url`: a local pseudo URL such as `apple-notes://<stable-hash>`, or
-  a real Notes deep link if one is available from the adapter
+- `canonical_url`: a local pseudo URL such as
+  `apple-notes://<external-id-or-hash>`, or a real Notes deep link if one is
+  available from the adapter
 - `title`: note `name`
 - `text`: note `plaintext`
 - `raw_json`: JSON envelope containing account, folder path, note ID, flags,
@@ -719,18 +831,18 @@ Dry run should avoid printing note bodies. It can print:
 - counts skipped by exclusion reason
 - a small sample of titles, unless `--private-dry-run` or similar is added
 
-## Live Retrieval And Incremental Sync
+## Materialization And Incremental Sync
 
-Live retrieval and optional materialization should be polling-based. Apple Notes
-does not expose a stable public change feed suitable for `dbrain`.
+Materialization should be polling-based. Apple Notes does not expose a stable
+public change feed suitable for `dbrain`.
 
 1. Enumerate configured accounts/folders.
 2. Read note IDs, titles, folder paths, modification dates, flags, and plaintext.
 3. Compute a content hash.
-4. For live-only retrieval, return scoped evidence without writing note content.
-5. For provider indexing, update the provider-local index/cache.
-6. For materialization, upsert changed notes as dbrain items and update
+4. For materialization, upsert changed notes as dbrain items and update
    `last_seen_at` for visible notes.
+5. For a future provider index, update the provider-local index/cache instead
+   of item rows.
 
 This is acceptable for `sync all --watch` because Notes libraries are usually
 small enough for periodic enumeration, and the first implementation can expose
@@ -787,9 +899,10 @@ enrichment pipeline.
 
 Apple Notes should be easy to include or exclude in retrieval:
 
-- `provider=apple_notes` should work in MCP, resources, prompts, search, web
-  filters, stats, and topic tools.
-- `source_type=apple_note` should work when Apple Notes are materialized.
+- `source_type=apple_note` should work in MCP, resources, prompts, search, web
+  filters, stats, and topic tools when Apple Notes are materialized.
+- `provider=apple_notes` should work consistently if a future provider-indexed
+  mode is added.
 - Research packs should surface that Apple Notes are user-authored notes, not
   third-party sources.
 - Answers should avoid treating personal notes as authoritative external facts.
@@ -806,63 +919,59 @@ The summary prompt for Apple Notes should likely differ from web sources:
 ## Implementation Phases
 
 1. **Probe and dry run**
-   Add a macOS-only adapter probe that enumerates available accounts/folders
-   and reports counts without storing content. It should detect whether
-   `apple_events` is usable, whether `direct_db` has Full Disk Access, and which
-   permissions are missing.
+   Add a macOS-only direct DB probe that opens the Notes database read-only,
+   detects Full Disk Access failures, probes schema columns, and reports
+   account/folder/note counts without decoding or storing note bodies.
 
-2. **Direct DB feasibility spike**
-   Prototype the non-AppleScript path against a small local Notes corpus. The
-   spike must prove body decoding, folder/account mapping, locked/shared flags,
-   deletion markers, modification timestamps, and a forced full-rescan path. If
-   the parser cannot meet those basics cleanly, keep it experimental rather than
-   making it the default.
+2. **Body decoder**
+   Implement a standalone `ZDATA []byte -> plaintext` decoder using gzip/zlib
+   plus protobuf parsing. Unit test it with captured non-private fixtures before
+   wiring it to the importer.
 
-3. **Memory provider interface**
-   Define a small internal provider shape for `Probe`, `Search`, `Get`, and
-   optional `Index`. Search results should include title, snippet, score,
-   provider ID, folder path, dates, and enough provenance to fetch the full note
-   when needed. Keep this as live retrieval, not an export directory.
-
-4. **Apple Notes provider**
-   Implement either `apple_events` first for lower permission risk, or
-   `direct_db` first if the non-AppleScript path proves reliable enough during
-   prototype testing. The adapter choice should be config/flag-driven so both
-   can coexist.
-
-5. **MCP and ask fan-out**
-   Teach dbrain retrieval to query DB-backed items/sources and live memory
-   providers in parallel, merge/rank evidence, and show provenance. This is the
-   first useful product milestone even without materializing notes.
-
-6. **Optional materialization**
+3. **Materialized importer**
    Add `dbrain import apple-notes` with folder/account allowlists, ignore
    markers, shared/locked-note defaults, item upsert, note rendering, FTS, and
-   JSON stats for users who want Apple Notes copied into dbrain.
+   JSON stats. This is the first useful product milestone.
 
-7. **Privacy purge**
-   Add tombstone/purge behavior for notes that become excluded after provider
-   indexing or materialization. Include tests proving raw text, summaries,
-   rendered notes, provider-cache content, and FTS content are removed.
+4. **Incremental re-import**
+   Track source DB mtime, high-water modification timestamps, content hashes,
+   parser version, and last-seen state. Re-runs should skip unchanged notes,
+   update changed notes, and support `--force` after parser fixes.
 
-8. **Sync integration**
+5. **Privacy purge**
+   Add tombstone/purge behavior for notes that become excluded after
+   materialization. Include tests proving raw text, summaries, rendered notes,
+   and FTS content are removed.
+
+6. **Sync integration**
    Add opt-in `sync all` integration behind config and `--skip-apple-notes`.
-   Keep materialization disabled by default.
+   Apple Notes remains disabled unless explicitly configured.
 
-9. **Categorization and summaries**
+7. **MCP/search/web polish**
+   Ensure `source_type=apple_note` works in search filters, MCP output,
+   rendered notes, web UI filters/detail pages, and topic/search resources.
+
+8. **Categorization and summaries**
    Add an Apple Notes-specific summary/categorization prompt path if generic
-   item summarization is too source-agnostic. This should apply only to
-   materialized notes unless a separate ephemeral summarization path is added.
+   item summarization is too source-agnostic. Prefer local models by default
+   unless the user explicitly allows hosted processing for notes.
 
-10. **Attachment metadata**
+9. **Attachment metadata**
    Import attachment metadata and URL attachments. Defer file extraction/OCR/PDF
    processing to a later explicit opt-in phase.
 
+10. **Future provider index**
+   Add live/provider-indexed retrieval only if users need Apple Notes search
+   without copying note bodies into the main dbrain item store.
+
 ## Testing Plan
 
-- Unit test parsing of Apple Events adapter JSON output if that adapter is
-  built.
 - Unit test parsing of direct DB adapter records if the direct adapter is built.
+- Unit test body decoding from representative `ZDATA` blobs.
+- Unit test schema column probing for account/date column drift.
+- Unit test read-only/open failure diagnostics for missing Full Disk Access.
+- Unit test parsing of Apple Events adapter JSON output if that fallback adapter
+  is built.
 - Unit test include/exclude folder matching.
 - Unit test ignore marker detection in plaintext and HTML-derived text.
 - Unit test source key stability.
@@ -870,8 +979,6 @@ The summary prompt for Apple Notes should likely differ from web sources:
 - Unit test purge/tombstone behavior for newly excluded notes.
 - Store tests proving materialized `apple_note` items enter search/FTS and MCP
   retrieval.
-- Retrieval tests proving live Apple Notes provider evidence can be merged with
-  DB-backed dbrain evidence without persisting note bodies.
 - CLI tests for dry-run/apply safety behavior.
 - Manual macOS integration test with a small test Notes folder.
 - Manual direct DB permission test that proves missing Full Disk Access fails
@@ -883,17 +990,12 @@ CI should not depend on the real Notes app or a real user note database.
 
 - `dbrain import apple-notes --dry-run --folder Test` reports matched/skipped
   counts without storing note bodies.
-- `dbrain ask --include-provider apple_notes ...` can retrieve scoped Apple
-  Notes evidence and DB-backed dbrain evidence in one answer without
-  materializing note bodies.
-- If `index_mode=provider_index`, changed or excluded notes update or purge the
-  provider-local index without creating dbrain item rows.
 - `dbrain import apple-notes --folder Test --apply` imports visible notes from
   that folder as `apple_note` items.
 - Re-running the importer reports unchanged notes without rewriting them.
 - Editing a note updates the item and rendered Markdown on the next import.
-- Adding `#dbrain-ignore` to a previously cached or materialized note purges
-  indexed content when `--forget-excluded` is enabled.
+- Adding `#dbrain-ignore` to a previously materialized note purges indexed
+  content when `--forget-excluded` is enabled.
 - Password-protected and shared notes are skipped by default.
 - Materialized Apple Notes appear in `search`, MCP tools,
   topic/search resources, and the web UI with `source_type=apple_note`.
@@ -914,18 +1016,15 @@ CI should not depend on the real Notes app or a real user note database.
   plaintext to reduce privacy blast radius?
 - Should Apple Notes summaries be local-model-only by default, regardless of the
   global summary provider?
-- Should the first production milestone be live MCP/ask retrieval only, with
-  materialization deliberately deferred?
+- Should `direct_db` open the live DB read-only, or always copy a DB/WAL/SHM
+  snapshot into dbrain temp state before reading?
 - Should dbrain support MCP-client providers for third-party local memory MCP
-  servers, or keep Apple Notes as a direct internal provider first?
-- Should live Apple Notes retrieval maintain a small local index for speed, and
-  if so, what is allowed in that index: embeddings only, snippets, or full note
-  bodies?
-- Should `apple_events` be the first built adapter because it is lower
-  permission, or should `direct_db` be first because it avoids AppleScript and
-  can be more incremental?
-- Is Full Disk Access acceptable for a clearly marked experimental direct DB
-  adapter?
+  servers, or keep Apple Notes as a direct internal importer/provider first?
+- Should future provider-indexed Apple Notes retrieval be embeddings-only,
+  snippets, or full plaintext?
+- Should an Apple Events fallback ship in v1 or wait until direct DB breaks for
+  someone?
+- Is Full Disk Access acceptable for a clearly marked v1 direct DB adapter?
 - How much of the private Notes database parser should be owned in Go versus a
   small Swift helper or external helper process?
 - Should we support a one-time migration path from existing exporters, or avoid
