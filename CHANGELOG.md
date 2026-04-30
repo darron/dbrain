@@ -12,6 +12,7 @@ development date for the change set.
 - **Failure accounting**: Source failure counts and first/last failure timestamps remain visible through source JSON/MCP, and rendered source notes now show extract failure count/kind metadata.
 - **Terminal classification**: Repeated access-denied, timeout, unsupported-file, and generic fetch failures now become terminal `dead` source extraction outcomes after defined thresholds instead of retrying indefinitely.
 - **Wayback fallback**: Repeated source extraction failures now check the Internet Archive Wayback Availability API before terminalizing, log both checks and misses, and final-attempt rows bypass the normal retry cooldown so unclassified failures stop after 5 attempts when no archive recovery succeeds.
+- **Wayback quality gate**: Very short Wayback extracts and archive/browser shells now keep raw extracted text but skip summarization instead of generating plausible summaries from weak evidence.
 - **Failure metadata**: Consecutive failure counts are now preserved when a retry changes from an older `unknown` class into a more specific terminal class.
 - **Docs**: README now documents the failed web-source rebaseline flow using `repair sources` plus source extraction/sync retries.
 - **Location**: `internal/store/`, `internal/sourceenrich/`, `internal/app/repair.go`, `internal/vault/source.go`, `README.md`

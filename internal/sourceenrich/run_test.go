@@ -72,6 +72,44 @@ func TestSkipSummaryReasonSkipsPlaceholderRedirectExtract(t *testing.T) {
 	}
 }
 
+func TestSkipSummaryReasonSkipsShortWaybackExtract(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{SourceType: "web"}
+	extract := model.ExtractResult{
+		Tool:    waybackToolName,
+		Content: "The method to Mark Carney's madness\n\nBy Max Fawcett\n\nOpinion\n\nPolitics\n\nShare this article",
+	}
+
+	reason, ok := skipSummaryReason(source, extract)
+	if !ok {
+		t.Fatal("expected short wayback extract to be skipped")
+	}
+	if !strings.Contains(reason, "wayback extract is too short") {
+		t.Fatalf("unexpected skip reason: %q", reason)
+	}
+}
+
+func TestSkipSummaryReasonSkipsWaybackFrameShell(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{SourceType: "web"}
+	extract := model.ExtractResult{
+		Tool: waybackToolName,
+		Content: `Your browser does not support frames. We recommend upgrading your browser.
+
+Click here to enter the site.`,
+	}
+
+	reason, ok := skipSummaryReason(source, extract)
+	if !ok {
+		t.Fatal("expected wayback frame shell to be skipped")
+	}
+	if !strings.Contains(reason, "placeholder boilerplate") {
+		t.Fatalf("unexpected skip reason: %q", reason)
+	}
+}
+
 func TestSkipSummaryReasonAllowsShortSubstantiveExtract(t *testing.T) {
 	t.Parallel()
 
@@ -1984,6 +2022,111 @@ func TestRunSourceIDsRejectsStoredSubstackSubscriptionShell(t *testing.T) {
 	}
 	if !strings.Contains(source.ExtractError, "subscription boilerplate") {
 		t.Fatalf("unexpected extract error: %q", source.ExtractError)
+	}
+}
+
+func TestRunPendingRepairsShortWaybackSummaryToSkipped(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-short-wayback-item",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-short-wayback-item",
+		CanonicalURL: "https://x.com/example/status/test-short-wayback-item",
+		Title:        "test short wayback item",
+		ContentHash:  "item-hash-test-short-wayback-item",
+		NotePath:     "items/x/2026/test-short-wayback-item.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	candidate := model.SourceCandidate{
+		SourceKey:     "src:test-short-wayback",
+		OriginalURL:   "https://example.com/title-only",
+		CanonicalURL:  "https://example.com/title-only",
+		NormalizedURL: "https://example.com/title-only",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-short-wayback.md",
+	}
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	content := "The method to Mark Carney's madness\n\nBy Max Fawcett\n\nOpinion\n\nPolitics\n\nShare this article"
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+		CanonicalURL: candidate.CanonicalURL,
+		FinalURL:     "http://web.archive.org/web/20260112031415id_/https://example.com/title-only",
+		Content:      content,
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         waybackToolName,
+		ToolVersion:  waybackToolVersion,
+	}, hashText(content)); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(context.Background(), link.SourceID, model.SummaryResult{
+		Text:          "old plausible summary",
+		Status:        "ok",
+		Model:         "test-model",
+		PromptVersion: SummaryPromptVersion,
+		Tool:          summarizecli.ToolName,
+		ToolVersion:   "test",
+		FetchedAt:     now,
+	}); err != nil {
+		t.Fatalf("SaveSourceSummary: %v", err)
+	}
+
+	stats, _, err := RunPending(context.Background(), cfg, st, Options{
+		Limit:     10,
+		Summarize: true,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunPending: %v", err)
+	}
+	if stats.SourcesQueued != 1 {
+		t.Fatalf("expected one source queued for repair, got %+v", stats)
+	}
+	if stats.SourcesSummarized != 0 || stats.Errors != 0 {
+		t.Fatalf("expected short wayback summary to be skipped without summarization/error, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.SummaryStatus != "skipped" {
+		t.Fatalf("expected summary status skipped, got %q", source.SummaryStatus)
+	}
+	if source.SummaryText != "" {
+		t.Fatalf("expected summary text cleared, got %q", source.SummaryText)
+	}
+	if !strings.Contains(source.SummaryError, "wayback extract is too short") {
+		t.Fatalf("unexpected summary error: %q", source.SummaryError)
 	}
 }
 

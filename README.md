@@ -323,6 +323,12 @@ with `extract_tool=wayback`; otherwise the source is marked `dead` or `gone`
 according to the failure classification. Disable this final fallback with
 `DBRAIN_SOURCE_WAYBACK_ENABLED=false`.
 
+Wayback extracts are quality-gated before summarization. Very short archived
+extracts and obvious archive/browser shells, such as `Loading...` or frame
+fallback pages, keep their raw extract but get `summary_status=skipped` instead
+of a model-generated summary. This avoids turning title-only or boilerplate
+snapshots into plausible-looking knowledge.
+
 Current source extraction terminal thresholds are: `gone` immediately for
 404/410 responses; `dead` after 1 DNS NXDOMAIN or unsupported-file failure;
 `dead` after 3 TLS, Cloudflare edge, connectivity, X article shell,

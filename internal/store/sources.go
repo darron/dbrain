@@ -1677,6 +1677,12 @@ func sourceSummaryCoverageRepairWhere() string {
 		OR (
 			extract_status = 'ok'
 			AND summary_status = 'ok'
+			AND extract_tool = 'wayback'
+			AND length(trim(extracted_text)) < 500
+		)
+		OR (
+			extract_status = 'ok'
+			AND summary_status = 'ok'
 			AND length(trim(extracted_text)) <= 300
 			AND (
 				lower(trim(extracted_text)) LIKE '%redirecting%'
@@ -1688,6 +1694,8 @@ func sourceSummaryCoverageRepairWhere() string {
 				OR lower(trim(extracted_text)) LIKE '%we use cookies to improve user experience%'
 				OR lower(trim(extracted_text)) LIKE '%nothing to see here%'
 				OR lower(trim(extracted_text)) LIKE '%google drive%'
+				OR lower(trim(extracted_text)) LIKE '%your browser does not support frames%'
+				OR lower(trim(extracted_text)) LIKE '%click here to enter the site%'
 				OR lower(trim(extracted_text)) LIKE '%sign in or sign up%'
 				OR lower(trim(extracted_text)) LIKE '%you are not logged in%'
 				OR lower(trim(extracted_text)) LIKE '%manage account%'

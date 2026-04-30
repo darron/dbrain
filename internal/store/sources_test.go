@@ -649,6 +649,61 @@ func TestListSourcesForEnrichmentQueuesPlaceholderSummaryForRepair(t *testing.T)
 	}
 }
 
+func TestListSourcesForEnrichmentQueuesShortWaybackSummaryForRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+	content := "The method to Mark Carney's madness\n\nBy Max Fawcett\n\nOpinion\n\nPolitics\n\nShare this article"
+
+	_, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, title,
+			extracted_text, extract_status, extracted_at, extract_tool, extract_tool_version,
+			summary_text, summary_status, summary_model, summary_content_hash, summary_prompt_version, summary_tool, summary_tool_version, summarized_at,
+			content_hash, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:test-short-wayback-summary-repair",
+		"https://example.com/title-only",
+		"https://example.com/title-only",
+		"web",
+		"example.com",
+		"Example",
+		content,
+		"ok",
+		now,
+		"wayback",
+		"wayback-v1",
+		"old plausible summary",
+		"ok",
+		"cli/test/model",
+		testHashText(content),
+		"dbrain-v1",
+		"summarize",
+		"0.13.0",
+		now,
+		testHashText(content),
+		"sources/web/example.md",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	sources, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "0.13.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 queued source, got %d", len(sources))
+	}
+	if sources[0].SourceKey != "src:test-short-wayback-summary-repair" {
+		t.Fatalf("unexpected source queued: %s", sources[0].SourceKey)
+	}
+}
+
 func TestListSourcesForEnrichmentDoesNotQueueSubstantiveSignupTeaser(t *testing.T) {
 	t.Parallel()
 

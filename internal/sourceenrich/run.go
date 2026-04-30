@@ -2040,6 +2040,25 @@ func genericSkipSummaryReason(extract model.ExtractResult) (string, bool) {
 	if looksLikePlaceholderExtractContent(content) {
 		return "extracted content appears to be redirect/login/placeholder boilerplate rather than substantive content", true
 	}
+	if reason, ok := waybackSkipSummaryReason(extract); ok {
+		return reason, true
+	}
+	return "", false
+}
+
+const maxLowSignalWaybackExtractChars = 500
+
+func waybackSkipSummaryReason(extract model.ExtractResult) (string, bool) {
+	if strings.TrimSpace(extract.Tool) != waybackToolName {
+		return "", false
+	}
+	content := strings.TrimSpace(extract.Content)
+	if content == "" {
+		return "", false
+	}
+	if len(content) < maxLowSignalWaybackExtractChars {
+		return fmt.Sprintf("wayback extract is too short to summarize reliably (%d chars)", len(content)), true
+	}
 	return "", false
 }
 
@@ -2057,7 +2076,9 @@ func looksLikePlaceholderExtractContent(content string) bool {
 		strings.Contains(normalized, "<div></div>"),
 		strings.Contains(normalized, "we use cookies to improve user experience"),
 		strings.Contains(normalized, "nothing to see here"),
-		strings.Contains(normalized, "google drive"):
+		strings.Contains(normalized, "google drive"),
+		strings.Contains(normalized, "your browser does not support frames"),
+		strings.Contains(normalized, "click here to enter the site"):
 		return len(normalized) <= 160
 	case strings.Contains(normalized, "sign in or sign up"),
 		strings.Contains(normalized, "you are not logged in"),
