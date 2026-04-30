@@ -81,6 +81,14 @@ handling.
 - `dbrain tsnet status` and `dbrain tsnet reset` resolve the same config,
   flags, and env as `serve remote`; the resolved state directory is the primary
   identity.
+- Status and reset accept the same target-shaping flags as remote serving,
+  including surface enablement, MCP path, listen address, TLS, hostname, state
+  dir, and experimental control URL, so operational checks do not invent
+  surfaces that were never mounted.
+- `dbrain tsnet status` reports `control_url`, respects non-default listener
+  ports in URLs, probes only configured surfaces, uses surface-specific HTTP
+  success rules, and canonicalizes the existing state path before sync-folder
+  checks.
 - Secret resolution uses typed refs first. `tsnet.auth_key_command` is an
   advanced YAML-only argv escape hatch and is disabled unless explicitly
   configured.
@@ -88,6 +96,9 @@ handling.
   user-configured command escape hatch.
 - `dbrain serve mcp --transport tsnet` accepts `--mcp-path` as an alias for
   `--path` so MCP-only tsnet and combined remote serving use the same naming.
+- Duplicate `UserLogf` lines may be suppressed before writing to stderr to keep
+  repeated tsnet login/status messages readable. Detected auth URL hints are
+  also deduped before the explicit `Visit this URL` re-emission.
 - State-dir lock failures use a typed already-running error internally so
   status/reset behavior does not depend on string matching.
 - State-dir advisory locking is implemented for Unix-like platforms first.
@@ -414,9 +425,11 @@ Resolution order:
 Direct config/env auth keys work, but should be documented as less preferred
 than secret references.
 
-If multiple auth-key sources are configured, the higher-precedence source wins.
-Log a warning that lower-precedence auth-key sources were ignored, but do not
-log any secret values.
+If multiple resolved auth-key source kinds are configured, the
+higher-precedence source wins. Log a warning that lower-precedence source kinds
+were ignored, but do not log any secret values. Normal config layering within
+the same source kind, such as env overriding config for `auth_key`, does not
+need a separate warning.
 
 ### Typed Secret References
 
@@ -644,8 +657,10 @@ First-pass behavior should be conservative:
 - Document custom-control support as experimental.
 - Do not show `.ts.net` URLs for custom-control mode unless tsnet status proves
   that is the actual reachable FQDN.
-- Either reject `--tsnet-control-url` with `--tsnet-tls=true` until behavior is
-  validated, or emit a clear experimental warning with the actual listener URL.
+- Emit a clear experimental warning when `--tsnet-control-url` is set.
+- Emit an additional warning when `--tsnet-control-url` is combined with
+  `--tsnet-tls=true`, because `.ts.net` DNS and certificate behavior are not
+  guaranteed on custom control servers.
 - Keep custom-control testing separate from the core Tailscale SaaS path.
 
 The existing MCP HTTP handler is stateless and returns JSON responses. It does
@@ -660,7 +675,8 @@ First-run authentication must not look like a hang.
 When no auth key is available and the node has not authenticated before:
 
 - Wire `tsnet.Server.UserLogf` to stderr even when verbose logging is disabled.
-- Tee all `UserLogf` output to stderr unconditionally.
+- Tee `UserLogf` output to stderr, with duplicate-line suppression so repeated
+  tsnet login/status messages do not drown out the actionable URL.
 - Detect URL-shaped strings in `UserLogf` output, not only
   `https://login.tailscale.com/...`, so custom-control auth URLs also surface.
 - Dedupe repeated auth URLs.
@@ -671,8 +687,9 @@ Visit this URL to authenticate dbrain:
 https://login.tailscale.com/...
 ```
 
-If the process is non-interactive and no auth key/ref is configured, fail with
-an actionable error instead of waiting indefinitely when possible.
+Non-interactive no-auth preflight is deferred for v1. Startup is still bounded
+by `tsnet.startup_timeout`, and `UserLogf` URL surfacing keeps interactive
+first-run setup visible.
 
 `tsnet.Server.Logf` is backend debug logging and should remain behind
 `--tsnet-verbose`. Do not depend on `Logf` for first-run authentication URLs.
@@ -686,9 +703,9 @@ dbrain tsnet status
 dbrain tsnet reset --tsnet-hostname dbrain
 ```
 
-`--hostname dbrain` is a default-hostname shortcut. The command still resolves
-the final target through config, env, and flags, and acts on the resolved
-state directory.
+`--tsnet-hostname dbrain` is a default-hostname shortcut. The command still
+resolves the final target through config, env, and flags, and acts on the
+resolved state directory.
 
 Do not add a separate `dbrain tsnet auth-url` command in v1. tsnet does not
 expose the pending auth URL as a stable API; startup-time `UserLogf` capture
@@ -709,7 +726,7 @@ tailnet_ips: 100.x.y.z, fd7a:...
 web_url: https://dbrain.example.ts.net/
 mcp_url: https://dbrain.example.ts.net/mcp
 tls: true
-state: authenticated
+state: healthy
 cert_health: ok
 needs_login: false
 control_url:
@@ -720,7 +737,10 @@ configured node:
 
 - Whether a dbrain process currently holds the state lock.
 - Whether the node appears to be running, not only whether state files exist.
-- If the node is running, probe both the web URL and MCP URL by default.
+- If the node is running, probe the configured surfaces by default. Web probes
+  require a `2xx` or `3xx` response from `/`; MCP probes accept `200` or `405`
+  from the exact MCP path because browser-style `GET` may be rejected while
+  JSON-RPC `POST` is healthy.
 - Report a running-but-unreachable node as `state: down`.
 - Check HTTPS certificate health with both a real HTTPS request and any local
   listener/certificate state that is practical to inspect.
@@ -728,11 +748,18 @@ configured node:
   peer status as a best-effort IP fallback and still validate HTTPS with the
   certificate hostname.
 - Include machine-readable JSON fields for `running`, `reachable`,
-  `web_reachable`, `mcp_reachable`, `cert_health`, and `needs_login`.
+  `web_reachable`, `mcp_reachable`, `cert_health`, `needs_login`, and
+  `control_url`.
 - Set `needs_login` when the tsnet node is not authenticated yet or startup
   would require an interactive Tailscale login URL.
 - A clear distinction between `not configured`, `needs login`, `running but
   unreachable`, and `healthy`.
+- Canonicalize an existing state directory with symlink resolution before
+  lock checks and sync-folder warnings, matching serve-time state handling.
+- Respect non-default listen ports in reported URLs. For example,
+  `--tsnet-listen :8443` reports `https://host:8443/`.
+- In custom-control mode, do not synthesize `.ts.net` URLs from the hostname
+  unless status has a concrete certificate/DNS name to report.
 
 Reset should be explicit and guarded:
 
@@ -740,7 +767,8 @@ Reset should be explicit and guarded:
 This will delete tsnet state for dbrain:
 /Users/alice/.local/share/dbrain/tsnet/dbrain
 This requires re-authentication.
-Proceed? [y/N]
+Hostname: dbrain
+Type 'reset' to continue:
 ```
 
 `status` and `reset` must resolve config, flags, and env through the same
@@ -748,6 +776,11 @@ pipeline as `serve remote`. Use the resolved state directory as the primary
 identity, not just `--hostname`, because users can set a custom `state_dir` or
 run multiple roots. `reset` must refuse to run when the state-dir lock is held
 by a running daemon.
+
+Both commands accept the remote target-shaping flags that affect identity or
+surface checks, including `--web`, `--mcp`, `--mcp-path`,
+`--tsnet-hostname`, `--tsnet-state-dir`, `--tsnet-listen`, `--tsnet-tls`, and
+`--tsnet-control-url`.
 
 ## Implementation Plan
 
@@ -779,8 +812,8 @@ by a running daemon.
 - Add the disabled-by-default YAML-only argv command escape hatch.
 - Add tests for precedence, command timeout, no-shell execution, logging
   hygiene, and single-call behavior.
-- Log a warning when a lower-precedence auth-key source is ignored because a
-  higher-precedence source was set.
+- Log a warning when a lower-precedence auth-key source kind is ignored because
+  a higher-precedence source kind was set.
 
 ### Phase 3: Transport
 
@@ -804,7 +837,8 @@ by a running daemon.
   available. If `LocalClient()` fails, keep serving and log requests by remote
   address.
 - Capture tsnet user logs through `UserLogf` and surface first-run
-  authentication URLs clearly.
+  authentication URLs clearly, deduping repeated raw lines and repeated
+  re-emitted URL hints.
 - Use `ListenTLS("tcp", listen)` by default.
 - Use `Listen("tcp", listen)` only when TLS is explicitly disabled.
 - Log the actual FQDN and URLs reported by tsnet/status where available; do not
@@ -821,7 +855,7 @@ by a running daemon.
 - Set bounded HTTP read-header, read, and write timeouts on the remote server.
 - For direct tsnet requests, use `tsnet.Server.LocalClient().WhoIs` against the
   request remote address for caller identity logging; fall back to remote
-  address on lookup failure.
+  address on lookup failure and log the lookup error with a short debounce.
 - If secret resolution, `Up(ctx)`, `ListenTLS`, `Listen`, or status lookup
   fails, close any partially constructed `tsnet.Server` and release the lock
   before returning.
@@ -835,11 +869,23 @@ by a running daemon.
 - Add guarded `dbrain tsnet reset`.
 - Resolve state-dir identity through the same config/flag/env pipeline as
   `serve remote`.
+- Wire status/reset target resolution for the same surface and transport flags
+  that affect health output: `--web`, `--mcp`, `--mcp-path`,
+  `--tsnet-listen`, `--tsnet-tls`, and `--tsnet-control-url`, in addition to
+  hostname and state dir.
+- Include `control_url` in text and JSON status output.
+- Probe only configured surfaces and classify HTTP status codes by surface:
+  web is healthy on `2xx`/`3xx`, MCP is healthy on `200`/`405`.
+- Respect non-default listen ports in startup banners and status URLs.
+- Canonicalize existing state directories before status lock checks and
+  sync-folder warnings.
 - Refuse reset when the state-dir advisory lock is held.
 - Hold the advisory lock while deleting the state directory. After deletion, a
   new process can recreate the directory and obtain a fresh lock; that is
   acceptable because reset is an explicit destructive operation and the held
   lock only proves no current process owns the old state.
+- Require the literal confirmation word `reset` for interactive reset unless
+  `--yes` is passed.
 - Add tests for state-dir validation and reset confirmation.
 
 ### Phase 5: Deferred Or Discarded
@@ -852,6 +898,11 @@ by a running daemon.
   current product direction.
 - Do not implement native Windows `LockFileEx` support now. Windows returns a
   clear unsupported-lock error for tsnet serve/status/reset until that exists.
+- Do not implement non-interactive no-auth preflight in v1. Startup remains
+  bounded by `tsnet.startup_timeout`.
+- Do not restructure config loading to warn about env-over-config masking
+  within the same auth-key source kind. Warn only when distinct resolved source
+  kinds are ignored, such as direct auth key overriding auth-key ref.
 
 ## Testing Strategy
 
@@ -862,7 +913,7 @@ Unit tests:
   `LocalClient` so startup, logging, and shutdown behavior can be unit-tested
   without a real tailnet.
 - Secret-ref resolution precedence.
-- Lower-precedence auth-key source warning.
+- Lower-precedence auth-key source-kind warning.
 - Keychain resolver behavior behind platform guards.
 - 1Password resolver argument construction.
 - Command escape hatch disabled by default.
@@ -886,6 +937,8 @@ Unit tests:
 - Direct tsnet request logging uses `LocalClient.WhoIs`, not injected headers.
 - `LocalClient` / `WhoIs` failures fall back to remote-address logging.
 - `WhoIs` identity logging is short-TTL cached by remote tailnet address.
+- `WhoIs` lookup failures are logged with debounce rather than silently falling
+  back on every request.
 - Shutdown ordering is `http.Server.Shutdown(ctx)` before
   `tsnet.Server.Close()`.
 - Startup failures unwind by closing tsnet and releasing the state-dir lock.
@@ -893,6 +946,12 @@ Unit tests:
 - Mutating remote web requests reject mismatched `Origin` values and accept
   no-`Origin` CLI/API requests.
 - Experimental `--tsnet-control-url` behavior is explicit.
+- Startup URLs include non-default listen ports.
+- Status/reset accept the full remote target flag set.
+- Status reports `control_url`, suppresses synthetic `.ts.net` URLs in
+  custom-control mode, and respects symlink-resolved state dirs.
+- Status probes are surface-specific, including MCP `GET` status handling.
+- Reset confirmation requires typing `reset` unless `--yes` is used.
 
 Add a handler-level non-tsnet routing test that proves `/mcp`, `/mcp/`, and
 `/mcp/foo` never fall through to SPA HTML.
@@ -935,8 +994,8 @@ dbrain serve remote \
 - Users may put auth keys directly in config.
 - 1Password or Keychain resolver failures can make startup look like a network
   problem unless errors are explicit.
-- Multiple auth-key sources can confuse startup unless ignored lower-precedence
-  sources are warned about without leaking secret values.
+- Multiple auth-key source kinds can confuse startup unless ignored
+  lower-precedence sources are warned about without leaking secret values.
 - First-run authentication can look like a hang if auth URLs are not surfaced.
 - Adding `tailscale.com/tsnet` may materially increase binary size and
   dependency footprint.
@@ -987,7 +1046,7 @@ Implement the first pass with:
 - explicit `--tsnet-tls=false` for development-only HTTP over the tailnet
 - typed `auth_key_ref` support for `env:`, `op://`, and `keychain://`
 - Go keyring as the v1 `keychain://` backend
-- warning when lower-precedence auth-key sources are ignored
+- warning when lower-precedence auth-key source kinds are ignored
 - optional YAML-only command escape hatch disabled by default
 - `--tsnet-control-url` as experimental custom-control support only
 - clear first-run auth URL output through `UserLogf`
@@ -1002,8 +1061,14 @@ Implement the first pass with:
 - `status` / `reset` target resolution through the same config pipeline as
   `serve remote`, using the resolved state dir as the primary identity
 - `dbrain tsnet status` health checks for running/reachable/certificate state
+- `dbrain tsnet status` configured-surface probes, `control_url` output,
+  symlink-aware state checks, non-default listen-port URLs, and conservative
+  custom-control URL reporting
+- `dbrain tsnet reset` guarded by the resolved state-dir lock and a literal
+  `reset` confirmation
 - remote web startup warning plus best-effort `LocalClient.WhoIs` identity
-  logging with short-TTL caching by remote tailnet address
+  logging with short-TTL caching by remote tailnet address and debounced lookup
+  failure logs
 - remote-only HTTP hardening headers and concrete Origin checks for mutating
   web requests
 - bounded remote HTTP server timeouts

@@ -107,6 +107,12 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	for _, warning := range auth.Warnings {
 		_, _ = fmt.Fprintf(logOut, "WARNING %s\n", warning)
 	}
+	if strings.TrimSpace(opts.ControlURL) != "" {
+		_, _ = fmt.Fprintf(logOut, "WARNING --tsnet-control-url is experimental; DNS and ListenTLS certificate behavior may differ from Tailscale SaaS: %s\n", opts.ControlURL)
+		if opts.TLS {
+			_, _ = fmt.Fprintln(logOut, "WARNING --tsnet-control-url with --tsnet-tls=true may not produce .ts.net HTTPS URLs on custom control servers.")
+		}
+	}
 
 	userLogf := newUserLogger(logOut)
 	node := deps.newNode(opts, auth, userLogf, logOut)
@@ -287,6 +293,7 @@ func (n tsnetNode) Close() error {
 func identityLogger(client whoIsClient, next http.Handler, logOut io.Writer) http.Handler {
 	var mu sync.Mutex
 	cache := map[string]identityCacheEntry{}
+	errorLogUntil := map[string]time.Time{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity := r.RemoteAddr
 		cacheKey := identityCacheKey(r.RemoteAddr)
@@ -303,6 +310,17 @@ func identityLogger(client whoIsClient, next http.Handler, logOut io.Writer) htt
 				mu.Lock()
 				cache[cacheKey] = identityCacheEntry{identity: identity, expires: now.Add(identityCacheTTL)}
 				mu.Unlock()
+			} else {
+				shouldLog := false
+				mu.Lock()
+				if !now.Before(errorLogUntil[cacheKey]) {
+					errorLogUntil[cacheKey] = now.Add(identityCacheTTL)
+					shouldLog = true
+				}
+				mu.Unlock()
+				if shouldLog {
+					logWhoIsFailure(logOut, r.RemoteAddr, err)
+				}
 			}
 		}
 		logRemoteRequest(logOut, r, identity)
@@ -321,6 +339,13 @@ func identityCacheKey(remoteAddr string) string {
 		return remoteAddr
 	}
 	return host
+}
+
+func logWhoIsFailure(out io.Writer, remoteAddr string, err error) {
+	if out == nil {
+		out = os.Stderr
+	}
+	_, _ = fmt.Fprintf(out, "WARNING tsnet WhoIs failed remote=%q error=%v\n", remoteAddr, err)
 }
 
 func whoIsLabel(who *apitype.WhoIsResponse, fallback string) string {
@@ -383,7 +408,7 @@ func URLs(status *ipnstate.Status, opts Options) ServeResult {
 	if !opts.TLS {
 		scheme = "http"
 	}
-	base := scheme + "://" + host
+	base := scheme + "://" + hostWithListenPort(host, opts.Listen, scheme)
 	if opts.Web {
 		result.WebURL = base + "/"
 	}
@@ -402,6 +427,37 @@ func statusHost(status *ipnstate.Status) string {
 	}
 	if status.Self != nil && strings.TrimSpace(status.Self.DNSName) != "" {
 		return strings.TrimSuffix(status.Self.DNSName, ".")
+	}
+	return ""
+}
+
+func hostWithListenPort(host string, listen string, scheme string) string {
+	port := listenPort(listen)
+	if port == "" || (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return net.JoinHostPort(host, port)
+	}
+	return net.JoinHostPort(strings.Trim(host, "[]"), port)
+}
+
+func listenPort(listen string) string {
+	listen = strings.TrimSpace(listen)
+	if listen == "" {
+		return ""
+	}
+	if strings.HasPrefix(listen, ":") {
+		return strings.TrimPrefix(listen, ":")
+	}
+	if host, port, err := net.SplitHostPort(listen); err == nil && (host != "" || port != "") {
+		return port
+	}
+	if !strings.Contains(listen, ":") {
+		return listen
 	}
 	return ""
 }

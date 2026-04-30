@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -378,11 +379,74 @@ func TestTSNetStatusReportsResolvedState(t *testing.T) {
 	if payload["state_dir"] != wantStateDir {
 		t.Fatalf("state_dir = %#v, want %q", payload["state_dir"], wantStateDir)
 	}
+	if payload["control_url"] != "" {
+		t.Fatalf("control_url = %#v, want empty", payload["control_url"])
+	}
 	if payload["exists"] != false {
 		t.Fatalf("exists = %#v, want false", payload["exists"])
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStatusAcceptsRemoteSurfaceAndListenFlags(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"--root", root,
+		"--no-debug",
+		"tsnet", "status",
+		"--json",
+		"--web=false",
+		"--mcp=true",
+		"--mcp-path", "/brain",
+		"--tsnet-listen", ":8080",
+		"--tsnet-tls=false",
+		"--tsnet-control-url", "https://control.example",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	if payload["tls"] != false {
+		t.Fatalf("tls = %#v, want false", payload["tls"])
+	}
+	if payload["control_url"] != "https://control.example" {
+		t.Fatalf("control_url = %#v", payload["control_url"])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStatusRejectsInvalidMCPPath(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--root", t.TempDir(),
+		"--no-debug",
+		"tsnet", "status",
+		"--mcp-path", "/",
+	})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "mcp path must not be /") {
+		t.Fatalf("ExecuteContext error = %v, want mcp path validation", err)
 	}
 }
 
@@ -518,6 +582,112 @@ func TestTSNetStateStatusReportsHealthyRunningNode(t *testing.T) {
 	}
 	if status.NeedsLogin {
 		t.Fatalf("NeedsLogin = true, want false")
+	}
+}
+
+func TestTSNetStateStatusUsesSurfaceSpecificProbeStatus(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      false,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: true, StatusCode: 404, EffectiveURL: rawURL, CertHealth: "ok"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.WebReachable || status.Reachable || status.State != "down" {
+		t.Fatalf("expected web 404 to be down, status=%#v", status)
+	}
+
+	opts.Web = false
+	opts.MCP = true
+	status, err = tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: true, StatusCode: http.StatusMethodNotAllowed, EffectiveURL: rawURL, CertHealth: "ok"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if !status.MCPReachable || !status.Reachable || status.State != "healthy" || status.WebURL != "" {
+		t.Fatalf("expected MCP 405 to be healthy without web URL, status=%#v", status)
+	}
+}
+
+func TestTSNetStateStatusReportsNonDefaultPortAndControlURL(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:        true,
+		MCP:        true,
+		MCPPath:    "/mcp",
+		Hostname:   "dbrain",
+		StateDir:   stateDir,
+		Listen:     ":8443",
+		TLS:        true,
+		ControlURL: "https://control.example",
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: true, StatusCode: http.StatusOK, EffectiveURL: rawURL, CertHealth: "ok"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.ControlURL != "https://control.example" {
+		t.Fatalf("ControlURL = %q", status.ControlURL)
+	}
+	if status.WebURL != "https://dbrain.tailnet.ts.net:8443/" || status.MCPURL != "https://dbrain.tailnet.ts.net:8443/mcp" {
+		t.Fatalf("unexpected URLs: web=%q mcp=%q", status.WebURL, status.MCPURL)
+	}
+	if !strings.Contains(status.Warning, "custom tsnet control URL is experimental") {
+		t.Fatalf("expected custom control warning, got %q", status.Warning)
 	}
 }
 

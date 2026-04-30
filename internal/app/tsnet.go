@@ -35,8 +35,7 @@ func newTSNetCommand(root *rootOptions) *cobra.Command {
 }
 
 func newTSNetStatusCommand(root *rootOptions) *cobra.Command {
-	var hostname string
-	var stateDir string
+	flags := defaultTSNetStateFlags()
 	var jsonOut bool
 
 	cmd := &cobra.Command{
@@ -53,7 +52,9 @@ func newTSNetStatusCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			applyTSNetStateFlagOverrides(cmd, cfg.DataDir, &opts, hostname, stateDir)
+			if err := applyTSNetStateFlagOverrides(cmd, cfg.DataDir, &opts, flags); err != nil {
+				return err
+			}
 
 			status, err := tsnetStateStatus(cmd.Context(), opts)
 			if err != nil {
@@ -72,6 +73,7 @@ func newTSNetStatusCommand(root *rootOptions) *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "web_reachable: %t\n", status.WebReachable)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "mcp_reachable: %t\n", status.MCPReachable)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "tls: %t\n", status.TLS)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "control_url: %s\n", status.ControlURL)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "state: %s\n", status.State)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "cert_health: %s\n", status.CertHealth)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "needs_login: %t\n", status.NeedsLogin)
@@ -101,16 +103,14 @@ func newTSNetStatusCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&hostname, "tsnet-hostname", "", "Stable tailnet machine name used to derive the default state directory")
-	cmd.Flags().StringVar(&stateDir, "tsnet-state-dir", "", "Durable tsnet state directory")
+	addTSNetStateFlags(cmd, &flags)
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print status as JSON")
 
 	return cmd
 }
 
 func newTSNetResetCommand(root *rootOptions) *cobra.Command {
-	var hostname string
-	var stateDir string
+	flags := defaultTSNetStateFlags()
 	var yes bool
 
 	cmd := &cobra.Command{
@@ -127,7 +127,9 @@ func newTSNetResetCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			applyTSNetStateFlagOverrides(cmd, cfg.DataDir, &opts, hostname, stateDir)
+			if err := applyTSNetStateFlagOverrides(cmd, cfg.DataDir, &opts, flags); err != nil {
+				return err
+			}
 
 			resolved, err := remote.ResolveStateDir(opts.StateDir)
 			if err != nil {
@@ -158,7 +160,7 @@ func newTSNetResetCommand(root *rootOptions) *cobra.Command {
 			}()
 
 			if !yes {
-				ok, err := confirmTSNetReset(cmd.InOrStdin(), cmd.OutOrStdout(), prepared)
+				ok, err := confirmTSNetReset(cmd.InOrStdin(), cmd.OutOrStdout(), opts.Hostname, prepared)
 				if err != nil {
 					return err
 				}
@@ -179,8 +181,7 @@ func newTSNetResetCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&hostname, "tsnet-hostname", "", "Stable tailnet machine name used to derive the default state directory")
-	cmd.Flags().StringVar(&stateDir, "tsnet-state-dir", "", "Durable tsnet state directory")
+	addTSNetStateFlags(cmd, &flags)
 	cmd.Flags().BoolVar(&yes, "yes", false, "Reset without interactive confirmation")
 
 	return cmd
@@ -199,6 +200,7 @@ type tsnetStateInfo struct {
 	WebURL       string   `json:"web_url,omitempty"`
 	MCPURL       string   `json:"mcp_url,omitempty"`
 	TLS          bool     `json:"tls"`
+	ControlURL   string   `json:"control_url"`
 	State        string   `json:"state"`
 	CertHealth   string   `json:"cert_health"`
 	NeedsLogin   bool     `json:"needs_login"`
@@ -253,14 +255,18 @@ func tsnetStateStatusWithDeps(ctx context.Context, opts remote.Options, deps tsn
 		return tsnetStateInfo{}, err
 	}
 	info := tsnetStateInfo{
-		Hostname: opts.Hostname,
-		StateDir: resolved,
-		LockPath: filepath.Join(resolved, remote.StateLockName),
-		TLS:      opts.TLS,
-		State:    "not_configured",
+		Hostname:   opts.Hostname,
+		StateDir:   resolved,
+		LockPath:   filepath.Join(resolved, remote.StateLockName),
+		TLS:        opts.TLS,
+		ControlURL: opts.ControlURL,
+		State:      "not_configured",
 	}
 	if remote.LooksLikeSyncedPath(resolved) {
-		info.Warning = "state directory appears to be under a sync folder"
+		appendTSNetWarning(&info, "state directory appears to be under a sync folder")
+	}
+	if strings.TrimSpace(opts.ControlURL) != "" {
+		appendTSNetWarning(&info, "custom tsnet control URL is experimental; DNS and ListenTLS certificate behavior may differ from Tailscale SaaS")
 	}
 
 	stat, err := os.Stat(resolved)
@@ -275,8 +281,20 @@ func tsnetStateStatusWithDeps(ctx context.Context, opts remote.Options, deps tsn
 	if !stat.IsDir() {
 		return tsnetStateInfo{}, fmt.Errorf("state path is not a directory: %s", resolved)
 	}
+	canonical, err := filepath.EvalSymlinks(resolved)
+	if err == nil && canonical != resolved {
+		resolved = canonical
+		info.StateDir = resolved
+		info.LockPath = filepath.Join(resolved, remote.StateLockName)
+		if remote.LooksLikeSyncedPath(resolved) {
+			appendTSNetWarning(&info, "state directory appears to be under a sync folder")
+		}
+	}
 	info.Exists = true
 	info.NeedsLogin = !hasTSNetAuthState(resolved)
+	if info.NeedsLogin {
+		info.State = "needs_login"
+	}
 
 	certState := deps.readCertState(resolved, opts.TLS)
 	info.CertHealth = certState.Health
@@ -295,36 +313,54 @@ func tsnetStateStatusWithDeps(ctx context.Context, opts remote.Options, deps tsn
 	if lock != nil {
 		_ = lock.Close()
 	}
+	if info.NeedsLogin {
+		return info, nil
+	}
 	info.State = "stopped"
 	return info, nil
 }
 
+func appendTSNetWarning(info *tsnetStateInfo, warning string) {
+	if strings.TrimSpace(warning) == "" || strings.Contains(info.Warning, warning) {
+		return
+	}
+	if info.Warning == "" {
+		info.Warning = warning
+		return
+	}
+	info.Warning += "; " + warning
+}
+
 func applyTSNetHealth(ctx context.Context, opts remote.Options, info *tsnetStateInfo, certState tsnetCertState, deps tsnetStatusDeps) {
-	host := opts.Hostname
+	host := ""
 	if len(certState.Domains) > 0 {
 		host = certState.Domains[0]
+	} else if strings.TrimSpace(opts.ControlURL) == "" {
+		host = opts.Hostname
 	}
-	info.TailnetIPs = deps.lookupIPs(ctx, host)
-	if len(info.TailnetIPs) == 0 && host != opts.Hostname {
+	if host != "" {
+		info.TailnetIPs = deps.lookupIPs(ctx, host)
+	}
+	if len(info.TailnetIPs) == 0 && host != "" && host != opts.Hostname {
 		info.TailnetIPs = deps.lookupIPs(ctx, opts.Hostname)
 	}
 	info.WebURL, info.MCPURL = tsnetStatusURLs(opts, host)
 
 	if info.WebURL != "" {
-		probe := probeTSNetStatusURL(ctx, opts, deps, info.WebURL, host, info.TailnetIPs)
+		probe := probeTSNetStatusURL(ctx, opts, deps, info.WebURL, host, info.TailnetIPs, tsnetProbeWeb)
 		if !probe.Reachable && len(probe.CertDNSNames) > 0 {
 			info.WebURL, info.MCPURL = tsnetStatusURLs(opts, probe.CertDNSNames[0])
-			probe = probeTSNetStatusURL(ctx, opts, deps, info.WebURL, probe.CertDNSNames[0], info.TailnetIPs)
+			probe = probeTSNetStatusURL(ctx, opts, deps, info.WebURL, probe.CertDNSNames[0], info.TailnetIPs, tsnetProbeWeb)
 		}
 		info.WebReachable = probe.Reachable
 		info.WebError = probe.Error
 		mergeProbeCert(info, probe)
 	}
 	if info.MCPURL != "" {
-		probe := probeTSNetStatusURL(ctx, opts, deps, info.MCPURL, host, info.TailnetIPs)
+		probe := probeTSNetStatusURL(ctx, opts, deps, info.MCPURL, host, info.TailnetIPs, tsnetProbeMCP)
 		if !probe.Reachable && len(probe.CertDNSNames) > 0 {
 			info.WebURL, info.MCPURL = tsnetStatusURLs(opts, probe.CertDNSNames[0])
-			probe = probeTSNetStatusURL(ctx, opts, deps, info.MCPURL, probe.CertDNSNames[0], info.TailnetIPs)
+			probe = probeTSNetStatusURL(ctx, opts, deps, info.MCPURL, probe.CertDNSNames[0], info.TailnetIPs, tsnetProbeMCP)
 		}
 		info.MCPReachable = probe.Reachable
 		info.MCPError = probe.Error
@@ -344,8 +380,15 @@ func applyTSNetHealth(ctx context.Context, opts remote.Options, info *tsnetState
 	}
 }
 
-func probeTSNetStatusURL(ctx context.Context, opts remote.Options, deps tsnetStatusDeps, rawURL string, certHost string, ipFallbacks []string) tsnetEndpointProbe {
-	probe := deps.probeEndpoint(ctx, rawURL, "")
+type tsnetProbeKind string
+
+const (
+	tsnetProbeWeb tsnetProbeKind = "web"
+	tsnetProbeMCP tsnetProbeKind = "mcp"
+)
+
+func probeTSNetStatusURL(ctx context.Context, opts remote.Options, deps tsnetStatusDeps, rawURL string, certHost string, ipFallbacks []string, kind tsnetProbeKind) tsnetEndpointProbe {
+	probe := classifyTSNetProbe(kind, deps.probeEndpoint(ctx, rawURL, ""))
 	if probe.Reachable || !opts.TLS || certHost == "" || certHost == opts.Hostname {
 		if probe.Reachable || len(ipFallbacks) == 0 {
 			return probe
@@ -354,7 +397,7 @@ func probeTSNetStatusURL(ctx context.Context, opts remote.Options, deps tsnetSta
 	if opts.TLS && certHost != "" && certHost != opts.Hostname {
 		alternateURL := replaceURLHost(rawURL, opts.Hostname)
 		if alternateURL != rawURL {
-			alternateProbe := deps.probeEndpoint(ctx, alternateURL, certHost)
+			alternateProbe := classifyTSNetProbe(kind, deps.probeEndpoint(ctx, alternateURL, certHost))
 			if alternateProbe.Reachable {
 				alternateProbe.EffectiveURL = rawURL
 				return alternateProbe
@@ -371,12 +414,30 @@ func probeTSNetStatusURL(ctx context.Context, opts remote.Options, deps tsnetSta
 		if serverName == "" {
 			serverName = opts.Hostname
 		}
-		ipProbe := deps.probeEndpoint(ctx, ipURL, serverName)
+		ipProbe := classifyTSNetProbe(kind, deps.probeEndpoint(ctx, ipURL, serverName))
 		if ipProbe.Reachable {
 			ipProbe.EffectiveURL = rawURL
 			return ipProbe
 		}
 		mergeProbeError(&probe, ipURL, serverName, ipProbe)
+	}
+	return probe
+}
+
+func classifyTSNetProbe(kind tsnetProbeKind, probe tsnetEndpointProbe) tsnetEndpointProbe {
+	if probe.StatusCode == 0 {
+		return probe
+	}
+	switch kind {
+	case tsnetProbeWeb:
+		probe.Reachable = probe.StatusCode >= 200 && probe.StatusCode < 400
+	case tsnetProbeMCP:
+		probe.Reachable = probe.StatusCode == http.StatusOK || probe.StatusCode == http.StatusMethodNotAllowed
+	default:
+		probe.Reachable = probe.StatusCode < 500
+	}
+	if !probe.Reachable && probe.Error == "" {
+		probe.Error = fmt.Sprintf("unexpected status %d", probe.StatusCode)
 	}
 	return probe
 }
@@ -423,6 +484,9 @@ func mergeProbeCert(info *tsnetStateInfo, probe tsnetEndpointProbe) {
 
 func tsnetStatusURLs(opts remote.Options, host string) (string, string) {
 	if strings.TrimSpace(host) == "" {
+		if strings.TrimSpace(opts.ControlURL) != "" {
+			return "", ""
+		}
 		host = opts.Hostname
 	}
 	scheme := "https"
@@ -669,21 +733,81 @@ func certHealthForMissingState(tlsEnabled bool) string {
 	return "missing"
 }
 
-func applyTSNetStateFlagOverrides(cmd *cobra.Command, dataDir string, opts *remote.Options, hostname string, stateDir string) {
+type tsnetStateFlags struct {
+	webEnabled bool
+	mcpEnabled bool
+	mcpPath    string
+	hostname   string
+	stateDir   string
+	listen     string
+	tlsEnabled bool
+	controlURL string
+}
+
+func defaultTSNetStateFlags() tsnetStateFlags {
+	return tsnetStateFlags{
+		webEnabled: true,
+		mcpEnabled: true,
+		mcpPath:    remote.DefaultMCPPath,
+		tlsEnabled: true,
+	}
+}
+
+func addTSNetStateFlags(cmd *cobra.Command, flags *tsnetStateFlags) {
+	cmd.Flags().BoolVar(&flags.webEnabled, "web", true, "Configured remote web surface")
+	cmd.Flags().BoolVar(&flags.mcpEnabled, "mcp", true, "Configured remote MCP surface")
+	cmd.Flags().StringVar(&flags.mcpPath, "mcp-path", remote.DefaultMCPPath, "Remote MCP endpoint path")
+	cmd.Flags().StringVar(&flags.hostname, "tsnet-hostname", "", "Stable tailnet machine name used to derive the default state directory")
+	cmd.Flags().StringVar(&flags.stateDir, "tsnet-state-dir", "", "Durable tsnet state directory")
+	cmd.Flags().StringVar(&flags.listen, "tsnet-listen", "", "Tailnet listen address")
+	cmd.Flags().BoolVar(&flags.tlsEnabled, "tsnet-tls", true, "Use Tailscale HTTPS via ListenTLS")
+	cmd.Flags().StringVar(&flags.controlURL, "tsnet-control-url", "", "Experimental alternate Tailscale control server URL")
+}
+
+func applyTSNetStateFlagOverrides(cmd *cobra.Command, dataDir string, opts *remote.Options, flags tsnetStateFlags) error {
 	changed := cmd.Flags().Changed
+	if changed("web") {
+		opts.Web = flags.webEnabled
+	}
+	if changed("mcp") {
+		opts.MCP = flags.mcpEnabled
+	}
+	if changed("mcp-path") {
+		opts.MCPPath = flags.mcpPath
+	}
 	if changed("tsnet-hostname") {
-		opts.Hostname = hostname
+		opts.Hostname = flags.hostname
 		if !changed("tsnet-state-dir") {
 			opts.StateDir = filepath.Join(dataDir, "tsnet", opts.Hostname)
 		}
 	}
 	if changed("tsnet-state-dir") {
-		opts.StateDir = stateDir
+		opts.StateDir = flags.stateDir
 	}
+	if changed("tsnet-listen") {
+		opts.Listen = flags.listen
+	}
+	if changed("tsnet-tls") {
+		opts.TLS = flags.tlsEnabled
+		if !changed("tsnet-listen") {
+			opts.Listen = ""
+		}
+	}
+	if changed("tsnet-control-url") {
+		opts.ControlURL = flags.controlURL
+	}
+	finalizeRemoteServeDefaults(dataDir, opts)
+	cleaned, err := remote.ValidateMCPPath(opts.MCPPath)
+	if err != nil {
+		return err
+	}
+	opts.MCPPath = cleaned
+	return nil
 }
 
-func confirmTSNetReset(in io.Reader, out io.Writer, stateDir string) (bool, error) {
+func confirmTSNetReset(in io.Reader, out io.Writer, hostname string, stateDir string) (bool, error) {
 	_, _ = fmt.Fprintf(out, "Remove tsnet state directory?\n")
+	_, _ = fmt.Fprintf(out, "Hostname: %s\n", hostname)
 	_, _ = fmt.Fprintf(out, "State dir: %s\n", stateDir)
 	_, _ = fmt.Fprintf(out, "This will require dbrain to authenticate with Tailscale again.\n")
 	_, _ = fmt.Fprintf(out, "Type 'reset' to continue: ")

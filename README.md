@@ -512,12 +512,19 @@ Important flags:
 ### `dbrain tsnet status`
 
 Prints the resolved tsnet hostname, state directory, lock path, local state,
-and active health using the same config/env/flag resolution as `serve remote`.
-When a running `dbrain` process holds the state lock, status probes the
-configured web and MCP URLs by default and reports `running`, `reachable`,
-`web_reachable`, `mcp_reachable`, `cert_health`, and `needs_login`. If MagicDNS
-lookup is unavailable to Go, status can use local Tailscale peer status as a
-best-effort tailnet IP fallback while preserving TLS certificate validation.
+control URL, and active health using the same config/env/flag resolution as
+`serve remote`. Status accepts the same target-shaping flags that affect
+health output, including `--web`, `--mcp`, `--mcp-path`, `--tsnet-listen`,
+`--tsnet-tls`, and `--tsnet-control-url`.
+
+When a running `dbrain` process holds the state lock, status probes only the
+configured web and MCP surfaces. Web probes expect `2xx`/`3xx`; MCP probes
+accept `200` or `405` because browser-style `GET` may be rejected while
+JSON-RPC `POST` is healthy. It reports `running`, `reachable`,
+`web_reachable`, `mcp_reachable`, `cert_health`, `needs_login`, and
+`control_url`. If MagicDNS lookup is unavailable to Go, status can use local
+Tailscale peer status as a best-effort tailnet IP fallback while preserving TLS
+certificate validation.
 
 ```sh
 dbrain tsnet status
@@ -527,7 +534,9 @@ dbrain tsnet status --json
 ### `dbrain tsnet reset`
 
 Removes the resolved tsnet state directory after confirmation. It refuses to
-run if another `dbrain` process holds the state lock.
+run if another `dbrain` process holds the state lock. Interactive reset prints
+the resolved hostname and state directory and requires typing `reset`; use
+`--yes` only for scripts.
 
 ```sh
 dbrain tsnet reset

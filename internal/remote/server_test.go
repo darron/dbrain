@@ -86,6 +86,20 @@ func TestRemoteURLs(t *testing.T) {
 	if result.MCPURL != "http://dbrain.tailnet.ts.net/brain" {
 		t.Fatalf("MCPURL = %q", result.MCPURL)
 	}
+
+	status = &ipnstate.Status{CertDomains: []string{"dbrain.example.ts.net."}}
+	result = URLs(status, Options{Web: true, MCP: true, MCPPath: "/mcp", TLS: true, Listen: ":8443"})
+	if result.WebURL != "https://dbrain.example.ts.net:8443/" {
+		t.Fatalf("non-default WebURL = %q", result.WebURL)
+	}
+	if result.MCPURL != "https://dbrain.example.ts.net:8443/mcp" {
+		t.Fatalf("non-default MCPURL = %q", result.MCPURL)
+	}
+
+	result = URLs(&ipnstate.Status{}, Options{Web: true, MCP: true, MCPPath: "/mcp", TLS: true, ControlURL: "https://control.example"})
+	if result.WebURL != "" || result.MCPURL != "" {
+		t.Fatalf("custom control without status host should not synthesize URLs: %#v", result)
+	}
 }
 
 func TestWhoIsLabelPrefersUserThenNodeThenFallback(t *testing.T) {
@@ -159,6 +173,35 @@ func TestIdentityLoggerCachesWhoIsByRemoteHost(t *testing.T) {
 
 	if calls != 1 {
 		t.Fatalf("WhoIs calls = %d, want 1", calls)
+	}
+}
+
+func TestIdentityLoggerDebouncesWhoIsFailures(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	calls := 0
+	handler := identityLogger(fakeWhoIsClient{
+		err:   errors.New("whois unavailable"),
+		calls: &calls,
+	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), &out)
+
+	for _, remoteAddr := range []string{"100.64.0.1:1111", "100.64.0.1:2222"} {
+		req, err := http.NewRequest(http.MethodGet, "/mcp", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.RemoteAddr = remoteAddr
+		handler.ServeHTTP(noopResponseWriter{}, req)
+	}
+
+	if calls != 2 {
+		t.Fatalf("WhoIs calls = %d, want 2", calls)
+	}
+	if strings.Count(out.String(), "WARNING tsnet WhoIs failed") != 1 {
+		t.Fatalf("expected one debounced WhoIs warning, got %q", out.String())
 	}
 }
 
