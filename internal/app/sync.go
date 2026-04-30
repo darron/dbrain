@@ -195,10 +195,10 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Timeout for summarize-backed extraction and summarization stages")
 	cmd.Flags().BoolVar(&archiveMedia, "archive-media", false, "Upload finalized media to configured S3-compatible storage and prune local copies at the end of sync")
 	cmd.Flags().IntVar(&archiveMediaLimit, "archive-media-limit", 5000, "Maximum finalized media assets to archive at the end of sync")
-	cmd.Flags().IntVar(&categorizeLimit, "categorize-limit", 0, "Maximum uncategorized items to categorize at the end of sync; 0 means all queued items")
-	cmd.Flags().IntVar(&categorizeConcurrency, "categorize-concurrency", 2, "Number of concurrent item categorization requests")
+	cmd.Flags().IntVar(&categorizeLimit, "categorize-limit", 0, "Maximum uncategorized items and sources to categorize per record type at the end of sync; 0 means all queued records")
+	cmd.Flags().IntVar(&categorizeConcurrency, "categorize-concurrency", 2, "Number of concurrent categorization requests")
 	cmd.Flags().StringVar(&categorizeModel, "categorize-model", "", "Categorization model override; defaults to DBRAIN_CATEGORIZE_MODEL or the categorizer default")
-	cmd.Flags().DurationVar(&categorizeTimeout, "categorize-timeout", 90*time.Second, "Per-item categorization request timeout")
+	cmd.Flags().DurationVar(&categorizeTimeout, "categorize-timeout", 90*time.Second, "Per-record categorization request timeout")
 	cmd.Flags().BoolVar(&categorizeImages, "categorize-images", true, "Embed item photos as base64 for vision-capable categorization models; use --categorize-images=false to disable")
 	cmd.Flags().BoolVar(&skipXBookmarks, "skip-x-bookmarks", false, "Skip direct X bookmark import")
 	cmd.Flags().BoolVar(&skipX, "skip-x", false, "Skip X hydration")
@@ -208,7 +208,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&skipGitHub, "skip-github", false, "Skip GitHub stars import")
 	cmd.Flags().BoolVar(&skipYouTube, "skip-youtube", false, "Skip YouTube signal import")
 	cmd.Flags().BoolVar(&skipSources, "skip-sources", false, "Skip the final source backlog worker stage")
-	cmd.Flags().BoolVar(&skipCategorize, "skip-categorize", false, "Skip final item categorization")
+	cmd.Flags().BoolVar(&skipCategorize, "skip-categorize", false, "Skip final item/source categorization")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print sync stats as JSON")
 
 	return cmd
@@ -290,7 +290,9 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 	}
 	if stats.Categorize != nil {
 		s := stats.Categorize.Stats
-		rows = append(rows, []string{"Categorize", stats.Categorize.Duration.String(), fmt.Sprintf("queued=%d applied=%d", s.Queued, s.Applied), fmt.Sprintf("succeeded=%d skipped=%d", s.Succeeded, s.Skipped), strconv.Itoa(s.Errors)})
+		items := stats.Categorize.ItemStats
+		sources := stats.Categorize.SourceStats
+		rows = append(rows, []string{"Categorize", stats.Categorize.Duration.String(), fmt.Sprintf("items=%d/%d sources=%d/%d", items.Applied, items.Queued, sources.Applied, sources.Queued), fmt.Sprintf("succeeded=%d skipped=%d", s.Succeeded, s.Skipped), strconv.Itoa(s.Errors)})
 	}
 	if stats.MediaArchive != nil {
 		s := stats.MediaArchive.Stats

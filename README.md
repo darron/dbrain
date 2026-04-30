@@ -387,12 +387,15 @@ dbrain import x-bookmarks --limit 25
 Runs the regular incremental refresh pipeline in one command: direct X bookmark
 import, X hydration, X media audio transcription, X photo OCR, tweet-link
 discovery/enrichment, GitHub stars import, YouTube import, and an optional
-source-backlog worker batch. It then categorizes uncategorized items with the
-same item categorizer used by `dbrain categorize batch`, unless
-`--skip-categorize` is passed. If enabled, the media archive stage runs after
-categorization so image categorization can still use local photo files before
-they are uploaded/pruned. Image categorization is enabled by default; use
-`--categorize-images=false` to disable it for text-only models.
+source-backlog worker batch. It then categorizes uncategorized items and linked
+sources with the same categorizer used by `dbrain categorize batch` and
+`dbrain categorize sources`, unless `--skip-categorize` is passed. If enabled,
+the media archive stage runs after categorization so image categorization can
+still use local photo files before they are uploaded/pruned. Image
+categorization is enabled for items by default; use `--categorize-images=false`
+to disable it for text-only models. `--categorize-limit` is applied separately
+to items and sources, so `--categorize-limit 25` can process up to 25 item rows
+and 25 source rows.
 
 The X media and X photo OCR stages use the same X batch limit as `hydrate x`
 (`--x-limit`). In the default configuration this combines the requirements of
@@ -847,8 +850,8 @@ to re-categorize everything. `--limit` and `--concurrency` control throughput.
 Use `--apply` to save results and `--json` for structured output. Saved
 categorizer tags are merged with existing `user_tags` without duplicate
 entries; existing tags are not overwritten. `dbrain sync all` runs this same
-apply path at the end of the sync pipeline unless `--skip-categorize` is
-passed.
+apply path for item rows at the end of the sync pipeline unless
+`--skip-categorize` is passed.
 
 ```sh
 dbrain categorize batch --limit 50 --concurrency 4 --model ollama/qwen2.5:7b-instruct --apply
@@ -874,7 +877,8 @@ Batch-categorizes linked sources. By default only sources with empty
 `user_tags` are selected; use `--force` to re-categorize existing source tags.
 This is useful when you want a source-centric view of linked articles,
 repositories, papers, and videos rather than only the tags on the saved item
-that referenced them.
+that referenced them. `dbrain sync all` runs this same apply path for source
+rows at the end of the sync pipeline unless `--skip-categorize` is passed.
 
 ```sh
 dbrain categorize sources --limit 50 --concurrency 2 --apply

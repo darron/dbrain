@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Sync Source Categorization (2026-04-30)
+
+- **Sync pipeline**: `dbrain sync all` now categorizes uncategorized linked sources as well as items before the media archive stage.
+- **Visibility**: Sync progress, debug logs, JSON stats, and the summary table now separate item and source categorization counts while preserving aggregate categorize totals.
+- **Docs**: Updated sync and categorization command docs to describe the source apply path.
+- **Location**: `internal/syncjob/`, `internal/app/sync.go`, `README.md`
+
 ### Source-Level Tags And Categorization (2026-04-29)
 
 - **Source tags**: Added first-class `sources.user_tags` so linked articles, repos, videos, and papers can be categorized independently from the saved items that reference them.

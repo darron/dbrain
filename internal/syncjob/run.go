@@ -24,16 +24,17 @@ import (
 )
 
 var (
-	runXBookmarkImport = xapi.RunBookmarks
-	runXHydrate        = xapi.Run
-	runXMediaStage     = xmediatranscribe.Run
-	runXPhotoOCRStage  = xphotoocr.Run
-	runLinkExtract     = linkextract.Run
-	runGitHubImport    = githubimport.Run
-	runYouTubeImport   = youtubeimport.Run
-	runSourceWorker    = worker.RunSources
-	runMediaArchive    = mediaarchive.Run
-	runItemCategorize  = itemcategorize.Batch
+	runXBookmarkImport  = xapi.RunBookmarks
+	runXHydrate         = xapi.Run
+	runXMediaStage      = xmediatranscribe.Run
+	runXPhotoOCRStage   = xphotoocr.Run
+	runLinkExtract      = linkextract.Run
+	runGitHubImport     = githubimport.Run
+	runYouTubeImport    = youtubeimport.Run
+	runSourceWorker     = worker.RunSources
+	runMediaArchive     = mediaarchive.Run
+	runItemCategorize   = itemcategorize.Batch
+	runSourceCategorize = itemcategorize.BatchSources
 )
 
 const maxXQuoteDrainPasses = 8
@@ -164,8 +165,10 @@ type MediaArchiveStage struct {
 }
 
 type CategorizeStage struct {
-	Duration time.Duration        `json:"duration"`
-	Stats    itemcategorize.Stats `json:"stats"`
+	Duration    time.Duration        `json:"duration"`
+	Stats       itemcategorize.Stats `json:"stats"`
+	ItemStats   itemcategorize.Stats `json:"item_stats"`
+	SourceStats itemcategorize.Stats `json:"source_stats"`
 }
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
@@ -497,12 +500,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 
 	if opts.CategorizeEnabled {
-		progressf(opts.Progress, "==> categorize items\n")
+		progressf(opts.Progress, "==> categorize items and sources\n")
 		start := time.Now()
-		var categorizeProcessed atomic.Int64
-		var categorizeErrors atomic.Int64
-		var categorizeTotal atomic.Int64
-		categorizeStats, _, err := runItemCategorize(ctx, cfg, st, itemcategorize.Options{
+		var itemProcessed atomic.Int64
+		var itemErrors atomic.Int64
+		var itemTotal atomic.Int64
+		itemStats, _, err := runItemCategorize(ctx, cfg, st, itemcategorize.Options{
 			Model:           opts.CategorizeModel,
 			Timeout:         opts.CategorizeTimeout,
 			Concurrency:     opts.CategorizeConcurrency,
@@ -516,7 +519,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			S3SecretKey:     opts.ArchiveSecretKey,
 			OpenRouterTitle: "dbrain sync categorize",
 			OnStart: func(total int) {
-				categorizeTotal.Store(int64(total))
+				itemTotal.Store(int64(total))
 				if opts.Logger != nil {
 					opts.Logger.Debug("item categorization candidates loaded",
 						"processed", 0,
@@ -530,8 +533,8 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				}
 			},
 			OnResult: func(ir itemcategorize.ItemResult) {
-				processed := categorizeProcessed.Add(1)
-				total := categorizeTotal.Load()
+				processed := itemProcessed.Add(1)
+				total := itemTotal.Load()
 				remaining := total - processed
 				if remaining < 0 {
 					remaining = 0
@@ -540,7 +543,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 					return
 				}
 				if ir.Error != "" {
-					errors := categorizeErrors.Add(1)
+					errors := itemErrors.Add(1)
 					opts.Logger.Debug("item categorization failed",
 						"source_key", ir.Item.SourceKey,
 						"item_id", ir.Item.ID,
@@ -558,18 +561,89 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 					"processed", processed,
 					"total", total,
 					"remaining", remaining,
-					"errors", categorizeErrors.Load(),
+					"errors", itemErrors.Load(),
 					"tags", strings.Join(ir.Result.Tags, ","),
 					"categories", strings.Join(ir.Result.Categories, ","),
 				)
 			},
 		})
-		stage := &CategorizeStage{Duration: time.Since(start), Stats: categorizeStats}
-		stats.Categorize = stage
 		if err != nil {
 			return finishStats(stats), fmt.Errorf("categorize items: %w", err)
 		}
-		progressf(opts.Progress, "Item categorization complete: queued=%d succeeded=%d applied=%d skipped=%d errors=%d (%s)\n", categorizeStats.Queued, categorizeStats.Succeeded, categorizeStats.Applied, categorizeStats.Skipped, categorizeStats.Errors, stage.Duration)
+
+		var sourceProcessed atomic.Int64
+		var sourceErrors atomic.Int64
+		var sourceTotal atomic.Int64
+		sourceStats, _, err := runSourceCategorize(ctx, cfg, st, itemcategorize.Options{
+			Model:           opts.CategorizeModel,
+			Timeout:         opts.CategorizeTimeout,
+			Concurrency:     opts.CategorizeConcurrency,
+			Limit:           opts.CategorizeLimit,
+			Force:           opts.Force,
+			Apply:           true,
+			OpenRouterTitle: "dbrain sync categorize",
+			OnStart: func(total int) {
+				sourceTotal.Store(int64(total))
+				if opts.Logger != nil {
+					opts.Logger.Debug("source categorization candidates loaded",
+						"processed", 0,
+						"total", total,
+						"remaining", total,
+						"sources", total,
+						"limit", opts.CategorizeLimit,
+						"force", opts.Force,
+						"concurrency", opts.CategorizeConcurrency,
+					)
+				}
+			},
+			OnSourceResult: func(sr itemcategorize.SourceResult) {
+				processed := sourceProcessed.Add(1)
+				total := sourceTotal.Load()
+				remaining := total - processed
+				if remaining < 0 {
+					remaining = 0
+				}
+				if opts.Logger == nil {
+					return
+				}
+				if sr.Error != "" {
+					errors := sourceErrors.Add(1)
+					opts.Logger.Debug("source categorization failed",
+						"source_key", sr.Source.SourceKey,
+						"source_id", sr.Source.ID,
+						"processed", processed,
+						"total", total,
+						"remaining", remaining,
+						"errors", errors,
+						"error", sr.Error,
+					)
+					return
+				}
+				opts.Logger.Debug("source categorized",
+					"source_key", sr.Source.SourceKey,
+					"source_id", sr.Source.ID,
+					"processed", processed,
+					"total", total,
+					"remaining", remaining,
+					"errors", sourceErrors.Load(),
+					"tags", strings.Join(sr.Result.Tags, ","),
+					"categories", strings.Join(sr.Result.Categories, ","),
+				)
+			},
+		})
+		if err != nil {
+			return finishStats(stats), fmt.Errorf("categorize sources: %w", err)
+		}
+
+		categorizeStats := mergeCategorizeStats(itemStats, sourceStats)
+		stage := &CategorizeStage{
+			Duration:    time.Since(start),
+			Stats:       categorizeStats,
+			ItemStats:   itemStats,
+			SourceStats: sourceStats,
+		}
+		stats.Categorize = stage
+		progressf(opts.Progress, "Categorization complete: item_queued=%d item_applied=%d source_queued=%d source_applied=%d succeeded=%d skipped=%d errors=%d (%s)\n", itemStats.Queued, itemStats.Applied, sourceStats.Queued, sourceStats.Applied, categorizeStats.Succeeded, categorizeStats.Skipped, categorizeStats.Errors, stage.Duration)
 	}
 
 	if opts.ArchiveMediaEnabled {
@@ -692,6 +766,18 @@ func mergeLinkStats(dst *linkextract.Stats, src linkextract.Stats) {
 	dst.SourcesRendered += src.SourcesRendered
 	dst.SourcesUnchanged += src.SourcesUnchanged
 	dst.Errors += src.Errors
+}
+
+func mergeCategorizeStats(values ...itemcategorize.Stats) itemcategorize.Stats {
+	var merged itemcategorize.Stats
+	for _, value := range values {
+		merged.Queued += value.Queued
+		merged.Succeeded += value.Succeeded
+		merged.Applied += value.Applied
+		merged.Skipped += value.Skipped
+		merged.Errors += value.Errors
+	}
+	return merged
 }
 
 func shouldSettleXFrontier(opts Options) bool {

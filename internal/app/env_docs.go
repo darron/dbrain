@@ -15,7 +15,7 @@ func configEnvSpecs() []envSpec {
 		{Key: "GITHUB_TOKEN", ConfigPath: "github.token or env.GITHUB_TOKEN", Default: "", Description: "GitHub API token for importing stars."},
 		{Key: "DBRAIN_SUMMARY_MODEL / SUMMARIZE_MODEL", ConfigPath: "summary.model", Default: "", Description: "Default model for summarize-backed source and answer synthesis."},
 		{Key: "DBRAIN_SUMMARY_LANGUAGE / DBRAIN_OUTPUT_LANGUAGE / SUMMARIZE_LANGUAGE", ConfigPath: "summary.language", Default: "en", Description: "Output language for summaries; use auto to match source language."},
-		{Key: "DBRAIN_CATEGORIZE_MODEL", ConfigPath: "categorize.model", Default: "openrouter/google/gemini-2.5-flash", Description: "Default LLM model for item categorization."},
+		{Key: "DBRAIN_CATEGORIZE_MODEL", ConfigPath: "categorize.model", Default: "openrouter/google/gemini-2.5-flash", Description: "Default LLM model for item/source categorization."},
 		{Key: "DBRAIN_OCR_MODEL / DBRAIN_X_PHOTO_OCR_MODEL", ConfigPath: "ocr.model", Default: "openrouter/google/gemini-3.1-flash-lite-preview", Description: "Default model for X photo OCR."},
 		{Key: "DBRAIN_OLLAMA_BASE_URL / OLLAMA_BASE_URL / OLLAMA_HOST", ConfigPath: "ollama.base_url", Default: "http://127.0.0.1:11434", Description: "Ollama endpoint for local model calls."},
 		{Key: "DBRAIN_OLLAMA_API_KEY / OLLAMA_API_KEY", ConfigPath: "ollama.api_key", Default: "ollama", Description: "API key label used for Ollama-compatible local calls."},

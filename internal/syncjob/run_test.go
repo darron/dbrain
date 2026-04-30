@@ -332,9 +332,11 @@ func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 
 	origArchive := runMediaArchive
 	origCategorize := runItemCategorize
+	origSourceCategorize := runSourceCategorize
 	t.Cleanup(func() {
 		runMediaArchive = origArchive
 		runItemCategorize = origCategorize
+		runSourceCategorize = origSourceCategorize
 	})
 
 	var calls []string
@@ -344,7 +346,7 @@ func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 		return mediaarchive.Stats{Candidates: 1, Uploaded: 1, Archived: 1}, nil
 	}
 	runItemCategorize = func(_ context.Context, _ config.Config, _ *store.Store, opts itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.ItemResult, error) {
-		calls = append(calls, "categorize")
+		calls = append(calls, "categorize-items")
 		if !opts.Apply {
 			t.Fatal("expected sync categorization to apply tags")
 		}
@@ -373,6 +375,39 @@ func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 		})
 		return itemcategorize.Stats{Queued: 2, Succeeded: 2, Applied: 2}, nil, nil
 	}
+	runSourceCategorize = func(_ context.Context, _ config.Config, _ *store.Store, opts itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.SourceResult, error) {
+		calls = append(calls, "categorize-sources")
+		if !opts.Apply {
+			t.Fatal("expected sync source categorization to apply tags")
+		}
+		if opts.Force {
+			t.Fatal("did not expect forced source categorization")
+		}
+		if opts.Limit != 12 {
+			t.Fatalf("expected source categorize limit 12, got %d", opts.Limit)
+		}
+		if opts.Concurrency != 3 {
+			t.Fatalf("expected source categorize concurrency 3, got %d", opts.Concurrency)
+		}
+		if opts.IncludeImages {
+			t.Fatal("did not expect source categorization to request images")
+		}
+		if opts.OnStart == nil {
+			t.Fatal("expected source categorize progress start callback")
+		}
+		if opts.OnSourceResult == nil {
+			t.Fatal("expected source categorize progress result callback")
+		}
+		opts.OnStart(1)
+		opts.OnSourceResult(itemcategorize.SourceResult{
+			Source: model.SourceDocument{ID: 201, SourceKey: "src:201"},
+			Result: itemcategorize.Result{
+				Tags:       []string{"payments"},
+				Categories: []string{"financial-technology"},
+			},
+		})
+		return itemcategorize.Stats{Queued: 1, Succeeded: 1, Applied: 1}, nil, nil
+	}
 
 	var progress bytes.Buffer
 	stats, err := Run(context.Background(), cfg, st, Options{
@@ -386,17 +421,23 @@ func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !slices.Equal(calls, []string{"categorize", "archive"}) {
+	if !slices.Equal(calls, []string{"categorize-items", "categorize-sources", "archive"}) {
 		t.Fatalf("unexpected stage order: %v", calls)
 	}
 	if stats.Categorize == nil {
 		t.Fatal("expected categorize stage stats")
 	}
+	if stats.Categorize.Stats.Queued != 3 || stats.Categorize.Stats.Applied != 3 {
+		t.Fatalf("expected aggregate categorize stats, got %+v", stats.Categorize.Stats)
+	}
+	if stats.Categorize.ItemStats.Queued != 2 || stats.Categorize.SourceStats.Queued != 1 {
+		t.Fatalf("expected item/source categorize stats, got items=%+v sources=%+v", stats.Categorize.ItemStats, stats.Categorize.SourceStats)
+	}
 	output := progress.String()
-	if !bytes.Contains([]byte(output), []byte("==> categorize items")) {
+	if !bytes.Contains([]byte(output), []byte("==> categorize items and sources")) {
 		t.Fatalf("expected progress output to contain categorize stage, got %q", output)
 	}
-	if !bytes.Contains([]byte(output), []byte("Item categorization complete")) {
+	if !bytes.Contains([]byte(output), []byte("Categorization complete")) {
 		t.Fatalf("expected categorize completion output, got %q", output)
 	}
 	logOutput := logs.String()
@@ -405,6 +446,12 @@ func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(logOutput), []byte("item categorized")) {
 		t.Fatalf("expected per-item categorize progress log, got %q", logOutput)
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("source categorization candidates loaded")) {
+		t.Fatalf("expected source categorize candidate progress log, got %q", logOutput)
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("source categorized")) {
+		t.Fatalf("expected per-source categorize progress log, got %q", logOutput)
 	}
 	if !bytes.Contains([]byte(logOutput), []byte("processed=1")) || !bytes.Contains([]byte(logOutput), []byte("total=2")) {
 		t.Fatalf("expected categorize progress counters, got %q", logOutput)
@@ -415,12 +462,18 @@ func TestRunSkipsCategorizeStageWhenDisabled(t *testing.T) {
 	cfg, st := testSyncStore(t)
 
 	origCategorize := runItemCategorize
+	origSourceCategorize := runSourceCategorize
 	t.Cleanup(func() {
 		runItemCategorize = origCategorize
+		runSourceCategorize = origSourceCategorize
 	})
 
 	runItemCategorize = func(context.Context, config.Config, *store.Store, itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.ItemResult, error) {
 		t.Fatal("categorize stage should not be called when disabled")
+		return itemcategorize.Stats{}, nil, nil
+	}
+	runSourceCategorize = func(context.Context, config.Config, *store.Store, itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.SourceResult, error) {
+		t.Fatal("source categorize stage should not be called when disabled")
 		return itemcategorize.Stats{}, nil, nil
 	}
 
