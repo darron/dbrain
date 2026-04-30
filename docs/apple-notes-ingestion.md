@@ -257,7 +257,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 
 The v1 reader is `direct_db`: snapshot Apple's local Notes database, decode
 bodies and attachments, and materialize notes. This avoids AppleScript and is
-best for periodic CLI imports, but it requires Full Disk Access and private
+well-suited to periodic CLI imports, but it requires Full Disk Access and private
 schema ownership.
 
 Write operations such as creating or editing Notes should stay out of scope for
@@ -592,9 +592,11 @@ Suggested first flags:
   Attempt password-protected notes. Default false, and likely ineffective unless
   Notes has them unlocked.
 - `--skip-attachments`
-  Import note bodies but skip attachment file extraction/OCR/PDF processing.
+  Opt out of the default attachment indexing path. Import note bodies and
+  attachment metadata, but skip attachment file extraction/OCR/PDF processing.
 - `--skip-attachment-ocr`
-  Keep attachment metadata and PDF/text extraction, but skip image OCR.
+  Opt out of default image OCR. Keep attachment metadata and PDF/text
+  extraction, but skip image OCR.
 - `--ocr-provider`
   Select the local OCR provider once implemented. Hosted OCR should require
   explicit configuration and should not be the default for Apple Notes.
@@ -681,7 +683,9 @@ Suggested item mapping:
   placeholders, and attachment metadata
 - `note_path`: `items/apple-notes/<year>/<slug-or-hash>.md`
 - `apple_note_tags`: source-scoped Apple Notes hashtags/tags, kept searchable
-  but not promoted into global `user_tags` in v1
+  but not promoted into global `user_tags` in v1. This is in scope for v1 if
+  tag extraction is available from the decoded body/schema; otherwise store an
+  empty set and record the parser limitation.
 - `user_tags`: normal dbrain tags only, not Apple Notes hashtags in v1
 
 The existing item summary, categorization, FTS, search, MCP, web UI, topic, and
@@ -970,6 +974,8 @@ a note-aware prompt:
 - Unit test ignore marker detection in plaintext and HTML-derived text.
 - Unit test source key stability.
 - Unit test content hash stability and change detection.
+- Unit test Apple Notes tag extraction when tags are present, and empty
+  `apple_note_tags` behavior when the parser cannot extract them.
 - Unit test blocked states for locked, smart-folder, offloaded, decode-failed,
   schema-unknown, empty-decoded, and too-large notes.
 - Unit test shared notes are included by default and excluded only when
@@ -1009,6 +1015,8 @@ or reused from public fixtures where licensing allows.
   content when `--forget-excluded` is enabled.
 - Password-protected notes are skipped by default.
 - Shared notes are included by default and can be excluded explicitly.
+- Apple Notes hashtags/tags are stored in `apple_note_tags` when extractable and
+  are not promoted into global `user_tags`.
 - Supported PDFs and images attached to notes are indexed through the existing
   extraction/OCR paths, with raw extracted text kept separate from summaries.
 - Imported notes receive local Apple Notes-specific summaries when summarization
