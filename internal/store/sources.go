@@ -1627,10 +1627,37 @@ func sourceExtractBacklogWhere(now time.Time) (string, []any) {
 	return `(
 		extract_status = ''
 		OR ` + sourceExtractCoverageRepairWhere() + `
-		OR (extract_status = 'error' AND (extract_last_failed_at = '' OR extract_last_failed_at <= ?))
+		OR (
+			extract_status = 'error'
+			AND (
+				extract_last_failed_at = ''
+				OR extract_last_failed_at <= ?
+				OR ` + sourceExtractFinalAttemptWhere() + `
+			)
+		)
 	)`, []any{
 			now.UTC().Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
 		}
+}
+
+func sourceExtractFinalAttemptWhere() string {
+	return `(
+		extract_failure_count > 0
+		AND (
+			(
+				COALESCE(NULLIF(extract_failure_kind, ''), 'unknown') IN ('unknown', 'fetch_failed', 'http_5xx')
+				AND extract_failure_count >= 4
+			)
+			OR (
+				extract_failure_kind IN ('tls_certificate', 'cloudflare_edge', 'connectivity', 'x_article_shell', 'http_access_denied', 'timeout')
+				AND extract_failure_count >= 2
+			)
+			OR (
+				extract_failure_kind IN ('dns_nxdomain', 'unsupported_file')
+				AND extract_failure_count >= 1
+			)
+		)
+	)`
 }
 
 func sourceExtractCoverageRepairWhere() string {
@@ -1707,7 +1734,7 @@ func nextExtractFailureState(current model.SourceDocument, status string, errorT
 
 	count := 1
 	firstFailedAt := now.UTC().Format(time.RFC3339)
-	if isExtractFailureStatus(current.ExtractStatus) && current.ExtractFailureKind == kind {
+	if isExtractFailureStatus(current.ExtractStatus) && current.ExtractFailureCount > 0 {
 		count = current.ExtractFailureCount + 1
 		if !current.ExtractFirstFailedAt.IsZero() {
 			firstFailedAt = current.ExtractFirstFailedAt.UTC().Format(time.RFC3339)

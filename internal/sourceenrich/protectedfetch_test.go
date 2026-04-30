@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,6 +170,184 @@ func TestRunSourceIDsRecoversSucuriProtectedSource(t *testing.T) {
 	}
 	if source.SummaryText != "summary from protected fetch" {
 		t.Fatalf("unexpected summary text: %q", source.SummaryText)
+	}
+}
+
+func TestExtractWaybackArchivedSource(t *testing.T) {
+	t.Parallel()
+
+	var availabilityRequested atomic.Bool
+	var snapshotRequested atomic.Bool
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/wayback/available":
+			availabilityRequested.Store(true)
+			if got := r.URL.Query().Get("url"); got != "https://example.com/missing" {
+				t.Fatalf("unexpected availability url query: %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"archived_snapshots":{"closest":{"available":true,"url":%q,"timestamp":"20260430150000","status":"200"}}}`, server.URL+"/web/20260430150000/https://example.com/missing")
+		case strings.HasPrefix(r.URL.Path, "/web/20260430150000id_/"):
+			snapshotRequested.Store(true)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprint(w, `<!doctype html>
+<html>
+<head>
+  <title>Archived Article</title>
+  <meta property="og:site_name" content="Archived Site">
+</head>
+<body>
+  <article>
+    <h1>Archived Article</h1>
+    <p>Archived article body from Wayback.</p>
+  </article>
+</body>
+</html>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	extract, recovered, err := extractWaybackArchivedSource(context.Background(), "https://example.com/missing", Options{
+		WaybackFallbackEnabled: true,
+		WaybackAvailabilityURL: server.URL + "/wayback/available?url={escaped_url}",
+	})
+	if err != nil {
+		t.Fatalf("extractWaybackArchivedSource: %v", err)
+	}
+	if !recovered {
+		t.Fatal("expected wayback extract to recover content")
+	}
+	if !availabilityRequested.Load() {
+		t.Fatal("expected availability endpoint to be requested")
+	}
+	if !snapshotRequested.Load() {
+		t.Fatal("expected raw snapshot endpoint to be requested")
+	}
+	if extract.Tool != waybackToolName || extract.ToolVersion != waybackToolVersion {
+		t.Fatalf("unexpected tool metadata: %s %s", extract.Tool, extract.ToolVersion)
+	}
+	if extract.Title != "Archived Article" {
+		t.Fatalf("unexpected title: %q", extract.Title)
+	}
+	if !strings.Contains(extract.Content, "Archived article body from Wayback") {
+		t.Fatalf("unexpected content: %q", extract.Content)
+	}
+}
+
+func TestRunSourceIDsUsesWaybackOnFinalFailure(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/wayback/available":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"archived_snapshots":{"closest":{"available":true,"url":%q,"timestamp":"20260430150100","status":"200"}}}`, server.URL+"/web/20260430150100/"+server.URL+"/gone")
+		case strings.HasPrefix(r.URL.Path, "/web/20260430150100id_/"):
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprint(w, `<!doctype html><html><head><title>Recovered</title></head><body><article>Recovered from Wayback cache.</article></body></html>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	sourceURL := server.URL + "/gone"
+	installSourceEnrichWaybackFailureFakeSummarize(t, root, sourceURL)
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "x:test-wayback-final",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-wayback-final",
+		CanonicalURL: "https://x.com/example/status/test-wayback-final",
+		Title:        "wayback final",
+		ContentHash:  "item-hash-wayback-final",
+		NotePath:     vault.NoteRelativePath("x", "2026", "test-wayback-final"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:wayback-final-test",
+		OriginalURL:   sourceURL,
+		CanonicalURL:  sourceURL,
+		NormalizedURL: sourceURL,
+		SourceType:    "web",
+		Domain:        "127.0.0.1",
+		NotePath:      vault.SourceNoteRelativePath("web", "wayback-final-test"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	for i := 0; i < 4; i++ {
+		if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+			Status:      "error",
+			Error:       "run summarize: fetch failed",
+			Tool:        "summarize",
+			ToolVersion: "test",
+		}, ""); err != nil {
+			t.Fatalf("seed source failure %d: %v", i+1, err)
+		}
+	}
+
+	stats, touched, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Limit:                  1,
+		Concurrency:            1,
+		Summarize:              false,
+		WaybackFallbackEnabled: true,
+		WaybackAvailabilityURL: server.URL + "/wayback/available?url={escaped_url}",
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if len(touched) != 1 || touched[0] != link.SourceID {
+		t.Fatalf("unexpected touched ids: %#v", touched)
+	}
+	if stats.SourcesExtracted != 1 || stats.Errors != 0 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if source.ExtractStatus != "ok" {
+		t.Fatalf("expected source recovered, got status=%q error=%q", source.ExtractStatus, source.ExtractError)
+	}
+	if source.ExtractTool != waybackToolName {
+		t.Fatalf("expected wayback tool, got %q", source.ExtractTool)
+	}
+	if !strings.Contains(source.ExtractedText, "Recovered from Wayback cache") {
+		t.Fatalf("unexpected extracted text: %q", source.ExtractedText)
+	}
+	if source.ExtractFailureCount != 0 || source.ExtractFailureKind != "" {
+		t.Fatalf("expected failure counters cleared, got kind=%q count=%d", source.ExtractFailureKind, source.ExtractFailureCount)
 	}
 }
 
@@ -473,6 +652,37 @@ if [ "$last" = "` + sourceURL + `" ]; then
   exit 1
 fi
 printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"Protected Article\nFirst paragraph.\nSecond paragraph."},"summary":"summary from protected fetch"}'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installSourceEnrichWaybackFailureFakeSummarize(t *testing.T, root string, sourceURL string) {
+	t.Helper()
+
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	scriptPath := filepath.Join(binDir, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+if [ "$last" = "` + sourceURL + `" ]; then
+  echo "run summarize: fetch failed" >&2
+  exit 1
+fi
+echo "unexpected input: $last" >&2
+exit 1
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)

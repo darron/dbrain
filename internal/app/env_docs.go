@@ -29,6 +29,8 @@ func configEnvSpecs() []envSpec {
 		{Key: "DBRAIN_OPENROUTER_TITLE / OPENROUTER_X_TITLE", ConfigPath: "openrouter.title", Default: "dbrain", Description: "HTTP title sent to OpenRouter for direct calls."},
 		{Key: "DBRAIN_SOURCE_READER_DOMAINS / DBRAIN_HTTP_READER_DOMAINS", ConfigPath: "source.reader.domains", Default: "canada.ca", Description: "Comma-separated domains routed through the reader/textifier path before summarize."},
 		{Key: "DBRAIN_SOURCE_READER_BASE_URL / DBRAIN_HTTP_READER_BASE_URL", ConfigPath: "source.reader.base_url", Default: "https://r.jina.ai/", Description: "Reader/textifier base URL for difficult domains."},
+		{Key: "DBRAIN_SOURCE_WAYBACK_ENABLED / DBRAIN_WAYBACK_ENABLED", ConfigPath: "source.wayback.enabled", Default: "true", Description: "Use Internet Archive Wayback as a final source extraction fallback before terminalizing repeated failures."},
+		{Key: "DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL / DBRAIN_WAYBACK_AVAILABILITY_URL", ConfigPath: "source.wayback.availability_url", Default: "https://archive.org/wayback/available?url={escaped_url}", Description: "Wayback Availability API URL template used for final source fallback."},
 		{Key: "DBRAIN_TSNET_WEB", ConfigPath: "tsnet.web", Default: "true", Description: "Mount the read/write web UI when using serve remote."},
 		{Key: "DBRAIN_TSNET_MCP", ConfigPath: "tsnet.mcp", Default: "true", Description: "Mount the read-only MCP HTTP endpoint when using serve remote."},
 		{Key: "DBRAIN_TSNET_MCP_PATH", ConfigPath: "tsnet.mcp_path", Default: "/mcp", Description: "Remote MCP endpoint path; must be a clean absolute path."},

@@ -181,6 +181,121 @@ func TestClassifyTerminalExtractErrorMarksUnsupportedFilesDeadImmediately(t *tes
 	}
 }
 
+func TestClassifyTerminalExtractErrorMarksUnknownFailuresDeadAfterFive(t *testing.T) {
+	t.Parallel()
+
+	for name, storedKind := range map[string]string{
+		"unknown": "unknown",
+		"legacy":  "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := model.SourceDocument{
+				ExtractStatus:       "error",
+				ExtractFailureKind:  storedKind,
+				ExtractFailureCount: 4,
+			}
+
+			status, errorText, terminal := classifyTerminalExtractError(source, errors.New("run summarize: unexpected extractor failure"))
+			if !terminal {
+				t.Fatal("expected repeated unknown failures to become terminal")
+			}
+			if status != "dead" {
+				t.Fatalf("expected dead status, got %q", status)
+			}
+			if !strings.Contains(errorText, "5 consecutive unclassified failures") {
+				t.Fatalf("unexpected terminal error text: %q", errorText)
+			}
+		})
+	}
+}
+
+func TestSaveSourceFailureKeepsTerminalSourceTerminal(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-terminal-source",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-terminal-source",
+		CanonicalURL: "https://x.com/example/status/test-terminal-source",
+		Title:        "test terminal source",
+		ContentHash:  "item-hash-terminal-source",
+		NotePath:     "items/x/2026/test-terminal-source.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
+		SourceKey:     "src:test-terminal-source",
+		OriginalURL:   "https://example.invalid/source",
+		CanonicalURL:  "https://example.invalid/source",
+		NormalizedURL: "https://example.invalid/source",
+		SourceType:    "web",
+		Domain:        "example.invalid",
+		NotePath:      "sources/web/test-terminal-source.md",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+		Status:      "dead",
+		Error:       "host does not resolve: example.invalid",
+		Tool:        "summarize",
+		ToolVersion: "test",
+	}, ""); err != nil {
+		t.Fatalf("SaveSourceExtraction dead: %v", err)
+	}
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+
+	if err := saveSourceFailure(context.Background(), st, source, model.ExtractResult{
+		Status:      "error",
+		Error:       "run summarize: fetch failed",
+		Tool:        "summarize",
+		ToolVersion: "test",
+	}, Options{Summarize: false}, "test", ""); err != nil {
+		t.Fatalf("saveSourceFailure: %v", err)
+	}
+
+	updated, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID updated: %v", err)
+	}
+	if updated.ExtractStatus != "dead" {
+		t.Fatalf("expected terminal status to be preserved, got %q", updated.ExtractStatus)
+	}
+	if updated.ExtractFailureKind != "fetch_failed" {
+		t.Fatalf("expected latest failure kind to be stored, got %q", updated.ExtractFailureKind)
+	}
+	if updated.ExtractFailureCount != 2 {
+		t.Fatalf("expected consecutive failure count 2, got %d", updated.ExtractFailureCount)
+	}
+}
+
 func TestRejectExtractFailureFlagsXArticleErrorShellAsRetryableError(t *testing.T) {
 	t.Parallel()
 

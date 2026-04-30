@@ -1305,6 +1305,29 @@ func TestSaveSourceExtractionTracksFailureCountsAndResetsOnSuccess(t *testing.T)
 	}
 
 	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
+		Status:      "dead",
+		Error:       "marking source dead after 3 consecutive http access denied failures: Failed to fetch HTML document (status 403)",
+		Tool:        "summarize",
+		ToolVersion: "test-1.0.0",
+	}, ""); err != nil {
+		t.Fatalf("terminal SaveSourceExtraction error: %v", err)
+	}
+
+	terminalFailure, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("get source after terminal failure: %v", err)
+	}
+	if terminalFailure.ExtractFailureKind != "http_access_denied" {
+		t.Fatalf("expected latest classified failure kind, got %q", terminalFailure.ExtractFailureKind)
+	}
+	if terminalFailure.ExtractFailureCount != 3 {
+		t.Fatalf("expected total consecutive failure count 3, got %d", terminalFailure.ExtractFailureCount)
+	}
+	if !terminalFailure.ExtractFirstFailedAt.Equal(firstFailure.ExtractFirstFailedAt) {
+		t.Fatalf("expected first failure timestamp to stay fixed through kind change, got %s -> %s", firstFailure.ExtractFirstFailedAt, terminalFailure.ExtractFirstFailedAt)
+	}
+
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
 		CanonicalURL: "https://example.com/post",
 		FinalURL:     "https://example.com/post",
 		Title:        "Example",
@@ -1343,13 +1366,14 @@ func TestListSourcesForEnrichmentSkipsRecentErrorsAndOrdersOldRetries(t *testing
 	insertTestSourceRow(t, st, "src:recent-error", "https://example.com/recent", "error", "connectivity", 1, recentFailure, recentFailure)
 	insertTestSourceRow(t, st, "src:retry-low", "https://example.com/retry-low", "error", "tls_certificate", 1, oldFailure, oldFailure)
 	insertTestSourceRow(t, st, "src:retry-high", "https://example.com/retry-high", "error", "tls_certificate", 3, oldFailure, oldFailure)
+	insertTestSourceRow(t, st, "src:recent-final", "https://example.com/recent-final", "error", "unknown", 4, recentFailure, recentFailure)
 
 	sources, err := st.ListSourcesForEnrichment(ctx, 10, false, false, "", "", "")
 	if err != nil {
 		t.Fatalf("ListSourcesForEnrichment: %v", err)
 	}
-	if len(sources) != 3 {
-		t.Fatalf("expected 3 queued sources, got %d", len(sources))
+	if len(sources) != 4 {
+		t.Fatalf("expected 4 queued sources, got %d", len(sources))
 	}
 	if sources[0].SourceKey != "src:fresh" {
 		t.Fatalf("expected fresh source first, got %s", sources[0].SourceKey)
@@ -1359,6 +1383,9 @@ func TestListSourcesForEnrichmentSkipsRecentErrorsAndOrdersOldRetries(t *testing
 	}
 	if sources[2].SourceKey != "src:retry-high" {
 		t.Fatalf("expected high retry count last, got %s", sources[2].SourceKey)
+	}
+	if sources[3].SourceKey != "src:recent-final" {
+		t.Fatalf("expected recent final-attempt source last, got %s", sources[3].SourceKey)
 	}
 }
 

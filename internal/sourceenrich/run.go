@@ -72,6 +72,8 @@ type Options struct {
 	FallbackExtractFor        func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error)
 	HTTPReaderFallbackDomains []string
 	HTTPReaderBaseURL         string
+	WaybackFallbackEnabled    bool
+	WaybackAvailabilityURL    string
 	Binary                    string
 	YouTubeBrowser            string
 	YouTubeProfile            string
@@ -171,6 +173,10 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 	}
 	if strings.TrimSpace(opts.HTTPReaderBaseURL) == "" {
 		opts.HTTPReaderBaseURL = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_HTTP_READER_BASE_URL"), "https://r.jina.ai/")
+	}
+	opts.WaybackFallbackEnabled = runtimeenv.FirstBoolDefault(cfg.RootDir, true, "DBRAIN_SOURCE_WAYBACK_ENABLED", "DBRAIN_WAYBACK_ENABLED")
+	if strings.TrimSpace(opts.WaybackAvailabilityURL) == "" {
+		opts.WaybackAvailabilityURL = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL", "DBRAIN_WAYBACK_AVAILABILITY_URL"), defaultWaybackAvailabilityURL)
 	}
 
 	stats := Stats{SourcesQueued: len(sources)}
@@ -553,6 +559,22 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 	}
 
 	if failure, terminal := preflightTerminalSourceFailure(ctx, source, opts, extractToolVersion); terminal {
+		if extract, recovered, recoverErr := waybackExtractForTerminalFailure(ctx, source, opts, errors.New(failure.Error)); recoverErr != nil {
+			debugLog(opts.Logger, "source wayback recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", recoverErr.Error())
+		} else if recovered {
+			debugLog(opts.Logger, "source extraction recovered via wayback", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", extract.FinalURL, "content_chars", len(extract.Content))
+			waybackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, extractToolVersion, summaryToolVersion)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			result.Stats.SourcesExtracted += waybackStats.SourcesExtracted
+			result.Stats.SourcesSummarized += waybackStats.SourcesSummarized
+			result.Stats.SourcesUnchanged += waybackStats.SourcesUnchanged
+			result.Stats.Errors += waybackStats.Errors
+			result.TouchedSourceID = source.ID
+			return result
+		}
 		result.Stats.Errors++
 		debugLog(opts.Logger, "source preflight failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "error", failure.Error)
 		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
@@ -936,6 +958,9 @@ func needsEnrichment(source model.SourceDocument, opts Options, promptVersion st
 }
 
 func saveSourceFailure(ctx context.Context, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, extractToolVersion string, summaryToolVersion string) error {
+	if extract.Status == "error" && isTerminalExtractStatus(source.ExtractStatus) {
+		extract.Status = source.ExtractStatus
+	}
 	if strings.TrimSpace(extract.Tool) == "" {
 		extract.Tool = summarizecli.ToolName
 	}
@@ -962,6 +987,15 @@ func saveSourceFailure(ctx context.Context, st *store.Store, source model.Source
 		ToolVersion:   summaryToolVersion,
 	})
 	return err
+}
+
+func isTerminalExtractStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "dead", "gone":
+		return true
+	default:
+		return false
+	}
 }
 
 func preflightTerminalSourceFailure(ctx context.Context, source model.SourceDocument, opts Options, toolVersion string) (model.ExtractResult, bool) {
@@ -1143,6 +1177,8 @@ func classifyExtractFailureKind(errorText string) string {
 
 func deadThresholdForFailureKind(kind string) int {
 	switch kind {
+	case "", "unknown":
+		return 5
 	case "dns_nxdomain":
 		return 1
 	case "tls_certificate", "cloudflare_edge", "connectivity":
@@ -1166,12 +1202,16 @@ func deadThresholdForFailureKind(kind string) int {
 
 func nextFailureCount(source model.SourceDocument, kind string) int {
 	if kind == "" {
+		kind = "unknown"
+	}
+	storedKind := strings.TrimSpace(source.ExtractFailureKind)
+	if source.ExtractFailureCount <= 0 {
 		return 1
 	}
-	if source.ExtractFailureKind == kind && source.ExtractFailureCount > 0 {
+	if storedKind == kind {
 		return source.ExtractFailureCount + 1
 	}
-	if source.ExtractFailureKind == "unknown" && source.ExtractFailureCount > 0 {
+	if storedKind == "" || storedKind == "unknown" {
 		return source.ExtractFailureCount + 1
 	}
 	return 1
@@ -1199,6 +1239,8 @@ func failureKindLabel(kind string) string {
 		return "fetch"
 	case "http_5xx":
 		return "http 5xx"
+	case "", "unknown":
+		return "unclassified"
 	default:
 		return "terminal"
 	}

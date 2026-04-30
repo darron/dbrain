@@ -172,6 +172,9 @@ source:
   reader:
     base_url: https://r.jina.ai/
     domains: canada.ca,open.canada.ca,fintrac-canafe.canada.ca
+  wayback:
+    enabled: true
+    availability_url: https://archive.org/wayback/available?url={escaped_url}
 
 archive:
   provider: r2
@@ -230,6 +233,8 @@ directory, then `config.yaml`. `--root` wins over `DBRAIN_ROOT`.
 | `DBRAIN_OPENROUTER_TITLE` / `OPENROUTER_X_TITLE` | `openrouter.title` | `dbrain` | HTTP title sent to OpenRouter for direct calls. |
 | `DBRAIN_SOURCE_READER_DOMAINS` / `DBRAIN_HTTP_READER_DOMAINS` | `source.reader.domains` | `canada.ca` | Comma-separated domains routed through the reader/textifier path before summarize. |
 | `DBRAIN_SOURCE_READER_BASE_URL` / `DBRAIN_HTTP_READER_BASE_URL` | `source.reader.base_url` | `https://r.jina.ai/` | Reader/textifier base URL for difficult domains. |
+| `DBRAIN_SOURCE_WAYBACK_ENABLED` / `DBRAIN_WAYBACK_ENABLED` | `source.wayback.enabled` | `true` | Use Internet Archive Wayback as a final source extraction fallback before terminalizing repeated failures. |
+| `DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL` / `DBRAIN_WAYBACK_AVAILABILITY_URL` | `source.wayback.availability_url` | `https://archive.org/wayback/available?url={escaped_url}` | Wayback Availability API URL template used for final source fallback. |
 | `DBRAIN_MEDIA_PROXY_BASE_URL` / `DBRAIN_WEB_BASE_URL` | `media.proxy.base_url` | `http://127.0.0.1:8742` | Base URL for local archived-media proxy links in rendered notes. |
 | `DBRAIN_AUTO_ARCHIVE_MEDIA` / `DBRAIN_ARCHIVE_AUTO` | `archive.auto` | `false` | Run media archive automatically at the end of `sync all`. |
 | `DBRAIN_ARCHIVE_UPLOAD` / `DBRAIN_R2_UPLOAD` | `archive.upload` | `false` | Upload eligible media before marking/pruning in `archive media`. |
@@ -310,6 +315,39 @@ headers. If the reader service rejects the request, it falls back to fetching
 the original page directly with browser-style headers and extracting readable
 HTML locally. Only the extracted raw text is then passed to `summarize` for the
 derived summary.
+
+When direct extraction reaches its terminal retry threshold, `dbrain` checks
+the Internet Archive Wayback Availability API before marking the source
+terminal. If a usable snapshot exists, the archived HTML is extracted and saved
+with `extract_tool=wayback`; otherwise the source is marked `dead` or `gone`
+according to the failure classification. Disable this final fallback with
+`DBRAIN_SOURCE_WAYBACK_ENABLED=false`.
+
+Current source extraction terminal thresholds are: `gone` immediately for
+404/410 responses; `dead` after 1 DNS NXDOMAIN or unsupported-file failure;
+`dead` after 3 TLS, Cloudflare edge, connectivity, X article shell,
+access-denied, or timeout failures; and `dead` after 5 generic fetch, HTTP 5xx,
+or unclassified failures. Rows that are one failure away from a terminal state
+bypass the normal 12-hour retry cooldown so Wayback recovery or terminal
+classification happens on the next source enrichment pass.
+
+To rebaseline old failed web-source rows after improving extraction logic,
+reset only the failed web sources and let them enter the normal extraction
+pipeline again:
+
+```sh
+dbrain repair sources --source-type web --extract-status error --extract-status dead --dry-run
+dbrain repair sources --source-type web --extract-status error --extract-status dead --yes
+dbrain extract sources --limit 500 --concurrency 4 --timeout 5m
+```
+
+This clears stale extract and summary state for currently failed web sources
+without touching successful sources. Retryable failures start with fresh failure
+counts; once they reach their terminal threshold, `dbrain` performs the Wayback
+final-attempt check before marking the source `dead` or `gone`. `sync all` will
+continue that retry progression naturally. For an urgent one-off row, use
+`dbrain extract sources --source <source_key> --force` to bypass cooldown for
+that specific source.
 
 ## Command Reference
 
@@ -921,6 +959,8 @@ run refetches article metadata instead of replaying stale previews.
 ```sh
 dbrain repair sources --domain canada.ca --dry-run
 dbrain repair sources --domain canada.ca --yes
+dbrain repair sources --source-type web --extract-status error --extract-status dead --dry-run
+dbrain repair sources --source-type web --extract-status error --extract-status dead --yes
 dbrain repair sources --source-type x_article --extract-status dead --summary-status error --failure-kind x_article_shell --min-failures 3 --dry-run
 dbrain repair sources --source-type x_article --extract-status dead --summary-status error --failure-kind x_article_shell --min-failures 3 --rehydrate-x-articles --yes
 ```
