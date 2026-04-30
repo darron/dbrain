@@ -608,7 +608,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				s.domain AS domain,
 				s.source_type AS source_type,
 				COALESCE(NULLIF(i.article_title, ''), s.title, '') AS title,
-				i.article_text AS article_text,
+				CASE WHEN i.article_title = 'X Media Transcript' THEN '' ELSE i.article_text END AS article_text,
 				i.author_handle AS author_handle,
 				i.x_post_json AS x_post_json,
 				i.updated_at AS updated_at,
@@ -627,7 +627,11 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				s.domain AS domain,
 				s.source_type AS source_type,
 				COALESCE(NULLIF(p.article_title, ''), NULLIF(i.article_title, ''), s.title, '') AS title,
-				COALESCE(NULLIF(p.article_text, ''), i.article_text, '') AS article_text,
+				COALESCE(
+					NULLIF(CASE WHEN p.article_title = 'X Media Transcript' THEN '' ELSE p.article_text END, ''),
+					CASE WHEN i.article_title = 'X Media Transcript' THEN '' ELSE i.article_text END,
+					''
+				) AS article_text,
 				p.author_handle AS author_handle,
 				p.x_post_json AS x_post_json,
 				p.updated_at AS updated_at,
@@ -751,22 +755,30 @@ type xArticlePreview struct {
 }
 
 type ResetSourceEnrichmentOptions struct {
-	Domains   []string
-	SourceIDs []int64
-	DryRun    bool
+	Domains            []string
+	SourceIDs          []int64
+	SourceTypes        []string
+	ExtractStatuses    []string
+	SummaryStatuses    []string
+	FailureKinds       []string
+	MinFailures        int
+	RehydrateXArticles bool
+	DryRun             bool
 }
 
 type ResetSourceEnrichmentStats struct {
-	Matched int  `json:"matched"`
-	Reset   int  `json:"reset"`
-	DryRun  bool `json:"dry_run"`
+	Matched       int  `json:"matched"`
+	Reset         int  `json:"reset"`
+	XItemsMatched int  `json:"x_items_matched,omitempty"`
+	XItemsReset   int  `json:"x_items_reset,omitempty"`
+	DryRun        bool `json:"dry_run"`
 }
 
 func (s *Store) ResetSourceEnrichment(ctx context.Context, opts ResetSourceEnrichmentOptions) (ResetSourceEnrichmentStats, error) {
 	stats := ResetSourceEnrichmentStats{DryRun: opts.DryRun}
 	where, args := resetSourceEnrichmentWhere(opts)
 	if where == "" {
-		return stats, fmt.Errorf("at least one source domain or source id is required")
+		return stats, fmt.Errorf("at least one source reset filter is required")
 	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sources WHERE `+where+` ORDER BY id ASC`, args...)
@@ -790,13 +802,22 @@ func (s *Store) ResetSourceEnrichment(ctx context.Context, opts ResetSourceEnric
 	}
 
 	stats.Matched = len(sourceIDs)
+	var xItemIDs []int64
+	if opts.RehydrateXArticles && len(sourceIDs) > 0 {
+		xItemIDs, err = s.listXArticleRehydrateItemIDs(ctx, sourceIDs)
+		if err != nil {
+			return stats, err
+		}
+		stats.XItemsMatched = len(xItemIDs)
+	}
 	if opts.DryRun || len(sourceIDs) == 0 {
 		return stats, nil
 	}
 
 	placeholders := make([]string, 0, len(sourceIDs))
 	updateArgs := make([]any, 0, len(sourceIDs)+1)
-	updateArgs = append(updateArgs, time.Now().UTC().Format(time.RFC3339))
+	nowText := time.Now().UTC().Format(time.RFC3339)
+	updateArgs = append(updateArgs, nowText)
 	for _, sourceID := range sourceIDs {
 		placeholders = append(placeholders, "?")
 		updateArgs = append(updateArgs, sourceID)
@@ -840,13 +861,138 @@ func (s *Store) ResetSourceEnrichment(ctx context.Context, opts ResetSourceEnric
 		}
 	}
 
+	if opts.RehydrateXArticles && len(xItemIDs) > 0 {
+		reset, err := s.resetXArticleHydrationItems(ctx, xItemIDs, nowText)
+		if err != nil {
+			return stats, err
+		}
+		stats.XItemsReset = reset
+	}
+
 	stats.Reset = len(sourceIDs)
 	return stats, nil
 }
 
+func (s *Store) listXArticleRehydrateItemIDs(ctx context.Context, sourceIDs []int64) ([]int64, error) {
+	sourceIDs = uniquePositiveInt64s(sourceIDs)
+	if len(sourceIDs) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, 0, len(sourceIDs))
+	args := make([]any, 0, len(sourceIDs))
+	for _, sourceID := range sourceIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, sourceID)
+	}
+	sourceClause := strings.Join(placeholders, ",")
+
+	rows, err := s.db.QueryContext(ctx, `
+		WITH linked_items AS (
+			SELECT i.id AS item_id
+			FROM item_source_links l
+			JOIN sources s ON s.id = l.source_id
+			JOIN items i ON i.id = l.item_id
+			WHERE s.source_type = 'x_article'
+				AND s.id IN (`+sourceClause+`)
+				AND (i.source_type = 'x_bookmark' OR i.source_type = 'x_quote')
+
+			UNION
+
+			SELECT p.id AS item_id
+			FROM item_source_links l
+			JOIN sources s ON s.id = l.source_id
+			JOIN items i ON i.id = l.item_id
+			JOIN item_item_links q ON q.child_item_id = i.id AND q.link_kind = 'quoted_post'
+			JOIN items p ON p.id = q.parent_item_id
+			WHERE s.source_type = 'x_article'
+				AND s.id IN (`+sourceClause+`)
+				AND (p.source_type = 'x_bookmark' OR p.source_type = 'x_quote')
+		)
+		SELECT DISTINCT item_id
+		FROM linked_items
+		ORDER BY item_id ASC`, append(args, args...)...)
+	if err != nil {
+		return nil, fmt.Errorf("list x article rehydrate items: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var itemIDs []int64
+	for rows.Next() {
+		var itemID int64
+		if err := rows.Scan(&itemID); err != nil {
+			return nil, fmt.Errorf("scan x article rehydrate item: %w", err)
+		}
+		itemIDs = append(itemIDs, itemID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate x article rehydrate items: %w", err)
+	}
+	return itemIDs, nil
+}
+
+func (s *Store) resetXArticleHydrationItems(ctx context.Context, itemIDs []int64, nowText string) (int, error) {
+	itemIDs = uniquePositiveInt64s(itemIDs)
+	if len(itemIDs) == 0 {
+		return 0, nil
+	}
+
+	placeholders := make([]string, 0, len(itemIDs))
+	args := make([]any, 0, len(itemIDs)+1)
+	args = append(args, nowText)
+	for _, itemID := range itemIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, itemID)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin x article hydration reset tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE items
+		SET x_post_text = '',
+			x_post_lang = '',
+			x_post_json = '',
+			x_post_fetched_at = '',
+			x_post_status = '',
+			x_post_error = '',
+			link_extract_synced_at = '',
+			updated_at = ?
+		WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("reset x article hydration items: %w", err)
+	}
+
+	for _, itemID := range itemIDs {
+		if _, err := s.invalidateItemSummaryTx(ctx, tx, itemID, nowText); err != nil {
+			return 0, err
+		}
+		if err := s.syncItemFTSByIDTx(ctx, tx, itemID); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit x article hydration reset: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return len(itemIDs), nil
+	}
+	return int(rowsAffected), nil
+}
+
 func resetSourceEnrichmentWhere(opts ResetSourceEnrichmentOptions) (string, []any) {
-	parts := make([]string, 0, 2)
-	args := make([]any, 0, len(opts.Domains)*2+len(opts.SourceIDs))
+	parts := make([]string, 0, 7)
+	args := make([]any, 0, len(opts.Domains)*2+len(opts.SourceIDs)+len(opts.SourceTypes)+len(opts.ExtractStatuses)+len(opts.SummaryStatuses)+len(opts.FailureKinds)+1)
 
 	domains := uniqueSourceResetDomains(opts.Domains)
 	if len(domains) > 0 {
@@ -868,10 +1014,39 @@ func resetSourceEnrichmentWhere(opts ResetSourceEnrichmentOptions) (string, []an
 		parts = append(parts, "id IN ("+strings.Join(placeholders, ",")+")")
 	}
 
+	if sourceTypes := uniqueLowerNonEmptyStrings(opts.SourceTypes); len(sourceTypes) > 0 {
+		clause, clauseArgs := stringInClause("source_type", sourceTypes)
+		parts = append(parts, clause)
+		args = append(args, clauseArgs...)
+	}
+
+	if extractStatuses := uniqueLowerNonEmptyStrings(opts.ExtractStatuses); len(extractStatuses) > 0 {
+		clause, clauseArgs := stringInClause("extract_status", extractStatuses)
+		parts = append(parts, clause)
+		args = append(args, clauseArgs...)
+	}
+
+	if summaryStatuses := uniqueLowerNonEmptyStrings(opts.SummaryStatuses); len(summaryStatuses) > 0 {
+		clause, clauseArgs := stringInClause("summary_status", summaryStatuses)
+		parts = append(parts, clause)
+		args = append(args, clauseArgs...)
+	}
+
+	if failureKinds := uniqueLowerNonEmptyStrings(opts.FailureKinds); len(failureKinds) > 0 {
+		clause, clauseArgs := stringInClause("extract_failure_kind", failureKinds)
+		parts = append(parts, clause)
+		args = append(args, clauseArgs...)
+	}
+
+	if opts.MinFailures > 0 {
+		parts = append(parts, "extract_failure_count >= ?")
+		args = append(args, opts.MinFailures)
+	}
+
 	if len(parts) == 0 {
 		return "", nil
 	}
-	return "(" + strings.Join(parts, " OR ") + ")", args
+	return "(" + strings.Join(parts, " AND ") + ")", args
 }
 
 func uniqueSourceResetDomains(values []string) []string {
@@ -906,6 +1081,33 @@ func uniquePositiveInt64s(values []int64) []int64 {
 		out = append(out, value)
 	}
 	return out
+}
+
+func uniqueLowerNonEmptyStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func stringInClause(column string, values []string) (string, []any) {
+	placeholders := make([]string, 0, len(values))
+	args := make([]any, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	return "lower(" + column + ") IN (" + strings.Join(placeholders, ",") + ")", args
 }
 
 func parseXArticlePreview(rawJSON string, canonicalURL string) (xArticlePreview, bool) {
@@ -1539,6 +1741,22 @@ func classifyStoredExtractFailureKind(status string, errorText string) string {
 		return "cloudflare_edge"
 	case strings.Contains(value, "x article returned an x error shell"):
 		return "x_article_shell"
+	case strings.Contains(value, "status 401"),
+		strings.Contains(value, "401 unauthorized"),
+		strings.Contains(value, "status 403"),
+		strings.Contains(value, "403 forbidden"),
+		strings.Contains(value, "status 451"),
+		strings.Contains(value, "451 unavailable"):
+		return "http_access_denied"
+	case strings.Contains(value, "unsupported file type"):
+		return "unsupported_file"
+	case strings.Contains(value, "signal: killed"),
+		strings.Contains(value, "context deadline exceeded"),
+		strings.Contains(value, "timeout"),
+		strings.Contains(value, "timed out"):
+		return "timeout"
+	case strings.Contains(value, "fetch failed"):
+		return "fetch_failed"
 	case strings.Contains(value, "unable to connect"),
 		strings.Contains(value, "connection refused"),
 		strings.Contains(value, "network is unreachable"),

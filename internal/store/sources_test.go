@@ -202,6 +202,297 @@ func TestResetSourceEnrichmentByDomainClearsCurrentState(t *testing.T) {
 	}
 }
 
+func TestResetSourceEnrichmentFiltersByTypeStatusKindAndFailureCount(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	insert := func(sourceKey string, sourceType string, extractStatus string, summaryStatus string, failureKind string, failureCount int) int64 {
+		t.Helper()
+		result, err := st.db.ExecContext(ctx, `
+			INSERT INTO sources (
+				source_key, canonical_url, normalized_url, source_type, domain, note_path,
+				extracted_text, extract_status, extract_error, extract_failure_kind, extract_failure_count, extract_first_failed_at, extract_last_failed_at,
+				summary_text, summary_status, content_hash,
+				created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sourceKey,
+			"https://x.com/i/article/"+sourceKey,
+			"https://x.com/i/article/"+sourceKey,
+			sourceType,
+			"x.com",
+			"sources/"+sourceType+"/"+sourceKey+".md",
+			"old extract",
+			extractStatus,
+			"old error",
+			failureKind,
+			failureCount,
+			now,
+			now,
+			"old summary",
+			summaryStatus,
+			"hash",
+			now,
+			now,
+		)
+		if err != nil {
+			t.Fatalf("insert source %s: %v", sourceKey, err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("source id %s: %v", sourceKey, err)
+		}
+		return id
+	}
+
+	matchingID := insert("matching", "x_article", "dead", "error", "x_article_shell", 3)
+	wrongTypeID := insert("wrong-type", "web", "dead", "error", "x_article_shell", 3)
+	wrongKindID := insert("wrong-kind", "x_article", "dead", "error", "http_access_denied", 3)
+	tooFewID := insert("too-few", "x_article", "dead", "error", "x_article_shell", 2)
+
+	dryRun, err := st.ResetSourceEnrichment(ctx, ResetSourceEnrichmentOptions{
+		SourceTypes:     []string{"x_article"},
+		ExtractStatuses: []string{"dead"},
+		SummaryStatuses: []string{"error"},
+		FailureKinds:    []string{"x_article_shell"},
+		MinFailures:     3,
+		DryRun:          true,
+	})
+	if err != nil {
+		t.Fatalf("dry run filtered reset: %v", err)
+	}
+	if dryRun.Matched != 1 || dryRun.Reset != 0 || !dryRun.DryRun {
+		t.Fatalf("unexpected dry-run stats: %+v", dryRun)
+	}
+
+	stats, err := st.ResetSourceEnrichment(ctx, ResetSourceEnrichmentOptions{
+		SourceTypes:     []string{"x_article"},
+		ExtractStatuses: []string{"dead"},
+		SummaryStatuses: []string{"error"},
+		FailureKinds:    []string{"x_article_shell"},
+		MinFailures:     3,
+	})
+	if err != nil {
+		t.Fatalf("filtered reset: %v", err)
+	}
+	if stats.Matched != 1 || stats.Reset != 1 {
+		t.Fatalf("unexpected reset stats: %+v", stats)
+	}
+
+	matching, err := st.GetSourceByID(ctx, matchingID)
+	if err != nil {
+		t.Fatalf("get matching source: %v", err)
+	}
+	if matching.ExtractStatus != "" || matching.SummaryStatus != "" || matching.ExtractFailureCount != 0 {
+		t.Fatalf("expected matching source reset, got %+v", matching)
+	}
+	for _, sourceID := range []int64{wrongTypeID, wrongKindID, tooFewID} {
+		source, err := st.GetSourceByID(ctx, sourceID)
+		if err != nil {
+			t.Fatalf("get nonmatching source: %v", err)
+		}
+		if source.ExtractStatus == "" || source.SummaryStatus == "" || source.ExtractFailureCount == 0 {
+			t.Fatalf("expected nonmatching source unchanged, got %+v", source)
+		}
+	}
+}
+
+func TestResetSourceEnrichmentCanMarkLinkedXArticlesForRehydration(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	insertSource := func(sourceKey string, sourceType string) int64 {
+		t.Helper()
+		result, err := st.db.ExecContext(ctx, `
+			INSERT INTO sources (
+				source_key, canonical_url, normalized_url, source_type, domain, note_path,
+				extracted_text, extract_status, extract_error, extract_failure_kind, extract_failure_count,
+				summary_text, summary_status, content_hash,
+				created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sourceKey,
+			"https://x.com/i/article/"+sourceKey,
+			"https://x.com/i/article/"+sourceKey,
+			sourceType,
+			"x.com",
+			"sources/"+sourceType+"/"+sourceKey+".md",
+			"old extract",
+			"dead",
+			"x article shell",
+			"x_article_shell",
+			3,
+			"old summary",
+			"error",
+			"hash",
+			now,
+			now,
+		)
+		if err != nil {
+			t.Fatalf("insert source %s: %v", sourceKey, err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("source id %s: %v", sourceKey, err)
+		}
+		return id
+	}
+
+	insertItem := func(sourceKey string, sourceType string, articleTitle string, articleText string) int64 {
+		t.Helper()
+		result, err := st.db.ExecContext(ctx, `
+			INSERT INTO items (
+				source_key, source_type, external_id, canonical_url, title, author_handle, author_name,
+				published_at, saved_at, synced_at, language, text, article_title, article_text,
+				primary_category, primary_domain, links_json, categories, domains, github_urls, folder_names,
+				like_count, repost_count, reply_count, quote_count, bookmark_count,
+				content_hash, note_path, raw_json, imported_at, updated_at, last_seen_at,
+				x_post_text, x_post_lang, x_post_json, x_post_fetched_at, x_post_status, x_post_error, link_extract_synced_at,
+				summary_text, summary_json, summary_status, summary_model, summary_input_hash, summarized_at
+			) VALUES (?, ?, ?, ?, ?, 'author', 'Author', '', '', '', 'en', 'tweet text', ?, ?,
+				'', '', '[]', '', '', '', '', 0, 0, 0, 0, 0,
+				?, ?, '{}', ?, ?, ?,
+				'old hydrated post', 'en', ?, ?, 'ok_graphql', '', ?,
+				'old summary', '{}', 'ok', 'model', 'input-hash', ?)`,
+			sourceKey,
+			sourceType,
+			sourceKey,
+			"https://x.com/example/status/"+sourceKey,
+			sourceKey,
+			articleTitle,
+			articleText,
+			sourceKey+"-hash",
+			"items/x/"+sourceKey+".md",
+			now,
+			now,
+			now,
+			`{"raw":{"article":{"title":"Old Article","preview_text":"Old preview text from stale hydration cache.","rest_id":"123"}}}`,
+			now,
+			now,
+			now,
+		)
+		if err != nil {
+			t.Fatalf("insert item %s: %v", sourceKey, err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("item id %s: %v", sourceKey, err)
+		}
+		return id
+	}
+
+	matchingSourceID := insertSource("matching", "x_article")
+	otherSourceID := insertSource("other", "web")
+	childItemID := insertItem("x-child", "x_quote", "X Media Transcript", "raw transcript should be preserved")
+	parentItemID := insertItem("x-parent", "x_bookmark", "", "")
+	otherItemID := insertItem("x-other", "x_bookmark", "", "")
+
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_source_links (item_id, source_id, original_url, created_at)
+		VALUES (?, ?, ?, ?)`,
+		childItemID,
+		matchingSourceID,
+		"https://x.com/i/article/matching",
+		now,
+	); err != nil {
+		t.Fatalf("insert matching item source link: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_source_links (item_id, source_id, original_url, created_at)
+		VALUES (?, ?, ?, ?)`,
+		otherItemID,
+		otherSourceID,
+		"https://example.com/other",
+		now,
+	); err != nil {
+		t.Fatalf("insert unrelated item source link: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_item_links (parent_item_id, child_item_id, link_kind, created_at, updated_at)
+		VALUES (?, ?, 'quoted_post', ?, ?)`,
+		parentItemID,
+		childItemID,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert quote link: %v", err)
+	}
+
+	dryRun, err := st.ResetSourceEnrichment(ctx, ResetSourceEnrichmentOptions{
+		SourceTypes:        []string{"x_article"},
+		ExtractStatuses:    []string{"dead"},
+		FailureKinds:       []string{"x_article_shell"},
+		RehydrateXArticles: true,
+		DryRun:             true,
+	})
+	if err != nil {
+		t.Fatalf("dry run reset with x article rehydrate: %v", err)
+	}
+	if dryRun.Matched != 1 || dryRun.XItemsMatched != 2 || dryRun.Reset != 0 || dryRun.XItemsReset != 0 {
+		t.Fatalf("unexpected dry-run stats: %+v", dryRun)
+	}
+
+	stats, err := st.ResetSourceEnrichment(ctx, ResetSourceEnrichmentOptions{
+		SourceTypes:        []string{"x_article"},
+		ExtractStatuses:    []string{"dead"},
+		FailureKinds:       []string{"x_article_shell"},
+		RehydrateXArticles: true,
+	})
+	if err != nil {
+		t.Fatalf("reset with x article rehydrate: %v", err)
+	}
+	if stats.Matched != 1 || stats.Reset != 1 || stats.XItemsMatched != 2 || stats.XItemsReset != 2 {
+		t.Fatalf("unexpected reset stats: %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(ctx, matchingSourceID)
+	if err != nil {
+		t.Fatalf("get reset source: %v", err)
+	}
+	if source.ExtractStatus != "" || source.SummaryStatus != "" || source.ExtractFailureCount != 0 {
+		t.Fatalf("expected matching source reset, got %+v", source)
+	}
+
+	for _, itemID := range []int64{childItemID, parentItemID} {
+		item, err := st.GetItemByID(ctx, itemID)
+		if err != nil {
+			t.Fatalf("get reset item %d: %v", itemID, err)
+		}
+		if item.XPostStatus != "" || item.XPostJSON != "" || item.XPostText != "" || !item.LinkExtractSyncedAt.IsZero() {
+			t.Fatalf("expected x hydration fields reset for item %d, got %+v", itemID, item)
+		}
+		if item.SummaryStatus != "" || item.SummaryText != "" {
+			t.Fatalf("expected item summary invalidated for item %d, got %+v", itemID, item)
+		}
+	}
+
+	child, err := st.GetItemByID(ctx, childItemID)
+	if err != nil {
+		t.Fatalf("get child item: %v", err)
+	}
+	if child.ArticleTitle != "X Media Transcript" || child.ArticleText != "raw transcript should be preserved" {
+		t.Fatalf("expected raw transcript article fields preserved, got title=%q text=%q", child.ArticleTitle, child.ArticleText)
+	}
+
+	other, err := st.GetItemByID(ctx, otherItemID)
+	if err != nil {
+		t.Fatalf("get unrelated item: %v", err)
+	}
+	if other.XPostStatus == "" || other.XPostJSON == "" || other.SummaryStatus == "" {
+		t.Fatalf("expected unrelated item unchanged, got %+v", other)
+	}
+
+	if result, ok, err := st.GetPreferredLocalSourceExtract(ctx, matchingSourceID); err != nil {
+		t.Fatalf("local extract after reset: %v", err)
+	} else if ok {
+		t.Fatalf("expected reset source to have no stale local extract, got %+v", result)
+	}
+}
+
 func TestListSourcesForEnrichmentQueuesSummaryToolVersionMismatch(t *testing.T) {
 	t.Parallel()
 

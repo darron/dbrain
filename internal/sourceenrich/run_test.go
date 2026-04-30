@@ -145,6 +145,42 @@ func TestClassifyTerminalExtractErrorKeepsEarlyConnectivityFailuresRetryable(t *
 	}
 }
 
+func TestClassifyTerminalExtractErrorMarksRepeatedAccessDeniedDead(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		ExtractStatus:       "error",
+		ExtractFailureKind:  "unknown",
+		ExtractFailureCount: 2,
+	}
+
+	status, errorText, terminal := classifyTerminalExtractError(source, errors.New("run summarize: Failed to fetch HTML document (status 403)"))
+	if !terminal {
+		t.Fatal("expected repeated access denied failures to become terminal")
+	}
+	if status != "dead" {
+		t.Fatalf("expected dead status, got %q", status)
+	}
+	if !strings.Contains(errorText, "3 consecutive http access denied failures") {
+		t.Fatalf("unexpected terminal error text: %q", errorText)
+	}
+}
+
+func TestClassifyTerminalExtractErrorMarksUnsupportedFilesDeadImmediately(t *testing.T) {
+	t.Parallel()
+
+	status, errorText, terminal := classifyTerminalExtractError(model.SourceDocument{}, errors.New("Unsupported file type: install (application/x-install-instructions)"))
+	if !terminal {
+		t.Fatal("expected unsupported files to become terminal")
+	}
+	if status != "dead" {
+		t.Fatalf("expected dead status, got %q", status)
+	}
+	if !strings.Contains(errorText, "unsupported file failures") {
+		t.Fatalf("unexpected terminal error text: %q", errorText)
+	}
+}
+
 func TestRejectExtractFailureFlagsXArticleErrorShellAsRetryableError(t *testing.T) {
 	t.Parallel()
 

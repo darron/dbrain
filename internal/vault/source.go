@@ -97,6 +97,26 @@ func RenderSource(source model.SourceDocument, backlinks []model.SourceBacklink)
 		b.WriteString(source.ExtractStatus)
 		b.WriteString("`\n")
 	}
+	if source.ExtractFailureCount > 0 || strings.TrimSpace(source.ExtractFailureKind) != "" {
+		b.WriteString("- Extract failures: ")
+		if source.ExtractFailureCount > 0 {
+			_, _ = fmt.Fprintf(&b, "%d", source.ExtractFailureCount)
+		} else {
+			b.WriteString("unknown")
+		}
+		if source.ExtractFailureKind != "" {
+			b.WriteString(" (`")
+			b.WriteString(source.ExtractFailureKind)
+			b.WriteString("`)")
+		}
+		if !source.ExtractFirstFailedAt.IsZero() || !source.ExtractLastFailedAt.IsZero() {
+			b.WriteString(" from ")
+			b.WriteString(formatTime(source.ExtractFirstFailedAt))
+			b.WriteString(" to ")
+			b.WriteString(formatTime(source.ExtractLastFailedAt))
+		}
+		b.WriteString("\n")
+	}
 	if !source.ExtractedAt.IsZero() {
 		b.WriteString("- Extracted at: ")
 		b.WriteString(formatTime(source.ExtractedAt))

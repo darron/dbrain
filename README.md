@@ -909,13 +909,20 @@ dbrain repair notes --missing-only=false --sources
 
 No external tools required. Clears extraction and summary state for selected
 sources so they can be reprocessed. Use `--domain <domain>` for a whole domain
-or `--source <id>` for specific rows. The command prints the number of matched
-sources first and asks for confirmation unless `--dry-run` or `--yes` is
-passed.
+or `--source <id>` for specific rows. Additional filters such as
+`--source-type`, `--extract-status`, `--summary-status`, `--failure-kind`, and
+`--min-failures` combine with AND semantics, which is useful for retrying a
+known failed class without resetting unrelated rows. The command prints the
+number of matched sources first and asks for confirmation unless `--dry-run` or
+`--yes` is passed. For X article repair, add `--rehydrate-x-articles` to also
+clear the linked X item hydration cache so the next `hydrate x` / `sync all`
+run refetches article metadata instead of replaying stale previews.
 
 ```sh
 dbrain repair sources --domain canada.ca --dry-run
 dbrain repair sources --domain canada.ca --yes
+dbrain repair sources --source-type x_article --extract-status dead --summary-status error --failure-kind x_article_shell --min-failures 3 --dry-run
+dbrain repair sources --source-type x_article --extract-status dead --summary-status error --failure-kind x_article_shell --min-failures 3 --rehydrate-x-articles --yes
 ```
 
 ### `dbrain repair fts`

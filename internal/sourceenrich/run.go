@@ -574,6 +574,12 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 				Tool:        protectedFetchToolName,
 				ToolVersion: httpReaderToolVersion,
 			}
+			if status, errorText, terminal := classifyTerminalExtractError(source, readerErr); terminal {
+				failure.Status = status
+				if errorText != "" {
+					failure.Error = errorText
+				}
+			}
 			if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
 				result.Err = err
 				return result
@@ -1105,6 +1111,22 @@ func classifyExtractFailureKind(errorText string) string {
 		return "cloudflare_edge"
 	case strings.Contains(value, "x article returned an x error shell"):
 		return "x_article_shell"
+	case strings.Contains(value, "status 401"),
+		strings.Contains(value, "401 unauthorized"),
+		strings.Contains(value, "status 403"),
+		strings.Contains(value, "403 forbidden"),
+		strings.Contains(value, "status 451"),
+		strings.Contains(value, "451 unavailable"):
+		return "http_access_denied"
+	case strings.Contains(value, "unsupported file type"):
+		return "unsupported_file"
+	case strings.Contains(value, "signal: killed"),
+		strings.Contains(value, "context deadline exceeded"),
+		strings.Contains(value, "timeout"),
+		strings.Contains(value, "timed out"):
+		return "timeout"
+	case strings.Contains(value, "fetch failed"):
+		return "fetch_failed"
 	case strings.Contains(value, "unable to connect"),
 		strings.Contains(value, "connection refused"),
 		strings.Contains(value, "network is unreachable"),
@@ -1127,6 +1149,14 @@ func deadThresholdForFailureKind(kind string) int {
 		return 3
 	case "x_article_shell":
 		return 3
+	case "http_access_denied":
+		return 3
+	case "unsupported_file":
+		return 1
+	case "timeout":
+		return 3
+	case "fetch_failed":
+		return 5
 	case "http_5xx":
 		return 5
 	default:
@@ -1139,6 +1169,9 @@ func nextFailureCount(source model.SourceDocument, kind string) int {
 		return 1
 	}
 	if source.ExtractFailureKind == kind && source.ExtractFailureCount > 0 {
+		return source.ExtractFailureCount + 1
+	}
+	if source.ExtractFailureKind == "unknown" && source.ExtractFailureCount > 0 {
 		return source.ExtractFailureCount + 1
 	}
 	return 1
@@ -1156,6 +1189,14 @@ func failureKindLabel(kind string) string {
 		return "connectivity"
 	case "x_article_shell":
 		return "x article shell"
+	case "http_access_denied":
+		return "http access denied"
+	case "unsupported_file":
+		return "unsupported file"
+	case "timeout":
+		return "timeout"
+	case "fetch_failed":
+		return "fetch"
 	case "http_5xx":
 		return "http 5xx"
 	default:

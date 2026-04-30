@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Source Retry Controls And Failure Classification (2026-04-30)
+
+- **Retry targeting**: `dbrain repair sources` can now filter by source type, extract status, summary status, failure kind, and minimum failure count before resetting enrichment state.
+- **X article repair**: `dbrain repair sources --rehydrate-x-articles` also clears linked X item hydration markers so bad cached article previews are rebuilt by the next `hydrate x` / `sync all` run.
+- **Failure accounting**: Source failure counts and first/last failure timestamps remain visible through source JSON/MCP, and rendered source notes now show extract failure count/kind metadata.
+- **Terminal classification**: Repeated access-denied, timeout, unsupported-file, and generic fetch failures now become terminal `dead` source extraction outcomes after defined thresholds instead of retrying indefinitely.
+- **Location**: `internal/store/`, `internal/sourceenrich/`, `internal/app/repair.go`, `internal/vault/source.go`, `README.md`
+
 ### Sync Source Categorization (2026-04-30)
 
 - **Sync pipeline**: `dbrain sync all` now categorizes uncategorized linked sources as well as items before the media archive stage.
