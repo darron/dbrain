@@ -64,7 +64,7 @@ export function askEvidence(question, options = {}) {
   });
 }
 
-export function tagItem(lookup, tags) {
+export function tagRecord(lookup, tags) {
   return fetchJSON("/api/tag", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

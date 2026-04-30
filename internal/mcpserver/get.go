@@ -302,6 +302,10 @@ func relatedSourceText(source model.SourceDocument) string {
 		b.WriteString("\nURL: ")
 		b.WriteString(source.CanonicalURL)
 	}
+	if strings.TrimSpace(source.UserTags) != "" {
+		b.WriteString("\nUser tags: ")
+		b.WriteString(strings.TrimSpace(source.UserTags))
+	}
 	body := firstNonEmpty(source.SummaryText, source.ExtractedText, source.Description)
 	if body != "" {
 		b.WriteString("\n\n")
@@ -358,6 +362,7 @@ func appendDistinctTextBlock(b *strings.Builder, label string, value string) {
 
 func sourceAvailableSections(source model.SourceDocument) []getSection {
 	var sections []getSection
+	appendUniqueSection(&sections, makeGetSection("user_tags", "metadata", "", "", "", time.Time{}, source.UserTags, 0))
 	appendUniqueSection(&sections, makeGetSection("summary_text", "derived", source.SummaryStatus, source.SummaryModel, source.SummaryTool, source.SummarizedAt, source.SummaryText, 0))
 	appendUniqueSection(&sections, makeGetSection("extracted_text", "raw", source.ExtractStatus, "", source.ExtractTool, source.ExtractedAt, source.ExtractedText, 0))
 	appendUniqueSection(&sections, makeGetSection("description", "metadata", "", "", "", time.Time{}, source.Description, 0))
@@ -677,6 +682,7 @@ func slimSource(source model.SourceDocument) map[string]interface{} {
 		"description":           source.Description,
 		"site_name":             source.SiteName,
 		"note_path":             source.NotePath,
+		"user_tags":             source.UserTags,
 		"extract_status":        source.ExtractStatus,
 		"extract_error":         source.ExtractError,
 		"extract_failure_kind":  source.ExtractFailureKind,
@@ -736,6 +742,13 @@ func formatGetPayload(payload map[string]interface{}) string {
 
 	if item, ok := payload["item"].(map[string]interface{}); ok {
 		if tags, _ := item["user_tags"].(string); strings.TrimSpace(tags) != "" {
+			b.WriteString("User tags: ")
+			b.WriteString(strings.TrimSpace(tags))
+			b.WriteString("\n")
+		}
+	}
+	if source, ok := payload["source"].(map[string]interface{}); ok {
+		if tags, _ := source["user_tags"].(string); strings.TrimSpace(tags) != "" {
 			b.WriteString("User tags: ")
 			b.WriteString(strings.TrimSpace(tags))
 			b.WriteString("\n")

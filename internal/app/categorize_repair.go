@@ -42,6 +42,10 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			sources, err := st.ListCategorizedSources(cmd.Context())
+			if err != nil {
+				return err
+			}
 
 			var updated, unchanged int
 			for _, item := range items {
@@ -64,9 +68,29 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 				}
 				updated++
 			}
+			for _, source := range sources {
+				newTags, changed := vocab.ApplyToCSV(source.UserTags)
+				if !changed {
+					unchanged++
+					continue
+				}
+				if dryRun {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[dry-run] %s\n  before: %s\n  after:  %s\n",
+						source.SourceKey,
+						formatTagDiff(source.UserTags, newTags),
+						newTags,
+					)
+					updated++
+					continue
+				}
+				if err := st.SaveSourceUserTags(cmd.Context(), source.ID, newTags); err != nil {
+					return fmt.Errorf("save %s: %w", source.SourceKey, err)
+				}
+				updated++
+			}
 
 			_, _ = fmt.Fprintln(cmd.OutOrStdout())
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Scanned:   %d\n", len(items))
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Scanned:   %d\n", len(items)+len(sources))
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updated:   %d\n", updated)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Unchanged: %d\n", unchanged)
 			if dryRun {

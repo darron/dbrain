@@ -67,8 +67,8 @@ evidence plus:
 - coverage counts by kind, source type, and tag
 - exact user-tag match counts
 - broad item/source text-match counts
-- representative `exact_tag_evidence` examples from saved items carrying those
-  tags
+- representative `exact_tag_evidence` examples from saved items or sources
+  carrying those tags
 - suggested follow-up tools
 - retrieval score explanations for each evidence row
 - a grouped topic brief when the question is broad enough to infer a topic
@@ -124,10 +124,13 @@ query so detail fetches keep the same query-windowing behavior.
 
 ## Tags
 
-Item `user_tags` are indexed for search and returned in MCP search and evidence
-payloads. They are research hints: agents can search by tag names, use tags to
-disambiguate broad questions, and treat tag matches as stronger retrieval
-signals without replacing the underlying source text.
+Item and source `user_tags` are indexed for search and returned in MCP search
+and evidence payloads. They are research hints: agents can search by tag names,
+use tags to disambiguate broad questions, and treat tag matches as stronger
+retrieval signals without replacing the underlying source text.
+
+Source tags describe the linked source itself. Backlink tags describe the saved
+item that referenced the source, so both can be useful and they may differ.
 
 Multi-word research questions also check the matching hyphenated tag alias. For
 example, `Mark Carney` checks `mark-carney`. `dbrain_search` reports the tag
@@ -165,7 +168,7 @@ saved URLs, and expected text are specific to one person's brain database.
 Eval cases can require a specific top source key, any top key from an
 acceptable set, specific source keys anywhere in the evidence, minimum evidence
 counts, expected text, expected top-result text, representative
-`exact_tag_evidence` saved-item examples, forbidden source keys or noisy text,
+`exact_tag_evidence` examples, forbidden source keys or noisy text,
 source-type filters, related-evidence expansion, top-result matched or missing
 terms, and rough latency budgets.
 
@@ -183,9 +186,9 @@ without custom MCP code when they write into the shared data model:
 - Create an `items` row for each saved signal with a stable `source_key`,
   `source_type`, `external_id`, canonical URL, title, source text, author
   metadata, timestamps, note path, raw JSON, and content hash.
-- Store collector-assigned or model-assigned tags in `user_tags`; multi-word
-  entity tags should use the shared hyphenated form, for example
-  `mark-carney`.
+- Store collector-assigned or model-assigned item tags in `items.user_tags` and
+  source-centric tags in `sources.user_tags`; multi-word entity tags should use
+  the shared hyphenated form, for example `mark-carney`.
 - Store raw extracted linked-source text in `sources.extracted_text` and
   derived source summaries in `sources.summary_text`; do not replace raw text
   with summaries.

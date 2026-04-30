@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Source-Level Tags And Categorization (2026-04-29)
+
+- **Source tags**: Added first-class `sources.user_tags` so linked articles, repos, videos, and papers can be categorized independently from the saved items that reference them.
+- **Categorization**: Added `dbrain categorize source` and `dbrain categorize sources`; `categorize repair` and `categorize analyze` now include both item and source tags.
+- **Retrieval**: Source tags are indexed for search, included in exact-tag matching/counts, returned through MCP evidence, and visible/editable on source detail pages in the web UI.
+- **Docs and skill**: Updated README, MCP docs, and the dbrain MCP skill to distinguish source tags from backlink item tags.
+- **Location**: `internal/store/`, `internal/itemcategorize/`, `internal/app/`, `internal/ask/`, `internal/mcpserver/`, `web/`, `MCP.md`, `README.md`
+
 ### Built-In tsnet Remote Serving (2026-04-29)
 
 - **Remote web and MCP**: Added `dbrain serve remote` to expose the existing read/write web UI and read-only MCP endpoint from one built-in Tailscale `tsnet` node.

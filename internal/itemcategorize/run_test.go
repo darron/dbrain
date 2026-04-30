@@ -4,8 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestMergeUserTagsPreservesExistingAndDedupesGenerated(t *testing.T) {
@@ -46,5 +49,35 @@ func TestCallOpenRouterSendsVersionedUserAgent(t *testing.T) {
 	}
 	if capturedUserAgent != "dbrain/test-sha" {
 		t.Fatalf("User-Agent = %q, want %q", capturedUserAgent, "dbrain/test-sha")
+	}
+}
+
+func TestBuildSourceContentBundleIncludesSourceEvidence(t *testing.T) {
+	t.Parallel()
+
+	bundle := buildSourceContentBundle(model.SourceDocument{
+		SourceKey:     "src:test-source",
+		SourceType:    "web",
+		CanonicalURL:  "https://example.com/article",
+		Domain:        "example.com",
+		SiteName:      "Example",
+		Title:         "Source Title",
+		Description:   "Source description.",
+		SummaryText:   "Source summary.",
+		ExtractedText: strings.Repeat("extract ", 20),
+	})
+
+	for _, want := range []string{
+		"record_kind: source",
+		"source_type: web",
+		"url: https://example.com/article",
+		"title: Source Title",
+		"Description:\nSource description.",
+		"Summary:\nSource summary.",
+		"Extracted text:\nextract",
+	} {
+		if !strings.Contains(bundle, want) {
+			t.Fatalf("source bundle missing %q:\n%s", want, bundle)
+		}
 	}
 }

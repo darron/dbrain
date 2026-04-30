@@ -386,16 +386,27 @@ func (s *server) handleTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.store.GetItem(r.Context(), req.Lookup)
-	if err != nil {
-		writeMessage(w, http.StatusNotFound, fmt.Sprintf("item not found: %s", req.Lookup))
+	if err == nil {
+		if err := s.store.SaveItemUserTags(r.Context(), item.ID, req.Tags); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		item.UserTags = req.Tags
+		writeJSON(w, http.StatusOK, item)
 		return
 	}
-	if err := s.store.SaveItemUserTags(r.Context(), item.ID, req.Tags); err != nil {
+
+	source, err := s.store.GetSource(r.Context(), req.Lookup)
+	if err != nil {
+		writeMessage(w, http.StatusNotFound, fmt.Sprintf("item or source not found: %s", req.Lookup))
+		return
+	}
+	if err := s.store.SaveSourceUserTags(r.Context(), source.ID, req.Tags); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	item.UserTags = req.Tags
-	writeJSON(w, http.StatusOK, item)
+	source.UserTags = req.Tags
+	writeJSON(w, http.StatusOK, source)
 }
 
 func (s *server) loadQuotedPosts(ctx context.Context, itemID int64) []model.Item {

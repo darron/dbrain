@@ -61,6 +61,7 @@ func RenderSource(source model.SourceDocument, backlinks []model.SourceBacklink)
 	writeYAMLScalar(&b, "summary_tool", source.SummaryTool)
 	writeYAMLScalar(&b, "summary_tool_version", source.SummaryToolVersion)
 	writeYAMLScalar(&b, "summarized_at", formatTime(source.SummarizedAt))
+	writeYAMLScalar(&b, "user_tags", source.UserTags)
 	writeYAMLArray(&b, "tags", []string{"source/link", "source/" + source.SourceType})
 	b.WriteString("---\n\n")
 
@@ -84,6 +85,11 @@ func RenderSource(source model.SourceDocument, backlinks []model.SourceBacklink)
 	if source.SiteName != "" {
 		b.WriteString("- Site: ")
 		b.WriteString(source.SiteName)
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(source.UserTags) != "" {
+		b.WriteString("- User tags: ")
+		b.WriteString(strings.TrimSpace(source.UserTags))
 		b.WriteString("\n")
 	}
 	if source.ExtractStatus != "" {

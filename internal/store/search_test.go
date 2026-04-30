@@ -61,6 +61,71 @@ func TestSearchMatchesAndReturnsUserTags(t *testing.T) {
 	}
 }
 
+func TestSearchMatchesAndReturnsSourceUserTags(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceResult, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:test-source-tags",
+		CanonicalURL:  "https://example.com/tagged-source",
+		NormalizedURL: "https://example.com/tagged-source",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/example-com-test-source-tags.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/tagged-source",
+		Title:        "Tagged Source",
+		Description:  "body without the tag query",
+		Content:      "source body without the tag query",
+		Status:       "ok",
+		FetchedAt:    time.Now().UTC(),
+		Tool:         "test",
+	}, "test-source-tags-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+	if err := st.SaveSourceUserTags(ctx, sourceResult.SourceID, "source-researchtag, compact-mag"); err != nil {
+		t.Fatalf("save source user tags: %v", err)
+	}
+
+	results, err := st.Search(ctx, "source-researchtag", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected source tag-matched search result")
+	}
+	if results[0].SourceKey != "src:test-source-tags" {
+		t.Fatalf("expected tagged source first, got %+v", results[0])
+	}
+	if results[0].UserTags != "source-researchtag, compact-mag" {
+		t.Fatalf("expected source user tags in search result, got %q", results[0].UserTags)
+	}
+
+	tagResults, err := st.SearchUserTags(ctx, "compact-mag", 5)
+	if err != nil {
+		t.Fatalf("SearchUserTags: %v", err)
+	}
+	if len(tagResults) == 0 {
+		t.Fatal("expected direct source tag search result")
+	}
+	if tagResults[0].SourceKey != "src:test-source-tags" {
+		t.Fatalf("expected direct tagged source first, got %+v", tagResults[0])
+	}
+
+	count, err := st.CountExactUserTag(ctx, "compact-mag", nil)
+	if err != nil {
+		t.Fatalf("CountExactUserTag: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountExactUserTag = %d, want 1", count)
+	}
+}
+
 func TestOpenReadOnlyCanSearchExistingStore(t *testing.T) {
 	t.Parallel()
 

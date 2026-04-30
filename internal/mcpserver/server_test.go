@@ -1157,6 +1157,9 @@ func TestServerGetToolUsesSlimSourceProjection(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save summary: %v", err)
 	}
+	if err := st.SaveSourceUserTags(context.Background(), sourceResult.SourceID, "source-memory, mcp-source"); err != nil {
+		t.Fatalf("save source tags: %v", err)
+	}
 	itemResult, err := st.UpsertItem(context.Background(), model.Item{
 		SourceKey:    "x:test-mcp-get-source-backlink",
 		SourceType:   "x_bookmark",
@@ -1206,6 +1209,9 @@ func TestServerGetToolUsesSlimSourceProjection(t *testing.T) {
 	if _, ok := source["extract_json"]; ok {
 		t.Fatalf("expected slim source without extract_json, got %#v", source)
 	}
+	if source["user_tags"] != "source-memory, mcp-source" {
+		t.Fatalf("expected source tags, got %#v", source["user_tags"])
+	}
 	backlinks := structured["backlinks"].([]interface{})
 	if len(backlinks) != 1 {
 		t.Fatalf("expected source backlink, got %#v", backlinks)
@@ -1218,6 +1224,9 @@ func TestServerGetToolUsesSlimSourceProjection(t *testing.T) {
 	text := content[0].(map[string]interface{})["text"].(string)
 	if !strings.Contains(text, "User tags: agent-memory, source-backlink") {
 		t.Fatalf("expected backlink tags in text output, got %q", text)
+	}
+	if !strings.Contains(text, "User tags: source-memory, mcp-source") {
+		t.Fatalf("expected source tags in text output, got %q", text)
 	}
 	available := structured["available_sections"].([]interface{})
 	if _, ok := available[0].(map[string]interface{})["text"]; ok {

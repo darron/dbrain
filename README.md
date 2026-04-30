@@ -54,6 +54,8 @@ dbrain config env
 - `dbrain categorize batch`
 - `dbrain categorize item`
 - `dbrain categorize repair`
+- `dbrain categorize source`
+- `dbrain categorize sources`
 - `dbrain config env`
 - `dbrain config paths`
 - `dbrain entity generate <query>`
@@ -214,7 +216,7 @@ directory, then `config.yaml`. `--root` wins over `DBRAIN_ROOT`.
 | `GITHUB_TOKEN` | `github.token` or `env.GITHUB_TOKEN` | `` | GitHub API token for importing stars. |
 | `DBRAIN_SUMMARY_MODEL` / `SUMMARIZE_MODEL` | `summary.model` | `` | Default model for summarize-backed source and answer synthesis. |
 | `DBRAIN_SUMMARY_LANGUAGE` / `DBRAIN_OUTPUT_LANGUAGE` / `SUMMARIZE_LANGUAGE` | `summary.language` | `en` | Output language for summaries; use `auto` to match source language. |
-| `DBRAIN_CATEGORIZE_MODEL` | `categorize.model` | `openrouter/google/gemini-2.5-flash` | Default LLM model for item categorization. |
+| `DBRAIN_CATEGORIZE_MODEL` | `categorize.model` | `openrouter/google/gemini-2.5-flash` | Default LLM model for item/source categorization. |
 | `DBRAIN_OCR_MODEL` / `DBRAIN_X_PHOTO_OCR_MODEL` | `ocr.model` | `openrouter/google/gemini-3.1-flash-lite-preview` | Default model for X photo OCR. |
 | `DBRAIN_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | `ollama.base_url` | `http://127.0.0.1:11434` | Ollama endpoint for local model calls. |
 | `DBRAIN_OLLAMA_API_KEY` / `OLLAMA_API_KEY` | `ollama.api_key` | `ollama` | API key label used for Ollama-compatible local calls. |
@@ -323,7 +325,7 @@ Usage:
 Available Commands:
   archive     Manage archived media and other durable storage tiers
   ask         Answer a question from the local brain with retrieved evidence
-  categorize  Categorize items with an LLM using all available content
+  categorize  Categorize items or linked sources with an LLM
   config      Show active configuration and storage paths
   entity      Derive and render entities from the local brain
   eval        Run local retrieval quality checks
@@ -854,10 +856,36 @@ dbrain categorize batch --force --limit 100 --concurrency 2 --model ollama/qwen2
 dbrain categorize batch --limit 50 --json
 ```
 
+### `dbrain categorize source`
+
+Sends one linked source's metadata, summary, description, and extracted text to
+the same categorizer. Use `--apply` to save the result to the source's own
+`user_tags` field and re-index source search. Source tags are distinct from the
+tags on saved items that backlink to the source.
+
+```sh
+dbrain categorize source --lookup src:db9d3b4551dd
+dbrain categorize source --lookup https://www.example.com/ --apply
+```
+
+### `dbrain categorize sources`
+
+Batch-categorizes linked sources. By default only sources with empty
+`user_tags` are selected; use `--force` to re-categorize existing source tags.
+This is useful when you want a source-centric view of linked articles,
+repositories, papers, and videos rather than only the tags on the saved item
+that referenced them.
+
+```sh
+dbrain categorize sources --limit 50 --concurrency 2 --apply
+dbrain categorize sources --force --limit 100 --json
+```
+
 ### `dbrain categorize repair`
 
-Repairs existing `user_tags` using the configured category rewrite vocabulary.
-This is useful after adding aliases or normalizing tag forms.
+Repairs existing item and source `user_tags` using the configured category
+rewrite vocabulary. This is useful after adding aliases or normalizing tag
+forms.
 
 ```sh
 dbrain categorize repair
@@ -1032,6 +1060,8 @@ configuration.
 - [ ] Continue improving topic/MOC synthesis quality and better periodic refresh workflows as the corpus fills out.
 - [x] Add optional embedded `tsnet` serving for remote web and MCP access
   without requiring users to configure `tailscale serve` themselves.
+- [x] Add source-level `user_tags`, source categorization commands, and
+  source-tag search/MCP visibility separate from backlink item tags.
 - [ ] Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
 - [ ] Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
 - [ ] Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.

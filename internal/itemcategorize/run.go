@@ -36,7 +36,7 @@ const (
 	maxTranscriptChars    = 3000
 )
 
-const systemPrompt = `You are categorizing items for a personal knowledge base.
+const systemPrompt = `You are categorizing items or linked sources for a personal knowledge base.
 Analyze the provided content and respond with ONLY valid JSON — no markdown, no code fences, no explanation.
 
 Required format:
@@ -85,6 +85,9 @@ type Options struct {
 	// OnResult is called from worker goroutines as each item completes.
 	// It must be safe to call concurrently. Leave nil to skip streaming output.
 	OnResult func(ItemResult)
+	// OnSourceResult is called from worker goroutines as each source completes.
+	// It must be safe to call concurrently. Leave nil to skip streaming output.
+	OnSourceResult func(SourceResult)
 }
 
 // Result holds the LLM categorization output for one item.
@@ -101,6 +104,13 @@ type ItemResult struct {
 	Item   model.Item `json:"item"`
 	Result Result     `json:"result,omitempty"`
 	Error  string     `json:"error,omitempty"`
+}
+
+// SourceResult pairs a source with its categorization result or error.
+type SourceResult struct {
+	Source model.SourceDocument `json:"source"`
+	Result Result               `json:"result,omitempty"`
+	Error  string               `json:"error,omitempty"`
 }
 
 // Stats summarises a batch categorize run.
@@ -133,6 +143,25 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, item model.Ite
 		tags := MergeUserTags(item.UserTags, result)
 		if err := st.SaveItemUserTags(ctx, item.ID, tags); err != nil {
 			return result, fmt.Errorf("save user_tags: %w", err)
+		}
+	}
+
+	return result, nil
+}
+
+// RunSource categorizes a single source and optionally saves the result.
+func RunSource(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options) (Result, error) {
+	resolveOpts(cfg, &opts)
+
+	result, err := callLLM(ctx, buildSourceContentBundle(source), nil, opts)
+	if err != nil {
+		return Result{}, err
+	}
+
+	if opts.Apply {
+		tags := MergeUserTags(source.UserTags, result)
+		if err := st.SaveSourceUserTags(ctx, source.ID, tags); err != nil {
+			return result, fmt.Errorf("save source user_tags: %w", err)
 		}
 	}
 
@@ -221,6 +250,88 @@ dispatch:
 	return stats, results, ctx.Err()
 }
 
+// BatchSources categorizes multiple sources (those without user_tags unless force is set).
+func BatchSources(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, []SourceResult, error) {
+	resolveOpts(cfg, &opts)
+
+	sources, err := st.ListSourcesForCategorize(ctx, opts.Limit, opts.Force)
+	if err != nil {
+		return Stats{}, nil, fmt.Errorf("list sources: %w", err)
+	}
+
+	stats := Stats{Queued: len(sources)}
+	if opts.OnStart != nil {
+		opts.OnStart(len(sources))
+	}
+	if len(sources) == 0 {
+		return stats, nil, nil
+	}
+
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = 2
+	}
+	if concurrency > len(sources) {
+		concurrency = len(sources)
+	}
+
+	var mu sync.Mutex
+	var results []SourceResult
+	var wg sync.WaitGroup
+	jobs := make(chan model.SourceDocument)
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case source, ok := <-jobs:
+					if !ok {
+						return
+					}
+					sr := SourceResult{Source: source}
+					res, runErr := RunSource(ctx, cfg, st, source, opts)
+					if runErr != nil {
+						sr.Error = runErr.Error()
+						mu.Lock()
+						stats.Errors++
+						results = append(results, sr)
+						mu.Unlock()
+					} else {
+						sr.Result = res
+						mu.Lock()
+						stats.Succeeded++
+						if opts.Apply {
+							stats.Applied++
+						}
+						results = append(results, sr)
+						mu.Unlock()
+					}
+					if opts.OnSourceResult != nil {
+						opts.OnSourceResult(sr)
+					}
+				}
+			}
+		}()
+	}
+
+dispatch:
+	for _, source := range sources {
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case jobs <- source:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	return stats, results, ctx.Err()
+}
+
 // ---- content bundle ------------------------------------------------------------
 
 func buildContentBundle(item model.Item) string {
@@ -283,6 +394,41 @@ func buildContentBundle(item model.Item) string {
 	// OCR text (already extracted from images)
 	if ocrText := strings.TrimSpace(item.OCRText); ocrText != "" {
 		sb.WriteString("Image text (OCR):\n" + ocrText + "\n\n")
+	}
+
+	return strings.TrimSpace(sb.String())
+}
+
+func buildSourceContentBundle(source model.SourceDocument) string {
+	var sb strings.Builder
+
+	sb.WriteString("record_kind: source\n")
+	sb.WriteString("source_type: " + source.SourceType + "\n")
+	if source.Domain != "" {
+		sb.WriteString("domain: " + source.Domain + "\n")
+	}
+	if source.SiteName != "" {
+		sb.WriteString("site_name: " + source.SiteName + "\n")
+	}
+	if source.CanonicalURL != "" {
+		sb.WriteString("url: " + source.CanonicalURL + "\n")
+	}
+	if source.Title != "" {
+		sb.WriteString("title: " + source.Title + "\n")
+	}
+	sb.WriteString("\n")
+
+	if description := strings.TrimSpace(source.Description); description != "" {
+		sb.WriteString("Description:\n" + description + "\n\n")
+	}
+	if summary := strings.TrimSpace(source.SummaryText); summary != "" {
+		sb.WriteString("Summary:\n" + summary + "\n\n")
+	}
+	if extracted := strings.TrimSpace(source.ExtractedText); extracted != "" {
+		if len(extracted) > maxArticleChars {
+			extracted = extracted[:maxArticleChars] + "…"
+		}
+		sb.WriteString("Extracted text:\n" + extracted + "\n\n")
 	}
 
 	return strings.TrimSpace(sb.String())

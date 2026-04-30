@@ -271,6 +271,26 @@ func TestWebHandlerServesBootstrapSearchGetAndAsk(t *testing.T) {
 		}
 	})
 
+	t.Run("tag source", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"lookup":"` + sourceKey + `","tags":"source-memory,example-source"}`)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/tag", body)
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response model.SourceDocument
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode tagged source: %v", err)
+		}
+		if response.UserTags != "source-memory,example-source" {
+			t.Fatalf("expected source tags, got %q", response.UserTags)
+		}
+	})
+
 	t.Run("ask retrieve only", func(t *testing.T) {
 		body := bytes.NewBufferString(`{"question":"What do I have on agent memory?","limit":4}`)
 		rec := httptest.NewRecorder()

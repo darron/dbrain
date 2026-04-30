@@ -35,11 +35,23 @@ func newCategorizeAnalyzeCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			sources, err := st.ListCategorizedSources(cmd.Context())
+			if err != nil {
+				return err
+			}
 
 			// Count every token across all user_tags.
 			counts := make(map[string]int)
 			for _, item := range items {
 				for _, t := range strings.Split(item.UserTags, ",") {
+					t = strings.TrimSpace(t)
+					if t != "" {
+						counts[t]++
+					}
+				}
+			}
+			for _, source := range sources {
+				for _, t := range strings.Split(source.UserTags, ",") {
 					t = strings.TrimSpace(t)
 					if t != "" {
 						counts[t]++
@@ -78,8 +90,8 @@ func newCategorizeAnalyzeCommand(root *rootOptions) *cobra.Command {
 				})
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Categorized items: %d\nUnique tokens (count >= %d): %d\n\n",
-				len(items), minCount, len(entries))
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Categorized records: %d items, %d sources\nUnique tokens (count >= %d): %d\n\n",
+				len(items), len(sources), minCount, len(entries))
 
 			for _, e := range entries {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%5d  %s\n", e.count, e.token)

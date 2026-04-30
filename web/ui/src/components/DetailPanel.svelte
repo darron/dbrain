@@ -1,5 +1,5 @@
 <script>
-  import { tagItem } from "../lib/api.js";
+  import { tagRecord } from "../lib/api.js";
 
   export let detailState = "idle";
   export let detailError = "";
@@ -90,7 +90,7 @@
     return text.slice(0, max).trimEnd() + "…";
   }
 
-  $: userTags = parseList(item?.user_tags);
+  $: userTags = parseList(rec?.user_tags);
   $: taggedBacklinks = detail?.kind === "source"
     ? (detail.backlinks || [])
         .map(ref => ({ ...ref, tags: parseList(ref.user_tags) }))
@@ -100,16 +100,18 @@
   let tagSaving = false;
   let tagEditMode = false;
 
-  // Reset edit mode whenever the viewed item changes
-  $: if (item?.id) { tagEditMode = false; newTag = ""; }
+  // Reset edit mode whenever the viewed record changes.
+  $: if (rec?.source_key) { tagEditMode = false; newTag = ""; }
 
-  async function saveTagsForItem(tags) {
-    if (!item) return;
+  async function saveTags(tags) {
+    if (!rec) return;
     tagSaving = true;
     try {
-      const updated = await tagItem(item.source_key, tags.join(","));
-      if (detail?.item) {
+      const updated = await tagRecord(rec.source_key, tags.join(","));
+      if (detail?.kind === "item" && detail?.item) {
         detail = { ...detail, item: { ...detail.item, user_tags: updated.user_tags ?? "" } };
+      } else if (detail?.kind === "source" && detail?.source) {
+        detail = { ...detail, source: { ...detail.source, user_tags: updated.user_tags ?? "" } };
       }
     } catch (e) {
       console.error("tag save failed", e);
@@ -122,11 +124,11 @@
     const t = newTag.trim();
     if (!t || userTags.includes(t)) { newTag = ""; return; }
     newTag = "";
-    await saveTagsForItem([...userTags, t]);
+    await saveTags([...userTags, t]);
   }
 
   async function removeTag(tag) {
-    await saveTagsForItem(userTags.filter(t => t !== tag));
+    await saveTags(userTags.filter(t => t !== tag));
   }
 
   function onTagKeydown(e) {
@@ -210,7 +212,7 @@
     {/if}
 
     <!-- User tags -->
-    {#if item}
+    {#if rec}
       <div class="detail-section tag-section">
         <div class="tag-chips">
           {#each userTags as tag}

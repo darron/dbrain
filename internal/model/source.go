@@ -35,6 +35,7 @@ type SourceDocument struct {
 	SummarizedAt         time.Time `json:"summarized_at"`
 	ContentHash          string    `json:"content_hash"`
 	NotePath             string    `json:"note_path"`
+	UserTags             string    `json:"user_tags"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
@@ -48,6 +49,7 @@ type ItemSourceRef struct {
 	NotePath      string `json:"note_path"`
 	ExtractStatus string `json:"extract_status"`
 	SummaryStatus string `json:"summary_status"`
+	UserTags      string `json:"user_tags"`
 }
 
 type SourceBacklink struct {

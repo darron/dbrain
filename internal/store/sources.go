@@ -22,7 +22,7 @@ const sourceSelectColumns = `
 	extract_tool, extract_tool_version,
 	summary_text, summary_json, summary_status, summary_error, summary_model, summary_content_hash, summary_prompt_version,
 	summary_tool, summary_tool_version, summarized_at,
-	content_hash, note_path, created_at, updated_at`
+	content_hash, note_path, user_tags, created_at, updated_at`
 
 func (s *Store) ensureSourceTables() error {
 	schema := []string{
@@ -59,6 +59,7 @@ func (s *Store) ensureSourceTables() error {
 			summarized_at TEXT NOT NULL DEFAULT '',
 			content_hash TEXT NOT NULL DEFAULT '',
 			note_path TEXT NOT NULL DEFAULT '',
+			user_tags TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
@@ -154,6 +155,7 @@ func (s *Store) ensureSourceColumns() error {
 		"summarized_at":           "TEXT NOT NULL DEFAULT ''",
 		"content_hash":            "TEXT NOT NULL DEFAULT ''",
 		"note_path":               "TEXT NOT NULL DEFAULT ''",
+		"user_tags":               "TEXT NOT NULL DEFAULT ''",
 	}
 
 	for name, definition := range required {
@@ -1285,7 +1287,7 @@ func (s *Store) GetSource(ctx context.Context, lookup string) (model.SourceDocum
 
 func (s *Store) ListSourcesForItem(ctx context.Context, itemID int64) ([]model.ItemSourceRef, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id, s.source_key, s.canonical_url, s.source_type, s.title, s.note_path, s.extract_status, s.summary_status
+		SELECT s.id, s.source_key, s.canonical_url, s.source_type, s.title, s.note_path, s.extract_status, s.summary_status, s.user_tags
 		FROM item_source_links l
 		JOIN sources s ON s.id = l.source_id
 		WHERE l.item_id = ?
@@ -1300,7 +1302,7 @@ func (s *Store) ListSourcesForItem(ctx context.Context, itemID int64) ([]model.I
 	var refs []model.ItemSourceRef
 	for rows.Next() {
 		var ref model.ItemSourceRef
-		if err := rows.Scan(&ref.SourceID, &ref.SourceKey, &ref.CanonicalURL, &ref.SourceType, &ref.Title, &ref.NotePath, &ref.ExtractStatus, &ref.SummaryStatus); err != nil {
+		if err := rows.Scan(&ref.SourceID, &ref.SourceKey, &ref.CanonicalURL, &ref.SourceType, &ref.Title, &ref.NotePath, &ref.ExtractStatus, &ref.SummaryStatus, &ref.UserTags); err != nil {
 			return nil, fmt.Errorf("scan item source ref %d: %w", itemID, err)
 		}
 		refs = append(refs, ref)
@@ -1339,6 +1341,25 @@ func (s *Store) ListBacklinksForSource(ctx context.Context, sourceID int64) ([]m
 	return refs, nil
 }
 
+func (s *Store) SaveSourceUserTags(ctx context.Context, sourceID int64, tags string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin source tag tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, `UPDATE sources SET user_tags = ?, updated_at = ? WHERE id = ?`, tags, time.Now().UTC().Format(time.RFC3339), sourceID); err != nil {
+		return fmt.Errorf("update user_tags for source %d: %w", sourceID, err)
+	}
+	if err = s.syncSourceFTSByIDTx(ctx, tx, sourceID); err != nil {
+		return fmt.Errorf("sync fts for source %d: %w", sourceID, err)
+	}
+	return tx.Commit()
+}
+
 func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.SourceDocument) error {
 	var extractedAt, summarizedAt, createdAt, updatedAt string
 	var extractFirstFailedAt, extractLastFailedAt string
@@ -1375,6 +1396,7 @@ func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.Sour
 		&summarizedAt,
 		&source.ContentHash,
 		&source.NotePath,
+		&source.UserTags,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -1539,16 +1561,33 @@ func storedTimeString(value time.Time) string {
 }
 
 func (s *Store) syncSourceFTS(ctx context.Context, sourceID int64) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sources_fts WHERE rowid = ?`, sourceID); err != nil {
+	return s.syncSourceFTSByIDTx(ctx, nil, sourceID)
+}
+
+func (s *Store) syncSourceFTSByIDTx(ctx context.Context, tx *sql.Tx, sourceID int64) error {
+	exec := func(query string, args ...any) (sql.Result, error) {
+		if tx != nil {
+			return tx.ExecContext(ctx, query, args...)
+		}
+		return s.db.ExecContext(ctx, query, args...)
+	}
+	queryRow := func(query string, args ...any) *sql.Row {
+		if tx != nil {
+			return tx.QueryRowContext(ctx, query, args...)
+		}
+		return s.db.QueryRowContext(ctx, query, args...)
+	}
+
+	if _, err := exec(`DELETE FROM sources_fts WHERE rowid = ?`, sourceID); err != nil {
 		return nil
 	}
 
-	source, err := s.GetSourceByID(ctx, sourceID)
-	if err != nil {
+	var source model.SourceDocument
+	if err := scanSource(queryRow(`SELECT `+sourceSelectColumns+` FROM sources WHERE id = ?`, sourceID), &source); err != nil {
 		return err
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err := exec(`
 		INSERT INTO sources_fts (
 			rowid, source_key, title, description, site_name, extracted_text, summary_text, domain
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1558,12 +1597,23 @@ func (s *Store) syncSourceFTS(ctx context.Context, sourceID int64) error {
 		source.Description,
 		source.SiteName,
 		source.ExtractedText,
-		source.SummaryText,
+		indexedSourceSummaryText(source),
 		source.Domain,
 	); err != nil {
 		return nil
 	}
 	return nil
+}
+
+func indexedSourceSummaryText(source model.SourceDocument) string {
+	parts := make([]string, 0, 2)
+	for _, value := range []string{strings.TrimSpace(source.SummaryText), strings.TrimSpace(source.UserTags)} {
+		if value == "" {
+			continue
+		}
+		parts = append(parts, value)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (s *Store) SearchSources(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
@@ -1596,7 +1646,7 @@ func (s *Store) searchSourcesFTS(ctx context.Context, query string, limit int) (
 			s.canonical_url,
 			s.domain,
 			s.note_path,
-			'' AS user_tags,
+			s.user_tags,
 			substr(trim(replace(COALESCE(NULLIF(s.summary_text, ''), s.extracted_text), char(10), ' ')), 1, 200) AS snippet
 		FROM sources_fts f
 		JOIN sources s ON s.id = f.rowid
@@ -1626,7 +1676,7 @@ func (s *Store) searchSourcesLike(ctx context.Context, query string, limit int) 
 			canonical_url,
 			domain,
 			note_path,
-			'' AS user_tags,
+			user_tags,
 			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), extracted_text), char(10), ' ')), 1, 200) AS snippet
 		FROM sources
 		WHERE title LIKE ?
@@ -1635,8 +1685,9 @@ func (s *Store) searchSourcesLike(ctx context.Context, query string, limit int) 
 			OR extracted_text LIKE ?
 			OR summary_text LIKE ?
 			OR domain LIKE ?
+			OR user_tags LIKE ?
 		ORDER BY updated_at DESC
-		LIMIT ?`, like, like, like, like, like, like, limit)
+		LIMIT ?`, like, like, like, like, like, like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("source like search: %w", err)
 	}

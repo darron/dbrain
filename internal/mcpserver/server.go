@@ -1116,9 +1116,9 @@ func searchResultSchema() map[string]interface{} {
 		"author_handle":  scalarSchema("string", "Author handle when present."),
 		"author_name":    scalarSchema("string", "Author display name when present."),
 		"canonical_url":  scalarSchema("string", "Canonical URL."),
-		"primary_domain": scalarSchema("string", "Primary domain for item rows."),
+		"primary_domain": scalarSchema("string", "Primary domain for item rows or source domain for source rows."),
 		"note_path":      scalarSchema("string", "Relative rendered note path."),
-		"user_tags":      scalarSchema("string", "Comma-separated user tags for item rows."),
+		"user_tags":      scalarSchema("string", "Comma-separated user tags for item or source rows."),
 		"snippet":        scalarSchema("string", "Search snippet."),
 	}, "source_key", "title", "canonical_url", "note_path")
 }
@@ -1137,7 +1137,7 @@ func evidenceSchema() map[string]interface{} {
 		"published_at":   scalarSchema("string", "Published timestamp when present."),
 		"extracted_at":   scalarSchema("string", "Extraction timestamp when present."),
 		"summarized_at":  scalarSchema("string", "Summary timestamp when present."),
-		"user_tags":      scalarSchema("string", "Comma-separated user tags for item evidence."),
+		"user_tags":      scalarSchema("string", "Comma-separated user tags for item or source evidence."),
 		"entity_matches": arraySchema(scalarSchema("string", "Derived entities that matched the query and reference this note.")),
 		"related_to":     scalarSchema("string", "Parent source key when added as related evidence."),
 		"relationship":   scalarSchema("string", "How this evidence relates to another node."),
@@ -1210,6 +1210,7 @@ func itemSourceRefSchema() map[string]interface{} {
 		"note_path":      scalarSchema("string", "Relative rendered note path."),
 		"extract_status": scalarSchema("string", "Extraction status."),
 		"summary_status": scalarSchema("string", "Summary status."),
+		"user_tags":      scalarSchema("string", "Comma-separated source user tags."),
 	}, "source_id", "source_key", "canonical_url", "source_type", "title", "note_path")
 }
 
@@ -1533,6 +1534,11 @@ func formatRelatedSources(lookup string, refs []model.ItemSourceRef) string {
 		b.WriteString("  Note: ")
 		b.WriteString(ref.NotePath)
 		b.WriteString("\n")
+		if strings.TrimSpace(ref.UserTags) != "" {
+			b.WriteString("  User tags: ")
+			b.WriteString(strings.TrimSpace(ref.UserTags))
+			b.WriteString("\n")
+		}
 	}
 	return strings.TrimSpace(b.String())
 }
