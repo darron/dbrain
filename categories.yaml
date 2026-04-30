@@ -47,6 +47,91 @@ aliases:
   nic-rh: nic-roberts-huntley
   nick-roberts-huntley: nic-roberts-huntley
 
+  # === Source categorization cleanup ===
+  # License names emitted frequently by GitHub/source categorization.
+  apache-license-2-0: apache-2-0
+  apache-2-0-license: apache-2-0
+  apache-2-license: apache-2-0
+  apache-license: apache-2-0
+  apache-license-2: apache-2-0
+  apachelicense-2-0: apache-2-0
+  apachelicense20: apache-2-0
+  apach-license-2-0: apache-2-0
+  apachely-license-2-0: apache-2-0
+  apacher-license-2-0: apache-2-0
+  agpl: agpl-3-0
+  agplv3: agpl-3-0
+  agpl-license: agpl-3-0
+  agpl-3-license: agpl-3-0
+  gnu-affero-general-public-license: agpl-3-0
+  gnu-affero-general-public-license-v3-0: agpl-3-0
+  gnu-agpl-license: agpl-3-0
+  bsd-3-clause: bsd-license
+  mozilla-public-license-2-0: mozilla-public-license
+  mozilla-license: mozilla-public-license
+
+  # Tooling/source categories that came back in many near-identical forms.
+  dev-tools: developer-tools
+  development-tools: developer-tools
+  software-tools: developer-tools
+  programming-tools: developer-tools
+  software-development-tools: developer-tools
+  cli: cli-tools
+  cli-tool: cli-tools
+  cli-utility: cli-tools
+  cli-utilities: cli-tools
+  cli-application: cli-tools
+  cli-applications: cli-tools
+  command-line: cli-tools
+  command-line-tool: cli-tools
+  command-line-tools: cli-tools
+  command-line-utility: cli-tools
+  command-line-utilities: cli-tools
+  command-line-interface: cli-tools
+  command-line-interfaces: cli-tools
+  cicd: ci-cd
+  ci-pipelines: ci-cd
+  ci-cd-automation: ci-cd
+  devops-tools: devops
+  devops-automation: devops
+  model-context-protocol: mcp
+  helm-chart: helm-charts
+  custom-resource-definition: custom-resource-definitions
+  crd: custom-resource-definitions
+  crds: custom-resource-definitions
+  elastic-search: elasticsearch
+  postgres: postgresql
+  faas: serverless-computing
+  serverless: serverless-computing
+  cloud-native-computing: cloud-native
+  kubernetes-operators: kubernetes-operator
+  software-supply-chain-security: supply-chain-security
+  supply-chain-integrity: supply-chain-security
+
+  # Organization/cloud/product spelling variants.
+  cloud-native-computing-foundation: cncf
+  cnfc: cncf
+  cnfc-sandbox: cncf-sandbox
+  gcp: google-cloud-platform
+  microsoft-azure: azure
+  open-shift: openshift
+
+  # Topic/category variants.
+  fintech: financial-technology
+  firearm-regulations: firearms-regulation
+  gun-control: firearms-regulation
+  gun-politics: firearms-regulation
+  oss: open-source-software
+  open-source: open-source-software
+  open-source-libraries: open-source-software
+  open-source-tools: open-source-software
+  rust-programming: rust
+  python-programming: python
+  ruby-programming: ruby
+  yaml-configuration: yaml
+  json-configuration: json
+  toml-config: toml
+
 drop:
   # Source import noise — describes how item arrived, not what it's about
   - github-star
@@ -68,3 +153,10 @@ drop:
   - social-media-links
   - user-content
   - unknown-content
+  - article-link
+  - twitter-articles
+  - access-denied
+  - vpn-block
+  - archived-repository
+  - pkg-go-dev
+  - godoc
