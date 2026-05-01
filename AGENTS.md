@@ -23,8 +23,9 @@ should not mutate the upstream app or treat upstream state as dbrain-owned.
 - prefer import-only behavior for local app stores
 - never add write-back, creation, or editing support unless explicitly planned
   and accepted as a separate feature
-- when reading another app's SQLite database, open the source read-only and
-  prefer a dbrain-owned snapshot before decoding/indexing
+- when reading another app's SQLite database, prefer a dbrain-owned snapshot
+  before decoding/indexing; if a live source connection is unavoidable, it must
+  be read-only and explicitly justified in the design
 - do not run write-affecting statements such as `VACUUM`, checkpoints,
   migrations, `CREATE`, `INSERT`, `UPDATE`, or `DELETE` against upstream app
   databases
@@ -109,8 +110,9 @@ store.
   this
 - require and diagnose Full Disk Access when needed; do not try to automate macOS
   permissions
-- open Apple's source database read-only and do not mutate the source DB, WAL,
-  or SHM files
+- copy Apple's Notes DB/WAL/SHM triplet into a dbrain-owned snapshot before
+  opening SQLite for import work; do not hardlink live Notes files
+- do not mutate Apple's source DB, WAL, or SHM files
 - treat private Notes schema drift as expected: probe columns/entities, tolerate
   unknown fields, and store parser/schema provenance
 
@@ -148,7 +150,7 @@ Apple Notes import should stay in the spirit of dbrain's CLI.
 
 - run from explicit CLI commands and optional configured `sync all`
 - do not add FSEvents capture, launchd orchestration, resident watchers, or a
-  SaaS component
+  SaaS component in v1 or without a later accepted design that revisits this
 - provider-index/live retrieval and write-back/note creation are out of scope
   unless a later accepted design says otherwise
 

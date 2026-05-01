@@ -25,9 +25,9 @@ The recommended implementation path is:
    default, with explicit account/folder/marker exclusions.
 3. Run that importer from the normal CLI path periodically, including optional
    `sync all` integration when configured.
-4. Index attached files through dbrain's existing document/media paths: PDFs
-   through text extraction/summarization, images through OCR, and attachment
-   text fields directly when Notes already provides them.
+4. Index attachment metadata and Notes-provided attachment text first, then add
+   file-content extraction for supported PDFs and images through dbrain's
+   existing document/OCR paths once attachment bytes can be safely resolved.
 
 This proposal assumes `dbrain` remains a local open-source CLI application. V1
 should be a single Homebrew-distributable binary that the user runs manually or
@@ -46,9 +46,10 @@ The implementation should be local-by-default and exclusion-driven:
 - If a previously cached or materialized note later becomes excluded, purge
   indexed content and derived outputs while retaining only a minimal tombstone
   when needed.
-- Highest priority: never corrupt Apple's Notes database. The importer must
-  open the source database read-only, must not write PRAGMAs/checkpoints/VACUUM
-  against the source, and should read from a dbrain-owned snapshot.
+- Highest priority: never corrupt Apple's Notes database. The importer should
+  copy the Notes SQLite DB/WAL/SHM triplet into a dbrain-owned snapshot before
+  opening SQLite, must not hardlink live files, and must not write
+  PRAGMAs/checkpoints/VACUUM against the source.
 
 This is a different data class from X bookmarks, GitHub stars, YouTube videos,
 or linked web sources. Apple Notes are user-authored working memory. Privacy and
@@ -118,8 +119,9 @@ Reference: https://lifecontext.vip/guide/intro/second-brain
 - Preserve enough metadata to detect updates without reprocessing every note.
 - Extract links from materialized notes so URLs in Apple Notes can become normal
   linked source rows.
-- Index useful attached files, especially PDFs and images, using existing
-  dbrain extraction/OCR/summarization pipelines.
+- Index useful attachment metadata and text, then supported attached files such
+  as PDFs and images through existing dbrain extraction/OCR/summarization
+  pipelines when file resolution is safe.
 - Summarize imported Notes locally with an Apple Notes-specific prompt.
 - Provide an explicit, reliable `DO NOT index` mechanism.
 - Make dry-run output useful before any private content is stored.
@@ -148,7 +150,7 @@ Reference: https://lifecontext.vip/guide/intro/second-brain
 
 | Option | Feasibility | Recommendation | Notes |
 | --- | --- | --- | --- |
-| Direct Notes SQLite/CloudKit store | Medium to high risk | Required v1 path | Best non-AppleScript path and best fit for periodic CLI materialization. Requires Full Disk Access and tracks private schema details such as `NoteStore.sqlite`, compressed note data, deletion markers, and attachment records. Must be source-read-only. |
+| Direct Notes SQLite/CloudKit store | Medium to high risk | Required v1 path | Best non-AppleScript path and best fit for periodic CLI materialization. Requires Full Disk Access and tracks private schema details such as `NoteStore.sqlite`, compressed note data, deletion markers, and attachment records. Must snapshot the DB/WAL/SHM triplet before SQLite reads and leave source files untouched. |
 | Apple Events / AppleScript / JXA | High | Reject | Scriptable and useful as prior art, but not needed for this product direction and adds Automation/TCC behavior we do not want. |
 | Swift helper or extra CLI | Medium | Avoid | A separate helper may improve TCC identity, but the goal is a single binary if at all possible. |
 | External Apple Notes MCP server | Medium | Reference/prototype only | Useful proof that Notes can be exposed as a tool surface. dbrain should import directly from SQLite rather than depending on a second MCP server. |
@@ -266,24 +268,29 @@ safety risk.
 
 ### Direct SQLite Shape
 
-The direct DB reader must never write to Apple's database. The source database
-connection should be opened with an SQLite URI equivalent to `mode=ro`, and no
-code path may execute write-affecting statements against the source, including
-`CREATE`, `INSERT`, `UPDATE`, `DELETE`, `ATTACH`, `VACUUM`, or
-`PRAGMA wal_checkpoint`. If read-only access cannot be guaranteed, the importer
-should fail closed.
+The direct DB reader must never write to Apple's database. The default path
+should create a dbrain-owned filesystem snapshot of the Notes SQLite triplet
+before opening SQLite at all:
 
-The default read path should create a dbrain-owned snapshot using SQLite's
-backup API from that read-only source connection, then read the snapshot.
-`VACUUM INTO` should not be used against the live source database because it is
-write-adjacent and violates the safety goal. A raw file copy of
-`NoteStore.sqlite` plus WAL/SHM sidecars should not be the default because it
-can capture an inconsistent WAL frame.
+- `NoteStore.sqlite`
+- `NoteStore.sqlite-wal`, when present
+- `NoteStore.sqlite-shm`, when present
+
+Use APFS clone/copy semantics when available, but do not use hard links because
+they alias the live files. Open only the copied snapshot with SQLite, validate
+it with an integrity check, and retry once or fail closed with a clear "close
+Notes and rerun" diagnostic if the snapshot is inconsistent.
+
+No code path may execute write-affecting statements against the source,
+including `CREATE`, `INSERT`, `UPDATE`, `DELETE`, `ATTACH`, `VACUUM`, or
+`PRAGMA wal_checkpoint`. If a future implementation ever needs a live source
+SQLite connection, it must be opened with read-only semantics and the acceptance
+criteria must be revisited explicitly.
 
 Snapshots should live under dbrain's temp/state tree, be guarded by a
 single-flight lock so two Apple Notes imports do not race over the same
-snapshot directory, and be pruned after the run unless `--snapshot-only` or a
-debug flag asks to keep them. A `--snapshot-dir` override is useful for testing
+snapshot directory, and be pruned after the run unless `snapshot` or a debug
+flag asks to keep them. The `snapshot --dir` subcommand is useful for testing
 large Notes databases.
 
 Known core path:
@@ -479,7 +486,9 @@ owned by dbrain.
   minimal `protowire` decoder for plaintext. Generated code is more
   maintainable once we care about formatting, links, checklists, or
   attachments.
-- PDFs can use dbrain's existing document extraction/summarization path.
+- Resolved PDFs can use dbrain's existing document extraction/summarization
+  path when that path accepts the copied attachment file; otherwise they should
+  be marked blocked rather than retried forever.
 - Image OCR should prefer a local provider for Apple Notes attachments. The
   exact local OCR choice is still open, but attachment OCR should be wired as a
   normal dbrain enrichment stage that stores raw OCR separately from summaries.
@@ -494,7 +503,7 @@ dependencies.
 The main implementation risk is not library availability. It is safe ownership
 of Apple's private Notes schema: table names, column names, compressed payload
 layout, timestamp fields, and attachment relationships are not a stable public
-API, and the live source database must remain read-only.
+API, and the live source DB/WAL/SHM files must remain untouched.
 
 ### Distribution And Permissions
 
@@ -557,16 +566,18 @@ dbrain import apple-notes --dry-run
 dbrain import apple-notes --apply
 dbrain import apple-notes --exclude-folder "Private" --exclude-folder "Passwords" --apply
 dbrain import apple-notes --limit 25 --show-titles --dry-run
-dbrain import apple-notes --snapshot-only --snapshot-dir /tmp/dbrain-notes-snapshot
+dbrain import apple-notes snapshot --dir /tmp/dbrain-notes-snapshot
 dbrain import apple-notes decode --note <note-id>
+dbrain sync all --skip-apple-notes
 dbrain ask "What do my notes and saved sources say about X?"
 ```
 
 Suggested first flags:
 
 - `--dry-run`
-  Print counts, accounts/folders matched, and skipped counts without storing
-  note bodies or titles.
+  Run the full import decision path without persistence: body decode, ignore
+  marker detection, blocked-state classification, and attachment
+  classification. Do not print note bodies or titles by default.
 - `--show-titles`
   Allow dry-run output to show sample titles. Default false because note titles
   can be private.
@@ -588,31 +599,38 @@ Suggested first flags:
   Exclude accounts by exact name or glob.
 - `--exclude-shared`
   Exclude shared notes. Default false because shared notes are included.
+- `--include-shared`
+  Include shared notes for a one-off CLI run when config disables them.
 - `--include-locked`
   Attempt password-protected notes. Default false, and likely ineffective unless
   Notes has them unlocked.
 - `--skip-attachments`
   Opt out of the default attachment indexing path. Import note bodies and
   attachment metadata, but skip attachment file extraction/OCR/PDF processing.
+  Attachments are on by default when configured; this flag disables the
+  file-content part for one run.
 - `--skip-attachment-ocr`
-  Opt out of default image OCR. Keep attachment metadata and PDF/text
-  extraction, but skip image OCR.
+  Opt out of default image OCR. Keep attachment metadata and any supported
+  non-OCR text extraction, but skip image OCR.
 - `--ocr-provider`
   Select the local OCR provider once implemented. Hosted OCR should require
   explicit configuration and should not be the default for Apple Notes.
 - `--forget-excluded`
   Purge content for existing imported notes that are now excluded or marked
   `DO NOT index`. Never implied by `sync all`.
-- `--snapshot-only`
-  Create a snapshot DB and print its path without decoding or importing notes.
-- `--snapshot-dir`
-  Override the snapshot directory for debugging large Notes databases.
+- `snapshot --dir`
+  Create a snapshot copy in the requested directory and print its path without
+  decoding or importing notes. Useful for debugging large Notes databases.
 - `--json`
   Machine-readable stats.
 
-`sync all` should not import Apple Notes by default. The integration should be
-enabled with config. Once enabled, it should import all visible notes by default
-while respecting exclusions. The v1 config should make materialization explicit:
+`sync all` should not import Apple Notes by default, and it should not be wired
+into the first implementation milestone. Build and test the standalone
+`dbrain import apple-notes` flow first. After probe, dry-run, apply,
+incremental re-import, privacy purge, and attachment behavior are reliable,
+`sync all` can call the same importer when explicitly enabled in config. Once
+enabled, it should import all visible notes by default while respecting
+exclusions. The v1 config should make materialization explicit:
 
 ```yaml
 apple_notes:
@@ -626,7 +644,6 @@ apple_notes:
     - Passwords
   ignore_markers:
     - "[[dbrain-ignore]]"
-    - "dbrain:ignore"
   include_shared: true
   include_locked: false
   index_attachments: true
@@ -672,7 +689,7 @@ Suggested item mapping:
 - `text`: note `plaintext`
 - `raw_json`: JSON envelope containing account, folder path, note ID, flags,
   including pinned/checklist/outline state when present, structural
-  placeholders, Apple Notes tags, attachment metadata, attachment-derived text
+  placeholders, `apple_note_tags`, attachment metadata, attachment-derived text
   provenance, reader name, schema fingerprint, and importer version. Do not
   store raw HTML body in v1.
 - `published_at`: creation date
@@ -682,10 +699,11 @@ Suggested item mapping:
 - `content_hash`: hash over plaintext, selected metadata, structural
   placeholders, and attachment metadata
 - `note_path`: `items/apple-notes/<year>/<slug-or-hash>.md`
-- `apple_note_tags`: source-scoped Apple Notes hashtags/tags, kept searchable
-  but not promoted into global `user_tags` in v1. This is in scope for v1 if
-  tag extraction is available from the decoded body/schema; otherwise store an
-  empty set and record the parser limitation.
+- `raw_json.apple_note_tags`: source-scoped Apple Notes hashtags/tags as a JSON
+  array. Keep them searchable through rendered/search text when practical, but
+  do not promote them into global `user_tags` in v1. If tag extraction is not
+  available from the decoded body/schema, store an empty array and record the
+  parser limitation.
 - `user_tags`: normal dbrain tags only, not Apple Notes hashtags in v1
 
 The existing item summary, categorization, FTS, search, MCP, web UI, topic, and
@@ -693,7 +711,8 @@ entity paths should work once the importer populates common item fields.
 
 ## Privacy Model
 
-Privacy behavior should be stricter than other importers.
+Apple Notes import is broad by default once enabled, but stricter than other
+importers on revocation and sensitive skipped content.
 
 ### Default Scope
 
@@ -707,7 +726,8 @@ Recommended UX:
 ```text
 Apple Notes import reads all visible notes by default.
 Run with --dry-run first to inspect counts without storing note content or titles.
-Use --exclude-folder, --exclude-account, or [[dbrain-ignore]] to opt out.
+Shared notes are included unless excluded.
+Use --exclude-folder, --exclude-account, --exclude-shared, or [[dbrain-ignore]] to opt out.
 ```
 
 ### Exclusions
@@ -726,7 +746,6 @@ Supported exclusion layers:
 Recommended note-level markers:
 
 - `[[dbrain-ignore]]`
-- `dbrain:ignore`
 
 Avoid hashtag defaults such as `#dbrain-ignore` because Apple Notes treats
 hashtags as first-class tags and surfaces them in the tag UI. Keep markers
@@ -745,7 +764,7 @@ ignore marker, privacy should override the normal "preserve raw data" rule.
 The materialization purge path should:
 
 - Clear `text`.
-- Clear raw HTML/body content from `raw_json`.
+- Clear raw body-derived content from `raw_json`.
 - Clear item summaries.
 - Clear attachment OCR/extract-derived fields.
 - Remove the rendered note content or replace it with a privacy tombstone.
@@ -759,12 +778,17 @@ privacy/import status rather than overloading normal summary or extract status.
 
 ### Dry Run
 
-Dry run should avoid printing note bodies and titles by default. It can print:
+Dry run should execute the full import decision path without persistence:
+snapshot, body decode, ignore marker detection, blocked-state classification,
+attachment classification, content hashing, and planned upsert/skip decisions.
+It should avoid printing note bodies and titles by default. It can print:
 
 - matched accounts
 - matched folders
 - counts by folder
 - counts skipped by exclusion reason
+- blocked-state counts
+- attachment classification counts
 
 Only print sample titles when `--show-titles` is explicitly set.
 
@@ -836,8 +860,12 @@ highest-signal part of Apple Notes: saved PDFs, screenshots, scanned documents,
 photos, and URL cards. The importer should still preserve raw note text and raw
 attachment-derived text separately from summaries.
 
-V1 should store attachment metadata, structural placeholders, and any
-Notes-provided attachment-derived text when present:
+V1 should land attachment support in two steps. The first step is metadata and
+cheap text that Notes already stores; the second step is file-content
+extraction for supported attachments once file resolution is proven safe.
+
+The first attachment milestone should store attachment metadata, structural
+placeholders, and any Notes-provided attachment-derived text when present:
 
 - attachment ID
 - name
@@ -853,15 +881,19 @@ Notes-provided attachment-derived text when present:
 - existing OCR/handwriting/indexable text fields when present
 - cross-note link attachment UUIDs when discoverable
 
-The file-content path should be conservative and read-only:
+The file-content path should be conservative and read-only. It should not block
+the body importer or local note summaries:
 
 - Resolve attachment files from the Notes database/container without writing to
   the Notes store.
 - Copy or stream attachment bytes into dbrain-controlled temp/state paths before
   extraction when needed.
-- Route PDFs through the existing document extraction and local summary path.
-- Route images and scanned-document images through OCR. Prefer a local OCR
-  provider for Apple Notes; hosted OCR should require explicit configuration.
+- Route PDFs through the existing document extraction and local summary path
+  only when the attachment can be resolved and the existing extractor accepts
+  the file. Otherwise mark the attachment blocked.
+- Route images and scanned-document images through OCR when attachment-file
+  resolution is straightforward. Prefer a local OCR provider for Apple Notes;
+  hosted OCR should require explicit configuration.
 - Store raw OCR/text extraction output separately from attachment summaries.
 - Classify unsupported, missing, offloaded, encrypted, too-large, or decode
   failed attachments as blocked states rather than retrying forever.
@@ -905,10 +937,11 @@ a note-aware prompt:
 
 ## Implementation Phases
 
-1. **Probe and dry run**
+1. **Probe**
    Add a macOS-only direct DB probe that detects Full Disk Access failures,
-   snapshots the Notes DB, probes schema columns/entity IDs, and reports
-   account/folder/note counts without decoding or storing note bodies.
+   snapshots the Notes DB/WAL/SHM triplet, probes schema columns/entity IDs,
+   and reports account/folder/note counts without decoding or storing note
+   bodies.
 
 2. **Body decoder**
    Implement a standalone `ZDATA []byte -> plaintext` decoder using gzip/zlib
@@ -921,38 +954,45 @@ a note-aware prompt:
    Add `dbrain import apple-notes` with default all-visible import,
    account/folder exclusions, optional include filters, ignore markers,
    shared-note inclusion, locked-note blocking, item upsert, note rendering,
-   FTS, and JSON stats. This is the first useful product milestone.
+   FTS, dry-run full decision reporting, and JSON stats. This is the first
+   useful product milestone.
 
-4. **Attachment indexing**
-   Index attachment metadata and file content where supported. Route PDFs
-   through the existing document extraction/summarization path, route images
-   through local OCR, keep raw extracted/OCR text separate from summaries, and
-   classify unsupported/offloaded/too-large attachments as blocked.
-
-5. **Local note summaries**
+4. **Local note summaries**
    Add an Apple Notes-specific local summary prompt and wire summaries into the
    normal item summary path with model/tool provenance.
 
-6. **Incremental re-import**
+5. **Attachment metadata and cheap text**
+   Index attachment metadata, URL attachment fields, cross-note references, and
+   Notes-provided indexable/alt/OCR/transcript text where present.
+
+6. **Attachment file-content extraction**
+   Index file content where supported. Route resolvable PDFs through the
+   existing document extraction/summarization path, route resolvable images
+   through local OCR, keep raw extracted/OCR text separate from summaries, and
+   classify unsupported/offloaded/too-large attachments as blocked.
+
+7. **Incremental re-import**
    Track source DB mtime, high-water modification timestamps, content hashes,
    parser version, and last-seen state. Re-runs should skip unchanged notes,
    update changed notes, and support `--force` after parser fixes. This remains
    periodic CLI polling, not FSEvents-triggered capture.
 
-7. **Privacy purge**
+8. **Privacy purge**
    Add tombstone/purge behavior for notes that become excluded after
    materialization. Include tests proving raw text, summaries, rendered notes,
    and FTS content are removed.
 
-8. **Sync integration**
-   Add configured `sync all` integration behind config and `--skip-apple-notes`.
-   Apple Notes remains disabled unless explicitly configured.
+9. **Sync integration**
+   After the standalone importer is tested and stable, add configured
+   `sync all` integration behind config and `--skip-apple-notes`. `sync all`
+   should call the same importer path rather than introducing separate Notes
+   semantics. Apple Notes remains disabled unless explicitly configured.
 
-9. **MCP/search/web polish**
+10. **MCP/search/web polish**
    Ensure `source_type=apple_note` works in search filters, MCP output,
    rendered notes, web UI filters/detail pages, and topic/search resources.
 
-10. **Later proposals**
+11. **Later proposals**
    Defer table reconstruction, drawing/gallery fidelity, complex audio/video
    extraction, and other fidelity improvements. Write-back and note creation
    remain out of scope.
@@ -964,25 +1004,34 @@ a note-aware prompt:
 - Unit test structural-placeholder extraction from `attribute_run` entries.
 - Unit test schema column probing for account/date column drift.
 - Unit test `Z_ENT` entity probing and polymorphic table filtering.
-- Unit test snapshot creation, pruning, `--snapshot-only`, and single-flight
-  locking around the snapshot directory.
-- Unit test source DB read-only behavior: open URI uses `mode=ro`, write
-  statements/checkpoints are not issued, and import does not mutate source
-  database mtime/hash in fixture tests.
+- Unit test filesystem snapshot creation for DB/WAL/SHM, pruning, the
+  `snapshot --dir` subcommand, and single-flight locking around the snapshot
+  directory.
+- Unit test that snapshots are copies or APFS clones, never hard links to live
+  Notes files.
+- Unit test snapshot validation and fail-closed behavior when the copied
+  DB/WAL/SHM set is inconsistent.
+- Unit test source DB safety: no source file is opened for SQLite import work,
+  write statements/checkpoints are not issued against the source, and import
+  does not mutate source database/WAL/SHM mtime/hash in fixture tests.
 - Unit test open failure diagnostics for missing Full Disk Access.
+- Unit test `probe` does not decode note bodies, while `--dry-run` runs the
+  full import decision path without persistence or default body/title output.
 - Unit test include/exclude folder matching.
 - Unit test ignore marker detection in plaintext and HTML-derived text.
 - Unit test source key stability.
 - Unit test content hash stability and change detection.
-- Unit test Apple Notes tag extraction when tags are present, and empty
-  `apple_note_tags` behavior when the parser cannot extract them.
+- Unit test Apple Notes tag extraction into `raw_json.apple_note_tags` when
+  tags are present, and empty-array behavior when the parser cannot extract
+  them.
 - Unit test blocked states for locked, smart-folder, offloaded, decode-failed,
   schema-unknown, empty-decoded, and too-large notes.
 - Unit test shared notes are included by default and excluded only when
   `--exclude-shared` or equivalent config is set.
 - Unit test purge/tombstone behavior for newly excluded notes.
-- Unit test attachment metadata indexing, PDF text extraction handoff, image OCR
-  handoff, and blocked attachment states.
+- Unit test attachment metadata and Notes-provided cheap text indexing.
+- Unit test PDF text extraction handoff, image OCR handoff, and blocked
+  attachment states for supported file-content extraction paths.
 - Unit test Apple Notes-specific summary prompt wiring and local model
   provenance.
 - Store tests proving materialized `apple_note` items enter search/FTS and MCP
@@ -1003,30 +1052,36 @@ or reused from public fixtures where licensing allows.
 
 ## Acceptance Criteria
 
-- `dbrain import apple-notes --dry-run` reports matched/skipped counts for all
-  visible notes without storing note bodies or titles.
+- `dbrain import apple-notes probe` reports permission/schema/account/folder
+  counts without decoding note bodies.
+- `dbrain import apple-notes --dry-run` reports matched/skipped/blocked counts
+  for all visible notes through the full import decision path without storing
+  or printing note bodies or titles by default.
 - `dbrain import apple-notes --apply` imports visible notes as `apple_note`
   items, respecting exclusions and ignore markers.
-- The importer opens the source Notes database read-only and does not mutate
-  the source database, WAL, or SHM files.
+- The importer opens only a dbrain-owned snapshot for SQLite import work and
+  does not mutate the source database, WAL, or SHM files.
 - Re-running the importer reports unchanged notes without rewriting them.
 - Editing a note updates the item and rendered Markdown on the next import.
 - Adding `[[dbrain-ignore]]` to a previously materialized note purges indexed
   content when `--forget-excluded` is enabled.
 - Password-protected notes are skipped by default.
 - Shared notes are included by default and can be excluded explicitly.
-- Apple Notes hashtags/tags are stored in `apple_note_tags` when extractable and
-  are not promoted into global `user_tags`.
-- Supported PDFs and images attached to notes are indexed through the existing
-  extraction/OCR paths, with raw extracted text kept separate from summaries.
+- Apple Notes hashtags/tags are stored in `raw_json.apple_note_tags` when
+  extractable and are not promoted into global `user_tags`.
+- Attachment metadata and Notes-provided attachment text are indexed. Supported
+  PDFs and images are indexed through existing extraction/OCR paths when
+  attachment bytes can be safely resolved, with raw extracted text kept
+  separate from summaries.
 - Imported notes receive local Apple Notes-specific summaries when summarization
   is enabled.
 - Materialized Apple Notes appear in `search`, MCP tools,
   topic/search resources, and the web UI with `source_type=apple_note`.
 - URLs inside materialized notes enter the normal link/source enrichment
   pipeline.
-- `sync all` imports Apple Notes only when explicitly configured and never
-  invokes `--forget-excluded` implicitly.
+- `sync all` imports Apple Notes only after the standalone importer is proven
+  reliable, only when explicitly configured, and never invokes
+  `--forget-excluded` implicitly.
 - The importer exits after each run; no watcher, daemon, or event-capture
   process is required.
 
