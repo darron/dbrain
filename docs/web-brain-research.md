@@ -65,6 +65,7 @@ The MCP surface already has the shape we want agents to use:
 - `dbrain_get`
 - `dbrain_get_many`
 - `dbrain_related`
+- `dbrain_ask`
 - `dbrain_topic_map`
 - `dbrain_topic_brief`
 - entity and stats tools
@@ -289,7 +290,9 @@ specific product reason to diverge. `max_chars_per_doc` caps any single
 evidence document in the research pack. If omitted, the server default should
 preserve the current MCP behavior, currently `max_chars_per_doc=700`, unless
 config overrides it. The web UI may send a larger explicit value when it wants
-more context.
+more context. The Research web UI should always send `max_chars_per_doc=4000`
+for evidence cards so browser users do not accidentally inherit the compact MCP
+default.
 
 Response:
 
@@ -395,8 +398,9 @@ echo the resolved model name so the UI can show what actually answered.
 research packs do not exceed the local model context window. If omitted, the
 server default should be `max_evidence_chars=24000`, unless config overrides
 it. The endpoint should enforce a hard request-body size limit. The pack should
-include `schema_version` and may include a deterministic `pack_hash`, but v1
-should remain stateless and should not imply server-issued pack handles.
+include `schema_version`, but `pack_hash` is out of scope for v1. The v1
+endpoint should remain stateless and should not imply server-issued pack
+handles.
 
 Response format: `text/event-stream`.
 
@@ -410,7 +414,8 @@ Events:
 - `start`: synthesis schema version, resolved model, prompt version, evidence
   budget, truncation metadata available before generation, and any upfront
   warnings
-- `heartbeat`: comment or event frame during model warmup or long synthesis
+- `heartbeat`: comment or event frame every 5 seconds during model warmup or
+  long synthesis, unless config overrides the interval
 - `answer`: final answer text; emitted once in the request/response model path
 - `token`: incremental answer text only when provider-native streaming exists
 - `citation`: optional structured citation metadata if emitted separately from
@@ -522,6 +527,10 @@ Recommended default behavior:
 - return truncation metadata: `evidence_budget_chars`, `evidence_chars_used`,
   `dropped_source_keys`, `partially_trimmed_source_key`, and warnings; emit
   known metadata in `start` and repeat final metadata in `done`
+- keep `exact_tag_reserved_chars`, `topic_brief_min_remaining_chars`, and
+  `topic_brief_summary_max_chars` as server-side synthesis budget settings
+  with the defaults listed above; do not expose them in the v1 request schema
+  unless practical testing shows per-request tuning is needed
 - if the configured local model is unavailable, cold-starting, or errors, keep
   the already-rendered research pack visible and report
   `answer_status=unavailable` or `answer_status=error` through the synthesis
@@ -690,7 +699,9 @@ Evidence rows should make provenance obvious:
 - MCP parity tests proving existing research-pack JSON semantics stay stable
   across extraction, including `mode`, `coverage.top_user_tags`,
   `coverage.recall_note`, `omitempty` behavior, and next-step ordering.
-- `internal/mcpeval` compatibility tests for research-pack cases.
+- `internal/mcpeval` compatibility tests for research-pack cases. This package
+  already exists and runs local retrieval eval cases against expected source
+  keys, evidence counts, exact-tag examples, and forbidden/required text.
 - Web handler tests for `/api/research`.
 - Fixture tests proving exact-tag evidence and source-type filters work through
   the web API.
@@ -713,7 +724,8 @@ Evidence rows should make provenance obvious:
 - UI tests for research-pack rendering when practical.
 - Integration tests asserting `/api/ask` returns 404 after removal.
 - CLI tests asserting `dbrain ask` is unavailable after removal.
-- MCP tool-list tests asserting `dbrain_ask` is absent after removal.
+- MCP tool-list tests asserting the existing `dbrain_ask` tool is absent after
+  removal.
 - Existing gates: `task fmt`, `task lint`, `task test`, and `task build`.
 
 ## Acceptance Criteria
@@ -731,7 +743,8 @@ Phase 1a is ready when:
   brief, semantic next steps, and schema version
 - exact-tag examples resolve both item and source rows
 - source-type filters and no-results responses are covered by handler tests
-- normalization drift between `ask` and research terms is frozen or centralized
+- query normalization between `ask.Hints()` and research terms is frozen or
+  centralized before `internal/brainresearch` is considered stable
 - existing MCP research tools still work
 
 Phase 1b is ready when:
