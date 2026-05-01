@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   import AddLinkPanel from "./components/AddLinkPanel.svelte";
   import DetailPanel from "./components/DetailPanel.svelte";
@@ -61,6 +61,7 @@
   let detailState = "idle";
   let detailError = "";
   let detail = null;
+  let detailPanelEl;
 
   // Add-link panel
   let showAddLink = false;
@@ -439,6 +440,7 @@
     detailState = "loading";
     detailError = "";
     detail = null;
+    void scrollDetailIntoViewOnMobile();
 
     try {
       detail = await getLookup(normalizedLookup);
@@ -446,10 +448,19 @@
       if (inputMode === "search") {
         expandGraphFromDetail(detail);
       }
+      void scrollDetailIntoViewOnMobile();
     } catch (error) {
       detailError = error.message;
       detailState = "error";
+      void scrollDetailIntoViewOnMobile();
     }
+  }
+
+  async function scrollDetailIntoViewOnMobile() {
+    if (typeof window === "undefined") return;
+    if (!window.matchMedia("(max-width: 760px)").matches) return;
+    await tick();
+    detailPanelEl?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function searchFor(term) {
@@ -572,7 +583,7 @@
     <div class="page-home">
       <!-- Mode/view controls -->
       <div class="search-zone">
-        <div style="display:flex;gap:0.5rem;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+        <div class="search-controls">
           <div class="search-tabs">
             <button class="search-tab" class:active={inputMode === "search"} on:click={() => { inputMode = "search"; }} type="button">
               Search
@@ -621,10 +632,10 @@
         </form>
 
         {#if activeState === "ready" && hasResults}
-          <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+          <div class="result-status">
             <span class="result-count">{activeResults.length} results</span>
             {#if inputMode === "research" && researchPack.coverage?.recall_note}
-              <span style="font-size:0.8rem;color:var(--text-lo)">· {researchPack.coverage.recall_note}</span>
+              <span class="coverage-note">· {researchPack.coverage.recall_note}</span>
             {/if}
           </div>
         {/if}
@@ -770,7 +781,7 @@
           </div>
 
           {#if showDetailPanel}
-            <div class="content-detail">
+            <div class="content-detail" bind:this={detailPanelEl}>
               <DetailPanel
                 {detailState}
                 {detailError}

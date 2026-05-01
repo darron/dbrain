@@ -359,6 +359,13 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		return PipelineStats{}, err
 	}
 	stats.Extraction = buildPipelineStageRows(extractionTotal, extractionCurrent, extractionPending, nil)
+	appleNoteExtractionRow, ok, err := s.pipelineAppleNoteExtractionRow(ctx)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	if ok {
+		stats.Extraction = appendPipelineStageRow(stats.Extraction, appleNoteExtractionRow)
+	}
 
 	summaryTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
 	if err != nil {
@@ -408,6 +415,13 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	}
 	if ok {
 		stats.Summary = appendPipelineStageRow(stats.Summary, xMediaSummaryRow)
+	}
+	appleNoteSummaryRow, ok, err := s.pipelineAppleNoteSummaryRow(ctx)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	if ok {
+		stats.Summary = appendPipelineStageRow(stats.Summary, appleNoteSummaryRow)
 	}
 	xPhotoOCRRow, ok, err := s.pipelineXPhotoOCRRow(ctx)
 	if err != nil {
@@ -643,6 +657,76 @@ func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow,
 	return row, true, nil
 }
 
+func (s *Store) pipelineAppleNoteExtractionRow(ctx context.Context) (PipelineStageRow, bool, error) {
+	candidateWhere := `source_type = 'apple_note'`
+
+	total, err := s.countWhere(ctx, "items", candidateWhere)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	if total == 0 {
+		return PipelineStageRow{}, false, nil
+	}
+
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND (text != '' OR article_text != '')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND text = '' AND article_text = ''`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+
+	row := PipelineStageRow{
+		Kind:    "apple_note",
+		Total:   total,
+		Current: current,
+		Blocked: blocked,
+	}
+	finalizePipelineStageRow(&row)
+	return row, true, nil
+}
+
+func (s *Store) pipelineAppleNoteSummaryRow(ctx context.Context) (PipelineStageRow, bool, error) {
+	candidateWhere := `source_type = 'apple_note' AND (text != '' OR article_text != '')`
+
+	total, err := s.countWhere(ctx, "items", candidateWhere)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	if total == 0 {
+		return PipelineStageRow{}, false, nil
+	}
+
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status = 'ok' AND summary_text != ''`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (summary_status = '' OR summary_status = 'error')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status IN ('blocked', 'skipped')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status != '' AND summary_status NOT IN ('ok', 'error', 'blocked', 'skipped')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+
+	row := PipelineStageRow{
+		Kind:    "apple_note",
+		Total:   total,
+		Current: current,
+		Pending: pending,
+		Blocked: blocked,
+		Failed:  failed,
+	}
+	finalizePipelineStageRow(&row)
+	return row, true, nil
+}
+
 func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, bool, error) {
 	candidateWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
@@ -742,7 +826,7 @@ func appendPipelineStageRow(rows []PipelineStageRow, extra PipelineStageRow) []P
 			}
 			return detailRows[i].Total > detailRows[j].Total
 		})
-		return append([]PipelineStageRow{out[0]}, detailRows...)
+		return append([]PipelineStageRow{aggregatePipelineStageRows(detailRows)}, detailRows...)
 	}
 
 	out = append(out, extra)

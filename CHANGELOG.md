@@ -16,6 +16,7 @@ development date for the change set.
 - **Citation lookup repair**: Research citation clicks normalize common model-prefixed forms such as `src:apple-note:*` and `src:src:*` back to real dbrain lookup keys.
 - **Apple Notes detail view**: Apple Note details now show the full decoded note body inside dbrain, keep indexed attachment text separate, and no longer offer a broken `apple-notes://` external open link.
 - **Research UI flow**: Research now keeps typing as a draft until explicit submit, removes the graph/list explorer from the Research view, and shows compact clickable evidence below the synthesis instead.
+- **Mobile Research layout**: The Explore Research view now uses normal page scrolling on phones, keeps controls compact, stacks the detail panel below results, auto-scrolls selected evidence into view, and wraps long source-key/citation chips so mobile browsers do not overflow horizontally.
 - **Ask removal**: Removed the old `dbrain ask`, `/api/ask`, and `dbrain_ask` MCP surfaces instead of preserving aliases.
 - **Regression coverage**: Added tests for source exact-tag evidence, `/api/research`, research synthesis budgeting/SSE behavior, removed Ask routes/tools, and a source-enrichment progress logger race.
 - **Location**: `internal/brainresearch/`, `internal/queryterms/`, `internal/app/`, `internal/mcpserver/`, `web/`, `README.md`, `skills/dbrain-mcp/`
@@ -29,6 +30,7 @@ development date for the change set.
 - **Sync integration**: `dbrain sync all --apple-notes` or `DBRAIN_APPLE_NOTES_ENABLED=true` includes configured Apple Notes import before link extraction/source work.
 - **Operator feedback**: Apple Notes imports now print per-note progress only for notes that need work; unchanged-current rows are counted in final stats without spamming output, and applied `--limit` batches skip unchanged-current notes so repeated limited runs advance to new or stale work.
 - **Summary default**: Standalone `dbrain import apple-notes` now summarizes by default; use `--summarize=false` for materialization-only imports.
+- **Pipeline stats**: `dbrain stats pipeline` now includes Apple Notes materialization and item-summary coverage so imported notes are visible alongside source extraction and media summary stages, and aggregate `ALL` rows include appended item-level stages.
 - **Summary prompt**: The Apple Notes summary prompt now labels note shape, such as authored notes, research link lists, checklists, logs, scratchpads, or mixed notes, so rough lists are not overread as polished prose.
 - **Docs**: README and `config.yaml.sample` document Apple Notes config/env keys, command usage, and the Full Disk Access requirement.
 - **Location**: `internal/applenotes/`, `internal/app/import_apple_notes.go`, `internal/syncjob/`, `internal/store/`, `README.md`, `config.yaml.sample`
