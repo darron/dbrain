@@ -232,7 +232,7 @@ func (s *Store) ListItemsForLinkDiscovery(ctx context.Context, limit int, force 
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
-		WHERE ` + xItemSourceTypeWhere + `
+		WHERE ` + linkDiscoveryItemSourceTypeWhere + `
 			AND links_json != '[]'`
 	if !force {
 		query += `
@@ -608,7 +608,11 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				s.domain AS domain,
 				s.source_type AS source_type,
 				COALESCE(NULLIF(i.article_title, ''), s.title, '') AS title,
-				CASE WHEN i.article_title = 'X Media Transcript' THEN '' ELSE i.article_text END AS article_text,
+				CASE
+					WHEN i.article_title = 'X Media Transcript' THEN ''
+					WHEN i.source_type = 'apple_note' THEN ''
+					ELSE i.article_text
+				END AS article_text,
 				i.author_handle AS author_handle,
 				i.x_post_json AS x_post_json,
 				i.updated_at AS updated_at,
@@ -629,7 +633,11 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				COALESCE(NULLIF(p.article_title, ''), NULLIF(i.article_title, ''), s.title, '') AS title,
 				COALESCE(
 					NULLIF(CASE WHEN p.article_title = 'X Media Transcript' THEN '' ELSE p.article_text END, ''),
-					CASE WHEN i.article_title = 'X Media Transcript' THEN '' ELSE i.article_text END,
+					CASE
+						WHEN i.article_title = 'X Media Transcript' THEN ''
+						WHEN i.source_type = 'apple_note' THEN ''
+						ELSE i.article_text
+					END,
 					''
 				) AS article_text,
 				p.author_handle AS author_handle,

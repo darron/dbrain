@@ -1,8 +1,9 @@
 # dbrain
 
 `dbrain` is a local-first second-brain scaffold for incremental imports from X
-bookmarks, GitHub stars, YouTube, and manually submitted web links, with
-Markdown note rendering for Obsidian and local query over the imported corpus.
+bookmarks, Apple Notes, GitHub stars, YouTube, and manually submitted web links,
+with Markdown note rendering for Obsidian and local query over the imported
+corpus.
 
 ## Requirements
 
@@ -38,6 +39,11 @@ Optional hosted services:
 - **OpenRouter**: `DBRAIN_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` for hosted categorization, OCR, and model calls.
 - **S3-compatible storage / Cloudflare R2**: R2/S3 env or config values for media and SQLite archives.
 
+Apple Notes import is local and direct-SQLite. On macOS it may require granting
+Full Disk Access to the `dbrain` binary or, more reliably for local builds, to
+the terminal or IDE app launching it. Rebuilding `bin/dbrain` may invalidate a
+binary-specific permission grant.
+
 For development in this checkout without touching installed state:
 
 ```sh
@@ -66,6 +72,7 @@ dbrain config env
 - `dbrain extract sources`
 - `dbrain get <source-key-or-id>`
 - `dbrain hydrate x`
+- `dbrain import apple-notes`
 - `dbrain import github stars`
 - `dbrain import x-bookmarks`
 - `dbrain import youtube`
@@ -235,6 +242,17 @@ directory, then `config.yaml`. `--root` wins over `DBRAIN_ROOT`.
 | `DBRAIN_SOURCE_READER_BASE_URL` / `DBRAIN_HTTP_READER_BASE_URL` | `source.reader.base_url` | `https://r.jina.ai/` | Reader/textifier base URL for difficult domains. |
 | `DBRAIN_SOURCE_WAYBACK_ENABLED` / `DBRAIN_WAYBACK_ENABLED` | `source.wayback.enabled` | `true` | Use Internet Archive Wayback as a final source extraction fallback before terminalizing repeated failures. |
 | `DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL` / `DBRAIN_WAYBACK_AVAILABILITY_URL` | `source.wayback.availability_url` | `https://archive.org/wayback/available?url={escaped_url}` | Wayback Availability API URL template used for final source fallback. |
+| `DBRAIN_APPLE_NOTES_ENABLED` | `apple_notes.enabled` | `false` | Include Apple Notes import in `sync all` when enabled; the standalone import command remains explicit. |
+| `DBRAIN_APPLE_NOTES_DB_PATH` | `apple_notes.db_path` | `` | Optional Apple Notes `NoteStore.sqlite` path override. |
+| `DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS` | `apple_notes.exclude_folders` | `` | Comma-separated or YAML-list Apple Notes folders/paths to skip. |
+| `DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS` | `apple_notes.exclude_accounts` | `` | Comma-separated or YAML-list Apple Notes accounts to skip. |
+| `DBRAIN_APPLE_NOTES_EXCLUDE_SHARED` | `apple_notes.exclude_shared` | `false` | Skip shared Apple Notes during import. |
+| `DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS` | `apple_notes.index_attachments` | `true` | Extract supported Apple Notes attachment files by default. Set false or use `DBRAIN_APPLE_NOTES_SKIP_ATTACHMENTS=true` to keep metadata only. |
+| `DBRAIN_APPLE_NOTES_SKIP_ATTACHMENTS` | `(env only)` | `false` | One-off opt-out for Apple Notes attachment file extraction/OCR while keeping note bodies and metadata. |
+| `DBRAIN_APPLE_NOTES_ATTACHMENT_OCR` | `apple_notes.attachment_ocr` | `true` | Run local OCR for Apple Notes image attachments when `tesseract` is available. |
+| `DBRAIN_APPLE_NOTES_SKIP_ATTACHMENT_OCR` | `(env only)` | `false` | One-off opt-out for Apple Notes image OCR while keeping non-OCR attachment extraction. |
+| `DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES` | `apple_notes.attachment_max_bytes` | `52428800` | Maximum attachment file size to extract. |
+| `DBRAIN_APPLE_NOTES_TESSERACT_BINARY` | `apple_notes.tesseract_binary` | `tesseract` | Local Tesseract binary for Apple Notes image OCR. |
 | `DBRAIN_MEDIA_PROXY_BASE_URL` / `DBRAIN_WEB_BASE_URL` | `media.proxy.base_url` | `http://127.0.0.1:8742` | Base URL for local archived-media proxy links in rendered notes. |
 | `DBRAIN_AUTO_ARCHIVE_MEDIA` / `DBRAIN_ARCHIVE_AUTO` | `archive.auto` | `false` | Run media archive automatically at the end of `sync all`. |
 | `DBRAIN_ARCHIVE_UPLOAD` / `DBRAIN_R2_UPLOAD` | `archive.upload` | `false` | Upload eligible media before marking/pruning in `archive media`. |
@@ -426,16 +444,42 @@ X cookies. Chrome/Chromium is the best-tested path.
 dbrain import x-bookmarks --limit 25
 ```
 
+### `dbrain import apple-notes`
+
+Imports Apple Notes directly from the local Notes SQLite store through a
+dbrain-owned snapshot. The importer is read-only against Apple's files,
+materializes decoded notes as `apple_note` items, preserves raw decoded text,
+renders Markdown notes, indexes discovered URLs, and can summarize notes with
+the normal local summarization path. Attachment metadata and text already
+exposed by Notes are indexed with the note; supported text/PDF attachment files
+are extracted locally, and image attachments use local `tesseract` OCR when
+available. Password-protected notes are skipped by default. Use account/folder
+exclusions or `[[dbrain-ignore]]` inside a note for opt-out privacy.
+Normal command output prints per-note progress. In applied mode, `--limit`
+counts notes that need work, so repeated limited runs skip unchanged-current
+notes and advance through the backlog.
+
+```sh
+dbrain import apple-notes probe
+dbrain import apple-notes --dry-run --show-titles
+dbrain import apple-notes --limit 25 --summarize
+dbrain import apple-notes --summarize
+dbrain import apple-notes --summarize --force
+dbrain import apple-notes --exclude-folder Private
+dbrain import apple-notes --skip-attachment-ocr
+```
+
 ### `dbrain sync all`
 
-Runs the regular incremental refresh pipeline in one command: direct X bookmark
-import, X hydration, X media audio transcription, X photo OCR, tweet-link
-discovery/enrichment, GitHub stars import, YouTube import, and an optional
-source-backlog worker batch. It then categorizes uncategorized items and linked
-sources with the same categorizer used by `dbrain categorize batch` and
-`dbrain categorize sources`, unless `--skip-categorize` is passed. If enabled,
-the media archive stage runs after categorization so image categorization can
-still use local photo files before they are uploaded/pruned. Image
+Runs the regular incremental refresh pipeline in one command: optional Apple
+Notes import, direct X bookmark import, X hydration, X media audio transcription,
+X photo OCR, link discovery/enrichment, GitHub stars import, YouTube
+import, and an optional source-backlog worker batch. It then categorizes
+uncategorized items and linked sources with the same categorizer used by
+`dbrain categorize batch` and `dbrain categorize sources`, unless
+`--skip-categorize` is passed. If enabled, the media archive stage runs after
+categorization so image categorization can still use local photo files before
+they are uploaded/pruned. Image
 categorization is enabled for items by default; use `--categorize-images=false`
 to disable it for text-only models. `--categorize-limit` is applied separately
 to items and sources, so `--categorize-limit 25` can process up to 25 item rows
@@ -447,10 +491,13 @@ X bookmark import, X hydration, X media transcription, X photo OCR, link/source
 enrichment, YouTube import, and categorization. A practical local setup usually
 includes a supported Chrome/Chromium profile with valid cookies plus Ollama or
 an OpenRouter key, `mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports
-`--skip-*` flags when you only want part of the pipeline.
+`--skip-*` flags when you only want part of the pipeline. Apple Notes is not
+run by default; enable it with `--apple-notes` or
+`DBRAIN_APPLE_NOTES_ENABLED=true`.
 
 ```sh
 dbrain sync all --length short --timeout 5m
+dbrain sync all --apple-notes --length short --timeout 5m
 dbrain sync all --skip-categorize --length short --timeout 5m
 dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m
 dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m

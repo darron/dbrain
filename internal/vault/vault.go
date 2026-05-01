@@ -184,6 +184,8 @@ func RenderItemWithOptions(item model.Item, opts RenderOptions) (string, error) 
 		b.WriteString("GitHub star imported. Canonical repo and homepage enrichment are stored on linked source notes.\n")
 	case isYouTubeItem(item):
 		b.WriteString("YouTube signal imported. Canonical video extraction and summarization are stored on linked source notes.\n")
+	case isAppleNoteItem(item):
+		b.WriteString("Apple Note imported. Local note body is cached below. No item summary stored yet.\n")
 	default:
 		b.WriteString("Bookmark imported. No expanded source text is stored yet.\n")
 	}
@@ -470,6 +472,10 @@ func isGitHubItem(item model.Item) bool {
 	return itemSourceFamily(item.SourceType) == "github"
 }
 
+func isAppleNoteItem(item model.Item) bool {
+	return item.SourceType == "apple_note"
+}
+
 func itemSavedLabel(item model.Item) string {
 	if isXItem(item) {
 		return "Bookmarked"
@@ -519,6 +525,9 @@ func itemTextHeading(item model.Item) string {
 	}
 	if isGitHubItem(item) {
 		return "Repository Description"
+	}
+	if isAppleNoteItem(item) {
+		return "Apple Note Body"
 	}
 	return "Imported Text"
 }

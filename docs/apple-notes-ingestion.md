@@ -418,7 +418,7 @@ The batch command should support a dry-run first:
 ```sh
 dbrain import apple-notes probe
 dbrain import apple-notes --dry-run
-dbrain import apple-notes --apply
+dbrain import apple-notes
 ```
 
 Materialized notes should become normal items:
@@ -563,8 +563,8 @@ with clear `source_type=apple_note` provenance.
 ```sh
 dbrain import apple-notes probe
 dbrain import apple-notes --dry-run
-dbrain import apple-notes --apply
-dbrain import apple-notes --exclude-folder "Private" --exclude-folder "Passwords" --apply
+dbrain import apple-notes
+dbrain import apple-notes --exclude-folder "Private" --exclude-folder "Passwords"
 dbrain import apple-notes --limit 25 --show-titles --dry-run
 dbrain import apple-notes snapshot --dir /tmp/dbrain-notes-snapshot
 dbrain import apple-notes decode --note <note-id>
@@ -577,13 +577,14 @@ Suggested first flags:
 - `--dry-run`
   Run the full import decision path without persistence: body decode, ignore
   marker detection, blocked-state classification, and attachment
-  classification. Do not print note bodies or titles by default.
+  classification. Do not print note bodies or titles by default. The default
+  command behavior materializes matching notes.
 - `--show-titles`
   Allow dry-run output to show sample titles. Default false because note titles
   can be private.
-- `--apply`
-  Required for content import unless `sync all` is running with the integration
-  enabled in config.
+- `--force`
+  Re-render and re-summarize matching notes even when imported content is
+  unchanged. Use this after parser or prompt fixes.
 - `--limit`
   Limit matched notes for iteration, fixture generation, and manual testing.
 - `--account`
@@ -624,33 +625,24 @@ Suggested first flags:
 - `--json`
   Machine-readable stats.
 
-`sync all` should not import Apple Notes by default, and it should not be wired
-into the first implementation milestone. Build and test the standalone
-`dbrain import apple-notes` flow first. After probe, dry-run, apply,
-incremental re-import, privacy purge, and attachment behavior are reliable,
-`sync all` can call the same importer when explicitly enabled in config. Once
-enabled, it should import all visible notes by default while respecting
-exclusions. The v1 config should make materialization explicit:
+`sync all` should not import Apple Notes by default. The standalone
+`dbrain import apple-notes` flow remains the primary test surface, and
+`sync all` calls the same importer only when explicitly enabled by
+`--apple-notes` or config/env. Once enabled, it imports visible notes by default
+while respecting exclusions. The v1 config makes materialization explicit:
 
 ```yaml
 apple_notes:
   enabled: true
-  materialize: true
-  summarize: true
-  summary_provider: local
   exclude_accounts: []
   exclude_folders:
     - Private
     - Passwords
-  ignore_markers:
-    - "[[dbrain-ignore]]"
-  include_shared: true
-  include_locked: false
+  exclude_shared: false
   index_attachments: true
-  attachment_pdf_text: true
   attachment_ocr: true
-  attachment_ocr_provider: local
-  forget_excluded: false
+  attachment_max_bytes: 52428800
+  tesseract_binary: tesseract
 ```
 
 Startup checks should make the direct SQLite tradeoff explicit:
@@ -860,9 +852,9 @@ highest-signal part of Apple Notes: saved PDFs, screenshots, scanned documents,
 photos, and URL cards. The importer should still preserve raw note text and raw
 attachment-derived text separately from summaries.
 
-V1 should land attachment support in two steps. The first step is metadata and
-cheap text that Notes already stores; the second step is file-content
-extraction for supported attachments once file resolution is proven safe.
+V1 lands attachment support in two steps. The first step is metadata and cheap
+text that Notes already stores; the second step is conservative file-content
+extraction for supported attachments after file resolution is proven safe.
 
 The first attachment milestone should store attachment metadata, structural
 placeholders, and any Notes-provided attachment-derived text when present:
@@ -888,9 +880,9 @@ the body importer or local note summaries:
   the Notes store.
 - Copy or stream attachment bytes into dbrain-controlled temp/state paths before
   extraction when needed.
-- Route PDFs through the existing document extraction and local summary path
-  only when the attachment can be resolved and the existing extractor accepts
-  the file. Otherwise mark the attachment blocked.
+- Extract text/PDF attachments locally inside the `dbrain` binary when the
+  attachment can be resolved and copied to a dbrain-controlled temp path.
+  Otherwise mark the attachment blocked.
 - Route images and scanned-document images through OCR when attachment-file
   resolution is straightforward. Prefer a local OCR provider for Apple Notes;
   hosted OCR should require explicit configuration.
@@ -967,8 +959,8 @@ a note-aware prompt:
 
 6. **Attachment file-content extraction**
    Index file content where supported. Route resolvable PDFs through the
-   existing document extraction/summarization path, route resolvable images
-   through local OCR, keep raw extracted/OCR text separate from summaries, and
+   local PDF text extractor, route resolvable images through local OCR, keep
+   raw extracted/OCR text separate from summaries, and
    classify unsupported/offloaded/too-large attachments as blocked.
 
 7. **Incremental re-import**
@@ -1036,7 +1028,7 @@ a note-aware prompt:
   provenance.
 - Store tests proving materialized `apple_note` items enter search/FTS and MCP
   retrieval.
-- CLI tests for dry-run/apply safety behavior.
+- CLI tests for dry-run/write safety behavior.
 - Manual macOS integration test with a small test Notes folder.
 - Manual direct DB permission test that proves missing Full Disk Access fails
   with a clear diagnostic.
@@ -1057,7 +1049,7 @@ or reused from public fixtures where licensing allows.
 - `dbrain import apple-notes --dry-run` reports matched/skipped/blocked counts
   for all visible notes through the full import decision path without storing
   or printing note bodies or titles by default.
-- `dbrain import apple-notes --apply` imports visible notes as `apple_note`
+- `dbrain import apple-notes` imports visible notes as `apple_note`
   items, respecting exclusions and ignore markers.
 - The importer opens only a dbrain-owned snapshot for SQLite import work and
   does not mutate the source database, WAL, or SHM files.

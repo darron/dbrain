@@ -191,6 +191,16 @@ func TestBacklogReportsPendingWorkByStage(t *testing.T) {
 		WHERE id = ?`, itemID); err != nil {
 		t.Fatalf("update x item: %v", err)
 	}
+	appleNote, err := st.UpsertItem(ctx, testItem("apple-note:pending-link", "apple_note", "apple-notes://default/pending-link", now))
+	if err != nil {
+		t.Fatalf("upsert apple note pending link item: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET links_json = '["https://example.com/from-note"]', link_extract_synced_at = ''
+		WHERE id = ?`, appleNote.ItemID); err != nil {
+		t.Fatalf("update apple note item links: %v", err)
+	}
 
 	upserted, err := st.UpsertItem(ctx, testItem("gh-star:darron:test/pending-extract", "github_star", "https://github.com/test/pending-extract", now))
 	if err != nil {
@@ -235,8 +245,8 @@ func TestBacklogReportsPendingWorkByStage(t *testing.T) {
 	if backlog.XHydrationPending != 1 {
 		t.Fatalf("expected 1 x hydration pending, got %d", backlog.XHydrationPending)
 	}
-	if backlog.LinkDiscoveryPending != 1 {
-		t.Fatalf("expected 1 link discovery pending, got %d", backlog.LinkDiscoveryPending)
+	if backlog.LinkDiscoveryPending != 2 {
+		t.Fatalf("expected 2 link discovery pending, got %d", backlog.LinkDiscoveryPending)
 	}
 	if backlog.SourceExtractionPending != 1 {
 		t.Fatalf("expected 1 source extraction pending, got %d", backlog.SourceExtractionPending)

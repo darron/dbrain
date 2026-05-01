@@ -108,7 +108,7 @@ func newAskCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&length, "length", "medium", "Answer length for summarize.sh")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for summarize.sh answer synthesis")
 	cmd.Flags().IntVar(&maxCharsPerDoc, "max-chars-per-doc", 1800, "Maximum summary/excerpt characters per retrieved document")
-	cmd.Flags().StringSliceVar(&sourceTypes, "source-type", nil, "Optional source type filter; repeat or comma-separate values like github, web, x_bookmark")
+	cmd.Flags().StringSliceVar(&sourceTypes, "source-type", nil, "Optional source type filter; repeat or comma-separate values like github, web, x_bookmark, apple_note")
 	cmd.Flags().BoolVar(&includeRelated, "include-related", false, "Include related evidence from linked items or sources")
 	cmd.Flags().IntVar(&relatedLimit, "related-limit", 2, "Maximum number of related evidence documents to append when --include-related is set")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the answer and evidence as JSON")

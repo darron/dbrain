@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/remote"
@@ -1356,6 +1357,40 @@ func TestWriteSyncStatsIncludesXMediaStage(t *testing.T) {
 
 	output := dst.String()
 	for _, value := range []string{"Sync Summary", "X Media", "processed=10 transcribed=6", "summarized=0 skipped=4", "3"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
+		}
+	}
+}
+
+func TestWriteSyncStatsIncludesAppleNotesStage(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:   time.Date(2026, time.April, 24, 15, 0, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, time.April, 24, 15, 2, 0, 0, time.UTC),
+		Duration:    2 * time.Minute,
+		AppleNotes: &syncjob.AppleNotesStage{
+			Stats: applenotes.Stats{
+				NotesImported:        8,
+				NotesRendered:        6,
+				NotesSkipped:         2,
+				NotesBlocked:         1,
+				AttachmentsIndexed:   4,
+				AttachmentsExtracted: 3,
+				SummariesCreated:     5,
+				Errors:               1,
+			},
+		},
+	}
+
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	for _, value := range []string{"Sync Summary", "Apple Notes", "imported=8 rendered=6", "skipped=2 blocked=1 attachments=4 extracted=3 summarized=5", "1"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}

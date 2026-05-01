@@ -53,7 +53,7 @@ func promptDefinitions() []map[string]interface{} {
 			"description": "Research a question against the local brain using the MCP tools and cite the strongest evidence.",
 			"arguments": []map[string]interface{}{
 				{"name": "question", "description": "Question to investigate.", "required": true},
-				{"name": "source_types", "description": "Optional comma-separated source type filters such as github, web, or x_bookmark.", "required": false},
+				{"name": "source_types", "description": "Optional comma-separated source type filters such as github, web, x_bookmark, or apple_note.", "required": false},
 				{"name": "include_related", "description": "Whether to append linked related evidence (true or false).", "required": false},
 			},
 		},
@@ -77,7 +77,7 @@ func promptDefinitions() []map[string]interface{} {
 			"description": "Build a compact topic map for a concept by combining search hits, graph expansion, and note inspection.",
 			"arguments": []map[string]interface{}{
 				{"name": "topic", "description": "Concept, keyword, or theme to map.", "required": true},
-				{"name": "source_types", "description": "Optional comma-separated source type filters such as github, web, or x_bookmark.", "required": false},
+				{"name": "source_types", "description": "Optional comma-separated source type filters such as github, web, x_bookmark, or apple_note.", "required": false},
 				{"name": "max_nodes", "description": "Maximum number of primary nodes to include in the map.", "required": false},
 			},
 		},
@@ -86,7 +86,7 @@ func promptDefinitions() []map[string]interface{} {
 			"description": "Build a richer topic brief with grouped entity pivots, key notes, and a rendered markdown preview.",
 			"arguments": []map[string]interface{}{
 				{"name": "topic", "description": "Concept, keyword, or theme to summarize.", "required": true},
-				{"name": "source_types", "description": "Optional comma-separated source type filters such as github, web, or x_bookmark.", "required": false},
+				{"name": "source_types", "description": "Optional comma-separated source type filters such as github, web, x_bookmark, or apple_note.", "required": false},
 				{"name": "max_nodes", "description": "Maximum number of primary nodes to include in the brief.", "required": false},
 			},
 		},

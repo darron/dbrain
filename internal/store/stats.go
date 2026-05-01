@@ -282,7 +282,7 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 		stats.XHydrationPending = value
 	}
 
-	linkWhere := xItemSourceTypeWhere + `
+	linkWhere := linkDiscoveryItemSourceTypeWhere + `
 		AND links_json != '[]'
 		AND (link_extract_synced_at = '' OR updated_at > link_extract_synced_at)`
 	if value, err := s.countWhere(ctx, "items", linkWhere); err != nil {

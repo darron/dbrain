@@ -19,7 +19,11 @@
       "Bash(./bin/dbrain categorize *)",
       "Bash(go get *)",
       "Bash(bin/dbrain categorize *)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/sirmews/apple-notes-mcp/main/src/apple_notes_mcp/proto/notestore.proto\")",
+      "Bash(curl *)",
+      "WebFetch",
+      "WebSearch"
     ]
   }
 }

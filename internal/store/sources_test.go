@@ -101,6 +101,27 @@ func TestUpsertSourceQueuesManualSourceForEnrichment(t *testing.T) {
 	}
 }
 
+func TestListItemsForLinkDiscoveryIncludesAppleNotes(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	item := testItem("apple-note:test-note", "apple_note", "apple-notes://default/test-note", now)
+	item.LinksJSON = `["https://example.com/from-note"]`
+	if _, err := st.UpsertItem(ctx, item); err != nil {
+		t.Fatalf("upsert apple note item: %v", err)
+	}
+
+	items, err := st.ListItemsForLinkDiscovery(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForLinkDiscovery: %v", err)
+	}
+	if len(items) != 1 || items[0].SourceKey != item.SourceKey {
+		t.Fatalf("expected Apple Note link discovery candidate, got %+v", items)
+	}
+}
+
 func TestResetSourceEnrichmentByDomainClearsCurrentState(t *testing.T) {
 	t.Parallel()
 
@@ -856,6 +877,57 @@ func TestGetPreferredLocalSourceExtractReturnsLongestCachedArticle(t *testing.T)
 	}
 	if result.Tool != "item-cache" || result.ToolVersion != "local-item-cache" {
 		t.Fatalf("unexpected tool metadata: %s %s", result.Tool, result.ToolVersion)
+	}
+}
+
+func TestGetPreferredLocalSourceExtractIgnoresAppleNoteAttachmentText(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	sourceInsert, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:note-link",
+		"https://example.com/from-note",
+		"https://example.com/from-note",
+		"web",
+		"example.com",
+		"sources/web/from-note.md",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	sourceID, err := sourceInsert.LastInsertId()
+	if err != nil {
+		t.Fatalf("source id: %v", err)
+	}
+	item := testItem("apple-note:test-note", "apple_note", "apple-notes://default/test-note", now)
+	item.ArticleTitle = "Apple Notes Attachment Text"
+	item.ArticleText = "attachment text belongs to the note, not every linked URL"
+	upserted, err := st.UpsertItem(ctx, item)
+	if err != nil {
+		t.Fatalf("upsert apple note item: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO item_source_links (item_id, source_id, original_url, created_at)
+		VALUES (?, ?, ?, ?)`,
+		upserted.ItemID, sourceID, "https://example.com/from-note", now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert source link: %v", err)
+	}
+
+	result, ok, err := st.GetPreferredLocalSourceExtract(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetPreferredLocalSourceExtract: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected no local source extract from Apple Note attachment text, got %+v", result)
 	}
 }
 

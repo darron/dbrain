@@ -692,7 +692,7 @@ func toolDefinitions() []map[string]interface{} {
 				"properties": map[string]interface{}{
 					"query":        map[string]interface{}{"type": "string", "description": "Search query."},
 					"limit":        map[string]interface{}{"type": "integer", "description": "Maximum number of results.", "default": 10},
-					"source_types": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source type filters like github, web, x_bookmark."},
+					"source_types": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source type filters like github, web, x_bookmark, apple_note."},
 				},
 				"required": []string{"query"},
 			},
