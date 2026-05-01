@@ -72,6 +72,27 @@ func TestSkipSummaryReasonSkipsPlaceholderRedirectExtract(t *testing.T) {
 	}
 }
 
+func TestSkipSummaryReasonSkipsRepairLengthPlaceholderExtract(t *testing.T) {
+	t.Parallel()
+
+	content := repairLengthPlaceholderExtract()
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(content)), " ")
+	if len(normalized) <= 160 || len(normalized) > 300 {
+		t.Fatalf("test content should exercise the repair selector range, got %d chars", len(normalized))
+	}
+
+	source := model.SourceDocument{SourceType: "web"}
+	extract := model.ExtractResult{Content: content}
+
+	reason, ok := skipSummaryReason(source, extract)
+	if !ok {
+		t.Fatal("expected repair-length placeholder extract to be skipped")
+	}
+	if !strings.Contains(reason, "placeholder boilerplate") {
+		t.Fatalf("unexpected skip reason: %q", reason)
+	}
+}
+
 func TestSkipSummaryReasonSkipsShortWaybackExtract(t *testing.T) {
 	t.Parallel()
 
@@ -134,6 +155,11 @@ func TestSkipSummaryReasonAllowsSubstantiveSignupTeaser(t *testing.T) {
 	if reason, ok := skipSummaryReason(source, extract); ok {
 		t.Fatalf("expected substantive signup teaser to summarize, got reason %q", reason)
 	}
+}
+
+func repairLengthPlaceholderExtract() string {
+	return "Redirecting to latest documentation. If you are not redirected automatically, follow this link. " +
+		strings.Repeat("placeholder text ", 10)
 }
 
 func TestBlockedSummaryReasonFlagsContextWindowErrors(t *testing.T) {
@@ -831,6 +857,128 @@ func TestRunSourceIDsBlocksEmptyExtractSummaryAndStopsRequeue(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("expected blocked summary source to drop out of enrichment selection, got %d candidates", len(pending))
+	}
+}
+
+func TestRunPendingSkipsPlaceholderSummaryRepairAndStopsRequeue(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "test:placeholder-summary-repair-item",
+		SourceType:   "test",
+		ExternalID:   "placeholder-summary-repair-item",
+		CanonicalURL: "https://example.com/placeholder-summary-repair-item",
+		Title:        "test item",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/test/placeholder-summary-repair-item.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
+		SourceKey:     "src:test-placeholder-summary-repair-loop",
+		CanonicalURL:  "https://example.com/redirect",
+		NormalizedURL: "https://example.com/redirect",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/src-test-placeholder-summary-repair-loop.md",
+		OriginalURL:   "https://example.com/redirect",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	content := repairLengthPlaceholderExtract()
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/redirect",
+		FinalURL:     "https://example.com/redirect",
+		Status:       "ok",
+		Content:      content,
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test-extract",
+	}, hashText(content)); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(context.Background(), link.SourceID, model.SummaryResult{
+		Text:          "old placeholder summary",
+		RawJSON:       `{"summary":"old placeholder summary"}`,
+		Status:        "ok",
+		Model:         "ollama/dbrain:test",
+		PromptVersion: SummaryPromptVersion,
+		Tool:          summarizecli.DirectSummaryToolName,
+		ToolVersion:   "ollama-direct-v1",
+		FetchedAt:     now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveSourceSummary: %v", err)
+	}
+
+	pending, err := st.ListSourcesForEnrichment(context.Background(), 10, false, true, "", "", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment before repair: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected placeholder summary repair candidate, got %d candidates", len(pending))
+	}
+
+	stats, _, err := RunPending(context.Background(), cfg, st, Options{
+		Limit:     10,
+		Summarize: true,
+		Model:     "ollama/dbrain:test",
+		Binary:    "dbrain-test-missing-summarize",
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunPending: %v", err)
+	}
+	if stats.Errors != 0 {
+		t.Fatalf("expected no errors, got %+v", stats)
+	}
+	if stats.SourcesSummarized != 0 {
+		t.Fatalf("expected placeholder repair to be skipped, not summarized, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.SummaryStatus != "skipped" {
+		t.Fatalf("expected summary status skipped, got %q", source.SummaryStatus)
+	}
+	if !strings.Contains(source.SummaryError, "placeholder boilerplate") {
+		t.Fatalf("unexpected summary error: %q", source.SummaryError)
+	}
+
+	pending, err = st.ListSourcesForEnrichment(context.Background(), 10, false, true, "", "", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment after repair: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected skipped placeholder summary repair to stop requeueing, got %d candidates", len(pending))
 	}
 }
 

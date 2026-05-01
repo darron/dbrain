@@ -402,7 +402,7 @@ func (s *Server) readTopicNoteResource(ctx context.Context, uri string, parsed *
 }
 
 func (s *Server) readResearchResource(ctx context.Context, uri string, parsed *url.URL, query string) ([]map[string]string, error) {
-	pack, err := s.buildResearchPack(ctx, researchPackOptions{
+	pack, err := s.BuildResearchPack(ctx, ResearchPackOptions{
 		Question:       query,
 		Topic:          firstQueryValue(parsed.Query(), "topic"),
 		Limit:          intFromQuery(parsed.Query(), "limit"),
@@ -518,7 +518,6 @@ The local dbrain MCP server is read-only.
 
 - ` + "`dbrain_search`" + `: search the local corpus, including exact user-tag aliases for multi-word entity queries
 - ` + "`dbrain_get`" + `: load DB-backed item/source metadata, capped content sections, and limited linked/quoted context; use ` + "`content_mode=rendered`" + ` only when rendered Markdown is needed
-- ` + "`dbrain_ask`" + `: retrieve evidence and optionally synthesize an answer
 - ` + "`dbrain_entity_map`" + `: browse derived entities across the local brain
 - ` + "`dbrain_topic_map`" + `: build a compact topic graph around a concept
 - ` + "`dbrain_topic_brief`" + `: build a richer topic brief with grouped pivots and markdown preview
@@ -560,7 +559,5 @@ The local dbrain MCP server is read-only.
 3. Entity browse: call ` + "`dbrain_entity_map`" + ` or read ` + "`dbrain://entity/{query}`" + ` to find people, repos, orgs, and sites connected to the corpus.
 4. Topic map: call ` + "`dbrain_topic_map`" + ` or read ` + "`dbrain://topic/{query}`" + ` for a compact graph around a concept.
 5. Topic brief: call ` + "`dbrain_topic_brief`" + ` or read ` + "`dbrain://topic-note/{query}`" + ` for grouped pivots and a rendered note preview.
-6. Monitor: call ` + "`dbrain_stats_activity`" + ` and ` + "`dbrain_stats_backlog`" + `, then use ` + "`dbrain_stats_sources`" + ` for deeper breakdowns.
-
-` + "`dbrain_ask`" + ` defaults to retrieval-only on the MCP surface so clients do not silently spend model usage.`
+6. Monitor: call ` + "`dbrain_stats_activity`" + ` and ` + "`dbrain_stats_backlog`" + `, then use ` + "`dbrain_stats_sources`" + ` for deeper breakdowns.`
 }

@@ -1,5 +1,6 @@
 <script>
   import { tagRecord } from "../lib/api.js";
+  import { appleNoteAttachmentText, appleNoteBodyText, isAppleNoteItem, isOpenableOriginalURL } from "../lib/detail.js";
 
   export let detailState = "idle";
   export let detailError = "";
@@ -21,11 +22,15 @@
   $: isX = stype === "x_bookmark" || stype === "x_quote";
   $: isGitHub = stype === "github_star" || stype === "github";
   $: isYouTube = stype === "youtube_watch_later" || stype === "youtube_liked" || stype === "youtube";
+  $: isAppleNote = isAppleNoteItem(item);
+  $: canOpenOriginal = isOpenableOriginalURL(canonURL);
 
   $: summaryText = rec?.summary_text ?? "";
   $: postText = item?.x_post_text ?? "";
   $: transcriptText = (isX && item?.article_title === "X Media Transcript") ? (item?.article_text ?? "") : "";
-  $: bodyText = (!isX || !transcriptText) ? (item?.article_text || item?.text || source?.extracted_text || "") : "";
+  $: appleNoteBody = appleNoteBodyText(item);
+  $: appleNoteAttachments = appleNoteAttachmentText(item);
+  $: bodyText = (!isAppleNote && (!isX || !transcriptText)) ? (item?.article_text || item?.text || source?.extracted_text || "") : "";
   $: description = source?.description ?? (!isX ? item?.article_title ?? "" : "");
   $: ocrText = item?.ocr_text ?? "";
 
@@ -186,7 +191,7 @@
 
     <!-- Actions -->
     <div class="detail-actions">
-      {#if canonURL}
+      {#if canOpenOriginal}
         <a class="link-chip" href={canonURL} rel="noopener noreferrer" target="_blank">
           ↗ Open original
         </a>
@@ -375,6 +380,28 @@
       </div>
     {/if}
 
+    <!-- Apple Note body -->
+    {#if appleNoteBody}
+      <div class="detail-section">
+        <h3>Apple Note Body</h3>
+        <details class="transcript-details note-body-details" open>
+          <summary>Full note body</summary>
+          <p class="body-excerpt body-excerpt--full" style="margin-top:0.6rem">{appleNoteBody}</p>
+        </details>
+      </div>
+    {/if}
+
+    <!-- Apple Note attachment text -->
+    {#if appleNoteAttachments}
+      <div class="detail-section">
+        <h3>Attachment Text</h3>
+        <details class="transcript-details">
+          <summary>Show indexed attachment text</summary>
+          <p class="body-excerpt" style="margin-top:0.6rem">{appleNoteAttachments}</p>
+        </details>
+      </div>
+    {/if}
+
     <!-- Source description -->
     {#if !isX && description}
       <div class="detail-section">
@@ -512,6 +539,10 @@
     opacity: 0.85;
   }
 
+  .body-excerpt--full {
+    opacity: 0.95;
+  }
+
   .transcript-details summary {
     color: var(--accent);
     cursor: pointer;
@@ -519,6 +550,13 @@
     user-select: none;
   }
   .transcript-details summary:hover { opacity: 0.8; }
+
+  .note-body-details {
+    background: rgba(74, 222, 128, 0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.7rem 0.9rem;
+  }
 
   .quoted-post-card {
     background: rgba(74, 222, 128, 0.03);

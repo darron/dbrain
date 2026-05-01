@@ -5,6 +5,20 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Brain Research Pack Surfaces (2026-04-30)
+
+- **Shared research core**: Added `internal/brainresearch` so MCP, web, and CLI research flows share one retrieval-pack builder with query/tag plans, exact-tag evidence, corpus coverage, semantic next steps, and optional topic briefs.
+- **CLI and web**: Added `dbrain research` and `/api/research`; the web Explore page now uses a Research tab for evidence packs.
+- **Local synthesis**: Added `/api/research/synthesize` as an SSE endpoint plus default-on web and CLI synthesis over research packs, with `--retrieval-only` for evidence-only CLI runs and explicit model/config checks to avoid silent hosted fallback.
+- **Citation navigation**: Research synthesis now turns both bracketed citations and bare source IDs in generated source lists into clickable detail lookups.
+- **Citation key handling**: Research citation links now preserve colon-delimited IDs such as `src:apple-note:default:<id>` and `src:rcmp:<id>` instead of linking only the first segment.
+- **Citation prompt**: Research synthesis now tells local models to cite exact source keys from the research pack, including `apple-note:*` keys, instead of inventing or shortening prefixes.
+- **Citation lookup repair**: Research citation clicks normalize common model-prefixed forms such as `src:apple-note:*` and `src:src:*` back to real dbrain lookup keys.
+- **Apple Notes detail view**: Apple Note details now show the full decoded note body inside dbrain, keep indexed attachment text separate, and no longer offer a broken `apple-notes://` external open link.
+- **Ask removal**: Removed the old `dbrain ask`, `/api/ask`, and `dbrain_ask` MCP surfaces instead of preserving aliases.
+- **Regression coverage**: Added tests for source exact-tag evidence, `/api/research`, research synthesis budgeting/SSE behavior, removed Ask routes/tools, and a source-enrichment progress logger race.
+- **Location**: `internal/brainresearch/`, `internal/queryterms/`, `internal/app/`, `internal/mcpserver/`, `web/`, `README.md`, `skills/dbrain-mcp/`
+
 ### Apple Notes Materialized Import (2026-04-30)
 
 - **Import command**: Added `dbrain import apple-notes` with read-only DB/WAL/SHM snapshotting, schema probing, default materialization, `--dry-run` preview mode, opt-out folder/account/shared-note exclusions, and `[[dbrain-ignore]]` support.
@@ -12,7 +26,8 @@ development date for the change set.
 - **Attachments**: The importer indexes attachment metadata and Notes-provided attachment text, extracts supported text/PDF attachment files locally, and OCRs image attachments through optional local `tesseract`; unsupported, missing, or oversized files are marked blocked.
 - **Safety**: The importer opens copied snapshots instead of live Apple Notes files, skips password-protected notes by default, explains macOS Full Disk Access failures, and supports explicit `--forget-excluded` purging for notes that become excluded.
 - **Sync integration**: `dbrain sync all --apple-notes` or `DBRAIN_APPLE_NOTES_ENABLED=true` includes configured Apple Notes import before link extraction/source work.
-- **Operator feedback**: Apple Notes imports now print per-note progress in normal CLI output and applied `--limit` batches skip unchanged-current notes so repeated limited runs advance to new or stale work.
+- **Operator feedback**: Apple Notes imports now print per-note progress only for notes that need work; unchanged-current rows are counted in final stats without spamming output, and applied `--limit` batches skip unchanged-current notes so repeated limited runs advance to new or stale work.
+- **Summary default**: Standalone `dbrain import apple-notes` now summarizes by default; use `--summarize=false` for materialization-only imports.
 - **Summary prompt**: The Apple Notes summary prompt now labels note shape, such as authored notes, research link lists, checklists, logs, scratchpads, or mixed notes, so rough lists are not overread as polished prose.
 - **Docs**: README and `config.yaml.sample` document Apple Notes config/env keys, command usage, and the Full Disk Access requirement.
 - **Location**: `internal/applenotes/`, `internal/app/import_apple_notes.go`, `internal/syncjob/`, `internal/store/`, `README.md`, `config.yaml.sample`
@@ -27,6 +42,7 @@ development date for the change set.
 - **Wayback quality gate**: Very short Wayback extracts and archive/browser shells now keep raw extracted text but skip summarization instead of generating plausible summaries from weak evidence.
 - **Extraction throughput**: Standalone `extract links` and `extract sources` now default to four concurrent source extract/summarize jobs, matching `sync all` and `worker sources`, so one slow URL does not serialize the whole batch.
 - **Failure metadata**: Consecutive failure counts are now preserved when a retry changes from an older `unknown` class into a more specific terminal class.
+- **Placeholder repair loop**: Short redirect/loading placeholder extracts selected for summary repair are now marked `skipped` instead of being repeatedly summarized as successful work.
 - **Docs**: README now documents the failed web-source rebaseline flow using `repair sources` plus source extraction/sync retries.
 - **Location**: `internal/store/`, `internal/sourceenrich/`, `internal/app/repair.go`, `internal/vault/source.go`, `README.md`
 

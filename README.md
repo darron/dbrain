@@ -56,7 +56,6 @@ dbrain config env
 ## Command Index
 
 - `dbrain archive media`
-- `dbrain ask <question>`
 - `dbrain categorize batch`
 - `dbrain categorize item`
 - `dbrain categorize repair`
@@ -81,6 +80,7 @@ dbrain config env
 - `dbrain repair fts`
 - `dbrain repair notes`
 - `dbrain repair sources`
+- `dbrain research <question>`
 - `dbrain search <query>`
 - `dbrain serve mcp`
 - `dbrain serve remote`
@@ -386,7 +386,6 @@ Usage:
 
 Available Commands:
   archive     Manage archived media and other durable storage tiers
-  ask         Answer a question from the local brain with retrieved evidence
   categorize  Categorize items or linked sources with an LLM
   config      Show active configuration and storage paths
   entity      Derive and render entities from the local brain
@@ -398,6 +397,7 @@ Available Commands:
   link        Add and manage manually submitted links
   ocr         Extract text from downloaded images
   repair      Repair derived local artifacts
+  research    Research the local brain with evidence and local synthesis
   search      Search items and sources
   serve       Serve local interfaces
   sqlite      Manage the local SQLite database
@@ -449,22 +449,25 @@ dbrain import x-bookmarks --limit 25
 Imports Apple Notes directly from the local Notes SQLite store through a
 dbrain-owned snapshot. The importer is read-only against Apple's files,
 materializes decoded notes as `apple_note` items, preserves raw decoded text,
-renders Markdown notes, indexes discovered URLs, and can summarize notes with
-the normal local summarization path. Attachment metadata and text already
+renders Markdown notes, indexes discovered URLs, and summarizes notes by
+default with the normal local summarization path. Use `--summarize=false` for a
+materialization-only run. Attachment metadata and text already
 exposed by Notes are indexed with the note; supported text/PDF attachment files
 are extracted locally, and image attachments use local `tesseract` OCR when
 available. Password-protected notes are skipped by default. Use account/folder
 exclusions or `[[dbrain-ignore]]` inside a note for opt-out privacy.
-Normal command output prints per-note progress. In applied mode, `--limit`
-counts notes that need work, so repeated limited runs skip unchanged-current
-notes and advance through the backlog.
+Normal command output prints per-note progress only for notes that need work;
+unchanged-current rows are counted in the final stats but not printed one by
+one. In applied mode, `--limit` counts notes that need work, so repeated
+limited runs skip unchanged-current notes and advance through the backlog.
 
 ```sh
 dbrain import apple-notes probe
 dbrain import apple-notes --dry-run --show-titles
-dbrain import apple-notes --limit 25 --summarize
-dbrain import apple-notes --summarize
-dbrain import apple-notes --summarize --force
+dbrain import apple-notes --limit 25
+dbrain import apple-notes
+dbrain import apple-notes --force
+dbrain import apple-notes --summarize=false
 dbrain import apple-notes --exclude-folder Private
 dbrain import apple-notes --skip-attachment-ocr
 ```
@@ -888,16 +891,22 @@ dbrain version
 dbrain version --json
 ```
 
-### `dbrain ask`
+### `dbrain research`
 
-Retrieval is read-only and works directly from `brain.db`. By default it also
-synthesizes an answer through `summarize`; use `--retrieve-only` when you want
-evidence only and no model call.
+Research is read-only and works directly from `brain.db`. It returns a research
+pack with evidence, query/tag planning metadata, coverage notes, and optional
+related evidence or topic brief data, then synthesizes a grounded local answer
+by default. Use `--retrieval-only` when you only want the evidence pack.
+Synthesis requires `--model` or a configured `DBRAIN_SUMMARY_MODEL` /
+`SUMMARIZE_MODEL`; it will not silently let the external summarizer choose a
+hosted fallback.
 
 ```sh
-dbrain ask "What validates Kubernetes manifests?" --retrieve-only
-dbrain ask "Show me GitHub repos about vector databases" --retrieve-only --source-type github
-dbrain ask "What is Agent Memory?" --retrieve-only --include-related --related-limit 2
+dbrain research "What validates Kubernetes manifests?"
+dbrain research "Show me GitHub repos about vector databases" --source-type github
+dbrain research "What is Agent Memory?" --include-related --related-limit 2
+dbrain research "What do I have in my brain about Mark Carney?" --retrieval-only --json
+dbrain research "What do I know about local models?" --model ollama/qwen3.6:35b
 ```
 
 ### `dbrain search`
@@ -1103,7 +1112,7 @@ For a new machine or GPU-backed A/B run, start with small scoped commands
 before pointing a whole sync at Ollama. A practical progression is:
 
 ```sh
-dbrain ask "What validates Kubernetes manifests?" --model ollama/qwen3.5:9b --timeout 2m
+dbrain research "What validates Kubernetes manifests?" --model ollama/qwen3.5:9b
 dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen3.5:9b --timeout 10m
 dbrain sync all --source-limit 25 --model ollama/qwen3.5:9b --timeout 10m
 ```
@@ -1137,7 +1146,7 @@ configuration.
   OCR text, transcript text, linked sources, and source-type filters.
 - [x] Add protocol-level tool-surface coverage so the core agent workflow tools
   (`dbrain_research_pack`, `dbrain_get`, `dbrain_get_many`, `dbrain_related`,
-  `dbrain_ask`, maps, and search) stay advertised by `tools/list`.
+  maps, and search) stay advertised by `tools/list`.
 - [x] Return structured, actionable MCP tool errors so clients and agents can
   recover from missing lookups, unsupported modes, or unknown tools.
 - [x] Add a representative exact-tag evidence lane so broad entity questions

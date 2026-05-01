@@ -8,6 +8,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/entities"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/queryterms"
 )
 
 func TestQueryTermsBuildTagAlias(t *testing.T) {
@@ -32,7 +33,7 @@ func TestQueryTermsBuildTagAlias(t *testing.T) {
 func TestTagQueriesIncludeAdjacentPairs(t *testing.T) {
 	t.Parallel()
 
-	tags := tagQueries([]string{"mark", "carney", "brookfield"})
+	tags := queryterms.TagQueries([]string{"mark", "carney", "brookfield"})
 	want := []string{"mark-carney-brookfield", "mark-carney", "carney-brookfield"}
 	if !reflect.DeepEqual(tags, want) {
 		t.Fatalf("unexpected tag queries: %#v", tags)

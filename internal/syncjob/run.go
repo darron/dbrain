@@ -329,6 +329,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if opts.AppleNotesEnabled {
 		progressf(opts.Progress, "==> import apple-notes\n")
 		start := time.Now()
+		var appleNotesProgress applenotes.ProgressFunc
+		if opts.Progress != nil {
+			appleNotesProgress = func(event applenotes.ProgressEvent) {
+				formatAppleNotesSyncProgress(opts.Progress, event)
+			}
+		}
 		appleStats, err := runAppleNotesImport(ctx, cfg, st, applenotes.Options{
 			DBPath:             opts.AppleNotesDBPath,
 			Limit:              opts.AppleNotesLimit,
@@ -346,6 +352,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			SummaryCLI:         opts.CLI,
 			SummaryLength:      opts.Length,
 			Timeout:            opts.Timeout,
+			Progress:           appleNotesProgress,
 		})
 		stage := &AppleNotesStage{Duration: time.Since(start), Stats: appleStats}
 		stats.AppleNotes = stage
@@ -737,6 +744,53 @@ func progressf(dst io.Writer, format string, args ...any) {
 		return
 	}
 	_, _ = fmt.Fprintf(dst, format, args...)
+}
+
+func formatAppleNotesSyncProgress(dst io.Writer, event applenotes.ProgressEvent) {
+	if dst == nil {
+		return
+	}
+	switch event.Phase {
+	case "processing":
+		if event.Reason == "summary" {
+			return
+		}
+		progressf(dst, "Apple Note%s processing source=%s reason=%s links=%d attachments=%d\n",
+			appleNoteProgressPosition(event), appleNoteProgressSource(event), emptyProgressValue(event.Reason), event.Links, event.Attachments)
+	case "summarizing":
+		progressf(dst, "Apple Note%s summarizing source=%s item_status=%s summary=%s\n",
+			appleNoteProgressPosition(event), appleNoteProgressSource(event), emptyProgressValue(event.Status), emptyProgressValue(event.SummaryStatus))
+	case "imported":
+		if event.Status == "unchanged" && !event.Rendered && (event.SummaryStatus == "ok" || event.SummaryStatus == "current") {
+			return
+		}
+		progressf(dst, "Apple Note%s imported source=%s status=%s rendered=%t summary=%s links=%d attachments=%d\n",
+			appleNoteProgressPosition(event), appleNoteProgressSource(event), emptyProgressValue(event.Status), event.Rendered, emptyProgressValue(event.SummaryStatus), event.Links, event.Attachments)
+	case "skipped", "blocked":
+		progressf(dst, "Apple Note%s %s source=%s reason=%s\n",
+			appleNoteProgressPosition(event), event.Phase, appleNoteProgressSource(event), emptyProgressValue(event.Reason))
+	}
+}
+
+func appleNoteProgressPosition(event applenotes.ProgressEvent) string {
+	if event.Index <= 0 || event.Total <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" %d/%d", event.Index, event.Total)
+}
+
+func appleNoteProgressSource(event applenotes.ProgressEvent) string {
+	if strings.TrimSpace(event.SourceKey) == "" {
+		return "unknown"
+	}
+	return event.SourceKey
+}
+
+func emptyProgressValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func mergeXStats(dst *xapi.Stats, src xapi.Stats) {

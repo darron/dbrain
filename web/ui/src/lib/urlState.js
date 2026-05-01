@@ -16,7 +16,7 @@ export function readRouteState() {
       page: "home",
       q: "",
       lookup: "",
-      ask: "",
+      research: "",
       activityDomain: "",
       activityType: "",
       activityLimit: "8",
@@ -33,7 +33,7 @@ export function readRouteState() {
     page: routePage(url.pathname),
     q: url.searchParams.get("q") || "",
     lookup: url.searchParams.get("lookup") || "",
-    ask: url.searchParams.get("ask") || "",
+    research: url.searchParams.get("research") || "",
     activityDomain: url.searchParams.get("activity_domain") || "",
     activityType: url.searchParams.get("activity_type") || "",
     activityLimit: url.searchParams.get("activity_limit") || "8",
@@ -55,7 +55,7 @@ export function writeRouteState(state) {
   const params = url.searchParams;
   applyParam(params, "q", state.q);
   applyParam(params, "lookup", state.lookup);
-  applyParam(params, "ask", state.ask);
+  applyParam(params, "research", state.research);
   applyParam(params, "activity_domain", state.activityDomain);
   applyParam(params, "activity_type", state.activityType);
   applyParam(params, "activity_limit", state.activityLimit);

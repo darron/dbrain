@@ -80,7 +80,6 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 		"dbrain_search":        false,
 		"dbrain_get":           false,
 		"dbrain_get_many":      false,
-		"dbrain_ask":           false,
 		"dbrain_research_pack": false,
 		"dbrain_related":       false,
 		"dbrain_topic_map":     false,
@@ -409,7 +408,8 @@ func TestServerToolErrorsAreStructuredAndActionable(t *testing.T) {
 
 	server := New(cfg, st)
 	input := framedJSON(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_missing_tool","arguments":{}}}`) +
-		framedJSON(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"missing:lookup"}}}`)
+		framedJSON(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dbrain_ask","arguments":{"question":"removed"}}}`) +
+		framedJSON(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dbrain_get","arguments":{"lookup":"missing:lookup"}}}`)
 
 	var out bytes.Buffer
 	if err := server.Serve(context.Background(), strings.NewReader(input), &out); err != nil {
@@ -417,11 +417,12 @@ func TestServerToolErrorsAreStructuredAndActionable(t *testing.T) {
 	}
 
 	responses := parseResponses(t, out.Bytes())
-	if len(responses) != 2 {
-		t.Fatalf("expected 2 responses, got %d", len(responses))
+	if len(responses) != 3 {
+		t.Fatalf("expected 3 responses, got %d", len(responses))
 	}
 	assertToolError(t, responses[0], "unknown tool", "tools/list")
-	assertToolError(t, responses[1], "lookup not found", "dbrain_search")
+	assertToolError(t, responses[1], "unknown tool", "dbrain_research_pack")
+	assertToolError(t, responses[2], "lookup not found", "dbrain_search")
 }
 
 func TestServerListsResourcesTemplatesAndPrompts(t *testing.T) {
@@ -1484,108 +1485,6 @@ func TestServerGetManyToolUsesQueryWindowForEvidenceSections(t *testing.T) {
 	}
 }
 
-func TestServerAskRetrieveOnlyTool(t *testing.T) {
-	root := t.TempDir()
-	cfg, err := config.Load(root)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if err := cfg.EnsureDirs(); err != nil {
-		t.Fatalf("ensure dirs: %v", err)
-	}
-
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() { _ = st.Close() }()
-
-	now := time.Now().UTC()
-	itemResult, err := st.UpsertItem(context.Background(), model.Item{
-		SourceKey:    "gh-star:darron:test-mcp-ask",
-		SourceType:   "github_star",
-		ExternalID:   "test-mcp-ask",
-		CanonicalURL: "https://github.com/test/mcp-ask",
-		Title:        "mcp ask repo",
-		ContentHash:  "mcp-ask-item-hash",
-		NotePath:     "items/github/test-mcp-ask.md",
-		RawJSON:      `{}`,
-		ImportedAt:   now,
-		UpdatedAt:    now,
-		LastSeenAt:   now,
-	})
-	if err != nil {
-		t.Fatalf("upsert item: %v", err)
-	}
-	if err := st.SaveItemUserTags(context.Background(), itemResult.ItemID, "asktagmcp, knowledge-base"); err != nil {
-		t.Fatalf("save user tags: %v", err)
-	}
-	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
-		SourceKey:     "src:test-mcp-ask",
-		OriginalURL:   "https://github.com/test/mcp-ask",
-		CanonicalURL:  "https://github.com/test/mcp-ask",
-		NormalizedURL: "https://github.com/test/mcp-ask",
-		SourceType:    "github",
-		Domain:        "github.com",
-		NotePath:      "sources/github/test-mcp-ask.md",
-	})
-	if err != nil {
-		t.Fatalf("source link: %v", err)
-	}
-	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
-		CanonicalURL: "https://github.com/test/mcp-ask",
-		FinalURL:     "https://github.com/test/mcp-ask",
-		Title:        "mcp ask repo",
-		Content:      "This project helps answer questions from a knowledge base.",
-		Status:       "ok",
-		FetchedAt:    now,
-		Tool:         "github-api",
-		ToolVersion:  "test",
-	}, "mcp-ask-source-hash"); err != nil {
-		t.Fatalf("save source extraction: %v", err)
-	}
-
-	server := New(cfg, st)
-	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_ask","arguments":{"question":"asktagmcp","retrieve_only":true,"limit":3}}}`
-
-	var out bytes.Buffer
-	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
-		t.Fatalf("serve: %v", err)
-	}
-
-	responses := parseResponses(t, out.Bytes())
-	result := responses[0]["result"].(map[string]interface{})
-	structured := result["structuredContent"].(map[string]interface{})
-	evidence := structured["evidence"].([]interface{})
-	if len(evidence) == 0 {
-		t.Fatalf("expected evidence in ask response: %#v", structured)
-	}
-	first := evidence[0].(map[string]interface{})
-	if first["user_tags"] != "asktagmcp, knowledge-base" {
-		t.Fatalf("expected ask evidence user tags, got %#v", first)
-	}
-	retrieval := first["retrieval"].(map[string]interface{})
-	if int(retrieval["score"].(float64)) <= 0 {
-		t.Fatalf("expected positive retrieval score, got %#v", retrieval)
-	}
-	matchedTerms := retrieval["matched_terms"].([]interface{})
-	if len(matchedTerms) != 1 || matchedTerms[0] != "asktagmcp" {
-		t.Fatalf("expected matched query term in retrieval info, got %#v", retrieval)
-	}
-	signals := retrieval["signals"].([]interface{})
-	var foundTagSignal bool
-	for _, raw := range signals {
-		signal := raw.(map[string]interface{})
-		if signal["name"] == "query_term_user_tags" && signal["detail"] == "asktagmcp" {
-			foundTagSignal = true
-			break
-		}
-	}
-	if !foundTagSignal {
-		t.Fatalf("expected user tag retrieval signal, got %#v", signals)
-	}
-}
-
 func TestServerEntityMapTool(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -2079,6 +1978,9 @@ func TestServerResearchPackTool(t *testing.T) {
 	responses := parseResponses(t, out.Bytes())
 	result := responses[0]["result"].(map[string]interface{})
 	structured := result["structuredContent"].(map[string]interface{})
+	if structured["schema_version"] != "research_pack.v1" {
+		t.Fatalf("expected research pack schema version, got %#v", structured["schema_version"])
+	}
 	if structured["mode"] != "topic_brief_and_evidence" {
 		t.Fatalf("expected topic brief mode, got %#v", structured)
 	}
@@ -2190,20 +2092,20 @@ func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {
 		t.Fatalf("expected get and related next steps, got %#v", nextSteps)
 	}
 	getStep := nextSteps[0].(map[string]interface{})
-	if getStep["tool"] != "dbrain_get" {
-		t.Fatalf("expected dbrain_get next step, got %#v", getStep)
+	if getStep["action"] != "inspect_top_evidence" {
+		t.Fatalf("expected inspect_top_evidence next step, got %#v", getStep)
 	}
-	getArgs := getStep["arguments"].(map[string]interface{})
-	if getArgs["lookup"] != "x:test-mcp-research-carney" || getArgs["query"] != "mark carney" || getArgs["content_mode"] != "evidence" {
-		t.Fatalf("expected query-windowed dbrain_get arguments, got %#v", getArgs)
+	getParams := getStep["params"].(map[string]interface{})
+	if getParams["lookup"] != "x:test-mcp-research-carney" || getParams["query"] != "mark carney" || getParams["content_mode"] != "evidence" {
+		t.Fatalf("expected query-windowed inspect params, got %#v", getParams)
 	}
 	relatedStep := nextSteps[1].(map[string]interface{})
-	if relatedStep["tool"] != "dbrain_related" {
-		t.Fatalf("expected dbrain_related next step, got %#v", relatedStep)
+	if relatedStep["action"] != "expand_related" {
+		t.Fatalf("expected expand_related next step, got %#v", relatedStep)
 	}
-	relatedArgs := relatedStep["arguments"].(map[string]interface{})
-	if relatedArgs["lookup"] != "x:test-mcp-research-carney" {
-		t.Fatalf("expected related lookup for top evidence, got %#v", relatedArgs)
+	relatedParams := relatedStep["params"].(map[string]interface{})
+	if relatedParams["lookup"] != "x:test-mcp-research-carney" {
+		t.Fatalf("expected related lookup for top evidence, got %#v", relatedParams)
 	}
 }
 

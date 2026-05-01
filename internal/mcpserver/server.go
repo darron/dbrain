@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/entities"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/queryterms"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
@@ -278,8 +278,6 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (map[s
 		return s.toolGet(ctx, params.Arguments)
 	case "dbrain_get_many":
 		return s.toolGetMany(ctx, params.Arguments)
-	case "dbrain_ask":
-		return s.toolAsk(ctx, params.Arguments)
 	case "dbrain_research_pack":
 		return s.toolResearchPack(ctx, params.Arguments)
 	case "dbrain_entity_map":
@@ -425,45 +423,6 @@ func (s *Server) toolGetMany(ctx context.Context, raw json.RawMessage) (map[stri
 		payload["query"] = query
 	}
 	return toolOKResult(formatGetManyPayload(payload, texts), payload), nil
-}
-
-func (s *Server) toolAsk(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
-	var args struct {
-		Question       string   `json:"question"`
-		Limit          int      `json:"limit"`
-		RetrieveOnly   *bool    `json:"retrieve_only"`
-		Model          string   `json:"model"`
-		CLI            string   `json:"cli"`
-		Length         string   `json:"length"`
-		TimeoutSeconds int      `json:"timeout_seconds"`
-		MaxCharsPerDoc int      `json:"max_chars_per_doc"`
-		SourceTypes    []string `json:"source_types"`
-		IncludeRelated bool     `json:"include_related"`
-		RelatedLimit   int      `json:"related_limit"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, fmt.Errorf("decode ask args: %w", err)
-	}
-	retrieveOnly := true
-	if args.RetrieveOnly != nil {
-		retrieveOnly = *args.RetrieveOnly
-	}
-	resp, err := ask.Run(ctx, s.cfg, s.st, args.Question, ask.Options{
-		Limit:          defaultInt(args.Limit, 8),
-		RetrieveOnly:   retrieveOnly,
-		Model:          args.Model,
-		CLI:            args.CLI,
-		Length:         args.Length,
-		Timeout:        secondsTimeout(args.TimeoutSeconds),
-		MaxCharsPerDoc: args.MaxCharsPerDoc,
-		SourceTypes:    args.SourceTypes,
-		IncludeRelated: args.IncludeRelated,
-		RelatedLimit:   args.RelatedLimit,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return toolOKResult(formatAskResponse(resp), resp), nil
 }
 
 func (s *Server) toolEntityMap(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
@@ -734,29 +693,6 @@ func toolDefinitions() []map[string]interface{} {
 			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
 		},
 		{
-			"name":        "dbrain_ask",
-			"description": "Retrieve evidence for a question from the local brain and optionally synthesize an answer. Defaults to retrieval-only to avoid spending model usage unintentionally.",
-			"inputSchema": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"question":          map[string]interface{}{"type": "string", "description": "Question to answer from the local brain."},
-					"limit":             map[string]interface{}{"type": "integer", "description": "Maximum evidence documents.", "default": 8},
-					"retrieve_only":     map[string]interface{}{"type": "boolean", "description": "If true, return evidence only and skip answer synthesis.", "default": true},
-					"source_types":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source type filters."},
-					"include_related":   map[string]interface{}{"type": "boolean", "description": "Whether to append linked related evidence.", "default": false},
-					"related_limit":     map[string]interface{}{"type": "integer", "description": "Maximum related evidence documents.", "default": 2},
-					"cli":               map[string]interface{}{"type": "string", "description": "Optional summarize CLI provider override when retrieve_only is false."},
-					"model":             map[string]interface{}{"type": "string", "description": "Optional summarize model override when retrieve_only is false."},
-					"length":            map[string]interface{}{"type": "string", "description": "Answer length when synthesizing."},
-					"timeout_seconds":   map[string]interface{}{"type": "integer", "description": "Answer synthesis timeout in seconds."},
-					"max_chars_per_doc": map[string]interface{}{"type": "integer", "description": "Maximum characters to include from each evidence document."},
-				},
-				"required": []string{"question"},
-			},
-			"outputSchema": askOutputSchema(),
-			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
-		},
-		{
 			"name":        "dbrain_research_pack",
 			"description": "Build a compact read-only research pack for a question. Expands text queries, hyphenated tag aliases, entity matches, optional graph links, and an optional topic brief so agents can answer broad corpus questions with one call.",
 			"inputSchema": map[string]interface{}{
@@ -954,16 +890,9 @@ func getSectionSchema() map[string]interface{} {
 	}, "name", "role", "chars", "truncated")
 }
 
-func askOutputSchema() map[string]interface{} {
-	return objectSchema(map[string]interface{}{
-		"question": scalarSchema("string", "Original question."),
-		"answer":   scalarSchema("string", "Synthesized answer text, or empty when retrieve_only is true."),
-		"evidence": arraySchema(evidenceSchema()),
-	}, "question", "answer", "evidence")
-}
-
 func researchPackOutputSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
+		"schema_version":     scalarSchema("string", "Version of the research pack schema."),
 		"question":           scalarSchema("string", "Original research question."),
 		"mode":               scalarSchema("string", "Whether this pack contains evidence only or a topic brief plus evidence."),
 		"query_plan":         researchQueryPlanSchema(),
@@ -974,7 +903,7 @@ func researchPackOutputSchema() map[string]interface{} {
 		"exact_tag_evidence": arraySchema(evidenceSchema()),
 		"topic_brief":        topicBriefOutputSchema(),
 		"next_steps":         arraySchema(researchNextStepSchema()),
-	}, "question", "mode", "query_plan", "coverage", "used_topic_brief", "evidence")
+	}, "schema_version", "question", "mode", "query_plan", "coverage", "used_topic_brief", "evidence")
 }
 
 func researchQueryPlanSchema() map[string]interface{} {
@@ -1019,10 +948,11 @@ func researchBucketSchema() map[string]interface{} {
 
 func researchNextStepSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
-		"tool":      scalarSchema("string", "Suggested MCP tool name."),
-		"reason":    scalarSchema("string", "Why this follow-up helps."),
-		"arguments": genericObjectSchema("Suggested tool arguments."),
-	}, "tool", "reason", "arguments")
+		"action": scalarSchema("string", "Semantic action identifier, such as inspect_top_evidence or expand_related."),
+		"label":  scalarSchema("string", "Human-readable action label."),
+		"reason": scalarSchema("string", "Why this follow-up helps."),
+		"params": genericObjectSchema("Suggested action parameters."),
+	}, "action", "label")
 }
 
 func topicMapOutputSchema() map[string]interface{} {
@@ -1443,14 +1373,25 @@ func formatSearchResults(cfg config.Config, results []model.SearchResult) string
 
 func searchTagAliases(query string) []string {
 	aliases := []string{}
-	if alias := tagAlias(query); alias != "" {
-		aliases = append(aliases, alias)
-	}
+	aliases = append(aliases, queryterms.TagQueries(queryterms.Terms(query))...)
 	trimmed := strings.TrimSpace(strings.ToLower(query))
 	if strings.Contains(trimmed, "-") && !strings.ContainsAny(trimmed, " \t\n\r") {
 		aliases = append(aliases, trimmed)
 	}
-	return uniqueStrings(aliases)
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(strings.ToLower(alias))
+		if alias == "" {
+			continue
+		}
+		if _, ok := seen[alias]; ok {
+			continue
+		}
+		seen[alias] = struct{}{}
+		out = append(out, alias)
+	}
+	return out
 }
 
 func dedupeSearchResults(results []model.SearchResult, limit int) []model.SearchResult {
@@ -1473,44 +1414,6 @@ func dedupeSearchResults(results []model.SearchResult, limit int) []model.Search
 		}
 	}
 	return out
-}
-
-func formatAskResponse(resp ask.Response) string {
-	var b strings.Builder
-	if strings.TrimSpace(resp.Answer) != "" {
-		b.WriteString(resp.Answer)
-		b.WriteString("\n\n")
-	}
-	b.WriteString("Evidence:\n")
-	for _, doc := range resp.Evidence {
-		b.WriteString("- [")
-		b.WriteString(doc.SourceKey)
-		b.WriteString("] ")
-		b.WriteString(doc.Title)
-		b.WriteString("\n")
-		if doc.Relationship != "" {
-			b.WriteString("  Relationship: ")
-			b.WriteString(doc.Relationship)
-			if doc.RelatedTo != "" {
-				b.WriteString(" (")
-				b.WriteString(doc.RelatedTo)
-				b.WriteString(")")
-			}
-			b.WriteString("\n")
-		}
-		b.WriteString("  URL: ")
-		b.WriteString(doc.URL)
-		b.WriteString("\n")
-		b.WriteString("  Note: ")
-		b.WriteString(doc.NotePath)
-		b.WriteString("\n")
-		if strings.TrimSpace(doc.UserTags) != "" {
-			b.WriteString("  User tags: ")
-			b.WriteString(strings.TrimSpace(doc.UserTags))
-			b.WriteString("\n")
-		}
-	}
-	return strings.TrimSpace(b.String())
 }
 
 func formatRelatedSources(lookup string, refs []model.ItemSourceRef) string {

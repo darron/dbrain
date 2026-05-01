@@ -76,8 +76,10 @@ process.
   failure facet buckets, and optionally filtered by source type, domain,
   status, stored failure kind, message text, time window, failure-table sort,
   and failure-table offset.
-- `POST /api/ask`
-  Accepts a question and returns retrieval-only evidence.
+- `POST /api/research`
+  Accepts a question and returns a research pack with evidence.
+- `POST /api/research/synthesize`
+  Accepts a research pack and streams a local synthesized answer over SSE.
 
 ## API Shape
 
@@ -113,7 +115,7 @@ process.
 }
 ```
 
-### `POST /api/ask`
+### `POST /api/research`
 
 ```json
 {
@@ -164,7 +166,7 @@ Response:
 
 - `go run ./cmd/dbrain serve web` starts a local HTTP server.
 - `/api/search`, `/api/get`, `/api/stats/backlog`, `/api/stats/activity`, and
-  `/api/ask` respond successfully against the local DB.
-- The embedded frontend can search, ask retrieval-only questions, inspect a
+  `/api/research` respond successfully against the local DB.
+- The embedded frontend can search, research local evidence, inspect a
   selected note, and show backlog/activity plus recent source-activity status,
   failure-table paging/sorting, and source trend buckets.
