@@ -15,6 +15,7 @@ development date for the change set.
 - **Citation prompt**: Research synthesis now tells local models to cite exact source keys from the research pack, including `apple-note:*` keys, instead of inventing or shortening prefixes.
 - **Citation lookup repair**: Research citation clicks normalize common model-prefixed forms such as `src:apple-note:*` and `src:src:*` back to real dbrain lookup keys.
 - **Apple Notes detail view**: Apple Note details now show the full decoded note body inside dbrain, keep indexed attachment text separate, and no longer offer a broken `apple-notes://` external open link.
+- **Research UI flow**: Research now keeps typing as a draft until explicit submit, removes the graph/list explorer from the Research view, and shows compact clickable evidence below the synthesis instead.
 - **Ask removal**: Removed the old `dbrain ask`, `/api/ask`, and `dbrain_ask` MCP surfaces instead of preserving aliases.
 - **Regression coverage**: Added tests for source exact-tag evidence, `/api/research`, research synthesis budgeting/SSE behavior, removed Ask routes/tools, and a source-enrichment progress logger race.
 - **Location**: `internal/brainresearch/`, `internal/queryterms/`, `internal/app/`, `internal/mcpserver/`, `web/`, `README.md`, `skills/dbrain-mcp/`

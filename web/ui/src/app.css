@@ -1097,6 +1097,59 @@ textarea { resize: vertical; }
   padding: 1rem 1.25rem 0;
 }
 
+.evidence-compact {
+  display: grid;
+  gap: 0.6rem;
+  padding-bottom: 0.25rem;
+}
+
+.evidence-compact-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.evidence-compact-header span {
+  color: var(--text-lo);
+  font-size: 0.78rem;
+}
+
+.evidence-compact-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.evidence-card {
+  width: 100%;
+  display: grid;
+  gap: 0.2rem;
+  text-align: left;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(74, 222, 128, 0.035);
+  color: var(--text);
+}
+
+.evidence-card:hover,
+.evidence-card.selected {
+  border-color: var(--border-hi);
+  background: rgba(74, 222, 128, 0.08);
+  transform: none;
+}
+
+.evidence-card strong {
+  color: var(--text-hi);
+  font-size: 0.88rem;
+}
+
+.evidence-card p {
+  color: var(--text-lo);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
 .synthesis-toggle {
   display: inline-flex;
   align-items: center;

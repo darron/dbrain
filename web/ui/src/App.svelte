@@ -38,6 +38,7 @@
   let searchError = "";
   let searchResults = [];
 
+  let researchDraft = "";
   let researchQuestion = "";
   let researchState = "idle";
   let researchError = "";
@@ -81,6 +82,7 @@
     const route = readRouteState();
     currentPage = route.page;
     searchQuery = route.q;
+    researchDraft = route.research;
     researchQuestion = route.research;
     selectedLookup = route.lookup;
     sourceActivityFilters = {
@@ -201,8 +203,13 @@
     if (inputMode === "search") {
       await runSearch();
     } else {
-      await runResearch();
+      await submitResearch();
     }
+  }
+
+  async function submitResearch() {
+    researchQuestion = researchDraft.trim();
+    await runResearch(researchQuestion);
   }
 
   function urlToLookup(query) {
@@ -256,8 +263,10 @@
     }
   }
 
-  async function runResearch() {
-    const question = researchQuestion.trim();
+  async function runResearch(question = researchQuestion) {
+    question = String(question || "").trim();
+    researchQuestion = question;
+    researchDraft = question;
     abortSynthesis();
     researchState = "loading";
     researchError = "";
@@ -269,14 +278,11 @@
     detailError = "";
     if (!question) {
       researchState = "idle";
-      graphNodes = [];
-      graphEdges = [];
       return;
     }
     try {
       researchPack = await researchBrain(question);
       researchState = "ready";
-      buildGraphFromResults(researchPack.evidence || []);
       if (synthesisEnabled) {
         await runSynthesis(question, researchPack);
       }
@@ -437,7 +443,9 @@
     try {
       detail = await getLookup(normalizedLookup);
       detailState = "ready";
-      expandGraphFromDetail(detail);
+      if (inputMode === "search") {
+        expandGraphFromDetail(detail);
+      }
     } catch (error) {
       detailError = error.message;
       detailState = "error";
@@ -448,6 +456,16 @@
     inputMode = "search";
     searchQuery = term;
     await runSearch();
+  }
+
+  function evidencePreview(evidence) {
+    return truncateText(evidence?.summary || evidence?.excerpt || "", 280);
+  }
+
+  function truncateText(value, max) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    if (text.length <= max) return text;
+    return text.slice(0, max).trimEnd() + "…";
   }
 
   async function runAddLink() {
@@ -564,7 +582,7 @@
             </button>
           </div>
 
-          {#if hasResults}
+          {#if inputMode === "search" && hasResults}
             <div class="view-toggle">
               <button class="view-btn" class:active={viewMode === "graph"} on:click={() => (viewMode = "graph")} type="button">
                 Graph
@@ -593,7 +611,7 @@
           {:else}
             <input
               class="search-input"
-              bind:value={researchQuestion}
+              bind:value={researchDraft}
               placeholder="What do I have on agent memory?"
             />
           {/if}
@@ -629,20 +647,26 @@
       {:else if hasResults || showDetailPanel || activeState === "loading" || (inputMode === "research" && activeState === "ready")}
         <div class="content-area" class:has-detail={showDetailPanel}>
           <div class="content-main">
-            {#if inputMode === "research" && researchState === "ready"}
+            {#if inputMode === "research"}
               <div class="research-summary">
                 <div class="answer-card">
                   <p class="panel-kicker" style="margin:0">Research Pack</p>
-                  <p>{researchPack.coverage?.recall_note || "Retrieved evidence from the local brain."}</p>
-                  {#if researchPack.topic_brief?.summary}
-                    <p>{researchPack.topic_brief.summary}</p>
-                  {/if}
-                  {#if !hasResults}
-                    <p class="message muted">No evidence matched this question. Try a narrower phrase, a known tag, or a source type.</p>
+                  {#if researchState === "loading"}
+                    <p class="message muted">Retrieving evidence from the local brain…</p>
+                  {:else if researchState === "ready"}
+                    <p>{researchPack.coverage?.recall_note || "Retrieved evidence from the local brain."}</p>
+                    {#if researchPack.topic_brief?.summary}
+                      <p>{researchPack.topic_brief.summary}</p>
+                    {/if}
+                    {#if !hasResults}
+                      <p class="message muted">No evidence matched this question. Try a narrower phrase, a known tag, or a source type.</p>
+                    {/if}
+                  {:else}
+                    <p class="message muted">Submit a question to retrieve an evidence pack.</p>
                   {/if}
                 </div>
 
-                {#if synthesisEnabled}
+                {#if synthesisEnabled && researchState !== "loading"}
                   <div class="answer-card synthesis-card">
                     <div class="synthesis-header">
                       <p class="panel-kicker" style="margin:0">Synthesis</p>
@@ -680,10 +704,28 @@
                     {/if}
                   </div>
                 {/if}
-              </div>
-            {/if}
 
-            {#if viewMode === "graph"}
+                {#if researchState === "ready" && hasResults}
+                  <div class="evidence-compact">
+                    <div class="evidence-compact-header">
+                      <p class="panel-kicker" style="margin:0">Evidence</p>
+                      <span>{activeResults.length} results</span>
+                    </div>
+                    <div class="evidence-compact-list">
+                      {#each activeResults as evidence}
+                        <button class="evidence-card" class:selected={selectedLookup === evidence.source_key} type="button" on:click={() => loadDetail(evidence.source_key)}>
+                          <span class="result-key">{evidence.source_type || evidence.kind || "source"}</span>
+                          <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
+                          {#if evidencePreview(evidence)}
+                            <p>{evidencePreview(evidence)}</p>
+                          {/if}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {:else if viewMode === "graph"}
               <div class="graph-area">
                 <GraphView
                   nodes={graphNodes}
