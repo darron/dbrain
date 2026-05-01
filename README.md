@@ -709,7 +709,8 @@ dbrain import github stars
 Requires `summarize`. It will prefer cached item `article_text` when
 available, but still uses `summarize` for normalization and summarization. Use
 `--concurrency` to run multiple source extract/summarize jobs in parallel after
-discovery.
+discovery. The default concurrency is `4`, matching `sync all` and
+`worker sources`; pass `--concurrency 1` for strictly sequential debugging.
 
 ```sh
 dbrain extract links --discover-limit 100 --limit 25 --concurrency 4 --summarize=false
@@ -732,7 +733,8 @@ dbrain link add "https://example.com/article" --enrich --length short
 
 Requires `summarize`. This is the global source-backlog worker for already
 known sources that still need extraction or summarization. Use `--concurrency`
-to run multiple source extract/summarize jobs in parallel. Source freshness is
+to run multiple source extract/summarize jobs in parallel. The default is `4`;
+pass `--concurrency 1` for strictly sequential debugging. Source freshness is
 tracked with extract timestamps, summary timestamps, prompt versions, content
 hashes, and summarize tool versions so refreshes can be policy-aware.
 

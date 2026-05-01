@@ -1706,6 +1706,29 @@ func TestExtractSourcesCommandOutputsZeroStatsForEmptyBacklog(t *testing.T) {
 	}
 }
 
+func TestExtractCommandsDefaultToParallelSourceEnrichment(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+
+	for _, args := range [][]string{
+		{"extract", "links"},
+		{"extract", "sources"},
+	} {
+		target, _, err := cmd.Find(args)
+		if err != nil {
+			t.Fatalf("find %v: %v", args, err)
+		}
+		flag := target.Flags().Lookup("concurrency")
+		if flag == nil {
+			t.Fatalf("expected %v to define --concurrency", args)
+		}
+		if flag.DefValue != "4" {
+			t.Fatalf("expected %v --concurrency default 4, got %q", args, flag.DefValue)
+		}
+	}
+}
+
 func TestExtractSourcesCommandUsesTargetedSourceLookup(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
