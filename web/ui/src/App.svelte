@@ -2,13 +2,14 @@
   import { onMount } from "svelte";
 
   import AddLinkPanel from "./components/AddLinkPanel.svelte";
-  import AskPanel from "./components/AskPanel.svelte";
   import DetailPanel from "./components/DetailPanel.svelte";
   import GraphView from "./components/GraphView.svelte";
+  import MarkdownView from "./components/MarkdownView.svelte";
   import OperationsPanel from "./components/OperationsPanel.svelte";
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
-  import { addLink, askEvidence, getBootstrap, getLookup, getSourceActivity, searchBrain } from "./lib/api.js";
+  import { addLink, getBootstrap, getLookup, getSourceActivity, researchBrain, searchBrain, synthesizeResearch } from "./lib/api.js";
+  import { normalizeLookupKey } from "./lib/sourceKeys.js";
   import { pageHref, readRouteState, writeRouteState } from "./lib/urlState.js";
 
   const defaultBacklog = { x_hydration_pending: 0, link_discovery_pending: 0, source_extraction_pending: 0, source_summary_pending: 0 };
@@ -29,18 +30,27 @@
   let bootstrapError = "";
   let sourceActivityError = "";
 
-  // Search/ask state
-  let inputMode = "search"; // "search" | "ask"
+  // Search/research state
+  let inputMode = "search"; // "search" | "research"
   let viewMode = "graph";   // "graph" | "list"
   let searchQuery = "";
   let searchState = "idle";
   let searchError = "";
   let searchResults = [];
 
-  let askQuestion = "";
-  let askState = "idle";
-  let askError = "";
-  let askResponse = { question: "", answer: "", evidence: [] };
+  let researchDraft = "";
+  let researchQuestion = "";
+  let researchState = "idle";
+  let researchError = "";
+  let researchPack = { question: "", evidence: [], coverage: {}, query_plan: {}, next_steps: [] };
+  let synthesisEnabled = true;
+  let synthesisState = "idle";
+  let synthesisError = "";
+  let synthesisAnswer = "";
+  let synthesisStart = null;
+  let synthesisDone = null;
+  let synthesisCitations = [];
+  let synthesisController = null;
 
   // Graph state
   let graphNodes = [];
@@ -59,17 +69,21 @@
   let linkError = "";
   let linkResponse = null;
 
-  $: activeResults = inputMode === "search" ? searchResults : (askResponse.evidence || []);
-  $: activeState = inputMode === "search" ? searchState : askState;
-  $: activeError = inputMode === "search" ? searchError : askError;
+  $: activeResults = inputMode === "search" ? searchResults : (researchPack.evidence || []);
+  $: activeState = inputMode === "search" ? searchState : researchState;
+  $: activeError = inputMode === "search" ? searchError : researchError;
   $: hasResults = activeState === "ready" && activeResults.length > 0;
   $: showDetailPanel = Boolean(detail || detailState !== "idle" || detailError);
+  $: synthesisWarnings = synthesisDone?.answer_warnings || synthesisStart?.answer_warnings || [];
+  $: visibleCitations = synthesisDone?.citations || synthesisCitations || [];
+  $: synthesisWarningMessages = synthesisWarnings.map(formatSynthesisWarning);
 
   onMount(async () => {
     const route = readRouteState();
     currentPage = route.page;
     searchQuery = route.q;
-    askQuestion = route.ask;
+    researchDraft = route.research;
+    researchQuestion = route.research;
     selectedLookup = route.lookup;
     sourceActivityFilters = {
       sourceType: route.activityType,
@@ -92,9 +106,9 @@
       inputMode = "search";
       await runSearch();
     }
-    if (currentPage === "home" && askQuestion) {
-      inputMode = "ask";
-      await runAsk();
+    if (currentPage === "home" && researchQuestion) {
+      inputMode = "research";
+      await runResearch();
     }
     if (selectedLookup) {
       await loadDetail(selectedLookup);
@@ -106,7 +120,7 @@
     writeRouteState({
       q: inputMode === "search" ? searchQuery : "",
       lookup: selectedLookup,
-      ask: inputMode === "ask" ? askQuestion : "",
+      research: inputMode === "research" ? researchQuestion : "",
       activityDomain: onAdminPage ? sourceActivityFilters.domain : "",
       activityType: onAdminPage ? sourceActivityFilters.sourceType : "",
       activityStatus: onAdminPage ? sourceActivityFilters.status : "",
@@ -189,8 +203,13 @@
     if (inputMode === "search") {
       await runSearch();
     } else {
-      await runAsk();
+      await submitResearch();
     }
+  }
+
+  async function submitResearch() {
+    researchQuestion = researchDraft.trim();
+    await runResearch(researchQuestion);
   }
 
   function urlToLookup(query) {
@@ -244,28 +263,101 @@
     }
   }
 
-  async function runAsk() {
-    const question = askQuestion.trim();
-    askState = "loading";
-    askError = "";
-    askResponse = { question, answer: "", evidence: [] };
+  async function runResearch(question = researchQuestion) {
+    question = String(question || "").trim();
+    researchQuestion = question;
+    researchDraft = question;
+    abortSynthesis();
+    researchState = "loading";
+    researchError = "";
+    researchPack = { question, evidence: [], coverage: {}, query_plan: {}, next_steps: [] };
+    resetSynthesis();
     selectedLookup = "";
     detail = null;
     detailState = "idle";
     detailError = "";
     if (!question) {
-      askState = "idle";
-      graphNodes = [];
-      graphEdges = [];
+      researchState = "idle";
       return;
     }
     try {
-      askResponse = await askEvidence(question, { limit: 10, include_related: true, related_limit: 2 });
-      askState = "ready";
-      buildGraphFromResults(askResponse.evidence || []);
+      researchPack = await researchBrain(question);
+      researchState = "ready";
+      if (synthesisEnabled) {
+        await runSynthesis(question, researchPack);
+      }
     } catch (error) {
-      askError = error.message;
-      askState = "error";
+      researchError = error.message;
+      researchState = "error";
+    }
+  }
+
+  function resetSynthesis() {
+    synthesisState = "idle";
+    synthesisError = "";
+    synthesisAnswer = "";
+    synthesisStart = null;
+    synthesisDone = null;
+    synthesisCitations = [];
+  }
+
+  function abortSynthesis() {
+    if (synthesisController) {
+      synthesisController.abort();
+      synthesisController = null;
+    }
+  }
+
+  async function handleSynthesisToggle() {
+    if (!synthesisEnabled) {
+      abortSynthesis();
+      resetSynthesis();
+      return;
+    }
+    if (researchState === "ready" && researchPack?.schema_version) {
+      await runSynthesis(researchQuestion.trim(), researchPack);
+    }
+  }
+
+  async function runSynthesis(question, pack) {
+    abortSynthesis();
+    resetSynthesis();
+    synthesisState = "loading";
+    synthesisController = new AbortController();
+    const controller = synthesisController;
+    try {
+      await synthesizeResearch(question, pack, {
+        signal: controller.signal,
+        onEvent: (event, payload) => {
+          if (event === "start") {
+            synthesisStart = payload;
+          } else if (event === "answer") {
+            synthesisAnswer = payload.text || "";
+          } else if (event === "citation") {
+            synthesisCitations = [...synthesisCitations, payload];
+          } else if (event === "done") {
+            synthesisDone = payload;
+            synthesisState = "ready";
+            synthesisCitations = payload.citations || synthesisCitations;
+          } else if (event === "error") {
+            synthesisError = payload.error || "Synthesis failed";
+            synthesisDone = payload;
+            synthesisState = "error";
+          }
+        }
+      });
+      if (synthesisState === "loading") {
+        synthesisState = "ready";
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        synthesisError = error.message;
+        synthesisState = "error";
+      }
+    } finally {
+      if (synthesisController === controller) {
+        synthesisController = null;
+      }
     }
   }
 
@@ -341,16 +433,19 @@
   }
 
   async function loadDetail(lookup) {
-    if (!lookup) return;
-    selectedLookup = lookup;
+    const normalizedLookup = normalizeLookupKey(lookup);
+    if (!normalizedLookup) return;
+    selectedLookup = normalizedLookup;
     detailState = "loading";
     detailError = "";
     detail = null;
 
     try {
-      detail = await getLookup(lookup);
+      detail = await getLookup(normalizedLookup);
       detailState = "ready";
-      expandGraphFromDetail(detail);
+      if (inputMode === "search") {
+        expandGraphFromDetail(detail);
+      }
     } catch (error) {
       detailError = error.message;
       detailState = "error";
@@ -361,6 +456,16 @@
     inputMode = "search";
     searchQuery = term;
     await runSearch();
+  }
+
+  function evidencePreview(evidence) {
+    return truncateText(evidence?.summary || evidence?.excerpt || "", 280);
+  }
+
+  function truncateText(value, max) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    if (text.length <= max) return text;
+    return text.slice(0, max).trimEnd() + "…";
   }
 
   async function runAddLink() {
@@ -427,6 +532,21 @@
       failureSort: normalizeActivitySort(filters?.failureSort)
     };
   }
+
+  function formatSynthesisWarning(warning) {
+    switch (warning) {
+      case "evidence_truncated":
+        return "Evidence was capped to the highest-ranked working set; use the cited sources or follow-up research to expand the context.";
+      case "model_unavailable":
+        return "No local synthesis model is configured, so only retrieved evidence is shown.";
+      case "model_error":
+        return "The local synthesis model failed after evidence retrieval completed.";
+      case "no_evidence":
+        return "No matching evidence was found for this question.";
+      default:
+        return warning;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -457,12 +577,12 @@
             <button class="search-tab" class:active={inputMode === "search"} on:click={() => { inputMode = "search"; }} type="button">
               Search
             </button>
-            <button class="search-tab" class:active={inputMode === "ask"} on:click={() => { inputMode = "ask"; }} type="button">
-              Ask
+            <button class="search-tab" class:active={inputMode === "research"} on:click={() => { inputMode = "research"; }} type="button">
+              Research
             </button>
           </div>
 
-          {#if hasResults}
+          {#if inputMode === "search" && hasResults}
             <div class="view-toggle">
               <button class="view-btn" class:active={viewMode === "graph"} on:click={() => (viewMode = "graph")} type="button">
                 Graph
@@ -471,6 +591,12 @@
                 List
               </button>
             </div>
+          {/if}
+          {#if inputMode === "research"}
+            <label class="synthesis-toggle">
+              <input type="checkbox" bind:checked={synthesisEnabled} on:change={handleSynthesisToggle} />
+              <span>Synthesize answer</span>
+            </label>
           {/if}
         </div>
 
@@ -485,20 +611,20 @@
           {:else}
             <input
               class="search-input"
-              bind:value={askQuestion}
+              bind:value={researchDraft}
               placeholder="What do I have on agent memory?"
             />
           {/if}
           <button class="search-btn" type="submit" disabled={activeState === "loading"}>
-            {activeState === "loading" ? "…" : inputMode === "search" ? "Search" : "Ask"}
+            {activeState === "loading" ? "…" : inputMode === "search" ? "Search" : "Research"}
           </button>
         </form>
 
         {#if activeState === "ready" && hasResults}
           <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
             <span class="result-count">{activeResults.length} results</span>
-            {#if inputMode === "ask" && askResponse.answer}
-              <span style="font-size:0.8rem;color:var(--text-lo)">· evidence pack</span>
+            {#if inputMode === "research" && researchPack.coverage?.recall_note}
+              <span style="font-size:0.8rem;color:var(--text-lo)">· {researchPack.coverage.recall_note}</span>
             {/if}
           </div>
         {/if}
@@ -513,15 +639,93 @@
         <!-- Home guide -->
         <div class="home-guide">
           <p class="panel-kicker" style="margin-bottom:0.5rem">Local Brain Surface</p>
-          <h2>Search for exact matches. Ask to pull evidence.</h2>
+          <h2>Search for exact matches. Research to pull an evidence pack.</h2>
           <p class="message muted" style="margin-top:0.5rem">
             Results appear as a navigable graph — click nodes to expand their relationships.
           </p>
         </div>
-      {:else if hasResults || showDetailPanel || activeState === "loading"}
+      {:else if hasResults || showDetailPanel || activeState === "loading" || (inputMode === "research" && activeState === "ready")}
         <div class="content-area" class:has-detail={showDetailPanel}>
           <div class="content-main">
-            {#if viewMode === "graph"}
+            {#if inputMode === "research"}
+              <div class="research-summary">
+                <div class="answer-card">
+                  <p class="panel-kicker" style="margin:0">Research Pack</p>
+                  {#if researchState === "loading"}
+                    <p class="message muted">Retrieving evidence from the local brain…</p>
+                  {:else if researchState === "ready"}
+                    <p>{researchPack.coverage?.recall_note || "Retrieved evidence from the local brain."}</p>
+                    {#if researchPack.topic_brief?.summary}
+                      <p>{researchPack.topic_brief.summary}</p>
+                    {/if}
+                    {#if !hasResults}
+                      <p class="message muted">No evidence matched this question. Try a narrower phrase, a known tag, or a source type.</p>
+                    {/if}
+                  {:else}
+                    <p class="message muted">Submit a question to retrieve an evidence pack.</p>
+                  {/if}
+                </div>
+
+                {#if synthesisEnabled && researchState !== "loading"}
+                  <div class="answer-card synthesis-card">
+                    <div class="synthesis-header">
+                      <p class="panel-kicker" style="margin:0">Synthesis</p>
+                      {#if synthesisStart?.model || synthesisDone?.model}
+                        <span>{synthesisDone?.model || synthesisStart?.model}</span>
+                      {/if}
+                    </div>
+                    {#if synthesisState === "loading"}
+                      <p class="message muted">Generating local answer…</p>
+                    {:else if synthesisState === "error"}
+                      <p class="message error">{synthesisError}</p>
+                    {:else if synthesisDone?.answer_status === "no_evidence"}
+                      <p class="message muted">No model call was made because the research pack has no evidence.</p>
+                    {:else if synthesisAnswer}
+                      <MarkdownView markdown={synthesisAnswer} linkSourceKeys={true} onLookup={loadDetail} />
+                    {:else}
+                      <p class="message muted">Synthesis is enabled for this question.</p>
+                    {/if}
+
+                    {#if synthesisWarningMessages.length > 0}
+                      <div class="synthesis-warnings">
+                        {#each synthesisWarningMessages as message}
+                          <p class="message muted">{message}</p>
+                        {/each}
+                      </div>
+                    {/if}
+                    {#if visibleCitations.length > 0}
+                      <div class="citation-chips" aria-label="Synthesis citations">
+                        {#each visibleCitations as citation}
+                          <button class="citation-chip" type="button" on:click={() => loadDetail(citation.source_key)} title={citation.title || citation.note_path || citation.source_key}>
+                            {citation.source_key}
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+
+                {#if researchState === "ready" && hasResults}
+                  <div class="evidence-compact">
+                    <div class="evidence-compact-header">
+                      <p class="panel-kicker" style="margin:0">Evidence</p>
+                      <span>{activeResults.length} results</span>
+                    </div>
+                    <div class="evidence-compact-list">
+                      {#each activeResults as evidence}
+                        <button class="evidence-card" class:selected={selectedLookup === evidence.source_key} type="button" on:click={() => loadDetail(evidence.source_key)}>
+                          <span class="result-key">{evidence.source_type || evidence.kind || "source"}</span>
+                          <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
+                          {#if evidencePreview(evidence)}
+                            <p>{evidencePreview(evidence)}</p>
+                          {/if}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {:else if viewMode === "graph"}
               <div class="graph-area">
                 <GraphView
                   nodes={graphNodes}
@@ -531,14 +735,6 @@
                 />
               </div>
             {:else}
-              {#if inputMode === "ask" && askResponse.answer}
-                <div style="padding:1rem 1.25rem 0">
-                  <div class="answer-card">
-                    <p class="panel-kicker" style="margin:0">Answer</p>
-                    <p>{askResponse.answer}</p>
-                  </div>
-                </div>
-              {/if}
               <ResultList
                 items={activeResults}
                 selectedLookup={selectedLookup}

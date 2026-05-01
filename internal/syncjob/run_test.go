@@ -290,6 +290,33 @@ func TestRunExecutesAppleNotesBeforeLinkExtractionWhenEnabled(t *testing.T) {
 		if !opts.SkipAttachmentOCR || opts.AttachmentMaxBytes != 12345 || opts.TesseractBinary != "fake-tesseract" {
 			t.Fatalf("unexpected Apple Notes attachment options: %+v", opts)
 		}
+		if opts.Progress == nil {
+			t.Fatal("expected sync Apple Notes import progress callback")
+		}
+		opts.Progress(applenotes.ProgressEvent{
+			Phase:     "processing",
+			Index:     1,
+			Total:     5,
+			SourceKey: "apple-note:default:test",
+			Reason:    "summary",
+		})
+		opts.Progress(applenotes.ProgressEvent{
+			Phase:         "summarizing",
+			Index:         1,
+			Total:         5,
+			SourceKey:     "apple-note:default:test",
+			Status:        "unchanged",
+			SummaryStatus: "running",
+		})
+		opts.Progress(applenotes.ProgressEvent{
+			Phase:          "imported",
+			Index:          1,
+			Total:          5,
+			SourceKey:      "apple-note:default:test",
+			Status:         "unchanged",
+			SummaryStatus:  "ok",
+			SummaryChanged: true,
+		})
 		return applenotes.Stats{NotesSeen: 1, NotesImported: 1, NotesRendered: 1, SummariesCreated: 1}, nil
 	}
 	runLinkExtract = func(_ context.Context, _ config.Config, _ *store.Store, _ linkextract.Options) (linkextract.Stats, error) {
@@ -322,9 +349,14 @@ func TestRunExecutesAppleNotesBeforeLinkExtractionWhenEnabled(t *testing.T) {
 		t.Fatalf("expected Apple Notes stage stats, got %+v", stats.AppleNotes)
 	}
 	output := progress.String()
-	for _, value := range []string{"==> import apple-notes", "Apple Notes import complete", "==> extract links"} {
+	for _, value := range []string{"==> import apple-notes", "Apple Note 1/5 summarizing source=apple-note:default:test item_status=unchanged summary=running", "Apple Notes import complete", "==> extract links"} {
 		if !bytes.Contains([]byte(output), []byte(value)) {
 			t.Fatalf("expected progress output to contain %q, got %q", value, output)
+		}
+	}
+	for _, value := range []string{"processing source=apple-note:default:test", "summarized source=apple-note:default:test", "imported source=apple-note:default:test"} {
+		if bytes.Contains([]byte(output), []byte(value)) {
+			t.Fatalf("expected summary-only progress output to omit %q, got %q", value, output)
 		}
 	}
 }

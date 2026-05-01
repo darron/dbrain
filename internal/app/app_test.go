@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,7 +41,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "eval", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "ask", "search", "get", "categorize", "version"} {
+	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "eval", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -88,6 +89,59 @@ func TestVersionCommand(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestImportAppleNotesSummarizeDefaultsEnabled(t *testing.T) {
+	t.Parallel()
+
+	cmd := newImportAppleNotesCommand(&rootOptions{})
+	flag := cmd.Flags().Lookup("summarize")
+	if flag == nil {
+		t.Fatal("expected summarize flag to exist")
+	}
+	if flag.DefValue != "true" {
+		t.Fatalf("summarize default = %q, want true", flag.DefValue)
+	}
+	value, err := cmd.Flags().GetBool("summarize")
+	if err != nil {
+		t.Fatalf("GetBool(summarize): %v", err)
+	}
+	if !value {
+		t.Fatal("summarize flag value = false, want true")
+	}
+}
+
+func TestWriteAppleNotesProgressSuppressesCurrentScanNoise(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	for _, event := range []applenotes.ProgressEvent{
+		{Phase: "decoded_note", Total: 3, SourceKey: "apple-note:default:current"},
+		{Phase: "attachments", Total: 3, SourceKey: "apple-note:default:current", Status: "start"},
+		{Phase: "attachment", Total: 3, SourceKey: "apple-note:default:current", Status: "extracting"},
+		{Phase: "unchanged", Total: 3, SourceKey: "apple-note:default:current"},
+	} {
+		writeAppleNotesProgress(&dst, event, false)
+	}
+	if dst.Len() != 0 {
+		t.Fatalf("expected scan/current events to be suppressed, got %q", dst.String())
+	}
+
+	writeAppleNotesProgress(&dst, applenotes.ProgressEvent{Phase: "processing", Total: 3, SourceKey: "apple-note:default:summary", Reason: "summary"}, false)
+	writeAppleNotesProgress(&dst, applenotes.ProgressEvent{Phase: "imported", Total: 3, SourceKey: "apple-note:default:summary", Status: "unchanged", SummaryStatus: "ok"}, false)
+	if dst.Len() != 0 {
+		t.Fatalf("expected summary-only processing/completion noise to be suppressed, got %q", dst.String())
+	}
+
+	writeAppleNotesProgress(&dst, applenotes.ProgressEvent{Phase: "processing", Total: 3, SourceKey: "apple-note:default:new", Reason: "new"}, false)
+	writeAppleNotesProgress(&dst, applenotes.ProgressEvent{Phase: "summarizing", Total: 3, SourceKey: "apple-note:default:new", Status: "created", SummaryStatus: "running"}, false)
+	writeAppleNotesProgress(&dst, applenotes.ProgressEvent{Phase: "attachments", Total: 1, SourceKey: "apple-note:default:new", Status: "start"}, false)
+	output := dst.String()
+	for _, value := range []string{"processing source=apple-note:default:new", "summarizing source=apple-note:default:new", "attachments source=apple-note:default:new"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected actionable progress output to contain %q, got %q", value, output)
+		}
 	}
 }
 
@@ -2419,7 +2473,7 @@ func TestRepairNotesCommandRebuildsMissingNotes(t *testing.T) {
 	}
 }
 
-func TestAskCommandRetrieveOnlyOutputsEvidence(t *testing.T) {
+func TestResearchCommandOutputsResearchPack(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -2497,21 +2551,21 @@ func TestAskCommandRetrieveOnlyOutputsEvidence(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "ask", "test retrieval repo", "--retrieve-only"})
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "research", "test retrieval repo", "--retrieval-only"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"Retrieved evidence:", "[src:test-retrieval] retrieval repo", "summary: Retrieval-oriented knowledge base tooling.", "entity_matches:"} {
+	for _, value := range []string{"Research pack: test retrieval repo", "Mode: evidence_only", "Retrieved evidence:", "[src:test-retrieval] retrieval repo", "summary: Retrieval-oriented knowledge base tooling.", "entity_matches:"} {
 		if !strings.Contains(output, value) {
-			t.Fatalf("expected ask output to contain %q, got %q", value, output)
+			t.Fatalf("expected research output to contain %q, got %q", value, output)
 		}
 	}
 }
 
-func TestAskCommandSynthesizesAnswer(t *testing.T) {
+func TestResearchCommandSynthesizesByDefault(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -2531,14 +2585,14 @@ func TestAskCommandSynthesizesAnswer(t *testing.T) {
 
 	now := time.Now().UTC()
 	itemResult, err := st.UpsertItem(context.Background(), model.Item{
-		SourceKey:    "x:test-ask-answer",
+		SourceKey:    "item:test-synthesis",
 		SourceType:   "x_bookmark",
-		ExternalID:   "test-ask-answer",
-		CanonicalURL: "https://x.com/example/status/test-ask-answer",
-		Title:        "Kubernetes validation tools",
-		Text:         "kubeval validates kubernetes YAML manifests",
-		ContentHash:  "hash-ask-answer-item",
-		NotePath:     "items/x/2026/test-ask-answer.md",
+		ExternalID:   "test-synthesis",
+		CanonicalURL: "https://x.com/example/status/test-synthesis",
+		Title:        "Synthesis item",
+		Text:         "synthesis retrieval local answer",
+		ContentHash:  "hash-synthesis-item",
+		NotePath:     "items/x/test-synthesis.md",
 		RawJSON:      `{}`,
 		ImportedAt:   now,
 		UpdatedAt:    now,
@@ -2547,34 +2601,33 @@ func TestAskCommandSynthesizesAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert item: %v", err)
 	}
-
 	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
-		SourceKey:     "src:test-ask-answer",
-		OriginalURL:   "https://kubeval.com/",
-		CanonicalURL:  "https://kubeval.com/",
-		NormalizedURL: "https://kubeval.com/",
+		SourceKey:     "src:test-synthesis",
+		OriginalURL:   "https://example.com/synthesis",
+		CanonicalURL:  "https://example.com/synthesis",
+		NormalizedURL: "https://example.com/synthesis",
 		SourceType:    "web",
-		Domain:        "kubeval.com",
-		NotePath:      "sources/web/test-ask-answer.md",
+		Domain:        "example.com",
+		NotePath:      "sources/web/test-synthesis.md",
 	})
 	if err != nil {
 		t.Fatalf("source link: %v", err)
 	}
 	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
-		CanonicalURL: "https://kubeval.com/",
-		FinalURL:     "https://kubeval.com/",
-		Title:        "kubeval",
-		Content:      "kubeval validates Kubernetes manifests and configuration files against schemas.",
+		CanonicalURL: "https://example.com/synthesis",
+		FinalURL:     "https://example.com/synthesis",
+		Title:        "Synthesis source",
+		Content:      "synthesis retrieval source body",
 		Status:       "ok",
 		FetchedAt:    now,
 		Tool:         "summarize",
 		ToolVersion:  "test",
-	}, "hash-ask-answer-source"); err != nil {
+	}, "hash-synthesis-source"); err != nil {
 		t.Fatalf("save source extraction: %v", err)
 	}
 	if _, err := st.SaveSourceSummary(context.Background(), link.SourceID, model.SummaryResult{
-		Text:          "kubeval validates Kubernetes manifests against upstream schemas.",
-		RawJSON:       `{"summary":"kubeval validates Kubernetes manifests against upstream schemas."}`,
+		Text:          "Synthesis retrieval should produce a cited local answer.",
+		RawJSON:       `{"summary":"Synthesis retrieval should produce a cited local answer."}`,
 		Model:         "cli/test/model",
 		PromptVersion: "dbrain-v1",
 		Status:        "ok",
@@ -2585,30 +2638,36 @@ func TestAskCommandSynthesizesAnswer(t *testing.T) {
 		t.Fatalf("save source summary: %v", err)
 	}
 
-	installAskFakeSummarize(t, root)
-	t.Setenv("DBRAIN_SUMMARY_MODEL", "")
-	t.Setenv("SUMMARIZE_MODEL", "")
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected ollama path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen-test","message":{"role":"assistant","content":"Synthesis retrieval produces a cited answer [src:test-synthesis]."}}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", ollama.URL)
 
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "ask", "What validates Kubernetes manifests?", "--cli", "codex", "--timeout", "5s"})
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "research", "synthesis retrieval", "--model", "ollama/qwen-test", "--synthesis-timeout", "5s"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"kubeval is a Kubernetes manifest validator [src:test-ask-answer].", "Retrieved evidence:", "[src:test-ask-answer] kubeval"} {
+	for _, value := range []string{"Answer status: ok", "Model: ollama/qwen-test", "Answer:", "Synthesis retrieval produces a cited answer [src:test-synthesis].", "Citations:", "Research pack:"} {
 		if !strings.Contains(output, value) {
-			t.Fatalf("expected ask output to contain %q, got %q", value, output)
+			t.Fatalf("expected synthesized research output to contain %q, got %q", value, output)
 		}
 	}
 }
 
-func TestAskCommandSourceTypeFilterLimitsEvidence(t *testing.T) {
+func TestResearchCommandSourceTypeFilterLimitsEvidence(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -2674,7 +2733,7 @@ func TestAskCommandSourceTypeFilterLimitsEvidence(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "ask", "show me github repos search results", "--retrieve-only", "--source-type", "github"})
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "research", "show me github repos search results", "--source-type", "github", "--retrieval-only"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
@@ -2692,7 +2751,7 @@ func TestAskCommandSourceTypeFilterLimitsEvidence(t *testing.T) {
 	}
 }
 
-func TestAskCommandIncludeRelatedAddsLinkedEvidence(t *testing.T) {
+func TestResearchCommandIncludeRelatedAddsLinkedEvidence(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -2771,7 +2830,7 @@ func TestAskCommandIncludeRelatedAddsLinkedEvidence(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "ask", "special retrieval phrase", "--retrieve-only", "--include-related", "--related-limit", "1", "--limit", "2"})
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "research", "special retrieval phrase", "--include-related", "--related-limit", "1", "--limit", "2", "--retrieval-only"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
@@ -2780,7 +2839,7 @@ func TestAskCommandIncludeRelatedAddsLinkedEvidence(t *testing.T) {
 	output := stdout.String()
 	for _, value := range []string{"[x:test-related-item] Parent item", "[src:test-related-source] Related source", "relationship: linked source (x:test-related-item)"} {
 		if !strings.Contains(output, value) {
-			t.Fatalf("expected related ask output to contain %q, got %q", value, output)
+			t.Fatalf("expected related research output to contain %q, got %q", value, output)
 		}
 	}
 }
@@ -3378,66 +3437,10 @@ func assertPipelineRowCounts(t *testing.T, rows []store.PipelineStageRow, kind s
 	t.Fatalf("missing pipeline row for %s in %+v", kind, rows)
 }
 
-func installAskFakeSummarize(t *testing.T, root string) {
-	t.Helper()
-
-	binDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("create bin dir: %v", err)
-	}
-	scriptPath := filepath.Join(binDir, "summarize")
-	script := `#!/bin/sh
-if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
-  echo "test-1.0.0"
-  exit 0
-fi
-last=""
-prev=""
-cli=""
-for arg in "$@"; do
-  if [ "$prev" = "--cli" ]; then
-    cli="$arg"
-  fi
-  last="$arg"
-  prev="$arg"
-done
-if [ "$cli" != "codex" ]; then
-  echo "expected codex cli provider, got $cli" >&2
-  exit 1
-fi
-if [ ! -f "$last" ]; then
-  echo "expected local ask prompt file" >&2
-  exit 1
-fi
-input="$(cat "$last")"
-case "$input" in
-  *"What validates Kubernetes manifests?"* ) ;;
-  *)
-    echo "expected question in ask prompt input" >&2
-    exit 1
-    ;;
-esac
-case "$input" in
-  *"src:test-ask-answer"* ) ;;
-  *)
-    echo "expected source key in ask prompt input" >&2
-    exit 1
-    ;;
-esac
-printf '%s\n' '{"input":{"model":"cli/test/ask"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"context"},"summary":"kubeval is a Kubernetes manifest validator [src:test-ask-answer].\n\nSources\n- [src:test-ask-answer] kubeval — /vault/sources/web/test-ask-answer.md"}'
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake summarize: %v", err)
-	}
-
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
 func TestCLIFlagsDefaultToCodex(t *testing.T) {
 	cmd := NewRootCommand()
 
 	for _, path := range [][]string{
-		{"ask"},
 		{"extract", "links"},
 		{"extract", "sources"},
 		{"import", "github", "stars"},

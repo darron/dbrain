@@ -299,7 +299,9 @@ func startSourceProgressLogger(ctx context.Context, logger *slog.Logger, interva
 	}
 
 	progressCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -325,7 +327,10 @@ func startSourceProgressLogger(ctx context.Context, logger *slog.Logger, interva
 			}
 		}
 	}()
-	return cancel
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *store.Store, sources []model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) ([]sourceProcessResult, error) {
@@ -2079,7 +2084,7 @@ func looksLikePlaceholderExtractContent(content string) bool {
 		strings.Contains(normalized, "google drive"),
 		strings.Contains(normalized, "your browser does not support frames"),
 		strings.Contains(normalized, "click here to enter the site"):
-		return len(normalized) <= 160
+		return len(normalized) <= 300
 	case strings.Contains(normalized, "sign in or sign up"),
 		strings.Contains(normalized, "you are not logged in"),
 		strings.Contains(normalized, "manage account"),

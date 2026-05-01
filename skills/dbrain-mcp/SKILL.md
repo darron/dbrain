@@ -105,12 +105,11 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 
 ## Default Workflow
 
-1. For broad research questions, call `dbrain_research_pack` first. It returns retrieve-only evidence, the text/tag query plan, exact tag coverage, representative `exact_tag_evidence` examples, corpus match counts, per-evidence retrieval score signals, suggested next tools, and may include a topic brief.
-2. For direct Q&A, call `dbrain_ask` with `retrieve_only=true` first. Only set `retrieve_only=false` when the user explicitly wants synthesized prose and model use is acceptable.
-3. For keyword or tag exploration, call `dbrain_search`, then inspect promising results with `dbrain_get_many` using `content_mode="evidence"` and the same `query` when there are multiple source keys, or `dbrain_get` for one source key.
-4. For graph expansion, call `dbrain_related` on strong evidence items or sources.
-5. For entity or topic browsing, use `dbrain_entity_map`, `dbrain_topic_map`, or `dbrain_topic_brief`.
-6. For operational status, use `dbrain_stats_activity`, `dbrain_stats_backlog`, `dbrain_stats_items`, or `dbrain_stats_sources`.
+1. For broad research questions and direct Q&A, call `dbrain_research_pack` first. It returns retrieve-only evidence, the text/tag query plan, exact tag coverage, representative `exact_tag_evidence` examples, corpus match counts, per-evidence retrieval score signals, suggested next tools, and may include a topic brief.
+2. For keyword or tag exploration, call `dbrain_search`, then inspect promising results with `dbrain_get_many` using `content_mode="evidence"` and the same `query` when there are multiple source keys, or `dbrain_get` for one source key.
+3. For graph expansion, call `dbrain_related` on strong evidence items or sources.
+4. For entity or topic browsing, use `dbrain_entity_map`, `dbrain_topic_map`, or `dbrain_topic_brief`.
+5. For operational status, use `dbrain_stats_activity`, `dbrain_stats_backlog`, `dbrain_stats_items`, or `dbrain_stats_sources`.
 
 ## Research Practice
 
@@ -131,7 +130,7 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 If MCP tools are not available in the current Codex session, use the local CLI from the dbrain repo:
 
 ```bash
-./bin/dbrain ask "QUESTION" --retrieve-only
+./bin/dbrain research "QUESTION" --retrieval-only
 ./bin/dbrain serve mcp
 ```
 

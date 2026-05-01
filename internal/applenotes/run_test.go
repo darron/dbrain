@@ -98,6 +98,9 @@ func TestRunReportsUnchanged(t *testing.T) {
 	if stats.NotesUnchanged != 1 {
 		t.Fatalf("NotesUnchanged = %d, want 1 (stats=%+v)", stats.NotesUnchanged, stats)
 	}
+	if stats.NotesImported != 0 {
+		t.Fatalf("NotesImported = %d, want 0 for unchanged-current note (stats=%+v)", stats.NotesImported, stats)
+	}
 }
 
 func TestRunLimitSkipsUnchangedAndAdvances(t *testing.T) {

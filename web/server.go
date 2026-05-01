@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/darron/dbrain/internal/ask"
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/linkadd"
 	"github.com/darron/dbrain/internal/model"
@@ -26,12 +26,14 @@ import (
 const (
 	defaultAddr           = "127.0.0.1:8742"
 	defaultSearchLimit    = 25
-	defaultAskLimit       = 25
+	defaultResearchLimit  = 8
+	defaultSynthesisBytes = 5 << 20
 	defaultEventLimit     = 8
 	defaultActivityWindow = 24 * time.Hour
+	defaultSSEHeartbeat   = 5 * time.Second
 	defaultWebCLI         = "codex"
 	maxSearchLimit        = 50
-	maxAskLimit           = 50
+	maxResearchLimit      = 50
 	maxEventLimit         = 20
 )
 
@@ -71,13 +73,23 @@ type GetResponse struct {
 	NoteError     string                 `json:"note_error,omitempty"`
 }
 
-type AskRequest struct {
-	Question       string   `json:"question"`
-	Limit          int      `json:"limit"`
-	SourceTypes    []string `json:"source_types"`
-	IncludeRelated bool     `json:"include_related"`
-	RelatedLimit   int      `json:"related_limit"`
-	MaxCharsPerDoc int      `json:"max_chars_per_doc"`
+type ResearchRequest struct {
+	Question          string   `json:"question"`
+	Topic             string   `json:"topic"`
+	Limit             int      `json:"limit"`
+	SourceTypes       []string `json:"source_types"`
+	IncludeRelated    bool     `json:"include_related"`
+	RelatedLimit      int      `json:"related_limit"`
+	SeedLimit         int      `json:"seed_limit"`
+	IncludeTopicBrief *bool    `json:"include_topic_brief"`
+	MaxCharsPerDoc    int      `json:"max_chars_per_doc"`
+}
+
+type ResearchSynthesisRequest struct {
+	Question         string             `json:"question"`
+	ResearchPack     brainresearch.Pack `json:"research_pack"`
+	Model            string             `json:"model"`
+	MaxEvidenceChars int                `json:"max_evidence_chars"`
 }
 
 type LinkAddRequest struct {
@@ -185,13 +197,19 @@ func (s *server) newMux() http.Handler {
 	mux.HandleFunc("/api/stats/backlog", s.handleBacklog)
 	mux.HandleFunc("/api/stats/activity", s.handleActivity)
 	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
-	mux.HandleFunc("/api/ask", s.handleAsk)
+	mux.HandleFunc("/api/ask", handleRemovedAPI)
+	mux.HandleFunc("/api/research", s.handleResearch)
+	mux.HandleFunc("/api/research/synthesize", s.handleResearchSynthesize)
 	mux.HandleFunc("/api/links", s.handleLinks)
 	mux.HandleFunc("/api/tag", s.handleTag)
 	mux.HandleFunc("/api/media/signed-url", s.handleMediaSignedURL)
 	mux.HandleFunc("/media/asset/", s.handleMediaAsset)
 	mux.Handle("/", http.HandlerFunc(s.handleStatic))
 	return mux
+}
+
+func handleRemovedAPI(w http.ResponseWriter, _ *http.Request) {
+	writeMessage(w, http.StatusNotFound, "endpoint removed")
 }
 
 func DefaultAddr() string {
@@ -462,13 +480,13 @@ func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, activity)
 }
 
-func (s *server) handleAsk(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleResearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
 
-	var req AskRequest
+	var req ResearchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeMessage(w, http.StatusBadRequest, "request body must be valid JSON")
 		return
@@ -480,20 +498,150 @@ func (s *server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := ask.Run(r.Context(), s.cfg, s.store, req.Question, ask.Options{
-		Limit:          clampLimit(req.Limit, 1, maxAskLimit),
-		RetrieveOnly:   true,
-		MaxCharsPerDoc: req.MaxCharsPerDoc,
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultResearchLimit
+	}
+	pack, err := brainresearch.Build(r.Context(), s.cfg, s.store, brainresearch.Options{
+		Question:       req.Question,
+		Topic:          req.Topic,
+		Limit:          clampLimit(limit, 1, maxResearchLimit),
 		SourceTypes:    req.SourceTypes,
 		IncludeRelated: req.IncludeRelated,
 		RelatedLimit:   req.RelatedLimit,
+		SeedLimit:      req.SeedLimit,
+		IncludeTopic:   req.IncludeTopicBrief,
+		MaxCharsPerDoc: req.MaxCharsPerDoc,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, pack)
+}
+
+func (s *server) handleResearchSynthesize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	var req ResearchSynthesisRequest
+	limitedBody := http.MaxBytesReader(w, r.Body, defaultSynthesisBytes)
+	if err := json.NewDecoder(limitedBody).Decode(&req); err != nil {
+		writeMessage(w, http.StatusBadRequest, "request body must be valid JSON")
+		return
+	}
+
+	prepared, err := brainresearch.PrepareSynthesis(s.cfg, brainresearch.SynthesisOptions{
+		Question:         req.Question,
+		Pack:             req.ResearchPack,
+		Model:            req.Model,
+		CLI:              defaultWebCLI,
+		MaxEvidenceChars: req.MaxEvidenceChars,
+	})
+	if err != nil {
+		if errors.Is(err, brainresearch.ErrSynthesisUnavailable) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+				"error":           err.Error(),
+				"answer_status":   "unavailable",
+				"answer_warnings": []string{"model_unavailable"},
+			})
+			return
+		}
+		writeMessage(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeMessage(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	writeSSE(w, flusher, "start", map[string]interface{}{
+		"schema_version":        prepared.SchemaVersion,
+		"model":                 prepared.Model,
+		"prompt_version":        prepared.PromptVersion,
+		"evidence_budget_chars": prepared.Truncation.EvidenceBudgetChars,
+		"truncation":            prepared.Truncation,
+		"answer_warnings":       prepared.Warnings,
+		"answer_status":         prepared.Status,
+	})
+
+	if prepared.Status == "no_evidence" {
+		writeSSE(w, flusher, "done", brainresearch.SynthesisResult{
+			SchemaVersion: prepared.SchemaVersion,
+			Question:      prepared.Question,
+			AnswerStatus:  "no_evidence",
+			Warnings:      prepared.Warnings,
+			Truncation:    prepared.Truncation,
+			Citations:     prepared.Citations,
+			PromptVersion: prepared.PromptVersion,
+			Model:         prepared.Model,
+		})
+		return
+	}
+
+	type synthesisOutcome struct {
+		Result brainresearch.SynthesisResult
+		Err    error
+	}
+	resultCh := make(chan synthesisOutcome, 1)
+	go func() {
+		result, err := brainresearch.RunPreparedSynthesis(r.Context(), s.cfg, prepared, brainresearch.SynthesisOptions{
+			CLI:              defaultWebCLI,
+			Model:            req.Model,
+			MaxEvidenceChars: req.MaxEvidenceChars,
+		})
+		resultCh <- synthesisOutcome{Result: result, Err: err}
+	}()
+
+	ticker := time.NewTicker(defaultSSEHeartbeat)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			writeSSE(w, flusher, "heartbeat", map[string]interface{}{
+				"ts": time.Now().UTC().Format(time.RFC3339),
+			})
+		case outcome := <-resultCh:
+			if outcome.Err != nil {
+				writeSSE(w, flusher, "error", map[string]interface{}{
+					"answer_status":   "error",
+					"answer_warnings": []string{"model_error"},
+					"error":           outcome.Err.Error(),
+				})
+				return
+			}
+			writeSSE(w, flusher, "answer", map[string]interface{}{
+				"text": outcome.Result.Answer,
+			})
+			for _, citation := range outcome.Result.Citations {
+				writeSSE(w, flusher, "citation", citation)
+			}
+			writeSSE(w, flusher, "done", outcome.Result)
+			return
+		}
+	}
+}
+
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, event string, data interface{}) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		payload = []byte(`{"error":"encode event"}`)
+	}
+	_, _ = fmt.Fprintf(w, "event: %s\n", event)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+	flusher.Flush()
 }
 
 func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {

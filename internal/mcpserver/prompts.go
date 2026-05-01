@@ -122,7 +122,6 @@ Recommended workflow:
 6. Review the strongest evidence with dbrain_get using content_mode=evidence before making detailed claims. Use content_mode=raw only when the raw extract/transcript/OCR is needed, and content_mode=rendered only when the rendered Markdown shape is useful.
 7. Return a concise answer with citations to source keys and note paths.
 8. Answer from the collector's saved corpus; do not add outside balance or model-background viewpoints unless the user asks.
-9. Only call dbrain_ask with retrieve_only=false if the user explicitly wants synthesized prose and spending model usage is acceptable.
 `, question, includeRelated, quotedCSV(sourceTypes))), nil
 	case "brain_browse":
 		lookup := strings.TrimSpace(argumentString(args, "lookup"))

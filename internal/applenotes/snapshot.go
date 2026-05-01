@@ -63,6 +63,7 @@ type ProgressEvent struct {
 	AttachmentChars int    `json:"attachment_chars,omitempty"`
 	Rendered        bool   `json:"rendered,omitempty"`
 	SummaryStatus   string `json:"summary_status,omitempty"`
+	SummaryChanged  bool   `json:"summary_changed,omitempty"`
 }
 
 type SnapshotInfo struct {

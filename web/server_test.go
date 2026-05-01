@@ -11,9 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/darron/dbrain/internal/ask"
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
@@ -57,7 +60,7 @@ func (f *fakeArchiveProxy) PresignGetObject(_ context.Context, _, _ string, ttl 
 	return f.signedURL, time.Date(2026, time.April, 25, 22, 5, 0, 0, time.UTC).Add(ttl), nil
 }
 
-func TestWebHandlerServesBootstrapSearchGetAndAsk(t *testing.T) {
+func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -291,10 +294,10 @@ func TestWebHandlerServesBootstrapSearchGetAndAsk(t *testing.T) {
 		}
 	})
 
-	t.Run("ask retrieve only", func(t *testing.T) {
-		body := bytes.NewBufferString(`{"question":"What do I have on agent memory?","limit":4}`)
+	t.Run("research pack", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"question":"What do I have on agent memory?","limit":4,"include_related":true,"related_limit":2,"max_chars_per_doc":4000}`)
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/ask", body)
+		req := httptest.NewRequest(http.MethodPost, "/api/research", body)
 		req.Header.Set("Content-Type", "application/json")
 		handler.ServeHTTP(rec, req)
 
@@ -304,16 +307,63 @@ func TestWebHandlerServesBootstrapSearchGetAndAsk(t *testing.T) {
 
 		var response map[string]any
 		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-			t.Fatalf("decode ask response: %v", err)
+			t.Fatalf("decode research response: %v", err)
+		}
+		if response["schema_version"] != "research_pack.v1" {
+			t.Fatalf("expected schema version, got %#v", response["schema_version"])
 		}
 		if response["question"] != "What do I have on agent memory?" {
 			t.Fatalf("expected echoed question, got %#v", response["question"])
 		}
-		if response["answer"] != "" {
-			t.Fatalf("expected retrieve-only empty answer, got %#v", response["answer"])
+		plan := response["query_plan"].(map[string]any)
+		if plan["max_chars_per_doc"] != float64(4000) {
+			t.Fatalf("expected web-requested max chars in query plan, got %#v", plan)
 		}
-		if _, ok := response["evidence"].([]any); !ok {
-			t.Fatalf("expected evidence array, got %#v", response["evidence"])
+		evidence := response["evidence"].([]any)
+		if len(evidence) == 0 {
+			t.Fatalf("expected evidence rows, got %#v", response)
+		}
+		coverage := response["coverage"].(map[string]any)
+		if coverage["recall_note"] == "" {
+			t.Fatalf("expected recall note in research pack, got %#v", coverage)
+		}
+		nextSteps := response["next_steps"].([]any)
+		if len(nextSteps) == 0 || nextSteps[0].(map[string]any)["action"] == "" {
+			t.Fatalf("expected semantic next steps, got %#v", nextSteps)
+		}
+	})
+
+	t.Run("research invalid body", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/research", bytes.NewBufferString(`{`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("research requires question", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/research", bytes.NewBufferString(`{"question":" "}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("ask route removed", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"question":"What do I have on agent memory?","limit":4}`)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/ask", body)
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 
@@ -386,6 +436,298 @@ func TestWebHandlerServesIndexHTML(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResearchSynthesizeStreamsFinalAnswer(t *testing.T) {
+	cfg, st := openTestStore(t)
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected ollama path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen-test","message":{"role":"assistant","content":"Agent memory requires durable retrieval [src:test]."}}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", ollama.URL)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	pack := brainresearch.Pack{
+		SchemaVersion: brainresearch.SchemaVersion,
+		Question:      "What do I know about agent memory?",
+		QueryPlan: brainresearch.QueryPlan{
+			TextQuery:  "agent memory",
+			QueryTerms: []string{"agent", "memory"},
+			TagQueries: []string{"agent-memory"},
+		},
+		Coverage: brainresearch.Coverage{EvidenceCount: 1, RecallNote: "one evidence row"},
+		Evidence: []ask.Evidence{
+			{
+				SourceKey: "src:test",
+				Kind:      "source",
+				Title:     "Agent Memory",
+				URL:       "https://example.com/agent-memory",
+				NotePath:  "sources/test.md",
+				Summary:   "Agent memory benefits from durable retrieval and citations.",
+			},
+		},
+	}
+	requestBody, err := json.Marshal(ResearchSynthesisRequest{
+		Question:         pack.Question,
+		ResearchPack:     pack,
+		Model:            "ollama/qwen-test",
+		MaxEvidenceChars: 4000,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/synthesize", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("expected text/event-stream content type, got %q", got)
+	}
+	events := parseSSEEvents(t, rec.Body.String())
+	for _, event := range []string{"start", "answer", "citation", "done"} {
+		if _, ok := events[event]; !ok {
+			t.Fatalf("expected %s event in stream:\n%s", event, rec.Body.String())
+		}
+	}
+	if _, ok := events["token"]; ok {
+		t.Fatalf("request/response synthesis must not emit token events: %+v", events)
+	}
+	var answer struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(events["answer"][0]), &answer); err != nil {
+		t.Fatalf("decode answer event: %v", err)
+	}
+	if answer.Text != "Agent memory requires durable retrieval [src:test]." {
+		t.Fatalf("unexpected answer text %q", answer.Text)
+	}
+	var done brainresearch.SynthesisResult
+	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
+		t.Fatalf("decode done event: %v", err)
+	}
+	if done.AnswerStatus != "ok" || done.Model != "ollama/qwen-test" || len(done.Citations) != 1 || done.Citations[0].SourceKey != "src:test" {
+		t.Fatalf("unexpected done event: %+v", done)
+	}
+}
+
+func TestResearchSynthesizeRejectsInvalidPack(t *testing.T) {
+	cfg, st := openTestStore(t)
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/synthesize", bytes.NewBufferString(`{"question":"Agent memory","research_pack":{"schema_version":"old"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "research_pack.schema_version") {
+		t.Fatalf("expected schema diagnostic, got %q", rec.Body.String())
+	}
+}
+
+func TestResearchSynthesizeReturnsUnavailableWithoutConfiguredModel(t *testing.T) {
+	t.Setenv("DBRAIN_SUMMARY_MODEL", "")
+	t.Setenv("SUMMARIZE_MODEL", "")
+	cfg, st := openTestStore(t)
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	pack := brainresearch.Pack{
+		SchemaVersion: brainresearch.SchemaVersion,
+		Question:      "What do I know about agent memory?",
+		QueryPlan:     brainresearch.QueryPlan{TextQuery: "agent memory"},
+		Coverage:      brainresearch.Coverage{EvidenceCount: 1, RecallNote: "one evidence row"},
+		Evidence: []ask.Evidence{
+			{SourceKey: "src:test", Kind: "source", Title: "Agent Memory", NotePath: "sources/test.md", Summary: "Agent memory evidence."},
+		},
+	}
+	requestBody, err := json.Marshal(ResearchSynthesisRequest{
+		Question:     pack.Question,
+		ResearchPack: pack,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/synthesize", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("expected JSON unavailable response, got %q", got)
+	}
+	var payload struct {
+		AnswerStatus string   `json:"answer_status"`
+		Warnings     []string `json:"answer_warnings"`
+		Error        string   `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode unavailable response: %v", err)
+	}
+	if payload.AnswerStatus != "unavailable" || len(payload.Warnings) != 1 || payload.Warnings[0] != "model_unavailable" {
+		t.Fatalf("unexpected unavailable payload: %+v", payload)
+	}
+}
+
+func TestResearchSynthesizeNoEvidenceSkipsModel(t *testing.T) {
+	cfg, st := openTestStore(t)
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	pack := brainresearch.Pack{
+		SchemaVersion: brainresearch.SchemaVersion,
+		Question:      "What do I know about nonexistent material?",
+		QueryPlan:     brainresearch.QueryPlan{TextQuery: "nonexistent material"},
+		Coverage:      brainresearch.Coverage{EvidenceCount: 0, RecallNote: "no evidence"},
+	}
+	requestBody, err := json.Marshal(ResearchSynthesisRequest{
+		Question:     pack.Question,
+		ResearchPack: pack,
+		Model:        "ollama/unused",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/synthesize", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events := parseSSEEvents(t, rec.Body.String())
+	if _, ok := events["answer"]; ok {
+		t.Fatalf("no-evidence synthesis should not emit answer: %+v", events)
+	}
+	var done brainresearch.SynthesisResult
+	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
+		t.Fatalf("decode done event: %v", err)
+	}
+	if done.AnswerStatus != "no_evidence" || len(done.Warnings) == 0 {
+		t.Fatalf("unexpected no-evidence done event: %+v", done)
+	}
+}
+
+func TestResearchSynthesizeStreamsPostStartError(t *testing.T) {
+	cfg, st := openTestStore(t)
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "model unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", ollama.URL)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	pack := brainresearch.Pack{
+		SchemaVersion: brainresearch.SchemaVersion,
+		Question:      "What do I know about agent memory?",
+		QueryPlan:     brainresearch.QueryPlan{TextQuery: "agent memory"},
+		Coverage:      brainresearch.Coverage{EvidenceCount: 1, RecallNote: "one evidence row"},
+		Evidence: []ask.Evidence{
+			{SourceKey: "src:test", Kind: "source", Title: "Agent Memory", NotePath: "sources/test.md", Summary: "Agent memory evidence."},
+		},
+	}
+	requestBody, err := json.Marshal(ResearchSynthesisRequest{
+		Question:     pack.Question,
+		ResearchPack: pack,
+		Model:        "ollama/qwen-test",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/synthesize", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected stream to start with 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events := parseSSEEvents(t, rec.Body.String())
+	if _, ok := events["start"]; !ok {
+		t.Fatalf("expected start event: %+v", events)
+	}
+	if _, ok := events["error"]; !ok {
+		t.Fatalf("expected terminal error event: %+v", events)
+	}
+	if _, ok := events["done"]; ok {
+		t.Fatalf("error stream must not also emit done: %+v", events)
+	}
+	var payload struct {
+		AnswerStatus string   `json:"answer_status"`
+		Warnings     []string `json:"answer_warnings"`
+		Error        string   `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(events["error"][0]), &payload); err != nil {
+		t.Fatalf("decode error event: %v", err)
+	}
+	if payload.AnswerStatus != "error" || !strings.Contains(payload.Error, "503") {
+		t.Fatalf("unexpected error payload: %+v", payload)
+	}
+}
+
+func parseSSEEvents(t *testing.T, body string) map[string][]string {
+	t.Helper()
+
+	events := map[string][]string{}
+	currentEvent := ""
+	var data strings.Builder
+	flush := func() {
+		if currentEvent == "" {
+			data.Reset()
+			return
+		}
+		events[currentEvent] = append(events[currentEvent], data.String())
+		currentEvent = ""
+		data.Reset()
+	}
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case line == "":
+			flush()
+		case strings.HasPrefix(line, "event: "):
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+		case strings.HasPrefix(line, "data: "):
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data: ")))
+		}
+	}
+	flush()
+	return events
 }
 
 func TestWebHandlerServesArchivedMediaAndSignedURL(t *testing.T) {

@@ -108,7 +108,7 @@ Reference: https://lifecontext.vip/guide/intro/second-brain
 ## Goals
 
 - Import Apple Notes as materialized `apple_note` items from SQLite.
-- Let `dbrain ask`, MCP search/research tools, and the web UI retrieve
+- Let `dbrain research`, MCP search/research tools, and the web UI retrieve
   materialized Apple Notes alongside DB-backed dbrain items and sources.
 - Import all visible Notes by default after the command/config is enabled, with
   opt-out exclusions for accounts, folders, note markers, locked notes, and
@@ -569,7 +569,7 @@ dbrain import apple-notes --limit 25 --show-titles --dry-run
 dbrain import apple-notes snapshot --dir /tmp/dbrain-notes-snapshot
 dbrain import apple-notes decode --note <note-id>
 dbrain sync all --skip-apple-notes
-dbrain ask "What do my notes and saved sources say about X?"
+dbrain research "What do my notes and saved sources say about X?"
 ```
 
 Suggested first flags:

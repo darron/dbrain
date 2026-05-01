@@ -59,9 +59,11 @@ type Stats struct {
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
 	readOpts := opts
 	deferAttachmentEnrichment := false
-	if !opts.DryRun && opts.Limit > 0 {
-		// In applied mode, --limit is a work limit. Read all candidate notes so
-		// unchanged-current rows do not consume the batch and repeated runs advance.
+	if !opts.DryRun {
+		// In applied mode, read all candidate notes so unchanged-current rows do
+		// not consume the batch and repeated runs advance. Attachment file work
+		// is deferred until candidate planning says work may be needed, then the
+		// plan is rechecked after enrichment before any unchanged row is written.
 		readOpts.Limit = 0
 		if !opts.SkipAttachments {
 			readOpts.SkipAttachments = true
@@ -166,7 +168,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			stats.Errors++
 			return stats, err
 		}
-		if opts.Limit > 0 && !plan.Actionable {
+		if !plan.Actionable {
 			countAttachments(&stats, doc.Attachments)
 			stats.NotesUnchanged++
 			event.Phase = "unchanged"
@@ -198,7 +200,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			event.Attachments = len(doc.Attachments)
 			event.TextChars = len(doc.Text)
 			event.AttachmentChars = totalAttachmentTextChars(doc)
-			if opts.Limit > 0 && !plan.Actionable {
+			if !plan.Actionable {
 				countAttachments(&stats, doc.Attachments)
 				stats.NotesUnchanged++
 				event.Phase = "unchanged"
@@ -269,6 +271,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				stats.SummariesCreated++
 				stats.NotesRendered++
 				event.SummaryStatus = "ok"
+				event.SummaryChanged = true
 			} else {
 				event.SummaryStatus = "current"
 			}

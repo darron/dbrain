@@ -127,7 +127,7 @@ func NewRootCommand() *cobra.Command {
 		serveCmd,
 		newOCRCommand(opts),
 		newStatsCommand(opts),
-		newAskCommand(opts),
+		newResearchCommand(opts),
 		newSearchCommand(opts),
 		newGetCommand(opts),
 		newCategorizeCommand(opts),

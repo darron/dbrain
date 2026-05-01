@@ -28,7 +28,7 @@ func newImportAppleNotesCommand(root *rootOptions) *cobra.Command {
 	var skipAttachmentOCR bool
 	var attachmentMaxBytes int64
 	var tesseractBinary string
-	var summarize bool
+	summarize := true
 	var summaryModel string
 	var summaryCLI string
 	var summaryLength string
@@ -153,7 +153,7 @@ func newImportAppleNotesCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&skipAttachmentOCR, "skip-attachment-ocr", false, "Skip default local OCR for image attachments")
 	cmd.Flags().Int64Var(&attachmentMaxBytes, "attachment-max-bytes", 0, "Maximum attachment file size to extract; 0 uses the default")
 	cmd.Flags().StringVar(&tesseractBinary, "tesseract", "", "Tesseract binary for local Apple Notes image OCR")
-	cmd.Flags().BoolVar(&summarize, "summarize", false, "Summarize imported Apple Notes locally after materialization")
+	cmd.Flags().BoolVar(&summarize, "summarize", true, "Summarize imported Apple Notes locally after materialization; set --summarize=false to skip")
 	cmd.Flags().StringVar(&summaryModel, "summary-model", "", "Apple Notes summary model override; defaults to summary.model")
 	cmd.Flags().StringVar(&summaryCLI, "summary-cli", defaultCLIProvider, "Summarize CLI provider for Apple Notes")
 	cmd.Flags().StringVar(&summaryLength, "summary-length", "medium", "Summary length for Apple Notes")
@@ -225,27 +225,35 @@ func writeAppleNotesProgress(dst interface{ Write([]byte) (int, error) }, event 
 	}
 
 	switch event.Phase {
-	case "decoded_note":
-		_, _ = fmt.Fprintf(dst, "Apple Note%s decoded source=%s links=%d attachments=%d text_chars=%d attachment_chars=%d%s\n",
-			position, source, event.Links, event.Attachments, event.TextChars, event.AttachmentChars, title)
+	case "decoded_note", "unchanged":
+		return
 	case "attachments":
+		if event.Total > 1 {
+			return
+		}
 		_, _ = fmt.Fprintf(dst, "Apple Note%s attachments source=%s status=%s links=%d attachments=%d attachment_chars=%d%s\n",
 			position, source, emptyDash(event.Status), event.Links, event.Attachments, event.AttachmentChars, title)
 	case "attachment":
+		if event.Total > 1 {
+			return
+		}
 		_, _ = fmt.Fprintf(dst, "Apple Note%s attachment source=%s ordinal=%d status=%s reason=%s attachment_chars=%d%s\n",
 			position, source, event.Attachments, emptyDash(event.Status), emptyDash(event.Reason), event.AttachmentChars, title)
 	case "processing":
+		if event.Reason == "summary" {
+			return
+		}
 		_, _ = fmt.Fprintf(dst, "Apple Note%s processing source=%s reason=%s links=%d attachments=%d text_chars=%d attachment_chars=%d%s\n",
 			position, source, emptyDash(event.Reason), event.Links, event.Attachments, event.TextChars, event.AttachmentChars, title)
 	case "summarizing":
 		_, _ = fmt.Fprintf(dst, "Apple Note%s summarizing source=%s status=%s%s\n",
 			position, source, emptyDash(event.Status), title)
 	case "imported":
+		if event.Status == "unchanged" && !event.Rendered && (event.SummaryStatus == "ok" || event.SummaryStatus == "current") {
+			return
+		}
 		_, _ = fmt.Fprintf(dst, "Apple Note%s imported source=%s status=%s rendered=%t summary=%s links=%d attachments=%d%s\n",
 			position, source, emptyDash(event.Status), event.Rendered, emptyDash(event.SummaryStatus), event.Links, event.Attachments, title)
-	case "unchanged":
-		_, _ = fmt.Fprintf(dst, "Apple Note%s unchanged source=%s links=%d attachments=%d%s\n",
-			position, source, event.Links, event.Attachments, title)
 	case "skipped", "blocked":
 		_, _ = fmt.Fprintf(dst, "Apple Note%s %s source=%s reason=%s%s\n",
 			position, event.Phase, source, emptyDash(event.Reason), title)
