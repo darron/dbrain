@@ -868,6 +868,89 @@ func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
 	assertPipelineRowCounts(t, stats.Summary, "x_media_summary", 4, 1, 1, 1, 1)
 }
 
+func TestPipelineAppleNoteExtractionAndSummaryClassifyItemCoverage(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertAppleNote := func(sourceKey string, body string, attachmentText string) int64 {
+		t.Helper()
+
+		item := testItem(sourceKey, "apple_note", "apple-notes://default/"+sourceKey, now)
+		item.Text = body
+		item.ArticleTitle = "Apple Notes Attachment Text"
+		item.ArticleText = attachmentText
+		result, err := st.UpsertItem(ctx, item)
+		if err != nil {
+			t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+		}
+		return result.ItemID
+	}
+
+	currentID := insertAppleNote("apple-note-summary-current", "current body", "")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_status = 'ok',
+			summary_text = 'saved note summary',
+			summarized_at = ?
+		WHERE id = ?`,
+		now.Format(time.RFC3339),
+		currentID,
+	); err != nil {
+		t.Fatalf("seed current apple note summary: %v", err)
+	}
+
+	_ = insertAppleNote("apple-note-summary-pending", "pending body", "")
+
+	blockedID := insertAppleNote("apple-note-summary-blocked", "", "attachment-only note")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_status = 'blocked',
+			summary_error = 'context limit'
+		WHERE id = ?`,
+		blockedID,
+	); err != nil {
+		t.Fatalf("seed blocked apple note summary: %v", err)
+	}
+
+	failedID := insertAppleNote("apple-note-summary-failed", "failed body", "")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_status = 'fatal',
+			summary_error = 'unexpected parser failure'
+		WHERE id = ?`,
+		failedID,
+	); err != nil {
+		t.Fatalf("seed failed apple note summary: %v", err)
+	}
+
+	_ = insertAppleNote("apple-note-summary-empty", "", "")
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+
+	assertPipelineRowCounts(t, stats.Extraction, "apple_note", 5, 4, 0, 1, 0)
+	assertPipelineRowCounts(t, stats.Summary, "apple_note", 4, 1, 1, 1, 1)
+}
+
+func TestAppendPipelineStageRowRecomputesAggregate(t *testing.T) {
+	t.Parallel()
+
+	rows := []PipelineStageRow{
+		{Kind: "ALL", Total: 2, Current: 1, Failed: 1, PercentCurrent: 50},
+		{Kind: "web", Total: 2, Current: 1, Failed: 1, PercentCurrent: 50},
+	}
+	extra := PipelineStageRow{Kind: "apple_note", Total: 1, Current: 1, PercentCurrent: 100}
+
+	got := appendPipelineStageRow(rows, extra)
+	assertPipelineRowCounts(t, got, "ALL", 3, 2, 0, 0, 1)
+	assertPipelineRowCounts(t, got, "apple_note", 1, 1, 0, 0, 0)
+}
+
 func TestPipelineXMediaTranscriptionCountsPrunedCurrentItems(t *testing.T) {
 	t.Parallel()
 
