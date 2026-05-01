@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -34,6 +35,17 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var linkConcurrency int
 	var githubLimit int
 	var youtubeLimit int
+	var appleNotes bool
+	var appleNotesDBPath string
+	var appleNotesLimit int
+	var appleNotesExcludeFolders []string
+	var appleNotesExcludeAccounts []string
+	var appleNotesExcludeShared bool
+	var appleNotesIncludeLocked bool
+	var appleNotesSkipAttachments bool
+	var appleNotesSkipAttachmentOCR bool
+	var appleNotesAttachmentMaxBytes int64
+	var appleNotesTesseractBinary string
 	var sourceLimit int
 	var sourceConcurrency int
 	var browser string
@@ -64,6 +76,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var skipLinks bool
 	var skipGitHub bool
 	var skipYouTube bool
+	var skipAppleNotes bool
 	var skipSources bool
 	var skipCategorize bool
 	var jsonOut bool
@@ -79,6 +92,57 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			}
 			if !archiveMedia {
 				archiveMedia = firstEnvBool(cfg.RootDir, "DBRAIN_AUTO_ARCHIVE_MEDIA", "DBRAIN_ARCHIVE_AUTO")
+			}
+			if !appleNotes {
+				appleNotes = firstEnvBool(cfg.RootDir, "DBRAIN_APPLE_NOTES_ENABLED")
+			}
+			if strings.TrimSpace(appleNotesDBPath) == "" {
+				appleNotesDBPath = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_DB_PATH")
+			}
+			if len(appleNotesExcludeFolders) == 0 {
+				appleNotesExcludeFolders = firstEnvList(cfg.RootDir, "DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS")
+			}
+			if len(appleNotesExcludeAccounts) == 0 {
+				appleNotesExcludeAccounts = firstEnvList(cfg.RootDir, "DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS")
+			}
+			if !appleNotesExcludeShared {
+				appleNotesExcludeShared = firstEnvBool(cfg.RootDir, "DBRAIN_APPLE_NOTES_EXCLUDE_SHARED")
+			}
+			if !appleNotesSkipAttachments {
+				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS"); value != "" {
+					parsed, parseErr := strconv.ParseBool(value)
+					if parseErr != nil {
+						return fmt.Errorf("parse DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS: %q", value)
+					}
+					appleNotesSkipAttachments = !parsed
+				}
+				if firstEnvBool(cfg.RootDir, "DBRAIN_APPLE_NOTES_SKIP_ATTACHMENTS") {
+					appleNotesSkipAttachments = true
+				}
+			}
+			if !appleNotesSkipAttachmentOCR {
+				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_ATTACHMENT_OCR"); value != "" {
+					parsed, parseErr := strconv.ParseBool(value)
+					if parseErr != nil {
+						return fmt.Errorf("parse DBRAIN_APPLE_NOTES_ATTACHMENT_OCR: %q", value)
+					}
+					appleNotesSkipAttachmentOCR = !parsed
+				}
+				if firstEnvBool(cfg.RootDir, "DBRAIN_APPLE_NOTES_SKIP_ATTACHMENT_OCR") {
+					appleNotesSkipAttachmentOCR = true
+				}
+			}
+			if appleNotesAttachmentMaxBytes <= 0 {
+				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES"); value != "" {
+					parsed, parseErr := strconv.ParseInt(value, 10, 64)
+					if parseErr != nil || parsed < 0 {
+						return fmt.Errorf("parse DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES: %q", value)
+					}
+					appleNotesAttachmentMaxBytes = parsed
+				}
+			}
+			if strings.TrimSpace(appleNotesTesseractBinary) == "" {
+				appleNotesTesseractBinary = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_TESSERACT_BINARY")
 			}
 
 			st, err := store.Open(cfg.DBPath)
@@ -100,60 +164,71 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			}
 
 			stats, err := syncjob.Run(cmd.Context(), cfg, st, syncjob.Options{
-				XBookmarksEnabled:     !skipXBookmarks,
-				XBookmarksLimit:       xBookmarksLimit,
-				XEnabled:              !skipX,
-				XLimit:                xLimit,
-				XConcurrency:          xConcurrency,
-				XTimeout:              xTimeout,
-				XMediaEnabled:         !skipXMedia,
-				XMediaLimit:           xLimit,
-				XPhotoOCREnabled:      !skipXPhotoOCR,
-				XPhotoOCRLimit:        xLimit,
-				LinksEnabled:          !skipLinks,
-				LinkDiscoverLimit:     linkDiscoverLimit,
-				LinkLimit:             linkLimit,
-				LinkConcurrency:       linkConcurrency,
-				GitHubEnabled:         !skipGitHub,
-				GitHubLimit:           githubLimit,
-				YouTubeEnabled:        !skipYouTube,
-				YouTubeLimit:          youtubeLimit,
-				WatchLater:            watchLater,
-				Liked:                 liked,
-				SourcesEnabled:        !skipSources,
-				SourceLimit:           sourceLimit,
-				SourceConcurrency:     sourceConcurrency,
-				SourceWatch:           watch,
-				SourcePollInterval:    pollInterval,
-				SourceIdleExitAfter:   idleExitAfter,
-				SourceMaxCycles:       maxCycles,
-				Browser:               browser,
-				Profile:               profile,
-				Force:                 force,
-				Summarize:             summarize,
-				Model:                 model,
-				OCRModel:              ocrModel,
-				ArchiveMediaEnabled:   archiveMedia,
-				ArchiveMediaLimit:     archiveMediaLimit,
-				ArchiveProvider:       firstNonEmptyEnv(cfg.RootDir, "DBRAIN_ARCHIVE_PROVIDER", "DBRAIN_R2_PROVIDER"),
-				ArchiveBucket:         firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_BUCKET", "DBRAIN_ARCHIVE_BUCKET"),
-				ArchivePublicBaseURL:  firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_PUBLIC_BASE_URL", "DBRAIN_MEDIA_PUBLIC_BASE_URL"),
-				ArchiveEndpoint:       firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"),
-				ArchiveRegion:         firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"),
-				ArchiveAccessKeyID:    firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
-				ArchiveSecretKey:      firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
-				ArchiveSessionToken:   firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
-				CategorizeEnabled:     !skipCategorize,
-				CategorizeLimit:       categorizeLimit,
-				CategorizeConcurrency: categorizeConcurrency,
-				CategorizeModel:       categorizeModel,
-				CategorizeTimeout:     categorizeTimeout,
-				CategorizeImages:      categorizeImages,
-				CLI:                   cliProvider,
-				Length:                length,
-				Timeout:               timeout,
-				Logger:                newLogger(commandDebugEnabled(cmd), logWriter),
-				Progress:              progress,
+				XBookmarksEnabled:            !skipXBookmarks,
+				XBookmarksLimit:              xBookmarksLimit,
+				XEnabled:                     !skipX,
+				XLimit:                       xLimit,
+				XConcurrency:                 xConcurrency,
+				XTimeout:                     xTimeout,
+				XMediaEnabled:                !skipXMedia,
+				XMediaLimit:                  xLimit,
+				XPhotoOCREnabled:             !skipXPhotoOCR,
+				XPhotoOCRLimit:               xLimit,
+				LinksEnabled:                 !skipLinks,
+				LinkDiscoverLimit:            linkDiscoverLimit,
+				LinkLimit:                    linkLimit,
+				LinkConcurrency:              linkConcurrency,
+				GitHubEnabled:                !skipGitHub,
+				GitHubLimit:                  githubLimit,
+				YouTubeEnabled:               !skipYouTube,
+				YouTubeLimit:                 youtubeLimit,
+				WatchLater:                   watchLater,
+				Liked:                        liked,
+				AppleNotesEnabled:            appleNotes && !skipAppleNotes,
+				AppleNotesDBPath:             appleNotesDBPath,
+				AppleNotesLimit:              appleNotesLimit,
+				AppleNotesExcludeFolders:     appleNotesExcludeFolders,
+				AppleNotesExcludeAccounts:    appleNotesExcludeAccounts,
+				AppleNotesExcludeShared:      appleNotesExcludeShared,
+				AppleNotesIncludeLocked:      appleNotesIncludeLocked,
+				AppleNotesSkipAttachments:    appleNotesSkipAttachments,
+				AppleNotesSkipAttachmentOCR:  appleNotesSkipAttachmentOCR,
+				AppleNotesAttachmentMaxBytes: appleNotesAttachmentMaxBytes,
+				AppleNotesTesseractBinary:    appleNotesTesseractBinary,
+				SourcesEnabled:               !skipSources,
+				SourceLimit:                  sourceLimit,
+				SourceConcurrency:            sourceConcurrency,
+				SourceWatch:                  watch,
+				SourcePollInterval:           pollInterval,
+				SourceIdleExitAfter:          idleExitAfter,
+				SourceMaxCycles:              maxCycles,
+				Browser:                      browser,
+				Profile:                      profile,
+				Force:                        force,
+				Summarize:                    summarize,
+				Model:                        model,
+				OCRModel:                     ocrModel,
+				ArchiveMediaEnabled:          archiveMedia,
+				ArchiveMediaLimit:            archiveMediaLimit,
+				ArchiveProvider:              firstNonEmptyEnv(cfg.RootDir, "DBRAIN_ARCHIVE_PROVIDER", "DBRAIN_R2_PROVIDER"),
+				ArchiveBucket:                firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_BUCKET", "DBRAIN_ARCHIVE_BUCKET"),
+				ArchivePublicBaseURL:         firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_PUBLIC_BASE_URL", "DBRAIN_MEDIA_PUBLIC_BASE_URL"),
+				ArchiveEndpoint:              firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"),
+				ArchiveRegion:                firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"),
+				ArchiveAccessKeyID:           firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
+				ArchiveSecretKey:             firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
+				ArchiveSessionToken:          firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
+				CategorizeEnabled:            !skipCategorize,
+				CategorizeLimit:              categorizeLimit,
+				CategorizeConcurrency:        categorizeConcurrency,
+				CategorizeModel:              categorizeModel,
+				CategorizeTimeout:            categorizeTimeout,
+				CategorizeImages:             categorizeImages,
+				CLI:                          cliProvider,
+				Length:                       length,
+				Timeout:                      timeout,
+				Logger:                       newLogger(commandDebugEnabled(cmd), logWriter),
+				Progress:                     progress,
 			})
 			if err != nil {
 				return err
@@ -177,6 +252,17 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&linkConcurrency, "link-concurrency", 4, "Number of concurrent link source extract/summarize jobs")
 	cmd.Flags().IntVar(&githubLimit, "github-limit", 0, "Maximum starred repositories to process before stopping")
 	cmd.Flags().IntVar(&youtubeLimit, "youtube-limit", 50, "Maximum videos to load from each selected YouTube feed")
+	cmd.Flags().BoolVar(&appleNotes, "apple-notes", false, "Include configured Apple Notes import in sync")
+	cmd.Flags().StringVar(&appleNotesDBPath, "apple-notes-db", "", "Apple Notes NoteStore.sqlite path override")
+	cmd.Flags().IntVar(&appleNotesLimit, "apple-notes-limit", 0, "Maximum Apple Notes to process")
+	cmd.Flags().StringArrayVar(&appleNotesExcludeFolders, "apple-notes-exclude-folder", nil, "Exclude an Apple Notes folder/path during sync; repeatable")
+	cmd.Flags().StringArrayVar(&appleNotesExcludeAccounts, "apple-notes-exclude-account", nil, "Exclude an Apple Notes account during sync; repeatable")
+	cmd.Flags().BoolVar(&appleNotesExcludeShared, "apple-notes-exclude-shared", false, "Exclude shared Apple Notes during sync")
+	cmd.Flags().BoolVar(&appleNotesIncludeLocked, "apple-notes-include-locked", false, "Attempt to include password-protected Apple Notes during sync")
+	cmd.Flags().BoolVar(&appleNotesSkipAttachments, "apple-notes-skip-attachments", false, "Skip Apple Notes attachment file extraction/OCR during sync")
+	cmd.Flags().BoolVar(&appleNotesSkipAttachmentOCR, "apple-notes-skip-attachment-ocr", false, "Skip local OCR for Apple Notes image attachments during sync")
+	cmd.Flags().Int64Var(&appleNotesAttachmentMaxBytes, "apple-notes-attachment-max-bytes", 0, "Maximum Apple Notes attachment file size to extract; 0 uses the default")
+	cmd.Flags().StringVar(&appleNotesTesseractBinary, "apple-notes-tesseract", "", "Tesseract binary for Apple Notes image OCR")
 	cmd.Flags().IntVar(&sourceLimit, "source-limit", 100, "Maximum queued sources to enrich per source-worker batch")
 	cmd.Flags().IntVar(&sourceConcurrency, "source-concurrency", 4, "Number of concurrent source extract/summarize jobs per batch")
 	cmd.Flags().StringVar(&browser, "browser", "chrome", "Preferred browser for cookie-backed X and YouTube flows")
@@ -207,6 +293,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&skipLinks, "skip-links", false, "Skip outbound link discovery and enrichment from imported items")
 	cmd.Flags().BoolVar(&skipGitHub, "skip-github", false, "Skip GitHub stars import")
 	cmd.Flags().BoolVar(&skipYouTube, "skip-youtube", false, "Skip YouTube signal import")
+	cmd.Flags().BoolVar(&skipAppleNotes, "skip-apple-notes", false, "Skip configured Apple Notes import")
 	cmd.Flags().BoolVar(&skipSources, "skip-sources", false, "Skip the final source backlog worker stage")
 	cmd.Flags().BoolVar(&skipCategorize, "skip-categorize", false, "Skip final item/source categorization")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print sync stats as JSON")
@@ -255,7 +342,11 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 }
 
 func syncSummaryRows(stats syncjob.Stats) [][]string {
-	rows := make([][]string, 0, 9)
+	rows := make([][]string, 0, 10)
+	if stats.AppleNotes != nil {
+		s := stats.AppleNotes.Stats
+		rows = append(rows, []string{"Apple Notes", stats.AppleNotes.Duration.String(), fmt.Sprintf("imported=%d rendered=%d", s.NotesImported, s.NotesRendered), fmt.Sprintf("skipped=%d blocked=%d attachments=%d extracted=%d summarized=%d", s.NotesSkipped, s.NotesBlocked, s.AttachmentsIndexed, s.AttachmentsExtracted, s.SummariesCreated), strconv.Itoa(s.Errors)})
+	}
 	if stats.XBookmarks != nil {
 		s := stats.XBookmarks.Stats
 		rows = append(rows, []string{"X Bookmarks", stats.XBookmarks.Duration.String(), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("unchanged=%d pages=%d stopped=%s", s.Unchanged, s.PagesFetched, s.StoppedReason), "0"})

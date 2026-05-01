@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
@@ -35,6 +36,7 @@ var (
 	runMediaArchive     = mediaarchive.Run
 	runItemCategorize   = itemcategorize.Batch
 	runSourceCategorize = itemcategorize.BatchSources
+	runAppleNotesImport = applenotes.Run
 )
 
 const maxXQuoteDrainPasses = 8
@@ -65,6 +67,18 @@ type Options struct {
 	YouTubeLimit   int
 	WatchLater     bool
 	Liked          bool
+
+	AppleNotesEnabled            bool
+	AppleNotesDBPath             string
+	AppleNotesLimit              int
+	AppleNotesExcludeFolders     []string
+	AppleNotesExcludeAccounts    []string
+	AppleNotesExcludeShared      bool
+	AppleNotesIncludeLocked      bool
+	AppleNotesSkipAttachments    bool
+	AppleNotesSkipAttachmentOCR  bool
+	AppleNotesAttachmentMaxBytes int64
+	AppleNotesTesseractBinary    string
 
 	SourcesEnabled      bool
 	SourceLimit         int
@@ -114,6 +128,7 @@ type Stats struct {
 	Links        *LinksStage        `json:"links,omitempty"`
 	GitHub       *GitHubStage       `json:"github,omitempty"`
 	YouTube      *YouTubeStage      `json:"youtube,omitempty"`
+	AppleNotes   *AppleNotesStage   `json:"apple_notes,omitempty"`
 	Sources      *SourcesStage      `json:"sources,omitempty"`
 	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
 	Categorize   *CategorizeStage   `json:"categorize,omitempty"`
@@ -152,6 +167,11 @@ type GitHubStage struct {
 type YouTubeStage struct {
 	Duration time.Duration       `json:"duration"`
 	Stats    youtubeimport.Stats `json:"stats"`
+}
+
+type AppleNotesStage struct {
+	Duration time.Duration    `json:"duration"`
+	Stats    applenotes.Stats `json:"stats"`
 }
 
 type SourcesStage struct {
@@ -304,6 +324,35 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			progressf(opts.Progress, "Link extraction complete: items_scanned=%d sources_queued=%d sources_summarized=%d errors=%d (%s)\n", linkStats.ItemsScanned, linkStats.SourcesQueued, linkStats.SourcesSummarized, linkStats.Errors, duration)
 		}
 		return linkStats, duration, err
+	}
+
+	if opts.AppleNotesEnabled {
+		progressf(opts.Progress, "==> import apple-notes\n")
+		start := time.Now()
+		appleStats, err := runAppleNotesImport(ctx, cfg, st, applenotes.Options{
+			DBPath:             opts.AppleNotesDBPath,
+			Limit:              opts.AppleNotesLimit,
+			Force:              opts.Force,
+			ExcludeFolders:     opts.AppleNotesExcludeFolders,
+			ExcludeAccounts:    opts.AppleNotesExcludeAccounts,
+			ExcludeShared:      opts.AppleNotesExcludeShared,
+			IncludeLocked:      opts.AppleNotesIncludeLocked,
+			SkipAttachments:    opts.AppleNotesSkipAttachments,
+			SkipAttachmentOCR:  opts.AppleNotesSkipAttachmentOCR,
+			AttachmentMaxBytes: opts.AppleNotesAttachmentMaxBytes,
+			TesseractBinary:    opts.AppleNotesTesseractBinary,
+			Summarize:          opts.Summarize,
+			SummaryModel:       opts.Model,
+			SummaryCLI:         opts.CLI,
+			SummaryLength:      opts.Length,
+			Timeout:            opts.Timeout,
+		})
+		stage := &AppleNotesStage{Duration: time.Since(start), Stats: appleStats}
+		stats.AppleNotes = stage
+		if err != nil {
+			return finishStats(stats), fmt.Errorf("import apple-notes: %w", err)
+		}
+		progressf(opts.Progress, "Apple Notes import complete: seen=%d imported=%d rendered=%d skipped=%d blocked=%d attachments=%d extracted=%d ocr=%d summarized=%d errors=%d (%s)\n", appleStats.NotesSeen, appleStats.NotesImported, appleStats.NotesRendered, appleStats.NotesSkipped, appleStats.NotesBlocked, appleStats.AttachmentsIndexed, appleStats.AttachmentsExtracted, appleStats.AttachmentsOCRed, appleStats.SummariesCreated, appleStats.Errors, stage.Duration)
 	}
 
 	if shouldSettleXFrontier(opts) {

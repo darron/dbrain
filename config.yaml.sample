@@ -44,6 +44,17 @@ source:
     enabled: true # DBRAIN_SOURCE_WAYBACK_ENABLED, DBRAIN_WAYBACK_ENABLED
     availability_url: "https://archive.org/wayback/available?url={escaped_url}" # DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL, DBRAIN_WAYBACK_AVAILABILITY_URL
 
+apple_notes:
+  enabled: false # DBRAIN_APPLE_NOTES_ENABLED; opt into sync all
+  db_path: "" # DBRAIN_APPLE_NOTES_DB_PATH; default is ~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite
+  exclude_folders: [] # DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS
+  exclude_accounts: [] # DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS
+  exclude_shared: false # DBRAIN_APPLE_NOTES_EXCLUDE_SHARED
+  index_attachments: true # DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS; set false to keep attachment metadata only
+  attachment_ocr: true # DBRAIN_APPLE_NOTES_ATTACHMENT_OCR; local OCR for image attachments
+  attachment_max_bytes: 52428800 # DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES; 50 MiB default
+  tesseract_binary: "tesseract" # DBRAIN_APPLE_NOTES_TESSERACT_BINARY
+
 tsnet:
   web: true # DBRAIN_TSNET_WEB
   mcp: true # DBRAIN_TSNET_MCP

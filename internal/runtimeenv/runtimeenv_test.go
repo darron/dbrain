@@ -68,6 +68,31 @@ test:
 	}
 }
 
+func TestAppleNotesConfigNamespaceMapping(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeConfig(t, root, `
+apple_notes:
+  enabled: true
+  db_path: /tmp/NoteStore.sqlite
+  exclude_folders:
+    - Private
+    - Archive
+`)
+
+	if !FirstBool(root, "DBRAIN_APPLE_NOTES_ENABLED") {
+		t.Fatalf("FirstBool = false, want true")
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_APPLE_NOTES_DB_PATH"); got != "/tmp/NoteStore.sqlite" {
+		t.Fatalf("FirstNonEmpty DB path = %q", got)
+	}
+	values := FirstList(root, "DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS")
+	if len(values) != 2 || values[0] != "Private" || values[1] != "Archive" {
+		t.Fatalf("FirstList exclude folders = %#v", values)
+	}
+}
+
 func TestFirstNonEmptyReadsHTTPUserAgentConfigValue(t *testing.T) {
 	t.Parallel()
 

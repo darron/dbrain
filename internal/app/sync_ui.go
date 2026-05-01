@@ -263,6 +263,8 @@ func syncStageLabel(stage string) string {
 		return "Importing GitHub stars"
 	case "import youtube":
 		return "Importing YouTube feeds"
+	case "import apple-notes":
+		return "Importing Apple Notes"
 	case "worker sources":
 		return "Draining source backlog"
 	case "archive media":

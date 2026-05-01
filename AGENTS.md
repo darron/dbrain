@@ -15,6 +15,23 @@ them in each change.
 
 ## Core Product Rules
 
+### Keep local-first imports import-only
+
+Local app integrations should read and materialize evidence into dbrain. They
+should not mutate the upstream app or treat upstream state as dbrain-owned.
+
+- prefer import-only behavior for local app stores
+- never add write-back, creation, or editing support unless explicitly planned
+  and accepted as a separate feature
+- when reading another app's SQLite database, prefer a dbrain-owned snapshot
+  before decoding/indexing; if a live source connection is unavoidable, it must
+  be read-only and explicitly justified in the design
+- do not run write-affecting statements such as `VACUUM`, checkpoints,
+  migrations, `CREATE`, `INSERT`, `UPDATE`, or `DELETE` against upstream app
+  databases
+- fail closed with a clear diagnostic if read-only source access cannot be
+  guaranteed
+
 ### Preserve raw data
 
 Raw imported or extracted content must remain available so it can be reprocessed
@@ -76,6 +93,66 @@ When item-level summary/OCR is added:
 - render it into the item note
 - include it in search/FTS inputs
 - keep the raw transcript/OCR text separately available in the same note
+
+## Apple Notes Rules
+
+Apple Notes is planned as a direct SQLite, materialized, import-only source.
+Do not reopen settled architecture without updating the planning doc first.
+
+### Direct SQLite only
+
+The intended Apple Notes path is direct local SQLite ingestion from the Notes
+store.
+
+- use direct SQLite snapshots, not AppleScript, Apple Events, JXA, Shortcuts, or
+  exporter CLIs
+- do not add a fallback adapter unless a new accepted design explicitly changes
+  this
+- require and diagnose Full Disk Access when needed; do not try to automate macOS
+  permissions
+- copy Apple's Notes DB/WAL/SHM triplet into a dbrain-owned snapshot before
+  opening SQLite for import work; do not hardlink live Notes files
+- do not mutate Apple's source DB, WAL, or SHM files
+- treat private Notes schema drift as expected: probe columns/entities, tolerate
+  unknown fields, and store parser/schema provenance
+
+### Import scope and privacy
+
+Once the Apple Notes importer is explicitly run or enabled in config, it should
+import visible notes by default and rely on opt-out exclusions.
+
+- default to all visible notes, not required folder allowlists
+- support excluded accounts/folders and note-level ignore markers such as
+  `[[dbrain-ignore]]`
+- include shared notes by default
+- skip password-protected notes by default and do not retain their titles,
+  snippets, attachment names, or derived metadata
+- if a previously imported note becomes excluded, support an explicit
+  `--forget-excluded` purge path; never imply destructive purges from `sync all`
+
+### Notes content and attachments
+
+Apple Notes are user-authored working memory and may contain high-signal
+attachments.
+
+- preserve decoded raw note text separately from summaries
+- summarize notes locally with an Apple Notes-specific prompt
+- index useful attachments where possible, especially PDFs and images
+- keep raw attachment text/OCR separate from summaries
+- prefer local OCR for Notes attachments; hosted OCR should require explicit
+  configuration
+- classify unsupported, offloaded, encrypted, too-large, or decode-failed notes
+  and attachments as `blocked`, not endlessly retryable `error`
+
+### CLI-shaped operation
+
+Apple Notes import should stay in the spirit of dbrain's CLI.
+
+- run from explicit CLI commands and optional configured `sync all`
+- do not add FSEvents capture, launchd orchestration, resident watchers, or a
+  SaaS component in v1 or without a later accepted design that revisits this
+- provider-index/live retrieval and write-back/note creation are out of scope
+  unless a later accepted design says otherwise
 
 ## X-Specific Rules
 
@@ -197,12 +274,17 @@ Long-term direction:
 
 ## Development Rules
 
-### Prefer Go-first solutions
+### Prefer Go-first, single-binary solutions
 
-Prefer implementations that keep behavior inside the `dbrain` binary.
+Prefer implementations that keep behavior inside the `dbrain` binary and remain
+friendly to local builds and Homebrew distribution.
 
-- small helper CLIs are acceptable when necessary, especially on macOS
+- avoid adding extra binaries, helper apps, app bundles, XPC services, daemons,
+  or long-running sidecars unless they are explicitly justified and accepted
+- small helper CLIs are acceptable only when necessary, especially on macOS
 - if a helper is required, keep the orchestration and state transitions in Go
+- when a feature depends on external tools, keep them optional or clearly
+  diagnosed rather than making the core binary unusable
 
 ### Add regression tests for bugs we fix
 

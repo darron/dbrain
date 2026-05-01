@@ -16,6 +16,8 @@ var (
 	runSourceEnrichSourceIDs = sourceenrich.RunSourceIDs
 )
 
+const defaultExtractConcurrency = 4
+
 func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 	var discoverLimit int
 	var limit int
@@ -83,7 +85,7 @@ func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 
 	cmd.Flags().IntVar(&discoverLimit, "discover-limit", 500, "Maximum bookmark items to scan for outbound links")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum deduped sources to enrich")
-	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of concurrent source extract/summarize jobs")
+	cmd.Flags().IntVar(&concurrency, "concurrency", defaultExtractConcurrency, "Number of concurrent source extract/summarize jobs")
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess items and sources even if they were already discovered or enriched")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization after extraction")
 	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
@@ -176,7 +178,7 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum queued sources to enrich")
-	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of concurrent source extract/summarize jobs")
+	cmd.Flags().IntVar(&concurrency, "concurrency", defaultExtractConcurrency, "Number of concurrent source extract/summarize jobs")
 	cmd.Flags().BoolVar(&force, "force", false, "Reprocess sources even if they already look current")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization after extraction")
 	cmd.Flags().StringSliceVar(&sourceLookups, "source", nil, "Specific source lookups to enrich; repeat or comma-separate source_key, canonical_url, normalized_url, or note_path values")

@@ -9,3 +9,7 @@ func firstNonEmptyEnv(rootDir string, keys ...string) string {
 func firstEnvBool(rootDir string, keys ...string) bool {
 	return runtimeenv.FirstBool(rootDir, keys...)
 }
+
+func firstEnvList(rootDir string, keys ...string) []string {
+	return runtimeenv.FirstList(rootDir, keys...)
+}

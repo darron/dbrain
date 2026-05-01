@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Apple Notes Materialized Import (2026-04-30)
+
+- **Import command**: Added `dbrain import apple-notes` with read-only DB/WAL/SHM snapshotting, schema probing, default materialization, `--dry-run` preview mode, opt-out folder/account/shared-note exclusions, and `[[dbrain-ignore]]` support.
+- **Materialization**: Apple Notes are imported as `apple_note` items, rendered to Markdown, included in search, and can be locally summarized with an Apple Notes-specific prompt; note URLs and URL attachments feed normal source discovery, and summaries are skipped on unchanged content unless `--force` is used.
+- **Attachments**: The importer indexes attachment metadata and Notes-provided attachment text, extracts supported text/PDF attachment files locally, and OCRs image attachments through optional local `tesseract`; unsupported, missing, or oversized files are marked blocked.
+- **Safety**: The importer opens copied snapshots instead of live Apple Notes files, skips password-protected notes by default, explains macOS Full Disk Access failures, and supports explicit `--forget-excluded` purging for notes that become excluded.
+- **Sync integration**: `dbrain sync all --apple-notes` or `DBRAIN_APPLE_NOTES_ENABLED=true` includes configured Apple Notes import before link extraction/source work.
+- **Operator feedback**: Apple Notes imports now print per-note progress in normal CLI output and applied `--limit` batches skip unchanged-current notes so repeated limited runs advance to new or stale work.
+- **Summary prompt**: The Apple Notes summary prompt now labels note shape, such as authored notes, research link lists, checklists, logs, scratchpads, or mixed notes, so rough lists are not overread as polished prose.
+- **Docs**: README and `config.yaml.sample` document Apple Notes config/env keys, command usage, and the Full Disk Access requirement.
+- **Location**: `internal/applenotes/`, `internal/app/import_apple_notes.go`, `internal/syncjob/`, `internal/store/`, `README.md`, `config.yaml.sample`
+
 ### Source Retry Controls And Failure Classification (2026-04-30)
 
 - **Retry targeting**: `dbrain repair sources` can now filter by source type, extract status, summary status, failure kind, and minimum failure count before resetting enrichment state.
@@ -13,6 +25,7 @@ development date for the change set.
 - **Terminal classification**: Repeated access-denied, timeout, unsupported-file, and generic fetch failures now become terminal `dead` source extraction outcomes after defined thresholds instead of retrying indefinitely.
 - **Wayback fallback**: Repeated source extraction failures now check the Internet Archive Wayback Availability API before terminalizing, log both checks and misses, and final-attempt rows bypass the normal retry cooldown so unclassified failures stop after 5 attempts when no archive recovery succeeds.
 - **Wayback quality gate**: Very short Wayback extracts and archive/browser shells now keep raw extracted text but skip summarization instead of generating plausible summaries from weak evidence.
+- **Extraction throughput**: Standalone `extract links` and `extract sources` now default to four concurrent source extract/summarize jobs, matching `sync all` and `worker sources`, so one slow URL does not serialize the whole batch.
 - **Failure metadata**: Consecutive failure counts are now preserved when a retry changes from an older `unknown` class into a more specific terminal class.
 - **Docs**: README now documents the failed web-source rebaseline flow using `repair sources` plus source extraction/sync retries.
 - **Location**: `internal/store/`, `internal/sourceenrich/`, `internal/app/repair.go`, `internal/vault/source.go`, `README.md`

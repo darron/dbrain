@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
@@ -255,6 +256,76 @@ func TestRunSkipsQuoteDrainWhenForceEnabled(t *testing.T) {
 	}
 	if !slices.Equal(calls, []string{"x"}) {
 		t.Fatalf("unexpected hydrate calls: %v", calls)
+	}
+}
+
+func TestRunExecutesAppleNotesBeforeLinkExtractionWhenEnabled(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origAppleNotes := runAppleNotesImport
+	origLinks := runLinkExtract
+	t.Cleanup(func() {
+		runAppleNotesImport = origAppleNotes
+		runLinkExtract = origLinks
+	})
+
+	var calls []string
+	runAppleNotesImport = func(_ context.Context, _ config.Config, _ *store.Store, opts applenotes.Options) (applenotes.Stats, error) {
+		calls = append(calls, "apple-notes")
+		if opts.DryRun {
+			t.Fatal("expected sync Apple Notes import to write by default")
+		}
+		if !opts.Summarize {
+			t.Fatal("expected sync Apple Notes import to use global summarize setting")
+		}
+		if opts.Limit != 5 {
+			t.Fatalf("expected Apple Notes limit 5, got %d", opts.Limit)
+		}
+		if opts.SummaryModel != "test/model" || opts.SummaryCLI != "cli" || opts.SummaryLength != "short" {
+			t.Fatalf("unexpected Apple Notes summary options: %+v", opts)
+		}
+		if !slices.Equal(opts.ExcludeFolders, []string{"Private"}) {
+			t.Fatalf("unexpected Apple Notes exclude folders: %#v", opts.ExcludeFolders)
+		}
+		if !opts.SkipAttachmentOCR || opts.AttachmentMaxBytes != 12345 || opts.TesseractBinary != "fake-tesseract" {
+			t.Fatalf("unexpected Apple Notes attachment options: %+v", opts)
+		}
+		return applenotes.Stats{NotesSeen: 1, NotesImported: 1, NotesRendered: 1, SummariesCreated: 1}, nil
+	}
+	runLinkExtract = func(_ context.Context, _ config.Config, _ *store.Store, _ linkextract.Options) (linkextract.Stats, error) {
+		calls = append(calls, "links")
+		return linkextract.Stats{ItemsScanned: 1, SourcesQueued: 1}, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(context.Background(), cfg, st, Options{
+		AppleNotesEnabled:            true,
+		AppleNotesLimit:              5,
+		AppleNotesExcludeFolders:     []string{"Private"},
+		AppleNotesSkipAttachmentOCR:  true,
+		AppleNotesAttachmentMaxBytes: 12345,
+		AppleNotesTesseractBinary:    "fake-tesseract",
+		LinksEnabled:                 true,
+		Summarize:                    true,
+		Model:                        "test/model",
+		CLI:                          "cli",
+		Length:                       "short",
+		Progress:                     &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Equal(calls, []string{"apple-notes", "links"}) {
+		t.Fatalf("unexpected stage order: %v", calls)
+	}
+	if stats.AppleNotes == nil || stats.AppleNotes.Stats.NotesImported != 1 {
+		t.Fatalf("expected Apple Notes stage stats, got %+v", stats.AppleNotes)
+	}
+	output := progress.String()
+	for _, value := range []string{"==> import apple-notes", "Apple Notes import complete", "==> extract links"} {
+		if !bytes.Contains([]byte(output), []byte(value)) {
+			t.Fatalf("expected progress output to contain %q, got %q", value, output)
+		}
 	}
 }
 
