@@ -1,7 +1,7 @@
 # dbrain
 
 `dbrain` is a local-first second-brain scaffold for incremental imports from X
-bookmarks, Apple Notes, GitHub stars, YouTube, and manually submitted web links,
+bookmarks, Apple Notes, GitHub stars, YouTube, Safari tabs and manually submitted web links,
 with Markdown note rendering for Obsidian and local query over the imported
 corpus.
 
@@ -73,6 +73,7 @@ dbrain config env
 - `dbrain hydrate x`
 - `dbrain import apple-notes`
 - `dbrain import github stars`
+- `dbrain import safari-tabs`
 - `dbrain import x-bookmarks`
 - `dbrain import youtube`
 - `dbrain link add <url>`
@@ -253,6 +254,11 @@ directory, then `config.yaml`. `--root` wins over `DBRAIN_ROOT`.
 | `DBRAIN_APPLE_NOTES_SKIP_ATTACHMENT_OCR` | `(env only)` | `false` | One-off opt-out for Apple Notes image OCR while keeping non-OCR attachment extraction. |
 | `DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES` | `apple_notes.attachment_max_bytes` | `52428800` | Maximum attachment file size to extract. |
 | `DBRAIN_APPLE_NOTES_TESSERACT_BINARY` | `apple_notes.tesseract_binary` | `tesseract` | Local Tesseract binary for Apple Notes image OCR. |
+| `DBRAIN_SAFARI_TABS_ENABLED` | `safari_tabs.enabled` | `false` | Include Safari iCloud tabs import in `sync all` when enabled; the standalone import command remains explicit. |
+| `DBRAIN_SAFARI_TABS_DB_PATH` | `safari_tabs.db_path` | `` | Optional Safari `CloudTabs.db` path override. |
+| `DBRAIN_SAFARI_TABS_DEVICE` | `safari_tabs.device` | `` | Safari iCloud device name or UUID to import during `sync all`. |
+| `DBRAIN_SAFARI_TABS_LIMIT` | `safari_tabs.limit` | `0` | Maximum Safari tabs to import after filtering; 0 means all matching tabs. |
+| `DBRAIN_SAFARI_TABS_OLDER_THAN` | `safari_tabs.older_than` | `0` | Only import Safari tabs last viewed before this duration ago, for example `168h`. |
 | `DBRAIN_MEDIA_PROXY_BASE_URL` / `DBRAIN_WEB_BASE_URL` | `media.proxy.base_url` | `http://127.0.0.1:8742` | Base URL for local archived-media proxy links in rendered notes. |
 | `DBRAIN_AUTO_ARCHIVE_MEDIA` / `DBRAIN_ARCHIVE_AUTO` | `archive.auto` | `false` | Run media archive automatically at the end of `sync all`. |
 | `DBRAIN_ARCHIVE_UPLOAD` / `DBRAIN_R2_UPLOAD` | `archive.upload` | `false` | Upload eligible media before marking/pruning in `archive media`. |
@@ -472,11 +478,31 @@ dbrain import apple-notes --exclude-folder Private
 dbrain import apple-notes --skip-attachment-ocr
 ```
 
+### `dbrain import safari-tabs`
+
+Imports Safari iCloud tabs from the local Safari `CloudTabs.db` through a
+dbrain-owned snapshot. The importer is read-only against Safari's files,
+targets one device by name or UUID, materializes matching HTTP(S) tabs as
+`safari_tab` items, and leaves Safari untouched. Imported tab URLs then flow
+through normal link discovery, source extraction, source summaries, rendering,
+and categorization. Only tabs Safari has materialized into `CloudTabs.db` are
+visible to dbrain; Private Browsing tabs, Start Page tabs, and not-yet-synced
+iCloud changes may not appear.
+
+```sh
+dbrain import safari-tabs devices
+dbrain import safari-tabs --device dfone --dry-run --show-titles
+dbrain import safari-tabs --device dfone
+dbrain import safari-tabs --device dfone --older-than 168h
+dbrain import safari-tabs --device dfone --limit 100
+```
+
 ### `dbrain sync all`
 
 Runs the regular incremental refresh pipeline in one command: optional Apple
-Notes import, direct X bookmark import, X hydration, X media audio transcription,
-X photo OCR, link discovery/enrichment, GitHub stars import, YouTube
+Notes import, optional Safari tabs import, direct X bookmark import, X
+hydration, X media audio transcription, X photo OCR, link
+discovery/enrichment, GitHub stars import, YouTube
 import, and an optional source-backlog worker batch. It then categorizes
 uncategorized items and linked sources with the same categorizer used by
 `dbrain categorize batch` and `dbrain categorize sources`, unless
@@ -496,11 +522,14 @@ includes a supported Chrome/Chromium profile with valid cookies plus Ollama or
 an OpenRouter key, `mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports
 `--skip-*` flags when you only want part of the pipeline. Apple Notes is not
 run by default; enable it with `--apple-notes` or
-`DBRAIN_APPLE_NOTES_ENABLED=true`.
+`DBRAIN_APPLE_NOTES_ENABLED=true`. Safari tabs are also disabled by default;
+enable them with `--safari-tabs --safari-tabs-device <device>` or
+`DBRAIN_SAFARI_TABS_ENABLED=true` plus `DBRAIN_SAFARI_TABS_DEVICE=<device>`.
 
 ```sh
 dbrain sync all --length short --timeout 5m
 dbrain sync all --apple-notes --length short --timeout 5m
+dbrain sync all --safari-tabs --safari-tabs-device dfone --length short --timeout 5m
 dbrain sync all --skip-categorize --length short --timeout 5m
 dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m
 dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m
@@ -671,6 +700,23 @@ OpenRouter/Gemini model, with local fallback support where configured.
 
 ```sh
 dbrain ocr x-photos --limit 50
+```
+
+For a read-only OCR bakeoff against the downloaded X photo corpus, use the
+devtool. It defaults to the currently configured OCR model as the baseline and
+compares it with `ollama/deepseek-ocr:3b`; it writes a Markdown report without
+changing persisted OCR state.
+
+```sh
+go run ./cmd/devtools/ocr_model_compare --limit 30 --output /tmp/dbrain-ocr-compare.md
+```
+
+Useful variants:
+
+```sh
+go run ./cmd/devtools/ocr_model_compare --root . --limit 30 --download-missing --output /tmp/dbrain-ocr-compare.md
+go run ./cmd/devtools/ocr_model_compare --limit 30 --json > /tmp/dbrain-ocr-compare.json
+go run ./cmd/devtools/ocr_model_compare --limit 10 --models openrouter/google/gemini-3.1-flash-lite-preview,ollama/deepseek-ocr:3b,tesseract
 ```
 
 ### `dbrain import youtube`
@@ -1194,7 +1240,7 @@ configuration.
 - [ ] Tighten X link-discovery candidate selection so items whose only links are X self-links like `/photo/1` or `/video/1` do not get rescanned and inflate `items_scanned` without producing real source candidates.
 - [ ] Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
 - [ ] Audit X media transcription throughput by recording per-video duration/bytes/transcript chars and testing cautious MacWhisper parallelism; avoid raising default concurrency until local GPU/CPU contention is understood.
-- [ ] Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends, report side-by-side output quality and timings, and avoid changing persisted item OCR state.
+- [x] Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends, report side-by-side output quality and timings, and avoid changing persisted item OCR state.
 - [ ] Add a summary bakeoff/audit command that can run the same source extract or media transcript through multiple summary models/backends, report side-by-side outputs and timings, and avoid changing persisted summary state.
 - [ ] Improve provider provenance so stored summaries always record the exact backend/model used.
 - [ ] Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.

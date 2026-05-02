@@ -93,6 +93,36 @@ apple_notes:
 	}
 }
 
+func TestSafariTabsConfigNamespaceMapping(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeConfig(t, root, `
+safari_tabs:
+  enabled: true
+  db_path: /tmp/CloudTabs.db
+  device: dfone
+  limit: 500
+  older_than: 168h
+`)
+
+	if !FirstBool(root, "DBRAIN_SAFARI_TABS_ENABLED") {
+		t.Fatalf("FirstBool = false, want true")
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_SAFARI_TABS_DB_PATH"); got != "/tmp/CloudTabs.db" {
+		t.Fatalf("FirstNonEmpty DB path = %q", got)
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_SAFARI_TABS_DEVICE"); got != "dfone" {
+		t.Fatalf("FirstNonEmpty device = %q", got)
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_SAFARI_TABS_LIMIT"); got != "500" {
+		t.Fatalf("FirstNonEmpty limit = %q", got)
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_SAFARI_TABS_OLDER_THAN"); got != "168h" {
+		t.Fatalf("FirstNonEmpty older_than = %q", got)
+	}
+}
+
 func TestFirstNonEmptyReadsHTTPUserAgentConfigValue(t *testing.T) {
 	t.Parallel()
 

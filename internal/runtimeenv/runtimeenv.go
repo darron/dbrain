@@ -198,6 +198,9 @@ func configValuePaths(key string) [][]string {
 	if short, ok := strings.CutPrefix(key, "DBRAIN_APPLE_NOTES_"); ok {
 		paths = append(paths, []string{"apple_notes", strings.ToLower(strings.Trim(short, "_"))})
 	}
+	if short, ok := strings.CutPrefix(key, "DBRAIN_SAFARI_TABS_"); ok {
+		paths = append(paths, []string{"safari_tabs", strings.ToLower(strings.Trim(short, "_"))})
+	}
 
 	for _, prefix := range []string{"DBRAIN_", "OPENROUTER_", "OLLAMA_", "SUMMARIZE_", "AWS_"} {
 		if short, ok := strings.CutPrefix(key, prefix); ok {

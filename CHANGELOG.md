@@ -5,11 +5,17 @@ development date for the change set.
 
 ## Recent Improvements
 
+### OCR Model Comparison Devtool (2026-05-02)
+
+- **Read-only OCR bakeoff**: Added `cmd/devtools/ocr_model_compare` to sample downloaded X photos, run the configured OCR model beside candidates such as `ollama/deepseek-ocr:3b`, and write Markdown/JSON reports with timings, output sizes, errors, and baseline word-overlap signals without changing stored OCR state; `--download-missing` can fetch pruned corpus images into temp files for the audit only.
+- **Location**: `cmd/devtools/ocr_model_compare/`, `internal/xphotoocr/`, `README.md`
+
 ### Brain Research Pack Surfaces (2026-04-30)
 
 - **Shared research core**: Added `internal/brainresearch` so MCP, web, and CLI research flows share one retrieval-pack builder with query/tag plans, exact-tag evidence, corpus coverage, semantic next steps, and optional topic briefs.
 - **CLI and web**: Added `dbrain research` and `/api/research`; the web Explore page now uses a Research tab for evidence packs.
 - **Local synthesis**: Added `/api/research/synthesize` as an SSE endpoint plus default-on web and CLI synthesis over research packs, with `--retrieval-only` for evidence-only CLI runs and explicit model/config checks to avoid silent hosted fallback.
+- **Accuracy framing**: Research synthesis and MCP prompts now frame the corpus as intentionally selective while prioritizing factual accuracy, source-claim separation, and explicit uncertainty over performative objectivity.
 - **Citation navigation**: Research synthesis now turns both bracketed citations and bare source IDs in generated source lists into clickable detail lookups.
 - **Citation key handling**: Research citation links now preserve colon-delimited IDs such as `src:apple-note:default:<id>` and `src:rcmp:<id>` instead of linking only the first segment.
 - **Citation prompt**: Research synthesis now tells local models to cite exact source keys from the research pack, including `apple-note:*` keys, instead of inventing or shortening prefixes.
@@ -35,6 +41,17 @@ development date for the change set.
 - **Docs**: README and `config.yaml.sample` document Apple Notes config/env keys, command usage, and the Full Disk Access requirement.
 - **Location**: `internal/applenotes/`, `internal/app/import_apple_notes.go`, `internal/syncjob/`, `internal/store/`, `README.md`, `config.yaml.sample`
 
+### Safari Tabs Import (2026-05-01)
+
+- **Import command**: Added `dbrain import safari-tabs --device <name-or-uuid>` to snapshot Safari's local `CloudTabs.db` read-only and materialize iCloud tabs from a targeted device as `safari_tab` items.
+- **Device review**: Added `dbrain import safari-tabs devices` to list visible Safari iCloud tab devices and tab counts before importing.
+- **Link pipeline**: Safari tab items now feed normal link discovery, source extraction, summaries, rendering, and categorization without mutating or closing upstream Safari tabs.
+- **Stats**: `dbrain stats pipeline` now reports Safari tab item materialization in the Extraction table while linked pages remain counted under their normal source types.
+- **Sync integration**: `dbrain sync all --safari-tabs --safari-tabs-device <device>` or `DBRAIN_SAFARI_TABS_ENABLED=true` plus `DBRAIN_SAFARI_TABS_DEVICE=<device>` includes configured Safari tabs import before link extraction/source work.
+- **Operator feedback**: Safari sync summaries now separate created, updated, unchanged, rendered, skipped, and linked rows so unchanged `CloudTabs.db` snapshots do not look like new imports every run.
+- **Filters**: The importer supports `--older-than`, `--limit`, `--dry-run`, and `--show-titles` so large tab backlogs can be imported or previewed safely.
+- **Location**: `internal/safaritabs/`, `internal/app/import_safari_tabs.go`, `internal/store/`
+
 ### Source Retry Controls And Failure Classification (2026-04-30)
 
 - **Retry targeting**: `dbrain repair sources` can now filter by source type, extract status, summary status, failure kind, and minimum failure count before resetting enrichment state.
@@ -46,6 +63,7 @@ development date for the change set.
 - **Extraction throughput**: Standalone `extract links` and `extract sources` now default to four concurrent source extract/summarize jobs, matching `sync all` and `worker sources`, so one slow URL does not serialize the whole batch.
 - **Failure metadata**: Consecutive failure counts are now preserved when a retry changes from an older `unknown` class into a more specific terminal class.
 - **Placeholder repair loop**: Short redirect/loading placeholder extracts selected for summary repair are now marked `skipped` instead of being repeatedly summarized as successful work.
+- **Summary timeout loop**: Source summary timeouts and context-limit failures now persist as `blocked` instead of retryable `error`, so oversized stored extracts do not hot-loop in `worker sources` or `sync all`.
 - **Docs**: README now documents the failed web-source rebaseline flow using `repair sources` plus source extraction/sync retries.
 - **Location**: `internal/store/`, `internal/sourceenrich/`, `internal/app/repair.go`, `internal/vault/source.go`, `README.md`
 

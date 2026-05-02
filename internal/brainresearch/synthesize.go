@@ -17,7 +17,7 @@ import (
 
 const (
 	SynthesisSchemaVersion           = "research_synthesis.v1"
-	SynthesisPromptVersion           = "brain-research-synthesis-v1"
+	SynthesisPromptVersion           = "brain-research-synthesis-v2"
 	DefaultMaxEvidenceChars          = 24000
 	defaultExactTagReservedChars     = 2000
 	defaultTopicBriefMinRemaining    = 2000
@@ -26,6 +26,9 @@ const (
 
 const synthesisPrompt = `Answer this question from the provided dbrain research pack only.
 Do not use outside knowledge.
+The corpus is intentionally selective: it reflects what the collector cared about or found noteworthy, not a neutral or comprehensive sample.
+Do not criticize the corpus for not being unbiased or compensate by adding outside balance unless asked.
+Accuracy matters more than appearing objective: separate supported facts, source claims, opinions, and uncertainty; flag weak or conflicting evidence.
 Cite each material claim with exact source keys from the research pack in brackets, such as [src:...], [x:...], [apple-note:...], or [gh-star:...].
 Do not add, remove, shorten, or rewrite source key prefixes.
 Include a short Sources section with source keys and note paths.

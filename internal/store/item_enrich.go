@@ -103,6 +103,55 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 	return items, nil
 }
 
+func (s *Store) ListItemsForXPhotoOCRAudit(ctx context.Context, limit int, includePruned bool) ([]model.Item, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `
+		SELECT ` + itemSelectColumns + `
+		FROM items
+		WHERE ` + xItemSourceTypeWhere + `
+			AND external_id != ''
+			AND EXISTS (
+				SELECT 1
+				FROM item_media_links l
+				JOIN media_assets a ON a.id = l.media_asset_id
+				WHERE l.item_id = items.id
+					AND a.download_status = 'downloaded'
+					AND a.local_path != ''
+					AND a.media_type = 'photo'`
+	if !includePruned {
+		query += `
+					AND a.local_pruned_at = ''`
+	}
+	query += `
+			)
+		ORDER BY last_seen_at DESC, id DESC
+		LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list x photo ocr audit items: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var items []model.Item
+	for rows.Next() {
+		var item model.Item
+		if err := scanItem(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan x photo ocr audit item: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate x photo ocr audit items: %w", err)
+	}
+	return items, nil
+}
+
 func (s *Store) SaveItemSummary(ctx context.Context, itemID int64, summary model.SummaryResult, inputHash string) (bool, error) {
 	return withBusyRetry(ctx, func() (bool, error) {
 		tx, err := s.db.BeginTx(ctx, nil)

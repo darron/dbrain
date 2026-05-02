@@ -19,6 +19,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/remote"
+	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
@@ -1445,6 +1446,41 @@ func TestWriteSyncStatsIncludesAppleNotesStage(t *testing.T) {
 
 	output := dst.String()
 	for _, value := range []string{"Sync Summary", "Apple Notes", "imported=8 rendered=6", "skipped=2 blocked=1 attachments=4 extracted=3 summarized=5", "1"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
+		}
+	}
+}
+
+func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:   time.Date(2026, time.May, 1, 15, 0, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, time.May, 1, 15, 1, 0, 0, time.UTC),
+		Duration:    time.Minute,
+		SafariTabs: &syncjob.SafariTabsStage{
+			Stats: safaritabs.Stats{
+				DeviceName:    "dfone",
+				TabsImported:  498,
+				TabsCreated:   1,
+				TabsUpdated:   2,
+				TabsUnchanged: 495,
+				TabsRendered:  498,
+				TabsSkipped:   2,
+				LinksFound:    492,
+				Errors:        1,
+			},
+		},
+	}
+
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	for _, value := range []string{"Sync Summary", "Safari Tabs", "created=1 updated=2", "unchanged=495 rendered=498 skipped=2 links=492 device=dfone", "1"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}
@@ -3368,6 +3404,23 @@ func TestStatsPipelineCommandJSON(t *testing.T) {
 		t.Fatalf("save x article summary: %v", err)
 	}
 
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "safari-tab:pipeline-current",
+		SourceType:   "safari_tab",
+		ExternalID:   "pipeline-current",
+		CanonicalURL: "https://example.com/safari-tab",
+		Title:        "safari tab item",
+		Text:         "Safari tab captured from iCloud Tabs.",
+		ContentHash:  "pipeline-safari-tab-hash",
+		NotePath:     "items/safari-tabs/2026/pipeline-current.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert safari tab item: %v", err)
+	}
+
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -3393,6 +3446,7 @@ func TestStatsPipelineCommandJSON(t *testing.T) {
 	assertPipelineRowCounts(t, stats.Extraction, "web", 1, 0, 1, 0, 0)
 	assertPipelineRowCounts(t, stats.Extraction, "youtube", 1, 1, 0, 0, 0)
 	assertPipelineRowCounts(t, stats.Extraction, "x_article", 1, 1, 0, 0, 0)
+	assertPipelineRowCounts(t, stats.Extraction, "safari_tab", 1, 1, 0, 0, 0)
 	assertPipelineRowCounts(t, stats.Summary, "web", 1, 0, 1, 0, 0)
 	assertPipelineRowCounts(t, stats.Summary, "youtube", 1, 1, 0, 0, 0)
 	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 0, 1, 0, 0)

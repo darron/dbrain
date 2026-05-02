@@ -55,6 +55,13 @@ apple_notes:
   attachment_max_bytes: 52428800 # DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES; 50 MiB default
   tesseract_binary: "tesseract" # DBRAIN_APPLE_NOTES_TESSERACT_BINARY
 
+safari_tabs:
+  enabled: false # DBRAIN_SAFARI_TABS_ENABLED; opt into sync all
+  db_path: "" # DBRAIN_SAFARI_TABS_DB_PATH; default is ~/Library/Containers/com.apple.Safari/Data/Library/Safari/CloudTabs.db
+  device: "" # DBRAIN_SAFARI_TABS_DEVICE; device name or UUID, for example dfone
+  limit: 0 # DBRAIN_SAFARI_TABS_LIMIT; 0 imports all matching tabs
+  older_than: "" # DBRAIN_SAFARI_TABS_OLDER_THAN; optional duration, for example 168h
+
 tsnet:
   web: true # DBRAIN_TSNET_WEB
   mcp: true # DBRAIN_TSNET_MCP

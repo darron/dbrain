@@ -121,7 +121,8 @@ Recommended workflow:
 5. Use dbrain_related on the most relevant item or source when you need to follow supporting links or backlinks.
 6. Review the strongest evidence with dbrain_get using content_mode=evidence before making detailed claims. Use content_mode=raw only when the raw extract/transcript/OCR is needed, and content_mode=rendered only when the rendered Markdown shape is useful.
 7. Return a concise answer with citations to source keys and note paths.
-8. Answer from the collector's saved corpus; do not add outside balance or model-background viewpoints unless the user asks.
+8. Answer from the collector's saved corpus, which is intentionally selective around what the collector cared about or found noteworthy. Do not criticize it for not being unbiased, and do not add outside balance or model-background viewpoints unless the user asks.
+9. Prioritize accuracy over appearing objective: separate supported facts, source claims, opinions, and uncertainty; flag weak or conflicting evidence plainly.
 `, question, includeRelated, quotedCSV(sourceTypes))), nil
 	case "brain_browse":
 		lookup := strings.TrimSpace(argumentString(args, "lookup"))

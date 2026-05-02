@@ -46,6 +46,11 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var appleNotesSkipAttachmentOCR bool
 	var appleNotesAttachmentMaxBytes int64
 	var appleNotesTesseractBinary string
+	var safariTabs bool
+	var safariTabsDBPath string
+	var safariTabsDevice string
+	var safariTabsLimit int
+	var safariTabsOlderThan time.Duration
 	var sourceLimit int
 	var sourceConcurrency int
 	var browser string
@@ -77,6 +82,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var skipGitHub bool
 	var skipYouTube bool
 	var skipAppleNotes bool
+	var skipSafariTabs bool
 	var skipSources bool
 	var skipCategorize bool
 	var jsonOut bool
@@ -144,6 +150,33 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			if strings.TrimSpace(appleNotesTesseractBinary) == "" {
 				appleNotesTesseractBinary = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_TESSERACT_BINARY")
 			}
+			if !safariTabs {
+				safariTabs = firstEnvBool(cfg.RootDir, "DBRAIN_SAFARI_TABS_ENABLED")
+			}
+			if strings.TrimSpace(safariTabsDBPath) == "" {
+				safariTabsDBPath = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_SAFARI_TABS_DB_PATH")
+			}
+			if strings.TrimSpace(safariTabsDevice) == "" {
+				safariTabsDevice = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_SAFARI_TABS_DEVICE")
+			}
+			if safariTabsLimit <= 0 {
+				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_SAFARI_TABS_LIMIT"); value != "" {
+					parsed, parseErr := strconv.Atoi(value)
+					if parseErr != nil || parsed < 0 {
+						return fmt.Errorf("parse DBRAIN_SAFARI_TABS_LIMIT: %q", value)
+					}
+					safariTabsLimit = parsed
+				}
+			}
+			if safariTabsOlderThan <= 0 {
+				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_SAFARI_TABS_OLDER_THAN"); value != "" {
+					parsed, parseErr := time.ParseDuration(value)
+					if parseErr != nil || parsed < 0 {
+						return fmt.Errorf("parse DBRAIN_SAFARI_TABS_OLDER_THAN: %q", value)
+					}
+					safariTabsOlderThan = parsed
+				}
+			}
 
 			st, err := store.Open(cfg.DBPath)
 			if err != nil {
@@ -195,6 +228,11 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				AppleNotesSkipAttachmentOCR:  appleNotesSkipAttachmentOCR,
 				AppleNotesAttachmentMaxBytes: appleNotesAttachmentMaxBytes,
 				AppleNotesTesseractBinary:    appleNotesTesseractBinary,
+				SafariTabsEnabled:            safariTabs && !skipSafariTabs,
+				SafariTabsDBPath:             safariTabsDBPath,
+				SafariTabsDevice:             safariTabsDevice,
+				SafariTabsLimit:              safariTabsLimit,
+				SafariTabsOlderThan:          safariTabsOlderThan,
 				SourcesEnabled:               !skipSources,
 				SourceLimit:                  sourceLimit,
 				SourceConcurrency:            sourceConcurrency,
@@ -263,6 +301,11 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&appleNotesSkipAttachmentOCR, "apple-notes-skip-attachment-ocr", false, "Skip local OCR for Apple Notes image attachments during sync")
 	cmd.Flags().Int64Var(&appleNotesAttachmentMaxBytes, "apple-notes-attachment-max-bytes", 0, "Maximum Apple Notes attachment file size to extract; 0 uses the default")
 	cmd.Flags().StringVar(&appleNotesTesseractBinary, "apple-notes-tesseract", "", "Tesseract binary for Apple Notes image OCR")
+	cmd.Flags().BoolVar(&safariTabs, "safari-tabs", false, "Include configured Safari iCloud tabs import in sync")
+	cmd.Flags().StringVar(&safariTabsDBPath, "safari-tabs-db", "", "Safari CloudTabs.db path override")
+	cmd.Flags().StringVar(&safariTabsDevice, "safari-tabs-device", "", "Safari iCloud device name or UUID to import")
+	cmd.Flags().IntVar(&safariTabsLimit, "safari-tabs-limit", 0, "Maximum Safari tabs to import after filtering")
+	cmd.Flags().DurationVar(&safariTabsOlderThan, "safari-tabs-older-than", 0, "Only import Safari tabs last viewed before this duration ago; 0 imports all matching tabs")
 	cmd.Flags().IntVar(&sourceLimit, "source-limit", 100, "Maximum queued sources to enrich per source-worker batch")
 	cmd.Flags().IntVar(&sourceConcurrency, "source-concurrency", 4, "Number of concurrent source extract/summarize jobs per batch")
 	cmd.Flags().StringVar(&browser, "browser", "chrome", "Preferred browser for cookie-backed X and YouTube flows")
@@ -294,6 +337,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&skipGitHub, "skip-github", false, "Skip GitHub stars import")
 	cmd.Flags().BoolVar(&skipYouTube, "skip-youtube", false, "Skip YouTube signal import")
 	cmd.Flags().BoolVar(&skipAppleNotes, "skip-apple-notes", false, "Skip configured Apple Notes import")
+	cmd.Flags().BoolVar(&skipSafariTabs, "skip-safari-tabs", false, "Skip configured Safari iCloud tabs import")
 	cmd.Flags().BoolVar(&skipSources, "skip-sources", false, "Skip the final source backlog worker stage")
 	cmd.Flags().BoolVar(&skipCategorize, "skip-categorize", false, "Skip final item/source categorization")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print sync stats as JSON")
@@ -346,6 +390,10 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 	if stats.AppleNotes != nil {
 		s := stats.AppleNotes.Stats
 		rows = append(rows, []string{"Apple Notes", stats.AppleNotes.Duration.String(), fmt.Sprintf("imported=%d rendered=%d", s.NotesImported, s.NotesRendered), fmt.Sprintf("skipped=%d blocked=%d attachments=%d extracted=%d summarized=%d", s.NotesSkipped, s.NotesBlocked, s.AttachmentsIndexed, s.AttachmentsExtracted, s.SummariesCreated), strconv.Itoa(s.Errors)})
+	}
+	if stats.SafariTabs != nil {
+		s := stats.SafariTabs.Stats
+		rows = append(rows, []string{"Safari Tabs", stats.SafariTabs.Duration.String(), fmt.Sprintf("created=%d updated=%d", s.TabsCreated, s.TabsUpdated), fmt.Sprintf("unchanged=%d rendered=%d skipped=%d links=%d device=%s", s.TabsUnchanged, s.TabsRendered, s.TabsSkipped, s.LinksFound, emptyDash(s.DeviceName)), strconv.Itoa(s.Errors)})
 	}
 	if stats.XBookmarks != nil {
 		s := stats.XBookmarks.Stats

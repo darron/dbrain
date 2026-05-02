@@ -366,6 +366,13 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if ok {
 		stats.Extraction = appendPipelineStageRow(stats.Extraction, appleNoteExtractionRow)
 	}
+	safariTabExtractionRow, ok, err := s.pipelineSafariTabExtractionRow(ctx)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	if ok {
+		stats.Extraction = appendPipelineStageRow(stats.Extraction, safariTabExtractionRow)
+	}
 
 	summaryTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
 	if err != nil {
@@ -679,6 +686,36 @@ func (s *Store) pipelineAppleNoteExtractionRow(ctx context.Context) (PipelineSta
 
 	row := PipelineStageRow{
 		Kind:    "apple_note",
+		Total:   total,
+		Current: current,
+		Blocked: blocked,
+	}
+	finalizePipelineStageRow(&row)
+	return row, true, nil
+}
+
+func (s *Store) pipelineSafariTabExtractionRow(ctx context.Context) (PipelineStageRow, bool, error) {
+	candidateWhere := `source_type = 'safari_tab'`
+
+	total, err := s.countWhere(ctx, "items", candidateWhere)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	if total == 0 {
+		return PipelineStageRow{}, false, nil
+	}
+
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND text != '' AND canonical_url != ''`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND (text = '' OR canonical_url = '')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+
+	row := PipelineStageRow{
+		Kind:    "safari_tab",
 		Total:   total,
 		Current: current,
 		Blocked: blocked,

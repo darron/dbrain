@@ -265,6 +265,8 @@ func syncStageLabel(stage string) string {
 		return "Importing YouTube feeds"
 	case "import apple-notes":
 		return "Importing Apple Notes"
+	case "import safari-tabs":
+		return "Importing Safari tabs"
 	case "worker sources":
 		return "Draining source backlog"
 	case "archive media":

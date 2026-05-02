@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/config"
@@ -13,6 +14,7 @@ import (
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
@@ -357,6 +359,74 @@ func TestRunExecutesAppleNotesBeforeLinkExtractionWhenEnabled(t *testing.T) {
 	for _, value := range []string{"processing source=apple-note:default:test", "summarized source=apple-note:default:test", "imported source=apple-note:default:test"} {
 		if bytes.Contains([]byte(output), []byte(value)) {
 			t.Fatalf("expected summary-only progress output to omit %q, got %q", value, output)
+		}
+	}
+}
+
+func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origSafariTabs := runSafariTabsImport
+	origLinks := runLinkExtract
+	t.Cleanup(func() {
+		runSafariTabsImport = origSafariTabs
+		runLinkExtract = origLinks
+	})
+
+	var calls []string
+	runSafariTabsImport = func(_ context.Context, _ config.Config, _ *store.Store, opts safaritabs.Options) (safaritabs.Stats, error) {
+		calls = append(calls, "safari-tabs")
+		if opts.DryRun {
+			t.Fatal("expected sync Safari Tabs import to write by default")
+		}
+		if opts.DBPath != "/tmp/CloudTabs.db" || opts.Device != "dfone" {
+			t.Fatalf("unexpected Safari Tabs source options: %+v", opts)
+		}
+		if opts.Limit != 25 || opts.OlderThan != 7*24*time.Hour {
+			t.Fatalf("unexpected Safari Tabs filter options: %+v", opts)
+		}
+		if opts.Progress == nil {
+			t.Fatal("expected sync Safari Tabs import progress callback")
+		}
+		opts.Progress(safaritabs.ProgressEvent{Phase: "loaded", Total: 2})
+		opts.Progress(safaritabs.ProgressEvent{
+			Phase:     "imported",
+			Index:     1,
+			Total:     2,
+			SourceKey: "safari-tab:dfone:test",
+			Status:    "created",
+			Rendered:  true,
+		})
+		return safaritabs.Stats{DeviceName: "dfone", TabsSeen: 2, TabsMatched: 1, TabsImported: 1, TabsCreated: 1, TabsRendered: 1, LinksFound: 1}, nil
+	}
+	runLinkExtract = func(_ context.Context, _ config.Config, _ *store.Store, _ linkextract.Options) (linkextract.Stats, error) {
+		calls = append(calls, "links")
+		return linkextract.Stats{ItemsScanned: 1, SourcesQueued: 1}, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(context.Background(), cfg, st, Options{
+		SafariTabsEnabled:   true,
+		SafariTabsDBPath:    "/tmp/CloudTabs.db",
+		SafariTabsDevice:    "dfone",
+		SafariTabsLimit:     25,
+		SafariTabsOlderThan: 7 * 24 * time.Hour,
+		LinksEnabled:        true,
+		Progress:            &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Equal(calls, []string{"safari-tabs", "links"}) {
+		t.Fatalf("unexpected stage order: %v", calls)
+	}
+	if stats.SafariTabs == nil || stats.SafariTabs.Stats.TabsImported != 1 {
+		t.Fatalf("expected Safari Tabs stage stats, got %+v", stats.SafariTabs)
+	}
+	output := progress.String()
+	for _, value := range []string{"==> import safari-tabs", "Safari tabs loaded: candidates=2", "Safari Tab 1/2 imported source=safari-tab:dfone:test status=created rendered=true", "Safari Tabs import complete: device=dfone seen=2 matched=1 created=1 updated=0 unchanged=0 rendered=1 skipped=0 links=1 errors=0", "==> extract links"} {
+		if !bytes.Contains([]byte(output), []byte(value)) {
+			t.Fatalf("expected progress output to contain %q, got %q", value, output)
 		}
 	}
 }

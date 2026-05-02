@@ -60,6 +60,22 @@ func TestPrepareSynthesisBudgetsEvidenceDeterministically(t *testing.T) {
 	}
 }
 
+func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
+	if SynthesisPromptVersion != "brain-research-synthesis-v2" {
+		t.Fatalf("unexpected synthesis prompt version: %q", SynthesisPromptVersion)
+	}
+	for _, want := range []string{
+		"intentionally selective",
+		"Do not criticize the corpus for not being unbiased",
+		"Accuracy matters more than appearing objective",
+		"separate supported facts, source claims, opinions, and uncertainty",
+	} {
+		if !strings.Contains(synthesisPrompt, want) {
+			t.Fatalf("synthesis prompt missing %q:\n%s", want, synthesisPrompt)
+		}
+	}
+}
+
 func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

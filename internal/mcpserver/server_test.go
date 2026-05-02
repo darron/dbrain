@@ -2594,7 +2594,7 @@ func TestServerPromptGetBrainResearch(t *testing.T) {
 		t.Fatalf("expected 1 prompt message, got %#v", messages)
 	}
 	content := messages[0].(map[string]interface{})["content"].(map[string]interface{})["text"].(string)
-	if !strings.Contains(content, "dbrain_research_pack") || !strings.Contains(content, `"github", "web"`) {
+	if !strings.Contains(content, "dbrain_research_pack") || !strings.Contains(content, `"github", "web"`) || !strings.Contains(content, "Prioritize accuracy over appearing objective") {
 		t.Fatalf("unexpected prompt content: %q", content)
 	}
 }

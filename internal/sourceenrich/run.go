@@ -2108,7 +2108,11 @@ func blockedSummaryReason(err error) (string, bool) {
 	case strings.Contains(value, "maximum context length"),
 		strings.Contains(value, "context length"),
 		strings.Contains(value, "too many tokens"),
-		strings.Contains(value, "input is too long"):
+		strings.Contains(value, "input is too long"),
+		strings.Contains(value, "context deadline exceeded"),
+		strings.Contains(value, "timeout"),
+		strings.Contains(value, "timed out"),
+		strings.Contains(value, "signal: killed"):
 		return err.Error(), true
 	default:
 		return "", false

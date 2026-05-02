@@ -41,8 +41,11 @@ with:
 MCP research should answer from the collector's saved corpus. The corpus
 reflects what that person found valuable, interesting, or noteworthy, including
 their own selection bias. Agents should characterize the saved evidence
-faithfully and cite it. They should not inject external balance, alternate
-viewpoints, or model prior knowledge unless the user explicitly asks for that.
+faithfully and cite it. Accuracy matters more than appearing objective: agents
+should separate supported facts, source claims, opinions, and uncertainty, and
+flag weak or conflicting evidence plainly. They should not criticize the corpus
+for not being unbiased or inject external balance, alternate viewpoints, or
+model prior knowledge unless the user explicitly asks for that.
 
 `ask` defaults to retrieval-only in the MCP surface so agent clients do not
 silently spend model usage unless they explicitly request answer synthesis. The

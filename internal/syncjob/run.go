@@ -15,6 +15,7 @@ import (
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/worker"
@@ -37,6 +38,7 @@ var (
 	runItemCategorize   = itemcategorize.Batch
 	runSourceCategorize = itemcategorize.BatchSources
 	runAppleNotesImport = applenotes.Run
+	runSafariTabsImport = safaritabs.Run
 )
 
 const maxXQuoteDrainPasses = 8
@@ -79,6 +81,12 @@ type Options struct {
 	AppleNotesSkipAttachmentOCR  bool
 	AppleNotesAttachmentMaxBytes int64
 	AppleNotesTesseractBinary    string
+
+	SafariTabsEnabled   bool
+	SafariTabsDBPath    string
+	SafariTabsDevice    string
+	SafariTabsLimit     int
+	SafariTabsOlderThan time.Duration
 
 	SourcesEnabled      bool
 	SourceLimit         int
@@ -129,6 +137,7 @@ type Stats struct {
 	GitHub       *GitHubStage       `json:"github,omitempty"`
 	YouTube      *YouTubeStage      `json:"youtube,omitempty"`
 	AppleNotes   *AppleNotesStage   `json:"apple_notes,omitempty"`
+	SafariTabs   *SafariTabsStage   `json:"safari_tabs,omitempty"`
 	Sources      *SourcesStage      `json:"sources,omitempty"`
 	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
 	Categorize   *CategorizeStage   `json:"categorize,omitempty"`
@@ -172,6 +181,11 @@ type YouTubeStage struct {
 type AppleNotesStage struct {
 	Duration time.Duration    `json:"duration"`
 	Stats    applenotes.Stats `json:"stats"`
+}
+
+type SafariTabsStage struct {
+	Duration time.Duration    `json:"duration"`
+	Stats    safaritabs.Stats `json:"stats"`
 }
 
 type SourcesStage struct {
@@ -360,6 +374,31 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			return finishStats(stats), fmt.Errorf("import apple-notes: %w", err)
 		}
 		progressf(opts.Progress, "Apple Notes import complete: seen=%d imported=%d rendered=%d skipped=%d blocked=%d attachments=%d extracted=%d ocr=%d summarized=%d errors=%d (%s)\n", appleStats.NotesSeen, appleStats.NotesImported, appleStats.NotesRendered, appleStats.NotesSkipped, appleStats.NotesBlocked, appleStats.AttachmentsIndexed, appleStats.AttachmentsExtracted, appleStats.AttachmentsOCRed, appleStats.SummariesCreated, appleStats.Errors, stage.Duration)
+	}
+
+	if opts.SafariTabsEnabled {
+		progressf(opts.Progress, "==> import safari-tabs\n")
+		start := time.Now()
+		var safariTabsProgress safaritabs.ProgressFunc
+		if opts.Progress != nil {
+			safariTabsProgress = func(event safaritabs.ProgressEvent) {
+				formatSafariTabsSyncProgress(opts.Progress, event)
+			}
+		}
+		safariStats, err := runSafariTabsImport(ctx, cfg, st, safaritabs.Options{
+			DBPath:    opts.SafariTabsDBPath,
+			Device:    opts.SafariTabsDevice,
+			Limit:     opts.SafariTabsLimit,
+			OlderThan: opts.SafariTabsOlderThan,
+			Force:     opts.Force,
+			Progress:  safariTabsProgress,
+		})
+		stage := &SafariTabsStage{Duration: time.Since(start), Stats: safariStats}
+		stats.SafariTabs = stage
+		if err != nil {
+			return finishStats(stats), fmt.Errorf("import safari-tabs: %w", err)
+		}
+		progressf(opts.Progress, "Safari Tabs import complete: device=%s seen=%d matched=%d created=%d updated=%d unchanged=%d rendered=%d skipped=%d links=%d errors=%d (%s)\n", emptyProgressValue(safariStats.DeviceName), safariStats.TabsSeen, safariStats.TabsMatched, safariStats.TabsCreated, safariStats.TabsUpdated, safariStats.TabsUnchanged, safariStats.TabsRendered, safariStats.TabsSkipped, safariStats.LinksFound, safariStats.Errors, stage.Duration)
 	}
 
 	if shouldSettleXFrontier(opts) {
@@ -780,6 +819,42 @@ func appleNoteProgressPosition(event applenotes.ProgressEvent) string {
 }
 
 func appleNoteProgressSource(event applenotes.ProgressEvent) string {
+	if strings.TrimSpace(event.SourceKey) == "" {
+		return "unknown"
+	}
+	return event.SourceKey
+}
+
+func formatSafariTabsSyncProgress(dst io.Writer, event safaritabs.ProgressEvent) {
+	if dst == nil {
+		return
+	}
+	switch event.Phase {
+	case "loaded":
+		progressf(dst, "Safari tabs loaded: candidates=%d\n", event.Total)
+	case "imported":
+		if event.Status == "unchanged" && !event.Rendered {
+			return
+		}
+		progressf(dst, "Safari Tab%s imported source=%s status=%s rendered=%t\n",
+			safariTabProgressPosition(event), safariTabProgressSource(event), emptyProgressValue(event.Status), event.Rendered)
+	case "skipped":
+		if event.Reason == "newer_than_cutoff" {
+			return
+		}
+		progressf(dst, "Safari Tab%s skipped reason=%s url=%s\n",
+			safariTabProgressPosition(event), emptyProgressValue(event.Reason), emptyProgressValue(event.URL))
+	}
+}
+
+func safariTabProgressPosition(event safaritabs.ProgressEvent) string {
+	if event.Index <= 0 || event.Total <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" %d/%d", event.Index, event.Total)
+}
+
+func safariTabProgressSource(event safaritabs.ProgressEvent) string {
 	if strings.TrimSpace(event.SourceKey) == "" {
 		return "unknown"
 	}

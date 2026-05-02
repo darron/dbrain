@@ -174,6 +174,24 @@ func TestBlockedSummaryReasonFlagsContextWindowErrors(t *testing.T) {
 	}
 }
 
+func TestBlockedSummaryReasonFlagsTimeoutErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, message := range []string{
+		"run ollama summary: Post \"http://127.0.0.1:11434/api/chat\": context deadline exceeded",
+		"run summarize: signal: killed",
+		"run summarize: request timed out",
+	} {
+		reason, ok := blockedSummaryReason(errors.New(message))
+		if !ok {
+			t.Fatalf("expected timeout-like summary error to be blocked: %q", message)
+		}
+		if reason == "" {
+			t.Fatalf("expected blocked reason for %q", message)
+		}
+	}
+}
+
 func TestClassifyTerminalExtractErrorMarksRepeatedTLSFailuresDead(t *testing.T) {
 	t.Parallel()
 
@@ -857,6 +875,104 @@ func TestRunSourceIDsBlocksEmptyExtractSummaryAndStopsRequeue(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("expected blocked summary source to drop out of enrichment selection, got %d candidates", len(pending))
+	}
+}
+
+func TestRunSourceIDsBlocksTimedOutStoredExtractSummaryAndStopsRequeue(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	installSourceEnrichSlowFakeSummarize(t, root)
+
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "manual:slow-summary-item",
+		SourceType:   "manual_link",
+		ExternalID:   "slow-summary-item",
+		CanonicalURL: "https://example.com/slow-summary-item",
+		Title:        "slow summary item",
+		ContentHash:  "slow-summary-item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/manual/slow-summary-item.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, model.SourceCandidate{
+		SourceKey:     "src:slow-summary",
+		CanonicalURL:  "https://example.com/slow-summary",
+		NormalizedURL: "https://example.com/slow-summary",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/src-slow-summary.md",
+		OriginalURL:   "https://example.com/slow-summary",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/slow-summary",
+		FinalURL:     "https://example.com/slow-summary",
+		Title:        "Slow Summary",
+		Content:      "stored extract content that should be summarized",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "summarize",
+		ToolVersion:  "test",
+	}, "slow-summary-hash"); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Summarize: true,
+		Model:     "cli/test/sourceenrich",
+		Timeout:   100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesSummarized != 0 {
+		t.Fatalf("expected no successful summary for timed out extract, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.SummaryStatus != "blocked" {
+		t.Fatalf("expected summary status blocked, got %q error=%q", source.SummaryStatus, source.SummaryError)
+	}
+	if !strings.Contains(strings.ToLower(source.SummaryError), "signal: killed") &&
+		!strings.Contains(strings.ToLower(source.SummaryError), "context deadline") &&
+		!strings.Contains(strings.ToLower(source.SummaryError), "timeout") {
+		t.Fatalf("unexpected timeout summary error: %q", source.SummaryError)
+	}
+
+	pending, err := st.ListSourcesForEnrichment(context.Background(), 50, false, true, SummaryPromptVersion, summarizecli.SummaryToolName("cli/test/sourceenrich"), summarizecli.SummaryToolVersion(context.Background(), "", "cli/test/sourceenrich"))
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected blocked timeout summary source to drop out of enrichment selection, got %d candidates", len(pending))
 	}
 }
 

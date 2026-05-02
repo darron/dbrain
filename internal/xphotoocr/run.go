@@ -142,33 +142,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if opts.Timeout <= 0 {
 		opts.Timeout = 2 * time.Minute
 	}
-	if strings.TrimSpace(opts.Model) == "" {
-		opts.Model = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OCR_MODEL", "DBRAIN_X_PHOTO_OCR_MODEL"), defaultOCRModel)
-	}
-	if strings.TrimSpace(opts.TesseractBinary) == "" {
-		opts.TesseractBinary = "tesseract"
-	}
-	if strings.TrimSpace(opts.OpenRouterBase) == "" {
-		opts.OpenRouterBase = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"), defaultOpenRouterBaseURL)
-	}
-	if strings.TrimSpace(opts.OpenRouterKey) == "" {
-		opts.OpenRouterKey = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
-	}
-	if strings.TrimSpace(opts.OpenRouterTitle) == "" {
-		opts.OpenRouterTitle = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE"), "dbrain X photo OCR")
-	}
-	if strings.TrimSpace(opts.OpenRouterRef) == "" {
-		opts.OpenRouterRef = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER"), "https://local.dbrain")
-	}
-	if strings.TrimSpace(opts.UserAgent) == "" {
-		opts.UserAgent = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_USER_AGENT")
-	}
-	if strings.TrimSpace(opts.OllamaBase) == "" {
-		opts.OllamaBase = ollamaBaseURL(cfg.RootDir)
-	}
-	if strings.TrimSpace(opts.OllamaKey) == "" {
-		opts.OllamaKey = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY"), defaultOllamaAPIKey)
-	}
+	opts = resolveOptions(cfg, opts)
 
 	items, err := st.ListItemsForXPhotoOCR(ctx, opts.Limit, opts.Force)
 	if err != nil {
@@ -438,6 +412,59 @@ func ocrPhoto(ctx context.Context, absolutePath string, ref model.ItemMediaRef, 
 	}, hostedAttempted, hostedFallback, nil
 }
 
+func ocrPhotoWithModel(ctx context.Context, absolutePath string, ref model.ItemMediaRef, opts Options) (ocrBlock, error) {
+	heading := fmt.Sprintf("Photo %d", ref.Ordinal+1)
+	if strings.EqualFold(strings.TrimSpace(opts.Model), "tesseract") {
+		text, err := ocrWithTesseract(ctx, absolutePath, opts.TesseractBinary, opts.Timeout)
+		if err != nil {
+			return ocrBlock{}, err
+		}
+		return ocrBlock{
+			Heading:     heading,
+			LocalPath:   ref.LocalPath,
+			RemoteURL:   ref.RemoteURL,
+			ExpandedURL: ref.ExpandedURL,
+			Tool:        tesseractTool,
+			Model:       "tesseract",
+			Text:        text,
+		}, nil
+	}
+	if ollamaModel, ok := parseOllamaModel(opts.Model); ok {
+		text, modelName, err := ocrWithOllama(ctx, absolutePath, opts, ollamaModel)
+		if err != nil {
+			return ocrBlock{}, err
+		}
+		return ocrBlock{
+			Heading:     heading,
+			LocalPath:   ref.LocalPath,
+			RemoteURL:   ref.RemoteURL,
+			ExpandedURL: ref.ExpandedURL,
+			Tool:        ollamaVisionTool,
+			Model:       modelName,
+			Text:        text,
+		}, nil
+	}
+	if _, ok := parseOpenRouterModel(opts.Model); ok {
+		if strings.TrimSpace(opts.OpenRouterKey) == "" {
+			return ocrBlock{}, fmt.Errorf("openrouter OCR key is required for model %s", opts.Model)
+		}
+		text, modelName, err := ocrWithOpenRouter(ctx, absolutePath, opts)
+		if err != nil {
+			return ocrBlock{}, err
+		}
+		return ocrBlock{
+			Heading:     heading,
+			LocalPath:   ref.LocalPath,
+			RemoteURL:   ref.RemoteURL,
+			ExpandedURL: ref.ExpandedURL,
+			Tool:        openRouterVisionTool,
+			Model:       modelName,
+			Text:        text,
+		}, nil
+	}
+	return ocrBlock{}, fmt.Errorf("unsupported OCR model %q; use ollama/<name>, openrouter/<provider>/<model>, or tesseract", opts.Model)
+}
+
 func ocrWithOllama(ctx context.Context, absolutePath string, opts Options, ollamaModel string) (string, string, error) {
 	data, err := os.ReadFile(absolutePath)
 	if err != nil {
@@ -628,6 +655,44 @@ func parseOllamaModel(model string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func ResolveModel(cfg config.Config, model string) string {
+	if strings.TrimSpace(model) != "" {
+		return strings.TrimSpace(model)
+	}
+	return firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OCR_MODEL", "DBRAIN_X_PHOTO_OCR_MODEL"), defaultOCRModel)
+}
+
+func resolveOptions(cfg config.Config, opts Options) Options {
+	if strings.TrimSpace(opts.Model) == "" {
+		opts.Model = ResolveModel(cfg, "")
+	}
+	if strings.TrimSpace(opts.TesseractBinary) == "" {
+		opts.TesseractBinary = "tesseract"
+	}
+	if strings.TrimSpace(opts.OpenRouterBase) == "" {
+		opts.OpenRouterBase = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"), defaultOpenRouterBaseURL)
+	}
+	if strings.TrimSpace(opts.OpenRouterKey) == "" {
+		opts.OpenRouterKey = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
+	}
+	if strings.TrimSpace(opts.OpenRouterTitle) == "" {
+		opts.OpenRouterTitle = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE"), "dbrain X photo OCR")
+	}
+	if strings.TrimSpace(opts.OpenRouterRef) == "" {
+		opts.OpenRouterRef = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER"), "https://local.dbrain")
+	}
+	if strings.TrimSpace(opts.UserAgent) == "" {
+		opts.UserAgent = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_USER_AGENT")
+	}
+	if strings.TrimSpace(opts.OllamaBase) == "" {
+		opts.OllamaBase = ollamaBaseURL(cfg.RootDir)
+	}
+	if strings.TrimSpace(opts.OllamaKey) == "" {
+		opts.OllamaKey = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY"), defaultOllamaAPIKey)
+	}
+	return opts
 }
 
 func ollamaBaseURL(rootDir string) string {

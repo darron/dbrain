@@ -937,6 +937,35 @@ func TestPipelineAppleNoteExtractionAndSummaryClassifyItemCoverage(t *testing.T)
 	assertPipelineRowCounts(t, stats.Summary, "apple_note", 4, 1, 1, 1, 1)
 }
 
+func TestPipelineSafariTabExtractionClassifiesItemMaterialization(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertSafariTab := func(sourceKey string, body string, canonicalURL string) {
+		t.Helper()
+
+		item := testItem(sourceKey, "safari_tab", canonicalURL, now)
+		item.Text = body
+		if _, err := st.UpsertItem(ctx, item); err != nil {
+			t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+		}
+	}
+
+	insertSafariTab("safari-tab:current", "Safari tab captured from iCloud Tabs.", "https://example.com/current")
+	insertSafariTab("safari-tab:missing-text", "", "https://example.com/missing-text")
+	insertSafariTab("safari-tab:missing-url", "Safari tab captured from iCloud Tabs.", "")
+
+	stats, err := st.Pipeline(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+
+	assertPipelineRowCounts(t, stats.Extraction, "safari_tab", 3, 1, 0, 2, 0)
+}
+
 func TestAppendPipelineStageRowRecomputesAggregate(t *testing.T) {
 	t.Parallel()
 
