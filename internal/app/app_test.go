@@ -1112,6 +1112,127 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 	}
 }
 
+func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
+	root := t.TempDir()
+	clearSyncEnvForTest(t)
+	env := strings.Join([]string{
+		"DBRAIN_AUTO_ARCHIVE_MEDIA=true",
+		"DBRAIN_APPLE_NOTES_ENABLED=true",
+		"DBRAIN_APPLE_NOTES_DB_PATH=/tmp/notes.sqlite",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS=Archive, Trash",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS=Work",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_SHARED=true",
+		"DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS=false",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_OCR=false",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES=12345",
+		"DBRAIN_APPLE_NOTES_TESSERACT_BINARY=/opt/bin/tesseract",
+		"DBRAIN_SAFARI_TABS_ENABLED=true",
+		"DBRAIN_SAFARI_TABS_DB_PATH=/tmp/cloudtabs.db",
+		"DBRAIN_SAFARI_TABS_DEVICE=dfone",
+		"DBRAIN_SAFARI_TABS_LIMIT=8",
+		"DBRAIN_SAFARI_TABS_OLDER_THAN=2h",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	resolved, err := resolveSyncAllFlags(root, syncAllFlags{})
+	if err != nil {
+		t.Fatalf("resolveSyncAllFlags: %v", err)
+	}
+	if !resolved.archiveMedia || !resolved.appleNotes || !resolved.safariTabs {
+		t.Fatalf("expected archive/apple-notes/safari-tabs enabled, got archive=%v apple=%v safari=%v", resolved.archiveMedia, resolved.appleNotes, resolved.safariTabs)
+	}
+	if resolved.appleNotesDBPath != "/tmp/notes.sqlite" {
+		t.Fatalf("appleNotesDBPath = %q", resolved.appleNotesDBPath)
+	}
+	if got := strings.Join(resolved.appleNotesExcludeFolders, ","); got != "Archive,Trash" {
+		t.Fatalf("appleNotesExcludeFolders = %q", got)
+	}
+	if got := strings.Join(resolved.appleNotesExcludeAccounts, ","); got != "Work" {
+		t.Fatalf("appleNotesExcludeAccounts = %q", got)
+	}
+	if !resolved.appleNotesExcludeShared || !resolved.appleNotesSkipAttachments || !resolved.appleNotesSkipAttachmentOCR {
+		t.Fatalf("expected Apple Notes exclusion/skip booleans resolved, got shared=%v skipAttachments=%v skipOCR=%v", resolved.appleNotesExcludeShared, resolved.appleNotesSkipAttachments, resolved.appleNotesSkipAttachmentOCR)
+	}
+	if resolved.appleNotesAttachmentMaxBytes != 12345 || resolved.appleNotesTesseractBinary != "/opt/bin/tesseract" {
+		t.Fatalf("unexpected Apple Notes attachment settings: max=%d tesseract=%q", resolved.appleNotesAttachmentMaxBytes, resolved.appleNotesTesseractBinary)
+	}
+	if resolved.safariTabsDBPath != "/tmp/cloudtabs.db" || resolved.safariTabsDevice != "dfone" || resolved.safariTabsLimit != 8 || resolved.safariTabsOlderThan != 2*time.Hour {
+		t.Fatalf("unexpected Safari tabs settings: db=%q device=%q limit=%d older=%s", resolved.safariTabsDBPath, resolved.safariTabsDevice, resolved.safariTabsLimit, resolved.safariTabsOlderThan)
+	}
+}
+
+func TestResolveSyncAllFlagsKeepsExplicitValues(t *testing.T) {
+	root := t.TempDir()
+	clearSyncEnvForTest(t)
+	env := strings.Join([]string{
+		"DBRAIN_APPLE_NOTES_ENABLED=true",
+		"DBRAIN_APPLE_NOTES_DB_PATH=/tmp/env-notes.sqlite",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS=Env",
+		"DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS=false",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES=999",
+		"DBRAIN_SAFARI_TABS_ENABLED=true",
+		"DBRAIN_SAFARI_TABS_DB_PATH=/tmp/env-cloudtabs.db",
+		"DBRAIN_SAFARI_TABS_DEVICE=env-device",
+		"DBRAIN_SAFARI_TABS_LIMIT=20",
+		"DBRAIN_SAFARI_TABS_OLDER_THAN=4h",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	resolved, err := resolveSyncAllFlags(root, syncAllFlags{
+		appleNotes:                   true,
+		appleNotesDBPath:             "/tmp/explicit-notes.sqlite",
+		appleNotesExcludeFolders:     []string{"Explicit"},
+		appleNotesAttachmentMaxBytes: 10,
+		safariTabs:                   true,
+		safariTabsDBPath:             "/tmp/explicit-cloudtabs.db",
+		safariTabsDevice:             "explicit-device",
+		safariTabsLimit:              3,
+		safariTabsOlderThan:          30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("resolveSyncAllFlags: %v", err)
+	}
+	if resolved.appleNotesDBPath != "/tmp/explicit-notes.sqlite" || strings.Join(resolved.appleNotesExcludeFolders, ",") != "Explicit" {
+		t.Fatalf("explicit Apple Notes values were not preserved: db=%q folders=%v", resolved.appleNotesDBPath, resolved.appleNotesExcludeFolders)
+	}
+	if resolved.appleNotesAttachmentMaxBytes != 10 {
+		t.Fatalf("appleNotesAttachmentMaxBytes = %d, want 10", resolved.appleNotesAttachmentMaxBytes)
+	}
+	if resolved.safariTabsDBPath != "/tmp/explicit-cloudtabs.db" || resolved.safariTabsDevice != "explicit-device" || resolved.safariTabsLimit != 3 || resolved.safariTabsOlderThan != 30*time.Minute {
+		t.Fatalf("explicit Safari values were not preserved: db=%q device=%q limit=%d older=%s", resolved.safariTabsDBPath, resolved.safariTabsDevice, resolved.safariTabsLimit, resolved.safariTabsOlderThan)
+	}
+}
+
+func clearSyncEnvForTest(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"DBRAIN_AUTO_ARCHIVE_MEDIA",
+		"DBRAIN_ARCHIVE_AUTO",
+		"DBRAIN_APPLE_NOTES_ENABLED",
+		"DBRAIN_APPLE_NOTES_DB_PATH",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_SHARED",
+		"DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS",
+		"DBRAIN_APPLE_NOTES_SKIP_ATTACHMENTS",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_OCR",
+		"DBRAIN_APPLE_NOTES_SKIP_ATTACHMENT_OCR",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES",
+		"DBRAIN_APPLE_NOTES_TESSERACT_BINARY",
+		"DBRAIN_SAFARI_TABS_ENABLED",
+		"DBRAIN_SAFARI_TABS_DB_PATH",
+		"DBRAIN_SAFARI_TABS_DEVICE",
+		"DBRAIN_SAFARI_TABS_LIMIT",
+		"DBRAIN_SAFARI_TABS_OLDER_THAN",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 func TestImportCommandHelpIncludesYouTubeImporter(t *testing.T) {
 	t.Parallel()
 

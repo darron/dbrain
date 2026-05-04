@@ -1,11 +1,6 @@
 package app
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
-	"time"
-
 	"github.com/spf13/cobra"
 
 	"github.com/darron/dbrain/internal/store"
@@ -25,69 +20,7 @@ func newSyncCommand(root *rootOptions) *cobra.Command {
 }
 
 func newSyncAllCommand(root *rootOptions) *cobra.Command {
-	var xBookmarksLimit int
-	var xLimit int
-	var xMediaLimit int
-	var xPhotoOCRLimit int
-	var xConcurrency int
-	var xTimeout time.Duration
-	var ocrModel string
-	var linkDiscoverLimit int
-	var linkLimit int
-	var linkConcurrency int
-	var githubLimit int
-	var youtubeLimit int
-	var appleNotes bool
-	var appleNotesDBPath string
-	var appleNotesLimit int
-	var appleNotesExcludeFolders []string
-	var appleNotesExcludeAccounts []string
-	var appleNotesExcludeShared bool
-	var appleNotesIncludeLocked bool
-	var appleNotesSkipAttachments bool
-	var appleNotesSkipAttachmentOCR bool
-	var appleNotesAttachmentMaxBytes int64
-	var appleNotesTesseractBinary string
-	var safariTabs bool
-	var safariTabsDBPath string
-	var safariTabsDevice string
-	var safariTabsLimit int
-	var safariTabsOlderThan time.Duration
-	var sourceLimit int
-	var sourceConcurrency int
-	var browser string
-	var profile string
-	var watchLater bool
-	var liked bool
-	var watch bool
-	var pollInterval time.Duration
-	var idleExitAfter time.Duration
-	var maxCycles int
-	var force bool
-	var summarize bool
-	var model string
-	var cliProvider string
-	var length string
-	var timeout time.Duration
-	var archiveMedia bool
-	var archiveMediaLimit int
-	var categorizeLimit int
-	var categorizeConcurrency int
-	var categorizeModel string
-	var categorizeTimeout time.Duration
-	var categorizeImages = true
-	var skipXBookmarks bool
-	var skipX bool
-	var skipXMedia bool
-	var skipXPhotoOCR bool
-	var skipLinks bool
-	var skipGitHub bool
-	var skipYouTube bool
-	var skipAppleNotes bool
-	var skipSafariTabs bool
-	var skipSources bool
-	var skipCategorize bool
-	var jsonOut bool
+	var flags syncAllFlags
 
 	cmd := &cobra.Command{
 		Use:   "all",
@@ -98,86 +31,9 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !archiveMedia {
-				archiveMedia = firstEnvBool(cfg.RootDir, "DBRAIN_AUTO_ARCHIVE_MEDIA", "DBRAIN_ARCHIVE_AUTO")
-			}
-			if !appleNotes {
-				appleNotes = firstEnvBool(cfg.RootDir, "DBRAIN_APPLE_NOTES_ENABLED")
-			}
-			if strings.TrimSpace(appleNotesDBPath) == "" {
-				appleNotesDBPath = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_DB_PATH")
-			}
-			if len(appleNotesExcludeFolders) == 0 {
-				appleNotesExcludeFolders = firstEnvList(cfg.RootDir, "DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS")
-			}
-			if len(appleNotesExcludeAccounts) == 0 {
-				appleNotesExcludeAccounts = firstEnvList(cfg.RootDir, "DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS")
-			}
-			if !appleNotesExcludeShared {
-				appleNotesExcludeShared = firstEnvBool(cfg.RootDir, "DBRAIN_APPLE_NOTES_EXCLUDE_SHARED")
-			}
-			if !appleNotesSkipAttachments {
-				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS"); value != "" {
-					parsed, parseErr := strconv.ParseBool(value)
-					if parseErr != nil {
-						return fmt.Errorf("parse DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS: %q", value)
-					}
-					appleNotesSkipAttachments = !parsed
-				}
-				if firstEnvBool(cfg.RootDir, "DBRAIN_APPLE_NOTES_SKIP_ATTACHMENTS") {
-					appleNotesSkipAttachments = true
-				}
-			}
-			if !appleNotesSkipAttachmentOCR {
-				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_ATTACHMENT_OCR"); value != "" {
-					parsed, parseErr := strconv.ParseBool(value)
-					if parseErr != nil {
-						return fmt.Errorf("parse DBRAIN_APPLE_NOTES_ATTACHMENT_OCR: %q", value)
-					}
-					appleNotesSkipAttachmentOCR = !parsed
-				}
-				if firstEnvBool(cfg.RootDir, "DBRAIN_APPLE_NOTES_SKIP_ATTACHMENT_OCR") {
-					appleNotesSkipAttachmentOCR = true
-				}
-			}
-			if appleNotesAttachmentMaxBytes <= 0 {
-				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES"); value != "" {
-					parsed, parseErr := strconv.ParseInt(value, 10, 64)
-					if parseErr != nil || parsed < 0 {
-						return fmt.Errorf("parse DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES: %q", value)
-					}
-					appleNotesAttachmentMaxBytes = parsed
-				}
-			}
-			if strings.TrimSpace(appleNotesTesseractBinary) == "" {
-				appleNotesTesseractBinary = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_APPLE_NOTES_TESSERACT_BINARY")
-			}
-			if !safariTabs {
-				safariTabs = firstEnvBool(cfg.RootDir, "DBRAIN_SAFARI_TABS_ENABLED")
-			}
-			if strings.TrimSpace(safariTabsDBPath) == "" {
-				safariTabsDBPath = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_SAFARI_TABS_DB_PATH")
-			}
-			if strings.TrimSpace(safariTabsDevice) == "" {
-				safariTabsDevice = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_SAFARI_TABS_DEVICE")
-			}
-			if safariTabsLimit <= 0 {
-				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_SAFARI_TABS_LIMIT"); value != "" {
-					parsed, parseErr := strconv.Atoi(value)
-					if parseErr != nil || parsed < 0 {
-						return fmt.Errorf("parse DBRAIN_SAFARI_TABS_LIMIT: %q", value)
-					}
-					safariTabsLimit = parsed
-				}
-			}
-			if safariTabsOlderThan <= 0 {
-				if value := firstNonEmptyEnv(cfg.RootDir, "DBRAIN_SAFARI_TABS_OLDER_THAN"); value != "" {
-					parsed, parseErr := time.ParseDuration(value)
-					if parseErr != nil || parsed < 0 {
-						return fmt.Errorf("parse DBRAIN_SAFARI_TABS_OLDER_THAN: %q", value)
-					}
-					safariTabsOlderThan = parsed
-				}
+			resolvedFlags, err := resolveSyncAllFlags(cfg.RootDir, flags)
+			if err != nil {
+				return err
 			}
 
 			st, err := store.Open(cfg.DBPath)
@@ -191,90 +47,20 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			progress := cmd.ErrOrStderr()
 			logWriter := cmd.ErrOrStderr()
 			var syncUI *syncProgressUI
-			if !jsonOut {
+			if !resolvedFlags.jsonOut {
 				syncUI = newSyncProgressUI(cmd.ErrOrStderr())
 				defer syncUI.Close()
 				progress = syncUI
 				logWriter = syncUI.LogWriter()
 			}
 
-			stats, err := runSyncAll(cmd.Context(), cfg, st, syncjob.Options{
-				XBookmarksEnabled:            !skipXBookmarks,
-				XBookmarksLimit:              xBookmarksLimit,
-				XEnabled:                     !skipX,
-				XLimit:                       xLimit,
-				XConcurrency:                 xConcurrency,
-				XTimeout:                     xTimeout,
-				XMediaEnabled:                !skipXMedia,
-				XMediaLimit:                  xMediaLimit,
-				XPhotoOCREnabled:             !skipXPhotoOCR,
-				XPhotoOCRLimit:               xPhotoOCRLimit,
-				LinksEnabled:                 !skipLinks,
-				LinkDiscoverLimit:            linkDiscoverLimit,
-				LinkLimit:                    linkLimit,
-				LinkConcurrency:              linkConcurrency,
-				GitHubEnabled:                !skipGitHub,
-				GitHubLimit:                  githubLimit,
-				YouTubeEnabled:               !skipYouTube,
-				YouTubeLimit:                 youtubeLimit,
-				WatchLater:                   watchLater,
-				Liked:                        liked,
-				AppleNotesEnabled:            appleNotes && !skipAppleNotes,
-				AppleNotesDBPath:             appleNotesDBPath,
-				AppleNotesLimit:              appleNotesLimit,
-				AppleNotesExcludeFolders:     appleNotesExcludeFolders,
-				AppleNotesExcludeAccounts:    appleNotesExcludeAccounts,
-				AppleNotesExcludeShared:      appleNotesExcludeShared,
-				AppleNotesIncludeLocked:      appleNotesIncludeLocked,
-				AppleNotesSkipAttachments:    appleNotesSkipAttachments,
-				AppleNotesSkipAttachmentOCR:  appleNotesSkipAttachmentOCR,
-				AppleNotesAttachmentMaxBytes: appleNotesAttachmentMaxBytes,
-				AppleNotesTesseractBinary:    appleNotesTesseractBinary,
-				SafariTabsEnabled:            safariTabs && !skipSafariTabs,
-				SafariTabsDBPath:             safariTabsDBPath,
-				SafariTabsDevice:             safariTabsDevice,
-				SafariTabsLimit:              safariTabsLimit,
-				SafariTabsOlderThan:          safariTabsOlderThan,
-				SourcesEnabled:               !skipSources,
-				SourceLimit:                  sourceLimit,
-				SourceConcurrency:            sourceConcurrency,
-				SourceWatch:                  watch,
-				SourcePollInterval:           pollInterval,
-				SourceIdleExitAfter:          idleExitAfter,
-				SourceMaxCycles:              maxCycles,
-				Browser:                      browser,
-				Profile:                      profile,
-				Force:                        force,
-				Summarize:                    summarize,
-				Model:                        model,
-				OCRModel:                     ocrModel,
-				ArchiveMediaEnabled:          archiveMedia,
-				ArchiveMediaLimit:            archiveMediaLimit,
-				ArchiveProvider:              firstNonEmptyEnv(cfg.RootDir, "DBRAIN_ARCHIVE_PROVIDER", "DBRAIN_R2_PROVIDER"),
-				ArchiveBucket:                firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_BUCKET", "DBRAIN_ARCHIVE_BUCKET"),
-				ArchivePublicBaseURL:         firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_PUBLIC_BASE_URL", "DBRAIN_MEDIA_PUBLIC_BASE_URL"),
-				ArchiveEndpoint:              firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"),
-				ArchiveRegion:                firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"),
-				ArchiveAccessKeyID:           firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
-				ArchiveSecretKey:             firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
-				ArchiveSessionToken:          firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
-				CategorizeEnabled:            !skipCategorize,
-				CategorizeLimit:              categorizeLimit,
-				CategorizeConcurrency:        categorizeConcurrency,
-				CategorizeModel:              categorizeModel,
-				CategorizeTimeout:            categorizeTimeout,
-				CategorizeImages:             categorizeImages,
-				CLI:                          cliProvider,
-				Length:                       length,
-				Timeout:                      timeout,
-				Logger:                       newLogger(commandDebugEnabled(cmd), logWriter),
-				Progress:                     progress,
-			})
+			options := syncOptionsFromFlags(cfg, resolvedFlags, newLogger(commandDebugEnabled(cmd), logWriter), progress)
+			stats, err := runSyncAll(cmd.Context(), cfg, st, options)
 			if err != nil {
 				return err
 			}
 
-			if jsonOut {
+			if resolvedFlags.jsonOut {
 				return writeJSON(cmd.OutOrStdout(), stats)
 			}
 
@@ -282,69 +68,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVar(&xBookmarksLimit, "x-bookmarks-limit", 0, "Optional direct X bookmark import limit for smoke runs")
-	cmd.Flags().IntVar(&xLimit, "x-limit", 100, "Maximum X items to hydrate per run")
-	cmd.Flags().IntVar(&xMediaLimit, "x-media-limit", 0, "Maximum X items to transcribe per run; 0 uses --x-limit")
-	cmd.Flags().IntVar(&xPhotoOCRLimit, "x-photo-ocr-limit", 0, "Maximum X items to OCR per run; 0 uses --x-limit")
-	cmd.Flags().IntVar(&xConcurrency, "x-concurrency", 4, "Number of concurrent X post fetches")
-	cmd.Flags().DurationVar(&xTimeout, "x-timeout", 30*time.Second, "Timeout for X browser helpers and HTTP requests")
-	cmd.Flags().StringVar(&ocrModel, "ocr-model", "", "Model override for X photo OCR; supports ollama/<name> and openrouter/<provider>/<model>")
-	cmd.Flags().IntVar(&linkDiscoverLimit, "link-discover-limit", 500, "Maximum imported items to scan for outbound links")
-	cmd.Flags().IntVar(&linkLimit, "link-limit", 100, "Maximum deduped discovered sources to enrich per link extraction run")
-	cmd.Flags().IntVar(&linkConcurrency, "link-concurrency", 4, "Number of concurrent link source extract/summarize jobs")
-	cmd.Flags().IntVar(&githubLimit, "github-limit", 0, "Maximum starred repositories to process before stopping")
-	cmd.Flags().IntVar(&youtubeLimit, "youtube-limit", 50, "Maximum videos to load from each selected YouTube feed")
-	cmd.Flags().BoolVar(&appleNotes, "apple-notes", false, "Include configured Apple Notes import in sync")
-	cmd.Flags().StringVar(&appleNotesDBPath, "apple-notes-db", "", "Apple Notes NoteStore.sqlite path override")
-	cmd.Flags().IntVar(&appleNotesLimit, "apple-notes-limit", 0, "Maximum Apple Notes to process")
-	cmd.Flags().StringArrayVar(&appleNotesExcludeFolders, "apple-notes-exclude-folder", nil, "Exclude an Apple Notes folder/path during sync; repeatable")
-	cmd.Flags().StringArrayVar(&appleNotesExcludeAccounts, "apple-notes-exclude-account", nil, "Exclude an Apple Notes account during sync; repeatable")
-	cmd.Flags().BoolVar(&appleNotesExcludeShared, "apple-notes-exclude-shared", false, "Exclude shared Apple Notes during sync")
-	cmd.Flags().BoolVar(&appleNotesIncludeLocked, "apple-notes-include-locked", false, "Attempt to include password-protected Apple Notes during sync")
-	cmd.Flags().BoolVar(&appleNotesSkipAttachments, "apple-notes-skip-attachments", false, "Skip Apple Notes attachment file extraction/OCR during sync")
-	cmd.Flags().BoolVar(&appleNotesSkipAttachmentOCR, "apple-notes-skip-attachment-ocr", false, "Skip local OCR for Apple Notes image attachments during sync")
-	cmd.Flags().Int64Var(&appleNotesAttachmentMaxBytes, "apple-notes-attachment-max-bytes", 0, "Maximum Apple Notes attachment file size to extract; 0 uses the default")
-	cmd.Flags().StringVar(&appleNotesTesseractBinary, "apple-notes-tesseract", "", "Tesseract binary for Apple Notes image OCR")
-	cmd.Flags().BoolVar(&safariTabs, "safari-tabs", false, "Include configured Safari iCloud tabs import in sync")
-	cmd.Flags().StringVar(&safariTabsDBPath, "safari-tabs-db", "", "Safari CloudTabs.db path override")
-	cmd.Flags().StringVar(&safariTabsDevice, "safari-tabs-device", "", "Safari iCloud device name or UUID to import")
-	cmd.Flags().IntVar(&safariTabsLimit, "safari-tabs-limit", 0, "Maximum Safari tabs to import after filtering")
-	cmd.Flags().DurationVar(&safariTabsOlderThan, "safari-tabs-older-than", 0, "Only import Safari tabs last viewed before this duration ago; 0 imports all matching tabs")
-	cmd.Flags().IntVar(&sourceLimit, "source-limit", 100, "Maximum queued sources to enrich per source-worker batch")
-	cmd.Flags().IntVar(&sourceConcurrency, "source-concurrency", 4, "Number of concurrent source extract/summarize jobs per batch")
-	cmd.Flags().StringVar(&browser, "browser", "chrome", "Preferred browser for cookie-backed X and YouTube flows")
-	cmd.Flags().StringVar(&profile, "profile", "", "Browser profile override; requires --browser")
-	cmd.Flags().BoolVar(&watchLater, "watch-later", true, "Import Watch Later YouTube videos")
-	cmd.Flags().BoolVar(&liked, "liked", true, "Import liked YouTube videos")
-	cmd.Flags().BoolVar(&watch, "watch", false, "Keep polling the source backlog instead of exiting when drained")
-	cmd.Flags().DurationVar(&pollInterval, "poll-interval", 30*time.Second, "How often to poll for new source backlog while watching")
-	cmd.Flags().DurationVar(&idleExitAfter, "idle-exit-after", 0, "Optional maximum idle watch duration before exiting")
-	cmd.Flags().IntVar(&maxCycles, "max-cycles", 0, "Optional maximum source worker cycles before exiting")
-	cmd.Flags().BoolVar(&force, "force", false, "Reprocess existing items and sources instead of only incrementally handling new or stale work")
-	cmd.Flags().BoolVar(&summarize, "summarize", true, "Run summarize.sh summarization during import and enrichment stages")
-	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
-	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
-	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
-	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Timeout for summarize-backed extraction and summarization stages")
-	cmd.Flags().BoolVar(&archiveMedia, "archive-media", false, "Upload finalized media to configured S3-compatible storage and prune local copies at the end of sync")
-	cmd.Flags().IntVar(&archiveMediaLimit, "archive-media-limit", 5000, "Maximum finalized media assets to archive at the end of sync")
-	cmd.Flags().IntVar(&categorizeLimit, "categorize-limit", 0, "Maximum uncategorized items and sources to categorize per record type at the end of sync; 0 means all queued records")
-	cmd.Flags().IntVar(&categorizeConcurrency, "categorize-concurrency", 2, "Number of concurrent categorization requests")
-	cmd.Flags().StringVar(&categorizeModel, "categorize-model", "", "Categorization model override; defaults to DBRAIN_CATEGORIZE_MODEL or the categorizer default")
-	cmd.Flags().DurationVar(&categorizeTimeout, "categorize-timeout", 90*time.Second, "Per-record categorization request timeout")
-	cmd.Flags().BoolVar(&categorizeImages, "categorize-images", true, "Embed item photos as base64 for vision-capable categorization models; use --categorize-images=false to disable")
-	cmd.Flags().BoolVar(&skipXBookmarks, "skip-x-bookmarks", false, "Skip direct X bookmark import")
-	cmd.Flags().BoolVar(&skipX, "skip-x", false, "Skip X hydration")
-	cmd.Flags().BoolVar(&skipXMedia, "skip-x-media", false, "Skip X media audio transcription")
-	cmd.Flags().BoolVar(&skipXPhotoOCR, "skip-x-photo-ocr", false, "Skip X photo OCR / vision extraction")
-	cmd.Flags().BoolVar(&skipLinks, "skip-links", false, "Skip outbound link discovery and enrichment from imported items")
-	cmd.Flags().BoolVar(&skipGitHub, "skip-github", false, "Skip GitHub stars import")
-	cmd.Flags().BoolVar(&skipYouTube, "skip-youtube", false, "Skip YouTube signal import")
-	cmd.Flags().BoolVar(&skipAppleNotes, "skip-apple-notes", false, "Skip configured Apple Notes import")
-	cmd.Flags().BoolVar(&skipSafariTabs, "skip-safari-tabs", false, "Skip configured Safari iCloud tabs import")
-	cmd.Flags().BoolVar(&skipSources, "skip-sources", false, "Skip the final source backlog worker stage")
-	cmd.Flags().BoolVar(&skipCategorize, "skip-categorize", false, "Skip final item/source categorization")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print sync stats as JSON")
+	bindSyncAllFlags(cmd, &flags)
 
 	return cmd
 }

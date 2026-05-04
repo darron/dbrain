@@ -121,10 +121,11 @@ The architecture is functional, but the main pressure points are:
   fallback, HTTP reader, Wayback, Sucuri protected fetch, WordPress recovery,
   HTML extraction, and progress logging live in focused files.
 - `internal/syncjob` now separates public types, option defaults, progress
-  formatting, stage-stat merging, and X frontier helpers from `run.go`, but the
-  main `Run` body and `internal/app/sync.go` still have wide option surfaces
-  and duplicate stage/config interpretation. Sync summary rendering now lives
-  outside the CLI flag adapter in `internal/app/sync_output.go`.
+  formatting, stage-stat merging, stage execution helpers, runner hooks, and X
+  frontier helpers from `run.go`. The main `Run` body is now an ordered
+  coordinator, but `syncjob.Options` still has a wide flat option surface. The
+  `sync all` CLI adapter now has focused files for flag binding, root-env
+  resolution, option assembly, progress UI, and summary output.
 - Retrieval concepts are split across `ask`, `brainresearch`, `mcpserver/get.go`,
   web handlers, entities, and topics.
 - The web docs drifted: the current web surface is read/write, while
@@ -190,13 +191,16 @@ The architecture is functional, but the main pressure points are:
   process/fallback flow, HTTP reader, Wayback, Sucuri protected fetch, WordPress
   recovery, and HTML extraction now live in focused files while preserving the
   existing fallback order.
-- `internal/syncjob/run.go` has been narrowed by moving public options/stats
-  types, default option normalization, progress formatting, stage-stat merging,
-  and X bookmark/hydrate/link frontier helpers into focused files while
-  preserving the current `sync all` order and bounded X follow-up passes.
-- `internal/app/sync.go` no longer owns sync summary table rendering; that
-  output formatting lives in `internal/app/sync_output.go` while command flags
-  and runtime option assembly remain in the CLI adapter.
+- `internal/syncjob/run.go` has been narrowed into an ordered stage
+  coordinator. Public options/stats types, default option normalization,
+  progress formatting, stage-stat merging, local import stages, X
+  bookmark/hydrate/link frontier helpers, media/import/source/archive stages,
+  categorization, and runner hooks now live in focused files while preserving
+  the current `sync all` order and bounded X follow-up passes.
+- `internal/app/sync.go` has been narrowed to command execution. Sync flag
+  binding, root-env/config resolution, `syncjob.Options` assembly, progress UI,
+  and summary table rendering now live in focused `internal/app/sync_*.go`
+  files, with tests covering root `.env` sync option resolution.
 
 ### P0: Open-Source Readiness
 
@@ -491,16 +495,19 @@ These are deeper and should be staged with focused tests.
    - `internal/syncjob/types.go` still exposes a large flat `Options` struct,
      and `internal/syncjob/run.go` still contains a hand-coded orchestration
      sequence.
-   - `internal/app/sync.go` has a large CLI flag/config adapter; sync summary
-     output has been split into `internal/app/sync_output.go`.
+   - `internal/app/sync.go` is now a narrow command runner; flag binding,
+     root-env resolution, option assembly, progress UI, and summary output are
+     split into focused `internal/app/sync_*.go` files.
    - Several stages have their own limit, force, concurrency, dry-run, progress,
      and summary semantics.
 
    Cleanup:
    - Land the X media/OCR limit wiring fix before this refactor.
    - Done: move `syncjob` public types, option defaults, progress formatting,
-     merge helpers, and X frontier pass helpers out of `run.go`.
-   - Done: move sync summary output rendering out of `internal/app/sync.go`.
+     merge helpers, stage execution helpers, runner hooks, and X frontier pass
+     helpers out of `run.go`.
+   - Done: move sync flag binding, root-env resolution, option assembly, and
+     summary output rendering out of `internal/app/sync.go`.
    - Group options by stage, for example `XOptions`, `AppleNotesOptions`,
      `SafariTabsOptions`, `SourceOptions`, `ArchiveOptions`.
    - Represent `sync all` as an ordered stage plan with explicit dependencies,
@@ -675,12 +682,12 @@ These are smaller findings that deserve targeted review:
    - Split store implementation files by repository/predicate/stats domains.
    - Split MCP protocol/tool/payload files.
    - Done: split `syncjob` public types, option defaults, progress formatting,
-     merge helpers, and X frontier helpers while preserving current command
-     behavior.
-   - Done: split sync summary output rendering out of the `sync all` CLI
-     adapter.
-   - Remaining: group sync options by stage and introduce an explicit stage
-     plan.
+     merge helpers, stage execution helpers, runner hooks, and X frontier
+     helpers while preserving current command behavior.
+   - Done: split sync flag binding, root-env resolution, option assembly, and
+     summary output rendering out of the `sync all` CLI command body.
+   - Remaining: group `syncjob.Options` by stage and introduce an explicit
+     stage plan.
 
 4. Replace ad hoc schema setup with versioned migrations.
 

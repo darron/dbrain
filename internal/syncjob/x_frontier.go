@@ -11,6 +11,82 @@ import (
 	"github.com/darron/dbrain/internal/xapi"
 )
 
+const maxXQuoteDrainPasses = 8
+const maxXFrontierSettlePasses = 3
+
+func executeXFrontierStages(ctx context.Context, cfg config.Config, st *store.Store, opts Options, stats *Stats) error {
+	if shouldSettleXFrontier(opts) {
+		for pass := 1; pass <= maxXFrontierSettlePasses; pass++ {
+			if pass > 1 {
+				progressf(opts.Progress, "==> x settle pass %d\n", pass)
+			}
+
+			frontierActive := false
+
+			bookmarkStats, bookmarkDuration, err := runXBookmarksPass(ctx, cfg, st, opts)
+			mergeXBookmarkStage(&stats.XBookmarks, bookmarkDuration, bookmarkStats)
+			if err != nil {
+				return fmt.Errorf("import x-bookmarks: %w", err)
+			}
+			if bookmarkStats.Created > 0 || bookmarkStats.Updated > 0 {
+				frontierActive = true
+			}
+
+			xStats, xDuration, err := runXHydratePass(ctx, cfg, st, opts)
+			mergeXStage(&stats.X, xDuration, xStats)
+			if err != nil {
+				return fmt.Errorf("hydrate x: %w", err)
+			}
+			if xStats.Candidates > 0 {
+				frontierActive = true
+			}
+
+			linkStats, linkDuration, err := runLinksPass(ctx, cfg, st, opts)
+			mergeLinksStage(&stats.Links, linkDuration, linkStats)
+			if err != nil {
+				return fmt.Errorf("extract links: %w", err)
+			}
+			if linkStats.ItemsScanned > 0 {
+				frontierActive = true
+			}
+
+			if !frontierActive {
+				break
+			}
+			if pass == maxXFrontierSettlePasses {
+				progressf(opts.Progress, "X frontier settle stopped after %d passes with activity still present\n", maxXFrontierSettlePasses)
+			}
+		}
+		return nil
+	}
+
+	if opts.XBookmarksEnabled {
+		bookmarkStats, bookmarkDuration, err := runXBookmarksPass(ctx, cfg, st, opts)
+		mergeXBookmarkStage(&stats.XBookmarks, bookmarkDuration, bookmarkStats)
+		if err != nil {
+			return fmt.Errorf("import x-bookmarks: %w", err)
+		}
+	}
+
+	if opts.XEnabled {
+		xStats, xDuration, err := runXHydratePass(ctx, cfg, st, opts)
+		mergeXStage(&stats.X, xDuration, xStats)
+		if err != nil {
+			return fmt.Errorf("hydrate x: %w", err)
+		}
+	}
+
+	if opts.LinksEnabled {
+		linkStats, linkDuration, err := runLinksPass(ctx, cfg, st, opts)
+		mergeLinksStage(&stats.Links, linkDuration, linkStats)
+		if err != nil {
+			return fmt.Errorf("extract links: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func runXBookmarksPass(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (xapi.BookmarkStats, time.Duration, error) {
 	progressf(opts.Progress, "==> import x-bookmarks\n")
 	start := time.Now()
