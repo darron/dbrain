@@ -56,6 +56,10 @@ func (s *Store) init() error {
 		}
 	}
 
+	return s.migrate()
+}
+
+func (s *Store) ensureCurrentSchema() error {
 	schema := []string{
 		`CREATE TABLE IF NOT EXISTS items (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,71 +143,58 @@ func (s *Store) init() error {
 }
 
 func (s *Store) ensureItemColumns() error {
-	existing := map[string]bool{}
-	rows, err := s.db.Query(`PRAGMA table_info(items)`)
+	return s.ensureColumns("items", []columnDefinition{
+		{Name: "x_post_text", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "x_post_lang", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "x_post_json", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "x_post_fetched_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "x_post_status", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "x_post_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "link_extract_synced_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_text", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_json", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_status", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_model", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_prompt_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_tool", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_tool_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_input_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summarized_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_text", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_json", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_status", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_model", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_tool", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_tool_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_input_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ocr_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "x_media_transcript_status", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "x_media_transcript_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "x_media_transcript_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "user_tags", Definition: "TEXT NOT NULL DEFAULT ''"},
+	})
+}
+
+type columnDefinition struct {
+	Name       string
+	Definition string
+}
+
+func (s *Store) ensureColumns(table string, required []columnDefinition) error {
+	existing, err := s.tableColumns(table)
 	if err != nil {
-		return fmt.Errorf("load item table info: %w", err)
-	}
-	defer func() {
-		_ = rows.Close()
-	}()
-
-	for rows.Next() {
-		var cid int
-		var name string
-		var colType string
-		var notNull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			return fmt.Errorf("scan item table info: %w", err)
-		}
-		existing[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate item table info: %w", err)
+		return fmt.Errorf("load %s table info: %w", table, err)
 	}
 
-	required := map[string]string{
-		"x_post_text":               "TEXT NOT NULL DEFAULT ''",
-		"x_post_lang":               "TEXT NOT NULL DEFAULT ''",
-		"x_post_json":               "TEXT NOT NULL DEFAULT ''",
-		"x_post_fetched_at":         "TEXT NOT NULL DEFAULT ''",
-		"x_post_status":             "TEXT NOT NULL DEFAULT ''",
-		"x_post_error":              "TEXT NOT NULL DEFAULT ''",
-		"link_extract_synced_at":    "TEXT NOT NULL DEFAULT ''",
-		"summary_text":              "TEXT NOT NULL DEFAULT ''",
-		"summary_json":              "TEXT NOT NULL DEFAULT ''",
-		"summary_status":            "TEXT NOT NULL DEFAULT ''",
-		"summary_error":             "TEXT NOT NULL DEFAULT ''",
-		"summary_model":             "TEXT NOT NULL DEFAULT ''",
-		"summary_prompt_version":    "TEXT NOT NULL DEFAULT ''",
-		"summary_tool":              "TEXT NOT NULL DEFAULT ''",
-		"summary_tool_version":      "TEXT NOT NULL DEFAULT ''",
-		"summary_input_hash":        "TEXT NOT NULL DEFAULT ''",
-		"summarized_at":             "TEXT NOT NULL DEFAULT ''",
-		"ocr_text":                  "TEXT NOT NULL DEFAULT ''",
-		"ocr_json":                  "TEXT NOT NULL DEFAULT ''",
-		"ocr_status":                "TEXT NOT NULL DEFAULT ''",
-		"ocr_error":                 "TEXT NOT NULL DEFAULT ''",
-		"ocr_model":                 "TEXT NOT NULL DEFAULT ''",
-		"ocr_tool":                  "TEXT NOT NULL DEFAULT ''",
-		"ocr_tool_version":          "TEXT NOT NULL DEFAULT ''",
-		"ocr_input_hash":            "TEXT NOT NULL DEFAULT ''",
-		"ocr_at":                    "TEXT NOT NULL DEFAULT ''",
-		"x_media_transcript_status": "TEXT NOT NULL DEFAULT ''",
-		"x_media_transcript_error":  "TEXT NOT NULL DEFAULT ''",
-		"x_media_transcript_at":     "TEXT NOT NULL DEFAULT ''",
-		"user_tags":                 "TEXT NOT NULL DEFAULT ''",
-	}
-
-	for name, definition := range required {
-		if existing[name] {
+	for _, column := range required {
+		if existing[column.Name] {
 			continue
 		}
-		stmt := fmt.Sprintf("ALTER TABLE items ADD COLUMN %s %s", name, definition)
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column.Name, column.Definition)
 		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("add items.%s: %w", name, err)
+			return fmt.Errorf("add %s.%s: %w", table, column.Name, err)
 		}
 	}
 

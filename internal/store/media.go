@@ -79,72 +79,38 @@ func (s *Store) ensureMediaTables() error {
 }
 
 func (s *Store) ensureMediaAssetColumns() error {
-	existing, err := s.tableColumns("media_assets")
-	if err != nil {
-		return fmt.Errorf("load media_assets table info: %w", err)
-	}
-
-	required := map[string]string{
-		"media_type":       "TEXT NOT NULL DEFAULT ''",
-		"mime_type":        "TEXT NOT NULL DEFAULT ''",
-		"width":            "INTEGER NOT NULL DEFAULT 0",
-		"height":           "INTEGER NOT NULL DEFAULT 0",
-		"byte_size":        "INTEGER NOT NULL DEFAULT 0",
-		"content_hash":     "TEXT NOT NULL DEFAULT ''",
-		"download_status":  "TEXT NOT NULL DEFAULT ''",
-		"download_error":   "TEXT NOT NULL DEFAULT ''",
-		"local_path":       "TEXT NOT NULL DEFAULT ''",
-		"archive_provider": "TEXT NOT NULL DEFAULT ''",
-		"archive_bucket":   "TEXT NOT NULL DEFAULT ''",
-		"archive_key":      "TEXT NOT NULL DEFAULT ''",
-		"archive_url":      "TEXT NOT NULL DEFAULT ''",
-		"archive_etag":     "TEXT NOT NULL DEFAULT ''",
-		"archive_status":   "TEXT NOT NULL DEFAULT ''",
-		"archive_error":    "TEXT NOT NULL DEFAULT ''",
-		"discovered_at":    "TEXT NOT NULL DEFAULT ''",
-		"downloaded_at":    "TEXT NOT NULL DEFAULT ''",
-		"archived_at":      "TEXT NOT NULL DEFAULT ''",
-		"local_pruned_at":  "TEXT NOT NULL DEFAULT ''",
-		"updated_at":       "TEXT NOT NULL DEFAULT ''",
-	}
-
-	for name, definition := range required {
-		if existing[name] {
-			continue
-		}
-		stmt := fmt.Sprintf("ALTER TABLE media_assets ADD COLUMN %s %s", name, definition)
-		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("add media_assets.%s: %w", name, err)
-		}
-	}
-
-	return nil
+	return s.ensureColumns("media_assets", []columnDefinition{
+		{Name: "media_type", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "mime_type", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "width", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "height", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "byte_size", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "content_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "download_status", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "download_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "local_path", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "archive_provider", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "archive_bucket", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "archive_key", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "archive_url", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "archive_etag", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "archive_status", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "archive_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "discovered_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "downloaded_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "archived_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "local_pruned_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+	})
 }
 
 func (s *Store) ensureItemMediaLinkColumns() error {
-	existing, err := s.tableColumns("item_media_links")
-	if err != nil {
-		return fmt.Errorf("load item_media_links table info: %w", err)
-	}
-
-	required := map[string]string{
-		"ordinal":      "INTEGER NOT NULL DEFAULT 0",
-		"expanded_url": "TEXT NOT NULL DEFAULT ''",
-		"created_at":   "TEXT NOT NULL DEFAULT ''",
-		"updated_at":   "TEXT NOT NULL DEFAULT ''",
-	}
-
-	for name, definition := range required {
-		if existing[name] {
-			continue
-		}
-		stmt := fmt.Sprintf("ALTER TABLE item_media_links ADD COLUMN %s %s", name, definition)
-		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("add item_media_links.%s: %w", name, err)
-		}
-	}
-
-	return nil
+	return s.ensureColumns("item_media_links", []columnDefinition{
+		{Name: "ordinal", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "expanded_url", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "created_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+	})
 }
 
 func (s *Store) syncXHydrationMediaTx(ctx context.Context, tx *sql.Tx, itemID int64, hydration model.XHydration, now time.Time) (bool, error) {

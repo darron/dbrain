@@ -163,6 +163,11 @@ The architecture is functional, but the main pressure points are:
 - Item row decoding and shared item column selection now live in
   `internal/store/item_scan.go`; item lookup/list/tag helpers now live in
   `internal/store/item_read.go`.
+- SQLite startup now runs through an ordered migration registry in
+  `internal/store/migrations.go`. The checked-in current schema is recorded as
+  baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests
+  cover fresh create, idempotent reopen, adopting the existing current schema
+  without migration metadata, and keeping `OpenReadOnly` migration-free.
 
 ### P0: Open-Source Readiness
 
@@ -385,36 +390,29 @@ These reduce maintenance burden without requiring major schema changes.
    - Move source-specific predicates into named policy objects while preserving
      one shared predicate source for workers and dashboards.
 
-7. Replace ad hoc schema setup with versioned migrations before open-source use.
+7. Finish migration hardening and publish schema policy before open-source use.
 
    Evidence:
-   - `internal/store/schema.go`, `internal/store/sources.go`,
-     `internal/store/media.go`, and `internal/store/item_links.go` currently
-     create tables and add missing columns through idempotent startup code.
-   - Column backfill helpers such as `ensureItemColumns`,
-     `ensureSourceColumns`, `ensureMediaAssetColumns`, and
-     `ensureItemMediaLinkColumns` currently iterate Go maps, which makes ALTER
-     ordering non-deterministic even though today's additions are independent.
-   - There is no explicit schema version table, `PRAGMA user_version` policy,
-     ordered migration registry, or migration test that upgrades an older DB
-     fixture to the current schema.
+   - `internal/store/migrations.go` now establishes version 1 as the baseline
+     for the current checked-in schema.
+   - Because the only pre-release SQLite instance is the current development
+     database, version 1 intentionally adopts the current schema rather than
+     carrying historical external fixtures.
+   - Future non-additive changes, backfills, index changes, FTS rebuilds, or
+     data-model migrations still need dedicated migration entries instead of
+     expanding the baseline.
 
    Risk:
-   - The current approach is pragmatic for one local development database, but
-     open-source users will eventually run different binary versions against
+   - Open-source users will eventually run different binary versions against
      real personal data.
-   - Future non-additive changes, backfills, index changes, FTS rebuilds, or
-     data-model migrations need ordering, idempotence, and clear failure
-     behavior.
+   - Without a published backup, downgrade, and failure policy, users will not
+     know what to do before or after a failed schema migration.
 
    Cleanup:
-   - Add an explicit migration runner with deterministic ordered migrations and
-     a recorded current schema version.
-   - Keep fresh database creation and upgrades using the same migration path, or
-     verify they produce identical schema.
-   - Add migration tests for fresh create, upgrading representative older
-     schemas, re-running migrations idempotently, and preserving raw imported
-     evidence.
+   - Add each future schema change as its own ordered migration instead of
+     mutating the version 1 baseline.
+   - Keep migration tests for fresh create, representative upgrades, idempotent
+     reruns, and raw imported evidence preservation.
    - Keep `OpenReadOnly` migration-free for MCP/read-only consumers.
    - Document backup/restore expectations and downgrade policy before publishing.
 
@@ -640,10 +638,13 @@ These are smaller findings that deserve targeted review:
 4. Replace ad hoc schema setup with versioned migrations.
 
    Output:
-   - Deterministic ordered migration runner and recorded schema version.
-   - Migration tests for fresh create, representative upgrades, idempotent
-     reruns, and raw evidence preservation.
-   - Documented backup/restore and downgrade policy.
+   - Done: deterministic ordered migration runner and recorded version 1
+     baseline.
+   - Done: migration tests for fresh create, idempotent reruns, adopting the
+     existing current schema, and read-only open behavior.
+   - Remaining: representative future upgrade fixtures, raw evidence
+     preservation tests for schema-changing migrations, and documented
+     backup/restore and downgrade policy.
 
 5. Decompose source enrichment.
 

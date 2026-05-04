@@ -123,76 +123,42 @@ func (s *Store) ensureSourceTables() error {
 }
 
 func (s *Store) ensureSourceColumns() error {
-	existing, err := s.tableColumns("sources")
-	if err != nil {
-		return fmt.Errorf("load source table info: %w", err)
-	}
-
-	required := map[string]string{
-		"domain":                  "TEXT NOT NULL DEFAULT ''",
-		"description":             "TEXT NOT NULL DEFAULT ''",
-		"site_name":               "TEXT NOT NULL DEFAULT ''",
-		"extracted_text":          "TEXT NOT NULL DEFAULT ''",
-		"extract_json":            "TEXT NOT NULL DEFAULT ''",
-		"extract_status":          "TEXT NOT NULL DEFAULT ''",
-		"extract_error":           "TEXT NOT NULL DEFAULT ''",
-		"extract_failure_kind":    "TEXT NOT NULL DEFAULT ''",
-		"extract_failure_count":   "INTEGER NOT NULL DEFAULT 0",
-		"extract_first_failed_at": "TEXT NOT NULL DEFAULT ''",
-		"extract_last_failed_at":  "TEXT NOT NULL DEFAULT ''",
-		"extracted_at":            "TEXT NOT NULL DEFAULT ''",
-		"extract_tool":            "TEXT NOT NULL DEFAULT ''",
-		"extract_tool_version":    "TEXT NOT NULL DEFAULT ''",
-		"summary_text":            "TEXT NOT NULL DEFAULT ''",
-		"summary_json":            "TEXT NOT NULL DEFAULT ''",
-		"summary_status":          "TEXT NOT NULL DEFAULT ''",
-		"summary_error":           "TEXT NOT NULL DEFAULT ''",
-		"summary_model":           "TEXT NOT NULL DEFAULT ''",
-		"summary_content_hash":    "TEXT NOT NULL DEFAULT ''",
-		"summary_prompt_version":  "TEXT NOT NULL DEFAULT ''",
-		"summary_tool":            "TEXT NOT NULL DEFAULT ''",
-		"summary_tool_version":    "TEXT NOT NULL DEFAULT ''",
-		"summarized_at":           "TEXT NOT NULL DEFAULT ''",
-		"content_hash":            "TEXT NOT NULL DEFAULT ''",
-		"note_path":               "TEXT NOT NULL DEFAULT ''",
-		"user_tags":               "TEXT NOT NULL DEFAULT ''",
-	}
-
-	for name, definition := range required {
-		if existing[name] {
-			continue
-		}
-		stmt := fmt.Sprintf("ALTER TABLE sources ADD COLUMN %s %s", name, definition)
-		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("add sources.%s: %w", name, err)
-		}
-	}
-
-	return nil
+	return s.ensureColumns("sources", []columnDefinition{
+		{Name: "domain", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "description", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "site_name", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extracted_text", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extract_json", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extract_status", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extract_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extract_failure_kind", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extract_failure_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "extract_first_failed_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extract_last_failed_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extracted_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extract_tool", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "extract_tool_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_text", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_json", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_status", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_model", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_content_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_prompt_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_tool", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_tool_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summarized_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "content_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "note_path", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "user_tags", Definition: "TEXT NOT NULL DEFAULT ''"},
+	})
 }
 
 func (s *Store) ensureSourceSummaryVersionColumns() error {
-	existing, err := s.tableColumns("source_summary_versions")
-	if err != nil {
-		return fmt.Errorf("load source summary version table info: %w", err)
-	}
-
-	required := map[string]string{
-		"summary_tool":         "TEXT NOT NULL DEFAULT ''",
-		"summary_tool_version": "TEXT NOT NULL DEFAULT ''",
-	}
-
-	for name, definition := range required {
-		if existing[name] {
-			continue
-		}
-		stmt := fmt.Sprintf("ALTER TABLE source_summary_versions ADD COLUMN %s %s", name, definition)
-		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("add source_summary_versions.%s: %w", name, err)
-		}
-	}
-
-	return nil
+	return s.ensureColumns("source_summary_versions", []columnDefinition{
+		{Name: "summary_tool", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_tool_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+	})
 }
 
 func (s *Store) tableColumns(table string) (map[string]bool, error) {

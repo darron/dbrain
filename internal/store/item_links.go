@@ -31,26 +31,12 @@ func (s *Store) ensureItemLinkTables() error {
 		}
 	}
 
-	existing, err := s.tableColumns("item_item_links")
-	if err != nil {
-		return fmt.Errorf("load item_item_links table info: %w", err)
-	}
-	required := map[string]string{
-		"link_kind":  "TEXT NOT NULL DEFAULT ''",
-		"ordinal":    "INTEGER NOT NULL DEFAULT 0",
-		"created_at": "TEXT NOT NULL DEFAULT ''",
-		"updated_at": "TEXT NOT NULL DEFAULT ''",
-	}
-	for name, definition := range required {
-		if existing[name] {
-			continue
-		}
-		stmt := fmt.Sprintf("ALTER TABLE item_item_links ADD COLUMN %s %s", name, definition)
-		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("add item_item_links.%s: %w", name, err)
-		}
-	}
-	return nil
+	return s.ensureColumns("item_item_links", []columnDefinition{
+		{Name: "link_kind", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "ordinal", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "created_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+	})
 }
 
 func (s *Store) ReplaceItemChildLinks(ctx context.Context, parentItemID int64, linkKind string, childItemIDs []int64) (bool, error) {
