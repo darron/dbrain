@@ -243,6 +243,42 @@ func (b *synthesisInputBuilder) build() string {
 	out.WriteString(strings.Join(b.pack.QueryPlan.QueryTerms, ", "))
 	out.WriteString("\n- tag_queries: ")
 	out.WriteString(strings.Join(b.pack.QueryPlan.TagQueries, ", "))
+	if strings.TrimSpace(b.pack.QueryPlan.Planner) != "" {
+		out.WriteString("\n- planner: ")
+		out.WriteString(b.pack.QueryPlan.Planner)
+	}
+	if strings.TrimSpace(b.pack.QueryPlan.PlannerModel) != "" {
+		out.WriteString("\n- planner_model: ")
+		out.WriteString(b.pack.QueryPlan.PlannerModel)
+	}
+	if strings.TrimSpace(b.pack.QueryPlan.PlannerError) != "" {
+		out.WriteString("\n- planner_error: ")
+		out.WriteString(b.pack.QueryPlan.PlannerError)
+	}
+	if len(b.pack.QueryPlan.QueryVariants) > 0 {
+		out.WriteString("\n- query_variants:")
+		for _, variant := range b.pack.QueryPlan.QueryVariants {
+			out.WriteString("\n  - ")
+			out.WriteString(variant.Query)
+			if strings.TrimSpace(variant.Reason) != "" {
+				out.WriteString(" (")
+				out.WriteString(variant.Reason)
+				out.WriteString(")")
+			}
+		}
+	}
+	if len(b.pack.QueryPlan.Concepts) > 0 {
+		out.WriteString("\n- required_concepts:")
+		for _, concept := range b.pack.QueryPlan.Concepts {
+			out.WriteString("\n  - ")
+			out.WriteString(concept.Key)
+			if !concept.Required {
+				out.WriteString(" (optional)")
+			}
+			out.WriteString(": ")
+			out.WriteString(strings.Join(concept.Terms, ", "))
+		}
+	}
 	out.WriteString("\n\n")
 	out.WriteString("## Coverage\n")
 	out.WriteString("- evidence_count: ")

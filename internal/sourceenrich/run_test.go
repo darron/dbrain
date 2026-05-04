@@ -131,6 +131,44 @@ Click here to enter the site.`,
 	}
 }
 
+func TestSkipSummaryReasonSkipsDirectMediaURL(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{SourceType: "web"}
+	extract := model.ExtractResult{
+		CanonicalURL: "https://example.com/images/photo.jpg",
+		FinalURL:     "http://web.archive.org/web/20210413102942id_/https://example.com/images/photo.jpg",
+		Tool:         waybackToolName,
+		Content:      strings.Repeat("jpeg binary payload ", 50),
+	}
+
+	reason, ok := skipSummaryReason(source, extract)
+	if !ok {
+		t.Fatal("expected direct media URL extract to be skipped")
+	}
+	if !strings.Contains(reason, "image/media") {
+		t.Fatalf("unexpected skip reason: %q", reason)
+	}
+}
+
+func TestSkipSummaryReasonSkipsBinaryExtractContent(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{SourceType: "web"}
+	extract := model.ExtractResult{
+		CanonicalURL: "https://example.com/page",
+		Content:      string([]byte{0xff, 0xd8, 0xff, 0xe0}) + strings.Repeat("image-bytes", 100),
+	}
+
+	reason, ok := skipSummaryReason(source, extract)
+	if !ok {
+		t.Fatal("expected binary extract content to be skipped")
+	}
+	if !strings.Contains(reason, "binary/non-text") {
+		t.Fatalf("unexpected skip reason: %q", reason)
+	}
+}
+
 func TestSkipSummaryReasonAllowsShortSubstantiveExtract(t *testing.T) {
 	t.Parallel()
 
@@ -2391,6 +2429,121 @@ func TestRunPendingRepairsShortWaybackSummaryToSkipped(t *testing.T) {
 	}
 	if !strings.Contains(source.SummaryError, "wayback extract is too short") {
 		t.Fatalf("unexpected summary error: %q", source.SummaryError)
+	}
+}
+
+func TestRunPendingSkipsWaybackImageExtractAndDoesNotRetry(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Now().UTC()
+	itemResult, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-wayback-image-item",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-wayback-image-item",
+		CanonicalURL: "https://x.com/example/status/test-wayback-image-item",
+		Title:        "test wayback image item",
+		ContentHash:  "item-hash-test-wayback-image-item",
+		NotePath:     "items/x/2026/test-wayback-image-item.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	imageURL := "http://web.archive.org/web/20210413102942id_/https://i.pinimg.com/originals/f8/d1/12/f8d112d04f380522233d718f9a53834d.jpg"
+	candidate := model.SourceCandidate{
+		SourceKey:     "src:test-wayback-image",
+		OriginalURL:   imageURL,
+		CanonicalURL:  imageURL,
+		NormalizedURL: imageURL,
+		SourceType:    "web",
+		Domain:        "i.pinimg.com",
+		NotePath:      "sources/web/test-wayback-image.md",
+	}
+	link, err := st.UpsertSourceLink(context.Background(), itemResult.ItemID, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+
+	content := "JPEG"
+	if _, err := st.SaveSourceExtraction(context.Background(), link.SourceID, model.ExtractResult{
+		CanonicalURL: candidate.CanonicalURL,
+		FinalURL:     imageURL,
+		Content:      content,
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         waybackToolName,
+		ToolVersion:  waybackToolVersion,
+	}, hashText(content)); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(context.Background(), link.SourceID, model.SummaryResult{
+		Text:          "old image summary",
+		Status:        "ok",
+		Model:         "test-model",
+		PromptVersion: "old-version",
+		Tool:          summarizecli.ToolName,
+		ToolVersion:   "test",
+		FetchedAt:     now,
+	}); err != nil {
+		t.Fatalf("SaveSourceSummary: %v", err)
+	}
+
+	stats, _, err := RunPending(context.Background(), cfg, st, Options{
+		Limit:     10,
+		Summarize: true,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunPending: %v", err)
+	}
+	if stats.SourcesQueued != 1 {
+		t.Fatalf("expected image source queued once for repair, got %+v", stats)
+	}
+	if stats.SourcesSummarized != 0 || stats.Errors != 0 {
+		t.Fatalf("expected image extract to be skipped without summarization/error, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.SummaryStatus != "skipped" {
+		t.Fatalf("expected summary status skipped, got %q", source.SummaryStatus)
+	}
+	if !strings.Contains(source.SummaryError, "image/media") && !strings.Contains(source.SummaryError, "binary/non-text") {
+		t.Fatalf("unexpected summary error: %q", source.SummaryError)
+	}
+
+	stats, _, err = RunPending(context.Background(), cfg, st, Options{
+		Limit:     10,
+		Summarize: true,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunPending second pass: %v", err)
+	}
+	if stats.SourcesQueued != 0 {
+		t.Fatalf("expected skipped image source not to be queued again, got %+v", stats)
 	}
 }
 

@@ -25,21 +25,27 @@ func (s *Server) toolResearchPack(ctx context.Context, raw json.RawMessage) (map
 		SeedLimit         int      `json:"seed_limit"`
 		IncludeTopicBrief *bool    `json:"include_topic_brief"`
 		MaxCharsPerDoc    int      `json:"max_chars_per_doc"`
+		PlannerModel      string   `json:"planner_model"`
+		UseModelPlanner   bool     `json:"use_model_planner"`
+		DisablePlanner    bool     `json:"disable_planner"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("decode research pack args: %w", err)
 	}
 
 	pack, err := s.BuildResearchPack(ctx, ResearchPackOptions{
-		Question:       args.Question,
-		Topic:          args.Topic,
-		Limit:          args.Limit,
-		SourceTypes:    args.SourceTypes,
-		IncludeRelated: args.IncludeRelated,
-		RelatedLimit:   args.RelatedLimit,
-		SeedLimit:      args.SeedLimit,
-		IncludeTopic:   args.IncludeTopicBrief,
-		MaxCharsPerDoc: args.MaxCharsPerDoc,
+		Question:        args.Question,
+		Topic:           args.Topic,
+		Limit:           args.Limit,
+		SourceTypes:     args.SourceTypes,
+		IncludeRelated:  args.IncludeRelated,
+		RelatedLimit:    args.RelatedLimit,
+		SeedLimit:       args.SeedLimit,
+		IncludeTopic:    args.IncludeTopicBrief,
+		MaxCharsPerDoc:  args.MaxCharsPerDoc,
+		PlannerModel:    args.PlannerModel,
+		UseModelPlanner: args.UseModelPlanner || !args.DisablePlanner,
+		DisablePlanner:  args.DisablePlanner,
 	})
 	if err != nil {
 		return nil, err
@@ -68,6 +74,28 @@ func formatResearchPack(pack brainresearch.Pack) string {
 	if len(pack.QueryPlan.TagQueries) > 0 {
 		b.WriteString("Tag aliases: ")
 		b.WriteString(strings.Join(pack.QueryPlan.TagQueries, ", "))
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(pack.QueryPlan.Planner) != "" {
+		b.WriteString("Planner: ")
+		b.WriteString(pack.QueryPlan.Planner)
+		if strings.TrimSpace(pack.QueryPlan.PlannerModel) != "" {
+			b.WriteString(" (")
+			b.WriteString(pack.QueryPlan.PlannerModel)
+			b.WriteString(")")
+		}
+		b.WriteString("\n")
+	}
+	if len(pack.QueryPlan.QueryVariants) > 0 {
+		b.WriteString("Query variants: ")
+		parts := make([]string, 0, min(len(pack.QueryPlan.QueryVariants), 4))
+		for _, variant := range pack.QueryPlan.QueryVariants {
+			parts = append(parts, variant.Query)
+			if len(parts) >= 4 {
+				break
+			}
+		}
+		b.WriteString(strings.Join(parts, " | "))
 		b.WriteString("\n")
 	}
 	if strings.TrimSpace(pack.Topic) != "" {

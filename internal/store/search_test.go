@@ -124,6 +124,63 @@ func TestSearchMatchesAndReturnsSourceUserTags(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("CountExactUserTag = %d, want 1", count)
 	}
+
+	sourceTextCount, err := st.CountSourceTextMatches(ctx, "source body", nil)
+	if err != nil {
+		t.Fatalf("CountSourceTextMatches: %v", err)
+	}
+	if sourceTextCount != 1 {
+		t.Fatalf("CountSourceTextMatches = %d, want 1", sourceTextCount)
+	}
+
+	filteredSourceTextCount, err := st.CountSourceTextMatches(ctx, "source body", []string{"github"})
+	if err != nil {
+		t.Fatalf("filtered CountSourceTextMatches: %v", err)
+	}
+	if filteredSourceTextCount != 0 {
+		t.Fatalf("filtered CountSourceTextMatches = %d, want 0", filteredSourceTextCount)
+	}
+}
+
+func TestCountItemTextMatchesUsesIndexedDerivedText(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-count-derived",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-count-derived",
+		CanonicalURL: "https://x.com/example/status/test-count-derived",
+		Title:        "Derived Count Item",
+		Text:         "body without the target phrase",
+		SummaryText:  "Calgary police charged a father after two children were found dead.",
+		ContentHash:  "test-count-derived-hash",
+		NotePath:     "items/x/2026/test-count-derived.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	count, err := st.CountItemTextMatches(ctx, "father two children", nil)
+	if err != nil {
+		t.Fatalf("CountItemTextMatches: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountItemTextMatches = %d, want 1", count)
+	}
+
+	filteredCount, err := st.CountItemTextMatches(ctx, "father two children", []string{"apple_note"})
+	if err != nil {
+		t.Fatalf("filtered CountItemTextMatches: %v", err)
+	}
+	if filteredCount != 0 {
+		t.Fatalf("filtered CountItemTextMatches = %d, want 0", filteredCount)
+	}
 }
 
 func TestOpenReadOnlyCanSearchExistingStore(t *testing.T) {

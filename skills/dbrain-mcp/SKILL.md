@@ -105,7 +105,7 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 
 ## Default Workflow
 
-1. For broad research questions and direct Q&A, call `dbrain_research_pack` first. It returns retrieve-only evidence, the text/tag query plan, exact tag coverage, representative `exact_tag_evidence` examples, corpus match counts, per-evidence retrieval score signals, suggested next tools, and may include a topic brief.
+1. For broad research questions and direct Q&A, call `dbrain_research_pack` first. It returns retrieve-only evidence, the text/tag query plan, model-assisted query planner metadata when available, exact tag coverage, representative `exact_tag_evidence` examples, corpus match counts, per-evidence retrieval score signals, suggested next tools, and may include a topic brief. Model-assisted planning is enabled by default when dbrain has a configured model; pass `disable_planner=true` only when deterministic planning is specifically needed.
 2. For keyword or tag exploration, call `dbrain_search`, then inspect promising results with `dbrain_get_many` using `content_mode="evidence"` and the same `query` when there are multiple source keys, or `dbrain_get` for one source key.
 3. For graph expansion, call `dbrain_related` on strong evidence items or sources.
 4. For entity or topic browsing, use `dbrain_entity_map`, `dbrain_topic_map`, or `dbrain_topic_brief`.
@@ -123,7 +123,7 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 - When inspecting a `src:...` source, use the source's own `user_tags` as source-centric categorization and read its `backlinks` rows too. Backlinks carry the saved item's `user_tags`, which often explain why the collector saved that source and may differ from the source's own tags.
 - Use `user_tags` as retrieval hints. Item and source tags can match searches, disambiguate broad topics, and indicate the user's own categorization, but they do not replace source text. When `exact_tag_evidence` is present, treat it as representative examples for the matching tag lane, not as a complete list.
 - For named entities, search the likely hyphenated tag alias too, for example `Mark Carney` should include `mark-carney`. `dbrain_search` and `dbrain_research_pack` report exact tag aliases/counts so you can see whether the tag path hit.
-- Prefer `dbrain_research_pack` over several primitive searches. Its suggested `dbrain_get` / `dbrain_get_many` next-step arguments include the query when available; preserve it unless you intentionally want un-windowed leading sections. If the pack is weak, then run narrow follow-up searches or `dbrain_related` using the pack's suggested next tools.
+- Prefer `dbrain_research_pack` over several primitive searches. Inspect `query_plan.planner`, `query_plan.query_variants`, and `query_plan.concepts` to understand what the harness tried. Its suggested `dbrain_get` / `dbrain_get_many` next-step arguments include the query when available; preserve it unless you intentionally want un-windowed leading sections. If the pack is weak, then run narrow follow-up searches or `dbrain_related` using the pack's suggested next tools.
 - Do not mutate dbrain state unless the user explicitly asks. The MCP server is intended to be read-only.
 
 ## Fallback

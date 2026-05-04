@@ -560,7 +560,10 @@ files aside with a timestamped suffix, then installs the restored database.
 Serves the local UI plus authenticated archived-media helpers. When archive
 credentials are configured, `/media/asset/<media-asset-id>` streams archived
 objects through the local server and `/api/media/signed-url?id=<id>` returns a
-short-lived direct URL for one-off access.
+short-lived direct URL for one-off access. The Explore page includes Search,
+Research, and Chat modes; Chat runs local research/synthesis turns in browser
+session state and can save a non-indexed Markdown diagnostic transcript under
+`data/chat-transcripts/`.
 
 ```sh
 dbrain serve web
@@ -787,7 +790,10 @@ known sources that still need extraction or summarization. Use `--concurrency`
 to run multiple source extract/summarize jobs in parallel. The default is `4`;
 pass `--concurrency 1` for strictly sequential debugging. Source freshness is
 tracked with extract timestamps, summary timestamps, prompt versions, content
-hashes, and summarize tool versions so refreshes can be policy-aware.
+hashes, and summarize tool versions so refreshes can be policy-aware. Repeated
+terminal extraction failures run a final Internet Archive Wayback fallback when
+enabled; usable snapshots are saved as `extract_tool=wayback`, while short
+archive shells are kept raw but skipped for summarization.
 
 ```sh
 dbrain extract sources --limit 50 --concurrency 4 --length short
@@ -944,7 +950,16 @@ dbrain version --json
 Research is read-only and works directly from `brain.db`. It returns a research
 pack with evidence, query/tag planning metadata, coverage notes, and optional
 related evidence or topic brief data, then synthesizes a grounded local answer
-by default. Use `--retrieval-only` when you only want the evidence pack.
+by default. Web Research, Chat, CLI research, and MCP research packs use
+model-assisted planning by default when a summary model is configured. The
+harness asks the configured local model for a small bounded query plan with
+aliases, alternate phrasings, and title-like variants, then validates and merges
+it with deterministic fallback concepts before retrieval. Research packs expose
+the planner metadata, query variants, and concept coverage signals so broad
+natural-language questions can retry with stronger terms and prefer directly
+matching evidence over broad near-misses. Use `--no-planner` or
+`disable_planner=true` to force deterministic planning, and `--retrieval-only`
+when you only want the evidence pack.
 Synthesis requires `--model` or a configured `DBRAIN_SUMMARY_MODEL` /
 `SUMMARIZE_MODEL`; it will not silently let the external summarizer choose a
 hosted fallback.
@@ -955,6 +970,9 @@ dbrain research "Show me GitHub repos about vector databases" --source-type gith
 dbrain research "What is Agent Memory?" --include-related --related-limit 2
 dbrain research "What do I have in my brain about Mark Carney?" --retrieval-only --json
 dbrain research "What do I know about local models?" --model ollama/qwen3.6:35b
+dbrain research "Calgary father killed two kids" --retrieval-only
+dbrain research "K8s Helm alternatives" --planner-model ollama/qwen3.6:35b --retrieval-only
+dbrain research "K8s Helm alternatives" --no-planner --retrieval-only
 ```
 
 ### `dbrain search`

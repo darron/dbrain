@@ -10,6 +10,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/entities"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/queryterms"
 	"github.com/darron/dbrain/internal/store"
@@ -19,6 +20,7 @@ import (
 const (
 	SchemaVersion       = "research_pack.v1"
 	maxExactTagEvidence = 3
+	maxQueryVariants    = 8
 )
 
 type Builder struct {
@@ -27,15 +29,20 @@ type Builder struct {
 }
 
 type Options struct {
-	Question       string
-	Topic          string
-	Limit          int
-	SourceTypes    []string
-	IncludeRelated bool
-	RelatedLimit   int
-	SeedLimit      int
-	IncludeTopic   *bool
-	MaxCharsPerDoc int
+	Question        string
+	Topic           string
+	Limit           int
+	SourceTypes     []string
+	IncludeRelated  bool
+	RelatedLimit    int
+	SeedLimit       int
+	IncludeTopic    *bool
+	MaxCharsPerDoc  int
+	PlannerModel    string
+	PlannerTimeout  time.Duration
+	PlannerBinary   string
+	UseModelPlanner bool
+	DisablePlanner  bool
 }
 
 type Pack struct {
@@ -53,17 +60,34 @@ type Pack struct {
 }
 
 type QueryPlan struct {
-	TextQuery         string   `json:"text_query"`
-	QueryTerms        []string `json:"query_terms"`
-	TagQueries        []string `json:"tag_queries"`
-	SourceTypes       []string `json:"source_types,omitempty"`
-	Limit             int      `json:"limit"`
-	MaxCharsPerDoc    int      `json:"max_chars_per_doc"`
-	IncludeRelated    bool     `json:"include_related"`
-	RelatedLimit      int      `json:"related_limit,omitempty"`
-	Topic             string   `json:"topic,omitempty"`
-	TopicSource       string   `json:"topic_source,omitempty"`
-	IncludeTopicBrief bool     `json:"include_topic_brief"`
+	TextQuery         string         `json:"text_query"`
+	QueryTerms        []string       `json:"query_terms"`
+	TagQueries        []string       `json:"tag_queries"`
+	QueryVariants     []QueryVariant `json:"query_variants,omitempty"`
+	Concepts          []QueryConcept `json:"concepts,omitempty"`
+	Planner           string         `json:"planner,omitempty"`
+	PlannerModel      string         `json:"planner_model,omitempty"`
+	PlannerError      string         `json:"planner_error,omitempty"`
+	SourceTypes       []string       `json:"source_types,omitempty"`
+	Limit             int            `json:"limit"`
+	MaxCharsPerDoc    int            `json:"max_chars_per_doc"`
+	IncludeRelated    bool           `json:"include_related"`
+	RelatedLimit      int            `json:"related_limit,omitempty"`
+	Topic             string         `json:"topic,omitempty"`
+	TopicSource       string         `json:"topic_source,omitempty"`
+	IncludeTopicBrief bool           `json:"include_topic_brief"`
+}
+
+type QueryVariant struct {
+	Query  string `json:"query"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type QueryConcept struct {
+	Key       string   `json:"key"`
+	Preferred string   `json:"preferred,omitempty"`
+	Terms     []string `json:"terms"`
+	Required  bool     `json:"required"`
 }
 
 type Coverage struct {
@@ -138,14 +162,8 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 		includeTopic = false
 	}
 
-	resp, err := ask.Run(ctx, b.cfg, b.st, question, ask.Options{
-		Limit:          limit,
-		RetrieveOnly:   true,
-		SourceTypes:    opts.SourceTypes,
-		IncludeRelated: opts.IncludeRelated,
-		RelatedLimit:   opts.RelatedLimit,
-		MaxCharsPerDoc: maxChars,
-	})
+	strategy := b.buildResearchStrategy(ctx, question, hints, opts)
+	evidence, err := b.collectStrategyEvidence(ctx, strategy, opts, limit, maxChars)
 	if err != nil {
 		return Pack{}, err
 	}
@@ -167,6 +185,11 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 			TextQuery:         hints.TextQuery,
 			QueryTerms:        hints.Terms,
 			TagQueries:        hints.TagQueries,
+			QueryVariants:     strategy.Variants,
+			Concepts:          strategy.Concepts,
+			Planner:           strategy.Planner,
+			PlannerModel:      strategy.PlannerModel,
+			PlannerError:      strategy.PlannerError,
 			SourceTypes:       opts.SourceTypes,
 			Limit:             limit,
 			MaxCharsPerDoc:    maxChars,
@@ -176,10 +199,10 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 			TopicSource:       topicSource,
 			IncludeTopicBrief: includeTopic,
 		},
-		Evidence:         resp.Evidence,
+		Evidence:         evidence,
 		ExactTagEvidence: exactTagEvidence,
-		Coverage:         mergeCoverage(buildCoverage(resp.Evidence), corpusCoverage),
-		NextSteps:        buildNextSteps(resp.Evidence, hints.TextQuery),
+		Coverage:         mergeCoverage(buildCoverage(evidence), corpusCoverage),
+		NextSteps:        buildNextSteps(evidence, hints.TextQuery),
 	}
 
 	if includeTopic {
@@ -211,6 +234,403 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 	pack.Coverage.RecallNote = recallNote(pack.Coverage)
 
 	return pack, nil
+}
+
+type researchStrategy struct {
+	Variants     []QueryVariant
+	Concepts     []QueryConcept
+	Planner      string
+	PlannerModel string
+	PlannerError string
+}
+
+func buildResearchStrategy(question string, hints ask.QueryHints) researchStrategy {
+	return buildDeterministicResearchStrategy(question, hints)
+}
+
+func (b *Builder) buildResearchStrategy(ctx context.Context, question string, hints ask.QueryHints, opts Options) researchStrategy {
+	strategy := buildDeterministicResearchStrategy(question, hints)
+	strategy.Planner = "deterministic"
+	if opts.DisablePlanner {
+		return strategy
+	}
+	if !opts.UseModelPlanner && strings.TrimSpace(opts.PlannerModel) == "" {
+		return strategy
+	}
+
+	planned, modelName, err := b.buildModelResearchPlan(ctx, question, hints, strategy, opts)
+	if modelName != "" {
+		strategy.PlannerModel = modelName
+	}
+	if err != nil {
+		strategy.PlannerError = err.Error()
+		return strategy
+	}
+	if planned.Empty() {
+		return strategy
+	}
+
+	strategy.Planner = "model_assisted"
+	strategy.Concepts = mergeQueryConcepts(strategy.Concepts, planned.Concepts)
+	strategy.Variants = mergeQueryVariants(strategy.Variants, planned.QueryVariants)
+	if preferred := preferredConceptQuery(strategy.Concepts); preferred != "" {
+		strategy.Variants = mergeQueryVariants(strategy.Variants, []QueryVariant{{Query: preferred, Reason: "model_concept_terms"}})
+	}
+	strategy.Variants = limitQueryVariants(strategy.Variants)
+	return strategy
+}
+
+func buildDeterministicResearchStrategy(question string, hints ask.QueryHints) researchStrategy {
+	terms := uniqueStrings(hints.Terms)
+	concepts := buildQueryConcepts(terms)
+	variants := buildQueryVariants(question, hints.TextQuery, terms, concepts)
+	return researchStrategy{Variants: variants, Concepts: concepts, Planner: "deterministic"}
+}
+
+func buildQueryConcepts(terms []string) []QueryConcept {
+	concepts := make([]QueryConcept, 0, len(terms))
+	seen := map[string]struct{}{}
+	for _, term := range terms {
+		concept := conceptForTerm(term)
+		if concept.Key == "" {
+			continue
+		}
+		if _, ok := seen[concept.Key]; ok {
+			continue
+		}
+		seen[concept.Key] = struct{}{}
+		concepts = append(concepts, concept)
+	}
+	return concepts
+}
+
+func conceptForTerm(term string) QueryConcept {
+	term = strings.TrimSpace(strings.ToLower(term))
+	switch term {
+	case "father", "dad", "parent", "man":
+		return QueryConcept{Key: "father", Preferred: "father", Terms: []string{"father", "dad", "parent", "man"}, Required: true}
+	case "mother", "mom", "woman":
+		return QueryConcept{Key: "mother", Preferred: "mother", Terms: []string{"mother", "mom", "parent", "woman"}, Required: true}
+	case "children", "child", "kid", "kids", "son", "daughter":
+		return QueryConcept{Key: "children", Preferred: "children", Terms: []string{"children", "child", "kid", "kids", "son", "daughter"}, Required: true}
+	case "kill", "killed", "killing", "murder", "murdered", "murdering", "death", "deaths":
+		return QueryConcept{Key: "kill", Preferred: "killing", Terms: []string{"kill", "killed", "killing", "kills", "murder", "murdered", "murdering", "death", "deaths", "dead"}, Required: true}
+	case "charge", "charged", "charges", "charging":
+		return QueryConcept{Key: "charge", Preferred: "charged", Terms: []string{"charge", "charged", "charges", "charging"}, Required: true}
+	case "vehicle", "suv", "car":
+		return QueryConcept{Key: "vehicle", Preferred: "vehicle", Terms: []string{"vehicle", "suv", "car", "automobile"}, Required: true}
+	case "two", "2":
+		return QueryConcept{Key: "two", Preferred: "two", Terms: []string{"two", "2"}, Required: false}
+	case "k8s", "kubernetes":
+		return QueryConcept{Key: "kubernetes", Preferred: "kubernetes", Terms: []string{"kubernetes", "k8s"}, Required: true}
+	case "alternative", "alternatives", "replacement", "replacements":
+		return QueryConcept{Key: "alternative", Preferred: "alternative", Terms: []string{"alternative", "alternatives", "replacement", "replacements", "instead of"}, Required: true}
+	default:
+		if len([]rune(term)) < 3 {
+			return QueryConcept{}
+		}
+		return QueryConcept{Key: term, Preferred: term, Terms: conceptTermAliases(term), Required: true}
+	}
+}
+
+func buildQueryVariants(question string, textQuery string, terms []string, concepts []QueryConcept) []QueryVariant {
+	variants := make([]QueryVariant, 0, maxQueryVariants)
+	add := func(query string, reason string) {
+		query = strings.TrimSpace(strings.Join(strings.Fields(query), " "))
+		if query == "" {
+			return
+		}
+		for _, existing := range variants {
+			if strings.EqualFold(existing.Query, query) {
+				return
+			}
+		}
+		variants = append(variants, QueryVariant{Query: query, Reason: reason})
+	}
+
+	add(textQuery, "normalized_terms")
+	if preferred := preferredConceptQuery(concepts); preferred != "" && !strings.EqualFold(preferred, textQuery) {
+		add(preferred, "preferred_concept_terms")
+	}
+
+	location := firstConceptKey(concepts, "calgary")
+	hasFather := hasConcept(concepts, "father")
+	hasChildren := hasConcept(concepts, "children")
+	hasKill := hasConcept(concepts, "kill")
+	if hasFather && hasChildren && hasKill {
+		prefix := strings.TrimSpace(location)
+		add(strings.TrimSpace(prefix+" father charged killing children"), "people_event_title_variant")
+		add(strings.TrimSpace(prefix+" man charged killing children"), "people_event_title_variant")
+		add(strings.TrimSpace(prefix+" father son daughter"), "victim_role_variant")
+	}
+	if hasChildren && hasConcept(concepts, "vehicle") {
+		prefix := strings.TrimSpace(location)
+		add(strings.TrimSpace(prefix+" children found vehicle"), "vehicle_context_variant")
+	}
+	for _, variant := range focusedConceptVariants(concepts) {
+		add(variant.Query, variant.Reason)
+	}
+
+	if len(variants) == 0 {
+		add(question, "original_question")
+	}
+	return limitQueryVariants(variants)
+}
+
+func preferredConceptQuery(concepts []QueryConcept) string {
+	terms := make([]string, 0, len(concepts))
+	for _, concept := range concepts {
+		if concept.Preferred != "" {
+			terms = append(terms, concept.Preferred)
+			continue
+		}
+		terms = append(terms, concept.Key)
+	}
+	return strings.Join(uniqueStrings(terms), " ")
+}
+
+func focusedConceptVariants(concepts []QueryConcept) []QueryVariant {
+	required := make([]string, 0, len(concepts))
+	for _, concept := range concepts {
+		if !concept.Required {
+			continue
+		}
+		if concept.Preferred != "" {
+			required = append(required, concept.Preferred)
+			continue
+		}
+		required = append(required, concept.Key)
+	}
+	if len(required) <= 3 {
+		return nil
+	}
+	var variants []QueryVariant
+	for i := 0; i <= len(required)-3 && len(variants) < 3; i++ {
+		variants = append(variants, QueryVariant{Query: strings.Join(required[i:i+3], " "), Reason: "focused_concept_window"})
+	}
+	return variants
+}
+
+func conceptTermAliases(term string) []string {
+	terms := []string{term}
+	switch {
+	case strings.HasSuffix(term, "ies") && len(term) > 4:
+		terms = append(terms, strings.TrimSuffix(term, "ies")+"y")
+	case strings.HasSuffix(term, "s") && len(term) > 4:
+		terms = append(terms, strings.TrimSuffix(term, "s"))
+	default:
+		terms = append(terms, term+"s")
+	}
+	return uniqueStrings(terms)
+}
+
+func hasConcept(concepts []QueryConcept, key string) bool {
+	return firstConceptKey(concepts, key) != ""
+}
+
+func firstConceptKey(concepts []QueryConcept, key string) string {
+	key = strings.TrimSpace(strings.ToLower(key))
+	for _, concept := range concepts {
+		if concept.Key == key {
+			return concept.Key
+		}
+	}
+	return ""
+}
+
+func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy researchStrategy, opts Options, limit int, maxChars int) ([]ask.Evidence, error) {
+	variants := strategy.Variants
+	if len(variants) == 0 {
+		variants = []QueryVariant{{Query: opts.Question, Reason: "original_question"}}
+	}
+
+	type scoredEvidence struct {
+		doc   ask.Evidence
+		score int
+		order int
+	}
+	seen := map[string]scoredEvidence{}
+	order := 0
+	perVariantLimit := max(limit, 8)
+	entityIndex, err := entities.BuildIndex(ctx, b.st)
+	if err != nil {
+		return nil, err
+	}
+	for _, variant := range variants {
+		resp, err := ask.Run(ctx, b.cfg, b.st, variant.Query, ask.Options{
+			Limit:               perVariantLimit,
+			RetrieveOnly:        true,
+			SourceTypes:         opts.SourceTypes,
+			IncludeRelated:      opts.IncludeRelated,
+			RelatedLimit:        opts.RelatedLimit,
+			MaxCharsPerDoc:      maxChars,
+			SearchLimit:         max(perVariantLimit*2, 12),
+			EntityIndex:         entityIndex,
+			DisableTagExpansion: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for rank, doc := range resp.Evidence {
+			if strings.TrimSpace(doc.SourceKey) == "" {
+				continue
+			}
+			scored := scoreEvidenceWithResearchStrategy(doc, strategy, variant, rank)
+			current, exists := seen[doc.SourceKey]
+			if !exists || scored.score > current.score {
+				scored.order = order
+				if exists {
+					scored.order = current.order
+				} else {
+					order++
+				}
+				seen[doc.SourceKey] = scored
+			}
+		}
+	}
+
+	ordered := make([]scoredEvidence, 0, len(seen))
+	for _, doc := range seen {
+		ordered = append(ordered, doc)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].score != ordered[j].score {
+			return ordered[i].score > ordered[j].score
+		}
+		return ordered[i].order < ordered[j].order
+	})
+	if len(ordered) > limit {
+		ordered = ordered[:limit]
+	}
+	out := make([]ask.Evidence, 0, len(ordered))
+	for _, scored := range ordered {
+		out = append(out, scored.doc)
+	}
+	return out, nil
+}
+
+func scoreEvidenceWithResearchStrategy(doc ask.Evidence, strategy researchStrategy, variant QueryVariant, rank int) struct {
+	doc   ask.Evidence
+	score int
+	order int
+} {
+	if doc.Retrieval == nil {
+		doc.Retrieval = &ask.RetrievalInfo{}
+	}
+	score := doc.Retrieval.Score
+	score += max(0, 8-rank)
+	appendResearchSignal(doc.Retrieval, "research_query_variant", variant.Query, max(0, 2-rank))
+
+	text := researchEvidenceText(doc)
+	matched := make([]string, 0, len(strategy.Concepts))
+	missing := make([]string, 0, len(strategy.Concepts))
+	requiredTotal := 0
+	requiredMatched := 0
+	for _, concept := range strategy.Concepts {
+		matches := conceptMatchesText(concept, text)
+		if concept.Required {
+			requiredTotal++
+			if matches {
+				requiredMatched++
+				matched = append(matched, concept.Key)
+				continue
+			}
+			missing = append(missing, concept.Key)
+			continue
+		}
+		if matches {
+			matched = append(matched, concept.Key)
+		}
+	}
+
+	if len(matched) > 0 {
+		weight := requiredMatched*14 + (len(matched)-requiredMatched)*4
+		score += weight
+		appendResearchSignal(doc.Retrieval, "research_concepts_matched", strings.Join(matched, ", "), weight)
+	}
+	if requiredTotal > 1 && len(missing) > 0 {
+		weight := -12 * len(missing)
+		score += weight
+		appendResearchSignal(doc.Retrieval, "research_concepts_missing", strings.Join(missing, ", "), weight)
+	}
+	if requiredTotal > 1 && requiredMatched == requiredTotal {
+		score += 24
+		appendResearchSignal(doc.Retrieval, "all_required_research_concepts_matched", strings.Join(matched, ", "), 24)
+	}
+	doc.Retrieval.Score = score
+	return struct {
+		doc   ask.Evidence
+		score int
+		order int
+	}{doc: doc, score: score}
+}
+
+func appendResearchSignal(info *ask.RetrievalInfo, name string, detail string, weight int) {
+	if info == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	info.Signals = append(info.Signals, ask.RetrievalSignal{
+		Name:   name,
+		Detail: strings.TrimSpace(detail),
+		Weight: weight,
+	})
+}
+
+func researchEvidenceText(doc ask.Evidence) string {
+	return strings.ToLower(strings.Join([]string{
+		doc.SourceKey,
+		doc.Title,
+		doc.URL,
+		doc.NotePath,
+		doc.Summary,
+		doc.Excerpt,
+		doc.Author,
+		doc.SourceType,
+		doc.UserTags,
+		strings.Join(doc.EntityMatches, " "),
+	}, "\n"))
+}
+
+func conceptMatchesText(concept QueryConcept, text string) bool {
+	for _, term := range concept.Terms {
+		if containsTerm(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsTerm(text string, term string) bool {
+	text = strings.ToLower(text)
+	term = strings.ToLower(strings.TrimSpace(term))
+	if text == "" || term == "" {
+		return false
+	}
+	if strings.Contains(term, " ") {
+		return strings.Contains(text, term)
+	}
+	start := 0
+	for {
+		idx := strings.Index(text[start:], term)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		beforeOK := idx == 0 || !isAlphaNumeric(rune(text[idx-1]))
+		after := idx + len(term)
+		afterOK := after >= len(text) || !isAlphaNumeric(rune(text[after]))
+		if beforeOK && afterOK {
+			return true
+		}
+		start = idx + len(term)
+		if start >= len(text) {
+			return false
+		}
+	}
+}
+
+func isAlphaNumeric(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 }
 
 func resolveTopic(question string, explicitTopic string) (string, string, bool) {

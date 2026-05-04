@@ -995,10 +995,20 @@ func (s *Store) CountExactUserTag(ctx context.Context, tag string, sourceTypes [
 }
 
 func (s *Store) CountItemTextMatches(ctx context.Context, query string, sourceTypes []string) (int, error) {
-	query = strings.ToLower(strings.TrimSpace(query))
+	query = strings.TrimSpace(query)
 	if query == "" {
 		return 0, nil
 	}
+	if s.hasFTS {
+		count, err := s.countItemFTSMatches(ctx, query, sourceTypes)
+		if err == nil {
+			return count, nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, ctxErr
+		}
+	}
+	query = strings.ToLower(query)
 	like := "%" + query + "%"
 	sqlQuery := `
 		SELECT COUNT(*)
@@ -1038,11 +1048,40 @@ func (s *Store) CountItemTextMatches(ctx context.Context, query string, sourceTy
 	return count, nil
 }
 
+func (s *Store) countItemFTSMatches(ctx context.Context, query string, sourceTypes []string) (int, error) {
+	ftsQuery := buildFTSQuery(query)
+	sqlQuery := `
+		SELECT COUNT(*)
+		FROM items_fts f
+		JOIN items i ON i.id = f.rowid
+		WHERE items_fts MATCH ?`
+	args := []any{ftsQuery}
+	if filter, filterArgs := sourceTypeFilter("i.source_type", sourceTypes); filter != "" {
+		sqlQuery += filter
+		args = append(args, filterArgs...)
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, sqlQuery, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count item fts matches %q: %w", query, err)
+	}
+	return count, nil
+}
+
 func (s *Store) CountSourceTextMatches(ctx context.Context, query string, sourceTypes []string) (int, error) {
-	query = strings.ToLower(strings.TrimSpace(query))
+	query = strings.TrimSpace(query)
 	if query == "" {
 		return 0, nil
 	}
+	if s.hasFTS {
+		count, err := s.countSourceFTSMatches(ctx, query, sourceTypes)
+		if err == nil {
+			return count, nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, ctxErr
+		}
+	}
+	query = strings.ToLower(query)
 	like := "%" + query + "%"
 	sqlQuery := `
 		SELECT COUNT(*)
@@ -1076,6 +1115,42 @@ func (s *Store) CountSourceTextMatches(ctx context.Context, query string, source
 		return 0, fmt.Errorf("count source text matches %q: %w", query, err)
 	}
 	return count, nil
+}
+
+func (s *Store) countSourceFTSMatches(ctx context.Context, query string, sourceTypes []string) (int, error) {
+	ftsQuery := buildFTSQuery(query)
+	sqlQuery := `
+		SELECT COUNT(*)
+		FROM sources_fts f
+		JOIN sources s ON s.id = f.rowid
+		WHERE sources_fts MATCH ?`
+	args := []any{ftsQuery}
+	if filter, filterArgs := sourceTypeFilter("s.source_type", sourceTypes); filter != "" {
+		sqlQuery += filter
+		args = append(args, filterArgs...)
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, sqlQuery, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count source fts matches %q: %w", query, err)
+	}
+	return count, nil
+}
+
+func sourceTypeFilter(column string, sourceTypes []string) (string, []any) {
+	placeholders := make([]string, 0, len(sourceTypes))
+	args := make([]any, 0, len(sourceTypes))
+	for _, sourceType := range sourceTypes {
+		sourceType = strings.TrimSpace(sourceType)
+		if sourceType == "" {
+			continue
+		}
+		placeholders = append(placeholders, "?")
+		args = append(args, sourceType)
+	}
+	if len(placeholders) == 0 {
+		return "", nil
+	}
+	return ` AND ` + column + ` IN (` + strings.Join(placeholders, ",") + `)`, args
 }
 
 func normalizeUserTagQuery(tag string) string {
@@ -1216,6 +1291,49 @@ func (s *Store) ListAllItems(ctx context.Context, limit int) ([]model.Item, erro
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate items: %w", err)
+	}
+	return items, nil
+}
+
+func (s *Store) ListAllEntityItems(ctx context.Context, limit int) ([]model.Item, error) {
+	query := `
+		SELECT id, source_key, source_type, canonical_url, title, author_handle, author_name, note_path
+		FROM items
+		WHERE note_path != ''
+		ORDER BY id ASC`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list entity items: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var items []model.Item
+	for rows.Next() {
+		var item model.Item
+		if err := rows.Scan(
+			&item.ID,
+			&item.SourceKey,
+			&item.SourceType,
+			&item.CanonicalURL,
+			&item.Title,
+			&item.AuthorHandle,
+			&item.AuthorName,
+			&item.NotePath,
+		); err != nil {
+			return nil, fmt.Errorf("scan entity item row: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate entity items: %w", err)
 	}
 	return items, nil
 }

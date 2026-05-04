@@ -40,6 +40,15 @@ type Options struct {
 	SourceTypes    []string
 	IncludeRelated bool
 	RelatedLimit   int
+	EntityIndex    []entities.Entity
+	SearchLimit    int
+	// DisableEntityExpansion keeps broad research retrieval off the expensive
+	// global entity index path. Direct ask calls keep the previous default.
+	DisableEntityExpansion bool
+	// DisableTagExpansion skips broad LIKE/INSTR tag scans. FTS still searches
+	// indexed user tags; exact tag examples can be gathered by callers that need
+	// them without paying this cost for every query variant.
+	DisableTagExpansion bool
 }
 
 type Evidence struct {
@@ -120,7 +129,10 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 
 	hints := Hints(question)
 	searchTerms := hints.Terms
-	searchLimit := opts.Limit * 4
+	searchLimit := opts.SearchLimit
+	if searchLimit <= 0 {
+		searchLimit = opts.Limit * 4
+	}
 	if searchLimit < opts.Limit {
 		searchLimit = opts.Limit
 	}
@@ -137,24 +149,33 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 		return Response{}, err
 	}
 	results = append(results, sourceResults...)
-	for _, tagQuery := range hints.TagQueries {
-		tagResults, err := st.SearchUserTags(ctx, tagQuery, searchLimit)
-		if err != nil {
-			return Response{}, err
+	if !opts.DisableTagExpansion {
+		for _, tagQuery := range hints.TagQueries {
+			tagResults, err := st.SearchUserTags(ctx, tagQuery, searchLimit)
+			if err != nil {
+				return Response{}, err
+			}
+			results = append(results, tagResults...)
+			exactTagResults, err := st.SearchExactUserTag(ctx, tagQuery, searchLimit)
+			if err != nil {
+				return Response{}, err
+			}
+			results = append(results, exactTagResults...)
 		}
-		results = append(results, tagResults...)
-		exactTagResults, err := st.SearchExactUserTag(ctx, tagQuery, searchLimit)
-		if err != nil {
-			return Response{}, err
-		}
-		results = append(results, exactTagResults...)
 	}
 
-	entityIndex, err := entities.BuildIndex(ctx, st)
-	if err != nil {
-		return Response{}, err
+	var entityMatches map[string]entityMatch
+	if !opts.DisableEntityExpansion {
+		entityIndex := opts.EntityIndex
+		if entityIndex == nil {
+			var err error
+			entityIndex, err = entities.BuildIndex(ctx, st)
+			if err != nil {
+				return Response{}, err
+			}
+		}
+		entityMatches = buildEntityMatchIndex(entityIndex, question, searchTerms, maxInt(opts.Limit*3, 12))
 	}
-	entityMatches := buildEntityMatchIndex(entityIndex, question, searchTerms, maxInt(opts.Limit*3, 12))
 
 	candidates := make([]evidenceCandidate, 0, len(results))
 	seen := map[string]struct{}{}
@@ -286,15 +307,36 @@ type weightedQuery struct {
 }
 
 func buildEvidence(ctx context.Context, cfg config.Config, st *store.Store, result model.SearchResult, maxChars int, terms []string) (evidenceCandidate, bool, error) {
-	if item, err := st.GetItem(ctx, result.SourceKey); err == nil {
-		return evidenceFromItem(cfg, item, result, maxChars, terms), true, nil
+	if !isSourceDocumentKey(result.SourceKey) {
+		if item, err := st.GetItem(ctx, result.SourceKey); err == nil {
+			return evidenceFromItem(cfg, item, result, maxChars, terms), true, nil
+		}
 	}
 
-	source, err := st.GetSource(ctx, result.SourceKey)
+	source, err := st.GetSourceEvidence(ctx, result.SourceKey)
 	if err != nil {
+		if isSourceDocumentKey(result.SourceKey) {
+			return evidenceCandidate{}, false, nil
+		}
+		if item, itemErr := st.GetItem(ctx, result.SourceKey); itemErr == nil {
+			// Some synthetic lookups can resolve as items even when source loading fails.
+			// Keep this as a fallback, not the common source-document path.
+			return evidenceFromItem(cfg, item, result, maxChars, terms), true, nil
+		}
 		return evidenceCandidate{}, false, nil
 	}
+	if !hasAnyText(result.Snippet, source.SummaryText, source.Description) {
+		extractedText, err := st.GetSourceExtractedText(ctx, result.SourceKey)
+		if err != nil {
+			return evidenceCandidate{}, false, nil
+		}
+		source.ExtractedText = extractedText
+	}
 	return evidenceFromSource(cfg, source, result, maxChars, terms), true, nil
+}
+
+func isSourceDocumentKey(sourceKey string) bool {
+	return strings.HasPrefix(strings.TrimSpace(sourceKey), "src:")
 }
 
 func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchResult, maxChars int, terms []string) evidenceCandidate {
@@ -308,11 +350,14 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 	}
 
 	excerpt := evidenceExcerpt(maxChars, terms,
-		item.XPostText,
-		item.ArticleText,
-		item.Text,
-		item.OCRText,
-		result.Snippet,
+		excerptValuesWithRawFallback(
+			terms,
+			[]string{result.Snippet, item.SummaryText},
+			item.XPostText,
+			item.ArticleText,
+			item.Text,
+			item.OCRText,
+		)...,
 	)
 
 	return evidenceCandidate{
@@ -330,22 +375,26 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 			UserTags:    item.UserTags,
 		},
 		ItemID: item.ID,
-		MatchText: strings.Join([]string{
+		MatchText: compactMatchText(
 			item.Title,
 			item.CanonicalURL,
 			item.AuthorName,
 			item.AuthorHandle,
 			item.UserTags,
 			item.SummaryText,
-			item.XPostText,
-			item.ArticleText,
-			item.Text,
-			item.OCRText,
-		}, "\n"),
+			result.Snippet,
+			excerpt,
+		),
 	}
 }
 
 func evidenceFromSource(cfg config.Config, source model.SourceDocument, result model.SearchResult, maxChars int, terms []string) evidenceCandidate {
+	excerpt := evidenceExcerpt(maxChars, terms,
+		sourceExcerptValues(
+			[]string{result.Snippet, source.SummaryText, source.Description},
+			source.ExtractedText,
+		)...,
+	)
 	return evidenceCandidate{
 		Evidence: Evidence{
 			SourceKey:    source.SourceKey,
@@ -354,21 +403,22 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 			URL:          source.CanonicalURL,
 			NotePath:     filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath)),
 			Summary:      trimTo(source.SummaryText, maxChars),
-			Excerpt:      evidenceExcerpt(maxChars, terms, source.ExtractedText, result.Snippet),
+			Excerpt:      excerpt,
 			SourceType:   source.SourceType,
 			ExtractedAt:  formatTime(source.ExtractedAt),
 			SummarizedAt: formatTime(source.SummarizedAt),
 			UserTags:     source.UserTags,
 		},
 		SourceID: source.ID,
-		MatchText: strings.Join([]string{
+		MatchText: compactMatchText(
 			source.Title,
 			source.CanonicalURL,
 			source.Description,
 			source.UserTags,
 			source.SummaryText,
-			source.ExtractedText,
-		}, "\n"),
+			result.Snippet,
+			excerpt,
+		),
 	}
 }
 
@@ -878,11 +928,94 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func compactMatchText(values ...string) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		parts = append(parts, value)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func hasAnyText(values ...string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func excerptValuesWithRawFallback(terms []string, compact []string, raw ...string) []string {
+	values := make([]string, 0, len(compact)+len(raw))
+	for _, value := range compact {
+		if strings.TrimSpace(value) != "" {
+			values = append(values, value)
+		}
+	}
+	if len(values) == 0 || !hasEnoughQueryCoverage(values, terms) {
+		for _, value := range raw {
+			if strings.TrimSpace(value) != "" {
+				values = append(values, value)
+			}
+		}
+	}
+	return values
+}
+
+func sourceExcerptValues(compact []string, raw ...string) []string {
+	values := make([]string, 0, len(compact)+len(raw))
+	for _, value := range compact {
+		if strings.TrimSpace(value) != "" {
+			values = append(values, value)
+		}
+	}
+	if len(values) == 0 {
+		for _, value := range raw {
+			if strings.TrimSpace(value) != "" {
+				values = append(values, value)
+			}
+		}
+	}
+	return values
+}
+
+func hasEnoughQueryCoverage(values []string, terms []string) bool {
+	queryTerms := uniqueTerms(terms)
+	if len(queryTerms) == 0 {
+		return true
+	}
+	required := minInt(2, len(queryTerms))
+	text := strings.ToLower(strings.Join(values, "\n"))
+	matched := 0
+	for _, term := range queryTerms {
+		if strings.Contains(text, term) {
+			matched++
+			if matched >= required {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func evidenceExcerpt(maxChars int, terms []string, values ...string) string {
 	var best queryWindowResult
-	scoreText := collapseWhitespace(strings.Join(values, "\n"))
+	collapsedValues := make([]string, 0, len(values))
 	for _, value := range values {
-		result := queryWindowCandidate(value, terms, maxChars, scoreText)
+		value = collapseWhitespace(value)
+		if value == "" {
+			continue
+		}
+		collapsedValues = append(collapsedValues, value)
+	}
+	scoreText := strings.ToLower(strings.Join(collapsedValues, "\n"))
+	termCounts := queryTermCounts(scoreText, terms)
+	for _, value := range collapsedValues {
+		result := queryWindowCandidate(value, terms, maxChars, termCounts)
 		if result.Matched && (!best.Matched || result.Score > best.Score) {
 			best = result
 		}
@@ -890,8 +1023,8 @@ func evidenceExcerpt(maxChars int, terms []string, values ...string) string {
 	if best.Matched {
 		return best.Text
 	}
-	for _, value := range values {
-		if excerpt := trimTo(collapseWhitespace(value), maxChars); excerpt != "" {
+	for _, value := range collapsedValues {
+		if excerpt := trimTo(value, maxChars); excerpt != "" {
 			return excerpt
 		}
 	}
@@ -904,7 +1037,7 @@ type queryWindowResult struct {
 	Matched bool
 }
 
-func queryWindowCandidate(value string, terms []string, maxChars int, scoreText string) queryWindowResult {
+func queryWindowCandidate(value string, terms []string, maxChars int, termCounts map[string]int) queryWindowResult {
 	value = collapseWhitespace(value)
 	if value == "" || maxChars <= 0 {
 		return queryWindowResult{Text: value}
@@ -916,9 +1049,8 @@ func queryWindowCandidate(value string, terms []string, maxChars int, scoreText 
 	}
 
 	lower := strings.ToLower(value)
-	lowerScoreText := strings.ToLower(collapseWhitespace(scoreText))
-	if lowerScoreText == "" {
-		lowerScoreText = lower
+	if len(termCounts) == 0 {
+		termCounts = queryTermCounts(lower, terms)
 	}
 	type candidateWindow struct {
 		start int
@@ -936,7 +1068,7 @@ func queryWindowCandidate(value string, terms []string, maxChars int, scoreText 
 			idx += searchFrom
 			window := queryWindowBounds(lower, idx, maxChars)
 			windowText := lower[window.start:window.end]
-			score := queryWindowScore(windowText, lowerScoreText, terms, candidate)
+			score := queryWindowScore(windowText, terms, candidate, termCounts)
 			if best.start < 0 || score > best.score || (score == best.score && window.start < best.start) {
 				best = candidateWindow{start: window.start, end: window.end, score: score}
 			}
@@ -990,11 +1122,11 @@ func queryWindowBounds(value string, matchByteIndex int, maxChars int) struct{ s
 	return struct{ start, end int }{start: startByte, end: endByte}
 }
 
-func queryWindowScore(window string, fullText string, terms []string, matchedCandidate string) int {
+func queryWindowScore(window string, terms []string, matchedCandidate string, termCounts map[string]int) int {
 	score := len([]rune(matchedCandidate))
 	for _, term := range uniqueTerms(terms) {
 		if strings.Contains(window, term) {
-			occurrences := strings.Count(fullText, term)
+			occurrences := termCounts[term]
 			if occurrences <= 0 {
 				occurrences = 1
 			}
@@ -1002,6 +1134,17 @@ func queryWindowScore(window string, fullText string, terms []string, matchedCan
 		}
 	}
 	return score
+}
+
+func queryTermCounts(fullText string, terms []string) map[string]int {
+	counts := make(map[string]int, len(terms))
+	for _, term := range uniqueTerms(terms) {
+		if term == "" {
+			continue
+		}
+		counts[term] = strings.Count(fullText, term)
+	}
+	return counts
 }
 
 func queryWindowTerms(terms []string) []string {

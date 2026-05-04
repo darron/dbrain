@@ -26,6 +26,10 @@ func newResearchCommand(root *rootOptions) *cobra.Command {
 	var synthesisModel string
 	var synthesisMaxEvidenceChars int
 	var synthesisTimeout time.Duration
+	var plannerModel string
+	var plannerTimeout time.Duration
+	usePlanner := true
+	var noPlanner bool
 
 	cmd := &cobra.Command{
 		Use:   "research <question>",
@@ -56,15 +60,19 @@ func newResearchCommand(root *rootOptions) *cobra.Command {
 			}
 
 			pack, err := brainresearch.Build(cmd.Context(), cfg, st, brainresearch.Options{
-				Question:       strings.Join(args, " "),
-				Topic:          topic,
-				Limit:          limit,
-				SourceTypes:    sourceTypes,
-				IncludeRelated: includeRelated,
-				RelatedLimit:   relatedLimit,
-				SeedLimit:      seedLimit,
-				IncludeTopic:   includeTopic,
-				MaxCharsPerDoc: maxCharsPerDoc,
+				Question:        strings.Join(args, " "),
+				Topic:           topic,
+				Limit:           limit,
+				SourceTypes:     sourceTypes,
+				IncludeRelated:  includeRelated,
+				RelatedLimit:    relatedLimit,
+				SeedLimit:       seedLimit,
+				IncludeTopic:    includeTopic,
+				MaxCharsPerDoc:  maxCharsPerDoc,
+				PlannerModel:    firstNonEmpty(plannerModel, synthesisModel),
+				PlannerTimeout:  plannerTimeout,
+				UseModelPlanner: usePlanner,
+				DisablePlanner:  noPlanner,
 			})
 			if err != nil {
 				return err
@@ -125,6 +133,10 @@ func newResearchCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&synthesisModel, "model", "", "Optional synthesis model; empty uses the configured default")
 	cmd.Flags().IntVar(&synthesisMaxEvidenceChars, "max-evidence-chars", brainresearch.DefaultMaxEvidenceChars, "Maximum total evidence characters sent to synthesis")
 	cmd.Flags().DurationVar(&synthesisTimeout, "synthesis-timeout", 2*time.Minute, "Maximum time to wait for local synthesis")
+	cmd.Flags().StringVar(&plannerModel, "planner-model", "", "Optional planner model; empty uses --model or the configured default")
+	cmd.Flags().DurationVar(&plannerTimeout, "planner-timeout", 20*time.Second, "Maximum time to wait for model-assisted query planning")
+	cmd.Flags().BoolVar(&usePlanner, "planner", true, "Use the configured model for query planning before retrieval")
+	cmd.Flags().BoolVar(&noPlanner, "no-planner", false, "Disable model-assisted query planning")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON output; includes synthesis unless --retrieval-only is set")
 
 	return cmd
@@ -134,6 +146,15 @@ type researchCommandOutput struct {
 	ResearchPack brainresearch.Pack             `json:"research_pack"`
 	Synthesis    *brainresearch.SynthesisResult `json:"synthesis,omitempty"`
 	Error        string                         `json:"error,omitempty"`
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func writeResearchSynthesis(out interface {

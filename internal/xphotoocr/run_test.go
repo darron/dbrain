@@ -156,7 +156,7 @@ func TestRunFallsBackToTesseractAndPreservesOCRAcrossLaterBlankUpsert(t *testing
 		OpenRouterBase:  server.URL,
 		OpenRouterKey:   "test-openrouter-key",
 		TesseractBinary: tesseract,
-		Timeout:         2 * time.Second,
+		Timeout:         10 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

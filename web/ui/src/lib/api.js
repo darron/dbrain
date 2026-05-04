@@ -49,18 +49,21 @@ export function getLookup(lookup) {
 }
 
 export function researchBrain(question, options = {}) {
+  const { signal, ...bodyOptions } = options;
   return fetchJSON("/api/research", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
+    signal,
     body: JSON.stringify({
       question,
       limit: 10,
       include_related: true,
       related_limit: 2,
       max_chars_per_doc: 4000,
-      ...options
+      use_model_planner: true,
+      ...bodyOptions
     })
   });
 }
@@ -100,6 +103,16 @@ export async function synthesizeResearch(question, researchPack, options = {}) {
   }
   buffer += decoder.decode();
   drainSSEBuffer(buffer + "\n\n", options.onEvent);
+}
+
+export function saveChatTranscript(payload) {
+  return fetchJSON("/api/chat/transcripts", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
 }
 
 function drainSSEBuffer(buffer, onEvent) {

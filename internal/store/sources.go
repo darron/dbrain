@@ -1436,6 +1436,49 @@ func (s *Store) ListAllSources(ctx context.Context, limit int) ([]model.SourceDo
 	return sources, nil
 }
 
+func (s *Store) ListAllEntitySources(ctx context.Context, limit int) ([]model.SourceDocument, error) {
+	query := `
+		SELECT id, source_key, canonical_url, source_type, domain, title, site_name, note_path
+		FROM sources
+		WHERE note_path != ''
+		ORDER BY id ASC`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list entity sources: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var sources []model.SourceDocument
+	for rows.Next() {
+		var source model.SourceDocument
+		if err := rows.Scan(
+			&source.ID,
+			&source.SourceKey,
+			&source.CanonicalURL,
+			&source.SourceType,
+			&source.Domain,
+			&source.Title,
+			&source.SiteName,
+			&source.NotePath,
+		); err != nil {
+			return nil, fmt.Errorf("scan entity source row: %w", err)
+		}
+		sources = append(sources, source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate entity sources: %w", err)
+	}
+	return sources, nil
+}
+
 func (s *Store) GetSourcesByIDs(ctx context.Context, sourceIDs []int64) ([]model.SourceDocument, error) {
 	if len(sourceIDs) == 0 {
 		return nil, nil
@@ -1493,6 +1536,73 @@ func (s *Store) GetSource(ctx context.Context, lookup string) (model.SourceDocum
 		return model.SourceDocument{}, fmt.Errorf("load source %s: %w", lookup, err)
 	}
 	return source, nil
+}
+
+func (s *Store) GetSourceEvidence(ctx context.Context, lookup string) (model.SourceDocument, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			id, source_key, canonical_url, normalized_url, source_type, domain, title, description, site_name,
+			extract_status, extracted_at,
+			summary_text, summary_status, summarized_at,
+			note_path, user_tags, created_at, updated_at
+		FROM sources
+		WHERE source_key = ?
+			OR canonical_url = ?
+			OR normalized_url = ?
+			OR note_path = ?
+		LIMIT 1`, lookup, lookup, lookup, lookup)
+
+	var source model.SourceDocument
+	var extractedAt, summarizedAt, createdAt, updatedAt string
+	if err := row.Scan(
+		&source.ID,
+		&source.SourceKey,
+		&source.CanonicalURL,
+		&source.NormalizedURL,
+		&source.SourceType,
+		&source.Domain,
+		&source.Title,
+		&source.Description,
+		&source.SiteName,
+		&source.ExtractStatus,
+		&extractedAt,
+		&source.SummaryText,
+		&source.SummaryStatus,
+		&summarizedAt,
+		&source.NotePath,
+		&source.UserTags,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.SourceDocument{}, fmt.Errorf("source not found: %s", lookup)
+		}
+		return model.SourceDocument{}, fmt.Errorf("load source evidence %s: %w", lookup, err)
+	}
+	source.ExtractedAt = parseStoredTime(extractedAt)
+	source.SummarizedAt = parseStoredTime(summarizedAt)
+	source.CreatedAt = parseStoredTime(createdAt)
+	source.UpdatedAt = parseStoredTime(updatedAt)
+	return source, nil
+}
+
+func (s *Store) GetSourceExtractedText(ctx context.Context, lookup string) (string, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT extracted_text
+		FROM sources
+		WHERE source_key = ?
+			OR canonical_url = ?
+			OR normalized_url = ?
+			OR note_path = ?
+		LIMIT 1`, lookup, lookup, lookup, lookup)
+	var extractedText string
+	if err := row.Scan(&extractedText); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("source not found: %s", lookup)
+		}
+		return "", fmt.Errorf("load source extracted text %s: %w", lookup, err)
+	}
+	return extractedText, nil
 }
 
 func (s *Store) ListSourcesForItem(ctx context.Context, itemID int64) ([]model.ItemSourceRef, error) {

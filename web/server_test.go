@@ -295,7 +295,7 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 	})
 
 	t.Run("research pack", func(t *testing.T) {
-		body := bytes.NewBufferString(`{"question":"What do I have on agent memory?","limit":4,"include_related":true,"related_limit":2,"max_chars_per_doc":4000}`)
+		body := bytes.NewBufferString(`{"question":"What do I have on agent memory?","limit":4,"include_related":true,"related_limit":2,"max_chars_per_doc":4000,"disable_planner":true}`)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/research", body)
 		req.Header.Set("Content-Type", "application/json")
@@ -364,6 +364,87 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("save chat transcript", func(t *testing.T) {
+		request := ChatTranscriptSaveRequest{
+			PinnedEvidenceKeys: []string{sourceKey},
+			SelectedLookup:     sourceKey,
+			Turns: []ChatTranscriptTurn{
+				{
+					ID:                "chat:turn-1",
+					Question:          "What do I know about Tanka?",
+					RetrievalQuestion: "Current question: What do I know about Tanka?",
+					Status:            "ready",
+					Answer:            "Tanka uses Jsonnet for Kubernetes configuration [" + sourceKey + "].",
+					CreatedAt:         "2026-05-02T16:00:00Z",
+					Citations: []brainresearch.Citation{
+						{SourceKey: sourceKey, Title: "Agent Memory Article", NotePath: "sources/test-agent-memory.md", Kind: "source"},
+					},
+					ResearchPack: brainresearch.Pack{
+						SchemaVersion: brainresearch.SchemaVersion,
+						Question:      "Current question: What do I know about Tanka?",
+						QueryPlan: brainresearch.QueryPlan{
+							TextQuery:  "tanka helm",
+							QueryTerms: []string{"tanka", "helm"},
+							TagQueries: []string{"tanka"},
+						},
+						Coverage: brainresearch.Coverage{EvidenceCount: 1, RecallNote: "one evidence row"},
+						Evidence: []ask.Evidence{
+							{
+								SourceKey:  sourceKey,
+								Kind:       "source",
+								Title:      "Agent Memory Article",
+								URL:        "https://example.com/agent-memory",
+								NotePath:   "sources/test-agent-memory.md",
+								Summary:    "Summary about durable retrieval.",
+								Excerpt:    "Excerpt about citations and retrieval.",
+								SourceType: "web",
+							},
+						},
+					},
+				},
+			},
+		}
+		body, err := json.Marshal(request)
+		if err != nil {
+			t.Fatalf("marshal transcript request: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/chat/transcripts", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response ChatTranscriptSaveResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode transcript save response: %v", err)
+		}
+		if response.Turns != 1 || response.Bytes == 0 || response.Path == "" {
+			t.Fatalf("unexpected transcript save response: %+v", response)
+		}
+		transcriptRoot := filepath.Join(cfg.DataDir, "chat-transcripts")
+		if !strings.HasPrefix(filepath.Clean(response.Path), transcriptRoot+string(os.PathSeparator)) {
+			t.Fatalf("transcript path escapes expected root: %s", response.Path)
+		}
+		content, err := os.ReadFile(response.Path)
+		if err != nil {
+			t.Fatalf("read transcript: %v", err)
+		}
+		for _, want := range []string{
+			"diagnostic export only",
+			"What do I know about Tanka?",
+			"Tanka uses Jsonnet",
+			sourceKey,
+			"Summary about durable retrieval.",
+		} {
+			if !bytes.Contains(content, []byte(want)) {
+				t.Fatalf("expected transcript to contain %q:\n%s", want, string(content))
+			}
 		}
 	})
 

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
@@ -2042,6 +2044,12 @@ func genericSkipSummaryReason(extract model.ExtractResult) (string, bool) {
 	if content == "" {
 		return "", false
 	}
+	if reason, ok := mediaURLSkipSummaryReason(extract); ok {
+		return reason, true
+	}
+	if looksLikeNonTextExtractContent(content) {
+		return "extracted content appears to be binary/non-text; text summarization skipped", true
+	}
 	if looksLikePlaceholderExtractContent(content) {
 		return "extracted content appears to be redirect/login/placeholder boilerplate rather than substantive content", true
 	}
@@ -2049,6 +2057,95 @@ func genericSkipSummaryReason(extract model.ExtractResult) (string, bool) {
 		return reason, true
 	}
 	return "", false
+}
+
+func mediaURLSkipSummaryReason(extract model.ExtractResult) (string, bool) {
+	rawURL := firstNonEmpty(extract.FinalURL, extract.CanonicalURL)
+	if strings.TrimSpace(rawURL) == "" {
+		return "", false
+	}
+	ext := sourceURLPathExtension(rawURL)
+	if ext == "" {
+		return "", false
+	}
+	if !isUnsupportedTextSummaryMediaExtension(ext) {
+		return "", false
+	}
+	return fmt.Sprintf("source URL points to %s content (%s); text summarization skipped", unsupportedTextSummaryMediaKind(ext), ext), true
+}
+
+func sourceURLPathExtension(rawURL string) string {
+	parsed, err := neturl.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.Ext(path))
+}
+
+func isUnsupportedTextSummaryMediaExtension(ext string) bool {
+	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic", ".heif", ".bmp", ".tif", ".tiff", ".ico", ".svg":
+		return true
+	case ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".mpeg", ".mpg":
+		return true
+	case ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus":
+		return true
+	case ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".dmg", ".pkg":
+		return true
+	default:
+		return false
+	}
+}
+
+func unsupportedTextSummaryMediaKind(ext string) string {
+	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic", ".heif", ".bmp", ".tif", ".tiff", ".ico", ".svg":
+		return "image/media"
+	case ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".mpeg", ".mpg":
+		return "video/media"
+	case ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus":
+		return "audio/media"
+	default:
+		return "binary/media"
+	}
+}
+
+func looksLikeNonTextExtractContent(content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
+	if strings.ContainsRune(content, '\x00') {
+		return true
+	}
+	if !utf8.ValidString(content) {
+		return true
+	}
+
+	runes := 0
+	replacementRunes := 0
+	controlRunes := 0
+	for _, r := range content {
+		runes++
+		if r == utf8.RuneError {
+			replacementRunes++
+			continue
+		}
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
+			controlRunes++
+		}
+	}
+	if runes == 0 {
+		return false
+	}
+	if replacementRunes >= 3 && replacementRunes*20 >= runes {
+		return true
+	}
+	return controlRunes >= 8 && controlRunes*10 >= runes
 }
 
 const maxLowSignalWaybackExtractChars = 500

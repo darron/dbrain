@@ -68,11 +68,11 @@ type builder struct {
 }
 
 func BuildIndex(ctx context.Context, st *store.Store) ([]Entity, error) {
-	items, err := st.ListAllItems(ctx, 0)
+	items, err := st.ListAllEntityItems(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
-	sources, err := st.ListAllSources(ctx, 0)
+	sources, err := st.ListAllEntitySources(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
