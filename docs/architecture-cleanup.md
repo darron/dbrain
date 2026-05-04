@@ -152,6 +152,11 @@ The architecture is functional, but the main pressure points are:
 - MCP stdio transport and JSON-RPC protocol dispatch now live outside
   `internal/mcpserver/server.go`, making transport, protocol, and tool behavior
   easier to review separately.
+- MCP tool dispatch, tool schemas, and tool result/formatting helpers have also
+  been split out of `internal/mcpserver/server.go`.
+- `internal/store/store.go` has been narrowed by moving schema/bootstrap logic
+  into `internal/store/schema.go` and item/source search plus FTS helpers into
+  `internal/store/search.go`, while keeping `store.Store` as the public handle.
 
 ### P0: Open-Source Readiness
 
