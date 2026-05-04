@@ -58,8 +58,8 @@ func TestRunEvaluatesExpectedRetrieval(t *testing.T) {
 		MinEvidence:         1,
 		ExpectSourceKeys:    []string{"x:carney-eval"},
 		ExpectTopSourceKeys: []string{"x:carney-eval"},
-		ExpectText:          []string{"fiscal policy"},
-		ExpectTopText:       []string{"fiscal policy"},
+		ExpectText:          []string{"local corpus"},
+		ExpectTopText:       []string{"local corpus"},
 		ForbidText:          []string{"unrelated boilerplate"},
 		MinExactTagEvidence: 1,
 		ExpectExactTagEvidenceSourceKeys: []string{

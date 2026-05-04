@@ -60,6 +60,22 @@ The local DB is a memory store, not a mirror that auto-deletes old signals.
 - audits should answer "what are we missing from upstream?"
 - audits should not default to "what should we delete locally?"
 
+### Keep research and chat evidence-grounded
+
+Research and chat should help inspect the local brain, not create new
+authoritative memory from model prose.
+
+- retrieval packs, cited source keys, raw extracts, notes, and summaries are
+  evidence
+- model answers are derived synthesis and must not be treated as evidence in
+  later research/chat turns
+- follow-up chat may reuse prior evidence context, pinned sources, and previous
+  user questions, but not previous model answers as facts
+- browser chat state should default to session-only storage unless a later
+  accepted design adds durable transcripts
+- synthesis should cite dbrain source keys and keep retrieval failure/no-evidence
+  states distinct from model failure states
+
 ## Pipeline Semantics
 
 ### Retry only genuinely retryable work
@@ -70,6 +86,8 @@ Do not let workers hot-loop forever on terminal cases.
   endlessly retryable `error`
 - oversized extracts that exceed model context should become `blocked` until a
   chunking/preprocessing path exists
+- source summary timeouts and model context-limit failures should become
+  blocked or terminal according to policy, not retryable rows that hot-loop
 - user-facing stats should separate `pending`, `blocked`, and real `failed`
   states clearly
 
@@ -153,6 +171,23 @@ Apple Notes import should stay in the spirit of dbrain's CLI.
   SaaS component in v1 or without a later accepted design that revisits this
 - provider-index/live retrieval and write-back/note creation are out of scope
   unless a later accepted design says otherwise
+
+## Safari Tabs Rules
+
+Safari tabs are another local-first, import-only evidence source. They are not
+dbrain-owned browser state.
+
+- read Safari/iCloud tab state through a dbrain-owned snapshot when possible
+- target a device explicitly for tab imports; do not assume all synced devices
+  should be imported together
+- never close, mutate, reorder, or otherwise manage upstream Safari tabs from
+  `dbrain`
+- treat Safari tab imports as append-only memory by default, even if the tab
+  later disappears upstream
+- keep `sync all` Safari tab import opt-in through explicit flags/config/env so
+  a stale iCloud tab set does not surprise users
+- report created, updated, unchanged, skipped, and linked rows separately so a
+  repeated import does not look like all tabs were newly ingested
 
 ## X-Specific Rules
 
@@ -339,11 +374,24 @@ If CLI behavior changed materially, also rebuild and spot-check the command:
 When changing workers, stats, or dashboards:
 
 - prefer outputs that explain what the system is actually doing
+- for long-running imports/enrichment, show per-item progress when real work is
+  happening; count unchanged-current rows in summaries instead of spamming them
 - avoid merged counters that hide the real cause of work or failure
 - avoid stages that look "pending forever" because semantics are unclear
 - keep similarly named counters intentionally distinct and documented, for
   example `requested` versus `hydrated`, or `items_scanned` versus
   `sources_queued`
+
+### Keep the web UI usable on mobile
+
+The web UI is used remotely from phones over Tailscale, not just on desktop.
+
+- avoid horizontal overflow from long source keys, URLs, citations, tags, and
+  Markdown code blocks
+- when a mobile interaction opens a detail panel, make the selected detail easy
+  to reach without manual scrolling through the whole page
+- prefer compact evidence lists for research/chat results and keep graph-heavy
+  views optional on small screens
 
 ## Content Handling
 

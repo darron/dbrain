@@ -9,13 +9,13 @@ import (
 func Terms(question string) []string {
 	stopwords := map[string]struct{}{
 		"a": {}, "an": {}, "and": {}, "are": {}, "can": {}, "did": {}, "do": {}, "does": {},
-		"about": {}, "brain": {}, "dbrain": {}, "evidence": {}, "find": {}, "for": {}, "from": {}, "github": {}, "have": {}, "how": {}, "i": {}, "if": {}, "in": {}, "include": {}, "is": {}, "know": {}, "local": {}, "me": {}, "my": {}, "of": {}, "on": {}, "or": {}, "present": {}, "related": {}, "saved": {}, "the": {},
+		"about": {}, "as": {}, "at": {}, "be": {}, "been": {}, "being": {}, "brain": {}, "by": {}, "context": {}, "current": {}, "data": {}, "dbrain": {}, "evidence": {}, "expansion": {}, "find": {}, "for": {}, "from": {}, "github": {}, "have": {}, "her": {}, "him": {}, "his": {}, "how": {}, "i": {}, "if": {}, "in": {}, "include": {}, "information": {}, "into": {}, "is": {}, "it": {}, "its": {}, "key": {}, "keys": {}, "know": {}, "local": {}, "look": {}, "looks": {}, "me": {}, "metadata": {}, "my": {}, "of": {}, "on": {}, "or": {}, "present": {}, "prior": {}, "query": {}, "question": {}, "questions": {}, "recent": {}, "related": {}, "relevant": {}, "saved": {}, "stories": {}, "story": {}, "that": {}, "the": {}, "their": {}, "them": {}, "there": {}, "these": {}, "this": {}, "those": {},
 		"repo": {}, "repos": {}, "repository": {}, "repositories": {},
-		"show": {}, "source": {}, "sources": {}, "tag": {}, "tags": {}, "tell": {}, "tweet": {}, "tweets": {},
-		"to": {}, "use": {}, "using": {}, "we": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {}, "you": {}, "your": {},
+		"show": {}, "source": {}, "sources": {}, "src": {}, "tag": {}, "tags": {}, "tell": {}, "tweet": {}, "tweets": {},
+		"to": {}, "use": {}, "user": {}, "using": {}, "was": {}, "we": {}, "were": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {}, "with": {}, "x": {}, "you": {}, "your": {},
 	}
 
-	parts := strings.Fields(strings.NewReplacer("-", " ", "_", " ").Replace(strings.TrimSpace(question)))
+	parts := strings.Fields(normalizeQuestionText(question))
 	if len(parts) == 0 {
 		return nil
 	}
@@ -30,7 +30,11 @@ func Terms(question string) []string {
 		if part == "" {
 			continue
 		}
+		part = canonicalTerm(part)
 		if _, skip := stopwords[part]; skip {
+			continue
+		}
+		if looksLikeSourceKeyFragment(part) {
 			continue
 		}
 		if _, exists := seen[part]; exists {
@@ -43,6 +47,56 @@ func Terms(question string) []string {
 		return strings.Fields(strings.ToLower(strings.TrimSpace(question)))
 	}
 	return terms
+}
+
+func canonicalTerm(term string) string {
+	switch term {
+	case "kid", "kids":
+		return "children"
+	case "child":
+		return "children"
+	case "killed", "killing", "kills":
+		return "kill"
+	case "charged", "charges", "charging":
+		return "charge"
+	}
+	return term
+}
+
+func normalizeQuestionText(question string) string {
+	question = strings.NewReplacer(`\n`, " ", `\r`, " ", `\t`, " ", "-", " ", "_", " ").Replace(strings.TrimSpace(question))
+	var b strings.Builder
+	b.Grow(len(question))
+	lastSpace := false
+	for _, r := range question {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return b.String()
+}
+
+func looksLikeSourceKeyFragment(term string) bool {
+	if len(term) < 8 {
+		return false
+	}
+	allDigits := true
+	allHex := true
+	for _, r := range term {
+		if !unicode.IsDigit(r) {
+			allDigits = false
+		}
+		if !unicode.IsDigit(r) && (r < 'a' || r > 'f') {
+			allHex = false
+		}
+	}
+	return allDigits || (allHex && len(term) >= 10)
 }
 
 // TagQueries returns hyphenated tag aliases that match dbrain user_tags.

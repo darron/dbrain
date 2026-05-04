@@ -40,6 +40,64 @@ func TestTagQueriesIncludeAdjacentPairs(t *testing.T) {
 	}
 }
 
+func TestChatRetrievalScaffoldingDoesNotPolluteQueryTerms(t *testing.T) {
+	t.Parallel()
+
+	hints := Hints(`Current question: other alternatives like Tanka?
+
+Recent user questions:
+- Kubernetes Helm alternatives
+
+Relevant prior evidence source keys:
+- src:56b20d0e9e0c
+
+Prior evidence metadata for query expansion:
+- Grafana Tanka | github | jsonnet, configuration-management, yaml-alternative`)
+
+	for _, noisy := range []string{"current", "question", "recent", "relevant", "prior", "evidence", "metadata", "query", "keys"} {
+		if containsString(hints.Terms, noisy) {
+			t.Fatalf("did not expect scaffolding term %q in %#v", noisy, hints.Terms)
+		}
+	}
+	for _, want := range []string{"tanka", "helm", "jsonnet", "configuration", "management", "yaml", "alternative"} {
+		if !containsString(hints.Terms, want) {
+			t.Fatalf("expected term %q in %#v", want, hints.Terms)
+		}
+	}
+	if !containsString(hints.TagQueries, "configuration-management") || !containsString(hints.TagQueries, "yaml-alternative") {
+		t.Fatalf("expected useful adjacent tag aliases, got %#v", hints.TagQueries)
+	}
+
+	hints = Hints(`Current question: Father charged with killing young son, daughter who were found in vehicle in Calgary\n\nRecent user questions:\n- Two young children found in an SUV in Calgary.\n\nRelevant prior evidence source keys:\n- x:1886891289838526774\n- src:c2c2fb606ce8`)
+	for _, term := range hints.Terms {
+		if strings.Contains(term, `\`) || strings.Contains(term, ":") {
+			t.Fatalf("did not expect escaped separator or source-key punctuation in term %q from %#v", term, hints.Terms)
+		}
+	}
+	for _, want := range []string{"father", "charge", "kill", "young", "son", "daughter", "found", "vehicle", "calgary"} {
+		if !containsString(hints.Terms, want) {
+			t.Fatalf("expected crime-story term %q in %#v", want, hints.Terms)
+		}
+	}
+	for _, noisy := range []string{"calgary\\n\\nrecent", "questions\\n", "keys\\n", "src", "x", "with", "were", "1886891289838526774", "c2c2fb606ce8"} {
+		if containsString(hints.Terms, noisy) {
+			t.Fatalf("did not expect noisy term %q in %#v", noisy, hints.Terms)
+		}
+	}
+
+	hints = Hints("Can you find the information about the Calgary man that killed his two kids?")
+	wantTerms := []string{"calgary", "man", "kill", "two", "children"}
+	if !reflect.DeepEqual(hints.Terms, wantTerms) {
+		t.Fatalf("expected conversational crime query to normalize to %#v, got %#v", wantTerms, hints.Terms)
+	}
+
+	hints = Hints("Can you look in my brain and find the stories about the father who killed two children?")
+	wantTerms = []string{"father", "kill", "two", "children"}
+	if !reflect.DeepEqual(hints.Terms, wantTerms) {
+		t.Fatalf("expected filler words to be stripped from story query, got %#v", hints.Terms)
+	}
+}
+
 func TestBuildEntityMatchIndexRequiresMultiTermEntityMatch(t *testing.T) {
 	t.Parallel()
 
@@ -131,6 +189,52 @@ func TestEvidenceFromSourcePrefersRarerQueryTermForExcerpt(t *testing.T) {
 	}
 }
 
+func TestEvidenceFromSourceUsesCompactSummaryBeforeRawExtract(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		SourceKey:     "src:calgary-crime",
+		CanonicalURL:  "https://example.com/calgary-crime",
+		Title:         "Calgary father charged",
+		SourceType:    "web",
+		NotePath:      "sources/calgary-crime.md",
+		SummaryText:   "Calgary police charged a father after his two children were found dead in a vehicle.",
+		ExtractedText: strings.Repeat("navigation related stories newsletter advertisement ", 2000) + "Calgary police charged a father after his two children were found dead in a vehicle.",
+	}
+
+	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, model.SearchResult{}, 160, []string{"father", "kill", "children"})
+	if !strings.Contains(candidate.Excerpt, "father") || !strings.Contains(candidate.Excerpt, "children") {
+		t.Fatalf("expected compact summary excerpt to include query terms, got %q", candidate.Excerpt)
+	}
+	if strings.Contains(candidate.Excerpt, "navigation related stories") {
+		t.Fatalf("expected excerpt to avoid raw extract boilerplate when summary matches, got %q", candidate.Excerpt)
+	}
+	if strings.Contains(candidate.MatchText, "navigation related stories") {
+		t.Fatalf("expected match text to avoid full raw extract boilerplate")
+	}
+	if !strings.Contains(candidate.MatchText, source.SummaryText) {
+		t.Fatalf("expected compact match text to include summary")
+	}
+}
+
+func TestEvidenceFromSourceFallsBackToRawExtractWhenCompactTextIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		SourceKey:     "src:raw-only",
+		CanonicalURL:  "https://example.com/raw-only",
+		Title:         "Sparse source",
+		SourceType:    "web",
+		NotePath:      "sources/raw-only.md",
+		ExtractedText: "Buried raw article text says Mark Carney discussed GFANZ policy.",
+	}
+
+	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, model.SearchResult{}, 160, []string{"mark", "carney", "gfanz"})
+	if !strings.Contains(candidate.Excerpt, "Mark Carney") || !strings.Contains(candidate.Excerpt, "GFANZ") {
+		t.Fatalf("expected raw extract fallback when compact fields are absent, got %q", candidate.Excerpt)
+	}
+}
+
 func TestEvidenceFromItemIncludesDerivedSummaryAndOCRExcerpt(t *testing.T) {
 	t.Parallel()
 
@@ -213,4 +317,13 @@ func TestExplainEvidenceScoreReportsTermCoverageAndDemotesMissingFocusedTerms(t 
 	if !reflect.DeepEqual(focusedInfo.MatchedTerms, terms) || len(focusedInfo.MissingTerms) != 0 {
 		t.Fatalf("expected focused result to cover all terms, got %#v", focusedInfo)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

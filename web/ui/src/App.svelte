@@ -8,7 +8,8 @@
   import OperationsPanel from "./components/OperationsPanel.svelte";
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
-  import { addLink, getBootstrap, getLookup, getSourceActivity, researchBrain, searchBrain, synthesizeResearch } from "./lib/api.js";
+  import { addLink, getBootstrap, getLookup, getSourceActivity, researchBrain, saveChatTranscript, searchBrain, synthesizeResearch } from "./lib/api.js";
+  import { buildChatRetrievalQuestion, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
   import { pageHref, readRouteState, writeRouteState } from "./lib/urlState.js";
 
@@ -16,6 +17,7 @@
   const defaultActivity = { window: "24h", items_updated_in_window: 0, sources_updated_in_window: 0, sources_summarized_in_window: 0, latest_item_updated_at: "", latest_source_updated_at: "", latest_source_summary_at: "" };
   const defaultSourceActivity = { window: "24h", recent_successes: [], recent_failures: [], failure_hotspots: [], failure_kinds: [], failure_statuses: [], failure_domains: [], failure_table: [], failure_table_total: 0, failure_table_offset: 0, failure_table_limit: 8, failure_table_sort: "newest", trend_bucket: "", trend: [] };
   const defaultSourceActivityFilters = { sourceType: "", domain: "", status: "", failureKind: "", message: "", window: "24h", limit: 8, failureOffset: 0, failureSort: "newest" };
+  const chatStorageKey = "dbrain.web.chat.v1";
 
   let mounted = false;
   let currentPage = "home";
@@ -31,7 +33,7 @@
   let sourceActivityError = "";
 
   // Search/research state
-  let inputMode = "search"; // "search" | "research"
+  let inputMode = "search"; // "search" | "research" | "chat"
   let viewMode = "graph";   // "graph" | "list"
   let searchQuery = "";
   let searchState = "idle";
@@ -50,7 +52,18 @@
   let synthesisStart = null;
   let synthesisDone = null;
   let synthesisCitations = [];
+  let researchController = null;
   let synthesisController = null;
+
+  let chatDraft = "";
+  let chatTurns = [];
+  let chatState = "idle";
+  let chatError = "";
+  let chatController = null;
+  let pinnedEvidenceKeys = [];
+  let chatSaveState = "idle";
+  let chatSaveError = "";
+  let chatSavedPath = "";
 
   // Graph state
   let graphNodes = [];
@@ -62,6 +75,7 @@
   let detailError = "";
   let detail = null;
   let detailPanelEl;
+  let chatBottomEl;
 
   // Add-link panel
   let showAddLink = false;
@@ -70,16 +84,23 @@
   let linkError = "";
   let linkResponse = null;
 
-  $: activeResults = inputMode === "search" ? searchResults : (researchPack.evidence || []);
-  $: activeState = inputMode === "search" ? searchState : researchState;
-  $: activeError = inputMode === "search" ? searchError : researchError;
-  $: hasResults = activeState === "ready" && activeResults.length > 0;
+  $: currentChatTurn = chatTurns[chatTurns.length - 1] || null;
+  $: chatBusy = chatState === "researching" || chatState === "synthesizing";
+  $: chatVisibleEvidence = currentChatTurn?.research_pack?.evidence || [];
+  $: activeResults = inputMode === "search" ? searchResults : inputMode === "research" ? (researchPack.evidence || []) : chatVisibleEvidence;
+  $: activeState = inputMode === "search" ? searchState : inputMode === "research" ? researchState : chatBusy ? "loading" : chatState === "error" ? "error" : chatTurns.length > 0 ? "ready" : "idle";
+  $: activeError = inputMode === "search" ? searchError : inputMode === "research" ? researchError : chatError;
+  $: hasResults = inputMode !== "chat" && activeState === "ready" && activeResults.length > 0;
   $: showDetailPanel = Boolean(detail || detailState !== "idle" || detailError);
   $: synthesisWarnings = synthesisDone?.answer_warnings || synthesisStart?.answer_warnings || [];
   $: visibleCitations = synthesisDone?.citations || synthesisCitations || [];
   $: synthesisWarningMessages = synthesisWarnings.map(formatSynthesisWarning);
 
   onMount(async () => {
+    const storedChat = loadChatSession();
+    chatTurns = storedChat.turns;
+    pinnedEvidenceKeys = storedChat.pinnedEvidenceKeys;
+
     const route = readRouteState();
     currentPage = route.page;
     searchQuery = route.q;
@@ -115,6 +136,10 @@
       await loadDetail(selectedLookup);
     }
   });
+
+  $: if (mounted) {
+    persistChatSession();
+  }
 
   $: if (mounted) {
     const onAdminPage = currentPage === "admin";
@@ -203,8 +228,10 @@
   async function handleSubmit() {
     if (inputMode === "search") {
       await runSearch();
-    } else {
+    } else if (inputMode === "research") {
       await submitResearch();
+    } else {
+      await submitChat();
     }
   }
 
@@ -268,6 +295,7 @@
     question = String(question || "").trim();
     researchQuestion = question;
     researchDraft = question;
+    abortResearch();
     abortSynthesis();
     researchState = "loading";
     researchError = "";
@@ -281,15 +309,23 @@
       researchState = "idle";
       return;
     }
+    researchController = new AbortController();
+    const controller = researchController;
     try {
-      researchPack = await researchBrain(question);
+      researchPack = await researchBrain(question, { signal: controller.signal });
       researchState = "ready";
       if (synthesisEnabled) {
         await runSynthesis(question, researchPack);
       }
     } catch (error) {
-      researchError = error.message;
-      researchState = "error";
+      if (error.name !== "AbortError") {
+        researchError = error.message;
+        researchState = "error";
+      }
+    } finally {
+      if (researchController === controller) {
+        researchController = null;
+      }
     }
   }
 
@@ -306,6 +342,13 @@
     if (synthesisController) {
       synthesisController.abort();
       synthesisController = null;
+    }
+  }
+
+  function abortResearch() {
+    if (researchController) {
+      researchController.abort();
+      researchController = null;
     }
   }
 
@@ -360,6 +403,196 @@
         synthesisController = null;
       }
     }
+  }
+
+  async function submitChat() {
+    const question = chatDraft.trim();
+    if (!question || chatBusy) return;
+    chatDraft = "";
+    await runChatTurn(question);
+  }
+
+  async function runChatTurn(question) {
+    abortChat();
+    chatError = "";
+    chatSaveError = "";
+    chatSavedPath = "";
+    chatSaveState = "idle";
+    const priorTurns = chatTurns;
+    const id = newID("chat");
+    const retrievalQuestion = buildChatRetrievalQuestion(question, priorTurns, pinnedEvidenceKeys);
+    const createdAt = new Date().toISOString();
+    const turn = {
+      id,
+      question,
+      retrieval_question: retrievalQuestion,
+      status: "researching",
+      answer: "",
+      research_pack: { question: retrievalQuestion, evidence: [], coverage: {}, query_plan: {}, next_steps: [] },
+      start: null,
+      done: null,
+      citations: [],
+      error: "",
+      created_at: createdAt
+    };
+    chatTurns = [...chatTurns, turn];
+    chatState = "researching";
+    void scrollChatBottomIntoView();
+
+    chatController = new AbortController();
+    const controller = chatController;
+    try {
+      const pack = await researchBrain(retrievalQuestion, { signal: controller.signal });
+      const mergedPack = mergeResearchPackForChat(question, pack, priorTurns, pinnedEvidenceKeys);
+      updateChatTurn(id, { research_pack: mergedPack, status: "synthesizing" });
+      chatState = "synthesizing";
+
+      await synthesizeResearch(question, mergedPack, {
+        signal: controller.signal,
+        onEvent: (event, payload) => {
+          if (event === "start") {
+            updateChatTurn(id, { start: payload });
+          } else if (event === "answer") {
+            updateChatTurn(id, { answer: payload.text || "" });
+          } else if (event === "citation") {
+            const current = chatTurns.find((candidate) => candidate.id === id);
+            updateChatTurn(id, { citations: [...(current?.citations || []), payload] });
+          } else if (event === "done") {
+            updateChatTurn(id, {
+              done: payload,
+              citations: payload.citations || chatTurns.find((candidate) => candidate.id === id)?.citations || [],
+              status: "ready"
+            });
+            chatState = "ready";
+          } else if (event === "error") {
+            updateChatTurn(id, { done: payload, error: payload.error || "Synthesis failed", status: "error" });
+            chatError = payload.error || "Synthesis failed";
+            chatState = "error";
+          }
+        }
+      });
+      if (chatTurns.find((candidate) => candidate.id === id)?.status === "synthesizing") {
+        updateChatTurn(id, { status: "ready" });
+      }
+      if (chatState === "synthesizing") {
+        chatState = "ready";
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        updateChatTurn(id, { error: error.message, status: "error" });
+        chatError = error.message;
+        chatState = "error";
+      }
+    } finally {
+      if (chatController === controller) {
+        chatController = null;
+      }
+    }
+  }
+
+  function updateChatTurn(id, patch) {
+    chatTurns = chatTurns.map((turn) => turn.id === id ? { ...turn, ...patch } : turn);
+  }
+
+  function chatEvidence(turn) {
+    return Array.isArray(turn?.research_pack?.evidence) ? turn.research_pack.evidence : [];
+  }
+
+  function chatWarnings(turn) {
+    const warnings = turn?.done?.answer_warnings || turn?.start?.answer_warnings || [];
+    return warnings.map(formatSynthesisWarning);
+  }
+
+  function chatCitations(turn) {
+    return turn?.done?.citations || turn?.citations || [];
+  }
+
+  function togglePinnedEvidence(sourceKey) {
+    if (!sourceKey) return;
+    if (pinnedEvidenceKeys.includes(sourceKey)) {
+      pinnedEvidenceKeys = pinnedEvidenceKeys.filter((key) => key !== sourceKey);
+    } else {
+      pinnedEvidenceKeys = [sourceKey, ...pinnedEvidenceKeys].slice(0, 24);
+    }
+  }
+
+  function isPinnedEvidence(sourceKey) {
+    return pinnedEvidenceKeys.includes(sourceKey);
+  }
+
+  function clearChat() {
+    abortChat();
+    chatTurns = [];
+    pinnedEvidenceKeys = [];
+    chatDraft = "";
+    chatError = "";
+    chatSaveError = "";
+    chatSavedPath = "";
+    chatSaveState = "idle";
+    chatState = "idle";
+  }
+
+  async function saveCurrentChatTranscript() {
+    if (chatTurns.length === 0 || chatSaveState === "loading") return;
+    chatSaveState = "loading";
+    chatSaveError = "";
+    chatSavedPath = "";
+    try {
+      const response = await saveChatTranscript({
+        turns: chatTurns,
+        pinned_evidence_keys: pinnedEvidenceKeys,
+        selected_lookup: selectedLookup
+      });
+      chatSavedPath = response.path || "";
+      chatSaveState = "ready";
+    } catch (error) {
+      chatSaveError = error.message;
+      chatSaveState = "error";
+    }
+  }
+
+  function abortChat() {
+    if (chatController) {
+      chatController.abort();
+      chatController = null;
+    }
+  }
+
+  async function scrollChatBottomIntoView() {
+    if (inputMode !== "chat") return;
+    await tick();
+    chatBottomEl?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
+
+  function loadChatSession() {
+    if (typeof sessionStorage === "undefined") return { turns: [], pinnedEvidenceKeys: [] };
+    try {
+      const raw = sessionStorage.getItem(chatStorageKey);
+      if (!raw) return { turns: [], pinnedEvidenceKeys: [] };
+      return normalizeStoredChatSession(JSON.parse(raw));
+    } catch {
+      return { turns: [], pinnedEvidenceKeys: [] };
+    }
+  }
+
+  function persistChatSession() {
+    if (typeof sessionStorage === "undefined") return;
+    const value = {
+      turns: chatTurns.slice(-8),
+      pinnedEvidenceKeys: pinnedEvidenceKeys.slice(0, 24)
+    };
+    try {
+      sessionStorage.setItem(chatStorageKey, JSON.stringify(value));
+    } catch {
+      // Ignore full or unavailable session storage; chat still works for the current render.
+    }
+  }
+
+  function newID(prefix) {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) {
+      return `${prefix}:${crypto.randomUUID()}`;
+    }
+    return `${prefix}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
   }
 
   function buildGraphFromResults(results) {
@@ -591,6 +824,9 @@
             <button class="search-tab" class:active={inputMode === "research"} on:click={() => { inputMode = "research"; }} type="button">
               Research
             </button>
+            <button class="search-tab" class:active={inputMode === "chat"} on:click={() => { inputMode = "chat"; }} type="button">
+              Chat
+            </button>
           </div>
 
           {#if inputMode === "search" && hasResults}
@@ -609,27 +845,65 @@
               <span>Synthesize answer</span>
             </label>
           {/if}
+          {#if inputMode === "chat" && chatTurns.length > 0}
+            <button class="btn-ghost compact-action" type="button" disabled={chatSaveState === "loading"} on:click={saveCurrentChatTranscript}>
+              {chatSaveState === "loading" ? "Saving…" : "Save transcript"}
+            </button>
+            <button class="btn-ghost compact-action" type="button" on:click={clearChat}>
+              New chat
+            </button>
+          {/if}
         </div>
 
-        <!-- Visible search bar on home (desktop hides header one on mobile) -->
-        <form class="search-bar" on:submit|preventDefault={handleSubmit}>
-          {#if inputMode === "search"}
-            <input
-              class="search-input"
-              bind:value={searchQuery}
-              placeholder="agent memory, kubernetes, tailscale…"
-            />
-          {:else}
-            <input
-              class="search-input"
-              bind:value={researchDraft}
-              placeholder="What do I have on agent memory?"
-            />
-          {/if}
-          <button class="search-btn" type="submit" disabled={activeState === "loading"}>
-            {activeState === "loading" ? "…" : inputMode === "search" ? "Search" : "Research"}
-          </button>
-        </form>
+        {#if inputMode !== "chat" || chatTurns.length === 0}
+          <!-- Visible search bar on home; active chat moves its composer into the thread. -->
+          <form class="search-bar" on:submit|preventDefault={handleSubmit}>
+            {#if inputMode === "search"}
+              <input
+                class="search-input"
+                bind:value={searchQuery}
+                placeholder="agent memory, kubernetes, tailscale…"
+              />
+            {:else}
+              {#if inputMode === "research"}
+                <input
+                  class="search-input"
+                  bind:value={researchDraft}
+                  placeholder="What do I have on agent memory?"
+                />
+              {:else}
+                <input
+                  class="search-input"
+                  bind:value={chatDraft}
+                  placeholder="Ask a follow-up about your brain…"
+                />
+              {/if}
+            {/if}
+            <button class="search-btn" type="submit" disabled={activeState === "loading"}>
+              {activeState === "loading" ? "…" : inputMode === "search" ? "Search" : inputMode === "research" ? "Research" : "Send"}
+            </button>
+          </form>
+        {/if}
+
+        {#if inputMode === "chat" && pinnedEvidenceKeys.length > 0}
+          <div class="chat-pins" aria-label="Pinned chat evidence">
+            <span>Context pins</span>
+            {#each pinnedEvidenceKeys as sourceKey}
+              <button class="citation-chip" type="button" on:click={() => loadDetail(sourceKey)}>
+                {sourceKey}
+              </button>
+            {/each}
+            <button class="btn-ghost compact-action" type="button" on:click={() => (pinnedEvidenceKeys = [])}>
+              Clear pins
+            </button>
+          </div>
+        {/if}
+
+        {#if inputMode === "chat" && (chatSavedPath || chatSaveError)}
+          <p class="chat-save-note" class:error={chatSaveError}>
+            {chatSaveError ? chatSaveError : `Saved transcript: ${chatSavedPath}`}
+          </p>
+        {/if}
 
         {#if activeState === "ready" && hasResults}
           <div class="result-status">
@@ -650,15 +924,132 @@
         <!-- Home guide -->
         <div class="home-guide">
           <p class="panel-kicker" style="margin-bottom:0.5rem">Local Brain Surface</p>
-          <h2>Search for exact matches. Research to pull an evidence pack.</h2>
-          <p class="message muted" style="margin-top:0.5rem">
-            Results appear as a navigable graph — click nodes to expand their relationships.
-          </p>
+          {#if inputMode === "chat"}
+            <h2>Start a session to research, clarify, and iterate against your local brain.</h2>
+            <p class="message muted" style="margin-top:0.5rem">
+              Chat history stays in this browser session. Evidence carries forward; previous model answers do not.
+            </p>
+          {:else}
+            <h2>Search for exact matches. Research to pull an evidence pack.</h2>
+            <p class="message muted" style="margin-top:0.5rem">
+              Results appear as a navigable graph — click nodes to expand their relationships.
+            </p>
+          {/if}
         </div>
-      {:else if hasResults || showDetailPanel || activeState === "loading" || (inputMode === "research" && activeState === "ready")}
+      {:else if hasResults || showDetailPanel || activeState === "loading" || (inputMode === "research" && activeState === "ready") || (inputMode === "chat" && chatTurns.length > 0)}
         <div class="content-area" class:has-detail={showDetailPanel}>
           <div class="content-main">
-            {#if inputMode === "research"}
+            {#if inputMode === "chat"}
+              <div class="chat-thread">
+                <div class="chat-thread-header">
+                  <div>
+                    <p class="panel-kicker" style="margin:0">Chat Research</p>
+                    <p class="message muted">Each turn retrieves a fresh pack and synthesizes locally with prior evidence context.</p>
+                  </div>
+                  {#if chatTurns.length > 0}
+                    <span>{chatTurns.length} turns</span>
+                  {/if}
+                </div>
+
+                {#each chatTurns as turn}
+                  <article class="chat-turn">
+                    <div class="chat-question">
+                      <span>You</span>
+                      <p>{turn.question}</p>
+                    </div>
+
+                    <div class="answer-card synthesis-card chat-answer">
+                      <div class="synthesis-header">
+                        <p class="panel-kicker" style="margin:0">dbrain</p>
+                        <span>{turn.done?.model || turn.start?.model || turn.status}</span>
+                      </div>
+
+                      {#if turn.status === "researching"}
+                        <p class="message muted">Retrieving evidence from the local brain…</p>
+                      {:else if turn.status === "synthesizing" && !turn.answer}
+                        <p class="message muted">Generating local answer…</p>
+                      {:else if turn.status === "error"}
+                        <p class="message error">{turn.error || "Chat turn failed"}</p>
+                      {/if}
+
+                      {#if turn.answer}
+                        <MarkdownView
+                          markdown={turn.answer}
+                          linkSourceKeys={true}
+                          showSourceKeyPins={true}
+                          sourceKeyPinVersion={pinnedEvidenceKeys.join("|")}
+                          isSourceKeyPinned={isPinnedEvidence}
+                          onLookup={loadDetail}
+                          onPinSourceKey={togglePinnedEvidence}
+                        />
+                      {/if}
+
+                      {#if chatWarnings(turn).length > 0}
+                        <div class="synthesis-warnings">
+                          {#each chatWarnings(turn) as message}
+                            <p class="message muted">{message}</p>
+                          {/each}
+                        </div>
+                      {/if}
+
+                      {#if chatCitations(turn).length > 0}
+                        <div class="citation-chips" aria-label="Chat citations">
+                          {#each chatCitations(turn) as citation}
+                            <span class="citation-pin-pair">
+                              <button class="citation-chip" type="button" on:click={() => loadDetail(citation.source_key)} title={citation.title || citation.note_path || citation.source_key}>
+                                {citation.source_key}
+                              </button>
+                              <button class="pin-chip tiny" class:active={isPinnedEvidence(citation.source_key)} type="button" on:click={() => togglePinnedEvidence(citation.source_key)}>
+                                Pin
+                              </button>
+                            </span>
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
+
+                    {#if chatEvidence(turn).length > 0}
+                      <details class="chat-evidence-details">
+                        <summary>
+                          <span>
+                            <span class="panel-kicker" style="margin:0">Evidence Used</span>
+                            <small>{chatEvidence(turn).length} rows with excerpts and pin controls</small>
+                          </span>
+                        </summary>
+                        <div class="evidence-compact-list">
+                          {#each chatEvidence(turn) as evidence}
+                            <div class="evidence-card chat-evidence-card" class:selected={selectedLookup === evidence.source_key}>
+                              <button class="evidence-card-main" type="button" on:click={() => loadDetail(evidence.source_key)}>
+                                <span class="result-key">{evidence.source_type || evidence.kind || evidence.relationship || "source"}</span>
+                                <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
+                                {#if evidencePreview(evidence)}
+                                  <p>{evidencePreview(evidence)}</p>
+                                {/if}
+                              </button>
+                              <button class="pin-chip" class:active={isPinnedEvidence(evidence.source_key)} type="button" on:click={() => togglePinnedEvidence(evidence.source_key)}>
+                                Pin
+                              </button>
+                            </div>
+                          {/each}
+                        </div>
+                      </details>
+                    {/if}
+                  </article>
+                {/each}
+
+                <form class="chat-composer" on:submit|preventDefault={submitChat} bind:this={chatBottomEl}>
+                  <input
+                    class="search-input"
+                    bind:value={chatDraft}
+                    placeholder={chatBusy ? "Waiting for this turn…" : "Ask a follow-up…"}
+                    disabled={chatBusy}
+                  />
+                  <button class="search-btn" type="submit" disabled={chatBusy || !chatDraft.trim()}>
+                    {chatBusy ? "…" : "Send"}
+                  </button>
+                </form>
+              </div>
+            {:else if inputMode === "research"}
               <div class="research-summary">
                 <div class="answer-card">
                   <p class="panel-kicker" style="margin:0">Research Pack</p>

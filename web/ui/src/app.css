@@ -276,6 +276,11 @@ a:hover {
   min-width: 0;
 }
 
+.compact-action {
+  padding: 0.32rem 0.6rem;
+  font-size: 0.78rem;
+}
+
 .coverage-note {
   min-width: 0;
   color: var(--text-lo);
@@ -693,6 +698,29 @@ p { margin: 0; }
   border-color: var(--border-hi);
   background: rgba(74, 222, 128, 0.18);
   text-decoration: none;
+}
+.note-markdown .source-key-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 0.22rem;
+  margin-right: 0.12rem;
+  padding: 0.03rem 0.34rem;
+  min-width: 2.15rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.05);
+  color: var(--text-lo);
+  font-size: 0.72em;
+  line-height: 1.5;
+  vertical-align: baseline;
+}
+.note-markdown .source-key-pin:hover,
+.note-markdown .source-key-pin.active {
+  border-color: var(--border-hi);
+  background: rgba(74, 222, 128, 0.16);
+  color: var(--accent);
+  transform: none;
 }
 .note-markdown ul, .note-markdown ol { padding-left: 1.3rem; }
 .note-markdown li { margin: 0.25em 0; }
@@ -1146,6 +1174,148 @@ textarea { resize: vertical; }
   min-width: 0;
 }
 
+.chat-pins {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.chat-pins > span {
+  color: var(--text-lo);
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.chat-save-note {
+  color: var(--text-lo);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.chat-save-note.error {
+  color: var(--danger);
+}
+
+.chat-thread {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem 1.25rem 1.25rem;
+  min-width: 0;
+}
+
+.chat-thread-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.035);
+}
+
+.chat-thread-header span {
+  color: var(--text-lo);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.chat-turn {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.chat-question {
+  justify-self: end;
+  display: grid;
+  gap: 0.25rem;
+  max-width: min(46rem, 82%);
+  padding: 0.65rem 0.8rem;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: var(--radius-sm) var(--radius-sm) 0.25rem var(--radius-sm);
+  background: rgba(74, 222, 128, 0.1);
+  color: var(--text-hi);
+}
+
+.chat-question span {
+  color: var(--accent);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.chat-question p {
+  overflow-wrap: anywhere;
+}
+
+.chat-answer {
+  max-width: 100%;
+}
+
+.chat-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, rgba(74, 222, 128, 0.08), rgba(96, 165, 250, 0.04));
+  box-shadow: 0 0 24px rgba(74, 222, 128, 0.05);
+  min-width: 0;
+}
+
+.chat-evidence-details {
+  border: 1px solid rgba(74, 222, 128, 0.12);
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.025);
+  min-width: 0;
+}
+
+.chat-evidence-details summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  color: var(--text-lo);
+  cursor: pointer;
+  list-style: none;
+}
+
+.chat-evidence-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-evidence-details summary::before {
+  content: "▸";
+  color: var(--accent);
+  font-size: 0.8rem;
+  transition: transform 120ms;
+}
+
+.chat-evidence-details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.chat-evidence-details summary span {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.chat-evidence-details summary small {
+  color: var(--text-lo);
+  font-size: 0.78rem;
+}
+
+.chat-evidence-details .evidence-compact-list {
+  padding: 0 0.7rem 0.7rem;
+}
+
 .evidence-compact {
   display: grid;
   gap: 0.6rem;
@@ -1200,6 +1370,53 @@ textarea { resize: vertical; }
   font-size: 0.82rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.chat-evidence-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.55rem;
+}
+
+.evidence-card-main {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.evidence-card-main:hover {
+  transform: none;
+  background: transparent;
+}
+
+.pin-chip {
+  min-width: 2.4rem;
+  padding: 0.22rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.06);
+  color: var(--text-lo);
+  font-size: 0.74rem;
+  text-align: center;
+}
+
+.pin-chip:hover,
+.pin-chip.active {
+  border-color: var(--border-hi);
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--accent);
+  transform: none;
+}
+
+.pin-chip.tiny {
+  min-width: 2.15rem;
+  padding: 0.18rem 0.42rem;
+  font-size: 0.7rem;
 }
 
 .synthesis-toggle {
@@ -1291,6 +1508,14 @@ textarea { resize: vertical; }
   border-color: var(--border-hi);
   background: rgba(74, 222, 128, 0.16);
   transform: none;
+}
+
+.citation-pin-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  max-width: 100%;
+  min-width: 0;
 }
 
 /* ─── AddLink ────────────────────────────────────────────────────── */
@@ -1505,6 +1730,12 @@ textarea { resize: vertical; }
     gap: 0.45rem;
   }
 
+  .chat-composer {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.45rem;
+    padding: 0.55rem;
+  }
+
   .search-input {
     width: 100%;
     font-size: 16px;
@@ -1560,6 +1791,7 @@ textarea { resize: vertical; }
   }
 
   .research-summary,
+  .chat-thread,
   .result-list {
     padding: 0.5rem;
   }
@@ -1577,14 +1809,29 @@ textarea { resize: vertical; }
 
   .synthesis-header,
   .evidence-compact-header,
+  .chat-thread-header,
   .panel-header {
     align-items: flex-start;
   }
 
   .synthesis-header,
-  .evidence-compact-header {
+  .evidence-compact-header,
+  .chat-thread-header {
     flex-direction: column;
     gap: 0.25rem;
+  }
+
+  .chat-question {
+    justify-self: stretch;
+    max-width: 100%;
+  }
+
+  .chat-evidence-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pin-chip {
+    justify-self: start;
   }
 
   .citation-chip,

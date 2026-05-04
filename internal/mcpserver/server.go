@@ -694,7 +694,7 @@ func toolDefinitions() []map[string]interface{} {
 		},
 		{
 			"name":        "dbrain_research_pack",
-			"description": "Build a compact read-only research pack for a question. Expands text queries, hyphenated tag aliases, entity matches, optional graph links, and an optional topic brief so agents can answer broad corpus questions with one call.",
+			"description": "Build a compact read-only research pack for a question. Expands text queries with bounded model-assisted query planning when configured, hyphenated tag aliases, entity matches, optional graph links, and an optional topic brief so agents can answer broad corpus questions with one call.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -707,6 +707,9 @@ func toolDefinitions() []map[string]interface{} {
 					"seed_limit":          map[string]interface{}{"type": "integer", "description": "Maximum primary topic nodes when a topic brief is included.", "default": 6},
 					"include_topic_brief": map[string]interface{}{"type": "boolean", "description": "Force topic brief on or off. Defaults to on only when a broad topic can be inferred."},
 					"max_chars_per_doc":   map[string]interface{}{"type": "integer", "description": "Maximum summary/excerpt characters per evidence document.", "default": 700},
+					"planner_model":       map[string]interface{}{"type": "string", "description": "Optional model for query planning; empty uses the configured summary model."},
+					"use_model_planner":   map[string]interface{}{"type": "boolean", "description": "Use the configured model for bounded query planning before retrieval. Defaults to true unless disable_planner is set.", "default": true},
+					"disable_planner":     map[string]interface{}{"type": "boolean", "description": "Disable model-assisted query planning and use deterministic planning only.", "default": false},
 				},
 				"required": []string{"question"},
 			},
@@ -911,6 +914,11 @@ func researchQueryPlanSchema() map[string]interface{} {
 		"text_query":          scalarSchema("string", "Text query submitted to corpus search after stopword removal."),
 		"query_terms":         arraySchema(scalarSchema("string", "Normalized query term.")),
 		"tag_queries":         arraySchema(scalarSchema("string", "Hyphenated user_tag aliases searched in addition to text search.")),
+		"query_variants":      arraySchema(researchQueryVariantSchema()),
+		"concepts":            arraySchema(researchQueryConceptSchema()),
+		"planner":             scalarSchema("string", "Planner path used for retrieval, such as deterministic or model_assisted."),
+		"planner_model":       scalarSchema("string", "Model used for query planning when model-assisted planning ran."),
+		"planner_error":       scalarSchema("string", "Non-fatal planner error when deterministic fallback was used."),
 		"source_types":        arraySchema(scalarSchema("string", "Optional source type filters.")),
 		"limit":               scalarSchema("integer", "Maximum evidence documents requested."),
 		"max_chars_per_doc":   scalarSchema("integer", "Maximum summary/excerpt characters per evidence document."),
@@ -920,6 +928,22 @@ func researchQueryPlanSchema() map[string]interface{} {
 		"topic_source":        scalarSchema("string", "How the topic was selected: explicit, inferred, or normalized_question."),
 		"include_topic_brief": scalarSchema("boolean", "Whether a topic brief was requested for this pack."),
 	}, "text_query", "query_terms", "tag_queries", "limit", "max_chars_per_doc", "include_related", "include_topic_brief")
+}
+
+func researchQueryVariantSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"query":  scalarSchema("string", "Bounded keyword query variant used for retrieval."),
+		"reason": scalarSchema("string", "Why this query variant was added."),
+	}, "query")
+}
+
+func researchQueryConceptSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"key":       scalarSchema("string", "Canonical concept key used for evidence scoring."),
+		"preferred": scalarSchema("string", "Preferred search term for this concept."),
+		"terms":     arraySchema(scalarSchema("string", "Alias or alternate phrase that can satisfy the concept.")),
+		"required":  scalarSchema("boolean", "Whether missing this concept should penalize evidence."),
+	}, "key", "terms", "required")
 }
 
 func researchCoverageSchema() map[string]interface{} {
