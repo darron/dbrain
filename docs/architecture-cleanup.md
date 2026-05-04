@@ -157,6 +157,9 @@ The architecture is functional, but the main pressure points are:
 - `internal/store/store.go` has been narrowed by moving schema/bootstrap logic
   into `internal/store/schema.go` and item/source search plus FTS helpers into
   `internal/store/search.go`, while keeping `store.Store` as the public handle.
+- Store open/read-only setup now lives in `internal/store/open.go`, long SQL
+  candidate predicates live in `internal/store/predicates.go`, and source
+  enrichment progress tracking/logging lives in `internal/sourceenrich/progress.go`.
 
 ### P0: Open-Source Readiness
 
