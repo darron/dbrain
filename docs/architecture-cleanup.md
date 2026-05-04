@@ -113,11 +113,11 @@ The architecture is functional, but the main pressure points are:
 
 - `internal/store` has become the schema, repository layer, search layer,
   pipeline predicate registry, stats engine, and source-specific policy holder.
-- `internal/sourceenrich/run.go` still contains candidate orchestration,
-  reader/Wayback/protected-fetch fallback flow, concurrency, persistence, and
-  note rendering, while summary execution, failure policy, extract validation,
-  YouTube audio fallback, protected fetch, and progress logging now live in
-  focused files.
+- `internal/sourceenrich/run.go` now contains the public entry points and the
+  main per-source fallback decision tree. Option defaults, candidate selection,
+  worker concurrency, persistence/note rendering, summary execution, failure
+  policy, extract validation, YouTube audio fallback, protected fetch, and
+  progress logging live in focused files.
 - `internal/syncjob/run.go` and `internal/app/sync.go` have very wide option
   surfaces and duplicate stage/config interpretation.
 - Retrieval concepts are split across `ask`, `brainresearch`, `mcpserver/get.go`,
@@ -179,8 +179,10 @@ The architecture is functional, but the main pressure points are:
   without migration metadata, and keeping `OpenReadOnly` migration-free.
 - `internal/sourceenrich/run.go` has been narrowed by moving source summary
   execution/freshness policy, extraction failure policy, extract validation and
-  cleanup, YouTube audio transcription fallback, protected fetch, and progress
-  tracking into focused files while preserving the existing fallback order.
+  cleanup, YouTube audio transcription fallback, option defaults, worker
+  concurrency, persistence/note rendering, protected fetch, selection helpers,
+  and progress tracking into focused files while preserving the existing
+  fallback order.
 
 ### P0: Open-Source Readiness
 
@@ -490,12 +492,12 @@ These are deeper and should be staged with focused tests.
 2. Decompose source enrichment.
 
    Evidence:
-   - `internal/sourceenrich/run.go` remains the source enrichment orchestrator
-     and still owns candidate selection, local-cache branching, HTTP/reader
-     fetching, Wayback branching, concurrency, persistence, and note rendering.
-   - Summary execution/freshness policy, extraction failure policy, extract
-     validation/cleanup, YouTube audio fallback, protected fetch, and progress
-     tracking are already in focused files.
+   - `internal/sourceenrich/run.go` remains the source enrichment entry point
+     and per-source fallback decision tree.
+   - Option defaults, candidate selection, worker concurrency,
+     persistence/note rendering, summary execution/freshness policy, extraction
+     failure policy, extract validation/cleanup, YouTube audio fallback,
+     protected fetch, and progress tracking are already in focused files.
 
    Cleanup:
    - Keep the existing failure policy, freshness, summary skip/blocking, and
