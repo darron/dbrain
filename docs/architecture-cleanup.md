@@ -113,13 +113,18 @@ The architecture is functional, but the main pressure points are:
 
 - `internal/store` has become the schema, repository layer, search layer,
   pipeline predicate registry, stats engine, and source-specific policy holder.
-- `internal/sourceenrich/run.go` now contains the public entry points and the
-  main per-source fallback decision tree. Option defaults, candidate selection,
-  worker concurrency, persistence/note rendering, summary execution, failure
-  policy, extract validation, YouTube audio fallback, protected fetch, and
-  progress logging live in focused files.
-- `internal/syncjob/run.go` and `internal/app/sync.go` have very wide option
-  surfaces and duplicate stage/config interpretation.
+- `internal/sourceenrich/run.go` now contains the public entry points, while
+  `process.go` and `fallback_flow.go` hold the main per-source fallback flow.
+  Option defaults, candidate selection, worker concurrency, persistence/note
+  rendering, summary execution/freshness/prompt/skip policy, failure
+  persistence/classification/preflight, extract validation, YouTube audio
+  fallback, HTTP reader, Wayback, Sucuri protected fetch, WordPress recovery,
+  HTML extraction, and progress logging live in focused files.
+- `internal/syncjob` now separates public types, option defaults, progress
+  formatting, stage-stat merging, and X frontier helpers from `run.go`, but the
+  main `Run` body and `internal/app/sync.go` still have wide option surfaces
+  and duplicate stage/config interpretation. Sync summary rendering now lives
+  outside the CLI flag adapter in `internal/app/sync_output.go`.
 - Retrieval concepts are split across `ask`, `brainresearch`, `mcpserver/get.go`,
   web handlers, entities, and topics.
 - The web docs drifted: the current web surface is read/write, while
@@ -177,12 +182,21 @@ The architecture is functional, but the main pressure points are:
   baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests
   cover fresh create, idempotent reopen, adopting the existing current schema
   without migration metadata, and keeping `OpenReadOnly` migration-free.
-- `internal/sourceenrich/run.go` has been narrowed by moving source summary
-  execution/freshness policy, extraction failure policy, extract validation and
-  cleanup, YouTube audio transcription fallback, option defaults, worker
-  concurrency, persistence/note rendering, protected fetch, selection helpers,
-  and progress tracking into focused files while preserving the existing
-  fallback order.
+- `internal/sourceenrich/run.go` has been narrowed to public entry points.
+  Source summary execution/freshness/prompt/skip policy, extraction failure
+  persistence/classification/preflight, extract validation and cleanup, YouTube
+  audio transcription fallback, option defaults, worker concurrency,
+  persistence/note rendering, selection helpers, progress tracking,
+  process/fallback flow, HTTP reader, Wayback, Sucuri protected fetch, WordPress
+  recovery, and HTML extraction now live in focused files while preserving the
+  existing fallback order.
+- `internal/syncjob/run.go` has been narrowed by moving public options/stats
+  types, default option normalization, progress formatting, stage-stat merging,
+  and X bookmark/hydrate/link frontier helpers into focused files while
+  preserving the current `sync all` order and bounded X follow-up passes.
+- `internal/app/sync.go` no longer owns sync summary table rendering; that
+  output formatting lives in `internal/app/sync_output.go` while command flags
+  and runtime option assembly remain in the CLI adapter.
 
 ### P0: Open-Source Readiness
 
@@ -474,14 +488,19 @@ These are deeper and should be staged with focused tests.
 1. Convert `syncjob` into an explicit stage plan.
 
    Evidence:
-   - `internal/syncjob/run.go` has a large `Options` struct and a hand-coded
-     orchestration sequence.
-   - `internal/app/sync.go` has a large CLI flag/config adapter.
+   - `internal/syncjob/types.go` still exposes a large flat `Options` struct,
+     and `internal/syncjob/run.go` still contains a hand-coded orchestration
+     sequence.
+   - `internal/app/sync.go` has a large CLI flag/config adapter; sync summary
+     output has been split into `internal/app/sync_output.go`.
    - Several stages have their own limit, force, concurrency, dry-run, progress,
      and summary semantics.
 
    Cleanup:
    - Land the X media/OCR limit wiring fix before this refactor.
+   - Done: move `syncjob` public types, option defaults, progress formatting,
+     merge helpers, and X frontier pass helpers out of `run.go`.
+   - Done: move sync summary output rendering out of `internal/app/sync.go`.
    - Group options by stage, for example `XOptions`, `AppleNotesOptions`,
      `SafariTabsOptions`, `SourceOptions`, `ArchiveOptions`.
    - Represent `sync all` as an ordered stage plan with explicit dependencies,
@@ -492,12 +511,15 @@ These are deeper and should be staged with focused tests.
 2. Decompose source enrichment.
 
    Evidence:
-   - `internal/sourceenrich/run.go` remains the source enrichment entry point
-     and per-source fallback decision tree.
+   - `internal/sourceenrich/run.go` remains the source enrichment entry point,
+     while `process.go` and `fallback_flow.go` now make the per-source fallback
+     ordering explicit.
    - Option defaults, candidate selection, worker concurrency,
-     persistence/note rendering, summary execution/freshness policy, extraction
-     failure policy, extract validation/cleanup, YouTube audio fallback,
-     protected fetch, and progress tracking are already in focused files.
+     persistence/note rendering, summary execution/freshness/prompt/skip
+     policy, extraction failure persistence/classification/preflight, extract
+     validation/cleanup, YouTube audio fallback, HTTP reader, Wayback, Sucuri
+     protected fetch, WordPress recovery, HTML extraction, and progress tracking
+     are already in focused files.
 
    Cleanup:
    - Keep the existing failure policy, freshness, summary skip/blocking, and
@@ -506,8 +528,9 @@ These are deeper and should be staged with focused tests.
      is covered by tests. Likely implementations include local item cache,
      direct summarize extraction, HTTP reader, protected fetch, Wayback, YouTube
      transcript, and stored extract reuse.
-   - Next, carve the remaining fetch/fallback sequence out of `run.go` without
-     changing current ordering or terminal-status handling.
+   - Next, add narrow tests around the now-explicit `process.go` fallback
+     sequence before introducing extractor interfaces or changing terminal
+     status handling.
    - Keep the current fallback order and add regression tests before changing
      behavior.
 
@@ -651,7 +674,13 @@ These are smaller findings that deserve targeted review:
    - Split `web/server.go` route files.
    - Split store implementation files by repository/predicate/stats domains.
    - Split MCP protocol/tool/payload files.
-   - Group sync options by stage while preserving current command behavior.
+   - Done: split `syncjob` public types, option defaults, progress formatting,
+     merge helpers, and X frontier helpers while preserving current command
+     behavior.
+   - Done: split sync summary output rendering out of the `sync all` CLI
+     adapter.
+   - Remaining: group sync options by stage and introduce an explicit stage
+     plan.
 
 4. Replace ad hoc schema setup with versioned migrations.
 
@@ -667,9 +696,11 @@ These are smaller findings that deserve targeted review:
 5. Decompose source enrichment.
 
    Output:
-   - Done: summary execution/freshness policy, failure policy, extract
-     validation, YouTube audio fallback, protected fetch, and progress tracking
-     are in focused files with existing regression coverage.
+   - Done: summary execution/freshness/prompt/skip policy, failure
+     persistence/classification/preflight, extract validation, YouTube audio
+     fallback, process/fallback flow, HTTP reader, Wayback, Sucuri protected
+     fetch, WordPress recovery, HTML extraction, and progress tracking are in
+     focused files with existing regression coverage.
    - Remaining: extractor interfaces or fetch/fallback modules once the current
      fallback order is covered tightly enough to make the split low-risk.
    - Same fallback order as today.

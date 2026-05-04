@@ -3,8 +3,6 @@ package syncjob
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -44,301 +42,11 @@ var (
 const maxXQuoteDrainPasses = 8
 const maxXFrontierSettlePasses = 3
 
-type Options struct {
-	XBookmarksEnabled bool
-	XBookmarksLimit   int
-
-	XEnabled         bool
-	XLimit           int
-	XConcurrency     int
-	XTimeout         time.Duration
-	XMediaEnabled    bool
-	XMediaLimit      int
-	XPhotoOCREnabled bool
-	XPhotoOCRLimit   int
-
-	LinksEnabled      bool
-	LinkDiscoverLimit int
-	LinkLimit         int
-	LinkConcurrency   int
-
-	GitHubEnabled bool
-	GitHubLimit   int
-
-	YouTubeEnabled bool
-	YouTubeLimit   int
-	WatchLater     bool
-	Liked          bool
-
-	AppleNotesEnabled            bool
-	AppleNotesDBPath             string
-	AppleNotesLimit              int
-	AppleNotesExcludeFolders     []string
-	AppleNotesExcludeAccounts    []string
-	AppleNotesExcludeShared      bool
-	AppleNotesIncludeLocked      bool
-	AppleNotesSkipAttachments    bool
-	AppleNotesSkipAttachmentOCR  bool
-	AppleNotesAttachmentMaxBytes int64
-	AppleNotesTesseractBinary    string
-
-	SafariTabsEnabled   bool
-	SafariTabsDBPath    string
-	SafariTabsDevice    string
-	SafariTabsLimit     int
-	SafariTabsOlderThan time.Duration
-
-	SourcesEnabled      bool
-	SourceLimit         int
-	SourceConcurrency   int
-	SourceWatch         bool
-	SourcePollInterval  time.Duration
-	SourceIdleExitAfter time.Duration
-	SourceMaxCycles     int
-
-	Browser               string
-	Profile               string
-	Force                 bool
-	Summarize             bool
-	Model                 string
-	OCRModel              string
-	ArchiveMediaEnabled   bool
-	ArchiveMediaLimit     int
-	ArchiveProvider       string
-	ArchiveBucket         string
-	ArchivePublicBaseURL  string
-	ArchiveEndpoint       string
-	ArchiveRegion         string
-	ArchiveAccessKeyID    string
-	ArchiveSecretKey      string
-	ArchiveSessionToken   string
-	CategorizeEnabled     bool
-	CategorizeLimit       int
-	CategorizeConcurrency int
-	CategorizeModel       string
-	CategorizeTimeout     time.Duration
-	CategorizeImages      bool
-	CLI                   string
-	Length                string
-	Timeout               time.Duration
-	Logger                *slog.Logger
-	Progress              io.Writer
-}
-
-type Stats struct {
-	StartedAt    time.Time          `json:"started_at"`
-	CompletedAt  time.Time          `json:"completed_at,omitempty"`
-	Duration     time.Duration      `json:"duration"`
-	XBookmarks   *XBookmarksStage   `json:"x_bookmarks,omitempty"`
-	X            *XStage            `json:"x,omitempty"`
-	XMedia       *XMediaStage       `json:"x_media,omitempty"`
-	XPhotoOCR    *XPhotoOCRStage    `json:"x_photo_ocr,omitempty"`
-	Links        *LinksStage        `json:"links,omitempty"`
-	GitHub       *GitHubStage       `json:"github,omitempty"`
-	YouTube      *YouTubeStage      `json:"youtube,omitempty"`
-	AppleNotes   *AppleNotesStage   `json:"apple_notes,omitempty"`
-	SafariTabs   *SafariTabsStage   `json:"safari_tabs,omitempty"`
-	Sources      *SourcesStage      `json:"sources,omitempty"`
-	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
-	Categorize   *CategorizeStage   `json:"categorize,omitempty"`
-}
-
-type XBookmarksStage struct {
-	Duration time.Duration      `json:"duration"`
-	Stats    xapi.BookmarkStats `json:"stats"`
-}
-
-type XStage struct {
-	Duration time.Duration `json:"duration"`
-	Stats    xapi.Stats    `json:"stats"`
-}
-
-type XMediaStage struct {
-	Duration time.Duration          `json:"duration"`
-	Stats    xmediatranscribe.Stats `json:"stats"`
-}
-
-type XPhotoOCRStage struct {
-	Duration time.Duration   `json:"duration"`
-	Stats    xphotoocr.Stats `json:"stats"`
-}
-
-type LinksStage struct {
-	Duration time.Duration     `json:"duration"`
-	Stats    linkextract.Stats `json:"stats"`
-}
-
-type GitHubStage struct {
-	Duration time.Duration      `json:"duration"`
-	Stats    githubimport.Stats `json:"stats"`
-}
-
-type YouTubeStage struct {
-	Duration time.Duration       `json:"duration"`
-	Stats    youtubeimport.Stats `json:"stats"`
-}
-
-type AppleNotesStage struct {
-	Duration time.Duration    `json:"duration"`
-	Stats    applenotes.Stats `json:"stats"`
-}
-
-type SafariTabsStage struct {
-	Duration time.Duration    `json:"duration"`
-	Stats    safaritabs.Stats `json:"stats"`
-}
-
-type SourcesStage struct {
-	Duration time.Duration      `json:"duration"`
-	Stats    worker.SourceStats `json:"stats"`
-}
-
-type MediaArchiveStage struct {
-	Duration time.Duration      `json:"duration"`
-	Stats    mediaarchive.Stats `json:"stats"`
-}
-
-type CategorizeStage struct {
-	Duration    time.Duration        `json:"duration"`
-	Stats       itemcategorize.Stats `json:"stats"`
-	ItemStats   itemcategorize.Stats `json:"item_stats"`
-	SourceStats itemcategorize.Stats `json:"source_stats"`
-}
-
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
-	if strings.TrimSpace(opts.Browser) == "" {
-		opts.Browser = "chrome"
-	}
-	if strings.TrimSpace(opts.Length) == "" {
-		opts.Length = "medium"
-	}
-	if opts.Timeout <= 0 {
-		opts.Timeout = 5 * time.Minute
-	}
-	if opts.XLimit <= 0 {
-		opts.XLimit = 100
-	}
-	if opts.XTimeout <= 0 {
-		opts.XTimeout = 30 * time.Second
-	}
-	if opts.XMediaLimit <= 0 {
-		opts.XMediaLimit = opts.XLimit
-	}
-	if opts.XPhotoOCRLimit <= 0 {
-		opts.XPhotoOCRLimit = opts.XLimit
-	}
-	if opts.XConcurrency <= 0 {
-		opts.XConcurrency = 4
-	}
-	if opts.LinkDiscoverLimit <= 0 {
-		opts.LinkDiscoverLimit = 500
-	}
-	if opts.LinkLimit <= 0 {
-		opts.LinkLimit = 100
-	}
-	if opts.LinkConcurrency <= 0 {
-		opts.LinkConcurrency = 4
-	}
-	if opts.YouTubeLimit <= 0 {
-		opts.YouTubeLimit = 50
-	}
-	if opts.SourceLimit <= 0 {
-		opts.SourceLimit = 100
-	}
-	if opts.SourceConcurrency <= 0 {
-		opts.SourceConcurrency = 4
-	}
-	if opts.ArchiveMediaLimit <= 0 {
-		opts.ArchiveMediaLimit = 5000
-	}
+	opts = normalizeOptions(opts)
 
 	stats := Stats{StartedAt: time.Now().UTC()}
 	progressf(opts.Progress, "Sync started at %s\n", stats.StartedAt.Format(time.RFC3339))
-
-	runXBookmarksPass := func() (xapi.BookmarkStats, time.Duration, error) {
-		progressf(opts.Progress, "==> import x-bookmarks\n")
-		start := time.Now()
-		bookmarkStats, err := runXBookmarkImport(ctx, cfg, st, xapi.BookmarkOptions{
-			Limit:   opts.XBookmarksLimit,
-			Browser: opts.Browser,
-			Profile: opts.Profile,
-			Force:   opts.Force,
-			Timeout: opts.XTimeout,
-			Logger:  opts.Logger,
-		})
-		duration := time.Since(start)
-		if err == nil {
-			progressf(opts.Progress, "X bookmarks import complete: created=%d updated=%d unchanged=%d rendered=%d pages=%d stopped=%s (%s)\n", bookmarkStats.Created, bookmarkStats.Updated, bookmarkStats.Unchanged, bookmarkStats.Rendered, bookmarkStats.PagesFetched, bookmarkStats.StoppedReason, duration)
-		}
-		return bookmarkStats, duration, err
-	}
-
-	runXHydratePass := func() (xapi.Stats, time.Duration, error) {
-		progressf(opts.Progress, "==> hydrate x\n")
-		start := time.Now()
-		xStats, err := runXHydrate(ctx, cfg, st, xapi.Options{
-			Limit:       opts.XLimit,
-			Force:       opts.Force,
-			Concurrency: opts.XConcurrency,
-			Browser:     opts.Browser,
-			Profile:     opts.Profile,
-			Timeout:     opts.XTimeout,
-			Logger:      opts.Logger,
-		})
-		if err != nil {
-			return xStats, time.Since(start), err
-		}
-		if !opts.Force && xStats.Candidates > 0 {
-			for pass := 1; pass <= maxXQuoteDrainPasses; pass++ {
-				quoteStats, quoteErr := runXHydrate(ctx, cfg, st, xapi.Options{
-					Limit:       opts.XLimit,
-					Force:       false,
-					QuoteOnly:   true,
-					Concurrency: opts.XConcurrency,
-					Browser:     opts.Browser,
-					Profile:     opts.Profile,
-					Timeout:     opts.XTimeout,
-					Logger:      opts.Logger,
-				})
-				mergeXStats(&xStats, quoteStats)
-				if quoteErr != nil {
-					return xStats, time.Since(start), fmt.Errorf("hydrate x quote pass %d: %w", pass, quoteErr)
-				}
-				if quoteStats.Candidates == 0 {
-					break
-				}
-				progressf(opts.Progress, "X quote hydration pass %d complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d\n", pass, quoteStats.Hydrated, quoteStats.Missing, quoteStats.APIErrors, quoteStats.MediaDownloaded, quoteStats.MediaErrors, quoteStats.Rendered)
-				if pass == maxXQuoteDrainPasses {
-					progressf(opts.Progress, "X quote hydration drain stopped after %d extra passes with candidates still present\n", maxXQuoteDrainPasses)
-				}
-			}
-		}
-		duration := time.Since(start)
-		progressf(opts.Progress, "X hydration complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d (%s)\n", xStats.Hydrated, xStats.Missing, xStats.APIErrors, xStats.MediaDownloaded, xStats.MediaErrors, xStats.Rendered, duration)
-		return xStats, duration, nil
-	}
-
-	runLinksPass := func() (linkextract.Stats, time.Duration, error) {
-		progressf(opts.Progress, "==> extract links\n")
-		start := time.Now()
-		linkStats, err := runLinkExtract(ctx, cfg, st, linkextract.Options{
-			DiscoverLimit: opts.LinkDiscoverLimit,
-			Limit:         opts.LinkLimit,
-			Concurrency:   opts.LinkConcurrency,
-			Force:         opts.Force,
-			Summarize:     opts.Summarize,
-			Model:         opts.Model,
-			CLI:           opts.CLI,
-			Length:        opts.Length,
-			Timeout:       opts.Timeout,
-			Logger:        opts.Logger,
-		})
-		duration := time.Since(start)
-		if err == nil {
-			progressf(opts.Progress, "Link extraction complete: items_scanned=%d sources_queued=%d sources_summarized=%d errors=%d (%s)\n", linkStats.ItemsScanned, linkStats.SourcesQueued, linkStats.SourcesSummarized, linkStats.Errors, duration)
-		}
-		return linkStats, duration, err
-	}
 
 	if opts.AppleNotesEnabled {
 		progressf(opts.Progress, "==> import apple-notes\n")
@@ -409,7 +117,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 
 			frontierActive := false
 
-			bookmarkStats, bookmarkDuration, err := runXBookmarksPass()
+			bookmarkStats, bookmarkDuration, err := runXBookmarksPass(ctx, cfg, st, opts)
 			mergeXBookmarkStage(&stats.XBookmarks, bookmarkDuration, bookmarkStats)
 			if err != nil {
 				return finishStats(stats), fmt.Errorf("import x-bookmarks: %w", err)
@@ -418,7 +126,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				frontierActive = true
 			}
 
-			xStats, xDuration, err := runXHydratePass()
+			xStats, xDuration, err := runXHydratePass(ctx, cfg, st, opts)
 			mergeXStage(&stats.X, xDuration, xStats)
 			if err != nil {
 				return finishStats(stats), fmt.Errorf("hydrate x: %w", err)
@@ -427,7 +135,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				frontierActive = true
 			}
 
-			linkStats, linkDuration, err := runLinksPass()
+			linkStats, linkDuration, err := runLinksPass(ctx, cfg, st, opts)
 			mergeLinksStage(&stats.Links, linkDuration, linkStats)
 			if err != nil {
 				return finishStats(stats), fmt.Errorf("extract links: %w", err)
@@ -445,7 +153,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 	} else {
 		if opts.XBookmarksEnabled {
-			bookmarkStats, bookmarkDuration, err := runXBookmarksPass()
+			bookmarkStats, bookmarkDuration, err := runXBookmarksPass(ctx, cfg, st, opts)
 			mergeXBookmarkStage(&stats.XBookmarks, bookmarkDuration, bookmarkStats)
 			if err != nil {
 				return finishStats(stats), fmt.Errorf("import x-bookmarks: %w", err)
@@ -453,7 +161,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 
 		if opts.XEnabled {
-			xStats, xDuration, err := runXHydratePass()
+			xStats, xDuration, err := runXHydratePass(ctx, cfg, st, opts)
 			mergeXStage(&stats.X, xDuration, xStats)
 			if err != nil {
 				return finishStats(stats), fmt.Errorf("hydrate x: %w", err)
@@ -461,7 +169,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 
 		if opts.LinksEnabled {
-			linkStats, linkDuration, err := runLinksPass()
+			linkStats, linkDuration, err := runLinksPass(ctx, cfg, st, opts)
 			mergeLinksStage(&stats.Links, linkDuration, linkStats)
 			if err != nil {
 				return finishStats(stats), fmt.Errorf("extract links: %w", err)
@@ -776,191 +484,4 @@ func finishStats(stats Stats) Stats {
 	stats.CompletedAt = time.Now().UTC()
 	stats.Duration = stats.CompletedAt.Sub(stats.StartedAt)
 	return stats
-}
-
-func progressf(dst io.Writer, format string, args ...any) {
-	if dst == nil {
-		return
-	}
-	_, _ = fmt.Fprintf(dst, format, args...)
-}
-
-func formatAppleNotesSyncProgress(dst io.Writer, event applenotes.ProgressEvent) {
-	if dst == nil {
-		return
-	}
-	switch event.Phase {
-	case "processing":
-		if event.Reason == "summary" {
-			return
-		}
-		progressf(dst, "Apple Note%s processing source=%s reason=%s links=%d attachments=%d\n",
-			appleNoteProgressPosition(event), appleNoteProgressSource(event), emptyProgressValue(event.Reason), event.Links, event.Attachments)
-	case "summarizing":
-		progressf(dst, "Apple Note%s summarizing source=%s item_status=%s summary=%s\n",
-			appleNoteProgressPosition(event), appleNoteProgressSource(event), emptyProgressValue(event.Status), emptyProgressValue(event.SummaryStatus))
-	case "imported":
-		if event.Status == "unchanged" && !event.Rendered && (event.SummaryStatus == "ok" || event.SummaryStatus == "current") {
-			return
-		}
-		progressf(dst, "Apple Note%s imported source=%s status=%s rendered=%t summary=%s links=%d attachments=%d\n",
-			appleNoteProgressPosition(event), appleNoteProgressSource(event), emptyProgressValue(event.Status), event.Rendered, emptyProgressValue(event.SummaryStatus), event.Links, event.Attachments)
-	case "skipped", "blocked":
-		progressf(dst, "Apple Note%s %s source=%s reason=%s\n",
-			appleNoteProgressPosition(event), event.Phase, appleNoteProgressSource(event), emptyProgressValue(event.Reason))
-	}
-}
-
-func appleNoteProgressPosition(event applenotes.ProgressEvent) string {
-	if event.Index <= 0 || event.Total <= 0 {
-		return ""
-	}
-	return fmt.Sprintf(" %d/%d", event.Index, event.Total)
-}
-
-func appleNoteProgressSource(event applenotes.ProgressEvent) string {
-	if strings.TrimSpace(event.SourceKey) == "" {
-		return "unknown"
-	}
-	return event.SourceKey
-}
-
-func formatSafariTabsSyncProgress(dst io.Writer, event safaritabs.ProgressEvent) {
-	if dst == nil {
-		return
-	}
-	switch event.Phase {
-	case "loaded":
-		progressf(dst, "Safari tabs loaded: candidates=%d\n", event.Total)
-	case "imported":
-		if event.Status == "unchanged" && !event.Rendered {
-			return
-		}
-		progressf(dst, "Safari Tab%s imported source=%s status=%s rendered=%t\n",
-			safariTabProgressPosition(event), safariTabProgressSource(event), emptyProgressValue(event.Status), event.Rendered)
-	case "skipped":
-		if event.Reason == "newer_than_cutoff" {
-			return
-		}
-		progressf(dst, "Safari Tab%s skipped reason=%s url=%s\n",
-			safariTabProgressPosition(event), emptyProgressValue(event.Reason), emptyProgressValue(event.URL))
-	}
-}
-
-func safariTabProgressPosition(event safaritabs.ProgressEvent) string {
-	if event.Index <= 0 || event.Total <= 0 {
-		return ""
-	}
-	return fmt.Sprintf(" %d/%d", event.Index, event.Total)
-}
-
-func safariTabProgressSource(event safaritabs.ProgressEvent) string {
-	if strings.TrimSpace(event.SourceKey) == "" {
-		return "unknown"
-	}
-	return event.SourceKey
-}
-
-func emptyProgressValue(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "-"
-	}
-	return value
-}
-
-func mergeXStats(dst *xapi.Stats, src xapi.Stats) {
-	if dst == nil {
-		return
-	}
-	dst.Candidates += src.Candidates
-	dst.Requested += src.Requested
-	dst.Hydrated += src.Hydrated
-	dst.Missing += src.Missing
-	dst.APIErrors += src.APIErrors
-	dst.Rendered += src.Rendered
-	dst.Unchanged += src.Unchanged
-	dst.MediaCandidates += src.MediaCandidates
-	dst.MediaRequested += src.MediaRequested
-	dst.MediaDownloaded += src.MediaDownloaded
-	dst.MediaGone += src.MediaGone
-	dst.MediaErrors += src.MediaErrors
-}
-
-func mergeXBookmarkStage(dst **XBookmarksStage, duration time.Duration, src xapi.BookmarkStats) {
-	if *dst == nil {
-		*dst = &XBookmarksStage{Duration: duration, Stats: src}
-		return
-	}
-	(*dst).Duration += duration
-	mergeXBookmarkStats(&(*dst).Stats, src)
-}
-
-func mergeXBookmarkStats(dst *xapi.BookmarkStats, src xapi.BookmarkStats) {
-	if dst == nil {
-		return
-	}
-	dst.PagesFetched += src.PagesFetched
-	dst.Processed += src.Processed
-	dst.Created += src.Created
-	dst.Updated += src.Updated
-	dst.Unchanged += src.Unchanged
-	dst.Rendered += src.Rendered
-	dst.StalePages += src.StalePages
-	if strings.TrimSpace(src.StoppedReason) != "" {
-		dst.StoppedReason = src.StoppedReason
-	}
-}
-
-func mergeXStage(dst **XStage, duration time.Duration, src xapi.Stats) {
-	if *dst == nil {
-		*dst = &XStage{Duration: duration, Stats: src}
-		return
-	}
-	(*dst).Duration += duration
-	mergeXStats(&(*dst).Stats, src)
-}
-
-func mergeLinksStage(dst **LinksStage, duration time.Duration, src linkextract.Stats) {
-	if *dst == nil {
-		*dst = &LinksStage{Duration: duration, Stats: src}
-		return
-	}
-	(*dst).Duration += duration
-	mergeLinkStats(&(*dst).Stats, src)
-}
-
-func mergeLinkStats(dst *linkextract.Stats, src linkextract.Stats) {
-	if dst == nil {
-		return
-	}
-	dst.ItemsScanned += src.ItemsScanned
-	dst.ItemsMarked += src.ItemsMarked
-	dst.LinksFound += src.LinksFound
-	dst.SourcesCreated += src.SourcesCreated
-	dst.LinksCreated += src.LinksCreated
-	dst.SourcesQueued += src.SourcesQueued
-	dst.SourcesExtracted += src.SourcesExtracted
-	dst.SourcesSummarized += src.SourcesSummarized
-	dst.SourcesRendered += src.SourcesRendered
-	dst.SourcesUnchanged += src.SourcesUnchanged
-	dst.Errors += src.Errors
-}
-
-func mergeCategorizeStats(values ...itemcategorize.Stats) itemcategorize.Stats {
-	var merged itemcategorize.Stats
-	for _, value := range values {
-		merged.Queued += value.Queued
-		merged.Succeeded += value.Succeeded
-		merged.Applied += value.Applied
-		merged.Skipped += value.Skipped
-		merged.Errors += value.Errors
-	}
-	return merged
-}
-
-func shouldSettleXFrontier(opts Options) bool {
-	return !opts.Force &&
-		opts.XBookmarksEnabled &&
-		opts.XEnabled &&
-		opts.LinksEnabled
 }
