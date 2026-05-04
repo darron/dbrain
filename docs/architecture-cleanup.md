@@ -167,6 +167,9 @@ The architecture is functional, but the main pressure points are:
 - Item writes now live in `internal/store/item_write.go`; X hydration,
   X media transcription state, and item link metadata helpers are split into
   focused store files.
+- Source row scanning, source reads/tags, source FTS/search, source pipeline
+  predicates, source repair/reset logic, and X article preview parsing now live
+  outside `internal/store/sources.go` in focused source files.
 - SQLite startup now runs through an ordered migration registry in
   `internal/store/migrations.go`. The checked-in current schema is recorded as
   baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests
@@ -382,15 +385,15 @@ These reduce maintenance burden without requiring major schema changes.
    Evidence:
    - `internal/store` already has focused files for categorization, cleanup,
      item links, item enrichments, media, archive state, retry, and stats.
-   - `internal/store/sources.go` remains large and holds source link upserts,
-     source enrichment persistence, repair logic, X article preview helpers,
-     read/query methods, source FTS, and source-specific pipeline SQL.
+   - `internal/store/sources.go` still holds source link upserts, source
+     extraction/summary persistence, local extract preference logic, and source
+     schema helpers.
    - Other packages depend directly on broad `store.Store` behavior.
 
    Cleanup:
    - Keep `store.Store` as the public handle initially.
-   - Target `sources.go` next: source repository, source repair, source
-     FTS/search, and pipeline predicates.
+   - Finish `sources.go` by splitting schema helpers, source link upserts, and
+     source extraction/summary persistence if those areas keep growing.
    - Move source-specific predicates into named policy objects while preserving
      one shared predicate source for workers and dashboards.
 
