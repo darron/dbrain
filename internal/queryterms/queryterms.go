@@ -8,11 +8,12 @@ import (
 // Terms normalizes a natural-language question into stable retrieval terms.
 func Terms(question string) []string {
 	stopwords := map[string]struct{}{
-		"a": {}, "an": {}, "and": {}, "are": {}, "can": {}, "did": {}, "do": {}, "does": {},
+		"a": {}, "an": {}, "and": {}, "are": {}, "can": {}, "could": {}, "did": {}, "do": {}, "does": {},
 		"about": {}, "as": {}, "at": {}, "be": {}, "been": {}, "being": {}, "brain": {}, "by": {}, "context": {}, "current": {}, "data": {}, "dbrain": {}, "evidence": {}, "expansion": {}, "find": {}, "for": {}, "from": {}, "github": {}, "have": {}, "her": {}, "him": {}, "his": {}, "how": {}, "i": {}, "if": {}, "in": {}, "include": {}, "information": {}, "into": {}, "is": {}, "it": {}, "its": {}, "key": {}, "keys": {}, "know": {}, "local": {}, "look": {}, "looks": {}, "me": {}, "metadata": {}, "my": {}, "of": {}, "on": {}, "or": {}, "present": {}, "prior": {}, "query": {}, "question": {}, "questions": {}, "recent": {}, "related": {}, "relevant": {}, "saved": {}, "stories": {}, "story": {}, "that": {}, "the": {}, "their": {}, "them": {}, "there": {}, "these": {}, "this": {}, "those": {},
 		"repo": {}, "repos": {}, "repository": {}, "repositories": {},
-		"show": {}, "source": {}, "sources": {}, "src": {}, "tag": {}, "tags": {}, "tell": {}, "tweet": {}, "tweets": {},
-		"to": {}, "use": {}, "user": {}, "using": {}, "was": {}, "we": {}, "were": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {}, "with": {}, "x": {}, "you": {}, "your": {},
+		"favored": {}, "favoured": {}, "favorite": {}, "favorites": {}, "favourite": {}, "favourites": {},
+		"show": {}, "should": {}, "source": {}, "sources": {}, "src": {}, "tag": {}, "tags": {}, "tell": {}, "tweet": {}, "tweets": {},
+		"to": {}, "use": {}, "user": {}, "using": {}, "was": {}, "we": {}, "were": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {}, "with": {}, "would": {}, "x": {}, "you": {}, "your": {},
 	}
 
 	parts := strings.Fields(normalizeQuestionText(question))
@@ -51,6 +52,8 @@ func Terms(question string) []string {
 
 func canonicalTerm(term string) string {
 	switch term {
+	case "models":
+		return "model"
 	case "kid", "kids":
 		return "children"
 	case "child":
@@ -64,6 +67,7 @@ func canonicalTerm(term string) string {
 }
 
 func normalizeQuestionText(question string) string {
+	question = stripCorpusFramePhrases(question)
 	question = strings.NewReplacer(`\n`, " ", `\r`, " ", `\t`, " ", "-", " ", "_", " ").Replace(strings.TrimSpace(question))
 	var b strings.Builder
 	b.Grow(len(question))
@@ -80,6 +84,23 @@ func normalizeQuestionText(question string) string {
 		}
 	}
 	return b.String()
+}
+
+func stripCorpusFramePhrases(question string) string {
+	question = strings.ToLower(question)
+	for _, phrase := range []string{
+		"in my research",
+		"from my research",
+		"my research",
+		"in your research",
+		"from your research",
+		"your research",
+		"in the research",
+		"from the research",
+	} {
+		question = strings.ReplaceAll(question, phrase, " ")
+	}
+	return question
 }
 
 func looksLikeSourceKeyFragment(term string) bool {

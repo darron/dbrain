@@ -325,6 +325,8 @@ func conceptForTerm(term string) QueryConcept {
 		return QueryConcept{Key: "kubernetes", Preferred: "kubernetes", Terms: []string{"kubernetes", "k8s"}, Required: true}
 	case "alternative", "alternatives", "replacement", "replacements":
 		return QueryConcept{Key: "alternative", Preferred: "alternative", Terms: []string{"alternative", "alternatives", "replacement", "replacements", "instead of"}, Required: true}
+	case "model", "models", "llm", "llms":
+		return QueryConcept{Key: "model", Preferred: "model", Terms: []string{"model", "models", "llm", "llms", "qwen", "gpt", "claude", "gemini", "minimax", "deepseek", "ollama", "openrouter"}, Required: true}
 	default:
 		if len([]rune(term)) < 3 {
 			return QueryConcept{}
@@ -367,6 +369,12 @@ func buildQueryVariants(question string, textQuery string, terms []string, conce
 		prefix := strings.TrimSpace(location)
 		add(strings.TrimSpace(prefix+" children found vehicle"), "vehicle_context_variant")
 	}
+	if hasConcept(concepts, "model") && hasConcept(concepts, "agent") {
+		if subject := modelStrategySubject(concepts); subject != "" {
+			add("llm model stack "+subject, "model_strategy_variant")
+			add("qwen gpt "+subject, "model_name_variant")
+		}
+	}
 	for _, variant := range focusedConceptVariants(concepts) {
 		add(variant.Query, variant.Reason)
 	}
@@ -375,6 +383,24 @@ func buildQueryVariants(question string, textQuery string, terms []string, conce
 		add(question, "original_question")
 	}
 	return limitQueryVariants(variants)
+}
+
+func modelStrategySubject(concepts []QueryConcept) string {
+	terms := make([]string, 0, len(concepts))
+	for _, concept := range concepts {
+		if concept.Key == "model" {
+			continue
+		}
+		if !concept.Required {
+			continue
+		}
+		if concept.Preferred != "" {
+			terms = append(terms, concept.Preferred)
+			continue
+		}
+		terms = append(terms, concept.Key)
+	}
+	return strings.Join(uniqueStrings(terms), " ")
 }
 
 func preferredConceptQuery(concepts []QueryConcept) string {

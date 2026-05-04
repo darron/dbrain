@@ -126,6 +126,30 @@ func TestBuildResearchStrategyExpandsGenericTechnicalQuery(t *testing.T) {
 	}
 }
 
+func TestBuildResearchStrategyDropsCorpusFrameTermsWhenPlannerFallsBack(t *testing.T) {
+	t.Parallel()
+
+	question := "What models should I use with Hermes agent? Are there favored models in my research?"
+	hints := ask.Hints(question)
+	strategy := buildResearchStrategy(question, hints)
+
+	if strategy.Variants[0].Query != "model hermes agent" {
+		t.Fatalf("expected clean normalized model query first, got %#v", strategy.Variants)
+	}
+	if !hasQueryVariant(strategy.Variants, "llm model stack hermes agent") ||
+		!hasQueryVariant(strategy.Variants, "qwen gpt hermes agent") {
+		t.Fatalf("expected model-strategy fallback variants, got %#v", strategy.Variants)
+	}
+	for _, noisy := range []string{"should", "favored", "research"} {
+		if hasConceptKey(strategy.Concepts, noisy) || hasQueryVariantContaining(strategy.Variants, noisy) {
+			t.Fatalf("did not expect noisy corpus-frame term %q in strategy %#v", noisy, strategy)
+		}
+	}
+	if !hasConceptKey(strategy.Concepts, "model") || !hasConceptKey(strategy.Concepts, "hermes") || !hasConceptKey(strategy.Concepts, "agent") {
+		t.Fatalf("expected model/hermes/agent concepts, got %#v", strategy.Concepts)
+	}
+}
+
 func TestBuildResearchStrategyMergesModelPlannerOutput(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -314,6 +338,17 @@ func hasQueryVariant(variants []QueryVariant, query string) bool {
 	for _, variant := range variants {
 		if variant.Query == query {
 			return true
+		}
+	}
+	return false
+}
+
+func hasQueryVariantContaining(variants []QueryVariant, term string) bool {
+	for _, variant := range variants {
+		for _, field := range strings.Fields(variant.Query) {
+			if field == term {
+				return true
+			}
 		}
 	}
 	return false

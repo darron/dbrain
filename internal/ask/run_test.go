@@ -96,6 +96,12 @@ Prior evidence metadata for query expansion:
 	if !reflect.DeepEqual(hints.Terms, wantTerms) {
 		t.Fatalf("expected filler words to be stripped from story query, got %#v", hints.Terms)
 	}
+
+	hints = Hints("What models should I use with Hermes agent? Are there favored models in my research?")
+	wantTerms = []string{"model", "hermes", "agent"}
+	if !reflect.DeepEqual(hints.Terms, wantTerms) {
+		t.Fatalf("expected corpus-framing model query to normalize to %#v, got %#v", wantTerms, hints.Terms)
+	}
 }
 
 func TestBuildEntityMatchIndexRequiresMultiTermEntityMatch(t *testing.T) {
