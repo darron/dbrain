@@ -1,5 +1,11 @@
 # Web UI Spec
 
+Status: historical first-slice design. The implemented web UI is now broader
+than this original read-only spec: it includes write routes for tags, link
+addition, chat transcript export, archive media helpers, and model-backed
+research/synthesis. See `docs/web-route-capabilities.md` for the current route
+and capability map.
+
 ## Summary
 
 Add a local read-only web surface for `dbrain` using a Go-served JSON API and an

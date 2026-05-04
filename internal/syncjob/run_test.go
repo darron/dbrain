@@ -18,6 +18,7 @@ import (
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
+	"github.com/darron/dbrain/internal/xphotoocr"
 )
 
 func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
@@ -90,6 +91,54 @@ func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(output), []byte("X media transcription complete")) {
 		t.Fatalf("expected completion output to contain x media summary, got %q", output)
+	}
+}
+
+func TestRunUsesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origXMedia := runXMediaStage
+	origXPhotoOCR := runXPhotoOCRStage
+	t.Cleanup(func() {
+		runXMediaStage = origXMedia
+		runXPhotoOCRStage = origXPhotoOCR
+	})
+
+	var calls []string
+	runXMediaStage = func(_ context.Context, _ config.Config, _ *store.Store, opts xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+		calls = append(calls, "x-media")
+		if opts.Limit != 3 {
+			t.Fatalf("expected x media limit 3, got %d", opts.Limit)
+		}
+		return xmediatranscribe.Stats{ItemsProcessed: 3}, nil
+	}
+	runXPhotoOCRStage = func(_ context.Context, _ config.Config, _ *store.Store, opts xphotoocr.Options) (xphotoocr.Stats, error) {
+		calls = append(calls, "x-photo-ocr")
+		if opts.Limit != 5 {
+			t.Fatalf("expected x photo OCR limit 5, got %d", opts.Limit)
+		}
+		return xphotoocr.Stats{ItemsProcessed: 5}, nil
+	}
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		XLimit:           7,
+		XMediaEnabled:    true,
+		XMediaLimit:      3,
+		XPhotoOCREnabled: true,
+		XPhotoOCRLimit:   5,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !slices.Equal(calls, []string{"x-media", "x-photo-ocr"}) {
+		t.Fatalf("unexpected stage order: %v", calls)
+	}
+	if stats.XMedia == nil || stats.XMedia.Stats.ItemsProcessed != 3 {
+		t.Fatalf("expected x media stats, got %+v", stats.XMedia)
+	}
+	if stats.XPhotoOCR == nil || stats.XPhotoOCR.Stats.ItemsProcessed != 5 {
+		t.Fatalf("expected x photo OCR stats, got %+v", stats.XPhotoOCR)
 	}
 }
 

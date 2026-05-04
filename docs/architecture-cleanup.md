@@ -131,6 +131,22 @@ The architecture is functional, but the main pressure points are:
 
 ## Priority Cleanup Plan
 
+### Completed In The 2026-05-04 Cleanup Pass
+
+- `docs/web-route-capabilities.md` now documents the current read/write web
+  route surface, model-call paths, local-file writes, and archive metadata
+  exposure. `docs/web-ui-spec.md` is marked as a historical first-slice design.
+- `docs/open-source-license-review.md` records the dependency-license scan and
+  the remaining root license/notice decisions.
+- Source FTS delete/insert failures now return wrapped errors, with regression
+  tests around source tag reindexing.
+- `dbrain sync all` now has separate `--x-media-limit` and
+  `--x-photo-ocr-limit` flags; both fall back to `--x-limit` when left at 0.
+- Brain research planner and synthesis temp prompt files now use the configured
+  dbrain temp directory.
+- MCP initialize responses now use build-derived `internal/version` metadata
+  instead of a hardcoded server version.
+
 ### P0: Open-Source Readiness
 
 These should happen before publishing the repo because they affect user trust,
@@ -149,8 +165,9 @@ privacy, and first-run understanding.
    Cleanup:
    - Add or promote a concise `docs/architecture.md` based on the architecture
      map above.
-   - Update `docs/web-ui-spec.md` to either mark it as historical or revise it
-     to describe the current read/write UI.
+   - Keep `docs/web-route-capabilities.md` current as the code-accurate web
+     route map; `docs/web-ui-spec.md` is now marked as a historical first-slice
+     design.
    - In README, separate current behavior from TODO/planned behavior. Consider
      moving large TODO blocks into issues or a roadmap doc.
 
@@ -179,7 +196,8 @@ privacy, and first-run understanding.
      without an obvious first-run or per-request disclosure.
 
    Cleanup:
-   - Document the exact write routes in one place.
+   - Keep the exact write routes documented in
+     `docs/web-route-capabilities.md`.
    - Document the remote trust model next to `serve remote`: Tailscale ACLs
      govern access, and remote web should not be treated as a public or
      unauthenticated read-only viewer.
@@ -228,6 +246,23 @@ privacy, and first-run understanding.
    - Document every command/path that can delete or purge local memory rows.
    - Ensure destructive operations are opt-in, named clearly, and excluded from
      generic `sync all` behavior unless explicitly configured.
+
+5. Complete the open-source license and notice pass.
+
+   Evidence:
+   - `docs/open-source-license-review.md` records the 2026-05-04 dependency
+     scan and remaining review items.
+   - The repository currently has no root `LICENSE` or `NOTICE` file.
+   - The `./cmd/dbrain` runtime graph did not show GPL/AGPL/SSPL-style
+     dependencies in the targeted scan, but the warmed module cache and `go.sum`
+     include GPL-licensed lint/tooling modules.
+
+   Cleanup:
+   - Choose and add the project license before publishing.
+   - Generate a third-party notice file for Go runtime dependencies and frontend
+     dependencies.
+   - Rerun the audit from a clean checkout and keep lint/tooling dependencies
+     separate from shipped runtime dependencies.
 
 ### P1: Structural Cleanup With Low Behavior Risk
 

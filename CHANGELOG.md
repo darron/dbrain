@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Architecture Cleanup And Open-Source Readiness (2026-05-04)
+
+- **Source FTS reliability**: Source FTS delete/insert failures now propagate instead of silently succeeding, with regression tests around source tag reindexing failures.
+- **Sync limits**: `dbrain sync all` now supports separate `--x-media-limit` and `--x-photo-ocr-limit` controls while preserving `--x-limit` as the default fallback.
+- **Research temp files**: Brain research planner and synthesis inputs now use the configured dbrain temp directory instead of the process temp directory.
+- **MCP metadata**: MCP initialize responses now use build-derived dbrain version metadata instead of a hardcoded server version.
+- **Open-source review**: Added architecture cleanup, current web route capability, and dependency-license review docs for pre-release cleanup planning.
+- **Location**: `internal/store/`, `internal/app/sync.go`, `internal/syncjob/`, `internal/brainresearch/`, `internal/mcpserver/`, `README.md`, `docs/`
+
 ### OCR Model Comparison Devtool (2026-05-02)
 
 - **Read-only OCR bakeoff**: Added `cmd/devtools/ocr_model_compare` to sample downloaded X photos, run the configured OCR model beside candidates such as `ollama/deepseek-ocr:3b`, and write Markdown/JSON reports with timings, output sizes, errors, and baseline word-overlap signals without changing stored OCR state; `--download-missing` can fetch pruned corpus images into temp files for the audit only.

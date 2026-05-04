@@ -14,6 +14,8 @@ import (
 	"github.com/darron/dbrain/internal/syncjob"
 )
 
+var runSyncAll = syncjob.Run
+
 func newSyncCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -27,6 +29,8 @@ func newSyncCommand(root *rootOptions) *cobra.Command {
 func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	var xBookmarksLimit int
 	var xLimit int
+	var xMediaLimit int
+	var xPhotoOCRLimit int
 	var xConcurrency int
 	var xTimeout time.Duration
 	var ocrModel string
@@ -196,7 +200,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				logWriter = syncUI.LogWriter()
 			}
 
-			stats, err := syncjob.Run(cmd.Context(), cfg, st, syncjob.Options{
+			stats, err := runSyncAll(cmd.Context(), cfg, st, syncjob.Options{
 				XBookmarksEnabled:            !skipXBookmarks,
 				XBookmarksLimit:              xBookmarksLimit,
 				XEnabled:                     !skipX,
@@ -204,9 +208,9 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				XConcurrency:                 xConcurrency,
 				XTimeout:                     xTimeout,
 				XMediaEnabled:                !skipXMedia,
-				XMediaLimit:                  xLimit,
+				XMediaLimit:                  xMediaLimit,
 				XPhotoOCREnabled:             !skipXPhotoOCR,
-				XPhotoOCRLimit:               xLimit,
+				XPhotoOCRLimit:               xPhotoOCRLimit,
 				LinksEnabled:                 !skipLinks,
 				LinkDiscoverLimit:            linkDiscoverLimit,
 				LinkLimit:                    linkLimit,
@@ -282,6 +286,8 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 
 	cmd.Flags().IntVar(&xBookmarksLimit, "x-bookmarks-limit", 0, "Optional direct X bookmark import limit for smoke runs")
 	cmd.Flags().IntVar(&xLimit, "x-limit", 100, "Maximum X items to hydrate per run")
+	cmd.Flags().IntVar(&xMediaLimit, "x-media-limit", 0, "Maximum X items to transcribe per run; 0 uses --x-limit")
+	cmd.Flags().IntVar(&xPhotoOCRLimit, "x-photo-ocr-limit", 0, "Maximum X items to OCR per run; 0 uses --x-limit")
 	cmd.Flags().IntVar(&xConcurrency, "x-concurrency", 4, "Number of concurrent X post fetches")
 	cmd.Flags().DurationVar(&xTimeout, "x-timeout", 30*time.Second, "Timeout for X browser helpers and HTTP requests")
 	cmd.Flags().StringVar(&ocrModel, "ocr-model", "", "Model override for X photo OCR; supports ollama/<name> and openrouter/<provider>/<model>")

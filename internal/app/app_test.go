@@ -1069,6 +1069,49 @@ func TestSyncCommandHelpIncludesAll(t *testing.T) {
 	}
 }
 
+func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
+	root := t.TempDir()
+	var captured syncjob.Options
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() {
+		runSyncAll = oldRunSyncAll
+	})
+	runSyncAll = func(_ context.Context, cfg config.Config, _ *store.Store, opts syncjob.Options) (syncjob.Stats, error) {
+		if cfg.RootDir != root {
+			t.Fatalf("expected root %s, got %s", root, cfg.RootDir)
+		}
+		captured = opts
+		now := time.Unix(0, 0).UTC()
+		return syncjob.Stats{StartedAt: now, CompletedAt: now}, nil
+	}
+
+	cmd := newSyncAllCommand(&rootOptions{root: root})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"--json",
+		"--x-limit", "7",
+		"--x-media-limit", "3",
+		"--x-photo-ocr-limit", "5",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+	if captured.XLimit != 7 {
+		t.Fatalf("expected x limit 7, got %d", captured.XLimit)
+	}
+	if captured.XMediaLimit != 3 {
+		t.Fatalf("expected x media limit 3, got %d", captured.XMediaLimit)
+	}
+	if captured.XPhotoOCRLimit != 5 {
+		t.Fatalf("expected x photo OCR limit 5, got %d", captured.XPhotoOCRLimit)
+	}
+}
+
 func TestImportCommandHelpIncludesYouTubeImporter(t *testing.T) {
 	t.Parallel()
 

@@ -516,14 +516,16 @@ to disable it for text-only models. `--categorize-limit` is applied separately
 to items and sources, so `--categorize-limit 25` can process up to 25 item rows
 and 25 source rows.
 
-The X media and X photo OCR stages use the same X batch limit as `hydrate x`
-(`--x-limit`). In the default configuration this combines the requirements of
-X bookmark import, X hydration, X media transcription, X photo OCR, link/source
-enrichment, YouTube import, and categorization. A practical local setup usually
-includes a supported Chrome/Chromium profile with valid cookies plus Ollama or
-an OpenRouter key, `mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports
-`--skip-*` flags when you only want part of the pipeline. Apple Notes is not
-run by default; enable it with `--apple-notes` or
+X hydration uses `--x-limit`. X media transcription and X photo OCR can be
+bounded independently with `--x-media-limit` and `--x-photo-ocr-limit`; either
+limit falls back to `--x-limit` when left at 0. In the default configuration
+this combines the requirements of X bookmark import, X hydration, X media
+transcription, X photo OCR, link/source enrichment, YouTube import, and
+categorization. A practical local setup usually includes a supported
+Chrome/Chromium profile with valid cookies plus Ollama or an OpenRouter key,
+`mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports `--skip-*` flags when
+you only want part of the pipeline. Apple Notes is not run by default; enable it
+with `--apple-notes` or
 `DBRAIN_APPLE_NOTES_ENABLED=true`. Safari tabs are also disabled by default;
 enable them with `--safari-tabs --safari-tabs-device <device>` or
 `DBRAIN_SAFARI_TABS_ENABLED=true` plus `DBRAIN_SAFARI_TABS_DEVICE=<device>`.
@@ -557,13 +559,13 @@ files aside with a timestamped suffix, then installs the restored database.
 
 ### `dbrain serve web`
 
-Serves the local UI plus authenticated archived-media helpers. When archive
-credentials are configured, `/media/asset/<media-asset-id>` streams archived
-objects through the local server and `/api/media/signed-url?id=<id>` returns a
-short-lived direct URL for one-off access. The Explore page includes Search,
-Research, and Chat modes; Chat runs local research/synthesis turns in browser
-session state and can save a non-indexed Markdown diagnostic transcript under
-`data/chat-transcripts/`.
+Serves the local read/write UI plus authenticated archived-media helpers. It can
+update item/source tags, queue links, run model-backed research/synthesis, and
+save non-indexed chat transcript diagnostics under `data/chat-transcripts/`.
+When archive credentials are configured, `/media/asset/<media-asset-id>` streams
+archived objects through the local server and `/api/media/signed-url?id=<id>`
+returns a short-lived direct URL for one-off access. See
+`docs/web-route-capabilities.md` for the current route capability map.
 
 ```sh
 dbrain serve web

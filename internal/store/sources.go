@@ -1950,7 +1950,7 @@ func (s *Store) syncSourceFTSByIDTx(ctx context.Context, tx *sql.Tx, sourceID in
 	}
 
 	if _, err := exec(`DELETE FROM sources_fts WHERE rowid = ?`, sourceID); err != nil {
-		return nil
+		return fmt.Errorf("delete source fts %d: %w", sourceID, err)
 	}
 
 	var source model.SourceDocument
@@ -1971,7 +1971,7 @@ func (s *Store) syncSourceFTSByIDTx(ctx context.Context, tx *sql.Tx, sourceID in
 		indexedSourceSummaryText(source),
 		source.Domain,
 	); err != nil {
-		return nil
+		return fmt.Errorf("insert source fts %d: %w", sourceID, err)
 	}
 	return nil
 }

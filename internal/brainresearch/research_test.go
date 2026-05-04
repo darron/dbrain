@@ -162,11 +162,23 @@ func TestBuildResearchStrategyMergesModelPlannerOutput(t *testing.T) {
 		fakeSummarize += ".bat"
 	}
 	script := `#!/bin/sh
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+case "$last" in
+  "$DBRAIN_TEST_EXPECT_INPUT_DIR"/* ) ;;
+  *)
+    echo "expected planner input under $DBRAIN_TEST_EXPECT_INPUT_DIR, got $last" >&2
+    exit 1
+    ;;
+esac
 printf '%s\n' '{"input":{"model":"cli/test/planner"},"extracted":{"content":"planner"},"summary":"{\"concepts\":[{\"key\":\"kubernetes\",\"preferred\":\"kubernetes\",\"terms\":[\"k8s\",\"kubernetes\"],\"required\":true},{\"key\":\"alternative\",\"preferred\":\"alternative\",\"terms\":[\"alternative\",\"replacement\",\"tanka\",\"kustomize\"],\"required\":true}],\"query_variants\":[{\"query\":\"kubernetes helm alternatives\",\"reason\":\"abbr expansion\"},{\"query\":\"helm tanka kustomize\",\"reason\":\"adjacent tools\"},{\"query\":\"src:bad\",\"reason\":\"bad source key\"}]}"}'
 `
 	if err := os.WriteFile(fakeSummarize, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)
 	}
+	t.Setenv("DBRAIN_TEST_EXPECT_INPUT_DIR", cfg.TempDir)
 	hints := ask.Hints("K8s Helm alternatives")
 	strategy := b.buildResearchStrategy(context.Background(), "K8s Helm alternatives", hints, Options{
 		PlannerModel:   "cli/test/planner",

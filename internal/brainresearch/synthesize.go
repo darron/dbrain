@@ -155,7 +155,7 @@ func RunPreparedSynthesis(ctx context.Context, cfg config.Config, prepared Prepa
 		}, nil
 	}
 
-	inputFile, err := os.CreateTemp("", "dbrain-research-synthesis-*.md")
+	inputFile, err := cfg.CreateTemp("dbrain-research-synthesis-*.md")
 	if err != nil {
 		return SynthesisResult{}, fmt.Errorf("create synthesis input: %w", err)
 	}

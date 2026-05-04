@@ -59,6 +59,10 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 	if initResult["protocolVersion"] != protocolVersion {
 		t.Fatalf("unexpected protocol version: %#v", initResult["protocolVersion"])
 	}
+	serverInfo := initResult["serverInfo"].(map[string]interface{})
+	if serverInfo["version"] == "0.1.0" || strings.TrimSpace(fmt.Sprint(serverInfo["version"])) == "" {
+		t.Fatalf("expected build-derived server version, got %#v", serverInfo["version"])
+	}
 	capabilities := initResult["capabilities"].(map[string]interface{})
 	if _, ok := capabilities["resources"]; !ok {
 		t.Fatalf("expected resources capability: %#v", capabilities)

@@ -68,7 +68,7 @@ func (b *Builder) buildModelResearchPlan(ctx context.Context, question string, h
 		timeout = defaultPlannerTimeout
 	}
 
-	inputFile, err := os.CreateTemp("", "dbrain-research-planner-*.md")
+	inputFile, err := b.cfg.CreateTemp("dbrain-research-planner-*.md")
 	if err != nil {
 		return modelResearchPlan{}, modelName, fmt.Errorf("create planner input: %w", err)
 	}

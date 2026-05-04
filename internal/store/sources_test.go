@@ -1480,6 +1480,45 @@ func TestSaveSourceExtractionTracksFailureCountsAndResetsOnSuccess(t *testing.T)
 	}
 }
 
+func TestSaveSourceUserTagsPropagatesFTSDeleteError(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:test-fts-delete-error", "https://example.com/fts-delete-error")
+
+	if _, err := st.db.ExecContext(ctx, `DROP TABLE sources_fts`); err != nil {
+		t.Fatalf("drop sources_fts: %v", err)
+	}
+
+	err := st.SaveSourceUserTags(ctx, sourceID, "source-tag")
+	if err == nil {
+		t.Fatal("expected SaveSourceUserTags to return FTS delete error")
+	}
+	if !strings.Contains(err.Error(), "delete source fts") {
+		t.Fatalf("expected delete source fts error, got %v", err)
+	}
+}
+
+func TestSaveSourceUserTagsPropagatesFTSInsertError(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:test-fts-insert-error", "https://example.com/fts-insert-error")
+
+	if _, err := st.db.ExecContext(ctx, `DROP TABLE sources_fts`); err != nil {
+		t.Fatalf("drop sources_fts: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `CREATE TABLE sources_fts(rowid INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create incompatible sources_fts: %v", err)
+	}
+
+	err := st.SaveSourceUserTags(ctx, sourceID, "source-tag")
+	if err == nil {
+		t.Fatal("expected SaveSourceUserTags to return FTS insert error")
+	}
+	if !strings.Contains(err.Error(), "insert source fts") {
+		t.Fatalf("expected insert source fts error, got %v", err)
+	}
+}
+
 func TestListSourcesForEnrichmentSkipsRecentErrorsAndOrdersOldRetries(t *testing.T) {
 	t.Parallel()
 
