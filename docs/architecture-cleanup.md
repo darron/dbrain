@@ -162,6 +162,9 @@ The architecture is functional, but the main pressure points are:
   easier to review separately.
 - MCP tool dispatch, tool schemas, and tool result/formatting helpers have also
   been split out of `internal/mcpserver/server.go`.
+- MCP `dbrain_get` payload assembly now separates lookup coordination, content
+  section selection/windowing, related item/source sections, slim metadata, and
+  text formatting while preserving the existing tool schema and JSON fields.
 - `internal/store/store.go` has been fully decomposed while keeping
   `store.Store` as the public handle: schema/bootstrap logic moved into
   `schema.go`; item/source search, tag search, match counts, and FTS helpers
@@ -240,6 +243,28 @@ The architecture is functional, but the main pressure points are:
 - `internal/itemcategorize/run.go` now remains the item/source categorization
   runner while DTOs, content bundles, photo/S3 loading, LLM transport, option
   resolution, tag merging, and small utilities live in focused files.
+- `internal/entities/entities.go` now remains the entity indexing/search facade
+  while item/source derivation, relationship inference, builder state, path
+  construction, and parsing/matching helpers live in focused files.
+- `internal/topics/topicmap.go` now remains the topic map builder while graph
+  node resolution, source-type filtering, entity scoring/pivots, formatting,
+  shared DTOs, and small utilities live in focused files.
+- `internal/vault/vault.go` now keeps path/stat helpers while item note
+  rendering, media/archive embeds, quoted-post rendering, YAML/text helpers, and
+  render-option resolution live in focused files.
+- `internal/githubimport/run.go` now remains the GitHub star import coordinator
+  while API transport, item materialization, repo extraction, source enrichment,
+  and utility helpers live in focused files.
+- `internal/youtubeimport/run.go` now remains the YouTube signal import
+  coordinator while feed execution, history cleanup, item/source shaping,
+  enrichment callbacks, browser-profile discovery, and utility helpers live in
+  focused files.
+- `internal/safaritabs/run.go` now remains the Safari tab import coordinator
+  while CloudTabs query code, item materialization, device matching, progress,
+  and time/hash helpers live in focused files.
+- `internal/xphotoocr/run.go` now remains the X photo OCR worker coordinator
+  while per-item persistence, model/provider routing, hosted/local OCR calls,
+  option resolution, and shared result helpers live in focused files.
 
 ### P0: Open-Source Readiness
 
