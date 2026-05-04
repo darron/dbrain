@@ -160,6 +160,9 @@ The architecture is functional, but the main pressure points are:
 - Store open/read-only setup now lives in `internal/store/open.go`, long SQL
   candidate predicates live in `internal/store/predicates.go`, and source
   enrichment progress tracking/logging lives in `internal/sourceenrich/progress.go`.
+- Item row decoding and shared item column selection now live in
+  `internal/store/item_scan.go`; item lookup/list/tag helpers now live in
+  `internal/store/item_read.go`.
 
 ### P0: Open-Source Readiness
 
@@ -382,7 +385,40 @@ These reduce maintenance burden without requiring major schema changes.
    - Move source-specific predicates into named policy objects while preserving
      one shared predicate source for workers and dashboards.
 
-7. Introduce typed status and stage constants.
+7. Replace ad hoc schema setup with versioned migrations before open-source use.
+
+   Evidence:
+   - `internal/store/schema.go`, `internal/store/sources.go`,
+     `internal/store/media.go`, and `internal/store/item_links.go` currently
+     create tables and add missing columns through idempotent startup code.
+   - Column backfill helpers such as `ensureItemColumns`,
+     `ensureSourceColumns`, `ensureMediaAssetColumns`, and
+     `ensureItemMediaLinkColumns` currently iterate Go maps, which makes ALTER
+     ordering non-deterministic even though today's additions are independent.
+   - There is no explicit schema version table, `PRAGMA user_version` policy,
+     ordered migration registry, or migration test that upgrades an older DB
+     fixture to the current schema.
+
+   Risk:
+   - The current approach is pragmatic for one local development database, but
+     open-source users will eventually run different binary versions against
+     real personal data.
+   - Future non-additive changes, backfills, index changes, FTS rebuilds, or
+     data-model migrations need ordering, idempotence, and clear failure
+     behavior.
+
+   Cleanup:
+   - Add an explicit migration runner with deterministic ordered migrations and
+     a recorded current schema version.
+   - Keep fresh database creation and upgrades using the same migration path, or
+     verify they produce identical schema.
+   - Add migration tests for fresh create, upgrading representative older
+     schemas, re-running migrations idempotently, and preserving raw imported
+     evidence.
+   - Keep `OpenReadOnly` migration-free for MCP/read-only consumers.
+   - Document backup/restore expectations and downgrade policy before publishing.
+
+8. Introduce typed status and stage constants.
 
    Evidence:
    - Statuses such as `ok`, `error`, `blocked`, `pending`, `dead`, `gone`, and
@@ -395,7 +431,7 @@ These reduce maintenance burden without requiring major schema changes.
    - Prefer helper predicates over open-coded string comparisons.
    - Keep database values stable to avoid a risky migration.
 
-8. Make config loading a typed runtime snapshot.
+9. Make config loading a typed runtime snapshot.
 
    Evidence:
    - `internal/config` owns paths only.
@@ -536,34 +572,25 @@ These are deeper and should be staged with focused tests.
 These are worth planning, but they should not block open sourcing unless they
 are already causing operational issues.
 
-1. Versioned schema migrations.
-
-   Current schema migration is mostly idempotent `CREATE TABLE` and `ALTER TABLE`
-   style code. That is pragmatic for local development, but open-source users
-   will benefit from explicit migration versions, migration tests, and downgrade
-   guidance. The current item/source column backfill helpers iterate Go maps, so
-   migration order is non-deterministic even though today's column additions are
-   independent. A versioned migration path should use deterministic ordering.
-
-2. Oversized-source preprocessing.
+1. Oversized-source preprocessing.
 
    Pipeline rules say oversized extracts should become blocked until chunking
    exists. A future chunking/preprocessing stage should be explicit rather than
    hidden inside summarization retry behavior.
 
-3. Provider policy and local/hosted execution modes.
+2. Provider policy and local/hosted execution modes.
 
    Local inference should remain viable. Hosted OpenRouter paths are useful for
    burst/catch-up work, but model calls should be easy to audit by stage, model,
    and provider.
 
-4. Entity/topic indexing strategy.
+3. Entity/topic indexing strategy.
 
    `internal/entities` and `internal/topics` build derived views on demand. If
    these grow, consider a persisted derived index with explicit rebuild/repair
    commands.
 
-5. Web UI build/release flow.
+4. Web UI build/release flow.
 
    `web/ui/dist` is tracked for embedding. That is acceptable if intentional,
    but release documentation should state when maintainers need to run
@@ -610,7 +637,15 @@ These are smaller findings that deserve targeted review:
    - Split MCP protocol/tool/payload files.
    - Group sync options by stage while preserving current command behavior.
 
-4. Decompose source enrichment.
+4. Replace ad hoc schema setup with versioned migrations.
+
+   Output:
+   - Deterministic ordered migration runner and recorded schema version.
+   - Migration tests for fresh create, representative upgrades, idempotent
+     reruns, and raw evidence preservation.
+   - Documented backup/restore and downgrade policy.
+
+5. Decompose source enrichment.
 
    Output:
    - Extractor interfaces.
@@ -618,7 +653,7 @@ These are smaller findings that deserve targeted review:
    - Summary policy tests.
    - Same fallback order as today.
 
-5. Plan and migrate data-model improvements.
+6. Plan and migrate data-model improvements.
 
    Output:
    - Versioned migration plan.
@@ -653,6 +688,8 @@ This cleanup effort is ready for open-source review when:
   credentials, bucket names, or corpus-specific assumptions.
 - Pipeline dashboards and worker selectors are backed by shared predicates or
   tested equivalently.
+- SQLite schema changes use ordered, versioned migrations with tests for fresh
+  create, representative upgrades, and idempotent reruns.
 - Raw evidence preservation is covered by tests for the main item-level
   enrichment paths.
 - Large files remain large only when the responsibility is inherently complex,

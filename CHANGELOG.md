@@ -11,7 +11,7 @@ development date for the change set.
 - **Sync limits**: `dbrain sync all` now supports separate `--x-media-limit` and `--x-photo-ocr-limit` controls while preserving `--x-limit` as the default fallback.
 - **Research temp files**: Brain research planner and synthesis inputs now use the configured dbrain temp directory instead of the process temp directory.
 - **MCP metadata**: MCP initialize responses now use build-derived dbrain version metadata instead of a hardcoded server version.
-- **Web/MCP/store/source structure**: Split the web server into focused route files, separated MCP transport/protocol/tools/schemas/helpers, moved store open/schema/search/predicate code into focused files, and extracted source-enrichment progress tracking without changing route, tool, store, or enrichment behavior.
+- **Web/MCP/store/source structure**: Split the web server into focused route files, separated MCP transport/protocol/tools/schemas/helpers, moved store open/schema/search/predicate/item-read/item-scan code into focused files, and extracted source-enrichment progress tracking without changing route, tool, store, or enrichment behavior.
 - **Open-source review**: Added architecture cleanup, current web route capability, and dependency-license review docs for pre-release cleanup planning.
 - **Location**: `internal/store/`, `internal/sourceenrich/`, `internal/app/sync.go`, `internal/syncjob/`, `internal/brainresearch/`, `internal/mcpserver/`, `web/`, `README.md`, `docs/`
 
