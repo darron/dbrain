@@ -11,8 +11,9 @@ development date for the change set.
 - **Sync limits**: `dbrain sync all` now supports separate `--x-media-limit` and `--x-photo-ocr-limit` controls while preserving `--x-limit` as the default fallback.
 - **Research temp files**: Brain research planner and synthesis inputs now use the configured dbrain temp directory instead of the process temp directory.
 - **MCP metadata**: MCP initialize responses now use build-derived dbrain version metadata instead of a hardcoded server version.
+- **Web/MCP structure**: Split the web server into focused route files and separated MCP stdio transport/protocol dispatch from tool implementations without changing route or tool behavior.
 - **Open-source review**: Added architecture cleanup, current web route capability, and dependency-license review docs for pre-release cleanup planning.
-- **Location**: `internal/store/`, `internal/app/sync.go`, `internal/syncjob/`, `internal/brainresearch/`, `internal/mcpserver/`, `README.md`, `docs/`
+- **Location**: `internal/store/`, `internal/app/sync.go`, `internal/syncjob/`, `internal/brainresearch/`, `internal/mcpserver/`, `web/`, `README.md`, `docs/`
 
 ### OCR Model Comparison Devtool (2026-05-02)
 

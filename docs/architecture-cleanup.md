@@ -146,6 +146,12 @@ The architecture is functional, but the main pressure points are:
   dbrain temp directory.
 - MCP initialize responses now use build-derived `internal/version` metadata
   instead of a hardcoded server version.
+- `web/server.go` has been split into focused static, read, stats, research,
+  chat transcript, mutation, utility, and API type files while preserving
+  `web.NewHandler` as the route entry point.
+- MCP stdio transport and JSON-RPC protocol dispatch now live outside
+  `internal/mcpserver/server.go`, making transport, protocol, and tool behavior
+  easier to review separately.
 
 ### P0: Open-Source Readiness
 
