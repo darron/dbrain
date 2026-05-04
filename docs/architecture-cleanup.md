@@ -167,9 +167,9 @@ The architecture is functional, but the main pressure points are:
 - Item writes now live in `internal/store/item_write.go`; X hydration,
   X media transcription state, and item link metadata helpers are split into
   focused store files.
-- Source row scanning, source reads/tags, source FTS/search, source pipeline
-  predicates, source repair/reset logic, and X article preview parsing now live
-  outside `internal/store/sources.go` in focused source files.
+- The former `internal/store/sources.go` catchall has been decomposed into
+  focused source schema, source link/upsert, enrichment persistence, scan/read,
+  search/FTS, predicate, repair, and X article preview files.
 - SQLite startup now runs through an ordered migration registry in
   `internal/store/migrations.go`. The checked-in current schema is recorded as
   baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests
@@ -297,23 +297,26 @@ privacy, and first-run understanding.
 
 These reduce maintenance burden without requiring major schema changes.
 
-1. Fix known source FTS error handling before broader store refactors.
+1. Keep source FTS error handling protected through broader store refactors.
 
    Evidence:
-   - `internal/store/sources.go` returns `nil` when `DELETE FROM sources_fts`
-     fails in `syncSourceFTSByIDTx`.
-   - The same function also returns `nil` when the follow-up `INSERT INTO
-     sources_fts` fails.
+   - `internal/store/source_search.go` owns `syncSourceFTSByIDTx`, and the
+     current implementation returns wrapped errors when either the
+     `DELETE FROM sources_fts` or follow-up `INSERT INTO sources_fts` fails.
+   - `internal/store/sources_test.go` includes regression tests that drop or
+     replace `sources_fts` and assert source tag saves surface the FTS errors.
 
    Risk:
-   - Source search indexing failures can be silently reported as success.
-   - A later store refactor could obscure the small bug and make it harder to
-     verify the intended FTS behavior.
+   - Source search indexing failures should never be reported as successful
+     metadata writes.
+   - Later store refactors could weaken this coverage if FTS sync behavior is
+     moved without the regression tests.
 
    Cleanup:
-   - Return wrapped errors from both FTS delete and insert failures.
-   - Add a narrow regression test if practical; otherwise document why SQLite FTS
-     failure injection is not worth the test complexity.
+   - Keep the delete/insert failure regression tests with any future source FTS
+     split.
+   - Add direct FTS rebuild/check tests if future schema changes touch
+     `sources_fts`.
 
 2. Add pipeline predicate and retry-policy guardrails.
 
@@ -322,7 +325,8 @@ These reduce maintenance burden without requiring major schema changes.
      predicates staying aligned.
    - SQLite writes use busy retry behavior, while source extraction has its own
      retry cooldowns and terminal/final-attempt thresholds in
-     `internal/store/sources.go`.
+     `internal/store/source_predicates.go` and
+     `internal/store/source_enrichment.go`.
 
    Cleanup:
    - Add tests that assert candidate selectors and stats use the same stage
@@ -385,15 +389,16 @@ These reduce maintenance burden without requiring major schema changes.
    Evidence:
    - `internal/store` already has focused files for categorization, cleanup,
      item links, item enrichments, media, archive state, retry, and stats.
-   - `internal/store/sources.go` still holds source link upserts, source
-     extraction/summary persistence, local extract preference logic, and source
-     schema helpers.
+   - `internal/store/sources.go` has been eliminated; source-store behavior now
+     lives in focused schema, link/upsert, enrichment persistence, scan/read,
+     search/FTS, predicate, repair, and X article preview files.
    - Other packages depend directly on broad `store.Store` behavior.
 
    Cleanup:
    - Keep `store.Store` as the public handle initially.
-   - Finish `sources.go` by splitting schema helpers, source link upserts, and
-     source extraction/summary persistence if those areas keep growing.
+   - Keep future source-store work in the focused files, and add new
+     source-specific files only when a responsibility grows beyond its current
+     owner.
    - Move source-specific predicates into named policy objects while preserving
      one shared predicate source for workers and dashboards.
 
