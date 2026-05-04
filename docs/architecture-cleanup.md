@@ -164,20 +164,33 @@ The architecture is functional, but the main pressure points are:
   been split out of `internal/mcpserver/server.go`.
 - `internal/store/store.go` has been fully decomposed while keeping
   `store.Store` as the public handle: schema/bootstrap logic moved into
-  `schema.go`, item/source search plus FTS helpers moved into `search.go`,
-  and item/X write paths moved into focused files.
+  `schema.go`; item/source search, tag search, match counts, and FTS helpers
+  moved into focused search/FTS files; and item/X write paths moved into
+  focused files.
 - Store open/read-only setup now lives in `internal/store/open.go`, long SQL
   candidate predicates live in `internal/store/predicates.go`, and source
   enrichment progress tracking/logging lives in `internal/sourceenrich/progress.go`.
 - Item row decoding and shared item column selection now live in
   `internal/store/item_scan.go`; item lookup/list/tag helpers now live in
   `internal/store/item_read.go`.
-- Item writes now live in `internal/store/item_write.go`; X hydration,
-  X media transcription state, and item link metadata helpers are split into
-  focused store files.
+- Item writes now live in `internal/store/item_write.go`; item enrichment
+  queries, summary writes, OCR writes, purge, item FTS sync, X hydration
+  candidate/save/link/invalidation paths, X media transcription state, and item
+  link metadata helpers are split into focused store files.
+- Media store behavior now has focused schema, download persistence, item
+  reference, archive/prune candidate, archive write, archive lookup, X hydration
+  media sync, X hydration media decode/merge, and raw media extraction files.
+- Source enrichment store behavior now separates candidate selection,
+  extraction persistence, preferred local extract lookup, and summary
+  persistence into focused files.
+- Store stats now separate DTOs, count queries, activity summaries, backlog
+  summaries, shared count helpers, pipeline assembly, item-level pipeline rows,
+  pipeline aggregation helpers, source activity feed assembly, source activity
+  SQL builders, and trend shaping.
 - The former `internal/store/sources.go` catchall has been decomposed into
   focused source schema, source link/upsert, enrichment persistence, scan/read,
-  search/FTS, predicate, repair, and X article preview files.
+  lookup/evidence/relation/tag helpers, search/FTS, predicate, repair filters,
+  X article repair reset, and X article preview files.
 - SQLite startup now runs through an ordered migration registry in
   `internal/store/migrations.go`. The checked-in current schema is recorded as
   baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests
@@ -187,6 +200,7 @@ The architecture is functional, but the main pressure points are:
   Source summary execution/freshness/prompt/skip policy, extraction failure
   persistence/classification/preflight, extract validation and cleanup, YouTube
   audio transcription fallback, option defaults, worker concurrency,
+  audio transcriber command helpers, option defaults, worker concurrency,
   persistence/note rendering, selection helpers, progress tracking,
   process/fallback flow, HTTP reader, Wayback, Sucuri protected fetch, WordPress
   recovery, and HTML extraction now live in focused files while preserving the
@@ -201,6 +215,31 @@ The architecture is functional, but the main pressure points are:
   binding, root-env/config resolution, `syncjob.Options` assembly, progress UI,
   and summary table rendering now live in focused `internal/app/sync_*.go`
   files, with tests covering root `.env` sync option resolution.
+- App-level stats command wiring and output rendering are split, and sync
+  progress UI rendering is separated from log/progress parsing helpers.
+- Apple Notes import command wiring, progress/stat output, and debug
+  probe/snapshot/decode subcommands are now separated in `internal/app`.
+- Serve command wiring is split by MCP, remote tsnet, and plain web surfaces
+  while preserving existing flags and defaults.
+- Categorization command wiring now separates item and source command surfaces.
+- `internal/ask/run.go` now remains the retrieval facade while query hints,
+  evidence shaping, scoring, prompt input writing, entity expansion, excerpt
+  windowing, and small utilities live in focused package files.
+- `internal/brainresearch/research.go` now remains the research-pack builder
+  while pack DTOs, deterministic/model-assisted strategy helpers, evidence
+  reranking, topic inference, coverage, exact-tag examples, search filtering,
+  next-step suggestions, and utilities live in focused package files.
+- `internal/summarizecli/client.go` now remains the summarize runner while
+  direct Ollama/OpenRouter calls, command retry/timeout behavior, provider
+  selection, version probing, model/env resolution, and shared DTOs live in
+  focused files.
+- `internal/xapi/xapi.go` now remains the X hydration coordinator while fetch
+  policy, quoted-post tree persistence, client/cookie handling, TweetResult
+  request metadata, snapshot parsing, and shared utilities live in focused
+  files.
+- `internal/itemcategorize/run.go` now remains the item/source categorization
+  runner while DTOs, content bundles, photo/S3 loading, LLM transport, option
+  resolution, tag merging, and small utilities live in focused files.
 
 ### P0: Open-Source Readiness
 
@@ -351,8 +390,10 @@ These reduce maintenance burden without requiring major schema changes.
      predicates staying aligned.
    - SQLite writes use busy retry behavior, while source extraction has its own
      retry cooldowns and terminal/final-attempt thresholds in
-     `internal/store/source_predicates.go` and
-     `internal/store/source_enrichment.go`.
+     `internal/store/source_predicates.go`,
+     `internal/store/source_enrichment_candidates.go`,
+     `internal/store/source_extraction.go`, and
+     `internal/store/source_summary.go`.
 
    Cleanup:
    - Add tests that assert candidate selectors and stats use the same stage
@@ -414,7 +455,9 @@ These reduce maintenance burden without requiring major schema changes.
 
    Evidence:
    - `internal/store` already has focused files for categorization, cleanup,
-     item links, item enrichments, media, archive state, retry, and stats.
+     item links, item enrichment queries/writes, media schema/download/refs,
+     archive state, retry, search/tag/count helpers, stats pipeline coverage,
+     and source activity.
    - `internal/store/sources.go` has been eliminated; source-store behavior now
      lives in focused schema, link/upsert, enrichment persistence, scan/read,
      search/FTS, predicate, repair, and X article preview files.
@@ -598,8 +641,12 @@ These are deeper and should be staged with focused tests.
 6. Consolidate retrieval payload construction.
 
    Evidence:
-   - `internal/ask` builds evidence for CLI/research-style answers.
-   - `internal/brainresearch` wraps `ask` into research packs.
+   - `internal/ask` now separates its retrieval facade from query hints,
+     evidence shaping, scoring, prompt input writing, entity expansion, excerpt
+     windowing, and small utilities.
+   - `internal/brainresearch` wraps `ask` into research packs and now keeps
+     strategy planning, evidence reranking, exact-tag examples, topic/coverage
+     helpers, and DTOs separate from the top-level pack builder.
    - `internal/mcpserver/get.go` builds separate content sections and related
      payloads.
    - `web/server.go` has its own detail/search payloads.
@@ -679,7 +726,8 @@ These are smaller findings that deserve targeted review:
    - Brain research temp files moved to configured dbrain temp storage where
      practical.
    - Split `web/server.go` route files.
-   - Split store implementation files by repository/predicate/stats domains.
+   - Split store implementation files by repository/predicate/stats/media/item
+     enrichment/source-enrichment domains.
    - Split MCP protocol/tool/payload files.
    - Done: split `syncjob` public types, option defaults, progress formatting,
      merge helpers, stage execution helpers, runner hooks, and X frontier

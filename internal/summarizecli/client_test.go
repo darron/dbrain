@@ -39,6 +39,29 @@ func TestPreferredCLIProviderFallsBackToCodex(t *testing.T) {
 	}
 }
 
+func TestVersionDoesNotCacheMissingBinary(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "summarize")
+	if got := Version(context.Background(), binary); got != "" {
+		t.Fatalf("expected missing binary version to be empty, got %q", got)
+	}
+
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	if got := Version(context.Background(), binary); got != "test-1.0.0" {
+		t.Fatalf("expected discovered version after fake binary install, got %q", got)
+	}
+}
+
 func TestRunRetriesDatabaseLocked(t *testing.T) {
 	root := t.TempDir()
 	countPath := filepath.Join(root, "count.txt")

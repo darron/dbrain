@@ -82,7 +82,7 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	installResearchFakeSummarize(t, root)
+	fakeSummarize := installResearchFakeSummarize(t, root)
 	t.Setenv("DBRAIN_TEST_EXPECT_INPUT_DIR", cfg.TempDir)
 	t.Setenv("DBRAIN_SUMMARY_MODEL", "")
 	t.Setenv("SUMMARIZE_MODEL", "")
@@ -101,6 +101,7 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 		Pack:             pack,
 		Model:            "cli/test/research",
 		CLI:              "codex",
+		Binary:           fakeSummarize,
 		Timeout:          5 * time.Second,
 		MaxEvidenceChars: 4000,
 	})
@@ -118,7 +119,7 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 	}
 }
 
-func installResearchFakeSummarize(t *testing.T, root string) {
+func installResearchFakeSummarize(t *testing.T, root string) string {
 	t.Helper()
 
 	binDir := filepath.Join(root, "bin")
@@ -174,5 +175,5 @@ printf '%s\n' '{"input":{"model":"cli/test/research"},"extracted":{"url":"","tit
 		t.Fatalf("write fake summarize: %v", err)
 	}
 
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return scriptPath
 }
