@@ -113,9 +113,11 @@ The architecture is functional, but the main pressure points are:
 
 - `internal/store` has become the schema, repository layer, search layer,
   pipeline predicate registry, stats engine, and source-specific policy holder.
-- `internal/sourceenrich/run.go` contains candidate handling, fetch policy,
-  fallback extraction, failure classification, summarization, concurrency,
-  progress, persistence, and note rendering in one large package file.
+- `internal/sourceenrich/run.go` still contains candidate orchestration,
+  reader/Wayback/protected-fetch fallback flow, concurrency, persistence, and
+  note rendering, while summary execution, failure policy, extract validation,
+  YouTube audio fallback, protected fetch, and progress logging now live in
+  focused files.
 - `internal/syncjob/run.go` and `internal/app/sync.go` have very wide option
   surfaces and duplicate stage/config interpretation.
 - Retrieval concepts are split across `ask`, `brainresearch`, `mcpserver/get.go`,
@@ -175,6 +177,10 @@ The architecture is functional, but the main pressure points are:
   baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests
   cover fresh create, idempotent reopen, adopting the existing current schema
   without migration metadata, and keeping `OpenReadOnly` migration-free.
+- `internal/sourceenrich/run.go` has been narrowed by moving source summary
+  execution/freshness policy, extraction failure policy, extract validation and
+  cleanup, YouTube audio transcription fallback, protected fetch, and progress
+  tracking into focused files while preserving the existing fallback order.
 
 ### P0: Open-Source Readiness
 
@@ -484,24 +490,22 @@ These are deeper and should be staged with focused tests.
 2. Decompose source enrichment.
 
    Evidence:
-   - `internal/sourceenrich/run.go` is the largest single implementation file.
-   - It owns candidate selection, local-cache use, HTTP/reader fetching,
-     Wayback, summarize CLI calls, failure policy, concurrency, persistence, and
-     note rendering.
-   - `internal/sourceenrich/protectedfetch.go` has already been extracted, so
-     this cleanup should focus on the remaining orchestration and policy code in
-     `run.go`, not restart a solved split.
+   - `internal/sourceenrich/run.go` remains the source enrichment orchestrator
+     and still owns candidate selection, local-cache branching, HTTP/reader
+     fetching, Wayback branching, concurrency, persistence, and note rendering.
+   - Summary execution/freshness policy, extraction failure policy, extract
+     validation/cleanup, YouTube audio fallback, protected fetch, and progress
+     tracking are already in focused files.
 
    Cleanup:
-   - Split internal functions and add regression tests around failure policy and
-     freshness before introducing new interfaces.
+   - Keep the existing failure policy, freshness, summary skip/blocking, and
+     YouTube fallback regression tests with the split files.
    - Extract a `SourceExtractor` interface only once the current fallback order
      is covered by tests. Likely implementations include local item cache,
      direct summarize extraction, HTTP reader, protected fetch, Wayback, YouTube
      transcript, and stored extract reuse.
-   - Extract a failure policy package that maps errors and content conditions to
-     retryable, blocked, dead, gone, or success states.
-   - Extract summary freshness and summary execution from extraction.
+   - Next, carve the remaining fetch/fallback sequence out of `run.go` without
+     changing current ordering or terminal-status handling.
    - Keep the current fallback order and add regression tests before changing
      behavior.
 
@@ -661,9 +665,11 @@ These are smaller findings that deserve targeted review:
 5. Decompose source enrichment.
 
    Output:
-   - Extractor interfaces.
-   - Failure policy tests.
-   - Summary policy tests.
+   - Done: summary execution/freshness policy, failure policy, extract
+     validation, YouTube audio fallback, protected fetch, and progress tracking
+     are in focused files with existing regression coverage.
+   - Remaining: extractor interfaces or fetch/fallback modules once the current
+     fallback order is covered tightly enough to make the split low-risk.
    - Same fallback order as today.
 
 6. Plan and migrate data-model improvements.
