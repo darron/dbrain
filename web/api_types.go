@@ -7,11 +7,8 @@ import (
 )
 
 type AppInfo struct {
-	Name     string `json:"name"`
-	RootDir  string `json:"root_dir"`
-	VaultDir string `json:"vault_dir"`
-	DBPath   string `json:"db_path"`
-	HasFTS   bool   `json:"has_fts"`
+	Name   string `json:"name"`
+	HasFTS bool   `json:"has_fts"`
 }
 
 type BootstrapResponse struct {
@@ -30,13 +27,31 @@ type SearchResponse struct {
 type GetResponse struct {
 	Lookup        string                 `json:"lookup"`
 	Kind          string                 `json:"kind"`
-	Item          *model.Item            `json:"item,omitempty"`
+	Item          *ItemResponse          `json:"item,omitempty"`
 	Source        *model.SourceDocument  `json:"source,omitempty"`
 	LinkedSources []model.ItemSourceRef  `json:"linked_sources,omitempty"`
 	Backlinks     []model.SourceBacklink `json:"backlinks,omitempty"`
-	QuotedPosts   []model.Item           `json:"quoted_posts,omitempty"`
+	QuotedPosts   []ItemResponse         `json:"quoted_posts,omitempty"`
 	NoteContent   string                 `json:"note_content,omitempty"`
 	NoteError     string                 `json:"note_error,omitempty"`
+}
+
+type ItemResponse struct {
+	model.Item
+	Media []MediaRefResponse `json:"media,omitempty"`
+}
+
+type MediaRefResponse struct {
+	MediaAssetID   int64  `json:"media_asset_id"`
+	Ordinal        int    `json:"ordinal"`
+	ExpandedURL    string `json:"expanded_url,omitempty"`
+	RemoteURL      string `json:"remote_url,omitempty"`
+	MediaType      string `json:"media_type"`
+	DownloadStatus string `json:"download_status,omitempty"`
+	ArchiveURL     string `json:"archive_url,omitempty"`
+	ArchiveStatus  string `json:"archive_status,omitempty"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
 }
 
 type ResearchRequest struct {

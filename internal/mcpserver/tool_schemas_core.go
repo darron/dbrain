@@ -15,7 +15,7 @@ func getOutputSchema() map[string]interface{} {
 		"title":                 scalarSchema("string", "Resolved title."),
 		"source_key":            scalarSchema("string", "Resolved source key."),
 		"url":                   scalarSchema("string", "Canonical URL when available."),
-		"note":                  scalarSchema("string", "Absolute path to the rendered note."),
+		"note":                  scalarSchema("string", "Relative rendered note path."),
 		"note_path":             scalarSchema("string", "Relative rendered note path."),
 		"query":                 scalarSchema("string", "Optional query used to window evidence sections around matches."),
 		"content_mode":          enumSchema("Returned content mode.", "brief", "evidence", "raw", "rendered"),

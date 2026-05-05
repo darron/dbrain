@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -56,7 +55,6 @@ func maxGetSectionChars(value int) int {
 }
 
 func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode string, maxChars int, query string) (map[string]interface{}, string, error) {
-	note := filepath.Join(s.cfg.VaultDir, filepath.FromSlash(item.NotePath))
 	available := itemAvailableSections(item)
 	relatedItems, relatedItemSections, err := s.itemRelatedItemSections(ctx, item)
 	if err != nil {
@@ -71,7 +69,7 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 
 	sections := sectionsForMode(available, mode, maxChars, query)
 	if mode == getModeRendered {
-		content, err := readNote(note)
+		content, err := readVaultNote(s.cfg.VaultDir, item.NotePath)
 		if err != nil {
 			return nil, "", err
 		}
@@ -83,7 +81,7 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 		"title":                 item.Title,
 		"source_key":            item.SourceKey,
 		"url":                   item.CanonicalURL,
-		"note":                  note,
+		"note":                  item.NotePath,
 		"note_path":             item.NotePath,
 		"content_mode":          mode,
 		"max_chars_per_section": maxChars,
@@ -107,7 +105,6 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 }
 
 func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocument, mode string, maxChars int, query string) (map[string]interface{}, string, error) {
-	note := filepath.Join(s.cfg.VaultDir, filepath.FromSlash(source.NotePath))
 	available := sourceAvailableSections(source)
 	backlinks, backlinkSections, err := s.sourceBacklinkSections(ctx, source)
 	if err != nil {
@@ -117,7 +114,7 @@ func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocume
 
 	sections := sectionsForMode(available, mode, maxChars, query)
 	if mode == getModeRendered {
-		content, err := readNote(note)
+		content, err := readVaultNote(s.cfg.VaultDir, source.NotePath)
 		if err != nil {
 			return nil, "", err
 		}
@@ -130,7 +127,7 @@ func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocume
 		"title":                 title,
 		"source_key":            source.SourceKey,
 		"url":                   source.CanonicalURL,
-		"note":                  note,
+		"note":                  source.NotePath,
 		"note_path":             source.NotePath,
 		"content_mode":          mode,
 		"max_chars_per_section": maxChars,

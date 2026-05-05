@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strings"
 
 	"github.com/darron/dbrain/internal/entities"
@@ -31,8 +30,7 @@ func (s *Server) readItemResource(ctx context.Context, uri string, lookup string
 		return nil, err
 	}
 
-	notePath := filepath.Join(s.cfg.VaultDir, filepath.FromSlash(item.NotePath))
-	noteBody, err := readNote(notePath)
+	noteBody, err := readVaultNote(s.cfg.VaultDir, item.NotePath)
 	if err != nil {
 		noteBody = fmt.Sprintf("_Note unreadable: %v_", err)
 	}
@@ -47,7 +45,7 @@ func (s *Server) readItemResource(ctx context.Context, uri string, lookup string
 ## Note
 
 %s
-`, firstNonEmpty(item.Title, item.SourceKey), item.SourceKey, item.SourceType, item.CanonicalURL, notePath, noteBody))
+`, firstNonEmpty(item.Title, item.SourceKey), item.SourceKey, item.SourceType, item.CanonicalURL, item.NotePath, noteBody))
 
 	return []map[string]string{{
 		"uri":      uri,
@@ -62,8 +60,7 @@ func (s *Server) readSourceResource(ctx context.Context, uri string, lookup stri
 		return nil, err
 	}
 
-	notePath := filepath.Join(s.cfg.VaultDir, filepath.FromSlash(source.NotePath))
-	noteBody, err := readNote(notePath)
+	noteBody, err := readVaultNote(s.cfg.VaultDir, source.NotePath)
 	if err != nil {
 		noteBody = fmt.Sprintf("_Note unreadable: %v_", err)
 	}
@@ -78,7 +75,7 @@ func (s *Server) readSourceResource(ctx context.Context, uri string, lookup stri
 ## Note
 
 %s
-`, firstNonEmpty(source.Title, source.SourceKey, source.CanonicalURL), source.SourceKey, source.SourceType, source.CanonicalURL, notePath, noteBody))
+`, firstNonEmpty(source.Title, source.SourceKey, source.CanonicalURL), source.SourceKey, source.SourceType, source.CanonicalURL, source.NotePath, noteBody))
 
 	return []map[string]string{{
 		"uri":      uri,

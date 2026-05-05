@@ -45,7 +45,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (map[strin
 	}
 	results = filterSearchResults(ctx, s.st, results, args.SourceTypes)
 	results = dedupeSearchResults(results, limit)
-	content := formatSearchResults(s.cfg, results)
+	content := formatSearchResults(results)
 	return toolOKResult(content, map[string]interface{}{
 		"results":           results,
 		"count":             len(results),

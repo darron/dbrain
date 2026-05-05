@@ -2,7 +2,9 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -36,11 +38,8 @@ func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, BootstrapResponse{
 		App: AppInfo{
-			Name:     "dbrain",
-			RootDir:  s.cfg.RootDir,
-			VaultDir: s.cfg.VaultDir,
-			DBPath:   s.cfg.DBPath,
-			HasFTS:   s.store.HasFTS(),
+			Name:   "dbrain",
+			HasFTS: s.store.HasFTS(),
 		},
 		Backlog:        backlog,
 		Activity:       activity,
@@ -95,10 +94,11 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		quotedPosts := s.loadQuotedPosts(r.Context(), item.ID)
+		itemResponse := itemWebResponse(item)
 		writeJSON(w, http.StatusOK, GetResponse{
 			Lookup:        lookup,
 			Kind:          "item",
-			Item:          &item,
+			Item:          &itemResponse,
 			LinkedSources: linkedSources,
 			QuotedPosts:   quotedPosts,
 			NoteContent:   noteContent,
@@ -130,19 +130,48 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) loadQuotedPosts(ctx context.Context, itemID int64) []model.Item {
+func (s *server) loadQuotedPosts(ctx context.Context, itemID int64) []ItemResponse {
 	childIDs, err := s.store.ListItemChildLinks(ctx, itemID, "quoted_post")
 	if err != nil || len(childIDs) == 0 {
 		return nil
 	}
-	posts := make([]model.Item, 0, len(childIDs))
+	posts := make([]ItemResponse, 0, len(childIDs))
 	for _, id := range childIDs {
 		child, err := s.store.GetItemByID(ctx, id)
 		if err == nil {
-			posts = append(posts, child)
+			posts = append(posts, itemWebResponse(child))
 		}
 	}
 	return posts
+}
+
+func itemWebResponse(item model.Item) ItemResponse {
+	return ItemResponse{
+		Item:  item,
+		Media: mediaWebResponse(item.Media),
+	}
+}
+
+func mediaWebResponse(refs []model.ItemMediaRef) []MediaRefResponse {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]MediaRefResponse, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, MediaRefResponse{
+			MediaAssetID:   ref.MediaAssetID,
+			Ordinal:        ref.Ordinal,
+			ExpandedURL:    ref.ExpandedURL,
+			RemoteURL:      ref.RemoteURL,
+			MediaType:      ref.MediaType,
+			DownloadStatus: ref.DownloadStatus,
+			ArchiveURL:     ref.ArchiveURL,
+			ArchiveStatus:  ref.ArchiveStatus,
+			Width:          ref.Width,
+			Height:         ref.Height,
+		})
+	}
+	return out
 }
 
 func (s *server) loadNote(notePath string) (string, string) {
@@ -156,9 +185,18 @@ func (s *server) loadNote(notePath string) (string, string) {
 
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
-		return "", fmt.Sprintf("read note %s: %v", fullPath, err)
+		return "", noteReadError(notePath, err)
 	}
 	return string(content), ""
+}
+
+func noteReadError(notePath string, err error) string {
+	reason := "failed"
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && pathErr.Err != nil {
+		reason = pathErr.Err.Error()
+	}
+	return fmt.Sprintf("read note %s: %s", filepath.ToSlash(notePath), reason)
 }
 
 func (s *server) resolveNotePath(notePath string) (string, error) {

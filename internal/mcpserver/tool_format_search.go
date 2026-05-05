@@ -1,15 +1,13 @@
 package mcpserver
 
 import (
-	"path/filepath"
 	"strings"
 
-	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/queryterms"
 )
 
-func formatSearchResults(cfg config.Config, results []model.SearchResult) string {
+func formatSearchResults(results []model.SearchResult) string {
 	if len(results) == 0 {
 		return "No results."
 	}
@@ -24,7 +22,7 @@ func formatSearchResults(cfg config.Config, results []model.SearchResult) string
 		b.WriteString(result.CanonicalURL)
 		b.WriteString("\n")
 		b.WriteString("  Note: ")
-		b.WriteString(filepath.Join(cfg.VaultDir, filepath.FromSlash(result.NotePath)))
+		b.WriteString(result.NotePath)
 		b.WriteString("\n")
 		if strings.TrimSpace(result.UserTags) != "" {
 			b.WriteString("  User tags: ")

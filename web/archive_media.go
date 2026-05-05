@@ -79,10 +79,7 @@ func (s *server) handleMediaSignedURL(w http.ResponseWriter, r *http.Request) {
 		AssetID:   asset.ID,
 		URL:       signedURL,
 		ExpiresAt: expiresAt.Format(time.RFC3339),
-		Bucket:    asset.ArchiveBucket,
-		Key:       asset.ArchiveKey,
 		ProxyURL:  s.mediaProxyURL(asset.ID),
 		MediaType: asset.MediaType,
-		Source:    asset.LocalPath,
 	})
 }

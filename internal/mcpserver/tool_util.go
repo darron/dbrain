@@ -1,7 +1,11 @@
 package mcpserver
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -30,6 +34,40 @@ func readNote(path string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func readVaultNote(vaultDir string, notePath string) (string, error) {
+	fullPath, err := resolveVaultNotePath(vaultDir, notePath)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", noteReadError(notePath, err)
+	}
+	return string(data), nil
+}
+
+func resolveVaultNotePath(vaultDir string, notePath string) (string, error) {
+	notePath = strings.TrimSpace(notePath)
+	if notePath == "" {
+		return "", fmt.Errorf("note path is empty")
+	}
+	fullPath := filepath.Clean(filepath.Join(vaultDir, filepath.FromSlash(notePath)))
+	vaultRoot := filepath.Clean(vaultDir)
+	if fullPath != vaultRoot && !strings.HasPrefix(fullPath, vaultRoot+string(os.PathSeparator)) {
+		return "", fmt.Errorf("note path escapes vault: %s", notePath)
+	}
+	return fullPath, nil
+}
+
+func noteReadError(notePath string, err error) error {
+	reason := "failed"
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && pathErr.Err != nil {
+		reason = pathErr.Err.Error()
+	}
+	return fmt.Errorf("read note %s: %s", filepath.ToSlash(notePath), reason)
 }
 
 func firstNonEmpty(values ...string) string {

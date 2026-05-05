@@ -114,6 +114,56 @@ still pass `--caffeinate` to force it explicitly.
 Structured debug logging is enabled by default. Use `--no-debug` when you want
 quiet CLI output.
 
+## Safety And Trust Model
+
+`dbrain` is local-first, but it stores high-signal personal data. Treat
+`brain.db`, rendered vault notes, media files, logs, temp files, chat
+transcripts, and tsnet state as private local state. Keep `data/`, `vault/`,
+`tmp/`, `cache/`, `logs/`, `.env`, `.envrc`, `.gocache/`, `.gomodcache/`,
+`web/ui/node_modules/`, and `bin/` out of git and public release archives unless
+you intentionally scrub and include them.
+
+Imports are intended to be import-only against upstream services and apps. X,
+GitHub, YouTube, Apple Notes, and Safari tab flows materialize local evidence;
+Apple Notes and Safari tabs read from dbrain-owned SQLite snapshots. Normal
+imports should not mutate upstream apps or delete local memories just because an
+upstream bookmark, tab, note, star, or video later disappears.
+
+`dbrain serve web` and `dbrain serve remote --web` are trusted read/write
+administration surfaces. They can edit tags, queue links, save diagnostic chat
+transcripts, trigger model-backed research/synthesis, and access archived media
+helpers. `serve remote` relies on Tailscale/tsnet identity, ACLs, node tags, and
+same-origin checks; there is no separate dbrain login or per-route authorization
+layer. Do not expose the web UI through Tailscale Funnel or a public reverse
+proxy. MCP surfaces are read-only, but they still expose local brain content to
+connected clients.
+
+Model-backed commands can send local evidence to the configured model provider.
+Local Ollama calls stay on the configured Ollama endpoint. Hosted OpenRouter or
+OpenAI-compatible calls may receive source extracts, note text, item text,
+transcripts, OCR text, tags, and images depending on the command. Web, CLI, and
+MCP research use model-assisted query planning by default when a planner or
+summary model is configured; use `--no-planner`, `disable_planner=true`, or
+retrieval-only modes when you want deterministic local retrieval without planner
+model calls.
+
+Archive features use S3-compatible storage only when configured. Media archives
+and SQLite snapshots can contain personal content. A public media base URL makes
+archived media links anonymously readable wherever that bucket policy allows;
+without a public base URL, the web UI can still proxy or sign archive access for
+trusted web users.
+
+Local maintenance commands can delete, replace, or reset local dbrain state:
+`dbrain archive media --prune-local` can remove local media files after archived
+coverage is complete, `dbrain sqlite restore` replaces the active SQLite DB
+after moving existing DB files aside, `dbrain tsnet reset` removes durable
+Tailscale node state, `dbrain import apple-notes --forget-excluded` purges
+indexed local content for notes that are now excluded, and `dbrain import
+youtube` prunes deprecated `youtube_history` rows and orphaned legacy YouTube
+sources as part of its import cleanup. `dbrain repair sources` clears selected
+derived extraction/summary state so it can be rebuilt. Prefer `--dry-run` on
+commands that offer it.
+
 ## Dev Tasks
 
 - `task build`
@@ -477,6 +527,7 @@ dbrain import apple-notes
 dbrain import apple-notes --force
 dbrain import apple-notes --summarize=false
 dbrain import apple-notes --exclude-folder Private
+dbrain import apple-notes --exclude-folder Private --forget-excluded
 dbrain import apple-notes --skip-attachment-ocr
 ```
 
@@ -543,7 +594,9 @@ dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short 
 
 Optional manual archive/prune pass for finalized media. It can either just
 mark/prune already-uploaded media or upload directly to an S3-compatible bucket
-first when `--upload` or archive-upload env vars are configured.
+first when `--upload` or archive-upload env vars are configured. `--prune-local`
+deletes a local media file only after all rows sharing that `local_path` are
+archived.
 
 ### `dbrain sqlite archive`
 
@@ -566,6 +619,8 @@ When archive credentials are configured, `/media/asset/<media-asset-id>` streams
 archived objects through the local server and `/api/media/signed-url?id=<id>`
 returns a short-lived direct URL for one-off access. See
 `docs/web-route-capabilities.md` for the current route capability map.
+Bind this to localhost or another trusted interface unless you have reviewed
+the route surface and trust boundary.
 
 ```sh
 dbrain serve web
@@ -605,6 +660,10 @@ Serves the existing read/write web UI and/or the read-only MCP endpoint on a
 built-in Tailscale `tsnet` node. This is parallel to local stdio and localhost
 HTTP transports; it does not require SSH access to the machine and does not
 replace `dbrain serve web`.
+
+The remote web UI is the same trusted read/write administration surface as
+`serve web`. Tailscale ACLs and node policy govern who can reach it; dbrain does
+not add a second login layer. Do not expose this surface publicly.
 
 The default state directory is `<data_dir>/tsnet/<hostname>`, usually
 `~/.local/share/dbrain/tsnet/dbrain`. Keep this directory out of iCloud,
@@ -740,6 +799,9 @@ each feed entry as an item, stores the canonical video URL once as a source, and
 keeps re-runs idempotent. YouTube source enrichment is transcript-first; when
 captions are missing, `--transcriber auto` tries local audio transcription
 before falling back to a skipped/no-content outcome.
+At the start of each run it also removes deprecated `youtube_history` rows and
+orphaned legacy YouTube sources from older importer versions; command output
+reports those counts as `Items deleted` and `Sources deleted`.
 
 ```sh
 dbrain import youtube --watch-later --liked --browser chrome --profile Default --limit 10 --transcriber auto
@@ -1087,6 +1149,7 @@ number of matched sources first and asks for confirmation unless `--dry-run` or
 `--yes` is passed. For X article repair, add `--rehydrate-x-articles` to also
 clear the linked X item hydration cache so the next `hydrate x` / `sync all`
 run refetches article metadata instead of replaying stale previews.
+This is a local derived-state reset, not an upstream deletion.
 
 ```sh
 dbrain repair sources --domain canada.ca --dry-run

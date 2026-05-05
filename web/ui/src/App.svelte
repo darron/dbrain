@@ -24,7 +24,7 @@
   let bootstrapState = "idle";
   let sourceActivityState = "idle";
 
-  let app = { name: "dbrain", root_dir: "", vault_dir: "", db_path: "", has_fts: false };
+  let app = { name: "dbrain", has_fts: false };
   let backlog = { ...defaultBacklog };
   let activity = { ...defaultActivity };
   let sourceActivity = { ...defaultSourceActivity };
@@ -1202,7 +1202,6 @@
           </nav>
           <div class="hero-meta">
             <span>{app.has_fts ? "FTS enabled" : "LIKE search"}</span>
-            <span style="font-size:0.75rem;color:var(--text-dim)">{app.db_path}</span>
           </div>
         </div>
       </header>

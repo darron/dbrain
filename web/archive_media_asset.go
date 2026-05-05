@@ -19,11 +19,8 @@ type signedURLResponse struct {
 	AssetID   int64  `json:"asset_id"`
 	URL       string `json:"url"`
 	ExpiresAt string `json:"expires_at"`
-	Bucket    string `json:"bucket"`
-	Key       string `json:"key"`
 	ProxyURL  string `json:"proxy_url"`
 	MediaType string `json:"media_type"`
-	Source    string `json:"source"`
 }
 
 func (s *server) loadArchivedMediaAsset(w http.ResponseWriter, r *http.Request) (model.MediaAsset, bool) {

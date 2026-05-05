@@ -144,8 +144,17 @@ The architecture is functional, but the main pressure points are:
 - `docs/web-route-capabilities.md` now documents the current read/write web
   route surface, model-call paths, local-file writes, and archive metadata
   exposure. `docs/web-ui-spec.md` is marked as a historical first-slice design.
+- `README.md` now has a top-level safety and trust model section covering
+  private local state, import-only upstream behavior, read/write web and remote
+  trust boundaries, model-call surfaces, archive storage exposure, and local
+  destructive/reset maintenance paths.
 - `docs/open-source-license-review.md` records the dependency-license scan,
-  MIT project-license decision, and remaining third-party notice work.
+  MIT project-license decision, third-party notice inventory, and remaining
+  release-archive license checks.
+- Web bootstrap, chat transcript save, detail media, note-read error, signed
+  media URL, and MCP search/get/resource responses no longer expose root/vault/DB
+  paths, absolute transcript paths, archive bucket/key values, or local media
+  source paths.
 - Source FTS delete/insert failures now return wrapped errors, with regression
   tests around source tag reindexing.
 - `dbrain sync all` now has separate `--x-media-limit` and
@@ -403,8 +412,8 @@ privacy, and first-run understanding.
    - Keep `docs/web-route-capabilities.md` current as the code-accurate web
      route map; `docs/web-ui-spec.md` is now marked as a historical first-slice
      design.
-   - In README, separate current behavior from TODO/planned behavior. Consider
-     moving large TODO blocks into issues or a roadmap doc.
+   - In README, continue separating current behavior from TODO/planned
+     behavior. Consider moving large TODO blocks into issues or a roadmap doc.
 
 2. Make the web/MCP write and model-call surface explicit and reviewable.
 
@@ -433,15 +442,15 @@ privacy, and first-run understanding.
    Cleanup:
    - Keep the exact write routes documented in
      `docs/web-route-capabilities.md`.
-   - Document the remote trust model next to `serve remote`: Tailscale ACLs
-     govern access, and remote web should not be treated as a public or
-     unauthenticated read-only viewer.
+   - Done: README documents the remote trust model next to `serve remote`:
+     Tailscale ACLs govern access, and remote web should not be treated as a
+     public or unauthenticated read-only viewer.
    - Explicitly decide whether read-only web is in scope. If it is not, remove
      stale docs that imply such a mode exists.
    - If a read-only mode is later added, wire it at the route layer so mutations
      are unavailable server-side, not merely hidden in the UI.
-   - Add a user-visible planner toggle or document the default planner behavior
-     in README and first-run/web UI copy. Cover both web and MCP research.
+   - Done: README documents the default planner behavior for web, CLI, and MCP
+     research. Remaining: add first-run/web UI copy or controls if needed.
 
 3. Audit tracked artifacts, local-data hygiene, and host metadata exposure.
 
@@ -452,21 +461,24 @@ privacy, and first-run understanding.
      `web/server.go`.
    - `internal/mediaarchive` and `internal/sqlitearchive` use S3-compatible
      archive configuration and credentials.
-   - Web APIs return local or storage-specific metadata in places such as
-     `/api/bootstrap`, transcript-save responses, note-read errors, and archive
-     media/signed-url responses.
+   - Web APIs returned local or storage-specific metadata in places such as
+     `/api/bootstrap`, item/detail media payloads, transcript-save responses,
+     note-read errors, and archive media/signed-url responses.
 
    Cleanup:
    - Confirm the tracked web build is intentional for Go embedding and releases.
-   - Add a short "private local data" section to README before open source.
+   - Done: README has a private local data section before command details.
    - Confirm no sample docs or tests reference private absolute paths, secrets,
      tailnet hostnames, or corpus content.
    - Audit S3/R2 archive docs, tests, config examples, and defaults for leaked
      bucket names, credential assumptions, or surprising network access.
-   - Review externally visible web payloads for absolute host paths, local
-     source paths, archive bucket/key values, and storage identifiers. Keep
-     developer diagnostics available, but avoid exposing more host-local metadata
-     than the UI needs.
+   - Done: `/api/bootstrap`, item/detail media payloads, chat transcript save,
+     note-read errors, signed media URL responses, and MCP search/get/resource
+     responses avoid root/vault/DB paths, absolute transcript paths, archive
+     bucket/key values, and local media source paths.
+   - Continue reviewing externally visible payloads for absolute host paths or
+     storage identifiers. Keep developer diagnostics available, but avoid
+     exposing more host-local metadata than the UI needs.
 
 4. Clarify destructive or non-append-only maintenance paths.
 
@@ -478,7 +490,9 @@ privacy, and first-run understanding.
    - Apple Notes exclusions use explicit forget/purge semantics.
 
    Cleanup:
-   - Document every command/path that can delete or purge local memory rows.
+   - Done: README documents known local delete/purge/reset paths: media prune,
+     SQLite restore, tsnet reset, Apple Notes `--forget-excluded`, YouTube
+     deprecated-history cleanup, and source derived-state repair.
    - Ensure destructive operations are opt-in, named clearly, and excluded from
      generic `sync all` behavior unless explicitly configured.
 

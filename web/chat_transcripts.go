@@ -52,6 +52,7 @@ func (s *server) handleChatTranscriptSave(w http.ResponseWriter, r *http.Request
 
 	filename := fmt.Sprintf("%s-%s-%d.md", savedAt.Format("20060102-150405"), chatTranscriptSlug(firstQuestion), savedAt.UnixNano())
 	path := filepath.Join(dir, filename)
+	responsePath := filepath.ToSlash(filepath.Join("chat-transcripts", filename))
 	content := renderChatTranscriptMarkdown(req, savedAt)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("write transcript: %w", err))
@@ -64,7 +65,7 @@ func (s *server) handleChatTranscriptSave(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, ChatTranscriptSaveResponse{
-		Path:  path,
+		Path:  responsePath,
 		Turns: len(req.Turns),
 		Bytes: info.Size(),
 	})

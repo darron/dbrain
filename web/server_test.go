@@ -89,6 +89,11 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		if response.App.Name != "dbrain" {
 			t.Fatalf("expected app name dbrain, got %q", response.App.Name)
 		}
+		for _, forbidden := range []string{`"root_dir"`, `"vault_dir"`, `"db_path"`, cfg.RootDir, cfg.VaultDir, cfg.DBPath} {
+			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+				t.Fatalf("bootstrap response exposed host-local metadata %q: %s", forbidden, rec.Body.String())
+			}
+		}
 		if len(response.SourceActivity.RecentSuccesses) == 0 {
 			t.Fatalf("expected bootstrap source activity successes")
 		}
@@ -244,6 +249,41 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		}
 		if len(response.LinkedSources) == 0 {
 			t.Fatalf("expected linked sources")
+		}
+	})
+
+	t.Run("get item note error hides absolute path", func(t *testing.T) {
+		notePath := filepath.Join(cfg.VaultDir, "items", "test-agent-memory.md")
+		missingPath := notePath + ".missing"
+		if err := os.Rename(notePath, missingPath); err != nil {
+			t.Fatalf("hide note fixture: %v", err)
+		}
+		defer func() {
+			if err := os.Rename(missingPath, notePath); err != nil {
+				t.Fatalf("restore note fixture: %v", err)
+			}
+		}()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/get?lookup=item:test-agent-memory", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response GetResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode get item: %v", err)
+		}
+		if response.NoteError == "" {
+			t.Fatalf("expected note error")
+		}
+		if strings.Contains(response.NoteError, cfg.VaultDir) || strings.Contains(response.NoteError, notePath) {
+			t.Fatalf("note error exposed absolute path: %q", response.NoteError)
+		}
+		if !strings.Contains(response.NoteError, "items/test-agent-memory.md") {
+			t.Fatalf("note error should include relative path, got %q", response.NoteError)
 		}
 	})
 
@@ -428,10 +468,17 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 			t.Fatalf("unexpected transcript save response: %+v", response)
 		}
 		transcriptRoot := filepath.Join(cfg.DataDir, "chat-transcripts")
-		if !strings.HasPrefix(filepath.Clean(response.Path), transcriptRoot+string(os.PathSeparator)) {
-			t.Fatalf("transcript path escapes expected root: %s", response.Path)
+		if filepath.IsAbs(response.Path) {
+			t.Fatalf("transcript response path should be relative, got %s", response.Path)
 		}
-		content, err := os.ReadFile(response.Path)
+		if bytes.Contains(rec.Body.Bytes(), []byte(cfg.DataDir)) {
+			t.Fatalf("transcript response exposed data dir: %s", rec.Body.String())
+		}
+		transcriptPath := filepath.Clean(filepath.Join(cfg.DataDir, filepath.FromSlash(response.Path)))
+		if !strings.HasPrefix(transcriptPath, transcriptRoot+string(os.PathSeparator)) {
+			t.Fatalf("transcript response path escapes expected root: %s", response.Path)
+		}
+		content, err := os.ReadFile(transcriptPath)
 		if err != nil {
 			t.Fatalf("read transcript: %v", err)
 		}
@@ -958,6 +1005,36 @@ func TestWebHandlerServesArchivedMediaAndSignedURL(t *testing.T) {
 		}
 		if response.ProxyURL != "http://127.0.0.1:8742/media/asset/"+strconv.FormatInt(refs[0].MediaAssetID, 10) {
 			t.Fatalf("unexpected proxy url response %+v", response)
+		}
+		for _, forbidden := range []string{`"bucket"`, `"key"`, `"source"`, "dbrain", "media/x/video/ab/test.mp4"} {
+			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+				t.Fatalf("signed url response exposed storage metadata %q: %s", forbidden, rec.Body.String())
+			}
+		}
+	})
+
+	t.Run("detail media payload hides storage metadata", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/get?lookup=item:test-agent-memory", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		for _, forbidden := range []string{`"local_path"`, `"archive_bucket"`, `"archive_key"`, "media/x/video/ab/test.mp4"} {
+			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+				t.Fatalf("detail media response exposed storage metadata %q: %s", forbidden, rec.Body.String())
+			}
+		}
+		var response GetResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode get item: %v", err)
+		}
+		if response.Item == nil || len(response.Item.Media) != 1 {
+			t.Fatalf("expected sanitized media ref, got %+v", response.Item)
+		}
+		if response.Item.Media[0].MediaAssetID != refs[0].MediaAssetID || response.Item.Media[0].MediaType != "video" {
+			t.Fatalf("unexpected sanitized media ref %+v", response.Item.Media[0])
 		}
 	})
 }
