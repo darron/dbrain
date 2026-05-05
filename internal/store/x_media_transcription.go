@@ -19,16 +19,7 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 		FROM items
 		WHERE ` + xItemSourceTypeWhere + `
 			AND external_id != ''
-			AND EXISTS (
-				SELECT 1
-				FROM item_media_links l
-				JOIN media_assets a ON a.id = l.media_asset_id
-				WHERE l.item_id = items.id
-					AND a.download_status = 'downloaded'
-					AND a.local_path != ''
-					AND a.local_pruned_at = ''
-					AND a.media_type IN ('video', 'animated_gif')
-			)`
+			AND ` + xMediaTranscriptionRunnableMediaExistsWhere
 	if !force {
 		query += `
 			AND NOT (

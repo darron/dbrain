@@ -1663,6 +1663,65 @@ func TestBacklogSourceCountsMatchEnrichmentSelectors(t *testing.T) {
 	}
 }
 
+func TestListSourcesForCategorizeRequiresExtractedOrSummaryEvidence(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+
+	insertTestSource(t, st, "src:categorize-no-evidence", "https://example.com/no-evidence")
+	titleOnlyID := insertTestSource(t, st, "src:categorize-title-only", "https://example.com/title-only")
+	extractedID := insertTestSource(t, st, "src:categorize-extracted", "https://example.com/extracted")
+	summaryID := insertTestSource(t, st, "src:categorize-summary", "https://example.com/summary")
+	taggedEvidenceID := insertTestSource(t, st, "src:categorize-tagged-evidence", "https://example.com/tagged-evidence")
+	taggedNoEvidenceID := insertTestSource(t, st, "src:categorize-tagged-no-evidence", "https://example.com/tagged-no-evidence")
+
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET title = 'Metadata title', description = 'Metadata description' WHERE id = ?`, titleOnlyID); err != nil {
+		t.Fatalf("seed metadata-only source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET extracted_text = 'Extracted evidence', extract_status = 'ok' WHERE id = ?`, extractedID); err != nil {
+		t.Fatalf("seed extracted source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET summary_text = 'Summary evidence', summary_status = 'ok' WHERE id = ?`, summaryID); err != nil {
+		t.Fatalf("seed summary source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET extracted_text = 'Tagged evidence', extract_status = 'ok', user_tags = 'existing-tag' WHERE id = ?`, taggedEvidenceID); err != nil {
+		t.Fatalf("seed tagged evidence source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET user_tags = 'metadata-tag' WHERE id = ?`, taggedNoEvidenceID); err != nil {
+		t.Fatalf("seed tagged no-evidence source: %v", err)
+	}
+
+	uncategorized, err := st.ListSourcesForCategorize(ctx, 0, false)
+	if err != nil {
+		t.Fatalf("ListSourcesForCategorize non-force: %v", err)
+	}
+	if got, want := sourceKeys(uncategorized), []string{"src:categorize-extracted", "src:categorize-summary"}; !sameStringSet(got, want) {
+		t.Fatalf("expected uncategorized evidence sources %v, got %v", want, got)
+	}
+
+	force, err := st.ListSourcesForCategorize(ctx, 0, true)
+	if err != nil {
+		t.Fatalf("ListSourcesForCategorize force: %v", err)
+	}
+	wantForce := []string{
+		"src:categorize-extracted",
+		"src:categorize-summary",
+		"src:categorize-tagged-evidence",
+	}
+	if got := sourceKeys(force); !sameStringSet(got, wantForce) {
+		t.Fatalf("expected forced evidence sources %v, got %v", wantForce, got)
+	}
+
+	noEvidenceTags, err := st.ListCategorizedSourcesWithoutEvidence(ctx)
+	if err != nil {
+		t.Fatalf("ListCategorizedSourcesWithoutEvidence: %v", err)
+	}
+	if got, want := sourceKeys(noEvidenceTags), []string{"src:categorize-tagged-no-evidence"}; !sameStringSet(got, want) {
+		t.Fatalf("expected tagged no-evidence sources %v, got %v", want, got)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 

@@ -7,14 +7,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 
 	candidateWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
-		AND EXISTS (
-			SELECT 1
-			FROM item_media_links l
-			JOIN media_assets a ON a.id = l.media_asset_id
-			WHERE l.item_id = items.id
-				AND a.download_status = 'downloaded'
-				AND a.media_type IN ('video', 'animated_gif')
-		)
+		AND ` + xMediaTranscriptionAnyMediaExistsWhere + `
 		AND (
 			article_text = ''
 			OR article_title = ?
@@ -33,11 +26,21 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status = ''`, transcriptTitle, transcriptTitle)
+	withoutMaterializedTranscriptWhere := ` AND NOT (article_title = ? AND article_text != '')`
+	pendingWhere := withoutMaterializedTranscriptWhere + ` AND x_media_transcript_status = '' AND ` + xMediaTranscriptionRunnableMediaExistsWhere
+	blockedWhere := withoutMaterializedTranscriptWhere + ` AND (
+		x_media_transcript_status = 'ok'
+		OR (
+			x_media_transcript_status = ''
+			AND NOT ` + xMediaTranscriptionRunnableMediaExistsWhere + `
+		)
+	)`
+
+	pending, err := s.countWhere(ctx, "items", candidateWhere+pendingWhere, transcriptTitle, transcriptTitle)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status = 'ok'`, transcriptTitle, transcriptTitle)
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+blockedWhere, transcriptTitle, transcriptTitle)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}

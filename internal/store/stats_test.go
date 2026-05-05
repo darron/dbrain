@@ -773,12 +773,36 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 		t.Fatalf("seed failed transcript: %v", err)
 	}
 
+	prunedPendingID := insertVideoCandidate("x-media-pruned-pending")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE media_assets
+		SET local_pruned_at = ?,
+			archive_status = 'archived'
+		WHERE id IN (
+			SELECT media_asset_id
+			FROM item_media_links
+			WHERE item_id = ?
+		)`,
+		now.Format(time.RFC3339),
+		prunedPendingID,
+	); err != nil {
+		t.Fatalf("seed pruned pending media: %v", err)
+	}
+
+	items, err := st.ListItemsForXMediaTranscription(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXMediaTranscription: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no runnable transcription candidates, got %d", len(items))
+	}
+
 	stats, err := st.Pipeline(ctx, "", "", "")
 	if err != nil {
 		t.Fatalf("Pipeline: %v", err)
 	}
 
-	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 3, 1, 0, 1, 1)
+	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 4, 1, 0, 2, 1)
 }
 
 func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {

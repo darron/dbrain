@@ -8,7 +8,26 @@ import (
 
 const xItemSourceTypeWhere = "(source_type = 'x_bookmark' OR source_type = 'x_quote')"
 const linkDiscoveryItemSourceTypeWhere = "(source_type = 'x_bookmark' OR source_type = 'x_quote' OR source_type = 'apple_note' OR source_type = 'safari_tab')"
+const sourceCategorizationEvidenceWhere = `(trim(summary_text) != '' OR trim(extracted_text) != '')`
 const xTopLevelMediaObjectsWhere = `(json_valid(x_post_json) AND json_extract(x_post_json, '$.snapshot.media_objects[0].type') IS NOT NULL)`
+const xMediaTranscriptionAnyMediaExistsWhere = `EXISTS (
+	SELECT 1
+	FROM item_media_links l
+	JOIN media_assets a ON a.id = l.media_asset_id
+	WHERE l.item_id = items.id
+		AND a.download_status = 'downloaded'
+		AND a.media_type IN ('video', 'animated_gif')
+)`
+const xMediaTranscriptionRunnableMediaExistsWhere = `EXISTS (
+	SELECT 1
+	FROM item_media_links l
+	JOIN media_assets a ON a.id = l.media_asset_id
+	WHERE l.item_id = items.id
+		AND a.download_status = 'downloaded'
+		AND a.local_path != ''
+		AND a.local_pruned_at = ''
+		AND a.media_type IN ('video', 'animated_gif')
+)`
 const xQuotedPostRepairWhere = `((x_post_json LIKE '%"quoted_tweet"%' OR x_post_json LIKE '%"quoted_status_result"%' OR x_post_json LIKE '%"quoted_post"%')
 	AND NOT EXISTS (
 		SELECT 1
