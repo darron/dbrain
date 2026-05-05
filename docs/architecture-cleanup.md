@@ -246,8 +246,9 @@ The architecture is functional, but the main pressure points are:
   sync option resolution.
 - App-level stats command wiring now separates root command construction,
   count/activity command bodies, backlog/pipeline command bodies, general stats
-  output, and pipeline table rendering. Sync progress UI rendering is separated
-  from log/progress parsing and log-line mechanics.
+  output, and pipeline table rendering. Sync progress UI construction,
+  stage/animation rendering, progress parsing, and log-line mechanics are
+  separated.
 - Apple Notes import command wiring, progress/stat output, and debug
   probe/snapshot/decode subcommands are now separated in `internal/app`.
 - Apple Notes reader code now separates low-level DB row value coercion,
@@ -357,6 +358,8 @@ The architecture is functional, but the main pressure points are:
 - `internal/xphotoocr/compare.go` now remains the compare devtool coordinator
   while sample collection, temp input/download handling, per-model execution,
   overlap scoring, and Markdown report rendering live in focused files.
+- `cmd/devtools/restore_pruned_pending_x_media` now keeps restore command
+  orchestration separate from pending-work SQL and ID loading helpers.
 - `internal/xmediatranscribe/run.go` now remains the X media transcription
   coordinator while option normalization, media/audio eligibility, external
   command execution, transcript classification/rendering, summary input/error
