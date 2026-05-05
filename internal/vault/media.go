@@ -20,11 +20,11 @@ func writeItemMediaSection(b *strings.Builder, mediaRefs []model.ItemMediaRef, o
 		b.WriteString("\n\n")
 		proxyURL := archivedMediaProxyURL(opts, media)
 		switch {
-		case media.DownloadStatus == "downloaded" && strings.TrimSpace(media.LocalPath) != "" && media.LocalPrunedAt.IsZero():
+		case media.DownloadStatus == model.MediaDownloadStatusDownloaded && strings.TrimSpace(media.LocalPath) != "" && media.LocalPrunedAt.IsZero():
 			b.WriteString("![[")
 			b.WriteString(media.LocalPath)
 			b.WriteString("]]\n\n")
-		case strings.TrimSpace(media.ArchiveURL) != "" && strings.TrimSpace(media.ArchiveStatus) == "archived":
+		case strings.TrimSpace(media.ArchiveURL) != "" && strings.TrimSpace(media.ArchiveStatus) == model.MediaArchiveStatusArchived:
 			if media.MediaType == "photo" {
 				writeArchivedImageEmbed(b, media.ArchiveURL)
 			} else if mediaIsVideoLike(media) {
@@ -34,7 +34,7 @@ func writeItemMediaSection(b *strings.Builder, mediaRefs []model.ItemMediaRef, o
 				b.WriteString(media.ArchiveURL)
 				b.WriteString(")\n\n")
 			}
-		case proxyURL != "" && strings.TrimSpace(media.ArchiveStatus) == "archived":
+		case proxyURL != "" && strings.TrimSpace(media.ArchiveStatus) == model.MediaArchiveStatusArchived:
 			if media.MediaType == "photo" {
 				writeArchivedImageEmbed(b, proxyURL)
 			} else if mediaIsVideoLike(media) {
@@ -44,11 +44,11 @@ func writeItemMediaSection(b *strings.Builder, mediaRefs []model.ItemMediaRef, o
 				b.WriteString(proxyURL)
 				b.WriteString(")\n\n")
 			}
-		case strings.TrimSpace(media.ArchiveStatus) == "archived":
+		case strings.TrimSpace(media.ArchiveStatus) == model.MediaArchiveStatusArchived:
 			b.WriteString("Archived remotely. No anonymous media URL is configured.\n\n")
 		}
 		b.WriteString("- Status: `")
-		b.WriteString(firstNonEmptyString(media.DownloadStatus, "pending"))
+		b.WriteString(firstNonEmptyString(media.DownloadStatus, model.MediaDownloadStatusPending))
 		b.WriteString("`\n")
 		if media.RemoteURL != "" {
 			b.WriteString("- Remote URL: ")

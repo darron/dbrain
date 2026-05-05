@@ -684,6 +684,8 @@ These reduce maintenance burden without requiring major schema changes.
    - Done for item summary, OCR, X media transcript statuses, and the
      synthesized X media transcript marker in worker persistence, stats,
      candidate selectors, source local-extract policy, and media archive gating.
+   - Done for media download/archive statuses in download policy, archive/prune
+     selectors, pipeline stats, and note rendering.
    - Remaining: continue replacing reporting-only raw strings when those files
      are next touched.
    - Prefer helper predicates over open-coded string comparisons.

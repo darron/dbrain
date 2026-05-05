@@ -14,6 +14,7 @@ development date for the change set.
 - **Source status constants**: Source extract statuses, summary statuses, and failure-kind strings now have shared model constants used by source enrichment, source activity reporting, and core store policy paths, reducing raw-string drift during retry/stat refactors.
 - **Pipeline kind constants**: Pipeline aggregate and item-level stage kinds now use named store constants at row assembly points.
 - **Item enrichment constants**: Item summary, OCR, X media transcript statuses, and the synthesized X media transcript marker now use shared model constants across worker persistence, stats, candidate selectors, source local-extract policy, and media archive gating.
+- **Media status constants**: Media download/archive status values now use shared model constants across download policy, archive/prune selectors, pipeline stats, and note rendering while preserving the existing SQLite values.
 - **Source enrichment fallback guardrails**: Added process-order regression tests for stored-extract-before-reader and terminal-preflight-before-reader fallback behavior, and bundled per-source process inputs to reduce fallback-flow argument sprawl.
 - **X media transcription stats**: Pipeline stats now classify untranscribed but locally pruned archived X videos as blocked instead of pending, matching the media transcription worker's runnable-media selector.
 - **Sync limits**: `dbrain sync all` now supports separate `--x-media-limit` and `--x-photo-ocr-limit` controls while preserving `--x-limit` as the default fallback.

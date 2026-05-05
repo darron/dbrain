@@ -48,7 +48,7 @@ func NewS3Client(opts Options) (*s3.Client, error) {
 
 func (u *S3Uploader) Upload(ctx context.Context, cfg config.Config, asset model.MediaAsset, opts Options) (model.MediaArchiveResult, bool, error) {
 	result := archiveResultForAsset(asset, opts)
-	if strings.TrimSpace(asset.ArchiveStatus) == "archived" &&
+	if strings.TrimSpace(asset.ArchiveStatus) == model.MediaArchiveStatusArchived &&
 		strings.TrimSpace(asset.ArchiveBucket) == strings.TrimSpace(opts.Bucket) &&
 		strings.TrimSpace(asset.ArchiveKey) == result.Key {
 		result.ETag = strings.TrimSpace(asset.ArchiveETag)

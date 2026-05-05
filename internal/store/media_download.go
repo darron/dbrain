@@ -27,9 +27,9 @@ func (s *Store) ListMediaAssetsForDownload(ctx context.Context, limit int, force
 	query += `
 		ORDER BY
 			CASE download_status
-				WHEN 'pending' THEN 0
+				WHEN '` + model.MediaDownloadStatusPending + `' THEN 0
 				WHEN '' THEN 1
-				WHEN 'error' THEN 2
+				WHEN '` + model.MediaDownloadStatusError + `' THEN 2
 				ELSE 3
 			END,
 			discovered_at ASC,
@@ -96,20 +96,20 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 		nextErrorCount := currentErrorCount
 		nextLastAttemptAt := currentLastAttemptAt
 		switch nextStatus {
-		case "error":
+		case model.MediaDownloadStatusError:
 			nextErrorCount = currentErrorCount + 1
 			nextLastAttemptAt = lastAttemptAt
 			if nextErrorCount >= model.MediaDownloadMaxConsecutiveErrors {
-				nextStatus = "blocked"
+				nextStatus = model.MediaDownloadStatusBlocked
 				nextError = terminalMediaDownloadError(nextErrorCount, nextError)
 			}
-		case "blocked":
+		case model.MediaDownloadStatusBlocked:
 			nextLastAttemptAt = lastAttemptAt
 			if nextErrorCount < model.MediaDownloadMaxConsecutiveErrors {
 				nextErrorCount = model.MediaDownloadMaxConsecutiveErrors
 			}
 			nextError = terminalMediaDownloadError(nextErrorCount, nextError)
-		case "downloaded", "gone":
+		case model.MediaDownloadStatusDownloaded, model.MediaDownloadStatusGone:
 			nextErrorCount = 0
 			nextLastAttemptAt = lastAttemptAt
 		}
@@ -119,7 +119,7 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 			downloadedAt = result.DownloadedAt.UTC().Format(time.RFC3339)
 		}
 		nextLocalPrunedAt := currentLocalPrunedAt
-		if result.Status == "downloaded" && strings.TrimSpace(result.LocalPath) != "" {
+		if result.Status == model.MediaDownloadStatusDownloaded && strings.TrimSpace(result.LocalPath) != "" {
 			nextLocalPrunedAt = ""
 		}
 

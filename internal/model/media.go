@@ -7,6 +7,18 @@ const (
 	MediaDownloadRetryCooldown        = 24 * time.Hour
 )
 
+// Media download/archive statuses are persisted in SQLite; keep these values stable.
+const (
+	MediaDownloadStatusPending    = "pending"
+	MediaDownloadStatusDownloaded = "downloaded"
+	MediaDownloadStatusError      = "error"
+	MediaDownloadStatusGone       = "gone"
+	MediaDownloadStatusBlocked    = "blocked"
+
+	MediaArchiveStatusArchived = "archived"
+	MediaArchiveStatusError    = "error"
+)
+
 type MediaAsset struct {
 	ID              int64     `json:"id"`
 	RemoteURL       string    `json:"remote_url"`

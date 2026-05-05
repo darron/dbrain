@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
 )
@@ -24,7 +25,7 @@ func pruneLocalPathIfSafe(ctx context.Context, cfg config.Config, st *store.Stor
 		return false, 0, nil
 	}
 	for _, asset := range assets {
-		if strings.TrimSpace(asset.ArchiveStatus) != "archived" {
+		if strings.TrimSpace(asset.ArchiveStatus) != model.MediaArchiveStatusArchived {
 			debugLog(logger, "media local prune deferred", "local_path", localPath, "blocking_asset_id", asset.ID, "archive_status", asset.ArchiveStatus)
 			return false, 0, nil
 		}

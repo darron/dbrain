@@ -118,7 +118,7 @@ func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, boo
 			FROM item_media_links l
 			JOIN media_assets a ON a.id = l.media_asset_id
 			WHERE l.item_id = items.id
-				AND a.download_status = 'downloaded'
+				AND a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 				AND a.media_type = 'photo'
 		)`
 

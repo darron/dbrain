@@ -10,7 +10,7 @@ import (
 
 func archiveResultForAsset(asset model.MediaAsset, opts Options) model.MediaArchiveResult {
 	archivedAt := time.Now().UTC()
-	if asset.ArchiveStatus == "archived" && !asset.ArchivedAt.IsZero() {
+	if asset.ArchiveStatus == model.MediaArchiveStatusArchived && !asset.ArchivedAt.IsZero() {
 		archivedAt = asset.ArchivedAt
 	}
 	key := filepath.ToSlash(strings.TrimSpace(asset.LocalPath))
@@ -23,7 +23,7 @@ func archiveResultForAsset(asset model.MediaAsset, opts Options) model.MediaArch
 		Bucket:     strings.TrimSpace(opts.Bucket),
 		Key:        key,
 		URL:        url,
-		Status:     "archived",
+		Status:     model.MediaArchiveStatusArchived,
 		Error:      "",
 		ArchivedAt: archivedAt,
 	}

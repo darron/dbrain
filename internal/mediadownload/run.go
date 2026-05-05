@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -82,13 +83,13 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 		}
 
 		switch result.Status {
-		case "downloaded":
+		case model.MediaDownloadStatusDownloaded:
 			stats.Downloaded++
-		case "gone":
+		case model.MediaDownloadStatusGone:
 			stats.Gone++
-		case "error":
+		case model.MediaDownloadStatusError:
 			stats.Errors++
-		case "blocked":
+		case model.MediaDownloadStatusBlocked:
 			stats.Blocked++
 		}
 

@@ -64,7 +64,7 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 				FROM item_media_links l
 				JOIN media_assets a ON a.id = l.media_asset_id
 				WHERE l.item_id = items.id
-					AND a.download_status = 'downloaded'
+					AND a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 					AND a.local_path != ''
 					AND a.local_pruned_at = ''
 					AND a.media_type = 'photo'
@@ -114,7 +114,7 @@ func (s *Store) ListItemsForXPhotoOCRAudit(ctx context.Context, limit int, inclu
 				FROM item_media_links l
 				JOIN media_assets a ON a.id = l.media_asset_id
 				WHERE l.item_id = items.id
-					AND a.download_status = 'downloaded'
+					AND a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 					AND a.local_path != ''
 					AND a.media_type = 'photo'`
 	if !includePruned {

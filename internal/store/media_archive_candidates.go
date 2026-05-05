@@ -15,12 +15,12 @@ func (s *Store) ListMediaAssetsForArchive(ctx context.Context, limit int, force 
 	query := `
 		SELECT ` + mediaSelectColumns + `
 		FROM media_assets a
-		WHERE a.download_status = 'downloaded'
+		WHERE a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 			AND a.local_path != ''
 			AND a.local_pruned_at = ''`
 	if !force {
 		query += `
-			AND (a.archive_status = '' OR a.archive_status = 'error')`
+			AND (a.archive_status = '' OR a.archive_status = '` + model.MediaArchiveStatusError + `')`
 	}
 	query += `
 			AND EXISTS (
@@ -84,9 +84,9 @@ func (s *Store) ListMediaAssetsForPrune(ctx context.Context, limit int) ([]model
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+mediaSelectColumns+`
 		FROM media_assets
-		WHERE download_status = 'downloaded'
+		WHERE download_status = '`+model.MediaDownloadStatusDownloaded+`'
 			AND local_path != ''
-			AND archive_status = 'archived'
+			AND archive_status = '`+model.MediaArchiveStatusArchived+`'
 			AND local_pruned_at = ''
 		ORDER BY local_path ASC, id ASC
 		LIMIT ?`, limit)

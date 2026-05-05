@@ -121,7 +121,7 @@ func (s *Store) upsertMediaAssetTx(ctx context.Context, tx *sql.Tx, media xHydra
 			INSERT INTO media_assets (
 				remote_url, media_type, mime_type, width, height, byte_size, content_hash,
 				download_status, download_error, local_path, discovered_at, downloaded_at, updated_at
-			) VALUES (?, ?, '', ?, ?, 0, '', 'pending', '', '', ?, '', ?)`,
+			) VALUES (?, ?, '', ?, ?, 0, '', '`+model.MediaDownloadStatusPending+`', '', '', ?, '', ?)`,
 			media.URL,
 			media.Type,
 			media.Width,
@@ -147,7 +147,7 @@ func (s *Store) upsertMediaAssetTx(ctx context.Context, tx *sql.Tx, media xHydra
 	nextHeight := maxInt(media.Height, currentHeight)
 	nextStatus := currentStatus
 	if strings.TrimSpace(nextStatus) == "" {
-		nextStatus = "pending"
+		nextStatus = model.MediaDownloadStatusPending
 	}
 	nextSeenAt := currentSeenAt
 	if strings.TrimSpace(nextSeenAt) == "" {
@@ -168,7 +168,7 @@ func (s *Store) upsertMediaAssetTx(ctx context.Context, tx *sql.Tx, media xHydra
 		SET media_type = ?,
 			width = ?,
 			height = ?,
-			download_status = CASE WHEN download_status = '' THEN 'pending' ELSE download_status END,
+			download_status = CASE WHEN download_status = '' THEN '`+model.MediaDownloadStatusPending+`' ELSE download_status END,
 			discovered_at = CASE WHEN discovered_at = '' THEN ? ELSE discovered_at END,
 			updated_at = ?
 		WHERE id = ?`,

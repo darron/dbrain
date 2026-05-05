@@ -35,7 +35,7 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 	resp, err := client.Do(req)
 	if err != nil {
 		return model.MediaDownloadResult{
-			Status: "error",
+			Status: model.MediaDownloadStatusError,
 			Error:  err.Error(),
 		}, nil
 	}
@@ -45,13 +45,13 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 		return model.MediaDownloadResult{
-			Status: "gone",
+			Status: model.MediaDownloadStatusGone,
 			Error:  fmt.Sprintf("media returned status=%d", resp.StatusCode),
 		}, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return model.MediaDownloadResult{
-			Status: "error",
+			Status: model.MediaDownloadStatusError,
 			Error:  fmt.Sprintf("media returned status=%d", resp.StatusCode),
 		}, nil
 	}
@@ -64,7 +64,7 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 	}
 	if strings.HasPrefix(mediaType, "text/html") {
 		return model.MediaDownloadResult{
-			Status: "error",
+			Status: model.MediaDownloadStatusError,
 			Error:  "media request returned HTML instead of media bytes",
 		}, nil
 	}
@@ -96,13 +96,13 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 	}
 	if copyErr != nil {
 		return model.MediaDownloadResult{
-			Status: "error",
+			Status: model.MediaDownloadStatusError,
 			Error:  copyErr.Error(),
 		}, nil
 	}
 	if err := tmpFile.Close(); err != nil {
 		return model.MediaDownloadResult{
-			Status: "error",
+			Status: model.MediaDownloadStatusError,
 			Error:  err.Error(),
 		}, nil
 	}
@@ -121,7 +121,7 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 			ByteSize:     written,
 			ContentHash:  "sha256:" + sum,
 			LocalPath:    relPath,
-			Status:       "downloaded",
+			Status:       model.MediaDownloadStatusDownloaded,
 			DownloadedAt: time.Now().UTC(),
 		}, nil
 	}
@@ -134,7 +134,7 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 		ByteSize:     written,
 		ContentHash:  "sha256:" + sum,
 		LocalPath:    relPath,
-		Status:       "downloaded",
+		Status:       model.MediaDownloadStatusDownloaded,
 		DownloadedAt: time.Now().UTC(),
 	}, nil
 }

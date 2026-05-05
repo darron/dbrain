@@ -15,7 +15,7 @@ const xMediaTranscriptionAnyMediaExistsWhere = `EXISTS (
 	FROM item_media_links l
 	JOIN media_assets a ON a.id = l.media_asset_id
 	WHERE l.item_id = items.id
-		AND a.download_status = 'downloaded'
+		AND a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 		AND a.media_type IN ('video', 'animated_gif')
 )`
 const xMediaTranscriptionRunnableMediaExistsWhere = `EXISTS (
@@ -23,7 +23,7 @@ const xMediaTranscriptionRunnableMediaExistsWhere = `EXISTS (
 	FROM item_media_links l
 	JOIN media_assets a ON a.id = l.media_asset_id
 	WHERE l.item_id = items.id
-		AND a.download_status = 'downloaded'
+		AND a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 		AND a.local_path != ''
 		AND a.local_pruned_at = ''
 		AND a.media_type IN ('video', 'animated_gif')
@@ -73,7 +73,7 @@ var xMediaHydrationRepairWhere = `(` + xTopLevelMediaObjectsWhere + `
 			FROM item_media_links l
 			JOIN media_assets a ON a.id = l.media_asset_id
 			WHERE l.item_id = items.id
-				AND a.download_status = 'downloaded'
+				AND a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 				AND a.media_type IN ('video', 'animated_gif')
 				AND (
 					a.local_path GLOB '*.jpg'
@@ -107,9 +107,9 @@ func mediaDownloadRetryableWhere(alias string) string {
 		prefix = alias + "."
 	}
 	return fmt.Sprintf(`(%[1]sdownload_status = ''
-				OR %[1]sdownload_status = 'pending'
+				OR %[1]sdownload_status = '%[4]s'
 				OR (
-					%[1]sdownload_status = 'error'
+					%[1]sdownload_status = '%[5]s'
 					AND %[1]sdownload_error_count < %[2]d
 					AND (
 						%[1]slast_download_attempt_at = ''
@@ -119,5 +119,7 @@ func mediaDownloadRetryableWhere(alias string) string {
 		prefix,
 		model.MediaDownloadMaxConsecutiveErrors,
 		int(model.MediaDownloadRetryCooldown.Seconds()),
+		model.MediaDownloadStatusPending,
+		model.MediaDownloadStatusError,
 	)
 }

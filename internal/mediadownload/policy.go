@@ -18,15 +18,15 @@ func shouldDownload(ref model.ItemMediaRef, cfg config.Config, force bool) bool 
 
 	status := strings.TrimSpace(ref.DownloadStatus)
 	switch status {
-	case "", "pending":
+	case "", model.MediaDownloadStatusPending:
 		return true
-	case "error":
+	case model.MediaDownloadStatusError:
 		return mediaDownloadRetryDue(ref, time.Now().UTC())
-	case "downloaded":
+	case model.MediaDownloadStatusDownloaded:
 		if strings.TrimSpace(ref.LocalPath) == "" {
 			return true
 		}
-		if !ref.LocalPrunedAt.IsZero() && strings.TrimSpace(ref.ArchiveStatus) == "archived" {
+		if !ref.LocalPrunedAt.IsZero() && strings.TrimSpace(ref.ArchiveStatus) == model.MediaArchiveStatusArchived {
 			return false
 		}
 		fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(ref.LocalPath))
@@ -49,7 +49,7 @@ func mediaDownloadRetryDue(ref model.ItemMediaRef, now time.Time) bool {
 }
 
 func applyRetryPolicy(ref model.ItemMediaRef, result model.MediaDownloadResult) model.MediaDownloadResult {
-	if strings.TrimSpace(result.Status) != "error" {
+	if strings.TrimSpace(result.Status) != model.MediaDownloadStatusError {
 		return result
 	}
 	if ref.DownloadErrors+1 < model.MediaDownloadMaxConsecutiveErrors {
@@ -59,7 +59,7 @@ func applyRetryPolicy(ref model.ItemMediaRef, result model.MediaDownloadResult) 
 	if count > model.MediaDownloadMaxConsecutiveErrors {
 		count = model.MediaDownloadMaxConsecutiveErrors
 	}
-	result.Status = "blocked"
+	result.Status = model.MediaDownloadStatusBlocked
 	result.Error = terminalDownloadError(count, result.Error)
 	return result
 }
