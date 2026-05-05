@@ -254,9 +254,10 @@ The architecture is functional, but the main pressure points are:
   object/note-data row loading, note document assembly, attachment-row decoding,
   and link/tag/identity text helpers from the snapshot decode flow.
 - Apple Notes import runtime now separates `Run` orchestration from stats/types,
-  work planning, progress dispatch, exclusion purge handling, summary
-  execution, item materialization, attachment enrichment substeps, and
-  snapshot/probe filesystem and read-only SQLite helpers.
+  run setup/progress event construction, work planning, progress dispatch,
+  exclusion purge handling, summary execution, item materialization, attachment
+  enrichment substeps, and snapshot/probe filesystem and read-only SQLite
+  helpers.
 - Serve command wiring is split by MCP, remote tsnet, and plain web surfaces
   while preserving existing flags and defaults.
 - SQLite archive/restore app command wiring now keeps command bodies separate
@@ -298,9 +299,9 @@ The architecture is functional, but the main pressure points are:
   path while planner JSON parsing/sanitization and deterministic/model merge
   rules live in focused files.
 - `internal/brainresearch/synthesize.go` now remains the public synthesis
-  prepare/run facade while prompt-input packing, evidence budget/truncation
-  accounting, citation collection, synthesis evidence input formatting, and
-  small synthesis helpers live in focused files.
+  prepare/run facade while prepared synthesis execution, prompt-input packing,
+  evidence budget/truncation accounting, citation collection, synthesis
+  evidence input formatting, and small synthesis helpers live in focused files.
 - App-level research command wiring now keeps retrieval/synthesis flow separate
   from human-output rendering helpers.
 - `internal/summarizecli/client.go` now remains the summarize runner while
@@ -316,8 +317,8 @@ The architecture is functional, but the main pressure points are:
   helpers while preserving the native cookie-backed GraphQL flow.
 - `internal/itemcategorize/run.go` now remains the single item/source
   categorization runner while batch orchestration, DTOs, content bundles,
-  photo/S3 loading, LLM transport, option resolution, tag merging, and small
-  utilities live in focused files.
+  photo/S3 loading, LLM transport/response parsing, option resolution, tag
+  merging, and small utilities live in focused files.
 - `internal/entities/entities.go` now remains the entity indexing/search facade
   while item/source derivation, relationship inference, identity-token
   normalization, builder state, path construction, and parsing/matching helpers
@@ -358,8 +359,8 @@ The architecture is functional, but the main pressure points are:
   overlap scoring, and Markdown report rendering live in focused files.
 - `internal/xmediatranscribe/run.go` now remains the X media transcription
   coordinator while option normalization, media/audio eligibility, external
-  command execution, transcript classification/rendering, persistence, and
-  logging helpers live in focused files.
+  command execution, transcript classification/rendering, summary input/error
+  helpers, persistence, and logging helpers live in focused files.
 - `internal/mediadownload/run.go` now remains the per-item media download
   coordinator while download policy, HTTP transfer, content-addressed path
   selection, and extension/type helpers live in focused files.

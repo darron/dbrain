@@ -12,46 +12,19 @@ import (
 )
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
-	readOpts := opts
-	deferAttachmentEnrichment := false
-	if !opts.DryRun {
-		// In applied mode, read all candidate notes so unchanged-current rows do
-		// not consume the batch and repeated runs advance. Attachment file work
-		// is deferred until candidate planning says work may be needed, then the
-		// plan is rechecked after enrichment before any unchanged row is written.
-		readOpts.Limit = 0
-		if !opts.SkipAttachments {
-			readOpts.SkipAttachments = true
-			deferAttachmentEnrichment = true
-		}
-	}
-	docs, snapshot, err := ReadDocuments(ctx, cfg, readOpts)
+	docs, snapshot, deferAttachmentEnrichment, err := readRunDocuments(ctx, cfg, opts)
 	if err != nil {
 		return Stats{}, err
 	}
 
-	stats := Stats{
-		SourceDBPath: snapshot.SourceDBPath,
-		Snapshot:     snapshot,
-		DryRun:       opts.DryRun,
-		Applied:      !opts.DryRun,
-	}
+	stats := initialRunStats(snapshot, opts)
 	now := time.Now().UTC()
 	emitProgress(opts, ProgressEvent{Phase: "loaded", Total: len(docs)})
 
 	processedWork := 0
 	for index, doc := range docs {
 		stats.NotesSeen++
-		event := ProgressEvent{
-			Index:           index + 1,
-			Total:           len(docs),
-			SourceKey:       doc.SourceKey,
-			Title:           doc.Title,
-			Links:           len(doc.Links),
-			Attachments:     len(doc.Attachments),
-			TextChars:       len(doc.Text),
-			AttachmentChars: totalAttachmentTextChars(doc),
-		}
+		event := progressEventForDocument(index, len(docs), doc)
 		if skipReason := exclusionReason(doc, opts); skipReason != "" {
 			countAttachments(&stats, doc.Attachments)
 			if opts.ForgetExcluded && stats.Applied {
@@ -151,10 +124,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				stats.Errors++
 				return stats, err
 			}
-			event.Links = len(doc.Links)
-			event.Attachments = len(doc.Attachments)
-			event.TextChars = len(doc.Text)
-			event.AttachmentChars = totalAttachmentTextChars(doc)
+			event = progressEventForDocument(index, len(docs), doc)
 			if !plan.Actionable {
 				countAttachments(&stats, doc.Attachments)
 				stats.NotesUnchanged++
