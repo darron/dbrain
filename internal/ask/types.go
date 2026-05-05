@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 const defaultMaxCharsPerDoc = 1800
@@ -51,18 +52,9 @@ type Evidence struct {
 	Retrieval     *RetrievalInfo `json:"retrieval,omitempty"`
 }
 
-type RetrievalInfo struct {
-	Score        int               `json:"score"`
-	Signals      []RetrievalSignal `json:"signals,omitempty"`
-	MatchedTerms []string          `json:"matched_terms,omitempty"`
-	MissingTerms []string          `json:"missing_terms,omitempty"`
-}
+type RetrievalInfo = retrieval.RetrievalInfo
 
-type RetrievalSignal struct {
-	Name   string `json:"name"`
-	Detail string `json:"detail,omitempty"`
-	Weight int    `json:"weight"`
-}
+type RetrievalSignal = retrieval.RetrievalSignal
 
 type Response struct {
 	Question string     `json:"question"`

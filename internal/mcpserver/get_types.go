@@ -1,5 +1,7 @@
 package mcpserver
 
+import "github.com/darron/dbrain/internal/retrieval"
+
 const (
 	getModeBrief    = "brief"
 	getModeEvidence = "evidence"
@@ -12,17 +14,7 @@ const (
 	maxGetManyLookups      = 20
 )
 
-type getSection struct {
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	Status    string `json:"status,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Tool      string `json:"tool,omitempty"`
-	At        string `json:"at,omitempty"`
-	Chars     int    `json:"chars"`
-	Text      string `json:"text,omitempty"`
-	Truncated bool   `json:"truncated"`
-}
+type getSection = retrieval.ContentSection
 
 type getManyError struct {
 	Lookup string `json:"lookup"`

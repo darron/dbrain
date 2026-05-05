@@ -852,6 +852,11 @@ These are deeper and should be staged with focused tests.
      surface does not accidentally reveal richer local paths, diagnostics, or
      raw content than the other.
 
+   Progress:
+   - Started `internal/retrieval` with shared `ContentSection`,
+     `RetrievalInfo`, and `RetrievalSignal` DTOs while keeping existing
+     `ask` and MCP JSON shapes stable through aliases.
+
 ### P3: Larger Design Follow-Ups
 
 These are worth planning, but they should not block open sourcing unless they
