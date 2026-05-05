@@ -20,25 +20,11 @@ func (s *Store) ListSourcesForEnrichment(ctx context.Context, limit int, force b
 	args := make([]any, 0, 2)
 
 	if !force {
-		errorEligible, errorArgs := sourceExtractBacklogWhere(time.Now().UTC())
-		if summarize {
-			args = append(args, errorArgs...)
-			summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(promptVersion, toolName, toolVersion)
-			args = append(args, summaryArgs...)
-
-			query += `
-				AND (
-					` + errorEligible + `
-					OR (
-						extract_status IN ('ok', 'empty')
-						AND ` + summaryStaleWhere + `
-					)
-				)`
-		} else {
-			args = append(args, errorArgs...)
-			query += `
-				AND ` + errorEligible
-		}
+		policy := newSourceEnrichmentPolicy(time.Now().UTC(), promptVersion, toolName, toolVersion)
+		candidateWhere, candidateArgs := policy.candidateWhere(summarize)
+		args = append(args, candidateArgs...)
+		query += `
+			AND ` + candidateWhere
 	}
 
 	query += `

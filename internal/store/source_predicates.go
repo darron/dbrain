@@ -7,6 +7,25 @@ import (
 
 const sourceExtractErrorRetryCooldown = 12 * time.Hour
 
+type sourceEnrichmentPolicy struct {
+	now           time.Time
+	promptVersion string
+	toolName      string
+	toolVersion   string
+}
+
+func newSourceEnrichmentPolicy(now time.Time, promptVersion string, toolName string, toolVersion string) sourceEnrichmentPolicy {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return sourceEnrichmentPolicy{
+		now:           now.UTC(),
+		promptVersion: strings.TrimSpace(promptVersion),
+		toolName:      strings.TrimSpace(toolName),
+		toolVersion:   strings.TrimSpace(toolVersion),
+	}
+}
+
 func isExtractFailureStatus(status string) bool {
 	switch strings.TrimSpace(status) {
 	case "error", "dead", "gone":
@@ -16,7 +35,7 @@ func isExtractFailureStatus(status string) bool {
 	}
 }
 
-func sourceExtractBacklogWhere(now time.Time) (string, []any) {
+func (p sourceEnrichmentPolicy) extractBacklogWhere() (string, []any) {
 	return `(
 		extract_status = ''
 		OR ` + sourceExtractCoverageRepairWhere() + `
@@ -29,8 +48,27 @@ func sourceExtractBacklogWhere(now time.Time) (string, []any) {
 			)
 		)
 	)`, []any{
-			now.UTC().Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
+			p.now.Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
 		}
+}
+
+func (p sourceEnrichmentPolicy) summaryBacklogWhere() (string, []any) {
+	staleWhere, args := sourceSummaryStaleWhere(p.promptVersion, p.toolName, p.toolVersion)
+	return `extract_status IN ('ok', 'empty') AND ` + staleWhere, args
+}
+
+func (p sourceEnrichmentPolicy) candidateWhere(summarize bool) (string, []any) {
+	extractWhere, extractArgs := p.extractBacklogWhere()
+	if !summarize {
+		return extractWhere, extractArgs
+	}
+	summaryWhere, summaryArgs := p.summaryBacklogWhere()
+	args := append([]any{}, extractArgs...)
+	args = append(args, summaryArgs...)
+	return `(
+		` + extractWhere + `
+		OR ` + summaryWhere + `
+	)`, args
 }
 
 func sourceExtractFinalAttemptWhere() string {

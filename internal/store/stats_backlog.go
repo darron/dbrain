@@ -2,15 +2,12 @@ package store
 
 import (
 	"context"
-	"strings"
 	"time"
 )
 
 func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName string, toolVersion string) (BacklogStats, error) {
 	stats := BacklogStats{}
-	summaryPromptVersion := strings.TrimSpace(promptVersion)
-	summaryTool := strings.TrimSpace(toolName)
-	summaryToolVersion := strings.TrimSpace(toolVersion)
+	policy := newSourceEnrichmentPolicy(time.Now().UTC(), promptVersion, toolName, toolVersion)
 
 	xWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
@@ -30,7 +27,7 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 		stats.LinkDiscoveryPending = value
 	}
 
-	extractWhere, extractArgs := sourceExtractBacklogWhere(time.Now().UTC())
+	extractWhere, extractArgs := policy.extractBacklogWhere()
 	extractBuckets, err := s.countGroupedWhere(ctx, "sources", "source_type", extractWhere, extractArgs...)
 	if err != nil {
 		return BacklogStats{}, err
@@ -40,7 +37,7 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 		stats.SourceExtractionPending += bucket.Count
 	}
 
-	summaryWhere, args := sourceSummaryBacklogWhere(summaryPromptVersion, summaryTool, summaryToolVersion)
+	summaryWhere, args := policy.summaryBacklogWhere()
 	summaryBuckets, err := s.countGroupedWhere(ctx, "sources", "source_type", summaryWhere, args...)
 	if err != nil {
 		return BacklogStats{}, err
@@ -56,9 +53,4 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 		stats.SourceSummaryPending == 0
 
 	return stats, nil
-}
-
-func sourceSummaryBacklogWhere(promptVersion string, toolName string, toolVersion string) (string, []any) {
-	staleWhere, args := sourceSummaryStaleWhere(promptVersion, toolName, toolVersion)
-	return `extract_status IN ('ok', 'empty') AND ` + staleWhere, args
 }

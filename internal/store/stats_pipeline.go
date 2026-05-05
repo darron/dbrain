@@ -2,20 +2,17 @@ package store
 
 import (
 	"context"
-	"strings"
 	"time"
 )
 
 func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName string, toolVersion string) (PipelineStats, error) {
-	summaryPromptVersion := strings.TrimSpace(promptVersion)
-	summaryTool := strings.TrimSpace(toolName)
-	summaryToolVersion := strings.TrimSpace(toolVersion)
+	policy := newSourceEnrichmentPolicy(time.Now().UTC(), promptVersion, toolName, toolVersion)
 
 	stats := PipelineStats{}
-	if summaryPromptVersion != "" || summaryTool != "" || summaryToolVersion != "" {
-		stats.SummaryPromptVersion = summaryPromptVersion
-		stats.SummaryTool = summaryTool
-		stats.SummaryToolVersion = summaryToolVersion
+	if policy.promptVersion != "" || policy.toolName != "" || policy.toolVersion != "" {
+		stats.SummaryPromptVersion = policy.promptVersion
+		stats.SummaryTool = policy.toolName
+		stats.SummaryToolVersion = policy.toolVersion
 	}
 
 	hydrationTotal, err := s.countGroupedWhere(ctx, "items", "source_type", xItemSourceTypeWhere+` AND external_id != ''`)
@@ -32,7 +29,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	}
 	stats.Hydration = buildPipelineStageRows(hydrationTotal, hydrationCurrent, hydrationPending, nil)
 
-	extractWhere, extractArgs := sourceExtractBacklogWhere(time.Now().UTC())
+	extractWhere, extractArgs := policy.extractBacklogWhere()
 	extractionTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
 	if err != nil {
 		return PipelineStats{}, err
@@ -66,8 +63,8 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		return PipelineStats{}, err
 	}
 	readyForSummaryWhere := `extract_status IN ('ok', 'empty') AND NOT ` + sourceExtractCoverageRepairWhere()
-	extractPendingWhere, extractPendingArgs := sourceExtractBacklogWhere(time.Now().UTC())
-	summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(summaryPromptVersion, summaryTool, summaryToolVersion)
+	extractPendingWhere, extractPendingArgs := policy.extractBacklogWhere()
+	summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(policy.promptVersion, policy.toolName, policy.toolVersion)
 	summaryCurrent, err := s.countGroupedWhere(
 		ctx,
 		"sources",
@@ -78,7 +75,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	summaryPendingWhere, summaryPendingArgs := sourceSummaryBacklogWhere(summaryPromptVersion, summaryTool, summaryToolVersion)
+	summaryPendingWhere, summaryPendingArgs := policy.summaryBacklogWhere()
 	summaryPendingCondition := `( (` + summaryPendingWhere + `) OR (` + extractPendingWhere + `) )`
 	summaryPendingArgs = append(summaryPendingArgs, extractPendingArgs...)
 	summaryPending, err := s.countGroupedWhere(ctx, "sources", "source_type", summaryPendingCondition, summaryPendingArgs...)

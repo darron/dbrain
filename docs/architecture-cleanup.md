@@ -236,6 +236,10 @@ The architecture is functional, but the main pressure points are:
   current schema definition and column backfill helpers.
 - Store source-extraction predicates now keep backlog/staleness SQL builders
   separate from stored failure state and failure-kind classification helpers.
+- Source enrichment extraction, summary, and worker-candidate predicates now go
+  through a named source-enrichment policy, with regression coverage that keeps
+  backlog counts aligned with extraction-only and summarize-enabled worker
+  selectors.
 - `internal/sourceenrich/run.go` has been narrowed to public entry points.
   Source summary execution/freshness/prompt/skip policy, summary content/media
   skip-policy helpers, extraction failure persistence/classification/preflight,

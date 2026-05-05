@@ -8,6 +8,7 @@ development date for the change set.
 ### Architecture Cleanup And Open-Source Readiness (2026-05-04)
 
 - **Source FTS reliability**: Source FTS delete/insert failures now propagate instead of silently succeeding, with regression tests around source tag reindexing failures.
+- **Source predicate guardrails**: Source enrichment worker selection, backlog counts, and pipeline pending counts now share a named source-enrichment predicate policy, with regression coverage for retry cooldowns and summary staleness.
 - **Sync limits**: `dbrain sync all` now supports separate `--x-media-limit` and `--x-photo-ocr-limit` controls while preserving `--x-limit` as the default fallback.
 - **Research temp files**: Brain research planner and synthesis inputs now use the configured dbrain temp directory instead of the process temp directory.
 - **MCP metadata**: MCP initialize responses now use build-derived dbrain version metadata instead of a hardcoded server version.
