@@ -26,7 +26,7 @@ func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item) (
 		if err != nil {
 			continue
 		}
-		related = append(related, relatedDocument(child))
+		related = append(related, retrieval.RelatedDocumentFromItem(child))
 		text := relatedItemText(child)
 		if strings.TrimSpace(text) == "" {
 			continue
@@ -57,7 +57,7 @@ func (s *Server) itemRelatedSourceSections(ctx context.Context, item model.Item)
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		sections = append(sections, retrieval.NewContentSection("linked_source:"+source.SourceKey, "related_source", firstNonEmpty(source.SummaryStatus, source.ExtractStatus), source.SummaryModel, firstNonEmpty(source.SummaryTool, source.ExtractTool), firstNonZeroTime(source.SummarizedAt, source.ExtractedAt), text, 0))
+		sections = append(sections, retrieval.NewContentSection("linked_source:"+source.SourceKey, "related_source", firstNonEmpty(source.SummaryStatus, source.ExtractStatus), source.SummaryModel, firstNonEmpty(source.SummaryTool, source.ExtractTool), retrieval.FirstNonZeroTime(source.SummarizedAt, source.ExtractedAt), text, 0))
 	}
 	return refs, sections, nil
 }

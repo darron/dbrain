@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/retrieval"
@@ -34,40 +33,9 @@ func slimItem(item model.Item) map[string]interface{} {
 		"ocr_model":                 item.OCRModel,
 		"ocr_tool":                  item.OCRTool,
 		"x_media_transcript_status": item.XMediaTranscriptStatus,
-		"imported_at":               formatGetTime(item.ImportedAt),
-		"updated_at":                formatGetTime(item.UpdatedAt),
-		"last_seen_at":              formatGetTime(item.LastSeenAt),
-	}
-}
-
-func relatedDocument(item model.Item) retrieval.RelatedDocument {
-	return retrieval.RelatedDocument{
-		ID:                     item.ID,
-		SourceKey:              item.SourceKey,
-		SourceType:             item.SourceType,
-		ExternalID:             item.ExternalID,
-		CanonicalURL:           item.CanonicalURL,
-		Title:                  item.Title,
-		AuthorHandle:           item.AuthorHandle,
-		AuthorName:             item.AuthorName,
-		PublishedAt:            item.PublishedAt,
-		SavedAt:                item.SavedAt,
-		Language:               item.Language,
-		PrimaryCategory:        item.PrimaryCategory,
-		PrimaryDomain:          item.PrimaryDomain,
-		NotePath:               item.NotePath,
-		UserTags:               item.UserTags,
-		XPostStatus:            item.XPostStatus,
-		SummaryStatus:          item.SummaryStatus,
-		SummaryModel:           item.SummaryModel,
-		SummaryTool:            item.SummaryTool,
-		OCRStatus:              item.OCRStatus,
-		OCRModel:               item.OCRModel,
-		OCRTool:                item.OCRTool,
-		XMediaTranscriptStatus: item.XMediaTranscriptStatus,
-		ImportedAt:             formatGetTime(item.ImportedAt),
-		UpdatedAt:              formatGetTime(item.UpdatedAt),
-		LastSeenAt:             formatGetTime(item.LastSeenAt),
+		"imported_at":               retrieval.FormatTime(item.ImportedAt),
+		"updated_at":                retrieval.FormatTime(item.UpdatedAt),
+		"last_seen_at":              retrieval.FormatTime(item.LastSeenAt),
 	}
 }
 
@@ -88,7 +56,7 @@ func slimSource(source model.SourceDocument) map[string]interface{} {
 		"extract_error":         source.ExtractError,
 		"extract_failure_kind":  source.ExtractFailureKind,
 		"extract_failure_count": source.ExtractFailureCount,
-		"extracted_at":          formatGetTime(source.ExtractedAt),
+		"extracted_at":          retrieval.FormatTime(source.ExtractedAt),
 		"extract_tool":          source.ExtractTool,
 		"extract_tool_version":  source.ExtractToolVersion,
 		"summary_status":        source.SummaryStatus,
@@ -96,27 +64,11 @@ func slimSource(source model.SourceDocument) map[string]interface{} {
 		"summary_model":         source.SummaryModel,
 		"summary_tool":          source.SummaryTool,
 		"summary_tool_version":  source.SummaryToolVersion,
-		"summarized_at":         formatGetTime(source.SummarizedAt),
+		"summarized_at":         retrieval.FormatTime(source.SummarizedAt),
 		"content_hash":          source.ContentHash,
-		"created_at":            formatGetTime(source.CreatedAt),
-		"updated_at":            formatGetTime(source.UpdatedAt),
+		"created_at":            retrieval.FormatTime(source.CreatedAt),
+		"updated_at":            retrieval.FormatTime(source.UpdatedAt),
 	}
-}
-
-func formatGetTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339)
-}
-
-func firstNonZeroTime(values ...time.Time) time.Time {
-	for _, value := range values {
-		if !value.IsZero() {
-			return value
-		}
-	}
-	return time.Time{}
 }
 
 func formatGetPayload(payload map[string]interface{}) string {

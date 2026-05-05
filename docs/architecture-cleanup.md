@@ -881,6 +881,9 @@ These are deeper and should be staged with focused tests.
    - Moved generic content-section construction, truncation, de-duplication,
      and catalog shaping into `internal/retrieval`; MCP now keeps only
      mode/filter/query presentation policy for get payloads.
+   - Moved related-item DTO construction and generic UTC time formatting into
+     `internal/retrieval` so MCP get/graph handlers share the same related item
+     payload mapping.
    - Web detail/tag responses now use explicit item/source DTOs instead of
      whole storage model structs, preserving UI fields while omitting unused raw
      JSON and internal diagnostic fields.

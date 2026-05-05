@@ -116,7 +116,7 @@ func (s *Server) toolRelated(ctx context.Context, raw json.RawMessage) (map[stri
 			if err != nil {
 				continue
 			}
-			relatedItems = append(relatedItems, relatedDocument(child))
+			relatedItems = append(relatedItems, retrieval.RelatedDocumentFromItem(child))
 		}
 		payload := map[string]interface{}{
 			"kind":            "item",
