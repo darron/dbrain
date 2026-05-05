@@ -283,9 +283,9 @@ The architecture is functional, but the main pressure points are:
   node adapter, request identity logging/user auth URL logging, and advertised
   URL rendering live in focused files.
 - `internal/ask/run.go` now remains the retrieval facade while query hints,
-  evidence shaping, scoring, prompt input writing, entity expansion, excerpt
-  assembly, excerpt windowing/scoring, and small utilities live in focused
-  package files.
+  evidence shaping, scoring, prompt input writing, entity expansion, entity
+  query/scoring policy, excerpt assembly, excerpt windowing/scoring, and small
+  utilities live in focused package files.
 - `internal/brainresearch/research.go` now remains the research-pack builder
   while pack DTOs, deterministic/model-assisted strategy helpers, evidence
   reranking, topic inference, coverage, exact-tag examples, search filtering,
@@ -329,8 +329,9 @@ The architecture is functional, but the main pressure points are:
   command bodies, refresh/index command bodies, refresh definition resolution,
   and topic index rebuild helpers separate.
 - `internal/vault/vault.go` now keeps path/stat helpers while item note
-  rendering, media/archive embeds, quoted-post rendering, YAML/text helpers, and
-  render-option resolution live in focused files.
+  rendering, item/source Markdown sections, media/archive embeds, quoted-post
+  rendering, YAML/text helpers, and render-option resolution live in focused
+  files.
 - Vault topic note code now separates note write coordination, Markdown
   rendering, topic index rendering, definition/frontmatter parsing, and path
   helpers, with round-trip coverage for generated topic definitions and index
