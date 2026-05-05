@@ -243,9 +243,10 @@ The architecture is functional, but the main pressure points are:
   `syncjob.Options` assembly, progress UI, and summary table rendering now live
   in focused `internal/app/sync_*.go` files, with tests covering root `.env`
   sync option resolution.
-- App-level stats command wiring, general stats output, and pipeline table
-  rendering are split, and sync progress UI rendering is separated from
-  log/progress parsing and log-line mechanics.
+- App-level stats command wiring now separates root command construction,
+  count/activity command bodies, backlog/pipeline command bodies, general stats
+  output, and pipeline table rendering. Sync progress UI rendering is separated
+  from log/progress parsing and log-line mechanics.
 - Apple Notes import command wiring, progress/stat output, and debug
   probe/snapshot/decode subcommands are now separated in `internal/app`.
 - Apple Notes reader code now separates low-level DB row value coercion,
@@ -257,6 +258,8 @@ The architecture is functional, but the main pressure points are:
   snapshot/probe filesystem and read-only SQLite helpers.
 - Serve command wiring is split by MCP, remote tsnet, and plain web surfaces
   while preserving existing flags and defaults.
+- SQLite archive/restore app command wiring now keeps command bodies separate
+  from S3 option/env resolution and restore confirmation helpers.
 - App-level `tsnet` state commands now keep command wiring separate from status
   computation, endpoint probing, certificate-state reads, flag override
   handling, reset confirmation, probe URL construction, tailnet IP lookup, and
@@ -271,9 +274,10 @@ The architecture is functional, but the main pressure points are:
   coordinator while option/stat DTOs, candidate collection, URL normalization,
   source classification, and hashing/slug/logging helpers live in focused files,
   with direct coverage for common URL canonicalization cases.
-- `internal/remote/server.go` now remains the remote serve/handler assembly
-  coordinator while the tsnet node adapter, request identity logging/user auth
-  URL logging, and advertised URL rendering live in focused files.
+- `internal/remote/server.go` now remains the remote serve lifecycle
+  coordinator while handler assembly, listen/error lifecycle helpers, the tsnet
+  node adapter, request identity logging/user auth URL logging, and advertised
+  URL rendering live in focused files.
 - `internal/ask/run.go` now remains the retrieval facade while query hints,
   evidence shaping, scoring, prompt input writing, entity expansion, excerpt
   assembly, excerpt windowing/scoring, and small utilities live in focused
@@ -317,9 +321,9 @@ The architecture is functional, but the main pressure points are:
   while evidence collection, section rendering, signal clustering, signal
   phrase extraction, signal stopword policy, shared types, and synthesis
   utilities live in focused files.
-- App-level topic command wiring now keeps topic map/generate/refresh/index
-  command construction separate from refresh definition resolution and topic
-  index rebuild helpers.
+- App-level topic command wiring now keeps the root command, map/generate
+  command bodies, refresh/index command bodies, refresh definition resolution,
+  and topic index rebuild helpers separate.
 - `internal/vault/vault.go` now keeps path/stat helpers while item note
   rendering, media/archive embeds, quoted-post rendering, YAML/text helpers, and
   render-option resolution live in focused files.
