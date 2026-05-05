@@ -224,9 +224,10 @@ The architecture is functional, but the main pressure points are:
   cover fresh create, idempotent reopen, adopting the existing current schema
   without migration metadata, and keeping `OpenReadOnly` migration-free.
 - `internal/sourceenrich/run.go` has been narrowed to public entry points.
-  Source summary execution/freshness/prompt/skip policy, extraction failure
-  persistence/classification/preflight, extract validation and cleanup, YouTube
-  audio transcription fallback, option defaults, worker concurrency,
+  Source summary execution/freshness/prompt/skip policy, summary content/media
+  skip-policy helpers, extraction failure persistence/classification/preflight,
+  extract validation and cleanup, YouTube audio transcription fallback, option
+  defaults, worker concurrency,
   audio transcriber command helpers,
   persistence/note rendering, selection helpers, progress tracking,
   process/fallback flow, HTTP reader, Wayback, Sucuri protected fetch, WordPress
@@ -278,6 +279,8 @@ The architecture is functional, but the main pressure points are:
   with direct coverage for common URL canonicalization cases.
 - MCP HTTP serving now keeps the server lifecycle and POST handler separate from
   path, origin, and endpoint URL helpers.
+- MCP research-pack handling now keeps tool argument decoding and pack building
+  separate from human-readable pack formatting.
 - `internal/remote/server.go` now remains the remote serve lifecycle
   coordinator while handler assembly, listen/error lifecycle helpers, the tsnet
   node adapter, request identity logging/user auth URL logging, and advertised
@@ -311,9 +314,10 @@ The architecture is functional, but the main pressure points are:
 - X bookmark import now separates the overlap-aware run loop from GraphQL
   request/retry code, timeline parsing, bookmark DTOs, and item materialization
   helpers while preserving the native cookie-backed GraphQL flow.
-- `internal/itemcategorize/run.go` now remains the item/source categorization
-  runner while DTOs, content bundles, photo/S3 loading, LLM transport, option
-  resolution, tag merging, and small utilities live in focused files.
+- `internal/itemcategorize/run.go` now remains the single item/source
+  categorization runner while batch orchestration, DTOs, content bundles,
+  photo/S3 loading, LLM transport, option resolution, tag merging, and small
+  utilities live in focused files.
 - `internal/entities/entities.go` now remains the entity indexing/search facade
   while item/source derivation, relationship inference, identity-token
   normalization, builder state, path construction, and parsing/matching helpers
