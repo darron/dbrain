@@ -18,7 +18,7 @@ func classifyTerminalExtractError(source model.SourceDocument, err error) (strin
 		strings.Contains(value, "404 not found"),
 		strings.Contains(value, "status 410"),
 		strings.Contains(value, "410 gone"):
-		return "gone", "", true
+		return model.SourceExtractStatusGone, "", true
 	default:
 		kind := classifyExtractFailureKind(errorText)
 		threshold := deadThresholdForFailureKind(kind)
@@ -29,7 +29,7 @@ func classifyTerminalExtractError(source model.SourceDocument, err error) (strin
 		if nextCount < threshold {
 			return "", "", false
 		}
-		return "dead", fmt.Sprintf("marking source dead after %d consecutive %s failures: %s", nextCount, failureKindLabel(kind), errorText), true
+		return model.SourceExtractStatusDead, fmt.Sprintf("marking source dead after %d consecutive %s failures: %s", nextCount, failureKindLabel(kind), errorText), true
 	}
 }
 
@@ -39,47 +39,47 @@ func classifyExtractFailureKind(errorText string) string {
 	case strings.Contains(value, "host does not resolve"),
 		strings.Contains(value, "no such host"),
 		strings.Contains(value, "nxdomain"):
-		return "dns_nxdomain"
+		return model.SourceFailureKindDNSNXDomain
 	case strings.Contains(value, "self signed certificate"),
 		strings.Contains(value, "unable to verify the first certificate"),
 		strings.Contains(value, "err_tls_cert_altname_invalid"),
 		strings.Contains(value, "altname invalid"),
 		strings.Contains(value, "x509"),
 		strings.Contains(value, "certificate"):
-		return "tls_certificate"
+		return model.SourceFailureKindTLSCertificate
 	case strings.Contains(value, "status 522"),
 		strings.Contains(value, "status 523"),
 		strings.Contains(value, "status 524"),
 		strings.Contains(value, "status 525"),
 		strings.Contains(value, "status 526"):
-		return "cloudflare_edge"
+		return model.SourceFailureKindCloudflareEdge
 	case strings.Contains(value, "x article returned an x error shell"):
-		return "x_article_shell"
+		return model.SourceFailureKindXArticleShell
 	case strings.Contains(value, "status 401"),
 		strings.Contains(value, "401 unauthorized"),
 		strings.Contains(value, "status 403"),
 		strings.Contains(value, "403 forbidden"),
 		strings.Contains(value, "status 451"),
 		strings.Contains(value, "451 unavailable"):
-		return "http_access_denied"
+		return model.SourceFailureKindHTTPAccessDenied
 	case strings.Contains(value, "unsupported file type"):
-		return "unsupported_file"
+		return model.SourceFailureKindUnsupportedFile
 	case strings.Contains(value, "signal: killed"),
 		strings.Contains(value, "context deadline exceeded"),
 		strings.Contains(value, "timeout"),
 		strings.Contains(value, "timed out"):
-		return "timeout"
+		return model.SourceFailureKindTimeout
 	case strings.Contains(value, "fetch failed"):
-		return "fetch_failed"
+		return model.SourceFailureKindFetchFailed
 	case strings.Contains(value, "unable to connect"),
 		strings.Contains(value, "connection refused"),
 		strings.Contains(value, "network is unreachable"),
 		strings.Contains(value, "no route to host"):
-		return "connectivity"
+		return model.SourceFailureKindConnectivity
 	case strings.Contains(value, "status 502"),
 		strings.Contains(value, "status 503"),
 		strings.Contains(value, "status 504"):
-		return "http_5xx"
+		return model.SourceFailureKindHTTP5xx
 	default:
 		return ""
 	}
@@ -87,23 +87,23 @@ func classifyExtractFailureKind(errorText string) string {
 
 func deadThresholdForFailureKind(kind string) int {
 	switch kind {
-	case "", "unknown":
+	case "", model.SourceFailureKindUnknown:
 		return 5
-	case "dns_nxdomain":
+	case model.SourceFailureKindDNSNXDomain:
 		return 1
-	case "tls_certificate", "cloudflare_edge", "connectivity":
+	case model.SourceFailureKindTLSCertificate, model.SourceFailureKindCloudflareEdge, model.SourceFailureKindConnectivity:
 		return 3
-	case "x_article_shell":
+	case model.SourceFailureKindXArticleShell:
 		return 3
-	case "http_access_denied":
+	case model.SourceFailureKindHTTPAccessDenied:
 		return 3
-	case "unsupported_file":
+	case model.SourceFailureKindUnsupportedFile:
 		return 1
-	case "timeout":
+	case model.SourceFailureKindTimeout:
 		return 3
-	case "fetch_failed":
+	case model.SourceFailureKindFetchFailed:
 		return 5
-	case "http_5xx":
+	case model.SourceFailureKindHTTP5xx:
 		return 5
 	default:
 		return 0
@@ -112,7 +112,7 @@ func deadThresholdForFailureKind(kind string) int {
 
 func nextFailureCount(source model.SourceDocument, kind string) int {
 	if kind == "" {
-		kind = "unknown"
+		kind = model.SourceFailureKindUnknown
 	}
 	storedKind := strings.TrimSpace(source.ExtractFailureKind)
 	if source.ExtractFailureCount <= 0 {
@@ -121,7 +121,7 @@ func nextFailureCount(source model.SourceDocument, kind string) int {
 	if storedKind == kind {
 		return source.ExtractFailureCount + 1
 	}
-	if storedKind == "" || storedKind == "unknown" {
+	if storedKind == "" || storedKind == model.SourceFailureKindUnknown {
 		return source.ExtractFailureCount + 1
 	}
 	return 1
@@ -129,27 +129,27 @@ func nextFailureCount(source model.SourceDocument, kind string) int {
 
 func failureKindLabel(kind string) string {
 	switch kind {
-	case "dns_nxdomain":
+	case model.SourceFailureKindDNSNXDomain:
 		return "dns resolution"
-	case "tls_certificate":
+	case model.SourceFailureKindTLSCertificate:
 		return "tls certificate"
-	case "cloudflare_edge":
+	case model.SourceFailureKindCloudflareEdge:
 		return "cloudflare edge"
-	case "connectivity":
+	case model.SourceFailureKindConnectivity:
 		return "connectivity"
-	case "x_article_shell":
+	case model.SourceFailureKindXArticleShell:
 		return "x article shell"
-	case "http_access_denied":
+	case model.SourceFailureKindHTTPAccessDenied:
 		return "http access denied"
-	case "unsupported_file":
+	case model.SourceFailureKindUnsupportedFile:
 		return "unsupported file"
-	case "timeout":
+	case model.SourceFailureKindTimeout:
 		return "timeout"
-	case "fetch_failed":
+	case model.SourceFailureKindFetchFailed:
 		return "fetch"
-	case "http_5xx":
+	case model.SourceFailureKindHTTP5xx:
 		return "http 5xx"
-	case "", "unknown":
+	case "", model.SourceFailureKindUnknown:
 		return "unclassified"
 	default:
 		return "terminal"

@@ -3,6 +3,8 @@ package store
 import (
 	"strings"
 	"time"
+
+	"github.com/darron/dbrain/internal/model"
 )
 
 const sourceExtractErrorRetryCooldown = 12 * time.Hour
@@ -28,7 +30,7 @@ func newSourceEnrichmentPolicy(now time.Time, promptVersion string, toolName str
 
 func isExtractFailureStatus(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "error", "dead", "gone":
+	case model.SourceExtractStatusError, model.SourceExtractStatusDead, model.SourceExtractStatusGone:
 		return true
 	default:
 		return false
@@ -40,7 +42,7 @@ func (p sourceEnrichmentPolicy) extractBacklogWhere() (string, []any) {
 		extract_status = ''
 		OR ` + sourceExtractCoverageRepairWhere() + `
 		OR (
-			extract_status = 'error'
+			extract_status = '` + model.SourceExtractStatusError + `'
 			AND (
 				extract_last_failed_at = ''
 				OR extract_last_failed_at <= ?
@@ -54,7 +56,7 @@ func (p sourceEnrichmentPolicy) extractBacklogWhere() (string, []any) {
 
 func (p sourceEnrichmentPolicy) summaryBacklogWhere() (string, []any) {
 	staleWhere, args := sourceSummaryStaleWhere(p.promptVersion, p.toolName, p.toolVersion)
-	return `extract_status IN ('ok', 'empty') AND ` + staleWhere, args
+	return `extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `') AND ` + staleWhere, args
 }
 
 func (p sourceEnrichmentPolicy) candidateWhere(summarize bool) (string, []any) {
@@ -76,15 +78,15 @@ func sourceExtractFinalAttemptWhere() string {
 		extract_failure_count > 0
 		AND (
 			(
-				COALESCE(NULLIF(extract_failure_kind, ''), 'unknown') IN ('unknown', 'fetch_failed', 'http_5xx')
+				COALESCE(NULLIF(extract_failure_kind, ''), '` + model.SourceFailureKindUnknown + `') IN ('` + model.SourceFailureKindUnknown + `', '` + model.SourceFailureKindFetchFailed + `', '` + model.SourceFailureKindHTTP5xx + `')
 				AND extract_failure_count >= 4
 			)
 			OR (
-				extract_failure_kind IN ('tls_certificate', 'cloudflare_edge', 'connectivity', 'x_article_shell', 'http_access_denied', 'timeout')
+				extract_failure_kind IN ('` + model.SourceFailureKindTLSCertificate + `', '` + model.SourceFailureKindCloudflareEdge + `', '` + model.SourceFailureKindConnectivity + `', '` + model.SourceFailureKindXArticleShell + `', '` + model.SourceFailureKindHTTPAccessDenied + `', '` + model.SourceFailureKindTimeout + `')
 				AND extract_failure_count >= 2
 			)
 			OR (
-				extract_failure_kind IN ('dns_nxdomain', 'unsupported_file')
+				extract_failure_kind IN ('` + model.SourceFailureKindDNSNXDomain + `', '` + model.SourceFailureKindUnsupportedFile + `')
 				AND extract_failure_count >= 1
 			)
 		)
@@ -94,7 +96,7 @@ func sourceExtractFinalAttemptWhere() string {
 func sourceExtractCoverageRepairWhere() string {
 	return `(
 		source_type = 'x_article'
-		AND extract_status = 'ok'
+		AND extract_status = '` + model.SourceExtractStatusOK + `'
 		AND extract_tool = 'x-hydration'
 		AND extract_tool_version = 'local-article-preview-cache'
 		AND length(trim(extracted_text)) > 0
@@ -104,16 +106,16 @@ func sourceExtractCoverageRepairWhere() string {
 
 func sourceSummaryCoverageRepairWhere() string {
 	return `(
-		(extract_status = 'empty' AND summary_status = 'ok')
+		(extract_status = '` + model.SourceExtractStatusEmpty + `' AND summary_status = '` + model.SourceSummaryStatusOK + `')
 		OR (
-			extract_status = 'ok'
-			AND summary_status = 'ok'
+			extract_status = '` + model.SourceExtractStatusOK + `'
+			AND summary_status = '` + model.SourceSummaryStatusOK + `'
 			AND extract_tool = 'wayback'
 			AND length(trim(extracted_text)) < 500
 		)
 		OR (
-			extract_status = 'ok'
-			AND summary_status = 'ok'
+			extract_status = '` + model.SourceExtractStatusOK + `'
+			AND summary_status = '` + model.SourceSummaryStatusOK + `'
 			AND length(trim(extracted_text)) <= 300
 			AND (
 				lower(trim(extracted_text)) LIKE '%redirecting%'
@@ -142,7 +144,7 @@ func sourceSummaryCoverageRepairWhere() string {
 
 func sourceSummaryStaleWhere(promptVersion string, toolName string, toolVersion string) (string, []any) {
 	parts := []string{
-		"(summary_status = '' OR summary_status = 'error' OR summary_content_hash != content_hash OR " + sourceSummaryCoverageRepairWhere(),
+		"(summary_status = '' OR summary_status = '" + model.SourceSummaryStatusError + "' OR summary_content_hash != content_hash OR " + sourceSummaryCoverageRepairWhere(),
 	}
 	args := []any{}
 	if strings.TrimSpace(promptVersion) != "" {

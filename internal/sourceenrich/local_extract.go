@@ -30,7 +30,7 @@ func processPreferredLocalExtract(ctx context.Context, cfg config.Config, st *st
 			debugLog(opts.Logger, "local source extract insufficient; falling back to remote fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "reason", failure.Error)
 			return result, true, false
 		}
-		if failure.Status == "error" {
+		if failure.Status == model.SourceExtractStatusError {
 			if status, errorText, terminal := classifyTerminalExtractError(source, errors.New(failure.Error)); terminal {
 				failure.Status = status
 				if errorText != "" {
@@ -70,7 +70,7 @@ func processPreferredLocalExtract(ctx context.Context, cfg config.Config, st *st
 			result.Stats.Errors++
 			debugLog(opts.Logger, "local source summarization failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
 			if _, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-				Status:        "error",
+				Status:        model.SourceSummaryStatusError,
 				Error:         err.Error(),
 				Model:         opts.Model,
 				PromptVersion: SummaryPromptVersion,
@@ -87,7 +87,7 @@ func processPreferredLocalExtract(ctx context.Context, cfg config.Config, st *st
 		if changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary); err != nil {
 			result.Err = err
 			return result, false, true
-		} else if changed && runResult.Summary.Status == "ok" {
+		} else if changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
 			result.Stats.SourcesSummarized++
 			debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
 		}
@@ -116,7 +116,7 @@ func processStoredExtractSummary(ctx context.Context, cfg config.Config, st *sto
 		}
 	}
 	if failure, invalid := rejectExtractFailure(source, storedExtract); invalid {
-		if failure.Status == "error" {
+		if failure.Status == model.SourceExtractStatusError {
 			if status, errorText, terminal := classifyTerminalExtractError(source, errors.New(failure.Error)); terminal {
 				failure.Status = status
 				if errorText != "" {
@@ -141,7 +141,7 @@ func processStoredExtractSummary(ctx context.Context, cfg config.Config, st *sto
 		}
 		result.Err = err
 		return result, true
-	} else if changed && status == "ok" {
+	} else if changed && status == model.SourceSummaryStatusOK {
 		result.Stats.SourcesSummarized++
 	}
 	result.TouchedSourceID = source.ID

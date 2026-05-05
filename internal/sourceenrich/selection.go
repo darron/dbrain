@@ -3,16 +3,16 @@ package sourceenrich
 import "github.com/darron/dbrain/internal/model"
 
 func needsEnrichment(source model.SourceDocument, opts Options, promptVersion string, toolName string, toolVersion string) bool {
-	if source.ExtractStatus == "" || source.ExtractStatus == "error" {
+	if source.ExtractStatus == "" || source.ExtractStatus == model.SourceExtractStatusError {
 		return true
 	}
 	if !opts.Summarize {
 		return false
 	}
-	if source.ExtractStatus != "ok" && source.ExtractStatus != "empty" {
+	if source.ExtractStatus != model.SourceExtractStatusOK && source.ExtractStatus != model.SourceExtractStatusEmpty {
 		return false
 	}
-	if source.SummaryStatus == "" || source.SummaryStatus == "error" {
+	if source.SummaryStatus == "" || source.SummaryStatus == model.SourceSummaryStatusError {
 		return true
 	}
 	if source.SummaryContentHash != source.ContentHash {

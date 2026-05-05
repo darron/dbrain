@@ -56,7 +56,7 @@ func processHTTPReaderFallback(ctx context.Context, cfg config.Config, st *store
 		result.Stats.Errors++
 		debugLog(opts.Logger, "source reader extraction failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", readerErr.Error())
 		failure := model.ExtractResult{
-			Status:      "error",
+			Status:      model.SourceExtractStatusError,
 			Error:       readerErr.Error(),
 			Tool:        protectedFetchToolName,
 			ToolVersion: httpReaderToolVersion,

@@ -31,7 +31,7 @@ func preflightTerminalSourceFailure(ctx context.Context, source model.SourceDocu
 	if err := resolveHost(lookupCtx, host); err != nil {
 		if isHostNotFoundError(err) {
 			return model.ExtractResult{
-				Status:      "dead",
+				Status:      model.SourceExtractStatusDead,
 				Error:       fmt.Sprintf("host does not resolve: %s", host),
 				Tool:        summarizecli.ToolName,
 				ToolVersion: toolVersion,

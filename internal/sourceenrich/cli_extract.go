@@ -88,7 +88,7 @@ func processDefaultCLIExtract(ctx context.Context, cfg config.Config, st *store.
 		runResult.Extract = normalizeReaderExtract(source, runResult.Extract)
 	}
 	if failure, invalid := rejectExtractFailure(source, runResult.Extract); invalid {
-		if failure.Status == "error" {
+		if failure.Status == model.SourceExtractStatusError {
 			if status, errorText, terminal := classifyTerminalExtractError(source, errors.New(failure.Error)); terminal {
 				failure.Status = status
 				if errorText != "" {
@@ -122,7 +122,7 @@ func processDefaultCLIExtract(ctx context.Context, cfg config.Config, st *store.
 		if changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary); err != nil {
 			result.Err = err
 			return result
-		} else if changed && runResult.Summary.Status == "ok" {
+		} else if changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
 			result.Stats.SourcesSummarized++
 			debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
 		}
@@ -158,7 +158,7 @@ func processExtractRunError(ctx context.Context, cfg config.Config, st *store.St
 	result.Stats.Errors++
 	debugLog(opts.Logger, logMessage, "source_key", source.SourceKey, "url", source.CanonicalURL, "error", runErr.Error())
 	failure := model.ExtractResult{
-		Status:      "error",
+		Status:      model.SourceExtractStatusError,
 		Error:       runErr.Error(),
 		Tool:        summarizecli.ToolName,
 		ToolVersion: extractToolVersion,

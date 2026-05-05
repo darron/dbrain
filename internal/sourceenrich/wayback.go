@@ -51,7 +51,7 @@ func shouldTryWaybackForSourceError(source model.SourceDocument, fetchErr error)
 	}
 	kind := classifyExtractFailureKind(fetchErr.Error())
 	if kind == "" {
-		kind = "unknown"
+		kind = model.SourceFailureKindUnknown
 	}
 	threshold := deadThresholdForFailureKind(kind)
 	if threshold <= 0 {

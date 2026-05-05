@@ -9,7 +9,7 @@ import (
 )
 
 func canSummarizeStoredExtract(source model.SourceDocument) bool {
-	if source.ExtractStatus != "ok" {
+	if source.ExtractStatus != model.SourceExtractStatusOK {
 		return false
 	}
 	return strings.TrimSpace(source.ExtractedText) != ""

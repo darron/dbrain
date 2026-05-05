@@ -72,7 +72,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 	summaryToolName := summarizecli.SummaryToolName(opts.Model)
 	if reason, ok := skipSummaryReason(source, extract); ok {
 		changed, err := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-			Status:        "skipped",
+			Status:        model.SourceSummaryStatusSkipped,
 			Error:         reason,
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
@@ -83,32 +83,32 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 		if err == nil && changed {
 			debugLog(opts.Logger, "source summary skipped", "source_key", source.SourceKey, "url", source.CanonicalURL, "reason", reason)
 		}
-		return changed, "skipped", err
+		return changed, model.SourceSummaryStatusSkipped, err
 	}
 
 	input, cleanup, err := summaryInputFile(cfg, extract)
 	if err != nil {
 		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-			Status:        "error",
+			Status:        model.SourceSummaryStatusError,
 			Error:         err.Error(),
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 		})
-		return changed, "error", saveErr
+		return changed, model.SourceSummaryStatusError, saveErr
 	}
 	defer cleanup()
 	if strings.TrimSpace(input) == "" {
 		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
-			Status:        "blocked",
+			Status:        model.SourceSummaryStatusBlocked,
 			Error:         "no extracted content available for summary",
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 		})
-		return changed, "blocked", saveErr
+		return changed, model.SourceSummaryStatusBlocked, saveErr
 	}
 
 	runResult, err := summarizecli.Run(ctx, summarizecli.Options{
@@ -127,9 +127,9 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 		if isUserCancellation(ctx, err) {
 			return false, "", context.Canceled
 		}
-		status := "error"
+		status := model.SourceSummaryStatusError
 		if reason, blocked := blockedSummaryReason(err); blocked {
-			status = "blocked"
+			status = model.SourceSummaryStatusBlocked
 			err = errors.New(reason)
 		}
 		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
@@ -145,7 +145,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 
 	runResult.Summary.PromptVersion = SummaryPromptVersion
 	changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary)
-	if err == nil && changed && runResult.Summary.Status == "ok" {
+	if err == nil && changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
 		debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
 	}
 	return changed, runResult.Summary.Status, err

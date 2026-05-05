@@ -240,6 +240,12 @@ The architecture is functional, but the main pressure points are:
   through a named source-enrichment policy, with regression coverage that keeps
   backlog counts aligned with extraction-only and summarize-enabled worker
   selectors.
+- Source extract statuses, source summary statuses, and source failure-kind
+  strings now have shared constants in `internal/model/source_status.go`, and
+  the source enrichment and core store policy paths use them instead of
+  open-coded strings.
+- Pipeline aggregate and item-level stage kinds now have named store constants
+  at stats row assembly points.
 - `internal/sourceenrich/run.go` has been narrowed to public entry points.
   Source summary execution/freshness/prompt/skip policy, summary content/media
   skip-policy helpers, extraction failure persistence/classification/preflight,
@@ -664,10 +670,18 @@ These reduce maintenance burden without requiring major schema changes.
    - Statuses such as `ok`, `error`, `blocked`, `pending`, `dead`, `gone`, and
      source-specific failure kinds appear as raw strings across store, workers,
      importers, and stats.
+   - Source extract/summary statuses and source failure-kind strings now have
+     shared model constants and are used by source enrichment and core store
+     policy paths. Pipeline aggregate and item-level stage kinds now use store
+     constants where rows are assembled.
 
    Cleanup:
-   - Add typed constants for item enrichment statuses, source extract statuses,
-     source summary statuses, and pipeline stage names.
+   - Done for source extract statuses, source summary statuses, and source
+     failure kinds in source enrichment and core store policy paths.
+   - Done for pipeline aggregate and item-level stage names at stats row
+     assembly points.
+   - Remaining: add typed constants for item enrichment statuses and continue
+     replacing reporting-only raw strings when those files are next touched.
    - Prefer helper predicates over open-coded string comparisons.
    - Keep database values stable to avoid a risky migration.
 

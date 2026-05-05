@@ -145,7 +145,7 @@ func transcribeYouTubeAudioFallback(ctx context.Context, cfg config.Config, sour
 		SiteName:     siteName,
 		Content:      "Transcript:\n" + transcript,
 		RawJSON:      string(rawJSONBytes),
-		Status:       "ok",
+		Status:       model.SourceExtractStatusOK,
 		FetchedAt:    time.Now().UTC(),
 		Tool:         provider,
 		ToolVersion:  "",

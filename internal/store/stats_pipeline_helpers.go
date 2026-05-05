@@ -66,7 +66,7 @@ func appendPipelineStageRow(rows []PipelineStageRow, extra PipelineStageRow) []P
 }
 
 func aggregatePipelineStageRows(rows []PipelineStageRow) PipelineStageRow {
-	total := PipelineStageRow{Kind: "ALL"}
+	total := PipelineStageRow{Kind: pipelineKindAll}
 	for _, row := range rows {
 		total.Total += row.Total
 		total.Current += row.Current

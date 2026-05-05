@@ -20,7 +20,7 @@ func shouldRetryRemoteAfterLocalExtractReject(source model.SourceDocument, extra
 	if !isXArticleURL(firstNonEmpty(source.CanonicalURL, extract.CanonicalURL, extract.FinalURL)) {
 		return false
 	}
-	if failure.Status != "error" {
+	if failure.Status != model.SourceExtractStatusError {
 		return false
 	}
 	if looksLikeXArticleErrorShell(extract.Content) {
@@ -33,7 +33,7 @@ func rejectExtractFailure(source model.SourceDocument, extract model.ExtractResu
 	if !isXArticleURL(firstNonEmpty(source.CanonicalURL, extract.CanonicalURL, extract.FinalURL)) {
 		if looksLikeSubstackSubscriptionShell(extract.Content) {
 			return model.ExtractResult{
-				Status:      "empty",
+				Status:      model.SourceExtractStatusEmpty,
 				Error:       "substack returned subscription boilerplate instead of article content",
 				Tool:        extract.Tool,
 				ToolVersion: extract.ToolVersion,
@@ -41,7 +41,7 @@ func rejectExtractFailure(source model.SourceDocument, extract model.ExtractResu
 		}
 		if looksLikeSubstackInboxNavigationShell(extract.Content) {
 			return model.ExtractResult{
-				Status:      "empty",
+				Status:      model.SourceExtractStatusEmpty,
 				Error:       "substack returned inbox/navigation chrome instead of article content",
 				Tool:        extract.Tool,
 				ToolVersion: extract.ToolVersion,
@@ -51,7 +51,7 @@ func rejectExtractFailure(source model.SourceDocument, extract model.ExtractResu
 	}
 	if looksLikeXArticleErrorShell(extract.Content) {
 		return model.ExtractResult{
-			Status:      "error",
+			Status:      model.SourceExtractStatusError,
 			Error:       "x article returned an X error shell instead of article content",
 			Tool:        extract.Tool,
 			ToolVersion: extract.ToolVersion,
@@ -59,7 +59,7 @@ func rejectExtractFailure(source model.SourceDocument, extract model.ExtractResu
 	}
 	if isShortXArticlePreviewExtract(extract) {
 		return model.ExtractResult{
-			Status:      "error",
+			Status:      model.SourceExtractStatusError,
 			Error:       fmt.Sprintf("x article hydration only exposed a short preview snippet (%d chars) instead of article content", len(strings.TrimSpace(extract.Content))),
 			Tool:        extract.Tool,
 			ToolVersion: extract.ToolVersion,

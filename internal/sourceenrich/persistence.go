@@ -26,7 +26,7 @@ func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config,
 	var stats Stats
 
 	if failure, invalid := rejectExtractFailure(source, extract); invalid {
-		if failure.Status == "error" {
+		if failure.Status == model.SourceExtractStatusError {
 			if status, errorText, terminal := classifyTerminalExtractError(source, errors.New(failure.Error)); terminal {
 				failure.Status = status
 				if errorText != "" {
@@ -58,7 +58,7 @@ func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config,
 
 	if changed, status, err := summarizeFromExtract(ctx, cfg, st, source, extract, opts, summaryToolVersion); err != nil {
 		return stats, err
-	} else if changed && status == "ok" {
+	} else if changed && status == model.SourceSummaryStatusOK {
 		stats.SourcesSummarized++
 	}
 

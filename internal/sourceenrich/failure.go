@@ -10,7 +10,7 @@ import (
 )
 
 func saveSourceFailure(ctx context.Context, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, extractToolVersion string, summaryToolVersion string) error {
-	if extract.Status == "error" && isTerminalExtractStatus(source.ExtractStatus) {
+	if extract.Status == model.SourceExtractStatusError && isTerminalExtractStatus(source.ExtractStatus) {
 		extract.Status = source.ExtractStatus
 	}
 	if strings.TrimSpace(extract.Tool) == "" {
@@ -26,9 +26,9 @@ func saveSourceFailure(ctx context.Context, st *store.Store, source model.Source
 		return nil
 	}
 
-	summaryStatus := "error"
-	if extract.Status != "error" {
-		summaryStatus = "skipped"
+	summaryStatus := model.SourceSummaryStatusError
+	if extract.Status != model.SourceExtractStatusError {
+		summaryStatus = model.SourceSummaryStatusSkipped
 	}
 	_, err := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
 		Status:        summaryStatus,
@@ -43,7 +43,7 @@ func saveSourceFailure(ctx context.Context, st *store.Store, source model.Source
 
 func isTerminalExtractStatus(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "dead", "gone":
+	case model.SourceExtractStatusDead, model.SourceExtractStatusGone:
 		return true
 	default:
 		return false

@@ -50,7 +50,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	}
 
 	row := PipelineStageRow{
-		Kind:    "x_media_transcript",
+		Kind:    pipelineKindXMediaTranscript,
 		Total:   total,
 		Current: current,
 		Pending: pending,
@@ -95,7 +95,7 @@ func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow,
 	}
 
 	row := PipelineStageRow{
-		Kind:    "x_media_summary",
+		Kind:    pipelineKindXMediaSummary,
 		Total:   total,
 		Current: current,
 		Pending: pending,
@@ -144,7 +144,7 @@ func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, boo
 	}
 
 	row := PipelineStageRow{
-		Kind:    "x_photo_ocr",
+		Kind:    pipelineKindXPhotoOCR,
 		Total:   total,
 		Current: current,
 		Pending: pending,

@@ -15,7 +15,7 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 			return false, err
 		}
 
-		if result.Status == "error" {
+		if result.Status == model.SourceSummaryStatusError {
 			changed := current.SummaryStatus != result.Status ||
 				current.SummaryError != result.Error ||
 				current.SummaryTool != result.Tool ||

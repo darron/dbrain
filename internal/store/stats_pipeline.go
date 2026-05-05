@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/darron/dbrain/internal/model"
 )
 
 func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName string, toolVersion string) (PipelineStats, error) {
@@ -34,7 +36,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	extractionCurrent, err := s.countGroupedWhere(ctx, "sources", "source_type", `extract_status IN ('ok', 'empty') AND NOT `+sourceExtractCoverageRepairWhere())
+	extractionCurrent, err := s.countGroupedWhere(ctx, "sources", "source_type", `extract_status IN ('`+model.SourceExtractStatusOK+`', '`+model.SourceExtractStatusEmpty+`') AND NOT `+sourceExtractCoverageRepairWhere())
 	if err != nil {
 		return PipelineStats{}, err
 	}
@@ -62,14 +64,14 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	readyForSummaryWhere := `extract_status IN ('ok', 'empty') AND NOT ` + sourceExtractCoverageRepairWhere()
+	readyForSummaryWhere := `extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `') AND NOT ` + sourceExtractCoverageRepairWhere()
 	extractPendingWhere, extractPendingArgs := policy.extractBacklogWhere()
 	summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(policy.promptVersion, policy.toolName, policy.toolVersion)
 	summaryCurrent, err := s.countGroupedWhere(
 		ctx,
 		"sources",
 		"source_type",
-		readyForSummaryWhere+` AND summary_status = 'ok' AND summary_content_hash = content_hash AND NOT `+summaryStaleWhere,
+		readyForSummaryWhere+` AND summary_status = '`+model.SourceSummaryStatusOK+`' AND summary_content_hash = content_hash AND NOT `+summaryStaleWhere,
 		summaryArgs...,
 	)
 	if err != nil {
@@ -86,7 +88,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		ctx,
 		"sources",
 		"source_type",
-		`extract_status IN ('dead', 'gone') OR (`+readyForSummaryWhere+` AND summary_status IN ('blocked', 'skipped'))`,
+		`extract_status IN ('`+model.SourceExtractStatusDead+`', '`+model.SourceExtractStatusGone+`') OR (`+readyForSummaryWhere+` AND summary_status IN ('`+model.SourceSummaryStatusBlocked+`', '`+model.SourceSummaryStatusSkipped+`'))`,
 	)
 	if err != nil {
 		return PipelineStats{}, err

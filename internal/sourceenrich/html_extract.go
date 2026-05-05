@@ -165,9 +165,9 @@ func siteNameFromURL(rawURL string) string {
 
 func extractStatusForContent(content string) string {
 	if strings.TrimSpace(content) == "" {
-		return "empty"
+		return model.SourceExtractStatusEmpty
 	}
-	return "ok"
+	return model.SourceExtractStatusOK
 }
 
 func buildProtectedRawJSON(method string, sourceURL string, finalURL string, title string, description string, siteName string, content string, challenge string) string {

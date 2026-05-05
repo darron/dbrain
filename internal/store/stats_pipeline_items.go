@@ -23,7 +23,7 @@ func (s *Store) pipelineAppleNoteExtractionRow(ctx context.Context) (PipelineSta
 	}
 
 	row := PipelineStageRow{
-		Kind:    "apple_note",
+		Kind:    pipelineKindAppleNote,
 		Total:   total,
 		Current: current,
 		Blocked: blocked,
@@ -53,7 +53,7 @@ func (s *Store) pipelineSafariTabExtractionRow(ctx context.Context) (PipelineSta
 	}
 
 	row := PipelineStageRow{
-		Kind:    "safari_tab",
+		Kind:    pipelineKindSafariTab,
 		Total:   total,
 		Current: current,
 		Blocked: blocked,
@@ -91,7 +91,7 @@ func (s *Store) pipelineAppleNoteSummaryRow(ctx context.Context) (PipelineStageR
 	}
 
 	row := PipelineStageRow{
-		Kind:    "apple_note",
+		Kind:    pipelineKindAppleNote,
 		Total:   total,
 		Current: current,
 		Pending: pending,

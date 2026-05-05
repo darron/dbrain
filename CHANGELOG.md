@@ -11,6 +11,8 @@ development date for the change set.
 - **Source predicate guardrails**: Source enrichment worker selection, backlog counts, and pipeline pending counts now share a named source-enrichment predicate policy, with regression coverage for retry cooldowns and summary staleness.
 - **Source categorization evidence gate**: Batch and sync source categorization now only queues sources with extracted text or summary evidence, so failed or metadata-only sources are not auto-tagged from URL/title context alone.
 - **Source tag cleanup**: `dbrain categorize repair --clear-source-tags-without-evidence` can clear previously generated source tags on rows without extracted or summarized evidence, with `--dry-run` preview support.
+- **Source status constants**: Source extract statuses, summary statuses, and failure-kind strings now have shared model constants used by source enrichment and core store policy paths, reducing raw-string drift during retry/stat refactors.
+- **Pipeline kind constants**: Pipeline aggregate and item-level stage kinds now use named store constants at row assembly points.
 - **X media transcription stats**: Pipeline stats now classify untranscribed but locally pruned archived X videos as blocked instead of pending, matching the media transcription worker's runnable-media selector.
 - **Sync limits**: `dbrain sync all` now supports separate `--x-media-limit` and `--x-photo-ocr-limit` controls while preserving `--x-limit` as the default fallback.
 - **Research temp files**: Brain research planner and synthesis inputs now use the configured dbrain temp directory instead of the process temp directory.
