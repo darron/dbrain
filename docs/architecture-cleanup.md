@@ -223,6 +223,8 @@ The architecture is functional, but the main pressure points are:
   baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests
   cover fresh create, idempotent reopen, adopting the existing current schema
   without migration metadata, and keeping `OpenReadOnly` migration-free.
+  Startup/read-only pragmas and table-existence checks now live separately from
+  current schema definition and column backfill helpers.
 - Store source-extraction predicates now keep backlog/staleness SQL builders
   separate from stored failure state and failure-kind classification helpers.
 - `internal/sourceenrich/run.go` has been narrowed to public entry points.
@@ -341,8 +343,8 @@ The architecture is functional, but the main pressure points are:
   and topic index rebuild helpers separate.
 - `internal/vault/vault.go` now keeps path/stat helpers while item note
   rendering, item/source Markdown sections, media/archive embeds, quoted-post
-  rendering, YAML/text helpers, and render-option resolution live in focused
-  files.
+  rendering, entity note writes, entity Markdown rendering, YAML/text helpers,
+  and render-option resolution live in focused files.
 - Vault topic note code now separates note write coordination, Markdown
   rendering, topic index rendering, definition/frontmatter parsing, and path
   helpers, with round-trip coverage for generated topic definitions and index
