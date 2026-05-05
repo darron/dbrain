@@ -162,6 +162,9 @@ The architecture is functional, but the main pressure points are:
   easier to review separately.
 - MCP tool dispatch, tool schemas, and tool result/formatting helpers have also
   been split out of `internal/mcpserver/server.go`.
+- MCP tool definitions and schema helpers are split from output schema builders,
+  and MCP resource catalogs, URI dispatch, concrete resource readers, stats
+  readers, and query/JSON helpers now live in focused files.
 - MCP `dbrain_get` payload assembly now separates lookup coordination, content
   section selection/windowing, related item/source sections, slim metadata, and
   text formatting while preserving the existing tool schema and JSON fields.
@@ -225,6 +228,9 @@ The architecture is functional, but the main pressure points are:
 - Serve command wiring is split by MCP, remote tsnet, and plain web surfaces
   while preserving existing flags and defaults.
 - Categorization command wiring now separates item and source command surfaces.
+- `internal/remote/server.go` now remains the remote serve/handler assembly
+  coordinator while the tsnet node adapter, request identity logging/user auth
+  URL logging, and advertised URL rendering live in focused files.
 - `internal/ask/run.go` now remains the retrieval facade while query hints,
   evidence shaping, scoring, prompt input writing, entity expansion, excerpt
   windowing, and small utilities live in focused package files.
@@ -232,6 +238,13 @@ The architecture is functional, but the main pressure points are:
   while pack DTOs, deterministic/model-assisted strategy helpers, evidence
   reranking, topic inference, coverage, exact-tag examples, search filtering,
   next-step suggestions, and utilities live in focused package files.
+- `internal/brainresearch/planner.go` now remains the model-planner execution
+  path while planner JSON parsing/sanitization and deterministic/model merge
+  rules live in focused files.
+- `internal/brainresearch/synthesize.go` now remains the public synthesis
+  prepare/run facade while prompt-input packing, evidence budget/truncation
+  accounting, citation collection, and small synthesis helpers live in focused
+  files.
 - `internal/summarizecli/client.go` now remains the summarize runner while
   direct Ollama/OpenRouter calls, command retry/timeout behavior, provider
   selection, version probing, model/env resolution, and shared DTOs live in
@@ -265,6 +278,19 @@ The architecture is functional, but the main pressure points are:
 - `internal/xphotoocr/run.go` now remains the X photo OCR worker coordinator
   while per-item persistence, model/provider routing, hosted/local OCR calls,
   option resolution, and shared result helpers live in focused files.
+- `internal/xphotoocr/compare.go` now remains the compare devtool coordinator
+  while sample collection, temp input/download handling, per-model execution,
+  overlap scoring, and Markdown report rendering live in focused files.
+- `internal/xmediatranscribe/run.go` now remains the X media transcription
+  coordinator while option normalization, media/audio eligibility, external
+  command execution, transcript classification/rendering, persistence, and
+  logging helpers live in focused files.
+- `internal/sqlitearchive` now separates archive, latest-selection, restore,
+  SQLite snapshot/validation, gzip/file movement, object key, and progress
+  helpers while preserving the existing archive/restore APIs.
+- `internal/mediaarchive/run.go` now remains the media archive coordinator while
+  option normalization, archive result shaping, reference-aware local pruning,
+  note refresh, and logging helpers live in focused files.
 
 ### P0: Open-Source Readiness
 
