@@ -144,8 +144,8 @@ The architecture is functional, but the main pressure points are:
 - `docs/web-route-capabilities.md` now documents the current read/write web
   route surface, model-call paths, local-file writes, and archive metadata
   exposure. `docs/web-ui-spec.md` is marked as a historical first-slice design.
-- `docs/open-source-license-review.md` records the dependency-license scan and
-  the remaining root license/notice decisions.
+- `docs/open-source-license-review.md` records the dependency-license scan,
+  MIT project-license decision, and remaining third-party notice work.
 - Source FTS delete/insert failures now return wrapped errors, with regression
   tests around source tag reindexing.
 - `dbrain sync all` now has separate `--x-media-limit` and
@@ -487,13 +487,13 @@ privacy, and first-run understanding.
    Evidence:
    - `docs/open-source-license-review.md` records the 2026-05-04 dependency
      scan and remaining review items.
-   - The repository currently has no root `LICENSE` or `NOTICE` file.
+   - The repository uses the MIT License in the root `LICENSE` file.
+   - The repository currently has no generated third-party notice file.
    - The `./cmd/dbrain` runtime graph did not show GPL/AGPL/SSPL-style
      dependencies in the targeted scan, but the warmed module cache and `go.sum`
      include GPL-licensed lint/tooling modules.
 
    Cleanup:
-   - Choose and add the project license before publishing.
    - Generate a third-party notice file for Go runtime dependencies and frontend
      dependencies.
    - Rerun the audit from a clean checkout and keep lint/tooling dependencies

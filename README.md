@@ -1206,6 +1206,10 @@ This repo includes a Codex skill for agents at `skills/dbrain-mcp/SKILL.md`.
 See [MCP.md](MCP.md#skill) for installation notes and the recommended Codex MCP
 configuration.
 
+## License
+
+`dbrain` is licensed under the MIT License. See [LICENSE](LICENSE).
+
 ## TODO
 
 ### MCP TODO
