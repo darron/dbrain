@@ -121,7 +121,7 @@ func (s *Server) toolRelated(ctx context.Context, raw json.RawMessage) (map[stri
 		payload := map[string]interface{}{
 			"kind":            "item",
 			"lookup":          lookup,
-			"item":            slimItem(item),
+			"item":            retrieval.ItemMetadata(item),
 			"related_sources": related,
 			"related_items":   relatedItems,
 			"count":           len(related) + len(relatedItems),
@@ -140,7 +140,7 @@ func (s *Server) toolRelated(ctx context.Context, raw json.RawMessage) (map[stri
 	payload := map[string]interface{}{
 		"kind":      "source",
 		"lookup":    lookup,
-		"source":    slimSource(source),
+		"source":    retrieval.SourceMetadata(source),
 		"backlinks": backlinks,
 		"count":     len(backlinks),
 	}

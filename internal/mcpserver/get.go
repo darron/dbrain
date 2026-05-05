@@ -88,7 +88,7 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 		"max_chars_per_section": maxChars,
 		"available_sections":    retrieval.ContentSectionCatalog(available),
 		"content_sections":      sections,
-		"item":                  slimItem(item),
+		"item":                  retrieval.ItemMetadata(item),
 	}
 	if query != "" {
 		payload["query"] = query
@@ -134,7 +134,7 @@ func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocume
 		"max_chars_per_section": maxChars,
 		"available_sections":    retrieval.ContentSectionCatalog(available),
 		"content_sections":      sections,
-		"source":                slimSource(source),
+		"source":                retrieval.SourceMetadata(source),
 	}
 	if query != "" {
 		payload["query"] = query

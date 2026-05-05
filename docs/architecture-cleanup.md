@@ -884,6 +884,8 @@ These are deeper and should be staged with focused tests.
    - Moved related-item DTO construction and generic UTC time formatting into
      `internal/retrieval` so MCP get/graph handlers share the same related item
      payload mapping.
+   - Moved slim item/source metadata payload shaping into `internal/retrieval`
+     with tests that keep raw text/JSON out of the compact MCP metadata maps.
    - Web detail/tag responses now use explicit item/source DTOs instead of
      whole storage model structs, preserving UI fields while omitting unused raw
      JSON and internal diagnostic fields.
