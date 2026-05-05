@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 
-	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
-	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
 )
 
-func processPreferredLocalExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, sourceEnv map[string]string, extractToolVersion string, summaryToolVersion string) (sourceProcessResult, bool, bool) {
+func processPreferredLocalExtract(processCtx sourceProcessContext) (sourceProcessResult, bool, bool) {
 	var result sourceProcessResult
+	ctx := processCtx.ctx
+	cfg := processCtx.cfg
+	st := processCtx.st
+	source := processCtx.source
+	opts := processCtx.opts
 
 	localExtract, hasLocalExtract, err := st.GetPreferredLocalSourceExtract(ctx, source.ID)
 	if err != nil {
@@ -40,7 +43,7 @@ func processPreferredLocalExtract(ctx context.Context, cfg config.Config, st *st
 		}
 		result.Stats.Errors++
 		debugLog(opts.Logger, "local source extract rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
-		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+		if err := saveSourceFailure(ctx, st, source, failure, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion); err != nil {
 			result.Err = err
 			return result, false, true
 		}
@@ -61,7 +64,7 @@ func processPreferredLocalExtract(ctx context.Context, cfg config.Config, st *st
 	}
 
 	if opts.Summarize {
-		runResult, err := summarizeExtract(ctx, cfg, source, localExtract, opts, sourceEnv)
+		runResult, err := summarizeExtract(ctx, cfg, source, localExtract, opts, processCtx.sourceEnv)
 		if err != nil {
 			if isUserCancellation(ctx, err) {
 				result.Err = context.Canceled
@@ -75,7 +78,7 @@ func processPreferredLocalExtract(ctx context.Context, cfg config.Config, st *st
 				Model:         opts.Model,
 				PromptVersion: SummaryPromptVersion,
 				Tool:          summarizecli.SummaryToolName(opts.Model),
-				ToolVersion:   summaryToolVersion,
+				ToolVersion:   processCtx.summaryToolVersion,
 			}); saveErr != nil {
 				result.Err = saveErr
 				return result, false, true
@@ -97,8 +100,13 @@ func processPreferredLocalExtract(ctx context.Context, cfg config.Config, st *st
 	return result, false, true
 }
 
-func processStoredExtractSummary(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) (sourceProcessResult, bool) {
+func processStoredExtractSummary(processCtx sourceProcessContext) (sourceProcessResult, bool) {
 	var result sourceProcessResult
+	ctx := processCtx.ctx
+	cfg := processCtx.cfg
+	st := processCtx.st
+	source := processCtx.source
+	opts := processCtx.opts
 
 	if !opts.Summarize || opts.Force || !canSummarizeStoredExtract(source) {
 		return result, false
@@ -126,7 +134,7 @@ func processStoredExtractSummary(ctx context.Context, cfg config.Config, st *sto
 		}
 		result.Stats.Errors++
 		debugLog(opts.Logger, "stored source extract rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
-		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+		if err := saveSourceFailure(ctx, st, source, failure, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion); err != nil {
 			result.Err = err
 			return result, true
 		}
@@ -134,7 +142,7 @@ func processStoredExtractSummary(ctx context.Context, cfg config.Config, st *sto
 		return result, true
 	}
 	debugLog(opts.Logger, "using stored extract for summary", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(storedExtract.Content))
-	if changed, status, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, summaryToolVersion); err != nil {
+	if changed, status, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, processCtx.summaryToolVersion); err != nil {
 		if isUserCancellation(ctx, err) {
 			result.Err = context.Canceled
 			return result, true

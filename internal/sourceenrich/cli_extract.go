@@ -4,16 +4,19 @@ import (
 	"context"
 	"errors"
 
-	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
-	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
 )
 
-func processDirectSummaryExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, sourceArgs []string, sourceEnv map[string]string, extractToolVersion string, summaryToolVersion string) (sourceProcessResult, bool) {
+func processDirectSummaryExtract(processCtx sourceProcessContext) (sourceProcessResult, bool) {
 	var result sourceProcessResult
+	ctx := processCtx.ctx
+	cfg := processCtx.cfg
+	st := processCtx.st
+	source := processCtx.source
+	opts := processCtx.opts
 
-	if !opts.Summarize || (len(sourceArgs) == 0 && !summarizecli.UsesDirectSummary(opts.Model)) {
+	if !opts.Summarize || (len(processCtx.sourceArgs) == 0 && !summarizecli.UsesDirectSummary(opts.Model)) {
 		return result, false
 	}
 
@@ -26,11 +29,11 @@ func processDirectSummaryExtract(ctx context.Context, cfg config.Config, st *sto
 		Language:  opts.Language,
 		Timeout:   opts.Timeout,
 		RootDir:   cfg.RootDir,
-		Env:       sourceEnv,
-		Args:      sourceArgs,
+		Env:       processCtx.sourceEnv,
+		Args:      processCtx.sourceArgs,
 	})
 	if err != nil {
-		return processExtractRunError(ctx, cfg, st, source, opts, err, "source extraction failed", extractToolVersion, summaryToolVersion), true
+		return processExtractRunError(processCtx, err, "source extraction failed"), true
 	}
 	if fallback, changed, err := fallbackExtract(ctx, cfg, opts, source, extractResult.Extract); err != nil {
 		result.Err = err
@@ -44,7 +47,7 @@ func processDirectSummaryExtract(ctx context.Context, cfg config.Config, st *sto
 	if normalized, changed := normalizeExtract(source, extractResult.Extract); changed {
 		extractResult.Extract = normalized
 	}
-	extractStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extractResult.Extract, opts, extractToolVersion, summaryToolVersion)
+	extractStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extractResult.Extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 	if err != nil {
 		result.Err = err
 		return result, true
@@ -58,8 +61,13 @@ func processDirectSummaryExtract(ctx context.Context, cfg config.Config, st *sto
 	return result, true
 }
 
-func processDefaultCLIExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, sourceArgs []string, sourceEnv map[string]string, extractToolVersion string, summaryToolVersion string) sourceProcessResult {
+func processDefaultCLIExtract(processCtx sourceProcessContext) sourceProcessResult {
 	var result sourceProcessResult
+	ctx := processCtx.ctx
+	cfg := processCtx.cfg
+	st := processCtx.st
+	source := processCtx.source
+	opts := processCtx.opts
 
 	cli := opts.CLI
 	if opts.Summarize {
@@ -78,11 +86,11 @@ func processDefaultCLIExtract(ctx context.Context, cfg config.Config, st *store.
 		Language:  opts.Language,
 		Timeout:   opts.Timeout,
 		RootDir:   cfg.RootDir,
-		Env:       sourceEnv,
-		Args:      sourceArgs,
+		Env:       processCtx.sourceEnv,
+		Args:      processCtx.sourceArgs,
 	})
 	if err != nil {
-		return processExtractRunError(ctx, cfg, st, source, opts, err, "source enrichment failed", extractToolVersion, summaryToolVersion)
+		return processExtractRunError(processCtx, err, "source enrichment failed")
 	}
 	if usingReaderInput {
 		runResult.Extract = normalizeReaderExtract(source, runResult.Extract)
@@ -98,7 +106,7 @@ func processDefaultCLIExtract(ctx context.Context, cfg config.Config, st *store.
 		}
 		result.Stats.Errors++
 		debugLog(opts.Logger, "source extraction rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
-		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+		if err := saveSourceFailure(ctx, st, source, failure, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion); err != nil {
 			result.Err = err
 			return result
 		}
@@ -132,8 +140,13 @@ func processDefaultCLIExtract(ctx context.Context, cfg config.Config, st *store.
 	return result
 }
 
-func processExtractRunError(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, runErr error, logMessage string, extractToolVersion string, summaryToolVersion string) sourceProcessResult {
+func processExtractRunError(processCtx sourceProcessContext, runErr error, logMessage string) sourceProcessResult {
 	var result sourceProcessResult
+	ctx := processCtx.ctx
+	cfg := processCtx.cfg
+	st := processCtx.st
+	source := processCtx.source
+	opts := processCtx.opts
 
 	if isUserCancellation(ctx, runErr) {
 		result.Err = context.Canceled
@@ -143,7 +156,7 @@ func processExtractRunError(ctx context.Context, cfg config.Config, st *store.St
 		debugLog(opts.Logger, "source protected fetch recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", fallbackErr.Error())
 	} else if recovered {
 		debugLog(opts.Logger, "source extraction recovered via fallback fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", fallbackExtract.FinalURL, "tool", fallbackExtract.Tool, "content_chars", len(fallbackExtract.Content))
-		fallbackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, fallbackExtract, opts, extractToolVersion, summaryToolVersion)
+		fallbackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, fallbackExtract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 		if err != nil {
 			result.Err = err
 			return result
@@ -161,7 +174,7 @@ func processExtractRunError(ctx context.Context, cfg config.Config, st *store.St
 		Status:      model.SourceExtractStatusError,
 		Error:       runErr.Error(),
 		Tool:        summarizecli.ToolName,
-		ToolVersion: extractToolVersion,
+		ToolVersion: processCtx.extractToolVersion,
 	}
 	if status, errorText, terminal := classifyTerminalExtractError(source, runErr); terminal {
 		failure.Status = status
@@ -169,7 +182,7 @@ func processExtractRunError(ctx context.Context, cfg config.Config, st *store.St
 			failure.Error = errorText
 		}
 	}
-	if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+	if err := saveSourceFailure(ctx, st, source, failure, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion); err != nil {
 		result.Err = err
 		return result
 	}

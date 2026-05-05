@@ -757,9 +757,11 @@ These are deeper and should be staged with focused tests.
      is covered by tests. Likely implementations include local item cache,
      direct summarize extraction, HTTP reader, protected fetch, Wayback, YouTube
      transcript, and stored extract reuse.
-   - Next, add narrow tests around the now-explicit `process.go` fallback
-     sequence before introducing extractor interfaces or changing terminal
-     status handling.
+   - Done: add narrow tests around the now-explicit `process.go` fallback
+     sequence for stored-extract-before-reader and
+     terminal-preflight-before-reader behavior.
+   - Next, introduce extractor interfaces only when the next behavior split
+     needs them.
    - Keep the current fallback order and add regression tests before changing
      behavior.
 

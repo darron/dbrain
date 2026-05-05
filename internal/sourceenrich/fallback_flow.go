@@ -1,18 +1,20 @@
 package sourceenrich
 
 import (
-	"context"
 	"errors"
 
-	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
-	"github.com/darron/dbrain/internal/store"
 )
 
-func processPreflightTerminal(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) (sourceProcessResult, bool) {
+func processPreflightTerminal(processCtx sourceProcessContext) (sourceProcessResult, bool) {
 	var result sourceProcessResult
+	ctx := processCtx.ctx
+	cfg := processCtx.cfg
+	st := processCtx.st
+	source := processCtx.source
+	opts := processCtx.opts
 
-	failure, terminal := preflightTerminalSourceFailure(ctx, source, opts, extractToolVersion)
+	failure, terminal := preflightTerminalSourceFailure(ctx, source, opts, processCtx.extractToolVersion)
 	if !terminal {
 		return result, false
 	}
@@ -21,7 +23,7 @@ func processPreflightTerminal(ctx context.Context, cfg config.Config, st *store.
 		debugLog(opts.Logger, "source wayback recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", recoverErr.Error())
 	} else if recovered {
 		debugLog(opts.Logger, "source extraction recovered via wayback", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", extract.FinalURL, "content_chars", len(extract.Content))
-		waybackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, extractToolVersion, summaryToolVersion)
+		waybackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 		if err != nil {
 			result.Err = err
 			return result, true
@@ -36,7 +38,7 @@ func processPreflightTerminal(ctx context.Context, cfg config.Config, st *store.
 
 	result.Stats.Errors++
 	debugLog(opts.Logger, "source preflight failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "error", failure.Error)
-	if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+	if err := saveSourceFailure(ctx, st, source, failure, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion); err != nil {
 		result.Err = err
 		return result, true
 	}
@@ -44,8 +46,13 @@ func processPreflightTerminal(ctx context.Context, cfg config.Config, st *store.
 	return result, true
 }
 
-func processHTTPReaderFallback(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) (sourceProcessResult, bool) {
+func processHTTPReaderFallback(processCtx sourceProcessContext) (sourceProcessResult, bool) {
 	var result sourceProcessResult
+	ctx := processCtx.ctx
+	cfg := processCtx.cfg
+	st := processCtx.st
+	source := processCtx.source
+	opts := processCtx.opts
 
 	if !sourceMatchesHTTPReaderFallbackDomain(source, opts) {
 		return result, false
@@ -67,7 +74,7 @@ func processHTTPReaderFallback(ctx context.Context, cfg config.Config, st *store
 				failure.Error = errorText
 			}
 		}
-		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
+		if err := saveSourceFailure(ctx, st, source, failure, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion); err != nil {
 			result.Err = err
 			return result, true
 		}
@@ -83,7 +90,7 @@ func processHTTPReaderFallback(ctx context.Context, cfg config.Config, st *store
 			debugLog(opts.Logger, "source extraction using reader fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "reader_url", readerURL, "content_chars", len(readerExtract.Content))
 		}
 		readerExtract = normalizeReaderExtract(source, readerExtract)
-		readerStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, readerExtract, opts, extractToolVersion, summaryToolVersion)
+		readerStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, readerExtract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 		if err != nil {
 			result.Err = err
 			return result, true

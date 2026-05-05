@@ -8,6 +8,18 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
+type sourceProcessContext struct {
+	ctx                context.Context
+	cfg                config.Config
+	st                 *store.Store
+	source             model.SourceDocument
+	opts               Options
+	sourceArgs         []string
+	sourceEnv          map[string]string
+	extractToolVersion string
+	summaryToolVersion string
+}
+
 func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options, extractToolVersion string, summaryToolVersion string) (result sourceProcessResult) {
 	debugLog(opts.Logger, "enriching source", "source_key", source.SourceKey, "url", source.CanonicalURL)
 
@@ -25,34 +37,43 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		result.Stats.SourcesRendered++
 	}()
 
-	sourceArgs := argsFor(opts, source)
-	sourceEnv := envFor(opts, source)
-	localResult, skipStoredExtract, handled := processPreferredLocalExtract(ctx, cfg, st, source, opts, sourceEnv, extractToolVersion, summaryToolVersion)
+	processCtx := sourceProcessContext{
+		ctx:                ctx,
+		cfg:                cfg,
+		st:                 st,
+		source:             source,
+		opts:               opts,
+		sourceArgs:         argsFor(opts, source),
+		sourceEnv:          envFor(opts, source),
+		extractToolVersion: extractToolVersion,
+		summaryToolVersion: summaryToolVersion,
+	}
+	localResult, skipStoredExtract, handled := processPreferredLocalExtract(processCtx)
 	if handled {
 		return localResult
 	}
 
 	if !skipStoredExtract {
-		storedResult, handled := processStoredExtractSummary(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
+		storedResult, handled := processStoredExtractSummary(processCtx)
 		if handled {
 			return storedResult
 		}
 	}
 
-	preflightResult, handled := processPreflightTerminal(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
+	preflightResult, handled := processPreflightTerminal(processCtx)
 	if handled {
 		return preflightResult
 	}
 
-	readerResult, handled := processHTTPReaderFallback(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
+	readerResult, handled := processHTTPReaderFallback(processCtx)
 	if handled {
 		return readerResult
 	}
 
-	directResult, handled := processDirectSummaryExtract(ctx, cfg, st, source, opts, sourceArgs, sourceEnv, extractToolVersion, summaryToolVersion)
+	directResult, handled := processDirectSummaryExtract(processCtx)
 	if handled {
 		return directResult
 	}
 
-	return processDefaultCLIExtract(ctx, cfg, st, source, opts, sourceArgs, sourceEnv, extractToolVersion, summaryToolVersion)
+	return processDefaultCLIExtract(processCtx)
 }
