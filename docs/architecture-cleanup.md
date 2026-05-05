@@ -162,9 +162,17 @@ The architecture is functional, but the main pressure points are:
   easier to review separately.
 - MCP tool dispatch, tool schemas, and tool result/formatting helpers have also
   been split out of `internal/mcpserver/server.go`.
+- MCP tool dispatch now stays in a small dispatcher while search, get/get-many,
+  graph/entity/topic/related, and stats tool handlers live in focused files.
 - MCP tool definitions and schema helpers are split from output schema builders,
   and MCP resource catalogs, URI dispatch, concrete resource readers, stats
   readers, and query/JSON helpers now live in focused files.
+- MCP tool result/error shaping, search result formatting, graph formatting,
+  stats formatting, source-type filtering, and small utility helpers are split
+  out of the former helper catchall.
+- `internal/mcpeval/run.go` now remains the eval report runner while case DTOs,
+  case loading/examples, per-case assertions, retrieval routing, and utility
+  helpers live in focused files.
 - MCP `dbrain_get` payload assembly now separates lookup coordination, content
   section selection/windowing, related item/source sections, slim metadata, and
   text formatting while preserving the existing tool schema and JSON fields.
@@ -262,9 +270,16 @@ The architecture is functional, but the main pressure points are:
 - `internal/topics/topicmap.go` now remains the topic map builder while graph
   node resolution, source-type filtering, entity scoring/pivots, formatting,
   shared DTOs, and small utilities live in focused files.
+- `internal/topics/synthesis.go` now remains the topic synthesis coordinator
+  while evidence collection, section rendering, signal extraction/clustering,
+  shared types, and synthesis utilities live in focused files.
 - `internal/vault/vault.go` now keeps path/stat helpers while item note
   rendering, media/archive embeds, quoted-post rendering, YAML/text helpers, and
   render-option resolution live in focused files.
+- Vault topic note code now separates note write coordination, Markdown
+  rendering, topic index rendering, definition/frontmatter parsing, and path
+  helpers, with round-trip coverage for generated topic definitions and index
+  links.
 - `internal/githubimport/run.go` now remains the GitHub star import coordinator
   while API transport, item materialization, repo extraction, source enrichment,
   and utility helpers live in focused files.
