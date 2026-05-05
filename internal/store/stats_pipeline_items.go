@@ -68,6 +68,8 @@ func (s *Store) pipelineSafariTabExtractionRow(ctx context.Context) (PipelineSta
 
 func (s *Store) pipelineAppleNoteSummaryRow(ctx context.Context) (PipelineStageRow, bool, error) {
 	candidateWhere := `source_type = 'apple_note' AND (text != '' OR article_text != '')`
+	summaryStatus := itemSummaryStatusExpr()
+	summaryText := itemSummaryTextExpr()
 
 	total, err := s.countWhere(ctx, "items", candidateWhere)
 	if err != nil {
@@ -77,19 +79,19 @@ func (s *Store) pipelineAppleNoteSummaryRow(ctx context.Context) (PipelineStageR
 		return PipelineStageRow{}, false, nil
 	}
 
-	current, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status = '`+model.ItemSummaryStatusOK+`' AND summary_text != ''`)
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND `+summaryStatus+` = '`+model.ItemSummaryStatusOK+`' AND `+summaryText+` != ''`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (summary_status = '' OR summary_status = '`+model.ItemSummaryStatusError+`')`)
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (`+summaryStatus+` = '' OR `+summaryStatus+` = '`+model.ItemSummaryStatusError+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status IN ('`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND `+summaryStatus+` IN ('`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status != '' AND summary_status NOT IN ('`+model.ItemSummaryStatusOK+`', '`+model.ItemSummaryStatusError+`', '`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND `+summaryStatus+` != '' AND `+summaryStatus+` NOT IN ('`+model.ItemSummaryStatusOK+`', '`+model.ItemSummaryStatusError+`', '`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}

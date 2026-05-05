@@ -7,18 +7,20 @@ import (
 )
 
 func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineStageRow, bool, error) {
-	const transcriptTitle = model.XMediaTranscriptArticleTitle
+	transcriptStatus := itemXMediaTranscriptStatusExpr()
+	transcriptText := itemXMediaTranscriptTextExpr()
 
 	candidateWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
 		AND ` + xMediaTranscriptionAnyMediaExistsWhere + `
 		AND (
 			article_text = ''
-			OR article_title = ?
-			OR x_media_transcript_status != ''
+			OR article_title = '` + model.XMediaTranscriptArticleTitle + `'
+			OR ` + transcriptStatus + ` != ''
+			OR ` + transcriptText + ` != ''
 		)`
 
-	total, err := s.countWhere(ctx, "items", candidateWhere, transcriptTitle)
+	total, err := s.countWhere(ctx, "items", candidateWhere)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
@@ -26,29 +28,29 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 		return PipelineStageRow{}, false, nil
 	}
 
-	current, err := s.countWhere(ctx, "items", candidateWhere+` AND article_title = ? AND article_text != ''`, transcriptTitle, transcriptTitle)
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND `+transcriptText+` != ''`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	withoutMaterializedTranscriptWhere := ` AND NOT (article_title = ? AND article_text != '')`
-	pendingWhere := withoutMaterializedTranscriptWhere + ` AND x_media_transcript_status = '' AND ` + xMediaTranscriptionRunnableMediaExistsWhere
+	withoutMaterializedTranscriptWhere := ` AND ` + transcriptText + ` = ''`
+	pendingWhere := withoutMaterializedTranscriptWhere + ` AND ` + transcriptStatus + ` = '' AND ` + xMediaTranscriptionRunnableMediaExistsWhere
 	blockedWhere := withoutMaterializedTranscriptWhere + ` AND (
-		x_media_transcript_status = '` + model.XMediaTranscriptStatusOK + `'
+		` + transcriptStatus + ` = '` + model.XMediaTranscriptStatusOK + `'
 		OR (
-			x_media_transcript_status = ''
+			` + transcriptStatus + ` = ''
 			AND NOT ` + xMediaTranscriptionRunnableMediaExistsWhere + `
 		)
 	)`
 
-	pending, err := s.countWhere(ctx, "items", candidateWhere+pendingWhere, transcriptTitle, transcriptTitle)
+	pending, err := s.countWhere(ctx, "items", candidateWhere+pendingWhere)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	blocked, err := s.countWhere(ctx, "items", candidateWhere+blockedWhere, transcriptTitle, transcriptTitle)
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+blockedWhere)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status != '' AND x_media_transcript_status != '`+model.XMediaTranscriptStatusOK+`'`, transcriptTitle, transcriptTitle)
+	failed, err := s.countWhere(ctx, "items", candidateWhere+withoutMaterializedTranscriptWhere+` AND `+transcriptStatus+` != '' AND `+transcriptStatus+` != '`+model.XMediaTranscriptStatusOK+`'`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
@@ -66,14 +68,16 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 }
 
 func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow, bool, error) {
-	const transcriptTitle = model.XMediaTranscriptArticleTitle
+	transcriptStatus := itemXMediaTranscriptStatusExpr()
+	transcriptText := itemXMediaTranscriptTextExpr()
+	summaryStatus := itemSummaryStatusExpr()
+	summaryText := itemSummaryTextExpr()
 
 	candidateWhere := xItemSourceTypeWhere + `
-		AND article_title = ?
-		AND article_text != ''
-		AND x_media_transcript_status = '` + model.XMediaTranscriptStatusOK + `'`
+		AND ` + transcriptText + ` != ''
+		AND ` + transcriptStatus + ` = '` + model.XMediaTranscriptStatusOK + `'`
 
-	total, err := s.countWhere(ctx, "items", candidateWhere, transcriptTitle)
+	total, err := s.countWhere(ctx, "items", candidateWhere)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
@@ -81,19 +85,19 @@ func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow,
 		return PipelineStageRow{}, false, nil
 	}
 
-	current, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status = '`+model.ItemSummaryStatusOK+`' AND summary_text != ''`, transcriptTitle)
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND `+summaryStatus+` = '`+model.ItemSummaryStatusOK+`' AND `+summaryText+` != ''`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (summary_status = '' OR summary_status = '`+model.ItemSummaryStatusError+`')`, transcriptTitle)
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (`+summaryStatus+` = '' OR `+summaryStatus+` = '`+model.ItemSummaryStatusError+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status IN ('`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`, transcriptTitle)
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND `+summaryStatus+` IN ('`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status != '' AND summary_status NOT IN ('`+model.ItemSummaryStatusOK+`', '`+model.ItemSummaryStatusError+`', '`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`, transcriptTitle)
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND `+summaryStatus+` != '' AND `+summaryStatus+` NOT IN ('`+model.ItemSummaryStatusOK+`', '`+model.ItemSummaryStatusError+`', '`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
@@ -111,6 +115,9 @@ func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow,
 }
 
 func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, bool, error) {
+	ocrStatus := itemOCRStatusExpr()
+	ocrText := itemOCRTextExpr()
+
 	candidateWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
 		AND EXISTS (
@@ -130,19 +137,19 @@ func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, boo
 		return PipelineStageRow{}, false, nil
 	}
 
-	current, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status = '`+model.ItemOCRStatusOK+`' AND ocr_text != ''`)
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND `+ocrStatus+` = '`+model.ItemOCRStatusOK+`' AND `+ocrText+` != ''`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (ocr_status = '' OR ocr_status = '`+model.ItemOCRStatusError+`')`)
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (`+ocrStatus+` = '' OR `+ocrStatus+` = '`+model.ItemOCRStatusError+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status IN ('`+model.ItemOCRStatusBlocked+`', '`+model.ItemOCRStatusSkipped+`')`)
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND `+ocrStatus+` IN ('`+model.ItemOCRStatusBlocked+`', '`+model.ItemOCRStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status != '' AND ocr_status NOT IN ('`+model.ItemOCRStatusOK+`', '`+model.ItemOCRStatusError+`', '`+model.ItemOCRStatusBlocked+`', '`+model.ItemOCRStatusSkipped+`')`)
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND `+ocrStatus+` != '' AND `+ocrStatus+` NOT IN ('`+model.ItemOCRStatusOK+`', '`+model.ItemOCRStatusError+`', '`+model.ItemOCRStatusBlocked+`', '`+model.ItemOCRStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}

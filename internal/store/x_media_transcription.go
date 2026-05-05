@@ -16,6 +16,9 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 		limit = 100
 	}
 
+	transcriptStatus := itemXMediaTranscriptStatusExpr()
+	transcriptText := itemXMediaTranscriptTextExpr()
+
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
@@ -24,12 +27,9 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 			AND ` + xMediaTranscriptionRunnableMediaExistsWhere
 	if !force {
 		query += `
-			AND NOT (
-				article_title = '` + model.XMediaTranscriptArticleTitle + `'
-				AND article_text != ''
-			)`
+			AND ` + transcriptText + ` = ''`
 		query += `
-			AND x_media_transcript_status = ''`
+			AND ` + transcriptStatus + ` = ''`
 	}
 	query += `
 		ORDER BY last_seen_at DESC, id DESC
@@ -53,6 +53,9 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate x media transcription items: %w", err)
+	}
+	if err := s.applyItemEnrichmentMirrorToItems(ctx, items); err != nil {
+		return nil, err
 	}
 
 	return items, nil

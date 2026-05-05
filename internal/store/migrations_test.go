@@ -44,6 +44,71 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestOpenSchemaMigrationRestoresFTSAvailabilityOnReopen(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if !st.HasFTS() {
+		t.Fatal("expected fresh store to have FTS enabled")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := st.db.Exec(`
+		INSERT INTO items (
+			source_key, source_type, external_id, canonical_url, title, text,
+			content_hash, raw_json, imported_at, updated_at, last_seen_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"gh-star:test:litestream",
+		"github_star",
+		"litestream",
+		"https://github.com/benbjohnson/litestream",
+		"benbjohnson/litestream",
+		"Litestream provides streaming replication for SQLite databases.",
+		"hash-litestream",
+		`{}`,
+		now,
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert litestream item: %v", err)
+	}
+	itemID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+	if _, err := st.db.Exec(`
+		INSERT INTO items_fts (
+			rowid, source_key, title, text, article_title, article_text,
+			author_handle, author_name, primary_category, primary_domain
+		) VALUES (?, ?, ?, ?, '', '', '', '', '', '')`,
+		itemID,
+		"gh-star:test:litestream",
+		"benbjohnson/litestream",
+		"Litestream provides streaming replication for SQLite databases.",
+	); err != nil {
+		t.Fatalf("insert litestream fts row: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() {
+		_ = st.Close()
+	}()
+	if !st.HasFTS() {
+		t.Fatal("expected reopened current-schema store to refresh FTS availability")
+	}
+	results, err := st.Search(t.Context(), "litestream sqlite replication", 5)
+	if err != nil {
+		t.Fatalf("search reopened store: %v", err)
+	}
+	if len(results) == 0 || results[0].SourceKey != "gh-star:test:litestream" {
+		t.Fatalf("expected multi-term FTS result after reopen, got %#v", results)
+	}
+}
+
 func TestOpenAdoptsExistingCurrentSchemaWithoutMigrationMetadata(t *testing.T) {
 	t.Parallel()
 

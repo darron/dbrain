@@ -19,6 +19,10 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 	if question == "" {
 		return Response{}, fmt.Errorf("question cannot be empty")
 	}
+	searchQuestion := SearchText(question)
+	if searchQuestion == "" {
+		searchQuestion = question
+	}
 	if opts.Limit <= 0 {
 		opts.Limit = 8
 	}
@@ -82,7 +86,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 				return Response{}, err
 			}
 		}
-		entityMatches = buildEntityMatchIndex(entityIndex, question, searchTerms, maxInt(opts.Limit*3, 12))
+		entityMatches = buildEntityMatchIndex(entityIndex, searchQuestion, searchTerms, maxInt(opts.Limit*3, 12))
 	}
 
 	candidates := make([]evidenceCandidate, 0, len(results))
@@ -99,11 +103,11 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 			continue
 		}
 		seen[candidate.SourceKey] = struct{}{}
-		scoreCandidate(&candidate, question, searchTerms)
+		scoreCandidate(&candidate, searchQuestion, searchTerms)
 		applyEntityMatches(&candidate, entityMatches)
 		candidates = append(candidates, candidate)
 	}
-	entityCandidates, err := collectEntityCandidates(ctx, cfg, st, opts, question, searchTerms, entityMatches, seen)
+	entityCandidates, err := collectEntityCandidates(ctx, cfg, st, opts, searchQuestion, searchTerms, entityMatches, seen)
 	if err != nil {
 		return Response{}, err
 	}

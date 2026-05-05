@@ -24,17 +24,21 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 	if question == "" {
 		return Pack{}, fmt.Errorf("question is required")
 	}
+	searchQuestion := ask.SearchText(question)
+	if searchQuestion == "" {
+		searchQuestion = question
+	}
 
 	hints := ask.Hints(question)
 	limit := defaultInt(opts.Limit, 8)
 	maxChars := defaultInt(opts.MaxCharsPerDoc, 700)
-	topic, topicSource, hasTopic := resolveTopic(question, opts.Topic)
+	topic, topicSource, hasTopic := resolveTopic(searchQuestion, opts.Topic)
 	includeTopic := hasTopic
 	if opts.IncludeTopic != nil {
 		includeTopic = *opts.IncludeTopic
 	}
 	if includeTopic && !hasTopic {
-		topic = normalizeTopicPhrase(question)
+		topic = normalizeTopicPhrase(searchQuestion)
 		if topic != "" {
 			topicSource = "normalized_question"
 			hasTopic = true
@@ -44,7 +48,7 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 		includeTopic = false
 	}
 
-	strategy := b.buildResearchStrategy(ctx, question, hints, opts)
+	strategy := b.buildResearchStrategy(ctx, searchQuestion, hints, opts)
 	evidence, err := b.collectStrategyEvidence(ctx, strategy, opts, limit, maxChars)
 	if err != nil {
 		return Pack{}, err

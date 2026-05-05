@@ -14,3 +14,7 @@ func Hints(question string) QueryHints {
 		TagQueries: queryterms.TagQueries(terms),
 	}
 }
+
+func SearchText(question string) string {
+	return queryterms.SearchText(question)
+}

@@ -93,6 +93,18 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
 		return fmt.Errorf("set schema user_version: %w", err)
 	}
+	if err := s.refreshFTSAvailability(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) refreshFTSAvailability() error {
+	var err error
+	s.hasFTS, err = s.tableExists("items_fts")
+	if err != nil {
+		return fmt.Errorf("check fts availability: %w", err)
+	}
 	return nil
 }
 

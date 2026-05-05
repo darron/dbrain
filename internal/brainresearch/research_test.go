@@ -90,6 +90,104 @@ func TestBuildIncludesSourceExactTagEvidence(t *testing.T) {
 	}
 }
 
+func TestBuildChatFollowupIgnoresPriorEvidenceTitleNoise(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	saveSource := func(key string, title string, sourceType string, content string) {
+		t.Helper()
+		url := "https://example.com/" + strings.TrimPrefix(key, "src:")
+		source, err := st.UpsertSource(ctx, model.SourceCandidate{
+			SourceKey:     key,
+			OriginalURL:   url,
+			CanonicalURL:  url,
+			NormalizedURL: url,
+			SourceType:    sourceType,
+			Domain:        "example.com",
+			NotePath:      "sources/" + sourceType + "/" + strings.TrimPrefix(key, "src:") + ".md",
+		})
+		if err != nil {
+			t.Fatalf("upsert source %s: %v", key, err)
+		}
+		if _, err := st.SaveSourceExtraction(ctx, source.SourceID, model.ExtractResult{
+			CanonicalURL: url,
+			FinalURL:     url,
+			Title:        title,
+			Content:      content,
+			Status:       "ok",
+			FetchedAt:    now,
+			Tool:         "test",
+			ToolVersion:  "test",
+		}, key+"-hash"); err != nil {
+			t.Fatalf("save source extraction %s: %v", key, err)
+		}
+	}
+
+	saveSource(
+		"src:litestream",
+		"benbjohnson/litestream",
+		"github",
+		"Litestream provides streaming replication for SQLite databases and backs them up to object storage.",
+	)
+	saveSource(
+		"src:marmot",
+		"Marmot V2 - Distributed SQLite Replicator - Nextra",
+		"web",
+		"Marmot is a distributed SQLite replicator and appears in prior evidence titles.",
+	)
+	saveSource(
+		"src:colmi",
+		"colmi_r02_client API documentation",
+		"web",
+		"Client API documentation from a Safari tab that should not steer this follow-up.",
+	)
+
+	pack, err := Build(ctx, cfg, st, Options{
+		Question: `Current question: what about litestream?
+
+Recent user questions:
+- sqlite replication
+
+Prior evidence titles for query focus:
+- Marmot V2 - Distributed SQLite Replicator - Nextra | web
+- maxpert/marmot | github
+- colmi_r02_client API documentation | web
+- colmi_r02_client API documentation | safari_tab`,
+		Limit:          3,
+		MaxCharsPerDoc: 200,
+		DisablePlanner: true,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if pack.QueryPlan.TextQuery != "litestream sqlite replication" {
+		t.Fatalf("expected clean chat follow-up query, got %q", pack.QueryPlan.TextQuery)
+	}
+	for _, noisy := range []string{"marmot", "colmi", "api", "safari"} {
+		if containsString(pack.QueryPlan.QueryTerms, noisy) || hasQueryVariantContaining(pack.QueryPlan.QueryVariants, noisy) {
+			t.Fatalf("did not expect prior evidence term %q in query plan %#v", noisy, pack.QueryPlan)
+		}
+	}
+	if len(pack.Evidence) == 0 || pack.Evidence[0].SourceKey != "src:litestream" {
+		t.Fatalf("expected litestream evidence first, got %#v", pack.Evidence)
+	}
+}
+
 func TestBuildResearchStrategyExpandsPeopleEventQuery(t *testing.T) {
 	t.Parallel()
 
@@ -392,6 +490,15 @@ func hasConceptTerm(concepts []QueryConcept, key string, term string) bool {
 func hasRetrievalSignal(signals []ask.RetrievalSignal, name string) bool {
 	for _, signal := range signals {
 		if signal.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

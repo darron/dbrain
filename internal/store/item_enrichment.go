@@ -30,6 +30,15 @@ func (s *Store) applyItemEnrichmentMirror(ctx context.Context, item *model.Item)
 	return applyItemEnrichmentMirrorFrom(ctx, s.db, item)
 }
 
+func (s *Store) applyItemEnrichmentMirrorToItems(ctx context.Context, items []model.Item) error {
+	for i := range items {
+		if err := s.applyItemEnrichmentMirror(ctx, &items[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type itemEnrichmentQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }

@@ -802,6 +802,9 @@ These are deeper and should be staged with focused tests.
    - Item FTS rebuilds and targeted item reindexing now hydrate from
      `item_enrichments` before indexing, and FTS search snippets prefer mirror
      summary/OCR/transcript text when available.
+   - Item-level pipeline stats and enrichment candidate selectors for Apple
+     Note summaries, X media summaries/transcription, and X photo OCR now use
+     `item_enrichments` first with compatibility-column fallback.
 
 4. Separate user tags from model/category tags.
 

@@ -12,16 +12,19 @@ func (s *Store) ListItemsForXMediaSummary(ctx context.Context, limit int, force 
 		limit = 100
 	}
 
+	transcriptStatus := itemXMediaTranscriptStatusExpr()
+	transcriptText := itemXMediaTranscriptTextExpr()
+	summaryStatus := itemSummaryStatusExpr()
+
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
 		WHERE ` + xItemSourceTypeWhere + `
-			AND article_title = '` + model.XMediaTranscriptArticleTitle + `'
-			AND article_text != ''
-			AND x_media_transcript_status = '` + model.XMediaTranscriptStatusOK + `'`
+			AND ` + transcriptText + ` != ''
+			AND ` + transcriptStatus + ` = '` + model.XMediaTranscriptStatusOK + `'`
 	if !force {
 		query += `
-			AND (summary_status = '' OR summary_status = '` + model.ItemSummaryStatusError + `')`
+			AND (` + summaryStatus + ` = '' OR ` + summaryStatus + ` = '` + model.ItemSummaryStatusError + `')`
 	}
 	query += `
 		ORDER BY x_media_transcript_at DESC, last_seen_at DESC, id DESC
@@ -46,6 +49,9 @@ func (s *Store) ListItemsForXMediaSummary(ctx context.Context, limit int, force 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate x media summary items: %w", err)
 	}
+	if err := s.applyItemEnrichmentMirrorToItems(ctx, items); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -53,6 +59,8 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 	if limit <= 0 {
 		limit = 100
 	}
+
+	ocrStatus := itemOCRStatusExpr()
 
 	query := `
 		SELECT ` + itemSelectColumns + `
@@ -71,7 +79,7 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 			)`
 	if !force {
 		query += `
-			AND (ocr_status = '' OR ocr_status = '` + model.ItemOCRStatusError + `')`
+			AND (` + ocrStatus + ` = '' OR ` + ocrStatus + ` = '` + model.ItemOCRStatusError + `')`
 	}
 	query += `
 		ORDER BY last_seen_at DESC, id DESC
@@ -95,6 +103,9 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate x photo ocr items: %w", err)
+	}
+	if err := s.applyItemEnrichmentMirrorToItems(ctx, items); err != nil {
+		return nil, err
 	}
 	return items, nil
 }
@@ -144,6 +155,9 @@ func (s *Store) ListItemsForXPhotoOCRAudit(ctx context.Context, limit int, inclu
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate x photo ocr audit items: %w", err)
+	}
+	if err := s.applyItemEnrichmentMirrorToItems(ctx, items); err != nil {
+		return nil, err
 	}
 	return items, nil
 }
