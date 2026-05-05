@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func resolveGetContentMode(value string, includeContent *bool) (string, error) {
@@ -73,7 +74,7 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 		if err != nil {
 			return nil, "", err
 		}
-		sections = []getSection{makeGetSection("rendered_note", "rendered", "", "", "", time.Time{}, content, maxChars)}
+		sections = []getSection{retrieval.NewContentSection("rendered_note", "rendered", "", "", "", time.Time{}, content, maxChars)}
 	}
 
 	payload := map[string]interface{}{
@@ -85,7 +86,7 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 		"note_path":             item.NotePath,
 		"content_mode":          mode,
 		"max_chars_per_section": maxChars,
-		"available_sections":    sectionCatalog(available),
+		"available_sections":    retrieval.ContentSectionCatalog(available),
 		"content_sections":      sections,
 		"item":                  slimItem(item),
 	}
@@ -118,7 +119,7 @@ func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocume
 		if err != nil {
 			return nil, "", err
 		}
-		sections = []getSection{makeGetSection("rendered_note", "rendered", "", "", "", time.Time{}, content, maxChars)}
+		sections = []getSection{retrieval.NewContentSection("rendered_note", "rendered", "", "", "", time.Time{}, content, maxChars)}
 	}
 
 	title := firstNonEmpty(source.Title, source.CanonicalURL)
@@ -131,7 +132,7 @@ func (s *Server) getSourcePayload(ctx context.Context, source model.SourceDocume
 		"note_path":             source.NotePath,
 		"content_mode":          mode,
 		"max_chars_per_section": maxChars,
-		"available_sections":    sectionCatalog(available),
+		"available_sections":    retrieval.ContentSectionCatalog(available),
 		"content_sections":      sections,
 		"source":                slimSource(source),
 	}

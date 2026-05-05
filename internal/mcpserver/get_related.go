@@ -31,7 +31,7 @@ func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item) (
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		sections = append(sections, makeGetSection("quoted_post:"+child.SourceKey, "related_item", child.XPostStatus, child.SummaryModel, child.SummaryTool, child.XPostFetchedAt, text, 0))
+		sections = append(sections, retrieval.NewContentSection("quoted_post:"+child.SourceKey, "related_item", child.XPostStatus, child.SummaryModel, child.SummaryTool, child.XPostFetchedAt, text, 0))
 	}
 	return related, sections, nil
 }
@@ -57,7 +57,7 @@ func (s *Server) itemRelatedSourceSections(ctx context.Context, item model.Item)
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		sections = append(sections, makeGetSection("linked_source:"+source.SourceKey, "related_source", firstNonEmpty(source.SummaryStatus, source.ExtractStatus), source.SummaryModel, firstNonEmpty(source.SummaryTool, source.ExtractTool), firstNonZeroTime(source.SummarizedAt, source.ExtractedAt), text, 0))
+		sections = append(sections, retrieval.NewContentSection("linked_source:"+source.SourceKey, "related_source", firstNonEmpty(source.SummaryStatus, source.ExtractStatus), source.SummaryModel, firstNonEmpty(source.SummaryTool, source.ExtractTool), firstNonZeroTime(source.SummarizedAt, source.ExtractedAt), text, 0))
 	}
 	return refs, sections, nil
 }
@@ -83,7 +83,7 @@ func (s *Server) sourceBacklinkSections(ctx context.Context, source model.Source
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		sections = append(sections, makeGetSection("referencing_item:"+item.SourceKey, "related_item", item.XPostStatus, item.SummaryModel, item.SummaryTool, item.XPostFetchedAt, text, 0))
+		sections = append(sections, retrieval.NewContentSection("referencing_item:"+item.SourceKey, "related_item", item.XPostStatus, item.SummaryModel, item.SummaryTool, item.XPostFetchedAt, text, 0))
 	}
 	return refs, sections, nil
 }
