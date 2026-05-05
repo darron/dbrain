@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/darron/dbrain/internal/model"
-	"github.com/darron/dbrain/internal/version"
 )
 
 func UsesDirectSummary(model string) bool {
@@ -42,34 +40,6 @@ func SummaryToolVersion(ctx context.Context, binary string, model string) string
 		return directOpenRouterVersion
 	}
 	return Version(ctx, binary)
-}
-
-func localSummaryInput(opts Options) (string, bool, error) {
-	if !opts.Summarize {
-		return "", false, nil
-	}
-	if value := strings.TrimSpace(opts.Stdin); value != "" {
-		return value, true, nil
-	}
-	input := strings.TrimSpace(opts.Input)
-	if input == "" {
-		return "", false, nil
-	}
-	info, err := os.Stat(input)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("stat summary input: %w", err)
-	}
-	if info.IsDir() {
-		return "", false, nil
-	}
-	data, err := os.ReadFile(input)
-	if err != nil {
-		return "", false, fmt.Errorf("read summary input: %w", err)
-	}
-	return string(data), true, nil
 }
 
 func runDirectSummary(ctx context.Context, opts Options, inputText string) (Result, error) {
@@ -169,79 +139,4 @@ func runDirectSummary(ctx context.Context, opts Options, inputText string) (Resu
 			ToolVersion: target.toolVersion,
 		},
 	}, nil
-}
-
-func directSummaryText(target directSummaryTarget, respBody []byte) (string, error) {
-	if target.nativeOllama {
-		var payload ollamaChatResponse
-		if err := json.Unmarshal(respBody, &payload); err != nil {
-			bodyText := strings.TrimSpace(string(respBody))
-			if len(bodyText) > 200 {
-				bodyText = bodyText[:200]
-			}
-			return "", fmt.Errorf("parse %s summary response: %w (body prefix: %q)", target.label, err, bodyText)
-		}
-		return strings.TrimSpace(payload.Message.Content), nil
-	}
-
-	var payload chatCompletionsResponse
-	if err := json.Unmarshal(respBody, &payload); err != nil {
-		bodyText := strings.TrimSpace(string(respBody))
-		if len(bodyText) > 200 {
-			bodyText = bodyText[:200]
-		}
-		return "", fmt.Errorf("parse %s summary response: %w (body prefix: %q)", target.label, err, bodyText)
-	}
-	if len(payload.Choices) == 0 {
-		return "", fmt.Errorf("run %s summary: response contained no choices", target.label)
-	}
-	return strings.TrimSpace(payload.Choices[0].Message.Content), nil
-}
-
-func resolveDirectSummaryTarget(ctx context.Context, opts Options) (directSummaryTarget, error) {
-	if ollamaModel, ok := parseOllamaModel(opts.Model); ok {
-		return directSummaryTarget{
-			model:        ollamaModel,
-			displayName:  defaultDirectDisplayName(opts.Model, "ollama/"+ollamaModel),
-			baseURL:      ollamaNativeBaseURLWithEnv(opts.Env),
-			apiKey:       ollamaAPIKeyWithEnv(opts.Env),
-			toolName:     SummaryToolName(opts.Model),
-			toolVersion:  SummaryToolVersion(ctx, opts.Binary, opts.Model),
-			label:        "ollama",
-			nativeOllama: true,
-		}, nil
-	}
-	if openrouterModel, ok := parseOpenRouterModel(opts.Model); ok {
-		apiKey := openRouterAPIKeyWithEnv(opts.Env)
-		if strings.TrimSpace(apiKey) == "" {
-			return directSummaryTarget{}, fmt.Errorf("direct openrouter summary requested without DBRAIN_OPENROUTER_API_KEY or OPENROUTER_API_KEY")
-		}
-		headers := map[string]string{}
-		if value := openRouterRefererWithEnv(opts.Env); value != "" {
-			headers["HTTP-Referer"] = value
-		}
-		if value := openRouterTitleWithEnv(opts.Env); value != "" {
-			headers["X-Title"] = value
-		}
-		headers["User-Agent"] = version.UserAgent(userAgentWithEnv(opts.Env))
-		return directSummaryTarget{
-			model:       openrouterModel,
-			displayName: defaultDirectDisplayName(opts.Model, "openrouter/"+openrouterModel),
-			baseURL:     openRouterBaseURLWithEnv(opts.Env),
-			apiKey:      apiKey,
-			toolName:    SummaryToolName(opts.Model),
-			toolVersion: SummaryToolVersion(ctx, opts.Binary, opts.Model),
-			headers:     headers,
-			label:       "openrouter",
-		}, nil
-	}
-	return directSummaryTarget{}, fmt.Errorf("direct summary requested without a supported direct model")
-}
-
-func defaultDirectDisplayName(current string, fallback string) string {
-	value := strings.TrimSpace(current)
-	if value != "" {
-		return value
-	}
-	return fallback
 }

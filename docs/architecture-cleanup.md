@@ -198,10 +198,11 @@ The architecture is functional, but the main pressure points are:
 - Item row decoding and shared item column selection now live in
   `internal/store/item_scan.go`; item lookup/list/tag helpers now live in
   `internal/store/item_read.go`.
-- Item writes now live in `internal/store/item_write.go`; item enrichment
-  queries, summary writes, OCR writes, purge, item FTS sync, X hydration
-  candidate/save/link/invalidation paths, X media transcription state, and item
-  link metadata helpers are split into focused store files.
+- Item writes now live in `internal/store/item_write.go`; item enrichment-field
+  preservation and DB time formatting now live outside the upsert transaction;
+  item enrichment queries, summary writes, OCR writes, purge, item FTS sync, X
+  hydration candidate/save/link/invalidation paths, X media transcription state,
+  and item link metadata helpers are split into focused store files.
 - Media store behavior now has focused schema, download persistence, item
   reference, archive/prune candidate, archive write, archive lookup, X hydration
   media sync, X hydration media decode/merge, and raw media extraction files.
@@ -210,8 +211,9 @@ The architecture is functional, but the main pressure points are:
   persistence into focused files.
 - Store stats now separate DTOs, count queries, activity summaries, backlog
   summaries, shared count helpers, pipeline assembly, item-level pipeline rows,
-  pipeline aggregation helpers, source activity feed assembly, source activity
-  SQL builders, source activity SQL union bodies, and trend shaping.
+  X media/OCR pipeline row helpers, pipeline aggregation helpers, source
+  activity feed assembly, source activity SQL builders, source activity SQL
+  union bodies, and trend shaping.
 - The former `internal/store/sources.go` catchall has been decomposed into
   focused source schema, source link/upsert, enrichment persistence, scan/read,
   lookup/evidence/relation/tag helpers, search/FTS, predicate, repair filters,
@@ -225,7 +227,7 @@ The architecture is functional, but the main pressure points are:
   Source summary execution/freshness/prompt/skip policy, extraction failure
   persistence/classification/preflight, extract validation and cleanup, YouTube
   audio transcription fallback, option defaults, worker concurrency,
-  audio transcriber command helpers, option defaults, worker concurrency,
+  audio transcriber command helpers,
   persistence/note rendering, selection helpers, progress tracking,
   process/fallback flow, HTTP reader, Wayback, Sucuri protected fetch, WordPress
   recovery, and HTML extraction now live in focused files while preserving the
@@ -237,11 +239,13 @@ The architecture is functional, but the main pressure points are:
   categorization, and runner hooks now live in focused files while preserving
   the current `sync all` order and bounded X follow-up passes.
 - `internal/app/sync.go` has been narrowed to command execution. Sync flag
-  binding, root-env/config resolution, `syncjob.Options` assembly, progress UI,
-  and summary table rendering now live in focused `internal/app/sync_*.go`
-  files, with tests covering root `.env` sync option resolution.
-- App-level stats command wiring and output rendering are split, and sync
-  progress UI rendering is separated from log/progress parsing helpers.
+  binding, root-env/config resolution, sync flag env resolution,
+  `syncjob.Options` assembly, progress UI, and summary table rendering now live
+  in focused `internal/app/sync_*.go` files, with tests covering root `.env`
+  sync option resolution.
+- App-level stats command wiring, general stats output, and pipeline table
+  rendering are split, and sync progress UI rendering is separated from
+  log/progress parsing and log-line mechanics.
 - Apple Notes import command wiring, progress/stat output, and debug
   probe/snapshot/decode subcommands are now separated in `internal/app`.
 - Apple Notes reader code now separates low-level DB row value coercion,
@@ -258,6 +262,8 @@ The architecture is functional, but the main pressure points are:
   handling, reset confirmation, probe URL construction, tailnet IP lookup, and
   HTTP/TLS probe execution.
 - Categorization command wiring now separates item and source command surfaces.
+- Repair command wiring now keeps FTS/note repair commands separate from source
+  reset lookup, preview, confirmation, and output flow.
 - `internal/runtimeenv` now keeps public scalar lookup in a small facade while
   bool/list helpers, env-file loading, YAML config decoding, and config key-path
   expansion live in focused files.
@@ -275,18 +281,21 @@ The architecture is functional, but the main pressure points are:
 - `internal/brainresearch/research.go` now remains the research-pack builder
   while pack DTOs, deterministic/model-assisted strategy helpers, evidence
   reranking, topic inference, coverage, exact-tag examples, search filtering,
-  next-step suggestions, and utilities live in focused package files.
+  strategy concept/variant derivation, next-step suggestions, and utilities
+  live in focused package files.
 - `internal/brainresearch/planner.go` now remains the model-planner execution
   path while planner JSON parsing/sanitization and deterministic/model merge
   rules live in focused files.
 - `internal/brainresearch/synthesize.go` now remains the public synthesis
   prepare/run facade while prompt-input packing, evidence budget/truncation
-  accounting, citation collection, and small synthesis helpers live in focused
-  files.
+  accounting, citation collection, synthesis evidence input formatting, and
+  small synthesis helpers live in focused files.
+- App-level research command wiring now keeps retrieval/synthesis flow separate
+  from human-output rendering helpers.
 - `internal/summarizecli/client.go` now remains the summarize runner while
-  direct Ollama/OpenRouter calls, command retry/timeout behavior, provider
-  selection, version probing, model/env resolution, and shared DTOs live in
-  focused files.
+  direct Ollama/OpenRouter calls, direct input/target/response helpers, command
+  retry/timeout behavior, provider selection, version probing, model/env
+  resolution, and shared DTOs live in focused files.
 - `internal/xapi/xapi.go` now remains the X hydration coordinator while fetch
   policy, quoted-post tree persistence, client/cookie handling, GraphQL and
   syndication fetch paths, TweetResult request metadata, GraphQL/syndication
@@ -302,12 +311,15 @@ The architecture is functional, but the main pressure points are:
   normalization, builder state, path construction, and parsing/matching helpers
   live in focused files.
 - `internal/topics/topicmap.go` now remains the topic map builder while graph
-  node resolution, source-type filtering, entity scoring/pivots, formatting,
-  shared DTOs, and small utilities live in focused files.
+  node resolution, source-type filtering, entity scoring rules, pivots,
+  formatting, shared DTOs, and small utilities live in focused files.
 - `internal/topics/synthesis.go` now remains the topic synthesis coordinator
   while evidence collection, section rendering, signal clustering, signal
   phrase extraction, signal stopword policy, shared types, and synthesis
   utilities live in focused files.
+- App-level topic command wiring now keeps topic map/generate/refresh/index
+  command construction separate from refresh definition resolution and topic
+  index rebuild helpers.
 - `internal/vault/vault.go` now keeps path/stat helpers while item note
   rendering, media/archive embeds, quoted-post rendering, YAML/text helpers, and
   render-option resolution live in focused files.
@@ -335,6 +347,9 @@ The architecture is functional, but the main pressure points are:
   coordinator while option normalization, media/audio eligibility, external
   command execution, transcript classification/rendering, persistence, and
   logging helpers live in focused files.
+- `internal/mediadownload/run.go` now remains the per-item media download
+  coordinator while download policy, HTTP transfer, content-addressed path
+  selection, and extension/type helpers live in focused files.
 - `internal/sqlitearchive` now separates archive, latest-selection, restore,
   SQLite snapshot/validation, gzip/file movement, object key, and progress
   helpers while preserving the existing archive/restore APIs.
