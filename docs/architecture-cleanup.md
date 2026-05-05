@@ -184,8 +184,9 @@ The architecture is functional, but the main pressure points are:
   case loading/examples, per-case assertions, retrieval routing, and utility
   helpers live in focused files.
 - MCP `dbrain_get` payload assembly now separates lookup coordination, content
-  section selection/windowing, related item/source sections, slim metadata, and
-  text formatting while preserving the existing tool schema and JSON fields.
+  section selection, evidence query-windowing, related item/source sections,
+  slim metadata, and text formatting while preserving the existing tool schema
+  and JSON fields.
 - `internal/store/store.go` has been fully decomposed while keeping
   `store.Store` as the public handle: schema/bootstrap logic moved into
   `schema.go`; item/source search, tag search, match counts, and FTS helpers
@@ -243,9 +244,13 @@ The architecture is functional, but the main pressure points are:
   progress UI rendering is separated from log/progress parsing helpers.
 - Apple Notes import command wiring, progress/stat output, and debug
   probe/snapshot/decode subcommands are now separated in `internal/app`.
-- Apple Notes reader code now separates low-level DB row value coercion and
-  link/tag/identity text helpers from the snapshot decode and document assembly
-  flow.
+- Apple Notes reader code now separates low-level DB row value coercion,
+  object/note-data row loading, note document assembly, attachment-row decoding,
+  and link/tag/identity text helpers from the snapshot decode flow.
+- Apple Notes import runtime now separates `Run` orchestration from stats/types,
+  work planning, progress dispatch, exclusion purge handling, summary
+  execution, item materialization, attachment enrichment substeps, and
+  snapshot/probe filesystem and read-only SQLite helpers.
 - Serve command wiring is split by MCP, remote tsnet, and plain web surfaces
   while preserving existing flags and defaults.
 - App-level `tsnet` state commands now keep command wiring separate from status
@@ -281,9 +286,12 @@ The architecture is functional, but the main pressure points are:
   selection, version probing, model/env resolution, and shared DTOs live in
   focused files.
 - `internal/xapi/xapi.go` now remains the X hydration coordinator while fetch
-  policy, quoted-post tree persistence, client/cookie handling, TweetResult
-  request metadata, snapshot parsing, and shared utilities live in focused
-  files.
+  policy, quoted-post tree persistence, client/cookie handling, GraphQL and
+  syndication fetch paths, TweetResult request metadata, GraphQL/syndication
+  snapshot parsing, and shared utilities live in focused files.
+- X bookmark import now separates the overlap-aware run loop from GraphQL
+  request/retry code, timeline parsing, bookmark DTOs, and item materialization
+  helpers while preserving the native cookie-backed GraphQL flow.
 - `internal/itemcategorize/run.go` now remains the item/source categorization
   runner while DTOs, content bundles, photo/S3 loading, LLM transport, option
   resolution, tag merging, and small utilities live in focused files.

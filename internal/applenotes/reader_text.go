@@ -1,6 +1,11 @@
 package applenotes
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+var urlPattern = regexp.MustCompile(`https?://[^\s<>"')\]]+`)
 
 func extractLinks(value string) []string {
 	matches := urlPattern.FindAllString(value, -1)
@@ -70,4 +75,22 @@ func sanitizeIdentity(value string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+func dedupeTextValues(values []string) []string {
+	seen := map[string]struct{}{}
+	deduped := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, value)
+	}
+	return deduped
 }
