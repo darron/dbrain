@@ -157,6 +157,12 @@ The architecture is functional, but the main pressure points are:
 - `web/server.go` has been split into focused static, read, stats, research,
   chat transcript, mutation, utility, and API type files while preserving
   `web.NewHandler` as the route entry point.
+- Chat transcript saving now keeps HTTP request handling separate from
+  transcript Markdown rendering, research-pack formatting, evidence rendering,
+  and filename/text helpers.
+- Archive media serving now keeps web handlers separate from S3 proxy setup,
+  archived-asset lookup/URL helpers, and archive response header/error helpers,
+  with helper coverage for ID parsing, signed URL TTLs, and response headers.
 - MCP stdio transport and JSON-RPC protocol dispatch now live outside
   `internal/mcpserver/server.go`, making transport, protocol, and tool behavior
   easier to review separately.
@@ -167,6 +173,10 @@ The architecture is functional, but the main pressure points are:
 - MCP tool definitions and schema helpers are split from output schema builders,
   and MCP resource catalogs, URI dispatch, concrete resource readers, stats
   readers, and query/JSON helpers now live in focused files.
+- MCP output schemas are now split by core lookup/search, research pack, graph,
+  and stats schema families.
+- MCP prompt handling now separates JSON-RPC handlers, prompt catalog
+  definitions, prompt template rendering, and argument coercion helpers.
 - MCP tool result/error shaping, search result formatting, graph formatting,
   stats formatting, source-type filtering, and small utility helpers are split
   out of the former helper catchall.
@@ -236,6 +246,13 @@ The architecture is functional, but the main pressure points are:
 - Serve command wiring is split by MCP, remote tsnet, and plain web surfaces
   while preserving existing flags and defaults.
 - Categorization command wiring now separates item and source command surfaces.
+- `internal/runtimeenv` now keeps public scalar lookup in a small facade while
+  bool/list helpers, env-file loading, YAML config decoding, and config key-path
+  expansion live in focused files.
+- `internal/linkextract/run.go` now remains the link-discovery/source-enrichment
+  coordinator while option/stat DTOs, candidate collection, URL normalization,
+  source classification, and hashing/slug/logging helpers live in focused files,
+  with direct coverage for common URL canonicalization cases.
 - `internal/remote/server.go` now remains the remote serve/handler assembly
   coordinator while the tsnet node adapter, request identity logging/user auth
   URL logging, and advertised URL rendering live in focused files.
