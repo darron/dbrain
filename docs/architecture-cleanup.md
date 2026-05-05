@@ -212,12 +212,12 @@ The architecture is functional, but the main pressure points are:
 - Store stats now separate DTOs, count queries, activity summaries, backlog
   summaries, shared count helpers, pipeline assembly, item-level pipeline rows,
   X media/OCR pipeline row helpers, pipeline aggregation helpers, source
-  activity feed assembly, source activity SQL builders, source activity SQL
-  union bodies, and trend shaping.
+  activity feed assembly, source activity row scanning, source activity SQL
+  builders, source activity SQL union bodies, and trend shaping.
 - The former `internal/store/sources.go` catchall has been decomposed into
   focused source schema, source link/upsert, enrichment persistence, scan/read,
-  lookup/evidence/relation/tag helpers, search/FTS, predicate, repair filters,
-  X article repair reset, and X article preview files.
+  lookup/evidence/relation/tag helpers, search/FTS/scanning, predicate, repair
+  filters, X article repair reset, and X article preview files.
 - SQLite startup now runs through an ordered migration registry in
   `internal/store/migrations.go`. The checked-in current schema is recorded as
   baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests

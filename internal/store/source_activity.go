@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
@@ -86,112 +85,26 @@ func (s *Store) SourceActivityFeedFiltered(ctx context.Context, filter SourceAct
 }
 
 func (s *Store) listSourceActivityEvents(ctx context.Context, query string, args ...any) ([]SourceActivityEvent, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list source activity events: %w", err)
-	}
-	defer func() {
-		_ = rows.Close()
-	}()
-
-	var events []SourceActivityEvent
-	for rows.Next() {
-		var event SourceActivityEvent
-		var eventAt string
-		if err := rows.Scan(
-			&event.SourceID,
-			&event.SourceKey,
-			&event.SourceType,
-			&event.Domain,
-			&event.FailureKind,
-			&event.CanonicalURL,
-			&event.Title,
-			&event.NotePath,
-			&event.EventKind,
-			&event.Status,
-			&event.Message,
-			&eventAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan source activity event: %w", err)
-		}
-		event.EventAt = parseStoredTime(eventAt)
-		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate source activity events: %w", err)
-	}
-	return events, nil
+	return s.scanSourceActivityEvents(ctx, query, args...)
 }
 
 func (s *Store) listSourceFailureHotspots(ctx context.Context, query string, args ...any) ([]SourceFailureHotspot, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list source failure hotspots: %w", err)
-	}
-	defer func() {
-		_ = rows.Close()
-	}()
-
-	var hotspots []SourceFailureHotspot
-	for rows.Next() {
-		var hotspot SourceFailureHotspot
-		var eventAt string
-		if err := rows.Scan(
-			&hotspot.Domain,
-			&hotspot.SourceType,
-			&hotspot.Status,
-			&hotspot.FailureKind,
-			&hotspot.Count,
-			&eventAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan source failure hotspot: %w", err)
-		}
-		hotspot.LatestEventAt = parseStoredTime(eventAt)
-		hotspots = append(hotspots, hotspot)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate source failure hotspots: %w", err)
-	}
-	return hotspots, nil
+	return s.scanSourceFailureHotspots(ctx, query, args...)
 }
 
 func (s *Store) listCountBuckets(ctx context.Context, query string, args ...any) ([]CountBucket, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list count buckets: %w", err)
-	}
-	defer func() {
-		_ = rows.Close()
-	}()
-
-	buckets, err := scanCountBuckets(rows, true)
-	if err != nil {
-		return nil, fmt.Errorf("scan count buckets: %w", err)
-	}
-	return buckets, nil
+	return s.scanCountBucketsByQuery(ctx, query, args...)
 }
 
 func (s *Store) countByQuery(ctx context.Context, query string, args ...any) (int, error) {
-	var count int
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count by query: %w", err)
-	}
-	return count, nil
+	return s.scanCountByQuery(ctx, query, args...)
 }
 
 func (s *Store) listSourceActivityTrend(ctx context.Context, filter SourceActivityFilter) ([]SourceActivityTrendPoint, time.Duration, error) {
 	bucket := sourceActivityTrendBucket(filter.Window)
 	now := time.Now().UTC()
 	query, args := sourceActivityTrendQuery(filter)
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("list source activity trend: %w", err)
-	}
-	defer func() {
-		_ = rows.Close()
-	}()
-
-	points, err := buildSourceActivityTrend(rows, now, filter.Window, bucket)
+	points, err := s.scanSourceActivityTrend(ctx, query, now, filter.Window, bucket, args...)
 	if err != nil {
 		return nil, 0, err
 	}
