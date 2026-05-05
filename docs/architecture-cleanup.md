@@ -342,9 +342,9 @@ The architecture is functional, but the main pressure points are:
   command bodies, refresh/index command bodies, refresh definition resolution,
   and topic index rebuild helpers separate.
 - `internal/vault/vault.go` now keeps path/stat helpers while item note
-  rendering, item/source Markdown sections, media/archive embeds, quoted-post
-  rendering, entity note writes, entity Markdown rendering, YAML/text helpers,
-  and render-option resolution live in focused files.
+  rendering, item frontmatter/source Markdown sections, media/archive embeds,
+  quoted-post rendering, entity note writes, entity Markdown rendering,
+  YAML/text helpers, and render-option resolution live in focused files.
 - Vault topic note code now separates note write coordination, Markdown
   rendering, topic index rendering, definition/frontmatter parsing, and path
   helpers, with round-trip coverage for generated topic definitions and index
@@ -357,8 +357,9 @@ The architecture is functional, but the main pressure points are:
   enrichment callbacks, browser-profile discovery, and utility helpers live in
   focused files.
 - `internal/safaritabs/run.go` now remains the Safari tab import coordinator
-  while CloudTabs query code, item materialization, device matching, progress,
-  and time/hash helpers live in focused files.
+  while CloudTabs query code, snapshot DB opening/validation, item
+  materialization, device matching, progress, and time/hash helpers live in
+  focused files.
 - `internal/xphotoocr/run.go` now remains the X photo OCR worker coordinator
   while per-item persistence, model/provider routing, hosted/local OCR calls,
   option resolution, and shared result helpers live in focused files.
