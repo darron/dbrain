@@ -1,6 +1,10 @@
 package xmediatranscribe
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/darron/dbrain/internal/model"
+)
 
 func shouldSkipTranscript(transcript string) bool {
 	body := strings.TrimSpace(transcript)
@@ -16,12 +20,12 @@ func shouldSkipTranscript(transcript string) bool {
 func classifyTranscriptSkip(transcript string) string {
 	body := strings.TrimSpace(transcript)
 	if body == "" {
-		return "empty"
+		return model.XMediaTranscriptStatusEmpty
 	}
 	if _, ok := transcriptNoiseMarkers[strings.ToLower(body)]; ok {
-		return "noise"
+		return model.XMediaTranscriptStatusNoise
 	}
-	return "too_short"
+	return model.XMediaTranscriptStatusTooShort
 }
 
 func classifyTranscriptError(err error) string {
@@ -29,9 +33,9 @@ func classifyTranscriptError(err error) string {
 		return ""
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "transcript empty") {
-		return "empty"
+		return model.XMediaTranscriptStatusEmpty
 	}
-	return "error"
+	return model.XMediaTranscriptStatusError
 }
 
 func chooseItemTranscriptOutcome(current itemTranscriptOutcome, next itemTranscriptOutcome) itemTranscriptOutcome {
@@ -43,15 +47,15 @@ func chooseItemTranscriptOutcome(current itemTranscriptOutcome, next itemTranscr
 
 func outcomePriority(status string) int {
 	switch status {
-	case "error":
+	case model.XMediaTranscriptStatusError:
 		return 5
-	case "empty":
+	case model.XMediaTranscriptStatusEmpty:
 		return 4
-	case "noise":
+	case model.XMediaTranscriptStatusNoise:
 		return 3
-	case "too_short":
+	case model.XMediaTranscriptStatusTooShort:
 		return 2
-	case "no_audio":
+	case model.XMediaTranscriptStatusNoAudio:
 		return 1
 	default:
 		return 0

@@ -76,7 +76,7 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 	}
 	if len(blocks) == 0 {
 		_, saveErr := st.SaveItemOCR(ctx, item.ID, model.OCRResult{
-			Status:      "error",
+			Status:      model.ItemOCRStatusError,
 			Error:       firstNonEmpty(lastErr, "no OCR text extracted"),
 			FetchedAt:   time.Now().UTC(),
 			Tool:        collapseSet(toolsUsed),
@@ -100,7 +100,7 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 	changed, err := st.SaveItemOCR(ctx, item.ID, model.OCRResult{
 		Text:        renderOCRBlocks(blocks),
 		RawJSON:     string(rawJSON),
-		Status:      "ok",
+		Status:      model.ItemOCRStatusOK,
 		Model:       collapseSet(modelsUsed),
 		FetchedAt:   time.Now().UTC(),
 		Tool:        collapseSet(toolsUsed),

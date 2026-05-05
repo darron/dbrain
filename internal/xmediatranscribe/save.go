@@ -38,7 +38,7 @@ func saveTranscriptItem(ctx context.Context, cfg config.Config, st *store.Store,
 		item.SummaryInputHash = ""
 		item.SummarizedAt = time.Time{}
 	}
-	if err := st.SaveXMediaTranscriptionState(ctx, item.ID, "ok", "", time.Now().UTC()); err != nil {
+	if err := st.SaveXMediaTranscriptionState(ctx, item.ID, model.XMediaTranscriptStatusOK, "", time.Now().UTC()); err != nil {
 		return changed, fmt.Errorf("save x media transcription state: %w", err)
 	}
 

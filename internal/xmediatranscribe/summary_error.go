@@ -9,9 +9,9 @@ import (
 )
 
 func summaryResultFromError(opts Options, err error) model.SummaryResult {
-	status := "error"
+	status := model.ItemSummaryStatusError
 	if isBlockedSummaryError(err) {
-		status = "blocked"
+		status = model.ItemSummaryStatusBlocked
 	}
 	return model.SummaryResult{
 		Model:         strings.TrimSpace(opts.SummaryModel),

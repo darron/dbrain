@@ -3,9 +3,11 @@ package xmediatranscribe
 import (
 	"log/slog"
 	"time"
+
+	"github.com/darron/dbrain/internal/model"
 )
 
-const transcriptArticleTitle = "X Media Transcript"
+const transcriptArticleTitle = model.XMediaTranscriptArticleTitle
 
 type Options struct {
 	Limit            int

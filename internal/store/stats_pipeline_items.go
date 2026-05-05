@@ -1,6 +1,10 @@
 package store
 
-import "context"
+import (
+	"context"
+
+	"github.com/darron/dbrain/internal/model"
+)
 
 func (s *Store) pipelineAppleNoteExtractionRow(ctx context.Context) (PipelineStageRow, bool, error) {
 	candidateWhere := `source_type = 'apple_note'`
@@ -73,19 +77,19 @@ func (s *Store) pipelineAppleNoteSummaryRow(ctx context.Context) (PipelineStageR
 		return PipelineStageRow{}, false, nil
 	}
 
-	current, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status = 'ok' AND summary_text != ''`)
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status = '`+model.ItemSummaryStatusOK+`' AND summary_text != ''`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (summary_status = '' OR summary_status = 'error')`)
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (summary_status = '' OR summary_status = '`+model.ItemSummaryStatusError+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status IN ('blocked', 'skipped')`)
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status IN ('`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status != '' AND summary_status NOT IN ('ok', 'error', 'blocked', 'skipped')`)
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status != '' AND summary_status NOT IN ('`+model.ItemSummaryStatusOK+`', '`+model.ItemSummaryStatusError+`', '`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}

@@ -82,7 +82,7 @@ func summarizeTranscriptItem(ctx context.Context, cfg config.Config, st *store.S
 	summary := model.SummaryResult{
 		Model:         strings.TrimSpace(opts.SummaryModel),
 		PromptVersion: xMediaSummaryPromptVersion,
-		Status:        "ok",
+		Status:        model.ItemSummaryStatusOK,
 	}
 	if err != nil {
 		summary = summaryResultFromError(opts, err)
@@ -96,7 +96,7 @@ func summarizeTranscriptItem(ctx context.Context, cfg config.Config, st *store.S
 		debugLog(opts.Logger, "x media summary save failed", "source_key", item.SourceKey, "item_id", item.ID, "error", saveErr.Error())
 		return 0, 1
 	}
-	if summary.Status != "ok" {
+	if summary.Status != model.ItemSummaryStatusOK {
 		debugLog(opts.Logger, "x media summary failed", "source_key", item.SourceKey, "item_id", item.ID, "status", summary.Status, "error", summary.Error)
 		return 0, 1
 	}

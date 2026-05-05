@@ -16,12 +16,12 @@ func (s *Store) ListItemsForXMediaSummary(ctx context.Context, limit int, force 
 		SELECT ` + itemSelectColumns + `
 		FROM items
 		WHERE ` + xItemSourceTypeWhere + `
-			AND article_title = 'X Media Transcript'
+			AND article_title = '` + model.XMediaTranscriptArticleTitle + `'
 			AND article_text != ''
-			AND x_media_transcript_status = 'ok'`
+			AND x_media_transcript_status = '` + model.XMediaTranscriptStatusOK + `'`
 	if !force {
 		query += `
-			AND (summary_status = '' OR summary_status = 'error')`
+			AND (summary_status = '' OR summary_status = '` + model.ItemSummaryStatusError + `')`
 	}
 	query += `
 		ORDER BY x_media_transcript_at DESC, last_seen_at DESC, id DESC
@@ -71,7 +71,7 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 			)`
 	if !force {
 		query += `
-			AND (ocr_status = '' OR ocr_status = 'error')`
+			AND (ocr_status = '' OR ocr_status = '` + model.ItemOCRStatusError + `')`
 	}
 	query += `
 		ORDER BY last_seen_at DESC, id DESC

@@ -23,7 +23,7 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 	if !force {
 		query += `
 			AND NOT (
-				article_title = 'X Media Transcript'
+				article_title = '` + model.XMediaTranscriptArticleTitle + `'
 				AND article_text != ''
 			)`
 		query += `

@@ -36,7 +36,7 @@ func (s *Store) ListMediaAssetsForArchive(ctx context.Context, limit int, force 
 						FROM item_media_links l
 						JOIN items i ON i.id = l.item_id
 						WHERE l.media_asset_id = a.id
-							AND i.ocr_status != 'ok'
+							AND i.ocr_status != '` + model.ItemOCRStatusOK + `'
 					)
 				)
 				OR
@@ -47,7 +47,7 @@ func (s *Store) ListMediaAssetsForArchive(ctx context.Context, limit int, force 
 						FROM item_media_links l
 						JOIN items i ON i.id = l.item_id
 						WHERE l.media_asset_id = a.id
-							AND i.x_media_transcript_status NOT IN ('ok', 'no_audio', 'noise', 'too_short', 'empty')
+							AND i.x_media_transcript_status NOT IN ('` + model.XMediaTranscriptStatusOK + `', '` + model.XMediaTranscriptStatusNoAudio + `', '` + model.XMediaTranscriptStatusNoise + `', '` + model.XMediaTranscriptStatusTooShort + `', '` + model.XMediaTranscriptStatusEmpty + `')
 					)
 				)
 			)

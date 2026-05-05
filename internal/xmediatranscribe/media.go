@@ -43,7 +43,7 @@ func transcribeItemMedia(ctx context.Context, cfg config.Config, refs []model.It
 		}
 		if !hasAudio {
 			debugLog(opts.Logger, "x media skipped without audio", "local_path", ref.LocalPath)
-			outcome = chooseItemTranscriptOutcome(outcome, itemTranscriptOutcome{Status: "no_audio"})
+			outcome = chooseItemTranscriptOutcome(outcome, itemTranscriptOutcome{Status: model.XMediaTranscriptStatusNoAudio})
 			continue
 		}
 

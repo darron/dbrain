@@ -672,16 +672,20 @@ These reduce maintenance burden without requiring major schema changes.
      importers, and stats.
    - Source extract/summary statuses and source failure-kind strings now have
      shared model constants and are used by source enrichment and core store
-     policy paths. Pipeline aggregate and item-level stage kinds now use store
-     constants where rows are assembled.
+     policy paths, including source activity reporting. Pipeline aggregate and
+     item-level stage kinds now use store constants where rows are assembled.
 
    Cleanup:
    - Done for source extract statuses, source summary statuses, and source
-     failure kinds in source enrichment and core store policy paths.
+     failure kinds in source enrichment, source activity reporting, and core
+     store policy paths.
    - Done for pipeline aggregate and item-level stage names at stats row
      assembly points.
-   - Remaining: add typed constants for item enrichment statuses and continue
-     replacing reporting-only raw strings when those files are next touched.
+   - Done for item summary, OCR, X media transcript statuses, and the
+     synthesized X media transcript marker in worker persistence, stats,
+     candidate selectors, source local-extract policy, and media archive gating.
+   - Remaining: continue replacing reporting-only raw strings when those files
+     are next touched.
    - Prefer helper predicates over open-coded string comparisons.
    - Keep database values stable to avoid a risky migration.
 

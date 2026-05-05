@@ -1,9 +1,13 @@
 package store
 
-import "context"
+import (
+	"context"
+
+	"github.com/darron/dbrain/internal/model"
+)
 
 func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineStageRow, bool, error) {
-	const transcriptTitle = "X Media Transcript"
+	const transcriptTitle = model.XMediaTranscriptArticleTitle
 
 	candidateWhere := xItemSourceTypeWhere + `
 		AND external_id != ''
@@ -29,7 +33,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	withoutMaterializedTranscriptWhere := ` AND NOT (article_title = ? AND article_text != '')`
 	pendingWhere := withoutMaterializedTranscriptWhere + ` AND x_media_transcript_status = '' AND ` + xMediaTranscriptionRunnableMediaExistsWhere
 	blockedWhere := withoutMaterializedTranscriptWhere + ` AND (
-		x_media_transcript_status = 'ok'
+		x_media_transcript_status = '` + model.XMediaTranscriptStatusOK + `'
 		OR (
 			x_media_transcript_status = ''
 			AND NOT ` + xMediaTranscriptionRunnableMediaExistsWhere + `
@@ -44,7 +48,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status != '' AND x_media_transcript_status != 'ok'`, transcriptTitle, transcriptTitle)
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND NOT (article_title = ? AND article_text != '') AND x_media_transcript_status != '' AND x_media_transcript_status != '`+model.XMediaTranscriptStatusOK+`'`, transcriptTitle, transcriptTitle)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
@@ -62,12 +66,12 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 }
 
 func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow, bool, error) {
-	const transcriptTitle = "X Media Transcript"
+	const transcriptTitle = model.XMediaTranscriptArticleTitle
 
 	candidateWhere := xItemSourceTypeWhere + `
 		AND article_title = ?
 		AND article_text != ''
-		AND x_media_transcript_status = 'ok'`
+		AND x_media_transcript_status = '` + model.XMediaTranscriptStatusOK + `'`
 
 	total, err := s.countWhere(ctx, "items", candidateWhere, transcriptTitle)
 	if err != nil {
@@ -77,19 +81,19 @@ func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow,
 		return PipelineStageRow{}, false, nil
 	}
 
-	current, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status = 'ok' AND summary_text != ''`, transcriptTitle)
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status = '`+model.ItemSummaryStatusOK+`' AND summary_text != ''`, transcriptTitle)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (summary_status = '' OR summary_status = 'error')`, transcriptTitle)
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (summary_status = '' OR summary_status = '`+model.ItemSummaryStatusError+`')`, transcriptTitle)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status IN ('blocked', 'skipped')`, transcriptTitle)
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status IN ('`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`, transcriptTitle)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status != '' AND summary_status NOT IN ('ok', 'error', 'blocked', 'skipped')`, transcriptTitle)
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND summary_status != '' AND summary_status NOT IN ('`+model.ItemSummaryStatusOK+`', '`+model.ItemSummaryStatusError+`', '`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`, transcriptTitle)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
@@ -126,19 +130,19 @@ func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, boo
 		return PipelineStageRow{}, false, nil
 	}
 
-	current, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status = 'ok' AND ocr_text != ''`)
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status = '`+model.ItemOCRStatusOK+`' AND ocr_text != ''`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (ocr_status = '' OR ocr_status = 'error')`)
+	pending, err := s.countWhere(ctx, "items", candidateWhere+` AND (ocr_status = '' OR ocr_status = '`+model.ItemOCRStatusError+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status IN ('blocked', 'skipped')`)
+	blocked, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status IN ('`+model.ItemOCRStatusBlocked+`', '`+model.ItemOCRStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status != '' AND ocr_status NOT IN ('ok', 'error', 'blocked', 'skipped')`)
+	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND ocr_status != '' AND ocr_status NOT IN ('`+model.ItemOCRStatusOK+`', '`+model.ItemOCRStatusError+`', '`+model.ItemOCRStatusBlocked+`', '`+model.ItemOCRStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}

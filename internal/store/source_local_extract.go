@@ -18,7 +18,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				s.source_type AS source_type,
 				COALESCE(NULLIF(i.article_title, ''), s.title, '') AS title,
 				CASE
-					WHEN i.article_title = 'X Media Transcript' THEN ''
+					WHEN i.article_title = '`+model.XMediaTranscriptArticleTitle+`' THEN ''
 					WHEN i.source_type = 'apple_note' THEN ''
 					ELSE i.article_text
 				END AS article_text,
@@ -41,9 +41,9 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				s.source_type AS source_type,
 				COALESCE(NULLIF(p.article_title, ''), NULLIF(i.article_title, ''), s.title, '') AS title,
 				COALESCE(
-					NULLIF(CASE WHEN p.article_title = 'X Media Transcript' THEN '' ELSE p.article_text END, ''),
+					NULLIF(CASE WHEN p.article_title = '`+model.XMediaTranscriptArticleTitle+`' THEN '' ELSE p.article_text END, ''),
 					CASE
-						WHEN i.article_title = 'X Media Transcript' THEN ''
+						WHEN i.article_title = '`+model.XMediaTranscriptArticleTitle+`' THEN ''
 						WHEN i.source_type = 'apple_note' THEN ''
 						ELSE i.article_text
 					END,
