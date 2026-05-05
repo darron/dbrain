@@ -854,8 +854,12 @@ These are deeper and should be staged with focused tests.
 
    Progress:
    - Started `internal/retrieval` with shared `ContentSection`,
-     `EvidenceDocument`, `RetrievalInfo`, and `RetrievalSignal` DTOs while
-     keeping existing `ask` and MCP JSON shapes stable through aliases.
+     `EvidenceDocument`, `RelatedDocument`, `RetrievalInfo`, and
+     `RetrievalSignal` DTOs while keeping existing `ask` and MCP JSON shapes
+     stable through aliases and typed related-item payloads.
+   - Web detail/tag responses now use explicit item/source DTOs instead of
+     whole storage model structs, preserving UI fields while omitting unused raw
+     JSON and internal diagnostic fields.
 
 ### P3: Larger Design Follow-Ups
 

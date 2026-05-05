@@ -250,6 +250,11 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		if len(response.LinkedSources) == 0 {
 			t.Fatalf("expected linked sources")
 		}
+		for _, forbidden := range []string{`"raw_json"`, `"x_post_json"`, `"summary_json"`, `"ocr_json"`} {
+			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+				t.Fatalf("item detail response exposed raw/internal JSON field %q: %s", forbidden, rec.Body.String())
+			}
+		}
 	})
 
 	t.Run("get item note error hides absolute path", func(t *testing.T) {
@@ -306,6 +311,11 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		if response.Source == nil || response.Source.SourceKey != sourceKey {
 			t.Fatalf("expected source %q, got %+v", sourceKey, response.Source)
 		}
+		for _, forbidden := range []string{`"extract_json"`, `"summary_json"`, `"extract_error"`, `"summary_error"`} {
+			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+				t.Fatalf("source detail response exposed raw/internal field %q: %s", forbidden, rec.Body.String())
+			}
+		}
 		if len(response.Backlinks) == 0 {
 			t.Fatalf("expected backlinks")
 		}
@@ -325,12 +335,17 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 		}
 
-		var response model.SourceDocument
+		var response SourceResponse
 		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 			t.Fatalf("decode tagged source: %v", err)
 		}
 		if response.UserTags != "source-memory,example-source" {
 			t.Fatalf("expected source tags, got %q", response.UserTags)
+		}
+		for _, forbidden := range []string{`"extract_json"`, `"summary_json"`, `"extract_error"`, `"summary_error"`} {
+			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+				t.Fatalf("tag source response exposed raw/internal field %q: %s", forbidden, rec.Body.String())
+			}
 		}
 	})
 
@@ -1021,7 +1036,7 @@ func TestWebHandlerServesArchivedMediaAndSignedURL(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 		}
-		for _, forbidden := range []string{`"local_path"`, `"archive_bucket"`, `"archive_key"`, "media/x/video/ab/test.mp4"} {
+		for _, forbidden := range []string{`"local_path"`, `"archive_bucket"`, `"archive_key"`, `"raw_json"`, `"x_post_json"`, `"summary_json"`, `"ocr_json"`, "media/x/video/ab/test.mp4"} {
 			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
 				t.Fatalf("detail media response exposed storage metadata %q: %s", forbidden, rec.Body.String())
 			}

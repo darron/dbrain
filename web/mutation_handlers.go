@@ -31,7 +31,7 @@ func (s *server) handleTag(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		item.UserTags = req.Tags
-		writeJSON(w, http.StatusOK, item)
+		writeJSON(w, http.StatusOK, itemWebResponse(item))
 		return
 	}
 
@@ -45,7 +45,7 @@ func (s *server) handleTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source.UserTags = req.Tags
-	writeJSON(w, http.StatusOK, source)
+	writeJSON(w, http.StatusOK, sourceWebResponse(source))
 }
 
 func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {

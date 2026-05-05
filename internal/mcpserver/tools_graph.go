@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/topics"
 	"github.com/darron/dbrain/internal/vault"
 )
@@ -109,13 +110,13 @@ func (s *Server) toolRelated(ctx context.Context, raw json.RawMessage) (map[stri
 		if err != nil {
 			return nil, err
 		}
-		relatedItems := make([]map[string]interface{}, 0, len(childIDs))
+		relatedItems := make([]retrieval.RelatedDocument, 0, len(childIDs))
 		for _, childID := range childIDs {
 			child, err := s.st.GetItemByID(ctx, childID)
 			if err != nil {
 				continue
 			}
-			relatedItems = append(relatedItems, slimItem(child))
+			relatedItems = append(relatedItems, relatedDocument(child))
 		}
 		payload := map[string]interface{}{
 			"kind":            "item",

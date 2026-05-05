@@ -5,9 +5,10 @@ import (
 	"strings"
 
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
-func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item) ([]map[string]interface{}, []getSection, error) {
+func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item) ([]retrieval.RelatedDocument, []getSection, error) {
 	childIDs, err := s.st.ListItemChildLinks(ctx, item.ID, "quoted_post")
 	if err != nil {
 		return nil, nil, err
@@ -15,7 +16,7 @@ func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item) (
 	if len(childIDs) == 0 {
 		return nil, nil, nil
 	}
-	related := make([]map[string]interface{}, 0, min(len(childIDs), maxGetRelatedSections))
+	related := make([]retrieval.RelatedDocument, 0, min(len(childIDs), maxGetRelatedSections))
 	sections := make([]getSection, 0, min(len(childIDs), maxGetRelatedSections))
 	for _, childID := range childIDs {
 		if len(sections) >= maxGetRelatedSections {
@@ -25,7 +26,7 @@ func (s *Server) itemRelatedItemSections(ctx context.Context, item model.Item) (
 		if err != nil {
 			continue
 		}
-		related = append(related, slimItem(child))
+		related = append(related, relatedDocument(child))
 		text := relatedItemText(child)
 		if strings.TrimSpace(text) == "" {
 			continue

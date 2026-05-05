@@ -1646,6 +1646,13 @@ func TestServerRelatedToolForItem(t *testing.T) {
 	if len(relatedItems) != 1 {
 		t.Fatalf("expected 1 related quoted item, got %#v", structured)
 	}
+	childItem := relatedItems[0].(map[string]interface{})
+	if childItem["source_key"] != "x:test-mcp-related-quote" {
+		t.Fatalf("expected related child source key, got %#v", childItem)
+	}
+	if _, ok := childItem["raw_json"]; ok {
+		t.Fatalf("expected slim related child item without raw_json, got %#v", childItem)
+	}
 	if int(structured["count"].(float64)) != 2 {
 		t.Fatalf("expected total related count to include sources and child items, got %#v", structured)
 	}

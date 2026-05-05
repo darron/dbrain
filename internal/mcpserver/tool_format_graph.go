@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func formatRelatedSources(lookup string, refs []model.ItemSourceRef) string {
@@ -37,7 +38,7 @@ func formatRelatedSources(lookup string, refs []model.ItemSourceRef) string {
 	return strings.TrimSpace(b.String())
 }
 
-func formatRelatedItemGraph(lookup string, refs []model.ItemSourceRef, childItems []map[string]interface{}) string {
+func formatRelatedItemGraph(lookup string, refs []model.ItemSourceRef, childItems []retrieval.RelatedDocument) string {
 	if len(refs) == 0 && len(childItems) == 0 {
 		return fmt.Sprintf("No linked sources or child items found for %s.", lookup)
 	}
@@ -45,24 +46,19 @@ func formatRelatedItemGraph(lookup string, refs []model.ItemSourceRef, childItem
 	if len(childItems) > 0 {
 		b.WriteString("Related child items:\n")
 		for _, child := range childItems {
-			sourceKey, _ := child["source_key"].(string)
-			title, _ := child["title"].(string)
-			url, _ := child["canonical_url"].(string)
-			notePath, _ := child["note_path"].(string)
-			sourceType, _ := child["source_type"].(string)
 			b.WriteString("- [")
-			b.WriteString(sourceKey)
+			b.WriteString(child.SourceKey)
 			b.WriteString("] ")
-			b.WriteString(firstNonEmpty(title, url))
+			b.WriteString(firstNonEmpty(child.Title, child.CanonicalURL))
 			b.WriteString("\n")
 			b.WriteString("  Type: ")
-			b.WriteString(sourceType)
+			b.WriteString(child.SourceType)
 			b.WriteString("\n")
 			b.WriteString("  URL: ")
-			b.WriteString(url)
+			b.WriteString(child.CanonicalURL)
 			b.WriteString("\n")
 			b.WriteString("  Note: ")
-			b.WriteString(notePath)
+			b.WriteString(child.NotePath)
 			b.WriteString("\n")
 		}
 	}
