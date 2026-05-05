@@ -211,7 +211,7 @@ The architecture is functional, but the main pressure points are:
 - Store stats now separate DTOs, count queries, activity summaries, backlog
   summaries, shared count helpers, pipeline assembly, item-level pipeline rows,
   pipeline aggregation helpers, source activity feed assembly, source activity
-  SQL builders, and trend shaping.
+  SQL builders, source activity SQL union bodies, and trend shaping.
 - The former `internal/store/sources.go` catchall has been decomposed into
   focused source schema, source link/upsert, enrichment persistence, scan/read,
   lookup/evidence/relation/tag helpers, search/FTS, predicate, repair filters,
@@ -255,7 +255,8 @@ The architecture is functional, but the main pressure points are:
   while preserving existing flags and defaults.
 - App-level `tsnet` state commands now keep command wiring separate from status
   computation, endpoint probing, certificate-state reads, flag override
-  handling, and reset confirmation.
+  handling, reset confirmation, probe URL construction, tailnet IP lookup, and
+  HTTP/TLS probe execution.
 - Categorization command wiring now separates item and source command surfaces.
 - `internal/runtimeenv` now keeps public scalar lookup in a small facade while
   bool/list helpers, env-file loading, YAML config decoding, and config key-path
@@ -269,7 +270,8 @@ The architecture is functional, but the main pressure points are:
   URL logging, and advertised URL rendering live in focused files.
 - `internal/ask/run.go` now remains the retrieval facade while query hints,
   evidence shaping, scoring, prompt input writing, entity expansion, excerpt
-  windowing, and small utilities live in focused package files.
+  assembly, excerpt windowing/scoring, and small utilities live in focused
+  package files.
 - `internal/brainresearch/research.go` now remains the research-pack builder
   while pack DTOs, deterministic/model-assisted strategy helpers, evidence
   reranking, topic inference, coverage, exact-tag examples, search filtering,
@@ -296,14 +298,16 @@ The architecture is functional, but the main pressure points are:
   runner while DTOs, content bundles, photo/S3 loading, LLM transport, option
   resolution, tag merging, and small utilities live in focused files.
 - `internal/entities/entities.go` now remains the entity indexing/search facade
-  while item/source derivation, relationship inference, builder state, path
-  construction, and parsing/matching helpers live in focused files.
+  while item/source derivation, relationship inference, identity-token
+  normalization, builder state, path construction, and parsing/matching helpers
+  live in focused files.
 - `internal/topics/topicmap.go` now remains the topic map builder while graph
   node resolution, source-type filtering, entity scoring/pivots, formatting,
   shared DTOs, and small utilities live in focused files.
 - `internal/topics/synthesis.go` now remains the topic synthesis coordinator
-  while evidence collection, section rendering, signal extraction/clustering,
-  shared types, and synthesis utilities live in focused files.
+  while evidence collection, section rendering, signal clustering, signal
+  phrase extraction, signal stopword policy, shared types, and synthesis
+  utilities live in focused files.
 - `internal/vault/vault.go` now keeps path/stat helpers while item note
   rendering, media/archive embeds, quoted-post rendering, YAML/text helpers, and
   render-option resolution live in focused files.
