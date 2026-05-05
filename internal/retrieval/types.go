@@ -12,6 +12,26 @@ type ContentSection struct {
 	Truncated bool   `json:"truncated"`
 }
 
+type EvidenceDocument struct {
+	SourceKey     string         `json:"source_key"`
+	Kind          string         `json:"kind"`
+	Title         string         `json:"title"`
+	URL           string         `json:"url"`
+	NotePath      string         `json:"note_path"`
+	Summary       string         `json:"summary"`
+	Excerpt       string         `json:"excerpt"`
+	Author        string         `json:"author,omitempty"`
+	SourceType    string         `json:"source_type,omitempty"`
+	PublishedAt   string         `json:"published_at,omitempty"`
+	ExtractedAt   string         `json:"extracted_at,omitempty"`
+	SummarizedAt  string         `json:"summarized_at,omitempty"`
+	UserTags      string         `json:"user_tags,omitempty"`
+	EntityMatches []string       `json:"entity_matches,omitempty"`
+	RelatedTo     string         `json:"related_to,omitempty"`
+	Relationship  string         `json:"relationship,omitempty"`
+	Retrieval     *RetrievalInfo `json:"retrieval,omitempty"`
+}
+
 type RetrievalInfo struct {
 	Score        int               `json:"score"`
 	Signals      []RetrievalSignal `json:"signals,omitempty"`

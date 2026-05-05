@@ -854,8 +854,8 @@ These are deeper and should be staged with focused tests.
 
    Progress:
    - Started `internal/retrieval` with shared `ContentSection`,
-     `RetrievalInfo`, and `RetrievalSignal` DTOs while keeping existing
-     `ask` and MCP JSON shapes stable through aliases.
+     `EvidenceDocument`, `RetrievalInfo`, and `RetrievalSignal` DTOs while
+     keeping existing `ask` and MCP JSON shapes stable through aliases.
 
 ### P3: Larger Design Follow-Ups
 
