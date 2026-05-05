@@ -243,8 +243,14 @@ The architecture is functional, but the main pressure points are:
   progress UI rendering is separated from log/progress parsing helpers.
 - Apple Notes import command wiring, progress/stat output, and debug
   probe/snapshot/decode subcommands are now separated in `internal/app`.
+- Apple Notes reader code now separates low-level DB row value coercion and
+  link/tag/identity text helpers from the snapshot decode and document assembly
+  flow.
 - Serve command wiring is split by MCP, remote tsnet, and plain web surfaces
   while preserving existing flags and defaults.
+- App-level `tsnet` state commands now keep command wiring separate from status
+  computation, endpoint probing, certificate-state reads, flag override
+  handling, and reset confirmation.
 - Categorization command wiring now separates item and source command surfaces.
 - `internal/runtimeenv` now keeps public scalar lookup in a small facade while
   bool/list helpers, env-file loading, YAML config decoding, and config key-path
