@@ -223,6 +223,8 @@ The architecture is functional, but the main pressure points are:
   baseline version 1 in `schema_migrations` and `PRAGMA user_version`; tests
   cover fresh create, idempotent reopen, adopting the existing current schema
   without migration metadata, and keeping `OpenReadOnly` migration-free.
+- Store source-extraction predicates now keep backlog/staleness SQL builders
+  separate from stored failure state and failure-kind classification helpers.
 - `internal/sourceenrich/run.go` has been narrowed to public entry points.
   Source summary execution/freshness/prompt/skip policy, summary content/media
   skip-policy helpers, extraction failure persistence/classification/preflight,
@@ -253,7 +255,8 @@ The architecture is functional, but the main pressure points are:
   probe/snapshot/decode subcommands are now separated in `internal/app`.
 - Apple Notes reader code now separates low-level DB row value coercion,
   object/note-data row loading, note document assembly, attachment-row decoding,
-  and link/tag/identity text helpers from the snapshot decode flow.
+  attachment path/URL coercion, and link/tag/identity text helpers from the
+  snapshot decode flow.
 - Apple Notes import runtime now separates `Run` orchestration from stats/types,
   run setup/progress event construction, work planning, progress dispatch,
   exclusion purge handling, summary execution, item materialization, attachment
@@ -293,9 +296,9 @@ The architecture is functional, but the main pressure points are:
   utilities live in focused package files.
 - `internal/brainresearch/research.go` now remains the research-pack builder
   while pack DTOs, deterministic/model-assisted strategy helpers, evidence
-  reranking, topic inference, coverage, exact-tag examples, search filtering,
-  strategy concept/variant derivation, next-step suggestions, and utilities
-  live in focused package files.
+  reranking/scoring, topic inference, coverage, exact-tag examples, search
+  filtering, strategy concept/variant derivation, next-step suggestions, and
+  utilities live in focused package files.
 - `internal/brainresearch/planner.go` now remains the model-planner execution
   path while planner JSON parsing/sanitization and deterministic/model merge
   rules live in focused files.
