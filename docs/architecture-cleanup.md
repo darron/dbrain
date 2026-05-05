@@ -317,6 +317,9 @@ The architecture is functional, but the main pressure points are:
   evidence shaping, scoring, prompt input writing, entity expansion, entity
   query/scoring policy, excerpt assembly, excerpt windowing/scoring, and small
   utilities live in focused package files.
+- `internal/queryterms` now separates public term extraction from chat prompt
+  search-text selection, normalization/source-key filtering, stopwords, and
+  tag-query alias generation.
 - `internal/brainresearch/research.go` now remains the research-pack builder
   while pack DTOs, deterministic/model-assisted strategy helpers, evidence
   reranking/scoring, topic inference, coverage, exact-tag examples, search
