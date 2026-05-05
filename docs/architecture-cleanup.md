@@ -875,6 +875,9 @@ These are deeper and should be staged with focused tests.
      `EvidenceDocument`, `RelatedDocument`, `RetrievalInfo`, and
      `RetrievalSignal` DTOs while keeping existing `ask` and MCP JSON shapes
      stable through aliases and typed related-item payloads.
+   - Moved shared query-window selection/scoring mechanics into
+     `internal/retrieval` while preserving `ask` and MCP-specific query parsing,
+     excerpt sizing, and presentation behavior.
    - Web detail/tag responses now use explicit item/source DTOs instead of
      whole storage model structs, preserving UI fields while omitting unused raw
      JSON and internal diagnostic fields.
