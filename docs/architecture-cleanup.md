@@ -261,10 +261,12 @@ The architecture is functional, but the main pressure points are:
 - SQLite archive/restore app command wiring now keeps command bodies separate
   from S3 option/env resolution and restore confirmation helpers.
 - App-level `tsnet` state commands now keep command wiring separate from status
-  computation, endpoint probing, certificate-state reads, flag override
-  handling, reset confirmation, probe URL construction, tailnet IP lookup, and
-  HTTP/TLS probe execution.
-- Categorization command wiring now separates item and source command surfaces.
+  computation, status DTO/dependency types, endpoint health aggregation,
+  endpoint probing, certificate-state reads, flag override handling, reset
+  confirmation, probe URL construction, tailnet IP lookup, and HTTP/TLS probe
+  execution.
+- Categorization command wiring now separates item command, source command,
+  analysis command, analysis token counting, and draft YAML rendering surfaces.
 - Repair command wiring now keeps FTS/note repair commands separate from source
   reset lookup, preview, confirmation, and output flow.
 - `internal/runtimeenv` now keeps public scalar lookup in a small facade while
@@ -274,6 +276,8 @@ The architecture is functional, but the main pressure points are:
   coordinator while option/stat DTOs, candidate collection, URL normalization,
   source classification, and hashing/slug/logging helpers live in focused files,
   with direct coverage for common URL canonicalization cases.
+- MCP HTTP serving now keeps the server lifecycle and POST handler separate from
+  path, origin, and endpoint URL helpers.
 - `internal/remote/server.go` now remains the remote serve lifecycle
   coordinator while handler assembly, listen/error lifecycle helpers, the tsnet
   node adapter, request identity logging/user auth URL logging, and advertised
