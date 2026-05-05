@@ -1209,6 +1209,8 @@ configuration.
 ## License
 
 `dbrain` is licensed under the MIT License. See [LICENSE](LICENSE).
+Third-party dependency notices are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO
 

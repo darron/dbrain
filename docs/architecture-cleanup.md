@@ -488,16 +488,18 @@ privacy, and first-run understanding.
    - `docs/open-source-license-review.md` records the 2026-05-04 dependency
      scan and remaining review items.
    - The repository uses the MIT License in the root `LICENSE` file.
-   - The repository currently has no generated third-party notice file.
+   - `THIRD_PARTY_NOTICES.md` lists the current `./cmd/dbrain` runtime
+     dependencies and frontend lockfile dependencies.
    - The `./cmd/dbrain` runtime graph did not show GPL/AGPL/SSPL-style
      dependencies in the targeted scan, but the warmed module cache and `go.sum`
      include GPL-licensed lint/tooling modules.
 
    Cleanup:
-   - Generate a third-party notice file for Go runtime dependencies and frontend
-     dependencies.
    - Rerun the audit from a clean checkout and keep lint/tooling dependencies
      separate from shipped runtime dependencies.
+   - Regenerate `THIRD_PARTY_NOTICES.md` before release and include exact
+     upstream license files for any dependency source or generated asset copied
+     into release archives.
 
 ### P1: Structural Cleanup With Low Behavior Risk
 

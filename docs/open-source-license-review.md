@@ -21,13 +21,15 @@ Not reviewed:
 - License obligations for generated binaries or packaged release archives.
 - Licenses for system tools installed outside the repo, such as `yt-dlp`,
   `ffmpeg`, `ollama`, `tesseract`, `golangci-lint`, or Homebrew packages.
-- A generated complete third-party notice bundle.
+- A legal review of whether release archives need to include exact upstream
+  license files beyond `THIRD_PARTY_NOTICES.md`.
 
 ## Summary
 
 - The repository project license is MIT. The root `LICENSE` file was added after
   this dependency scan.
-- The repository does not currently have a generated third-party notice file.
+- `THIRD_PARTY_NOTICES.md` now lists `./cmd/dbrain` runtime dependencies and
+  frontend lockfile dependencies.
 - The current targeted scan does not show a runtime dependency that obviously
   forces `dbrain` itself to use a copyleft license. Most dependency obligations
   appear to be notice/source-distribution obligations, not project-license
@@ -118,7 +120,7 @@ metadata.
 ## Repository Artifacts
 
 - Root project license: MIT in `LICENSE`.
-- Root third-party notice file: missing.
+- Root third-party notice file: `THIRD_PARTY_NOTICES.md`.
 - `.gitignore` excludes `.gomodcache/`, `.gocache/`, `web/ui/node_modules/`,
   `/data/`, `/vault/`, `/tmp/`, and `/bin/`.
 - `web/ui/dist` is intentionally tracked for Go embedding; include frontend
@@ -129,12 +131,13 @@ metadata.
 
 ## Recommended Cleanup Before Publishing
 
-1. Generate and commit a `THIRD_PARTY_NOTICES.md` or equivalent release notice
-   file covering Go runtime dependencies and frontend dependencies.
-2. Run the license audit from a clean checkout, not a warmed developer module
+1. Run the license audit from a clean checkout, not a warmed developer module
    cache, and save the generated dependency inventory.
-3. Keep `.gomodcache`, `.gocache`, `node_modules`, local data, vaults, and temp
+2. Keep `.gomodcache`, `.gocache`, `node_modules`, local data, vaults, and temp
    directories out of source and release archives.
+3. Regenerate `THIRD_PARTY_NOTICES.md` before each release and include exact
+   upstream license files for any third-party source or generated asset copied
+   into release archives.
 4. Decide whether lint tooling should stay as external prerequisites or move
    into a separate tooling module with its own license review.
 5. Add a CI license scan that fails on GPL, AGPL, SSPL, Elastic License, and
