@@ -76,6 +76,10 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 			err = syncErr
 			return model.UpsertResult{}, err
 		}
+		if syncErr := s.syncItemEnrichmentMirrorTx(ctx, tx, itemID, item); syncErr != nil {
+			err = syncErr
+			return model.UpsertResult{}, err
+		}
 		if commitErr := tx.Commit(); commitErr != nil {
 			return model.UpsertResult{}, fmt.Errorf("commit insert: %w", commitErr)
 		}
@@ -124,6 +128,10 @@ func (s *Store) upsertItem(ctx context.Context, item model.Item) (model.UpsertRe
 	}
 
 	if syncErr := s.syncFTSTx(ctx, tx, existingID, item); syncErr != nil {
+		err = syncErr
+		return model.UpsertResult{}, err
+	}
+	if syncErr := s.syncItemEnrichmentMirrorTx(ctx, tx, existingID, item); syncErr != nil {
 		err = syncErr
 		return model.UpsertResult{}, err
 	}

@@ -117,7 +117,7 @@ func TestMigrationBackfillsExistingMediaDownloadErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite directly: %v", err)
 	}
-	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, currentSchemaVersion); err != nil {
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version >= ?`, 2); err != nil {
 		t.Fatalf("simulate pre-v2 migration metadata: %v", err)
 	}
 	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {

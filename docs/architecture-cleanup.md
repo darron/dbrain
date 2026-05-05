@@ -791,6 +791,12 @@ These are deeper and should be staged with focused tests.
    - Keep rendered notes stable during the transition.
    - Add tests that raw evidence survives summary regeneration and model swaps.
 
+   Progress:
+   - Added a versioned `item_enrichments` current-state table with summary,
+     OCR, and X media transcript roles, backfilled from existing item columns
+     and dual-written from current summary/OCR/transcript persistence paths
+     while preserving the existing compatibility columns.
+
 4. Separate user tags from model/category tags.
 
    Evidence:

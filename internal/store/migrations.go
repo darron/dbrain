@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 type schemaMigration struct {
 	Version int
@@ -48,6 +48,16 @@ var schemaMigrations = []schemaMigration{
 				return fmt.Errorf("backfill media download retry state: %w", err)
 			}
 			return nil
+		},
+	},
+	{
+		Version: 3,
+		Name:    "item_enrichments_current_state",
+		Run: func(s *Store) error {
+			if err := s.ensureItemEnrichmentTables(); err != nil {
+				return err
+			}
+			return s.backfillItemEnrichments()
 		},
 	},
 }

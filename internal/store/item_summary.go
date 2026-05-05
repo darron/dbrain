@@ -96,6 +96,22 @@ func (s *Store) SaveItemSummary(ctx context.Context, itemID int64, summary model
 			return false, fmt.Errorf("save item summary %d: %w", itemID, err)
 		}
 
+		if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
+			ItemID:        itemID,
+			Role:          model.ItemEnrichmentRoleSummary,
+			Status:        summary.Status,
+			Text:          summary.Text,
+			RawJSON:       summary.RawJSON,
+			Error:         summary.Error,
+			Model:         summary.Model,
+			PromptVersion: summary.PromptVersion,
+			Tool:          summary.Tool,
+			ToolVersion:   summary.ToolVersion,
+			InputHash:     strings.TrimSpace(inputHash),
+			CompletedAt:   summary.FetchedAt,
+		}); err != nil {
+			return false, err
+		}
 		if err := s.syncItemFTSByIDTx(ctx, tx, itemID); err != nil {
 			return false, err
 		}
@@ -168,6 +184,9 @@ func (s *Store) invalidateItemSummaryTx(ctx context.Context, tx *sql.Tx, itemID 
 			updated_at = ?
 		WHERE id = ?`, nowText, itemID); err != nil {
 		return false, fmt.Errorf("clear item summary %d: %w", itemID, err)
+	}
+	if err := s.deleteItemEnrichmentTx(ctx, tx, itemID, model.ItemEnrichmentRoleSummary); err != nil {
+		return false, err
 	}
 	return true, nil
 }

@@ -91,6 +91,21 @@ func (s *Store) SaveItemOCR(ctx context.Context, itemID int64, result model.OCRR
 			return false, fmt.Errorf("save item ocr %d: %w", itemID, err)
 		}
 
+		if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
+			ItemID:      itemID,
+			Role:        model.ItemEnrichmentRoleOCR,
+			Status:      result.Status,
+			Text:        result.Text,
+			RawJSON:     result.RawJSON,
+			Error:       result.Error,
+			Model:       result.Model,
+			Tool:        result.Tool,
+			ToolVersion: result.ToolVersion,
+			InputHash:   strings.TrimSpace(inputHash),
+			CompletedAt: result.FetchedAt,
+		}); err != nil {
+			return false, err
+		}
 		if err := s.syncItemFTSByIDTx(ctx, tx, itemID); err != nil {
 			return false, err
 		}
@@ -162,6 +177,9 @@ func (s *Store) invalidateItemOCRTx(ctx context.Context, tx *sql.Tx, itemID int6
 			updated_at = ?
 		WHERE id = ?`, nowText, itemID); err != nil {
 		return false, fmt.Errorf("clear item ocr %d: %w", itemID, err)
+	}
+	if err := s.deleteItemEnrichmentTx(ctx, tx, itemID, model.ItemEnrichmentRoleOCR); err != nil {
+		return false, err
 	}
 	return true, nil
 }
