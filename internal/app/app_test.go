@@ -24,6 +24,7 @@ import (
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 	"github.com/darron/dbrain/internal/version"
+	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
 
@@ -1096,6 +1097,7 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 		"--x-limit", "7",
 		"--x-media-limit", "3",
 		"--x-photo-ocr-limit", "5",
+		"--x-media-download-timeout", "45m",
 	})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
@@ -1109,6 +1111,9 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 	}
 	if captured.XPhotoOCRLimit != 5 {
 		t.Fatalf("expected x photo OCR limit 5, got %d", captured.XPhotoOCRLimit)
+	}
+	if captured.XMediaTimeout != 45*time.Minute {
+		t.Fatalf("expected x media download timeout 45m, got %s", captured.XMediaTimeout)
 	}
 }
 
@@ -1651,6 +1656,48 @@ func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
 	}
 }
 
+func TestFormatSyncDurationUsesTwoDecimalSeconds(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		duration time.Duration
+		want     string
+	}{
+		{69*time.Millisecond + 980*time.Microsecond + 750*time.Nanosecond, "0.07s"},
+		{24*time.Second + 245*time.Millisecond + 314*time.Microsecond, "24.25s"},
+		{2 * time.Minute, "120.00s"},
+	}
+	for _, tc := range cases {
+		if got := formatSyncDuration(tc.duration); got != tc.want {
+			t.Fatalf("formatSyncDuration(%s) = %q, want %q", tc.duration, got, tc.want)
+		}
+	}
+}
+
+func TestSyncSummaryRowsSeparateBlockedMediaFromErrors(t *testing.T) {
+	t.Parallel()
+
+	rows := syncSummaryRows(syncjob.Stats{
+		X: &syncjob.XStage{
+			Stats: xapi.Stats{
+				Hydrated:        1,
+				MediaBlocked:    2,
+				MediaErrors:     1,
+				MediaDownloaded: 3,
+			},
+		},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("expected one x summary row, got %#v", rows)
+	}
+	if !strings.Contains(rows[0][3], "blocked=2") {
+		t.Fatalf("expected blocked media in secondary column, got %#v", rows[0])
+	}
+	if rows[0][4] != "1" {
+		t.Fatalf("expected blocked media not to count as active errors, got %#v", rows[0])
+	}
+}
+
 func TestSyncProgressUIFormatsStageLines(t *testing.T) {
 	t.Parallel()
 
@@ -1658,7 +1705,7 @@ func TestSyncProgressUIFormatsStageLines(t *testing.T) {
 	ui := newSyncProgressUI(&dst)
 	_, _ = fmt.Fprintln(ui, "Sync started at 2026-04-26T21:01:56Z")
 	_, _ = fmt.Fprintln(ui, "==> hydrate x")
-	_, _ = fmt.Fprintln(ui, "X hydration complete: hydrated=4 missing=0 api_errors=0 media_downloaded=3 media_errors=0 rendered=4 (3s)")
+	_, _ = fmt.Fprintln(ui, "X hydration complete: hydrated=4 missing=0 api_errors=0 media_downloaded=3 media_errors=0 media_blocked=0 rendered=4 (3s)")
 	ui.Close()
 
 	output := dst.String()

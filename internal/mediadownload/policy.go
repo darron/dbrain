@@ -3,7 +3,9 @@ package mediadownload
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
@@ -16,8 +18,10 @@ func shouldDownload(ref model.ItemMediaRef, cfg config.Config, force bool) bool 
 
 	status := strings.TrimSpace(ref.DownloadStatus)
 	switch status {
-	case "", "pending", "error":
+	case "", "pending":
 		return true
+	case "error":
+		return mediaDownloadRetryDue(ref, time.Now().UTC())
 	case "downloaded":
 		if strings.TrimSpace(ref.LocalPath) == "" {
 			return true
@@ -31,4 +35,43 @@ func shouldDownload(ref model.ItemMediaRef, cfg config.Config, force bool) bool 
 	default:
 		return false
 	}
+}
+
+func mediaDownloadRetryDue(ref model.ItemMediaRef, now time.Time) bool {
+	if ref.DownloadErrors >= model.MediaDownloadMaxConsecutiveErrors {
+		return false
+	}
+	if ref.LastDownloadAt.IsZero() {
+		return true
+	}
+	cutoff := now.Add(-model.MediaDownloadRetryCooldown)
+	return !ref.LastDownloadAt.After(cutoff)
+}
+
+func applyRetryPolicy(ref model.ItemMediaRef, result model.MediaDownloadResult) model.MediaDownloadResult {
+	if strings.TrimSpace(result.Status) != "error" {
+		return result
+	}
+	if ref.DownloadErrors+1 < model.MediaDownloadMaxConsecutiveErrors {
+		return result
+	}
+	count := ref.DownloadErrors + 1
+	if count > model.MediaDownloadMaxConsecutiveErrors {
+		count = model.MediaDownloadMaxConsecutiveErrors
+	}
+	result.Status = "blocked"
+	result.Error = terminalDownloadError(count, result.Error)
+	return result
+}
+
+func terminalDownloadError(count int, errText string) string {
+	errText = strings.TrimSpace(errText)
+	prefix := "blocked after " + strconv.Itoa(count) + " failed media download attempts"
+	if errText == "" {
+		return prefix
+	}
+	if strings.HasPrefix(errText, "blocked after ") {
+		return errText
+	}
+	return prefix + ": " + errText
 }

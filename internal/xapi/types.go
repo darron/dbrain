@@ -9,16 +9,17 @@ import (
 )
 
 type Options struct {
-	Limit       int
-	Force       bool
-	QuoteOnly   bool
-	Concurrency int
-	Browser     string
-	Profile     string
-	CT0         string
-	AuthToken   string
-	Timeout     time.Duration
-	Logger      *slog.Logger
+	Limit        int
+	Force        bool
+	QuoteOnly    bool
+	Concurrency  int
+	Browser      string
+	Profile      string
+	CT0          string
+	AuthToken    string
+	Timeout      time.Duration
+	MediaTimeout time.Duration
+	Logger       *slog.Logger
 }
 
 type Stats struct {
@@ -34,6 +35,7 @@ type Stats struct {
 	MediaDownloaded int `json:"media_downloaded"`
 	MediaGone       int `json:"media_gone"`
 	MediaErrors     int `json:"media_errors"`
+	MediaBlocked    int `json:"media_blocked"`
 }
 
 type Client struct {

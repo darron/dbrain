@@ -1,5 +1,11 @@
 package store
 
+import (
+	"fmt"
+
+	"github.com/darron/dbrain/internal/model"
+)
+
 const xItemSourceTypeWhere = "(source_type = 'x_bookmark' OR source_type = 'x_quote')"
 const linkDiscoveryItemSourceTypeWhere = "(source_type = 'x_bookmark' OR source_type = 'x_quote' OR source_type = 'apple_note' OR source_type = 'safari_tab')"
 const xTopLevelMediaObjectsWhere = `(json_valid(x_post_json) AND json_extract(x_post_json, '$.snapshot.media_objects[0].type') IS NOT NULL)`
@@ -28,7 +34,8 @@ const xNoteTweetLinkRepairWhere = `(json_valid(x_post_json)
 				WHERE existing_link.value = note_url.value
 			)
 	))`
-const xMediaHydrationRepairWhere = `(` + xTopLevelMediaObjectsWhere + `
+
+var xMediaHydrationRepairWhere = `(` + xTopLevelMediaObjectsWhere + `
 	AND (
 		NOT EXISTS (
 			SELECT 1
@@ -40,11 +47,7 @@ const xMediaHydrationRepairWhere = `(` + xTopLevelMediaObjectsWhere + `
 			FROM item_media_links l
 			JOIN media_assets a ON a.id = l.media_asset_id
 			WHERE l.item_id = items.id
-				AND (
-					a.download_status = ''
-					OR a.download_status = 'pending'
-					OR a.download_status = 'error'
-				)
+				AND ` + mediaDownloadRetryableWhere("a") + `
 		)
 		OR EXISTS (
 			SELECT 1
@@ -62,10 +65,10 @@ const xMediaHydrationRepairWhere = `(` + xTopLevelMediaObjectsWhere + `
 				)
 		)
 	))`
-const xHydrationRepairWhere = `(` + xQuotedPostRepairWhere + `
+var xHydrationRepairWhere = `(` + xQuotedPostRepairWhere + `
 	OR ` + xQuoteDirectHydrationRepairWhere + `
 	OR ` + xNoteTweetLinkRepairWhere + `)`
-const xHydrationCandidateWhere = `(
+var xHydrationCandidateWhere = `(
 	x_post_status = ''
 	OR x_post_status = 'api_error'
 	OR x_post_status = 'error'
@@ -78,3 +81,24 @@ const xHydrationCandidateWhere = `(
 		)
 	)
 )`
+
+func mediaDownloadRetryableWhere(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(`(%[1]sdownload_status = ''
+				OR %[1]sdownload_status = 'pending'
+				OR (
+					%[1]sdownload_status = 'error'
+					AND %[1]sdownload_error_count < %[2]d
+					AND (
+						%[1]slast_download_attempt_at = ''
+						OR %[1]slast_download_attempt_at <= strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ', 'now', '-%[3]d seconds')
+					)
+				))`,
+		prefix,
+		model.MediaDownloadMaxConsecutiveErrors,
+		int(model.MediaDownloadRetryCooldown.Seconds()),
+	)
+}

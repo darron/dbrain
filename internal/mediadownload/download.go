@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	neturl "net/url"
@@ -18,7 +19,13 @@ import (
 	"github.com/darron/dbrain/internal/model"
 )
 
-func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, ref model.ItemMediaRef) (model.MediaDownloadResult, error) {
+type progressOptions struct {
+	Logger   *slog.Logger
+	Interval time.Duration
+	Bytes    int64
+}
+
+func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, ref model.ItemMediaRef, progress progressOptions) (model.MediaDownloadResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ref.RemoteURL, nil)
 	if err != nil {
 		return model.MediaDownloadResult{}, fmt.Errorf("create media request %q: %w", ref.RemoteURL, err)
@@ -49,6 +56,7 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 		}, nil
 	}
 
+	contentLength := resp.ContentLength
 	contentType := resp.Header.Get("content-type")
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
@@ -77,7 +85,15 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 	}()
 
 	hasher := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(tmpFile, hasher), resp.Body)
+	writer := io.MultiWriter(tmpFile, hasher)
+	tracker := newDownloadProgressWriter(writer, progress, ref, contentLength)
+	if tracker != nil {
+		writer = tracker
+	}
+	written, copyErr := io.Copy(writer, resp.Body)
+	if tracker != nil {
+		tracker.finish()
+	}
 	if copyErr != nil {
 		return model.MediaDownloadResult{
 			Status: "error",

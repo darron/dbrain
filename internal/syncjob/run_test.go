@@ -45,6 +45,9 @@ func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 		if opts.Limit != 7 {
 			t.Fatalf("expected x limit 7, got %d", opts.Limit)
 		}
+		if opts.MediaTimeout != 45*time.Minute {
+			t.Fatalf("expected x media timeout 45m, got %s", opts.MediaTimeout)
+		}
 		if opts.QuoteOnly {
 			calls = append(calls, "x-quote")
 			return xapi.Stats{}, nil
@@ -66,6 +69,7 @@ func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 		XBookmarksLimit:   9,
 		XEnabled:          true,
 		XLimit:            7,
+		XMediaTimeout:     45 * time.Minute,
 		XMediaEnabled:     true,
 		Progress:          &progress,
 	})
@@ -197,6 +201,41 @@ func TestRunDrainsQuoteHydrationTailBeforeXMediaStage(t *testing.T) {
 	}
 }
 
+func TestRunStopsQuoteHydrationTailWhenOnlyRetryingUnchangedMediaErrors(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origX := runXHydrate
+	t.Cleanup(func() {
+		runXHydrate = origX
+	})
+
+	var calls []string
+	runXHydrate = func(_ context.Context, _ config.Config, _ *store.Store, opts xapi.Options) (xapi.Stats, error) {
+		if opts.QuoteOnly {
+			calls = append(calls, "x-quote")
+			return xapi.Stats{
+				Candidates:      1,
+				Hydrated:        1,
+				Unchanged:       1,
+				MediaCandidates: 1,
+				MediaRequested:  1,
+				MediaErrors:     1,
+			}, nil
+		}
+		calls = append(calls, "x")
+		return xapi.Stats{Candidates: 1, Hydrated: 1}, nil
+	}
+
+	_, err := Run(context.Background(), cfg, st, Options{XEnabled: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !slices.Equal(calls, []string{"x", "x-quote"}) {
+		t.Fatalf("unchanged quote media retry should not keep draining, got calls %v", calls)
+	}
+}
+
 func TestRunSettlesXFrontierBeforeDownstreamStages(t *testing.T) {
 	cfg, st := testSyncStore(t)
 
@@ -278,6 +317,72 @@ func TestRunSettlesXFrontierBeforeDownstreamStages(t *testing.T) {
 	output := progress.String()
 	if !bytes.Contains([]byte(output), []byte("==> x settle pass 2")) {
 		t.Fatalf("expected progress output to contain x settle pass, got %q", output)
+	}
+}
+
+func TestRunStopsXFrontierSettleWhenOnlyRetryingUnchangedMediaErrors(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origBookmarks := runXBookmarkImport
+	origX := runXHydrate
+	origLinks := runLinkExtract
+	origXMedia := runXMediaStage
+	t.Cleanup(func() {
+		runXBookmarkImport = origBookmarks
+		runXHydrate = origX
+		runLinkExtract = origLinks
+		runXMediaStage = origXMedia
+	})
+
+	var calls []string
+	runXBookmarkImport = func(_ context.Context, _ config.Config, _ *store.Store, _ xapi.BookmarkOptions) (xapi.BookmarkStats, error) {
+		calls = append(calls, "x-bookmarks")
+		return xapi.BookmarkStats{Unchanged: 40, PagesFetched: 2, StoppedReason: "overlap"}, nil
+	}
+	runXHydrate = func(_ context.Context, _ config.Config, _ *store.Store, opts xapi.Options) (xapi.Stats, error) {
+		if opts.QuoteOnly {
+			calls = append(calls, "x-quote")
+			return xapi.Stats{}, nil
+		}
+		calls = append(calls, "x")
+		return xapi.Stats{
+			Candidates:      1,
+			Hydrated:        1,
+			Unchanged:       1,
+			MediaCandidates: 1,
+			MediaRequested:  1,
+			MediaErrors:     1,
+		}, nil
+	}
+	runLinkExtract = func(_ context.Context, _ config.Config, _ *store.Store, _ linkextract.Options) (linkextract.Stats, error) {
+		calls = append(calls, "links")
+		return linkextract.Stats{ItemsScanned: 1, ItemsMarked: 1}, nil
+	}
+	runXMediaStage = func(_ context.Context, _ config.Config, _ *store.Store, _ xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+		calls = append(calls, "x-media")
+		return xmediatranscribe.Stats{}, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(context.Background(), cfg, st, Options{
+		XBookmarksEnabled: true,
+		XEnabled:          true,
+		LinksEnabled:      true,
+		XMediaEnabled:     true,
+		Progress:          &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !slices.Equal(calls, []string{"x-bookmarks", "x", "x-quote", "links", "x-media"}) {
+		t.Fatalf("unchanged media retry should not keep frontier active, got calls %v", calls)
+	}
+	if stats.X == nil || stats.X.Stats.MediaErrors != 1 {
+		t.Fatalf("expected one aggregated media error, got %+v", stats.X)
+	}
+	if bytes.Contains(progress.Bytes(), []byte("==> x settle pass 2")) {
+		t.Fatalf("unexpected extra settle pass for unchanged media retry: %q", progress.String())
 	}
 }
 

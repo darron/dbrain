@@ -28,7 +28,7 @@ func executeXFrontierStages(ctx context.Context, cfg config.Config, st *store.St
 			if err != nil {
 				return fmt.Errorf("import x-bookmarks: %w", err)
 			}
-			if bookmarkStats.Created > 0 || bookmarkStats.Updated > 0 {
+			if xBookmarkFrontierActivity(bookmarkStats) {
 				frontierActive = true
 			}
 
@@ -37,7 +37,7 @@ func executeXFrontierStages(ctx context.Context, cfg config.Config, st *store.St
 			if err != nil {
 				return fmt.Errorf("hydrate x: %w", err)
 			}
-			if xStats.Candidates > 0 {
+			if xHydrationFrontierActivity(xStats) {
 				frontierActive = true
 			}
 
@@ -46,7 +46,7 @@ func executeXFrontierStages(ctx context.Context, cfg config.Config, st *store.St
 			if err != nil {
 				return fmt.Errorf("extract links: %w", err)
 			}
-			if linkStats.ItemsScanned > 0 {
+			if linkFrontierActivity(linkStats) {
 				frontierActive = true
 			}
 
@@ -109,13 +109,14 @@ func runXHydratePass(ctx context.Context, cfg config.Config, st *store.Store, op
 	progressf(opts.Progress, "==> hydrate x\n")
 	start := time.Now()
 	xStats, err := runXHydrate(ctx, cfg, st, xapi.Options{
-		Limit:       opts.XLimit,
-		Force:       opts.Force,
-		Concurrency: opts.XConcurrency,
-		Browser:     opts.Browser,
-		Profile:     opts.Profile,
-		Timeout:     opts.XTimeout,
-		Logger:      opts.Logger,
+		Limit:        opts.XLimit,
+		Force:        opts.Force,
+		Concurrency:  opts.XConcurrency,
+		Browser:      opts.Browser,
+		Profile:      opts.Profile,
+		Timeout:      opts.XTimeout,
+		MediaTimeout: opts.XMediaTimeout,
+		Logger:       opts.Logger,
 	})
 	if err != nil {
 		return xStats, time.Since(start), err
@@ -123,14 +124,15 @@ func runXHydratePass(ctx context.Context, cfg config.Config, st *store.Store, op
 	if !opts.Force && xStats.Candidates > 0 {
 		for pass := 1; pass <= maxXQuoteDrainPasses; pass++ {
 			quoteStats, quoteErr := runXHydrate(ctx, cfg, st, xapi.Options{
-				Limit:       opts.XLimit,
-				Force:       false,
-				QuoteOnly:   true,
-				Concurrency: opts.XConcurrency,
-				Browser:     opts.Browser,
-				Profile:     opts.Profile,
-				Timeout:     opts.XTimeout,
-				Logger:      opts.Logger,
+				Limit:        opts.XLimit,
+				Force:        false,
+				QuoteOnly:    true,
+				Concurrency:  opts.XConcurrency,
+				Browser:      opts.Browser,
+				Profile:      opts.Profile,
+				Timeout:      opts.XTimeout,
+				MediaTimeout: opts.XMediaTimeout,
+				Logger:       opts.Logger,
 			})
 			mergeXStats(&xStats, quoteStats)
 			if quoteErr != nil {
@@ -139,14 +141,17 @@ func runXHydratePass(ctx context.Context, cfg config.Config, st *store.Store, op
 			if quoteStats.Candidates == 0 {
 				break
 			}
-			progressf(opts.Progress, "X quote hydration pass %d complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d\n", pass, quoteStats.Hydrated, quoteStats.Missing, quoteStats.APIErrors, quoteStats.MediaDownloaded, quoteStats.MediaErrors, quoteStats.Rendered)
+			progressf(opts.Progress, "X quote hydration pass %d complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d media_blocked=%d rendered=%d\n", pass, quoteStats.Hydrated, quoteStats.Missing, quoteStats.APIErrors, quoteStats.MediaDownloaded, quoteStats.MediaErrors, quoteStats.MediaBlocked, quoteStats.Rendered)
+			if !xHydrationFrontierActivity(quoteStats) {
+				break
+			}
 			if pass == maxXQuoteDrainPasses {
 				progressf(opts.Progress, "X quote hydration drain stopped after %d extra passes with candidates still present\n", maxXQuoteDrainPasses)
 			}
 		}
 	}
 	duration := time.Since(start)
-	progressf(opts.Progress, "X hydration complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d rendered=%d (%s)\n", xStats.Hydrated, xStats.Missing, xStats.APIErrors, xStats.MediaDownloaded, xStats.MediaErrors, xStats.Rendered, duration)
+	progressf(opts.Progress, "X hydration complete: hydrated=%d missing=%d api_errors=%d media_downloaded=%d media_errors=%d media_blocked=%d rendered=%d (%s)\n", xStats.Hydrated, xStats.Missing, xStats.APIErrors, xStats.MediaDownloaded, xStats.MediaErrors, xStats.MediaBlocked, xStats.Rendered, duration)
 	return xStats, duration, nil
 }
 
@@ -170,4 +175,21 @@ func runLinksPass(ctx context.Context, cfg config.Config, st *store.Store, opts 
 		progressf(opts.Progress, "Link extraction complete: items_scanned=%d sources_queued=%d sources_summarized=%d errors=%d (%s)\n", linkStats.ItemsScanned, linkStats.SourcesQueued, linkStats.SourcesSummarized, linkStats.Errors, duration)
 	}
 	return linkStats, duration, err
+}
+
+func xBookmarkFrontierActivity(stats xapi.BookmarkStats) bool {
+	return stats.Created > 0 || stats.Updated > 0 || stats.Rendered > 0
+}
+
+func xHydrationFrontierActivity(stats xapi.Stats) bool {
+	return stats.Rendered > 0 || stats.MediaDownloaded > 0 || stats.MediaGone > 0
+}
+
+func linkFrontierActivity(stats linkextract.Stats) bool {
+	return stats.SourcesCreated > 0 ||
+		stats.LinksCreated > 0 ||
+		stats.SourcesQueued > 0 ||
+		stats.SourcesExtracted > 0 ||
+		stats.SourcesSummarized > 0 ||
+		stats.SourcesRendered > 0
 }

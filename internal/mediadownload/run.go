@@ -11,10 +11,18 @@ import (
 )
 
 type Options struct {
-	Force   bool
-	Timeout time.Duration
-	Logger  *slog.Logger
+	Force            bool
+	Timeout          time.Duration
+	ProgressInterval time.Duration
+	ProgressBytes    int64
+	Logger           *slog.Logger
 }
+
+const (
+	DefaultTimeout          = 30 * time.Minute
+	DefaultProgressInterval = 5 * time.Second
+	DefaultProgressBytes    = 32 * 1024 * 1024
+)
 
 type Stats struct {
 	Candidates int `json:"candidates"`
@@ -22,12 +30,19 @@ type Stats struct {
 	Downloaded int `json:"downloaded"`
 	Gone       int `json:"gone"`
 	Errors     int `json:"errors"`
+	Blocked    int `json:"blocked"`
 	Changed    int `json:"changed"`
 }
 
 func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID int64, opts Options) (Stats, error) {
 	if opts.Timeout <= 0 {
-		opts.Timeout = 30 * time.Second
+		opts.Timeout = DefaultTimeout
+	}
+	if opts.ProgressInterval <= 0 {
+		opts.ProgressInterval = DefaultProgressInterval
+	}
+	if opts.ProgressBytes <= 0 {
+		opts.ProgressBytes = DefaultProgressBytes
 	}
 
 	refs, err := st.ListItemMediaRefs(ctx, itemID)
@@ -47,10 +62,16 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 		}
 
 		stats.Requested++
-		result, err := downloadRef(ctx, client, cfg, ref)
+		result, err := downloadRef(ctx, client, cfg, ref, progressOptions{
+			Logger:   opts.Logger,
+			Interval: opts.ProgressInterval,
+			Bytes:    opts.ProgressBytes,
+		})
 		if err != nil {
 			return stats, err
 		}
+		result.AttemptedAt = time.Now().UTC()
+		result = applyRetryPolicy(ref, result)
 
 		changed, err := st.SaveMediaDownload(ctx, ref.MediaAssetID, result)
 		if err != nil {
@@ -67,6 +88,8 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 			stats.Gone++
 		case "error":
 			stats.Errors++
+		case "blocked":
+			stats.Blocked++
 		}
 
 		debugLog(opts.Logger, "x media download result",

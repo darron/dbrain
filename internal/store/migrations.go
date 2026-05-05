@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 type schemaMigration struct {
 	Version int
@@ -20,6 +20,34 @@ var schemaMigrations = []schemaMigration{
 		Name:    "current_schema_baseline",
 		Run: func(s *Store) error {
 			return s.ensureCurrentSchema()
+		},
+	},
+	{
+		Version: 2,
+		Name:    "media_download_retry_state",
+		Run: func(s *Store) error {
+			if err := s.ensureMediaAssetColumns(); err != nil {
+				return err
+			}
+			if _, err := s.db.Exec(`
+				CREATE INDEX IF NOT EXISTS idx_media_assets_download_retry
+				ON media_assets(download_status, last_download_attempt_at)`); err != nil {
+				return fmt.Errorf("ensure media download retry index: %w", err)
+			}
+			if _, err := s.db.Exec(`
+				UPDATE media_assets
+				SET download_error_count = CASE
+						WHEN download_error_count <= 0 THEN 1
+						ELSE download_error_count
+					END,
+					last_download_attempt_at = CASE
+						WHEN last_download_attempt_at = '' THEN updated_at
+						ELSE last_download_attempt_at
+					END
+				WHERE download_status = 'error'`); err != nil {
+				return fmt.Errorf("backfill media download retry state: %w", err)
+			}
+			return nil
 		},
 	},
 }

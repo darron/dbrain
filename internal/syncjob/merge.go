@@ -25,6 +25,7 @@ func mergeXStats(dst *xapi.Stats, src xapi.Stats) {
 	dst.MediaDownloaded += src.MediaDownloaded
 	dst.MediaGone += src.MediaGone
 	dst.MediaErrors += src.MediaErrors
+	dst.MediaBlocked += src.MediaBlocked
 }
 
 func mergeXBookmarkStage(dst **XBookmarksStage, duration time.Duration, src xapi.BookmarkStats) {

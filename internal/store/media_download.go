@@ -22,9 +22,7 @@ func (s *Store) ListMediaAssetsForDownload(ctx context.Context, limit int, force
 		WHERE remote_url != ''`
 	if !force {
 		query += `
-			AND (download_status = ''
-				OR download_status = 'pending'
-				OR download_status = 'error')`
+			AND ` + mediaDownloadRetryableWhere("")
 	}
 	query += `
 		ORDER BY
@@ -64,7 +62,7 @@ func (s *Store) ListMediaAssetsForDownload(ctx context.Context, limit int, force
 func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result model.MediaDownloadResult) (bool, error) {
 	return withBusyRetry(ctx, func() (bool, error) {
 		row := s.db.QueryRowContext(ctx, `
-			SELECT mime_type, byte_size, content_hash, local_path, download_status, download_error, downloaded_at, local_pruned_at
+			SELECT mime_type, byte_size, content_hash, local_path, download_status, download_error, download_error_count, last_download_attempt_at, downloaded_at, local_pruned_at
 			FROM media_assets
 			WHERE id = ?`, assetID)
 
@@ -74,13 +72,46 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 		var currentPath string
 		var currentStatus string
 		var currentError string
+		var currentErrorCount int
+		var currentLastAttemptAt string
 		var currentDownloadedAt string
 		var currentLocalPrunedAt string
-		if err := row.Scan(&currentMIME, &currentByteSize, &currentHash, &currentPath, &currentStatus, &currentError, &currentDownloadedAt, &currentLocalPrunedAt); err != nil {
+		if err := row.Scan(&currentMIME, &currentByteSize, &currentHash, &currentPath, &currentStatus, &currentError, &currentErrorCount, &currentLastAttemptAt, &currentDownloadedAt, &currentLocalPrunedAt); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return false, fmt.Errorf("media asset not found: %d", assetID)
 			}
 			return false, fmt.Errorf("load media asset %d: %w", assetID, err)
+		}
+
+		attemptedAt := result.AttemptedAt
+		if attemptedAt.IsZero() {
+			attemptedAt = time.Now().UTC()
+		} else {
+			attemptedAt = attemptedAt.UTC()
+		}
+		lastAttemptAt := attemptedAt.Format(time.RFC3339)
+
+		nextStatus := result.Status
+		nextError := result.Error
+		nextErrorCount := currentErrorCount
+		nextLastAttemptAt := currentLastAttemptAt
+		switch nextStatus {
+		case "error":
+			nextErrorCount = currentErrorCount + 1
+			nextLastAttemptAt = lastAttemptAt
+			if nextErrorCount >= model.MediaDownloadMaxConsecutiveErrors {
+				nextStatus = "blocked"
+				nextError = terminalMediaDownloadError(nextErrorCount, nextError)
+			}
+		case "blocked":
+			nextLastAttemptAt = lastAttemptAt
+			if nextErrorCount < model.MediaDownloadMaxConsecutiveErrors {
+				nextErrorCount = model.MediaDownloadMaxConsecutiveErrors
+			}
+			nextError = terminalMediaDownloadError(nextErrorCount, nextError)
+		case "downloaded", "gone":
+			nextErrorCount = 0
+			nextLastAttemptAt = lastAttemptAt
 		}
 
 		downloadedAt := ""
@@ -96,8 +127,10 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 			currentByteSize != result.ByteSize ||
 			currentHash != result.ContentHash ||
 			currentPath != result.LocalPath ||
-			currentStatus != result.Status ||
-			currentError != result.Error ||
+			currentStatus != nextStatus ||
+			currentError != nextError ||
+			currentErrorCount != nextErrorCount ||
+			currentLastAttemptAt != nextLastAttemptAt ||
 			currentDownloadedAt != downloadedAt ||
 			currentLocalPrunedAt != nextLocalPrunedAt
 		if !changed {
@@ -112,6 +145,8 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 				local_path = ?,
 				download_status = ?,
 				download_error = ?,
+				download_error_count = ?,
+				last_download_attempt_at = ?,
 				downloaded_at = ?,
 				local_pruned_at = ?,
 				updated_at = ?
@@ -120,8 +155,10 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 			result.ByteSize,
 			result.ContentHash,
 			result.LocalPath,
-			result.Status,
-			result.Error,
+			nextStatus,
+			nextError,
+			nextErrorCount,
+			nextLastAttemptAt,
 			downloadedAt,
 			nextLocalPrunedAt,
 			time.Now().UTC().Format(time.RFC3339),
@@ -139,6 +176,7 @@ func scanMediaAsset(scan func(dest ...any) error, asset *model.MediaAsset) error
 	var downloadedAt string
 	var archivedAt string
 	var localPrunedAt string
+	var lastDownloadAt string
 	var updatedAt string
 	if err := scan(
 		&asset.ID,
@@ -151,6 +189,8 @@ func scanMediaAsset(scan func(dest ...any) error, asset *model.MediaAsset) error
 		&asset.ContentHash,
 		&asset.DownloadStatus,
 		&asset.DownloadError,
+		&asset.DownloadErrors,
+		&lastDownloadAt,
 		&asset.LocalPath,
 		&asset.ArchiveProvider,
 		&asset.ArchiveBucket,
@@ -168,9 +208,22 @@ func scanMediaAsset(scan func(dest ...any) error, asset *model.MediaAsset) error
 		return err
 	}
 	asset.DiscoveredAt = parseStoredTime(discoveredAt)
+	asset.LastDownloadAt = parseStoredTime(lastDownloadAt)
 	asset.DownloadedAt = parseStoredTime(downloadedAt)
 	asset.ArchivedAt = parseStoredTime(archivedAt)
 	asset.LocalPrunedAt = parseStoredTime(localPrunedAt)
 	asset.UpdatedAt = parseStoredTime(updatedAt)
 	return nil
+}
+
+func terminalMediaDownloadError(count int, errText string) string {
+	errText = strings.TrimSpace(errText)
+	prefix := fmt.Sprintf("blocked after %d failed media download attempts", count)
+	if errText == "" {
+		return prefix
+	}
+	if strings.HasPrefix(errText, "blocked after ") {
+		return errText
+	}
+	return prefix + ": " + errText
 }

@@ -19,6 +19,8 @@ func (s *Store) ListItemMediaRefs(ctx context.Context, itemID int64) ([]model.It
 			a.remote_url,
 			a.media_type,
 			a.download_status,
+			a.download_error_count,
+			a.last_download_attempt_at,
 			a.local_path,
 			a.archive_provider,
 			a.archive_bucket,
@@ -70,6 +72,8 @@ func (s *Store) listItemMediaRefsTx(ctx context.Context, tx *sql.Tx, itemID int6
 			a.remote_url,
 			a.media_type,
 			a.download_status,
+			a.download_error_count,
+			a.last_download_attempt_at,
 			a.local_path,
 			a.archive_provider,
 			a.archive_bucket,
@@ -131,6 +135,7 @@ func desiredItemMediaRefs(itemID int64, media []xHydrationMedia) []model.ItemMed
 
 func scanItemMediaRef(scan func(dest ...any) error, ref *model.ItemMediaRef) error {
 	var localPrunedAt string
+	var lastDownloadAt string
 	if err := scan(
 		&ref.ItemID,
 		&ref.MediaAssetID,
@@ -139,6 +144,8 @@ func scanItemMediaRef(scan func(dest ...any) error, ref *model.ItemMediaRef) err
 		&ref.RemoteURL,
 		&ref.MediaType,
 		&ref.DownloadStatus,
+		&ref.DownloadErrors,
+		&lastDownloadAt,
 		&ref.LocalPath,
 		&ref.ArchiveProvider,
 		&ref.ArchiveBucket,
@@ -151,6 +158,7 @@ func scanItemMediaRef(scan func(dest ...any) error, ref *model.ItemMediaRef) err
 	); err != nil {
 		return err
 	}
+	ref.LastDownloadAt = parseStoredTime(lastDownloadAt)
 	ref.LocalPrunedAt = parseStoredTime(localPrunedAt)
 	return nil
 }

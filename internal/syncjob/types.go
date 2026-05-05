@@ -26,6 +26,7 @@ type Options struct {
 	XLimit           int
 	XConcurrency     int
 	XTimeout         time.Duration
+	XMediaTimeout    time.Duration
 	XMediaEnabled    bool
 	XMediaLimit      int
 	XPhotoOCREnabled bool

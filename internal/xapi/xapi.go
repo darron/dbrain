@@ -17,6 +17,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if opts.Timeout <= 0 {
 		opts.Timeout = 30 * time.Second
 	}
+	if opts.MediaTimeout <= 0 {
+		opts.MediaTimeout = mediadownload.DefaultTimeout
+	}
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 4
 	}
@@ -107,7 +110,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 
 		mediaStats, mediaErr := mediadownload.RunForItem(ctx, cfg, st, result.item.ID, mediadownload.Options{
 			Force:   opts.Force,
-			Timeout: opts.Timeout,
+			Timeout: opts.MediaTimeout,
 			Logger:  opts.Logger,
 		})
 		if mediaErr != nil {
@@ -118,6 +121,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		stats.MediaDownloaded += mediaStats.Downloaded
 		stats.MediaGone += mediaStats.Gone
 		stats.MediaErrors += mediaStats.Errors
+		stats.MediaBlocked += mediaStats.Blocked
 
 		quoteStats, quoteChanged, quoteRendered, quoteErr := syncQuotedPosts(ctx, cfg, st, result.item, result.hydration, snapshot, opts)
 		if quoteErr != nil {
@@ -128,6 +132,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		stats.MediaDownloaded += quoteStats.Downloaded
 		stats.MediaGone += quoteStats.Gone
 		stats.MediaErrors += quoteStats.Errors
+		stats.MediaBlocked += quoteStats.Blocked
 		stats.Rendered += quoteRendered
 
 		switch result.hydration.Status {
@@ -161,6 +166,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			"media_changed", mediaChanged,
 			"media_requested", mediaStats.Requested,
 			"media_downloaded", mediaStats.Downloaded,
+			"media_blocked", mediaStats.Blocked,
 		)
 		if opts.Logger != nil && (processed%25 == 0 || result.hydration.Status != "ok_graphql" || mediaStats.Requested > 0) {
 			opts.Logger.Info("x hydration progress",
@@ -177,6 +183,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				"media_downloaded", stats.MediaDownloaded,
 				"media_gone", stats.MediaGone,
 				"media_errors", stats.MediaErrors,
+				"media_blocked", stats.MediaBlocked,
 				"remaining", stats.Candidates-processed,
 			)
 		}

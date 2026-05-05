@@ -16,6 +16,7 @@ type syncAllFlags struct {
 	xPhotoOCRLimit  int
 	xConcurrency    int
 	xTimeout        time.Duration
+	xMediaTimeout   time.Duration
 	ocrModel        string
 
 	linkDiscoverLimit int
@@ -87,6 +88,7 @@ func syncOptionsFromFlags(cfg config.Config, flags syncAllFlags, logger *slog.Lo
 		XLimit:                       flags.xLimit,
 		XConcurrency:                 flags.xConcurrency,
 		XTimeout:                     flags.xTimeout,
+		XMediaTimeout:                flags.xMediaTimeout,
 		XMediaEnabled:                !flags.skipXMedia,
 		XMediaLimit:                  flags.xMediaLimit,
 		XPhotoOCREnabled:             !flags.skipXPhotoOCR,

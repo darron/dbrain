@@ -39,8 +39,8 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema migrations: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected one schema migration row after reopen, got %d", count)
+	if count != len(schemaMigrations) {
+		t.Fatalf("expected %d schema migration rows after reopen, got %d", len(schemaMigrations), count)
 	}
 }
 
@@ -88,6 +88,67 @@ func TestOpenAdoptsExistingCurrentSchemaWithoutMigrationMetadata(t *testing.T) {
 	if title != "Existing item" {
 		t.Fatalf("expected preserved item title, got %q", title)
 	}
+}
+
+func TestMigrationBackfillsExistingMediaDownloadErrors(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	now := time.Date(2026, 5, 5, 5, 14, 1, 0, time.UTC).Format(time.RFC3339)
+	if _, err := st.db.Exec(`
+		INSERT INTO media_assets (
+			remote_url, media_type, download_status, download_error, discovered_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		"https://video.twimg.com/ext/error.mp4",
+		"video",
+		"error",
+		"context deadline exceeded",
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert media asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, currentSchemaVersion); err != nil {
+		t.Fatalf("simulate pre-v2 migration metadata: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatalf("set old user_version: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE media_assets SET download_error_count = 0, last_download_attempt_at = ''`); err != nil {
+		t.Fatalf("clear retry state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() {
+		_ = st.Close()
+	}()
+
+	var count int
+	var lastAttempt string
+	if err := st.db.QueryRow(`
+		SELECT download_error_count, last_download_attempt_at
+		FROM media_assets
+		WHERE remote_url = ?`,
+		"https://video.twimg.com/ext/error.mp4",
+	).Scan(&count, &lastAttempt); err != nil {
+		t.Fatalf("load retry state: %v", err)
+	}
+	if count != 1 || lastAttempt != now {
+		t.Fatalf("expected retry state to be backfilled from updated_at, got count=%d last=%q", count, lastAttempt)
+	}
+	assertCurrentSchemaMigration(t, st.db)
 }
 
 func TestOpenReadOnlySkipsSchemaMigration(t *testing.T) {
@@ -159,11 +220,12 @@ func clearMigrationMetadata(t *testing.T, path string) {
 func assertCurrentSchemaMigration(t *testing.T, db *sql.DB) {
 	t.Helper()
 
+	currentMigration := schemaMigrations[len(schemaMigrations)-1]
 	var count int
 	if err := db.QueryRow(
 		`SELECT COUNT(*) FROM schema_migrations WHERE version = ? AND name = ?`,
 		currentSchemaVersion,
-		"current_schema_baseline",
+		currentMigration.Name,
 	).Scan(&count); err != nil {
 		t.Fatalf("count current schema migration: %v", err)
 	}

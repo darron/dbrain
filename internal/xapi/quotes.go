@@ -84,7 +84,7 @@ func upsertQuotedPostTree(ctx context.Context, cfg config.Config, st *store.Stor
 
 	mediaStats, err := mediadownload.RunForItem(ctx, cfg, st, upsertResult.ItemID, mediadownload.Options{
 		Force:   opts.Force,
-		Timeout: opts.Timeout,
+		Timeout: quotedMediaTimeout(opts),
 		Logger:  opts.Logger,
 	})
 	if err != nil {
@@ -103,6 +103,7 @@ func upsertQuotedPostTree(ctx context.Context, cfg config.Config, st *store.Stor
 		mediaStats.Downloaded += nestedMediaStats.Downloaded
 		mediaStats.Gone += nestedMediaStats.Gone
 		mediaStats.Errors += nestedMediaStats.Errors
+		mediaStats.Blocked += nestedMediaStats.Blocked
 		mediaStats.Changed += nestedMediaStats.Changed
 		rendered += nestedRendered
 		if childID > 0 {
@@ -127,6 +128,13 @@ func upsertQuotedPostTree(ctx context.Context, cfg config.Config, st *store.Stor
 	}
 
 	return upsertResult.ItemID, mediaStats, rendered, nil
+}
+
+func quotedMediaTimeout(opts Options) time.Duration {
+	if opts.MediaTimeout > 0 {
+		return opts.MediaTimeout
+	}
+	return opts.Timeout
 }
 
 func snapshotFromHydrationJSON(fallbackTweetID, apiJSON string) (*xpost.Snapshot, error) {

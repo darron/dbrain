@@ -15,6 +15,8 @@ func (s *Store) ensureMediaTables() error {
 			content_hash TEXT NOT NULL DEFAULT '',
 			download_status TEXT NOT NULL DEFAULT '',
 			download_error TEXT NOT NULL DEFAULT '',
+			download_error_count INTEGER NOT NULL DEFAULT 0,
+			last_download_attempt_at TEXT NOT NULL DEFAULT '',
 			local_path TEXT NOT NULL DEFAULT '',
 			archive_provider TEXT NOT NULL DEFAULT '',
 			archive_bucket TEXT NOT NULL DEFAULT '',
@@ -30,6 +32,7 @@ func (s *Store) ensureMediaTables() error {
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_media_assets_download_status ON media_assets(download_status);`,
+		`CREATE INDEX IF NOT EXISTS idx_media_assets_download_retry ON media_assets(download_status, last_download_attempt_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_media_assets_content_hash ON media_assets(content_hash);`,
 		`CREATE TABLE IF NOT EXISTS item_media_links (
 			item_id INTEGER NOT NULL,
@@ -72,6 +75,8 @@ func (s *Store) ensureMediaAssetColumns() error {
 		{Name: "content_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "download_status", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "download_error", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "download_error_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "last_download_attempt_at", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "local_path", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "archive_provider", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "archive_bucket", Definition: "TEXT NOT NULL DEFAULT ''"},

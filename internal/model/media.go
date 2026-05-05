@@ -2,6 +2,11 @@ package model
 
 import "time"
 
+const (
+	MediaDownloadMaxConsecutiveErrors = 3
+	MediaDownloadRetryCooldown        = 24 * time.Hour
+)
+
 type MediaAsset struct {
 	ID              int64     `json:"id"`
 	RemoteURL       string    `json:"remote_url"`
@@ -13,6 +18,8 @@ type MediaAsset struct {
 	ContentHash     string    `json:"content_hash"`
 	DownloadStatus  string    `json:"download_status"`
 	DownloadError   string    `json:"download_error"`
+	DownloadErrors  int       `json:"download_errors"`
+	LastDownloadAt  time.Time `json:"last_download_attempt_at"`
 	LocalPath       string    `json:"local_path"`
 	ArchiveProvider string    `json:"archive_provider"`
 	ArchiveBucket   string    `json:"archive_bucket"`
@@ -36,6 +43,8 @@ type ItemMediaRef struct {
 	RemoteURL       string    `json:"remote_url"`
 	MediaType       string    `json:"media_type"`
 	DownloadStatus  string    `json:"download_status"`
+	DownloadErrors  int       `json:"download_errors"`
+	LastDownloadAt  time.Time `json:"last_download_attempt_at"`
 	LocalPath       string    `json:"local_path"`
 	ArchiveProvider string    `json:"archive_provider"`
 	ArchiveBucket   string    `json:"archive_bucket"`
@@ -54,6 +63,7 @@ type MediaDownloadResult struct {
 	LocalPath    string    `json:"local_path"`
 	Status       string    `json:"status"`
 	Error        string    `json:"error"`
+	AttemptedAt  time.Time `json:"attempted_at"`
 	DownloadedAt time.Time `json:"downloaded_at"`
 }
 
