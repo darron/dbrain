@@ -540,7 +540,9 @@ targets one device by name or UUID, materializes matching HTTP(S) tabs as
 through normal link discovery, source extraction, source summaries, rendering,
 and categorization. Only tabs Safari has materialized into `CloudTabs.db` are
 visible to dbrain; Private Browsing tabs, Start Page tabs, and not-yet-synced
-iCloud changes may not appear.
+iCloud changes may not appear. In practice, macOS may not refresh that local
+database until Safari is running on the machine doing the import; launching
+Safari can make newly synced tabs appear in a follow-up import within seconds.
 
 ```sh
 dbrain import safari-tabs devices
