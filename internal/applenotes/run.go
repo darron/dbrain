@@ -6,9 +6,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
-	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
@@ -149,57 +147,22 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			return stats, err
 		}
 		stats.NotesImported++
-		switch result.Status {
-		case model.UpsertCreated:
-			stats.NotesCreated++
-		case model.UpsertUpdated:
-			stats.NotesUpdated++
-		case model.UpsertUnchanged:
-			stats.NotesUnchanged++
-		}
+		recordAppleNoteUpsertStats(&stats, result.Status)
 
-		shouldRender := opts.Force || result.Status != model.UpsertUnchanged || plan.RenderNeeded
-		if !shouldRender {
-			if _, err := vault.StatNote(cfg, item.NotePath); err != nil {
-				shouldRender = true
-			}
+		shouldRender, err := renderImportedAppleNote(cfg, opts, item, result, plan)
+		if err != nil {
+			stats.Errors++
+			return stats, err
 		}
 		if shouldRender {
-			if err := vault.WriteItem(cfg, item); err != nil {
-				stats.Errors++
-				return stats, fmt.Errorf("render apple note %s: %w", item.SourceKey, err)
-			}
 			stats.NotesRendered++
 		}
 		event.Phase = "imported"
 		event.Status = string(result.Status)
 		event.Rendered = shouldRender
 		event.SummaryStatus = "skipped"
-		if opts.Summarize {
-			event.Phase = "summarizing"
-			event.Status = string(result.Status)
-			event.Rendered = shouldRender
-			event.SummaryStatus = "running"
-			emitProgress(opts, event)
-
-			summarized, err := summarizeAppleNote(ctx, cfg, st, opts, result.ItemID, item)
-			if err != nil {
-				stats.SummaryErrors++
-				stats.Errors++
-				event.Phase = "imported"
-				event.SummaryStatus = "error"
-				event.Reason = err.Error()
-				emitProgress(opts, event)
-				continue
-			}
-			if summarized {
-				stats.SummariesCreated++
-				stats.NotesRendered++
-				event.SummaryStatus = "ok"
-				event.SummaryChanged = true
-			} else {
-				event.SummaryStatus = "current"
-			}
+		if !summarizeImportedAppleNote(ctx, cfg, st, opts, result, item, &stats, &event) {
+			continue
 		}
 		event.Phase = "imported"
 		emitProgress(opts, event)

@@ -253,15 +253,17 @@ The architecture is functional, but the main pressure points are:
   separated.
 - Apple Notes import command wiring, progress/stat output, and debug
   probe/snapshot/decode subcommands are now separated in `internal/app`.
+- Safari tabs import command wiring now keeps command execution separate from
+  progress/stat output rendering.
 - Apple Notes reader code now separates low-level DB row value coercion,
   object/note-data row loading, note document assembly, attachment-row decoding,
   attachment path/URL coercion, and link/tag/identity text helpers from the
   snapshot decode flow.
 - Apple Notes import runtime now separates `Run` orchestration from stats/types,
   run setup/progress event construction, work planning, progress dispatch,
-  exclusion purge handling, summary execution, item materialization, attachment
-  enrichment substeps, and snapshot/probe filesystem and read-only SQLite
-  helpers.
+  exclusion purge handling, item render/summary apply helpers, summary
+  execution, item materialization, attachment enrichment substeps, and
+  snapshot/probe filesystem and read-only SQLite helpers.
 - Serve command wiring is split by MCP, remote tsnet, and plain web surfaces
   while preserving existing flags and defaults.
 - SQLite archive/restore app command wiring now keeps command bodies separate
