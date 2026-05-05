@@ -6,6 +6,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
 )
@@ -21,7 +22,7 @@ func recordAppleNoteUpsertStats(stats *Stats, status model.UpsertStatus) {
 	}
 }
 
-func renderImportedAppleNote(cfg config.Config, opts Options, item model.Item, result model.UpsertResult, plan appleNoteWorkPlan) (bool, error) {
+func renderImportedAppleNote(ctx context.Context, cfg config.Config, st *store.Store, opts Options, item model.Item, result model.UpsertResult, plan appleNoteWorkPlan) (bool, error) {
 	shouldRender := opts.Force || result.Status != model.UpsertUnchanged || plan.RenderNeeded
 	if !shouldRender {
 		if _, err := vault.StatNote(cfg, item.NotePath); err != nil {
@@ -31,7 +32,7 @@ func renderImportedAppleNote(cfg config.Config, opts Options, item model.Item, r
 	if !shouldRender {
 		return false, nil
 	}
-	if err := vault.WriteItem(cfg, item); err != nil {
+	if _, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey); err != nil {
 		return false, fmt.Errorf("render apple note %s: %w", item.SourceKey, err)
 	}
 	return true, nil

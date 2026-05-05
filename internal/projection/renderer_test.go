@@ -50,6 +50,49 @@ func TestRendererRefreshItemWritesRenderedNote(t *testing.T) {
 	}
 }
 
+func TestRendererRefreshItemUsesStoredEnrichmentFields(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg, st := openProjectionTestStore(t)
+	now := time.Date(2026, time.May, 5, 12, 0, 0, 0, time.UTC)
+	item := model.Item{
+		SourceKey:    "test:item-enrichment-refresh",
+		SourceType:   "test",
+		CanonicalURL: "https://example.com/enriched-item",
+		Title:        "Enriched Item",
+		Text:         "raw item text",
+		LinksJSON:    "[]",
+		ContentHash:  "hash-enriched-item",
+		NotePath:     "items/test/item-enrichment-refresh.md",
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	result, err := st.UpsertItem(ctx, item)
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.SaveItemSummary(ctx, result.ItemID, model.SummaryResult{
+		Text:          "stored derived summary",
+		Status:        model.ItemSummaryStatusOK,
+		Model:         "test/model",
+		PromptVersion: "test-prompt",
+		Tool:          "test-tool",
+		FetchedAt:     now,
+	}, "summary-input-hash"); err != nil {
+		t.Fatalf("SaveItemSummary: %v", err)
+	}
+
+	if _, err := NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey); err != nil {
+		t.Fatalf("RefreshItem: %v", err)
+	}
+
+	body := readProjectionFile(t, cfg, item.NotePath)
+	if !strings.Contains(body, "stored derived summary") {
+		t.Fatalf("rendered item note missing stored summary:\n%s", body)
+	}
+}
+
 func TestRendererRefreshSourceLoadsBacklinks(t *testing.T) {
 	t.Parallel()
 

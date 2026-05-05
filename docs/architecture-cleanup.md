@@ -825,10 +825,10 @@ These are deeper and should be staged with focused tests.
 
    Progress:
    - Added `internal/projection.Renderer` as a synchronous item/source note
-     refresh boundary and routed representative source-enrichment,
-     GitHub-source, media-prune, and X photo OCR refresh paths through it.
-   - Continue moving direct `vault.WriteItem` / `vault.WriteSource` callers
-     behind this boundary as those packages are touched.
+     refresh boundary and routed direct `vault.WriteItem` / `vault.WriteSource`
+     production callers through it.
+   - Direct vault rendering is now isolated to `internal/projection`; longer
+     term dirty-projection repair remains a separate design follow-up.
 
 6. Consolidate retrieval payload construction.
 

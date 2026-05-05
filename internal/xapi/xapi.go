@@ -9,8 +9,8 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mediadownload"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
@@ -50,6 +50,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if len(items) == 0 {
 		return stats, nil
 	}
+	renderer := projection.NewRenderer(cfg, st)
 
 	var client *Client
 	if requiresRemoteFetch(items, opts.Force) {
@@ -146,11 +147,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 
 		mediaChanged := mediaStats.Changed > 0
 		if changed || mediaChanged || quoteChanged || hydrationNormalized {
-			refreshed, err := st.GetItem(ctx, result.item.SourceKey)
-			if err != nil {
-				return stats, err
-			}
-			if err := vault.WriteItem(cfg, refreshed); err != nil {
+			if _, err := renderer.RefreshItem(ctx, result.item.SourceKey); err != nil {
 				return stats, fmt.Errorf("render hydrated note %s: %w", result.item.SourceKey, err)
 			}
 			stats.Rendered++

@@ -149,7 +149,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		stats.NotesImported++
 		recordAppleNoteUpsertStats(&stats, result.Status)
 
-		shouldRender, err := renderImportedAppleNote(cfg, opts, item, result, plan)
+		shouldRender, err := renderImportedAppleNote(ctx, cfg, st, opts, item, result, plan)
 		if err != nil {
 			stats.Errors++
 			return stats, err

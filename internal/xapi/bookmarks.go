@@ -7,6 +7,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
 )
@@ -41,6 +42,7 @@ func RunBookmarks(ctx context.Context, cfg config.Config, st *store.Store, opts 
 	cursor := ""
 	stalePages := 0
 	now := time.Now().UTC()
+	renderer := projection.NewRenderer(cfg, st)
 
 pageLoop:
 	for {
@@ -99,7 +101,7 @@ pageLoop:
 				}
 			}
 			if shouldRender {
-				if err := vault.WriteItem(cfg, item); err != nil {
+				if _, err := renderer.RefreshItem(ctx, item.SourceKey); err != nil {
 					return stats, fmt.Errorf("render imported bookmark note %s: %w", item.SourceKey, err)
 				}
 				stats.Rendered++

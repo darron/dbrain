@@ -9,6 +9,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
@@ -51,6 +52,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 
 	stats := Stats{Viewer: viewer.Login}
 	now := time.Now().UTC()
+	renderer := projection.NewRenderer(cfg, st)
 	githubSourceIDs := map[int64]struct{}{}
 	homepageSourceIDs := map[int64]struct{}{}
 
@@ -92,7 +94,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				}
 			}
 			if shouldRender {
-				if err := vault.WriteItem(cfg, item); err != nil {
+				if _, err := renderer.RefreshItem(ctx, item.SourceKey); err != nil {
 					return stats, fmt.Errorf("render github star note %s: %w", item.SourceKey, err)
 				}
 				stats.ItemsRendered++

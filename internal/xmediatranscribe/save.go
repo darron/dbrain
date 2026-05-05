@@ -8,8 +8,8 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/itemhash"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 func saveTranscriptItem(ctx context.Context, cfg config.Config, st *store.Store, opts Options, item model.Item, blocks []transcriptBlock) (bool, error) {
@@ -42,7 +42,7 @@ func saveTranscriptItem(ctx context.Context, cfg config.Config, st *store.Store,
 		return changed, fmt.Errorf("save x media transcription state: %w", err)
 	}
 
-	if err := vault.WriteItem(cfg, item); err != nil {
+	if _, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey); err != nil {
 		return changed, fmt.Errorf("write x media transcript note: %w", err)
 	}
 	debugLog(opts.Logger, "x media transcription saved", "source_key", item.SourceKey, "item_id", item.ID, "changed", changed)

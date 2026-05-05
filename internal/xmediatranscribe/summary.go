@@ -7,9 +7,9 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 const (
@@ -104,13 +104,9 @@ func summarizeTranscriptItem(ctx context.Context, cfg config.Config, st *store.S
 		return 0, 0
 	}
 
-	refreshed, err := st.GetItem(ctx, item.SourceKey)
+	refreshed, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey)
 	if err != nil {
 		debugLog(opts.Logger, "x media summary refresh failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
-		return 0, 1
-	}
-	if err := vault.WriteItem(cfg, refreshed); err != nil {
-		debugLog(opts.Logger, "x media summary note write failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
 		return 0, 1
 	}
 	debugLog(opts.Logger, "x media summary saved", "source_key", item.SourceKey, "item_id", item.ID, "summary_chars", len(refreshed.SummaryText), "model", refreshed.SummaryModel, "tool", refreshed.SummaryTool)

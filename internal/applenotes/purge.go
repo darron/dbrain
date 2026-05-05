@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 func purgeExcluded(ctx context.Context, cfg config.Config, st *store.Store, doc NoteDocument, reason string) (bool, error) {
@@ -29,11 +29,7 @@ func purgeExcluded(ctx context.Context, cfg config.Config, st *store.Store, doc 
 	if err != nil || !purged {
 		return purged, err
 	}
-	item, err := st.GetItem(ctx, doc.SourceKey)
-	if err != nil {
-		return false, err
-	}
-	if err := vault.WriteItem(cfg, item); err != nil {
+	if _, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, doc.SourceKey); err != nil {
 		return false, err
 	}
 	return true, nil

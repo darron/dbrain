@@ -10,10 +10,10 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
 	"github.com/darron/dbrain/internal/summaryconfig"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 func summarizeAppleNote(ctx context.Context, cfg config.Config, st *store.Store, opts Options, itemID int64, item model.Item) (bool, error) {
@@ -81,11 +81,7 @@ func summarizeAppleNote(ctx context.Context, cfg config.Config, st *store.Store,
 	if !changed {
 		return false, nil
 	}
-	refreshed, err := st.GetItem(ctx, item.SourceKey)
-	if err != nil {
-		return false, err
-	}
-	if err := vault.WriteItem(cfg, refreshed); err != nil {
+	if _, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -11,8 +11,8 @@ import (
 	"github.com/darron/dbrain/internal/itemhash"
 	"github.com/darron/dbrain/internal/mediadownload"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/vault"
 	"github.com/darron/dbrain/internal/xpost"
 )
 
@@ -117,12 +117,8 @@ func upsertQuotedPostTree(ctx context.Context, cfg config.Config, st *store.Stor
 	}
 
 	if upsertResult.Status != model.UpsertUnchanged || hydrationChanged || mediaStats.Changed > 0 || linkChanged {
-		refreshed, err := st.GetItem(ctx, item.SourceKey)
-		if err != nil {
-			return 0, mediadownload.Stats{}, 0, err
-		}
-		if err := vault.WriteItem(cfg, refreshed); err != nil {
-			return 0, mediadownload.Stats{}, 0, fmt.Errorf("render quoted x note %s: %w", refreshed.SourceKey, err)
+		if _, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey); err != nil {
+			return 0, mediadownload.Stats{}, 0, fmt.Errorf("render quoted x note %s: %w", item.SourceKey, err)
 		}
 		rendered++
 	}

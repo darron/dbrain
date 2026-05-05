@@ -9,6 +9,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
 )
@@ -43,6 +44,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	emitProgress(opts, ProgressEvent{Phase: "loaded", Total: len(tabs)})
 
 	now := time.Now().UTC()
+	renderer := projection.NewRenderer(cfg, st)
 	cutoff := time.Time{}
 	if opts.OlderThan > 0 {
 		cutoff = now.Add(-opts.OlderThan)
@@ -117,7 +119,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			}
 		}
 		if shouldRender {
-			if err := vault.WriteItem(cfg, item); err != nil {
+			if _, err := renderer.RefreshItem(ctx, item.SourceKey); err != nil {
 				stats.Errors++
 				return stats, fmt.Errorf("render Safari tab %s: %w", item.SourceKey, err)
 			}
