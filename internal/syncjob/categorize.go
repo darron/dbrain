@@ -12,36 +12,39 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
-func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (*CategorizeStage, error) {
-	progressf(opts.Progress, "==> categorize items and sources\n")
+func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions) (*CategorizeStage, error) {
+	common := opts.Common
+	stageOpts := opts.Categorize
+	archiveOpts := opts.Archive
+	progressf(common.Progress, "==> categorize items and sources\n")
 	start := time.Now()
 	var itemProcessed atomic.Int64
 	var itemErrors atomic.Int64
 	var itemTotal atomic.Int64
 	itemStats, _, err := runItemCategorize(ctx, cfg, st, itemcategorize.Options{
-		Model:           opts.CategorizeModel,
-		Timeout:         opts.CategorizeTimeout,
-		Concurrency:     opts.CategorizeConcurrency,
-		Limit:           opts.CategorizeLimit,
-		Force:           opts.Force,
+		Model:           stageOpts.Model,
+		Timeout:         stageOpts.Timeout,
+		Concurrency:     stageOpts.Concurrency,
+		Limit:           stageOpts.Limit,
+		Force:           common.Force,
 		Apply:           true,
-		IncludeImages:   opts.CategorizeImages,
-		S3Endpoint:      opts.ArchiveEndpoint,
-		S3Region:        opts.ArchiveRegion,
-		S3AccessKey:     opts.ArchiveAccessKeyID,
-		S3SecretKey:     opts.ArchiveSecretKey,
+		IncludeImages:   stageOpts.Images,
+		S3Endpoint:      archiveOpts.Endpoint,
+		S3Region:        archiveOpts.Region,
+		S3AccessKey:     archiveOpts.AccessKeyID,
+		S3SecretKey:     archiveOpts.SecretKey,
 		OpenRouterTitle: "dbrain sync categorize",
 		OnStart: func(total int) {
 			itemTotal.Store(int64(total))
-			if opts.Logger != nil {
-				opts.Logger.Debug("item categorization candidates loaded",
+			if common.Logger != nil {
+				common.Logger.Debug("item categorization candidates loaded",
 					"processed", 0,
 					"total", total,
 					"remaining", total,
 					"items", total,
-					"limit", opts.CategorizeLimit,
-					"force", opts.Force,
-					"concurrency", opts.CategorizeConcurrency,
+					"limit", stageOpts.Limit,
+					"force", common.Force,
+					"concurrency", stageOpts.Concurrency,
 				)
 			}
 		},
@@ -52,12 +55,12 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 			if remaining < 0 {
 				remaining = 0
 			}
-			if opts.Logger == nil {
+			if common.Logger == nil {
 				return
 			}
 			if ir.Error != "" {
 				errors := itemErrors.Add(1)
-				opts.Logger.Debug("item categorization failed",
+				common.Logger.Debug("item categorization failed",
 					"source_key", ir.Item.SourceKey,
 					"item_id", ir.Item.ID,
 					"processed", processed,
@@ -68,7 +71,7 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 				)
 				return
 			}
-			opts.Logger.Debug("item categorized",
+			common.Logger.Debug("item categorized",
 				"source_key", ir.Item.SourceKey,
 				"item_id", ir.Item.ID,
 				"processed", processed,
@@ -88,24 +91,24 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 	var sourceErrors atomic.Int64
 	var sourceTotal atomic.Int64
 	sourceStats, _, err := runSourceCategorize(ctx, cfg, st, itemcategorize.Options{
-		Model:           opts.CategorizeModel,
-		Timeout:         opts.CategorizeTimeout,
-		Concurrency:     opts.CategorizeConcurrency,
-		Limit:           opts.CategorizeLimit,
-		Force:           opts.Force,
+		Model:           stageOpts.Model,
+		Timeout:         stageOpts.Timeout,
+		Concurrency:     stageOpts.Concurrency,
+		Limit:           stageOpts.Limit,
+		Force:           common.Force,
 		Apply:           true,
 		OpenRouterTitle: "dbrain sync categorize",
 		OnStart: func(total int) {
 			sourceTotal.Store(int64(total))
-			if opts.Logger != nil {
-				opts.Logger.Debug("source categorization candidates loaded",
+			if common.Logger != nil {
+				common.Logger.Debug("source categorization candidates loaded",
 					"processed", 0,
 					"total", total,
 					"remaining", total,
 					"sources", total,
-					"limit", opts.CategorizeLimit,
-					"force", opts.Force,
-					"concurrency", opts.CategorizeConcurrency,
+					"limit", stageOpts.Limit,
+					"force", common.Force,
+					"concurrency", stageOpts.Concurrency,
 				)
 			}
 		},
@@ -116,12 +119,12 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 			if remaining < 0 {
 				remaining = 0
 			}
-			if opts.Logger == nil {
+			if common.Logger == nil {
 				return
 			}
 			if sr.Error != "" {
 				errors := sourceErrors.Add(1)
-				opts.Logger.Debug("source categorization failed",
+				common.Logger.Debug("source categorization failed",
 					"source_key", sr.Source.SourceKey,
 					"source_id", sr.Source.ID,
 					"processed", processed,
@@ -132,7 +135,7 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 				)
 				return
 			}
-			opts.Logger.Debug("source categorized",
+			common.Logger.Debug("source categorized",
 				"source_key", sr.Source.SourceKey,
 				"source_id", sr.Source.ID,
 				"processed", processed,
@@ -155,6 +158,6 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 		ItemStats:   itemStats,
 		SourceStats: sourceStats,
 	}
-	progressf(opts.Progress, "Categorization complete: item_queued=%d item_applied=%d source_queued=%d source_applied=%d succeeded=%d skipped=%d errors=%d (%s)\n", itemStats.Queued, itemStats.Applied, sourceStats.Queued, sourceStats.Applied, categorizeStats.Succeeded, categorizeStats.Skipped, categorizeStats.Errors, stage.Duration)
+	progressf(common.Progress, "Categorization complete: item_queued=%d item_applied=%d source_queued=%d source_applied=%d succeeded=%d skipped=%d errors=%d (%s)\n", itemStats.Queued, itemStats.Applied, sourceStats.Queued, sourceStats.Applied, categorizeStats.Succeeded, categorizeStats.Skipped, categorizeStats.Errors, stage.Duration)
 	return stage, nil
 }

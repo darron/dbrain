@@ -732,8 +732,9 @@ These are deeper and should be staged with focused tests.
      helpers out of `run.go`.
    - Done: move sync flag binding, root-env resolution, option assembly, and
      summary output rendering out of `internal/app/sync.go`.
-   - Group options by stage, for example `XOptions`, `AppleNotesOptions`,
-     `SafariTabsOptions`, `SourceOptions`, `ArchiveOptions`.
+   - Done: `syncjob` now projects flat caller options into grouped internal
+     per-stage options before orchestration, keeping the public flat `Options`
+     shape stable for existing command/test callers.
    - Represent `sync all` as an ordered stage plan with explicit dependencies,
      enabled predicates, run functions, and stats.
    - Keep the current order and bounded follow-up behavior until tests prove a

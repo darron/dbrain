@@ -10,80 +10,81 @@ import (
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
 	opts = normalizeOptions(opts)
+	stages := newStageOptions(opts)
 
 	stats := Stats{StartedAt: time.Now().UTC()}
-	progressf(opts.Progress, "Sync started at %s\n", stats.StartedAt.Format(time.RFC3339))
+	progressf(stages.Common.Progress, "Sync started at %s\n", stats.StartedAt.Format(time.RFC3339))
 
-	if opts.AppleNotesEnabled {
-		stage, err := executeAppleNotesStage(ctx, cfg, st, opts)
+	if stages.AppleNotes.Enabled {
+		stage, err := executeAppleNotesStage(ctx, cfg, st, stages)
 		stats.AppleNotes = stage
 		if err != nil {
 			return finishStats(stats), err
 		}
 	}
 
-	if opts.SafariTabsEnabled {
-		stage, err := executeSafariTabsStage(ctx, cfg, st, opts)
+	if stages.SafariTabs.Enabled {
+		stage, err := executeSafariTabsStage(ctx, cfg, st, stages)
 		stats.SafariTabs = stage
 		if err != nil {
 			return finishStats(stats), err
 		}
 	}
 
-	if err := executeXFrontierStages(ctx, cfg, st, opts, &stats); err != nil {
+	if err := executeXFrontierStages(ctx, cfg, st, stages, &stats); err != nil {
 		return finishStats(stats), err
 	}
 
-	if opts.XMediaEnabled {
-		stage, err := executeXMediaStage(ctx, cfg, st, opts)
+	if stages.XMedia.Enabled {
+		stage, err := executeXMediaStage(ctx, cfg, st, stages)
 		stats.XMedia = stage
 		if err != nil {
 			return finishStats(stats), err
 		}
 	}
 
-	if opts.XPhotoOCREnabled {
-		stage, err := executeXPhotoOCRStage(ctx, cfg, st, opts)
+	if stages.XPhotoOCR.Enabled {
+		stage, err := executeXPhotoOCRStage(ctx, cfg, st, stages)
 		stats.XPhotoOCR = stage
 		if err != nil {
 			return finishStats(stats), err
 		}
 	}
 
-	if opts.GitHubEnabled {
-		stage, err := executeGitHubStage(ctx, cfg, st, opts)
+	if stages.GitHub.Enabled {
+		stage, err := executeGitHubStage(ctx, cfg, st, stages)
 		stats.GitHub = stage
 		if err != nil {
 			return finishStats(stats), err
 		}
 	}
 
-	if opts.YouTubeEnabled {
-		stage, err := executeYouTubeStage(ctx, cfg, st, opts)
+	if stages.YouTube.Enabled {
+		stage, err := executeYouTubeStage(ctx, cfg, st, stages)
 		stats.YouTube = stage
 		if err != nil {
 			return finishStats(stats), err
 		}
 	}
 
-	if opts.SourcesEnabled {
-		stage, err := executeSourcesStage(ctx, cfg, st, opts)
+	if stages.Sources.Enabled {
+		stage, err := executeSourcesStage(ctx, cfg, st, stages)
 		stats.Sources = stage
 		if err != nil {
 			return finishStats(stats), err
 		}
 	}
 
-	if opts.CategorizeEnabled {
-		stage, err := executeCategorizeStage(ctx, cfg, st, opts)
+	if stages.Categorize.Enabled {
+		stage, err := executeCategorizeStage(ctx, cfg, st, stages)
 		if err != nil {
 			return finishStats(stats), err
 		}
 		stats.Categorize = stage
 	}
 
-	if opts.ArchiveMediaEnabled {
-		stage, err := executeMediaArchiveStage(ctx, cfg, st, opts)
+	if stages.Archive.Enabled {
+		stage, err := executeMediaArchiveStage(ctx, cfg, st, stages)
 		stats.MediaArchive = stage
 		if err != nil {
 			return finishStats(stats), err
@@ -91,7 +92,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 
 	stats = finishStats(stats)
-	progressf(opts.Progress, "Sync completed in %s\n", stats.Duration)
+	progressf(stages.Common.Progress, "Sync completed in %s\n", stats.Duration)
 	return stats, nil
 }
 

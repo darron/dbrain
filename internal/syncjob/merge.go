@@ -100,9 +100,9 @@ func mergeCategorizeStats(values ...itemcategorize.Stats) itemcategorize.Stats {
 	return merged
 }
 
-func shouldSettleXFrontier(opts Options) bool {
-	return !opts.Force &&
-		opts.XBookmarksEnabled &&
-		opts.XEnabled &&
-		opts.LinksEnabled
+func shouldSettleXFrontier(opts stageOptions) bool {
+	return !opts.Common.Force &&
+		opts.XBookmarks.Enabled &&
+		opts.X.Enabled &&
+		opts.Links.Enabled
 }
