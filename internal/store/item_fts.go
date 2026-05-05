@@ -59,6 +59,10 @@ func (s *Store) RebuildFTS(ctx context.Context) (RebuildFTSStats, error) {
 			stats.Errors++
 			continue
 		}
+		if err := applyItemEnrichmentMirrorFrom(ctx, tx, &item); err != nil {
+			stats.Errors++
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO items_fts (
 			rowid, source_key, title, text, article_title, article_text, author_handle, author_name, primary_category, primary_domain
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -91,6 +95,9 @@ func (s *Store) syncItemFTSByIDTx(ctx context.Context, tx *sql.Tx, itemID int64)
 	var item model.Item
 	if err := scanItem(row, &item); err != nil {
 		return fmt.Errorf("load item %d for fts sync: %w", itemID, err)
+	}
+	if err := applyItemEnrichmentMirrorFrom(ctx, tx, &item); err != nil {
+		return err
 	}
 	return s.syncFTSTx(ctx, tx, itemID, item)
 }

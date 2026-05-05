@@ -27,6 +27,9 @@ func (s *Store) GetItem(ctx context.Context, lookup string) (model.Item, error) 
 		}
 		return model.Item{}, fmt.Errorf("load item %s: %w", lookup, err)
 	}
+	if err := s.applyItemEnrichmentMirror(ctx, &item); err != nil {
+		return model.Item{}, err
+	}
 
 	media, err := s.ListItemMediaRefs(ctx, item.ID)
 	if err != nil {
@@ -45,6 +48,9 @@ func (s *Store) GetItemByID(ctx context.Context, id int64) (model.Item, error) {
 			return model.Item{}, fmt.Errorf("item not found: %d", id)
 		}
 		return model.Item{}, fmt.Errorf("load item %d: %w", id, err)
+	}
+	if err := s.applyItemEnrichmentMirror(ctx, &item); err != nil {
+		return model.Item{}, err
 	}
 	media, err := s.ListItemMediaRefs(ctx, item.ID)
 	if err != nil {

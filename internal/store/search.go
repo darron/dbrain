@@ -99,12 +99,32 @@ func (s *Store) searchFTS(ctx context.Context, query string, limit int) ([]model
 			i.primary_domain,
 			i.note_path,
 			i.user_tags,
-			substr(trim(replace(COALESCE(NULLIF(i.summary_text, ''), NULLIF(i.ocr_text, ''), NULLIF(i.article_text, ''), i.text), char(10), ' ')), 1, 200) AS snippet
+			substr(trim(replace(COALESCE(
+				NULLIF(summary_enrichment.text, ''),
+				NULLIF(i.summary_text, ''),
+				NULLIF(ocr_enrichment.text, ''),
+				NULLIF(i.ocr_text, ''),
+				NULLIF(transcript_enrichment.text, ''),
+				NULLIF(i.article_text, ''),
+				i.text
+			), char(10), ' ')), 1, 200) AS snippet
 		FROM items_fts f
 		JOIN items i ON i.id = f.rowid
+		LEFT JOIN item_enrichments summary_enrichment
+			ON summary_enrichment.item_id = i.id AND summary_enrichment.role = ?
+		LEFT JOIN item_enrichments ocr_enrichment
+			ON ocr_enrichment.item_id = i.id AND ocr_enrichment.role = ?
+		LEFT JOIN item_enrichments transcript_enrichment
+			ON transcript_enrichment.item_id = i.id AND transcript_enrichment.role = ?
 		WHERE items_fts MATCH ?
 		ORDER BY bm25(items_fts), i.last_seen_at DESC
-		LIMIT ?`, ftsQuery, limit)
+		LIMIT ?`,
+		model.ItemEnrichmentRoleSummary,
+		model.ItemEnrichmentRoleOCR,
+		model.ItemEnrichmentRoleXMediaTranscript,
+		ftsQuery,
+		limit,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("fts search: %w", err)
 	}

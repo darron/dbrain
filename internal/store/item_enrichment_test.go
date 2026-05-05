@@ -198,6 +198,214 @@ func TestItemEnrichmentMirrorPreservesRawRoles(t *testing.T) {
 	assertItemEnrichmentText(t, st, upsert.ItemID, model.ItemEnrichmentRoleXMediaTranscript, "raw transcript text")
 }
 
+func TestGetItemByIDPrefersItemEnrichmentMirror(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Date(2026, 5, 5, 19, 0, 0, 0, time.UTC)
+	upsert, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-enrichment-read-mirror",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-enrichment-read-mirror",
+		CanonicalURL: "https://x.com/test/status/3",
+		Title:        "Read mirror item",
+		ContentHash:  "hash-read-mirror",
+		NotePath:     "items/x/test-enrichment-read-mirror.md",
+		RawJSON:      `{"raw":true}`,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	if _, err := st.SaveItemSummary(ctx, upsert.ItemID, model.SummaryResult{
+		Text:          "mirror summary",
+		RawJSON:       `{"summary":"mirror"}`,
+		Model:         "ollama/mirror",
+		PromptVersion: "prompt-mirror",
+		Status:        model.ItemSummaryStatusOK,
+		FetchedAt:     now,
+		Tool:          "ollama-direct",
+		ToolVersion:   "tool-mirror",
+	}, "summary-mirror-input"); err != nil {
+		t.Fatalf("save item summary: %v", err)
+	}
+	if _, err := st.SaveItemOCR(ctx, upsert.ItemID, model.OCRResult{
+		Text:        "mirror ocr",
+		RawJSON:     `{"ocr":"mirror"}`,
+		Model:       "vision/mirror",
+		Status:      model.ItemOCRStatusOK,
+		FetchedAt:   now,
+		Tool:        "openrouter-vision",
+		ToolVersion: "vision-mirror",
+	}, "ocr-mirror-input"); err != nil {
+		t.Fatalf("save item ocr: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET article_title = ?, article_text = ?
+		WHERE id = ?`,
+		model.XMediaTranscriptArticleTitle,
+		"mirror transcript",
+		upsert.ItemID,
+	); err != nil {
+		t.Fatalf("save transcript text fixture: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(ctx, upsert.ItemID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+		t.Fatalf("save transcript state: %v", err)
+	}
+
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_text = ?,
+			summary_json = ?,
+			summary_status = ?,
+			summary_error = ?,
+			summary_model = ?,
+			summary_prompt_version = ?,
+			summary_tool = ?,
+			summary_tool_version = ?,
+			summary_input_hash = ?,
+			summarized_at = ?,
+			ocr_text = ?,
+			ocr_json = ?,
+			ocr_status = ?,
+			ocr_error = ?,
+			ocr_model = ?,
+			ocr_tool = ?,
+			ocr_tool_version = ?,
+			ocr_input_hash = ?,
+			ocr_at = ?,
+			article_title = ?,
+			article_text = ?,
+			x_media_transcript_status = ?,
+			x_media_transcript_error = ?,
+			x_media_transcript_at = ?
+		WHERE id = ?`,
+		"stale summary",
+		`{"summary":"stale"}`,
+		model.ItemSummaryStatusError,
+		"stale summary error",
+		"ollama/stale",
+		"prompt-stale",
+		"summary-stale-tool",
+		"summary-stale-version",
+		"summary-stale-input",
+		now.Add(-time.Hour).Format(time.RFC3339),
+		"stale ocr",
+		`{"ocr":"stale"}`,
+		model.ItemOCRStatusError,
+		"stale ocr error",
+		"vision/stale",
+		"ocr-stale-tool",
+		"ocr-stale-version",
+		"ocr-stale-input",
+		now.Add(-time.Hour).Format(time.RFC3339),
+		model.XMediaTranscriptArticleTitle,
+		"stale transcript",
+		model.XMediaTranscriptStatusError,
+		"stale transcript error",
+		now.Add(-time.Hour).Format(time.RFC3339),
+		upsert.ItemID,
+	); err != nil {
+		t.Fatalf("stale compatibility columns: %v", err)
+	}
+
+	item, err := st.GetItemByID(ctx, upsert.ItemID)
+	if err != nil {
+		t.Fatalf("get item by id: %v", err)
+	}
+	if item.SummaryText != "mirror summary" || item.SummaryStatus != model.ItemSummaryStatusOK || item.SummaryModel != "ollama/mirror" {
+		t.Fatalf("expected summary mirror values, got text=%q status=%q model=%q", item.SummaryText, item.SummaryStatus, item.SummaryModel)
+	}
+	if item.OCRText != "mirror ocr" || item.OCRStatus != model.ItemOCRStatusOK || item.OCRModel != "vision/mirror" {
+		t.Fatalf("expected OCR mirror values, got text=%q status=%q model=%q", item.OCRText, item.OCRStatus, item.OCRModel)
+	}
+	if item.ArticleTitle != model.XMediaTranscriptArticleTitle || item.ArticleText != "mirror transcript" || item.XMediaTranscriptStatus != model.XMediaTranscriptStatusOK {
+		t.Fatalf("expected transcript mirror values, got title=%q text=%q status=%q", item.ArticleTitle, item.ArticleText, item.XMediaTranscriptStatus)
+	}
+
+	lookupItem, err := st.GetItem(ctx, "x:test-enrichment-read-mirror")
+	if err != nil {
+		t.Fatalf("get item by source key: %v", err)
+	}
+	if lookupItem.SummaryText != "mirror summary" || lookupItem.OCRText != "mirror ocr" || lookupItem.ArticleText != "mirror transcript" {
+		t.Fatalf("expected source-key lookup to use mirror values, got summary=%q ocr=%q transcript=%q", lookupItem.SummaryText, lookupItem.OCRText, lookupItem.ArticleText)
+	}
+}
+
+func TestGetItemByIDFallsBackToCompatibilityColumns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Date(2026, 5, 5, 19, 30, 0, 0, time.UTC)
+	upsert, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:              "x:test-enrichment-read-fallback",
+		SourceType:             "x_bookmark",
+		ExternalID:             "test-enrichment-read-fallback",
+		CanonicalURL:           "https://x.com/test/status/4",
+		Title:                  "Read fallback item",
+		ArticleTitle:           model.XMediaTranscriptArticleTitle,
+		ArticleText:            "column transcript",
+		ContentHash:            "hash-read-fallback",
+		NotePath:               "items/x/test-enrichment-read-fallback.md",
+		RawJSON:                `{"raw":true}`,
+		UpdatedAt:              now,
+		LastSeenAt:             now,
+		SummaryText:            "column summary",
+		SummaryStatus:          model.ItemSummaryStatusOK,
+		SummaryModel:           "ollama/column",
+		SummarizedAt:           now,
+		OCRText:                "column ocr",
+		OCRStatus:              model.ItemOCRStatusOK,
+		OCRModel:               "vision/column",
+		OCRAt:                  now,
+		XMediaTranscriptStatus: model.XMediaTranscriptStatusOK,
+		XMediaTranscriptAt:     now,
+	})
+	if err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET x_media_transcript_status = ?,
+			x_media_transcript_at = ?
+		WHERE id = ?`,
+		model.XMediaTranscriptStatusOK,
+		now.Format(time.RFC3339),
+		upsert.ItemID,
+	); err != nil {
+		t.Fatalf("set transcript compatibility columns: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM item_enrichments WHERE item_id = ?`, upsert.ItemID); err != nil {
+		t.Fatalf("delete mirror rows: %v", err)
+	}
+
+	item, err := st.GetItemByID(ctx, upsert.ItemID)
+	if err != nil {
+		t.Fatalf("get item by id: %v", err)
+	}
+	if item.SummaryText != "column summary" || item.SummaryStatus != model.ItemSummaryStatusOK || item.SummaryModel != "ollama/column" {
+		t.Fatalf("expected summary compatibility values, got text=%q status=%q model=%q", item.SummaryText, item.SummaryStatus, item.SummaryModel)
+	}
+	if item.OCRText != "column ocr" || item.OCRStatus != model.ItemOCRStatusOK || item.OCRModel != "vision/column" {
+		t.Fatalf("expected OCR compatibility values, got text=%q status=%q model=%q", item.OCRText, item.OCRStatus, item.OCRModel)
+	}
+	if item.ArticleTitle != model.XMediaTranscriptArticleTitle || item.ArticleText != "column transcript" || item.XMediaTranscriptStatus != model.XMediaTranscriptStatusOK {
+		t.Fatalf("expected transcript compatibility values, got title=%q text=%q status=%q", item.ArticleTitle, item.ArticleText, item.XMediaTranscriptStatus)
+	}
+}
+
 func assertItemEnrichmentText(t *testing.T, st *Store, itemID int64, role string, want string) {
 	t.Helper()
 

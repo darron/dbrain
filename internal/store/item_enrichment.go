@@ -11,16 +11,90 @@ import (
 	"github.com/darron/dbrain/internal/model"
 )
 
+const itemEnrichmentSelectColumns = `
+	id, item_id, role, status, text, raw_json, error, model, prompt_version,
+	tool, tool_version, input_hash, completed_at, created_at, updated_at`
+
 func (s *Store) GetItemEnrichment(ctx context.Context, itemID int64, role string) (model.ItemEnrichment, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, item_id, role, status, text, raw_json, error, model, prompt_version,
-			tool, tool_version, input_hash, completed_at, created_at, updated_at
+		SELECT `+itemEnrichmentSelectColumns+`
 		FROM item_enrichments
 		WHERE item_id = ? AND role = ?`,
 		itemID,
 		strings.TrimSpace(role),
 	)
 	return scanItemEnrichment(row)
+}
+
+func (s *Store) applyItemEnrichmentMirror(ctx context.Context, item *model.Item) error {
+	return applyItemEnrichmentMirrorFrom(ctx, s.db, item)
+}
+
+type itemEnrichmentQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func applyItemEnrichmentMirrorFrom(ctx context.Context, queryer itemEnrichmentQueryer, item *model.Item) error {
+	if item == nil || item.ID == 0 {
+		return nil
+	}
+	rows, err := queryer.QueryContext(ctx, `
+		SELECT `+itemEnrichmentSelectColumns+`
+		FROM item_enrichments
+		WHERE item_id = ?`,
+		item.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("load item enrichments %d: %w", item.ID, err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		enrichment, err := scanItemEnrichment(rows)
+		if err != nil {
+			return fmt.Errorf("scan item enrichment %d: %w", item.ID, err)
+		}
+		applyItemEnrichmentToItem(item, enrichment)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate item enrichments %d: %w", item.ID, err)
+	}
+	return nil
+}
+
+func applyItemEnrichmentToItem(item *model.Item, enrichment model.ItemEnrichment) {
+	switch strings.TrimSpace(enrichment.Role) {
+	case model.ItemEnrichmentRoleSummary:
+		item.SummaryText = enrichment.Text
+		item.SummaryJSON = enrichment.RawJSON
+		item.SummaryStatus = enrichment.Status
+		item.SummaryError = enrichment.Error
+		item.SummaryModel = enrichment.Model
+		item.SummaryPromptVersion = enrichment.PromptVersion
+		item.SummaryTool = enrichment.Tool
+		item.SummaryToolVersion = enrichment.ToolVersion
+		item.SummaryInputHash = enrichment.InputHash
+		item.SummarizedAt = enrichment.CompletedAt
+	case model.ItemEnrichmentRoleOCR:
+		item.OCRText = enrichment.Text
+		item.OCRJSON = enrichment.RawJSON
+		item.OCRStatus = enrichment.Status
+		item.OCRError = enrichment.Error
+		item.OCRModel = enrichment.Model
+		item.OCRTool = enrichment.Tool
+		item.OCRToolVersion = enrichment.ToolVersion
+		item.OCRInputHash = enrichment.InputHash
+		item.OCRAt = enrichment.CompletedAt
+	case model.ItemEnrichmentRoleXMediaTranscript:
+		item.XMediaTranscriptStatus = enrichment.Status
+		item.XMediaTranscriptError = enrichment.Error
+		item.XMediaTranscriptAt = enrichment.CompletedAt
+		if strings.TrimSpace(enrichment.Text) != "" || strings.TrimSpace(item.ArticleTitle) == model.XMediaTranscriptArticleTitle {
+			item.ArticleTitle = model.XMediaTranscriptArticleTitle
+			item.ArticleText = enrichment.Text
+		}
+	}
 }
 
 func scanItemEnrichment(row interface {

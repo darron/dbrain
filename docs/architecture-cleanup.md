@@ -796,6 +796,12 @@ These are deeper and should be staged with focused tests.
      OCR, and X media transcript roles, backfilled from existing item columns
      and dual-written from current summary/OCR/transcript persistence paths
      while preserving the existing compatibility columns.
+   - Item point lookups now hydrate summary, OCR, and X media transcript fields
+     from `item_enrichments` when mirror rows exist, with the compatibility
+     columns remaining as fallback storage during the transition.
+   - Item FTS rebuilds and targeted item reindexing now hydrate from
+     `item_enrichments` before indexing, and FTS search snippets prefer mirror
+     summary/OCR/transcript text when available.
 
 4. Separate user tags from model/category tags.
 
