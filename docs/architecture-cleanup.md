@@ -823,6 +823,13 @@ These are deeper and should be staged with focused tests.
    - Longer term, consider marking dirty projections in the DB and repairing
      them in a controlled pass.
 
+   Progress:
+   - Added `internal/projection.Renderer` as a synchronous item/source note
+     refresh boundary and routed representative source-enrichment,
+     GitHub-source, media-prune, and X photo OCR refresh paths through it.
+   - Continue moving direct `vault.WriteItem` / `vault.WriteSource` callers
+     behind this boundary as those packages are touched.
+
 6. Consolidate retrieval payload construction.
 
    Evidence:

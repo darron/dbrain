@@ -19,6 +19,8 @@ development date for the change set.
 - **Sync stage option grouping**: `syncjob` now projects the flat command options into grouped per-stage option structs before orchestration, keeping existing CLI/caller behavior while preparing the explicit stage-plan refactor.
 - **Sync stage plan**: `sync all` now runs through an explicit ordered internal stage plan with stage IDs, ordering metadata, enabled predicates, run functions, and plan-order regression tests.
 - **Sync summary alignment**: The `sync all` summary table now right-aligns the Duration column for easier scanning.
+- **Projection renderer boundary**: Added an internal renderer helper for synchronous item/source note refreshes and moved representative source enrichment, GitHub source, media prune, and X photo OCR paths behind it.
+- **Source rate-limit cooldowns**: Source extraction failures with HTTP 429 are now classified as `rate_limited` and stay on the normal retry cooldown instead of being treated as unknown failures that can immediately requeue for a final attempt.
 - **X media transcription stats**: Pipeline stats now classify untranscribed but locally pruned archived X videos as blocked instead of pending, matching the media transcription worker's runnable-media selector.
 - **Sync limits**: `dbrain sync all` now supports separate `--x-media-limit` and `--x-photo-ocr-limit` controls while preserving `--x-limit` as the default fallback.
 - **Research temp files**: Brain research planner and synthesis inputs now use the configured dbrain temp directory instead of the process temp directory.

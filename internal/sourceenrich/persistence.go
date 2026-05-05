@@ -6,20 +6,13 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 func renderSourceNote(ctx context.Context, cfg config.Config, st *store.Store, sourceID int64) error {
-	source, err := st.GetSourceByID(ctx, sourceID)
-	if err != nil {
-		return err
-	}
-	backlinks, err := st.ListBacklinksForSource(ctx, sourceID)
-	if err != nil {
-		return err
-	}
-	return vault.WriteSource(cfg, source, backlinks)
+	_, err := projection.NewRenderer(cfg, st).RefreshSourceByID(ctx, sourceID)
+	return err
 }
 
 func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, extractToolVersion string, summaryToolVersion string) (Stats, error) {

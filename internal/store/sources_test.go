@@ -101,6 +101,68 @@ func TestUpsertSourceQueuesManualSourceForEnrichment(t *testing.T) {
 	}
 }
 
+func TestHTTP429SourceExtractionFailureUsesCooldownWithoutImmediateFinalAttempt(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:rate-limited", "https://archive.is/")
+	failure := model.ExtractResult{
+		Status: model.SourceExtractStatusError,
+		Error:  "run summarize: Failed to fetch HTML document (status 429)",
+		Tool:   "summarize",
+	}
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, failure, ""); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	source, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractFailureKind != model.SourceFailureKindRateLimited {
+		t.Fatalf("expected rate-limited failure kind, got %+v", source)
+	}
+
+	pending, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment recent: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected recent 429 failure to stay on cooldown, got %+v", pending)
+	}
+
+	backlog, err := st.Backlog(ctx, "dbrain-v1", "summarize", "")
+	if err != nil {
+		t.Fatalf("Backlog recent: %v", err)
+	}
+	if backlog.SourceExtractionPending != 0 {
+		t.Fatalf("expected recent 429 failure to be absent from extraction backlog, got %+v", backlog)
+	}
+
+	oldFailure := time.Now().UTC().Add(-13 * time.Hour).Format(time.RFC3339)
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET extract_failure_count = 4,
+			extract_first_failed_at = ?,
+			extract_last_failed_at = ?
+		WHERE id = ?`,
+		oldFailure,
+		oldFailure,
+		sourceID,
+	); err != nil {
+		t.Fatalf("age rate-limited source: %v", err)
+	}
+
+	pending, err = st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment old: %v", err)
+	}
+	if got, want := sourceKeys(pending), []string{"src:rate-limited"}; !sameStringSet(got, want) {
+		t.Fatalf("expected old 429 failure to retry after cooldown, got %v", got)
+	}
+}
+
 func TestListItemsForLinkDiscoveryIncludesAppleNotes(t *testing.T) {
 	t.Parallel()
 

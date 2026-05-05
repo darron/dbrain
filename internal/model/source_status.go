@@ -18,6 +18,7 @@ const (
 const (
 	SourceFailureKindUnknown          = "unknown"
 	SourceFailureKindFetchFailed      = "fetch_failed"
+	SourceFailureKindRateLimited      = "rate_limited"
 	SourceFailureKindHTTP5xx          = "http_5xx"
 	SourceFailureKindTLSCertificate   = "tls_certificate"
 	SourceFailureKindCloudflareEdge   = "cloudflare_edge"

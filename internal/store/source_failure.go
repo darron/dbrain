@@ -69,6 +69,10 @@ func classifyStoredExtractFailureKind(status string, errorText string) string {
 		return model.SourceFailureKindTimeout
 	case strings.Contains(value, "fetch failed"):
 		return model.SourceFailureKindFetchFailed
+	case strings.Contains(value, "status 429"),
+		strings.Contains(value, "429 too many requests"),
+		strings.Contains(value, "too many requests"):
+		return model.SourceFailureKindRateLimited
 	case strings.Contains(value, "unable to connect"),
 		strings.Contains(value, "connection refused"),
 		strings.Contains(value, "network is unreachable"),

@@ -71,6 +71,10 @@ func classifyExtractFailureKind(errorText string) string {
 		return model.SourceFailureKindTimeout
 	case strings.Contains(value, "fetch failed"):
 		return model.SourceFailureKindFetchFailed
+	case strings.Contains(value, "status 429"),
+		strings.Contains(value, "429 too many requests"),
+		strings.Contains(value, "too many requests"):
+		return model.SourceFailureKindRateLimited
 	case strings.Contains(value, "unable to connect"),
 		strings.Contains(value, "connection refused"),
 		strings.Contains(value, "network is unreachable"),
@@ -103,6 +107,8 @@ func deadThresholdForFailureKind(kind string) int {
 		return 3
 	case model.SourceFailureKindFetchFailed:
 		return 5
+	case model.SourceFailureKindRateLimited:
+		return 0
 	case model.SourceFailureKindHTTP5xx:
 		return 5
 	default:
@@ -147,6 +153,8 @@ func failureKindLabel(kind string) string {
 		return "timeout"
 	case model.SourceFailureKindFetchFailed:
 		return "fetch"
+	case model.SourceFailureKindRateLimited:
+		return "rate limited"
 	case model.SourceFailureKindHTTP5xx:
 		return "http 5xx"
 	case "", model.SourceFailureKindUnknown:

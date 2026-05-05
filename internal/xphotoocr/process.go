@@ -9,8 +9,8 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opts Options, item model.Item) ocrItemOutcome {
@@ -120,18 +120,13 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 		return outcome
 	}
 
-	refreshed, err := st.GetItem(ctx, item.SourceKey)
+	refreshed, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey)
 	if err != nil {
 		if isContextCanceled(err) || ctx.Err() != nil {
 			return outcome
 		}
 		outcome.errors++
 		debugLog(opts.Logger, "x photo ocr refresh failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
-		return outcome
-	}
-	if err := vault.WriteItem(cfg, refreshed); err != nil {
-		outcome.errors++
-		debugLog(opts.Logger, "x photo ocr note write failed", "source_key", item.SourceKey, "item_id", item.ID, "error", err.Error())
 		return outcome
 	}
 	outcome.itemsUpdated++

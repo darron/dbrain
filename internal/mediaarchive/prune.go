@@ -12,8 +12,8 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/vault"
 )
 
 func pruneLocalPathIfSafe(ctx context.Context, cfg config.Config, st *store.Store, localPath string, logger *slog.Logger) (bool, int64, error) {
@@ -48,16 +48,14 @@ func refreshNotesForLocalPath(ctx context.Context, cfg config.Config, st *store.
 	if err != nil {
 		return err
 	}
+	renderer := projection.NewRenderer(cfg, st)
 	for _, sourceKey := range sourceKeys {
-		item, err := st.GetItem(ctx, sourceKey)
+		item, err := renderer.RefreshItem(ctx, sourceKey)
 		if err != nil {
-			return fmt.Errorf("load item %s for media note refresh: %w", sourceKey, err)
+			return fmt.Errorf("refresh item note %s for media prune: %w", sourceKey, err)
 		}
 		if item.NotePath == "" {
 			continue
-		}
-		if err := vault.WriteItem(cfg, item); err != nil {
-			return fmt.Errorf("write note %s for media note refresh: %w", item.NotePath, err)
 		}
 		debugLog(logger, "media prune note refreshed", "source_key", sourceKey, "note_path", item.NotePath, "local_path", localPath)
 	}

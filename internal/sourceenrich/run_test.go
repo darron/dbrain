@@ -265,6 +265,23 @@ func TestClassifyTerminalExtractErrorKeepsEarlyConnectivityFailuresRetryable(t *
 	}
 }
 
+func TestClassifyTerminalExtractErrorKeepsRateLimitedFailuresRetryable(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		ExtractStatus:       model.SourceExtractStatusError,
+		ExtractFailureKind:  model.SourceFailureKindRateLimited,
+		ExtractFailureCount: 10,
+	}
+
+	if got := classifyExtractFailureKind("run summarize: Failed to fetch HTML document (status 429)"); got != model.SourceFailureKindRateLimited {
+		t.Fatalf("expected rate limited failure kind, got %q", got)
+	}
+	if status, errorText, terminal := classifyTerminalExtractError(source, errors.New("run summarize: Failed to fetch HTML document (status 429)")); terminal {
+		t.Fatalf("expected rate-limited failures to stay retryable, got status=%q error=%q", status, errorText)
+	}
+}
+
 func TestClassifyTerminalExtractErrorMarksRepeatedAccessDeniedDead(t *testing.T) {
 	t.Parallel()
 

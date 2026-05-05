@@ -7,6 +7,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
@@ -52,16 +53,9 @@ func summarizeHomepageSources(ctx context.Context, cfg config.Config, st *store.
 
 func renderSourceNotes(ctx context.Context, cfg config.Config, st *store.Store, sourceIDs []int64) (int, error) {
 	rendered := 0
+	renderer := projection.NewRenderer(cfg, st)
 	for _, sourceID := range uniqueSorted(sourceIDs) {
-		source, err := st.GetSourceByID(ctx, sourceID)
-		if err != nil {
-			return rendered, err
-		}
-		backlinks, err := st.ListBacklinksForSource(ctx, sourceID)
-		if err != nil {
-			return rendered, err
-		}
-		if err := vault.WriteSource(cfg, source, backlinks); err != nil {
+		if _, err := renderer.RefreshSourceByID(ctx, sourceID); err != nil {
 			return rendered, err
 		}
 		rendered++
