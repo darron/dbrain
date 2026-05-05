@@ -17,6 +17,8 @@ development date for the change set.
 - **Media status constants**: Media download/archive status values now use shared model constants across download policy, archive/prune selectors, pipeline stats, and note rendering while preserving the existing SQLite values.
 - **Source enrichment fallback guardrails**: Added process-order regression tests for stored-extract-before-reader and terminal-preflight-before-reader fallback behavior, and bundled per-source process inputs to reduce fallback-flow argument sprawl.
 - **Sync stage option grouping**: `syncjob` now projects the flat command options into grouped per-stage option structs before orchestration, keeping existing CLI/caller behavior while preparing the explicit stage-plan refactor.
+- **Sync stage plan**: `sync all` now runs through an explicit ordered internal stage plan with stage IDs, ordering metadata, enabled predicates, run functions, and plan-order regression tests.
+- **Sync summary alignment**: The `sync all` summary table now right-aligns the Duration column for easier scanning.
 - **X media transcription stats**: Pipeline stats now classify untranscribed but locally pruned archived X videos as blocked instead of pending, matching the media transcription worker's runnable-media selector.
 - **Sync limits**: `dbrain sync all` now supports separate `--x-media-limit` and `--x-photo-ocr-limit` controls while preserving `--x-limit` as the default fallback.
 - **Research temp files**: Brain research planner and synthesis inputs now use the configured dbrain temp directory instead of the process temp directory.

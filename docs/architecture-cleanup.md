@@ -735,8 +735,9 @@ These are deeper and should be staged with focused tests.
    - Done: `syncjob` now projects flat caller options into grouped internal
      per-stage options before orchestration, keeping the public flat `Options`
      shape stable for existing command/test callers.
-   - Represent `sync all` as an ordered stage plan with explicit dependencies,
-     enabled predicates, run functions, and stats.
+   - Done: represent `sync all` as an ordered internal stage plan with stage IDs,
+     ordering metadata, enabled predicates, run functions, stats writes, and
+     plan-order regression tests.
    - Keep the current order and bounded follow-up behavior until tests prove a
      safer refactor.
 
@@ -918,8 +919,8 @@ These are smaller findings that deserve targeted review:
      helpers while preserving current command behavior.
    - Done: split sync flag binding, root-env resolution, option assembly, and
      summary output rendering out of the `sync all` CLI command body.
-   - Remaining: group `syncjob.Options` by stage and introduce an explicit
-     stage plan.
+   - Done: group `syncjob.Options` by stage internally and introduce an explicit
+     ordered stage plan.
 
 4. Replace ad hoc schema setup with versioned migrations.
 

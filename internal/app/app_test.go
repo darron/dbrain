@@ -1674,6 +1674,34 @@ func TestFormatSyncDurationUsesTwoDecimalSeconds(t *testing.T) {
 	}
 }
 
+func TestWriteSyncStatsRightAlignsDurationColumn(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:   time.Date(2026, time.May, 5, 16, 0, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, time.May, 5, 16, 2, 40, 0, time.UTC),
+		Duration:    160 * time.Second,
+		Links: &syncjob.LinksStage{
+			Duration: 70 * time.Millisecond,
+		},
+		MediaArchive: &syncjob.MediaArchiveStage{
+			Duration: 160 * time.Second,
+		},
+	}
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	if !strings.Contains(output, "│ Links         │    0.07s │") {
+		t.Fatalf("expected short duration to be right aligned, got %q", output)
+	}
+	if !strings.Contains(output, "│ Media Archive │  160.00s │") {
+		t.Fatalf("expected long duration to define right edge, got %q", output)
+	}
+}
+
 func TestSyncSummaryRowsSeparateBlockedMediaFromErrors(t *testing.T) {
 	t.Parallel()
 

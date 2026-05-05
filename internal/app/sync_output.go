@@ -33,6 +33,9 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 		Rows(rows...).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			base := lipgloss.NewStyle().Padding(0, 1)
+			if col == 1 {
+				base = base.Align(lipgloss.Right)
+			}
 			if row == table.HeaderRow {
 				return base.Bold(true).Foreground(lipgloss.Color("39"))
 			}
