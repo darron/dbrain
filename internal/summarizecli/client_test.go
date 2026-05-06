@@ -608,7 +608,10 @@ summary:
 	t.Setenv("DBRAIN_OUTPUT_LANGUAGE", "")
 	t.Setenv("SUMMARIZE_LANGUAGE", "")
 
-	env := envWithRuntimeConfig(root, nil)
+	env, err := envWithRuntimeConfig(context.Background(), root, nil, "ollama/qwen")
+	if err != nil {
+		t.Fatalf("envWithRuntimeConfig: %v", err)
+	}
 	if got := env["DBRAIN_OLLAMA_BASE_URL"]; got != "http://10.0.0.6:11434" {
 		t.Fatalf("expected Ollama base URL from config, got %q", got)
 	}
@@ -618,17 +621,27 @@ summary:
 	if got := env["OPENAI_BASE_URL"]; got != "https://openai-compatible.example/v1" {
 		t.Fatalf("expected OpenAI base URL from config, got %q", got)
 	}
-	if got := env["OPENAI_API_KEY"]; got != "hosted-key" {
-		t.Fatalf("expected OpenAI API key from config, got %q", got)
-	}
 	if got := env["OPENAI_USE_CHAT_COMPLETIONS"]; got != "true" {
 		t.Fatalf("expected OpenAI chat-completions flag from config, got %q", got)
+	}
+	if got := env["DBRAIN_SUMMARY_LANGUAGE"]; got != "English" {
+		t.Fatalf("expected summary language from config, got %q", got)
+	}
+
+	env, err = envWithRuntimeConfig(context.Background(), root, nil, "openrouter/qwen/qwen3.5-27b")
+	if err != nil {
+		t.Fatalf("envWithRuntimeConfig openrouter: %v", err)
 	}
 	if got := env["DBRAIN_OPENROUTER_API_KEY"]; got != "router-key" {
 		t.Fatalf("expected OpenRouter API key from config, got %q", got)
 	}
-	if got := env["DBRAIN_SUMMARY_LANGUAGE"]; got != "English" {
-		t.Fatalf("expected summary language from config, got %q", got)
+
+	env, err = envWithRuntimeConfig(context.Background(), root, nil, "openai/gpt-test")
+	if err != nil {
+		t.Fatalf("envWithRuntimeConfig openai: %v", err)
+	}
+	if got := env["OPENAI_API_KEY"]; got != "hosted-key" {
+		t.Fatalf("expected OpenAI API key from config, got %q", got)
 	}
 }
 

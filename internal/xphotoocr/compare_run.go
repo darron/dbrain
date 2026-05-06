@@ -33,7 +33,14 @@ func runComparePhoto(ctx context.Context, cfg config.Config, opts CompareOptions
 			continue
 		}
 		runStart := time.Now()
-		block, err := ocrPhotoWithModel(ctx, absolutePath, ref, compareClientOptions(cfg, opts, modelName))
+		clientOpts, err := compareClientOptions(ctx, cfg, opts, modelName)
+		if err != nil {
+			run.DurationMS = time.Since(runStart).Milliseconds()
+			run.Error = err.Error()
+			runs = append(runs, run)
+			continue
+		}
+		block, err := ocrPhotoWithModel(ctx, absolutePath, ref, clientOpts)
 		run.DurationMS = time.Since(runStart).Milliseconds()
 		if err != nil {
 			run.Error = err.Error()
@@ -52,8 +59,8 @@ func runComparePhoto(ctx context.Context, cfg config.Config, opts CompareOptions
 	return runs, absolutePath, inputSource
 }
 
-func compareClientOptions(cfg config.Config, opts CompareOptions, modelName string) Options {
-	return resolveOptions(cfg, Options{
+func compareClientOptions(ctx context.Context, cfg config.Config, opts CompareOptions, modelName string) (Options, error) {
+	return resolveOptions(ctx, cfg, Options{
 		Model:           modelName,
 		Timeout:         opts.Timeout,
 		TesseractBinary: opts.TesseractBinary,

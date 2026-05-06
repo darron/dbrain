@@ -12,7 +12,9 @@ import (
 
 // Batch categorizes multiple items (those without user_tags unless force is set).
 func Batch(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, []ItemResult, error) {
-	resolveOpts(cfg, &opts)
+	if err := resolveOpts(ctx, cfg, &opts); err != nil {
+		return Stats{}, nil, err
+	}
 
 	items, err := st.ListItemsForCategorize(ctx, opts.Limit, opts.Force)
 	if err != nil {
@@ -94,7 +96,9 @@ dispatch:
 
 // BatchSources categorizes multiple sources (those without user_tags unless force is set).
 func BatchSources(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, []SourceResult, error) {
-	resolveOpts(cfg, &opts)
+	if err := resolveOpts(ctx, cfg, &opts); err != nil {
+		return Stats{}, nil, err
+	}
 
 	sources, err := st.ListSourcesForCategorize(ctx, opts.Limit, opts.Force)
 	if err != nil {

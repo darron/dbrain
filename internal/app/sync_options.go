@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"time"
@@ -80,7 +81,25 @@ type syncAllFlags struct {
 	jsonOut                      bool
 }
 
-func syncOptionsFromFlags(cfg config.Config, flags syncAllFlags, logger *slog.Logger, progress io.Writer) syncjob.Options {
+func syncOptionsFromFlags(ctx context.Context, cfg config.Config, flags syncAllFlags, logger *slog.Logger, progress io.Writer) (syncjob.Options, error) {
+	var archiveAccessKeyID string
+	var archiveSecretKey string
+	var archiveSessionToken string
+	if flags.archiveMedia {
+		var err error
+		archiveAccessKeyID, err = firstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+		if err != nil {
+			return syncjob.Options{}, err
+		}
+		archiveSecretKey, err = firstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+		if err != nil {
+			return syncjob.Options{}, err
+		}
+		archiveSessionToken, err = firstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN")
+		if err != nil {
+			return syncjob.Options{}, err
+		}
+	}
 	return syncjob.Options{
 		XBookmarksEnabled:            !flags.skipXBookmarks,
 		XBookmarksLimit:              flags.xBookmarksLimit,
@@ -139,9 +158,9 @@ func syncOptionsFromFlags(cfg config.Config, flags syncAllFlags, logger *slog.Lo
 		ArchivePublicBaseURL:         firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_PUBLIC_BASE_URL", "DBRAIN_MEDIA_PUBLIC_BASE_URL"),
 		ArchiveEndpoint:              firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"),
 		ArchiveRegion:                firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"),
-		ArchiveAccessKeyID:           firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
-		ArchiveSecretKey:             firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
-		ArchiveSessionToken:          firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
+		ArchiveAccessKeyID:           archiveAccessKeyID,
+		ArchiveSecretKey:             archiveSecretKey,
+		ArchiveSessionToken:          archiveSessionToken,
 		CategorizeEnabled:            !flags.skipCategorize,
 		CategorizeLimit:              flags.categorizeLimit,
 		CategorizeConcurrency:        flags.categorizeConcurrency,
@@ -153,5 +172,5 @@ func syncOptionsFromFlags(cfg config.Config, flags syncAllFlags, logger *slog.Lo
 		Timeout:                      flags.timeout,
 		Logger:                       logger,
 		Progress:                     progress,
-	}
+	}, nil
 }

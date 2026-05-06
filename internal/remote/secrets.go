@@ -3,12 +3,11 @@ package remote
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/zalando/go-keyring"
+	"github.com/darron/dbrain/internal/runtimeenv"
 )
 
 const SecretCommandTimeout = 10 * time.Second
@@ -26,7 +25,7 @@ func ResolveAuthKey(ctx context.Context, opts Options) (SecretResult, error) {
 		return SecretResult{Value: strings.TrimSpace(opts.AuthKey), Source: "auth_key", Warnings: warnings}, nil
 	}
 	if strings.TrimSpace(opts.AuthKeyRef) != "" {
-		value, err := resolveSecretRef(ctx, opts.AuthKeyRef)
+		value, err := runtimeenv.ResolveSecretRef(ctx, opts.AuthKeyRef)
 		if err != nil {
 			return SecretResult{}, err
 		}
@@ -68,49 +67,6 @@ func ignoredSourceWarnings(sources []string) []string {
 		warnings = append(warnings, fmt.Sprintf("ignoring lower-precedence tsnet auth source %s", source))
 	}
 	return warnings
-}
-
-func resolveSecretRef(ctx context.Context, ref string) (string, error) {
-	ref = strings.TrimSpace(ref)
-	switch {
-	case strings.HasPrefix(ref, "env:"):
-		key := strings.TrimSpace(strings.TrimPrefix(ref, "env:"))
-		if key == "" {
-			return "", fmt.Errorf("env secret ref missing variable name")
-		}
-		value := strings.TrimSpace(os.Getenv(key))
-		if value == "" {
-			return "", fmt.Errorf("env secret ref %s is empty", key)
-		}
-		return value, nil
-	case strings.HasPrefix(ref, "op://"):
-		return runSecretCommand(ctx, []string{"op", "read", ref})
-	case strings.HasPrefix(ref, "keychain://"):
-		service, account, err := parseKeychainRef(ref)
-		if err != nil {
-			return "", err
-		}
-		value, err := keyring.Get(service, account)
-		if err != nil {
-			return "", fmt.Errorf("read keychain secret %s/%s: %w", service, account, err)
-		}
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return "", fmt.Errorf("keychain secret %s/%s is empty", service, account)
-		}
-		return value, nil
-	default:
-		return "", fmt.Errorf("unsupported secret ref %q (supported: env:, op://, keychain://)", ref)
-	}
-}
-
-func parseKeychainRef(ref string) (string, string, error) {
-	value := strings.TrimPrefix(strings.TrimSpace(ref), "keychain://")
-	parts := strings.SplitN(value, "/", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-		return "", "", fmt.Errorf("keychain ref must be keychain://service/account")
-	}
-	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
 
 func runSecretCommand(ctx context.Context, argv []string) (string, error) {

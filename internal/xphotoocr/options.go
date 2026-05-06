@@ -1,6 +1,7 @@
 package xphotoocr
 
 import (
+	"context"
 	"strings"
 
 	"github.com/darron/dbrain/internal/config"
@@ -55,7 +56,7 @@ func ResolveModel(cfg config.Config, model string) string {
 	return firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OCR_MODEL", "DBRAIN_X_PHOTO_OCR_MODEL"), defaultOCRModel)
 }
 
-func resolveOptions(cfg config.Config, opts Options) Options {
+func resolveOptions(ctx context.Context, cfg config.Config, opts Options) (Options, error) {
 	if strings.TrimSpace(opts.Model) == "" {
 		opts.Model = ResolveModel(cfg, "")
 	}
@@ -65,8 +66,12 @@ func resolveOptions(cfg config.Config, opts Options) Options {
 	if strings.TrimSpace(opts.OpenRouterBase) == "" {
 		opts.OpenRouterBase = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"), defaultOpenRouterBaseURL)
 	}
-	if strings.TrimSpace(opts.OpenRouterKey) == "" {
-		opts.OpenRouterKey = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
+	if _, ok := parseOpenRouterModel(opts.Model); ok && strings.TrimSpace(opts.OpenRouterKey) == "" {
+		value, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
+		if err != nil {
+			return Options{}, err
+		}
+		opts.OpenRouterKey = value
 	}
 	if strings.TrimSpace(opts.OpenRouterTitle) == "" {
 		opts.OpenRouterTitle = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE"), "dbrain X photo OCR")
@@ -80,10 +85,14 @@ func resolveOptions(cfg config.Config, opts Options) Options {
 	if strings.TrimSpace(opts.OllamaBase) == "" {
 		opts.OllamaBase = ollamaBaseURL(cfg.RootDir)
 	}
-	if strings.TrimSpace(opts.OllamaKey) == "" {
-		opts.OllamaKey = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY"), defaultOllamaAPIKey)
+	if _, ok := parseOllamaModel(opts.Model); ok && strings.TrimSpace(opts.OllamaKey) == "" {
+		value, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY")
+		if err != nil {
+			return Options{}, err
+		}
+		opts.OllamaKey = firstNonEmpty(value, defaultOllamaAPIKey)
 	}
-	return opts
+	return opts, nil
 }
 
 func ollamaBaseURL(rootDir string) string {

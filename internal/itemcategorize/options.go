@@ -1,6 +1,7 @@
 package itemcategorize
 
 import (
+	"context"
 	"strings"
 
 	"github.com/darron/dbrain/internal/categoryvocab"
@@ -8,7 +9,7 @@ import (
 	"github.com/darron/dbrain/internal/runtimeenv"
 )
 
-func resolveOpts(cfg config.Config, opts *Options) {
+func resolveOpts(ctx context.Context, cfg config.Config, opts *Options) error {
 	if opts.Vocab.Empty() {
 		vocab, _ := categoryvocab.Load(cfg.CategoriesPath)
 		opts.Vocab = vocab
@@ -25,8 +26,12 @@ func resolveOpts(cfg config.Config, opts *Options) {
 	if strings.TrimSpace(opts.OpenRouterBase) == "" {
 		opts.OpenRouterBase = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"), defaultOpenRouterBase)
 	}
-	if strings.TrimSpace(opts.OpenRouterKey) == "" {
-		opts.OpenRouterKey = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
+	if _, ok := parseOpenRouterModel(opts.Model); ok && strings.TrimSpace(opts.OpenRouterKey) == "" {
+		value, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
+		if err != nil {
+			return err
+		}
+		opts.OpenRouterKey = value
 	}
 	if strings.TrimSpace(opts.OpenRouterRef) == "" {
 		opts.OpenRouterRef = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER"), "https://local.dbrain")
@@ -40,19 +45,32 @@ func resolveOpts(cfg config.Config, opts *Options) {
 	if strings.TrimSpace(opts.OllamaBase) == "" {
 		opts.OllamaBase = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OLLAMA_BASE_URL", "OLLAMA_BASE_URL", "OLLAMA_HOST"), defaultOllamaBase)
 	}
-	if strings.TrimSpace(opts.OllamaKey) == "" {
-		opts.OllamaKey = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY"), defaultOllamaKey)
+	if _, ok := parseOllamaModel(opts.Model); ok && strings.TrimSpace(opts.OllamaKey) == "" {
+		value, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY")
+		if err != nil {
+			return err
+		}
+		opts.OllamaKey = firstNonEmpty(value, defaultOllamaKey)
 	}
 	if strings.TrimSpace(opts.S3Endpoint) == "" {
 		opts.S3Endpoint = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT")
 	}
-	if strings.TrimSpace(opts.S3AccessKey) == "" {
-		opts.S3AccessKey = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+	if opts.IncludeImages && strings.TrimSpace(opts.S3AccessKey) == "" {
+		value, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+		if err != nil {
+			return err
+		}
+		opts.S3AccessKey = value
 	}
-	if strings.TrimSpace(opts.S3SecretKey) == "" {
-		opts.S3SecretKey = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+	if opts.IncludeImages && strings.TrimSpace(opts.S3SecretKey) == "" {
+		value, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+		if err != nil {
+			return err
+		}
+		opts.S3SecretKey = value
 	}
 	if strings.TrimSpace(opts.S3Region) == "" {
 		opts.S3Region = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"), "auto")
 	}
+	return nil
 }

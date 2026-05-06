@@ -11,7 +11,9 @@ import (
 
 // Run categorizes a single item and optionally saves the result.
 func Run(ctx context.Context, cfg config.Config, st *store.Store, item model.Item, opts Options) (Result, error) {
-	resolveOpts(cfg, &opts)
+	if err := resolveOpts(ctx, cfg, &opts); err != nil {
+		return Result{}, err
+	}
 
 	refs, _ := st.ListItemMediaRefs(ctx, item.ID)
 
@@ -36,7 +38,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, item model.Ite
 
 // RunSource categorizes a single source and optionally saves the result.
 func RunSource(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, opts Options) (Result, error) {
-	resolveOpts(cfg, &opts)
+	if err := resolveOpts(ctx, cfg, &opts); err != nil {
+		return Result{}, err
+	}
 
 	result, err := callLLM(ctx, buildSourceContentBundle(source), nil, opts)
 	if err != nil {

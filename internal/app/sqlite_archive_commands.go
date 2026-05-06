@@ -21,7 +21,7 @@ func newSQLiteArchiveCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			store, prefix, err := buildSQLiteArchiveStore(cfg.RootDir, opts)
+			store, prefix, err := buildSQLiteArchiveStore(cmd.Context(), cfg.RootDir, opts)
 			if err != nil {
 				return err
 			}
@@ -68,7 +68,7 @@ func newSQLiteRestoreCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			store, prefix, err := buildSQLiteArchiveStore(cfg.RootDir, opts)
+			store, prefix, err := buildSQLiteArchiveStore(cmd.Context(), cfg.RootDir, opts)
 			if err != nil {
 				return err
 			}

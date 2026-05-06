@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -32,7 +33,7 @@ func addSQLiteArchiveFlags(cmd *cobra.Command, opts *sqliteArchiveFlags) {
 	cmd.Flags().StringVar(&opts.sessionToken, "session-token", "", "Optional S3-compatible session token (defaults to DBRAIN_R2_SESSION_TOKEN/DBRAIN_S3_SESSION_TOKEN/AWS_SESSION_TOKEN)")
 }
 
-func buildSQLiteArchiveStore(rootDir string, opts sqliteArchiveFlags) (*sqlitearchive.S3Store, string, error) {
+func buildSQLiteArchiveStore(ctx context.Context, rootDir string, opts sqliteArchiveFlags) (*sqlitearchive.S3Store, string, error) {
 	bucket := strings.TrimSpace(opts.bucket)
 	if bucket == "" {
 		bucket = firstNonEmptyEnv(rootDir, "DBRAIN_R2_BUCKET", "DBRAIN_ARCHIVE_BUCKET", "DBRAIN_S3_BUCKET")
@@ -47,15 +48,27 @@ func buildSQLiteArchiveStore(rootDir string, opts sqliteArchiveFlags) (*sqlitear
 	}
 	accessKeyID := strings.TrimSpace(opts.accessKeyID)
 	if accessKeyID == "" {
-		accessKeyID = firstNonEmptyEnv(rootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+		value, err := firstNonEmptySecret(ctx, rootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+		if err != nil {
+			return nil, "", err
+		}
+		accessKeyID = value
 	}
 	secretAccessKey := strings.TrimSpace(opts.secretAccessKey)
 	if secretAccessKey == "" {
-		secretAccessKey = firstNonEmptyEnv(rootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+		value, err := firstNonEmptySecret(ctx, rootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+		if err != nil {
+			return nil, "", err
+		}
+		secretAccessKey = value
 	}
 	sessionToken := strings.TrimSpace(opts.sessionToken)
 	if sessionToken == "" {
-		sessionToken = firstNonEmptyEnv(rootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN")
+		value, err := firstNonEmptySecret(ctx, rootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN")
+		if err != nil {
+			return nil, "", err
+		}
+		sessionToken = value
 	}
 
 	store, err := sqlitearchive.NewS3Store(sqlitearchive.S3Options{
