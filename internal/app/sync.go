@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/darron/dbrain/internal/startuplog"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 )
@@ -36,14 +37,6 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 
-			st, err := store.Open(cfg.DBPath)
-			if err != nil {
-				return err
-			}
-			defer func() {
-				_ = st.Close()
-			}()
-
 			progress := cmd.ErrOrStderr()
 			logWriter := cmd.ErrOrStderr()
 			var syncUI *syncProgressUI
@@ -53,6 +46,17 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				progress = syncUI
 				logWriter = syncUI.LogWriter()
 			}
+
+			startuplog.WriteVersion(progress)
+			st, err := store.OpenWithOptions(cfg.DBPath, store.OpenOptions{
+				MigrationReporter: startuplog.MigrationReporter(progress),
+			})
+			if err != nil {
+				return err
+			}
+			defer func() {
+				_ = st.Close()
+			}()
 
 			options := syncOptionsFromFlags(cfg, resolvedFlags, newLogger(commandDebugEnabled(cmd), logWriter), progress)
 			stats, err := runSyncAll(cmd.Context(), cfg, st, options)

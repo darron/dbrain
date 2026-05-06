@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/startuplog"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn/ipnstate"
 )
@@ -63,6 +64,7 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	if err := opts.Validate(); err != nil {
 		return err
 	}
+	startuplog.WriteVersion(logOut)
 
 	stateDir, err := deps.prepareStateDir(opts.StateDir)
 	if err != nil {

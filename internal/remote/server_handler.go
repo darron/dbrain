@@ -6,6 +6,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mcpserver"
+	"github.com/darron/dbrain/internal/startuplog"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/web"
 )
@@ -20,7 +21,9 @@ func buildHandler(cfg config.Config, opts Options, lc whoIsClient, logOut io.Wri
 
 	var webHandler http.Handler
 	if opts.Web {
-		st, err := store.Open(cfg.DBPath)
+		st, err := store.OpenWithOptions(cfg.DBPath, store.OpenOptions{
+			MigrationReporter: startuplog.MigrationReporter(logOut),
+		})
 		if err != nil {
 			cleanup()
 			return nil, nil, err

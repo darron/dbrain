@@ -5,6 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/darron/dbrain/internal/startuplog"
+	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/web"
 )
 
@@ -20,8 +22,13 @@ func newServeWebCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			startuplog.WriteVersion(cmd.ErrOrStderr())
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Web UI: http://%s\n", addr)
-			return web.Serve(cmd.Context(), cfg, addr)
+			return web.ServeWithOptions(cmd.Context(), cfg, addr, web.ServeOptions{
+				StoreOpenOptions: store.OpenOptions{
+					MigrationReporter: startuplog.MigrationReporter(cmd.ErrOrStderr()),
+				},
+			})
 		},
 	}
 

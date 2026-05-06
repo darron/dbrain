@@ -214,10 +214,14 @@ func TestServeWithDepsUsesStartupTimeoutAndUnwinds(t *testing.T) {
 	opts := testServeOptions(t)
 	opts.StartupTimeout = 25 * time.Millisecond
 	start := time.Now()
+	var out bytes.Buffer
 
-	err := serveWithDeps(context.Background(), config.Config{}, opts, &bytes.Buffer{}, testRemoteDeps(node, &events))
+	err := serveWithDeps(context.Background(), config.Config{}, opts, &out, testRemoteDeps(node, &events))
 	if err == nil || !strings.Contains(err.Error(), "start tsnet") {
 		t.Fatalf("expected start tsnet error, got %v", err)
+	}
+	if !strings.Contains(out.String(), "dbrain version:") {
+		t.Fatalf("expected startup version in serve output, got %q", out.String())
 	}
 	if !node.upDeadlineSet {
 		t.Fatalf("expected Up context to have a deadline")

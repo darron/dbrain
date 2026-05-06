@@ -15,7 +15,40 @@ type Store struct {
 	hasFTS bool
 }
 
+// OpenOptions configures writable store startup behavior.
+type OpenOptions struct {
+	MigrationReporter MigrationReporter
+}
+
+// MigrationReporter receives migration lifecycle events during writable startup.
+type MigrationReporter func(MigrationEvent)
+
+// MigrationPhase identifies the lifecycle state for a migration event.
+type MigrationPhase string
+
+const (
+	// MigrationStarted is emitted before a missing migration starts running.
+	MigrationStarted MigrationPhase = "started"
+	// MigrationApplied is emitted after a missing migration has been applied and recorded.
+	MigrationApplied MigrationPhase = "applied"
+	// MigrationFailed is emitted when a missing migration or its metadata write fails.
+	MigrationFailed MigrationPhase = "failed"
+)
+
+// MigrationEvent describes one schema migration lifecycle event.
+type MigrationEvent struct {
+	Phase         MigrationPhase
+	Version       int
+	LatestVersion int
+	Name          string
+	Err           error
+}
+
 func Open(path string) (*Store, error) {
+	return OpenWithOptions(path, OpenOptions{})
+}
+
+func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	db, err := sql.Open(driverName, path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
@@ -24,7 +57,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxIdleConns(1)
 
 	st := &Store{db: db}
-	if err := st.init(); err != nil {
+	if err := st.init(opts); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

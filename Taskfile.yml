@@ -3,8 +3,15 @@ version: "3"
 vars:
   GOCACHE: "{{.ROOT_DIR}}/.gocache"
   GOMODCACHE: "{{.ROOT_DIR}}/.gomodcache"
-  GIT_VERSION:
-    sh: git --version 2>/dev/null | sed 's/git version //' || echo unknown
+  RELEASE_VERSION:
+    sh: |
+      if [ -n "${DBRAIN_RELEASE_VERSION:-}" ]; then
+        printf "%s" "${DBRAIN_RELEASE_VERSION}"
+      elif [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
+        printf "%s" "${GITHUB_REF_NAME}"
+      else
+        git describe --tags --exact-match 2>/dev/null || echo unknown
+      fi
   BUILD_PLATFORM:
     sh: printf "%s/%s" "$(go env GOOS)" "$(go env GOARCH)"
 
@@ -13,7 +20,7 @@ tasks:
     desc: Build the dbrain CLI
     cmds:
       - mkdir -p bin
-      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go build -buildvcs=true -ldflags "-X github.com/darron/dbrain/internal/version.GitVersion={{.GIT_VERSION}} -X github.com/darron/dbrain/internal/version.BuildPlatform={{.BUILD_PLATFORM}}" -o ./bin/dbrain ./cmd/dbrain
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go build -buildvcs=true -ldflags "-X github.com/darron/dbrain/internal/version.ReleaseVersion={{.RELEASE_VERSION}} -X github.com/darron/dbrain/internal/version.BuildPlatform={{.BUILD_PLATFORM}}" -o ./bin/dbrain ./cmd/dbrain
 
   fmt:
     desc: Format Go source files

@@ -62,7 +62,7 @@ var schemaMigrations = []schemaMigration{
 	},
 }
 
-func (s *Store) migrate() error {
+func (s *Store) migrate(reporter MigrationReporter) error {
 	if err := validateSchemaMigrations(schemaMigrations); err != nil {
 		return err
 	}
@@ -78,7 +78,20 @@ func (s *Store) migrate() error {
 		if applied[migration.Version] {
 			continue
 		}
+		reportMigration(reporter, MigrationEvent{
+			Phase:         MigrationStarted,
+			Version:       migration.Version,
+			LatestVersion: currentSchemaVersion,
+			Name:          migration.Name,
+		})
 		if err := migration.Run(s); err != nil {
+			reportMigration(reporter, MigrationEvent{
+				Phase:         MigrationFailed,
+				Version:       migration.Version,
+				LatestVersion: currentSchemaVersion,
+				Name:          migration.Name,
+				Err:           err,
+			})
 			return fmt.Errorf("apply migration %d %s: %w", migration.Version, migration.Name, err)
 		}
 		if _, err := s.db.Exec(
@@ -87,8 +100,21 @@ func (s *Store) migrate() error {
 			migration.Name,
 			time.Now().UTC().Format(time.RFC3339),
 		); err != nil {
+			reportMigration(reporter, MigrationEvent{
+				Phase:         MigrationFailed,
+				Version:       migration.Version,
+				LatestVersion: currentSchemaVersion,
+				Name:          migration.Name,
+				Err:           err,
+			})
 			return fmt.Errorf("record migration %d %s: %w", migration.Version, migration.Name, err)
 		}
+		reportMigration(reporter, MigrationEvent{
+			Phase:         MigrationApplied,
+			Version:       migration.Version,
+			LatestVersion: currentSchemaVersion,
+			Name:          migration.Name,
+		})
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
 		return fmt.Errorf("set schema user_version: %w", err)
@@ -97,6 +123,13 @@ func (s *Store) migrate() error {
 		return err
 	}
 	return nil
+}
+
+func reportMigration(reporter MigrationReporter, event MigrationEvent) {
+	if reporter == nil {
+		return
+	}
+	reporter(event)
 }
 
 func (s *Store) refreshFTSAvailability() error {

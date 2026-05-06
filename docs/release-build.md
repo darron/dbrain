@@ -20,6 +20,10 @@ contains. It does not run `task web-build`.
 This keeps ordinary Go builds from requiring `npm`, but it means UI source
 changes must be paired with refreshed dist assets before release.
 
+`task build` injects release metadata from `DBRAIN_RELEASE_VERSION`, a GitHub
+Actions tag ref, or an exact checked-out git tag. Untagged local builds report
+`release_version: unknown` and rely on the build short commit for identity.
+
 ## When To Run `task web-build`
 
 Run `task web-install` after a fresh checkout if `web/ui/node_modules` is

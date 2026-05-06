@@ -11,6 +11,7 @@ import (
 
 	"github.com/darron/dbrain/internal/mcpserver"
 	"github.com/darron/dbrain/internal/remote"
+	"github.com/darron/dbrain/internal/startuplog"
 )
 
 func newServeMCPCommand(root *rootOptions) *cobra.Command {
@@ -57,6 +58,7 @@ read-only MCP directly from the built-in tailnet node.`,
 				if strings.TrimSpace(resolvedPath) == "" {
 					resolvedPath = mcpserver.DefaultHTTPPath
 				}
+				startuplog.WriteVersion(cmd.ErrOrStderr())
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "MCP HTTP: http://%s%s\n", resolvedAddr, resolvedPath)
 				return mcpserver.ServeHTTP(cmd.Context(), cfg, mcpserver.HTTPOptions{
 					Addr:           resolvedAddr,

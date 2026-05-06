@@ -43,7 +43,7 @@ func (s *Store) tableExists(name string) (bool, error) {
 	return true, nil
 }
 
-func (s *Store) init() error {
+func (s *Store) init(opts OpenOptions) error {
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL;",
 		"PRAGMA synchronous = NORMAL;",
@@ -56,5 +56,5 @@ func (s *Store) init() error {
 		}
 	}
 
-	return s.migrate()
+	return s.migrate(opts.MigrationReporter)
 }

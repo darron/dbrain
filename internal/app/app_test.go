@@ -76,7 +76,7 @@ func TestVersionCommand(t *testing.T) {
 		"build_time: " + current.BuildTime,
 		"git_status: " + current.GitStatus,
 		"go_version: " + current.GoVersion,
-		"git_version: " + current.GitVersion,
+		"release_version: " + current.ReleaseVersion,
 		"build_platform: " + current.BuildPlatform,
 	} {
 		if !strings.Contains(stdout.String(), expected) {
@@ -1114,6 +1114,16 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 	}
 	if captured.XMediaTimeout != 45*time.Minute {
 		t.Fatalf("expected x media download timeout 45m, got %s", captured.XMediaTimeout)
+	}
+	stderrText := stderr.String()
+	for _, want := range []string{
+		"dbrain version:",
+		"SQLite migration running schema_version=1",
+		"SQLite migration applied schema_version=1",
+	} {
+		if !strings.Contains(stderrText, want) {
+			t.Fatalf("expected sync startup stderr to contain %q, got %q", want, stderrText)
+		}
 	}
 }
 

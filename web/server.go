@@ -45,12 +45,20 @@ type server struct {
 	toolVersion string
 }
 
+type ServeOptions struct {
+	StoreOpenOptions store.OpenOptions
+}
+
 func Serve(ctx context.Context, cfg config.Config, addr string) error {
+	return ServeWithOptions(ctx, cfg, addr, ServeOptions{})
+}
+
+func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts ServeOptions) error {
 	if strings.TrimSpace(addr) == "" {
 		addr = defaultAddr
 	}
 
-	st, err := store.Open(cfg.DBPath)
+	st, err := store.OpenWithOptions(cfg.DBPath, opts.StoreOpenOptions)
 	if err != nil {
 		return err
 	}

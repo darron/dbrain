@@ -15,6 +15,8 @@ Writable store opens use `store.Open`, which:
 - opens the configured `brain.db`
 - applies normal writable SQLite pragmas, including WAL mode
 - runs the ordered migration registry in `internal/store/migrations.go`
+- emits migration progress when the startup command supplies a reporter, such
+  as `sync all` and web/remote serve startup
 - records applied migrations in `schema_migrations`
 - writes `PRAGMA user_version` to the current schema version
 

@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Release Workflow (2026-05-05)
+
+- **GitHub release action**: Added the release workflow under `.github/workflows/`, using `task lint`, `task test`, and `task build`; release archives are named for `dbrain` and include README, license, and third-party notices.
+- **Location**: `.github/workflows/release.yaml`
+
+### Startup Visibility (2026-05-05)
+
+- **Version banner**: `sync all` and serve startup paths now print the running short commit, status, and build platform, plus `release=<tag>` only for tag/release builds.
+- **Release metadata**: `task build` now injects tag-derived `release_version` metadata instead of the local `git --version` tool version.
+- **Migration progress**: Writable startup paths now emit schema migration running/applied lines when missing SQLite migrations are applied during startup.
+- **Location**: `internal/startuplog/`, `internal/store/`, `internal/app/`, `internal/remote/`, `web/`
+
 ### Architecture Documentation (2026-05-05)
 
 - **Current architecture guide**: Added `docs/architecture.md` as the concise reader-facing package/state architecture guide and linked it from the README.

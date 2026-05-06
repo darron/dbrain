@@ -37,7 +37,7 @@ func printVersionDetails(writer io.Writer, current version.Details) error {
 		fmt.Sprintf("build_time: %s", current.BuildTime),
 		fmt.Sprintf("git_status: %s", current.GitStatus),
 		fmt.Sprintf("go_version: %s", current.GoVersion),
-		fmt.Sprintf("git_version: %s", current.GitVersion),
+		fmt.Sprintf("release_version: %s", current.ReleaseVersion),
 		fmt.Sprintf("build_platform: %s", current.BuildPlatform),
 	}
 	if current.ModulePath != "" {

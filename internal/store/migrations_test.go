@@ -44,6 +44,54 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestOpenWithOptionsReportsAppliedSchemaMigrations(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	var events []MigrationEvent
+	st, err := OpenWithOptions(path, OpenOptions{
+		MigrationReporter: func(event MigrationEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("open store with migration reporter: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if len(events) != len(schemaMigrations)*2 {
+		t.Fatalf("expected start/applied events for %d migrations, got %d: %#v", len(schemaMigrations), len(events), events)
+	}
+	for i, migration := range schemaMigrations {
+		started := events[i*2]
+		if started.Phase != MigrationStarted || started.Version != migration.Version || started.LatestVersion != currentSchemaVersion || started.Name != migration.Name || started.Err != nil {
+			t.Fatalf("unexpected started event for migration %d: %#v", migration.Version, started)
+		}
+		applied := events[i*2+1]
+		if applied.Phase != MigrationApplied || applied.Version != migration.Version || applied.LatestVersion != currentSchemaVersion || applied.Name != migration.Name || applied.Err != nil {
+			t.Fatalf("unexpected applied event for migration %d: %#v", migration.Version, applied)
+		}
+	}
+
+	events = nil
+	st, err = OpenWithOptions(path, OpenOptions{
+		MigrationReporter: func(event MigrationEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("reopen current store with migration reporter: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+	if len(events) != 0 {
+		t.Fatalf("expected no migration events on current-schema reopen, got %#v", events)
+	}
+}
+
 func TestOpenSchemaMigrationRestoresFTSAvailabilityOnReopen(t *testing.T) {
 	t.Parallel()
 
