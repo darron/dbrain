@@ -9,6 +9,9 @@ import (
 )
 
 func canSummarizeStoredExtract(source model.SourceDocument) bool {
+	if source.ExtractStatus == model.SourceExtractStatusEmpty {
+		return true
+	}
 	if source.ExtractStatus != model.SourceExtractStatusOK {
 		return false
 	}

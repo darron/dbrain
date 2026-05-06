@@ -5,6 +5,11 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Source Summary Blocking (2026-05-05)
+
+- **Empty extract summaries**: Stored empty source extracts are now converted to blocked summaries without falling through to live re-extraction, preventing retryable summary errors and requeue loops.
+- **Location**: `internal/sourceenrich/`
+
 ### Release Workflow (2026-05-05)
 
 - **GitHub release action**: Added the release workflow under `.github/workflows/`, using `task lint`, `task test`, and `task build`; release archives are named for `dbrain` and include README, license, and third-party notices.
