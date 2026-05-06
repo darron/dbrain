@@ -17,7 +17,11 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 
 		if isExtractFailureStatus(result.Status) {
 			now := time.Now().UTC()
-			failureKind, failureCount, firstFailedAt, lastFailedAt := nextExtractFailureState(current, result.Status, result.Error, now)
+			failedAt := now
+			if !result.FetchedAt.IsZero() {
+				failedAt = result.FetchedAt.UTC()
+			}
+			failureKind, failureCount, firstFailedAt, lastFailedAt := nextExtractFailureState(current, result.Status, result.Error, failedAt)
 			changed := current.ExtractStatus != result.Status ||
 				current.ExtractError != result.Error ||
 				current.ExtractFailureKind != failureKind ||

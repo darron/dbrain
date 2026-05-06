@@ -60,13 +60,25 @@ func newArchiveMediaCommand(root *rootOptions) *cobra.Command {
 				region = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION")
 			}
 			if accessKeyID == "" {
-				accessKeyID = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+				value, err := firstNonEmptySecret(cmd.Context(), cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+				if err != nil {
+					return err
+				}
+				accessKeyID = value
 			}
 			if secretAccessKey == "" {
-				secretAccessKey = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+				value, err := firstNonEmptySecret(cmd.Context(), cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+				if err != nil {
+					return err
+				}
+				secretAccessKey = value
 			}
 			if sessionToken == "" {
-				sessionToken = firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN")
+				value, err := firstNonEmptySecret(cmd.Context(), cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN")
+				if err != nil {
+					return err
+				}
+				sessionToken = value
 			}
 			if !upload {
 				upload = firstEnvBool(cfg.RootDir, "DBRAIN_ARCHIVE_UPLOAD", "DBRAIN_R2_UPLOAD")

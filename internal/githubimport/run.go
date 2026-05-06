@@ -27,7 +27,11 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		opts.APIBase = defaultAPIBaseURL
 	}
 	if strings.TrimSpace(opts.Token) == "" {
-		opts.Token = runtimeenv.FirstNonEmpty(cfg.RootDir, "GITHUB_TOKEN")
+		token, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "GITHUB_TOKEN")
+		if err != nil {
+			return Stats{}, err
+		}
+		opts.Token = token
 	}
 	if strings.TrimSpace(opts.Token) == "" {
 		return Stats{}, fmt.Errorf("GITHUB_TOKEN is required")

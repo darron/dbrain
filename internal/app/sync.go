@@ -58,7 +58,10 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				_ = st.Close()
 			}()
 
-			options := syncOptionsFromFlags(cfg, resolvedFlags, newLogger(commandDebugEnabled(cmd), logWriter), progress)
+			options, err := syncOptionsFromFlags(cmd.Context(), cfg, resolvedFlags, newLogger(commandDebugEnabled(cmd), logWriter), progress)
+			if err != nil {
+				return err
+			}
 			stats, err := runSyncAll(cmd.Context(), cfg, st, options)
 			if err != nil {
 				return err

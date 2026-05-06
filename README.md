@@ -248,7 +248,7 @@ summary:
   language: English
 
 openrouter:
-  api_key: op://Private/OpenRouter/credential
+  api_key: op://Private/dbrain/OPENROUTER_API_KEY
   base_url: https://openrouter.ai/api/v1
 
 ollama:
@@ -271,12 +271,27 @@ archive:
   upload: true
 
 env:
-  GITHUB_TOKEN: ghp_example
+  GITHUB_TOKEN: keychain://dbrain/github-token
 ```
 
-Secret references such as `op://...` are not dereferenced yet; put concrete
-values in the environment or `.env` files until password-manager resolution is
-implemented.
+Secret-bearing fields can be direct values or typed references. Supported
+references are `env:NAME`, `op://vault/item/field`, and
+`keychain://service/account`. References are resolved by `dbrain` only when a
+command needs that secret, so they do not need to be exported into your whole
+shell session.
+
+For macOS Keychain, store a secret with:
+
+```sh
+security add-generic-password -U -s dbrain -a openrouter-api-key -w "..."
+```
+
+Then reference it from `config.yaml`:
+
+```yaml
+openrouter:
+  api_key: keychain://dbrain/openrouter-api-key
+```
 
 `config.yaml.sample` contains every currently supported grouped config value
 with its matching environment variable comment on the same line:
@@ -299,6 +314,10 @@ docs or issue comments.
 
 Lookup order is shell environment, `.envrc` or `.env` in the active config/root
 directory, then `config.yaml`. `--root` wins over `DBRAIN_ROOT`.
+
+Secret config values for GitHub, OpenRouter/OpenAI/Ollama API keys, and R2/S3
+credentials may be direct values or typed references: `env:NAME`,
+`op://vault/item/field`, or `keychain://service/account`.
 
 | Environment variable(s) | config.yaml key | Default | Purpose |
 | --- | --- | --- | --- |

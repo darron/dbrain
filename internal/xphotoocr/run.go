@@ -20,7 +20,11 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	if opts.Timeout <= 0 {
 		opts.Timeout = 2 * time.Minute
 	}
-	opts = resolveOptions(cfg, opts)
+	var err error
+	opts, err = resolveOptions(ctx, cfg, opts)
+	if err != nil {
+		return Stats{}, err
+	}
 
 	items, err := st.ListItemsForXPhotoOCR(ctx, opts.Limit, opts.Force)
 	if err != nil {

@@ -73,18 +73,3 @@ func TestResolveAuthKeyCommand(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 }
-
-func TestParseKeychainRef(t *testing.T) {
-	t.Parallel()
-
-	service, account, err := parseKeychainRef("keychain://dbrain/tsnet-auth-key")
-	if err != nil {
-		t.Fatalf("parseKeychainRef: %v", err)
-	}
-	if service != "dbrain" || account != "tsnet-auth-key" {
-		t.Fatalf("service/account = %q/%q", service, account)
-	}
-	if _, _, err := parseKeychainRef("keychain://missing-account"); err == nil {
-		t.Fatalf("expected invalid keychain ref error")
-	}
-}

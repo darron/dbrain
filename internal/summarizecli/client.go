@@ -20,7 +20,11 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Length) == "" {
 		opts.Length = "medium"
 	}
-	opts.Env = envWithRuntimeConfig(opts.RootDir, opts.Env)
+	var err error
+	opts.Env, err = envWithRuntimeConfig(ctx, opts.RootDir, opts.Env, opts.Model)
+	if err != nil {
+		return Result{}, err
+	}
 	if strings.TrimSpace(opts.Language) == "" {
 		opts.Language = summaryLanguageWithEnv(opts.Env)
 	}

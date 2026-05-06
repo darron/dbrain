@@ -4,9 +4,10 @@
 # Dev override: export DBRAIN_ROOT=.  # DBRAIN_ROOT (env only; --root wins)
 # XDG config base: ~/.config          # XDG_CONFIG_HOME (env only)
 # XDG data base: ~/.local/share       # XDG_DATA_HOME (env only)
+# Secret fields accept direct values, env:NAME, op://vault/item/field, or keychain://service/account.
 
 github:
-  token: "" # GITHUB_TOKEN
+  token: "" # GITHUB_TOKEN; secret ref supported
 
 summary:
   model: "" # DBRAIN_SUMMARY_MODEL, SUMMARIZE_MODEL
@@ -20,11 +21,11 @@ ocr:
 
 ollama:
   base_url: "http://127.0.0.1:11434" # DBRAIN_OLLAMA_BASE_URL, OLLAMA_BASE_URL, OLLAMA_HOST
-  api_key: "ollama" # DBRAIN_OLLAMA_API_KEY, OLLAMA_API_KEY
+  api_key: "ollama" # DBRAIN_OLLAMA_API_KEY, OLLAMA_API_KEY; secret ref supported
 
 openai:
   base_url: "" # OPENAI_BASE_URL
-  api_key: "" # OPENAI_API_KEY
+  api_key: "" # OPENAI_API_KEY; secret ref supported
   use_chat_completions: "" # OPENAI_USE_CHAT_COMPLETIONS
 
 http:
@@ -32,7 +33,7 @@ http:
 
 openrouter:
   base_url: "https://openrouter.ai/api/v1" # DBRAIN_OPENROUTER_BASE_URL, OPENROUTER_BASE_URL
-  api_key: "" # DBRAIN_OPENROUTER_API_KEY, OPENROUTER_API_KEY
+  api_key: "" # DBRAIN_OPENROUTER_API_KEY, OPENROUTER_API_KEY; secret ref supported
   referer: "https://local.dbrain" # DBRAIN_OPENROUTER_REFERER, OPENROUTER_HTTP_REFERER
   title: "dbrain" # DBRAIN_OPENROUTER_TITLE, OPENROUTER_X_TITLE
 
@@ -95,10 +96,10 @@ r2:
   public_base_url: "" # DBRAIN_R2_PUBLIC_BASE_URL, DBRAIN_MEDIA_PUBLIC_BASE_URL
   endpoint: "" # DBRAIN_R2_ENDPOINT, DBRAIN_S3_ENDPOINT
   region: "auto" # DBRAIN_R2_REGION, DBRAIN_S3_REGION, AWS_REGION, AWS_DEFAULT_REGION
-  access_key_id: "" # DBRAIN_R2_ACCESS_KEY_ID, DBRAIN_S3_ACCESS_KEY_ID, AWS_ACCESS_KEY_ID
-  secret_access_key: "" # DBRAIN_R2_SECRET_ACCESS_KEY, DBRAIN_S3_SECRET_ACCESS_KEY, AWS_SECRET_ACCESS_KEY
-  session_token: "" # DBRAIN_R2_SESSION_TOKEN, DBRAIN_S3_SESSION_TOKEN, AWS_SESSION_TOKEN
+  access_key_id: "" # DBRAIN_R2_ACCESS_KEY_ID, DBRAIN_S3_ACCESS_KEY_ID, AWS_ACCESS_KEY_ID; secret ref supported
+  secret_access_key: "" # DBRAIN_R2_SECRET_ACCESS_KEY, DBRAIN_S3_SECRET_ACCESS_KEY, AWS_SECRET_ACCESS_KEY; secret ref supported
+  session_token: "" # DBRAIN_R2_SESSION_TOKEN, DBRAIN_S3_SESSION_TOKEN, AWS_SESSION_TOKEN; secret ref supported
 
 env:
-  GITHUB_TOKEN: "" # GITHUB_TOKEN exact-key fallback form
-  DBRAIN_OPENROUTER_API_KEY: "" # DBRAIN_OPENROUTER_API_KEY exact-key fallback form
+  GITHUB_TOKEN: "" # GITHUB_TOKEN exact-key fallback form; secret ref supported
+  DBRAIN_OPENROUTER_API_KEY: "" # DBRAIN_OPENROUTER_API_KEY exact-key fallback form; secret ref supported

@@ -1,6 +1,7 @@
 package summarizecli
 
 import (
+	"context"
 	"os"
 	"strings"
 
@@ -109,9 +110,9 @@ func cloneEnv(env map[string]string) map[string]string {
 	return out
 }
 
-func envWithRuntimeConfig(rootDir string, env map[string]string) map[string]string {
+func envWithRuntimeConfig(ctx context.Context, rootDir string, env map[string]string, model string) (map[string]string, error) {
 	if strings.TrimSpace(rootDir) == "" {
-		return env
+		return env, nil
 	}
 	out := cloneEnv(env)
 	for _, keys := range [][]string{
@@ -127,7 +128,13 @@ func envWithRuntimeConfig(rootDir string, env map[string]string) map[string]stri
 		{"DBRAIN_USER_AGENT"},
 		{"DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE"},
 	} {
-		value := runtimeenv.FirstNonEmpty(rootDir, keys...)
+		if hasAnyEnvMapValue(out, keys...) {
+			continue
+		}
+		value, err := runtimeValue(ctx, rootDir, model, keys...)
+		if err != nil {
+			return nil, err
+		}
 		if value == "" {
 			continue
 		}
@@ -138,7 +145,39 @@ func envWithRuntimeConfig(rootDir string, env map[string]string) map[string]stri
 			}
 		}
 	}
-	return out
+	return out, nil
+}
+
+func hasAnyEnvMapValue(env map[string]string, keys ...string) bool {
+	for _, key := range keys {
+		if strings.TrimSpace(env[key]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeValue(ctx context.Context, rootDir string, model string, keys ...string) (string, error) {
+	for _, key := range keys {
+		switch key {
+		case "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY":
+			if _, ok := parseOllamaModel(model); !ok {
+				return "", nil
+			}
+			return runtimeenv.FirstNonEmptySecret(ctx, rootDir, keys...)
+		case "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY":
+			if _, ok := parseOpenRouterModel(model); !ok {
+				return "", nil
+			}
+			return runtimeenv.FirstNonEmptySecret(ctx, rootDir, keys...)
+		case "OPENAI_API_KEY":
+			if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "openai/") {
+				return "", nil
+			}
+			return runtimeenv.FirstNonEmptySecret(ctx, rootDir, keys...)
+		}
+	}
+	return runtimeenv.FirstNonEmpty(rootDir, keys...), nil
 }
 
 func hasEnvValue(env map[string]string, key string) bool {
