@@ -22,6 +22,26 @@ test:
 	}
 }
 
+func TestFirstNonEmptyReadsRegisteredConfigFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, "stable.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+test:
+  service:
+    api_key: from-registered-config
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	RegisterConfigFile(root, configPath)
+
+	got := FirstNonEmpty(root, "DBRAIN_TEST_SERVICE_API_KEY")
+	if got != "from-registered-config" {
+		t.Fatalf("FirstNonEmpty = %q, want from-registered-config", got)
+	}
+}
+
 func TestFirstNonEmptyReadsExactEnvConfigValue(t *testing.T) {
 	t.Parallel()
 

@@ -20,7 +20,7 @@ func newTopicRefreshCommand(root *rootOptions) *cobra.Command {
 		Short: "Refresh generated topic notes from stored frontmatter settings",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -71,7 +71,7 @@ func newTopicIndexCommand(root *rootOptions) *cobra.Command {
 		Short: "Rebuild the topic index note from generated topic notes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

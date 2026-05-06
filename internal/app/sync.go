@@ -28,7 +28,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 		Short: "Run the incremental brain refresh pipeline end to end",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -11,18 +11,34 @@ import (
 	"strings"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/runtimeenv"
 )
 
 const rootEnvVar = "DBRAIN_ROOT"
+const configFileEnvVar = "DBRAIN_CONFIG_FILE"
 
-func loadConfig(root string) (config.Config, error) {
-	if strings.TrimSpace(root) == "" {
-		root = strings.TrimSpace(os.Getenv(rootEnvVar))
+func loadConfig(root string, configFile ...string) (config.Config, error) {
+	selectedConfigFile := ""
+	if len(configFile) > 0 {
+		selectedConfigFile = strings.TrimSpace(configFile[0])
 	}
-	cfg, err := config.Load(root)
+	var cfg config.Config
+	var err error
+	switch {
+	case selectedConfigFile != "":
+		cfg, err = config.LoadConfigFile(selectedConfigFile)
+	case strings.TrimSpace(root) != "":
+		cfg, err = config.Load(root)
+	case strings.TrimSpace(os.Getenv(configFileEnvVar)) != "":
+		cfg, err = config.LoadConfigFile(os.Getenv(configFileEnvVar))
+	default:
+		root = strings.TrimSpace(os.Getenv(rootEnvVar))
+		cfg, err = config.Load(root)
+	}
 	if err != nil {
 		return config.Config{}, err
 	}
+	runtimeenv.RegisterConfigFile(cfg.RootDir, cfg.ConfigPath)
 	if err := cfg.EnsureDirs(); err != nil {
 		return config.Config{}, err
 	}

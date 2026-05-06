@@ -18,7 +18,7 @@ func newGetCommand(root *rootOptions) *cobra.Command {
 		Short: "Load an item or source note",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -40,7 +40,7 @@ func newResearchCommand(root *rootOptions) *cobra.Command {
 				return fmt.Errorf("--topic-brief and --no-topic-brief cannot both be set")
 			}
 
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

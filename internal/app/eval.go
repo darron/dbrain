@@ -37,7 +37,7 @@ func newEvalMCPCommand(root *rootOptions) *cobra.Command {
 				return fmt.Errorf("--file is required unless --write-example is set")
 			}
 
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

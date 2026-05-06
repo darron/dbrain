@@ -23,7 +23,7 @@ func newTopicMapCommand(root *rootOptions) *cobra.Command {
 		Short: "Build a topic map from the local brain",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -69,7 +69,7 @@ func newTopicGenerateCommand(root *rootOptions) *cobra.Command {
 		Short: "Generate a topic note under vault/topics",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

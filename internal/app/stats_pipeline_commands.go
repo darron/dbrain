@@ -19,7 +19,7 @@ func newStatsBacklogCommand(root *rootOptions) *cobra.Command {
 		Short: "Show remaining queued work by pipeline stage",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -58,7 +58,7 @@ func newStatsPipelineCommand(root *rootOptions) *cobra.Command {
 		Short: "Show pipeline completion by stage and data type",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -28,7 +28,7 @@ func newRepairSourcesCommand(root *rootOptions) *cobra.Command {
 		Short: "Reset source extraction and summary state so matching sources rerun",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

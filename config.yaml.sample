@@ -1,7 +1,9 @@
 # dbrain config file.
 # Lookup order: shell environment > .envrc/.env in config/root dir > config.yaml.
 # Install default: ~/.config/dbrain/config.yaml
+# File override: dbrain --config-file ~/.config/dbrain/config.yaml
 # Dev override: export DBRAIN_ROOT=.  # DBRAIN_ROOT (env only; --root wins)
+# Env file override: export DBRAIN_CONFIG_FILE=~/.config/dbrain/config.yaml
 # XDG config base: ~/.config          # XDG_CONFIG_HOME (env only)
 # XDG data base: ~/.local/share       # XDG_DATA_HOME (env only)
 # Secret fields accept direct values, env:NAME, op://vault/item/field, or keychain://service/account.

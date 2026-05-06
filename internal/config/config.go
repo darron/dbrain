@@ -28,6 +28,45 @@ func Load(root string) (Config, error) {
 	return loadExplicitRoot(root)
 }
 
+func LoadConfigFile(path string) (Config, error) {
+	if strings.TrimSpace(path) == "" {
+		return Config{}, fmt.Errorf("config file path is required")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve config file: %w", err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return Config{}, fmt.Errorf("stat config file %s: %w", absPath, err)
+	}
+	if info.IsDir() {
+		return Config{}, fmt.Errorf("config file %s is a directory", absPath)
+	}
+	configDir := filepath.Dir(absPath)
+
+	dataBase, err := xdgBaseDir("XDG_DATA_HOME", filepath.Join(".local", "share"))
+	if err != nil {
+		return Config{}, err
+	}
+	dataDir := filepath.Join(dataBase, "dbrain")
+	vaultDir := filepath.Join(dataDir, "vault")
+
+	return Config{
+		RootDir:        configDir,
+		ConfigDir:      configDir,
+		ConfigPath:     absPath,
+		CategoriesPath: filepath.Join(configDir, "categories.yaml"),
+		DataDir:        dataDir,
+		TempDir:        filepath.Join(dataDir, "tmp"),
+		CacheDir:       filepath.Join(dataDir, "cache"),
+		LogDir:         filepath.Join(dataDir, "logs"),
+		MediaDir:       filepath.Join(vaultDir, "media"),
+		VaultDir:       vaultDir,
+		DBPath:         filepath.Join(dataDir, "brain.db"),
+	}, nil
+}
+
 func loadExplicitRoot(root string) (Config, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {

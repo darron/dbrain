@@ -40,7 +40,7 @@ func newImportAppleNotesCommand(root *rootOptions) *cobra.Command {
 		Short: "Import Apple Notes from the local Notes SQLite store",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

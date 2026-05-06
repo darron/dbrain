@@ -35,7 +35,7 @@ func newImportGitHubStarsCommand(root *rootOptions) *cobra.Command {
 		Short: "Import starred repositories via the GitHub API",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

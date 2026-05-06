@@ -43,7 +43,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "eval", "entity", "topic", "worker", "link", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
+	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -91,6 +91,149 @@ func TestVersionCommand(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestLaunchdPlistCommandUsesDefaultLayoutWithoutRootArg(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, ".config")
+	dataHome := filepath.Join(home, ".local", "share")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--no-debug", "launchd", "plist", "--bin", "/opt/homebrew/bin/dbrain"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	for _, expected := range []string{
+		"<string>/opt/homebrew/bin/dbrain</string>",
+		"<string>serve</string>",
+		"<string>remote</string>",
+		filepath.Join(dataHome, "dbrain", "logs", "launchd.out.log"),
+		filepath.Join(dataHome, "dbrain", "logs", "launchd.err.log"),
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected plist to contain %q, got %q", expected, output)
+		}
+	}
+	if strings.Contains(output, "<string>--root</string>") {
+		t.Fatalf("default launchd plist should not include --root, got %q", output)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+func TestLaunchdPlistCommandIncludesExplicitRootArg(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "launchd", "plist", "--label", "com.darron.dbrain-dev", "--bin", "/tmp/dbrain"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	for _, expected := range []string{
+		"<string>com.darron.dbrain-dev</string>",
+		"<string>/tmp/dbrain</string>",
+		"<string>--root</string>",
+		"<string>" + root + "</string>",
+		"<string>serve</string>",
+		"<string>remote</string>",
+		filepath.Join(root, "logs", "launchd.out.log"),
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected plist to contain %q, got %q", expected, output)
+		}
+	}
+}
+
+func TestLaunchdInstallNoStartWritesPlist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--no-debug", "launchd", "install", "--no-start", "--bin", "/opt/homebrew/bin/dbrain"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", defaultLaunchdLabel+".plist")
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read plist: %v", err)
+	}
+	if !strings.Contains(string(data), "<string>/opt/homebrew/bin/dbrain</string>") {
+		t.Fatalf("unexpected plist: %s", data)
+	}
+	if !strings.Contains(stdout.String(), "Not loaded because --no-start was set.") {
+		t.Fatalf("expected no-start message, got %q", stdout.String())
+	}
+}
+
+func TestLaunchdPlistCommandPreservesConfigFileSelector(t *testing.T) {
+	home := t.TempDir()
+	devRoot := t.TempDir()
+	configDir := filepath.Join(home, ".config", "dbrain")
+	dataHome := filepath.Join(home, ".local", "share")
+	configPath := filepath.Join(configDir, "stable.yaml")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("tsnet:\n  hostname: dbrain\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("DBRAIN_ROOT", devRoot)
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--config-file", configPath, "--no-debug", "launchd", "plist", "--bin", "/opt/homebrew/bin/dbrain"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	for _, expected := range []string{
+		"<string>--config-file</string>",
+		"<string>" + configPath + "</string>",
+		filepath.Join(dataHome, "dbrain", "logs", "launchd.out.log"),
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected plist to contain %q, got %q", expected, output)
+		}
+	}
+	if strings.Contains(output, "<string>--root</string>") || strings.Contains(output, devRoot) {
+		t.Fatalf("config-file launchd plist should not include dev root, got %q", output)
 	}
 }
 
@@ -290,6 +433,51 @@ func TestConfigPathsCommandRootFlagOverridesRootEnv(t *testing.T) {
 	}
 }
 
+func TestConfigPathsCommandConfigFileOverridesRootEnv(t *testing.T) {
+	home := t.TempDir()
+	envRoot := t.TempDir()
+	configDir := filepath.Join(home, "configs", "dbrain")
+	dataHome := filepath.Join(home, "data-home")
+	configPath := filepath.Join(configDir, "stable.yaml")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("tsnet:\n  hostname: dbrain\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv(rootEnvVar, envRoot)
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--config-file", configPath, "--no-debug", "config", "paths", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	if payload["config_file"] != configPath {
+		t.Fatalf("config_file = %q, want %q", payload["config_file"], configPath)
+	}
+	if payload["database"] != filepath.Join(dataHome, "dbrain", "brain.db") {
+		t.Fatalf("database = %q", payload["database"])
+	}
+	if strings.Contains(payload["database"], envRoot) {
+		t.Fatalf("database should not use DBRAIN_ROOT, got %q", payload["database"])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
 func TestConfigEnvCommandIncludesKnownEnvVars(t *testing.T) {
 	t.Parallel()
 
@@ -305,7 +493,7 @@ func TestConfigEnvCommandIncludesKnownEnvVars(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"DBRAIN_ROOT", "DBRAIN_OPENROUTER_API_KEY", "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_TSNET_AUTH_KEY_REF", "DBRAIN_R2_SECRET_ACCESS_KEY", "config.yaml"} {
+	for _, value := range []string{"DBRAIN_ROOT", "DBRAIN_CONFIG_FILE", "DBRAIN_OPENROUTER_API_KEY", "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_TSNET_AUTH_KEY_REF", "DBRAIN_R2_SECRET_ACCESS_KEY", "config.yaml"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected config env output to contain %q, got %q", value, output)
 		}
@@ -441,6 +629,48 @@ func TestTSNetStatusReportsResolvedState(t *testing.T) {
 	}
 	if payload["exists"] != false {
 		t.Fatalf("exists = %#v, want false", payload["exists"])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStatusReadsExplicitConfigFileValues(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, "configs")
+	dataHome := filepath.Join(home, "data-home")
+	configPath := filepath.Join(configDir, "stable.yaml")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`
+tsnet:
+  hostname: dbrain-stable
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("DBRAIN_ROOT", t.TempDir())
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--config-file", configPath, "--no-debug", "tsnet", "status", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	wantStateDir := filepath.Join(dataHome, "dbrain", "tsnet", "dbrain-stable")
+	if payload["state_dir"] != wantStateDir {
+		t.Fatalf("state_dir = %#v, want %q", payload["state_dir"], wantStateDir)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())

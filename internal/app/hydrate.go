@@ -28,7 +28,7 @@ func newHydrateXCommand(root *rootOptions) *cobra.Command {
 		Short: "Hydrate canonical X post content",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

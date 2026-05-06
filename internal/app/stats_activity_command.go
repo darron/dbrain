@@ -17,7 +17,7 @@ func newStatsActivityCommand(root *rootOptions) *cobra.Command {
 		Short: "Show recent database write activity",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

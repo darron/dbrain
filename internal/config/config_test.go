@@ -97,6 +97,59 @@ func TestLoadExplicitRootKeepsRepoLayout(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFileUsesFileAndXDGDataLayout(t *testing.T) {
+	home := t.TempDir()
+	dataHome := filepath.Join(home, "xdg-data")
+	configDir := filepath.Join(home, "configs", "dbrain")
+	configFile := filepath.Join(configDir, "stable.yaml")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configFile, []byte("tsnet:\n  hostname: dbrain\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	cfg, err := LoadConfigFile(configFile)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+
+	dataDir := filepath.Join(dataHome, "dbrain")
+	want := map[string]string{
+		"RootDir":        configDir,
+		"ConfigDir":      configDir,
+		"ConfigPath":     configFile,
+		"CategoriesPath": filepath.Join(configDir, "categories.yaml"),
+		"DataDir":        dataDir,
+		"TempDir":        filepath.Join(dataDir, "tmp"),
+		"CacheDir":       filepath.Join(dataDir, "cache"),
+		"LogDir":         filepath.Join(dataDir, "logs"),
+		"VaultDir":       filepath.Join(dataDir, "vault"),
+		"MediaDir":       filepath.Join(dataDir, "vault", "media"),
+		"DBPath":         filepath.Join(dataDir, "brain.db"),
+	}
+	got := map[string]string{
+		"RootDir":        cfg.RootDir,
+		"ConfigDir":      cfg.ConfigDir,
+		"ConfigPath":     cfg.ConfigPath,
+		"CategoriesPath": cfg.CategoriesPath,
+		"DataDir":        cfg.DataDir,
+		"TempDir":        cfg.TempDir,
+		"CacheDir":       cfg.CacheDir,
+		"LogDir":         cfg.LogDir,
+		"VaultDir":       cfg.VaultDir,
+		"MediaDir":       cfg.MediaDir,
+		"DBPath":         cfg.DBPath,
+	}
+	for name, wantValue := range want {
+		if got[name] != wantValue {
+			t.Fatalf("%s = %q, want %q", name, got[name], wantValue)
+		}
+	}
+}
+
 func TestEnsureDirsCreatesConfigAndDataDirs(t *testing.T) {
 	home := t.TempDir()
 	configHome := filepath.Join(home, "xdg-config")

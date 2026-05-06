@@ -34,7 +34,7 @@ Remote web is the full read/write web UI. MCP remains read-only. Tailscale ACLs
 govern who can reach the node.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

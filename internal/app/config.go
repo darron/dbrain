@@ -29,11 +29,11 @@ func newConfigPathsCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "paths",
 		Short:       "Print active config, data, cache, log, and vault paths",
-		Long:        "Print the active config, categories, data, database, vault, media, temp, cache, and log paths after resolving --root, DBRAIN_ROOT, and XDG defaults.",
+		Long:        "Print the active config, categories, data, database, vault, media, temp, cache, and log paths after resolving --config-file, --root, DBRAIN_CONFIG_FILE, DBRAIN_ROOT, and XDG defaults.",
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{skipKeepAwakeAnnotation: "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

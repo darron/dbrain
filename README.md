@@ -221,6 +221,12 @@ Installed/default layout:
 `dbrain` honors `XDG_CONFIG_HOME` and `XDG_DATA_HOME`; if set, the same
 `dbrain` subdirectories are created under those bases.
 
+To pin a command or service to one installed config file without inheriting a
+checkout's `DBRAIN_ROOT`, pass `--config-file <path>` or set
+`DBRAIN_CONFIG_FILE=<path>`. The config directory is the file's parent
+directory; data, logs, cache, temp files, and the vault still default to the XDG
+data layout unless separately configured by a feature-specific setting.
+
 For local development or isolated runs, pass `--root <dir>` or set
 `DBRAIN_ROOT=<dir>`. Explicit roots keep the original self-contained layout:
 
@@ -236,7 +242,8 @@ For repo-local development, this keeps commands pointed at the checkout:
 export DBRAIN_ROOT=.
 ```
 
-If both are present, `--root` wins over `DBRAIN_ROOT`.
+Resolution order for config layout is `--config-file`, `--root`,
+`DBRAIN_CONFIG_FILE`, `DBRAIN_ROOT`, then XDG defaults.
 
 Configuration currently resolves in this order: shell environment, `.envrc` or
 `.env` in the config/root directory, then `config.yaml`. The YAML file can use
@@ -500,6 +507,7 @@ Available Commands:
   get         Load an item or source note
   hydrate     Hydrate canonical source data
   import      Import source data into the brain
+  launchd     Install or print a macOS launchd service for dbrain
   link        Add and manage manually submitted links
   ocr         Extract text from downloaded images
   repair      Repair derived local artifacts
@@ -515,7 +523,7 @@ Available Commands:
   worker      Run long-lived background-style worker loops
 
 Environment:
-  --root wins over DBRAIN_ROOT.
+  --config-file wins over --root, DBRAIN_CONFIG_FILE, and DBRAIN_ROOT.
   Defaults: config in ~/.config/dbrain, state in ~/.local/share/dbrain.
   Runtime values resolve from shell env, then .envrc/.env, then config.yaml.
   Run "dbrain config env" for the full environment/config key table.
@@ -752,6 +760,47 @@ Important flags:
   `tsnet.auth_key_command` execution.
 - `--tsnet-advertise-tags`: comma-separated Tailscale tags to request.
 - `--tsnet-control-url`: experimental alternate Tailscale control server URL.
+
+### `dbrain launchd`
+
+Prints, installs, or removes a per-user macOS LaunchAgent for
+`dbrain serve remote`. The generated service uses the same config resolution as
+the command you run: default XDG paths unless you pass `--config-file` or
+`--root`. If `DBRAIN_CONFIG_FILE` or `DBRAIN_ROOT` are present in the install
+environment, the generated plist records the matching explicit flag so launchd
+does not depend on your shell startup files.
+
+Stable Homebrew service:
+
+```sh
+dbrain --config-file ~/.config/dbrain/config.yaml launchd plist \
+  --bin /opt/homebrew/bin/dbrain
+
+dbrain --config-file ~/.config/dbrain/config.yaml launchd install \
+  --bin /opt/homebrew/bin/dbrain
+```
+
+Development service with a separate root, label, and configured
+`tsnet.hostname` such as `dbrain-dev`:
+
+```sh
+go run ./cmd/dbrain --root /path/to/dbrain-checkout launchd plist \
+  --label com.darron.dbrain-dev \
+  --bin /path/to/dbrain-checkout/bin/dbrain
+
+go run ./cmd/dbrain --root /path/to/dbrain-checkout launchd install \
+  --label com.darron.dbrain-dev \
+  --bin /path/to/dbrain-checkout/bin/dbrain
+```
+
+The plist is written to `~/Library/LaunchAgents/<label>.plist`, with stdout and
+stderr logs under the active dbrain log directory. Use `--no-start` to write the
+plist without loading it.
+
+```sh
+dbrain launchd uninstall
+dbrain launchd uninstall --label com.darron.dbrain-dev
+```
 
 ### `dbrain tsnet status`
 

@@ -17,7 +17,7 @@ func newSQLiteArchiveCommand(root *rootOptions) *cobra.Command {
 		Short: "Snapshot, compress, and upload the local SQLite database",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -64,7 +64,7 @@ func newSQLiteRestoreCommand(root *rootOptions) *cobra.Command {
 		Short: "Download and restore the newest archived SQLite database",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -35,7 +35,7 @@ func newExtractLinksCommand(root *rootOptions) *cobra.Command {
 		Short: "Discover and enrich outbound links from imported items",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -114,7 +114,7 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 		Short: "Enrich already-known sources from the global backlog",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -34,7 +34,7 @@ func newOCRXPhotosCommand(root *rootOptions) *cobra.Command {
 		Short: "OCR downloaded X photo media with Ollama/OpenRouter vision plus Tesseract fallback",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -36,7 +36,7 @@ func newEntityMapCommand(root *rootOptions) *cobra.Command {
 		Short: "Search derived entities from the local brain",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -82,7 +82,7 @@ func newEntityGenerateCommand(root *rootOptions) *cobra.Command {
 		Short: "Generate entity notes for matching derived entities",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -135,7 +135,7 @@ func newEntityIndexCommand(root *rootOptions) *cobra.Command {
 		Short: "Generate all derived entity notes and rebuild the entity index",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
