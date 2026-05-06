@@ -5,6 +5,11 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Homebrew Install Docs (2026-05-05)
+
+- **Install instructions**: Added top-level README instructions for installing `dbrain` from the `darron/tap` Homebrew tap and verifying the installed binary.
+- **Location**: `README.md`
+
 ### PR CI Workflow (2026-05-05)
 
 - **Pull request gates**: Added a PR-only CI workflow that runs `task fmt`, verifies formatting produced no diff, then runs `task lint` and `task test` in order for branch protection.

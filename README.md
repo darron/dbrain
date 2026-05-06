@@ -7,6 +7,27 @@ bookmarks, Apple Notes, GitHub stars, YouTube, Safari tabs and manually submitte
 with Markdown note rendering for Obsidian and local query over the imported
 corpus.
 
+## Install
+
+Install the latest released `dbrain` CLI with Homebrew:
+
+```sh
+brew install darron/tap/dbrain
+```
+
+Or tap once and install by formula name:
+
+```sh
+brew tap darron/tap
+brew install dbrain
+```
+
+Verify the installed binary:
+
+```sh
+dbrain version
+```
+
 ## Requirements
 
 Install the common local toolchain with Homebrew:
