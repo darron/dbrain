@@ -1473,6 +1473,25 @@ func TestSaveSourceExtractionTracksFailureCountsAndResetsOnSuccess(t *testing.T)
 		t.Fatalf("expected failure timestamps to be set, got %+v", firstFailure)
 	}
 
+	fetchedFailureAt := time.Date(2026, 5, 6, 12, 30, 0, 0, time.UTC)
+	fetchedFailureSourceID := insertTestSource(t, st, "src:test-fetched-failure-time", "https://example.com/fetched-failure")
+	if _, err := st.SaveSourceExtraction(ctx, fetchedFailureSourceID, model.ExtractResult{
+		Status:      "error",
+		Error:       "Unable to connect. Is the computer able to access the url?",
+		FetchedAt:   fetchedFailureAt,
+		Tool:        "summarize",
+		ToolVersion: "test-1.0.0",
+	}, ""); err != nil {
+		t.Fatalf("fetched-time SaveSourceExtraction error: %v", err)
+	}
+	fetchedFailure, err := st.GetSourceByID(ctx, fetchedFailureSourceID)
+	if err != nil {
+		t.Fatalf("get fetched-time source failure: %v", err)
+	}
+	if !fetchedFailure.ExtractFirstFailedAt.Equal(fetchedFailureAt) || !fetchedFailure.ExtractLastFailedAt.Equal(fetchedFailureAt) {
+		t.Fatalf("expected failure timestamps to use fetched_at, got first=%s last=%s", fetchedFailure.ExtractFirstFailedAt, fetchedFailure.ExtractLastFailedAt)
+	}
+
 	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
 		Status:      "error",
 		Error:       "Unable to connect. Is the computer able to access the url?",

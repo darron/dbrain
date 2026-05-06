@@ -202,7 +202,7 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		if response.FailureTableTotal != 2 || response.FailureTableOffset != 1 || response.FailureTableSort != "oldest" {
 			t.Fatalf("unexpected paged failure table metadata: %+v", response)
 		}
-		if len(response.FailureTable) != 1 || response.FailureTable[0].SourceKey != "src:test-agent-memory-failure-two" {
+		if len(response.FailureTable) != 1 || response.FailureTable[0].SourceKey != "src:test-agent-memory-failure" {
 			t.Fatalf("unexpected paged failure rows: %+v", response.FailureTable)
 		}
 	})
