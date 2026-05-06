@@ -1,13 +1,82 @@
 # Architecture Cleanup Review
 
-Status: draft for review
+Status: active cleanup tracker
 Date: 2026-05-04
+Last updated: 2026-05-05
 Source of truth: current code in this checkout. Existing docs are background only
 where they match implementation.
 
 This document reviews the current `dbrain` architecture and proposes cleanup
 work before open sourcing. It is intended to be evaluated by humans and other
 LLMs, so it calls out code evidence, risks, and concrete cleanup directions.
+
+## Current Remaining Work
+
+Most behavior-preserving package/file splits in this document are now complete.
+Do not keep refactoring simply because an older paragraph says "split" or
+"consolidate". Further refactors should be tied to one of the concrete items
+below, a real bug, or an imminent behavior change.
+
+### Open-Source Release Blockers Or Near-Blockers
+
+No active release blockers remain from this cleanup plan.
+
+Before an actual public release, do the normal release hygiene pass against the
+current tree: rerun tests, check docs links, confirm packaged assets/notices, and
+review the current diff for any new public surface area introduced after this
+document was last updated.
+
+### Done Or No Longer Active
+
+- License choice and dependency/package audit are done: the repo uses MIT,
+  `docs/open-source-license-review.md` records the audit, and
+  `THIRD_PARTY_NOTICES.md` exists. Only rerun/regenerate before an actual
+  release if dependencies or packaged assets changed.
+- `docs/architecture.md` is now the concise reader-facing architecture guide.
+  This cleanup review remains background/audit history.
+- `docs/schema-migrations.md` now documents schema migration behavior,
+  backup/restore expectations, and downgrade policy. Version 1 remains the
+  adoption baseline; current schema version tracks the highest registered
+  migration.
+- `docs/maintenance-operations.md` now documents local delete, purge, prune,
+  restore, and reset paths. The audit found one intentional `sync all`
+  exception: YouTube import removes deprecated `youtube_history` rows and
+  orphaned legacy YouTube sources. Do not expand that into upstream mirror
+  pruning.
+- `docs/release-build.md` now documents that `web/ui/dist` is tracked for Go
+  embedding, that `task build` embeds the current dist assets without rebuilding
+  them, and when maintainers should run `task web-build`.
+- The final public-surface documentation pass is done: README,
+  `docs/web-route-capabilities.md`, and `docs/tsnet-transport.md` all describe
+  local/remote web as a trusted read/write administration surface and MCP as
+  read-only. `docs/web-ui-spec.md` remains explicitly marked as a historical
+  first-slice design, not the current route contract.
+- The broad low-risk split work is done for web routes, MCP transport/tools/get
+  payloads, store files, sync/app orchestration, source enrichment, runtime env
+  helpers, importers, summarization, categorization, retrieval, topics,
+  entities, vault rendering, media archive/download, and SQLite archive.
+- `sync all` has an explicit stage plan. Keep current ordering and bounded
+  follow-up behavior unless a test-backed behavior change requires more.
+- Source enrichment fallback order is now explicit. Do not introduce extractor
+  interfaces until a real behavior split needs that abstraction.
+
+### Guardrails To Add When Related Code Is Touched
+
+- More focused source retry/cooldown/final-attempt tests before changing source
+  retry policy.
+- Additional predicate alignment tests if worker/dashboard selectors change.
+- Raw evidence preservation tests for any future schema-changing migration.
+- Keep source FTS failure regression tests with any future FTS refactor.
+
+### Design Backlog, Not Current Refactor Work
+
+- Typed runtime config snapshot over `runtimeenv.Lookup`.
+- Tag provenance or a model-tag/user-tag split.
+- Finish the item enrichment transition if/when compatibility columns become a
+  maintenance problem.
+- Oversized-source chunking/preprocessing.
+- Provider/model-call audit policy and local/hosted execution modes.
+- Persisted entity/topic indexes if on-demand derived views become too slow.
 
 ## Reviewer Instructions
 
@@ -420,8 +489,8 @@ privacy, and first-run understanding.
      correctly describe remote web as read/write.
 
    Cleanup:
-   - Add or promote a concise `docs/architecture.md` based on the architecture
-     map above.
+   - Done: `docs/architecture.md` is the concise reader-facing architecture
+     guide based on the architecture map above.
    - Keep `docs/web-route-capabilities.md` current as the code-accurate web
      route map; `docs/web-ui-spec.md` is now marked as a historical first-slice
      design.
@@ -503,17 +572,19 @@ privacy, and first-run understanding.
    - Apple Notes exclusions use explicit forget/purge semantics.
 
    Cleanup:
-   - Done: README documents known local delete/purge/reset paths: media prune,
+   - Done: `docs/maintenance-operations.md` documents media prune/archive,
      SQLite restore, tsnet reset, Apple Notes `--forget-excluded`, YouTube
-     deprecated-history cleanup, and source derived-state repair.
-   - Ensure destructive operations are opt-in, named clearly, and excluded from
-     generic `sync all` behavior unless explicitly configured.
+     deprecated-history cleanup, source derived-state repair, and the devtool
+     pruned-media restore path.
+   - Done: the audit identifies the only ordinary `sync all` exception:
+     YouTube legacy cleanup for obsolete `youtube_history` rows and orphaned
+     legacy YouTube sources. Keep that exception narrow and documented.
 
-5. Complete the open-source license and notice pass.
+5. Open-source license and notice pass.
 
    Evidence:
    - `docs/open-source-license-review.md` records the 2026-05-04 dependency
-     scan and remaining review items.
+     scan.
    - The repository uses the MIT License in the root `LICENSE` file.
    - `THIRD_PARTY_NOTICES.md` lists the current `./cmd/dbrain` runtime
      dependencies and frontend lockfile dependencies.
@@ -522,11 +593,11 @@ privacy, and first-run understanding.
      include GPL-licensed lint/tooling modules.
 
    Cleanup:
-   - Rerun the audit from a clean checkout and keep lint/tooling dependencies
-     separate from shipped runtime dependencies.
-   - Regenerate `THIRD_PARTY_NOTICES.md` before release and include exact
-     upstream license files for any dependency source or generated asset copied
-     into release archives.
+   - Done: MIT was selected and dependency/package audit work is recorded.
+   - Done: runtime dependencies are separated from lint/tooling dependencies in
+     the review.
+   - Release-time maintenance only: regenerate `THIRD_PARTY_NOTICES.md` and
+     rerun the audit if dependencies or packaged assets changed.
 
 ### P1: Structural Cleanup With Low Behavior Risk
 
@@ -924,41 +995,39 @@ are already causing operational issues.
 These are smaller findings that deserve targeted review:
 
 - `internal/store/cleanup.go`: audit all callers of physical delete helpers and
-  document them as explicit maintenance operations.
+  document them as explicit maintenance operations. Done in
+  `docs/maintenance-operations.md`.
 
-## Proposed Cleanup Sequence
+## Current Cleanup Sequence
 
 1. Update docs that are contradicted by code.
 
    Output:
-   - Current architecture doc.
-   - Revised or deprecated `docs/web-ui-spec.md`.
-   - README section that distinguishes current behavior from roadmap.
-   - Route/capability matrix for web and remote serving.
-   - Web/MCP model-planner disclosure and web payload privacy audit.
+   - Done: revised/deprecated `docs/web-ui-spec.md` and added
+     `docs/web-route-capabilities.md`.
+   - Done: README now distinguishes current behavior, trust boundaries, and
+     model-call behavior.
+   - Done: published concise `docs/architecture.md`; keep this review as
+     supporting audit history.
 
 2. Add guardrails before refactors.
 
    Output:
-   - Source FTS error handling fixed or explicitly tracked as a blocking bug.
-   - Tests around pipeline predicates versus stats.
-   - Tests around source retry cooldowns, blocked/terminal statuses, and
-     final-attempt thresholds.
-   - Tests around raw evidence preservation for item summaries, OCR, and
-     transcripts.
-   - Tests around source FTS sync failure behavior if it is changed.
-   - Tests around read-only web mode if added.
+   - Done: source FTS error handling is covered by regression tests.
+   - Done: key worker/dashboard predicate alignment paths have coverage.
+   - Remaining only when touching related code: source retry cooldown/final
+     attempt tests, raw evidence preservation tests for future migrations, and
+     read-only web tests if a read-only web mode is actually added.
 
 3. Do low-risk splits without schema changes.
 
    Output:
-   - X media/OCR limit wiring fixed.
-   - Brain research temp files moved to configured dbrain temp storage where
-     practical.
-   - Split `web/server.go` route files.
-   - Split store implementation files by repository/predicate/stats/media/item
-     enrichment/source-enrichment domains.
-   - Split MCP protocol/tool/payload files.
+   - Done: X media/OCR limit wiring fixed.
+   - Done: brain research temp files use configured dbrain temp storage.
+   - Done: `web/server.go` route files split.
+   - Done: store implementation files split by repository/predicate/stats/media/
+     item-enrichment/source-enrichment domains.
+   - Done: MCP protocol/tool/payload files split.
    - Done: split `syncjob` public types, option defaults, progress formatting,
      merge helpers, stage execution helpers, runner hooks, and X frontier
      helpers while preserving current command behavior.
@@ -966,6 +1035,8 @@ These are smaller findings that deserve targeted review:
      summary output rendering out of the `sync all` CLI command body.
    - Done: group `syncjob.Options` by stage internally and introduce an explicit
      ordered stage plan.
+   - Stop: do not keep doing file movement here unless it supports a concrete
+     remaining item or fixes an active maintainability problem.
 
 4. Replace ad hoc schema setup with versioned migrations.
 
@@ -974,9 +1045,10 @@ These are smaller findings that deserve targeted review:
      baseline.
    - Done: migration tests for fresh create, idempotent reruns, adopting the
      existing current schema, and read-only open behavior.
-   - Remaining: representative future upgrade fixtures, raw evidence
-     preservation tests for schema-changing migrations, and documented
-     backup/restore and downgrade policy.
+   - Done: documented backup/restore and downgrade policy in
+     `docs/schema-migrations.md`.
+   - Remaining later: representative future upgrade fixtures and raw evidence
+     preservation tests when a real schema-changing migration exists.
 
 5. Decompose source enrichment.
 
@@ -989,14 +1061,18 @@ These are smaller findings that deserve targeted review:
    - Remaining: extractor interfaces or fetch/fallback modules once the current
      fallback order is covered tightly enough to make the split low-risk.
    - Same fallback order as today.
+   - Stop: do not introduce extractor interfaces until a behavior change or
+     concrete test seam requires them.
 
 6. Plan and migrate data-model improvements.
 
    Output:
-   - Versioned migration plan.
-   - Item enrichment model.
-   - Tag provenance model.
-   - Backfill and compatibility path for existing databases.
+   - Done in part: item enrichment model exists with backfill and compatibility
+     paths for summary, OCR, and X media transcript roles.
+   - Remaining: decide whether/when to remove compatibility-column dependence.
+   - Remaining: tag provenance model or split user tags from model-derived tags.
+   - Remaining: typed runtime config snapshot is a separate design backlog item,
+     not part of the completed low-risk split pass.
 
 ## Non-Goals For This Cleanup
 

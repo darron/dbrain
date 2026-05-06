@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Architecture Documentation (2026-05-05)
+
+- **Current architecture guide**: Added `docs/architecture.md` as the concise reader-facing package/state architecture guide and linked it from the README.
+- **Schema migration policy**: Added `docs/schema-migrations.md` to document SQLite migration behavior, backup/restore expectations, and the supported downgrade path.
+- **Maintenance operation audit**: Added `docs/maintenance-operations.md` to document local delete, purge, prune, restore, and reset paths, including the narrow YouTube legacy cleanup exception that can run during `sync all`.
+- **Release build notes**: Added `docs/release-build.md` to document tracked embedded web assets, when `task web-build` is required, and how to avoid stale `web/ui/dist` assets in Go releases.
+- **Cleanup tracker reset**: Updated `docs/architecture-cleanup.md` to separate actual remaining release work from completed splits, stale license-audit items, and design backlog so future work has a concrete stop condition.
+- **Location**: `docs/architecture.md`, `docs/schema-migrations.md`, `docs/maintenance-operations.md`, `docs/release-build.md`, `docs/architecture-cleanup.md`, `README.md`
+
 ### Architecture Cleanup And Open-Source Readiness (2026-05-04)
 
 - **Source FTS reliability**: Source FTS delete/insert failures now propagate instead of silently succeeding, with regression tests around source tag reindexing failures.

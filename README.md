@@ -164,6 +164,14 @@ sources as part of its import cleanup. `dbrain repair sources` clears selected
 derived extraction/summary state so it can be rebuilt. Prefer `--dry-run` on
 commands that offer it.
 
+See [docs/architecture.md](docs/architecture.md) for the current package/state
+architecture and [docs/web-route-capabilities.md](docs/web-route-capabilities.md)
+for the web route capability matrix. See
+[docs/schema-migrations.md](docs/schema-migrations.md) for SQLite migration,
+backup, restore, and downgrade policy. See
+[docs/maintenance-operations.md](docs/maintenance-operations.md) for local
+delete, purge, prune, restore, and reset paths.
+
 ## Dev Tasks
 
 - `task build`
@@ -1179,7 +1187,10 @@ UI source.
 ### `task web-build`
 
 Requires `npm`. Rebuilds the embedded `web/ui/dist` assets from the Svelte
-source tree.
+source tree. `task build` embeds the currently tracked `web/ui/dist` assets but
+does not rebuild them, so run `task web-build` and commit the dist changes when
+UI source or UI build configuration changes. See
+[docs/release-build.md](docs/release-build.md) for the release checklist.
 
 ### `task fmt`
 
