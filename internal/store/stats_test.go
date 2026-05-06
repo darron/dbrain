@@ -748,6 +748,20 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed current transcript: %v", err)
 	}
+	if err := st.SaveXMediaTranscriptionState(ctx, currentID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+		t.Fatalf("save current transcript mirror: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET article_title = '',
+			article_text = '',
+			x_media_transcript_status = '',
+			x_media_transcript_at = ''
+		WHERE id = ?`,
+		currentID,
+	); err != nil {
+		t.Fatalf("clear current transcript compatibility columns: %v", err)
+	}
 
 	blockedID := insertVideoCandidate("x-media-blocked")
 	if _, err := st.db.ExecContext(ctx, `
@@ -773,12 +787,36 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 		t.Fatalf("seed failed transcript: %v", err)
 	}
 
+	prunedPendingID := insertVideoCandidate("x-media-pruned-pending")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE media_assets
+		SET local_pruned_at = ?,
+			archive_status = 'archived'
+		WHERE id IN (
+			SELECT media_asset_id
+			FROM item_media_links
+			WHERE item_id = ?
+		)`,
+		now.Format(time.RFC3339),
+		prunedPendingID,
+	); err != nil {
+		t.Fatalf("seed pruned pending media: %v", err)
+	}
+
+	items, err := st.ListItemsForXMediaTranscription(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXMediaTranscription: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no runnable transcription candidates, got %d", len(items))
+	}
+
 	stats, err := st.Pipeline(ctx, "", "", "")
 	if err != nil {
 		t.Fatalf("Pipeline: %v", err)
 	}
 
-	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 3, 1, 0, 1, 1)
+	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 4, 1, 0, 2, 1)
 }
 
 func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
@@ -820,20 +858,40 @@ func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
 		); err != nil {
 			t.Fatalf("seed transcript %s: %v", sourceKey, err)
 		}
+		if err := st.SaveXMediaTranscriptionState(ctx, itemResult.ItemID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+			t.Fatalf("save transcript mirror %s: %v", sourceKey, err)
+		}
+		if _, err := st.db.ExecContext(ctx, `
+			UPDATE items
+			SET article_title = '',
+				article_text = '',
+				x_media_transcript_status = '',
+				x_media_transcript_at = ''
+			WHERE id = ?`,
+			itemResult.ItemID,
+		); err != nil {
+			t.Fatalf("clear transcript compatibility columns %s: %v", sourceKey, err)
+		}
 		return itemResult.ItemID
 	}
 
 	currentID := insertTranscriptItem("x-media-summary-current")
+	if _, err := st.SaveItemSummary(ctx, currentID, model.SummaryResult{
+		Text:      "saved summary",
+		Status:    model.ItemSummaryStatusOK,
+		FetchedAt: now,
+	}, "x-media-summary-current-input"); err != nil {
+		t.Fatalf("save current x media summary mirror: %v", err)
+	}
 	if _, err := st.db.ExecContext(ctx, `
 		UPDATE items
-		SET summary_status = 'ok',
-			summary_text = 'saved summary',
-			summarized_at = ?
+		SET summary_status = '',
+			summary_text = '',
+			summarized_at = ''
 		WHERE id = ?`,
-		now.Format(time.RFC3339),
 		currentID,
 	); err != nil {
-		t.Fatalf("seed current x media summary: %v", err)
+		t.Fatalf("clear current x media summary compatibility columns: %v", err)
 	}
 
 	_ = insertTranscriptItem("x-media-summary-pending")
@@ -858,6 +916,14 @@ func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
 		failedID,
 	); err != nil {
 		t.Fatalf("seed failed x media summary: %v", err)
+	}
+
+	items, err := st.ListItemsForXMediaSummary(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXMediaSummary: %v", err)
+	}
+	if len(items) != 1 || items[0].SourceKey != "x-media-summary-pending" || items[0].ArticleText == "" {
+		t.Fatalf("expected only pending x media summary candidate with mirrored transcript text, got %+v", items)
 	}
 
 	stats, err := st.Pipeline(ctx, "", "", "")
@@ -890,16 +956,22 @@ func TestPipelineAppleNoteExtractionAndSummaryClassifyItemCoverage(t *testing.T)
 	}
 
 	currentID := insertAppleNote("apple-note-summary-current", "current body", "")
+	if _, err := st.SaveItemSummary(ctx, currentID, model.SummaryResult{
+		Text:      "saved note summary",
+		Status:    model.ItemSummaryStatusOK,
+		FetchedAt: now,
+	}, "apple-note-summary-current-input"); err != nil {
+		t.Fatalf("save current apple note summary mirror: %v", err)
+	}
 	if _, err := st.db.ExecContext(ctx, `
 		UPDATE items
-		SET summary_status = 'ok',
-			summary_text = 'saved note summary',
-			summarized_at = ?
+		SET summary_status = '',
+			summary_text = '',
+			summarized_at = ''
 		WHERE id = ?`,
-		now.Format(time.RFC3339),
 		currentID,
 	); err != nil {
-		t.Fatalf("seed current apple note summary: %v", err)
+		t.Fatalf("clear current apple note summary compatibility columns: %v", err)
 	}
 
 	_ = insertAppleNote("apple-note-summary-pending", "pending body", "")
@@ -1131,16 +1203,22 @@ func TestPipelineXPhotoOCRClassifiesPendingBlockedAndFailed(t *testing.T) {
 	}
 
 	currentID := insertPhotoCandidate("x-photo-ocr-current")
+	if _, err := st.SaveItemOCR(ctx, currentID, model.OCRResult{
+		Text:      "saved ocr text",
+		Status:    model.ItemOCRStatusOK,
+		FetchedAt: now,
+	}, "x-photo-ocr-current-input"); err != nil {
+		t.Fatalf("save current ocr mirror: %v", err)
+	}
 	if _, err := st.db.ExecContext(ctx, `
 		UPDATE items
-		SET ocr_status = 'ok',
-			ocr_text = 'saved ocr text',
-			ocr_at = ?
+		SET ocr_status = '',
+			ocr_text = '',
+			ocr_at = ''
 		WHERE id = ?`,
-		now.Format(time.RFC3339),
 		currentID,
 	); err != nil {
-		t.Fatalf("seed current ocr: %v", err)
+		t.Fatalf("clear current ocr compatibility columns: %v", err)
 	}
 
 	_ = insertPhotoCandidate("x-photo-ocr-pending")
@@ -1165,6 +1243,14 @@ func TestPipelineXPhotoOCRClassifiesPendingBlockedAndFailed(t *testing.T) {
 		failedID,
 	); err != nil {
 		t.Fatalf("seed failed ocr: %v", err)
+	}
+
+	items, err := st.ListItemsForXPhotoOCR(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXPhotoOCR: %v", err)
+	}
+	if len(items) != 1 || items[0].SourceKey != "x-photo-ocr-pending" {
+		t.Fatalf("expected only pending x photo OCR candidate, got %+v", items)
 	}
 
 	stats, err := st.Pipeline(ctx, "", "", "")

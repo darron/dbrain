@@ -249,6 +249,68 @@ func TestSaveMediaDownloadRemovesCompletedAssetFromPendingList(t *testing.T) {
 	}
 }
 
+func TestListMediaAssetsForDownloadBacksOffRecentErrors(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	oldAttempt := now.Add(-model.MediaDownloadRetryCooldown - time.Minute).Format(time.RFC3339)
+	recentAttempt := now.Add(-time.Hour).Format(time.RFC3339)
+
+	rows := []struct {
+		url       string
+		status    string
+		errCount  int
+		attemptAt string
+	}{
+		{"https://video.twimg.com/ext/pending.mp4", "pending", 0, ""},
+		{"https://video.twimg.com/ext/old-error.mp4", "error", 1, oldAttempt},
+		{"https://video.twimg.com/ext/recent-error.mp4", "error", 1, recentAttempt},
+		{"https://video.twimg.com/ext/blocked.mp4", "blocked", model.MediaDownloadMaxConsecutiveErrors, recentAttempt},
+	}
+	for _, row := range rows {
+		if _, err := st.db.ExecContext(ctx, `
+			INSERT INTO media_assets (
+				remote_url, media_type, download_status, download_error_count,
+				last_download_attempt_at, discovered_at, updated_at
+			) VALUES (?, 'video', ?, ?, ?, ?, ?)`,
+			row.url,
+			row.status,
+			row.errCount,
+			row.attemptAt,
+			now.Format(time.RFC3339),
+			now.Format(time.RFC3339),
+		); err != nil {
+			t.Fatalf("insert %s: %v", row.url, err)
+		}
+	}
+
+	assets, err := st.ListMediaAssetsForDownload(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListMediaAssetsForDownload: %v", err)
+	}
+	var urls []string
+	for _, asset := range assets {
+		urls = append(urls, asset.RemoteURL)
+	}
+	want := []string{
+		"https://video.twimg.com/ext/pending.mp4",
+		"https://video.twimg.com/ext/old-error.mp4",
+	}
+	if !slices.Equal(urls, want) {
+		t.Fatalf("expected retryable assets %v, got %v", want, urls)
+	}
+
+	forced, err := st.ListMediaAssetsForDownload(ctx, 10, true)
+	if err != nil {
+		t.Fatalf("ListMediaAssetsForDownload(force): %v", err)
+	}
+	if len(forced) != len(rows) {
+		t.Fatalf("expected force to include all assets, got %d", len(forced))
+	}
+}
+
 func TestSaveMediaDownloadClearsLocalPrunedAtOnRestore(t *testing.T) {
 	t.Parallel()
 
@@ -300,6 +362,59 @@ func TestSaveMediaDownloadClearsLocalPrunedAtOnRestore(t *testing.T) {
 	}
 	if asset.LocalPath != "media/x/video/ab/restored.mp4" {
 		t.Fatalf("unexpected local path after restore: %+v", asset)
+	}
+}
+
+func TestSaveMediaDownloadBlocksAfterRepeatedErrors(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 5, 5, 14, 1, 0, time.UTC)
+
+	result, err := st.db.ExecContext(ctx, `
+		INSERT INTO media_assets (
+			remote_url, media_type, download_status, download_error_count,
+			last_download_attempt_at, discovered_at, updated_at
+		) VALUES (?, 'video', 'error', ?, ?, ?, ?)`,
+		"https://video.twimg.com/ext/flaky.mp4",
+		model.MediaDownloadMaxConsecutiveErrors-1,
+		now.Add(-model.MediaDownloadRetryCooldown-time.Minute).Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("insert media asset: %v", err)
+	}
+	assetID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("asset id: %v", err)
+	}
+
+	changed, err := st.SaveMediaDownload(ctx, assetID, model.MediaDownloadResult{
+		Status:      "error",
+		Error:       "context deadline exceeded",
+		AttemptedAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("SaveMediaDownload: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected terminal error update to change row")
+	}
+
+	asset, err := st.GetMediaAsset(ctx, assetID)
+	if err != nil {
+		t.Fatalf("GetMediaAsset: %v", err)
+	}
+	if asset.DownloadStatus != "blocked" {
+		t.Fatalf("expected blocked media asset, got %+v", asset)
+	}
+	if asset.DownloadErrors != model.MediaDownloadMaxConsecutiveErrors {
+		t.Fatalf("expected %d download errors, got %+v", model.MediaDownloadMaxConsecutiveErrors, asset)
+	}
+	if !strings.Contains(asset.DownloadError, "blocked after 3 failed media download attempts") {
+		t.Fatalf("expected terminal error message, got %q", asset.DownloadError)
 	}
 }
 
@@ -563,7 +678,8 @@ func TestSaveXHydrationBackfillsVideoMediaFromRawPayload(t *testing.T) {
 											"video_info":{
 												"variants":[
 													{"content_type":"application/x-mpegURL","url":"https://video.twimg.com/ext/playlist.m3u8"},
-													{"bitrate":832000,"content_type":"video/mp4","url":"https://video.twimg.com/ext/real.mp4"}
+													{"bitrate":832000,"content_type":"video/mp4","url":"https://video.twimg.com/ext/low.mp4"},
+													{"bitrate":4320000,"content_type":"video/mp4","url":"https://video.twimg.com/ext/3840x2160/high.mp4"}
 												]
 											}
 										}
@@ -594,7 +710,7 @@ func TestSaveXHydrationBackfillsVideoMediaFromRawPayload(t *testing.T) {
 	if refs[0].MediaType != "video" {
 		t.Fatalf("expected video media ref, got %+v", refs[0])
 	}
-	if refs[0].RemoteURL != "https://video.twimg.com/ext/real.mp4" {
+	if refs[0].RemoteURL != "https://video.twimg.com/ext/3840x2160/high.mp4" {
 		t.Fatalf("expected playable video url, got %+v", refs[0])
 	}
 }
@@ -655,6 +771,71 @@ func TestListItemsForXHydrationIncludesCachedMediaPendingDownloads(t *testing.T)
 	}
 	if len(items) != 0 {
 		t.Fatalf("expected completed media item to drop out of hydration queue, got %#v", items)
+	}
+}
+
+func TestListItemsForXHydrationSkipsMediaInRetryBackoffOrBlocked(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	recentAttempt := now.Add(-time.Hour).Format(time.RFC3339)
+
+	recentErrorID := insertTestItem(t, st, "x:recent-media-error", "", "", now)
+	if _, err := st.SaveXHydration(ctx, recentErrorID, model.XHydration{
+		FullText:  "recent error",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON:   `{"snapshot":{"media_objects":[{"type":"video","url":"https://video.twimg.com/ext/recent-error.mp4","expanded_url":"https://x.com/example/status/123/video/1","width":1920,"height":1080}]}}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration recent: %v", err)
+	}
+	blockedID := insertTestItem(t, st, "x:blocked-media-error", "", "", now)
+	if _, err := st.SaveXHydration(ctx, blockedID, model.XHydration{
+		FullText:  "blocked",
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON:   `{"snapshot":{"media_objects":[{"type":"video","url":"https://video.twimg.com/ext/blocked.mp4","expanded_url":"https://x.com/example/status/456/video/1","width":1920,"height":1080}]}}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration blocked: %v", err)
+	}
+
+	for _, row := range []struct {
+		itemID   int64
+		status   string
+		errCount int
+	}{
+		{recentErrorID, "error", 1},
+		{blockedID, "blocked", model.MediaDownloadMaxConsecutiveErrors},
+	} {
+		if _, err := st.db.ExecContext(ctx, `
+			UPDATE media_assets
+			SET download_status = ?,
+				download_error_count = ?,
+				last_download_attempt_at = ?
+			WHERE id IN (
+				SELECT media_asset_id
+				FROM item_media_links
+				WHERE item_id = ?
+			)`,
+			row.status,
+			row.errCount,
+			recentAttempt,
+			row.itemID,
+		); err != nil {
+			t.Fatalf("update media status for %d: %v", row.itemID, err)
+		}
+	}
+
+	items, err := st.ListItemsForXHydration(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXHydration: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected recent/blocked media to stay out of hydration queue, got %#v", items)
 	}
 }
 

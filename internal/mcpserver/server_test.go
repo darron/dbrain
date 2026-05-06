@@ -59,6 +59,10 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 	if initResult["protocolVersion"] != protocolVersion {
 		t.Fatalf("unexpected protocol version: %#v", initResult["protocolVersion"])
 	}
+	serverInfo := initResult["serverInfo"].(map[string]interface{})
+	if serverInfo["version"] == "0.1.0" || strings.TrimSpace(fmt.Sprint(serverInfo["version"])) == "" {
+		t.Fatalf("expected build-derived server version, got %#v", serverInfo["version"])
+	}
 	capabilities := initResult["capabilities"].(map[string]interface{})
 	if _, ok := capabilities["resources"]; !ok {
 		t.Fatalf("expected resources capability: %#v", capabilities)
@@ -584,6 +588,9 @@ func TestServerSearchTool(t *testing.T) {
 	if !strings.Contains(text, "tagmcp, research") {
 		t.Fatalf("expected search result text to contain user tags, got %q", text)
 	}
+	if strings.Contains(text, cfg.VaultDir) {
+		t.Fatalf("search result text exposed absolute vault path: %q", text)
+	}
 	results := structured["results"].([]interface{})
 	first := results[0].(map[string]interface{})
 	if first["user_tags"] != "tagmcp, research" {
@@ -834,6 +841,12 @@ func TestServerGetToolDefaultsToDBEvidence(t *testing.T) {
 	}
 	if strings.Contains(text, "STALE MARKDOWN CONTENT") {
 		t.Fatalf("default get should not read rendered markdown: %q", text)
+	}
+	if strings.Contains(text, cfg.VaultDir) {
+		t.Fatalf("get result text exposed absolute vault path: %q", text)
+	}
+	if structured["note"] != notePath {
+		t.Fatalf("expected relative note path, got %#v", structured["note"])
 	}
 	item := structured["item"].(map[string]interface{})
 	if _, ok := item["raw_json"]; ok {
@@ -1099,6 +1112,11 @@ func TestServerGetToolRenderedModeReadsMarkdown(t *testing.T) {
 	first := sections[0].(map[string]interface{})
 	if first["name"] != "rendered_note" || !strings.Contains(first["text"].(string), "rendered markdown evidence") {
 		t.Fatalf("expected rendered note section, got %#v", first)
+	}
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if strings.Contains(text, cfg.VaultDir) {
+		t.Fatalf("rendered get text exposed absolute vault path: %q", text)
 	}
 }
 
@@ -1627,6 +1645,13 @@ func TestServerRelatedToolForItem(t *testing.T) {
 	relatedItems := structured["related_items"].([]interface{})
 	if len(relatedItems) != 1 {
 		t.Fatalf("expected 1 related quoted item, got %#v", structured)
+	}
+	childItem := relatedItems[0].(map[string]interface{})
+	if childItem["source_key"] != "x:test-mcp-related-quote" {
+		t.Fatalf("expected related child source key, got %#v", childItem)
+	}
+	if _, ok := childItem["raw_json"]; ok {
+		t.Fatalf("expected slim related child item without raw_json, got %#v", childItem)
 	}
 	if int(structured["count"].(float64)) != 2 {
 		t.Fatalf("expected total related count to include sources and child items, got %#v", structured)
@@ -2267,6 +2292,9 @@ func TestServerReadItemResource(t *testing.T) {
 	text := contents[0].(map[string]interface{})["text"].(string)
 	if !strings.Contains(text, "MCP Resource Item") || !strings.Contains(text, "full note body") {
 		t.Fatalf("unexpected resource text: %q", text)
+	}
+	if strings.Contains(text, cfg.VaultDir) {
+		t.Fatalf("resource text exposed absolute vault path: %q", text)
 	}
 }
 

@@ -1,0 +1,193 @@
+package syncjob
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/store"
+)
+
+type syncStageID string
+
+const (
+	syncStageAppleNotes   syncStageID = "apple_notes"
+	syncStageSafariTabs   syncStageID = "safari_tabs"
+	syncStageXFrontier    syncStageID = "x_frontier"
+	syncStageXMedia       syncStageID = "x_media"
+	syncStageXPhotoOCR    syncStageID = "x_photo_ocr"
+	syncStageGitHub       syncStageID = "github"
+	syncStageYouTube      syncStageID = "youtube"
+	syncStageSources      syncStageID = "sources"
+	syncStageCategorize   syncStageID = "categorize"
+	syncStageMediaArchive syncStageID = "media_archive"
+)
+
+type syncStage struct {
+	ID      syncStageID
+	After   []syncStageID
+	Enabled func(stageOptions) bool
+	Run     func(context.Context, config.Config, *store.Store, stageOptions, *Stats) error
+}
+
+func defaultSyncStagePlan() []syncStage {
+	return []syncStage{
+		{
+			ID:      syncStageAppleNotes,
+			Enabled: func(opts stageOptions) bool { return opts.AppleNotes.Enabled },
+			Run:     runAppleNotesSyncStage,
+		},
+		{
+			ID:      syncStageSafariTabs,
+			After:   []syncStageID{syncStageAppleNotes},
+			Enabled: func(opts stageOptions) bool { return opts.SafariTabs.Enabled },
+			Run:     runSafariTabsSyncStage,
+		},
+		{
+			ID: syncStageXFrontier,
+			After: []syncStageID{
+				syncStageAppleNotes,
+				syncStageSafariTabs,
+			},
+			Enabled: syncXFrontierEnabled,
+			Run:     runXFrontierSyncStage,
+		},
+		{
+			ID:      syncStageXMedia,
+			After:   []syncStageID{syncStageXFrontier},
+			Enabled: func(opts stageOptions) bool { return opts.XMedia.Enabled },
+			Run:     runXMediaSyncStage,
+		},
+		{
+			ID:      syncStageXPhotoOCR,
+			After:   []syncStageID{syncStageXFrontier},
+			Enabled: func(opts stageOptions) bool { return opts.XPhotoOCR.Enabled },
+			Run:     runXPhotoOCRSyncStage,
+		},
+		{
+			ID:      syncStageGitHub,
+			Enabled: func(opts stageOptions) bool { return opts.GitHub.Enabled },
+			Run:     runGitHubSyncStage,
+		},
+		{
+			ID:      syncStageYouTube,
+			Enabled: func(opts stageOptions) bool { return opts.YouTube.Enabled },
+			Run:     runYouTubeSyncStage,
+		},
+		{
+			ID:      syncStageSources,
+			After:   []syncStageID{syncStageXFrontier, syncStageGitHub, syncStageYouTube},
+			Enabled: func(opts stageOptions) bool { return opts.Sources.Enabled },
+			Run:     runSourcesSyncStage,
+		},
+		{
+			ID:      syncStageCategorize,
+			After:   []syncStageID{syncStageXMedia, syncStageXPhotoOCR, syncStageSources},
+			Enabled: func(opts stageOptions) bool { return opts.Categorize.Enabled },
+			Run:     runCategorizeSyncStage,
+		},
+		{
+			ID: syncStageMediaArchive,
+			After: []syncStageID{
+				syncStageXMedia,
+				syncStageXPhotoOCR,
+				syncStageCategorize,
+			},
+			Enabled: func(opts stageOptions) bool { return opts.Archive.Enabled },
+			Run:     runMediaArchiveSyncStage,
+		},
+	}
+}
+
+func runSyncStagePlan(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	for _, stage := range defaultSyncStagePlan() {
+		if !stage.Enabled(opts) {
+			continue
+		}
+		if err := stage.Run(ctx, cfg, st, opts, stats); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSyncStagePlan(plan []syncStage) error {
+	seen := map[syncStageID]struct{}{}
+	for _, stage := range plan {
+		if _, ok := seen[stage.ID]; ok {
+			return fmt.Errorf("duplicate sync stage %q", stage.ID)
+		}
+		for _, dependency := range stage.After {
+			if _, ok := seen[dependency]; !ok {
+				return fmt.Errorf("sync stage %q must run after unknown or later stage %q", stage.ID, dependency)
+			}
+		}
+		seen[stage.ID] = struct{}{}
+	}
+	return nil
+}
+
+func syncXFrontierEnabled(opts stageOptions) bool {
+	return opts.XBookmarks.Enabled || opts.X.Enabled || opts.Links.Enabled
+}
+
+func runAppleNotesSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeAppleNotesStage(ctx, cfg, st, opts)
+	stats.AppleNotes = stage
+	return err
+}
+
+func runSafariTabsSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeSafariTabsStage(ctx, cfg, st, opts)
+	stats.SafariTabs = stage
+	return err
+}
+
+func runXFrontierSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	return executeXFrontierStages(ctx, cfg, st, opts, stats)
+}
+
+func runXMediaSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeXMediaStage(ctx, cfg, st, opts)
+	stats.XMedia = stage
+	return err
+}
+
+func runXPhotoOCRSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeXPhotoOCRStage(ctx, cfg, st, opts)
+	stats.XPhotoOCR = stage
+	return err
+}
+
+func runGitHubSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeGitHubStage(ctx, cfg, st, opts)
+	stats.GitHub = stage
+	return err
+}
+
+func runYouTubeSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeYouTubeStage(ctx, cfg, st, opts)
+	stats.YouTube = stage
+	return err
+}
+
+func runSourcesSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeSourcesStage(ctx, cfg, st, opts)
+	stats.Sources = stage
+	return err
+}
+
+func runCategorizeSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeCategorizeStage(ctx, cfg, st, opts)
+	if err != nil {
+		return err
+	}
+	stats.Categorize = stage
+	return nil
+}
+
+func runMediaArchiveSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeMediaArchiveStage(ctx, cfg, st, opts)
+	stats.MediaArchive = stage
+	return err
+}

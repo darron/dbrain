@@ -363,7 +363,7 @@ func installFakeSummarize(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "summarize")
-	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"input\":{\"model\":\"test/model\"},\"extracted\":{\"url\":\"\",\"title\":\"\",\"description\":\"\",\"siteName\":\"\",\"content\":\"\"},\"summary\":\"apple note summary\"}'\n"
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ] || [ \"$1\" = \"version\" ]; then echo \"test-1.0.0\"; exit 0; fi\ncat >/dev/null\nprintf '%s' '{\"input\":{\"model\":\"test/model\"},\"extracted\":{\"url\":\"\",\"title\":\"\",\"description\":\"\",\"siteName\":\"\",\"content\":\"\"},\"summary\":\"apple note summary\"}'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)
 	}
@@ -376,7 +376,7 @@ func installCountingFakeSummarize(t *testing.T) string {
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "counter")
 	path := filepath.Join(dir, "summarize")
-	script := "#!/bin/sh\ncat >/dev/null\ncount=0\nif [ -f " + shellQuote(counter) + " ]; then count=$(cat " + shellQuote(counter) + "); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > " + shellQuote(counter) + "\nprintf '%s' '{\"input\":{\"model\":\"test/model\"},\"extracted\":{\"url\":\"\",\"title\":\"\",\"description\":\"\",\"siteName\":\"\",\"content\":\"\"},\"summary\":\"apple note summary\"}'\n"
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ] || [ \"$1\" = \"version\" ]; then echo \"test-1.0.0\"; exit 0; fi\ncat >/dev/null\ncount=0\nif [ -f " + shellQuote(counter) + " ]; then count=$(cat " + shellQuote(counter) + "); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > " + shellQuote(counter) + "\nprintf '%s' '{\"input\":{\"model\":\"test/model\"},\"extracted\":{\"url\":\"\",\"title\":\"\",\"description\":\"\",\"siteName\":\"\",\"content\":\"\"},\"summary\":\"apple note summary\"}'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)
 	}

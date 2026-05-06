@@ -59,13 +59,20 @@ Prior evidence metadata for query expansion:
 			t.Fatalf("did not expect scaffolding term %q in %#v", noisy, hints.Terms)
 		}
 	}
-	for _, want := range []string{"tanka", "helm", "jsonnet", "configuration", "management", "yaml", "alternative"} {
+	for _, want := range []string{"tanka", "kubernetes", "helm", "alternatives"} {
 		if !containsString(hints.Terms, want) {
 			t.Fatalf("expected term %q in %#v", want, hints.Terms)
 		}
 	}
-	if !containsString(hints.TagQueries, "configuration-management") || !containsString(hints.TagQueries, "yaml-alternative") {
-		t.Fatalf("expected useful adjacent tag aliases, got %#v", hints.TagQueries)
+	for _, noisy := range []string{"grafana", "jsonnet", "configuration", "management", "yaml"} {
+		if containsString(hints.Terms, noisy) {
+			t.Fatalf("did not expect prior evidence term %q in %#v", noisy, hints.Terms)
+		}
+	}
+	for _, noisy := range []string{"configuration-management", "yaml-alternative"} {
+		if containsString(hints.TagQueries, noisy) {
+			t.Fatalf("did not expect prior evidence tag alias %q in %#v", noisy, hints.TagQueries)
+		}
 	}
 
 	hints = Hints(`Current question: Father charged with killing young son, daughter who were found in vehicle in Calgary\n\nRecent user questions:\n- Two young children found in an SUV in Calgary.\n\nRelevant prior evidence source keys:\n- x:1886891289838526774\n- src:c2c2fb606ce8`)
@@ -101,6 +108,32 @@ Prior evidence metadata for query expansion:
 	wantTerms = []string{"model", "hermes", "agent"}
 	if !reflect.DeepEqual(hints.Terms, wantTerms) {
 		t.Fatalf("expected corpus-framing model query to normalize to %#v, got %#v", wantTerms, hints.Terms)
+	}
+
+	hints = Hints(`Current question: what about litestream?
+
+Recent user questions:
+- sqlite replication
+
+Prior evidence titles for query focus:
+- Marmot V2 - Distributed SQLite Replicator - Nextra | web
+- maxpert/marmot | github
+- colmi_r02_client API documentation | web
+- maxpert/marmot | github_star
+- colmi_r02_client API documentation | safari_tab`)
+	wantTerms = []string{"litestream", "sqlite", "replication"}
+	if !reflect.DeepEqual(hints.Terms, wantTerms) {
+		t.Fatalf("expected prior evidence titles to be ignored, got %#v", hints.Terms)
+	}
+	for _, noisy := range []string{"marmot", "colmi", "client", "api", "documentation", "safari", "tab"} {
+		if containsString(hints.Terms, noisy) {
+			t.Fatalf("did not expect prior evidence term %q in %#v", noisy, hints.Terms)
+		}
+	}
+
+	hints = Hints(`Current question: what about litestream? Recent user questions: sqlite replication Prior evidence titles for query focus: Marmot V2 Distributed SQLite Replicator Nextra web colmi_r02_client API documentation safari_tab`)
+	if !reflect.DeepEqual(hints.Terms, wantTerms) {
+		t.Fatalf("expected flattened chat scaffold to ignore prior evidence titles, got %#v", hints.Terms)
 	}
 }
 

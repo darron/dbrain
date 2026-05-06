@@ -101,6 +101,68 @@ func TestUpsertSourceQueuesManualSourceForEnrichment(t *testing.T) {
 	}
 }
 
+func TestHTTP429SourceExtractionFailureUsesCooldownWithoutImmediateFinalAttempt(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:rate-limited", "https://archive.is/")
+	failure := model.ExtractResult{
+		Status: model.SourceExtractStatusError,
+		Error:  "run summarize: Failed to fetch HTML document (status 429)",
+		Tool:   "summarize",
+	}
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, failure, ""); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	source, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractFailureKind != model.SourceFailureKindRateLimited {
+		t.Fatalf("expected rate-limited failure kind, got %+v", source)
+	}
+
+	pending, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment recent: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected recent 429 failure to stay on cooldown, got %+v", pending)
+	}
+
+	backlog, err := st.Backlog(ctx, "dbrain-v1", "summarize", "")
+	if err != nil {
+		t.Fatalf("Backlog recent: %v", err)
+	}
+	if backlog.SourceExtractionPending != 0 {
+		t.Fatalf("expected recent 429 failure to be absent from extraction backlog, got %+v", backlog)
+	}
+
+	oldFailure := time.Now().UTC().Add(-13 * time.Hour).Format(time.RFC3339)
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET extract_failure_count = 4,
+			extract_first_failed_at = ?,
+			extract_last_failed_at = ?
+		WHERE id = ?`,
+		oldFailure,
+		oldFailure,
+		sourceID,
+	); err != nil {
+		t.Fatalf("age rate-limited source: %v", err)
+	}
+
+	pending, err = st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment old: %v", err)
+	}
+	if got, want := sourceKeys(pending), []string{"src:rate-limited"}; !sameStringSet(got, want) {
+		t.Fatalf("expected old 429 failure to retry after cooldown, got %v", got)
+	}
+}
+
 func TestListItemsForLinkDiscoveryIncludesAppleNotes(t *testing.T) {
 	t.Parallel()
 
@@ -1480,6 +1542,45 @@ func TestSaveSourceExtractionTracksFailureCountsAndResetsOnSuccess(t *testing.T)
 	}
 }
 
+func TestSaveSourceUserTagsPropagatesFTSDeleteError(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:test-fts-delete-error", "https://example.com/fts-delete-error")
+
+	if _, err := st.db.ExecContext(ctx, `DROP TABLE sources_fts`); err != nil {
+		t.Fatalf("drop sources_fts: %v", err)
+	}
+
+	err := st.SaveSourceUserTags(ctx, sourceID, "source-tag")
+	if err == nil {
+		t.Fatal("expected SaveSourceUserTags to return FTS delete error")
+	}
+	if !strings.Contains(err.Error(), "delete source fts") {
+		t.Fatalf("expected delete source fts error, got %v", err)
+	}
+}
+
+func TestSaveSourceUserTagsPropagatesFTSInsertError(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:test-fts-insert-error", "https://example.com/fts-insert-error")
+
+	if _, err := st.db.ExecContext(ctx, `DROP TABLE sources_fts`); err != nil {
+		t.Fatalf("drop sources_fts: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `CREATE TABLE sources_fts(rowid INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create incompatible sources_fts: %v", err)
+	}
+
+	err := st.SaveSourceUserTags(ctx, sourceID, "source-tag")
+	if err == nil {
+		t.Fatal("expected SaveSourceUserTags to return FTS insert error")
+	}
+	if !strings.Contains(err.Error(), "insert source fts") {
+		t.Fatalf("expected insert source fts error, got %v", err)
+	}
+}
+
 func TestListSourcesForEnrichmentSkipsRecentErrorsAndOrdersOldRetries(t *testing.T) {
 	t.Parallel()
 
@@ -1513,6 +1614,173 @@ func TestListSourcesForEnrichmentSkipsRecentErrorsAndOrdersOldRetries(t *testing
 	}
 	if sources[3].SourceKey != "src:recent-final" {
 		t.Fatalf("expected recent final-attempt source last, got %s", sources[3].SourceKey)
+	}
+}
+
+func TestBacklogSourceCountsMatchEnrichmentSelectors(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	oldFailure := now.Add(-13 * time.Hour).Format(time.RFC3339)
+	recentFailure := now.Format(time.RFC3339)
+	extractedAt := now.Add(-time.Hour).Format(time.RFC3339)
+
+	type sourceFixture struct {
+		key                  string
+		extractStatus        string
+		failureKind          string
+		failureCount         int
+		firstFailedAt        string
+		lastFailedAt         string
+		extractedText        string
+		extractedAt          string
+		summaryStatus        string
+		summaryContentHash   string
+		summaryPromptVersion string
+		summaryTool          string
+		summaryToolVersion   string
+	}
+	insert := func(f sourceFixture) {
+		t.Helper()
+
+		contentHash := "hash-" + f.key
+		if f.summaryContentHash == "current" {
+			f.summaryContentHash = contentHash
+		}
+		if _, err := st.db.ExecContext(ctx, `
+			INSERT INTO sources (
+				source_key, canonical_url, normalized_url, source_type, domain, note_path,
+				extracted_text, extract_status, extract_failure_kind, extract_failure_count,
+				extract_first_failed_at, extract_last_failed_at, extracted_at,
+				summary_status, summary_content_hash, summary_prompt_version,
+				summary_tool, summary_tool_version, content_hash, created_at, updated_at
+			) VALUES (?, ?, ?, 'web', 'example.com', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			f.key,
+			"https://example.com/"+strings.TrimPrefix(f.key, "src:"),
+			"https://example.com/"+strings.TrimPrefix(f.key, "src:"),
+			"sources/web/"+strings.TrimPrefix(f.key, "src:")+".md",
+			f.extractedText,
+			f.extractStatus,
+			f.failureKind,
+			f.failureCount,
+			f.firstFailedAt,
+			f.lastFailedAt,
+			f.extractedAt,
+			f.summaryStatus,
+			f.summaryContentHash,
+			f.summaryPromptVersion,
+			f.summaryTool,
+			f.summaryToolVersion,
+			contentHash,
+			now.Format(time.RFC3339),
+			now.Format(time.RFC3339),
+		); err != nil {
+			t.Fatalf("insert source fixture %s: %v", f.key, err)
+		}
+	}
+
+	insert(sourceFixture{key: "src:extract-new"})
+	insert(sourceFixture{key: "src:extract-old-error", extractStatus: "error", failureKind: "tls_certificate", failureCount: 1, firstFailedAt: oldFailure, lastFailedAt: oldFailure})
+	insert(sourceFixture{key: "src:extract-recent-error", extractStatus: "error", failureKind: "connectivity", failureCount: 1, firstFailedAt: recentFailure, lastFailedAt: recentFailure})
+	insert(sourceFixture{key: "src:extract-dead", extractStatus: "dead", failureKind: "http_access_denied", failureCount: 3, firstFailedAt: oldFailure, lastFailedAt: oldFailure})
+	insert(sourceFixture{key: "src:summary-new", extractStatus: "ok", extractedText: "summary candidate", extractedAt: extractedAt})
+	insert(sourceFixture{key: "src:summary-error", extractStatus: "ok", extractedText: "summary error candidate", extractedAt: extractedAt, summaryStatus: "error", summaryContentHash: "current", summaryPromptVersion: "dbrain-v1", summaryTool: "summarize", summaryToolVersion: "0.2.0"})
+	insert(sourceFixture{key: "src:summary-stale-prompt", extractStatus: "ok", extractedText: "summary stale candidate", extractedAt: extractedAt, summaryStatus: "ok", summaryContentHash: "current", summaryPromptVersion: "old-prompt", summaryTool: "summarize", summaryToolVersion: "0.2.0"})
+	insert(sourceFixture{key: "src:summary-current", extractStatus: "ok", extractedText: "summary current", extractedAt: extractedAt, summaryStatus: "ok", summaryContentHash: "current", summaryPromptVersion: "dbrain-v1", summaryTool: "summarize", summaryToolVersion: "0.2.0"})
+
+	backlog, err := st.Backlog(ctx, "dbrain-v1", "summarize", "0.2.0")
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog.SourceExtractionPending != 2 {
+		t.Fatalf("expected 2 extraction-pending sources, got %+v", backlog)
+	}
+	if backlog.SourceSummaryPending != 3 {
+		t.Fatalf("expected 3 summary-pending sources, got %+v", backlog)
+	}
+
+	extractionOnly, err := st.ListSourcesForEnrichment(ctx, 50, false, false, "dbrain-v1", "summarize", "0.2.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment extraction-only: %v", err)
+	}
+	if got, want := sourceKeys(extractionOnly), []string{"src:extract-new", "src:extract-old-error"}; !sameStringSet(got, want) {
+		t.Fatalf("expected extraction selector %v, got %v", want, got)
+	}
+
+	withSummary, err := st.ListSourcesForEnrichment(ctx, 50, false, true, "dbrain-v1", "summarize", "0.2.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment summarize: %v", err)
+	}
+	wantSummary := []string{
+		"src:extract-new",
+		"src:extract-old-error",
+		"src:summary-new",
+		"src:summary-error",
+		"src:summary-stale-prompt",
+	}
+	if got := sourceKeys(withSummary); !sameStringSet(got, wantSummary) {
+		t.Fatalf("expected summarize selector %v, got %v", wantSummary, got)
+	}
+}
+
+func TestListSourcesForCategorizeRequiresExtractedOrSummaryEvidence(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+
+	insertTestSource(t, st, "src:categorize-no-evidence", "https://example.com/no-evidence")
+	titleOnlyID := insertTestSource(t, st, "src:categorize-title-only", "https://example.com/title-only")
+	extractedID := insertTestSource(t, st, "src:categorize-extracted", "https://example.com/extracted")
+	summaryID := insertTestSource(t, st, "src:categorize-summary", "https://example.com/summary")
+	taggedEvidenceID := insertTestSource(t, st, "src:categorize-tagged-evidence", "https://example.com/tagged-evidence")
+	taggedNoEvidenceID := insertTestSource(t, st, "src:categorize-tagged-no-evidence", "https://example.com/tagged-no-evidence")
+
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET title = 'Metadata title', description = 'Metadata description' WHERE id = ?`, titleOnlyID); err != nil {
+		t.Fatalf("seed metadata-only source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET extracted_text = 'Extracted evidence', extract_status = 'ok' WHERE id = ?`, extractedID); err != nil {
+		t.Fatalf("seed extracted source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET summary_text = 'Summary evidence', summary_status = 'ok' WHERE id = ?`, summaryID); err != nil {
+		t.Fatalf("seed summary source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET extracted_text = 'Tagged evidence', extract_status = 'ok', user_tags = 'existing-tag' WHERE id = ?`, taggedEvidenceID); err != nil {
+		t.Fatalf("seed tagged evidence source: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET user_tags = 'metadata-tag' WHERE id = ?`, taggedNoEvidenceID); err != nil {
+		t.Fatalf("seed tagged no-evidence source: %v", err)
+	}
+
+	uncategorized, err := st.ListSourcesForCategorize(ctx, 0, false)
+	if err != nil {
+		t.Fatalf("ListSourcesForCategorize non-force: %v", err)
+	}
+	if got, want := sourceKeys(uncategorized), []string{"src:categorize-extracted", "src:categorize-summary"}; !sameStringSet(got, want) {
+		t.Fatalf("expected uncategorized evidence sources %v, got %v", want, got)
+	}
+
+	force, err := st.ListSourcesForCategorize(ctx, 0, true)
+	if err != nil {
+		t.Fatalf("ListSourcesForCategorize force: %v", err)
+	}
+	wantForce := []string{
+		"src:categorize-extracted",
+		"src:categorize-summary",
+		"src:categorize-tagged-evidence",
+	}
+	if got := sourceKeys(force); !sameStringSet(got, wantForce) {
+		t.Fatalf("expected forced evidence sources %v, got %v", wantForce, got)
+	}
+
+	noEvidenceTags, err := st.ListCategorizedSourcesWithoutEvidence(ctx)
+	if err != nil {
+		t.Fatalf("ListCategorizedSourcesWithoutEvidence: %v", err)
+	}
+	if got, want := sourceKeys(noEvidenceTags), []string{"src:categorize-tagged-no-evidence"}; !sameStringSet(got, want) {
+		t.Fatalf("expected tagged no-evidence sources %v, got %v", want, got)
 	}
 }
 
@@ -1617,4 +1885,29 @@ func insertTestItem(t *testing.T, st *Store, sourceKey string, articleTitle stri
 		t.Fatalf("item id %s: %v", sourceKey, err)
 	}
 	return itemID
+}
+
+func sourceKeys(sources []model.SourceDocument) []string {
+	keys := make([]string, 0, len(sources))
+	for _, source := range sources {
+		keys = append(keys, source.SourceKey)
+	}
+	return keys
+}
+
+func sameStringSet(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]int, len(left))
+	for _, value := range left {
+		seen[value]++
+	}
+	for _, value := range right {
+		seen[value]--
+		if seen[value] < 0 {
+			return false
+		}
+	}
+	return true
 }

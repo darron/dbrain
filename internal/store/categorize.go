@@ -49,6 +49,27 @@ func (s *Store) ListCategorizedSources(ctx context.Context) ([]model.SourceDocum
 	return sources, rows.Err()
 }
 
+// ListCategorizedSourcesWithoutEvidence returns tagged sources that lack extracted or summarized evidence.
+func (s *Store) ListCategorizedSourcesWithoutEvidence(ctx context.Context) ([]model.SourceDocument, error) {
+	query := `SELECT ` + sourceSelectColumns + ` FROM sources WHERE user_tags != '' AND NOT (` + sourceCategorizationEvidenceWhere + `) ORDER BY id ASC`
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list categorized sources without evidence: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var sources []model.SourceDocument
+	for rows.Next() {
+		var source model.SourceDocument
+		if err := scanSource(rows, &source); err != nil {
+			return nil, fmt.Errorf("scan categorized source without evidence: %w", err)
+		}
+		sources = append(sources, source)
+	}
+	return sources, rows.Err()
+}
+
 // ListItemsForCategorize returns items ordered newest-first.
 // When force is false only items with an empty user_tags field are returned.
 func (s *Store) ListItemsForCategorize(ctx context.Context, limit int, force bool) ([]model.Item, error) {
@@ -78,12 +99,12 @@ func (s *Store) ListItemsForCategorize(ctx context.Context, limit int, force boo
 	return items, rows.Err()
 }
 
-// ListSourcesForCategorize returns sources ordered newest-first.
-// When force is false only sources with an empty user_tags field are returned.
+// ListSourcesForCategorize returns sources with extracted or summarized evidence ordered newest-first.
+// When force is false only evidence-bearing sources with an empty user_tags field are returned.
 func (s *Store) ListSourcesForCategorize(ctx context.Context, limit int, force bool) ([]model.SourceDocument, error) {
-	query := `SELECT ` + sourceSelectColumns + ` FROM sources`
+	query := `SELECT ` + sourceSelectColumns + ` FROM sources WHERE ` + sourceCategorizationEvidenceWhere
 	if !force {
-		query += ` WHERE user_tags = ''`
+		query += ` AND user_tags = ''`
 	}
 	query += ` ORDER BY updated_at DESC, id DESC`
 	if limit > 0 {

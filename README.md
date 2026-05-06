@@ -114,6 +114,64 @@ still pass `--caffeinate` to force it explicitly.
 Structured debug logging is enabled by default. Use `--no-debug` when you want
 quiet CLI output.
 
+## Safety And Trust Model
+
+`dbrain` is local-first, but it stores high-signal personal data. Treat
+`brain.db`, rendered vault notes, media files, logs, temp files, chat
+transcripts, and tsnet state as private local state. Keep `data/`, `vault/`,
+`tmp/`, `cache/`, `logs/`, `.env`, `.envrc`, `.gocache/`, `.gomodcache/`,
+`web/ui/node_modules/`, and `bin/` out of git and public release archives unless
+you intentionally scrub and include them.
+
+Imports are intended to be import-only against upstream services and apps. X,
+GitHub, YouTube, Apple Notes, and Safari tab flows materialize local evidence;
+Apple Notes and Safari tabs read from dbrain-owned SQLite snapshots. Normal
+imports should not mutate upstream apps or delete local memories just because an
+upstream bookmark, tab, note, star, or video later disappears.
+
+`dbrain serve web` and `dbrain serve remote --web` are trusted read/write
+administration surfaces. They can edit tags, queue links, save diagnostic chat
+transcripts, trigger model-backed research/synthesis, and access archived media
+helpers. `serve remote` relies on Tailscale/tsnet identity, ACLs, node tags, and
+same-origin checks; there is no separate dbrain login or per-route authorization
+layer. Do not expose the web UI through Tailscale Funnel or a public reverse
+proxy. MCP surfaces are read-only, but they still expose local brain content to
+connected clients.
+
+Model-backed commands can send local evidence to the configured model provider.
+Local Ollama calls stay on the configured Ollama endpoint. Hosted OpenRouter or
+OpenAI-compatible calls may receive source extracts, note text, item text,
+transcripts, OCR text, tags, and images depending on the command. Web, CLI, and
+MCP research use model-assisted query planning by default when a planner or
+summary model is configured; use `--no-planner`, `disable_planner=true`, or
+retrieval-only modes when you want deterministic local retrieval without planner
+model calls.
+
+Archive features use S3-compatible storage only when configured. Media archives
+and SQLite snapshots can contain personal content. A public media base URL makes
+archived media links anonymously readable wherever that bucket policy allows;
+without a public base URL, the web UI can still proxy or sign archive access for
+trusted web users.
+
+Local maintenance commands can delete, replace, or reset local dbrain state:
+`dbrain archive media --prune-local` can remove local media files after archived
+coverage is complete, `dbrain sqlite restore` replaces the active SQLite DB
+after moving existing DB files aside, `dbrain tsnet reset` removes durable
+Tailscale node state, `dbrain import apple-notes --forget-excluded` purges
+indexed local content for notes that are now excluded, and `dbrain import
+youtube` prunes deprecated `youtube_history` rows and orphaned legacy YouTube
+sources as part of its import cleanup. `dbrain repair sources` clears selected
+derived extraction/summary state so it can be rebuilt. Prefer `--dry-run` on
+commands that offer it.
+
+See [docs/architecture.md](docs/architecture.md) for the current package/state
+architecture and [docs/web-route-capabilities.md](docs/web-route-capabilities.md)
+for the web route capability matrix. See
+[docs/schema-migrations.md](docs/schema-migrations.md) for SQLite migration,
+backup, restore, and downgrade policy. See
+[docs/maintenance-operations.md](docs/maintenance-operations.md) for local
+delete, purge, prune, restore, and reset paths.
+
 ## Dev Tasks
 
 - `task build`
@@ -477,6 +535,7 @@ dbrain import apple-notes
 dbrain import apple-notes --force
 dbrain import apple-notes --summarize=false
 dbrain import apple-notes --exclude-folder Private
+dbrain import apple-notes --exclude-folder Private --forget-excluded
 dbrain import apple-notes --skip-attachment-ocr
 ```
 
@@ -489,7 +548,9 @@ targets one device by name or UUID, materializes matching HTTP(S) tabs as
 through normal link discovery, source extraction, source summaries, rendering,
 and categorization. Only tabs Safari has materialized into `CloudTabs.db` are
 visible to dbrain; Private Browsing tabs, Start Page tabs, and not-yet-synced
-iCloud changes may not appear.
+iCloud changes may not appear. In practice, macOS may not refresh that local
+database until Safari is running on the machine doing the import; launching
+Safari can make newly synced tabs appear in a follow-up import within seconds.
 
 ```sh
 dbrain import safari-tabs devices
@@ -516,14 +577,16 @@ to disable it for text-only models. `--categorize-limit` is applied separately
 to items and sources, so `--categorize-limit 25` can process up to 25 item rows
 and 25 source rows.
 
-The X media and X photo OCR stages use the same X batch limit as `hydrate x`
-(`--x-limit`). In the default configuration this combines the requirements of
-X bookmark import, X hydration, X media transcription, X photo OCR, link/source
-enrichment, YouTube import, and categorization. A practical local setup usually
-includes a supported Chrome/Chromium profile with valid cookies plus Ollama or
-an OpenRouter key, `mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports
-`--skip-*` flags when you only want part of the pipeline. Apple Notes is not
-run by default; enable it with `--apple-notes` or
+X hydration uses `--x-limit`. X media transcription and X photo OCR can be
+bounded independently with `--x-media-limit` and `--x-photo-ocr-limit`; either
+limit falls back to `--x-limit` when left at 0. In the default configuration
+this combines the requirements of X bookmark import, X hydration, X media
+transcription, X photo OCR, link/source enrichment, YouTube import, and
+categorization. A practical local setup usually includes a supported
+Chrome/Chromium profile with valid cookies plus Ollama or an OpenRouter key,
+`mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports `--skip-*` flags when
+you only want part of the pipeline. Apple Notes is not run by default; enable it
+with `--apple-notes` or
 `DBRAIN_APPLE_NOTES_ENABLED=true`. Safari tabs are also disabled by default;
 enable them with `--safari-tabs --safari-tabs-device <device>` or
 `DBRAIN_SAFARI_TABS_ENABLED=true` plus `DBRAIN_SAFARI_TABS_DEVICE=<device>`.
@@ -541,7 +604,9 @@ dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short 
 
 Optional manual archive/prune pass for finalized media. It can either just
 mark/prune already-uploaded media or upload directly to an S3-compatible bucket
-first when `--upload` or archive-upload env vars are configured.
+first when `--upload` or archive-upload env vars are configured. `--prune-local`
+deletes a local media file only after all rows sharing that `local_path` are
+archived.
 
 ### `dbrain sqlite archive`
 
@@ -557,13 +622,15 @@ files aside with a timestamped suffix, then installs the restored database.
 
 ### `dbrain serve web`
 
-Serves the local UI plus authenticated archived-media helpers. When archive
-credentials are configured, `/media/asset/<media-asset-id>` streams archived
-objects through the local server and `/api/media/signed-url?id=<id>` returns a
-short-lived direct URL for one-off access. The Explore page includes Search,
-Research, and Chat modes; Chat runs local research/synthesis turns in browser
-session state and can save a non-indexed Markdown diagnostic transcript under
-`data/chat-transcripts/`.
+Serves the local read/write UI plus authenticated archived-media helpers. It can
+update item/source tags, queue links, run model-backed research/synthesis, and
+save non-indexed chat transcript diagnostics under `data/chat-transcripts/`.
+When archive credentials are configured, `/media/asset/<media-asset-id>` streams
+archived objects through the local server and `/api/media/signed-url?id=<id>`
+returns a short-lived direct URL for one-off access. See
+`docs/web-route-capabilities.md` for the current route capability map.
+Bind this to localhost or another trusted interface unless you have reviewed
+the route surface and trust boundary.
 
 ```sh
 dbrain serve web
@@ -603,6 +670,10 @@ Serves the existing read/write web UI and/or the read-only MCP endpoint on a
 built-in Tailscale `tsnet` node. This is parallel to local stdio and localhost
 HTTP transports; it does not require SSH access to the machine and does not
 replace `dbrain serve web`.
+
+The remote web UI is the same trusted read/write administration surface as
+`serve web`. Tailscale ACLs and node policy govern who can reach it; dbrain does
+not add a second login layer. Do not expose this surface publicly.
 
 The default state directory is `<data_dir>/tsnet/<hostname>`, usually
 `~/.local/share/dbrain/tsnet/dbrain`. Keep this directory out of iCloud,
@@ -738,6 +809,9 @@ each feed entry as an item, stores the canonical video URL once as a source, and
 keeps re-runs idempotent. YouTube source enrichment is transcript-first; when
 captions are missing, `--transcriber auto` tries local audio transcription
 before falling back to a skipped/no-content outcome.
+At the start of each run it also removes deprecated `youtube_history` rows and
+orphaned legacy YouTube sources from older importer versions; command output
+reports those counts as `Items deleted` and `Sources deleted`.
 
 ```sh
 dbrain import youtube --watch-later --liked --browser chrome --profile Default --limit 10 --transcriber auto
@@ -1085,6 +1159,7 @@ number of matched sources first and asks for confirmation unless `--dry-run` or
 `--yes` is passed. For X article repair, add `--rehydrate-x-articles` to also
 clear the linked X item hydration cache so the next `hydrate x` / `sync all`
 run refetches article metadata instead of replaying stale previews.
+This is a local derived-state reset, not an upstream deletion.
 
 ```sh
 dbrain repair sources --domain canada.ca --dry-run
@@ -1112,7 +1187,10 @@ UI source.
 ### `task web-build`
 
 Requires `npm`. Rebuilds the embedded `web/ui/dist` assets from the Svelte
-source tree.
+source tree. `task build` embeds the currently tracked `web/ui/dist` assets but
+does not rebuild them, so run `task web-build` and commit the dist changes when
+UI source or UI build configuration changes. See
+[docs/release-build.md](docs/release-build.md) for the release checklist.
 
 ### `task fmt`
 
@@ -1203,6 +1281,12 @@ client configuration, importer contract, logging behavior, and skill setup.
 This repo includes a Codex skill for agents at `skills/dbrain-mcp/SKILL.md`.
 See [MCP.md](MCP.md#skill) for installation notes and the recommended Codex MCP
 configuration.
+
+## License
+
+`dbrain` is licensed under the MIT License. See [LICENSE](LICENSE).
+Third-party dependency notices are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO
 

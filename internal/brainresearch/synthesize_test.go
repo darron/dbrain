@@ -82,7 +82,8 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	installResearchFakeSummarize(t, root)
+	fakeSummarize := installResearchFakeSummarize(t, root)
+	t.Setenv("DBRAIN_TEST_EXPECT_INPUT_DIR", cfg.TempDir)
 	t.Setenv("DBRAIN_SUMMARY_MODEL", "")
 	t.Setenv("SUMMARIZE_MODEL", "")
 
@@ -100,6 +101,7 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 		Pack:             pack,
 		Model:            "cli/test/research",
 		CLI:              "codex",
+		Binary:           fakeSummarize,
 		Timeout:          5 * time.Second,
 		MaxEvidenceChars: 4000,
 	})
@@ -117,7 +119,7 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 	}
 }
 
-func installResearchFakeSummarize(t *testing.T, root string) {
+func installResearchFakeSummarize(t *testing.T, root string) string {
 	t.Helper()
 
 	binDir := filepath.Join(root, "bin")
@@ -152,6 +154,13 @@ if [ ! -f "$last" ]; then
   echo "expected synthesis input file" >&2
   exit 1
 fi
+case "$last" in
+  "$DBRAIN_TEST_EXPECT_INPUT_DIR"/* ) ;;
+  *)
+    echo "expected synthesis input under $DBRAIN_TEST_EXPECT_INPUT_DIR, got $last" >&2
+    exit 1
+    ;;
+esac
 input="$(cat "$last")"
 case "$input" in
   *"source_key: src:kubeval"* ) ;;
@@ -166,5 +175,5 @@ printf '%s\n' '{"input":{"model":"cli/test/research"},"extracted":{"url":"","tit
 		t.Fatalf("write fake summarize: %v", err)
 	}
 
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return scriptPath
 }

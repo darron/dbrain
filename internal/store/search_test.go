@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,6 +181,174 @@ func TestCountItemTextMatchesUsesIndexedDerivedText(t *testing.T) {
 	}
 	if filteredCount != 0 {
 		t.Fatalf("filtered CountItemTextMatches = %d, want 0", filteredCount)
+	}
+}
+
+func TestRebuildFTSUsesItemEnrichmentMirror(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	if !st.HasFTS() {
+		t.Skip("FTS is not available")
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	result, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-fts-enrichment-mirror",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-fts-enrichment-mirror",
+		CanonicalURL: "https://x.com/example/status/test-fts-enrichment-mirror",
+		Title:        "FTS Mirror Item",
+		Text:         "body without mirror-only terms",
+		ContentHash:  "test-fts-enrichment-mirror-hash",
+		NotePath:     "items/x/2026/test-fts-enrichment-mirror.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	if _, err := st.SaveItemSummary(ctx, result.ItemID, model.SummaryResult{
+		Text:      "current mirror summary alphaftsmirror",
+		Status:    model.ItemSummaryStatusOK,
+		FetchedAt: now,
+	}, "summary-fts-mirror-input"); err != nil {
+		t.Fatalf("save item summary: %v", err)
+	}
+	if _, err := st.SaveItemOCR(ctx, result.ItemID, model.OCRResult{
+		Text:      "current mirror ocr betaftsmirror",
+		Status:    model.ItemOCRStatusOK,
+		FetchedAt: now,
+	}, "ocr-fts-mirror-input"); err != nil {
+		t.Fatalf("save item ocr: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET article_title = ?, article_text = ?
+		WHERE id = ?`,
+		model.XMediaTranscriptArticleTitle,
+		"current mirror transcript gammaftsmirror",
+		result.ItemID,
+	); err != nil {
+		t.Fatalf("save transcript text fixture: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(ctx, result.ItemID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+		t.Fatalf("save transcript state: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_text = 'stale summary',
+			ocr_text = 'stale ocr',
+			article_title = ?,
+			article_text = 'stale transcript'
+		WHERE id = ?`,
+		model.XMediaTranscriptArticleTitle,
+		result.ItemID,
+	); err != nil {
+		t.Fatalf("stale compatibility columns: %v", err)
+	}
+
+	stats, err := st.RebuildFTS(ctx)
+	if err != nil {
+		t.Fatalf("rebuild fts: %v", err)
+	}
+	if stats.Errors != 0 {
+		t.Fatalf("expected no rebuild errors, got %+v", stats)
+	}
+
+	results, err := st.Search(ctx, "alphaftsmirror", 5)
+	if err != nil {
+		t.Fatalf("search summary mirror term: %v", err)
+	}
+	if len(results) == 0 || results[0].SourceKey != "x:test-fts-enrichment-mirror" {
+		t.Fatalf("expected summary mirror search result, got %+v", results)
+	}
+	if !strings.Contains(results[0].Snippet, "alphaftsmirror") {
+		t.Fatalf("expected search snippet from mirror summary, got %q", results[0].Snippet)
+	}
+
+	count, err := st.CountItemTextMatches(ctx, "betaftsmirror", nil)
+	if err != nil {
+		t.Fatalf("count OCR mirror term: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountItemTextMatches for OCR mirror term = %d, want 1", count)
+	}
+
+	results, err = st.Search(ctx, "gammaftsmirror", 5)
+	if err != nil {
+		t.Fatalf("search transcript mirror term: %v", err)
+	}
+	if len(results) == 0 || results[0].SourceKey != "x:test-fts-enrichment-mirror" {
+		t.Fatalf("expected transcript mirror search result, got %+v", results)
+	}
+}
+
+func TestSyncItemFTSByIDUsesItemEnrichmentMirror(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	if !st.HasFTS() {
+		t.Skip("FTS is not available")
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	result, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-fts-enrichment-incremental",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-fts-enrichment-incremental",
+		CanonicalURL: "https://x.com/example/status/test-fts-enrichment-incremental",
+		Title:        "FTS Incremental Mirror Item",
+		Text:         "body without incremental mirror-only terms",
+		ContentHash:  "test-fts-enrichment-incremental-hash",
+		NotePath:     "items/x/2026/test-fts-enrichment-incremental.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	if _, err := st.SaveItemSummary(ctx, result.ItemID, model.SummaryResult{
+		Text:      "incremental mirror summary deltaftsmirror",
+		Status:    model.ItemSummaryStatusOK,
+		FetchedAt: now,
+	}, "summary-fts-incremental-input"); err != nil {
+		t.Fatalf("save item summary: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET summary_text = 'stale incremental summary'
+		WHERE id = ?`,
+		result.ItemID,
+	); err != nil {
+		t.Fatalf("stale compatibility columns: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM items_fts WHERE rowid = ?`, result.ItemID); err != nil {
+		t.Fatalf("clear fts row: %v", err)
+	}
+
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := st.syncItemFTSByIDTx(ctx, tx, result.ItemID); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("sync item fts by id: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+
+	results, err := st.Search(ctx, "deltaftsmirror", 5)
+	if err != nil {
+		t.Fatalf("search incremental mirror term: %v", err)
+	}
+	if len(results) == 0 || results[0].SourceKey != "x:test-fts-enrichment-incremental" {
+		t.Fatalf("expected incremental mirror search result, got %+v", results)
 	}
 }
 

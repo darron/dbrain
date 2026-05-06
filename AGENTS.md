@@ -178,6 +178,10 @@ Safari tabs are another local-first, import-only evidence source. They are not
 dbrain-owned browser state.
 
 - read Safari/iCloud tab state through a dbrain-owned snapshot when possible
+- remember that Safari may need to be running on the import machine before
+  macOS refreshes the local `CloudTabs.db`; launching Safari can make newly
+  synced tabs appear in a follow-up import within seconds, so stale imports can
+  reflect stale upstream local state rather than a dbrain importer bug
 - target a device explicitly for tab imports; do not assume all synced devices
   should be imported together
 - never close, mutate, reorder, or otherwise manage upstream Safari tabs from

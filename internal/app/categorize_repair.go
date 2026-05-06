@@ -12,15 +12,57 @@ import (
 
 func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 	var dryRun bool
+	var clearSourceTagsWithoutEvidence bool
 
 	cmd := &cobra.Command{
 		Use:   "repair",
-		Short: "Apply categories.yaml aliases and drops to all existing user_tags",
+		Short: "Repair category tags or clear unsupported source tags",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig(root.root)
 			if err != nil {
 				return err
+			}
+
+			if clearSourceTagsWithoutEvidence {
+				st, err := store.Open(cfg.DBPath)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = st.Close() }()
+
+				sources, err := st.ListCategorizedSourcesWithoutEvidence(cmd.Context())
+				if err != nil {
+					return err
+				}
+
+				const previewLimit = 20
+				for i, source := range sources {
+					if dryRun {
+						if i < previewLimit {
+							_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[dry-run] %s\n  before: %s\n  after:  \n",
+								source.SourceKey,
+								source.UserTags,
+							)
+						}
+						continue
+					}
+					if err := st.SaveSourceUserTags(cmd.Context(), source.ID, ""); err != nil {
+						return fmt.Errorf("clear source tags %s: %w", source.SourceKey, err)
+					}
+				}
+				if dryRun && len(sources) > previewLimit {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[dry-run] ... %d more sources omitted from preview\n", len(sources)-previewLimit)
+				}
+
+				_, _ = fmt.Fprintln(cmd.OutOrStdout())
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Scanned:   %d\n", len(sources))
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updated:   %d\n", len(sources))
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Unchanged: 0")
+				if dryRun {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "(dry-run — no changes written)")
+				}
+				return nil
 			}
 
 			vocab, err := categoryvocab.Load(cfg.CategoriesPath)
@@ -101,6 +143,7 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing to the database")
+	cmd.Flags().BoolVar(&clearSourceTagsWithoutEvidence, "clear-source-tags-without-evidence", false, "Clear source user_tags for sources that lack extracted text or summary evidence")
 
 	return cmd
 }

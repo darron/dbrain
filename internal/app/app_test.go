@@ -24,6 +24,7 @@ import (
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 	"github.com/darron/dbrain/internal/version"
+	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
 
@@ -1069,6 +1070,174 @@ func TestSyncCommandHelpIncludesAll(t *testing.T) {
 	}
 }
 
+func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
+	root := t.TempDir()
+	var captured syncjob.Options
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() {
+		runSyncAll = oldRunSyncAll
+	})
+	runSyncAll = func(_ context.Context, cfg config.Config, _ *store.Store, opts syncjob.Options) (syncjob.Stats, error) {
+		if cfg.RootDir != root {
+			t.Fatalf("expected root %s, got %s", root, cfg.RootDir)
+		}
+		captured = opts
+		now := time.Unix(0, 0).UTC()
+		return syncjob.Stats{StartedAt: now, CompletedAt: now}, nil
+	}
+
+	cmd := newSyncAllCommand(&rootOptions{root: root})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"--json",
+		"--x-limit", "7",
+		"--x-media-limit", "3",
+		"--x-photo-ocr-limit", "5",
+		"--x-media-download-timeout", "45m",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+	if captured.XLimit != 7 {
+		t.Fatalf("expected x limit 7, got %d", captured.XLimit)
+	}
+	if captured.XMediaLimit != 3 {
+		t.Fatalf("expected x media limit 3, got %d", captured.XMediaLimit)
+	}
+	if captured.XPhotoOCRLimit != 5 {
+		t.Fatalf("expected x photo OCR limit 5, got %d", captured.XPhotoOCRLimit)
+	}
+	if captured.XMediaTimeout != 45*time.Minute {
+		t.Fatalf("expected x media download timeout 45m, got %s", captured.XMediaTimeout)
+	}
+}
+
+func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
+	root := t.TempDir()
+	clearSyncEnvForTest(t)
+	env := strings.Join([]string{
+		"DBRAIN_AUTO_ARCHIVE_MEDIA=true",
+		"DBRAIN_APPLE_NOTES_ENABLED=true",
+		"DBRAIN_APPLE_NOTES_DB_PATH=/tmp/notes.sqlite",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS=Archive, Trash",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS=Work",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_SHARED=true",
+		"DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS=false",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_OCR=false",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES=12345",
+		"DBRAIN_APPLE_NOTES_TESSERACT_BINARY=/opt/bin/tesseract",
+		"DBRAIN_SAFARI_TABS_ENABLED=true",
+		"DBRAIN_SAFARI_TABS_DB_PATH=/tmp/cloudtabs.db",
+		"DBRAIN_SAFARI_TABS_DEVICE=dfone",
+		"DBRAIN_SAFARI_TABS_LIMIT=8",
+		"DBRAIN_SAFARI_TABS_OLDER_THAN=2h",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	resolved, err := resolveSyncAllFlags(root, syncAllFlags{})
+	if err != nil {
+		t.Fatalf("resolveSyncAllFlags: %v", err)
+	}
+	if !resolved.archiveMedia || !resolved.appleNotes || !resolved.safariTabs {
+		t.Fatalf("expected archive/apple-notes/safari-tabs enabled, got archive=%v apple=%v safari=%v", resolved.archiveMedia, resolved.appleNotes, resolved.safariTabs)
+	}
+	if resolved.appleNotesDBPath != "/tmp/notes.sqlite" {
+		t.Fatalf("appleNotesDBPath = %q", resolved.appleNotesDBPath)
+	}
+	if got := strings.Join(resolved.appleNotesExcludeFolders, ","); got != "Archive,Trash" {
+		t.Fatalf("appleNotesExcludeFolders = %q", got)
+	}
+	if got := strings.Join(resolved.appleNotesExcludeAccounts, ","); got != "Work" {
+		t.Fatalf("appleNotesExcludeAccounts = %q", got)
+	}
+	if !resolved.appleNotesExcludeShared || !resolved.appleNotesSkipAttachments || !resolved.appleNotesSkipAttachmentOCR {
+		t.Fatalf("expected Apple Notes exclusion/skip booleans resolved, got shared=%v skipAttachments=%v skipOCR=%v", resolved.appleNotesExcludeShared, resolved.appleNotesSkipAttachments, resolved.appleNotesSkipAttachmentOCR)
+	}
+	if resolved.appleNotesAttachmentMaxBytes != 12345 || resolved.appleNotesTesseractBinary != "/opt/bin/tesseract" {
+		t.Fatalf("unexpected Apple Notes attachment settings: max=%d tesseract=%q", resolved.appleNotesAttachmentMaxBytes, resolved.appleNotesTesseractBinary)
+	}
+	if resolved.safariTabsDBPath != "/tmp/cloudtabs.db" || resolved.safariTabsDevice != "dfone" || resolved.safariTabsLimit != 8 || resolved.safariTabsOlderThan != 2*time.Hour {
+		t.Fatalf("unexpected Safari tabs settings: db=%q device=%q limit=%d older=%s", resolved.safariTabsDBPath, resolved.safariTabsDevice, resolved.safariTabsLimit, resolved.safariTabsOlderThan)
+	}
+}
+
+func TestResolveSyncAllFlagsKeepsExplicitValues(t *testing.T) {
+	root := t.TempDir()
+	clearSyncEnvForTest(t)
+	env := strings.Join([]string{
+		"DBRAIN_APPLE_NOTES_ENABLED=true",
+		"DBRAIN_APPLE_NOTES_DB_PATH=/tmp/env-notes.sqlite",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS=Env",
+		"DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS=false",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES=999",
+		"DBRAIN_SAFARI_TABS_ENABLED=true",
+		"DBRAIN_SAFARI_TABS_DB_PATH=/tmp/env-cloudtabs.db",
+		"DBRAIN_SAFARI_TABS_DEVICE=env-device",
+		"DBRAIN_SAFARI_TABS_LIMIT=20",
+		"DBRAIN_SAFARI_TABS_OLDER_THAN=4h",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	resolved, err := resolveSyncAllFlags(root, syncAllFlags{
+		appleNotes:                   true,
+		appleNotesDBPath:             "/tmp/explicit-notes.sqlite",
+		appleNotesExcludeFolders:     []string{"Explicit"},
+		appleNotesAttachmentMaxBytes: 10,
+		safariTabs:                   true,
+		safariTabsDBPath:             "/tmp/explicit-cloudtabs.db",
+		safariTabsDevice:             "explicit-device",
+		safariTabsLimit:              3,
+		safariTabsOlderThan:          30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("resolveSyncAllFlags: %v", err)
+	}
+	if resolved.appleNotesDBPath != "/tmp/explicit-notes.sqlite" || strings.Join(resolved.appleNotesExcludeFolders, ",") != "Explicit" {
+		t.Fatalf("explicit Apple Notes values were not preserved: db=%q folders=%v", resolved.appleNotesDBPath, resolved.appleNotesExcludeFolders)
+	}
+	if resolved.appleNotesAttachmentMaxBytes != 10 {
+		t.Fatalf("appleNotesAttachmentMaxBytes = %d, want 10", resolved.appleNotesAttachmentMaxBytes)
+	}
+	if resolved.safariTabsDBPath != "/tmp/explicit-cloudtabs.db" || resolved.safariTabsDevice != "explicit-device" || resolved.safariTabsLimit != 3 || resolved.safariTabsOlderThan != 30*time.Minute {
+		t.Fatalf("explicit Safari values were not preserved: db=%q device=%q limit=%d older=%s", resolved.safariTabsDBPath, resolved.safariTabsDevice, resolved.safariTabsLimit, resolved.safariTabsOlderThan)
+	}
+}
+
+func clearSyncEnvForTest(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"DBRAIN_AUTO_ARCHIVE_MEDIA",
+		"DBRAIN_ARCHIVE_AUTO",
+		"DBRAIN_APPLE_NOTES_ENABLED",
+		"DBRAIN_APPLE_NOTES_DB_PATH",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS",
+		"DBRAIN_APPLE_NOTES_EXCLUDE_SHARED",
+		"DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS",
+		"DBRAIN_APPLE_NOTES_SKIP_ATTACHMENTS",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_OCR",
+		"DBRAIN_APPLE_NOTES_SKIP_ATTACHMENT_OCR",
+		"DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES",
+		"DBRAIN_APPLE_NOTES_TESSERACT_BINARY",
+		"DBRAIN_SAFARI_TABS_ENABLED",
+		"DBRAIN_SAFARI_TABS_DB_PATH",
+		"DBRAIN_SAFARI_TABS_DEVICE",
+		"DBRAIN_SAFARI_TABS_LIMIT",
+		"DBRAIN_SAFARI_TABS_OLDER_THAN",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 func TestImportCommandHelpIncludesYouTubeImporter(t *testing.T) {
 	t.Parallel()
 
@@ -1487,6 +1656,76 @@ func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
 	}
 }
 
+func TestFormatSyncDurationUsesTwoDecimalSeconds(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		duration time.Duration
+		want     string
+	}{
+		{69*time.Millisecond + 980*time.Microsecond + 750*time.Nanosecond, "0.07s"},
+		{24*time.Second + 245*time.Millisecond + 314*time.Microsecond, "24.25s"},
+		{2 * time.Minute, "120.00s"},
+	}
+	for _, tc := range cases {
+		if got := formatSyncDuration(tc.duration); got != tc.want {
+			t.Fatalf("formatSyncDuration(%s) = %q, want %q", tc.duration, got, tc.want)
+		}
+	}
+}
+
+func TestWriteSyncStatsRightAlignsDurationColumn(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:   time.Date(2026, time.May, 5, 16, 0, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, time.May, 5, 16, 2, 40, 0, time.UTC),
+		Duration:    160 * time.Second,
+		Links: &syncjob.LinksStage{
+			Duration: 70 * time.Millisecond,
+		},
+		MediaArchive: &syncjob.MediaArchiveStage{
+			Duration: 160 * time.Second,
+		},
+	}
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	if !strings.Contains(output, "│ Links         │    0.07s │") {
+		t.Fatalf("expected short duration to be right aligned, got %q", output)
+	}
+	if !strings.Contains(output, "│ Media Archive │  160.00s │") {
+		t.Fatalf("expected long duration to define right edge, got %q", output)
+	}
+}
+
+func TestSyncSummaryRowsSeparateBlockedMediaFromErrors(t *testing.T) {
+	t.Parallel()
+
+	rows := syncSummaryRows(syncjob.Stats{
+		X: &syncjob.XStage{
+			Stats: xapi.Stats{
+				Hydrated:        1,
+				MediaBlocked:    2,
+				MediaErrors:     1,
+				MediaDownloaded: 3,
+			},
+		},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("expected one x summary row, got %#v", rows)
+	}
+	if !strings.Contains(rows[0][3], "blocked=2") {
+		t.Fatalf("expected blocked media in secondary column, got %#v", rows[0])
+	}
+	if rows[0][4] != "1" {
+		t.Fatalf("expected blocked media not to count as active errors, got %#v", rows[0])
+	}
+}
+
 func TestSyncProgressUIFormatsStageLines(t *testing.T) {
 	t.Parallel()
 
@@ -1494,7 +1733,7 @@ func TestSyncProgressUIFormatsStageLines(t *testing.T) {
 	ui := newSyncProgressUI(&dst)
 	_, _ = fmt.Fprintln(ui, "Sync started at 2026-04-26T21:01:56Z")
 	_, _ = fmt.Fprintln(ui, "==> hydrate x")
-	_, _ = fmt.Fprintln(ui, "X hydration complete: hydrated=4 missing=0 api_errors=0 media_downloaded=3 media_errors=0 rendered=4 (3s)")
+	_, _ = fmt.Fprintln(ui, "X hydration complete: hydrated=4 missing=0 api_errors=0 media_downloaded=3 media_errors=0 media_blocked=0 rendered=4 (3s)")
 	ui.Close()
 
 	output := dst.String()
