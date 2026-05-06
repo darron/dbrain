@@ -334,6 +334,9 @@ the bug reappeared.
 - if the bug crossed stage boundaries, add the smallest integration-style test
   that proves the pipeline behavior stays fixed
 - do not rely on memory or chat history to keep regressions from returning
+- keep tests safe for GitHub Actions: do not depend on a developer's local
+  browser profiles, installed helper tools, model services, network access, or
+  OS-specific paths unless the test explicitly skips or fakes those dependencies
 
 ### Keep the changelog current
 

@@ -5,6 +5,11 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Agent Testing Guidance (2026-05-05)
+
+- **CI-safe tests**: Updated `AGENTS.md` to require regression tests to fake or skip local-only dependencies such as browser profiles, helper tools, model services, network access, and OS-specific paths so GitHub Actions remains reliable.
+- **Location**: `AGENTS.md`
+
 ### Source Summary Blocking (2026-05-05)
 
 - **Empty extract summaries**: Stored empty source extracts are now converted to blocked summaries without falling through to live re-extraction, preventing retryable summary errors and requeue loops.
