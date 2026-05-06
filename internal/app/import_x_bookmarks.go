@@ -28,7 +28,7 @@ func newImportXBookmarksCommand(root *rootOptions) *cobra.Command {
 		Short: "Import X bookmarks directly with browser session cookies",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -10,6 +10,7 @@ type envSpec struct {
 func configEnvSpecs() []envSpec {
 	return []envSpec{
 		{Key: "DBRAIN_ROOT", ConfigPath: "(env only)", Default: "", Description: "CLI root override. --root wins when both are set."},
+		{Key: "DBRAIN_CONFIG_FILE", ConfigPath: "(env only)", Default: "", Description: "CLI config file override. --config-file wins when both are set."},
 		{Key: "XDG_CONFIG_HOME", ConfigPath: "(env only)", Default: "~/.config", Description: "Base directory for default config files."},
 		{Key: "XDG_DATA_HOME", ConfigPath: "(env only)", Default: "~/.local/share", Description: "Base directory for default database, vault, cache, tmp, and logs."},
 		{Key: "GITHUB_TOKEN", ConfigPath: "github.token or env.GITHUB_TOKEN", Default: "", Description: "GitHub API token for importing stars; supports env:, op://, and keychain:// refs."},

@@ -42,7 +42,7 @@ endpoint, usually behind Tailscale Serve. Use --transport tsnet to expose
 read-only MCP directly from the built-in tailnet node.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

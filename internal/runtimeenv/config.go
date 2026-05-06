@@ -6,19 +6,28 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
+
+var registeredConfigFiles sync.Map
+
+func RegisterConfigFile(rootDir string, path string) {
+	rootDir = strings.TrimSpace(rootDir)
+	path = strings.TrimSpace(path)
+	if rootDir == "" || path == "" {
+		return
+	}
+	registeredConfigFiles.Store(rootDir, path)
+}
 
 func loadConfigValueOK(rootDir string, key string) (string, bool) {
 	if strings.TrimSpace(rootDir) == "" || strings.TrimSpace(key) == "" {
 		return "", false
 	}
 
-	cfg, ok := loadConfigFile(filepath.Join(rootDir, "config.yaml"))
-	if !ok {
-		cfg, ok = loadConfigFile(filepath.Join(rootDir, "config.yml"))
-	}
+	cfg, ok := loadConfigForRoot(rootDir)
 	if !ok {
 		return "", false
 	}
@@ -36,10 +45,7 @@ func loadConfigList(rootDir string, key string) ([]string, bool) {
 		return nil, false
 	}
 
-	cfg, ok := loadConfigFile(filepath.Join(rootDir, "config.yaml"))
-	if !ok {
-		cfg, ok = loadConfigFile(filepath.Join(rootDir, "config.yml"))
-	}
+	cfg, ok := loadConfigForRoot(rootDir)
 	if !ok {
 		return nil, false
 	}
@@ -53,6 +59,21 @@ func loadConfigList(rootDir string, key string) ([]string, bool) {
 		}
 	}
 	return nil, false
+}
+
+func loadConfigForRoot(rootDir string) (map[string]any, bool) {
+	if value, ok := registeredConfigFiles.Load(rootDir); ok {
+		if path, ok := value.(string); ok {
+			if cfg, ok := loadConfigFile(path); ok {
+				return cfg, true
+			}
+		}
+	}
+	cfg, ok := loadConfigFile(filepath.Join(rootDir, "config.yaml"))
+	if !ok {
+		cfg, ok = loadConfigFile(filepath.Join(rootDir, "config.yml"))
+	}
+	return cfg, ok
 }
 
 func loadConfigFile(path string) (map[string]any, bool) {

@@ -18,7 +18,7 @@ func newServeWebCommand(root *rootOptions) *cobra.Command {
 		Short: "Serve the local brain over HTTP",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

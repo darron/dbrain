@@ -36,7 +36,7 @@ func newLinkAddCommand(root *rootOptions) *cobra.Command {
 		Short: "Queue one or more links for extraction and summarization",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

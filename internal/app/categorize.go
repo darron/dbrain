@@ -35,7 +35,7 @@ func newCategorizeItemCommand(root *rootOptions) *cobra.Command {
 		Short: "Categorize a single item by source_key, external_id, or URL",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -101,7 +101,7 @@ func newCategorizeBatchCommand(root *rootOptions) *cobra.Command {
 		Short: "Categorize items without existing user_tags (or all with --force)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -20,7 +20,7 @@ func newImportAppleNotesProbeCommand(root *rootOptions) *cobra.Command {
 		Short: "Probe Apple Notes database access and schema without decoding note bodies",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -77,7 +77,7 @@ func newImportAppleNotesSnapshotCommand(root *rootOptions) *cobra.Command {
 			if strings.TrimSpace(dir) == "" {
 				return fmt.Errorf("--dir is required")
 			}
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -128,7 +128,7 @@ func newImportAppleNotesDecodeCommand(root *rootOptions) *cobra.Command {
 			if strings.TrimSpace(noteID) == "" {
 				return fmt.Errorf("--note is required")
 			}
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

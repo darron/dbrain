@@ -19,7 +19,7 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 		Short: "Repair category tags or clear unsupported source tags",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

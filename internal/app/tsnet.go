@@ -31,7 +31,7 @@ func newTSNetStatusCommand(root *rootOptions) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{skipKeepAwakeAnnotation: "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -106,7 +106,7 @@ func newTSNetResetCommand(root *rootOptions) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{skipKeepAwakeAnnotation: "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

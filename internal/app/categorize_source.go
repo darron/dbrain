@@ -24,7 +24,7 @@ func newCategorizeSourceCommand(root *rootOptions) *cobra.Command {
 		Short: "Categorize a single linked source by source_key, URL, or note path",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
@@ -87,7 +87,7 @@ func newCategorizeSourcesCommand(root *rootOptions) *cobra.Command {
 		Short: "Categorize evidence-bearing sources without existing user_tags (or all with --force)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}

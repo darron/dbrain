@@ -5,6 +5,12 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Launchd Service Command (2026-05-06)
+
+- **macOS background service**: Added `dbrain launchd` commands to print, install, and uninstall a per-user launchd service that runs `dbrain serve remote` with the active config layout.
+- **Config-file selector**: Added global `--config-file` / `DBRAIN_CONFIG_FILE` support so installed services can pin `~/.config/dbrain/config.yaml` while ignoring checkout-local `DBRAIN_ROOT` from direnv.
+- **Location**: `internal/config/`, `internal/runtimeenv/`, `internal/app/`, `README.md`, `config.yaml.sample`
+
 ### Secret References In Config (2026-05-06)
 
 - **Keychain and 1Password config refs**: Secret-bearing config values for GitHub, OpenRouter/OpenAI/Ollama API keys, and R2/S3 credentials can now use `env:`, `op://`, or `keychain://` references that are resolved only by `dbrain`.

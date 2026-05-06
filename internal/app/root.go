@@ -16,6 +16,7 @@ const skipKeepAwakeAnnotation = "dbrain.skip_keep_awake"
 
 type rootOptions struct {
 	root         string
+	configFile   string
 	caffeinate   bool
 	noCaffeinate bool
 	debug        bool
@@ -68,6 +69,7 @@ func NewRootCommand() *cobra.Command {
 		RunE: helpCommand,
 	}
 	rootCmd.PersistentFlags().StringVar(&opts.root, "root", "", "Brain root directory override (defaults to DBRAIN_ROOT, then ~/.config/dbrain and ~/.local/share/dbrain)")
+	rootCmd.PersistentFlags().StringVar(&opts.configFile, "config-file", "", "Config file path override (wins over --root, DBRAIN_CONFIG_FILE, and DBRAIN_ROOT)")
 	rootCmd.PersistentFlags().BoolVar(&opts.caffeinate, "caffeinate", false, "Force keep-awake behavior while the command is running")
 	rootCmd.PersistentFlags().BoolVar(&opts.noCaffeinate, "no-caffeinate", false, "Disable automatic keep-awake behavior for this command")
 	rootCmd.PersistentFlags().BoolVar(&opts.debug, "debug", true, "Enable structured debug logging to stderr")
@@ -120,6 +122,7 @@ func NewRootCommand() *cobra.Command {
 		newTopicCommand(opts),
 		newWorkerCommand(opts),
 		newLinkCommand(opts),
+		newLaunchdCommand(opts),
 		extractCmd,
 		hydrateCmd,
 		newTranscribeCommand(opts),
@@ -144,7 +147,7 @@ func applyEnvHelpTemplate(cmd *cobra.Command) {
 	if !strings.Contains(template, "Environment:") {
 		template += `
 Environment:
-  --root wins over DBRAIN_ROOT.
+  --config-file wins over --root, DBRAIN_CONFIG_FILE, and DBRAIN_ROOT.
   Defaults: config in ~/.config/dbrain, state in ~/.local/share/dbrain.
   Runtime values resolve from shell env, then .envrc/.env, then config.yaml.
   Run "dbrain config env" for the full environment/config key table.

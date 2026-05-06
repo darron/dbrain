@@ -39,7 +39,7 @@ func newTranscribeXMediaCommand(root *rootOptions) *cobra.Command {
 		Short: "Transcribe downloaded X video media with MacWhisper",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root)
+			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
 			}
