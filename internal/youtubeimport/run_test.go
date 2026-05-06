@@ -438,16 +438,18 @@ func TestRunContinuesWhenOneFeedFails(t *testing.T) {
 	}()
 
 	ytDLPPath := installPartialFailureFakeYTDLP(t, root)
+	summarizePath := installSourceExtractFakeSummarize(t, root)
 
 	stats, err := Run(context.Background(), cfg, st, Options{
-		Browser:     "chrome",
-		Profile:     "Default",
-		Summarize:   false,
-		Limit:       5,
-		Timeout:     5 * time.Second,
-		WatchLater:  true,
-		Liked:       true,
-		YTDLPBinary: ytDLPPath,
+		Browser:         "chrome",
+		Profile:         "Default",
+		Summarize:       false,
+		Limit:           5,
+		Timeout:         5 * time.Second,
+		WatchLater:      true,
+		Liked:           true,
+		YTDLPBinary:     ytDLPPath,
+		SummarizeBinary: summarizePath,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -474,7 +476,7 @@ func TestRunRetriesDiscoveredProfilesWhenProfileNotSpecified(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 
-	chromeDir := filepath.Join(root, "Library", "Application Support", "Google", "Chrome", "Profile 2")
+	chromeDir := filepath.Join(browserProfileBaseDir("chrome"), "Profile 2")
 	if err := os.MkdirAll(chromeDir, 0o755); err != nil {
 		t.Fatalf("mkdir chrome profile: %v", err)
 	}
@@ -496,14 +498,16 @@ func TestRunRetriesDiscoveredProfilesWhenProfileNotSpecified(t *testing.T) {
 	}()
 
 	ytDLPPath := installDiscoveredProfileFakeYTDLP(t, root, "chrome:Profile 2")
+	summarizePath := installSourceExtractFakeSummarize(t, root)
 
 	stats, err := Run(context.Background(), cfg, st, Options{
-		Browser:     "chrome",
-		Summarize:   false,
-		Limit:       5,
-		Timeout:     5 * time.Second,
-		WatchLater:  true,
-		YTDLPBinary: ytDLPPath,
+		Browser:         "chrome",
+		Summarize:       false,
+		Limit:           5,
+		Timeout:         5 * time.Second,
+		WatchLater:      true,
+		YTDLPBinary:     ytDLPPath,
+		SummarizeBinary: summarizePath,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -626,6 +630,35 @@ printf '%s\n' '{"id":"WL","title":"Watch Later","entries":[{"id":"profileRetry12
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake discovered profile yt-dlp: %v", err)
+	}
+	return scriptPath
+}
+
+func installSourceExtractFakeSummarize(t *testing.T, root string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(root, "fake-summarize-source-extract")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-youtube-extract-1.0.0"
+  exit 0
+fi
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+case "$last" in
+  https://www.youtube.com/watch\?v=*|https://youtu.be/*)
+    printf '{"input":{"model":"cli/test/youtube"},"extracted":{"url":"%s","title":"YouTube source","description":"","siteName":"YouTube","content":"source extract from fake summarize"},"summary":null}\n' "$last"
+    ;;
+  *)
+    echo "unexpected summarize input: $last" >&2
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake source extract summarize: %v", err)
 	}
 	return scriptPath
 }
