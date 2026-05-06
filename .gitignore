@@ -1,6 +1,7 @@
 /.gocache/
 /.gomodcache/
 /bin/
+/config.yaml
 /data/
 /vault/
 .envrc

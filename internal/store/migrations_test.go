@@ -264,6 +264,48 @@ func TestMigrationBackfillsExistingMediaDownloadErrors(t *testing.T) {
 	assertCurrentSchemaMigration(t, st.db)
 }
 
+func TestOpenRepairsLegacyMediaSchemaBeforeCreatingRetryIndex(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE media_assets (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			remote_url TEXT NOT NULL UNIQUE,
+			download_status TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL
+		);`); err != nil {
+		t.Fatalf("seed legacy media schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	st := openStoreAtPath(t, path)
+	defer func() {
+		_ = st.Close()
+	}()
+
+	for _, column := range []string{"download_error_count", "last_download_attempt_at"} {
+		var found int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('media_assets') WHERE name = ?`, column).Scan(&found); err != nil {
+			t.Fatalf("check media column %s: %v", column, err)
+		}
+		if found != 1 {
+			t.Fatalf("expected media_assets.%s to be repaired, found=%d", column, found)
+		}
+	}
+	var indexName string
+	if err := st.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_media_assets_download_retry'`).Scan(&indexName); err != nil {
+		t.Fatalf("expected retry index after schema repair: %v", err)
+	}
+	assertCurrentSchemaMigration(t, st.db)
+}
+
 func TestOpenReadOnlySkipsSchemaMigration(t *testing.T) {
 	t.Parallel()
 

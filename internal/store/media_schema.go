@@ -3,7 +3,7 @@ package store
 import "fmt"
 
 func (s *Store) ensureMediaTables() error {
-	schema := []string{
+	tables := []string{
 		`CREATE TABLE IF NOT EXISTS media_assets (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			remote_url TEXT NOT NULL UNIQUE,
@@ -31,9 +31,6 @@ func (s *Store) ensureMediaTables() error {
 			local_pruned_at TEXT NOT NULL DEFAULT '',
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_media_assets_download_status ON media_assets(download_status);`,
-		`CREATE INDEX IF NOT EXISTS idx_media_assets_download_retry ON media_assets(download_status, last_download_attempt_at);`,
-		`CREATE INDEX IF NOT EXISTS idx_media_assets_content_hash ON media_assets(content_hash);`,
 		`CREATE TABLE IF NOT EXISTS item_media_links (
 			item_id INTEGER NOT NULL,
 			media_asset_id INTEGER NOT NULL,
@@ -46,10 +43,9 @@ func (s *Store) ensureMediaTables() error {
 			FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
 			FOREIGN KEY (media_asset_id) REFERENCES media_assets(id) ON DELETE CASCADE
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_item_media_links_media_asset_id ON item_media_links(media_asset_id);`,
 	}
 
-	for _, stmt := range schema {
+	for _, stmt := range tables {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("apply media schema: %w", err)
 		}
@@ -60,6 +56,18 @@ func (s *Store) ensureMediaTables() error {
 	}
 	if err := s.ensureItemMediaLinkColumns(); err != nil {
 		return err
+	}
+
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_media_assets_download_status ON media_assets(download_status);`,
+		`CREATE INDEX IF NOT EXISTS idx_media_assets_download_retry ON media_assets(download_status, last_download_attempt_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_media_assets_content_hash ON media_assets(content_hash);`,
+		`CREATE INDEX IF NOT EXISTS idx_item_media_links_media_asset_id ON item_media_links(media_asset_id);`,
+	}
+	for _, stmt := range indexes {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("apply media schema: %w", err)
+		}
 	}
 
 	return nil

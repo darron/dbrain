@@ -5,6 +5,11 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Startup Schema Repair (2026-05-06)
+
+- **Media schema repair**: Startup now repairs legacy or partially created `media_assets` columns before creating indexes that reference retry-state columns, so default installs with older local DBs do not fail during the baseline migration.
+- **Location**: `internal/store/`
+
 ### Homebrew Install Docs (2026-05-05)
 
 - **Install instructions**: Added top-level README instructions for installing `dbrain` from the `darron/tap` Homebrew tap and verifying the installed binary.
