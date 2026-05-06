@@ -5,6 +5,16 @@ development date for the change set.
 
 ## Recent Improvements
 
+### PR CI Workflow (2026-05-05)
+
+- **Pull request gates**: Added a PR-only CI workflow that runs `task fmt`, verifies formatting produced no diff, then runs `task lint` and `task test` in order for branch protection.
+- **Location**: `.github/workflows/pr-ci.yaml`
+
+### PR Diff Stats Workflow (2026-05-05)
+
+- **Pull request sizing**: Added a PR diff stats workflow adapted for `dbrain`, with sticky same-repo PR comments and bucket rules for docs, tests, schema files, generated/runtime surfaces, lockfiles, packaging, skills, and CI/config changes.
+- **Location**: `.github/workflows/pr-diff-stats.yaml`
+
 ### Agent Testing Guidance (2026-05-05)
 
 - **CI-safe tests**: Updated `AGENTS.md` to require regression tests to fake or skip local-only dependencies such as browser profiles, helper tools, model services, network access, and OS-specific paths so GitHub Actions remains reliable.

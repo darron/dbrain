@@ -1,0 +1,286 @@
+name: PR Diff Stats
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+jobs:
+  diff-stats:
+    name: Diff stats
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Summarize PR diff by bucket
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const marker = "<!-- dbrain-pr-diff-stats -->";
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed("This workflow only supports pull_request events.");
+              return;
+            }
+
+            const lockfileNames = new Set([
+              "go.sum",
+              "package-lock.json",
+              "pnpm-lock.yaml",
+              "yarn.lock",
+              "bun.lockb",
+            ]);
+
+            const configNames = new Set([
+              ".dockerignore",
+              ".envrc",
+              ".gitignore",
+              "CODEOWNERS",
+              "Dockerfile",
+              "Makefile",
+              "Taskfile.yml",
+              "config.yaml.sample",
+              "fly.toml",
+            ]);
+
+            const bucketOrder = [
+              "docs",
+              "tests",
+              "migrations",
+              "generated",
+              "lockfiles",
+              "config_ops",
+              "code",
+            ];
+
+            const bucketLabels = {
+              docs: "Docs",
+              tests: "Tests",
+              migrations: "Migrations",
+              generated: "Generated",
+              lockfiles: "Lockfiles",
+              config_ops: "Config / Ops",
+              code: "Code",
+            };
+
+            function isDocs(filename) {
+              return (
+                filename === "README.md" ||
+                filename === "AGENTS.md" ||
+                /\.(md|mdx|rst|txt)$/i.test(filename)
+              );
+            }
+
+            function isTestFile(filename) {
+              return (
+                /(^|\/)[^/]+_test\.go$/i.test(filename) ||
+                /(^|\/)(test|tests)\//i.test(filename) ||
+                /(^|\/)e2e\//i.test(filename) ||
+                /\.(test|spec)\.[cm]?[jt]sx?$/i.test(filename)
+              );
+            }
+
+            function isMigration(filename) {
+              return (
+                /^migrations\/.+\.sql$/i.test(filename) ||
+                filename === "internal/store/migrations.go" ||
+                filename === "internal/store/schema_init.go" ||
+                filename === "internal/store/schema_init.sql"
+              );
+            }
+
+            function isGenerated(filename) {
+              return (
+                filename.startsWith("data/") ||
+                filename.startsWith("logs/") ||
+                filename.startsWith("tmp/") ||
+                filename.startsWith("vault/") ||
+                filename.startsWith("web/ui/dist/")
+              );
+            }
+
+            function isLockfile(filename) {
+              const parts = filename.split("/");
+              return lockfileNames.has(parts[parts.length - 1]);
+            }
+
+            function isConfigOps(filename) {
+              return (
+                configNames.has(filename) ||
+                filename.startsWith(".github/") ||
+                filename.startsWith("packaging/") ||
+                filename.startsWith("scripts/") ||
+                filename.startsWith("skills/")
+              );
+            }
+
+            function classify(filename) {
+              if (isMigration(filename)) return "migrations";
+              if (isGenerated(filename)) return "generated";
+              if (isLockfile(filename)) return "lockfiles";
+              if (isDocs(filename)) return "docs";
+              if (isTestFile(filename)) return "tests";
+              if (isConfigOps(filename)) return "config_ops";
+              return "code";
+            }
+
+            function emptyStats() {
+              return { files: 0, additions: 0, deletions: 0, changed: 0 };
+            }
+
+            function formatNumber(value) {
+              return new Intl.NumberFormat("en-US").format(value || 0);
+            }
+
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              }
+            );
+
+            const bucketStats = Object.fromEntries(
+              bucketOrder.map((key) => [key, emptyStats()])
+            );
+
+            for (const file of files) {
+              const bucket = classify(file.filename);
+              const additions = file.additions || 0;
+              const deletions = file.deletions || 0;
+              bucketStats[bucket].files += 1;
+              bucketStats[bucket].additions += additions;
+              bucketStats[bucket].deletions += deletions;
+              bucketStats[bucket].changed += additions + deletions;
+            }
+
+            const totals = bucketOrder.reduce((acc, key) => {
+              acc.files += bucketStats[key].files;
+              acc.additions += bucketStats[key].additions;
+              acc.deletions += bucketStats[key].deletions;
+              acc.changed += bucketStats[key].changed;
+              return acc;
+            }, emptyStats());
+
+            const lines = [
+              "## PR Diff Stats",
+              "",
+              `PR #${pr.number} changed ${formatNumber(totals.files)} file(s), ` +
+                `with +${formatNumber(totals.additions)} / -${formatNumber(totals.deletions)} ` +
+                `(${formatNumber(totals.changed)} changed lines).`,
+              "",
+              "| Bucket | Files | Additions | Deletions | Changed |",
+              "|---|---:|---:|---:|---:|",
+            ];
+
+            for (const key of bucketOrder) {
+              const stats = bucketStats[key];
+              lines.push(
+                `| ${bucketLabels[key]} | ${formatNumber(stats.files)} | +${formatNumber(stats.additions)} | -${formatNumber(stats.deletions)} | ${formatNumber(stats.changed)} |`
+              );
+            }
+
+            lines.push(
+              `| **Total** | **${formatNumber(totals.files)}** | **+${formatNumber(totals.additions)}** | **-${formatNumber(totals.deletions)}** | **${formatNumber(totals.changed)}** |`,
+              ""
+            );
+
+            const largestFiles = [...files]
+              .map((file) => ({
+                filename: file.filename,
+                bucket: bucketLabels[classify(file.filename)],
+                additions: file.additions || 0,
+                deletions: file.deletions || 0,
+                changed: (file.additions || 0) + (file.deletions || 0),
+              }))
+              .sort((left, right) => right.changed - left.changed)
+              .slice(0, 10);
+
+            if (largestFiles.length > 0) {
+              lines.push("### Largest Changed Files", "");
+              lines.push("| File | Bucket | Additions | Deletions | Changed |");
+              lines.push("|---|---|---:|---:|---:|");
+              for (const file of largestFiles) {
+                lines.push(
+                  `| \`${file.filename}\` | ${file.bucket} | +${formatNumber(file.additions)} | -${formatNumber(file.deletions)} | ${formatNumber(file.changed)} |`
+                );
+              }
+              lines.push("");
+            }
+
+            lines.push(
+              "<details>",
+              "<summary>Bucket rules</summary>",
+              "",
+              "- `Docs`: Markdown/text docs such as `docs/**`, `README.md`, and other `*.md` or `*.txt` files",
+              "- `Tests`: `*_test.go`, `test/`, `tests/`, `e2e/`, and JS/TS `*.test.*` or `*.spec.*` files",
+              "- `Migrations`: schema migration/init files such as `internal/store/migrations.go` and `internal/store/schema_init.go`",
+              "- `Generated`: local runtime/generated surfaces such as `data/`, `logs/`, `tmp/`, `vault/`, and `web/ui/dist/`",
+              "- `Lockfiles`: dependency lockfiles such as `go.sum` and `package-lock.json`",
+              "- `Config / Ops`: CI, config, packaging, skills, deploy, and scripting files such as `.github/`, `packaging/`, `skills/`, `scripts/`, `Makefile`, `Dockerfile`, `Taskfile.yml`, `config.yaml.sample`, and `fly.toml`",
+              "- `Code`: everything else",
+              "",
+              "</details>"
+            );
+
+            const body = lines.join("\n");
+            await core.summary.addRaw(body).write();
+
+            const sameRepoPR = pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            if (!sameRepoPR) {
+              core.info("Skipping sticky PR comment for forked pull request; job summary still contains the diff stats.");
+              return;
+            }
+
+            const commentBody = `${marker}\n${body}`;
+            try {
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  per_page: 100,
+                }
+              );
+
+              const existing = comments.find((comment) => (comment.body || "").includes(marker));
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body: commentBody,
+                });
+                core.info(`Updated existing PR diff stats comment (${existing.id}).`);
+                return;
+              }
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: commentBody,
+              });
+              core.info("Created PR diff stats comment.");
+            } catch (error) {
+              const message = `${error?.message || error}`;
+              const permissionDenied =
+                error?.status === 403 ||
+                /resource not accessible by integration/i.test(message);
+              if (permissionDenied) {
+                core.warning(
+                  `Skipping sticky PR comment because this workflow token cannot write issue comments for PR #${pr.number}. The job summary still contains the diff stats.`
+                );
+                return;
+              }
+              throw error;
+            }
