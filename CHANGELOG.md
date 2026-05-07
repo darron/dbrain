@@ -5,6 +5,17 @@ development date for the change set.
 
 ## Recent Improvements
 
+### X Article Canonical URLs (2026-05-07)
+
+- **Fixed**: Kept X article source canonical URLs on the stable `https://x.com/i/article/<id>` route instead of rewriting them to author-scoped article URLs that X may redirect to non-existent status pages.
+- **Migration**: Existing `x_article` sources are repaired from their stored normalized URLs without reimporting or rehydrating data.
+- **Location**: `internal/store/`
+
+### Launchd Restart Command (2026-05-07)
+
+- **Added**: `dbrain launchd restart` to restart the loaded background `serve remote` LaunchAgent without reinstalling the plist.
+- **Location**: `internal/app/`, `README.md`
+
 ### Launchd Service Command (2026-05-06)
 
 - **macOS background service**: Added `dbrain launchd` commands to print, install, and uninstall a per-user launchd service that runs `dbrain serve remote` with the active config layout.

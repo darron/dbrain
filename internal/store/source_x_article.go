@@ -147,12 +147,3 @@ func xArticleRestIDFromURL(rawURL string) string {
 	}
 	return ""
 }
-
-func buildXArticlePublicURL(authorHandle string, restID string) string {
-	authorHandle = strings.TrimSpace(strings.TrimPrefix(authorHandle, "@"))
-	restID = strings.TrimSpace(restID)
-	if authorHandle == "" || restID == "" {
-		return ""
-	}
-	return "https://x.com/" + authorHandle + "/article/" + restID
-}

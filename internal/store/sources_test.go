@@ -1070,7 +1070,7 @@ func TestGetPreferredLocalSourceExtractUsesXArticlePreviewFromHydratedItem(t *te
 	if !ok {
 		t.Fatal("expected local x article preview extract to be found")
 	}
-	if result.FinalURL != "https://x.com/mattshumer_/article/"+articleID {
+	if result.FinalURL != "https://x.com/i/article/"+articleID {
 		t.Fatalf("unexpected final url: %q", result.FinalURL)
 	}
 	if result.Title != "Synthetic Minds in the Loop" {
@@ -1187,7 +1187,7 @@ func TestGetPreferredLocalSourceExtractUsesFullXArticleBodyFromHydratedItem(t *t
 	if !ok {
 		t.Fatal("expected local x article body extract to be found")
 	}
-	if result.FinalURL != "https://x.com/HamelHusain/article/"+articleID {
+	if result.FinalURL != "https://x.com/i/article/"+articleID {
 		t.Fatalf("unexpected final url: %q", result.FinalURL)
 	}
 	if result.Title != "Evals Skills for Coding Agents" {
@@ -1429,7 +1429,7 @@ func TestGetPreferredLocalSourceExtractUsesQuotedParentHydrationForStaleQuoteChi
 	if !ok {
 		t.Fatal("expected local x article extract to be recovered from quoted parent hydration")
 	}
-	if result.FinalURL != "https://x.com/parentauthor/article/"+articleID {
+	if result.FinalURL != "https://x.com/i/article/"+articleID {
 		t.Fatalf("unexpected final url: %q", result.FinalURL)
 	}
 	if result.Title != "Quoted article title" {

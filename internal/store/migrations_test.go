@@ -264,6 +264,60 @@ func TestMigrationBackfillsExistingMediaDownloadErrors(t *testing.T) {
 	assertCurrentSchemaMigration(t, st.db)
 }
 
+func TestMigrationBackfillsXArticleCanonicalURLs(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.db.Exec(`
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, domain, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"src:x-article-pretty-url",
+		"https://x.com/cyrilXBT/article/2052202263263744010",
+		"https://x.com/i/article/2052202263263744010",
+		"x_article",
+		"x.com",
+		"sources/x_article/x-com-test.md",
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert x article source: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version >= ?`, 4); err != nil {
+		t.Fatalf("simulate pre-v4 migration metadata: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 3`); err != nil {
+		t.Fatalf("set old user_version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() {
+		_ = st.Close()
+	}()
+
+	var canonicalURL string
+	if err := st.db.QueryRow(`SELECT canonical_url FROM sources WHERE source_key = ?`, "src:x-article-pretty-url").Scan(&canonicalURL); err != nil {
+		t.Fatalf("load x article canonical url: %v", err)
+	}
+	if canonicalURL != "https://x.com/i/article/2052202263263744010" {
+		t.Fatalf("expected canonical url to use i/article URL, got %q", canonicalURL)
+	}
+	assertCurrentSchemaMigration(t, st.db)
+}
+
 func TestOpenRepairsLegacyMediaSchemaBeforeCreatingRetryIndex(t *testing.T) {
 	t.Parallel()
 
