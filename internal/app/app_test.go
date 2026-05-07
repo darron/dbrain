@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -193,6 +194,40 @@ func TestLaunchdInstallNoStartWritesPlist(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Not loaded because --no-start was set.") {
 		t.Fatalf("expected no-start message, got %q", stdout.String())
+	}
+}
+
+func TestLaunchdRestartKickstartsLoadedService(t *testing.T) {
+	originalRunLaunchctl := runLaunchctl
+	defer func() {
+		runLaunchctl = originalRunLaunchctl
+	}()
+
+	var calls [][]string
+	runLaunchctl = func(_ context.Context, args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		return nil
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--no-debug", "launchd", "restart", "--label", "com.darron.dbrain-dev"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("expected one launchctl call, got %#v", calls)
+	}
+	expected := []string{"kickstart", "-k", launchdDomain() + "/com.darron.dbrain-dev"}
+	if !reflect.DeepEqual(calls[0], expected) {
+		t.Fatalf("unexpected launchctl args: got %#v want %#v", calls[0], expected)
+	}
+	if !strings.Contains(stdout.String(), "Restarted launchd service: "+launchdDomain()+"/com.darron.dbrain-dev") {
+		t.Fatalf("expected restart message, got %q", stdout.String())
 	}
 }
 

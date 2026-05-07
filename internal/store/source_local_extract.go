@@ -14,6 +14,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 		WITH local_candidates AS (
 			SELECT
 				s.canonical_url AS canonical_url,
+				s.normalized_url AS normalized_url,
 				s.domain AS domain,
 				s.source_type AS source_type,
 				COALESCE(NULLIF(i.article_title, ''), s.title, '') AS title,
@@ -37,6 +38,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 
 			SELECT
 				s.canonical_url AS canonical_url,
+				s.normalized_url AS normalized_url,
 				s.domain AS domain,
 				s.source_type AS source_type,
 				COALESCE(NULLIF(p.article_title, ''), NULLIF(i.article_title, ''), s.title, '') AS title,
@@ -64,6 +66,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 		)
 		SELECT
 			canonical_url,
+			normalized_url,
 			domain,
 			source_type,
 			title,
@@ -86,6 +89,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 
 	for rows.Next() {
 		var canonicalURL string
+		var normalizedURL string
 		var domain string
 		var sourceType string
 		var title string
@@ -93,16 +97,17 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 		var authorHandle string
 		var xPostJSON string
 		var updatedAt string
-		if err := rows.Scan(&canonicalURL, &domain, &sourceType, &title, &articleText, &authorHandle, &xPostJSON, &updatedAt); err != nil {
+		if err := rows.Scan(&canonicalURL, &normalizedURL, &domain, &sourceType, &title, &articleText, &authorHandle, &xPostJSON, &updatedAt); err != nil {
 			return model.ExtractResult{}, false, fmt.Errorf("scan local source extract %d: %w", sourceID, err)
 		}
 
+		sourceURL := preferredLocalExtractURL(sourceType, canonicalURL, normalizedURL)
 		var candidate model.ExtractResult
 		candidateRank := -1
 		if content := strings.TrimSpace(articleText); content != "" {
 			candidate = model.ExtractResult{
-				CanonicalURL: canonicalURL,
-				FinalURL:     canonicalURL,
+				CanonicalURL: sourceURL,
+				FinalURL:     sourceURL,
 				Title:        title,
 				SiteName:     domain,
 				Content:      content,
@@ -113,11 +118,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 			}
 			candidateRank = 2
 		} else if sourceType == "x_article" {
-			if preview, ok := parseXArticlePreview(xPostJSON, canonicalURL); ok {
-				finalURL := canonicalURL
-				if value := buildXArticlePublicURL(authorHandle, preview.RestID); value != "" {
-					finalURL = value
-				}
+			if preview, ok := parseXArticlePreview(xPostJSON, sourceURL); ok {
 				toolVersion := "local-article-preview-cache"
 				candidateRank = 1
 				if preview.HasFullText {
@@ -125,8 +126,8 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 					candidateRank = 2
 				}
 				candidate = model.ExtractResult{
-					CanonicalURL: canonicalURL,
-					FinalURL:     finalURL,
+					CanonicalURL: sourceURL,
+					FinalURL:     sourceURL,
 					Title:        firstNonEmpty(preview.Title, title),
 					SiteName:     firstNonEmpty(domain, "x.com"),
 					Content:      preview.Content,
@@ -159,4 +160,11 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 	}
 
 	return best, true, nil
+}
+
+func preferredLocalExtractURL(sourceType string, canonicalURL string, normalizedURL string) string {
+	if sourceType == "x_article" && strings.Contains(normalizedURL, "/i/article/") {
+		return normalizedURL
+	}
+	return canonicalURL
 }

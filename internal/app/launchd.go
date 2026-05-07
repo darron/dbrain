@@ -37,7 +37,7 @@ func newLaunchdCommand(root *rootOptions) *cobra.Command {
 		RunE:        helpCommand,
 		Annotations: map[string]string{skipKeepAwakeAnnotation: "true"},
 	}
-	cmd.AddCommand(newLaunchdPlistCommand(root), newLaunchdInstallCommand(root), newLaunchdUninstallCommand())
+	cmd.AddCommand(newLaunchdPlistCommand(root), newLaunchdInstallCommand(root), newLaunchdRestartCommand(), newLaunchdUninstallCommand())
 	return cmd
 }
 
@@ -160,6 +160,29 @@ func newLaunchdUninstallCommand() *cobra.Command {
 				return fmt.Errorf("remove plist %s: %w", plistPath, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed launchd plist: %s\n", plistPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&label, "label", defaultLaunchdLabel, "launchd label")
+	return cmd
+}
+
+func newLaunchdRestartCommand() *cobra.Command {
+	var label string
+	cmd := &cobra.Command{
+		Use:         "restart",
+		Short:       "Restart the loaded dbrain launchd service",
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{skipKeepAwakeAnnotation: "true"},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(label) == "" {
+				return fmt.Errorf("launchd label is required")
+			}
+			target := launchdDomain() + "/" + label
+			if err := runLaunchctl(cmd.Context(), "kickstart", "-k", target); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Restarted launchd service: %s\n", target)
 			return nil
 		},
 	}

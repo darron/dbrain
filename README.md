@@ -798,6 +798,9 @@ stderr logs under the active dbrain log directory. Use `--no-start` to write the
 plist without loading it.
 
 ```sh
+dbrain launchd restart
+dbrain launchd restart --label com.darron.dbrain-dev
+
 dbrain launchd uninstall
 dbrain launchd uninstall --label com.darron.dbrain-dev
 ```

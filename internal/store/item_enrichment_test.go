@@ -79,7 +79,7 @@ func TestMigrationBackfillsItemEnrichments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite directly: %v", err)
 	}
-	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, currentSchemaVersion); err != nil {
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version >= ?`, 3); err != nil {
 		t.Fatalf("simulate pre-v3 migration metadata: %v", err)
 	}
 	if _, err := db.Exec(`PRAGMA user_version = 2`); err != nil {
