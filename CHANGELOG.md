@@ -22,6 +22,11 @@ development date for the change set.
 - **Config-file selector**: Added global `--config-file` / `DBRAIN_CONFIG_FILE` support so installed services can pin `~/.config/dbrain/config.yaml` while ignoring checkout-local `DBRAIN_ROOT` from direnv.
 - **Location**: `internal/config/`, `internal/runtimeenv/`, `internal/app/`, `README.md`, `config.yaml.sample`
 
+### Homebrew Tap Automation (2026-05-06)
+
+- **Release automation**: The tag release workflow can now update `darron/homebrew-tap` after publishing release assets when `HOMEBREW_TAP_TOKEN` is configured.
+- **Location**: `.github/workflows/release.yaml`, `docs/release-build.md`
+
 ### Secret References In Config (2026-05-06)
 
 - **Keychain and 1Password config refs**: Secret-bearing config values for GitHub, OpenRouter/OpenAI/Ollama API keys, and R2/S3 credentials can now use `env:`, `op://`, or `keychain://` references that are resolved only by `dbrain`.
