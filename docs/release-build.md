@@ -82,3 +82,15 @@ git diff -- web/ui/dist
 
 If `task build` succeeds but the served UI looks old, the binary likely embedded
 stale tracked dist assets. Rebuild the UI, then rebuild the Go binary.
+
+## Homebrew Tap Automation
+
+The tag release workflow updates `darron/homebrew-tap` after the GitHub release
+assets are published when the repository secret `HOMEBREW_TAP_TOKEN` is present.
+The token must be able to write contents to `darron/homebrew-tap`.
+
+The workflow downloads the built release archives, computes the four Homebrew
+checksums for `darwin_amd64`, `darwin_arm64`, `linux_amd64`, and `linux_arm64`,
+updates `Formula/dbrain.rb`, and pushes a commit named
+`Update dbrain to <tag>`. If the secret is absent, the release still succeeds
+and the tap update is skipped.

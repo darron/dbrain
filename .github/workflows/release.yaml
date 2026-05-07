@@ -158,3 +158,115 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/dbrain_*
+
+  update-homebrew-tap:
+    name: Update Homebrew tap
+    runs-on: ubuntu-latest
+    needs: publish
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_REPOSITORY: darron/homebrew-tap
+      TAP_FORMULA_PATH: Formula/dbrain.rb
+
+    steps:
+      - name: Skip without tap token
+        if: env.HOMEBREW_TAP_TOKEN == ''
+        run: |
+          echo "HOMEBREW_TAP_TOKEN is not configured; skipping tap update."
+
+      - name: Download build artifacts
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: dist
+          pattern: cli-*
+          merge-multiple: true
+
+      - name: Check out Homebrew tap
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: ${{ env.TAP_REPOSITORY }}
+          token: ${{ env.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version_tag="${GITHUB_REF_NAME}"
+          version="${version_tag#v}"
+          release_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${version_tag}"
+
+          declare -A checksums
+          for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+            archive="dist/dbrain_${version_tag}_${target}.tar.gz"
+            if [ ! -f "${archive}" ]; then
+              echo "missing release archive: ${archive}" >&2
+              exit 1
+            fi
+            checksums["${target}"]="$(sha256sum "${archive}" | awk '{print $1}')"
+          done
+
+          export VERSION="${version}"
+          export VERSION_TAG="${version_tag}"
+          export RELEASE_BASE="${release_base}"
+          export DARWIN_AMD64_SHA="${checksums[darwin_amd64]}"
+          export DARWIN_ARM64_SHA="${checksums[darwin_arm64]}"
+          export LINUX_AMD64_SHA="${checksums[linux_amd64]}"
+          export LINUX_ARM64_SHA="${checksums[linux_arm64]}"
+
+          ruby <<'RUBY'
+          formula_path = File.join("homebrew-tap", ENV.fetch("TAP_FORMULA_PATH"))
+          text = File.read(formula_path)
+          version = ENV.fetch("VERSION")
+          version_tag = ENV.fetch("VERSION_TAG")
+          release_base = ENV.fetch("RELEASE_BASE")
+          targets = {
+            "darwin_amd64" => ENV.fetch("DARWIN_AMD64_SHA"),
+            "darwin_arm64" => ENV.fetch("DARWIN_ARM64_SHA"),
+            "linux_amd64" => ENV.fetch("LINUX_AMD64_SHA"),
+            "linux_arm64" => ENV.fetch("LINUX_ARM64_SHA"),
+          }
+
+          if text.match?(/^\s*version\s+"/)
+            text = text.sub(/^\s*version\s+"[^"]+"/, "  version \"#{version}\"")
+          end
+
+          targets.each do |target, sha|
+            os, arch = target.split("_", 2)
+            filename = "dbrain_#{version_tag}_#{os}_#{arch}.tar.gz"
+            url = "#{release_base}/#{filename}"
+
+            text = text.gsub(/https:\/\/github\.com\/[^"]*\/releases\/download\/v[^"]*\/dbrain_v[^"]*_#{os}_#{arch}\.tar\.gz/, url)
+            text = text.gsub(/dbrain_v[^"\/]*_#{os}_#{arch}\.tar\.gz/, filename)
+            text = text.gsub(
+              /(url\s+"[^"]*dbrain_[^"]*_#{os}_#{arch}\.tar\.gz"\n\s*)sha256\s+"[a-fA-F0-9]+"/,
+              "\\1sha256 \"#{sha}\"",
+            )
+
+            unless text.include?(url) && text.include?(sha)
+              abort("formula update did not find #{target} URL/checksum slots")
+            end
+          end
+
+          File.write(formula_path, text)
+          RUBY
+
+      - name: Commit and push tap update
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd homebrew-tap
+          if git diff --quiet -- "${TAP_FORMULA_PATH}"; then
+            echo "Homebrew formula is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${TAP_FORMULA_PATH}"
+          git commit -m "Update dbrain to ${GITHUB_REF_NAME}"
+          git push
