@@ -12,6 +12,7 @@ import (
 
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/version"
 )
 
 func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
@@ -38,13 +39,25 @@ func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, BootstrapResponse{
 		App: AppInfo{
-			Name:   "dbrain",
-			HasFTS: s.store.HasFTS(),
+			Name:    "dbrain",
+			HasFTS:  s.store.HasFTS(),
+			Version: webVersionInfo(),
 		},
 		Backlog:        backlog,
 		Activity:       activity,
 		SourceActivity: sourceActivity,
 	})
+}
+
+func webVersionInfo() WebVersionInfo {
+	current := version.Current()
+	return WebVersionInfo{
+		Commit:         current.Commit,
+		Short:          current.Short,
+		GitStatus:      current.GitStatus,
+		ReleaseVersion: current.ReleaseVersion,
+		ModuleVersion:  current.ModuleVersion,
+	}
 }
 
 func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {

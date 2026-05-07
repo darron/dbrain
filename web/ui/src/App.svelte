@@ -95,6 +95,16 @@
   $: synthesisWarnings = synthesisDone?.answer_warnings || synthesisStart?.answer_warnings || [];
   $: visibleCitations = synthesisDone?.citations || synthesisCitations || [];
   $: synthesisWarningMessages = synthesisWarnings.map(formatSynthesisWarning);
+  $: appVersion = app?.version || {};
+  $: releaseVersion = cleanVersionValue(appVersion.release_version);
+  $: moduleVersion = cleanVersionValue(appVersion.module_version);
+  $: commitSHA = cleanVersionValue(appVersion.commit);
+  $: shortSHA = cleanVersionValue(appVersion.short) || (commitSHA ? commitSHA.slice(0, 7) : "");
+  $: gitDirty = String(appVersion.git_status || "").trim().toLowerCase() === "modified";
+  $: releaseLabel = releaseVersion || moduleVersion || "";
+  $: releaseURL = releaseVersion ? `https://github.com/darron/dbrain/releases/tag/${encodeURIComponent(releaseVersion)}` : "https://github.com/darron/dbrain/releases";
+  $: commitURL = commitSHA ? `https://github.com/darron/dbrain/commit/${encodeURIComponent(commitSHA)}` : "";
+  $: versionReady = bootstrapState === "ready" && Boolean(releaseLabel || shortSHA || gitDirty);
 
   onMount(async () => {
     const storedChat = loadChatSession();
@@ -791,6 +801,14 @@
         return warning;
     }
   }
+
+  function cleanVersionValue(value) {
+    value = String(value || "").trim();
+    if (!value || value.toLowerCase() === "unknown" || value === "(devel)") {
+      return "";
+    }
+    return value;
+  }
 </script>
 
 <svelte:head>
@@ -1229,4 +1247,25 @@
       {/if}
     </div>
   {/if}
+
+  <footer class="version-footer" aria-label="Build version">
+    {#if versionReady}
+      <span>dbrain</span>
+      {#if releaseLabel}
+        <a href={releaseURL} target="_blank" rel="noreferrer">{releaseLabel}</a>
+      {:else}
+        <a href="https://github.com/darron/dbrain/releases" target="_blank" rel="noreferrer">releases</a>
+      {/if}
+      {#if commitURL}
+        <span aria-hidden="true">·</span>
+        <a href={commitURL} target="_blank" rel="noreferrer">{shortSHA}</a>
+      {:else if shortSHA}
+        <span aria-hidden="true">·</span>
+        <span>{shortSHA}</span>
+      {/if}
+      {#if gitDirty}
+        <span class="dirty">dirty</span>
+      {/if}
+    {/if}
+  </footer>
 </div>

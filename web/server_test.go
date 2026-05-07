@@ -89,7 +89,10 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		if response.App.Name != "dbrain" {
 			t.Fatalf("expected app name dbrain, got %q", response.App.Name)
 		}
-		for _, forbidden := range []string{`"root_dir"`, `"vault_dir"`, `"db_path"`, cfg.RootDir, cfg.VaultDir, cfg.DBPath} {
+		if response.App.Version.Commit == "" || response.App.Version.ReleaseVersion == "" {
+			t.Fatalf("expected bootstrap version metadata, got %#v", response.App.Version)
+		}
+		for _, forbidden := range []string{`"root_dir"`, `"vault_dir"`, `"db_path"`, `"build_settings"`, cfg.RootDir, cfg.VaultDir, cfg.DBPath} {
 			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
 				t.Fatalf("bootstrap response exposed host-local metadata %q: %s", forbidden, rec.Body.String())
 			}

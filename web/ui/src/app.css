@@ -56,7 +56,7 @@ a:hover {
 
 .app {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 100vh;
 }
 
@@ -144,8 +144,35 @@ a:hover {
 .page-home {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 49px);
+  min-height: 0;
   overflow: hidden;
+}
+
+.version-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 1.5rem 0.45rem;
+  border-top: 1px solid var(--border);
+  background: rgba(7, 13, 10, 0.92);
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.version-footer a {
+  color: var(--text-lo);
+  text-decoration: none;
+}
+
+.version-footer a:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.version-footer .dirty {
+  color: var(--warn);
 }
 
 .search-zone {
@@ -1704,6 +1731,12 @@ textarea { resize: vertical; }
     min-height: 100dvh;
     height: auto;
     overflow: visible;
+  }
+
+  .version-footer {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    padding: 0.4rem 0.75rem 0.55rem;
   }
 
   .search-zone {

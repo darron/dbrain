@@ -9,8 +9,17 @@ import (
 )
 
 type AppInfo struct {
-	Name   string `json:"name"`
-	HasFTS bool   `json:"has_fts"`
+	Name    string         `json:"name"`
+	HasFTS  bool           `json:"has_fts"`
+	Version WebVersionInfo `json:"version"`
+}
+
+type WebVersionInfo struct {
+	Commit         string `json:"commit"`
+	Short          string `json:"short"`
+	GitStatus      string `json:"git_status"`
+	ReleaseVersion string `json:"release_version"`
+	ModuleVersion  string `json:"module_version,omitempty"`
 }
 
 type BootstrapResponse struct {
