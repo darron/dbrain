@@ -16,6 +16,17 @@ development date for the change set.
 - **Added**: `dbrain launchd restart` to restart the loaded background `serve remote` LaunchAgent without reinstalling the plist.
 - **Location**: `internal/app/`, `README.md`
 
+### Web Version Footer (2026-05-07)
+
+- **Added**: The web interface now exposes the running release and commit SHA as unobtrusive footer links to the GitHub release tag and commit.
+- **Location**: `web/`, `web/ui/`
+
+### Release Web Asset Build (2026-05-07)
+
+- **Fixed**: The GitHub release workflow now rebuilds the Svelte web UI before compiling release binaries, ensuring embedded web assets match the tagged source.
+- **PR guard**: Pull request CI now rebuilds the web UI and fails if `web/ui/dist` is stale.
+- **Location**: `.github/workflows/release.yaml`, `.github/workflows/pr-ci.yaml`, `docs/release-build.md`
+
 ### Launchd Service Command (2026-05-06)
 
 - **macOS background service**: Added `dbrain launchd` commands to print, install, and uninstall a per-user launchd service that runs `dbrain serve remote` with the active config layout.

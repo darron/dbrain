@@ -15,10 +15,19 @@ var embeddedUI embed.FS
 ```
 
 `task build` compiles the Go binary and embeds whatever `web/ui/dist` currently
-contains. It does not run `task web-build`.
+contains. It does not run `task web-build` locally.
 
 This keeps ordinary Go builds from requiring `npm`, but it means UI source
 changes must be paired with refreshed dist assets before release.
+
+The GitHub release workflow is stricter: it runs `npm ci` and `task web-build`
+before every release `task build`, so published binaries embed web assets built
+from the tagged UI source rather than relying only on the committed `dist`
+directory.
+
+Pull request CI also runs `task web-build` and then checks `web/ui/dist` for a
+clean diff. If UI source changes were not committed with refreshed dist assets,
+the PR fails before merge.
 
 `task build` injects release metadata from `DBRAIN_RELEASE_VERSION`, a GitHub
 Actions tag ref, or an exact checked-out git tag. Untagged local builds report
@@ -82,6 +91,12 @@ git diff -- web/ui/dist
 
 If `task build` succeeds but the served UI looks old, the binary likely embedded
 stale tracked dist assets. Rebuild the UI, then rebuild the Go binary.
+
+For tag releases, GitHub Actions rebuilds `web/ui/dist` before compiling the Go
+binary. The committed dist files still matter for local builds, review, and
+source checkouts, but the release archives are protected from stale UI assets.
+Pull request CI catches stale committed dist assets earlier by rebuilding and
+requiring `git diff --exit-code -- web/ui/dist` to stay clean.
 
 ## Homebrew Tap Automation
 
