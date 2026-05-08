@@ -307,6 +307,40 @@ with its matching environment variable comment on the same line:
 cp config.yaml.sample ~/.config/dbrain/config.yaml
 ```
 
+## Preflight Checks
+
+`dbrain` runs lightweight preflight checks after resolving the active
+configuration. The checks are meant to catch missing local vocabulary files and
+missing secrets before a long import or enrichment run does partial work.
+
+Missing `categories.yaml` is a warning, not a hard failure. Categorization can
+still run, but it will not apply the canonical vocabulary rewrites and drops
+from the category file. Homebrew/default installs should keep the file at:
+
+```sh
+~/.config/dbrain/categories.yaml
+```
+
+Development roots should keep it beside the root config:
+
+```sh
+<root>/categories.yaml
+```
+
+These selected features fail early when their required secrets are missing:
+
+- GitHub imports require `GITHUB_TOKEN` or `github.token`.
+- OpenRouter-backed categorization requires `DBRAIN_OPENROUTER_API_KEY`,
+  `OPENROUTER_API_KEY`, or `openrouter.api_key`.
+- OpenRouter-backed OCR requires the same OpenRouter key when the OCR model is
+  an `openrouter/...` model.
+- R2/S3 archive paths require an access key and secret when archive upload,
+  bucket, endpoint, or public archive URL settings are configured.
+
+Use `--config-file ~/.config/dbrain/config.yaml` for Homebrew/background
+service runs when you want the installed binary to ignore checkout-local
+environment overrides.
+
 Every command help screen includes the effective configuration lookup summary.
 Use this command for the authoritative env/config mapping:
 

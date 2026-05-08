@@ -39,6 +39,9 @@ func newImportGitHubStarsCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := preflightRequireGitHub(cmd.Context(), cfg); err != nil {
+				return err
+			}
 
 			st, err := store.Open(cfg.DBPath)
 			if err != nil {

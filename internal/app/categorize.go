@@ -39,6 +39,9 @@ func newCategorizeItemCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := preflightRequireOpenRouterForModel(cmd.Context(), cfg, model); err != nil {
+				return err
+			}
 			st, err := store.Open(cfg.DBPath)
 			if err != nil {
 				return err
@@ -103,6 +106,9 @@ func newCategorizeBatchCommand(root *rootOptions) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
+				return err
+			}
+			if err := preflightRequireOpenRouterForModel(cmd.Context(), cfg, model); err != nil {
 				return err
 			}
 			st, err := store.Open(cfg.DBPath)

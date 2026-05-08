@@ -45,6 +45,7 @@ func loadConfig(root string, configFile ...string) (config.Config, error) {
 	if err := cleanupLegacySummaryTempFiles(cfg); err != nil {
 		return config.Config{}, err
 	}
+	runStartupPreflight(cfg)
 	return cfg, nil
 }
 
