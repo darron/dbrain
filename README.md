@@ -887,6 +887,36 @@ go run ./cmd/devtools/ocr_model_compare --limit 30 --json > /tmp/dbrain-ocr-comp
 go run ./cmd/devtools/ocr_model_compare --limit 10 --models openrouter/google/gemini-3.1-flash-lite-preview,ollama/deepseek-ocr:3b,tesseract
 ```
 
+### Model Bakeoffs
+
+For read-only summary and categorization comparisons, use the model bakeoff
+devtool. It runs the existing summary or categorization prompt against explicit
+targets and models, reports timing and side-by-side outputs, and does not save
+summaries, categories, or tags.
+
+```sh
+go run ./cmd/devtools/model_bakeoff \
+  --mode source-summary \
+  --lookup src:47acb64df52e \
+  --model ollama/qwen3.6:27b \
+  --model ollama/gemma4:31b \
+  --output /tmp/dbrain-summary-bakeoff.md
+
+go run ./cmd/devtools/model_bakeoff \
+  --mode categorize-item \
+  --lookup x:2052235121416188114 \
+  --model ollama/qwen3.6:27b \
+  --model openrouter/google/gemini-2.5-flash \
+  --output /tmp/dbrain-categorize-bakeoff.md
+
+go run ./cmd/devtools/model_bakeoff \
+  --mode categorize-source \
+  --lookup src:47acb64df52e \
+  --model ollama/qwen3.6:27b \
+  --model ollama/gemma4:31b \
+  --json > /tmp/dbrain-categorize-source-bakeoff.json
+```
+
 ### `dbrain import youtube`
 
 Requires a browser profile with valid YouTube cookies, `yt-dlp`, and
@@ -1370,9 +1400,13 @@ client configuration, importer contract, logging behavior, and skill setup.
 
 ## Skill
 
-This repo includes a Codex skill for agents at `skills/dbrain-mcp/SKILL.md`.
-See [MCP.md](MCP.md#skill) for installation notes and the recommended Codex MCP
-configuration.
+This repo includes Codex skills for agents:
+
+- `skills/dbrain-mcp/SKILL.md` helps agents query the local dbrain corpus
+  through MCP. See [MCP.md](MCP.md#skill) for installation notes and the
+  recommended Codex MCP configuration.
+- `skills/dbrain-model-bakeoff/SKILL.md` helps agents compare summary and
+  categorization models with the read-only bakeoff devtool.
 
 ## License
 
@@ -1437,7 +1471,7 @@ Third-party dependency notices are in
 - [ ] Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
 - [ ] Audit X media transcription throughput by recording per-video duration/bytes/transcript chars and testing cautious MacWhisper parallelism; avoid raising default concurrency until local GPU/CPU contention is understood.
 - [x] Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends, report side-by-side output quality and timings, and avoid changing persisted item OCR state.
-- [ ] Add a summary bakeoff/audit command that can run the same source extract or media transcript through multiple summary models/backends, report side-by-side outputs and timings, and avoid changing persisted summary state.
+- [x] Add a summary/categorization bakeoff devtool that can run the same source extract or content bundle through multiple models/backends, report side-by-side outputs and timings, and avoid changing persisted summary/tag state.
 - [ ] Improve provider provenance so stored summaries always record the exact backend/model used.
 - [ ] Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
 - [ ] Add explicit source-of-truth audit commands such as `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`, while treating the local DB as append-only by default.

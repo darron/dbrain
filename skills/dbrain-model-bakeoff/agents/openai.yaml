@@ -1,0 +1,3 @@
+display_name: dbrain Model Bakeoff
+short_description: Compare dbrain summary and categorization models.
+default_prompt: Compare these dbrain models across summary and categorization modes.
