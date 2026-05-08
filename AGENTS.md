@@ -337,6 +337,15 @@ the bug reappeared.
 - keep tests safe for GitHub Actions: do not depend on a developer's local
   browser profiles, installed helper tools, model services, network access, or
   OS-specific paths unless the test explicitly skips or fakes those dependencies
+- keep tests independent of local secrets: unset or fake GitHub, OpenRouter,
+  R2/S3, Keychain, and 1Password-backed credentials in tests that do not
+  explicitly cover credential behavior
+- when a command test is checking unrelated option plumbing, disable unrelated
+  stages or use local/fake providers so preflight does not accidentally depend
+  on ambient developer configuration
+- when adding or changing preflight checks, add separate tests that prove both
+  selected-stage failures and skipped/local-provider success paths work in a
+  GitHub Actions-like environment with no personal secrets
 
 ### Keep the changelog current
 
