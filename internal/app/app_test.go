@@ -1359,6 +1359,9 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{
 		"--json",
+		"--skip-github",
+		"--categorize-model", "ollama/test-categorizer",
+		"--ocr-model", "ollama/test-ocr",
 		"--x-limit", "7",
 		"--x-media-limit", "3",
 		"--x-photo-ocr-limit", "5",
