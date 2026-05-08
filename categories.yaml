@@ -46,6 +46,9 @@ aliases:
   liberal-party-of-canada: liberal-party
   nic-rh: nic-roberts-huntley
   nick-roberts-huntley: nic-roberts-huntley
+  cyber-security: cybersecurity
+  ctvnews: ctv-news
+  jihadwatch: jihad-watch
 
   # === Source categorization cleanup ===
   # License names emitted frequently by GitHub/source categorization.
@@ -95,6 +98,9 @@ aliases:
   devops-tools: devops
   devops-automation: devops
   model-context-protocol: mcp
+  mcp-protocol: mcp
+  mcp-server: mcp
+  mcp-servers: mcp
   helm-chart: helm-charts
   custom-resource-definition: custom-resource-definitions
   crd: custom-resource-definitions
@@ -113,6 +119,8 @@ aliases:
   cnfc: cncf
   cnfc-sandbox: cncf-sandbox
   gcp: google-cloud-platform
+  amazon-web-services: aws
+  aws-services: aws
   microsoft-azure: azure
   open-shift: openshift
 
@@ -126,6 +134,8 @@ aliases:
   open-source-libraries: open-source-software
   open-source-tools: open-source-software
   rust-programming: rust
+  rust-language: rust
+  rust-lang: rust
   python-programming: python
   ruby-programming: ruby
   yaml-configuration: yaml
@@ -145,12 +155,16 @@ drop:
   - bookmark
   - bookmarks
   - link-sharing
+  - link-share
   - links
+  - external-link
   - external-links
   - digital-links
   - media-links
   - web-links
   - social-media-links
+  - social-media-link
+  - twitter-link
   - user-content
   - unknown-content
   - article-link

@@ -38,6 +38,9 @@ func newOCRXPhotosCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := preflightOCRModel(cmd.Context(), cfg, model); err != nil {
+				return err
+			}
 
 			st, err := store.Open(cfg.DBPath)
 			if err != nil {

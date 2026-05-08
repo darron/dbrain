@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -82,6 +83,11 @@ func newArchiveMediaCommand(root *rootOptions) *cobra.Command {
 			}
 			if !upload {
 				upload = firstEnvBool(cfg.RootDir, "DBRAIN_ARCHIVE_UPLOAD", "DBRAIN_R2_UPLOAD")
+			}
+			if upload || bucket != "" || endpoint != "" || publicBaseURL != "" {
+				if strings.TrimSpace(accessKeyID) == "" || strings.TrimSpace(secretAccessKey) == "" {
+					return fmt.Errorf("preflight failed: R2/S3 archive is configured but access key or secret key is missing")
+				}
 			}
 
 			st, err := store.Open(cfg.DBPath)

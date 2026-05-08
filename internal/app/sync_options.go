@@ -82,6 +82,32 @@ type syncAllFlags struct {
 }
 
 func syncOptionsFromFlags(ctx context.Context, cfg config.Config, flags syncAllFlags, logger *slog.Logger, progress io.Writer) (syncjob.Options, error) {
+	if !flags.skipGitHub {
+		if err := preflightRequireGitHub(ctx, cfg); err != nil {
+			return syncjob.Options{}, err
+		}
+	}
+	if !flags.skipXPhotoOCR {
+		if err := preflightOCRModel(ctx, cfg, flags.ocrModel); err != nil {
+			return syncjob.Options{}, err
+		}
+	}
+	if flags.summarize && !flags.skipSources {
+		if err := preflightSummaryModel(ctx, cfg, flags.model); err != nil {
+			return syncjob.Options{}, err
+		}
+	}
+	if !flags.skipCategorize {
+		if err := preflightRequireOpenRouterForModel(ctx, cfg, flags.categorizeModel); err != nil {
+			return syncjob.Options{}, err
+		}
+	}
+	if flags.archiveMedia || preflightR2Configured(cfg) {
+		if err := preflightRequireR2(ctx, cfg); err != nil {
+			return syncjob.Options{}, err
+		}
+	}
+
 	var archiveAccessKeyID string
 	var archiveSecretKey string
 	var archiveSessionToken string

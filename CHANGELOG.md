@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Startup Preflight Checks (2026-05-08)
+
+- **Added**: Startup now warns when the configured `categories.yaml` is missing so Homebrew installs do not silently categorize without canonical vocabulary rewrites.
+- **Validation**: GitHub imports, R2/S3 archive paths, OpenRouter-backed OCR, and OpenRouter-backed categorization now fail early when their required secrets are missing.
+- **Categories**: Added conservative vocabulary cleanup for duplicate tags found during repair/analyze.
+- **Location**: `internal/app/`, `categories.yaml`
+
 ### X Article Canonical URLs (2026-05-07)
 
 - **Fixed**: Kept X article source canonical URLs on the stable `https://x.com/i/article/<id>` route instead of rewriting them to author-scoped article URLs that X may redirect to non-existent status pages.
