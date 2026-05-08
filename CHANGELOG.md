@@ -27,6 +27,12 @@ development date for the change set.
 - **PR guard**: Pull request CI now rebuilds the web UI and fails if `web/ui/dist` is stale.
 - **Location**: `.github/workflows/release.yaml`, `.github/workflows/pr-ci.yaml`, `docs/release-build.md`
 
+### Model Bakeoff Devtool (2026-05-07)
+
+- **Added**: A read-only `cmd/devtools/model_bakeoff` tool for comparing source-summary, item-categorization, and source-categorization models side by side without saving derived state.
+- **Skill**: Added a shareable Codex skill that documents the model bakeoff workflow for future agent runs.
+- **Location**: `cmd/devtools/model_bakeoff/`, `internal/modelbakeoff/`, `internal/sourceenrich/`, `README.md`, `skills/dbrain-model-bakeoff/`
+
 ### Launchd Service Command (2026-05-06)
 
 - **macOS background service**: Added `dbrain launchd` commands to print, install, and uninstall a per-user launchd service that runs `dbrain serve remote` with the active config layout.
