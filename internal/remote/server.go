@@ -153,6 +153,9 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	if opts.Web {
 		_, _ = fmt.Fprintln(logOut, "WARNING remote web is read/write; Tailscale ACLs govern access.")
 	}
+	if opts.OnReady != nil {
+		opts.OnReady()
+	}
 
 	select {
 	case <-ctx.Done():

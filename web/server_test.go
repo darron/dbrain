@@ -19,6 +19,7 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -141,6 +142,24 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		}
 		if len(response.Trend) == 0 || response.TrendBucket == "" {
 			t.Fatalf("expected source activity trend data, got bucket=%q trend=%+v", response.TrendBucket, response.Trend)
+		}
+	})
+
+	t.Run("scheduler status without provider", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/scheduler/sync-all", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response SchedulerSyncAllResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode scheduler status: %v", err)
+		}
+		if response.SyncAll.Enabled {
+			t.Fatalf("expected disabled scheduler without provider, got %#v", response.SyncAll)
 		}
 	})
 
@@ -537,6 +556,48 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 			t.Fatalf("unexpected add link response %+v", response)
 		}
 	})
+}
+
+func TestWebHandlerServesSchedulerStatus(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := openTestStore(t)
+	now := time.Date(2026, time.May, 8, 12, 0, 0, 0, time.UTC)
+	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{
+		SchedulerStatus: func() schedulerstate.SyncAllStatus {
+			return schedulerstate.SyncAllStatus{
+				Enabled:        true,
+				Interval:       "1h",
+				RunOnStart:     true,
+				Running:        false,
+				LastStartedAt:  now.Add(-time.Hour),
+				LastFinishedAt: now.Add(-59 * time.Minute),
+				LastStatus:     "ok",
+				NextRunAt:      now.Add(time.Minute),
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHandlerWithOptions: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/scheduler/sync-all", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response SchedulerSyncAllResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode scheduler status: %v", err)
+	}
+	if !response.SyncAll.Enabled || response.SyncAll.Interval != "1h" || response.SyncAll.LastStatus != "ok" {
+		t.Fatalf("unexpected scheduler response: %#v", response.SyncAll)
+	}
+	if response.SyncAll.NextRunAt.IsZero() {
+		t.Fatalf("expected next run timestamp")
+	}
 }
 
 func TestWebHandlerAddLinkRejectsInvalidURL(t *testing.T) {

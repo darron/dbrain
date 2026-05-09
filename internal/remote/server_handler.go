@@ -29,7 +29,9 @@ func buildHandler(cfg config.Config, opts Options, lc whoIsClient, logOut io.Wri
 			return nil, nil, err
 		}
 		closers = append(closers, st)
-		webHandler, err = web.NewHandler(cfg, st)
+		webHandler, err = web.NewHandlerWithOptions(cfg, st, web.HandlerOptions{
+			SchedulerStatus: opts.SchedulerStatus,
+		})
 		if err != nil {
 			cleanup()
 			return nil, nil, err

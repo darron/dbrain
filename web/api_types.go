@@ -5,6 +5,7 @@ import (
 
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -33,6 +34,10 @@ type SearchResponse struct {
 	Query   string               `json:"query"`
 	Limit   int                  `json:"limit"`
 	Results []model.SearchResult `json:"results"`
+}
+
+type SchedulerSyncAllResponse struct {
+	SyncAll schedulerstate.SyncAllStatus `json:"sync_all"`
 }
 
 type GetResponse struct {

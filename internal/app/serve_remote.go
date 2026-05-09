@@ -58,6 +58,16 @@ govern who can reach the node.`,
 				controlURL:         controlURL,
 				verbose:            verbose,
 			})
+			schedulerOpts, err := schedulerSyncConfigFromRuntime(cfg.RootDir)
+			if err != nil {
+				return err
+			}
+			scheduler := newSyncScheduler(cfg, schedulerOpts, cmd.ErrOrStderr())
+			opts.SchedulerStatus = scheduler.Status
+			opts.OnReady = func() {
+				scheduler.Start(cmd.Context())
+			}
+			defer scheduler.Stop()
 			return remote.Serve(cmd.Context(), cfg, opts, cmd.ErrOrStderr())
 		},
 	}

@@ -65,6 +65,19 @@ safari_tabs:
   limit: 0 # DBRAIN_SAFARI_TABS_LIMIT; 0 imports all matching tabs
   older_than: "" # DBRAIN_SAFARI_TABS_OLDER_THAN; optional duration, for example 168h
 
+scheduler:
+  sync_all:
+    enabled: false # DBRAIN_SCHEDULER_SYNC_ALL_ENABLED; run sync all from serve remote
+    interval: "1h" # DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL
+    run_on_start: false # DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START
+    jitter: "" # DBRAIN_SCHEDULER_SYNC_ALL_JITTER; optional, for example 5m
+    source_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_LIMIT; 0 uses sync all default
+    source_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_CONCURRENCY
+    categorize_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_LIMIT
+    skip_github: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB
+    skip_youtube: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE
+    skip_categorize: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE
+
 tsnet:
   web: true # DBRAIN_TSNET_WEB
   mcp: true # DBRAIN_TSNET_MCP
