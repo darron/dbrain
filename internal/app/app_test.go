@@ -18,6 +18,7 @@ import (
 
 	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/safaritabs"
@@ -66,6 +67,32 @@ func TestFeedAddCheckFlagDefaultsToVerifyOnly(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Fatalf("--check default = %q, want false", flag.DefValue)
+	}
+}
+
+func TestFeedStatusFormattingShowsScheduleState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 9, 18, 0, 0, 0, time.UTC)
+	feed := store.Feed{
+		Enabled:        true,
+		HealthStatus:   store.FeedHealthOK,
+		LastCheckedAt:  now.Add(-time.Hour),
+		NextFetchAfter: now.Add(time.Minute),
+	}
+	if got := feedDueStatus(feed, now); got != "not_due" {
+		t.Fatalf("feedDueStatus = %q, want not_due", got)
+	}
+	feed.NextFetchAfter = now.Add(-time.Minute)
+	if got := feedDueStatus(feed, now); got != "due" {
+		t.Fatalf("feedDueStatus = %q, want due", got)
+	}
+	feed.Enabled = false
+	if got := feedDueStatus(feed, now); got != "disabled" {
+		t.Fatalf("feedDueStatus = %q, want disabled", got)
+	}
+	if got := formatFeedCLITime(time.Time{}); got != "-" {
+		t.Fatalf("formatFeedCLITime zero = %q, want -", got)
 	}
 }
 
@@ -1942,6 +1969,38 @@ func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
 
 	output := dst.String()
 	for _, value := range []string{"Sync Summary", "Safari Tabs", "created=1 updated=2", "unchanged=495 rendered=498 skipped=2 links=492 device=dfone", "1"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
+		}
+	}
+}
+
+func TestWriteSyncStatsIncludesFeedLevelChangedAndUnchanged(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:   time.Date(2026, time.May, 9, 18, 42, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, time.May, 9, 18, 43, 0, 0, time.UTC),
+		Duration:    time.Minute,
+		Feeds: &syncjob.FeedsStage{
+			Stats: feedimport.Stats{
+				FeedsChecked:   1,
+				FeedsChanged:   0,
+				FeedsUnchanged: 1,
+				EntriesSeen:    0,
+				ItemsCreated:   0,
+				ItemsUpdated:   0,
+			},
+		},
+	}
+
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	for _, value := range []string{"Sync Summary", "Feeds", "checked=1 entries=0", "changed=0 unchanged=1 created=0 updated=0"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}

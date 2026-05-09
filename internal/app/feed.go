@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -119,7 +120,19 @@ func newFeedListCommand(root *rootOptions) *cobra.Command {
 				if !feed.Enabled {
 					enabled = "disabled"
 				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", feed.FeedKey, enabled, feed.HealthStatus, feed.Title, feed.NormalizedURL)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\tlast=%s\tnext=%s\t%s\t%s\n",
+					feed.FeedKey,
+					enabled,
+					feed.HealthStatus,
+					feedDueStatus(feed, time.Now().UTC()),
+					formatFeedCLITime(feed.LastCheckedAt),
+					formatFeedCLITime(feed.NextFetchAfter),
+					feed.Title,
+					feed.NormalizedURL,
+				)
+				if feed.LastError != "" {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\terror=%s\n", truncateFeedError(feed.LastError))
+				}
 			}
 			return nil
 		},
@@ -255,10 +268,40 @@ func writeFeed(dst interface{ Write([]byte) (int, error) }, feed store.Feed) err
 	_, _ = fmt.Fprintf(dst, "title: %s\n", feed.Title)
 	_, _ = fmt.Fprintf(dst, "enabled: %t\n", feed.Enabled)
 	_, _ = fmt.Fprintf(dst, "health_status: %s\n", feed.HealthStatus)
-	_, _ = fmt.Fprintf(dst, "last_checked_at: %s\n", feed.LastCheckedAt.Format(time.RFC3339))
-	_, _ = fmt.Fprintf(dst, "next_fetch_after: %s\n", feed.NextFetchAfter.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(dst, "due: %s\n", feedDueStatus(feed, time.Now().UTC()))
+	_, _ = fmt.Fprintf(dst, "last_checked_at: %s\n", formatFeedCLITime(feed.LastCheckedAt))
+	_, _ = fmt.Fprintf(dst, "next_fetch_after: %s\n", formatFeedCLITime(feed.NextFetchAfter))
 	_, _ = fmt.Fprintf(dst, "last_error: %s\n", feed.LastError)
 	return nil
+}
+
+func feedDueStatus(feed store.Feed, now time.Time) string {
+	if !feed.Enabled {
+		return "disabled"
+	}
+	if feed.HealthStatus == store.FeedHealthBlocked || feed.HealthStatus == store.FeedHealthDead {
+		return feed.HealthStatus
+	}
+	if feed.NextFetchAfter.IsZero() || !feed.NextFetchAfter.After(now) {
+		return "due"
+	}
+	return "not_due"
+}
+
+func formatFeedCLITime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func truncateFeedError(value string) string {
+	value = strings.TrimSpace(value)
+	const limit = 160
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit-3] + "..."
 }
 
 func writeFeedStats(dst interface{ Write([]byte) (int, error) }, stats feedimport.Stats) error {

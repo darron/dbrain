@@ -94,7 +94,7 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 	}
 	if stats.Feeds != nil {
 		s := stats.Feeds.Stats
-		rows = append(rows, []string{"Feeds", formatSyncDuration(stats.Feeds.Duration), fmt.Sprintf("checked=%d entries=%d", s.FeedsChecked, s.EntriesSeen), fmt.Sprintf("created=%d updated=%d unchanged=%d", s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged), strconv.Itoa(s.Errors)})
+		rows = append(rows, []string{"Feeds", formatSyncDuration(stats.Feeds.Duration), fmt.Sprintf("checked=%d entries=%d", s.FeedsChecked, s.EntriesSeen), fmt.Sprintf("changed=%d unchanged=%d created=%d updated=%d", s.FeedsChanged, s.FeedsUnchanged, s.ItemsCreated, s.ItemsUpdated), strconv.Itoa(s.Errors)})
 	}
 	if stats.Sources != nil {
 		s := stats.Sources.Stats
