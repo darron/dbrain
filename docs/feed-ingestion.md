@@ -145,6 +145,11 @@ When `/api/links` receives a URL:
   implementation can expose this through API output without building a full feed
   management UI.
 
+Do not auto-subscribe to multiple autodiscovered feeds. If a page advertises one
+feed, the CLI may subscribe to that feed after reporting the resolved feed URL.
+If a page advertises multiple feeds, return or print the candidates and require
+the user to choose an exact feed URL.
+
 The web UI may eventually expose a compact feed management view:
 
 - URL
@@ -171,10 +176,13 @@ Suggested config:
 feeds:
   enabled: true
   default_poll_interval: 1h
+  max_concurrent_fetches: 6
   user_agent: "dbrain/<version> (+https://github.com/darron/dbrain)"
-  accept_markdown: true
   max_body_bytes: 10485760
   request_timeout: 30s
+
+extraction:
+  accept_markdown: true
 ```
 
 Suggested env vars:
@@ -182,10 +190,11 @@ Suggested env vars:
 ```text
 DBRAIN_FEEDS_ENABLED
 DBRAIN_FEEDS_DEFAULT_POLL_INTERVAL
+DBRAIN_FEEDS_MAX_CONCURRENT_FETCHES
 DBRAIN_FEEDS_USER_AGENT
-DBRAIN_FEEDS_ACCEPT_MARKDOWN
 DBRAIN_FEEDS_MAX_BODY_BYTES
 DBRAIN_FEEDS_REQUEST_TIMEOUT
+DBRAIN_EXTRACTION_ACCEPT_MARKDOWN
 ```
 
 `sync all` should include feeds by default. When no feed subscriptions exist, it
@@ -202,6 +211,15 @@ The scheduler should not need feed-specific scheduling logic at first. If
 `scheduler.sync_all.enabled` is true, scheduled runs will check feeds
 periodically through the normal stage plan unless `--skip-feeds` or its
 scheduled config equivalent is set.
+
+`feed add --poll-interval` and `feeds.default_poll_interval` should accept Go
+duration strings such as `30m`, `1h`, and `24h`. Store the resolved per-feed
+value as integer seconds in SQLite and render it back as a human-readable
+duration in `feed list` and `feed status`.
+
+`feeds.max_concurrent_fetches` limits concurrent feed HTTP requests. The default
+should be small enough to avoid looking like a flood to feed servers while still
+making many-feed syncs practical; start with `6`.
 
 ## Data Model
 
@@ -262,7 +280,7 @@ Suggested columns:
 - `title`
 - `author`
 - `published_at`
-- `updated_at`
+- `entry_updated_at` feed-provided entry update timestamp, when present
 - `summary_html`
 - `summary_text`
 - `content_html`
@@ -272,7 +290,8 @@ Suggested columns:
 - `extensions_json`
 - `raw_json`
 - `content_hash`
-- `version`
+- `version` integer, starting at `1` and incremented on each content-hash
+  change
 - `item_id` linked `items.id`
 - `source_id` linked `sources.id` for the canonical URL when available
 - `first_seen_at`
@@ -292,8 +311,8 @@ Indexes:
 
 ### `feed_entry_versions`
 
-Optional but recommended because feed entry content changes are exactly the sort
-of raw data dbrain should preserve for later reprocessing.
+Required because feed entry content changes are exactly the sort of raw data
+dbrain should preserve for later reprocessing.
 
 Suggested columns:
 
@@ -310,7 +329,9 @@ Suggested columns:
 - `observed_at`
 
 The current entry row stores the latest version. Version rows preserve prior
-observations.
+observations. `feed_entries.version` mirrors the latest version number, and each
+`feed_entry_versions.version` row stores the previous observed version that was
+replaced.
 
 ### Materialized `items`
 
@@ -335,6 +356,11 @@ Suggested mapping:
 When the feed entry content hash changes, update this same item row rather than
 creating a duplicate.
 
+Feed subscription `user_tags` should propagate to newly materialized entry
+items as user tags. Later changes to feed tags should apply to future entries
+and may be offered as an explicit repair command for existing entries, but the
+first importer should not silently overwrite user-edited item tags.
+
 ### Materialized `sources`
 
 If the feed entry has a canonical link, upsert it through the same normalization
@@ -355,7 +381,7 @@ Identity priority:
 
 1. Stable item GUID/ID, if present.
 2. Normalized canonical item link, if present.
-3. Hash of feed key, title, published date, and first useful content text.
+3. Hash of feed key, title, published date, and deterministic fallback text.
 
 Rules:
 
@@ -370,17 +396,29 @@ Rules:
 - If both GUID and link are missing, use the fallback hash and accept that some
   broken feeds may create duplicates when titles or bodies churn.
 
+Fallback text must be deterministic:
+
+1. Prefer normalized `content_markdown`.
+2. Otherwise use normalized `content_text`.
+3. Otherwise use normalized `summary_text`.
+4. Otherwise use normalized title.
+5. Otherwise use normalized enclosure metadata.
+
+For identity hashing, truncate fallback text to the first 2,048 UTF-8 bytes
+after whitespace normalization. This keeps broken-feed identity stable enough
+without letting huge bodies dominate identity.
+
 Content hash inputs:
 
 - title
 - canonical link
 - author
-- published/updated timestamps when present
+- published and entry-updated timestamps when present
 - content Markdown
 - content HTML/text
 - summary HTML/text
 - enclosures
-- stable extension fields that affect user-visible entry content
+- normalized extensions JSON with deterministic key ordering
 
 Content hash exclusions:
 
@@ -477,19 +515,23 @@ hashing is the source of truth for duplicate prevention.
 Fetch flow:
 
 1. Select enabled feeds with `next_fetch_after <= now`.
-2. Send `If-None-Match` when `fetch_etag` is known.
-3. Send `If-Modified-Since` when `fetch_last_modified` is known.
-4. On `304 Not Modified`, update `last_checked_at`, clear transient errors, and
+2. Process selected feeds with a bounded worker pool using
+   `feeds.max_concurrent_fetches`.
+3. Validate the requested URL before opening a connection.
+4. Send `If-None-Match` when `fetch_etag` is known.
+5. Send `If-Modified-Since` when `fetch_last_modified` is known.
+6. Re-validate every redirect target before following it.
+7. On `304 Not Modified`, update `last_checked_at`, clear transient errors, and
    stop.
-5. On `200 OK`, read the bounded body, hash the raw bytes, parse the feed, and
+8. On `200 OK`, read the bounded body, hash the raw bytes, parse the feed, and
    persist current response metadata.
-6. If the raw body hash matches `fetch_body_hash`, update fetch metadata but
+9. If the raw body hash matches `fetch_body_hash`, update fetch metadata but
    skip entry materialization unless `--force` was requested.
-7. If the raw body hash changed, materialize entries and update feed metadata.
-8. On retryable failures, record the error, increment `error_count`, and compute
+10. If the raw body hash changed, materialize entries and update feed metadata.
+11. On retryable failures, record the error, increment `error_count`, and compute
    a backoff-based `next_fetch_after`.
-9. On terminal-looking failures, such as repeated `404` or `410`, mark the feed
-   `dead` only after multiple failed checks.
+12. On terminal-looking failures, such as repeated `404` or `410`, apply the
+   dead-feed threshold below before marking the feed `dead`.
 
 Important edge cases:
 
@@ -510,6 +552,39 @@ Therefore:
 - Enforce `max_body_bytes`.
 - Use a dbrain User-Agent that makes the client identifiable without leaking
   local paths or secrets.
+
+### URL Safety
+
+Feed and source fetching must fail closed for unsafe URLs.
+
+Before opening a connection, validate that the URL:
+
+- uses `http` or `https`
+- has a non-empty host
+- resolves to routable public IP addresses
+- does not resolve to loopback, link-local, private RFC1918, multicast,
+  unspecified, or other special-use addresses
+
+Repeat this validation after each redirect target is resolved. A redirect from a
+public URL to `127.0.0.1`, `localhost`, `169.254.169.254`, a private LAN
+address, or another non-public target must be blocked before the request is
+sent.
+
+### Retry and Dead Feed Policy
+
+Use deterministic retry behavior:
+
+- initial retry delay: `15m`
+- multiplier: `2`
+- maximum retry delay: `24h`
+- retryable failures: DNS errors, connection timeouts, request timeouts,
+  temporary network failures, `429`, and `5xx`
+- terminal-looking failures: `404`, `410`, unsupported scheme, unsafe URL, and
+  permanent parse failures for a body that keeps the same hash
+
+Mark a feed `dead` after `5` consecutive terminal-looking failures across at
+least `24h`. Retryable failures should leave the feed in `error`, not `dead`,
+unless a later policy explicitly changes that.
 
 ## Feed Format Messiness
 
@@ -631,6 +706,8 @@ implementation. The linked article/source is the primary summarization target.
 2. Add feed schema migration.
 3. Add `internal/feedimport` with:
    - HTTP fetcher
+   - URL safety validation before requests and after redirects
+   - bounded concurrent fetch worker pool
    - conditional request support
    - body hashing
    - parser wrapper
@@ -661,6 +738,8 @@ Required coverage:
 - Reordered feed does not update unchanged entries.
 - Entry content update changes one existing item, not a new item.
 - Entry with Markdown content prefers Markdown for item text and search input.
+- Missing GUID/link fallback identity uses the documented deterministic text
+  order and truncation.
 - GUID changed but link stable updates existing entry.
 - Link changed but GUID stable updates existing entry and source link.
 - Entry disappeared from later response is not deleted.
@@ -668,33 +747,18 @@ Required coverage:
 - Changed ETag with identical body hash does not reprocess entries.
 - Malformed feed returns a useful error and updates feed diagnostics.
 - Oversized body is rejected without storing partial feed content.
+- Unsafe feed/source URLs and redirects to unsafe targets are blocked before a
+  request is sent.
+- Retry backoff and dead-feed thresholds follow the documented policy.
+- Concurrent feed checks obey `feeds.max_concurrent_fetches`.
+- Feed tags propagate to newly materialized entry items without overwriting
+  user-edited item tags.
 - CLI `feed add`, `feed list`, and `feed check`.
+- CLI feed autodiscovery subscribes to one discovered feed and requires explicit
+  choice for multiple discovered feeds.
 - `/api/links` keeps normal URL behavior and routes feed URLs to subscription.
 - `sync all` includes feeds by default.
 - `sync all` with no subscriptions prints a no-op message and succeeds.
 
 Do not require network access, local browser profiles, model services, or
 personal secrets in these tests.
-
-## Resolved Decisions
-
-- Feeds are enabled for `sync all` by default.
-- `sync all` with no feed subscriptions should clearly say that no feeds are
-  configured and continue.
-- Feed management is CLI-only in the first implementation.
-- The web URL-add path may add feed subscriptions, but no full web feed
-  management UI is required in the first implementation.
-- LLM summarization should target linked article/source items, not the feed
-  entry itself.
-- Enclosures such as videos, images, audio, or other attachments should remain
-  preserved metadata in the first implementation.
-- OPML import/export is not needed in the first implementation.
-- Feed autodiscovery should live in a shared helper used by both CLI and web
-  paths.
-- Markdown entry content, when clearly available, should be preferred over HTML
-  or plain text for imported feed entry text.
-- Feed and feed autodiscovery fetches should not request Markdown.
-- Linked article/source fetches should send an `Accept` header that prefers
-  `text/markdown` while still accepting HTML and fallback responses.
-- Markdown source extraction should live in the shared source extraction path so
-  manually added URLs and other importers benefit too.
