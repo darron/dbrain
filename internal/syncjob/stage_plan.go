@@ -18,6 +18,7 @@ const (
 	syncStageXPhotoOCR    syncStageID = "x_photo_ocr"
 	syncStageGitHub       syncStageID = "github"
 	syncStageYouTube      syncStageID = "youtube"
+	syncStageFeeds        syncStageID = "feeds"
 	syncStageSources      syncStageID = "sources"
 	syncStageCategorize   syncStageID = "categorize"
 	syncStageMediaArchive syncStageID = "media_archive"
@@ -75,8 +76,17 @@ func defaultSyncStagePlan() []syncStage {
 			Run:     runYouTubeSyncStage,
 		},
 		{
+			ID: syncStageFeeds,
+			After: []syncStageID{
+				syncStageGitHub,
+				syncStageYouTube,
+			},
+			Enabled: func(opts stageOptions) bool { return opts.Feeds.Enabled },
+			Run:     runFeedsSyncStage,
+		},
+		{
 			ID:      syncStageSources,
-			After:   []syncStageID{syncStageXFrontier, syncStageGitHub, syncStageYouTube},
+			After:   []syncStageID{syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds},
 			Enabled: func(opts stageOptions) bool { return opts.Sources.Enabled },
 			Run:     runSourcesSyncStage,
 		},
@@ -168,6 +178,12 @@ func runGitHubSyncStage(ctx context.Context, cfg config.Config, st *store.Store,
 func runYouTubeSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
 	stage, err := executeYouTubeStage(ctx, cfg, st, opts)
 	stats.YouTube = stage
+	return err
+}
+
+func runFeedsSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeFeedsStage(ctx, cfg, st, opts)
+	stats.Feeds = stage
 	return err
 }
 

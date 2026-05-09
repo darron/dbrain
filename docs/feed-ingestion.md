@@ -111,24 +111,22 @@ reader database.
 Add a top-level `feed` command group:
 
 ```text
-dbrain feed add <url> [--title <title>] [--tag <tag>] [--poll-interval 1h] [--disabled] [--check]
+dbrain feed add <url> [--tags <tags>] [--poll-interval 1h] [--disabled] [--check=false]
 dbrain feed list [--json]
-dbrain feed status [<feed-key-or-url>] [--json]
-dbrain feed check [<feed-key-or-url>] [--limit N] [--force] [--enrich]
+dbrain feed status <feed-key-or-url> [--json]
+dbrain feed check [<feed-key-or-url>] [--limit N] [--force]
 dbrain feed disable <feed-key-or-url>
 dbrain feed enable <feed-key-or-url>
 ```
 
 Behavior:
 
-- `feed add` stores the subscription and fetches enough metadata to verify it is
-  a parseable feed unless `--disabled` is passed.
-- `feed add --check` immediately imports available entries.
+- `feed add` stores the subscription and, by default, immediately imports
+  available entries. Pass `--check=false`, `--no-fetch`, or `--disabled` to
+  avoid the initial fetch/import.
 - `feed check` fetches one feed or all enabled feeds.
 - `feed check --force` ignores stored ETag/Last-Modified and reparses the body.
   It still dedupes entries by identity and content hash.
-- `feed check --enrich` queues and processes source enrichment for newly queued
-  article URLs, matching the spirit of `link add --enrich`.
 - `feed disable` sets `enabled=false` without deleting feed, entry, item, or
   source rows.
 - `feed enable` sets `enabled=true`, resets `health_status` to `ok`, clears

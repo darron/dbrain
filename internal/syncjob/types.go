@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
@@ -63,6 +64,9 @@ type Options struct {
 	SafariTabsLimit     int
 	SafariTabsOlderThan time.Duration
 
+	FeedsEnabled bool
+	FeedLimit    int
+
 	SourcesEnabled      bool
 	SourceLimit         int
 	SourceConcurrency   int
@@ -113,6 +117,7 @@ type Stats struct {
 	YouTube      *YouTubeStage      `json:"youtube,omitempty"`
 	AppleNotes   *AppleNotesStage   `json:"apple_notes,omitempty"`
 	SafariTabs   *SafariTabsStage   `json:"safari_tabs,omitempty"`
+	Feeds        *FeedsStage        `json:"feeds,omitempty"`
 	Sources      *SourcesStage      `json:"sources,omitempty"`
 	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
 	Categorize   *CategorizeStage   `json:"categorize,omitempty"`
@@ -161,6 +166,11 @@ type AppleNotesStage struct {
 type SafariTabsStage struct {
 	Duration time.Duration    `json:"duration"`
 	Stats    safaritabs.Stats `json:"stats"`
+}
+
+type FeedsStage struct {
+	Duration time.Duration    `json:"duration"`
+	Stats    feedimport.Stats `json:"stats"`
 }
 
 type SourcesStage struct {

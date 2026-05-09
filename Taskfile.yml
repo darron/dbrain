@@ -1,7 +1,7 @@
 version: "3"
 
 vars:
-  GOCACHE: "{{.ROOT_DIR}}/.gocache"
+  GOCACHE: "/tmp/go-build"
   GOMODCACHE: "{{.ROOT_DIR}}/.gomodcache"
   RELEASE_VERSION:
     sh: |
@@ -46,6 +46,26 @@ tasks:
     desc: Run the Go test suite
     cmds:
       - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test -cover -race ./...
+
+  test-go:
+    desc: Run the Go test suite without race or coverage
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test ./...
+
+  test-feeds:
+    desc: Run feed ingestion related tests
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test ./internal/feedimport ./internal/store ./internal/syncjob
+
+  test-pkg:
+    desc: Run go test for package args passed after --
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test {{.CLI_ARGS}}
+
+  test-race-pkg:
+    desc: Run go test -cover -race for package args passed after --
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test -cover -race {{.CLI_ARGS}}
 
   test-mcp:
     desc: Run deterministic MCP retrieval and server tests

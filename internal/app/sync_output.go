@@ -92,6 +92,10 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 		s := stats.YouTube.Stats
 		rows = append(rows, []string{"YouTube", formatSyncDuration(stats.YouTube.Duration), fmt.Sprintf("items=%d", s.ItemsProcessed), fmt.Sprintf("summarized=%d", s.SourcesSummarized), strconv.Itoa(s.Errors)})
 	}
+	if stats.Feeds != nil {
+		s := stats.Feeds.Stats
+		rows = append(rows, []string{"Feeds", formatSyncDuration(stats.Feeds.Duration), fmt.Sprintf("checked=%d entries=%d", s.FeedsChecked, s.EntriesSeen), fmt.Sprintf("created=%d updated=%d unchanged=%d", s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged), strconv.Itoa(s.Errors)})
+	}
 	if stats.Sources != nil {
 		s := stats.Sources.Stats
 		rows = append(rows, []string{"Sources", formatSyncDuration(stats.Sources.Duration), fmt.Sprintf("cycles=%d summarized=%d", s.WorkCycles, s.SourcesSummarized), fmt.Sprintf("stopped=%s", s.StoppedReason), strconv.Itoa(s.Errors)})

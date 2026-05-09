@@ -13,7 +13,7 @@ func fetchHTTPText(ctx context.Context, client *http.Client, rawURL string) (*ht
 		return nil, "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("user-agent", protectedFetchUserAgent)
-	req.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("accept", "text/markdown, text/plain;q=0.95, text/html;q=0.9, application/xhtml+xml;q=0.8, application/xml;q=0.7, */*;q=0.5")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
 
 	resp, err := client.Do(req)

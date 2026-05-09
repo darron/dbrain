@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 type schemaMigration struct {
 	Version int
@@ -65,6 +65,13 @@ var schemaMigrations = []schemaMigration{
 		Name:    "x_article_canonical_i_article_urls",
 		Run: func(s *Store) error {
 			return s.backfillXArticleCanonicalURLs()
+		},
+	},
+	{
+		Version: 5,
+		Name:    "feed_ingestion_tables",
+		Run: func(s *Store) error {
+			return s.ensureFeedTables()
 		},
 	},
 }
