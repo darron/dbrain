@@ -5,11 +5,13 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
@@ -810,6 +812,63 @@ func TestRunSkipsCategorizeStageWhenDisabled(t *testing.T) {
 	}
 	if stats.Categorize != nil {
 		t.Fatalf("expected no categorize stage stats, got %+v", stats.Categorize)
+	}
+}
+
+func TestRunFeedsNoDueProgressIncludesScheduleState(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	next := now.Add(time.Hour)
+
+	result, err := st.UpsertFeed(ctx, store.FeedUpsert{
+		FeedKey:             "feed:test",
+		URL:                 "https://example.com/feed.xml",
+		NormalizedURL:       "https://example.com/feed.xml",
+		PollIntervalSeconds: 3600,
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertFeed: %v", err)
+	}
+	if err := st.UpdateFeedFailure(ctx, store.FeedFailureState{
+		FeedID:         result.FeedID,
+		HealthStatus:   store.FeedHealthError,
+		FailureKind:    "network",
+		Error:          "lookup example.com: no such host",
+		FailedAt:       now,
+		NextFetchAfter: next,
+	}); err != nil {
+		t.Fatalf("UpdateFeedFailure: %v", err)
+	}
+
+	origFeed := runFeedImport
+	t.Cleanup(func() { runFeedImport = origFeed })
+	runFeedImport = func(context.Context, config.Config, *store.Store, feedimport.Options) (feedimport.Stats, error) {
+		return feedimport.Stats{}, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(ctx, cfg, st, Options{
+		FeedsEnabled: true,
+		Progress:     &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.Feeds == nil {
+		t.Fatal("expected feeds stage stats")
+	}
+	output := progress.String()
+	for _, want := range []string{
+		"Feeds import complete: checked=0 subscribed=1 due=0",
+		"next_due=" + next.Format(time.RFC3339),
+		"backing_off=1",
+		`last_error="lookup example.com: no such host"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected progress to contain %q, got %q", want, output)
+		}
 	}
 }
 

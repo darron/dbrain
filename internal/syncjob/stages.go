@@ -3,6 +3,7 @@ package syncjob
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
@@ -129,11 +130,80 @@ func executeFeedsStage(ctx context.Context, cfg config.Config, st *store.Store, 
 		return stage, fmt.Errorf("import feeds: %w", err)
 	}
 	if feedStats.FeedsChecked == 0 {
-		progressf(common.Progress, "Feeds import complete: no subscribed feeds due (%s)\n", stage.Duration)
+		progressf(common.Progress, "Feeds import complete: %s (%s)\n", feedNoWorkSummary(ctx, st), stage.Duration)
 		return stage, nil
 	}
 	progressf(common.Progress, "Feeds import complete: feeds_checked=%d changed=%d unchanged=%d entries=%d created=%d updated=%d errors=%d (%s)\n", feedStats.FeedsChecked, feedStats.FeedsChanged, feedStats.FeedsUnchanged, feedStats.EntriesSeen, feedStats.ItemsCreated, feedStats.ItemsUpdated, feedStats.Errors, stage.Duration)
 	return stage, nil
+}
+
+func feedNoWorkSummary(ctx context.Context, st *store.Store) string {
+	feeds, err := st.ListFeeds(ctx, false)
+	if err != nil {
+		return fmt.Sprintf("checked=0 due=0 schedule_status=unknown error=%q", err.Error())
+	}
+	if len(feeds) == 0 {
+		return "checked=0 subscribed=0 due=0 no subscribed feeds configured"
+	}
+
+	now := time.Now().UTC()
+	nextDue := time.Time{}
+	var blocked, dead, backingOff int
+	var firstError string
+	for _, feed := range feeds {
+		switch feed.HealthStatus {
+		case store.FeedHealthBlocked:
+			blocked++
+			continue
+		case store.FeedHealthDead:
+			dead++
+			continue
+		}
+		if feed.HealthStatus == store.FeedHealthError && feed.NextFetchAfter.After(now) {
+			backingOff++
+			if firstError == "" {
+				firstError = feed.LastError
+			}
+		}
+		if feed.NextFetchAfter.IsZero() {
+			nextDue = time.Time{}
+			break
+		}
+		if nextDue.IsZero() || feed.NextFetchAfter.Before(nextDue) {
+			nextDue = feed.NextFetchAfter
+		}
+	}
+
+	parts := []string{
+		"checked=0",
+		fmt.Sprintf("subscribed=%d", len(feeds)),
+		"due=0",
+	}
+	if !nextDue.IsZero() {
+		parts = append(parts, "next_due="+nextDue.UTC().Format(time.RFC3339))
+	}
+	if backingOff > 0 {
+		parts = append(parts, fmt.Sprintf("backing_off=%d", backingOff))
+	}
+	if blocked > 0 {
+		parts = append(parts, fmt.Sprintf("blocked=%d", blocked))
+	}
+	if dead > 0 {
+		parts = append(parts, fmt.Sprintf("dead=%d", dead))
+	}
+	if firstError != "" {
+		parts = append(parts, "last_error="+quoteShortFeedError(firstError))
+	}
+	return strings.Join(parts, " ")
+}
+
+func quoteShortFeedError(value string) string {
+	value = strings.TrimSpace(value)
+	const limit = 120
+	if len(value) > limit {
+		value = value[:limit-3] + "..."
+	}
+	return fmt.Sprintf("%q", value)
 }
 
 func executeSourcesStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions) (*SourcesStage, error) {
