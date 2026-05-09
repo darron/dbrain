@@ -39,6 +39,9 @@ func normalizeOptions(opts Options) Options {
 	if opts.LinkConcurrency <= 0 {
 		opts.LinkConcurrency = 4
 	}
+	if opts.FeedLimit <= 0 {
+		opts.FeedLimit = 100
+	}
 	if opts.YouTubeLimit <= 0 {
 		opts.YouTubeLimit = 50
 	}

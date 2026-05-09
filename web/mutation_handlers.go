@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/linkadd"
 )
 
@@ -68,7 +70,47 @@ func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats, err := linkadd.Run(r.Context(), s.cfg, s.store, urls, linkadd.Options{
+	feedURLs, linkURLs, feedCandidates := splitFeedInputs(r.Context(), urls)
+	var feedStats feedimport.Stats
+	for _, raw := range feedURLs {
+		_, _, stats, err := feedimport.Add(r.Context(), s.cfg, s.store, raw, feedimport.AddOptions{
+			Enabled: true,
+			Fetch:   true,
+			Import:  true,
+		})
+		if err != nil {
+			feedStats.Errors++
+			continue
+		}
+		feedStats.FeedsChecked += stats.FeedsChecked
+		feedStats.FeedsChanged += stats.FeedsChanged
+		feedStats.FeedsUnchanged += stats.FeedsUnchanged
+		feedStats.FeedsFailed += stats.FeedsFailed
+		feedStats.EntriesSeen += stats.EntriesSeen
+		feedStats.ItemsCreated += stats.ItemsCreated
+		feedStats.ItemsUpdated += stats.ItemsUpdated
+		feedStats.ItemsUnchanged += stats.ItemsUnchanged
+		feedStats.VersionsCreated += stats.VersionsCreated
+		feedStats.SourcesCreated += stats.SourcesCreated
+		feedStats.SourcesLinked += stats.SourcesLinked
+		feedStats.ItemsRendered += stats.ItemsRendered
+		feedStats.Errors += stats.Errors
+		feedStats.Results = append(feedStats.Results, stats.Results...)
+	}
+	if len(linkURLs) == 0 {
+		status := http.StatusOK
+		if feedStats.Errors > 0 && feedStats.ItemsCreated+feedStats.ItemsUpdated+feedStats.ItemsUnchanged == 0 {
+			status = http.StatusBadRequest
+		}
+		response := map[string]any{"feeds": feedStats}
+		if len(feedCandidates) > 0 {
+			response["feed_candidates"] = feedCandidates
+		}
+		writeJSON(w, status, response)
+		return
+	}
+
+	stats, err := linkadd.Run(r.Context(), s.cfg, s.store, linkURLs, linkadd.Options{
 		Enrich:    req.Enrich,
 		Summarize: true,
 		CLI:       defaultWebCLI,
@@ -83,5 +125,52 @@ func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, stats)
 		return
 	}
+	if len(feedURLs) > 0 {
+		response := map[string]any{"links": stats, "feeds": feedStats}
+		if len(feedCandidates) > 0 {
+			response["feed_candidates"] = feedCandidates
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	if len(feedCandidates) > 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"links": stats, "feed_candidates": feedCandidates})
+		return
+	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+func splitFeedInputs(ctx context.Context, urls []string) ([]string, []string, []feedimport.DiscoveryCandidate) {
+	var feeds []string
+	var links []string
+	var candidates []feedimport.DiscoveryCandidate
+	for _, raw := range urls {
+		if isLikelyFeedURL(raw) {
+			feeds = append(feeds, raw)
+			continue
+		}
+		discovered, ok := feedimport.DiscoverURL(ctx, raw, feedimport.AddOptions{Fetch: true})
+		if ok {
+			if len(discovered) == 1 && discovered[0].Type == "feed" {
+				feeds = append(feeds, discovered[0].URL)
+				continue
+			}
+			candidates = append(candidates, discovered...)
+			continue
+		}
+		links = append(links, raw)
+	}
+	return feeds, links, candidates
+}
+
+func isLikelyFeedURL(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	return strings.Contains(lower, "/feed") ||
+		strings.Contains(lower, "/rss") ||
+		strings.Contains(lower, "/atom") ||
+		strings.HasSuffix(lower, ".rss") ||
+		strings.HasSuffix(lower, ".xml") ||
+		strings.HasSuffix(lower, ".atom") ||
+		strings.Contains(lower, "format=rss") ||
+		strings.Contains(lower, "format=atom")
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/sourceenrich"
@@ -110,6 +111,28 @@ func executeYouTubeStage(ctx context.Context, cfg config.Config, st *store.Store
 		return stage, fmt.Errorf("import youtube: %w", err)
 	}
 	progressf(common.Progress, "YouTube import complete: items_processed=%d sources_summarized=%d errors=%d (%s)\n", youtubeStats.ItemsProcessed, youtubeStats.SourcesSummarized, youtubeStats.Errors, stage.Duration)
+	return stage, nil
+}
+
+func executeFeedsStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions) (*FeedsStage, error) {
+	common := opts.Common
+	stageOpts := opts.Feeds
+	progressf(common.Progress, "==> import feeds\n")
+	start := time.Now()
+	feedStats, err := runFeedImport(ctx, cfg, st, feedimport.Options{
+		Limit:  stageOpts.Limit,
+		Force:  common.Force,
+		Logger: common.Logger,
+	})
+	stage := &FeedsStage{Duration: time.Since(start), Stats: feedStats}
+	if err != nil {
+		return stage, fmt.Errorf("import feeds: %w", err)
+	}
+	if feedStats.FeedsChecked == 0 {
+		progressf(common.Progress, "Feeds import complete: no subscribed feeds due (%s)\n", stage.Duration)
+		return stage, nil
+	}
+	progressf(common.Progress, "Feeds import complete: feeds_checked=%d changed=%d unchanged=%d entries=%d created=%d updated=%d errors=%d (%s)\n", feedStats.FeedsChecked, feedStats.FeedsChanged, feedStats.FeedsUnchanged, feedStats.EntriesSeen, feedStats.ItemsCreated, feedStats.ItemsUpdated, feedStats.Errors, stage.Duration)
 	return stage, nil
 }
 

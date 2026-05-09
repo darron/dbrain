@@ -2,6 +2,7 @@ package syncjob
 
 import (
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
@@ -28,4 +29,5 @@ var (
 	runSourceCategorize = itemcategorize.BatchSources
 	runAppleNotesImport = applenotes.Run
 	runSafariTabsImport = safaritabs.Run
+	runFeedImport       = feedimport.Run
 )

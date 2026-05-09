@@ -17,6 +17,7 @@ type stageOptions struct {
 	YouTube    youTubeStageOptions
 	AppleNotes appleNotesStageOptions
 	SafariTabs safariTabsStageOptions
+	Feeds      feedsStageOptions
 	Sources    sourcesStageOptions
 	Archive    archiveStageOptions
 	Categorize categorizeStageOptions
@@ -99,6 +100,11 @@ type safariTabsStageOptions struct {
 	Device    string
 	Limit     int
 	OlderThan time.Duration
+}
+
+type feedsStageOptions struct {
+	Enabled bool
+	Limit   int
 }
 
 type sourcesStageOptions struct {
@@ -203,6 +209,10 @@ func newStageOptions(opts Options) stageOptions {
 			Device:    opts.SafariTabsDevice,
 			Limit:     opts.SafariTabsLimit,
 			OlderThan: opts.SafariTabsOlderThan,
+		},
+		Feeds: feedsStageOptions{
+			Enabled: opts.FeedsEnabled,
+			Limit:   opts.FeedLimit,
 		},
 		Sources: sourcesStageOptions{
 			Enabled:       opts.SourcesEnabled,

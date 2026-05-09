@@ -46,6 +46,7 @@ type syncAllFlags struct {
 	safariTabsDevice             string
 	safariTabsLimit              int
 	safariTabsOlderThan          time.Duration
+	feedLimit                    int
 	sourceLimit                  int
 	sourceConcurrency            int
 	browser                      string
@@ -76,6 +77,7 @@ type syncAllFlags struct {
 	skipYouTube                  bool
 	skipAppleNotes               bool
 	skipSafariTabs               bool
+	skipFeeds                    bool
 	skipSources                  bool
 	skipCategorize               bool
 	jsonOut                      bool
@@ -164,6 +166,8 @@ func syncOptionsFromFlags(ctx context.Context, cfg config.Config, flags syncAllF
 		SafariTabsDevice:             flags.safariTabsDevice,
 		SafariTabsLimit:              flags.safariTabsLimit,
 		SafariTabsOlderThan:          flags.safariTabsOlderThan,
+		FeedsEnabled:                 !flags.skipFeeds,
+		FeedLimit:                    flags.feedLimit,
 		SourcesEnabled:               !flags.skipSources,
 		SourceLimit:                  flags.sourceLimit,
 		SourceConcurrency:            flags.sourceConcurrency,

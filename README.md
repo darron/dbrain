@@ -92,6 +92,10 @@ dbrain config env
 - `dbrain eval mcp`
 - `dbrain extract links`
 - `dbrain extract sources`
+- `dbrain feed add <url>`
+- `dbrain feed check [feed-key-or-url]`
+- `dbrain feed list`
+- `dbrain feed status <feed-key-or-url>`
 - `dbrain get <source-key-or-id>`
 - `dbrain hydrate x`
 - `dbrain import apple-notes`
@@ -655,7 +659,7 @@ dbrain import safari-tabs --device dfone --limit 100
 Runs the regular incremental refresh pipeline in one command: optional Apple
 Notes import, optional Safari tabs import, direct X bookmark import, X
 hydration, X media audio transcription, X photo OCR, link
-discovery/enrichment, GitHub stars import, YouTube
+discovery/enrichment, GitHub stars import, YouTube, RSS/Atom/JSON Feed
 import, and an optional source-backlog worker batch. It then categorizes
 uncategorized items and linked sources with the same categorizer used by
 `dbrain categorize batch` and `dbrain categorize sources`, unless
@@ -680,6 +684,9 @@ with `--apple-notes` or
 `DBRAIN_APPLE_NOTES_ENABLED=true`. Safari tabs are also disabled by default;
 enable them with `--safari-tabs --safari-tabs-device <device>` or
 `DBRAIN_SAFARI_TABS_ENABLED=true` plus `DBRAIN_SAFARI_TABS_DEVICE=<device>`.
+Feeds are enabled in `sync all` by default. If no feeds are subscribed or due,
+the feed stage reports that there is no feed work. Use `--skip-feeds` to skip
+the stage or `--feed-limit` to cap checks in one run.
 
 ```sh
 dbrain sync all --length short --timeout 5m
@@ -689,6 +696,32 @@ dbrain sync all --skip-categorize --length short --timeout 5m
 dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m
 dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m
 ```
+
+### `dbrain feed`
+
+Subscribes to RSS, Atom, and JSON Feed URLs and materializes linked entries as
+normal `feed_entry` items. Each entry keeps raw feed metadata, links its
+canonical article URL into the normal `sources` table when available, and is
+updated only when its stable identity is unchanged but its content hash changes.
+Entries disappearing from a feed are not deleted locally.
+
+```sh
+dbrain feed add https://example.com/feed.xml
+dbrain feed add https://example.com/feed.xml --check
+dbrain feed list
+dbrain feed status feed:abc123def456
+dbrain feed check
+dbrain feed check feed:abc123def456 --force
+dbrain feed disable feed:abc123def456
+dbrain feed enable feed:abc123def456
+```
+
+`feed add` stores the subscription by default. Add `--check` when you want to
+fetch and import current entries immediately.
+
+`feed enable` clears previous feed health diagnostics and makes the feed
+eligible for an immediate check. `feed disable` stops future checks without
+removing already imported feed entries, items, sources, or rendered notes.
 
 ### `dbrain archive media`
 
