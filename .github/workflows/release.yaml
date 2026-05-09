@@ -179,13 +179,26 @@ jobs:
           sha256sum dbrain_* > dbrain_checksums.txt
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
-        with:
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/dbrain_*
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          files=(dist/dbrain_*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no release files matched dist/dbrain_*" >&2
+            exit 1
+          fi
+
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
+
+          gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
 
   update-homebrew-tap:
     name: Update Homebrew tap
