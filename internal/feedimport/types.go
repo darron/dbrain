@@ -8,6 +8,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/version"
 )
 
 const (
@@ -15,7 +16,7 @@ const (
 	DefaultTimeout      = 30 * time.Second
 	DefaultMaxBodyBytes = 10 << 20
 	DefaultConcurrency  = 6
-	DefaultUserAgent    = "dbrain feed importer"
+	DefaultUserAgent    = ""
 	initialBackoff      = 15 * time.Minute
 	maxBackoff          = 24 * time.Hour
 	deadFailureCount    = 5
@@ -52,6 +53,7 @@ type Options struct {
 	Timeout             time.Duration
 	MaxBodyBytes        int64
 	UserAgent           string
+	AllowPrivateNetwork bool
 	Client              *http.Client
 	Fetcher             Fetcher
 	Now                 func() time.Time
@@ -69,6 +71,7 @@ type AddOptions struct {
 	Timeout             time.Duration
 	MaxBodyBytes        int64
 	UserAgent           string
+	AllowPrivateNetwork bool
 	Client              *http.Client
 	Fetcher             Fetcher
 	Now                 func() time.Time
@@ -136,13 +139,13 @@ func normalizeOptions(opts Options) Options {
 		opts.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 	if opts.UserAgent == "" {
-		opts.UserAgent = DefaultUserAgent
+		opts.UserAgent = version.UserAgent(DefaultUserAgent)
 	}
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if opts.Fetcher == nil {
-		opts.Fetcher = NewHTTPFetcher(opts.Client)
+		opts.Fetcher = NewHTTPFetcherWithOptions(opts.Client, HTTPFetcherOptions{AllowPrivateNetwork: opts.AllowPrivateNetwork})
 	}
 	return opts
 }
@@ -161,13 +164,13 @@ func normalizeAddOptions(opts AddOptions) AddOptions {
 		opts.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 	if opts.UserAgent == "" {
-		opts.UserAgent = DefaultUserAgent
+		opts.UserAgent = version.UserAgent(DefaultUserAgent)
 	}
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if opts.Fetcher == nil {
-		opts.Fetcher = NewHTTPFetcher(opts.Client)
+		opts.Fetcher = NewHTTPFetcherWithOptions(opts.Client, HTTPFetcherOptions{AllowPrivateNetwork: opts.AllowPrivateNetwork})
 	}
 	return opts
 }

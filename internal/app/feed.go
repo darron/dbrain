@@ -35,6 +35,7 @@ func newFeedAddCommand(root *rootOptions) *cobra.Command {
 	var tags string
 	var pollInterval time.Duration
 	var jsonOut bool
+	var allowPrivateNetwork bool
 	cmd := &cobra.Command{
 		Use:   "add URL",
 		Short: "Subscribe to a feed URL",
@@ -54,12 +55,13 @@ func newFeedAddCommand(root *rootOptions) *cobra.Command {
 			defer func() { _ = st.Close() }()
 
 			feed, created, stats, err := feedimport.Add(cmd.Context(), cfg, st, args[0], feedimport.AddOptions{
-				Disabled:     disabled,
-				Import:       check,
-				PollInterval: pollInterval,
-				UserTags:     tags,
-				Fetch:        !noFetch && !disabled,
-				Logger:       newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
+				Disabled:            disabled,
+				Import:              check,
+				PollInterval:        pollInterval,
+				UserTags:            tags,
+				Fetch:               !noFetch && !disabled,
+				AllowPrivateNetwork: allowPrivateNetwork || feedAllowPrivateNetworkFromRuntime(cfg.RootDir),
+				Logger:              newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
 			})
 			if err != nil {
 				return err
@@ -83,6 +85,7 @@ func newFeedAddCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&check, "check", false, "Immediately fetch and import available entries")
 	cmd.Flags().StringVar(&tags, "tags", "", "Optional comma-separated user tags for imported feed entries")
 	cmd.Flags().DurationVar(&pollInterval, "poll-interval", feedimport.DefaultPollInterval, "How often sync all should check this feed")
+	cmd.Flags().BoolVar(&allowPrivateNetwork, "allow-private-network", false, "Allow localhost/private/link-local feed URLs for local testing")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print result as JSON")
 	return cmd
 }
@@ -177,6 +180,7 @@ func newFeedCheckCommand(root *rootOptions) *cobra.Command {
 	var force bool
 	var limit int
 	var jsonOut bool
+	var allowPrivateNetwork bool
 	cmd := &cobra.Command{
 		Use:   "check [FEED]",
 		Short: "Fetch subscribed feeds now",
@@ -194,7 +198,12 @@ func newFeedCheckCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			opts := feedimport.Options{Force: force, Limit: limit, Logger: newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr())}
+			opts := feedimport.Options{
+				Force:               force,
+				Limit:               limit,
+				AllowPrivateNetwork: allowPrivateNetwork || feedAllowPrivateNetworkFromRuntime(cfg.RootDir),
+				Logger:              newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
+			}
 			var stats feedimport.Stats
 			if len(args) == 1 {
 				feed, err := st.GetFeed(cmd.Context(), args[0])
@@ -223,8 +232,13 @@ func newFeedCheckCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&all, "all", false, "Include blocked and dead feeds when checking all due feeds")
 	cmd.Flags().BoolVar(&force, "force", false, "Process feed entries even when the feed body hash is unchanged")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum due feeds to check when no feed is specified")
+	cmd.Flags().BoolVar(&allowPrivateNetwork, "allow-private-network", false, "Allow localhost/private/link-local feed URLs for local testing")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print result as JSON")
 	return cmd
+}
+
+func feedAllowPrivateNetworkFromRuntime(rootDir string) bool {
+	return firstEnvBool(rootDir, "DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK", "DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS")
 }
 
 func newFeedEnableCommand(root *rootOptions, enabled bool) *cobra.Command {

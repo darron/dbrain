@@ -99,6 +99,9 @@ func TestRunMaterializesFeedEntryAndUnchangedBodySkipsEntries(t *testing.T) {
 	if item.Title != "First post" || item.SourceType != "feed_entry" {
 		t.Fatalf("unexpected item: %+v", item)
 	}
+	if !strings.Contains(item.ArticleText, "Hello world") {
+		t.Fatalf("expected feed entry text to be available as local article text, got %q", item.ArticleText)
+	}
 
 	stats, err = CheckFeed(ctx, cfg, st, feed, Options{Fetcher: fetcher, Now: fixedNow})
 	if err != nil {
@@ -116,15 +119,29 @@ func TestAddFetchesMetadataWithoutImportUnlessRequested(t *testing.T) {
 <rss version="2.0"><channel><title>Example Feed</title><link>https://example.com/</link>
 <item><guid>post-1</guid><title>First post</title><link>https://example.com/post-1</link></item>
 </channel></rss>`)
-	fetcher := &fakeFetcher{results: []FetchResult{{
-		RequestURL:        "https://example.com/feed.xml",
-		FinalURL:          "https://example.com/feed.xml",
-		HTTPStatus:        200,
-		DecodedBody:       body,
-		DecodedBodyHash:   sha256Hex(body),
-		WireResponseBytes: body,
-		DecodedSizeBytes:  int64(len(body)),
-	}}}
+	hash := sha256Hex(body)
+	fetcher := &fakeFetcher{results: []FetchResult{
+		{
+			RequestURL:        "https://example.com/feed.xml",
+			FinalURL:          "https://example.com/feed.xml",
+			HTTPStatus:        200,
+			DecodedBody:       body,
+			DecodedBodyHash:   hash,
+			WireResponseBytes: body,
+			DecodedSizeBytes:  int64(len(body)),
+			ETag:              `"v1"`,
+		},
+		{
+			RequestURL:        "https://example.com/feed.xml",
+			FinalURL:          "https://example.com/feed.xml",
+			HTTPStatus:        200,
+			DecodedBody:       body,
+			DecodedBodyHash:   hash,
+			WireResponseBytes: body,
+			DecodedSizeBytes:  int64(len(body)),
+			ETag:              `"v1"`,
+		},
+	}}
 
 	feed, _, stats, err := Add(ctx, cfg, st, "https://example.com/feed.xml", AddOptions{
 		Fetch:   true,
@@ -143,6 +160,28 @@ func TestAddFetchesMetadataWithoutImportUnlessRequested(t *testing.T) {
 	}
 	if _, err := st.GetItem(ctx, "feed-entry:"+shortHash(feed.FeedKey+"|guid:post-1")); err == nil {
 		t.Fatal("expected verify-only add not to materialize feed entry item")
+	}
+	stored, err := st.GetFeed(ctx, feed.FeedKey)
+	if err != nil {
+		t.Fatalf("GetFeed: %v", err)
+	}
+	if stored.FetchBodyHash != "" || stored.FetchETag != "" {
+		t.Fatalf("verify-only add should not cache feed validators before import: hash=%q etag=%q", stored.FetchBodyHash, stored.FetchETag)
+	}
+
+	stats, err = CheckFeed(ctx, cfg, st, stored, Options{Fetcher: fetcher, Now: fixedNow})
+	if err != nil {
+		t.Fatalf("CheckFeed after verify-only add: %v", err)
+	}
+	if stats.ItemsCreated != 1 || stats.EntriesSeen != 1 {
+		t.Fatalf("expected first normal check to import entries, got %+v", stats)
+	}
+	item, err := st.GetItem(ctx, "feed-entry:"+shortHash(feed.FeedKey+"|guid:post-1"))
+	if err != nil {
+		t.Fatalf("GetItem after check: %v", err)
+	}
+	if item.ArticleText == "" {
+		t.Fatal("expected feed entry import to populate local article text")
 	}
 }
 

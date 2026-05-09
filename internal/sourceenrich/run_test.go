@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2767,6 +2768,92 @@ func TestRunSourceIDsUsesYouTubeTranscriptPathForGenericSources(t *testing.T) {
 	}
 	if source.SummaryText != "summary from youtube path" {
 		t.Fatalf("unexpected summary text: %q", source.SummaryText)
+	}
+}
+
+func TestRunSourceIDsFetchesFeedLinkedSourceWithMarkdownAccept(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	var capturedAccept string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAccept = r.Header.Get("accept")
+		w.Header().Set("content-type", "text/markdown; charset=utf-8")
+		_, _ = w.Write([]byte("# Full linked article\n\nThis is the full Markdown body from the linked URL.\n\nIt is much longer than the feed teaser."))
+	}))
+	defer server.Close()
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "feed-entry:test-markdown",
+		SourceType:   "feed_entry",
+		ExternalID:   "guid:test-markdown",
+		CanonicalURL: server.URL + "/share/test",
+		Title:        "Feed teaser",
+		ArticleTitle: "Feed teaser",
+		ArticleText:  "short feed teaser",
+		ContentHash:  "feed-entry-test-markdown",
+		NotePath:     vault.NoteRelativePath("feed", "2026", "test-markdown"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert feed entry item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:feed-markdown",
+		OriginalURL:   server.URL + "/share/test",
+		CanonicalURL:  server.URL + "/share/test",
+		NormalizedURL: server.URL + "/share/test",
+		SourceType:    "web",
+		Domain:        "127.0.0.1",
+		NotePath:      vault.SourceNoteRelativePath("web", "feed-markdown"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Summarize: false,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesExtracted != 1 {
+		t.Fatalf("expected 1 extracted source, got %+v", stats)
+	}
+	if !strings.Contains(capturedAccept, "text/markdown") {
+		t.Fatalf("expected markdown accept header, got %q", capturedAccept)
+	}
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if source.ExtractTool != protectedFetchToolName {
+		t.Fatalf("expected dbrain HTTP extract tool, got %q", source.ExtractTool)
+	}
+	if !strings.Contains(source.ExtractedText, "Full linked article") || !strings.Contains(source.ExtractedText, "full Markdown body") {
+		t.Fatalf("expected linked Markdown body, got %q", source.ExtractedText)
+	}
+	if strings.Contains(source.ExtractedText, "short feed teaser") {
+		t.Fatalf("expected linked body instead of feed teaser, got %q", source.ExtractedText)
 	}
 }
 

@@ -96,6 +96,24 @@ func (s *Store) UpsertSource(ctx context.Context, candidate model.SourceCandidat
 	})
 }
 
+func (s *Store) SourceHasLinkedItemType(ctx context.Context, sourceID int64, sourceType string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM item_source_links l
+		JOIN items i ON i.id = l.item_id
+		WHERE l.source_id = ?
+			AND i.source_type = ?
+		LIMIT 1`, sourceID, sourceType).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check source linked item type %d %s: %w", sourceID, sourceType, err)
+	}
+	return true, nil
+}
+
 func (s *Store) upsertSourceLink(ctx context.Context, itemID int64, candidate model.SourceCandidate) (model.SourceLinkUpsertResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

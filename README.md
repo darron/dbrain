@@ -708,6 +708,7 @@ Entries disappearing from a feed are not deleted locally.
 ```sh
 dbrain feed add https://example.com/feed.xml
 dbrain feed add https://example.com/feed.xml --check
+dbrain feed add http://localhost:8080/feed.atom --allow-private-network
 dbrain feed list
 dbrain feed status feed:abc123def456
 dbrain feed check
@@ -718,6 +719,12 @@ dbrain feed enable feed:abc123def456
 
 `feed add` stores the subscription by default. Add `--check` when you want to
 fetch and import current entries immediately.
+
+Feed fetching blocks localhost, private, link-local, and multicast IPs by
+default. For local feed development, pass `--allow-private-network` to
+`feed add` / `feed check`, or set `feeds.allow_private_network: true` in
+`config.yaml` / `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK=true`. The plural
+`DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS` is also accepted for compatibility.
 
 `feed enable` clears previous feed health diagnostics and makes the feed
 eligible for an immediate check. `feed disable` stops future checks without

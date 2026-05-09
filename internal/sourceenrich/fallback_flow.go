@@ -46,6 +46,56 @@ func processPreflightTerminal(processCtx sourceProcessContext) (sourceProcessRes
 	return result, true
 }
 
+func processFeedLinkedHTTPExtract(processCtx sourceProcessContext) (sourceProcessResult, bool) {
+	var result sourceProcessResult
+	ctx := processCtx.ctx
+	cfg := processCtx.cfg
+	st := processCtx.st
+	source := processCtx.source
+	opts := processCtx.opts
+
+	linkedFromFeed, err := st.SourceHasLinkedItemType(ctx, source.ID, "feed_entry")
+	if err != nil {
+		result.Err = err
+		return result, true
+	}
+	if !linkedFromFeed {
+		return result, false
+	}
+
+	sourceURL := firstNonEmpty(source.CanonicalURL, source.NormalizedURL)
+	if sourceURL == "" {
+		return result, false
+	}
+	extract, recovered, err := extractHTTPReadableSource(ctx, sourceURL)
+	if err != nil || !recovered {
+		if err != nil {
+			debugLog(opts.Logger, "feed-linked source markdown fetch failed; falling back to local or CLI extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
+		}
+		return result, false
+	}
+	if normalized, changed := normalizeExtract(source, extract); changed {
+		extract = normalized
+	}
+	if failure, invalid := rejectExtractFailure(source, extract); invalid {
+		debugLog(opts.Logger, "feed-linked source markdown extract rejected; falling back to local or CLI extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
+		return result, false
+	}
+
+	debugLog(opts.Logger, "using feed-linked HTTP extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(extract.Content), "tool", extract.Tool)
+	stats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
+	if err != nil {
+		result.Err = err
+		return result, true
+	}
+	result.Stats.SourcesExtracted += stats.SourcesExtracted
+	result.Stats.SourcesSummarized += stats.SourcesSummarized
+	result.Stats.SourcesUnchanged += stats.SourcesUnchanged
+	result.Stats.Errors += stats.Errors
+	result.TouchedSourceID = source.ID
+	return result, true
+}
+
 func processHTTPReaderFallback(processCtx sourceProcessContext) (sourceProcessResult, bool) {
 	var result sourceProcessResult
 	ctx := processCtx.ctx

@@ -20,6 +20,10 @@ func extractHTTPReadableSource(ctx context.Context, rawURL string) (model.Extrac
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return model.ExtractResult{}, false, fmt.Errorf("fetch readable source: unexpected status %d", resp.StatusCode)
 	}
+	contentType := strings.ToLower(resp.Header.Get("content-type"))
+	if !strings.Contains(contentType, "html") && !strings.Contains(strings.ToLower(body[:min(len(body), 512)]), "<html") {
+		return extractPlainTextSource(rawURL, resp, body, "http-text", httpReaderToolVersion), true, nil
+	}
 	return extractHTMLSource(rawURL, resp, body, "http-html", httpReaderToolVersion, ""), true, nil
 }
 
@@ -59,20 +63,29 @@ func extractHTTPReaderSource(ctx context.Context, sourceURL string, readerURL st
 		return extractHTMLSource(sourceURL, resp, body, "reader-html", httpReaderToolVersion, ""), true, nil
 	}
 
+	return extractPlainTextSource(sourceURL, resp, body, "reader-text", httpReaderToolVersion), true, nil
+}
+
+func extractPlainTextSource(sourceURL string, resp *http.Response, body string, method string, toolVersion string) model.ExtractResult {
+	finalURL := sourceURL
+	if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
 	content := normalizeExtractedText(body)
 	title := firstMarkdownTitle(content)
+	siteName := siteNameFromURL(finalURL)
 	return model.ExtractResult{
 		CanonicalURL: sourceURL,
-		FinalURL:     sourceURL,
+		FinalURL:     finalURL,
 		Title:        title,
-		SiteName:     siteNameFromURL(sourceURL),
+		SiteName:     siteName,
 		Content:      content,
-		RawJSON:      buildProtectedRawJSON("reader-text", sourceURL, readerURL, title, "", siteNameFromURL(sourceURL), content, ""),
+		RawJSON:      buildProtectedRawJSON(method, sourceURL, finalURL, title, "", siteName, content, ""),
 		Status:       extractStatusForContent(content),
 		FetchedAt:    time.Now().UTC(),
 		Tool:         protectedFetchToolName,
-		ToolVersion:  httpReaderToolVersion,
-	}, true, nil
+		ToolVersion:  toolVersion,
+	}
 }
 
 func extractKnownReaderDomainSource(ctx context.Context, source model.SourceDocument, opts Options) (model.ExtractResult, bool, error) {

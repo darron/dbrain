@@ -10,6 +10,7 @@ import (
 	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/worker"
@@ -121,9 +122,10 @@ func executeFeedsStage(ctx context.Context, cfg config.Config, st *store.Store, 
 	progressf(common.Progress, "==> import feeds\n")
 	start := time.Now()
 	feedStats, err := runFeedImport(ctx, cfg, st, feedimport.Options{
-		Limit:  stageOpts.Limit,
-		Force:  common.Force,
-		Logger: common.Logger,
+		Limit:               stageOpts.Limit,
+		Force:               common.Force,
+		AllowPrivateNetwork: feedAllowPrivateNetworkFromRuntime(cfg.RootDir),
+		Logger:              common.Logger,
 	})
 	stage := &FeedsStage{Duration: time.Since(start), Stats: feedStats}
 	if err != nil {
@@ -135,6 +137,10 @@ func executeFeedsStage(ctx context.Context, cfg config.Config, st *store.Store, 
 	}
 	progressf(common.Progress, "Feeds import complete: feeds_checked=%d changed=%d unchanged=%d entries=%d created=%d updated=%d errors=%d (%s)\n", feedStats.FeedsChecked, feedStats.FeedsChanged, feedStats.FeedsUnchanged, feedStats.EntriesSeen, feedStats.ItemsCreated, feedStats.ItemsUpdated, feedStats.Errors, stage.Duration)
 	return stage, nil
+}
+
+func feedAllowPrivateNetworkFromRuntime(rootDir string) bool {
+	return runtimeenv.FirstBool(rootDir, "DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK", "DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS")
 }
 
 func feedNoWorkSummary(ctx context.Context, st *store.Store) string {

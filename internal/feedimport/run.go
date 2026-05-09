@@ -67,6 +67,7 @@ func Add(ctx context.Context, cfg config.Config, st *store.Store, rawURL string,
 		Timeout:             opts.Timeout,
 		MaxBodyBytes:        opts.MaxBodyBytes,
 		UserAgent:           opts.UserAgent,
+		AllowPrivateNetwork: opts.AllowPrivateNetwork,
 		Fetcher:             opts.Fetcher,
 		Now:                 opts.Now,
 		Logger:              opts.Logger,
@@ -246,6 +247,19 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 	recordFeedFetch(ctx, st, opts, feedFetchRecord(feed.ID, fetch, now, parseStatus, parseErr))
 
 	latestJSON := mustJSON(parsed, "{}")
+	fetchETag := fetch.ETag
+	fetchLastModified := fetch.LastModified
+	fetchBodyHash := fetch.DecodedBodyHash
+	markChanged := true
+	if opts.MetadataOnly {
+		// A verify-only add should not cache validators/body hashes before entries
+		// have been materialized. Otherwise the first real check can be skipped as
+		// unchanged and never import the entries it just subscribed to.
+		fetchETag = feed.FetchETag
+		fetchLastModified = feed.FetchLastModified
+		fetchBodyHash = feed.FetchBodyHash
+		markChanged = false
+	}
 	if err := st.UpdateFeedFetchState(ctx, store.FeedFetchState{
 		FeedID:               feed.ID,
 		ResolvedURL:          fetch.FinalURL,
@@ -253,13 +267,13 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 		SiteURL:              strings.TrimSpace(parsed.Link),
 		Description:          strings.TrimSpace(parsed.Description),
 		Language:             strings.TrimSpace(parsed.Language),
-		FetchETag:            fetch.ETag,
-		FetchLastModified:    fetch.LastModified,
-		FetchBodyHash:        fetch.DecodedBodyHash,
+		FetchETag:            fetchETag,
+		FetchLastModified:    fetchLastModified,
+		FetchBodyHash:        fetchBodyHash,
 		LatestNormalizedJSON: latestJSON,
 		CheckedAt:            now,
 		FetchedAt:            now,
-		Changed:              true,
+		Changed:              markChanged,
 		NextFetchAfter:       nextFetchAfter(now, feed, opts, fetch.RetryAfter),
 	}); err != nil {
 		stats.Errors++

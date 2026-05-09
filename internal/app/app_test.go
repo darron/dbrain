@@ -70,6 +70,21 @@ func TestFeedAddCheckFlagDefaultsToVerifyOnly(t *testing.T) {
 	}
 }
 
+func TestFeedAllowPrivateNetworkRuntimeAcceptsSingularAndPluralEnv(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK", "")
+	t.Setenv("DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS", "true")
+	if !feedAllowPrivateNetworkFromRuntime(root) {
+		t.Fatal("expected plural feed private-network env alias to be accepted")
+	}
+
+	t.Setenv("DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK", "true")
+	t.Setenv("DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS", "")
+	if !feedAllowPrivateNetworkFromRuntime(root) {
+		t.Fatal("expected singular feed private-network env to be accepted")
+	}
+}
+
 func TestFeedStatusFormattingShowsScheduleState(t *testing.T) {
 	t.Parallel()
 

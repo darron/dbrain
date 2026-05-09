@@ -83,7 +83,10 @@ func (s *Store) SearchSources(ctx context.Context, query string, limit int) ([]m
 }
 
 func (s *Store) searchSourcesFTS(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
-	ftsQuery := buildFTSQuery(query)
+	return s.searchSourcesFTSQuery(ctx, buildFTSQuery(query), limit)
+}
+
+func (s *Store) searchSourcesFTSQuery(ctx context.Context, ftsQuery string, limit int) ([]model.SearchResult, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			s.source_key,
@@ -129,14 +132,18 @@ func (s *Store) searchSourcesLike(ctx context.Context, query string, limit int) 
 			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), extracted_text), char(10), ' ')), 1, 200) AS snippet
 		FROM sources
 		WHERE title LIKE ?
+			OR source_key LIKE ?
 			OR description LIKE ?
 			OR site_name LIKE ?
 			OR extracted_text LIKE ?
 			OR summary_text LIKE ?
+			OR canonical_url LIKE ?
+			OR normalized_url LIKE ?
 			OR domain LIKE ?
+			OR note_path LIKE ?
 			OR user_tags LIKE ?
 		ORDER BY updated_at DESC
-		LIMIT ?`, like, like, like, like, like, like, like, limit)
+		LIMIT ?`, like, like, like, like, like, like, like, like, like, like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("source like search: %w", err)
 	}
