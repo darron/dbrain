@@ -5,6 +5,12 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Scheduled Sync All (2026-05-08)
+
+- **Added**: `serve remote` can now run `sync all` periodically from config via `scheduler.sync_all`, with optional startup runs, non-overlap protection, and live status at `/api/scheduler/sync-all`.
+- **Config**: Added scheduler config/env documentation and sample config fields for interval, jitter, source limits, and common stage skips.
+- **Location**: `internal/app/`, `internal/runtimeenv/`, `README.md`, `config.yaml.sample`
+
 ### Startup Preflight Checks (2026-05-08)
 
 - **Added**: Startup now warns when the configured `categories.yaml` is missing so Homebrew installs do not silently categorize without canonical vocabulary rewrites.

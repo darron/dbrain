@@ -86,6 +86,20 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *server) handleSchedulerSyncAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	if s.schedulerStatus == nil {
+		writeJSON(w, http.StatusOK, SchedulerSyncAllResponse{})
+		return
+	}
+	writeJSON(w, http.StatusOK, SchedulerSyncAllResponse{
+		SyncAll: s.schedulerStatus(),
+	})
+}
+
 func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)

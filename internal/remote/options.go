@@ -9,6 +9,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/schedulerstate"
 )
 
 const (
@@ -33,6 +34,8 @@ type Options struct {
 	AdvertiseTags      []string
 	ControlURL         string
 	Verbose            bool
+	OnReady            func()
+	SchedulerStatus    func() schedulerstate.SyncAllStatus
 }
 
 func OptionsFromRuntime(cfg config.Config) (Options, error) {

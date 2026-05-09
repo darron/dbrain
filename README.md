@@ -400,6 +400,14 @@ credentials may be direct values or typed references: `env:NAME`,
 | `DBRAIN_SAFARI_TABS_DEVICE` | `safari_tabs.device` | `` | Safari iCloud device name or UUID to import during `sync all`. |
 | `DBRAIN_SAFARI_TABS_LIMIT` | `safari_tabs.limit` | `0` | Maximum Safari tabs to import after filtering; 0 means all matching tabs. |
 | `DBRAIN_SAFARI_TABS_OLDER_THAN` | `safari_tabs.older_than` | `0` | Only import Safari tabs last viewed before this duration ago, for example `168h`. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_ENABLED` | `scheduler.sync_all.enabled` | `false` | Run `sync all` periodically from the long-running `serve remote` process. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL` | `scheduler.sync_all.interval` | `1h` | Interval between scheduled `sync all` runs when the scheduler is enabled. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START` | `scheduler.sync_all.run_on_start` | `false` | Run `sync all` once when `serve remote` starts, then continue on the interval. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_JITTER` | `scheduler.sync_all.jitter` | `0` | Optional bounded delay added to each interval so multiple nodes do not sync at exactly the same time. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_LIMIT` | `scheduler.sync_all.source_limit` | `0` | Optional scheduled source-worker limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB` | `scheduler.sync_all.skip_github` | `false` | Skip GitHub import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE` | `scheduler.sync_all.skip_youtube` | `false` | Skip YouTube import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE` | `scheduler.sync_all.skip_categorize` | `false` | Skip final categorization in scheduled `sync all` runs. |
 | `DBRAIN_MEDIA_PROXY_BASE_URL` / `DBRAIN_WEB_BASE_URL` | `media.proxy.base_url` | `http://127.0.0.1:8742` | Base URL for local archived-media proxy links in rendered notes. |
 | `DBRAIN_AUTO_ARCHIVE_MEDIA` / `DBRAIN_ARCHIVE_AUTO` | `archive.auto` | `false` | Run media archive automatically at the end of `sync all`. |
 | `DBRAIN_ARCHIVE_UPLOAD` / `DBRAIN_R2_UPLOAD` | `archive.upload` | `false` | Upload eligible media before marking/pruning in `archive media`. |
@@ -838,6 +846,42 @@ dbrain launchd restart --label com.darron.dbrain-dev
 dbrain launchd uninstall
 dbrain launchd uninstall --label com.darron.dbrain-dev
 ```
+
+### Scheduled `sync all`
+
+When `dbrain serve remote` is kept alive through launchd, it can also run
+`sync all` on an internal interval. The scheduler uses the same resolved
+config/root, opens the local database for each run, and skips a tick if a
+previous scheduled sync is still active.
+
+```yaml
+scheduler:
+  sync_all:
+    enabled: true
+    interval: 1h
+    run_on_start: false
+    jitter: 5m
+    source_limit: 100
+    source_concurrency: 2
+    skip_github: false
+    skip_youtube: false
+    skip_categorize: false
+```
+
+The scheduled run uses the normal `sync all` preflight checks, so secret-backed
+providers still need their configured `env:`, `op://`, or `keychain://`
+references to resolve. Use the `skip_*` fields for stages you do not want the
+background service to run.
+
+Scheduler state is available from the running web surface:
+
+```sh
+curl -s https://dbrain.<tailnet>.ts.net/api/scheduler/sync-all
+```
+
+The response includes whether the scheduler is enabled, whether a run is active,
+the next scheduled run time, and the last run's start, finish, status, and
+error.
 
 ### `dbrain tsnet status`
 
@@ -1513,5 +1557,5 @@ Third-party dependency notices are in
 - [ ] Add an oversized-X-video policy for media download/transcription with byte-size and/or duration gating, lower-bitrate transcription variants, and terminal `too_large` / `too_long` states instead of endless retry.
 - [ ] Maybe reclassify non-actionable X media transcript outcomes like `no_audio`, `noise`, and `too_short` out of the generic failed bucket so transcription stats distinguish real pipeline errors from terminal no-content cases.
 - [ ] Add an optional X thread expansion path when a bookmarked post is clearly part of a longer thread.
-- [ ] Add a scheduler/launchd-style mode on top of the worker loop so enrichment can resume automatically after terminal closure or reboot.
+- [x] Add a config-driven scheduler inside `serve remote` so launchd-backed installs can run `sync all` periodically and skip overlapping runs.
 - [x] No longer needed for now: keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) only as an external reference if source extraction gets stuck again. The current protected-fetch and Wayback fallback path covers the original gap well enough.

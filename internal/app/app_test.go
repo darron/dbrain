@@ -645,7 +645,7 @@ func TestTSNetStatusReportsResolvedState(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "status", "--json"})
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "status", "--json", "--tsnet-hostname", "dbrain"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v", err)
@@ -687,6 +687,7 @@ tsnet:
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", dataHome)
 	t.Setenv("DBRAIN_ROOT", t.TempDir())
+	t.Setenv("DBRAIN_TSNET_HOSTNAME", "")
 
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
@@ -833,7 +834,7 @@ tsnet:
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "status", "--json"})
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "status", "--json", "--tsnet-hostname", "dbrain"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v", err)
@@ -1206,7 +1207,7 @@ func TestTSNetResetRequiresConfirmation(t *testing.T) {
 	cmd.SetIn(strings.NewReader("no\n"))
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset"})
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset", "--tsnet-hostname", "dbrain"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v", err)
@@ -1247,7 +1248,7 @@ func TestTSNetResetRefusesLockedState(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset", "--yes"})
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset", "--yes", "--tsnet-hostname", "dbrain"})
 
 	err = cmd.ExecuteContext(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already locked") {
@@ -1278,7 +1279,7 @@ func TestTSNetResetRemovesStateWithYes(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset", "--yes"})
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "tsnet", "reset", "--yes", "--tsnet-hostname", "dbrain"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v", err)

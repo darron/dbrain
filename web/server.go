@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
 )
@@ -35,18 +36,23 @@ const (
 var embeddedUI embed.FS
 
 type server struct {
-	cfg         config.Config
-	store       *store.Store
-	archive     archiveProxy
-	proxyBase   string
-	staticFS    fs.FS
-	static      http.Handler
-	indexHTML   []byte
-	toolVersion string
+	cfg             config.Config
+	store           *store.Store
+	archive         archiveProxy
+	proxyBase       string
+	staticFS        fs.FS
+	static          http.Handler
+	indexHTML       []byte
+	toolVersion     string
+	schedulerStatus func() schedulerstate.SyncAllStatus
 }
 
 type ServeOptions struct {
 	StoreOpenOptions store.OpenOptions
+}
+
+type HandlerOptions struct {
+	SchedulerStatus func() schedulerstate.SyncAllStatus
 }
 
 func Serve(ctx context.Context, cfg config.Config, addr string) error {
@@ -105,6 +111,10 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 }
 
 func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
+	return NewHandlerWithOptions(cfg, st, HandlerOptions{})
+}
+
+func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptions) (http.Handler, error) {
 	archive, err := newArchiveProxy(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("configure archive proxy: %w", err)
@@ -120,14 +130,15 @@ func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
 	}
 
 	s := &server{
-		cfg:         cfg,
-		store:       st,
-		archive:     archive,
-		proxyBase:   mediaProxyBaseURL(cfg),
-		staticFS:    staticFS,
-		static:      http.FileServerFS(staticFS),
-		indexHTML:   indexHTML,
-		toolVersion: summarizecli.Version(context.Background(), ""),
+		cfg:             cfg,
+		store:           st,
+		archive:         archive,
+		proxyBase:       mediaProxyBaseURL(cfg),
+		staticFS:        staticFS,
+		static:          http.FileServerFS(staticFS),
+		indexHTML:       indexHTML,
+		toolVersion:     summarizecli.Version(context.Background(), ""),
+		schedulerStatus: opts.SchedulerStatus,
 	}
 
 	return s.newMux(), nil
@@ -141,6 +152,7 @@ func (s *server) newMux() http.Handler {
 	mux.HandleFunc("/api/stats/backlog", s.handleBacklog)
 	mux.HandleFunc("/api/stats/activity", s.handleActivity)
 	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
+	mux.HandleFunc("/api/scheduler/sync-all", s.handleSchedulerSyncAll)
 	mux.HandleFunc("/api/ask", handleRemovedAPI)
 	mux.HandleFunc("/api/research", s.handleResearch)
 	mux.HandleFunc("/api/research/synthesize", s.handleResearchSynthesize)
