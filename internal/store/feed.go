@@ -244,21 +244,29 @@ func (s *Store) ListFeeds(ctx context.Context, includeDisabled bool) ([]Feed, er
 	if err != nil {
 		return nil, fmt.Errorf("list feed keys: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var feeds []Feed
+	var keys []string
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
 			return nil, fmt.Errorf("scan feed key: %w", err)
 		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate feed keys: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close feed keys: %w", err)
+	}
+	var feeds []Feed
+	for _, key := range keys {
 		feed, err := s.GetFeed(ctx, key)
 		if err != nil {
 			return nil, err
 		}
 		feeds = append(feeds, feed)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate feed keys: %w", err)
 	}
 	return feeds, nil
 }
@@ -286,22 +294,29 @@ func (s *Store) ListFeedsDue(ctx context.Context, now time.Time, limit int, incl
 	if err != nil {
 		return nil, fmt.Errorf("list due feeds: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var feeds []Feed
+	var keys []string
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
 			return nil, fmt.Errorf("scan due feed key: %w", err)
 		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate due feeds: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close due feed keys: %w", err)
+	}
+	var feeds []Feed
+	for _, key := range keys {
 		feed, err := s.GetFeed(ctx, key)
 		if err != nil {
 			return nil, err
 		}
 		feeds = append(feeds, feed)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate due feeds: %w", err)
 	}
 	return feeds, nil
 }

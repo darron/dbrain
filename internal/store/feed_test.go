@@ -95,6 +95,54 @@ func TestFeedEnableDisableKeepsRowsAndResetsHealth(t *testing.T) {
 	}
 }
 
+func TestListFeedsAndDueFeedsCloseKeyCursorBeforeLoadingRows(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() {
+		_ = st.Close()
+	}()
+
+	for _, input := range []FeedUpsert{
+		{
+			FeedKey:             "feed:one",
+			URL:                 "https://example.com/one.xml",
+			NormalizedURL:       "https://example.com/one.xml",
+			PollIntervalSeconds: 3600,
+			Enabled:             true,
+		},
+		{
+			FeedKey:             "feed:two",
+			URL:                 "https://example.com/two.xml",
+			NormalizedURL:       "https://example.com/two.xml",
+			PollIntervalSeconds: 3600,
+			Enabled:             true,
+		},
+	} {
+		if _, err := st.UpsertFeed(ctx, input); err != nil {
+			t.Fatalf("UpsertFeed %s: %v", input.FeedKey, err)
+		}
+	}
+
+	feeds, err := st.ListFeeds(ctx, false)
+	if err != nil {
+		t.Fatalf("ListFeeds: %v", err)
+	}
+	if len(feeds) != 2 {
+		t.Fatalf("ListFeeds count = %d, want 2", len(feeds))
+	}
+
+	due, err := st.ListFeedsDue(ctx, time.Date(2026, 5, 9, 17, 0, 0, 0, time.UTC), 10, false)
+	if err != nil {
+		t.Fatalf("ListFeedsDue: %v", err)
+	}
+	if len(due) != 2 {
+		t.Fatalf("ListFeedsDue count = %d, want 2", len(due))
+	}
+}
+
 func TestRecordFeedFetchAllowsAuditRowWithoutBodyForUnchanged200(t *testing.T) {
 	t.Parallel()
 
