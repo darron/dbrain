@@ -1489,10 +1489,10 @@ Third-party dependency notices are in
   source-tag search/MCP visibility separate from backlink item tags.
 - [ ] Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
 - [ ] Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
-- [ ] Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.
-- [ ] Add URL-backed state and deeper note-to-note navigation in the web UI so searches, selected notes, and related pivots survive refreshes and remote sessions.
+- [x] Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.
+- [x] Add URL-backed state and deeper note-to-note navigation in the web UI so searches, selected notes, and related pivots survive refreshes and remote sessions.
 - [ ] Improve web UI tag visibility in search, graph, list, and detail views so selected items and linked sources show their own tags plus backlink tags without extra discovery.
-- [ ] Expand the web operations/dashboard view with deeper worker drill-down, richer backlog trend views, and clearer source-level drill-ins so repeated failures are easier to triage.
+- [ ] Expand the web operations/dashboard view with deeper worker drill-down and richer backlog trend views so repeated failures are easier to triage.
 - [ ] Add first-class filters and browsing controls in the web UI for source type, kind, status, tag, and recency so the corpus is easier to slice than with one text box.
 - [ ] Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
 - [ ] Add a translation stage for non-English X content, storing both original and translated text.
@@ -1502,16 +1502,16 @@ Third-party dependency notices are in
 ### Pipeline TODO
 
 - [ ] Tighten X link-discovery candidate selection so items whose only links are X self-links like `/photo/1` or `/video/1` do not get rescanned and inflate `items_scanned` without producing real source candidates.
-- [ ] Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
+- [x] Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
 - [ ] Audit X media transcription throughput by recording per-video duration/bytes/transcript chars and testing cautious MacWhisper parallelism; avoid raising default concurrency until local GPU/CPU contention is understood.
 - [x] Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends, report side-by-side output quality and timings, and avoid changing persisted item OCR state.
 - [x] Add a summary/categorization bakeoff devtool that can run the same source extract or content bundle through multiple models/backends, report side-by-side outputs and timings, and avoid changing persisted summary/tag state.
-- [ ] Improve provider provenance so stored summaries always record the exact backend/model used.
-- [ ] Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
+- [x] Improve provider provenance so stored summaries always record the exact backend/model used.
+- [x] Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
 - [ ] Add explicit source-of-truth audit commands such as `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`, while treating the local DB as append-only by default.
 - [ ] Add a pre-summary staging path for oversized extracts so giant PDFs and long documents can be chunked, pre-compressed, or locally preprocessed before hosted summary calls hit provider context limits.
 - [ ] Add an oversized-X-video policy for media download/transcription with byte-size and/or duration gating, lower-bitrate transcription variants, and terminal `too_large` / `too_long` states instead of endless retry.
 - [ ] Maybe reclassify non-actionable X media transcript outcomes like `no_audio`, `noise`, and `too_short` out of the generic failed bucket so transcription stats distinguish real pipeline errors from terminal no-content cases.
 - [ ] Add an optional X thread expansion path when a bookmarked post is clearly part of a longer thread.
 - [ ] Add a scheduler/launchd-style mode on top of the worker loop so enrichment can resume automatically after terminal closure or reboot.
-- [ ] Keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) in mind as a possible future browser/scraping backend if headless Chrome-based extraction gets stuck again.
+- [x] No longer needed for now: keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) only as an external reference if source extraction gets stuck again. The current protected-fetch and Wayback fallback path covers the original gap well enough.
