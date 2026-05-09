@@ -112,15 +112,16 @@ type FeedEntry struct {
 }
 
 type FeedEntryApplyResult struct {
-	FeedEntryID   int64
-	ItemID        int64
-	SourceID      int64
-	Created       bool
-	Updated       bool
-	Unchanged     bool
-	Version       int
-	SourceLinked  bool
-	SourceCreated bool
+	FeedEntryID      int64
+	ItemID           int64
+	SourceID         int64
+	Created          bool
+	Updated          bool
+	Unchanged        bool
+	Version          int
+	SourceLinked     bool
+	SourceCreated    bool
+	IdentityConflict bool
 }
 
 type FeedFetchState struct {
@@ -268,13 +269,13 @@ func (s *Store) ListFeedsDue(ctx context.Context, now time.Time, limit int, incl
 	}
 	query := `SELECT feed_key FROM feeds WHERE enabled = 1`
 	if !includeBlocked {
-		query += ` AND health_status != ?`
+		query += ` AND health_status NOT IN (?, ?)`
 	}
 	query += ` AND (next_fetch_after = '' OR next_fetch_after <= ?)
 		ORDER BY COALESCE(NULLIF(last_checked_at, ''), created_at), id`
 	args := []any{}
 	if !includeBlocked {
-		args = append(args, FeedHealthBlocked)
+		args = append(args, FeedHealthBlocked, FeedHealthDead)
 	}
 	args = append(args, now.UTC().Format(time.RFC3339))
 	if limit > 0 {
@@ -457,6 +458,14 @@ func (s *Store) applyFeedEntry(ctx context.Context, entry FeedEntry) (FeedEntryA
 		}
 	}()
 
+	match, err := resolveFeedEntryMatchTx(ctx, tx, entry)
+	if err != nil {
+		return FeedEntryApplyResult{}, err
+	}
+	if match.ItemSourceKey != "" {
+		entry.Item.SourceKey = match.ItemSourceKey
+	}
+
 	itemResult, err := s.upsertItemTx(ctx, tx, entry.Item)
 	if err != nil {
 		return FeedEntryApplyResult{}, err
@@ -482,15 +491,8 @@ func (s *Store) applyFeedEntry(ctx context.Context, entry FeedEntry) (FeedEntryA
 	}
 	nowText := now.UTC().Format(time.RFC3339)
 
-	var existingID int64
-	var existingHash string
-	var existingVersion int
-	row := tx.QueryRowContext(ctx, `
-		SELECT id, content_hash, version
-		FROM feed_entries
-		WHERE feed_id = ? AND identity_key = ?`, entry.FeedID, entry.IdentityKey)
-	switch scanErr := row.Scan(&existingID, &existingHash, &existingVersion); {
-	case errors.Is(scanErr, sql.ErrNoRows):
+	switch match.ID {
+	case 0:
 		result, execErr := tx.ExecContext(ctx, `
 			INSERT INTO feed_entries (
 				feed_id, entry_key, identity_key, guid, guid_is_permalink, link, normalized_link, title, author,
@@ -514,29 +516,27 @@ func (s *Store) applyFeedEntry(ctx context.Context, entry FeedEntry) (FeedEntryA
 			return FeedEntryApplyResult{}, fmt.Errorf("commit feed entry insert: %w", err)
 		}
 		return FeedEntryApplyResult{FeedEntryID: id, ItemID: itemResult.ItemID, SourceID: sourceID, Created: true, Version: 1, SourceLinked: linkCreated, SourceCreated: sourceCreated}, nil
-	case scanErr != nil:
-		return FeedEntryApplyResult{}, fmt.Errorf("lookup feed entry %s: %w", entry.EntryKey, scanErr)
 	default:
 	}
 
-	if existingHash == entry.ContentHash {
+	if match.ContentHash == entry.ContentHash {
 		if _, execErr := tx.ExecContext(ctx, `
 			UPDATE feed_entries
-			SET last_seen_at = ?, raw_json = ?, item_id = ?, source_id = ?, updated_at = ?
+			SET guid = ?, guid_is_permalink = ?, link = ?, normalized_link = ?, raw_json = ?, item_id = ?, source_id = ?, last_seen_at = ?, updated_at = ?
 			WHERE id = ?`,
-			nowText, entry.RawJSON, itemResult.ItemID, sourceID, nowText, existingID); execErr != nil {
+			entry.GUID, boolInt(entry.GUIDIsPermalink), entry.Link, entry.NormalizedLink, entry.RawJSON, itemResult.ItemID, sourceID, nowText, nowText, match.ID); execErr != nil {
 			return FeedEntryApplyResult{}, fmt.Errorf("touch feed entry %s: %w", entry.EntryKey, execErr)
 		}
 		if err := tx.Commit(); err != nil {
 			return FeedEntryApplyResult{}, fmt.Errorf("commit unchanged feed entry: %w", err)
 		}
-		return FeedEntryApplyResult{FeedEntryID: existingID, ItemID: itemResult.ItemID, SourceID: sourceID, Unchanged: true, Version: existingVersion, SourceLinked: linkCreated, SourceCreated: sourceCreated}, nil
+		return FeedEntryApplyResult{FeedEntryID: match.ID, ItemID: itemResult.ItemID, SourceID: sourceID, Unchanged: true, Version: match.Version, SourceLinked: linkCreated, SourceCreated: sourceCreated, IdentityConflict: match.IdentityConflict}, nil
 	}
 
-	if err := appendFeedEntryVersionTx(ctx, tx, existingID, existingVersion, nowText); err != nil {
+	if err := appendFeedEntryVersionTx(ctx, tx, match.ID, match.Version, nowText); err != nil {
 		return FeedEntryApplyResult{}, err
 	}
-	nextVersion := existingVersion + 1
+	nextVersion := match.Version + 1
 	if _, execErr := tx.ExecContext(ctx, `
 		UPDATE feed_entries
 		SET guid = ?, guid_is_permalink = ?, link = ?, normalized_link = ?, title = ?, author = ?,
@@ -547,14 +547,75 @@ func (s *Store) applyFeedEntry(ctx context.Context, entry FeedEntry) (FeedEntryA
 		entry.GUID, boolInt(entry.GUIDIsPermalink), entry.Link, entry.NormalizedLink, entry.Title, entry.Author,
 		entry.PublishedAt, entry.EntryUpdatedAt, entry.SummaryHTML, entry.SummaryText, entry.ContentHTML, entry.ContentMarkdown, entry.ContentText,
 		defaultJSON(entry.EnclosuresJSON, "[]"), defaultJSON(entry.ExtensionsJSON, "{}"), entry.RawJSON, entry.ContentHash, nextVersion, itemResult.ItemID, sourceID,
-		nowText, nowText, nowText, existingID,
+		nowText, nowText, nowText, match.ID,
 	); execErr != nil {
 		return FeedEntryApplyResult{}, fmt.Errorf("update feed entry %s: %w", entry.EntryKey, execErr)
 	}
 	if err := tx.Commit(); err != nil {
 		return FeedEntryApplyResult{}, fmt.Errorf("commit feed entry update: %w", err)
 	}
-	return FeedEntryApplyResult{FeedEntryID: existingID, ItemID: itemResult.ItemID, SourceID: sourceID, Updated: true, Version: nextVersion, SourceLinked: linkCreated, SourceCreated: sourceCreated}, nil
+	return FeedEntryApplyResult{FeedEntryID: match.ID, ItemID: itemResult.ItemID, SourceID: sourceID, Updated: true, Version: nextVersion, SourceLinked: linkCreated, SourceCreated: sourceCreated, IdentityConflict: match.IdentityConflict}, nil
+}
+
+type feedEntryMatch struct {
+	ID               int64
+	ContentHash      string
+	Version          int
+	ItemID           int64
+	ItemSourceKey    string
+	IdentityConflict bool
+}
+
+func resolveFeedEntryMatchTx(ctx context.Context, tx *sql.Tx, entry FeedEntry) (feedEntryMatch, error) {
+	identityMatch, err := lookupFeedEntryMatchTx(ctx, tx, `feed_id = ? AND identity_key = ?`, entry.FeedID, entry.IdentityKey)
+	if err != nil {
+		return feedEntryMatch{}, err
+	}
+	guidMatch := feedEntryMatch{}
+	if entry.GUID != "" {
+		guidMatch, err = lookupFeedEntryMatchTx(ctx, tx, `feed_id = ? AND guid = ? AND guid != ''`, entry.FeedID, entry.GUID)
+		if err != nil {
+			return feedEntryMatch{}, err
+		}
+	}
+	linkMatch := feedEntryMatch{}
+	if entry.NormalizedLink != "" {
+		linkMatch, err = lookupFeedEntryMatchTx(ctx, tx, `feed_id = ? AND normalized_link = ? AND normalized_link != ''`, entry.FeedID, entry.NormalizedLink)
+		if err != nil {
+			return feedEntryMatch{}, err
+		}
+	}
+	switch {
+	case guidMatch.ID != 0:
+		if linkMatch.ID != 0 && linkMatch.ID != guidMatch.ID {
+			guidMatch.IdentityConflict = true
+		}
+		return guidMatch, nil
+	case identityMatch.ID != 0:
+		return identityMatch, nil
+	case linkMatch.ID != 0:
+		return linkMatch, nil
+	default:
+		return feedEntryMatch{}, nil
+	}
+}
+
+func lookupFeedEntryMatchTx(ctx context.Context, tx *sql.Tx, where string, args ...any) (feedEntryMatch, error) {
+	query := `
+		SELECT e.id, e.content_hash, e.version, e.item_id, i.source_key
+		FROM feed_entries e
+		JOIN items i ON i.id = e.item_id
+		WHERE ` + where + `
+		LIMIT 1`
+	var match feedEntryMatch
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&match.ID, &match.ContentHash, &match.Version, &match.ItemID, &match.ItemSourceKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return feedEntryMatch{}, nil
+	}
+	if err != nil {
+		return feedEntryMatch{}, fmt.Errorf("lookup feed entry match: %w", err)
+	}
+	return match, nil
 }
 
 func (s *Store) upsertItemTx(ctx context.Context, tx *sql.Tx, item model.Item) (model.UpsertResult, error) {

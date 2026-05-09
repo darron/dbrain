@@ -9,7 +9,9 @@ development date for the change set.
 
 - **Added**: RSS, Atom, and JSON Feed subscriptions with `dbrain feed add/list/status/check/enable/disable`.
 - **Sync**: `sync all` now checks due feeds by default, materializes feed entries as local items, links canonical article URLs into normal sources, and preserves raw feed fetch/entry data for later reprocessing.
-- **Safety**: Feed fetch audit rows are stored separately from entry/item/source transactions, unchanged bodies skip entry processing, and feed disappearance never deletes local memory.
+- **Safety**: Feed fetch audit rows are stored separately from entry/item/source transactions, unchanged bodies skip entry processing, feed disappearance never deletes local memory, retryable failures use exponential backoff, and dead feeds require repeated terminal-looking failures over time.
+- **Identity**: Feed entry fallback identity follows the documented Markdown/text/summary/title/enclosure order, GUID/link changes reuse existing entries, and GUID/link conflicts are surfaced without merging rows.
+- **CLI**: `dbrain feed add` now stores a subscription by default; pass `--check` to import current entries immediately.
 - **Location**: `internal/feedimport/`, `internal/store/`, `internal/app/`, `internal/syncjob/`, `web/`, `README.md`, `docs/feed-ingestion.md`
 
 ### Scheduled Sync All (2026-05-08)

@@ -70,6 +70,7 @@ func Add(ctx context.Context, cfg config.Config, st *store.Store, rawURL string,
 		Fetcher:             opts.Fetcher,
 		Now:                 opts.Now,
 		Logger:              opts.Logger,
+		MetadataOnly:        !opts.Import,
 	})
 	stored, getErr := st.GetFeed(ctx, feedKey)
 	if getErr == nil {
@@ -181,11 +182,11 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 	if err != nil {
 		parseStatus = "error"
 		parseErr = err.Error()
-		_ = st.RecordFeedFetch(ctx, feedFetchRecord(feed.ID, fetch, now, parseStatus, parseErr))
-		next := nextFetchAfter(now, feed, opts, fetch.RetryAfter)
+		recordFeedFetch(ctx, st, opts, feedFetchRecord(feed.ID, fetch, now, parseStatus, parseErr))
+		next := nextFailureFetchAfter(now, feed, fetch.RetryAfter)
 		_ = st.UpdateFeedFailure(ctx, store.FeedFailureState{
 			FeedID:         feed.ID,
-			HealthStatus:   classifyFeedFailure(fetch.HTTPStatus),
+			HealthStatus:   classifyFeedFailure(feed, fetch.HTTPStatus, now),
 			FailureKind:    failureKind(fetch.HTTPStatus),
 			LastHTTPStatus: fetch.HTTPStatus,
 			Error:          err.Error(),
@@ -200,7 +201,7 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 		return stats, err
 	}
 	if fetch.NotModified || fetch.UnchangedBody {
-		_ = st.RecordFeedFetch(ctx, feedFetchRecord(feed.ID, fetch, now, "unchanged", ""))
+		recordFeedFetch(ctx, st, opts, feedFetchRecord(feed.ID, fetch, now, "unchanged", ""))
 		if err := st.UpdateFeedFetchState(ctx, store.FeedFetchState{
 			FeedID:            feed.ID,
 			ResolvedURL:       fetch.FinalURL,
@@ -225,7 +226,7 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 	if err != nil {
 		parseStatus = "parse_error"
 		parseErr = err.Error()
-		_ = st.RecordFeedFetch(ctx, feedFetchRecord(feed.ID, fetch, now, parseStatus, parseErr))
+		recordFeedFetch(ctx, st, opts, feedFetchRecord(feed.ID, fetch, now, parseStatus, parseErr))
 		_ = st.UpdateFeedFailure(ctx, store.FeedFailureState{
 			FeedID:         feed.ID,
 			HealthStatus:   store.FeedHealthBlocked,
@@ -233,7 +234,7 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 			LastHTTPStatus: fetch.HTTPStatus,
 			Error:          err.Error(),
 			FailedAt:       now,
-			NextFetchAfter: nextFetchAfter(now, feed, opts, fetch.RetryAfter),
+			NextFetchAfter: time.Time{},
 		})
 		stats.FeedsFailed++
 		stats.Errors++
@@ -242,7 +243,7 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 		stats.Results = append(stats.Results, result)
 		return stats, err
 	}
-	_ = st.RecordFeedFetch(ctx, feedFetchRecord(feed.ID, fetch, now, parseStatus, parseErr))
+	recordFeedFetch(ctx, st, opts, feedFetchRecord(feed.ID, fetch, now, parseStatus, parseErr))
 
 	latestJSON := mustJSON(parsed, "{}")
 	if err := st.UpdateFeedFetchState(ctx, store.FeedFetchState{
@@ -270,6 +271,10 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 	feed.Language = firstNonEmpty(parsed.Language, feed.Language)
 	stats.FeedsChanged++
 	result.Status = "changed"
+	if opts.MetadataOnly {
+		stats.Results = append(stats.Results, result)
+		return stats, nil
+	}
 
 	for _, item := range parsed.Items {
 		entry, ok := buildFeedEntry(feed, parsed, item, now)
@@ -304,6 +309,12 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 		if applied.SourceLinked {
 			stats.SourcesLinked++
 		}
+		if applied.IdentityConflict {
+			stats.IdentityConflicts++
+			if opts.Logger != nil {
+				opts.Logger.Warn("feed entry identity conflict", "feed_key", feed.FeedKey, "entry_key", entry.EntryKey, "guid", entry.GUID, "normalized_link", entry.NormalizedLink)
+			}
+		}
 		if err := vault.WriteItem(cfg, entry.Item); err != nil {
 			stats.Errors++
 			result.Error = err.Error()
@@ -332,6 +343,12 @@ func feedFetchRecord(feedID int64, fetch FetchResult, observed time.Time, parseS
 	}
 }
 
+func recordFeedFetch(ctx context.Context, st *store.Store, opts Options, rec store.FeedFetchRecord) {
+	if err := st.RecordFeedFetch(ctx, rec); err != nil && opts.Logger != nil {
+		opts.Logger.Warn("record feed fetch failed", "feed_id", rec.FeedID, "url", rec.RequestURL, "error", err)
+	}
+}
+
 func nextFetchAfter(now time.Time, feed store.Feed, opts Options, retryAfter time.Time) time.Time {
 	if !retryAfter.IsZero() && retryAfter.After(now) {
 		return retryAfter.UTC()
@@ -343,14 +360,39 @@ func nextFetchAfter(now time.Time, feed store.Feed, opts Options, retryAfter tim
 	return now.Add(interval).UTC()
 }
 
-func classifyFeedFailure(status int) string {
-	if status == http.StatusGone || status == http.StatusNotFound {
-		return store.FeedHealthDead
+func nextFailureFetchAfter(now time.Time, feed store.Feed, retryAfter time.Time) time.Time {
+	if !retryAfter.IsZero() && retryAfter.After(now) {
+		return retryAfter.UTC()
 	}
+	delay := initialBackoff
+	for i := 0; i < feed.ErrorCount && delay < maxBackoff; i++ {
+		delay *= 2
+		if delay >= maxBackoff {
+			delay = maxBackoff
+			break
+		}
+	}
+	return now.Add(delay).UTC()
+}
+
+func classifyFeedFailure(feed store.Feed, status int, now time.Time) string {
 	if status == http.StatusForbidden || status == http.StatusUnauthorized {
 		return store.FeedHealthBlocked
 	}
+	if terminalLookingFailure(status) {
+		firstFailedAt := feed.FirstFailedAt
+		if firstFailedAt.IsZero() {
+			firstFailedAt = now
+		}
+		if feed.ErrorCount+1 >= deadFailureCount && !firstFailedAt.After(now.Add(-deadFailureWindow)) {
+			return store.FeedHealthDead
+		}
+	}
 	return store.FeedHealthError
+}
+
+func terminalLookingFailure(status int) bool {
+	return status == http.StatusGone || status == http.StatusNotFound
 }
 
 func failureKind(status int) string {
@@ -376,6 +418,7 @@ func mergeStats(dst *Stats, src Stats) {
 	dst.SourcesCreated += src.SourcesCreated
 	dst.SourcesLinked += src.SourcesLinked
 	dst.ItemsRendered += src.ItemsRendered
+	dst.IdentityConflicts += src.IdentityConflicts
 	dst.Errors += src.Errors
 	dst.Results = append(dst.Results, src.Results...)
 }

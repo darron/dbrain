@@ -707,6 +707,7 @@ Entries disappearing from a feed are not deleted locally.
 
 ```sh
 dbrain feed add https://example.com/feed.xml
+dbrain feed add https://example.com/feed.xml --check
 dbrain feed list
 dbrain feed status feed:abc123def456
 dbrain feed check
@@ -714,6 +715,9 @@ dbrain feed check feed:abc123def456 --force
 dbrain feed disable feed:abc123def456
 dbrain feed enable feed:abc123def456
 ```
+
+`feed add` stores the subscription by default. Add `--check` when you want to
+fetch and import current entries immediately.
 
 `feed enable` clears previous feed health diagnostics and makes the feed
 eligible for an immediate check. `feed disable` stops future checks without

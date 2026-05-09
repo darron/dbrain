@@ -23,11 +23,6 @@ import (
 var htmlTagPattern = regexp.MustCompile(`<[^>]+>`)
 
 func buildFeedEntry(feed store.Feed, parsed *gofeed.Feed, item *gofeed.Item, observedAt time.Time) (store.FeedEntry, bool) {
-	identity := feedItemIdentity(item)
-	if identity == "" {
-		return store.FeedEntry{}, false
-	}
-	entryKey := "feed-entry:" + shortHash(feed.FeedKey+"|"+identity)
 	link := strings.TrimSpace(item.Link)
 	normalizedLink := ""
 	var sourceCandidate *model.SourceCandidate
@@ -39,7 +34,13 @@ func buildFeedEntry(feed store.Feed, parsed *gofeed.Feed, item *gofeed.Item, obs
 	publishedAt := feedItemTime(item.Published, item.PublishedParsed)
 	entryUpdatedAt := feedItemTime(item.Updated, item.UpdatedParsed)
 	contentMarkdown := extractMarkdown(item.Extensions, item.Custom)
-	contentText := firstNonEmpty(contentMarkdown, textFromHTML(item.Content), textFromHTML(item.Description))
+	contentText := textFromHTML(item.Content)
+	summaryText := textFromHTML(item.Description)
+	identity := feedItemIdentity(item, contentMarkdown, contentText, summaryText)
+	if identity == "" {
+		return store.FeedEntry{}, false
+	}
+	entryKey := "feed-entry:" + shortHash(feed.FeedKey+"|"+identity)
 	enclosuresJSON := mustJSON(item.Enclosures, "[]")
 	extensionsJSON := mustJSON(item.Extensions, "{}")
 	rawJSON := mustJSON(item, "{}")
@@ -87,7 +88,7 @@ func buildFeedEntry(feed store.Feed, parsed *gofeed.Feed, item *gofeed.Item, obs
 		PublishedAt:     publishedAt,
 		EntryUpdatedAt:  entryUpdatedAt,
 		SummaryHTML:     strings.TrimSpace(item.Description),
-		SummaryText:     textFromHTML(item.Description),
+		SummaryText:     summaryText,
 		ContentHTML:     strings.TrimSpace(item.Content),
 		ContentMarkdown: contentMarkdown,
 		ContentText:     contentText,
@@ -101,7 +102,7 @@ func buildFeedEntry(feed store.Feed, parsed *gofeed.Feed, item *gofeed.Item, obs
 	}, true
 }
 
-func feedItemIdentity(item *gofeed.Item) string {
+func feedItemIdentity(item *gofeed.Item, contentMarkdown string, contentText string, summaryText string) string {
 	if guid := strings.TrimSpace(item.GUID); guid != "" {
 		return "guid:" + guid
 	}
@@ -111,15 +112,51 @@ func feedItemIdentity(item *gofeed.Item) string {
 		}
 		return "link:" + link
 	}
+	fallbackText := normalizedFallbackText(item, contentMarkdown, contentText, summaryText)
+	if fallbackText == "" {
+		return ""
+	}
 	fallback := strings.Join([]string{
 		strings.TrimSpace(item.Title),
 		strings.TrimSpace(item.Published),
-		textFromHTML(firstNonEmpty(item.Content, item.Description)),
+		truncateUTF8Bytes(fallbackText, 2048),
 	}, "\x00")
-	if strings.TrimSpace(fallback) == "" {
+	return "fallback:" + shortHash(fallback)
+}
+
+func normalizedFallbackText(item *gofeed.Item, contentMarkdown string, contentText string, summaryText string) string {
+	if value := strings.Join(strings.Fields(contentMarkdown), " "); value != "" {
+		return value
+	}
+	if value := strings.Join(strings.Fields(contentText), " "); value != "" {
+		return value
+	}
+	if value := strings.Join(strings.Fields(summaryText), " "); value != "" {
+		return value
+	}
+	if value := strings.Join(strings.Fields(item.Title), " "); value != "" {
+		return value
+	}
+	metadata := stableEnclosures(item.Enclosures)
+	if len(metadata) == 0 {
 		return ""
 	}
-	return "fallback:" + shortHash(fallback)
+	return mustJSON(metadata, "")
+}
+
+func truncateUTF8Bytes(value string, maxBytes int) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	var out strings.Builder
+	for _, r := range value {
+		next := string(r)
+		if out.Len()+len(next) > maxBytes {
+			break
+		}
+		out.WriteString(next)
+	}
+	return out.String()
 }
 
 func feedEntryContentHash(item *gofeed.Item, markdown string) string {

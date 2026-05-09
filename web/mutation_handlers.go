@@ -76,6 +76,7 @@ func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {
 		_, _, stats, err := feedimport.Add(r.Context(), s.cfg, s.store, raw, feedimport.AddOptions{
 			Enabled: true,
 			Fetch:   true,
+			Import:  true,
 		})
 		if err != nil {
 			feedStats.Errors++

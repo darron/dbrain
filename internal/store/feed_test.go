@@ -180,6 +180,9 @@ func TestApplyFeedEntryVersioningAndUniqueItem(t *testing.T) {
 	duplicate := testFeedEntry(feedID, now.Add(2*time.Minute), "another body")
 	duplicate.EntryKey = "feed-entry:duplicate"
 	duplicate.IdentityKey = "duplicate"
+	duplicate.GUID = ""
+	duplicate.Link = "https://example.com/duplicate"
+	duplicate.NormalizedLink = "https://example.com/duplicate"
 	duplicate.Item.SourceKey = entry.Item.SourceKey
 	if _, err := st.ApplyFeedEntry(ctx, duplicate); err == nil {
 		t.Fatal("expected duplicate materialized item to fail")

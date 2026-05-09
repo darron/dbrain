@@ -54,9 +54,10 @@ func newFeedAddCommand(root *rootOptions) *cobra.Command {
 
 			feed, created, stats, err := feedimport.Add(cmd.Context(), cfg, st, args[0], feedimport.AddOptions{
 				Disabled:     disabled,
+				Import:       check,
 				PollInterval: pollInterval,
 				UserTags:     tags,
-				Fetch:        check && !noFetch && !disabled,
+				Fetch:        !noFetch && !disabled,
 				Logger:       newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
 			})
 			if err != nil {
@@ -70,7 +71,7 @@ func newFeedAddCommand(root *rootOptions) *cobra.Command {
 				status = "created"
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", status, feed.FeedKey, feed.NormalizedURL)
-			if check && !noFetch && !disabled {
+			if !noFetch && !disabled {
 				return writeFeedStats(cmd.OutOrStdout(), stats)
 			}
 			return nil
@@ -78,7 +79,7 @@ func newFeedAddCommand(root *rootOptions) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&noFetch, "no-fetch", false, "Subscribe without immediately fetching the feed")
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "Add the subscription disabled")
-	cmd.Flags().BoolVar(&check, "check", true, "Immediately fetch and import available entries")
+	cmd.Flags().BoolVar(&check, "check", false, "Immediately fetch and import available entries")
 	cmd.Flags().StringVar(&tags, "tags", "", "Optional comma-separated user tags for imported feed entries")
 	cmd.Flags().DurationVar(&pollInterval, "poll-interval", feedimport.DefaultPollInterval, "How often sync all should check this feed")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print result as JSON")
@@ -206,7 +207,7 @@ func newFeedCheckCommand(root *rootOptions) *cobra.Command {
 			return writeFeedStats(cmd.OutOrStdout(), stats)
 		},
 	}
-	cmd.Flags().BoolVar(&all, "all", false, "Include blocked feeds when checking all due feeds")
+	cmd.Flags().BoolVar(&all, "all", false, "Include blocked and dead feeds when checking all due feeds")
 	cmd.Flags().BoolVar(&force, "force", false, "Process feed entries even when the feed body hash is unchanged")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum due feeds to check when no feed is specified")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print result as JSON")
@@ -272,6 +273,7 @@ func writeFeedStats(dst interface{ Write([]byte) (int, error) }, stats feedimpor
 	_, _ = fmt.Fprintf(dst, "Sources created: %d\n", stats.SourcesCreated)
 	_, _ = fmt.Fprintf(dst, "Sources linked: %d\n", stats.SourcesLinked)
 	_, _ = fmt.Fprintf(dst, "Items rendered: %d\n", stats.ItemsRendered)
+	_, _ = fmt.Fprintf(dst, "Identity conflicts: %d\n", stats.IdentityConflicts)
 	_, _ = fmt.Fprintf(dst, "Errors: %d\n", stats.Errors)
 	return nil
 }

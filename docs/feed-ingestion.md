@@ -121,9 +121,10 @@ dbrain feed enable <feed-key-or-url>
 
 Behavior:
 
-- `feed add` stores the subscription and, by default, immediately imports
-  available entries. Pass `--check=false`, `--no-fetch`, or `--disabled` to
-  avoid the initial fetch/import.
+- `feed add` stores the subscription without importing entries by default.
+- `feed add --check` immediately imports available entries.
+- `feed add --no-fetch` and `feed add --disabled` avoid initial feed
+  autodiscovery/fetch work.
 - `feed check` fetches one feed or all enabled feeds.
 - `feed check --force` ignores stored ETag/Last-Modified and reparses the body.
   It still dedupes entries by identity and content hash.

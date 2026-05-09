@@ -56,6 +56,19 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 }
 
+func TestFeedAddCheckFlagDefaultsToVerifyOnly(t *testing.T) {
+	t.Parallel()
+
+	cmd := newFeedAddCommand(&rootOptions{})
+	flag := cmd.Flags().Lookup("check")
+	if flag == nil {
+		t.Fatal("missing --check flag")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("--check default = %q, want false", flag.DefValue)
+	}
+}
+
 func TestVersionCommand(t *testing.T) {
 	t.Parallel()
 

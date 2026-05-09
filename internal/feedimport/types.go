@@ -16,6 +16,10 @@ const (
 	DefaultMaxBodyBytes = 10 << 20
 	DefaultConcurrency  = 6
 	DefaultUserAgent    = "dbrain feed importer"
+	initialBackoff      = 15 * time.Minute
+	maxBackoff          = 24 * time.Hour
+	deadFailureCount    = 5
+	deadFailureWindow   = 24 * time.Hour
 )
 
 var ExtensionContentHashWhitelist = map[string]map[string]bool{
@@ -41,6 +45,7 @@ type Fetcher interface {
 type Options struct {
 	Limit               int
 	Force               bool
+	MetadataOnly        bool
 	IncludeBlocked      bool
 	Concurrency         int
 	DefaultPollInterval time.Duration
@@ -56,6 +61,7 @@ type Options struct {
 type AddOptions struct {
 	Enabled             bool
 	Disabled            bool
+	Import              bool
 	PollInterval        time.Duration
 	UserTags            string
 	Fetch               bool
@@ -70,20 +76,21 @@ type AddOptions struct {
 }
 
 type Stats struct {
-	FeedsChecked    int      `json:"feeds_checked"`
-	FeedsChanged    int      `json:"feeds_changed"`
-	FeedsUnchanged  int      `json:"feeds_unchanged"`
-	FeedsFailed     int      `json:"feeds_failed"`
-	EntriesSeen     int      `json:"entries_seen"`
-	ItemsCreated    int      `json:"items_created"`
-	ItemsUpdated    int      `json:"items_updated"`
-	ItemsUnchanged  int      `json:"items_unchanged"`
-	VersionsCreated int      `json:"versions_created"`
-	SourcesCreated  int      `json:"sources_created"`
-	SourcesLinked   int      `json:"sources_linked"`
-	ItemsRendered   int      `json:"items_rendered"`
-	Errors          int      `json:"errors"`
-	Results         []Result `json:"results,omitempty"`
+	FeedsChecked      int      `json:"feeds_checked"`
+	FeedsChanged      int      `json:"feeds_changed"`
+	FeedsUnchanged    int      `json:"feeds_unchanged"`
+	FeedsFailed       int      `json:"feeds_failed"`
+	EntriesSeen       int      `json:"entries_seen"`
+	ItemsCreated      int      `json:"items_created"`
+	ItemsUpdated      int      `json:"items_updated"`
+	ItemsUnchanged    int      `json:"items_unchanged"`
+	VersionsCreated   int      `json:"versions_created"`
+	SourcesCreated    int      `json:"sources_created"`
+	SourcesLinked     int      `json:"sources_linked"`
+	ItemsRendered     int      `json:"items_rendered"`
+	IdentityConflicts int      `json:"identity_conflicts"`
+	Errors            int      `json:"errors"`
+	Results           []Result `json:"results,omitempty"`
 }
 
 type Result struct {
