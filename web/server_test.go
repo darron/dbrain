@@ -107,6 +107,9 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		if response.SourceActivity.Window == "" {
 			t.Fatalf("expected bootstrap source activity window")
 		}
+		if response.Backlog.SourceSummaryPending != 0 {
+			t.Fatalf("expected bootstrap backlog to use model-agnostic summary coverage, got %d pending summaries", response.Backlog.SourceSummaryPending)
+		}
 	})
 
 	t.Run("source activity", func(t *testing.T) {
