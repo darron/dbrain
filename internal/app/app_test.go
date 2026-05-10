@@ -221,6 +221,9 @@ func TestLaunchdPlistCommandUsesDefaultLayoutWithoutRootArg(t *testing.T) {
 		"<string>/opt/homebrew/bin/dbrain</string>",
 		"<string>serve</string>",
 		"<string>remote</string>",
+		"<key>EnvironmentVariables</key>",
+		"<key>PATH</key>",
+		"<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>",
 		filepath.Join(dataHome, "dbrain", "logs", "launchd.out.log"),
 		filepath.Join(dataHome, "dbrain", "logs", "launchd.err.log"),
 	} {
@@ -291,6 +294,9 @@ func TestLaunchdInstallNoStartWritesPlist(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "<string>/opt/homebrew/bin/dbrain</string>") {
 		t.Fatalf("unexpected plist: %s", data)
+	}
+	if !strings.Contains(string(data), "<key>PATH</key>") || !strings.Contains(string(data), "/opt/homebrew/bin:/usr/local/bin") {
+		t.Fatalf("expected launchd plist to include Homebrew PATH, got: %s", data)
 	}
 	if !strings.Contains(stdout.String(), "Not loaded because --no-start was set.") {
 		t.Fatalf("expected no-start message, got %q", stdout.String())

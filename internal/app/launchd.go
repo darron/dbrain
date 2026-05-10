@@ -14,6 +14,7 @@ import (
 )
 
 const defaultLaunchdLabel = "com.darron.dbrain"
+const defaultLaunchdPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 type launchdInstallFlags struct {
 	label   string
@@ -228,6 +229,10 @@ func renderLaunchdPlist(opts launchdPlistOptions) ([]byte, error) {
 		b.WriteString("</string>\n")
 	}
 	b.WriteString("  </array>\n")
+	b.WriteString("  <key>EnvironmentVariables</key>\n")
+	b.WriteString("  <dict>\n")
+	writePlistStringIndented(&b, "PATH", defaultLaunchdPath, "    ")
+	b.WriteString("  </dict>\n")
 	writePlistBool(&b, "RunAtLoad", true)
 	writePlistBool(&b, "KeepAlive", true)
 	writePlistString(&b, "StandardOutPath", opts.OutPath)
@@ -237,9 +242,16 @@ func renderLaunchdPlist(opts launchdPlistOptions) ([]byte, error) {
 }
 
 func writePlistString(b *bytes.Buffer, key string, value string) {
-	b.WriteString("  <key>")
+	writePlistStringIndented(b, key, value, "  ")
+}
+
+func writePlistStringIndented(b *bytes.Buffer, key string, value string, indent string) {
+	b.WriteString(indent)
+	b.WriteString("<key>")
 	_ = xml.EscapeText(b, []byte(key))
-	b.WriteString("</key>\n  <string>")
+	b.WriteString("</key>\n")
+	b.WriteString(indent)
+	b.WriteString("<string>")
 	_ = xml.EscapeText(b, []byte(value))
 	b.WriteString("</string>\n")
 }
