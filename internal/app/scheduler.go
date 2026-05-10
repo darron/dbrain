@@ -312,6 +312,17 @@ func (s *syncScheduler) run(ctx context.Context, reason string) {
 		_, _ = fmt.Fprintf(s.logOut, "scheduler sync all skipped: previous run still active\n")
 		return
 	}
+	lock, err := acquireSyncAllLock(s.cfg, "scheduler:"+reason)
+	if err != nil {
+		now := time.Now().UTC()
+		s.status.LastReason = reason
+		s.status.LastStatus = "skipped"
+		s.status.LastError = err.Error()
+		s.status.LastFinishedAt = now
+		s.mu.Unlock()
+		_, _ = fmt.Fprintf(s.logOut, "scheduler sync all skipped: %v\n", err)
+		return
+	}
 	start := time.Now().UTC()
 	s.status.Running = true
 	s.status.CurrentReason = reason
@@ -322,6 +333,7 @@ func (s *syncScheduler) run(ctx context.Context, reason string) {
 	s.status.LastError = ""
 	s.mu.Unlock()
 	defer func() {
+		_ = lock.Close()
 		s.mu.Lock()
 		s.status.Running = false
 		s.status.CurrentReason = ""
@@ -330,7 +342,7 @@ func (s *syncScheduler) run(ctx context.Context, reason string) {
 	}()
 
 	_, _ = fmt.Fprintf(s.logOut, "scheduler sync all started: reason=%s at=%s\n", reason, start.Format(time.RFC3339))
-	if err := runScheduledSyncAll(ctx, s.cfg, s.opts.Flags, s.logOut); err != nil {
+	if err := runScheduledSyncAllUnlocked(ctx, s.cfg, s.opts.Flags, s.logOut); err != nil {
 		s.finishRun("error", err.Error())
 		_, _ = fmt.Fprintf(s.logOut, "scheduler sync all failed: duration=%s error=%v\n", time.Since(start).Round(time.Second), err)
 		return
@@ -354,6 +366,17 @@ func (s *syncScheduler) finishRun(status string, errorText string) {
 }
 
 func runScheduledSyncAll(ctx context.Context, cfg config.Config, flags syncAllFlags, logOut io.Writer) error {
+	lock, err := acquireSyncAllLock(cfg, "scheduler")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+	return runScheduledSyncAllUnlocked(ctx, cfg, flags, logOut)
+}
+
+func runScheduledSyncAllUnlocked(ctx context.Context, cfg config.Config, flags syncAllFlags, logOut io.Writer) error {
 	resolvedFlags, err := resolveSyncAllFlags(cfg.RootDir, flags)
 	if err != nil {
 		return err

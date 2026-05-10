@@ -11,6 +11,12 @@ development date for the change set.
 - **Search**: Multi-term searches that miss strict FTS and phrase fallback now get a relaxed FTS pass, helping queries with extra context still surface partial high-signal matches.
 - **Location**: `internal/store/`
 
+### Sync Run Lock (2026-05-09)
+
+- **Fixed**: Manual `dbrain sync all` and scheduled `serve remote` sync runs now share a local lock, so one path fails or records a skipped run instead of overlapping the same pipeline.
+- **Docs**: Documented the scheduler lock path and the Apple Notes Full Disk Access/skip-stage choice for background runs.
+- **Location**: `internal/app/`, `internal/runlock/`, `README.md`
+
 ### Feed Local Testing (2026-05-09)
 
 - **Added**: `dbrain feed refresh FEED` fetches one feed and immediately enriches linked article sources, with `--force --summarize` for feed QA and reprocessing.

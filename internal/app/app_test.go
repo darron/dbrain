@@ -1468,6 +1468,39 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 	}
 }
 
+func TestSyncAllCommandFailsWhenRunLockHeld(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	lock, err := acquireSyncAllLock(cfg, "test")
+	if err != nil {
+		t.Fatalf("acquireSyncAllLock: %v", err)
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
+	cmd := newSyncAllCommand(&rootOptions{root: root})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--json"})
+
+	err = cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("expected sync all to fail while lock is held")
+	}
+	if !isSyncAllAlreadyRunning(err) || !strings.Contains(err.Error(), "sync all already running") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 	root := t.TempDir()
 	clearSyncEnvForTest(t)

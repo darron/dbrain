@@ -77,6 +77,7 @@ scheduler:
     source_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_LIMIT; 0 uses sync all default
     source_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_CONCURRENCY
     categorize_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_LIMIT
+    skip_apple_notes: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_APPLE_NOTES; useful when launchd lacks Full Disk Access
     skip_github: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB
     skip_youtube: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE
     skip_categorize: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE
