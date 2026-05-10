@@ -6,9 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
-	"github.com/darron/dbrain/internal/summarizecli"
 )
 
 func (s *server) handleBacklog(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +63,7 @@ func (s *server) handleSourceActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) backlog(ctx context.Context) (store.BacklogStats, error) {
-	return s.store.Backlog(ctx, sourceenrich.SummaryPromptVersion, summarizecli.ToolName, s.toolVersion)
+	return s.store.Backlog(ctx, "", "", "")
 }
 
 func (s *server) activity(ctx context.Context, window time.Duration) (store.ActivityStats, error) {

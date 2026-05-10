@@ -3,12 +3,17 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/spf13/cobra"
 
 	"github.com/darron/dbrain/internal/remote"
+	"github.com/darron/dbrain/internal/schedulerstate"
 )
 
 func newTSNetCommand(root *rootOptions) *cobra.Command {
@@ -51,42 +56,7 @@ func newTSNetStatusCommand(root *rootOptions) *cobra.Command {
 			if jsonOut {
 				return writeJSON(cmd.OutOrStdout(), status)
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "hostname: %s\n", status.Hostname)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "state_dir: %s\n", status.StateDir)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "exists: %t\n", status.Exists)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "locked: %t\n", status.Locked)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "running: %t\n", status.Running)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "reachable: %t\n", status.Reachable)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "web_reachable: %t\n", status.WebReachable)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "mcp_reachable: %t\n", status.MCPReachable)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "tls: %t\n", status.TLS)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "control_url: %s\n", status.ControlURL)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "state: %s\n", status.State)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "cert_health: %s\n", status.CertHealth)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "needs_login: %t\n", status.NeedsLogin)
-			if len(status.TailnetIPs) > 0 {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "tailnet_ips: %s\n", strings.Join(status.TailnetIPs, ", "))
-			}
-			if status.WebURL != "" {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "web_url: %s\n", status.WebURL)
-			}
-			if status.MCPURL != "" {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "mcp_url: %s\n", status.MCPURL)
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "lock_path: %s\n", status.LockPath)
-			if status.WebError != "" {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "web_error: %s\n", status.WebError)
-			}
-			if status.MCPError != "" {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "mcp_error: %s\n", status.MCPError)
-			}
-			if status.CertError != "" {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "cert_error: %s\n", status.CertError)
-			}
-			if status.Warning != "" {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "warning: %s\n", status.Warning)
-			}
-			return nil
+			return writeTSNetStatus(cmd.OutOrStdout(), status)
 		},
 	}
 
@@ -94,6 +64,146 @@ func newTSNetStatusCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print status as JSON")
 
 	return cmd
+}
+
+func writeTSNetStatus(dst io.Writer, status tsnetStateInfo) error {
+	if _, err := fmt.Fprintln(dst, "TSNet Node"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(dst, renderTSNetTable(dst, [][]string{
+		{"Hostname", status.Hostname},
+		{"State", status.State},
+		{"Running", boolString(status.Running)},
+		{"Reachable", boolString(status.Reachable)},
+		{"State dir", status.StateDir},
+		{"State exists", boolString(status.Exists)},
+		{"State locked", boolString(status.Locked)},
+		{"Lock path", status.LockPath},
+		{"Needs login", boolString(status.NeedsLogin)},
+		{"Warning", tsnetEmptyDash(status.Warning)},
+	})); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(dst); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(dst, "TSNet Endpoints"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(dst, renderTSNetTable(dst, [][]string{
+		{"TLS", boolString(status.TLS)},
+		{"Control URL", tsnetEmptyDash(status.ControlURL)},
+		{"Cert health", tsnetEmptyDash(status.CertHealth)},
+		{"Cert error", tsnetEmptyDash(status.CertError)},
+		{"Tailnet IPs", tsnetEmptyDash(strings.Join(status.TailnetIPs, ", "))},
+		{"Web reachable", boolString(status.WebReachable)},
+		{"Web URL", tsnetEmptyDash(status.WebURL)},
+		{"Web error", tsnetEmptyDash(status.WebError)},
+		{"MCP reachable", boolString(status.MCPReachable)},
+		{"MCP URL", tsnetEmptyDash(status.MCPURL)},
+		{"MCP error", tsnetEmptyDash(status.MCPError)},
+	})); err != nil {
+		return err
+	}
+	if status.SyncAll != nil {
+		if _, err := fmt.Fprintln(dst); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(dst, "Scheduled Sync All"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(dst, renderTSNetSchedulerTable(dst, *status.SyncAll)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderTSNetTable(dst io.Writer, rows [][]string) string {
+	width := tsnetStatusTableWidth(dst)
+	valueWidth := width - 26
+	if valueWidth < 32 {
+		valueWidth = 32
+	}
+	return table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("240"))).
+		Headers("Field", "Value").
+		Rows(rows...).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			base := lipgloss.NewStyle().Padding(0, 1)
+			if row == table.HeaderRow {
+				return base.Bold(true).Foreground(lipgloss.Color("39"))
+			}
+			if col == 0 {
+				return base.Bold(true).Width(18)
+			}
+			return base.Width(valueWidth)
+		}).
+		Width(width).
+		Wrap(true).
+		String()
+}
+
+func tsnetStatusTableWidth(dst io.Writer) int {
+	width := outputWidth(dst)
+	if width > 132 {
+		return 132
+	}
+	return width
+}
+
+func renderTSNetSchedulerTable(dst io.Writer, status schedulerstate.SyncAllStatus) string {
+	currentStarted := timeString(status.CurrentStartedAt)
+	currentElapsed := "-"
+	if status.Running && !status.CurrentStartedAt.IsZero() {
+		currentElapsed = elapsedSince(status.CurrentStartedAt)
+	}
+	return renderTSNetTable(dst, [][]string{
+		{"Enabled", boolString(status.Enabled)},
+		{"Running", boolString(status.Running)},
+		{"Interval", tsnetEmptyDash(status.Interval)},
+		{"Jitter", tsnetEmptyDash(status.Jitter)},
+		{"Run on start", boolString(status.RunOnStart)},
+		{"Current reason", tsnetEmptyDash(status.CurrentReason)},
+		{"Current started", currentStarted},
+		{"Current elapsed", currentElapsed},
+		{"Last reason", tsnetEmptyDash(status.LastReason)},
+		{"Last started", timeString(status.LastStartedAt)},
+		{"Last finished", timeString(status.LastFinishedAt)},
+		{"Last status", tsnetEmptyDash(status.LastStatus)},
+		{"Last error", tsnetEmptyDash(status.LastError)},
+		{"Next run", timeString(status.NextRunAt)},
+	})
+}
+
+func boolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
+func tsnetEmptyDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
+}
+
+func timeString(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func elapsedSince(value time.Time) string {
+	elapsed := time.Since(value.UTC()).Round(time.Second)
+	if elapsed < 0 {
+		return "0s"
+	}
+	return elapsed.String()
 }
 
 func newTSNetResetCommand(root *rootOptions) *cobra.Command {

@@ -53,6 +53,7 @@ func applyTSNetHealth(ctx context.Context, opts remote.Options, info *tsnetState
 		info.MCPError = probe.Error
 		mergeProbeCert(info, probe)
 	}
+	applyTSNetSchedulerStatus(ctx, opts, info, host, info.TailnetIPs, deps)
 
 	webOK := !opts.Web || info.WebReachable
 	mcpOK := !opts.MCP || info.MCPReachable

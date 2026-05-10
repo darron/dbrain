@@ -14,6 +14,9 @@ development date for the change set.
 ### Sync Run Lock (2026-05-09)
 
 - **Fixed**: Manual `dbrain sync all` and scheduled `serve remote` sync runs now share a local lock, so one path fails or records a skipped run instead of overlapping the same pipeline.
+- **Fixed**: Generated launchd plists now set a Homebrew-aware `PATH`, so scheduled background runs can find helper tools such as `ffprobe` and `mw` for X media transcription.
+- **Fixed**: The web admin "Pending Summaries" card now uses the same model-agnostic summary coverage policy as `dbrain stats pipeline`, instead of treating valid summaries from another backend as pending work.
+- **Status**: `dbrain tsnet status` now renders human output as readable tables and includes detailed scheduled `sync all` state from the remote web API when reachable.
 - **Docs**: Documented the scheduler lock path and the Apple Notes Full Disk Access/skip-stage choice for background runs.
 - **Location**: `internal/app/`, `internal/runlock/`, `README.md`
 

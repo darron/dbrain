@@ -22,6 +22,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/safaritabs"
+	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
@@ -220,6 +221,9 @@ func TestLaunchdPlistCommandUsesDefaultLayoutWithoutRootArg(t *testing.T) {
 		"<string>/opt/homebrew/bin/dbrain</string>",
 		"<string>serve</string>",
 		"<string>remote</string>",
+		"<key>EnvironmentVariables</key>",
+		"<key>PATH</key>",
+		"<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>",
 		filepath.Join(dataHome, "dbrain", "logs", "launchd.out.log"),
 		filepath.Join(dataHome, "dbrain", "logs", "launchd.err.log"),
 	} {
@@ -290,6 +294,9 @@ func TestLaunchdInstallNoStartWritesPlist(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "<string>/opt/homebrew/bin/dbrain</string>") {
 		t.Fatalf("unexpected plist: %s", data)
+	}
+	if !strings.Contains(string(data), "<key>PATH</key>") || !strings.Contains(string(data), "/opt/homebrew/bin:/usr/local/bin") {
+		t.Fatalf("expected launchd plist to include Homebrew PATH, got: %s", data)
 	}
 	if !strings.Contains(stdout.String(), "Not loaded because --no-start was set.") {
 		t.Fatalf("expected no-start message, got %q", stdout.String())
@@ -894,7 +901,7 @@ tsnet:
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "state_dir:") {
+	if !strings.Contains(stdout.String(), "State dir") {
 		t.Fatalf("expected status output, got %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
@@ -1004,6 +1011,161 @@ func TestTSNetStateStatusReportsHealthyRunningNode(t *testing.T) {
 	}
 	if status.NeedsLogin {
 		t.Fatalf("NeedsLogin = true, want false")
+	}
+}
+
+func TestTSNetStateStatusIncludesRunningScheduler(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      false,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	started := time.Date(2026, time.May, 10, 2, 17, 42, 0, time.UTC)
+	var schedulerURL string
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: true, StatusCode: http.StatusOK, EffectiveURL: rawURL, CertHealth: "ok"}
+		},
+		fetchScheduler: func(_ context.Context, rawURL string, _ string) (schedulerstate.SyncAllStatus, error) {
+			schedulerURL = rawURL
+			return schedulerstate.SyncAllStatus{
+				Enabled:          true,
+				Interval:         "1h0m0s",
+				Running:          true,
+				CurrentReason:    "interval",
+				CurrentStartedAt: started,
+			}, nil
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if schedulerURL != "https://dbrain.tailnet.ts.net/api/scheduler/sync-all" {
+		t.Fatalf("schedulerURL = %q", schedulerURL)
+	}
+	if status.SyncAll == nil || !status.SyncAll.Running || status.SyncAll.CurrentReason != "interval" || !status.SyncAll.CurrentStartedAt.Equal(started) {
+		t.Fatalf("unexpected scheduler status: %#v", status.SyncAll)
+	}
+}
+
+func TestTSNetStateStatusIncludesIdleScheduler(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      false,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":443",
+		TLS:      true,
+	}
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+			return tsnetEndpointProbe{Reachable: true, StatusCode: http.StatusOK, EffectiveURL: rawURL, CertHealth: "ok"}
+		},
+		fetchScheduler: func(context.Context, string, string) (schedulerstate.SyncAllStatus, error) {
+			return schedulerstate.SyncAllStatus{Enabled: true, Interval: "1h0m0s", Running: false}, nil
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if status.SyncAll == nil || !status.SyncAll.Enabled || status.SyncAll.Running {
+		t.Fatalf("unexpected idle scheduler status: %#v", status.SyncAll)
+	}
+}
+
+func TestWriteTSNetStatusRendersTables(t *testing.T) {
+	t.Parallel()
+
+	started := time.Now().UTC().Add(-2 * time.Minute)
+	var out bytes.Buffer
+	err := writeTSNetStatus(&out, tsnetStateInfo{
+		Hostname:     "dbrain-dev",
+		StateDir:     "/tmp/dbrain/tsnet/dbrain-dev",
+		Exists:       true,
+		Locked:       true,
+		Running:      true,
+		Reachable:    true,
+		WebReachable: true,
+		MCPReachable: true,
+		TailnetIPs:   []string{"100.105.187.55"},
+		WebURL:       "https://dbrain-dev.tailbdd5.ts.net/",
+		MCPURL:       "https://dbrain-dev.tailbdd5.ts.net/mcp",
+		TLS:          true,
+		State:        "healthy",
+		CertHealth:   "ok",
+		LockPath:     "/tmp/dbrain/tsnet/dbrain-dev/dbrain.lock",
+		SyncAll: &schedulerstate.SyncAllStatus{
+			Enabled:          true,
+			Interval:         "1h0m0s",
+			Jitter:           "5m0s",
+			Running:          true,
+			CurrentReason:    "interval",
+			CurrentStartedAt: started,
+			LastStatus:       "ok",
+		},
+	})
+	if err != nil {
+		t.Fatalf("writeTSNetStatus: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"TSNet Node",
+		"TSNet Endpoints",
+		"Scheduled Sync All",
+		"Hostname",
+		"dbrain-dev",
+		"Web URL",
+		"https://dbrain-dev.tailbdd5.ts.net/",
+		"Current reason",
+		"interval",
+		"Current elapsed",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected output to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestTSNetStatusTableWidthIsCapped(t *testing.T) {
+	t.Setenv("COLUMNS", "220")
+
+	if got := tsnetStatusTableWidth(&bytes.Buffer{}); got != 132 {
+		t.Fatalf("tsnetStatusTableWidth = %d, want 132", got)
 	}
 }
 
