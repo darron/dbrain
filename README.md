@@ -961,6 +961,13 @@ JSON-RPC `POST` is healthy. It reports `running`, `reachable`,
 Tailscale peer status as a best-effort tailnet IP fallback while preserving TLS
 certificate validation.
 
+Human output is grouped into tables for node state, endpoint health, and, when
+the remote web surface can answer `/api/scheduler/sync-all`, scheduled `sync
+all` state. The scheduler table includes enabled/running state, interval,
+jitter, current run reason/start/elapsed time, last run timestamps/status/error,
+and next run time. JSON output keeps the same structured fields and adds a
+`sync_all` object when the scheduler API is reachable.
+
 ```sh
 dbrain tsnet status
 dbrain tsnet status --json
