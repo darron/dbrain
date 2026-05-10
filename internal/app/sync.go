@@ -36,6 +36,16 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := cfg.EnsureDirs(); err != nil {
+				return err
+			}
+			lock, err := acquireSyncAllLock(cfg, "cli")
+			if err != nil {
+				return err
+			}
+			defer func() {
+				_ = lock.Close()
+			}()
 
 			progress := cmd.ErrOrStderr()
 			logWriter := cmd.ErrOrStderr()

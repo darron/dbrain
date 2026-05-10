@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ scheduler:
     categorize_limit: 5
     categorize_model: ollama/test-categorizer
     ocr_model: ollama/test-ocr
+    skip_apple_notes: true
     skip_github: true
     skip_youtube: true
     skip_x_bookmarks: true
@@ -51,7 +53,7 @@ scheduler:
 	if got.Flags.categorizeLimit != 5 || got.Flags.categorizeModel != "ollama/test-categorizer" || got.Flags.ocrModel != "ollama/test-ocr" {
 		t.Fatalf("unexpected model/categorize flags: %+v", got.Flags)
 	}
-	if !got.Flags.skipGitHub || !got.Flags.skipYouTube || !got.Flags.skipXBookmarks {
+	if !got.Flags.skipAppleNotes || !got.Flags.skipGitHub || !got.Flags.skipYouTube || !got.Flags.skipXBookmarks {
 		t.Fatalf("expected skip flags from config, got %+v", got.Flags)
 	}
 	if !got.Flags.watchLater || !got.Flags.liked || !got.Flags.summarize || !got.Flags.categorizeImages {
@@ -151,5 +153,41 @@ func TestSyncSchedulerStatusTracksRuns(t *testing.T) {
 	}
 	if after.LastReason != "test" || after.LastStatus != "ok" || after.LastStartedAt.IsZero() || after.LastFinishedAt.IsZero() || after.NextRunAt.IsZero() {
 		t.Fatalf("unexpected status after run: %#v", after)
+	}
+}
+
+func TestSyncSchedulerSkipsWhenSyncAllLockHeld(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	lock, err := acquireSyncAllLock(cfg, "test")
+	if err != nil {
+		t.Fatalf("acquireSyncAllLock: %v", err)
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
+	var out bytes.Buffer
+	s := newSyncScheduler(cfg, schedulerSyncConfig{
+		Enabled:  true,
+		Interval: time.Hour,
+	}, &out)
+	s.run(context.Background(), "test")
+
+	after := s.Status()
+	if after.Running {
+		t.Fatalf("expected scheduler idle after skipped run: %#v", after)
+	}
+	if after.LastReason != "test" || after.LastStatus != "skipped" || !strings.Contains(after.LastError, "sync all already running") {
+		t.Fatalf("unexpected skipped status: %#v", after)
+	}
+	if !strings.Contains(out.String(), "scheduler sync all skipped") {
+		t.Fatalf("expected skip log, got %q", out.String())
 	}
 }
