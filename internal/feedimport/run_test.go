@@ -174,6 +174,9 @@ func TestAddFetchesMetadataWithoutImportUnlessRequested(t *testing.T) {
 	if stored.FetchBodyHash != "" || stored.FetchETag != "" {
 		t.Fatalf("verify-only add should not cache feed validators before import: hash=%q etag=%q", stored.FetchBodyHash, stored.FetchETag)
 	}
+	if !stored.NextFetchAfter.IsZero() {
+		t.Fatalf("verify-only add should leave feed due for first import, next_fetch_after=%s", stored.NextFetchAfter)
+	}
 
 	stats, err = CheckFeed(ctx, cfg, st, stored, Options{Fetcher: fetcher, Now: fixedNow})
 	if err != nil {

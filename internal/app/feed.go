@@ -2,6 +2,8 @@ package app
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -69,13 +71,13 @@ func newFeedAddCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), map[string]any{"feed": feed, "created": created, "stats": stats})
+				return writeJSON(cmd.OutOrStdout(), map[string]any{"feed": redactFeedForOutput(feed), "created": created, "stats": redactFeedStatsForOutput(stats)})
 			}
 			status := "updated"
 			if created {
 				status = "created"
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", status, feed.FeedKey, feed.NormalizedURL)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", status, feed.FeedKey, redactURLUserInfo(feed.NormalizedURL))
 			if !noFetch && !disabled {
 				return writeFeedStats(cmd.OutOrStdout(), stats)
 			}
@@ -114,7 +116,7 @@ func newFeedListCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), feeds)
+				return writeJSON(cmd.OutOrStdout(), redactFeedsForOutput(feeds))
 			}
 			if len(feeds) == 0 {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No feeds subscribed.")
@@ -133,10 +135,10 @@ func newFeedListCommand(root *rootOptions) *cobra.Command {
 					formatFeedCLITime(feed.LastCheckedAt),
 					formatFeedCLITime(feed.NextFetchAfter),
 					feed.Title,
-					feed.NormalizedURL,
+					redactURLUserInfo(feed.NormalizedURL),
 				)
 				if feed.LastError != "" {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\terror=%s\n", truncateFeedError(feed.LastError))
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\terror=%s\n", truncateFeedError(redactURLUserInfo(feed.LastError)))
 				}
 			}
 			return nil
@@ -168,7 +170,7 @@ func newFeedStatusCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), feed)
+				return writeJSON(cmd.OutOrStdout(), redactFeedForOutput(feed))
 			}
 			return writeFeed(cmd.OutOrStdout(), feed)
 		},
@@ -226,7 +228,7 @@ func newFeedCheckCommand(root *rootOptions) *cobra.Command {
 				}
 			}
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), stats)
+				return writeJSON(cmd.OutOrStdout(), redactFeedStatsForOutput(stats))
 			}
 			return writeFeedStats(cmd.OutOrStdout(), stats)
 		},
@@ -298,7 +300,7 @@ func newFeedRefreshCommand(root *rootOptions) *cobra.Command {
 			}
 
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), map[string]any{"feed": feedStats, "sources": sourceStats})
+				return writeJSON(cmd.OutOrStdout(), map[string]any{"feed": redactFeedStatsForOutput(feedStats), "sources": sourceStats})
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Feed")
 			if err := writeFeedStats(cmd.OutOrStdout(), feedStats); err != nil {
@@ -361,16 +363,62 @@ func newFeedEnableCommand(root *rootOptions, enabled bool) *cobra.Command {
 
 func writeFeed(dst interface{ Write([]byte) (int, error) }, feed store.Feed) error {
 	_, _ = fmt.Fprintf(dst, "key: %s\n", feed.FeedKey)
-	_, _ = fmt.Fprintf(dst, "url: %s\n", feed.NormalizedURL)
-	_, _ = fmt.Fprintf(dst, "resolved_url: %s\n", feed.ResolvedURL)
+	_, _ = fmt.Fprintf(dst, "url: %s\n", redactURLUserInfo(feed.NormalizedURL))
+	_, _ = fmt.Fprintf(dst, "resolved_url: %s\n", redactURLUserInfo(feed.ResolvedURL))
 	_, _ = fmt.Fprintf(dst, "title: %s\n", feed.Title)
 	_, _ = fmt.Fprintf(dst, "enabled: %t\n", feed.Enabled)
 	_, _ = fmt.Fprintf(dst, "health_status: %s\n", feed.HealthStatus)
 	_, _ = fmt.Fprintf(dst, "due: %s\n", feedDueStatus(feed, time.Now().UTC()))
 	_, _ = fmt.Fprintf(dst, "last_checked_at: %s\n", formatFeedCLITime(feed.LastCheckedAt))
 	_, _ = fmt.Fprintf(dst, "next_fetch_after: %s\n", formatFeedCLITime(feed.NextFetchAfter))
-	_, _ = fmt.Fprintf(dst, "last_error: %s\n", feed.LastError)
+	_, _ = fmt.Fprintf(dst, "last_error: %s\n", redactURLUserInfo(feed.LastError))
 	return nil
+}
+
+var basicAuthURLPattern = regexp.MustCompile(`((?:https?://)[^:@/\s]+):[^@/\s]+@`)
+
+func redactURLUserInfo(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return raw
+	}
+	parsed, err := url.Parse(value)
+	if err == nil && parsed.User != nil && parsed.Scheme != "" && parsed.Host != "" {
+		username := parsed.User.Username()
+		if username == "" {
+			parsed.User = url.User("REDACTED")
+		} else if _, hasPassword := parsed.User.Password(); hasPassword {
+			parsed.User = url.UserPassword(username, "REDACTED")
+		} else {
+			parsed.User = url.User("REDACTED")
+		}
+		return parsed.String()
+	}
+	return basicAuthURLPattern.ReplaceAllString(value, `${1}:REDACTED@`)
+}
+
+func redactFeedForOutput(feed store.Feed) store.Feed {
+	feed.URL = redactURLUserInfo(feed.URL)
+	feed.NormalizedURL = redactURLUserInfo(feed.NormalizedURL)
+	feed.ResolvedURL = redactURLUserInfo(feed.ResolvedURL)
+	feed.LastError = redactURLUserInfo(feed.LastError)
+	return feed
+}
+
+func redactFeedsForOutput(feeds []store.Feed) []store.Feed {
+	out := make([]store.Feed, len(feeds))
+	for i, feed := range feeds {
+		out[i] = redactFeedForOutput(feed)
+	}
+	return out
+}
+
+func redactFeedStatsForOutput(stats feedimport.Stats) feedimport.Stats {
+	for i := range stats.Results {
+		stats.Results[i].URL = redactURLUserInfo(stats.Results[i].URL)
+		stats.Results[i].Error = redactURLUserInfo(stats.Results[i].Error)
+	}
+	return stats
 }
 
 func feedDueStatus(feed store.Feed, now time.Time) string {
