@@ -128,6 +128,33 @@ func TestFeedStatusFormattingShowsScheduleState(t *testing.T) {
 	}
 }
 
+func TestFeedOutputRedactsBasicAuthPassword(t *testing.T) {
+	t.Parallel()
+
+	raw := "https://feed:secret@example.com/feed.atom"
+	if got := redactURLUserInfo(raw); got != "https://feed:REDACTED@example.com/feed.atom" {
+		t.Fatalf("redactURLUserInfo = %q", got)
+	}
+	feed := redactFeedForOutput(store.Feed{
+		URL:           raw,
+		NormalizedURL: raw,
+		ResolvedURL:   raw,
+		LastError:     "fetch " + raw + ": unauthorized",
+	})
+	for _, got := range []string{feed.URL, feed.NormalizedURL, feed.ResolvedURL, feed.LastError} {
+		if strings.Contains(got, "secret") {
+			t.Fatalf("expected redacted feed output, got %q", got)
+		}
+	}
+	stats := redactFeedStatsForOutput(feedimport.Stats{Results: []feedimport.Result{{
+		URL:   raw,
+		Error: "fetch " + raw,
+	}}})
+	if strings.Contains(stats.Results[0].URL, "secret") || strings.Contains(stats.Results[0].Error, "secret") {
+		t.Fatalf("expected redacted stats output, got %+v", stats.Results[0])
+	}
+}
+
 func TestVersionCommand(t *testing.T) {
 	t.Parallel()
 

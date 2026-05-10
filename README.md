@@ -718,8 +718,9 @@ dbrain feed disable feed:abc123def456
 dbrain feed enable feed:abc123def456
 ```
 
-`feed add` stores the subscription by default. Add `--check` when you want to
-fetch and import current entries immediately.
+`feed add` stores the subscription by default and leaves the feed due, so the
+next `sync all` imports its entries. Add `--check` when you want to fetch and
+import current entries immediately.
 
 `feed refresh FEED` is the manual feed QA path: it fetches one feed, processes
 its entries, then extracts and summarizes the linked article sources from those

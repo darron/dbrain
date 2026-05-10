@@ -251,6 +251,7 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 	fetchLastModified := fetch.LastModified
 	fetchBodyHash := fetch.DecodedBodyHash
 	markChanged := true
+	nextFetch := nextFetchAfter(now, feed, opts, fetch.RetryAfter)
 	if opts.MetadataOnly {
 		// A verify-only add should not cache validators/body hashes before entries
 		// have been materialized. Otherwise the first real check can be skipped as
@@ -259,6 +260,7 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 		fetchLastModified = feed.FetchLastModified
 		fetchBodyHash = feed.FetchBodyHash
 		markChanged = false
+		nextFetch = time.Time{}
 	}
 	if err := st.UpdateFeedFetchState(ctx, store.FeedFetchState{
 		FeedID:               feed.ID,
@@ -274,7 +276,7 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 		CheckedAt:            now,
 		FetchedAt:            now,
 		Changed:              markChanged,
-		NextFetchAfter:       nextFetchAfter(now, feed, opts, fetch.RetryAfter),
+		NextFetchAfter:       nextFetch,
 	}); err != nil {
 		stats.Errors++
 		return stats, err

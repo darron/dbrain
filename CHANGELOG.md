@@ -21,8 +21,9 @@ development date for the change set.
 
 - **Added**: `dbrain feed refresh FEED` fetches one feed and immediately enriches linked article sources, with `--force --summarize` for feed QA and reprocessing.
 - **Added**: `dbrain feed add/check --allow-private-network` plus `feeds.allow_private_network` / `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK` for explicitly testing localhost or private-network feeds while keeping public-IP-only fetching as the default.
-- **Fixed**: Verify-only `feed add` no longer caches feed validators before importing entries, so the first later `feed check` can still materialize entries instead of reporting an unchanged feed with zero entries seen.
+- **Fixed**: Verify-only `feed add` no longer caches feed validators before importing entries or marks the feed not due, so the next `sync all` or `feed check` can materialize entries instead of reporting an unchanged feed with zero entries seen.
 - **Fixed**: `dbrain feed check --force` now skips conditional feed request headers so it can really refetch and process an otherwise unchanged feed body.
+- **Fixed**: Feed CLI and JSON output now redact Basic Auth passwords in feed URLs.
 - **Changed**: Feed fetches now use the standard versioned `dbrain/<short-sha>` user agent, including `+dirty` for local modified builds, instead of the generic `dbrain feed importer` string.
 - **Changed**: Feed entry content is now stored as local article text so linked feed sources can be summarized from the feed reader's parsed content before falling back to URL refetching.
 - **Changed**: Sources linked from feed entries now fetch the linked article URL through dbrain's HTTP reader with Markdown `Accept` negotiation, merge explicit feed-entry context into the source summary/search text, and only fall back to local feed text or the external summarize CLI fetch path when URL fetch fails.
