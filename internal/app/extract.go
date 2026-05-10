@@ -167,13 +167,7 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), stats)
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources queued: %d\n", stats.SourcesQueued)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources extracted: %d\n", stats.SourcesExtracted)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources summarized: %d\n", stats.SourcesSummarized)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sources rendered: %d\n", stats.SourcesRendered)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Source unchanged writes: %d\n", stats.SourcesUnchanged)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Errors: %d\n", stats.Errors)
-			return nil
+			return writeSourceEnrichStats(cmd.OutOrStdout(), stats)
 		},
 	}
 
@@ -189,4 +183,16 @@ func newExtractSourcesCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print enrichment stats as JSON")
 
 	return cmd
+}
+
+func writeSourceEnrichStats(out interface {
+	Write([]byte) (int, error)
+}, stats sourceenrich.Stats) error {
+	_, _ = fmt.Fprintf(out, "Sources queued: %d\n", stats.SourcesQueued)
+	_, _ = fmt.Fprintf(out, "Sources extracted: %d\n", stats.SourcesExtracted)
+	_, _ = fmt.Fprintf(out, "Sources summarized: %d\n", stats.SourcesSummarized)
+	_, _ = fmt.Fprintf(out, "Sources rendered: %d\n", stats.SourcesRendered)
+	_, _ = fmt.Fprintf(out, "Source unchanged writes: %d\n", stats.SourcesUnchanged)
+	_, _ = fmt.Fprintf(out, "Errors: %d\n", stats.Errors)
+	return nil
 }

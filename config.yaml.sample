@@ -47,6 +47,9 @@ source:
     enabled: true # DBRAIN_SOURCE_WAYBACK_ENABLED, DBRAIN_WAYBACK_ENABLED
     availability_url: "https://archive.org/wayback/available?url={escaped_url}" # DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL, DBRAIN_WAYBACK_AVAILABILITY_URL
 
+feeds:
+  allow_private_network: false # DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK; enable only for local feed testing
+
 apple_notes:
   enabled: false # DBRAIN_APPLE_NOTES_ENABLED; opt into sync all
   db_path: "" # DBRAIN_APPLE_NOTES_DB_PATH; default is ~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite

@@ -22,16 +22,29 @@ type HTTPFetcher struct {
 	client *http.Client
 }
 
+type HTTPFetcherOptions struct {
+	AllowPrivateNetwork bool
+}
+
 func NewHTTPFetcher(client *http.Client) HTTPFetcher {
+	return NewHTTPFetcherWithOptions(client, HTTPFetcherOptions{})
+}
+
+func NewHTTPFetcherWithOptions(client *http.Client, opts HTTPFetcherOptions) HTTPFetcher {
 	if client != nil {
 		return HTTPFetcher{client: client}
+	}
+	dialContext := safeDialContext
+	if opts.AllowPrivateNetwork {
+		var dialer net.Dialer
+		dialContext = dialer.DialContext
 	}
 	return HTTPFetcher{client: &http.Client{
 		Timeout: DefaultTimeout,
 		Transport: &http.Transport{
 			Proxy:              http.ProxyFromEnvironment,
 			DisableCompression: true,
-			DialContext:        safeDialContext,
+			DialContext:        dialContext,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -54,10 +67,10 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 	req.Header.Set("user-agent", opts.UserAgent)
 	req.Header.Set("accept", "application/feed+json, application/atom+xml, application/rss+xml, application/xml, text/xml, */*;q=0.1")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
-	if feed.FetchETag != "" {
+	if !opts.Force && feed.FetchETag != "" {
 		req.Header.Set("if-none-match", feed.FetchETag)
 	}
-	if feed.FetchLastModified != "" {
+	if !opts.Force && feed.FetchLastModified != "" {
 		req.Header.Set("if-modified-since", feed.FetchLastModified)
 	}
 

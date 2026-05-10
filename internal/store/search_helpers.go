@@ -25,6 +25,14 @@ func scanSearchResults(rows *sql.Rows) ([]model.SearchResult, error) {
 }
 
 func buildFTSQuery(query string) string {
+	return buildFTSQueryWithOperator(query, "AND")
+}
+
+func buildRelaxedFTSQuery(query string) string {
+	return buildFTSQueryWithOperator(query, "OR")
+}
+
+func buildFTSQueryWithOperator(query, operator string) string {
 	parts := strings.Fields(strings.TrimSpace(query))
 	if len(parts) == 0 {
 		return `""`
@@ -44,5 +52,56 @@ func buildFTSQuery(query string) string {
 	if len(terms) == 0 {
 		return `""`
 	}
-	return strings.Join(terms, " AND ")
+	return strings.Join(terms, " "+operator+" ")
+}
+
+func relaxedMatchTerms(query string) []string {
+	parts := strings.Fields(strings.TrimSpace(query))
+	terms := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		part = strings.TrimFunc(strings.ToLower(part), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r) && r != '-'
+		})
+		if len(part) < 3 {
+			continue
+		}
+		if _, exists := seen[part]; exists {
+			continue
+		}
+		seen[part] = struct{}{}
+		terms = append(terms, part)
+	}
+	return terms
+}
+
+func matchesRelaxedTerms(result model.SearchResult, terms []string) bool {
+	if len(terms) == 0 {
+		return true
+	}
+	minMatches := 1
+	if len(terms) > 1 {
+		minMatches = 2
+	}
+	text := strings.ToLower(strings.Join([]string{
+		result.SourceKey,
+		result.Title,
+		result.AuthorHandle,
+		result.AuthorName,
+		result.CanonicalURL,
+		result.PrimaryDomain,
+		result.NotePath,
+		result.UserTags,
+		result.Snippet,
+	}, " "))
+	matches := 0
+	for _, term := range terms {
+		if strings.Contains(text, term) {
+			matches++
+			if matches >= minMatches {
+				return true
+			}
+		}
+	}
+	return false
 }

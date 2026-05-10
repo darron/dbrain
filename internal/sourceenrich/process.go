@@ -48,6 +48,11 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		extractToolVersion: extractToolVersion,
 		summaryToolVersion: summaryToolVersion,
 	}
+	feedResult, handled := processFeedLinkedHTTPExtract(processCtx)
+	if handled {
+		return feedResult
+	}
+
 	localResult, skipStoredExtract, handled := processPreferredLocalExtract(processCtx)
 	if handled {
 		return localResult

@@ -50,7 +50,7 @@ func buildFeedEntry(feed store.Feed, parsed *gofeed.Feed, item *gofeed.Item, obs
 	year := yearFor(firstNonEmpty(publishedAt, entryUpdatedAt, nowText))
 	title := strings.TrimSpace(item.Title)
 	canonicalURL := firstNonEmpty(normalizedLink, link, feed.SiteURL, feed.NormalizedURL)
-	text := feedItemText(parsed, item, contentMarkdown, contentText)
+	text := feedItemText(parsed, item, contentMarkdown, contentText, summaryText)
 	linksJSON := feedItemLinks(item, canonicalURL)
 	noteID := slugify(firstNonEmpty(title, identity)) + "-" + strings.TrimPrefix(entryKey, "feed-entry:")
 	modelItem := model.Item{
@@ -59,6 +59,8 @@ func buildFeedEntry(feed store.Feed, parsed *gofeed.Feed, item *gofeed.Item, obs
 		ExternalID:   identity,
 		CanonicalURL: canonicalURL,
 		Title:        title,
+		ArticleTitle: title,
+		ArticleText:  text,
 		AuthorName:   author,
 		PublishedAt:  publishedAt,
 		SavedAt:      nowText,
@@ -259,7 +261,7 @@ func textFromHTML(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
-func feedItemText(feed *gofeed.Feed, item *gofeed.Item, markdown string, text string) string {
+func feedItemText(feed *gofeed.Feed, item *gofeed.Item, markdown string, text string, summaryText string) string {
 	parts := []string{}
 	if feed.Title != "" {
 		parts = append(parts, "Feed: "+strings.TrimSpace(feed.Title))
@@ -274,6 +276,8 @@ func feedItemText(feed *gofeed.Feed, item *gofeed.Item, markdown string, text st
 		parts = append(parts, markdown)
 	} else if text != "" {
 		parts = append(parts, text)
+	} else if summaryText != "" {
+		parts = append(parts, summaryText)
 	}
 	return strings.Join(parts, "\n\n")
 }

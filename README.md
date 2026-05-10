@@ -708,16 +708,36 @@ Entries disappearing from a feed are not deleted locally.
 ```sh
 dbrain feed add https://example.com/feed.xml
 dbrain feed add https://example.com/feed.xml --check
+dbrain feed add http://localhost:8080/feed.atom --allow-private-network
 dbrain feed list
 dbrain feed status feed:abc123def456
 dbrain feed check
 dbrain feed check feed:abc123def456 --force
+dbrain feed refresh feed:abc123def456 --force --summarize
 dbrain feed disable feed:abc123def456
 dbrain feed enable feed:abc123def456
 ```
 
 `feed add` stores the subscription by default. Add `--check` when you want to
 fetch and import current entries immediately.
+
+`feed refresh FEED` is the manual feed QA path: it fetches one feed, processes
+its entries, then extracts and summarizes the linked article sources from those
+entries. Use `--force` when you want to reprocess an unchanged feed body and
+rerun linked source enrichment.
+
+When a feed entry has both its own content and a linked article URL, source
+enrichment keeps both signals: the linked page is fetched as the primary source
+text, and the feed entry text is included as explicit feed-entry context for
+summary and search. If the feed entry has no useful body, the linked page stands
+on its own.
+
+Feed fetching blocks localhost, private, link-local, and multicast IPs by
+default. For local feed development, pass `--allow-private-network` to
+`feed add` / `feed check` / `feed refresh`, or set
+`feeds.allow_private_network: true` in `config.yaml` /
+`DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK=true`. The plural
+`DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS` is also accepted for compatibility.
 
 `feed enable` clears previous feed health diagnostics and makes the feed
 eligible for an immediate check. `feed disable` stops future checks without

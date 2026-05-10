@@ -8,6 +8,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/version"
 )
 
 const (
@@ -15,7 +16,7 @@ const (
 	DefaultTimeout      = 30 * time.Second
 	DefaultMaxBodyBytes = 10 << 20
 	DefaultConcurrency  = 6
-	DefaultUserAgent    = "dbrain feed importer"
+	DefaultUserAgent    = ""
 	initialBackoff      = 15 * time.Minute
 	maxBackoff          = 24 * time.Hour
 	deadFailureCount    = 5
@@ -52,6 +53,7 @@ type Options struct {
 	Timeout             time.Duration
 	MaxBodyBytes        int64
 	UserAgent           string
+	AllowPrivateNetwork bool
 	Client              *http.Client
 	Fetcher             Fetcher
 	Now                 func() time.Time
@@ -69,6 +71,7 @@ type AddOptions struct {
 	Timeout             time.Duration
 	MaxBodyBytes        int64
 	UserAgent           string
+	AllowPrivateNetwork bool
 	Client              *http.Client
 	Fetcher             Fetcher
 	Now                 func() time.Time
@@ -87,6 +90,7 @@ type Stats struct {
 	VersionsCreated   int      `json:"versions_created"`
 	SourcesCreated    int      `json:"sources_created"`
 	SourcesLinked     int      `json:"sources_linked"`
+	SourceIDs         []int64  `json:"source_ids,omitempty"`
 	ItemsRendered     int      `json:"items_rendered"`
 	IdentityConflicts int      `json:"identity_conflicts"`
 	Errors            int      `json:"errors"`
@@ -94,15 +98,16 @@ type Stats struct {
 }
 
 type Result struct {
-	FeedKey        string `json:"feed_key"`
-	URL            string `json:"url"`
-	Status         string `json:"status"`
-	HTTPStatus     int    `json:"http_status,omitempty"`
-	EntriesSeen    int    `json:"entries_seen"`
-	ItemsCreated   int    `json:"items_created"`
-	ItemsUpdated   int    `json:"items_updated"`
-	ItemsUnchanged int    `json:"items_unchanged"`
-	Error          string `json:"error,omitempty"`
+	FeedKey        string  `json:"feed_key"`
+	URL            string  `json:"url"`
+	Status         string  `json:"status"`
+	HTTPStatus     int     `json:"http_status,omitempty"`
+	EntriesSeen    int     `json:"entries_seen"`
+	ItemsCreated   int     `json:"items_created"`
+	ItemsUpdated   int     `json:"items_updated"`
+	ItemsUnchanged int     `json:"items_unchanged"`
+	SourceIDs      []int64 `json:"source_ids,omitempty"`
+	Error          string  `json:"error,omitempty"`
 }
 
 type FetchResult struct {
@@ -136,13 +141,13 @@ func normalizeOptions(opts Options) Options {
 		opts.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 	if opts.UserAgent == "" {
-		opts.UserAgent = DefaultUserAgent
+		opts.UserAgent = version.UserAgent(DefaultUserAgent)
 	}
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if opts.Fetcher == nil {
-		opts.Fetcher = NewHTTPFetcher(opts.Client)
+		opts.Fetcher = NewHTTPFetcherWithOptions(opts.Client, HTTPFetcherOptions{AllowPrivateNetwork: opts.AllowPrivateNetwork})
 	}
 	return opts
 }
@@ -161,13 +166,13 @@ func normalizeAddOptions(opts AddOptions) AddOptions {
 		opts.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 	if opts.UserAgent == "" {
-		opts.UserAgent = DefaultUserAgent
+		opts.UserAgent = version.UserAgent(DefaultUserAgent)
 	}
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if opts.Fetcher == nil {
-		opts.Fetcher = NewHTTPFetcher(opts.Client)
+		opts.Fetcher = NewHTTPFetcherWithOptions(opts.Client, HTTPFetcherOptions{AllowPrivateNetwork: opts.AllowPrivateNetwork})
 	}
 	return opts
 }

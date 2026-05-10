@@ -143,6 +143,145 @@ func TestSearchMatchesAndReturnsSourceUserTags(t *testing.T) {
 	}
 }
 
+func TestSearchFindsExactSourceKey(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceResult, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:test-exact-source-key",
+		CanonicalURL:  "https://example.com/exact-source-key",
+		NormalizedURL: "https://example.com/exact-source-key",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/example-com-exact-source-key.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/exact-source-key",
+		Title:        "Exact Source Key Fixture",
+		Content:      "the source_key column is intentionally not indexed by FTS",
+		Status:       "ok",
+		FetchedAt:    time.Now().UTC(),
+		Tool:         "test",
+	}, "exact-source-key-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+
+	results, err := st.Search(ctx, "src:test-exact-source-key", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one exact source result, got %+v", results)
+	}
+	if results[0].SourceKey != "src:test-exact-source-key" {
+		t.Fatalf("expected exact source result, got %+v", results[0])
+	}
+}
+
+func TestSearchFindsExactItemSourceKey(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "safari-tab:test-exact-item-key",
+		SourceType:   "safari_tab",
+		ExternalID:   "test-exact-item-key",
+		CanonicalURL: "https://example.com/exact-item-key",
+		Title:        "Exact Item Key Fixture",
+		Text:         "the item source key is an operator-facing lookup value",
+		ContentHash:  "test-exact-item-key-hash",
+		NotePath:     "items/safari-tabs/2026/test-exact-item-key.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	results, err := st.Search(ctx, "safari-tab:test-exact-item-key", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one exact item result, got %+v", results)
+	}
+	if results[0].SourceKey != "safari-tab:test-exact-item-key" {
+		t.Fatalf("expected exact item result, got %+v", results[0])
+	}
+}
+
+func TestSearchRelaxesMultiTermQueryWhenStrictSearchMisses(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceResult, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:test-x-files-conspiracy",
+		CanonicalURL:  "https://example.com/x-files-conspiracy",
+		NormalizedURL: "https://example.com/x-files-conspiracy",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/example-com-x-files-conspiracy.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, sourceResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/x-files-conspiracy",
+		Title:        "The X-Files main conspiracy guide",
+		Content:      "A mythology episode list for The X-Files main conspiracy arc.",
+		Status:       "ok",
+		FetchedAt:    time.Now().UTC(),
+		Tool:         "test",
+	}, "x-files-conspiracy-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+	strayResult, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:test-file-watcher",
+		CanonicalURL:  "https://example.com/file-watcher",
+		NormalizedURL: "https://example.com/file-watcher",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/example-com-file-watcher.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert stray source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, strayResult.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/file-watcher",
+		Title:        "File watcher",
+		Content:      "A utility that watches files for local filesystem changes.",
+		Status:       "ok",
+		FetchedAt:    time.Now().UTC(),
+		Tool:         "test",
+	}, "file-watcher-hash"); err != nil {
+		t.Fatalf("save stray source extraction: %v", err)
+	}
+
+	results, err := st.Search(ctx, "X-Files season 5 conspiracy", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected relaxed search result")
+	}
+	if results[0].SourceKey != "src:test-x-files-conspiracy" {
+		t.Fatalf("expected relaxed X-Files source first, got %+v", results)
+	}
+	for _, result := range results {
+		if result.SourceKey == "src:test-file-watcher" {
+			t.Fatalf("expected relaxed fallback to filter weak one-term match, got %+v", results)
+		}
+	}
+}
+
 func TestCountItemTextMatchesUsesIndexedDerivedText(t *testing.T) {
 	t.Parallel()
 

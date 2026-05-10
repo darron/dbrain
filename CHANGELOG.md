@@ -5,6 +5,23 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Search Lookup Robustness (2026-05-09)
+
+- **Fixed**: `dbrain search` now resolves exact item/source lookup keys such as `src:...` before FTS, so operator-visible keys work the same way as `dbrain get`.
+- **Search**: Multi-term searches that miss strict FTS and phrase fallback now get a relaxed FTS pass, helping queries with extra context still surface partial high-signal matches.
+- **Location**: `internal/store/`
+
+### Feed Local Testing (2026-05-09)
+
+- **Added**: `dbrain feed refresh FEED` fetches one feed and immediately enriches linked article sources, with `--force --summarize` for feed QA and reprocessing.
+- **Added**: `dbrain feed add/check --allow-private-network` plus `feeds.allow_private_network` / `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK` for explicitly testing localhost or private-network feeds while keeping public-IP-only fetching as the default.
+- **Fixed**: Verify-only `feed add` no longer caches feed validators before importing entries, so the first later `feed check` can still materialize entries instead of reporting an unchanged feed with zero entries seen.
+- **Fixed**: `dbrain feed check --force` now skips conditional feed request headers so it can really refetch and process an otherwise unchanged feed body.
+- **Changed**: Feed fetches now use the standard versioned `dbrain/<short-sha>` user agent, including `+dirty` for local modified builds, instead of the generic `dbrain feed importer` string.
+- **Changed**: Feed entry content is now stored as local article text so linked feed sources can be summarized from the feed reader's parsed content before falling back to URL refetching.
+- **Changed**: Sources linked from feed entries now fetch the linked article URL through dbrain's HTTP reader with Markdown `Accept` negotiation, merge explicit feed-entry context into the source summary/search text, and only fall back to local feed text or the external summarize CLI fetch path when URL fetch fails.
+- **Location**: `internal/feedimport/`, `internal/app/`, `README.md`, `config.yaml.sample`
+
 ### Feed Ingestion (2026-05-08)
 
 - **Added**: RSS, Atom, and JSON Feed subscriptions with `dbrain feed add/list/status/check/enable/disable`.
