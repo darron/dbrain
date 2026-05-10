@@ -90,6 +90,7 @@ type Stats struct {
 	VersionsCreated   int      `json:"versions_created"`
 	SourcesCreated    int      `json:"sources_created"`
 	SourcesLinked     int      `json:"sources_linked"`
+	SourceIDs         []int64  `json:"source_ids,omitempty"`
 	ItemsRendered     int      `json:"items_rendered"`
 	IdentityConflicts int      `json:"identity_conflicts"`
 	Errors            int      `json:"errors"`
@@ -97,15 +98,16 @@ type Stats struct {
 }
 
 type Result struct {
-	FeedKey        string `json:"feed_key"`
-	URL            string `json:"url"`
-	Status         string `json:"status"`
-	HTTPStatus     int    `json:"http_status,omitempty"`
-	EntriesSeen    int    `json:"entries_seen"`
-	ItemsCreated   int    `json:"items_created"`
-	ItemsUpdated   int    `json:"items_updated"`
-	ItemsUnchanged int    `json:"items_unchanged"`
-	Error          string `json:"error,omitempty"`
+	FeedKey        string  `json:"feed_key"`
+	URL            string  `json:"url"`
+	Status         string  `json:"status"`
+	HTTPStatus     int     `json:"http_status,omitempty"`
+	EntriesSeen    int     `json:"entries_seen"`
+	ItemsCreated   int     `json:"items_created"`
+	ItemsUpdated   int     `json:"items_updated"`
+	ItemsUnchanged int     `json:"items_unchanged"`
+	SourceIDs      []int64 `json:"source_ids,omitempty"`
+	Error          string  `json:"error,omitempty"`
 }
 
 type FetchResult struct {

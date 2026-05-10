@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/darron/dbrain/internal/feedimport"
+	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -22,6 +23,7 @@ func newFeedCommand(root *rootOptions) *cobra.Command {
 		newFeedListCommand(root),
 		newFeedStatusCommand(root),
 		newFeedCheckCommand(root),
+		newFeedRefreshCommand(root),
 		newFeedEnableCommand(root, true),
 		newFeedEnableCommand(root, false),
 	)
@@ -232,6 +234,88 @@ func newFeedCheckCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&all, "all", false, "Include blocked and dead feeds when checking all due feeds")
 	cmd.Flags().BoolVar(&force, "force", false, "Process feed entries even when the feed body hash is unchanged")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum due feeds to check when no feed is specified")
+	cmd.Flags().BoolVar(&allowPrivateNetwork, "allow-private-network", false, "Allow localhost/private/link-local feed URLs for local testing")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print result as JSON")
+	return cmd
+}
+
+func newFeedRefreshCommand(root *rootOptions) *cobra.Command {
+	var force bool
+	var summarize bool
+	var model string
+	var cliProvider string
+	var length string
+	var timeout time.Duration
+	var concurrency int
+	var jsonOut bool
+	var allowPrivateNetwork bool
+	cmd := &cobra.Command{
+		Use:   "refresh FEED",
+		Short: "Fetch one feed and enrich its linked sources",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig(root.root, root.configFile)
+			if err != nil {
+				return err
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				return err
+			}
+			st, err := store.Open(cfg.DBPath)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = st.Close() }()
+
+			feed, err := st.GetFeed(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			feedStats, err := feedimport.CheckFeed(cmd.Context(), cfg, st, feed, feedimport.Options{
+				Force:               force,
+				AllowPrivateNetwork: allowPrivateNetwork || feedAllowPrivateNetworkFromRuntime(cfg.RootDir),
+				Logger:              newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
+			})
+			if err != nil {
+				return err
+			}
+
+			sourceStats := sourceenrich.Stats{}
+			if len(feedStats.SourceIDs) > 0 {
+				sourceStats, _, err = runSourceEnrichSourceIDs(cmd.Context(), cfg, st, feedStats.SourceIDs, sourceenrich.Options{
+					Concurrency: concurrency,
+					Force:       force,
+					Summarize:   summarize,
+					Model:       model,
+					CLI:         cliProvider,
+					Length:      length,
+					Timeout:     timeout,
+					Logger:      newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
+				})
+				if err != nil {
+					return err
+				}
+			}
+
+			if jsonOut {
+				return writeJSON(cmd.OutOrStdout(), map[string]any{"feed": feedStats, "sources": sourceStats})
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Feed")
+			if err := writeFeedStats(cmd.OutOrStdout(), feedStats); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Sources")
+			return writeSourceEnrichStats(cmd.OutOrStdout(), sourceStats)
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "Refresh feed and linked sources even when they look current")
+	cmd.Flags().BoolVar(&summarize, "summarize", true, "Summarize linked sources after extraction")
+	cmd.Flags().StringVar(&model, "model", "", "Optional summarize model override")
+	cmd.Flags().StringVar(&cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")
+	cmd.Flags().StringVar(&length, "length", "medium", "Summary length for summarize.sh")
+	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Timeout for source extraction and summarization")
+	cmd.Flags().IntVar(&concurrency, "concurrency", defaultExtractConcurrency, "Number of concurrent source extract/summarize jobs")
 	cmd.Flags().BoolVar(&allowPrivateNetwork, "allow-private-network", false, "Allow localhost/private/link-local feed URLs for local testing")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print result as JSON")
 	return cmd

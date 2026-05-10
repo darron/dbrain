@@ -2849,11 +2849,11 @@ func TestRunSourceIDsFetchesFeedLinkedSourceWithMarkdownAccept(t *testing.T) {
 	if source.ExtractTool != protectedFetchToolName {
 		t.Fatalf("expected dbrain HTTP extract tool, got %q", source.ExtractTool)
 	}
-	if !strings.Contains(source.ExtractedText, "Full linked article") || !strings.Contains(source.ExtractedText, "full Markdown body") {
+	if !strings.Contains(source.ExtractedText, "# Linked Source Text") || !strings.Contains(source.ExtractedText, "Full linked article") || !strings.Contains(source.ExtractedText, "full Markdown body") {
 		t.Fatalf("expected linked Markdown body, got %q", source.ExtractedText)
 	}
-	if strings.Contains(source.ExtractedText, "short feed teaser") {
-		t.Fatalf("expected linked body instead of feed teaser, got %q", source.ExtractedText)
+	if !strings.Contains(source.ExtractedText, "# Feed Entry Context") || !strings.Contains(source.ExtractedText, "short feed teaser") {
+		t.Fatalf("expected feed entry context to be preserved with linked body, got %q", source.ExtractedText)
 	}
 }
 

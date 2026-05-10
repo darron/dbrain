@@ -323,6 +323,10 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 		if applied.SourceLinked {
 			stats.SourcesLinked++
 		}
+		if applied.SourceID > 0 {
+			stats.SourceIDs = appendUniqueInt64(stats.SourceIDs, applied.SourceID)
+			result.SourceIDs = appendUniqueInt64(result.SourceIDs, applied.SourceID)
+		}
 		if applied.IdentityConflict {
 			stats.IdentityConflicts++
 			if opts.Logger != nil {
@@ -431,8 +435,28 @@ func mergeStats(dst *Stats, src Stats) {
 	dst.VersionsCreated += src.VersionsCreated
 	dst.SourcesCreated += src.SourcesCreated
 	dst.SourcesLinked += src.SourcesLinked
+	dst.SourceIDs = appendUniqueInt64s(dst.SourceIDs, src.SourceIDs)
 	dst.ItemsRendered += src.ItemsRendered
 	dst.IdentityConflicts += src.IdentityConflicts
 	dst.Errors += src.Errors
 	dst.Results = append(dst.Results, src.Results...)
+}
+
+func appendUniqueInt64(values []int64, value int64) []int64 {
+	if value <= 0 {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func appendUniqueInt64s(dst []int64, src []int64) []int64 {
+	for _, value := range src {
+		dst = appendUniqueInt64(dst, value)
+	}
+	return dst
 }

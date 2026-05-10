@@ -92,6 +92,9 @@ func TestRunMaterializesFeedEntryAndUnchangedBodySkipsEntries(t *testing.T) {
 	if stats.ItemsCreated != 1 || stats.EntriesSeen != 1 || stats.SourcesCreated != 1 || stats.SourcesLinked != 1 {
 		t.Fatalf("unexpected add stats: %+v", stats)
 	}
+	if len(stats.SourceIDs) != 1 {
+		t.Fatalf("expected one linked source id, got %+v", stats.SourceIDs)
+	}
 	item, err := st.GetItem(ctx, "feed-entry:"+shortHash(feed.FeedKey+"|guid:post-1"))
 	if err != nil {
 		t.Fatalf("GetItem: %v", err)
@@ -109,6 +112,9 @@ func TestRunMaterializesFeedEntryAndUnchangedBodySkipsEntries(t *testing.T) {
 	}
 	if stats.FeedsUnchanged != 1 || stats.EntriesSeen != 0 {
 		t.Fatalf("expected unchanged feed without entry processing, got %+v", stats)
+	}
+	if len(stats.SourceIDs) != 0 {
+		t.Fatalf("unchanged feed should not report source ids without entry processing, got %+v", stats.SourceIDs)
 	}
 }
 

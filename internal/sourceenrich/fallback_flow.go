@@ -1,7 +1,9 @@
 package sourceenrich
 
 import (
+	"context"
 	"errors"
+	"strings"
 
 	"github.com/darron/dbrain/internal/model"
 )
@@ -77,6 +79,12 @@ func processFeedLinkedHTTPExtract(processCtx sourceProcessContext) (sourceProces
 	if normalized, changed := normalizeExtract(source, extract); changed {
 		extract = normalized
 	}
+	merged, mergeErr := mergeFeedEntryContext(ctx, st, source, extract)
+	if mergeErr != nil {
+		result.Err = mergeErr
+		return result, true
+	}
+	extract = merged
 	if failure, invalid := rejectExtractFailure(source, extract); invalid {
 		debugLog(opts.Logger, "feed-linked source markdown extract rejected; falling back to local or CLI extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
 		return result, false
@@ -94,6 +102,80 @@ func processFeedLinkedHTTPExtract(processCtx sourceProcessContext) (sourceProces
 	result.Stats.Errors += stats.Errors
 	result.TouchedSourceID = source.ID
 	return result, true
+}
+
+func mergeFeedEntryContext(ctx context.Context, st interface {
+	ListLinkedItemsBySourceType(context.Context, int64, string, int) ([]model.Item, error)
+}, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, error) {
+	items, err := st.ListLinkedItemsBySourceType(ctx, source.ID, "feed_entry", 3)
+	if err != nil {
+		return extract, err
+	}
+	contextText := feedEntryContextText(items, extract.Content)
+	if contextText == "" {
+		return extract, nil
+	}
+
+	merged := extract
+	var b strings.Builder
+	b.WriteString("# Linked Source Text\n\n")
+	b.WriteString(strings.TrimSpace(extract.Content))
+	b.WriteString("\n\n# Feed Entry Context\n\n")
+	b.WriteString(contextText)
+	merged.Content = strings.TrimSpace(b.String())
+	if strings.TrimSpace(merged.Description) == "" {
+		merged.Description = "Linked source text plus feed entry context."
+	}
+	return merged, nil
+}
+
+func feedEntryContextText(items []model.Item, linkedContent string) string {
+	linkedNorm := normalizeContextComparison(linkedContent)
+	parts := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		text := firstNonEmpty(item.ArticleText, item.Text, item.SummaryText)
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		textNorm := normalizeContextComparison(text)
+		if textNorm == linkedNorm || seen[textNorm] {
+			continue
+		}
+		seen[textNorm] = true
+		var b strings.Builder
+		if title := strings.TrimSpace(item.Title); title != "" {
+			b.WriteString("Feed entry title: ")
+			b.WriteString(title)
+			b.WriteString("\n\n")
+		}
+		b.WriteString(text)
+		parts = append(parts, strings.TrimSpace(b.String()))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncateUTF8(strings.Join(parts, "\n\n---\n\n"), 12000)
+}
+
+func normalizeContextComparison(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
+}
+
+func truncateUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	var out strings.Builder
+	for _, r := range value {
+		next := string(r)
+		if out.Len()+len(next) > maxBytes {
+			break
+		}
+		out.WriteString(next)
+	}
+	return out.String()
 }
 
 func processHTTPReaderFallback(processCtx sourceProcessContext) (sourceProcessResult, bool) {

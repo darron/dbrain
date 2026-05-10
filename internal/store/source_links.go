@@ -114,6 +114,39 @@ func (s *Store) SourceHasLinkedItemType(ctx context.Context, sourceID int64, sou
 	return true, nil
 }
 
+func (s *Store) ListLinkedItemsBySourceType(ctx context.Context, sourceID int64, sourceType string, limit int) ([]model.Item, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+itemSelectColumns+`
+		FROM item_source_links l
+		JOIN items i ON i.id = l.item_id
+		WHERE l.source_id = ?
+			AND i.source_type = ?
+		ORDER BY COALESCE(i.last_seen_at, i.updated_at, '') DESC, i.id DESC
+		LIMIT ?`, sourceID, sourceType, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list linked items by source type %d %s: %w", sourceID, sourceType, err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var items []model.Item
+	for rows.Next() {
+		var item model.Item
+		if err := scanItem(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan linked item by source type %d %s: %w", sourceID, sourceType, err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate linked items by source type %d %s: %w", sourceID, sourceType, err)
+	}
+	return items, nil
+}
+
 func (s *Store) upsertSourceLink(ctx context.Context, itemID int64, candidate model.SourceCandidate) (model.SourceLinkUpsertResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

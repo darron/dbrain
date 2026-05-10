@@ -70,6 +70,23 @@ func TestFeedAddCheckFlagDefaultsToVerifyOnly(t *testing.T) {
 	}
 }
 
+func TestFeedRefreshCommandDefinesForceSummarizeAndSourceFlags(t *testing.T) {
+	t.Parallel()
+
+	cmd := newFeedRefreshCommand(&rootOptions{})
+	for _, name := range []string{"force", "summarize", "model", "cli", "length", "timeout", "concurrency", "allow-private-network", "json"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Fatalf("missing --%s flag", name)
+		}
+	}
+	if got := cmd.Flags().Lookup("summarize").DefValue; got != "true" {
+		t.Fatalf("--summarize default = %q, want true", got)
+	}
+	if got := cmd.Flags().Lookup("concurrency").DefValue; got != "4" {
+		t.Fatalf("--concurrency default = %q, want 4", got)
+	}
+}
+
 func TestFeedAllowPrivateNetworkRuntimeAcceptsSingularAndPluralEnv(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK", "")
