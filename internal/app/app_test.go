@@ -341,10 +341,12 @@ func TestLaunchdRestartOpensFullDiskAccessWhenProbeFails(t *testing.T) {
 	originalRunLaunchctl := runLaunchctl
 	originalProbe := runFullDiskAccessProbeBinary
 	originalOpen := openFullDiskAccessSettings
+	originalWaitService := waitForLaunchdServiceFullDiskAccessFunc
 	defer func() {
 		runLaunchctl = originalRunLaunchctl
 		runFullDiskAccessProbeBinary = originalProbe
 		openFullDiskAccessSettings = originalOpen
+		waitForLaunchdServiceFullDiskAccessFunc = originalWaitService
 	}()
 
 	home := t.TempDir()
@@ -372,6 +374,16 @@ func TestLaunchdRestartOpensFullDiskAccessWhenProbeFails(t *testing.T) {
 		probedBin = binPath
 		return []byte("probe denied\n"), fmt.Errorf("exit status 1")
 	}
+	waitForLaunchdServiceFullDiskAccessFunc = func(context.Context, *rootOptions, string) (serviceFullDiskAccessResponse, error) {
+		return serviceFullDiskAccessResponse{
+			OK:         false,
+			Readable:   false,
+			Path:       "/Users/example/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite",
+			Executable: "/opt/homebrew/bin/dbrain",
+			PID:        1234,
+			Error:      "operation not permitted",
+		}, nil
+	}
 	var opened bool
 	openFullDiskAccessSettings = func(context.Context) error {
 		opened = true
@@ -391,8 +403,8 @@ func TestLaunchdRestartOpensFullDiskAccessWhenProbeFails(t *testing.T) {
 	if len(launchctlCalls) != 1 {
 		t.Fatalf("expected one launchctl call, got %#v", launchctlCalls)
 	}
-	if probedBin != "/opt/homebrew/bin/dbrain" {
-		t.Fatalf("probed binary = %q, want /opt/homebrew/bin/dbrain", probedBin)
+	if probedBin != "" {
+		t.Fatalf("foreground binary should not run when service check responds, probed %q", probedBin)
 	}
 	if !opened {
 		t.Fatal("expected Full Disk Access settings to open")
@@ -402,8 +414,8 @@ func TestLaunchdRestartOpensFullDiskAccessWhenProbeFails(t *testing.T) {
 		"Restarted launchd service:",
 		"Full Disk Access check",
 		"Target binary: /opt/homebrew/bin/dbrain",
-		"probe denied",
-		"Full Disk Access check: failed",
+		"Service process: pid=1234 executable=/opt/homebrew/bin/dbrain",
+		"Full Disk Access check: failed (operation not permitted)",
 		"Opening Full Disk Access settings",
 	} {
 		if !strings.Contains(output, expected) {

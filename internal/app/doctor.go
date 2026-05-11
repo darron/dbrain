@@ -2,20 +2,37 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/remote"
 	"github.com/spf13/cobra"
 )
 
 const fullDiskAccessSettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
 const defaultAppleNotesDBRelPath = "Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"
+const serviceFullDiskAccessPath = "/api/doctor/full-disk-access"
+
+type serviceFullDiskAccessResponse struct {
+	OK         bool   `json:"ok"`
+	Readable   bool   `json:"readable"`
+	Path       string `json:"path"`
+	Executable string `json:"executable"`
+	PID        int    `json:"pid"`
+	Error      string `json:"error,omitempty"`
+}
 
 type doctorFullDiskAccessFlags struct {
 	label        string
@@ -36,6 +53,8 @@ var runFullDiskAccessProbeBinary = func(ctx context.Context, binPath string, not
 	}
 	return exec.CommandContext(ctx, binPath, args...).CombinedOutput()
 }
+
+var waitForLaunchdServiceFullDiskAccessFunc = waitForLaunchdServiceFullDiskAccess
 
 func newDoctorCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{
@@ -176,7 +195,7 @@ func resolveDoctorFullDiskAccessTarget(binPath string, label string) (string, st
 	return abs, "current executable", nil
 }
 
-func checkLaunchdFullDiskAccess(ctx context.Context, label string, notesDBPath string, openSettings bool, out io.Writer) error {
+func checkLaunchdFullDiskAccess(ctx context.Context, root *rootOptions, label string, notesDBPath string, openSettings bool, out io.Writer) error {
 	target, source, err := resolveDoctorFullDiskAccessTarget("", label)
 	if err != nil {
 		return err
@@ -194,9 +213,35 @@ func checkLaunchdFullDiskAccess(ctx context.Context, label string, notesDBPath s
 	}
 	_, _ = fmt.Fprintf(out, "Target source: %s\n", source)
 	_, _ = fmt.Fprintf(out, "Apple Notes probe: %s\n", notesPath)
+
+	service, serviceErr := waitForLaunchdServiceFullDiskAccessFunc(ctx, root, label)
+	if serviceErr == nil {
+		_, _ = fmt.Fprintf(out, "Service process: pid=%d executable=%s\n", service.PID, service.Executable)
+		_, _ = fmt.Fprintf(out, "Service probe: %s\n", service.Path)
+		if service.OK && service.Readable {
+			_, _ = fmt.Fprintln(out, "Full Disk Access check: ok")
+			return nil
+		}
+		if service.Error != "" {
+			_, _ = fmt.Fprintf(out, "Full Disk Access check: failed (%s)\n", service.Error)
+		} else {
+			_, _ = fmt.Fprintln(out, "Full Disk Access check: failed")
+		}
+		_, _ = fmt.Fprintln(out, "Enable the target binary in System Settings > Privacy & Security > Full Disk Access, then restart the service again.")
+		if openSettings {
+			_, _ = fmt.Fprintln(out, "Opening Full Disk Access settings...")
+			if err := openFullDiskAccessSettings(ctx); err != nil {
+				return fmt.Errorf("open Full Disk Access settings: %w", err)
+			}
+		}
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(out, "Service Full Disk Access check: unavailable (%v)\n", serviceErr)
+	_, _ = fmt.Fprintln(out, "Falling back to a foreground binary probe; this is diagnostic only and does not prove the launchd service has access.")
 	probeOut, probeErr := runFullDiskAccessProbeBinary(ctx, target, notesPath)
 	if probeErr == nil {
-		_, _ = fmt.Fprintln(out, "Full Disk Access check: ok")
+		_, _ = fmt.Fprintln(out, "Foreground binary probe: ok")
 		return nil
 	}
 	if len(probeOut) > 0 {
@@ -205,7 +250,7 @@ func checkLaunchdFullDiskAccess(ctx context.Context, label string, notesDBPath s
 			_, _ = fmt.Fprintln(out)
 		}
 	}
-	_, _ = fmt.Fprintf(out, "Full Disk Access check: failed (%v)\n", probeErr)
+	_, _ = fmt.Fprintf(out, "Foreground binary probe: failed (%v)\n", probeErr)
 	_, _ = fmt.Fprintln(out, "Enable the target binary in System Settings > Privacy & Security > Full Disk Access, then restart the service again.")
 	if openSettings {
 		_, _ = fmt.Fprintln(out, "Opening Full Disk Access settings...")
@@ -214,6 +259,125 @@ func checkLaunchdFullDiskAccess(ctx context.Context, label string, notesDBPath s
 		}
 	}
 	return nil
+}
+
+func waitForLaunchdServiceFullDiskAccess(ctx context.Context, root *rootOptions, label string) (serviceFullDiskAccessResponse, error) {
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for {
+		status, err := fetchLaunchdServiceFullDiskAccess(ctx, root, label)
+		if err == nil {
+			return status, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return serviceFullDiskAccessResponse{}, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return serviceFullDiskAccessResponse{}, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func fetchLaunchdServiceFullDiskAccess(ctx context.Context, root *rootOptions, label string) (serviceFullDiskAccessResponse, error) {
+	cfg, err := launchdServiceConfig(root, label)
+	if err != nil {
+		return serviceFullDiskAccessResponse{}, err
+	}
+	opts, err := remote.OptionsFromRuntime(cfg)
+	if err != nil {
+		return serviceFullDiskAccessResponse{}, err
+	}
+	info, err := tsnetStateStatus(ctx, opts)
+	if err != nil {
+		return serviceFullDiskAccessResponse{}, err
+	}
+	if !info.WebReachable || strings.TrimSpace(info.WebURL) == "" {
+		return serviceFullDiskAccessResponse{}, fmt.Errorf("remote web is not reachable")
+	}
+	return fetchServiceFullDiskAccess(ctx, fullDiskAccessStatusURL(info.WebURL), "")
+}
+
+func launchdServiceConfig(root *rootOptions, label string) (config.Config, error) {
+	if plistPath, err := launchdPlistPath(label); err == nil {
+		if args, readErr := readLaunchdProgramArguments(plistPath); readErr == nil {
+			parsedRoot, parsedConfig := launchdConfigFromProgramArguments(args)
+			if parsedRoot != "" || parsedConfig != "" {
+				return loadConfig(parsedRoot, parsedConfig)
+			}
+		}
+	}
+	if root == nil {
+		return loadConfig("")
+	}
+	return loadConfig(root.root, root.configFile)
+}
+
+func launchdConfigFromProgramArguments(args []string) (string, string) {
+	var root string
+	var configFile string
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--root":
+			if i+1 < len(args) {
+				root = args[i+1]
+				i++
+			}
+		case "--config-file":
+			if i+1 < len(args) {
+				configFile = args[i+1]
+				i++
+			}
+		case "serve":
+			return root, configFile
+		}
+	}
+	return root, configFile
+}
+
+func fullDiskAccessStatusURL(webURL string) string {
+	parsed, err := url.Parse(webURL)
+	if err != nil {
+		return ""
+	}
+	parsed.Path = serviceFullDiskAccessPath
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func fetchServiceFullDiskAccess(ctx context.Context, rawURL string, tlsServerName string) (serviceFullDiskAccessResponse, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return serviceFullDiskAccessResponse{}, fmt.Errorf("service Full Disk Access URL is empty")
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return serviceFullDiskAccessResponse{}, err
+	}
+	transport := cloneDefaultHTTPTransport()
+	if strings.TrimSpace(tlsServerName) != "" {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: tlsServerName}
+	}
+	resp, err := (&http.Client{Timeout: 3 * time.Second, Transport: transport}).Do(req)
+	if err != nil {
+		return serviceFullDiskAccessResponse{}, err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return serviceFullDiskAccessResponse{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	var payload serviceFullDiskAccessResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return serviceFullDiskAccessResponse{}, err
+	}
+	return payload, nil
 }
 
 func readLaunchdProgramArguments(path string) ([]string, error) {

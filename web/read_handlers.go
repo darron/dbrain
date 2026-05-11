@@ -10,10 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/version"
 )
+
+const defaultAppleNotesDBRelPath = "Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"
 
 func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -47,6 +51,51 @@ func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Activity:       activity,
 		SourceActivity: sourceActivity,
 	})
+}
+
+func (s *server) handleDoctorFullDiskAccess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	path, err := fullDiskAccessProbePathWithOverride(s.cfg, s.fullDiskPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	executable, _ := os.Executable()
+	response := FullDiskAccessResponse{
+		Path:       path,
+		Executable: executable,
+		PID:        os.Getpid(),
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		response.Error = err.Error()
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	_ = file.Close()
+	response.OK = true
+	response.Readable = true
+	writeJSON(w, http.StatusOK, response)
+}
+
+func fullDiskAccessProbePathWithOverride(cfg config.Config, override string) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return filepath.Abs(strings.TrimSpace(override))
+	}
+	if value := runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_APPLE_NOTES_DB_PATH"); strings.TrimSpace(value) != "" {
+		return filepath.Abs(strings.TrimSpace(value))
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("resolve home directory: empty HOME")
+	}
+	return filepath.Join(home, defaultAppleNotesDBRelPath), nil
 }
 
 func webVersionInfo() WebVersionInfo {

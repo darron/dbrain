@@ -45,6 +45,7 @@ type server struct {
 	indexHTML       []byte
 	toolVersion     string
 	schedulerStatus func() schedulerstate.SyncAllStatus
+	fullDiskPath    string
 }
 
 type ServeOptions struct {
@@ -52,7 +53,8 @@ type ServeOptions struct {
 }
 
 type HandlerOptions struct {
-	SchedulerStatus func() schedulerstate.SyncAllStatus
+	SchedulerStatus    func() schedulerstate.SyncAllStatus
+	FullDiskAccessPath string
 }
 
 func Serve(ctx context.Context, cfg config.Config, addr string) error {
@@ -139,6 +141,7 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 		indexHTML:       indexHTML,
 		toolVersion:     summarizecli.Version(context.Background(), ""),
 		schedulerStatus: opts.SchedulerStatus,
+		fullDiskPath:    opts.FullDiskAccessPath,
 	}
 
 	return s.newMux(), nil
@@ -153,6 +156,7 @@ func (s *server) newMux() http.Handler {
 	mux.HandleFunc("/api/stats/activity", s.handleActivity)
 	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
 	mux.HandleFunc("/api/scheduler/sync-all", s.handleSchedulerSyncAll)
+	mux.HandleFunc("/api/doctor/full-disk-access", s.handleDoctorFullDiskAccess)
 	mux.HandleFunc("/api/ask", handleRemovedAPI)
 	mux.HandleFunc("/api/research", s.handleResearch)
 	mux.HandleFunc("/api/research/synthesize", s.handleResearchSynthesize)
