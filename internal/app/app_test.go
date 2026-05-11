@@ -46,7 +46,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
+	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -319,7 +319,7 @@ func TestLaunchdRestartKickstartsLoadedService(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--no-debug", "launchd", "restart", "--label", "com.darron.dbrain-dev"})
+	cmd.SetArgs([]string{"--no-debug", "launchd", "restart", "--label", "com.darron.dbrain-dev", "--check-full-disk-access=false"})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("ExecuteContext: %v", err)
@@ -334,6 +334,146 @@ func TestLaunchdRestartKickstartsLoadedService(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Restarted launchd service: "+launchdDomain()+"/com.darron.dbrain-dev") {
 		t.Fatalf("expected restart message, got %q", stdout.String())
+	}
+}
+
+func TestLaunchdRestartOpensFullDiskAccessWhenProbeFails(t *testing.T) {
+	originalRunLaunchctl := runLaunchctl
+	originalProbe := runFullDiskAccessProbeBinary
+	originalOpen := openFullDiskAccessSettings
+	defer func() {
+		runLaunchctl = originalRunLaunchctl
+		runFullDiskAccessProbeBinary = originalProbe
+		openFullDiskAccessSettings = originalOpen
+	}()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	install := NewRootCommand()
+	install.SetOut(io.Discard)
+	install.SetErr(io.Discard)
+	install.SetArgs([]string{"--no-debug", "launchd", "install", "--no-start", "--bin", "/opt/homebrew/bin/dbrain"})
+	if err := install.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install launchd plist: %v", err)
+	}
+
+	var launchctlCalls [][]string
+	runLaunchctl = func(_ context.Context, args ...string) error {
+		launchctlCalls = append(launchctlCalls, append([]string(nil), args...))
+		return nil
+	}
+	var probedBin string
+	runFullDiskAccessProbeBinary = func(_ context.Context, binPath string, _ string) ([]byte, error) {
+		probedBin = binPath
+		return []byte("probe denied\n"), fmt.Errorf("exit status 1")
+	}
+	var opened bool
+	openFullDiskAccessSettings = func(context.Context) error {
+		opened = true
+		return nil
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--no-debug", "launchd", "restart"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	if len(launchctlCalls) != 1 {
+		t.Fatalf("expected one launchctl call, got %#v", launchctlCalls)
+	}
+	if probedBin != "/opt/homebrew/bin/dbrain" {
+		t.Fatalf("probed binary = %q, want /opt/homebrew/bin/dbrain", probedBin)
+	}
+	if !opened {
+		t.Fatal("expected Full Disk Access settings to open")
+	}
+	output := stdout.String()
+	for _, expected := range []string{
+		"Restarted launchd service:",
+		"Full Disk Access check",
+		"Target binary: /opt/homebrew/bin/dbrain",
+		"probe denied",
+		"Full Disk Access check: failed",
+		"Opening Full Disk Access settings",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected output to contain %q, got %q", expected, output)
+		}
+	}
+}
+
+func TestDoctorFullDiskAccessReportsLaunchdTargetWithoutSideEffects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	install := NewRootCommand()
+	install.SetOut(io.Discard)
+	install.SetErr(io.Discard)
+	install.SetArgs([]string{"--no-debug", "launchd", "install", "--no-start", "--bin", "/opt/homebrew/bin/dbrain"})
+	if err := install.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install launchd plist: %v", err)
+	}
+
+	doctor := NewRootCommand()
+	var stdout bytes.Buffer
+	doctor.SetOut(&stdout)
+	doctor.SetErr(io.Discard)
+	doctor.SetArgs([]string{"--no-debug", "doctor", "full-disk-access", "--open=false", "--probe=false"})
+	if err := doctor.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("doctor full-disk-access: %v", err)
+	}
+
+	output := stdout.String()
+	for _, expected := range []string{
+		"Full Disk Access",
+		"Target binary: /opt/homebrew/bin/dbrain",
+		"Target source: launchd plist",
+		"Apple Notes probe:",
+		"It cannot grant Full Disk Access automatically",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected doctor output to contain %q, got %q", expected, output)
+		}
+	}
+}
+
+func TestReadLaunchdProgramArguments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "com.darron.dbrain.plist")
+	data, err := renderLaunchdPlist(launchdPlistOptions{
+		Label:   "com.darron.dbrain",
+		BinPath: "/opt/homebrew/bin/dbrain",
+		Args:    []string{"--config-file", "/Users/example/.config/dbrain/config.yaml"},
+		OutPath: "/tmp/dbrain.out",
+		ErrPath: "/tmp/dbrain.err",
+	})
+	if err != nil {
+		t.Fatalf("renderLaunchdPlist: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := readLaunchdProgramArguments(path)
+	if err != nil {
+		t.Fatalf("readLaunchdProgramArguments: %v", err)
+	}
+	want := []string{"/opt/homebrew/bin/dbrain", "--config-file", "/Users/example/.config/dbrain/config.yaml", "serve", "remote"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("program arguments = %#v, want %#v", got, want)
 	}
 }
 

@@ -113,6 +113,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(
 		newArchiveCommand(opts),
 		newConfigCommand(opts),
+		newDoctorCommand(opts),
 		newSQLiteCommand(opts),
 		newTSNetCommand(opts),
 		importCmd,

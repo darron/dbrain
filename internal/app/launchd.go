@@ -170,6 +170,9 @@ func newLaunchdUninstallCommand() *cobra.Command {
 
 func newLaunchdRestartCommand() *cobra.Command {
 	var label string
+	var checkFullDiskAccess bool
+	var openFullDiskAccess bool
+	var appleNotesDBPath string
 	cmd := &cobra.Command{
 		Use:         "restart",
 		Short:       "Restart the loaded dbrain launchd service",
@@ -184,10 +187,18 @@ func newLaunchdRestartCommand() *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Restarted launchd service: %s\n", target)
+			if checkFullDiskAccess {
+				if err := checkLaunchdFullDiskAccess(cmd.Context(), label, appleNotesDBPath, openFullDiskAccess, cmd.OutOrStdout()); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&label, "label", defaultLaunchdLabel, "launchd label")
+	cmd.Flags().BoolVar(&checkFullDiskAccess, "check-full-disk-access", true, "Probe the launchd dbrain binary for macOS Full Disk Access after restart")
+	cmd.Flags().BoolVar(&openFullDiskAccess, "open-full-disk-access", true, "Open macOS Full Disk Access settings if the post-restart probe fails")
+	cmd.Flags().StringVar(&appleNotesDBPath, "apple-notes-db", "", "Apple Notes NoteStore.sqlite path for the post-restart Full Disk Access probe")
 	return cmd
 }
 
