@@ -603,6 +603,35 @@ func TestWebHandlerServesSchedulerStatus(t *testing.T) {
 	}
 }
 
+func TestWebHandlerServesFullDiskAccessStatusFromServiceProcess(t *testing.T) {
+	cfg, st := openTestStore(t)
+	probePath := filepath.Join(t.TempDir(), "NoteStore.sqlite")
+	if err := os.WriteFile(probePath, []byte("notes"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{
+		FullDiskAccessPath: probePath,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/doctor/full-disk-access", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response FullDiskAccessResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode full disk access status: %v", err)
+	}
+	if !response.OK || !response.Readable || response.Path != probePath || response.PID == 0 {
+		t.Fatalf("unexpected full disk access response: %#v", response)
+	}
+}
+
 func TestWebHandlerAddLinkRejectsInvalidURL(t *testing.T) {
 	t.Parallel()
 

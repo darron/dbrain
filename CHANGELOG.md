@@ -19,7 +19,7 @@ development date for the change set.
 - **Status**: `dbrain tsnet status` now renders human output as readable tables and includes detailed scheduled `sync all` state from the remote web API when reachable.
 - **Status**: Scheduled `sync all` timestamps in `dbrain tsnet status` now include relative hints such as `55 minutes ago` or `45 minutes from now`.
 - **Added**: `dbrain doctor full-disk-access` diagnoses the launchd target binary, can probe Apple Notes through that binary, and opens macOS Full Disk Access settings for manual approval.
-- **Added**: `dbrain launchd restart` now probes the restarted LaunchAgent binary for Full Disk Access and opens the approval pane when the upgraded binary is not covered.
+- **Added**: `dbrain launchd restart` now asks the restarted web service process to verify Full Disk Access and opens the approval pane when the upgraded background binary is not covered.
 - **Docs**: Documented the scheduler lock path and the Apple Notes Full Disk Access/skip-stage choice for background runs.
 - **Location**: `internal/app/`, `internal/runlock/`, `README.md`
 

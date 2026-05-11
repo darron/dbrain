@@ -40,6 +40,15 @@ type SchedulerSyncAllResponse struct {
 	SyncAll schedulerstate.SyncAllStatus `json:"sync_all"`
 }
 
+type FullDiskAccessResponse struct {
+	OK         bool   `json:"ok"`
+	Readable   bool   `json:"readable"`
+	Path       string `json:"path"`
+	Executable string `json:"executable"`
+	PID        int    `json:"pid"`
+	Error      string `json:"error,omitempty"`
+}
+
 type GetResponse struct {
 	Lookup        string                 `json:"lookup"`
 	Kind          string                 `json:"kind"`

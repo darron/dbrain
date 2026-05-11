@@ -38,7 +38,7 @@ func newLaunchdCommand(root *rootOptions) *cobra.Command {
 		RunE:        helpCommand,
 		Annotations: map[string]string{skipKeepAwakeAnnotation: "true"},
 	}
-	cmd.AddCommand(newLaunchdPlistCommand(root), newLaunchdInstallCommand(root), newLaunchdRestartCommand(), newLaunchdUninstallCommand())
+	cmd.AddCommand(newLaunchdPlistCommand(root), newLaunchdInstallCommand(root), newLaunchdRestartCommand(root), newLaunchdUninstallCommand())
 	return cmd
 }
 
@@ -168,7 +168,7 @@ func newLaunchdUninstallCommand() *cobra.Command {
 	return cmd
 }
 
-func newLaunchdRestartCommand() *cobra.Command {
+func newLaunchdRestartCommand(root *rootOptions) *cobra.Command {
 	var label string
 	var checkFullDiskAccess bool
 	var openFullDiskAccess bool
@@ -188,7 +188,7 @@ func newLaunchdRestartCommand() *cobra.Command {
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Restarted launchd service: %s\n", target)
 			if checkFullDiskAccess {
-				if err := checkLaunchdFullDiskAccess(cmd.Context(), label, appleNotesDBPath, openFullDiskAccess, cmd.OutOrStdout()); err != nil {
+				if err := checkLaunchdFullDiskAccess(cmd.Context(), root, label, appleNotesDBPath, openFullDiskAccess, cmd.OutOrStdout()); err != nil {
 					return err
 				}
 			}
@@ -196,7 +196,7 @@ func newLaunchdRestartCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&label, "label", defaultLaunchdLabel, "launchd label")
-	cmd.Flags().BoolVar(&checkFullDiskAccess, "check-full-disk-access", true, "Probe the launchd dbrain binary for macOS Full Disk Access after restart")
+	cmd.Flags().BoolVar(&checkFullDiskAccess, "check-full-disk-access", true, "Ask the restarted service process to verify macOS Full Disk Access")
 	cmd.Flags().BoolVar(&openFullDiskAccess, "open-full-disk-access", true, "Open macOS Full Disk Access settings if the post-restart probe fails")
 	cmd.Flags().StringVar(&appleNotesDBPath, "apple-notes-db", "", "Apple Notes NoteStore.sqlite path for the post-restart Full Disk Access probe")
 	return cmd
