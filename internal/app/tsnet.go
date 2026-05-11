@@ -154,10 +154,11 @@ func tsnetStatusTableWidth(dst io.Writer) int {
 }
 
 func renderTSNetSchedulerTable(dst io.Writer, status schedulerstate.SyncAllStatus) string {
-	currentStarted := timeString(status.CurrentStartedAt)
+	now := time.Now()
+	currentStarted := timeStringWithRelative(status.CurrentStartedAt, now)
 	currentElapsed := "-"
 	if status.Running && !status.CurrentStartedAt.IsZero() {
-		currentElapsed = elapsedSince(status.CurrentStartedAt)
+		currentElapsed = elapsedSinceAt(status.CurrentStartedAt, now)
 	}
 	return renderTSNetTable(dst, [][]string{
 		{"Enabled", boolString(status.Enabled)},
@@ -169,11 +170,11 @@ func renderTSNetSchedulerTable(dst io.Writer, status schedulerstate.SyncAllStatu
 		{"Current started", currentStarted},
 		{"Current elapsed", currentElapsed},
 		{"Last reason", tsnetEmptyDash(status.LastReason)},
-		{"Last started", timeString(status.LastStartedAt)},
-		{"Last finished", timeString(status.LastFinishedAt)},
+		{"Last started", timeStringWithRelative(status.LastStartedAt, now)},
+		{"Last finished", timeStringWithRelative(status.LastFinishedAt, now)},
 		{"Last status", tsnetEmptyDash(status.LastStatus)},
 		{"Last error", tsnetEmptyDash(status.LastError)},
-		{"Next run", timeString(status.NextRunAt)},
+		{"Next run", timeStringWithRelative(status.NextRunAt, now)},
 	})
 }
 
@@ -198,8 +199,50 @@ func timeString(value time.Time) string {
 	return value.UTC().Format(time.RFC3339)
 }
 
-func elapsedSince(value time.Time) string {
-	elapsed := time.Since(value.UTC()).Round(time.Second)
+func timeStringWithRelative(value time.Time, now time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	relative := relativeTimeString(value, now)
+	if relative == "" {
+		return timeString(value)
+	}
+	return fmt.Sprintf("%s (%s)", timeString(value), relative)
+}
+
+func relativeTimeString(value time.Time, now time.Time) string {
+	if value.IsZero() || now.IsZero() {
+		return ""
+	}
+	delta := value.Sub(now)
+	suffix := "from now"
+	if delta < 0 {
+		suffix = "ago"
+		delta = -delta
+	}
+	if delta < time.Minute {
+		return "less than a minute " + suffix
+	}
+
+	unitValue := int((delta + 30*time.Second) / time.Minute)
+	unit := "minute"
+	switch {
+	case unitValue < 60:
+	case delta < 36*time.Hour:
+		unitValue = int((delta + 30*time.Minute) / time.Hour)
+		unit = "hour"
+	default:
+		unitValue = int((delta + 12*time.Hour) / (24 * time.Hour))
+		unit = "day"
+	}
+	if unitValue != 1 {
+		unit += "s"
+	}
+	return fmt.Sprintf("%d %s %s", unitValue, unit, suffix)
+}
+
+func elapsedSinceAt(value time.Time, now time.Time) string {
+	elapsed := now.UTC().Sub(value.UTC()).Round(time.Second)
 	if elapsed < 0 {
 		return "0s"
 	}

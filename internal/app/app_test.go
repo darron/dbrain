@@ -1161,6 +1161,44 @@ func TestWriteTSNetStatusRendersTables(t *testing.T) {
 	}
 }
 
+func TestTimeStringWithRelative(t *testing.T) {
+	now := time.Date(2026, 5, 11, 1, 16, 2, 0, time.UTC)
+
+	tests := []struct {
+		name  string
+		value time.Time
+		want  string
+	}{
+		{
+			name:  "zero",
+			value: time.Time{},
+			want:  "-",
+		},
+		{
+			name:  "past minutes",
+			value: time.Date(2026, 5, 11, 0, 21, 2, 0, time.UTC),
+			want:  "2026-05-11T00:21:02Z (55 minutes ago)",
+		},
+		{
+			name:  "future minutes",
+			value: time.Date(2026, 5, 11, 2, 1, 2, 0, time.UTC),
+			want:  "2026-05-11T02:01:02Z (45 minutes from now)",
+		},
+		{
+			name:  "singular hour",
+			value: time.Date(2026, 5, 11, 0, 16, 2, 0, time.UTC),
+			want:  "2026-05-11T00:16:02Z (1 hour ago)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := timeStringWithRelative(tt.value, now); got != tt.want {
+				t.Fatalf("timeStringWithRelative() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTSNetStatusTableWidthIsCapped(t *testing.T) {
 	t.Setenv("COLUMNS", "220")
 
