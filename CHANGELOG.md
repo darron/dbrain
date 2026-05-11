@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### What's New Review Feed (2026-05-11)
+
+- **Added**: `dbrain whats-new` returns a cursor-based review feed of new imports, enrichments, blocked work, and failures since an RFC3339 timestamp or relative duration.
+- **API/MCP**: Added `/api/whats-new` and the read-only `dbrain_whats_new` MCP tool so bots such as Hermes can page through reviewable changes with structured JSON.
+- **Sync**: `sync all` now prints a review cursor and high-watermark that can be used as a clean bootstrap point after a completed run.
+- **Storage**: Added timestamp indexes used by the derived review-feed query across items, sources, feed entries, and item enrichments.
+- **Location**: `internal/store/`, `internal/app/`, `internal/mcpserver/`, `web/`
+
 ### Category Vocabulary Automation (2026-05-10)
 
 - **Added**: `dbrain categorize vocab` analyzes existing item/source tags, asks a local Ollama model for conservative `categories.yaml` cleanup suggestions, and can `--apply --repair` the resulting safe vocabulary changes.

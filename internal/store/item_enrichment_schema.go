@@ -25,6 +25,8 @@ func (s *Store) ensureItemEnrichmentTables() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_item_enrichments_item ON item_enrichments(item_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_item_enrichments_role_status ON item_enrichments(role, status);`,
+		`CREATE INDEX IF NOT EXISTS idx_item_enrichments_updated_at ON item_enrichments(updated_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_item_enrichments_completed_at ON item_enrichments(completed_at);`,
 	}
 
 	for _, stmt := range schema {

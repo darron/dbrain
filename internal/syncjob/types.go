@@ -105,22 +105,24 @@ type Options struct {
 }
 
 type Stats struct {
-	StartedAt    time.Time          `json:"started_at"`
-	CompletedAt  time.Time          `json:"completed_at,omitempty"`
-	Duration     time.Duration      `json:"duration"`
-	XBookmarks   *XBookmarksStage   `json:"x_bookmarks,omitempty"`
-	X            *XStage            `json:"x,omitempty"`
-	XMedia       *XMediaStage       `json:"x_media,omitempty"`
-	XPhotoOCR    *XPhotoOCRStage    `json:"x_photo_ocr,omitempty"`
-	Links        *LinksStage        `json:"links,omitempty"`
-	GitHub       *GitHubStage       `json:"github,omitempty"`
-	YouTube      *YouTubeStage      `json:"youtube,omitempty"`
-	AppleNotes   *AppleNotesStage   `json:"apple_notes,omitempty"`
-	SafariTabs   *SafariTabsStage   `json:"safari_tabs,omitempty"`
-	Feeds        *FeedsStage        `json:"feeds,omitempty"`
-	Sources      *SourcesStage      `json:"sources,omitempty"`
-	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
-	Categorize   *CategorizeStage   `json:"categorize,omitempty"`
+	StartedAt           time.Time          `json:"started_at"`
+	CompletedAt         time.Time          `json:"completed_at,omitempty"`
+	Duration            time.Duration      `json:"duration"`
+	ReviewCursor        string             `json:"review_cursor,omitempty"`
+	ReviewHighWatermark time.Time          `json:"review_high_watermark,omitempty"`
+	XBookmarks          *XBookmarksStage   `json:"x_bookmarks,omitempty"`
+	X                   *XStage            `json:"x,omitempty"`
+	XMedia              *XMediaStage       `json:"x_media,omitempty"`
+	XPhotoOCR           *XPhotoOCRStage    `json:"x_photo_ocr,omitempty"`
+	Links               *LinksStage        `json:"links,omitempty"`
+	GitHub              *GitHubStage       `json:"github,omitempty"`
+	YouTube             *YouTubeStage      `json:"youtube,omitempty"`
+	AppleNotes          *AppleNotesStage   `json:"apple_notes,omitempty"`
+	SafariTabs          *SafariTabsStage   `json:"safari_tabs,omitempty"`
+	Feeds               *FeedsStage        `json:"feeds,omitempty"`
+	Sources             *SourcesStage      `json:"sources,omitempty"`
+	MediaArchive        *MediaArchiveStage `json:"media_archive,omitempty"`
+	Categorize          *CategorizeStage   `json:"categorize,omitempty"`
 }
 
 type XBookmarksStage struct {

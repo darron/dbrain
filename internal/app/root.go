@@ -124,6 +124,7 @@ func NewRootCommand() *cobra.Command {
 		newWorkerCommand(opts),
 		newLinkCommand(opts),
 		newFeedCommand(opts),
+		newWhatsNewCommand(opts),
 		newLaunchdCommand(opts),
 		extractCmd,
 		hydrateCmd,

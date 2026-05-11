@@ -43,6 +43,8 @@ func (s *Store) ensureCurrentSchema() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_items_source_type ON items(source_type);`,
 		`CREATE INDEX IF NOT EXISTS idx_items_external_id ON items(external_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_items_imported_at ON items(imported_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_items_updated_at ON items(updated_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_items_last_seen_at ON items(last_seen_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_items_primary_domain ON items(primary_domain);`,
 		`CREATE INDEX IF NOT EXISTS idx_items_primary_category ON items(primary_category);`,

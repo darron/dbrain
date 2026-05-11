@@ -148,6 +148,27 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		}
 	})
 
+	t.Run("whats new", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/whats-new?since=24h&types=imports&limit=5", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var response store.ReviewEventFeed
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode whats-new: %v", err)
+		}
+		if len(response.Events) == 0 {
+			t.Fatal("expected review events")
+		}
+		if response.NextCursor == "" {
+			t.Fatal("expected next cursor")
+		}
+	})
+
 	t.Run("scheduler status without provider", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/scheduler/sync-all", nil)

@@ -47,7 +47,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
+	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "feed", "whats-new", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -69,6 +69,64 @@ func TestFeedAddCheckFlagDefaultsToVerifyOnly(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Fatalf("--check default = %q, want false", flag.DefValue)
+	}
+}
+
+func TestWhatsNewCommandOutputsReviewFeedJSON(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store open: %v", err)
+	}
+	itemAt := time.Now().UTC().Add(-10 * time.Minute)
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "feed-entry:whats-new-cli",
+		SourceType:   "feed_entry",
+		ExternalID:   "whats-new-cli",
+		CanonicalURL: "https://example.com/whats-new-cli",
+		Title:        "What changed",
+		ContentHash:  "whats-new-cli-hash",
+		NotePath:     "items/feed/whats-new-cli.md",
+		RawJSON:      `{}`,
+		ImportedAt:   itemAt,
+		UpdatedAt:    itemAt,
+		LastSeenAt:   itemAt,
+		UserTags:     "automation, review-feed",
+	}); err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "whats-new", "--since", "1h", "--types", "imports", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v stderr=%s", err, stderr.String())
+	}
+	var payload store.ReviewEventFeed
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode output %q: %v", stdout.String(), err)
+	}
+	if len(payload.Events) != 1 || payload.Events[0].EntityKey != "feed-entry:whats-new-cli" {
+		t.Fatalf("unexpected events: %+v", payload.Events)
+	}
+	if payload.NextCursor == "" {
+		t.Fatal("expected next_cursor")
 	}
 }
 
@@ -2581,6 +2639,30 @@ func TestWriteSyncStatsIncludesFeedLevelChangedAndUnchanged(t *testing.T) {
 
 	output := dst.String()
 	for _, value := range []string{"Sync Summary", "Feeds", "checked=1 entries=0", "changed=0 unchanged=1 created=0 updated=0"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
+		}
+	}
+}
+
+func TestWriteSyncStatsIncludesReviewCursor(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:           time.Date(2026, time.May, 11, 13, 0, 0, 0, time.UTC),
+		CompletedAt:         time.Date(2026, time.May, 11, 13, 5, 0, 0, time.UTC),
+		Duration:            5 * time.Minute,
+		ReviewCursor:        "cursor_test",
+		ReviewHighWatermark: time.Date(2026, time.May, 11, 13, 5, 0, 0, time.UTC),
+	}
+
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	for _, value := range []string{"Review cursor:     cursor_test", "Review watermark:  2026-05-11T13:05:00Z"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}

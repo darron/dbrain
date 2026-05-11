@@ -1792,6 +1792,63 @@ func TestServerStatsSourcesTool(t *testing.T) {
 	}
 }
 
+func TestServerWhatsNewTool(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "feed-entry:mcp-whats-new",
+		SourceType:   "feed_entry",
+		ExternalID:   "mcp-whats-new",
+		CanonicalURL: "https://example.com/mcp-whats-new",
+		Title:        "MCP Whats New",
+		ContentHash:  "mcp-whats-new-hash",
+		NotePath:     "items/feed/mcp-whats-new.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_whats_new","arguments":{"since":"24h","types":["imports"],"limit":5}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	events := structured["events"].([]interface{})
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %#v", structured)
+	}
+	event := events[0].(map[string]interface{})
+	if event["entity_key"] != "feed-entry:mcp-whats-new" {
+		t.Fatalf("unexpected event: %#v", event)
+	}
+	if structured["next_cursor"] == "" {
+		t.Fatalf("expected next_cursor: %#v", structured)
+	}
+}
+
 func TestServerTopicMapTool(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

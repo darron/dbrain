@@ -32,6 +32,8 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (map[s
 		return s.toolTopicBrief(ctx, params.Arguments)
 	case "dbrain_related":
 		return s.toolRelated(ctx, params.Arguments)
+	case "dbrain_whats_new":
+		return s.toolWhatsNew(ctx, params.Arguments)
 	case "dbrain_stats_items":
 		return s.toolStatsItems(ctx, params.Arguments)
 	case "dbrain_stats_sources":

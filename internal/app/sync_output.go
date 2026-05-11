@@ -24,6 +24,14 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 	if _, err := fmt.Fprintf(dst, "Duration:  %s\n\n", formatSyncDuration(stats.Duration)); err != nil {
 		return err
 	}
+	if stats.ReviewCursor != "" {
+		if _, err := fmt.Fprintf(dst, "Review cursor:     %s\n", stats.ReviewCursor); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(dst, "Review watermark:  %s\n\n", stats.ReviewHighWatermark.Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
 
 	rows := syncSummaryRows(stats)
 	t := table.New().

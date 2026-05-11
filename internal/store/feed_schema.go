@@ -90,6 +90,9 @@ func (s *Store) ensureFeedTables() error {
 		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_entries_feed_identity ON feed_entries(feed_id, identity_key);`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_entries_feed_seen ON feed_entries(feed_id, last_seen_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_entries_first_seen_at ON feed_entries(first_seen_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_entries_last_seen_at ON feed_entries(last_seen_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_entries_last_changed_at ON feed_entries(last_changed_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_entries_normalized_link ON feed_entries(normalized_link);`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_entries_source_id ON feed_entries(source_id);`,
 		`CREATE TABLE IF NOT EXISTS feed_entry_versions (

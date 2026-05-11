@@ -46,6 +46,11 @@ func (s *Store) ensureSourceTables() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_domain ON sources(domain);`,
+		`CREATE INDEX IF NOT EXISTS idx_sources_created_at ON sources(created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_sources_updated_at ON sources(updated_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_sources_extracted_at ON sources(extracted_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_sources_summarized_at ON sources(summarized_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_sources_extract_last_failed_at ON sources(extract_last_failed_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_extract_status ON sources(extract_status);`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_summary_status ON sources(summary_status);`,
 		`CREATE TABLE IF NOT EXISTS item_source_links (

@@ -135,6 +135,21 @@ func toolDefinitions() []map[string]interface{} {
 			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
 		},
 		{
+			"name":        "dbrain_whats_new",
+			"description": "Return a stable read-only review feed of imports, enrichments, failures, and blocked work since a timestamp or cursor.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"since":  map[string]interface{}{"type": "string", "description": "RFC3339 timestamp or relative duration such as 2h, 24h, or 7d."},
+					"cursor": map[string]interface{}{"type": "string", "description": "Opaque next_cursor token from a prior dbrain_whats_new call."},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Maximum number of events.", "default": 100},
+					"types":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional groups: all, imports, enrichments, failures, categorization."},
+				},
+			},
+			"outputSchema": whatsNewOutputSchema(),
+			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
+		},
+		{
 			"name":        "dbrain_stats_items",
 			"description": "Read item counts from the local brain, optionally filtered by source type and grouped by source type or none.",
 			"inputSchema": map[string]interface{}{

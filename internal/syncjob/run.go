@@ -27,5 +27,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 func finishStats(stats Stats) Stats {
 	stats.CompletedAt = time.Now().UTC()
 	stats.Duration = stats.CompletedAt.Sub(stats.StartedAt)
+	stats.ReviewHighWatermark = stats.CompletedAt
+	if token, err := store.NewReviewCursorSince(stats.CompletedAt).Token(); err == nil {
+		stats.ReviewCursor = token
+	}
 	return stats
 }

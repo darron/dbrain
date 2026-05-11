@@ -155,6 +155,7 @@ func (s *server) newMux() http.Handler {
 	mux.HandleFunc("/api/stats/backlog", s.handleBacklog)
 	mux.HandleFunc("/api/stats/activity", s.handleActivity)
 	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
+	mux.HandleFunc("/api/whats-new", s.handleWhatsNew)
 	mux.HandleFunc("/api/scheduler/sync-all", s.handleSchedulerSyncAll)
 	mux.HandleFunc("/api/doctor/full-disk-access", s.handleDoctorFullDiskAccess)
 	mux.HandleFunc("/api/ask", handleRemovedAPI)
