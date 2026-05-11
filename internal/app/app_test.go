@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/model"
@@ -153,6 +154,141 @@ func TestFeedOutputRedactsBasicAuthPassword(t *testing.T) {
 	}}})
 	if strings.Contains(stats.Results[0].URL, "secret") || strings.Contains(stats.Results[0].Error, "secret") {
 		t.Fatalf("expected redacted stats output, got %+v", stats.Results[0])
+	}
+}
+
+func TestCategorizeVocabSuggestionMergePreservesCategoriesLayout(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`# categories.yaml
+aliases:
+  go: golang
+
+drop:
+  - bookmark
+`)
+	suggestion := categorizeVocabSuggestion{
+		Aliases: map[string]string{
+			"go-lang": "golang",
+			"go":      "golang",
+		},
+		Drop: []string{"external-link", "bookmark"},
+	}
+	got, stats, err := mergeCategorizeVocabSuggestion(input, suggestion, time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("mergeCategorizeVocabSuggestion: %v", err)
+	}
+	if stats.AliasesAdded != 1 || stats.DropAdded != 1 {
+		t.Fatalf("stats = %+v, want aliases=1 drop=1", stats)
+	}
+	output := string(got)
+	for _, expected := range []string{
+		"  # === LLM-suggested cleanup (2026-05-10) ===",
+		"  go-lang: golang",
+		"drop:\n  - bookmark",
+		"  # LLM-suggested cleanup (2026-05-10)",
+		"  - external-link",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected merged output to contain %q, got:\n%s", expected, output)
+		}
+	}
+	if strings.Count(output, "  go: golang") != 1 {
+		t.Fatalf("existing alias should not be re-added, got:\n%s", output)
+	}
+}
+
+func TestCategorizeVocabSuggestionMergeKeepsApprovedDeterministicAliases(t *testing.T) {
+	t.Parallel()
+
+	input := []byte("aliases:\n  go: golang\n\ndrop:\n  - bookmark\n")
+	suggestion := categorizeVocabSuggestion{Aliases: map[string]string{
+		"llm": "large-language-models",
+	}}
+	got, stats, err := mergeCategorizeVocabSuggestion(input, suggestion, time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("mergeCategorizeVocabSuggestion: %v", err)
+	}
+	if stats.AliasesAdded != 1 {
+		t.Fatalf("stats = %+v, want aliases=1", stats)
+	}
+	if !strings.Contains(string(got), "  llm: large-language-models") {
+		t.Fatalf("expected approved deterministic alias to be merged, got:\n%s", string(got))
+	}
+}
+
+func TestParseCategorizeVocabSuggestionAcceptsJSONFence(t *testing.T) {
+	t.Parallel()
+
+	got, err := parseCategorizeVocabSuggestion("```json\n{\"aliases\":{\"go-lang\":\"golang\"},\"drop\":[\"bookmark\"],\"notes\":[\"ok\"]}\n```")
+	if err != nil {
+		t.Fatalf("parseCategorizeVocabSuggestion: %v", err)
+	}
+	if got.Aliases["go-lang"] != "golang" {
+		t.Fatalf("aliases = %#v", got.Aliases)
+	}
+	if !reflect.DeepEqual(got.Drop, []string{"bookmark"}) {
+		t.Fatalf("drop = %#v", got.Drop)
+	}
+}
+
+func TestFilterCategorizeVocabSuggestionRejectsBroadTopicCollapses(t *testing.T) {
+	t.Parallel()
+
+	got := filterCategorizeVocabSuggestion(categorizeVocabSuggestion{
+		Aliases: map[string]string{
+			"software-development": "software-engineering",
+			"libraries":            "library",
+		},
+		Drop: []string{"python", "external-link", "open-source-projects"},
+	}, categoryvocab.Vocab{}, []categorizeVocabToken{
+		{Token: "software-development", Count: 100},
+		{Token: "software-engineering", Count: 80},
+		{Token: "libraries", Count: 20},
+		{Token: "library", Count: 30},
+		{Token: "python", Count: 100},
+		{Token: "external-link", Count: 10},
+		{Token: "open-source-projects", Count: 50},
+	})
+
+	if _, ok := got.Aliases["software-development"]; ok {
+		t.Fatalf("expected broad semantic alias to be rejected, got %#v", got.Aliases)
+	}
+	if got.Aliases["libraries"] != "library" {
+		t.Fatalf("expected plural alias to survive, got %#v", got.Aliases)
+	}
+	if !reflect.DeepEqual(got.Drop, []string{"external-link"}) {
+		t.Fatalf("drop = %#v, want only external-link", got.Drop)
+	}
+}
+
+func TestDeterministicCategorizeVocabSuggestsKnownCorpusCleanup(t *testing.T) {
+	t.Parallel()
+
+	got := suggestDeterministicCategorizeVocab(map[string]int{
+		"large-language-models":        100,
+		"llm":                          10,
+		"kubernetes":                   100,
+		"k8s":                          5,
+		"site-reliability-engineering": 20,
+		"sre":                          6,
+		"twitter":                      20,
+		"x-twitter":                    6,
+		"social-media-post":            12,
+		"github-repo":                  7,
+	}, categoryvocab.Vocab{}, 2)
+
+	wantAliases := map[string]string{
+		"llm":       "large-language-models",
+		"k8s":       "kubernetes",
+		"sre":       "site-reliability-engineering",
+		"x-twitter": "twitter",
+	}
+	if !reflect.DeepEqual(got.Aliases, wantAliases) {
+		t.Fatalf("aliases = %#v, want %#v", got.Aliases, wantAliases)
+	}
+	if !reflect.DeepEqual(got.Drop, []string{"github-repo", "social-media-post"}) {
+		t.Fatalf("drop = %#v", got.Drop)
 	}
 }
 

@@ -1419,6 +1419,24 @@ dbrain categorize sources --limit 50 --concurrency 2 --apply
 dbrain categorize sources --force --limit 100 --json
 ```
 
+### `dbrain categorize vocab`
+
+Analyzes existing item/source `user_tags`, sends the highest-frequency unmapped
+tokens to a local Ollama model, and asks for conservative `categories.yaml`
+cleanup suggestions. The default is review-only; pass `--apply` to merge safe
+suggestions into `categories.yaml`, and `--repair` to immediately rewrite
+existing item/source tags with the updated vocabulary.
+
+The command intentionally keeps a hard safety filter around LLM output. It
+accepts boring lexical cleanup such as plural/singular variants and near-typos,
+but rejects broad semantic collapses like `python -> programming-languages` or
+`software-development -> software-engineering`.
+
+```sh
+dbrain categorize vocab --model ollama/dbrain:latest
+dbrain categorize vocab --limit 350 --min-count 5 --timeout 5m --apply --repair
+```
+
 ### `dbrain categorize repair`
 
 Repairs existing item and source `user_tags` using the configured category

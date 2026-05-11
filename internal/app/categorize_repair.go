@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -65,80 +67,8 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 				return nil
 			}
 
-			vocab, err := categoryvocab.Load(cfg.CategoriesPath)
-			if err != nil {
-				return fmt.Errorf("load categories.yaml: %w", err)
-			}
-			if vocab.Empty() {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "categories.yaml not found or empty — nothing to do.")
-				return nil
-			}
-
-			st, err := store.Open(cfg.DBPath)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = st.Close() }()
-
-			items, err := st.ListCategorizedItems(cmd.Context())
-			if err != nil {
-				return err
-			}
-			sources, err := st.ListCategorizedSources(cmd.Context())
-			if err != nil {
-				return err
-			}
-
-			var updated, unchanged int
-			for _, item := range items {
-				newTags, changed := vocab.ApplyToCSV(item.UserTags)
-				if !changed {
-					unchanged++
-					continue
-				}
-				if dryRun {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[dry-run] %s\n  before: %s\n  after:  %s\n",
-						item.SourceKey,
-						formatTagDiff(item.UserTags, newTags),
-						newTags,
-					)
-					updated++
-					continue
-				}
-				if err := st.SaveItemUserTags(cmd.Context(), item.ID, newTags); err != nil {
-					return fmt.Errorf("save %s: %w", item.SourceKey, err)
-				}
-				updated++
-			}
-			for _, source := range sources {
-				newTags, changed := vocab.ApplyToCSV(source.UserTags)
-				if !changed {
-					unchanged++
-					continue
-				}
-				if dryRun {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[dry-run] %s\n  before: %s\n  after:  %s\n",
-						source.SourceKey,
-						formatTagDiff(source.UserTags, newTags),
-						newTags,
-					)
-					updated++
-					continue
-				}
-				if err := st.SaveSourceUserTags(cmd.Context(), source.ID, newTags); err != nil {
-					return fmt.Errorf("save %s: %w", source.SourceKey, err)
-				}
-				updated++
-			}
-
-			_, _ = fmt.Fprintln(cmd.OutOrStdout())
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Scanned:   %d\n", len(items)+len(sources))
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updated:   %d\n", updated)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Unchanged: %d\n", unchanged)
-			if dryRun {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "(dry-run — no changes written)")
-			}
-			return nil
+			_, err = runCategorizeVocabRepair(cmd.Context(), cfg.DBPath, cfg.CategoriesPath, dryRun, cmd.OutOrStdout())
+			return err
 		},
 	}
 
@@ -146,6 +76,89 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&clearSourceTagsWithoutEvidence, "clear-source-tags-without-evidence", false, "Clear source user_tags for sources that lack extracted text or summary evidence")
 
 	return cmd
+}
+
+type categorizeVocabRepairStats struct {
+	Scanned   int
+	Updated   int
+	Unchanged int
+}
+
+func runCategorizeVocabRepair(ctx context.Context, dbPath, categoriesPath string, dryRun bool, out io.Writer) (categorizeVocabRepairStats, error) {
+	vocab, err := categoryvocab.Load(categoriesPath)
+	if err != nil {
+		return categorizeVocabRepairStats{}, fmt.Errorf("load categories.yaml: %w", err)
+	}
+	if vocab.Empty() {
+		_, _ = fmt.Fprintln(out, "categories.yaml not found or empty — nothing to do.")
+		return categorizeVocabRepairStats{}, nil
+	}
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return categorizeVocabRepairStats{}, err
+	}
+	defer func() { _ = st.Close() }()
+
+	items, err := st.ListCategorizedItems(ctx)
+	if err != nil {
+		return categorizeVocabRepairStats{}, err
+	}
+	sources, err := st.ListCategorizedSources(ctx)
+	if err != nil {
+		return categorizeVocabRepairStats{}, err
+	}
+
+	stats := categorizeVocabRepairStats{Scanned: len(items) + len(sources)}
+	for _, item := range items {
+		newTags, changed := vocab.ApplyToCSV(item.UserTags)
+		if !changed {
+			stats.Unchanged++
+			continue
+		}
+		if dryRun {
+			_, _ = fmt.Fprintf(out, "[dry-run] %s\n  before: %s\n  after:  %s\n",
+				item.SourceKey,
+				formatTagDiff(item.UserTags, newTags),
+				newTags,
+			)
+			stats.Updated++
+			continue
+		}
+		if err := st.SaveItemUserTags(ctx, item.ID, newTags); err != nil {
+			return stats, fmt.Errorf("save %s: %w", item.SourceKey, err)
+		}
+		stats.Updated++
+	}
+	for _, source := range sources {
+		newTags, changed := vocab.ApplyToCSV(source.UserTags)
+		if !changed {
+			stats.Unchanged++
+			continue
+		}
+		if dryRun {
+			_, _ = fmt.Fprintf(out, "[dry-run] %s\n  before: %s\n  after:  %s\n",
+				source.SourceKey,
+				formatTagDiff(source.UserTags, newTags),
+				newTags,
+			)
+			stats.Updated++
+			continue
+		}
+		if err := st.SaveSourceUserTags(ctx, source.ID, newTags); err != nil {
+			return stats, fmt.Errorf("save %s: %w", source.SourceKey, err)
+		}
+		stats.Updated++
+	}
+
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "Scanned:   %d\n", stats.Scanned)
+	_, _ = fmt.Fprintf(out, "Updated:   %d\n", stats.Updated)
+	_, _ = fmt.Fprintf(out, "Unchanged: %d\n", stats.Unchanged)
+	if dryRun {
+		_, _ = fmt.Fprintln(out, "(dry-run — no changes written)")
+	}
+	return stats, nil
 }
 
 // formatTagDiff highlights which tokens changed by marking removed/added tokens.

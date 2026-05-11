@@ -34,9 +34,18 @@ func Load(path string) (Vocab, error) {
 		return Vocab{}, fmt.Errorf("read categories.yaml: %w", err)
 	}
 
+	v, err := Parse(data)
+	if err != nil {
+		return Vocab{}, fmt.Errorf("parse categories.yaml: %w", err)
+	}
+	return v, nil
+}
+
+// Parse parses categories.yaml bytes and initialises lookup maps.
+func Parse(data []byte) (Vocab, error) {
 	var v Vocab
 	if err := yaml.Unmarshal(data, &v); err != nil {
-		return Vocab{}, fmt.Errorf("parse categories.yaml: %w", err)
+		return Vocab{}, err
 	}
 	v.init()
 	return v, nil
