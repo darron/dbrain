@@ -8,11 +8,11 @@ const sourceSelectColumns = `
 	extract_first_failed_at, extract_last_failed_at, extracted_at,
 	extract_tool, extract_tool_version,
 	summary_text, summary_json, summary_status, summary_error, summary_model, summary_content_hash, summary_prompt_version,
-	summary_tool, summary_tool_version, summarized_at,
+	summary_tool, summary_tool_version, summarized_at, summary_failed_at,
 	content_hash, note_path, user_tags, created_at, updated_at`
 
 func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.SourceDocument) error {
-	var extractedAt, summarizedAt, createdAt, updatedAt string
+	var extractedAt, summarizedAt, summaryFailedAt, createdAt, updatedAt string
 	var extractFirstFailedAt, extractLastFailedAt string
 	if err := scanner.Scan(
 		&source.ID,
@@ -45,6 +45,7 @@ func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.Sour
 		&source.SummaryTool,
 		&source.SummaryToolVersion,
 		&summarizedAt,
+		&summaryFailedAt,
 		&source.ContentHash,
 		&source.NotePath,
 		&source.UserTags,
@@ -58,6 +59,7 @@ func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.Sour
 	source.ExtractFirstFailedAt = parseStoredTime(extractFirstFailedAt)
 	source.ExtractLastFailedAt = parseStoredTime(extractLastFailedAt)
 	source.SummarizedAt = parseStoredTime(summarizedAt)
+	source.SummaryFailedAt = parseStoredTime(summaryFailedAt)
 	source.CreatedAt = parseStoredTime(createdAt)
 	source.UpdatedAt = parseStoredTime(updatedAt)
 	return nil

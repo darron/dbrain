@@ -206,6 +206,7 @@ func (s *Store) ListReviewEvents(ctx context.Context, filter ReviewEventFilter) 
 		return emptyReviewEventFeed(filter.Cursor, cursorToken, now), nil
 	}
 
+	cursorAt := formatTimeForDB(filter.Cursor.EventAt)
 	query := `SELECT event_kind, event_at, entity_kind, entity_id, entity_key, event_stage, source_type, title, url, note_path, summary, user_tags, status, actionability, importance, reason, message
 FROM (` + reviewEventsUnionQuery + `) e
 WHERE e.event_at != ''
@@ -234,9 +235,10 @@ WHERE e.event_at != ''
 		)
 		)
 	)`
-	args := []any{
-		formatTimeForDB(filter.Cursor.EventAt),
-		formatTimeForDB(filter.Cursor.EventAt),
+	args := reviewEventBranchCursorArgs(cursorAt)
+	args = append(args,
+		cursorAt,
+		cursorAt,
 		filter.Cursor.EventKind,
 		filter.Cursor.EventKind,
 		filter.Cursor.EntityKind,
@@ -244,7 +246,7 @@ WHERE e.event_at != ''
 		filter.Cursor.EntityID,
 		filter.Cursor.EntityID,
 		filter.Cursor.EventStage,
-	}
+	)
 	if len(eventKinds) > 0 {
 		query += ` AND e.event_kind IN (` + placeholders(len(eventKinds)) + `)`
 		for _, kind := range eventKinds {
@@ -301,6 +303,14 @@ LIMIT ?`
 		Truncated:          truncated,
 		Counts:             countReviewEvents(events),
 	}, nil
+}
+
+func reviewEventBranchCursorArgs(cursorAt string) []any {
+	args := make([]any, reviewEventBranchCursorPredicateCount)
+	for i := range args {
+		args[i] = cursorAt
+	}
+	return args
 }
 
 func emptyReviewEventFeed(cursor ReviewCursor, cursorToken string, now time.Time) ReviewEventFeed {
@@ -559,7 +569,7 @@ const reviewEventsUnionQuery = `
 		'new item imported' AS reason,
 		'' AS message
 	FROM items i
-	WHERE i.imported_at != ''
+	WHERE i.imported_at != '' AND i.imported_at >= ?
 
 	UNION ALL
 
@@ -583,7 +593,7 @@ const reviewEventsUnionQuery = `
 		'' AS message
 	FROM feed_entries e
 	JOIN items i ON i.id = e.item_id
-	WHERE e.last_changed_at != '' AND e.version > 1
+	WHERE e.last_changed_at != '' AND e.last_changed_at >= ? AND e.version > 1
 
 	UNION ALL
 
@@ -606,7 +616,7 @@ const reviewEventsUnionQuery = `
 		'new linked source created' AS reason,
 		'' AS message
 	FROM sources s
-	WHERE s.created_at != ''
+	WHERE s.created_at != '' AND s.created_at >= ?
 
 	UNION ALL
 
@@ -629,7 +639,7 @@ const reviewEventsUnionQuery = `
 		'raw source extract became available' AS reason,
 		'' AS message
 	FROM sources s
-	WHERE s.extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `') AND s.extracted_at != ''
+	WHERE s.extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `') AND s.extracted_at != '' AND s.extracted_at >= ?
 
 	UNION ALL
 
@@ -652,7 +662,7 @@ const reviewEventsUnionQuery = `
 		'source summary became available' AS reason,
 		'' AS message
 	FROM sources s
-	WHERE s.summary_status = '` + model.SourceSummaryStatusOK + `' AND s.summarized_at != ''
+	WHERE s.summary_status = '` + model.SourceSummaryStatusOK + `' AND s.summarized_at != '' AND s.summarized_at >= ?
 
 	UNION ALL
 
@@ -689,7 +699,7 @@ const reviewEventsUnionQuery = `
 	FROM item_enrichments e
 	JOIN items i ON i.id = e.item_id
 	LEFT JOIN item_enrichments tx ON tx.item_id = i.id AND tx.role = '` + model.ItemEnrichmentRoleXMediaTranscript + `'
-	WHERE e.role = '` + model.ItemEnrichmentRoleSummary + `' AND e.status = '` + model.ItemSummaryStatusOK + `' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != ''
+	WHERE e.role = '` + model.ItemEnrichmentRoleSummary + `' AND e.status = '` + model.ItemSummaryStatusOK + `' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != '' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) >= ?
 
 	UNION ALL
 
@@ -713,7 +723,7 @@ const reviewEventsUnionQuery = `
 		'' AS message
 	FROM item_enrichments e
 	JOIN items i ON i.id = e.item_id
-	WHERE e.role = '` + model.ItemEnrichmentRoleXMediaTranscript + `' AND e.status = '` + model.XMediaTranscriptStatusOK + `' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != ''
+	WHERE e.role = '` + model.ItemEnrichmentRoleXMediaTranscript + `' AND e.status = '` + model.XMediaTranscriptStatusOK + `' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != '' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) >= ?
 
 	UNION ALL
 
@@ -737,13 +747,13 @@ const reviewEventsUnionQuery = `
 		'' AS message
 	FROM item_enrichments e
 	JOIN items i ON i.id = e.item_id
-	WHERE e.role = '` + model.ItemEnrichmentRoleOCR + `' AND e.status = '` + model.ItemOCRStatusOK + `' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != ''
+	WHERE e.role = '` + model.ItemEnrichmentRoleOCR + `' AND e.status = '` + model.ItemOCRStatusOK + `' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != '' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) >= ?
 
 	UNION ALL
 
 	SELECT
 		CASE WHEN s.summary_status = '` + model.SourceSummaryStatusError + `' THEN '` + ReviewEventKindFailed + `' ELSE '` + ReviewEventKindBlocked + `' END AS event_kind,
-		s.updated_at AS event_at,
+		s.summary_failed_at AS event_at,
 		'source' AS entity_kind,
 		s.id AS entity_id,
 		s.source_key AS entity_key,
@@ -760,7 +770,7 @@ const reviewEventsUnionQuery = `
 		'source summary requires attention' AS reason,
 		s.summary_error AS message
 	FROM sources s
-	WHERE s.summary_status IN ('` + model.SourceSummaryStatusError + `', '` + model.SourceSummaryStatusBlocked + `', '` + model.SourceSummaryStatusSkipped + `') AND s.updated_at != ''
+	WHERE s.summary_status IN ('` + model.SourceSummaryStatusError + `', '` + model.SourceSummaryStatusBlocked + `', '` + model.SourceSummaryStatusSkipped + `') AND s.summary_failed_at != '' AND s.summary_failed_at >= ?
 
 	UNION ALL
 
@@ -783,7 +793,7 @@ const reviewEventsUnionQuery = `
 		'source extraction requires attention' AS reason,
 		COALESCE(NULLIF(s.extract_error, ''), s.extract_failure_kind) AS message
 	FROM sources s
-	WHERE s.extract_status IN ('` + model.SourceExtractStatusError + `', '` + model.SourceExtractStatusDead + `', '` + model.SourceExtractStatusGone + `') AND COALESCE(NULLIF(s.extract_last_failed_at, ''), s.updated_at) != ''
+	WHERE s.extract_status IN ('` + model.SourceExtractStatusError + `', '` + model.SourceExtractStatusDead + `', '` + model.SourceExtractStatusGone + `') AND COALESCE(NULLIF(s.extract_last_failed_at, ''), s.updated_at) != '' AND COALESCE(NULLIF(s.extract_last_failed_at, ''), s.updated_at) >= ?
 
 	UNION ALL
 
@@ -807,7 +817,7 @@ const reviewEventsUnionQuery = `
 		e.error AS message
 	FROM item_enrichments e
 	JOIN items i ON i.id = e.item_id
-	WHERE e.role = '` + model.ItemEnrichmentRoleSummary + `' AND e.status IN ('` + model.ItemSummaryStatusError + `', '` + model.ItemSummaryStatusBlocked + `', '` + model.ItemSummaryStatusSkipped + `') AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != ''
+	WHERE e.role = '` + model.ItemEnrichmentRoleSummary + `' AND e.status IN ('` + model.ItemSummaryStatusError + `', '` + model.ItemSummaryStatusBlocked + `', '` + model.ItemSummaryStatusSkipped + `') AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != '' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) >= ?
 
 	UNION ALL
 
@@ -831,7 +841,7 @@ const reviewEventsUnionQuery = `
 		e.error AS message
 	FROM item_enrichments e
 	JOIN items i ON i.id = e.item_id
-	WHERE e.role = '` + model.ItemEnrichmentRoleOCR + `' AND e.status IN ('` + model.ItemOCRStatusError + `', '` + model.ItemOCRStatusBlocked + `', '` + model.ItemOCRStatusSkipped + `') AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != ''
+	WHERE e.role = '` + model.ItemEnrichmentRoleOCR + `' AND e.status IN ('` + model.ItemOCRStatusError + `', '` + model.ItemOCRStatusBlocked + `', '` + model.ItemOCRStatusSkipped + `') AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != '' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) >= ?
 
 	UNION ALL
 
@@ -855,5 +865,7 @@ const reviewEventsUnionQuery = `
 		e.error AS message
 	FROM item_enrichments e
 	JOIN items i ON i.id = e.item_id
-	WHERE e.role = '` + model.ItemEnrichmentRoleXMediaTranscript + `' AND e.status IN ('` + model.XMediaTranscriptStatusError + `', '` + model.XMediaTranscriptStatusEmpty + `', '` + model.XMediaTranscriptStatusNoise + `', '` + model.XMediaTranscriptStatusTooShort + `', '` + model.XMediaTranscriptStatusNoAudio + `') AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != ''
+	WHERE e.role = '` + model.ItemEnrichmentRoleXMediaTranscript + `' AND e.status IN ('` + model.XMediaTranscriptStatusError + `', '` + model.XMediaTranscriptStatusEmpty + `', '` + model.XMediaTranscriptStatusNoise + `', '` + model.XMediaTranscriptStatusTooShort + `', '` + model.XMediaTranscriptStatusNoAudio + `') AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) != '' AND COALESCE(NULLIF(e.completed_at, ''), e.updated_at) >= ?
 `
+
+const reviewEventBranchCursorPredicateCount = 13

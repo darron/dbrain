@@ -103,10 +103,17 @@ func writeWhatsNewDigest(dst interface{ Write([]byte) (int, error) }, cursor sto
 			return err
 		}
 	} else {
-		if err := writeWhatsNewEventSection(dst, "High-signal review", feed.Events, false); err != nil {
+		if err := writeWhatsNewEventSection(dst, "High-signal review", feed.Events, func(event store.ReviewEvent) bool {
+			return !isReviewFailure(event) && event.Importance >= 70
+		}); err != nil {
 			return err
 		}
-		if err := writeWhatsNewEventSection(dst, "Failures and blocked", feed.Events, true); err != nil {
+		if err := writeWhatsNewEventSection(dst, "Background changes", feed.Events, func(event store.ReviewEvent) bool {
+			return !isReviewFailure(event) && event.Importance < 70
+		}); err != nil {
+			return err
+		}
+		if err := writeWhatsNewEventSection(dst, "Failures and blocked", feed.Events, isReviewFailure); err != nil {
 			return err
 		}
 	}
@@ -136,11 +143,10 @@ func writeWhatsNewCounts(dst interface{ Write([]byte) (int, error) }, counts sto
 	return nil
 }
 
-func writeWhatsNewEventSection(dst interface{ Write([]byte) (int, error) }, title string, events []store.ReviewEvent, failuresOnly bool) error {
+func writeWhatsNewEventSection(dst interface{ Write([]byte) (int, error) }, title string, events []store.ReviewEvent, include func(store.ReviewEvent) bool) error {
 	wroteTitle := false
 	for _, event := range events {
-		isFailure := event.EventKind == store.ReviewEventKindFailed || event.EventKind == store.ReviewEventKindBlocked
-		if failuresOnly != isFailure {
+		if include != nil && !include(event) {
 			continue
 		}
 		if !wroteTitle {
@@ -197,6 +203,10 @@ func writeWhatsNewEventSection(dst interface{ Write([]byte) (int, error) }, titl
 		}
 	}
 	return nil
+}
+
+func isReviewFailure(event store.ReviewEvent) bool {
+	return event.EventKind == store.ReviewEventKindFailed || event.EventKind == store.ReviewEventKindBlocked
 }
 
 func formatCountBucketsInline(buckets []store.CountBucket) string {

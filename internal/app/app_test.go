@@ -130,6 +130,49 @@ func TestWhatsNewCommandOutputsReviewFeedJSON(t *testing.T) {
 	}
 }
 
+func TestWriteWhatsNewDigestGroupsBackgroundByImportance(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.May, 11, 13, 0, 0, 0, time.UTC)
+	feed := store.ReviewEventFeed{
+		HighWatermark: now,
+		Events: []store.ReviewEvent{
+			{
+				EventKind:  store.ReviewEventKindSourceSummarized,
+				EventAt:    now,
+				EntityKey:  "src:summary",
+				Title:      "Summary",
+				Importance: 85,
+			},
+			{
+				EventKind:  store.ReviewEventKindSourceExtracted,
+				EventAt:    now,
+				EntityKey:  "src:extract",
+				Title:      "Extract",
+				Importance: 45,
+			},
+			{
+				EventKind:  store.ReviewEventKindBlocked,
+				EventAt:    now,
+				EntityKey:  "src:blocked",
+				Title:      "Blocked",
+				Importance: 95,
+			},
+		},
+		NextCursor: "cursor_test",
+	}
+	var dst bytes.Buffer
+	if err := writeWhatsNewDigest(&dst, store.NewReviewCursorSince(now.Add(-time.Hour)), feed); err != nil {
+		t.Fatalf("writeWhatsNewDigest: %v", err)
+	}
+	output := dst.String()
+	for _, value := range []string{"High-signal review", "src:summary", "Background changes", "src:extract", "Failures and blocked", "src:blocked"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected digest to contain %q, got %q", value, output)
+		}
+	}
+}
+
 func TestFeedRefreshCommandDefinesForceSummarizeAndSourceFlags(t *testing.T) {
 	t.Parallel()
 

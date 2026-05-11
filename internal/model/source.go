@@ -33,6 +33,7 @@ type SourceDocument struct {
 	SummaryTool          string    `json:"summary_tool"`
 	SummaryToolVersion   string    `json:"summary_tool_version"`
 	SummarizedAt         time.Time `json:"summarized_at"`
+	SummaryFailedAt      time.Time `json:"summary_failed_at"`
 	ContentHash          string    `json:"content_hash"`
 	NotePath             string    `json:"note_path"`
 	UserTags             string    `json:"user_tags"`

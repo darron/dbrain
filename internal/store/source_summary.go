@@ -16,6 +16,7 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 		}
 
 		if result.Status == model.SourceSummaryStatusError {
+			failedAt := sourceSummaryFailureTime(result)
 			changed := current.SummaryStatus != result.Status ||
 				current.SummaryError != result.Error ||
 				current.SummaryTool != result.Tool ||
@@ -29,12 +30,14 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 					summary_error = ?,
 					summary_tool = ?,
 					summary_tool_version = ?,
+					summary_failed_at = ?,
 					updated_at = ?
 				WHERE id = ?`,
 				result.Status,
 				result.Error,
 				result.Tool,
 				result.ToolVersion,
+				failedAt,
 				time.Now().UTC().Format(time.RFC3339),
 				sourceID,
 			); err != nil {
@@ -46,6 +49,10 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 		summarizedAt := ""
 		if !result.FetchedAt.IsZero() {
 			summarizedAt = result.FetchedAt.UTC().Format(time.RFC3339)
+		}
+		summaryFailedAt := ""
+		if result.Status != model.SourceSummaryStatusOK {
+			summaryFailedAt = sourceSummaryFailureTime(result)
 		}
 
 		changed := current.SummaryText != result.Text ||
@@ -85,6 +92,7 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 				summary_tool = ?,
 				summary_tool_version = ?,
 				summarized_at = ?,
+				summary_failed_at = ?,
 				updated_at = ?
 			WHERE id = ?`,
 			result.Text,
@@ -97,6 +105,7 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 			result.Tool,
 			result.ToolVersion,
 			summarizedAt,
+			summaryFailedAt,
 			time.Now().UTC().Format(time.RFC3339),
 			sourceID,
 		); err != nil {
@@ -133,4 +142,11 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 
 		return true, nil
 	})
+}
+
+func sourceSummaryFailureTime(result model.SummaryResult) string {
+	if !result.FetchedAt.IsZero() {
+		return result.FetchedAt.UTC().Format(time.RFC3339)
+	}
+	return time.Now().UTC().Format(time.RFC3339)
 }

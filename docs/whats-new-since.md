@@ -512,6 +512,14 @@ new actionable evidence.
 If a feed entry or Apple Note changes, emit `item_updated`, not another
 `item_imported`. Include `previously_seen=true` if useful.
 
+### New Item And Source Co-Firing
+
+The derived first-pass feed may emit both `item_imported` and `source_created`
+for the same URL when an importer creates an item and linked source in the same
+sync window. That is acceptable in v1 because the events describe different
+entities, but human digest rendering and future durable review events should
+avoid making this feel like duplicate work.
+
 ### Noisy Bookkeeping Writes
 
 Avoid surfacing rows that only changed because of archive pruning, retry counter

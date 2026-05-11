@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,10 +102,11 @@ func TestListReviewEventsReturnsEnrichmentAndFailureEvents(t *testing.T) {
 	}
 	if _, err := st.db.ExecContext(ctx, `
 		UPDATE sources
-		SET summary_status = ?, summary_error = ?, updated_at = ?
+		SET summary_status = ?, summary_error = ?, summary_failed_at = ?, updated_at = ?
 		WHERE id = ?`,
 		model.SourceSummaryStatusBlocked,
 		"context limit",
+		now.Add(-3*time.Minute).Format(time.RFC3339),
 		now.Add(-3*time.Minute).Format(time.RFC3339),
 		source.SourceID,
 	); err != nil {
@@ -135,6 +137,65 @@ func TestListReviewEventsReturnsEnrichmentAndFailureEvents(t *testing.T) {
 	}
 	if len(feed.Counts.ByKind) == 0 {
 		t.Fatal("expected counts by kind")
+	}
+}
+
+func TestListReviewEventsUsesSummaryFailureTimestampNotUpdatedAt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() {
+		_ = st.Close()
+	}()
+
+	now := time.Date(2026, 5, 11, 13, 30, 0, 0, time.UTC)
+	source, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:stale-summary-failure",
+		CanonicalURL:  "https://example.com/stale-summary-failure",
+		NormalizedURL: "https://example.com/stale-summary-failure",
+		OriginalURL:   "https://example.com/stale-summary-failure",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/stale-summary-failure.md",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSource: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE sources
+		SET summary_status = ?, summary_error = ?, summary_failed_at = ?, updated_at = ?
+		WHERE id = ?`,
+		model.SourceSummaryStatusError,
+		"old model error",
+		now.Add(-48*time.Hour).Format(time.RFC3339),
+		now.Add(-5*time.Minute).Format(time.RFC3339),
+		source.SourceID,
+	); err != nil {
+		t.Fatalf("seed stale summary failure: %v", err)
+	}
+
+	feed, err := st.ListReviewEvents(ctx, ReviewEventFilter{
+		Cursor: NewReviewCursorSince(now.Add(-time.Hour)),
+		Limit:  20,
+		Types:  []string{"failures"},
+		Now:    now,
+	})
+	if err != nil {
+		t.Fatalf("ListReviewEvents: %v", err)
+	}
+	for _, event := range feed.Events {
+		if event.EntityKey == "src:stale-summary-failure" {
+			t.Fatalf("stale summary failure surfaced from updated_at: %+v", event)
+		}
+	}
+}
+
+func TestReviewEventsUnionAppliesCursorInsideEachBranch(t *testing.T) {
+	t.Parallel()
+
+	if got := strings.Count(reviewEventsUnionQuery, ">= ?"); got != reviewEventBranchCursorPredicateCount {
+		t.Fatalf("branch cursor predicate count = %d, want %d", got, reviewEventBranchCursorPredicateCount)
 	}
 }
 
