@@ -142,6 +142,33 @@ aliases:
   json-configuration: json
   toml-config: toml
 
+  # === LLM-suggested cleanup (2026-05-10) ===
+  amazon-eks: aws-eks
+  eks: aws-eks
+  go-libraries: go-library
+  golang-library: go-library
+  google-kubernetes-engine: gke
+  hashicorp-terraform: terraform
+  javascript-libraries: javascript-library
+  k8s: kubernetes
+  kubernetes-utilities: kubernetes-tools
+  llm: large-language-models
+  llms: large-language-models
+  local-llms: local-llm
+  mtls: mutual-tls
+  prometheus-exporter: prometheus
+  prometheus-metrics: prometheus
+  python-libraries: python-library
+  sre: site-reliability-engineering
+  ssl-certificates: tls-certificates
+  ssl-tls: tls
+  ssl-tls-certificates: tls-certificates
+  twitter-x: twitter
+  x-twitter: twitter
+
+  # === LLM-suggested cleanup (2026-05-10) ===
+  ai-agent: ai-agents
+
 drop:
   # Source import noise — describes how item arrived, not what it's about
   - github-star
@@ -174,3 +201,22 @@ drop:
   - archived-repository
   - pkg-go-dev
   - godoc
+
+  # LLM-suggested cleanup (2026-05-10)
+  - blog-post
+  - code-repositories
+  - code-repository
+  - git-repositories
+  - git-repository
+  - github-repo
+  - github-repositories
+  - repository
+  - social-media-post
+  - social-media-posts
+  - social-post
+  - software-repository
+  - source-code-repository
+  - tweet
+  - twitter-article
+  - twitter-quote
+  - x-post

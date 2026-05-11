@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Category Vocabulary Automation (2026-05-10)
+
+- **Added**: `dbrain categorize vocab` analyzes existing item/source tags, asks a local Ollama model for conservative `categories.yaml` cleanup suggestions, and can `--apply --repair` the resulting safe vocabulary changes.
+- **Safety**: LLM vocabulary suggestions now pass through a hard filter that accepts lexical cleanup but rejects broad topical collapses before display or file updates.
+- **Defaults**: `categorize vocab` now uses a smaller default token sample and a 5-minute local LLM timeout so unflagged runs fit local Ollama latency better.
+- **Categories**: Added another round of high-confidence alias/drop cleanup from the current tag corpus and repaired existing local item/source `user_tags`.
+- **Location**: `internal/app/`, `internal/categoryvocab/`, `categories.yaml`, `README.md`
+
 ### Search Lookup Robustness (2026-05-09)
 
 - **Fixed**: `dbrain search` now resolves exact item/source lookup keys such as `src:...` before FTS, so operator-visible keys work the same way as `dbrain get`.
