@@ -901,6 +901,13 @@ dbrain launchd uninstall
 dbrain launchd uninstall --label com.darron.dbrain-dev
 ```
 
+`dbrain launchd restart` also checks whether the LaunchAgent target binary can
+read the Apple Notes SQLite store. If the probe fails, it opens Full Disk Access
+settings so the newly upgraded Homebrew binary can be enabled before the next
+scheduled sync. Use `--check-full-disk-access=false` to skip the check or
+`--open-full-disk-access=false` to report the failure without opening System
+Settings.
+
 ### Scheduled `sync all`
 
 When `dbrain serve remote` is kept alive through launchd, it can also run
@@ -928,6 +935,19 @@ references to resolve. Use the `skip_*` fields for stages you do not want the
 background service to run. If the background service does not have macOS Full
 Disk Access for Apple Notes, either grant access to the binary/service context
 that launchd runs or set `scheduler.sync_all.skip_apple_notes: true`.
+
+`dbrain doctor full-disk-access` helps with the macOS approval loop. It reads
+the LaunchAgent plist, reports the binary that launchd runs, optionally probes
+the Apple Notes SQLite path through that target binary so macOS can attribute
+the denied access to the right executable, and opens System Settings to Full
+Disk Access. macOS still requires the final approval in System Settings; dbrain
+does not write the TCC database directly.
+
+```sh
+dbrain doctor full-disk-access
+dbrain doctor full-disk-access --bin /opt/homebrew/bin/dbrain
+dbrain doctor full-disk-access --probe=false --open=false
+```
 
 Scheduled and manual `sync all` runs share a local lock at
 `<data_dir>/locks/sync-all.lock`. A manual `dbrain sync all` fails fast when the
