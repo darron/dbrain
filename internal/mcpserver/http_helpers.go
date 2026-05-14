@@ -53,6 +53,31 @@ func originAllowed(r *http.Request, allowed []string) bool {
 	return false
 }
 
+func bearerTokenFromRequest(r *http.Request) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authorization == "" {
+		return "", false
+	}
+	scheme, token, ok := strings.Cut(authorization, " ")
+	if !ok || !strings.EqualFold(strings.TrimSpace(scheme), "Bearer") {
+		return "", false
+	}
+	token = strings.TrimSpace(token)
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
+		return "", false
+	}
+	return token, true
+}
+
+func writeBearerUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="dbrain mcp"`)
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+}
+
 func originMatchesHost(origin string, host string) bool {
 	parsed, err := url.Parse(origin)
 	if err != nil || parsed.Host == "" {

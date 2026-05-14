@@ -75,6 +75,9 @@ func (s *Store) ensureCurrentSchema() error {
 	if err := s.ensureAuthUserTables(); err != nil {
 		return err
 	}
+	if err := s.ensureMCPBearerTokenTables(); err != nil {
+		return err
+	}
 
 	if _, err := s.db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
 		source_key UNINDEXED,

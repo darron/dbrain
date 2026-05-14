@@ -268,10 +268,24 @@ persistent `tsnet` node. For MCP-only tailnet serving:
 dbrain serve mcp --transport tsnet --tsnet-hostname dbrain
 ```
 
+Add `--tsnet-funnel` only when you intentionally want Tailscale Funnel public
+exposure:
+
+```sh
+dbrain serve mcp --transport tsnet --tsnet-funnel
+```
+
+This does not create a second identity. It uses the same `tsnet.Server`
+hostname, state directory, and Tailscale auth credentials, but switches the
+listener from tailnet-only `ListenTLS` to public `ListenFunnel`. dbrain requires
+TLS and a Funnel-supported port (`:443`, `:8443`, or `:10000`) before starting
+that mode.
+
 Smoke test either HTTP-over-Tailscale or built-in `tsnet` with:
 
 ```sh
 curl -s https://dbrain.<tailnet>.ts.net/mcp \
+  -H "Authorization: Bearer $DBRAIN_MCP_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
@@ -287,6 +301,20 @@ Security defaults:
 - Same-host `Origin` requests are accepted.
 - Other browser origins are rejected unless passed with repeatable
   `--allow-origin`.
+- Optional bearer auth can be enabled with `mcp.auth.enabled=true` or
+  `DBRAIN_MCP_AUTH_ENABLED=true`.
+
+Create an MCP bearer token with:
+
+```sh
+dbrain auth mcp token add laptop
+```
+
+The raw token is shown once; SQLite stores only the token hash and fingerprint.
+Authenticated HTTP clients must send `Authorization: Bearer <token>`. When
+bearer auth is disabled, HTTP and tsnet MCP startup logs a warning because
+Tailscale Funnel or another public proxy would make the read-only brain content
+publicly reachable.
 
 Do not configure both stdio and HTTP transports for the same agent unless you
 want duplicate dbrain tools. It is fine to run one long-lived HTTP daemon for

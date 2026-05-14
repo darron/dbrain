@@ -5,6 +5,21 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Tailscale Funnel Toggle (2026-05-14)
+
+- **Added**: Optional `--tsnet-funnel`, `tsnet.funnel`, and `DBRAIN_TSNET_FUNNEL` support for serving the existing built-in tsnet listener through Tailscale Funnel.
+- **Behavior**: Funnel uses the same tsnet node identity, hostname, state directory, and Tailscale auth credentials as normal `serve remote`; it is a listener mode, not a separate feature set.
+- **Hardening**: Funnel mode requires TLS and one of Tailscale's supported Funnel ports (`:443`, `:8443`, or `:10000`) and prints public-exposure warnings for web/MCP surfaces.
+- **Location**: `internal/remote/`, `internal/app/`, `README.md`, `MCP.md`, `config.yaml.sample`
+
+### MCP Bearer Token Auth (2026-05-14)
+
+- **Added**: Optional DB-backed Bearer-token auth for MCP Streamable HTTP endpoints behind `mcp.auth.enabled` / `DBRAIN_MCP_AUTH_ENABLED`.
+- **CLI**: `dbrain auth mcp token add NAME` creates a one-time displayed MCP bearer token while storing only its SHA-256 hash and fingerprint in SQLite.
+- **Hardening**: MCP HTTP requests now return `401 WWW-Authenticate: Bearer` when auth is enabled and the token is missing or invalid.
+- **Operations**: HTTP and tsnet MCP startup now prints a loud warning when MCP is served without dbrain bearer-token auth, explicitly calling out Tailscale Funnel/public proxy exposure.
+- **Location**: `internal/mcpserver/`, `internal/store/`, `internal/app/`, `internal/remote/`, `README.md`, `MCP.md`
+
 ### GitHub OAuth Web Login (2026-05-13)
 
 - **Added**: Optional GitHub OAuth login for the web UI behind `auth.enabled`, preserving the existing no-login localhost/tailnet behavior by default.

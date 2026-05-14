@@ -7,6 +7,9 @@ import (
 )
 
 func listen(ts remoteNode, opts Options) (net.Listener, error) {
+	if opts.Funnel {
+		return ts.ListenFunnel("tcp", opts.Listen)
+	}
 	if opts.TLS {
 		return ts.ListenTLS("tcp", opts.Listen)
 	}

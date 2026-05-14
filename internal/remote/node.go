@@ -47,6 +47,10 @@ func (n tsnetNode) ListenTLS(network string, addr string) (net.Listener, error) 
 	return n.server.ListenTLS(network, addr)
 }
 
+func (n tsnetNode) ListenFunnel(network string, addr string) (net.Listener, error) {
+	return n.server.ListenFunnel(network, addr)
+}
+
 func (n tsnetNode) Close() error {
 	return n.server.Close()
 }

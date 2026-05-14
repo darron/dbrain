@@ -47,7 +47,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
+	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -56,6 +56,44 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
+	}
+}
+
+func TestAuthMCPTokenAddCreatesDBBackedBearerToken(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "--no-debug", "auth", "mcp", "token", "add", "phone", "--json"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+	var result store.MCPBearerTokenCreateResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal token result: %v output=%q", err, stdout.String())
+	}
+	if !strings.HasPrefix(result.Token, "dbrain_mcp_") || result.Record.Name != "phone" {
+		t.Fatalf("unexpected token result: %#v", result)
+	}
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if ok, err := st.ValidateMCPBearerToken(context.Background(), result.Token); err != nil {
+		t.Fatalf("ValidateMCPBearerToken: %v", err)
+	} else if !ok {
+		t.Fatalf("expected CLI-created token to validate")
 	}
 }
 
@@ -922,7 +960,7 @@ func TestConfigEnvCommandIncludesKnownEnvVars(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"DBRAIN_ROOT", "DBRAIN_CONFIG_FILE", "DBRAIN_OPENROUTER_API_KEY", "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_TSNET_AUTH_KEY_REF", "DBRAIN_R2_SECRET_ACCESS_KEY", "config.yaml"} {
+	for _, value := range []string{"DBRAIN_ROOT", "DBRAIN_CONFIG_FILE", "DBRAIN_OPENROUTER_API_KEY", "DBRAIN_SOURCE_READER_BASE_URL", "DBRAIN_TSNET_AUTH_KEY_REF", "DBRAIN_TSNET_FUNNEL", "DBRAIN_R2_SECRET_ACCESS_KEY", "config.yaml"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected config env output to contain %q, got %q", value, output)
 		}
@@ -947,7 +985,7 @@ func TestConfigEnvCommandMarkdownOutput(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"| Environment variable(s) | config.yaml key | Default | Purpose |", "`DBRAIN_ROOT`", "`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`", "`DBRAIN_TSNET_MCP_PATH`"} {
+	for _, value := range []string{"| Environment variable(s) | config.yaml key | Default | Purpose |", "`DBRAIN_ROOT`", "`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`", "`DBRAIN_TSNET_MCP_PATH`", "`DBRAIN_TSNET_FUNNEL`"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected markdown config env output to contain %q, got %q", value, output)
 		}
@@ -972,7 +1010,7 @@ func TestServeRemoteHelpIncludesTSNetFlags(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"--tsnet-hostname", "--tsnet-state-dir", "--mcp-path", "read/write web UI"} {
+	for _, value := range []string{"--tsnet-hostname", "--tsnet-state-dir", "--tsnet-funnel", "--mcp-path", "read/write web UI"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected serve remote help to contain %q, got %q", value, output)
 		}
@@ -997,7 +1035,7 @@ func TestServeMCPHelpIncludesTSNetTransport(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"stdio, http, or tsnet", "--mcp-path", "--tsnet-hostname", "--tsnet-auth-key-ref"} {
+	for _, value := range []string{"stdio, http, or tsnet", "--mcp-path", "--tsnet-hostname", "--tsnet-funnel", "--tsnet-auth-key-ref"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected serve mcp help to contain %q, got %q", value, output)
 		}
@@ -1024,6 +1062,86 @@ func TestServeRemoteRequiresAtLeastOneSurface(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "at least one surface") {
 		t.Fatalf("expected at least-one-surface error, got %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no output, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestServeRemoteRejectsFunnelWithoutTLS(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "serve", "remote", "--web=false", "--mcp=true", "--tsnet-funnel", "--tsnet-tls=false"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "tsnet funnel requires --tsnet-tls=true") {
+		t.Fatalf("expected Funnel TLS validation error, got %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no output, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestServeRemoteRejectsFunnelUnsupportedPort(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "serve", "remote", "--web=false", "--mcp=true", "--tsnet-funnel", "--tsnet-listen", ":80"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "tsnet funnel listen port must be 443, 8443, or 10000") {
+		t.Fatalf("expected Funnel port validation error, got %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no output, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestServeMCPRejectsFunnelWithoutTLS(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "serve", "mcp", "--transport", "tsnet", "--tsnet-funnel", "--tsnet-tls=false"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "tsnet funnel requires --tsnet-tls=true") {
+		t.Fatalf("expected Funnel TLS validation error, got %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no output, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestServeMCPRejectsFunnelUnsupportedPort(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "serve", "mcp", "--transport", "tsnet", "--tsnet-funnel", "--tsnet-listen", ":80"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "tsnet funnel listen port must be 443, 8443, or 10000") {
+		t.Fatalf("expected Funnel port validation error, got %v", err)
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Fatalf("expected no output, stdout=%q stderr=%q", stdout.String(), stderr.String())
@@ -1075,6 +1193,7 @@ func TestTSNetStatusReadsExplicitConfigFileValues(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(`
 tsnet:
   hostname: dbrain-stable
+  funnel: true
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -1101,6 +1220,9 @@ tsnet:
 	wantStateDir := filepath.Join(dataHome, "dbrain", "tsnet", "dbrain-stable")
 	if payload["state_dir"] != wantStateDir {
 		t.Fatalf("state_dir = %#v, want %q", payload["state_dir"], wantStateDir)
+	}
+	if payload["funnel"] != true {
+		t.Fatalf("funnel = %#v, want true", payload["funnel"])
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())
@@ -1145,6 +1267,67 @@ func TestTSNetStatusAcceptsRemoteSurfaceAndListenFlags(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStatusAcceptsFunnelFlag(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"--root", root,
+		"--no-debug",
+		"tsnet", "status",
+		"--json",
+		"--web=false",
+		"--mcp=true",
+		"--tsnet-funnel",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON output, got %q: %v", stdout.String(), err)
+	}
+	if payload["funnel"] != true {
+		t.Fatalf("funnel = %#v, want true", payload["funnel"])
+	}
+	if payload["tls"] != true {
+		t.Fatalf("tls = %#v, want true", payload["tls"])
+	}
+	if !strings.Contains(fmt.Sprint(payload["warning"]), "Tailscale Funnel is enabled") {
+		t.Fatalf("warning = %#v, want Funnel warning", payload["warning"])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestTSNetStatusRejectsInvalidFunnelPort(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--root", t.TempDir(),
+		"--no-debug",
+		"tsnet", "status",
+		"--tsnet-funnel",
+		"--tsnet-listen", ":80",
+	})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "tsnet funnel listen port must be 443, 8443, or 10000") {
+		t.Fatalf("ExecuteContext error = %v, want Funnel port validation", err)
 	}
 }
 
@@ -1302,6 +1485,59 @@ func TestTSNetStateStatusReportsHealthyRunningNode(t *testing.T) {
 	}
 }
 
+func TestTSNetStateStatusReportsFunnelURLsAndWarning(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	opts := remote.Options{
+		Web:      true,
+		MCP:      true,
+		MCPPath:  "/mcp",
+		Hostname: "dbrain",
+		StateDir: stateDir,
+		Listen:   ":10000",
+		TLS:      true,
+		Funnel:   true,
+	}
+	var probed []string
+	status, err := tsnetStateStatusWithDeps(context.Background(), opts, tsnetStatusDeps{
+		acquireStateLock: func(string) (io.Closer, error) {
+			return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+		},
+		probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+			probed = append(probed, rawURL)
+			return tsnetEndpointProbe{Reachable: true, StatusCode: http.StatusOK, EffectiveURL: rawURL, CertHealth: "ok"}
+		},
+		lookupIPs: func(context.Context, string) []string {
+			return nil
+		},
+		readCertState: func(string, bool) tsnetCertState {
+			return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+	}
+	if !status.Funnel {
+		t.Fatalf("Funnel = false, want true")
+	}
+	if status.WebURL != "https://dbrain.tailnet.ts.net:10000/" {
+		t.Fatalf("WebURL = %q", status.WebURL)
+	}
+	if status.MCPURL != "https://dbrain.tailnet.ts.net:10000/mcp" {
+		t.Fatalf("MCPURL = %q", status.MCPURL)
+	}
+	if !strings.Contains(status.Warning, "Tailscale Funnel is enabled") {
+		t.Fatalf("Warning = %q, want Funnel warning", status.Warning)
+	}
+	if len(probed) != 2 || probed[0] != status.WebURL || probed[1] != status.MCPURL {
+		t.Fatalf("probed URLs = %#v", probed)
+	}
+}
+
 func TestTSNetStateStatusIncludesRunningScheduler(t *testing.T) {
 	t.Parallel()
 
@@ -1414,6 +1650,7 @@ func TestWriteTSNetStatusRendersTables(t *testing.T) {
 		WebURL:       "https://dbrain-dev.tailbdd5.ts.net/",
 		MCPURL:       "https://dbrain-dev.tailbdd5.ts.net/mcp",
 		TLS:          true,
+		Funnel:       true,
 		State:        "healthy",
 		CertHealth:   "ok",
 		LockPath:     "/tmp/dbrain/tsnet/dbrain-dev/dbrain.lock",
@@ -1437,6 +1674,7 @@ func TestWriteTSNetStatusRendersTables(t *testing.T) {
 		"Scheduled Sync All",
 		"Hostname",
 		"dbrain-dev",
+		"Funnel",
 		"Web URL",
 		"https://dbrain-dev.tailbdd5.ts.net/",
 		"Current reason",

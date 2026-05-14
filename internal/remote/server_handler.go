@@ -46,7 +46,12 @@ func buildHandler(cfg config.Config, opts Options, lc whoIsClient, logOut io.Wri
 			return nil, nil, err
 		}
 		closers = append(closers, st)
-		mcpHandler = mcpserver.New(cfg, st).HTTPHandler(mcpserver.HTTPOptions{Path: opts.MCPPath})
+		httpOptions := mcpserver.HTTPOptions{Path: opts.MCPPath}
+		if err := mcpserver.ApplyRuntimeAuthOptions(cfg, st, &httpOptions); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		mcpHandler = mcpserver.New(cfg, st).HTTPHandler(httpOptions)
 	}
 
 	handler, err := NewHandler(HandlerOptions{

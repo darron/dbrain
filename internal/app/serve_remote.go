@@ -17,6 +17,7 @@ func newServeRemoteCommand(root *rootOptions) *cobra.Command {
 	var stateDir string
 	var listen string
 	var tlsEnabled bool
+	var funnelEnabled bool
 	var startupTimeout time.Duration
 	var authKey string
 	var authKeyRef string
@@ -30,8 +31,9 @@ func newServeRemoteCommand(root *rootOptions) *cobra.Command {
 		Short: "Serve web and MCP on a built-in Tailscale tsnet node",
 		Long: `Serve web and/or MCP on a built-in Tailscale tsnet node.
 
-Remote web is the full read/write web UI. MCP remains read-only. Tailscale ACLs
-govern who can reach the node.`,
+Remote web is the full read/write web UI. MCP remains read-only. By default,
+Tailscale ACLs govern who can reach the node. --tsnet-funnel makes the selected
+surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig(root.root, root.configFile)
@@ -50,6 +52,7 @@ govern who can reach the node.`,
 				stateDir:           stateDir,
 				listen:             listen,
 				tlsEnabled:         tlsEnabled,
+				funnelEnabled:      funnelEnabled,
 				startupTimeout:     startupTimeout,
 				authKey:            authKey,
 				authKeyRef:         authKeyRef,
@@ -77,8 +80,9 @@ govern who can reach the node.`,
 	cmd.Flags().StringVar(&mcpPath, "mcp-path", remote.DefaultMCPPath, "Remote MCP endpoint path")
 	cmd.Flags().StringVar(&hostname, "tsnet-hostname", remote.DefaultHostname, "Stable tailnet machine name")
 	cmd.Flags().StringVar(&stateDir, "tsnet-state-dir", "", "Durable tsnet state directory (default: <data_dir>/tsnet/<hostname>)")
-	cmd.Flags().StringVar(&listen, "tsnet-listen", "", "Tailnet listen address (default: :443 with TLS, :80 without TLS)")
+	cmd.Flags().StringVar(&listen, "tsnet-listen", "", "Tailnet listen address (default: :443 with TLS/Funnel, :80 without TLS)")
 	cmd.Flags().BoolVar(&tlsEnabled, "tsnet-tls", true, "Use Tailscale HTTPS via ListenTLS")
+	cmd.Flags().BoolVar(&funnelEnabled, "tsnet-funnel", false, "Expose the tsnet listener through Tailscale Funnel")
 	cmd.Flags().DurationVar(&startupTimeout, "tsnet-startup-timeout", remote.DefaultStartupTimeout, "Maximum time to wait for tsnet Up(ctx)")
 	cmd.Flags().StringVar(&authKey, "tsnet-auth-key", "", "Optional direct Tailscale auth key; prefer --tsnet-auth-key-ref")
 	cmd.Flags().StringVar(&authKeyRef, "tsnet-auth-key-ref", "", "Typed auth key secret ref: env:, op://, or keychain://")
@@ -98,6 +102,7 @@ type serveRemoteFlags struct {
 	stateDir           string
 	listen             string
 	tlsEnabled         bool
+	funnelEnabled      bool
 	startupTimeout     time.Duration
 	authKey            string
 	authKeyRef         string
@@ -136,6 +141,12 @@ func applyServeRemoteFlagOverrides(cmd *cobra.Command, dataDir string, opts *rem
 			opts.Listen = ""
 		}
 	}
+	if changed("tsnet-funnel") {
+		opts.Funnel = flags.funnelEnabled
+		if !changed("tsnet-listen") {
+			opts.Listen = ""
+		}
+	}
 	if changed("tsnet-startup-timeout") {
 		opts.StartupTimeout = flags.startupTimeout
 	}
@@ -165,7 +176,7 @@ func finalizeRemoteServeDefaults(dataDir string, opts *remote.Options) {
 		opts.StateDir = filepath.Join(dataDir, "tsnet", opts.Hostname)
 	}
 	if opts.Listen == "" {
-		if opts.TLS {
+		if opts.TLS || opts.Funnel {
 			opts.Listen = ":443"
 		} else {
 			opts.Listen = ":80"

@@ -11,10 +11,10 @@ import (
 func newAuthCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Manage web UI authentication approvals",
+		Short: "Manage authentication approvals and tokens",
 		RunE:  helpCommand,
 	}
-	cmd.AddCommand(newAuthGitHubCommand(root))
+	cmd.AddCommand(newAuthGitHubCommand(root), newAuthMCPCommand(root))
 	return cmd
 }
 
@@ -66,5 +66,61 @@ func newAuthGitHubApproveCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print approval as JSON")
+	return cmd
+}
+
+func newAuthMCPCommand(root *rootOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "Manage MCP bearer tokens",
+		RunE:  helpCommand,
+	}
+	cmd.AddCommand(newAuthMCPTokenCommand(root))
+	return cmd
+}
+
+func newAuthMCPTokenCommand(root *rootOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "token",
+		Short: "Manage MCP bearer tokens",
+		RunE:  helpCommand,
+	}
+	cmd.AddCommand(newAuthMCPTokenAddCommand(root))
+	return cmd
+}
+
+func newAuthMCPTokenAddCommand(root *rootOptions) *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "add NAME",
+		Short: "Create an MCP bearer token",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig(root.root, root.configFile)
+			if err != nil {
+				return err
+			}
+			st, err := store.Open(cfg.DBPath)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				_ = st.Close()
+			}()
+
+			result, err := st.CreateMCPBearerToken(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				return writeJSON(cmd.OutOrStdout(), result)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "created mcp bearer token %s\n", result.Record.Name)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "token (shown once): %s\n", result.Token)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "use header: Authorization: Bearer <token>")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print created token as JSON")
 	return cmd
 }

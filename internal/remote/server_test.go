@@ -96,6 +96,11 @@ func TestRemoteURLs(t *testing.T) {
 		t.Fatalf("non-default MCPURL = %q", result.MCPURL)
 	}
 
+	result = URLs(status, Options{Web: true, MCPPath: "/mcp", TLS: true, Funnel: true, Listen: ":10000"})
+	if result.WebURL != "https://dbrain.example.ts.net:10000/" {
+		t.Fatalf("funnel WebURL = %q", result.WebURL)
+	}
+
 	result = URLs(&ipnstate.Status{}, Options{Web: true, MCP: true, MCPPath: "/mcp", TLS: true, ControlURL: "https://control.example"})
 	if result.WebURL != "" || result.MCPURL != "" {
 		t.Fatalf("custom control without status host should not synthesize URLs: %#v", result)
@@ -250,15 +255,35 @@ func TestServeWithDepsRejectsNoSurfacesBeforeStartingNode(t *testing.T) {
 	}
 }
 
+func TestServeWithDepsRejectsInvalidFunnelBeforeStartingNode(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	node := &fakeRemoteNode{events: &events}
+	opts := testServeOptions(t)
+	opts.Funnel = true
+	opts.Listen = ":80"
+
+	err := serveWithDeps(context.Background(), config.Config{}, opts, &bytes.Buffer{}, testRemoteDeps(node, &events))
+	if err == nil || !strings.Contains(err.Error(), "tsnet funnel listen port must be 443, 8443, or 10000") {
+		t.Fatalf("expected Funnel port validation error, got %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no node or lock activity, got %v", events)
+	}
+}
+
 func TestServeWithDepsSelectsListenMode(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name string
-		tls  bool
+		name   string
+		tls    bool
+		funnel bool
 	}{
 		{name: "tls", tls: true},
 		{name: "plain", tls: false},
+		{name: "funnel", tls: true, funnel: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -272,12 +297,16 @@ func TestServeWithDepsSelectsListenMode(t *testing.T) {
 			}
 			opts := testServeOptions(t)
 			opts.TLS = tc.tls
+			opts.Funnel = tc.funnel
 
 			err := serveWithDeps(context.Background(), config.Config{}, opts, &bytes.Buffer{}, testRemoteDeps(node, &events))
 			if err == nil || !strings.Contains(err.Error(), "listen failed") {
 				t.Fatalf("expected listen error, got %v", err)
 			}
-			if tc.tls && !node.listenTLSCalled {
+			if tc.funnel && !node.listenFunnelCalled {
+				t.Fatalf("expected ListenFunnel to be called")
+			}
+			if !tc.funnel && tc.tls && !node.listenTLSCalled {
 				t.Fatalf("expected ListenTLS to be called")
 			}
 			if !tc.tls && !node.listenCalled {
@@ -330,6 +359,72 @@ func TestServeWithDepsShutdownOrder(t *testing.T) {
 	}
 
 	assertEventOrder(t, events, "listener-close", "node-close", "lock-close")
+}
+
+func TestServeWithDepsWarnsWhenFunnelEnabled(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	listenerEvents := []string{}
+	listener := newBlockingListener(&listenerEvents)
+	node := &fakeRemoteNode{
+		status:   &ipnstate.Status{CertDomains: []string{"dbrain.example.ts.net."}},
+		localErr: errors.New("no local client"),
+		listener: listener,
+		events:   &events,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := testServeOptions(t)
+	opts.Web = true
+	opts.MCP = false
+	opts.Funnel = true
+	opts.OnReady = cancel
+	var out bytes.Buffer
+	deps := testRemoteDeps(node, &events)
+	deps.buildHandler = func(config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error) {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("ok"))
+		})
+		return handler, func() {}, nil
+	}
+
+	if err := serveWithDeps(ctx, config.Config{RootDir: t.TempDir()}, opts, &out, deps); err != nil {
+		t.Fatalf("serveWithDeps returned error: %v", err)
+	}
+	output := out.String()
+	for _, want := range []string{"--tsnet-funnel", "public internet", "same tsnet node identity", "remote web is read/write"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected Funnel warning to contain %q, got %q", want, output)
+		}
+	}
+}
+
+func TestServeWithDepsWarnsWhenMCPAuthDisabled(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	listener := newBlockingListener(&events)
+	node := &fakeRemoteNode{
+		status:   &ipnstate.Status{CertDomains: []string{"dbrain.example.ts.net."}},
+		localErr: errors.New("no local client"),
+		listener: listener,
+		events:   &events,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := testServeOptions(t)
+	opts.Web = false
+	opts.MCP = true
+	opts.OnReady = cancel
+	var out bytes.Buffer
+
+	if err := serveWithDeps(ctx, config.Config{RootDir: t.TempDir()}, opts, &out, testRemoteDeps(node, &events)); err != nil {
+		t.Fatalf("serveWithDeps returned error: %v", err)
+	}
+	if !strings.Contains(out.String(), "WARNING MCP AUTH DISABLED") || !strings.Contains(out.String(), "Tailscale Funnel") {
+		t.Fatalf("expected open MCP auth warning, got %q", out.String())
+	}
 }
 
 func TestServeWithDepsPassesPreparedStateDirToNode(t *testing.T) {
@@ -409,17 +504,18 @@ func (l fakeStateLock) Close() error {
 }
 
 type fakeRemoteNode struct {
-	status          *ipnstate.Status
-	upErr           error
-	localErr        error
-	listenErr       error
-	listener        net.Listener
-	events          *[]string
-	listened        chan struct{}
-	upDeadlineSet   bool
-	upDeadline      time.Time
-	listenCalled    bool
-	listenTLSCalled bool
+	status             *ipnstate.Status
+	upErr              error
+	localErr           error
+	listenErr          error
+	listener           net.Listener
+	events             *[]string
+	listened           chan struct{}
+	upDeadlineSet      bool
+	upDeadline         time.Time
+	listenCalled       bool
+	listenTLSCalled    bool
+	listenFunnelCalled bool
 }
 
 func (n *fakeRemoteNode) Up(ctx context.Context) (*ipnstate.Status, error) {
@@ -459,6 +555,18 @@ func (n *fakeRemoteNode) Listen(string, string) (net.Listener, error) {
 func (n *fakeRemoteNode) ListenTLS(string, string) (net.Listener, error) {
 	n.listenTLSCalled = true
 	*n.events = append(*n.events, "listen-tls")
+	if n.listened != nil {
+		close(n.listened)
+	}
+	if n.listenErr != nil {
+		return nil, n.listenErr
+	}
+	return n.listener, nil
+}
+
+func (n *fakeRemoteNode) ListenFunnel(string, string) (net.Listener, error) {
+	n.listenFunnelCalled = true
+	*n.events = append(*n.events, "listen-funnel")
 	if n.listened != nil {
 		close(n.listened)
 	}

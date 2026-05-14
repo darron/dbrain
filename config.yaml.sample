@@ -20,6 +20,10 @@ auth:
     client_id: "" # DBRAIN_AUTH_GITHUB_CLIENT_ID
     client_secret: "" # DBRAIN_AUTH_GITHUB_CLIENT_SECRET; secret ref supported
 
+mcp:
+  auth:
+    enabled: false # DBRAIN_MCP_AUTH_ENABLED; require DB-backed Bearer tokens for HTTP/tsnet MCP
+
 summary:
   model: "" # DBRAIN_SUMMARY_MODEL, SUMMARIZE_MODEL
   language: "en" # DBRAIN_SUMMARY_LANGUAGE, DBRAIN_OUTPUT_LANGUAGE, SUMMARIZE_LANGUAGE
@@ -97,8 +101,9 @@ tsnet:
   mcp_path: "/mcp" # DBRAIN_TSNET_MCP_PATH
   hostname: "dbrain" # DBRAIN_TSNET_HOSTNAME
   state_dir: "" # DBRAIN_TSNET_STATE_DIR; default is <data_dir>/tsnet/<hostname>
-  listen: "" # DBRAIN_TSNET_LISTEN; default is :443 with TLS, :80 without TLS
+  listen: "" # DBRAIN_TSNET_LISTEN; default is :443 with TLS/Funnel, :80 without TLS
   tls: true # DBRAIN_TSNET_TLS
+  funnel: false # DBRAIN_TSNET_FUNNEL; public Tailscale Funnel exposure, requires TLS and port 443/8443/10000
   startup_timeout: "45s" # DBRAIN_TSNET_STARTUP_TIMEOUT
   auth_key: "" # DBRAIN_TSNET_AUTH_KEY
   auth_key_ref: "" # DBRAIN_TSNET_AUTH_KEY_REF; env:, op://, or keychain://

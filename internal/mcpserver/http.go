@@ -22,10 +22,12 @@ const (
 )
 
 type HTTPOptions struct {
-	Addr           string
-	Path           string
-	AllowedOrigins []string
-	MaxBodyBytes   int64
+	Addr                 string
+	Path                 string
+	AllowedOrigins       []string
+	MaxBodyBytes         int64
+	RequireBearerAuth    bool
+	BearerTokenValidator BearerTokenValidator
 }
 
 func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions) error {
@@ -41,6 +43,15 @@ func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions) error {
 		_ = st.Close()
 	}()
 
+	if err := ApplyRuntimeAuthOptions(cfg, st, &opts); err != nil {
+		logMCPServer("http_auth_config_failed", "duration", time.Since(start).String(), "error", err.Error())
+		return err
+	}
+	if opts.RequireBearerAuth {
+		logMCPServer("http_bearer_auth_enabled")
+	} else {
+		WriteOpenAuthWarning(os.Stderr, "MCP HTTP")
+	}
 	server := New(cfg, st)
 	httpServer := &http.Server{
 		Addr:              defaultString(opts.Addr, DefaultHTTPAddr),
@@ -92,6 +103,28 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 			http.Error(w, "forbidden origin", http.StatusForbidden)
 			return
 		}
+		if opts.RequireBearerAuth && r.Method != http.MethodOptions {
+			token, ok := bearerTokenFromRequest(r)
+			if !ok {
+				writeBearerUnauthorized(w)
+				return
+			}
+			if opts.BearerTokenValidator == nil {
+				logMCPServer("http_bearer_auth_misconfigured")
+				http.Error(w, "mcp bearer auth is misconfigured", http.StatusInternalServerError)
+				return
+			}
+			allowed, err := opts.BearerTokenValidator(r.Context(), token)
+			if err != nil {
+				logMCPServer("http_bearer_auth_failed", "error", err.Error())
+				http.Error(w, "mcp bearer auth failed", http.StatusInternalServerError)
+				return
+			}
+			if !allowed {
+				writeBearerUnauthorized(w)
+				return
+			}
+		}
 
 		switch r.Method {
 		case http.MethodPost:
@@ -108,6 +141,8 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 			_, _ = fmt.Fprintf(w, `curl -s %s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`+"\n", requestEndpointURL(r))
 		case http.MethodOptions:
 			w.Header().Set("Allow", "POST, GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.Header().Set("Allow", "POST, GET, OPTIONS")

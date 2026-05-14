@@ -33,3 +33,28 @@ func (s *Store) ensureAuthUserTables() error {
 	}
 	return nil
 }
+
+func (s *Store) ensureMCPBearerTokenTables() error {
+	schema := []string{
+		`CREATE TABLE IF NOT EXISTS mcp_bearer_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			token_fingerprint TEXT NOT NULL,
+			revoked_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_bearer_tokens_name
+			ON mcp_bearer_tokens(name);`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_bearer_tokens_active
+			ON mcp_bearer_tokens(revoked_at, updated_at);`,
+	}
+
+	for _, stmt := range schema {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("apply mcp bearer token schema: %w", err)
+		}
+	}
+	return nil
+}

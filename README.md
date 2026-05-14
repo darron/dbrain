@@ -79,6 +79,8 @@ dbrain config env
 ## Command Index
 
 - `dbrain archive media`
+- `dbrain auth github approve <username>`
+- `dbrain auth mcp token add <name>`
 - `dbrain categorize batch`
 - `dbrain categorize item`
 - `dbrain categorize repair`
@@ -162,8 +164,13 @@ same-origin checks by default. Optional GitHub OAuth can add a dbrain session
 gate for the web UI when `auth.enabled` is configured, but the default remains
 the existing no-login local/trusted-network behavior. Do not expose the web UI
 through Tailscale Funnel or a public reverse proxy unless you have explicitly
-reviewed the full route surface and auth boundary. MCP surfaces are read-only,
-but they still expose local brain content to connected clients.
+reviewed the full route surface and auth boundary. `--tsnet-funnel` is public
+exposure on the same tsnet node identity, hostname, state directory, and auth
+credentials; it is not a separate dbrain feature set. MCP surfaces are
+read-only, but they still expose local brain content to connected clients.
+Optional DB-backed MCP bearer auth can protect Streamable HTTP MCP endpoints
+when `mcp.auth.enabled` is set; startup logs warn loudly when HTTP or tsnet MCP
+is served without that guard.
 
 Model-backed commands can send local evidence to the configured model provider.
 Local Ollama calls stay on the configured Ollama endpoint. Hosted OpenRouter or
@@ -379,6 +386,7 @@ references: `env:NAME`,
 | `DBRAIN_AUTH_SESSION_KEY` | `auth.session_key` | `` | Secret key used to sign OAuth state; must be at least 32 random characters. Generate with `openssl rand -hex 32`. |
 | `DBRAIN_AUTH_GITHUB_CLIENT_ID` | `auth.github.client_id` | `` | GitHub OAuth app client ID for web UI login. |
 | `DBRAIN_AUTH_GITHUB_CLIENT_SECRET` | `auth.github.client_secret` | `` | GitHub OAuth app client secret for web UI login. |
+| `DBRAIN_MCP_AUTH_ENABLED` | `mcp.auth.enabled` | `false` | Require DB-backed Bearer tokens on MCP Streamable HTTP endpoints. Create tokens with `dbrain auth mcp token add NAME`. |
 | `DBRAIN_SUMMARY_MODEL` / `SUMMARIZE_MODEL` | `summary.model` | `` | Default model for summarize-backed source and answer synthesis. |
 | `DBRAIN_SUMMARY_LANGUAGE` / `DBRAIN_OUTPUT_LANGUAGE` / `SUMMARIZE_LANGUAGE` | `summary.language` | `en` | Output language for summaries; use `auto` to match source language. |
 | `DBRAIN_CATEGORIZE_MODEL` | `categorize.model` | `openrouter/google/gemini-2.5-flash` | Default LLM model for item/source categorization. |
@@ -477,6 +485,41 @@ origin registered in the GitHub OAuth app. Generate a random session key with
 expire after 24 hours, so restarting the web process logs users out.
 `GITHUB_TOKEN` is still only the GitHub import token; it is not used for web UI
 OAuth.
+
+### MCP Bearer Auth
+
+MCP bearer auth is optional and only applies to Streamable HTTP MCP endpoints:
+`dbrain serve mcp --transport http`, `dbrain serve mcp --transport tsnet`, and
+the MCP surface mounted by `dbrain serve remote`. Local stdio MCP is unchanged.
+
+Create a token:
+
+```sh
+dbrain auth mcp token add laptop
+```
+
+The raw token is shown once. Store it in the MCP client secret store and send it
+as:
+
+```text
+Authorization: Bearer <token>
+```
+
+Enable enforcement with config or env:
+
+```yaml
+mcp:
+  auth:
+    enabled: true
+```
+
+```sh
+export DBRAIN_MCP_AUTH_ENABLED=true
+```
+
+When bearer auth is disabled, HTTP and tsnet MCP startup prints a warning that
+the endpoint is acceptable only on private localhost/trusted tailnet paths and
+must not be exposed through Tailscale Funnel or a public reverse proxy.
 
 ### Import Credentials
 
@@ -862,6 +905,10 @@ Important flags:
 - `--tsnet-*`: same state, auth, TLS, tag, and timeout settings as
   `dbrain serve remote`, used only with `--transport tsnet`.
 
+Set `mcp.auth.enabled=true` before exposing HTTP or tsnet MCP outside a private
+localhost/trusted-tailnet boundary. Authenticated clients must send
+`Authorization: Bearer <token>`.
+
 ### `dbrain serve remote`
 
 Serves the existing read/write web UI and/or the read-only MCP endpoint on a
@@ -871,7 +918,8 @@ replace `dbrain serve web`.
 
 The remote web UI is the same trusted read/write administration surface as
 `serve web`. Tailscale ACLs and node policy govern who can reach it; dbrain does
-not add a second login layer. Do not expose this surface publicly.
+not add a second login layer unless optional GitHub OAuth is configured. Do not
+expose this surface publicly without reviewing the full route and auth boundary.
 
 The default state directory is `<data_dir>/tsnet/<hostname>`, usually
 `~/.local/share/dbrain/tsnet/dbrain`. Keep this directory out of iCloud,
@@ -882,13 +930,22 @@ restarts do not repeatedly create new nodes or certificates.
 dbrain serve remote --web --mcp
 dbrain serve remote --web --mcp=false
 dbrain serve remote --web=false --mcp
+dbrain serve remote --web --mcp --tsnet-funnel
 dbrain serve remote --tsnet-hostname dbrain-dev --tsnet-tls=false --tsnet-listen :80
 ```
+
+`--tsnet-funnel` switches the built-in tsnet listener to Tailscale Funnel. It
+uses the same `tsnet.Server` identity and persistent state as normal remote
+serving; there is no second node to create. Funnel requires tailnet policy that
+allows Funnel, MagicDNS, HTTPS certificates, `--tsnet-tls=true`, and a supported
+listener port (`:443`, `:8443`, or `:10000`). Configure GitHub OAuth for public
+web exposure and `mcp.auth.enabled=true` for public MCP exposure.
 
 MCP smoke test after startup:
 
 ```sh
 curl -s https://dbrain.<tailnet>.ts.net/mcp \
+  -H "Authorization: Bearer $DBRAIN_MCP_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
@@ -901,7 +958,11 @@ Important flags:
 - `--tsnet-hostname`: stable tailnet machine name; default `dbrain`.
 - `--tsnet-state-dir`: durable tsnet state directory; default
   `<data_dir>/tsnet/<hostname>`.
+- `--tsnet-listen`: listener address; default `:443` with TLS/Funnel and `:80`
+  only when TLS is disabled.
 - `--tsnet-tls`: use Tailscale HTTPS through `ListenTLS`; default `true`.
+- `--tsnet-funnel`: expose the same tsnet listener through Tailscale Funnel;
+  default `false`.
 - `--tsnet-startup-timeout`: maximum time to wait for `tsnet.Up`; default
   `45s`.
 - `--tsnet-auth-key-ref`: typed bootstrap secret ref, such as `env:NAME`,
@@ -909,7 +970,8 @@ Important flags:
 - `--tsnet-allow-secret-command`: opt in to YAML-only
   `tsnet.auth_key_command` execution.
 - `--tsnet-advertise-tags`: comma-separated Tailscale tags to request.
-- `--tsnet-control-url`: experimental alternate Tailscale control server URL.
+- `--tsnet-control-url`: experimental alternate Tailscale control server URL;
+  HTTPS/cert and Funnel behavior may differ from Tailscale SaaS.
 
 ### `dbrain launchd`
 
