@@ -11,6 +11,15 @@
 github:
   token: "" # GITHUB_TOKEN; secret ref supported
 
+auth:
+  enabled: false # DBRAIN_AUTH_ENABLED; opt into web UI login
+  providers: ["github"] # DBRAIN_AUTH_PROVIDERS; only github is supported
+  base_url: "http://127.0.0.1:8742" # DBRAIN_AUTH_BASE_URL; OAuth callback origin; use https:// for non-localhost
+  session_key: "" # DBRAIN_AUTH_SESSION_KEY; secret ref supported, required when enabled; generate with: openssl rand -hex 32
+  github:
+    client_id: "" # DBRAIN_AUTH_GITHUB_CLIENT_ID
+    client_secret: "" # DBRAIN_AUTH_GITHUB_CLIENT_SECRET; secret ref supported
+
 summary:
   model: "" # DBRAIN_SUMMARY_MODEL, SUMMARIZE_MODEL
   language: "en" # DBRAIN_SUMMARY_LANGUAGE, DBRAIN_OUTPUT_LANGUAGE, SUMMARIZE_LANGUAGE

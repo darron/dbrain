@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### GitHub OAuth Web Login (2026-05-13)
+
+- **Added**: Optional GitHub OAuth login for the web UI behind `auth.enabled`, preserving the existing no-login localhost/tailnet behavior by default.
+- **Auth**: `dbrain auth github approve USERNAME` now stores approved GitHub web users in the local DB; first successful login binds the row to the GitHub numeric ID and profile fields for future sessions.
+- **Hardening**: Auth config validates the provider whitelist, requires a strong session signing key, requires HTTPS for non-localhost OAuth base URLs, and keeps `GITHUB_TOKEN` scoped to imports instead of web login.
+- **Schema/Tests**: Added schema version 6 `auth_users`, README/config/env docs, and focused store/web tests for provider validation, route protection, OAuth binding, and unapproved-user rejection.
+- **Location**: `internal/app/`, `internal/store/`, `web/`, `README.md`, `config.yaml.sample`
+
 ### Category Vocabulary Automation (2026-05-10)
 
 - **Added**: `dbrain categorize vocab` analyzes existing item/source tags, asks a local Ollama model for conservative `categories.yaml` cleanup suggestions, and can `--apply --repair` the resulting safe vocabulary changes.

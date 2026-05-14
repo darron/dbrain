@@ -158,10 +158,12 @@ upstream bookmark, tab, note, star, or video later disappears.
 administration surfaces. They can edit tags, queue links, save diagnostic chat
 transcripts, trigger model-backed research/synthesis, and access archived media
 helpers. `serve remote` relies on Tailscale/tsnet identity, ACLs, node tags, and
-same-origin checks; there is no separate dbrain login or per-route authorization
-layer. Do not expose the web UI through Tailscale Funnel or a public reverse
-proxy. MCP surfaces are read-only, but they still expose local brain content to
-connected clients.
+same-origin checks by default. Optional GitHub OAuth can add a dbrain session
+gate for the web UI when `auth.enabled` is configured, but the default remains
+the existing no-login local/trusted-network behavior. Do not expose the web UI
+through Tailscale Funnel or a public reverse proxy unless you have explicitly
+reviewed the full route surface and auth boundary. MCP surfaces are read-only,
+but they still expose local brain content to connected clients.
 
 Model-backed commands can send local evidence to the configured model provider.
 Local Ollama calls stay on the configured Ollama endpoint. Hosted OpenRouter or
@@ -360,8 +362,9 @@ docs or issue comments.
 Lookup order is shell environment, `.envrc` or `.env` in the active config/root
 directory, then `config.yaml`. `--root` wins over `DBRAIN_ROOT`.
 
-Secret config values for GitHub, OpenRouter/OpenAI/Ollama API keys, and R2/S3
-credentials may be direct values or typed references: `env:NAME`,
+Secret config values for GitHub import/OAuth, OpenRouter/OpenAI/Ollama API
+keys, auth session signing, and R2/S3 credentials may be direct values or typed
+references: `env:NAME`,
 `op://vault/item/field`, or `keychain://service/account`.
 
 | Environment variable(s) | config.yaml key | Default | Purpose |
@@ -370,6 +373,12 @@ credentials may be direct values or typed references: `env:NAME`,
 | `XDG_CONFIG_HOME` | `(env only)` | `~/.config` | Base directory for default config files. |
 | `XDG_DATA_HOME` | `(env only)` | `~/.local/share` | Base directory for default database, vault, cache, tmp, and logs. |
 | `GITHUB_TOKEN` | `github.token` or `env.GITHUB_TOKEN` | `` | GitHub API token for importing stars. |
+| `DBRAIN_AUTH_ENABLED` | `auth.enabled` | `false` | Enable session-gated web UI login. Disabled by default. |
+| `DBRAIN_AUTH_PROVIDERS` | `auth.providers` | `github when auth is enabled` | OAuth providers allowed for web login; currently only `github` is supported. |
+| `DBRAIN_AUTH_BASE_URL` | `auth.base_url` | `http://127.0.0.1:8742` | Public origin used for OAuth callback URLs. Must be `https://` when auth is enabled for non-localhost deployments. |
+| `DBRAIN_AUTH_SESSION_KEY` | `auth.session_key` | `` | Secret key used to sign OAuth state; must be at least 32 random characters. Generate with `openssl rand -hex 32`. |
+| `DBRAIN_AUTH_GITHUB_CLIENT_ID` | `auth.github.client_id` | `` | GitHub OAuth app client ID for web UI login. |
+| `DBRAIN_AUTH_GITHUB_CLIENT_SECRET` | `auth.github.client_secret` | `` | GitHub OAuth app client secret for web UI login. |
 | `DBRAIN_SUMMARY_MODEL` / `SUMMARIZE_MODEL` | `summary.model` | `` | Default model for summarize-backed source and answer synthesis. |
 | `DBRAIN_SUMMARY_LANGUAGE` / `DBRAIN_OUTPUT_LANGUAGE` / `SUMMARIZE_LANGUAGE` | `summary.language` | `en` | Output language for summaries; use `auto` to match source language. |
 | `DBRAIN_CATEGORIZE_MODEL` | `categorize.model` | `openrouter/google/gemini-2.5-flash` | Default LLM model for item/source categorization. |
@@ -425,6 +434,51 @@ credentials may be direct values or typed references: `env:NAME`,
 | `DBRAIN_R2_SESSION_TOKEN` / `DBRAIN_S3_SESSION_TOKEN` / `AWS_SESSION_TOKEN` | `r2.session_token` | `` | Optional S3-compatible session token. |
 
 ## Authentication
+
+### Web UI GitHub OAuth
+
+By default, `dbrain serve web` and `dbrain serve remote --web` keep the existing
+trusted localhost/tailnet behavior and do not require a dbrain login. To require
+login, create a GitHub OAuth app with this callback URL:
+
+```text
+<auth.base_url>/auth/github/callback
+```
+
+Then enable the allowlisted GitHub provider:
+
+```yaml
+auth:
+  enabled: true
+  providers: ["github"]
+  base_url: "https://dbrain.example.ts.net"
+  session_key: "env:DBRAIN_AUTH_SESSION_SECRET"
+  github:
+    client_id: "..."
+    client_secret: "env:DBRAIN_AUTH_GITHUB_CLIENT_SECRET"
+```
+
+Only `github` is currently accepted in `auth.providers`. OAuth login is denied
+unless the GitHub username has first been approved in the dbrain database:
+
+```bash
+dbrain auth github approve your-github-login
+```
+
+Approved usernames are matched case-insensitively and may be approved with or
+without a leading `@`. The first successful login binds the approved database row
+to the user's GitHub numeric ID and profile fields; future logins can match that
+GitHub ID. Config/env allowlists such as `auth.allowed_github_users` are not the
+authoritative allowlist for web login.
+
+For internet-exposed deployments, `auth.base_url` must be the public `https://`
+origin registered in the GitHub OAuth app. Generate a random session key with
+`openssl rand -hex 32` and store it via a secret ref. Sessions are in-memory and
+expire after 24 hours, so restarting the web process logs users out.
+`GITHUB_TOKEN` is still only the GitHub import token; it is not used for web UI
+OAuth.
+
+### Import Credentials
 
 For GitHub stars, use a fine-grained PAT with:
 

@@ -25,9 +25,23 @@ type WebVersionInfo struct {
 
 type BootstrapResponse struct {
 	App            AppInfo                  `json:"app"`
+	Auth           AuthInfo                 `json:"auth"`
 	Backlog        store.BacklogStats       `json:"backlog"`
 	Activity       store.ActivityStats      `json:"activity"`
 	SourceActivity store.SourceActivityFeed `json:"source_activity"`
+}
+
+type AuthInfo struct {
+	Enabled  bool          `json:"enabled"`
+	Provider string        `json:"provider,omitempty"`
+	User     *AuthUserInfo `json:"user,omitempty"`
+}
+
+type AuthUserInfo struct {
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email,omitempty"`
 }
 
 type SearchResponse struct {
