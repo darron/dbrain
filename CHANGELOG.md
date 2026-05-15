@@ -25,6 +25,8 @@ development date for the change set.
 - **Added**: Optional GitHub OAuth login for the web UI behind `auth.enabled`, preserving the existing no-login localhost/tailnet behavior by default.
 - **Auth**: `dbrain auth github approve USERNAME` now stores approved GitHub web users in the local DB; first successful login binds the row to the GitHub numeric ID and profile fields for future sessions.
 - **Hardening**: Auth config validates the provider whitelist, requires a strong session signing key, requires HTTPS for non-localhost OAuth base URLs, and keeps `GITHUB_TOKEN` scoped to imports instead of web login.
+- **Operations**: Web startup now logs whether auth is enabled or disabled, explicitly notes that web sessions are in-memory, and cleans expired in-memory sessions in the background.
+- **Hardening**: Funnel web auth now rejects localhost/default `auth.base_url` so GitHub OAuth callbacks must use the public HTTPS origin.
 - **Schema/Tests**: Added schema version 6 `auth_users`, README/config/env docs, and focused store/web tests for provider validation, route protection, OAuth binding, and unapproved-user rejection.
 - **Location**: `internal/app/`, `internal/store/`, `web/`, `README.md`, `config.yaml.sample`
 

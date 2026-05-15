@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"golang.org/x/oauth2"
@@ -152,6 +154,19 @@ func TestAuthEnabledProtectsAppRoutesAndLoginIsPublic(t *testing.T) {
 		}
 	})
 
+	t.Run("non api accept json gets login redirect", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Accept", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if location := rec.Header().Get("Location"); location != "/login?return_to=%2F" {
+			t.Fatalf("unexpected redirect location %q", location)
+		}
+	})
+
 	t.Run("login renders github option", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/login", nil)
@@ -164,6 +179,84 @@ func TestAuthEnabledProtectsAppRoutesAndLoginIsPublic(t *testing.T) {
 			t.Fatalf("expected GitHub login option, got %s", body)
 		}
 	})
+}
+
+func TestValidatePublicAuthConfigRequiresPublicBaseURL(t *testing.T) {
+	cfg := loadTestConfig(t)
+	writeAuthConfig(t, cfg, `
+auth:
+  enabled: true
+  providers: [github]
+  session_key: "test-session-key-32-characters-long"
+  github:
+    client_id: "client-id"
+    client_secret: "client-secret"
+`)
+
+	err := ValidatePublicAuthConfig(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "public https origin") {
+		t.Fatalf("expected public base URL error, got %v", err)
+	}
+
+	writeAuthConfig(t, cfg, validAuthConfigYAML())
+	if err := ValidatePublicAuthConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("ValidatePublicAuthConfig with public base URL: %v", err)
+	}
+}
+
+func TestNewHandlerWithOptionsLogsAuthStatus(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		cfg, st := openTestStore(t)
+		var out bytes.Buffer
+		if _, err := NewHandlerWithOptions(cfg, st, HandlerOptions{LogOutput: &out}); err != nil {
+			t.Fatalf("NewHandlerWithOptions: %v", err)
+		}
+		if !strings.Contains(out.String(), "WARNING web auth disabled") || !strings.Contains(out.String(), "unauthenticated") {
+			t.Fatalf("unexpected auth startup log: %q", out.String())
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		cfg, st := openTestStore(t)
+		writeAuthConfig(t, cfg, validAuthConfigYAML())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var out bytes.Buffer
+		if _, err := NewHandlerWithOptions(cfg, st, HandlerOptions{Context: ctx, LogOutput: &out}); err != nil {
+			t.Fatalf("NewHandlerWithOptions: %v", err)
+		}
+		if !strings.Contains(out.String(), "Web auth enabled") || !strings.Contains(out.String(), "sessions are in-memory") {
+			t.Fatalf("unexpected auth startup log: %q", out.String())
+		}
+	})
+}
+
+func TestAuthSessionStoreCleanupExpired(t *testing.T) {
+	base := time.Date(2026, time.May, 14, 12, 0, 0, 0, time.UTC)
+	now := base
+	sessions := newAuthSessionStore()
+	sessions.now = func() time.Time { return now }
+
+	expired, err := sessions.create(authUser{Provider: authProviderGitHub, ID: "1", Username: "old"}, time.Hour)
+	if err != nil {
+		t.Fatalf("create expired session: %v", err)
+	}
+	now = base.Add(30 * time.Minute)
+	active, err := sessions.create(authUser{Provider: authProviderGitHub, ID: "2", Username: "active"}, time.Hour)
+	if err != nil {
+		t.Fatalf("create active session: %v", err)
+	}
+
+	removed := sessions.cleanupExpired(base.Add(89 * time.Minute))
+	if removed != 1 {
+		t.Fatalf("cleanup removed %d sessions, want 1", removed)
+	}
+	if _, ok := sessions.get(expired.Token); ok {
+		t.Fatalf("expired session still present")
+	}
+	if got, ok := sessions.get(active.Token); !ok || got.User.Username != "active" {
+		t.Fatalf("active session missing after cleanup: %#v ok=%v", got, ok)
+	}
 }
 
 func TestGitHubOAuthCallbackCreatesAuthenticatedSession(t *testing.T) {

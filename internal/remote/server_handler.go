@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"io"
 	"net/http"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/darron/dbrain/web"
 )
 
-func buildHandler(cfg config.Config, opts Options, lc whoIsClient, logOut io.Writer) (http.Handler, func(), error) {
+func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIsClient, logOut io.Writer) (http.Handler, func(), error) {
 	var closers []io.Closer
 	cleanup := func() {
 		for i := len(closers) - 1; i >= 0; i-- {
@@ -31,6 +32,8 @@ func buildHandler(cfg config.Config, opts Options, lc whoIsClient, logOut io.Wri
 		closers = append(closers, st)
 		webHandler, err = web.NewHandlerWithOptions(cfg, st, web.HandlerOptions{
 			SchedulerStatus: opts.SchedulerStatus,
+			Context:         ctx,
+			LogOutput:       logOut,
 		})
 		if err != nil {
 			cleanup()

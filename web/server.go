@@ -5,8 +5,10 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -56,6 +58,8 @@ type ServeOptions struct {
 type HandlerOptions struct {
 	SchedulerStatus    func() schedulerstate.SyncAllStatus
 	FullDiskAccessPath string
+	Context            context.Context
+	LogOutput          io.Writer
 }
 
 func Serve(ctx context.Context, cfg config.Config, addr string) error {
@@ -75,7 +79,10 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 		_ = st.Close()
 	}()
 
-	handler, err := NewHandler(cfg, st)
+	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{
+		Context:   ctx,
+		LogOutput: os.Stderr,
+	})
 	if err != nil {
 		return err
 	}
@@ -131,14 +138,19 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 	if err != nil {
 		return nil, fmt.Errorf("read embedded ui index: %w", err)
 	}
-	authCfg, err := loadAuthConfig(context.Background(), cfg)
+	startupCtx := opts.Context
+	if startupCtx == nil {
+		startupCtx = context.Background()
+	}
+	authCfg, err := loadAuthConfig(startupCtx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("load auth config: %w", err)
 	}
-	authManager, err := newAuthManager(authCfg, st)
+	authManager, err := newAuthManagerWithContext(startupCtx, authCfg, st)
 	if err != nil {
 		return nil, fmt.Errorf("init auth manager: %w", err)
 	}
+	writeAuthStartupStatus(opts.LogOutput, authCfg)
 
 	s := &server{
 		cfg:             cfg,
@@ -155,6 +167,21 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 	}
 
 	return s.newMux(), nil
+}
+
+func writeAuthStartupStatus(out io.Writer, authCfg authConfig) {
+	if out == nil {
+		return
+	}
+	if !authCfg.Enabled {
+		_, _ = fmt.Fprintln(out, "WARNING web auth disabled; all web routes are unauthenticated.")
+		return
+	}
+	provider := "unknown"
+	if len(authCfg.Providers) > 0 {
+		provider = strings.Join(authCfg.Providers, ",")
+	}
+	_, _ = fmt.Fprintf(out, "Web auth enabled (provider: %s); sessions are in-memory and expire after %s; restarting the web process logs users out.\n", provider, authCfg.SessionTTL)
 }
 
 func (s *server) newMux() http.Handler {

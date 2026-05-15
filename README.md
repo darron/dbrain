@@ -480,9 +480,11 @@ GitHub ID. Config/env allowlists such as `auth.allowed_github_users` are not the
 authoritative allowlist for web login.
 
 For internet-exposed deployments, `auth.base_url` must be the public `https://`
-origin registered in the GitHub OAuth app. Generate a random session key with
-`openssl rand -hex 32` and store it via a secret ref. Sessions are in-memory and
-expire after 24 hours, so restarting the web process logs users out.
+origin registered in the GitHub OAuth app; `--tsnet-funnel --web` rejects the
+default localhost origin when web auth is enabled. Generate a random session key
+with `openssl rand -hex 32` and store it via a secret ref. Sessions are
+in-memory and expire after 24 hours, so restarting the web process logs users
+out.
 `GITHUB_TOKEN` is still only the GitHub import token; it is not used for web UI
 OAuth.
 

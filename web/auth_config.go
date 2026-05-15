@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -95,20 +96,59 @@ func loadAuthConfig(ctx context.Context, cfg config.Config) (authConfig, error) 
 }
 
 func validateAuthBaseURL(raw string) error {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("auth.base_url must be an absolute URL")
+	u, err := parseAuthBaseURL(raw)
+	if err != nil {
+		return err
 	}
 	if strings.EqualFold(u.Scheme, "https") {
 		return nil
 	}
 	if strings.EqualFold(u.Scheme, "http") {
-		host := strings.ToLower(u.Hostname())
-		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		if isLocalAuthHost(u.Hostname()) {
 			return nil
 		}
 	}
 	return fmt.Errorf("auth.base_url must use https for internet-exposed auth; http is only allowed for localhost development")
+}
+
+// ValidatePublicAuthConfig rejects auth settings that cannot work on public web exposure.
+func ValidatePublicAuthConfig(ctx context.Context, cfg config.Config) error {
+	authCfg, err := loadAuthConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	if !authCfg.Enabled {
+		return nil
+	}
+	return validatePublicAuthBaseURL(authCfg.BaseURL)
+}
+
+func validatePublicAuthBaseURL(raw string) error {
+	u, err := parseAuthBaseURL(raw)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(u.Scheme, "https") || isLocalAuthHost(u.Hostname()) {
+		return fmt.Errorf("auth.base_url must be a public https origin when web auth is used with Tailscale Funnel")
+	}
+	return nil
+}
+
+func parseAuthBaseURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("auth.base_url must be an absolute URL")
+	}
+	return u, nil
+}
+
+func isLocalAuthHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func normalizeOAuthProviders(raw []string) ([]string, error) {

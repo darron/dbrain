@@ -14,6 +14,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mcpserver"
 	"github.com/darron/dbrain/internal/startuplog"
+	"github.com/darron/dbrain/web"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn/ipnstate"
 )
@@ -40,7 +41,7 @@ type remoteDeps struct {
 	acquireStateLock func(string) (stateLock, error)
 	resolveAuthKey   func(context.Context, Options) (SecretResult, error)
 	newNode          func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode
-	buildHandler     func(config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error)
+	buildHandler     func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error)
 }
 
 func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer) error {
@@ -65,6 +66,11 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	}
 	if err := opts.Validate(); err != nil {
 		return err
+	}
+	if opts.Funnel && opts.Web {
+		if err := web.ValidatePublicAuthConfig(ctx, cfg); err != nil {
+			return err
+		}
 	}
 	startuplog.WriteVersion(logOut)
 
@@ -127,7 +133,7 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 		_, _ = fmt.Fprintf(logOut, "WARNING tsnet LocalClient unavailable; request identity logging will use remote addresses: %v\n", err)
 	}
 
-	handler, cleanup, err := deps.buildHandler(cfg, opts, lc, logOut)
+	handler, cleanup, err := deps.buildHandler(ctx, cfg, opts, lc, logOut)
 	if err != nil {
 		return err
 	}

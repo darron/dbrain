@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -273,6 +275,41 @@ func TestServeWithDepsRejectsInvalidFunnelBeforeStartingNode(t *testing.T) {
 	}
 }
 
+func TestServeWithDepsRejectsFunnelWebAuthWithLocalhostBaseURL(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+auth:
+  enabled: true
+  providers: [github]
+  session_key: "test-session-key-32-characters-long"
+  github:
+    client_id: "client-id"
+    client_secret: "client-secret"
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	events := []string{}
+	node := &fakeRemoteNode{events: &events}
+	opts := testServeOptions(t)
+	opts.Funnel = true
+	opts.Web = true
+	opts.MCP = false
+
+	err = serveWithDeps(context.Background(), cfg, opts, &bytes.Buffer{}, testRemoteDeps(node, &events))
+	if err == nil || !strings.Contains(err.Error(), "auth.base_url must be a public https origin") {
+		t.Fatalf("expected public auth base URL validation error, got %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no node or lock activity, got %v", events)
+	}
+}
+
 func TestServeWithDepsSelectsListenMode(t *testing.T) {
 	t.Parallel()
 
@@ -382,7 +419,7 @@ func TestServeWithDepsWarnsWhenFunnelEnabled(t *testing.T) {
 	opts.OnReady = cancel
 	var out bytes.Buffer
 	deps := testRemoteDeps(node, &events)
-	deps.buildHandler = func(config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error) {
+	deps.buildHandler = func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error) {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte("ok"))
 		})
@@ -482,7 +519,7 @@ func testRemoteDeps(node *fakeRemoteNode, events *[]string) remoteDeps {
 		newNode: func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode {
 			return node
 		},
-		buildHandler: func(config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error) {
+		buildHandler: func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte("ok"))
 			})

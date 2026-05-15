@@ -54,6 +54,14 @@ type githubOAuthUser struct {
 }
 
 func newAuthManager(cfg authConfig, st *store.Store) (*authManager, error) {
+	return newAuthManagerWithCleanup(context.TODO(), cfg, st, false)
+}
+
+func newAuthManagerWithContext(ctx context.Context, cfg authConfig, st *store.Store) (*authManager, error) {
+	return newAuthManagerWithCleanup(ctx, cfg, st, true)
+}
+
+func newAuthManagerWithCleanup(ctx context.Context, cfg authConfig, st *store.Store, cleanup bool) (*authManager, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
@@ -65,6 +73,9 @@ func newAuthManager(cfg authConfig, st *store.Store) (*authManager, error) {
 		cfg:      cfg,
 		store:    st,
 		sessions: newAuthSessionStore(),
+	}
+	if cleanup {
+		manager.sessions.startCleanup(ctx, cfg.SessionTTL/2)
 	}
 	if oauthProviderAllowed(cfg.Providers, authProviderGitHub) {
 		manager.githubOAuth = &oauth2.Config{
@@ -405,11 +416,7 @@ func authRoute(requestPath string) (provider string, callback bool, ok bool) {
 }
 
 func wantsAuthJSON(r *http.Request) bool {
-	if strings.HasPrefix(r.URL.Path, "/api/") {
-		return true
-	}
-	accept := strings.ToLower(r.Header.Get("Accept"))
-	return strings.Contains(accept, "application/json")
+	return strings.HasPrefix(r.URL.Path, "/api/")
 }
 
 func authReturnToForRequest(r *http.Request) string {

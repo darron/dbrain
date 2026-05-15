@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -34,6 +35,24 @@ func newAuthSessionStore() *authSessionStore {
 		sessions: map[string]authSession{},
 		now:      time.Now,
 	}
+}
+
+func (s *authSessionStore) startCleanup(ctx context.Context, interval time.Duration) {
+	if ctx == nil || interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.cleanupExpired(s.now())
+			}
+		}
+	}()
 }
 
 func (s *authSessionStore) create(user authUser, ttl time.Duration) (authSession, error) {
@@ -82,6 +101,19 @@ func (s *authSessionStore) delete(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, token)
+}
+
+func (s *authSessionStore) cleanupExpired(now time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for token, session := range s.sessions {
+		if !session.ExpiresAt.After(now) {
+			delete(s.sessions, token)
+			removed++
+		}
+	}
+	return removed
 }
 
 func randomToken(bytes int) (string, error) {
