@@ -12,7 +12,7 @@
   "dependencies": {
     "dompurify": "^3.4.1",
     "marked": "^18.0.2",
-    "svelte": "^5.39.6"
+    "svelte": "^5.55.7"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",
