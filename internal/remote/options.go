@@ -2,8 +2,10 @@ package remote
 
 import (
 	"fmt"
+	"net"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +28,7 @@ type Options struct {
 	StateDir           string
 	Listen             string
 	TLS                bool
+	Funnel             bool
 	StartupTimeout     time.Duration
 	AuthKey            string
 	AuthKeyRef         string
@@ -41,9 +44,10 @@ type Options struct {
 func OptionsFromRuntime(cfg config.Config) (Options, error) {
 	hostname := firstRuntimeString(cfg.RootDir, DefaultHostname, "DBRAIN_TSNET_HOSTNAME")
 	tls := runtimeenv.FirstBoolDefault(cfg.RootDir, true, "DBRAIN_TSNET_TLS")
+	funnel := runtimeenv.FirstBoolDefault(cfg.RootDir, false, "DBRAIN_TSNET_FUNNEL")
 
 	stateDir := firstRuntimeString(cfg.RootDir, filepath.Join(cfg.DataDir, "tsnet", hostname), "DBRAIN_TSNET_STATE_DIR")
-	listen := firstRuntimeString(cfg.RootDir, defaultListen(tls), "DBRAIN_TSNET_LISTEN")
+	listen := firstRuntimeString(cfg.RootDir, defaultListen(tls || funnel), "DBRAIN_TSNET_LISTEN")
 	startupTimeout := DefaultStartupTimeout
 	if raw, ok := runtimeenv.Lookup(cfg.RootDir, "DBRAIN_TSNET_STARTUP_TIMEOUT"); ok {
 		parsed, err := time.ParseDuration(raw)
@@ -61,6 +65,7 @@ func OptionsFromRuntime(cfg config.Config) (Options, error) {
 		StateDir:           stateDir,
 		Listen:             listen,
 		TLS:                tls,
+		Funnel:             funnel,
 		StartupTimeout:     startupTimeout,
 		AuthKey:            runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TSNET_AUTH_KEY"),
 		AuthKeyRef:         runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TSNET_AUTH_KEY_REF"),
@@ -97,6 +102,9 @@ func (o *Options) Validate() error {
 	if strings.TrimSpace(o.Listen) == "" {
 		return fmt.Errorf("tsnet listen address is required")
 	}
+	if err := ValidateFunnelOptions(*o); err != nil {
+		return err
+	}
 	cleaned, err := ValidateMCPPath(o.MCPPath)
 	if err != nil {
 		return err
@@ -124,6 +132,36 @@ func ValidateMCPPath(value string) (string, error) {
 		return "", fmt.Errorf("mcp path must be clean")
 	}
 	return cleaned, nil
+}
+
+func ValidateFunnelOptions(o Options) error {
+	if !o.Funnel {
+		return nil
+	}
+	if !o.TLS {
+		return fmt.Errorf("tsnet funnel requires --tsnet-tls=true")
+	}
+	listen := strings.TrimSpace(o.Listen)
+	if listen == "" {
+		return fmt.Errorf("tsnet listen address is required")
+	}
+	host, portString, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("parse tsnet funnel listen address: %w", err)
+	}
+	if strings.TrimSpace(host) != "" {
+		return fmt.Errorf("tsnet funnel listen address must not include a host")
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		return fmt.Errorf("parse tsnet funnel listen port: %w", err)
+	}
+	switch port {
+	case 443, 8443, 10000:
+		return nil
+	default:
+		return fmt.Errorf("tsnet funnel listen port must be 443, 8443, or 10000")
+	}
 }
 
 func firstRuntimeString(rootDir string, fallback string, keys ...string) string {

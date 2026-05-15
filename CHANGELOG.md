@@ -5,6 +5,41 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Authenticated Access Logging (2026-05-14)
+
+- **Operations**: Web requests now emit app-layer access logs with the authenticated GitHub identity after session validation, which keeps Funnel traffic attributable even without Tailscale identity headers.
+- **Operations**: MCP Streamable HTTP requests now emit app-layer access logs with Bearer token name/fingerprint metadata when token auth is enabled, without logging raw token secrets.
+- **Location**: `web/`, `internal/mcpserver/`, `internal/store/`, `internal/remote/`
+
+### Tailscale Funnel Toggle (2026-05-14)
+
+- **Added**: Optional `--tsnet-funnel`, `tsnet.funnel`, and `DBRAIN_TSNET_FUNNEL` support for serving the existing built-in tsnet listener through Tailscale Funnel.
+- **Behavior**: Funnel uses the same tsnet node identity, hostname, state directory, and Tailscale auth credentials as normal `serve remote`; it is a listener mode, not a separate feature set.
+- **Hardening**: Funnel mode requires TLS and one of Tailscale's supported Funnel ports (`:443`, `:8443`, or `:10000`) and prints public-exposure warnings for web/MCP surfaces.
+- **Docs**: Added Tailscale policy `nodeAttrs` examples for granting Funnel publishing to one user or a dbrain tag, and clarified that app auth still controls public access.
+- **Docs**: Split detailed remote, tsnet, and Funnel operations into [TAILSCALE.md](TAILSCALE.md) and added a README documentation map.
+- **Docs**: Split the detailed command index and command/task reference into [COMMANDS.md](COMMANDS.md) so the README stays shorter and easier to scan.
+- **Location**: `internal/remote/`, `internal/app/`, [README.md](README.md), [COMMANDS.md](COMMANDS.md), [TAILSCALE.md](TAILSCALE.md), [MCP.md](MCP.md), [config.yaml.sample](config.yaml.sample)
+
+### MCP Bearer Token Auth (2026-05-14)
+
+- **Added**: Optional DB-backed Bearer-token auth for MCP Streamable HTTP endpoints behind `mcp.auth.enabled` / `DBRAIN_MCP_AUTH_ENABLED`.
+- **CLI**: `dbrain auth mcp token add NAME` creates a one-time displayed MCP bearer token while storing only its SHA-256 hash and fingerprint in SQLite.
+- **Hardening**: MCP HTTP requests now return `401 WWW-Authenticate: Bearer` when auth is enabled and the token is missing or invalid.
+- **Operations**: HTTP and tsnet MCP startup now prints a loud warning when MCP is served without dbrain bearer-token auth, explicitly calling out Tailscale Funnel/public proxy exposure.
+- **Location**: `internal/mcpserver/`, `internal/store/`, `internal/app/`, `internal/remote/`, `README.md`, `MCP.md`
+
+### GitHub OAuth Web Login (2026-05-13)
+
+- **Added**: Optional GitHub OAuth login for the web UI behind `auth.enabled`, preserving the existing no-login localhost/tailnet behavior by default.
+- **Auth**: `dbrain auth github approve USERNAME` now stores approved GitHub web users in the local DB; first successful login binds the row to the GitHub numeric ID and profile fields for future sessions.
+- **CLI**: `dbrain auth github list/remove` manage approved web users, and `dbrain auth mcp token list/revoke` manage MCP bearer token records without revealing raw token secrets.
+- **Hardening**: Auth config validates the provider whitelist, requires a strong session signing key, requires HTTPS for non-localhost OAuth base URLs, and keeps `GITHUB_TOKEN` scoped to imports instead of web login.
+- **Operations**: Web startup now logs whether auth is enabled or disabled, explicitly notes that web sessions are in-memory, and cleans expired in-memory sessions in the background.
+- **Hardening**: Funnel web auth now rejects localhost/default `auth.base_url` so GitHub OAuth callbacks must use the public HTTPS origin.
+- **Schema/Tests**: Added and repaired the `auth_users` schema migration, README/config/env docs, and focused store/web tests for provider validation, route protection, OAuth binding, and unapproved-user rejection.
+- **Location**: `internal/app/`, `internal/store/`, `web/`, `README.md`, `config.yaml.sample`
+
 ### Category Vocabulary Automation (2026-05-10)
 
 - **Added**: `dbrain categorize vocab` analyzes existing item/source tags, asks a local Ollama model for conservative `categories.yaml` cleanup suggestions, and can `--apply --repair` the resulting safe vocabulary changes.

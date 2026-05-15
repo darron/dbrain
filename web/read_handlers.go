@@ -47,6 +47,7 @@ func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			HasFTS:  s.store.HasFTS(),
 			Version: webVersionInfo(),
 		},
+		Auth:           s.authInfo(r.Context()),
 		Backlog:        backlog,
 		Activity:       activity,
 		SourceActivity: sourceActivity,

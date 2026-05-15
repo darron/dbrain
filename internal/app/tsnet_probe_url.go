@@ -25,7 +25,7 @@ func tsnetStatusURLs(opts remote.Options, host string) (string, string) {
 		host = opts.Hostname
 	}
 	scheme := "https"
-	if !opts.TLS {
+	if !opts.TLS && !opts.Funnel {
 		scheme = "http"
 	}
 	base := scheme + "://" + hostWithStatusPort(host, opts.Listen, scheme)

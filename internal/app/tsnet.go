@@ -92,6 +92,7 @@ func writeTSNetStatus(dst io.Writer, status tsnetStateInfo) error {
 	}
 	if _, err := fmt.Fprintln(dst, renderTSNetTable(dst, [][]string{
 		{"TLS", boolString(status.TLS)},
+		{"Funnel", boolString(status.Funnel)},
 		{"Control URL", tsnetEmptyDash(status.ControlURL)},
 		{"Cert health", tsnetEmptyDash(status.CertHealth)},
 		{"Cert error", tsnetEmptyDash(status.CertError)},
