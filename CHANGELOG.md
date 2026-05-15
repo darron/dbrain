@@ -17,7 +17,9 @@ development date for the change set.
 - **Behavior**: Funnel uses the same tsnet node identity, hostname, state directory, and Tailscale auth credentials as normal `serve remote`; it is a listener mode, not a separate feature set.
 - **Hardening**: Funnel mode requires TLS and one of Tailscale's supported Funnel ports (`:443`, `:8443`, or `:10000`) and prints public-exposure warnings for web/MCP surfaces.
 - **Docs**: Added Tailscale policy `nodeAttrs` examples for granting Funnel publishing to one user or a dbrain tag, and clarified that app auth still controls public access.
-- **Location**: `internal/remote/`, `internal/app/`, `README.md`, `MCP.md`, `config.yaml.sample`
+- **Docs**: Split detailed remote, tsnet, and Funnel operations into [TAILSCALE.md](TAILSCALE.md) and added a README documentation map.
+- **Docs**: Split the detailed command index and command/task reference into [COMMANDS.md](COMMANDS.md) so the README stays shorter and easier to scan.
+- **Location**: `internal/remote/`, `internal/app/`, [README.md](README.md), [COMMANDS.md](COMMANDS.md), [TAILSCALE.md](TAILSCALE.md), [MCP.md](MCP.md), [config.yaml.sample](config.yaml.sample)
 
 ### MCP Bearer Token Auth (2026-05-14)
 

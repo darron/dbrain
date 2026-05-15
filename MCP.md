@@ -279,7 +279,8 @@ This does not create a second identity. It uses the same `tsnet.Server`
 hostname, state directory, and Tailscale auth credentials, but switches the
 listener from tailnet-only `ListenTLS` to public `ListenFunnel`. dbrain requires
 TLS and a Funnel-supported port (`:443`, `:8443`, or `:10000`) before starting
-that mode.
+that mode. See [TAILSCALE.md](TAILSCALE.md) for Funnel policy, DNS
+propagation, web OAuth, MCP bearer auth, and access-log troubleshooting.
 
 Smoke test either HTTP-over-Tailscale or built-in `tsnet` with:
 
