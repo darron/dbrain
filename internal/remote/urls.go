@@ -20,7 +20,7 @@ func URLs(status *ipnstate.Status, opts Options) ServeResult {
 		return result
 	}
 	scheme := "https"
-	if !opts.TLS {
+	if !opts.TLS && !opts.Funnel {
 		scheme = "http"
 	}
 	base := scheme + "://" + hostWithListenPort(host, opts.Listen, scheme)

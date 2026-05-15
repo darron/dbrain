@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mcpserver"
 	"github.com/darron/dbrain/internal/startuplog"
+	"github.com/darron/dbrain/web"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn/ipnstate"
 )
@@ -26,6 +28,7 @@ type remoteNode interface {
 	LocalClient() (whoIsClient, error)
 	Listen(network string, addr string) (net.Listener, error)
 	ListenTLS(network string, addr string) (net.Listener, error)
+	ListenFunnel(network string, addr string) (net.Listener, error)
 	Close() error
 }
 
@@ -38,7 +41,7 @@ type remoteDeps struct {
 	acquireStateLock func(string) (stateLock, error)
 	resolveAuthKey   func(context.Context, Options) (SecretResult, error)
 	newNode          func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode
-	buildHandler     func(config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error)
+	buildHandler     func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error)
 }
 
 func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer) error {
@@ -63,6 +66,11 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	}
 	if err := opts.Validate(); err != nil {
 		return err
+	}
+	if opts.Funnel && opts.Web {
+		if err := web.ValidatePublicAuthConfig(ctx, cfg); err != nil {
+			return err
+		}
 	}
 	startuplog.WriteVersion(logOut)
 
@@ -94,10 +102,14 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 		_, _ = fmt.Fprintf(logOut, "WARNING %s\n", warning)
 	}
 	if strings.TrimSpace(opts.ControlURL) != "" {
-		_, _ = fmt.Fprintf(logOut, "WARNING --tsnet-control-url is experimental; DNS and ListenTLS certificate behavior may differ from Tailscale SaaS: %s\n", opts.ControlURL)
+		_, _ = fmt.Fprintf(logOut, "WARNING --tsnet-control-url is experimental; DNS and tsnet HTTPS certificate behavior may differ from Tailscale SaaS: %s\n", opts.ControlURL)
 		if opts.TLS {
 			_, _ = fmt.Fprintln(logOut, "WARNING --tsnet-control-url with --tsnet-tls=true may not produce .ts.net HTTPS URLs on custom control servers.")
 		}
+	}
+	if opts.Funnel {
+		_, _ = fmt.Fprintln(logOut, "WARNING --tsnet-funnel exposes configured dbrain surfaces to the public internet through Tailscale Funnel; it uses the same tsnet node identity, hostname, state dir, and auth credentials.")
+		_, _ = fmt.Fprintln(logOut, "WARNING Tailscale Funnel requires tailnet Funnel policy, MagicDNS, HTTPS certificates, and a supported port (:443, :8443, or :10000).")
 	}
 
 	userLogf := newUserLogger(logOut)
@@ -121,7 +133,7 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 		_, _ = fmt.Fprintf(logOut, "WARNING tsnet LocalClient unavailable; request identity logging will use remote addresses: %v\n", err)
 	}
 
-	handler, cleanup, err := deps.buildHandler(cfg, opts, lc, logOut)
+	handler, cleanup, err := deps.buildHandler(ctx, cfg, opts, lc, logOut)
 	if err != nil {
 		return err
 	}
@@ -151,7 +163,14 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 		_, _ = fmt.Fprintf(logOut, "Remote MCP: %s\n", urls.MCPURL)
 	}
 	if opts.Web {
-		_, _ = fmt.Fprintln(logOut, "WARNING remote web is read/write; Tailscale ACLs govern access.")
+		if opts.Funnel {
+			_, _ = fmt.Fprintln(logOut, "WARNING remote web is read/write and Tailscale Funnel can make it publicly reachable; configure web OAuth auth or disable --web before public exposure.")
+		} else {
+			_, _ = fmt.Fprintln(logOut, "WARNING remote web is read/write; Tailscale ACLs govern access.")
+		}
+	}
+	if opts.MCP && !mcpserver.AuthEnabled(cfg) {
+		mcpserver.WriteOpenAuthWarning(logOut, "Remote MCP")
 	}
 	if opts.OnReady != nil {
 		opts.OnReady()
@@ -162,11 +181,22 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		shutdownErr := httpServer.Shutdown(shutdownCtx)
+		var serveErr error
+		select {
+		case serveErr = <-errCh:
+			if errors.Is(serveErr, http.ErrServerClosed) {
+				serveErr = nil
+			}
+		case <-shutdownCtx.Done():
+			if shutdownErr == nil {
+				shutdownErr = shutdownCtx.Err()
+			}
+		}
 		closeErr := node.Close()
 		nodeClosed = true
 		lockErr := lock.Close()
 		lockHeld = false
-		return firstErr(shutdownErr, closeErr, lockErr, ctx.Err())
+		return firstErr(shutdownErr, serveErr, closeErr, lockErr, ctx.Err())
 	case err := <-errCh:
 		closeErr := node.Close()
 		nodeClosed = true

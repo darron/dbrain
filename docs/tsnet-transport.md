@@ -120,7 +120,7 @@ Current transports:
 - `http`: `dbrain serve mcp --transport http` listens on localhost and can be
   exposed by `tailscale serve`.
 
-Proposed additional transport:
+Built-in remote transport:
 
 - `remote tsnet`: `dbrain` embeds Tailscale directly, listens inside the
   tailnet, and mounts web plus MCP on one HTTPS server.
@@ -132,6 +132,9 @@ Relevant upstream docs:
 - `tsnet` uses persistent state so a program can reconnect after restart:
   https://tailscale.com/docs/features/tsnet/how-to/create-basic-tsnet-app
 - `ListenTLS` serves HTTPS using Tailscale certificate support:
+  https://tailscale.com/docs/reference/tsnet-server-api
+- `ListenFunnel` is the tsnet API for public Funnel listeners. dbrain exposes
+  it only when `--tsnet-funnel` / `tsnet.funnel` is explicitly enabled:
   https://tailscale.com/docs/reference/tsnet-server-api
 
 ## Goals
@@ -258,14 +261,15 @@ Suggested flags:
 | `--mcp-path` | `/mcp` | Remote MCP endpoint path. Must pass strict path validation. |
 | `--tsnet-hostname` | `dbrain` | Stable tailnet machine name. |
 | `--tsnet-state-dir` | `~/.local/share/dbrain/tsnet/<hostname>` | Durable tsnet node state. |
-| `--tsnet-listen` | `:443` when TLS is on, `:80` when TLS is off | Tailnet listener address. |
+| `--tsnet-listen` | `:443` when TLS or Funnel is on, `:80` when TLS is off | Tailnet listener address. |
 | `--tsnet-tls` | `true` | Use `ListenTLS` for HTTPS. |
+| `--tsnet-funnel` | `false` | Use `ListenFunnel` for explicit public Tailscale Funnel exposure. Requires TLS and port `:443`, `:8443`, or `:10000`. |
 | `--tsnet-startup-timeout` | `45s` | Maximum time to wait for `Up(ctx)` before failing startup. |
 | `--tsnet-auth-key` | empty | Optional direct bootstrap auth key. Prefer refs. |
 | `--tsnet-auth-key-ref` | empty | Typed secret reference for bootstrap auth key. |
 | `--tsnet-allow-secret-command` | `false` | Required before command refs are executed. |
 | `--tsnet-advertise-tags` | empty | Optional comma-separated Tailscale tags. |
-| `--tsnet-control-url` | empty | Experimental alternate control server. HTTPS/cert behavior may differ from Tailscale SaaS. |
+| `--tsnet-control-url` | empty | Experimental alternate control server. HTTPS/cert and Funnel behavior may differ from Tailscale SaaS. |
 | `--tsnet-verbose` | `false` | Enable tsnet logs on stderr. |
 
 `serve remote` does not need a `--transport` flag in v1 because remote means
@@ -311,6 +315,7 @@ tsnet:
   state_dir: ~/.local/share/dbrain/tsnet/dbrain
   listen: :443
   tls: true
+  funnel: false
   startup_timeout: 45s
   web: true
   mcp: true
@@ -335,12 +340,13 @@ Environment variables:
 | `DBRAIN_TSNET_STATE_DIR` | `tsnet.state_dir` | Persistent tsnet state directory. |
 | `DBRAIN_TSNET_LISTEN` | `tsnet.listen` | Tailnet listen address. |
 | `DBRAIN_TSNET_TLS` | `tsnet.tls` | Enable HTTPS via `ListenTLS`. |
+| `DBRAIN_TSNET_FUNNEL` | `tsnet.funnel` | Enable public Tailscale Funnel via `ListenFunnel`. |
 | `DBRAIN_TSNET_STARTUP_TIMEOUT` | `tsnet.startup_timeout` | Maximum time to wait for `Up(ctx)`. |
 | `DBRAIN_TSNET_AUTH_KEY` | `tsnet.auth_key` | Direct auth key. Prefer refs. |
 | `DBRAIN_TSNET_AUTH_KEY_REF` | `tsnet.auth_key_ref` | Typed secret reference. |
 | `DBRAIN_TSNET_ALLOW_SECRET_COMMAND` | `tsnet.allow_secret_command` | Permit command resolver execution. |
 | `DBRAIN_TSNET_ADVERTISE_TAGS` | `tsnet.advertise_tags` | Comma-separated Tailscale tags. |
-| `DBRAIN_TSNET_CONTROL_URL` | `tsnet.control_url` | Experimental alternate control server URL. |
+| `DBRAIN_TSNET_CONTROL_URL` | `tsnet.control_url` | Experimental alternate control server URL. HTTPS/cert and Funnel behavior may differ. |
 | `DBRAIN_TSNET_VERBOSE` | `tsnet.verbose` | Verbose tsnet logging. |
 
 `--tsnet-advertise-tags` and `DBRAIN_TSNET_ADVERTISE_TAGS` should parse as
@@ -557,8 +563,12 @@ Default posture:
 - `tsnet` exposes only to the tailnet.
 - `tsnet` uses HTTPS by default.
 - Plain HTTP over tsnet requires explicit opt-out.
-- Avoid Tailscale Funnel for web or MCP unless a user explicitly chooses public
-  internet exposure.
+- Tailscale Funnel is disabled by default and requires explicit
+  `--tsnet-funnel` / `tsnet.funnel` public internet exposure. It uses the same
+  tsnet node identity, hostname, state directory, and auth credentials.
+- MCP Streamable HTTP can optionally require DB-backed Bearer tokens with
+  `mcp.auth.enabled`; startup warns loudly when HTTP or tsnet MCP is mounted
+  without that guard.
 
 ### Web UI Access
 
@@ -841,6 +851,9 @@ surface checks, including `--web`, `--mcp`, `--mcp-path`,
   re-emitted URL hints.
 - Use `ListenTLS("tcp", listen)` by default.
 - Use `Listen("tcp", listen)` only when TLS is explicitly disabled.
+- Use `ListenFunnel("tcp", listen)` only when Funnel is explicitly enabled.
+  Validate that Funnel has TLS on and a supported hostless listen address:
+  `:443`, `:8443`, or `:10000`.
 - Log the actual FQDN and URLs reported by tsnet/status where available; do not
   rely only on reconstructing strings from `--tsnet-hostname`.
 - Add an outer dispatcher on the tsnet listener that sends `path == mcp_path`
@@ -849,7 +862,8 @@ surface checks, including `--web`, `--mcp`, `--mcp-path`,
   errors, not SPA HTML.
 - Mount the existing web handler at `/` when web is enabled, after the MCP route
   so any SPA fallback cannot swallow `/mcp`.
-- Emit a remote web startup warning that Tailscale ACLs govern access.
+- Emit a remote web startup warning that Tailscale ACLs govern access, or a
+  public-exposure warning when Funnel is enabled.
 - Add remote-only security headers and concrete Origin checks for mutating web
   requests on the tsnet listener.
 - Set bounded HTTP read-header, read, and write timeouts on the remote server.
@@ -1000,8 +1014,15 @@ dbrain serve remote \
 - Adding `tailscale.com/tsnet` may materially increase binary size and
   dependency footprint.
 - Some MCP clients may not support remote Streamable HTTP yet.
-- Web UI remote exposure is read/write and has no separate dbrain login in the
-  first pass; access relies on Tailscale ACLs/tags.
+- Web UI remote exposure is read/write. It can now be gated by optional GitHub
+  OAuth, but the default remains trusted-local/tailnet behavior and access still
+  relies on Tailscale ACLs/tags unless that auth is configured.
+- MCP remote exposure is read-only but can reveal local brain content. It can
+  now be gated by optional DB-backed Bearer tokens; unauthenticated MCP startup
+  warnings are guardrails, not proof that a Funnel/public proxy is absent.
+- Funnel mode makes the selected tsnet web/MCP surfaces public when tailnet
+  policy permits it. It is a listener mode on the same tsnet node, not a new
+  identity or credential set.
 - Remote web mutating routes need browser-origin/CSRF guardrails because
   Tailscale ACLs do not protect against every browser-origin scenario.
 - The concrete v1 CSRF guard only checks browser `Origin`; it is not a
@@ -1010,8 +1031,9 @@ dbrain serve remote \
   without cookie auth or browser sessions.
 - Web UI remote exposure may need additional UI-side checks for absolute URLs,
   websocket/SSE assumptions if added later, and safe external-link behavior.
-- Custom control servers may not support `.ts.net` DNS or `ListenTLS`
-  certificate behavior; treat `--tsnet-control-url` as experimental.
+- Custom control servers may not support `.ts.net` DNS, `ListenTLS`
+  certificate behavior, or `ListenFunnel`; treat `--tsnet-control-url` as
+  experimental.
 - Tailscale `.ts.net` certificate issuance publishes the node FQDN to public
   Certificate Transparency logs.
 - `ListenTLS` returning does not guarantee the first browser request will be

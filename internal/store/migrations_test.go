@@ -360,6 +360,50 @@ func TestOpenRepairsLegacyMediaSchemaBeforeCreatingRetryIndex(t *testing.T) {
 	assertCurrentSchemaMigration(t, st.db)
 }
 
+func TestOpenRepairsAuthUserSchemaWhenVersionSixWasUsedByOlderMigration(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS auth_users`); err != nil {
+		t.Fatalf("drop auth_users: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE schema_migrations SET name = ? WHERE version = 6`, "source_summary_failure_timestamp"); err != nil {
+		t.Fatalf("simulate older version 6 migration name: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version >= ?`, 8); err != nil {
+		t.Fatalf("remove auth repair migration metadata: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 7`); err != nil {
+		t.Fatalf("set old user_version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() {
+		_ = st.Close()
+	}()
+
+	var tableName string
+	if err := st.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'auth_users'`).Scan(&tableName); err != nil {
+		t.Fatalf("expected auth_users repair migration to create table: %v", err)
+	}
+	if _, _, err := st.ApproveGitHubAuthUser(t.Context(), "darron"); err != nil {
+		t.Fatalf("ApproveGitHubAuthUser after repair migration: %v", err)
+	}
+	assertCurrentSchemaMigration(t, st.db)
+}
+
 func TestOpenReadOnlySkipsSchemaMigration(t *testing.T) {
 	t.Parallel()
 
