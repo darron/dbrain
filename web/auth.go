@@ -43,6 +43,7 @@ type authManager struct {
 	store       *store.Store
 	sessions    *authSessionStore
 	githubOAuth *oauth2.Config
+	logOutput   io.Writer
 }
 
 type githubOAuthUser struct {
@@ -103,7 +104,10 @@ func (a *authManager) handleLogin(w http.ResponseWriter, r *http.Request) {
 		setCookie(w, authReturnCookieName, returnTo, a.cfg.OAuthStateTTL, a.secureCookies())
 	}
 
-	if _, ok := a.sessionFromRequest(r); ok {
+	if _, ok, err := a.sessionFromRequest(r.Context(), r); err != nil {
+		http.Error(w, "auth session check failed", http.StatusInternalServerError)
+		return
+	} else if ok {
 		if returnTo == "" {
 			returnTo = cleanReturnToFromCookie(r)
 		}
@@ -303,18 +307,26 @@ func fetchGitHubOAuthUser(ctx context.Context, client *http.Client) (githubOAuth
 
 func (a *authManager) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		session, ok := a.sessionFromRequest(r)
+		logged := newWebAccessLogWriter(w)
+		session, ok, err := a.sessionFromRequest(r.Context(), r)
+		if err != nil {
+			http.Error(logged, "auth session check failed", http.StatusInternalServerError)
+			a.logAccess(r, logged.statusCode(), authUser{}, false)
+			return
+		}
 		if ok {
 			ctx := context.WithValue(r.Context(), authContextKey{}, session.User)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(logged, r.WithContext(ctx))
+			a.logAccess(r, logged.statusCode(), session.User, true)
 			return
 		}
 
 		if wantsAuthJSON(r) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{
+			writeJSON(logged, http.StatusUnauthorized, map[string]string{
 				"error":    "authentication required",
 				"redirect": "/login",
 			})
+			a.logAccess(r, logged.statusCode(), authUser{}, false)
 			return
 		}
 
@@ -322,16 +334,52 @@ func (a *authManager) requireAuth(next http.Handler) http.Handler {
 		if returnTo := authReturnToForRequest(r); returnTo != "" {
 			loginURL += "?return_to=" + url.QueryEscape(returnTo)
 		}
-		http.Redirect(w, r, loginURL, http.StatusSeeOther)
+		http.Redirect(logged, r, loginURL, http.StatusSeeOther)
+		a.logAccess(r, logged.statusCode(), authUser{}, false)
 	})
 }
 
-func (a *authManager) sessionFromRequest(r *http.Request) (authSession, bool) {
+func (a *authManager) sessionFromRequest(ctx context.Context, r *http.Request) (authSession, bool, error) {
 	cookie, err := r.Cookie(authSessionCookieName)
 	if err != nil {
-		return authSession{}, false
+		return authSession{}, false, nil
 	}
-	return a.sessions.get(cookie.Value)
+	session, ok := a.sessions.get(cookie.Value)
+	if !ok {
+		return authSession{}, false, nil
+	}
+	approved, err := a.sessionUserStillApproved(ctx, session.User)
+	if err != nil {
+		return authSession{}, false, err
+	}
+	if !approved {
+		a.sessions.delete(cookie.Value)
+		return authSession{}, false, nil
+	}
+	return session, true, nil
+}
+
+func (a *authManager) sessionUserStillApproved(ctx context.Context, user authUser) (bool, error) {
+	if user.Provider != authProviderGitHub {
+		return false, nil
+	}
+	if id := strings.TrimSpace(user.ID); id != "" {
+		_, found, err := a.store.GetGitHubAuthUserByID(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			return true, nil
+		}
+	}
+	if username := strings.TrimSpace(user.Username); username != "" {
+		_, found, err := a.store.GetGitHubAuthUserByUsername(ctx, username)
+		if err != nil {
+			return false, err
+		}
+		return found, nil
+	}
+	return false, nil
 }
 
 func (a *authManager) signState(state string) string {

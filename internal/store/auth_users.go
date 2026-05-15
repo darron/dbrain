@@ -150,6 +150,65 @@ func (s *Store) GetGitHubAuthUserByUsername(ctx context.Context, username string
 	return user, true, nil
 }
 
+func (s *Store) ListGitHubAuthUsers(ctx context.Context) ([]AuthUser, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+authUserColumns+`
+		FROM auth_users
+		WHERE provider = ?
+		ORDER BY github_username_normalized ASC`,
+		authProviderGitHub,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list github auth users: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	users := []AuthUser{}
+	for rows.Next() {
+		user, err := scanAuthUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan github auth user: %w", err)
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate github auth users: %w", err)
+	}
+	return users, nil
+}
+
+func (s *Store) RemoveGitHubAuthUser(ctx context.Context, username string) (AuthUser, bool, error) {
+	normalized := NormalizeGitHubUsername(username)
+	if normalized == "" {
+		return AuthUser{}, false, fmt.Errorf("github username is required")
+	}
+
+	user, found, err := s.GetGitHubAuthUserByUsername(ctx, normalized)
+	if err != nil {
+		return AuthUser{}, false, err
+	}
+	if !found {
+		return AuthUser{}, false, nil
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM auth_users
+		WHERE id = ? AND provider = ?`,
+		user.ID,
+		authProviderGitHub,
+	)
+	if err != nil {
+		return AuthUser{}, false, fmt.Errorf("remove github auth user: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return AuthUser{}, false, fmt.Errorf("check removed github auth user: %w", err)
+	}
+	return user, rows > 0, nil
+}
+
 func (s *Store) UpdateGitHubAuthUserFromOAuth(ctx context.Context, userID int64, profile GitHubAuthProfile) (AuthUser, error) {
 	if userID <= 0 {
 		return AuthUser{}, fmt.Errorf("auth user id is required")

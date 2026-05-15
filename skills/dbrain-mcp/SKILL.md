@@ -58,10 +58,46 @@ Use the printed MCP URL in the remote agent config:
   "mcpServers": {
     "dbrain": {
       "transport": "streamable-http",
-      "url": "https://dbrain.<tailnet>.ts.net/mcp"
+      "url": "https://dbrain.<tailnet>.ts.net/mcp",
+      "headers": {
+        "Authorization": "Bearer ${DBRAIN_MCP_TOKEN}"
+      }
     }
   }
 }
+```
+
+Use the MCP client's supported secret or environment interpolation for the
+token value; do not put raw bearer tokens in shared config files.
+
+For any HTTP, tsnet, remote, Funnel, or reverse-proxied MCP endpoint that is not
+strictly private, enable MCP bearer auth before exposing it. Stdio MCP does not
+use bearer auth.
+
+```bash
+dbrain --root "$(pwd)" auth mcp token add agent-name
+dbrain --root "$(pwd)" auth mcp token list
+```
+
+The add command prints the raw token once. Later list output shows token records
+and fingerprints, not the full secret. Configure dbrain to require the token
+with either:
+
+```yaml
+mcp:
+  auth:
+    enabled: true
+```
+
+```bash
+export DBRAIN_MCP_AUTH_ENABLED=true
+export DBRAIN_MCP_TOKEN='paste-token-from-add-command'
+```
+
+Authenticated Streamable HTTP MCP clients must send:
+
+```text
+Authorization: Bearer <token>
 ```
 
 For MCP-only tailnet serving, use:
@@ -95,9 +131,12 @@ Smoke-test any Streamable HTTP endpoint with JSON-RPC POST:
 
 ```bash
 curl -s https://dbrain.<tailnet>.ts.net/mcp \
+  -H "Authorization: Bearer $DBRAIN_MCP_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
+
+Omit the Authorization header only when bearer auth is intentionally disabled.
 
 Do not configure both stdio and remote HTTP for the same agent unless duplicate
 `dbrain_*` tools are intentional. Local Codex/Claude sessions can keep using

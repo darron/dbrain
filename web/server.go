@@ -150,6 +150,9 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 	if err != nil {
 		return nil, fmt.Errorf("init auth manager: %w", err)
 	}
+	if authManager != nil {
+		authManager.logOutput = opts.LogOutput
+	}
 	writeAuthStartupStatus(opts.LogOutput, authCfg)
 
 	s := &server{

@@ -335,6 +335,51 @@ func TestAuthSessionStoreCleanupExpired(t *testing.T) {
 	}
 }
 
+func TestAuthSessionRequiresCurrentGitHubApproval(t *testing.T) {
+	cfg, st := openTestStore(t)
+	writeAuthConfig(t, cfg, validAuthConfigYAML())
+	if _, _, err := st.ApproveGitHubAuthUser(context.Background(), "darron"); err != nil {
+		t.Fatalf("approve github auth user: %v", err)
+	}
+	authCfg, err := loadAuthConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("load auth config: %v", err)
+	}
+	manager, err := newAuthManager(authCfg, st)
+	if err != nil {
+		t.Fatalf("new auth manager: %v", err)
+	}
+	session, err := manager.sessions.create(authUser{Provider: authProviderGitHub, Username: "darron"}, time.Hour)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	handler := manager.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/bootstrap", nil)
+	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: session.Token})
+	ok := httptest.NewRecorder()
+	handler.ServeHTTP(ok, req)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("expected approved session to pass, got %d: %s", ok.Code, ok.Body.String())
+	}
+
+	if _, removed, err := st.RemoveGitHubAuthUser(context.Background(), "darron"); err != nil {
+		t.Fatalf("remove github auth user: %v", err)
+	} else if !removed {
+		t.Fatalf("expected github auth user to be removed")
+	}
+
+	revokedReq := httptest.NewRequest(http.MethodGet, "/api/bootstrap", nil)
+	revokedReq.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: session.Token})
+	revoked := httptest.NewRecorder()
+	handler.ServeHTTP(revoked, revokedReq)
+	if revoked.Code != http.StatusUnauthorized {
+		t.Fatalf("expected removed user session to be rejected, got %d: %s", revoked.Code, revoked.Body.String())
+	}
+}
+
 func TestGitHubOAuthCallbackCreatesAuthenticatedSession(t *testing.T) {
 	fakeGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -382,7 +427,8 @@ func TestGitHubOAuthCallbackCreatesAuthenticatedSession(t *testing.T) {
 	if !created || approvedBefore.GitHubID != "" {
 		t.Fatalf("expected newly approved unbound user, got created=%v user=%#v", created, approvedBefore)
 	}
-	handler, err := NewHandler(cfg, st)
+	var accessLog bytes.Buffer
+	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{LogOutput: &accessLog})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -441,6 +487,15 @@ func TestGitHubOAuthCallbackCreatesAuthenticatedSession(t *testing.T) {
 	}
 	if !response.Auth.Enabled || response.Auth.Provider != authProviderGitHub || response.Auth.User == nil || response.Auth.User.Username != "darron" {
 		t.Fatalf("unexpected auth bootstrap info: %#v", response.Auth)
+	}
+	logOutput := accessLog.String()
+	for _, value := range []string{"web request", "method=GET", "path=/api/bootstrap", "status=200", `auth="github"`, `identity="darron"`} {
+		if !strings.Contains(logOutput, value) {
+			t.Fatalf("expected authenticated web access log to contain %q, got %q", value, logOutput)
+		}
+	}
+	if strings.Contains(logOutput, sessionCookie.Value) || strings.Contains(logOutput, "fake-token") {
+		t.Fatalf("web access log exposed secret material: %q", logOutput)
 	}
 	approvedAfter, found, err := st.GetGitHubAuthUserByUsername(context.Background(), "DARRON")
 	if err != nil {

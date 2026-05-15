@@ -80,7 +80,11 @@ dbrain config env
 
 - `dbrain archive media`
 - `dbrain auth github approve <username>`
+- `dbrain auth github list`
+- `dbrain auth github remove <username>`
 - `dbrain auth mcp token add <name>`
+- `dbrain auth mcp token list`
+- `dbrain auth mcp token revoke <id-or-name-or-fingerprint>`
 - `dbrain categorize batch`
 - `dbrain categorize item`
 - `dbrain categorize repair`
@@ -477,7 +481,10 @@ Approved usernames are matched case-insensitively and may be approved with or
 without a leading `@`. The first successful login binds the approved database row
 to the user's GitHub numeric ID and profile fields; future logins can match that
 GitHub ID. Config/env allowlists such as `auth.allowed_github_users` are not the
-authoritative allowlist for web login.
+authoritative allowlist for web login. Use `dbrain auth github list` to view
+approved users and `dbrain auth github remove USERNAME` to remove an approval.
+Removed approvals are checked against live web sessions, so a removed user must
+log in again and will be denied unless reapproved.
 
 For internet-exposed deployments, `auth.base_url` must be the public `https://`
 origin registered in the GitHub OAuth app; `--tsnet-funnel --web` rejects the
@@ -485,6 +492,9 @@ default localhost origin when web auth is enabled. Generate a random session key
 with `openssl rand -hex 32` and store it via a secret ref. Sessions are
 in-memory and expire after 24 hours, so restarting the web process logs users
 out.
+Authenticated web requests emit app-layer access logs with the GitHub identity,
+which is the useful identity source when Funnel traffic does not carry tailnet
+identity headers.
 `GITHUB_TOKEN` is still only the GitHub import token; it is not used for web UI
 OAuth.
 
@@ -507,6 +517,12 @@ as:
 Authorization: Bearer <token>
 ```
 
+Use `dbrain auth mcp token list` to list token records by ID, name, fingerprint,
+status, and timestamps without revealing the raw token. Use
+`dbrain auth mcp token revoke ID_OR_NAME_OR_FINGERPRINT` to revoke a token;
+names must be unique when used as the revocation selector. Add `--all` to list
+revoked token records too.
+
 Enable enforcement with config or env:
 
 ```yaml
@@ -522,6 +538,8 @@ export DBRAIN_MCP_AUTH_ENABLED=true
 When bearer auth is disabled, HTTP and tsnet MCP startup prints a warning that
 the endpoint is acceptable only on private localhost/trusted tailnet paths and
 must not be exposed through Tailscale Funnel or a public reverse proxy.
+When bearer auth is enabled, MCP HTTP access logs include the token record name
+and fingerprint, never the raw token.
 
 ### Import Credentials
 

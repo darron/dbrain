@@ -12,6 +12,13 @@ import (
 
 type BearerTokenValidator func(context.Context, string) (bool, error)
 
+type BearerTokenAuthenticator func(context.Context, string) (BearerTokenIdentity, bool, error)
+
+type BearerTokenIdentity struct {
+	Name        string
+	Fingerprint string
+}
+
 func AuthEnabled(cfg config.Config) bool {
 	return runtimeenv.FirstBoolDefault(cfg.RootDir, false, "DBRAIN_MCP_AUTH_ENABLED")
 }
@@ -27,8 +34,21 @@ func ApplyRuntimeAuthOptions(cfg config.Config, st *store.Store, opts *HTTPOptio
 		return fmt.Errorf("mcp bearer auth is enabled but the token table is unavailable; create a token with dbrain auth mcp token add NAME: %w", err)
 	}
 	opts.RequireBearerAuth = true
-	opts.BearerTokenValidator = st.ValidateMCPBearerToken
+	opts.BearerTokenAuthenticator = storeBearerTokenAuthenticator(st)
 	return nil
+}
+
+func storeBearerTokenAuthenticator(st *store.Store) BearerTokenAuthenticator {
+	return func(ctx context.Context, token string) (BearerTokenIdentity, bool, error) {
+		record, found, err := st.GetMCPBearerTokenByRawToken(ctx, token)
+		if err != nil || !found {
+			return BearerTokenIdentity{}, found, err
+		}
+		return BearerTokenIdentity{
+			Name:        record.Name,
+			Fingerprint: record.TokenFingerprint,
+		}, true, nil
+	}
 }
 
 func WriteOpenAuthWarning(out io.Writer, surface string) {

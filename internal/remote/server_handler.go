@@ -49,7 +49,10 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 			return nil, nil, err
 		}
 		closers = append(closers, st)
-		httpOptions := mcpserver.HTTPOptions{Path: opts.MCPPath}
+		httpOptions := mcpserver.HTTPOptions{
+			Path:      opts.MCPPath,
+			LogOutput: logOut,
+		}
 		if err := mcpserver.ApplyRuntimeAuthOptions(cfg, st, &httpOptions); err != nil {
 			cleanup()
 			return nil, nil, err

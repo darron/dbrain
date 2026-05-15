@@ -304,6 +304,72 @@ func TestHTTPHandlerRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestHTTPHandlerLogsBearerTokenIdentity(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	created, err := st.CreateMCPBearerToken(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("CreateMCPBearerToken: %v", err)
+	}
+
+	var accessLog bytes.Buffer
+	server := New(cfg, st)
+	httpServer := httptest.NewServer(server.HTTPHandler(HTTPOptions{
+		Path:                     "/mcp",
+		RequireBearerAuth:        true,
+		BearerTokenAuthenticator: storeBearerTokenAuthenticator(st),
+		LogOutput:                &accessLog,
+	}))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	if err != nil {
+		t.Fatalf("new valid-token request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post valid-token request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("valid token status = %d, want 200", resp.StatusCode)
+	}
+
+	logOutput := accessLog.String()
+	for _, value := range []string{
+		"mcp request",
+		"method=POST",
+		"path=/mcp",
+		"status=200",
+		`auth="bearer"`,
+		`token_status="accepted"`,
+		`token_name="codex"`,
+		fmt.Sprintf(`token_fingerprint="%s"`, created.Record.TokenFingerprint),
+	} {
+		if !strings.Contains(logOutput, value) {
+			t.Fatalf("expected MCP access log to contain %q, got %q", value, logOutput)
+		}
+	}
+	if strings.Contains(logOutput, created.Token) {
+		t.Fatalf("MCP access log exposed raw bearer token: %q", logOutput)
+	}
+}
+
 func TestHTTPHandlerRejectsUntrustedOrigin(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

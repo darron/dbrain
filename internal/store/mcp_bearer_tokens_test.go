@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -61,5 +62,72 @@ func TestCreateAndValidateMCPBearerToken(t *testing.T) {
 		t.Fatalf("read-only ValidateMCPBearerToken: %v", err)
 	} else if !ok {
 		t.Fatalf("expected read-only validation to accept created token")
+	}
+}
+
+func TestListAndRevokeMCPBearerTokens(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	laptop, err := st.CreateMCPBearerToken(ctx, "laptop")
+	if err != nil {
+		t.Fatalf("CreateMCPBearerToken laptop: %v", err)
+	}
+	phone, err := st.CreateMCPBearerToken(ctx, "phone")
+	if err != nil {
+		t.Fatalf("CreateMCPBearerToken phone: %v", err)
+	}
+
+	tokens, err := st.ListMCPBearerTokens(ctx, false)
+	if err != nil {
+		t.Fatalf("ListMCPBearerTokens active: %v", err)
+	}
+	if len(tokens) != 2 {
+		t.Fatalf("expected two active tokens, got %#v", tokens)
+	}
+	for _, record := range tokens {
+		if record.TokenFingerprint == laptop.Token || record.TokenFingerprint == phone.Token || strings.Contains(record.TokenFingerprint, mcpBearerTokenPrefix) {
+			t.Fatalf("token fingerprint should not expose raw token material: record=%#v", record)
+		}
+	}
+
+	revoked, changed, err := st.RevokeMCPBearerToken(ctx, phone.Record.TokenFingerprint)
+	if err != nil {
+		t.Fatalf("RevokeMCPBearerToken: %v", err)
+	}
+	if !changed || revoked.ID != phone.Record.ID || revoked.RevokedAt == "" {
+		t.Fatalf("unexpected revoked token: changed=%v record=%#v", changed, revoked)
+	}
+	if ok, err := st.ValidateMCPBearerToken(ctx, phone.Token); err != nil {
+		t.Fatalf("ValidateMCPBearerToken revoked: %v", err)
+	} else if ok {
+		t.Fatalf("revoked token should not validate")
+	}
+	if ok, err := st.ValidateMCPBearerToken(ctx, laptop.Token); err != nil {
+		t.Fatalf("ValidateMCPBearerToken active: %v", err)
+	} else if !ok {
+		t.Fatalf("active token should still validate")
+	}
+
+	active, err := st.ListMCPBearerTokens(ctx, false)
+	if err != nil {
+		t.Fatalf("ListMCPBearerTokens after revoke: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != laptop.Record.ID {
+		t.Fatalf("expected only laptop active, got %#v", active)
+	}
+	all, err := st.ListMCPBearerTokens(ctx, true)
+	if err != nil {
+		t.Fatalf("ListMCPBearerTokens all: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected active and revoked tokens with includeRevoked, got %#v", all)
+	}
+	if _, changed, err := st.RevokeMCPBearerToken(ctx, strconv.FormatInt(phone.Record.ID, 10)); err != nil {
+		t.Fatalf("RevokeMCPBearerToken already revoked: %v", err)
+	} else if changed {
+		t.Fatalf("already revoked token should not report changed")
 	}
 }

@@ -22,12 +22,14 @@ const (
 )
 
 type HTTPOptions struct {
-	Addr                 string
-	Path                 string
-	AllowedOrigins       []string
-	MaxBodyBytes         int64
-	RequireBearerAuth    bool
-	BearerTokenValidator BearerTokenValidator
+	Addr                     string
+	Path                     string
+	AllowedOrigins           []string
+	MaxBodyBytes             int64
+	RequireBearerAuth        bool
+	BearerTokenValidator     BearerTokenValidator
+	BearerTokenAuthenticator BearerTokenAuthenticator
+	LogOutput                io.Writer
 }
 
 func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions) error {
@@ -51,6 +53,9 @@ func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions) error {
 		logMCPServer("http_bearer_auth_enabled")
 	} else {
 		WriteOpenAuthWarning(os.Stderr, "MCP HTTP")
+	}
+	if opts.LogOutput == nil {
+		opts.LogOutput = os.Stderr
 	}
 	server := New(cfg, st)
 	httpServer := &http.Server{
@@ -99,57 +104,84 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		logged := newMCPAccessLogWriter(w)
+		access := mcpAccessLogIdentity{Auth: "disabled"}
+		if opts.RequireBearerAuth {
+			access.Auth = "bearer"
+			if r.Method == http.MethodOptions {
+				access.TokenStatus = "preflight"
+			}
+		}
+		defer func() {
+			logMCPAccess(opts.LogOutput, r, logged.statusCode(), access)
+		}()
+
 		if !originAllowed(r, opts.AllowedOrigins) {
-			http.Error(w, "forbidden origin", http.StatusForbidden)
+			http.Error(logged, "forbidden origin", http.StatusForbidden)
 			return
 		}
 		if opts.RequireBearerAuth && r.Method != http.MethodOptions {
 			token, ok := bearerTokenFromRequest(r)
 			if !ok {
-				writeBearerUnauthorized(w)
+				access.TokenStatus = "missing"
+				writeBearerUnauthorized(logged)
 				return
 			}
-			if opts.BearerTokenValidator == nil {
+			if opts.BearerTokenValidator == nil && opts.BearerTokenAuthenticator == nil {
 				logMCPServer("http_bearer_auth_misconfigured")
-				http.Error(w, "mcp bearer auth is misconfigured", http.StatusInternalServerError)
+				access.TokenStatus = "misconfigured"
+				http.Error(logged, "mcp bearer auth is misconfigured", http.StatusInternalServerError)
 				return
 			}
-			allowed, err := opts.BearerTokenValidator(r.Context(), token)
+			identity, allowed, err := authenticateBearerToken(r.Context(), opts, token)
 			if err != nil {
 				logMCPServer("http_bearer_auth_failed", "error", err.Error())
-				http.Error(w, "mcp bearer auth failed", http.StatusInternalServerError)
+				access.TokenStatus = "error"
+				http.Error(logged, "mcp bearer auth failed", http.StatusInternalServerError)
 				return
 			}
 			if !allowed {
-				writeBearerUnauthorized(w)
+				access.TokenStatus = "invalid"
+				writeBearerUnauthorized(logged)
 				return
 			}
+			access.TokenStatus = "accepted"
+			access.TokenName = identity.Name
+			access.TokenFingerprint = identity.Fingerprint
 		}
 
 		switch r.Method {
 		case http.MethodPost:
-			s.handleHTTPPost(w, r, maxBodyBytes)
+			s.handleHTTPPost(logged, r, maxBodyBytes)
 		case http.MethodGet:
-			w.Header().Set("Allow", "POST, GET")
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			_, _ = fmt.Fprintln(w, "dbrain MCP endpoint is reachable.")
-			_, _ = fmt.Fprintln(w)
-			_, _ = fmt.Fprintln(w, "This endpoint does not serve a browser UI and does not support SSE streams.")
-			_, _ = fmt.Fprintln(w, "Use JSON-RPC over HTTP POST with Content-Type: application/json.")
-			_, _ = fmt.Fprintf(w, "\nExample:\n")
-			_, _ = fmt.Fprintf(w, `curl -s %s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`+"\n", requestEndpointURL(r))
+			logged.Header().Set("Allow", "POST, GET")
+			logged.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			logged.WriteHeader(http.StatusMethodNotAllowed)
+			_, _ = fmt.Fprintln(logged, "dbrain MCP endpoint is reachable.")
+			_, _ = fmt.Fprintln(logged)
+			_, _ = fmt.Fprintln(logged, "This endpoint does not serve a browser UI and does not support SSE streams.")
+			_, _ = fmt.Fprintln(logged, "Use JSON-RPC over HTTP POST with Content-Type: application/json.")
+			_, _ = fmt.Fprintf(logged, "\nExample:\n")
+			_, _ = fmt.Fprintf(logged, `curl -s %s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`+"\n", requestEndpointURL(r))
 		case http.MethodOptions:
-			w.Header().Set("Allow", "POST, GET, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
-			w.WriteHeader(http.StatusNoContent)
+			logged.Header().Set("Allow", "POST, GET, OPTIONS")
+			logged.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+			logged.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+			logged.WriteHeader(http.StatusNoContent)
 		default:
-			w.Header().Set("Allow", "POST, GET, OPTIONS")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			logged.Header().Set("Allow", "POST, GET, OPTIONS")
+			http.Error(logged, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 	return mux
+}
+
+func authenticateBearerToken(ctx context.Context, opts HTTPOptions, token string) (BearerTokenIdentity, bool, error) {
+	if opts.BearerTokenAuthenticator != nil {
+		return opts.BearerTokenAuthenticator(ctx, token)
+	}
+	allowed, err := opts.BearerTokenValidator(ctx, token)
+	return BearerTokenIdentity{}, allowed, err
 }
 
 func (s *Server) handleHTTPPost(w http.ResponseWriter, r *http.Request, maxBodyBytes int64) {

@@ -66,3 +66,47 @@ func TestApproveGitHubAuthUserAndBindOAuthProfile(t *testing.T) {
 		t.Fatalf("expected repeated approval to preserve bound id, created=%v user=%#v", created, again)
 	}
 }
+
+func TestListAndRemoveGitHubAuthUsers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	if _, _, err := st.ApproveGitHubAuthUser(ctx, "Zoey"); err != nil {
+		t.Fatalf("approve zoey: %v", err)
+	}
+	removed, created, err := st.ApproveGitHubAuthUser(ctx, "Alice")
+	if err != nil {
+		t.Fatalf("approve alice: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected alice approval to create a row")
+	}
+
+	users, err := st.ListGitHubAuthUsers(ctx)
+	if err != nil {
+		t.Fatalf("ListGitHubAuthUsers: %v", err)
+	}
+	if len(users) != 2 || users[0].GitHubUsernameNormalized != "alice" || users[1].GitHubUsernameNormalized != "zoey" {
+		t.Fatalf("unexpected listed users: %#v", users)
+	}
+
+	got, ok, err := st.RemoveGitHubAuthUser(ctx, "@ALICE")
+	if err != nil {
+		t.Fatalf("RemoveGitHubAuthUser: %v", err)
+	}
+	if !ok || got.ID != removed.ID {
+		t.Fatalf("expected removed alice row, removed=%v user=%#v", ok, got)
+	}
+	if _, found, err := st.GetGitHubAuthUserByUsername(ctx, "alice"); err != nil {
+		t.Fatalf("GetGitHubAuthUserByUsername after remove: %v", err)
+	} else if found {
+		t.Fatalf("expected alice to be removed")
+	}
+	if _, ok, err := st.RemoveGitHubAuthUser(ctx, "missing"); err != nil {
+		t.Fatalf("RemoveGitHubAuthUser missing: %v", err)
+	} else if ok {
+		t.Fatalf("missing user should not report removed")
+	}
+}

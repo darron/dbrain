@@ -59,23 +59,30 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 }
 
-func TestAuthMCPTokenAddCreatesDBBackedBearerToken(t *testing.T) {
-	t.Parallel()
+func runRootCommand(t *testing.T, root string, args ...string) string {
+	t.Helper()
 
-	root := t.TempDir()
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "--no-debug", "auth", "mcp", "token", "add", "phone", "--json"})
-
+	fullArgs := append([]string{"--root", root, "--no-caffeinate", "--no-debug"}, args...)
+	cmd.SetArgs(fullArgs)
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
-		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+		t.Fatalf("ExecuteContext %v: %v (stderr=%q)", fullArgs, err, stderr.String())
 	}
+	return stdout.String()
+}
+
+func TestAuthMCPTokenAddCreatesDBBackedBearerToken(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stdout := runRootCommand(t, root, "auth", "mcp", "token", "add", "phone", "--json")
 	var result store.MCPBearerTokenCreateResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("unmarshal token result: %v output=%q", err, stdout.String())
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal token result: %v output=%q", err, stdout)
 	}
 	if !strings.HasPrefix(result.Token, "dbrain_mcp_") || result.Record.Name != "phone" {
 		t.Fatalf("unexpected token result: %#v", result)
@@ -94,6 +101,103 @@ func TestAuthMCPTokenAddCreatesDBBackedBearerToken(t *testing.T) {
 		t.Fatalf("ValidateMCPBearerToken: %v", err)
 	} else if !ok {
 		t.Fatalf("expected CLI-created token to validate")
+	}
+}
+
+func TestAuthGitHubListAndRemoveApprovedUsers(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	runRootCommand(t, root, "auth", "github", "approve", "Darron")
+
+	listOut := runRootCommand(t, root, "auth", "github", "list", "--json")
+	var users []store.AuthUser
+	if err := json.Unmarshal([]byte(listOut), &users); err != nil {
+		t.Fatalf("unmarshal users: %v output=%q", err, listOut)
+	}
+	if len(users) != 1 || users[0].GitHubUsernameNormalized != "darron" {
+		t.Fatalf("unexpected listed users: %#v", users)
+	}
+
+	removeOut := runRootCommand(t, root, "auth", "github", "remove", "@DARRON", "--json")
+	var removed struct {
+		Removed bool           `json:"removed"`
+		User    store.AuthUser `json:"user"`
+	}
+	if err := json.Unmarshal([]byte(removeOut), &removed); err != nil {
+		t.Fatalf("unmarshal removal: %v output=%q", err, removeOut)
+	}
+	if !removed.Removed || removed.User.GitHubUsernameNormalized != "darron" {
+		t.Fatalf("unexpected removal result: %#v", removed)
+	}
+
+	listOut = runRootCommand(t, root, "auth", "github", "list", "--json")
+	users = nil
+	if err := json.Unmarshal([]byte(listOut), &users); err != nil {
+		t.Fatalf("unmarshal users after removal: %v output=%q", err, listOut)
+	}
+	if len(users) != 0 {
+		t.Fatalf("expected no approved users after removal, got %#v", users)
+	}
+}
+
+func TestAuthMCPTokenListAndRevokeDoNotExposeSecret(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	createOut := runRootCommand(t, root, "auth", "mcp", "token", "add", "phone", "--json")
+	var created store.MCPBearerTokenCreateResult
+	if err := json.Unmarshal([]byte(createOut), &created); err != nil {
+		t.Fatalf("unmarshal created token: %v output=%q", err, createOut)
+	}
+	if created.Token == "" || created.Record.TokenFingerprint == "" {
+		t.Fatalf("unexpected created token result: %#v", created)
+	}
+
+	listOut := runRootCommand(t, root, "auth", "mcp", "token", "list", "--json")
+	if strings.Contains(listOut, created.Token) {
+		t.Fatalf("token list exposed raw token: %q", listOut)
+	}
+	var records []store.MCPBearerToken
+	if err := json.Unmarshal([]byte(listOut), &records); err != nil {
+		t.Fatalf("unmarshal token list: %v output=%q", err, listOut)
+	}
+	if len(records) != 1 || records[0].TokenFingerprint != created.Record.TokenFingerprint {
+		t.Fatalf("unexpected token list: %#v", records)
+	}
+	humanListOut := runRootCommand(t, root, "auth", "mcp", "token", "list")
+	if strings.Contains(humanListOut, created.Token) {
+		t.Fatalf("human token list exposed raw token: %q", humanListOut)
+	}
+
+	revokeOut := runRootCommand(t, root, "auth", "mcp", "token", "revoke", created.Record.TokenFingerprint, "--json")
+	if strings.Contains(revokeOut, created.Token) {
+		t.Fatalf("token revoke exposed raw token: %q", revokeOut)
+	}
+	var revoked struct {
+		Revoked bool                 `json:"revoked"`
+		Token   store.MCPBearerToken `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(revokeOut), &revoked); err != nil {
+		t.Fatalf("unmarshal token revoke: %v output=%q", err, revokeOut)
+	}
+	if !revoked.Revoked || revoked.Token.RevokedAt == "" {
+		t.Fatalf("unexpected revoke result: %#v", revoked)
+	}
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if ok, err := st.ValidateMCPBearerToken(context.Background(), created.Token); err != nil {
+		t.Fatalf("ValidateMCPBearerToken after revoke: %v", err)
+	} else if ok {
+		t.Fatalf("expected revoked token to be rejected")
 	}
 }
 
