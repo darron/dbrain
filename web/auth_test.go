@@ -181,6 +181,82 @@ func TestAuthEnabledProtectsAppRoutesAndLoginIsPublic(t *testing.T) {
 	})
 }
 
+func TestAuthEnabledProtectsKnownNonMCPRoutes(t *testing.T) {
+	cfg, st := openTestStore(t)
+	writeAuthConfig(t, cfg, validAuthConfigYAML())
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		target string
+		api    bool
+	}{
+		{name: "root app", method: http.MethodGet, target: "/"},
+		{name: "static app route", method: http.MethodGet, target: "/items/item:test"},
+		{name: "embedded asset route", method: http.MethodGet, target: "/assets/index.js"},
+		{name: "bootstrap", method: http.MethodGet, target: "/api/bootstrap", api: true},
+		{name: "search", method: http.MethodGet, target: "/api/search?q=memory", api: true},
+		{name: "get", method: http.MethodGet, target: "/api/get?key=item:test", api: true},
+		{name: "backlog stats", method: http.MethodGet, target: "/api/stats/backlog", api: true},
+		{name: "activity stats", method: http.MethodGet, target: "/api/stats/activity", api: true},
+		{name: "source activity stats", method: http.MethodGet, target: "/api/stats/source-activity", api: true},
+		{name: "scheduler sync all", method: http.MethodGet, target: "/api/scheduler/sync-all", api: true},
+		{name: "doctor full disk access", method: http.MethodGet, target: "/api/doctor/full-disk-access", api: true},
+		{name: "removed ask endpoint", method: http.MethodGet, target: "/api/ask", api: true},
+		{name: "research", method: http.MethodPost, target: "/api/research", api: true},
+		{name: "research synthesize", method: http.MethodPost, target: "/api/research/synthesize", api: true},
+		{name: "chat transcripts", method: http.MethodPost, target: "/api/chat/transcripts", api: true},
+		{name: "links", method: http.MethodPost, target: "/api/links", api: true},
+		{name: "tag", method: http.MethodPost, target: "/api/tag", api: true},
+		{name: "media signed url", method: http.MethodGet, target: "/api/media/signed-url?id=1", api: true},
+		{name: "media asset", method: http.MethodGet, target: "/media/asset/1"},
+		{name: "media asset head", method: http.MethodHead, target: "/media/asset/1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.method, tt.target, nil)
+			if tt.api {
+				req.Header.Set("Accept", "application/json")
+			} else {
+				req.Header.Set("Accept", "text/html")
+			}
+			handler.ServeHTTP(rec, req)
+
+			if tt.api {
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("expected api route to return 401 before handler execution, got %d: %s", rec.Code, rec.Body.String())
+				}
+				var body map[string]string
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatalf("decode auth response: %v", err)
+				}
+				if body["error"] != "authentication required" || body["redirect"] != "/login" {
+					t.Fatalf("unexpected auth response body: %#v", body)
+				}
+				return
+			}
+
+			if rec.Code != http.StatusSeeOther {
+				t.Fatalf("expected browser route to redirect before handler execution, got %d: %s", rec.Code, rec.Body.String())
+			}
+			wantLocation := "/login"
+			if returnTo := cleanReturnTo(req.URL.RequestURI()); returnTo != "" {
+				wantLocation += "?return_to=" + url.QueryEscape(returnTo)
+			}
+			if location := rec.Header().Get("Location"); location != wantLocation {
+				t.Fatalf("unexpected redirect location %q, want %q", location, wantLocation)
+			}
+		})
+	}
+}
+
 func TestValidatePublicAuthConfigRequiresPublicBaseURL(t *testing.T) {
 	cfg := loadTestConfig(t)
 	writeAuthConfig(t, cfg, `
