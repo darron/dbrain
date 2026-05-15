@@ -16,6 +16,7 @@ type tsnetStateFlags struct {
 	stateDir   string
 	listen     string
 	tlsEnabled bool
+	funnel     bool
 	controlURL string
 }
 
@@ -36,6 +37,7 @@ func addTSNetStateFlags(cmd *cobra.Command, flags *tsnetStateFlags) {
 	cmd.Flags().StringVar(&flags.stateDir, "tsnet-state-dir", "", "Durable tsnet state directory")
 	cmd.Flags().StringVar(&flags.listen, "tsnet-listen", "", "Tailnet listen address")
 	cmd.Flags().BoolVar(&flags.tlsEnabled, "tsnet-tls", true, "Use Tailscale HTTPS via ListenTLS")
+	cmd.Flags().BoolVar(&flags.funnel, "tsnet-funnel", false, "Configured Tailscale Funnel exposure")
 	cmd.Flags().StringVar(&flags.controlURL, "tsnet-control-url", "", "Experimental alternate Tailscale control server URL")
 }
 
@@ -68,6 +70,12 @@ func applyTSNetStateFlagOverrides(cmd *cobra.Command, dataDir string, opts *remo
 			opts.Listen = ""
 		}
 	}
+	if changed("tsnet-funnel") {
+		opts.Funnel = flags.funnel
+		if !changed("tsnet-listen") {
+			opts.Listen = ""
+		}
+	}
 	if changed("tsnet-control-url") {
 		opts.ControlURL = flags.controlURL
 	}
@@ -77,5 +85,5 @@ func applyTSNetStateFlagOverrides(cmd *cobra.Command, dataDir string, opts *remo
 		return err
 	}
 	opts.MCPPath = cleaned
-	return nil
+	return remote.ValidateFunnelOptions(*opts)
 }

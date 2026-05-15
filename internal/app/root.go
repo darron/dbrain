@@ -112,6 +112,7 @@ func NewRootCommand() *cobra.Command {
 
 	rootCmd.AddCommand(
 		newArchiveCommand(opts),
+		newAuthCommand(opts),
 		newConfigCommand(opts),
 		newDoctorCommand(opts),
 		newSQLiteCommand(opts),

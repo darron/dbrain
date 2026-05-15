@@ -347,6 +347,26 @@ the bug reappeared.
   selected-stage failures and skipped/local-provider success paths work in a
   GitHub Actions-like environment with no personal secrets
 
+### Guard schema migration history
+
+SQLite migration numbers are append-only public history once a branch may have
+been run locally, even if that branch or PR has not been merged yet.
+
+- before adding a migration, inspect the current branch, `main`, and recent
+  local/work-in-progress branches for existing `schema_migrations` versions and
+  names
+- never reuse a migration version number for different schema work; if there is
+  any ambiguity, choose the next higher version
+- remember that local developer DBs may already contain migration rows from
+  unmerged branches, so a reused version can make fresh DB tests pass while
+  existing DBs silently skip required schema creation
+- when a migration adds or repairs a table/column/index used by new code, add a
+  regression test that simulates an existing DB with prior migration metadata
+  and proves reopening the store creates or repairs the required schema
+- if migration history has already diverged, fix it with an idempotent
+  follow-up repair migration rather than editing or reusing old migration
+  numbers
+
 ### Keep the changelog current
 
 When adding, fixing, or materially changing user-visible behavior, update

@@ -5,8 +5,10 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -46,6 +48,7 @@ type server struct {
 	toolVersion     string
 	schedulerStatus func() schedulerstate.SyncAllStatus
 	fullDiskPath    string
+	auth            *authManager
 }
 
 type ServeOptions struct {
@@ -55,6 +58,8 @@ type ServeOptions struct {
 type HandlerOptions struct {
 	SchedulerStatus    func() schedulerstate.SyncAllStatus
 	FullDiskAccessPath string
+	Context            context.Context
+	LogOutput          io.Writer
 }
 
 func Serve(ctx context.Context, cfg config.Config, addr string) error {
@@ -74,7 +79,10 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 		_ = st.Close()
 	}()
 
-	handler, err := NewHandler(cfg, st)
+	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{
+		Context:   ctx,
+		LogOutput: os.Stderr,
+	})
 	if err != nil {
 		return err
 	}
@@ -130,6 +138,22 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 	if err != nil {
 		return nil, fmt.Errorf("read embedded ui index: %w", err)
 	}
+	startupCtx := opts.Context
+	if startupCtx == nil {
+		startupCtx = context.Background()
+	}
+	authCfg, err := loadAuthConfig(startupCtx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("load auth config: %w", err)
+	}
+	authManager, err := newAuthManagerWithContext(startupCtx, authCfg, st)
+	if err != nil {
+		return nil, fmt.Errorf("init auth manager: %w", err)
+	}
+	if authManager != nil {
+		authManager.logOutput = opts.LogOutput
+	}
+	writeAuthStartupStatus(opts.LogOutput, authCfg)
 
 	s := &server{
 		cfg:             cfg,
@@ -142,30 +166,56 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 		toolVersion:     summarizecli.Version(context.Background(), ""),
 		schedulerStatus: opts.SchedulerStatus,
 		fullDiskPath:    opts.FullDiskAccessPath,
+		auth:            authManager,
 	}
 
 	return s.newMux(), nil
 }
 
+func writeAuthStartupStatus(out io.Writer, authCfg authConfig) {
+	if out == nil {
+		return
+	}
+	if !authCfg.Enabled {
+		_, _ = fmt.Fprintln(out, "WARNING web auth disabled; all web routes are unauthenticated.")
+		return
+	}
+	provider := "unknown"
+	if len(authCfg.Providers) > 0 {
+		provider = strings.Join(authCfg.Providers, ",")
+	}
+	_, _ = fmt.Fprintf(out, "Web auth enabled (provider: %s); sessions are in-memory and expire after %s; restarting the web process logs users out.\n", provider, authCfg.SessionTTL)
+}
+
 func (s *server) newMux() http.Handler {
+	appMux := http.NewServeMux()
+	appMux.HandleFunc("/api/bootstrap", s.handleBootstrap)
+	appMux.HandleFunc("/api/search", s.handleSearch)
+	appMux.HandleFunc("/api/get", s.handleGet)
+	appMux.HandleFunc("/api/stats/backlog", s.handleBacklog)
+	appMux.HandleFunc("/api/stats/activity", s.handleActivity)
+	appMux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
+	appMux.HandleFunc("/api/scheduler/sync-all", s.handleSchedulerSyncAll)
+	appMux.HandleFunc("/api/doctor/full-disk-access", s.handleDoctorFullDiskAccess)
+	appMux.HandleFunc("/api/ask", handleRemovedAPI)
+	appMux.HandleFunc("/api/research", s.handleResearch)
+	appMux.HandleFunc("/api/research/synthesize", s.handleResearchSynthesize)
+	appMux.HandleFunc("/api/chat/transcripts", s.handleChatTranscriptSave)
+	appMux.HandleFunc("/api/links", s.handleLinks)
+	appMux.HandleFunc("/api/tag", s.handleTag)
+	appMux.HandleFunc("/api/media/signed-url", s.handleMediaSignedURL)
+	appMux.HandleFunc("/media/asset/", s.handleMediaAsset)
+	appMux.Handle("/", http.HandlerFunc(s.handleStatic))
+
+	if s.auth == nil {
+		return appMux
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/bootstrap", s.handleBootstrap)
-	mux.HandleFunc("/api/search", s.handleSearch)
-	mux.HandleFunc("/api/get", s.handleGet)
-	mux.HandleFunc("/api/stats/backlog", s.handleBacklog)
-	mux.HandleFunc("/api/stats/activity", s.handleActivity)
-	mux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)
-	mux.HandleFunc("/api/scheduler/sync-all", s.handleSchedulerSyncAll)
-	mux.HandleFunc("/api/doctor/full-disk-access", s.handleDoctorFullDiskAccess)
-	mux.HandleFunc("/api/ask", handleRemovedAPI)
-	mux.HandleFunc("/api/research", s.handleResearch)
-	mux.HandleFunc("/api/research/synthesize", s.handleResearchSynthesize)
-	mux.HandleFunc("/api/chat/transcripts", s.handleChatTranscriptSave)
-	mux.HandleFunc("/api/links", s.handleLinks)
-	mux.HandleFunc("/api/tag", s.handleTag)
-	mux.HandleFunc("/api/media/signed-url", s.handleMediaSignedURL)
-	mux.HandleFunc("/media/asset/", s.handleMediaAsset)
-	mux.Handle("/", http.HandlerFunc(s.handleStatic))
+	mux.HandleFunc("/login", s.auth.handleLogin)
+	mux.HandleFunc("/logout", s.auth.handleLogout)
+	mux.HandleFunc("/auth/", s.auth.handleAuth)
+	mux.Handle("/", s.auth.requireAuth(appMux))
 	return mux
 }
 

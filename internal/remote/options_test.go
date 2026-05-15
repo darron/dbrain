@@ -3,6 +3,7 @@ package remote
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,147 @@ func TestOptionsFromRuntimeDoesNotReadAuthKeyCommandEnv(t *testing.T) {
 	}
 	if len(opts.AuthKeyCommand) != 0 {
 		t.Fatalf("AuthKeyCommand = %#v, want none", opts.AuthKeyCommand)
+	}
+}
+
+func TestOptionsFromRuntimeReadsFunnelConfig(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+tsnet:
+  funnel: true
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	opts, err := OptionsFromRuntime(cfg)
+	if err != nil {
+		t.Fatalf("OptionsFromRuntime: %v", err)
+	}
+	if !opts.Funnel {
+		t.Fatalf("Funnel = false, want true")
+	}
+	if !opts.TLS {
+		t.Fatalf("TLS = false, want true")
+	}
+	if opts.Listen != ":443" {
+		t.Fatalf("Listen = %q, want :443", opts.Listen)
+	}
+}
+
+func TestOptionsFromRuntimeFunnelEnvOverridesConfig(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+tsnet:
+  tls: false
+  funnel: false
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("DBRAIN_TSNET_TLS", "true")
+	t.Setenv("DBRAIN_TSNET_FUNNEL", "true")
+	t.Setenv("DBRAIN_TSNET_LISTEN", ":8443")
+
+	opts, err := OptionsFromRuntime(cfg)
+	if err != nil {
+		t.Fatalf("OptionsFromRuntime: %v", err)
+	}
+	if !opts.Funnel || !opts.TLS {
+		t.Fatalf("Funnel/TLS = %v/%v, want true/true", opts.Funnel, opts.TLS)
+	}
+	if opts.Listen != ":8443" {
+		t.Fatalf("Listen = %q, want :8443", opts.Listen)
+	}
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidateAcceptsSupportedFunnelPorts(t *testing.T) {
+	t.Parallel()
+
+	for _, listen := range []string{":443", ":8443", ":10000"} {
+		t.Run(listen, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{
+				Web:            true,
+				MCPPath:        DefaultMCPPath,
+				Hostname:       "dbrain-test",
+				StateDir:       t.TempDir(),
+				Listen:         listen,
+				TLS:            true,
+				Funnel:         true,
+				StartupTimeout: DefaultStartupTimeout,
+			}
+			if err := opts.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsInvalidFunnelOptions(t *testing.T) {
+	t.Parallel()
+
+	base := Options{
+		Web:            true,
+		MCPPath:        DefaultMCPPath,
+		Hostname:       "dbrain-test",
+		StateDir:       t.TempDir(),
+		Listen:         ":443",
+		TLS:            true,
+		Funnel:         true,
+		StartupTimeout: DefaultStartupTimeout,
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*Options)
+		wantErr string
+	}{
+		{
+			name: "tls disabled",
+			mutate: func(opts *Options) {
+				opts.TLS = false
+			},
+			wantErr: "requires --tsnet-tls=true",
+		},
+		{
+			name: "unsupported port",
+			mutate: func(opts *Options) {
+				opts.Listen = ":80"
+			},
+			wantErr: "port must be 443, 8443, or 10000",
+		},
+		{
+			name: "host included",
+			mutate: func(opts *Options) {
+				opts.Listen = "127.0.0.1:443"
+			},
+			wantErr: "must not include a host",
+		},
+		{
+			name: "missing port separator",
+			mutate: func(opts *Options) {
+				opts.Listen = "443"
+			},
+			wantErr: "parse tsnet funnel listen address",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := base
+			tc.mutate(&opts)
+			err := opts.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate error = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
