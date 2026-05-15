@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 type schemaMigration struct {
 	Version int
@@ -86,6 +86,13 @@ var schemaMigrations = []schemaMigration{
 		Name:    "mcp_bearer_tokens",
 		Run: func(s *Store) error {
 			return s.ensureMCPBearerTokenTables()
+		},
+	},
+	{
+		Version: 8,
+		Name:    "auth_user_approvals_repair",
+		Run: func(s *Store) error {
+			return s.ensureAuthUserTables()
 		},
 	},
 }
