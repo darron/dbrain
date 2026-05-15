@@ -975,6 +975,34 @@ tsnet:
   funnel: true
 ```
 
+Tailnet policy must also allow the node owner or tag to publish Funnel. To allow
+only one tailnet user to start Funnel on their own nodes, add a `nodeAttrs`
+entry like this to the Tailscale policy file:
+
+```jsonc
+"nodeAttrs": [
+  {
+    "target": ["you@example.com"],
+    "attr": ["funnel"],
+  },
+],
+```
+
+If the dbrain tsnet node is tagged, target the tag instead:
+
+```jsonc
+"nodeAttrs": [
+  {
+    "target": ["tag:dbrain"],
+    "attr": ["funnel"],
+  },
+],
+```
+
+This authorizes who may publish a Funnel; it does not restrict who on the public
+internet can visit the Funnel URL. Do not use `autogroup:member` unless every
+tailnet member should be allowed to publish public Funnel services.
+
 MCP smoke test after startup:
 
 ```sh

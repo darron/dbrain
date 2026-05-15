@@ -16,6 +16,7 @@ development date for the change set.
 - **Added**: Optional `--tsnet-funnel`, `tsnet.funnel`, and `DBRAIN_TSNET_FUNNEL` support for serving the existing built-in tsnet listener through Tailscale Funnel.
 - **Behavior**: Funnel uses the same tsnet node identity, hostname, state directory, and Tailscale auth credentials as normal `serve remote`; it is a listener mode, not a separate feature set.
 - **Hardening**: Funnel mode requires TLS and one of Tailscale's supported Funnel ports (`:443`, `:8443`, or `:10000`) and prints public-exposure warnings for web/MCP surfaces.
+- **Docs**: Added Tailscale policy `nodeAttrs` examples for granting Funnel publishing to one user or a dbrain tag, and clarified that app auth still controls public access.
 - **Location**: `internal/remote/`, `internal/app/`, `README.md`, `MCP.md`, `config.yaml.sample`
 
 ### MCP Bearer Token Auth (2026-05-14)
