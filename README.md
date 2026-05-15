@@ -954,12 +954,26 @@ dbrain serve remote --web --mcp --tsnet-funnel
 dbrain serve remote --tsnet-hostname dbrain-dev --tsnet-tls=false --tsnet-listen :80
 ```
 
-`--tsnet-funnel` switches the built-in tsnet listener to Tailscale Funnel. It
-uses the same `tsnet.Server` identity and persistent state as normal remote
-serving; there is no second node to create. Funnel requires tailnet policy that
-allows Funnel, MagicDNS, HTTPS certificates, `--tsnet-tls=true`, and a supported
-listener port (`:443`, `:8443`, or `:10000`). Configure GitHub OAuth for public
-web exposure and `mcp.auth.enabled=true` for public MCP exposure.
+`--tsnet-funnel`, `DBRAIN_TSNET_FUNNEL=true`, or `tsnet.funnel: true` switches
+the built-in tsnet listener to Tailscale Funnel. It uses the same `tsnet.Server`
+identity and persistent state as normal remote serving; there is no second node
+to create. Funnel requires tailnet policy that allows Funnel, MagicDNS, HTTPS
+certificates, `--tsnet-tls=true`, and a supported listener port (`:443`,
+`:8443`, or `:10000`). Configure GitHub OAuth for public web exposure and
+`mcp.auth.enabled=true` for public MCP exposure.
+
+Environment equivalent:
+
+```sh
+DBRAIN_TSNET_FUNNEL=true dbrain serve remote --web --mcp
+```
+
+Config equivalent:
+
+```yaml
+tsnet:
+  funnel: true
+```
 
 MCP smoke test after startup:
 
