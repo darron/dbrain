@@ -168,6 +168,16 @@ func TestPublicExternalURLCleansEncodedBackticksAndPunctuation(t *testing.T) {
 			raw:  "https://example.com/source:",
 			want: "https://example.com/source",
 		},
+		{
+			name: "encoded adjacent markdown URL",
+			raw:  "https://x.com/i/article/2048484969333526528%5D%5Bhttps://www.youtube.com/watch?v=nWzXyjXCoCE",
+			want: "https://x.com/i/article/2048484969333526528",
+		},
+		{
+			name: "raw adjacent markdown URL",
+			raw:  "https://x.com/i/article/2048484969333526528][https://www.youtube.com/watch?v=nWzXyjXCoCE",
+			want: "https://x.com/i/article/2048484969333526528",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -219,8 +229,8 @@ func TestLinkPublicShareURLsProducesRealLinks(t *testing.T) {
 func TestPublicShareOriginalSourcesUsesFullURLText(t *testing.T) {
 	metadata := publicChatShareMetadata{Sources: []publicShareOriginalSource{{
 		URL:     "https://www.thestar.com/opinion/article.html%60",
-		Title:   "Toronto Star opinion",
-		Summary: "Summary beside the full URL.",
+		Title:   "Toronto `Star` **opinion**",
+		Summary: "### What It Is\nSummary beside the **full** URL with `code`.",
 	}}}
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
@@ -230,8 +240,37 @@ func TestPublicShareOriginalSourcesUsesFullURLText(t *testing.T) {
 	if len(sources) != 1 {
 		t.Fatalf("expected one original source, got %+v", sources)
 	}
-	if sources[0].URL != "https://www.thestar.com/opinion/article.html" || sources[0].Host != "thestar.com" || sources[0].Summary != "Summary beside the full URL." {
+	if sources[0].URL != "https://www.thestar.com/opinion/article.html" || sources[0].Host != "thestar.com" || sources[0].Summary != "Summary beside the full URL with code." || sources[0].Title != "Toronto Star opinion" {
 		t.Fatalf("unexpected source normalization: %+v", sources[0])
+	}
+	for _, forbidden := range []string{"###", "**", "`", "%60", "What It Is"} {
+		if strings.Contains(sources[0].Title, forbidden) || strings.Contains(sources[0].Summary, forbidden) || strings.Contains(sources[0].URL, forbidden) {
+			t.Fatalf("source still contains markdown/url artifact %q: %+v", forbidden, sources[0])
+		}
+	}
+}
+
+func TestPublicShareOriginalSourcesCleansStoredMarkdownJoinedURL(t *testing.T) {
+	metadata := publicChatShareMetadata{Sources: []publicShareOriginalSource{{
+		URL:     "https://x.com/i/article/2048484969333526528",
+		Summary: "### What It Is\nThis source covers **harnesses** and `agents`.",
+	}}}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	sources := publicShareOriginalSources([]string{
+		"https://x.com/i/article/2048484969333526528%5D%5Bhttps://www.youtube.com/watch?v=nWzXyjXCoCE",
+		"https://x.com/i/article/2048484969333526528",
+	}, string(metadataJSON))
+	if len(sources) != 1 {
+		t.Fatalf("expected duplicate joined URL to collapse to one source, got %+v", sources)
+	}
+	if sources[0].URL != "https://x.com/i/article/2048484969333526528" {
+		t.Fatalf("unexpected cleaned URL: %+v", sources[0])
+	}
+	if sources[0].Summary != "This source covers harnesses and agents." {
+		t.Fatalf("expected plain-text summary, got %+v", sources[0])
 	}
 }
 

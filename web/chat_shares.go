@@ -32,6 +32,11 @@ var (
 	shareAngledURLPattern              = regexp.MustCompile(`<((?:https?://)[^\s<>"']+)>`)
 	shareURLPattern                    = regexp.MustCompile("https?://[^\\s<>\"'`]+")
 	shareURLTrailingBacktickPattern    = regexp.MustCompile("(https?://[^\\s<>\"'`]+)`+")
+	shareMarkdownHeadingPattern        = regexp.MustCompile(`(?m)^\s{0,3}#{1,6}\s+`)
+	shareMarkdownListMarkerPattern     = regexp.MustCompile(`(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)`)
+	shareMarkdownBlockquotePattern     = regexp.MustCompile(`(?m)^\s*>\s?`)
+	shareMarkdownFencePattern          = regexp.MustCompile("(?m)^\\s*```[A-Za-z0-9_-]*\\s*$")
+	shareSnippetLeadingBoilerplate     = regexp.MustCompile(`(?i)^(?:what it is|what this is)\b[:.\s-]*`)
 	shareSourceKeyPattern              = regexp.MustCompile(`\b(?:src:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|apple-note:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+|gh-star:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|x:[A-Za-z0-9_-]+|youtube:[A-Za-z0-9_-]+|item:[A-Za-z0-9_-]+)\b`)
 	shareInternalFieldPattern          = regexp.MustCompile(`(?im)^\s*(?:[-*]\s*)?(?:source[_ ]?key|lookup|item[_ ]?id|source[_ ]?id|note[_ ]?path|db[_ ]?key|filesystem[_ ]?path)\s*[:=].*$`)
 	shareLocalPathPattern              = regexp.MustCompile(`(?:/Users|/private|/var|/tmp|/Volumes)/[^\s)\]]+`)
@@ -302,7 +307,8 @@ func publicShareSourceDetails(turn ChatTranscriptTurn, originalURLs []string) []
 }
 
 func publicShareSnippet(value string, maxRunes int) string {
-	value = strings.Join(strings.Fields(sanitizeSharedChatContent(value, nil)), " ")
+	value = strings.Join(strings.Fields(stripPublicShareSnippetMarkdown(sanitizeSharedChatContent(value, nil))), " ")
+	value = strings.TrimSpace(shareSnippetLeadingBoilerplate.ReplaceAllString(value, ""))
 	if value == "" {
 		return ""
 	}
@@ -311,6 +317,20 @@ func publicShareSnippet(value string, maxRunes int) string {
 		return value
 	}
 	return strings.TrimSpace(string(runes[:maxRunes])) + "..."
+}
+
+func stripPublicShareSnippetMarkdown(value string) string {
+	value = shareMarkdownFencePattern.ReplaceAllString(value, "")
+	value = shareMarkdownHeadingPattern.ReplaceAllString(value, "")
+	value = shareMarkdownListMarkerPattern.ReplaceAllString(value, "")
+	value = shareMarkdownBlockquotePattern.ReplaceAllString(value, "")
+	value = strings.NewReplacer(
+		"**", "",
+		"__", "",
+		"~~", "",
+		"`", "",
+	).Replace(value)
+	return strings.TrimSpace(value)
 }
 
 func publicShareOriginalSources(originalURLs []string, metadataJSON string) []publicShareOriginalSource {
@@ -524,6 +544,7 @@ func shareTitle(question string, summary string) string {
 
 func publicExternalURL(raw string) (string, bool) {
 	raw = strings.TrimSpace(strings.TrimRight(raw, "`.,);]:"))
+	raw = trimPublicURLMarkdownJoin(raw)
 	if raw == "" {
 		return "", false
 	}
@@ -551,6 +572,26 @@ func publicExternalURL(raw string) (string, bool) {
 	u.RawQuery = trimPublicURLComponentRight(u.RawQuery)
 	u.Fragment = ""
 	return u.String(), true
+}
+
+func trimPublicURLMarkdownJoin(raw string) string {
+	lower := strings.ToLower(raw)
+	cut := len(raw)
+	for _, marker := range []string{
+		"][http://",
+		"][https://",
+		"] [http://",
+		"] [https://",
+		"%5d%5bhttp://",
+		"%5d%5bhttps://",
+		"%5d%20%5bhttp://",
+		"%5d%20%5bhttps://",
+	} {
+		if idx := strings.Index(lower, marker); idx >= 0 && idx < cut {
+			cut = idx
+		}
+	}
+	return strings.TrimSpace(raw[:cut])
 }
 
 func publicShareURLHost(raw string) string {

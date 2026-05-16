@@ -11,6 +11,11 @@ development date for the change set.
 - **Hardening**: The doctor API remains protected for normal web/API callers; the local CLI uses a short-lived HMAC service header derived from `auth.session_key` for this narrow restart probe.
 - **Location**: `internal/app/`, `web/`, `internal/serviceauth/`
 
+### Public Share URL Cleanup (2026-05-16)
+
+- **Fixed**: Public chat share "Original URLs" now strips Markdown syntax and boilerplate labels such as "What It Is" from source snippets, and cleans adjacent Markdown URL artifacts such as encoded `][https://...` joins, including for already-created shares.
+- **Location**: `web/`
+
 ### Public Chat Shares (2026-05-15)
 
 - **Added**: Completed browser Chat answers can now be shared as stable public `/share/{slug}` pages, with deterministic summaries, categories, original external URLs, and per-owner share history in the web UI.
