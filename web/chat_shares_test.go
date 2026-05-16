@@ -118,6 +118,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 		"sources/test-agent-memory.md",
 		"<script>alert",
 		"%60",
+		"class=\"summary\"",
 		"&lt;https://",
 		"[<a href",
 		"]</a>",

@@ -776,7 +776,6 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
     </header>
     <main>
       <h1>{{.Title}}</h1>
-      <p class="summary">{{.Summary}}</p>
       {{if .Categories}}
       <div class="chips" aria-label="Categories">
         {{range .Categories}}<span class="chip">{{.}}</span>{{end}}
