@@ -35,6 +35,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 				"### Markdown Heading",
 				"- Render **bold** and `code` as HTML.",
 				"Clean URL punctuation: https://example.com/with-backtick` and https://example.com/with-colon:",
+				"Bracketed/angled URLs should become hostname links: [https://example.com/bracketed%60] and <https://www.example.org/angled%60>",
 				"source_key: " + sourceKey,
 				"Local path: /Users/darron/src/dbrain/data/brain.db",
 				"Internal route: /api/get?lookup=" + url.QueryEscape(sourceKey),
@@ -100,7 +101,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 		t.Fatalf("expected public page 200, got %d: %s", public.Code, public.Body.String())
 	}
 	page := public.Body.String()
-	for _, want := range []string{"https://example.com/agent-memory", "Agent memory systems", "Original URLs", "Summary about durable retrieval.", "<h3 id=\"markdown-heading\">Markdown Heading</h3>", "<strong>bold</strong>", "<code>code</code>", "href=\"https://example.com/with-backtick\"", "href=\"https://example.com/with-colon\""} {
+	for _, want := range []string{"https://example.com/agent-memory", "Agent memory systems", "Original URLs", "Summary about durable retrieval.", "<h3 id=\"markdown-heading\">Markdown Heading</h3>", "<strong>bold</strong>", "<code>code</code>", "href=\"https://example.com/with-backtick\"", "href=\"https://example.com/with-colon\"", "href=\"https://example.com/bracketed\">example.com</a>", "href=\"https://www.example.org/angled\">example.org</a>"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("expected public page to contain %q:\n%s", want, page)
 		}
@@ -116,6 +117,9 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 		"sources/test-agent-memory.md",
 		"<script>alert",
 		"%60",
+		"&lt;https://",
+		"[<a href",
+		"]</a>",
 	} {
 		if strings.Contains(page, forbidden) {
 			t.Fatalf("public page leaked %q:\n%s", forbidden, page)

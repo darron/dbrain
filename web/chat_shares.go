@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/darron/dbrain/internal/store"
 	"github.com/yuin/goldmark"
@@ -28,6 +27,8 @@ const (
 var (
 	shareSlugPattern                   = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
 	shareMarkdownLinkPattern           = regexp.MustCompile(`\[([^\]\n]{0,240})\]\(([^)\s]+)[^)]*\)`)
+	shareBracketedURLPattern           = regexp.MustCompile(`\[(https?://[^\s<>"'\]]+)\]`)
+	shareAngledURLPattern              = regexp.MustCompile(`<((?:https?://)[^\s<>"']+)>`)
 	shareURLPattern                    = regexp.MustCompile("https?://[^\\s<>\"'`]+")
 	shareURLTrailingBacktickPattern    = regexp.MustCompile("(https?://[^\\s<>\"'`]+)`+")
 	shareSourceKeyPattern              = regexp.MustCompile(`\b(?:src:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|apple-note:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+|gh-star:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|x:[A-Za-z0-9_-]+|youtube:[A-Za-z0-9_-]+|item:[A-Za-z0-9_-]+)\b`)
@@ -229,6 +230,7 @@ type publicShareOriginalSource struct {
 	URL     string `json:"url"`
 	Title   string `json:"title,omitempty"`
 	Summary string `json:"summary,omitempty"`
+	Host    string `json:"host,omitempty"`
 }
 
 func collectOriginalURLs(turn ChatTranscriptTurn) []string {
@@ -267,6 +269,7 @@ func publicShareSourceDetails(turn ChatTranscriptTurn, originalURLs []string) []
 		}
 		current := byURL[cleanURL]
 		current.URL = cleanURL
+		current.Host = publicShareURLHost(cleanURL)
 		if current.Title == "" {
 			current.Title = publicShareSnippet(title, 140)
 		}
@@ -319,6 +322,7 @@ func publicShareOriginalSources(originalURLs []string, metadataJSON string) []pu
 			continue
 		}
 		source.URL = cleanURL
+		source.Host = publicShareURLHost(cleanURL)
 		source.Title = publicShareSnippet(source.Title, 140)
 		source.Summary = publicShareSnippet(source.Summary, 320)
 		byURL[cleanURL] = source
@@ -337,6 +341,9 @@ func publicShareOriginalSources(originalURLs []string, metadataJSON string) []pu
 		source := byURL[cleanURL]
 		if source.URL == "" {
 			source.URL = cleanURL
+		}
+		if source.Host == "" {
+			source.Host = publicShareURLHost(cleanURL)
 		}
 		sources = append(sources, source)
 	}
@@ -538,8 +545,23 @@ func publicExternalURL(raw string) (string, bool) {
 			return "", false
 		}
 	}
+	u.Path = strings.TrimRight(u.Path, "`.,);]:")
+	u.RawPath = ""
+	u.RawQuery = strings.TrimRight(u.RawQuery, "`.,);]:")
 	u.Fragment = ""
 	return u.String(), true
+}
+
+func publicShareURLHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	if host == "" {
+		return raw
+	}
+	return host
 }
 
 func redactProtectedShareRoutes(text string) string {
@@ -630,29 +652,48 @@ func renderPublicShareMarkdown(markdown string) template.HTML {
 }
 
 func linkPublicShareURLs(markdown string) string {
-	return shareURLPattern.ReplaceAllStringFunc(markdown, func(match string) string {
-		cleanURL, ok := publicExternalURL(match)
-		if !ok {
+	markdown = shareBracketedURLPattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		parts := shareBracketedURLPattern.FindStringSubmatch(match)
+		if len(parts) != 2 {
 			return match
 		}
-		trailing := publicURLTrailingPunctuation(match)
-		return "<" + cleanURL + ">" + trailing
+		return publicShareMarkdownURLLink(parts[1])
 	})
+	markdown = shareAngledURLPattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		parts := shareAngledURLPattern.FindStringSubmatch(match)
+		if len(parts) != 2 {
+			return match
+		}
+		return publicShareMarkdownURLLink(parts[1])
+	})
+	return linkBarePublicShareURLs(markdown)
 }
 
-func publicURLTrailingPunctuation(raw string) string {
-	var trailing []rune
-	for len(raw) > 0 {
-		r, size := utf8.DecodeLastRuneInString(raw)
-		switch r {
-		case '.', ',', ')', ';', ']', ':':
-			trailing = append([]rune{r}, trailing...)
-			raw = raw[:len(raw)-size]
-		default:
-			return string(trailing)
+func linkBarePublicShareURLs(markdown string) string {
+	var out strings.Builder
+	last := 0
+	for _, loc := range shareURLPattern.FindAllStringIndex(markdown, -1) {
+		start, end := loc[0], loc[1]
+		if start > 0 && (markdown[start-1] == '(' || markdown[start-1] == '[' || markdown[start-1] == '<') {
+			continue
 		}
+		out.WriteString(markdown[last:start])
+		out.WriteString(publicShareMarkdownURLLink(markdown[start:end]))
+		last = end
 	}
-	return string(trailing)
+	if last == 0 {
+		return markdown
+	}
+	out.WriteString(markdown[last:])
+	return out.String()
+}
+
+func publicShareMarkdownURLLink(raw string) string {
+	cleanURL, ok := publicExternalURL(raw)
+	if !ok {
+		return raw
+	}
+	return "[" + publicShareURLHost(cleanURL) + "](" + cleanURL + ")"
 }
 
 var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!doctype html>
@@ -727,7 +768,7 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
       <section class="sources" aria-label="Original URLs">
         <h2>Original URLs</h2>
         <ul>
-          {{range .OriginalSources}}<li><a href="{{.URL}}" rel="noreferrer noopener" target="_blank">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>{{if .Summary}}<p>{{.Summary}}</p>{{else if .Title}}<p>{{.URL}}</p>{{end}}</li>{{end}}
+          {{range .OriginalSources}}<li><a href="{{.URL}}" rel="noreferrer noopener" target="_blank">{{if .Host}}{{.Host}}{{else}}{{.URL}}{{end}}</a>{{if .Summary}}: {{.Summary}}{{else if .Title}}: {{.Title}}{{end}}</li>{{end}}
         </ul>
       </section>
       {{end}}
