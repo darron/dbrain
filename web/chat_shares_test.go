@@ -36,6 +36,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 				"- Render **bold** and `code` as HTML.",
 				"Clean URL punctuation: https://example.com/with-backtick` and https://example.com/with-colon:",
 				"Bracketed/angled URLs should become hostname links: [https://example.com/bracketed%60] and <https://www.example.org/angled%60>",
+				"Sources sometimes arrive as code-wrapped autolinks: `<https://example.net/code-source%60>`.",
 				"source_key: " + sourceKey,
 				"Local path: /Users/darron/src/dbrain/data/brain.db",
 				"Internal route: /api/get?lookup=" + url.QueryEscape(sourceKey),
@@ -101,7 +102,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 		t.Fatalf("expected public page 200, got %d: %s", public.Code, public.Body.String())
 	}
 	page := public.Body.String()
-	for _, want := range []string{"https://example.com/agent-memory", "Agent memory systems", "Original URLs", "Summary about durable retrieval.", "<h3 id=\"markdown-heading\">Markdown Heading</h3>", "<strong>bold</strong>", "<code>code</code>", "href=\"https://example.com/with-backtick\"", "href=\"https://example.com/with-colon\"", "href=\"https://example.com/bracketed\">example.com</a>", "href=\"https://www.example.org/angled\">example.org</a>"} {
+	for _, want := range []string{"https://example.com/agent-memory", ">https://example.com/agent-memory</a>: Summary about durable retrieval.", "Agent memory systems", "Original URLs", "Summary about durable retrieval.", "<h3 id=\"markdown-heading\">Markdown Heading</h3>", "<strong>bold</strong>", "<code>code</code>", "href=\"https://example.com/with-backtick\"", "href=\"https://example.com/with-colon\"", "href=\"https://example.com/bracketed\">example.com</a>", "href=\"https://www.example.org/angled\">example.org</a>", "href=\"https://example.net/code-source\">example.net</a>"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("expected public page to contain %q:\n%s", want, page)
 		}
@@ -142,6 +143,94 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 	}
 	if recreateResponse.Slug != createResponse.Slug {
 		t.Fatalf("expected identical owner/content to reuse slug, got %q then %q", createResponse.Slug, recreateResponse.Slug)
+	}
+}
+
+func TestPublicExternalURLCleansEncodedBackticksAndPunctuation(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "encoded backtick in path",
+			raw:  "https://calgaryherald.com/opinion/story%60",
+			want: "https://calgaryherald.com/opinion/story",
+		},
+		{
+			name: "encoded backtick in query",
+			raw:  "https://boereport.com/2026/05/01/alberta-oil-pipeline?utm_source=dlvr.it&utm_medium=twitter%60",
+			want: "https://boereport.com/2026/05/01/alberta-oil-pipeline?utm_source=dlvr.it&utm_medium=twitter",
+		},
+		{
+			name: "trailing colon",
+			raw:  "https://example.com/source:",
+			want: "https://example.com/source",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := publicExternalURL(tt.raw)
+			if !ok || got != tt.want {
+				t.Fatalf("publicExternalURL(%q) = %q, %v; want %q, true", tt.raw, got, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestLinkPublicShareURLsProducesRealLinks(t *testing.T) {
+	markdown := strings.Join([]string{
+		"Source: `<https://www.thestar.com/opinion/article.html%60>`: summary.",
+		"Bare URL: https://calgaryherald.com/news/story%60.",
+		"Bracketed URL: [https://nationalpost.com/news/story%60]",
+	}, "\n")
+	linked := linkPublicShareURLs(markdown)
+	for _, want := range []string{
+		"[thestar.com](https://www.thestar.com/opinion/article.html): summary.",
+		"[calgaryherald.com](https://calgaryherald.com/news/story).",
+		"[nationalpost.com](https://nationalpost.com/news/story)",
+	} {
+		if !strings.Contains(linked, want) {
+			t.Fatalf("expected linked markdown to contain %q:\n%s", want, linked)
+		}
+	}
+	for _, forbidden := range []string{"%60", "`[", "<https://"} {
+		if strings.Contains(linked, forbidden) {
+			t.Fatalf("linked markdown still contains %q:\n%s", forbidden, linked)
+		}
+	}
+
+	html := string(renderPublicShareMarkdown(markdown))
+	for _, want := range []string{
+		"href=\"https://www.thestar.com/opinion/article.html\">thestar.com</a>: summary.",
+		"href=\"https://calgaryherald.com/news/story\">calgaryherald.com</a>.",
+		"href=\"https://nationalpost.com/news/story\">nationalpost.com</a>",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected rendered HTML to contain %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "<code>") {
+		t.Fatalf("expected source URLs to render as links, not code spans:\n%s", html)
+	}
+}
+
+func TestPublicShareOriginalSourcesUsesFullURLText(t *testing.T) {
+	metadata := publicChatShareMetadata{Sources: []publicShareOriginalSource{{
+		URL:     "https://www.thestar.com/opinion/article.html%60",
+		Title:   "Toronto Star opinion",
+		Summary: "Summary beside the full URL.",
+	}}}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	sources := publicShareOriginalSources([]string{"https://www.thestar.com/opinion/article.html%60"}, string(metadataJSON))
+	if len(sources) != 1 {
+		t.Fatalf("expected one original source, got %+v", sources)
+	}
+	if sources[0].URL != "https://www.thestar.com/opinion/article.html" || sources[0].Host != "thestar.com" || sources[0].Summary != "Summary beside the full URL." {
+		t.Fatalf("unexpected source normalization: %+v", sources[0])
 	}
 }
 

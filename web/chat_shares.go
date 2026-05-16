@@ -27,6 +27,7 @@ const (
 var (
 	shareSlugPattern                   = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
 	shareMarkdownLinkPattern           = regexp.MustCompile(`\[([^\]\n]{0,240})\]\(([^)\s]+)[^)]*\)`)
+	shareMarkdownURLCodeSpanPattern    = regexp.MustCompile("`(\\[[^\\]\\n]{1,240}\\]\\(https?://[^\\s)]+\\))`")
 	shareBracketedURLPattern           = regexp.MustCompile(`\[(https?://[^\s<>"'\]]+)\]`)
 	shareAngledURLPattern              = regexp.MustCompile(`<((?:https?://)[^\s<>"']+)>`)
 	shareURLPattern                    = regexp.MustCompile("https?://[^\\s<>\"'`]+")
@@ -547,7 +548,7 @@ func publicExternalURL(raw string) (string, bool) {
 	}
 	u.Path = strings.TrimRight(u.Path, "`.,);]:")
 	u.RawPath = ""
-	u.RawQuery = strings.TrimRight(u.RawQuery, "`.,);]:")
+	u.RawQuery = trimPublicURLComponentRight(u.RawQuery)
 	u.Fragment = ""
 	return u.String(), true
 }
@@ -562,6 +563,14 @@ func publicShareURLHost(raw string) string {
 		return raw
 	}
 	return host
+}
+
+func trimPublicURLComponentRight(value string) string {
+	value = strings.TrimRight(value, "`.,);]:")
+	for strings.HasSuffix(strings.ToLower(value), "%60") {
+		value = strings.TrimSuffix(value[:len(value)-3], "`.,);]:")
+	}
+	return value
 }
 
 func redactProtectedShareRoutes(text string) string {
@@ -666,7 +675,8 @@ func linkPublicShareURLs(markdown string) string {
 		}
 		return publicShareMarkdownURLLink(parts[1])
 	})
-	return linkBarePublicShareURLs(markdown)
+	markdown = linkBarePublicShareURLs(markdown)
+	return shareMarkdownURLCodeSpanPattern.ReplaceAllString(markdown, "$1")
 }
 
 func linkBarePublicShareURLs(markdown string) string {
@@ -693,7 +703,16 @@ func publicShareMarkdownURLLink(raw string) string {
 	if !ok {
 		return raw
 	}
-	return "[" + publicShareURLHost(cleanURL) + "](" + cleanURL + ")"
+	return "[" + publicShareURLHost(cleanURL) + "](" + cleanURL + ")" + publicURLTrailingPunctuation(raw)
+}
+
+func publicURLTrailingPunctuation(raw string) string {
+	raw = strings.TrimRight(raw, "`")
+	idx := len(raw)
+	for idx > 0 && strings.ContainsRune(".,);]:", rune(raw[idx-1])) {
+		idx--
+	}
+	return raw[idx:]
 }
 
 var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!doctype html>
@@ -768,7 +787,7 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
       <section class="sources" aria-label="Original URLs">
         <h2>Original URLs</h2>
         <ul>
-          {{range .OriginalSources}}<li><a href="{{.URL}}" rel="noreferrer noopener" target="_blank">{{if .Host}}{{.Host}}{{else}}{{.URL}}{{end}}</a>{{if .Summary}}: {{.Summary}}{{else if .Title}}: {{.Title}}{{end}}</li>{{end}}
+          {{range .OriginalSources}}<li><a href="{{.URL}}" rel="noreferrer noopener" target="_blank">{{.URL}}</a>{{if .Summary}}: {{.Summary}}{{else if .Title}}: {{.Title}}{{end}}</li>{{end}}
         </ul>
       </section>
       {{end}}
