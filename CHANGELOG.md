@@ -5,6 +5,12 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Launchd Full Disk Access Probe Auth (2026-05-16)
+
+- **Fixed**: `dbrain launchd restart` now authenticates its service-process Full Disk Access probe when web OAuth is enabled, so `/api/doctor/full-disk-access` no longer returns a diagnostic-only `401` after the GitHub OAuth rollout.
+- **Hardening**: The doctor API remains protected for normal web/API callers; the local CLI uses a short-lived HMAC service header derived from `auth.session_key` for this narrow restart probe.
+- **Location**: `internal/app/`, `web/`, `internal/serviceauth/`
+
 ### Public Chat Shares (2026-05-15)
 
 - **Added**: Completed browser Chat answers can now be shared as stable public `/share/{slug}` pages, with deterministic summaries, categories, original external URLs, and per-owner share history in the web UI.

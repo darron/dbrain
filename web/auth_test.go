@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/serviceauth"
 	"golang.org/x/oauth2"
 )
 
@@ -254,6 +255,49 @@ func TestAuthEnabledProtectsKnownNonMCPRoutes(t *testing.T) {
 				t.Fatalf("unexpected redirect location %q, want %q", location, wantLocation)
 			}
 		})
+	}
+}
+
+func TestServiceAuthAllowsDoctorFullDiskAccessProbe(t *testing.T) {
+	t.Setenv("DBRAIN_AUTH_BASE_URL", "")
+	t.Setenv("DBRAIN_AUTH_ENABLED", "")
+	t.Setenv("DBRAIN_AUTH_GITHUB_CLIENT_ID", "")
+	t.Setenv("DBRAIN_AUTH_GITHUB_CLIENT_SECRET", "")
+	t.Setenv("DBRAIN_AUTH_PROVIDERS", "")
+	t.Setenv("DBRAIN_AUTH_SESSION_KEY", "")
+
+	cfg, st := openTestStore(t)
+	writeAuthConfig(t, cfg, validAuthConfigYAML())
+	probePath := filepath.Join(t.TempDir(), "NoteStore.sqlite")
+	if err := os.WriteFile(probePath, []byte("notes"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{
+		FullDiskAccessPath: probePath,
+	})
+	if err != nil {
+		t.Fatalf("NewHandlerWithOptions: %v", err)
+	}
+	header, err := serviceauth.SignHeader(http.MethodGet, "/api/doctor/full-disk-access", "test-session-key-32-characters-long", time.Now())
+	if err != nil {
+		t.Fatalf("SignHeader: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/doctor/full-disk-access", nil)
+	req.Header.Set(serviceauth.HeaderName, header)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response FullDiskAccessResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode full disk access response: %v", err)
+	}
+	if !response.OK || !response.Readable || response.Path != probePath {
+		t.Fatalf("unexpected response: %#v", response)
 	}
 }
 
