@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"html/template"
 	"net"
@@ -10,8 +11,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/darron/dbrain/internal/store"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer/html"
 )
 
 const (
@@ -22,11 +28,12 @@ const (
 var (
 	shareSlugPattern                   = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
 	shareMarkdownLinkPattern           = regexp.MustCompile(`\[([^\]\n]{0,240})\]\(([^)\s]+)[^)]*\)`)
-	shareURLPattern                    = regexp.MustCompile(`https?://[^\s<>"']+`)
+	shareURLPattern                    = regexp.MustCompile("https?://[^\\s<>\"'`]+")
+	shareURLTrailingBacktickPattern    = regexp.MustCompile("(https?://[^\\s<>\"'`]+)`+")
 	shareSourceKeyPattern              = regexp.MustCompile(`\b(?:src:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|apple-note:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+|gh-star:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|x:[A-Za-z0-9_-]+|youtube:[A-Za-z0-9_-]+|item:[A-Za-z0-9_-]+)\b`)
 	shareInternalFieldPattern          = regexp.MustCompile(`(?im)^\s*(?:[-*]\s*)?(?:source[_ ]?key|lookup|item[_ ]?id|source[_ ]?id|note[_ ]?path|db[_ ]?key|filesystem[_ ]?path)\s*[:=].*$`)
 	shareLocalPathPattern              = regexp.MustCompile(`(?:/Users|/private|/var|/tmp|/Volumes)/[^\s)\]]+`)
-	shareAbsoluteProtectedRoutePattern = regexp.MustCompile(`(?i)https?://[^\s<>"']+/(?:api|media|auth|login|logout)(?:[/?#][^\s)\]]*)?`)
+	shareAbsoluteProtectedRoutePattern = regexp.MustCompile("(?i)https?://[^\\s<>\"'`]+/(?:api|media|auth|login|logout)(?:[/?#][^\\s)\\]`]*)?")
 	shareRelativeProtectedRoutePattern = regexp.MustCompile(`(?i)(^|[\s([])(/(?:api|media|auth|login|logout)(?:[/?#][^\s)\]]*)?)`)
 	shareWhitespacePattern             = regexp.MustCompile(`[ \t]+`)
 )
@@ -126,13 +133,13 @@ func (s *server) handlePublicShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = publicShareTemplate.Execute(w, publicShareTemplateData{
-		Title:        fallbackShareTitle(share.Title),
-		Summary:      share.Summary,
-		Categories:   share.Categories,
-		Content:      share.SanitizedContent,
-		OriginalURLs: share.OriginalURLs,
-		CreatedAt:    share.CreatedAt.Format("2006-01-02 15:04 MST"),
-		Version:      webVersionInfo(),
+		Title:           fallbackShareTitle(share.Title),
+		Summary:         share.Summary,
+		Categories:      share.Categories,
+		ContentHTML:     renderPublicShareMarkdown(share.SanitizedContent),
+		OriginalSources: publicShareOriginalSources(share.OriginalURLs, share.MetadataJSON),
+		CreatedAt:       share.CreatedAt.Format("2006-01-02 15:04 MST"),
+		Version:         webVersionInfo(),
 	})
 }
 
@@ -168,11 +175,12 @@ func buildPublicChatShareInput(owner chatShareOwner, turn ChatTranscriptTurn) st
 	summary := summarizeSharedContent(content)
 	categories := categorizeSharedContent(content, turn)
 	title := shareTitle(turn.Question, summary)
-	metadata := map[string]string{
-		"question": sanitizeSharedChatContent(turn.Question, keyURLs),
+	metadata := publicChatShareMetadata{
+		Question: sanitizeSharedChatContent(turn.Question, keyURLs),
+		Sources:  publicShareSourceDetails(turn, originalURLs),
 	}
 	if turn.CreatedAt != "" {
-		metadata["chat_created_at"] = strings.TrimSpace(turn.CreatedAt)
+		metadata.ChatCreatedAt = strings.TrimSpace(turn.CreatedAt)
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 	return store.PublicChatShareInput{
@@ -211,6 +219,18 @@ func sourceKeyURLMap(turn ChatTranscriptTurn) map[string]string {
 	return urls
 }
 
+type publicChatShareMetadata struct {
+	Question      string                      `json:"question,omitempty"`
+	ChatCreatedAt string                      `json:"chat_created_at,omitempty"`
+	Sources       []publicShareOriginalSource `json:"sources,omitempty"`
+}
+
+type publicShareOriginalSource struct {
+	URL     string `json:"url"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
+}
+
 func collectOriginalURLs(turn ChatTranscriptTurn) []string {
 	seen := map[string]struct{}{}
 	var urls []string
@@ -236,6 +256,91 @@ func collectOriginalURLs(turn ChatTranscriptTurn) []string {
 	}
 	sort.Strings(urls)
 	return urls
+}
+
+func publicShareSourceDetails(turn ChatTranscriptTurn, originalURLs []string) []publicShareOriginalSource {
+	byURL := map[string]publicShareOriginalSource{}
+	add := func(rawURL string, title string, summary string) {
+		cleanURL, ok := publicExternalURL(rawURL)
+		if !ok {
+			return
+		}
+		current := byURL[cleanURL]
+		current.URL = cleanURL
+		if current.Title == "" {
+			current.Title = publicShareSnippet(title, 140)
+		}
+		if current.Summary == "" {
+			current.Summary = publicShareSnippet(summary, 320)
+		}
+		byURL[cleanURL] = current
+	}
+	for _, evidence := range turn.ResearchPack.Evidence {
+		add(evidence.URL, evidence.Title, firstNonEmptyString(evidence.Summary, evidence.Excerpt))
+	}
+	for _, evidence := range turn.ResearchPack.ExactTagEvidence {
+		add(evidence.URL, evidence.Title, firstNonEmptyString(evidence.Summary, evidence.Excerpt))
+	}
+	for _, citation := range turn.Citations {
+		add(citation.URL, citation.Title, "")
+	}
+	ordered := make([]publicShareOriginalSource, 0, len(originalURLs))
+	for _, rawURL := range originalURLs {
+		cleanURL, ok := publicExternalURL(rawURL)
+		if !ok {
+			continue
+		}
+		if source, ok := byURL[cleanURL]; ok {
+			ordered = append(ordered, source)
+		}
+	}
+	return ordered
+}
+
+func publicShareSnippet(value string, maxRunes int) string {
+	value = strings.Join(strings.Fields(sanitizeSharedChatContent(value, nil)), " ")
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:maxRunes])) + "..."
+}
+
+func publicShareOriginalSources(originalURLs []string, metadataJSON string) []publicShareOriginalSource {
+	var metadata publicChatShareMetadata
+	_ = json.Unmarshal([]byte(metadataJSON), &metadata)
+	byURL := map[string]publicShareOriginalSource{}
+	for _, source := range metadata.Sources {
+		cleanURL, ok := publicExternalURL(source.URL)
+		if !ok {
+			continue
+		}
+		source.URL = cleanURL
+		source.Title = publicShareSnippet(source.Title, 140)
+		source.Summary = publicShareSnippet(source.Summary, 320)
+		byURL[cleanURL] = source
+	}
+	seen := map[string]struct{}{}
+	var sources []publicShareOriginalSource
+	for _, rawURL := range originalURLs {
+		cleanURL, ok := publicExternalURL(rawURL)
+		if !ok {
+			continue
+		}
+		if _, ok := seen[cleanURL]; ok {
+			continue
+		}
+		seen[cleanURL] = struct{}{}
+		source := byURL[cleanURL]
+		if source.URL == "" {
+			source.URL = cleanURL
+		}
+		sources = append(sources, source)
+	}
+	return sources
 }
 
 func extractExternalURLs(content string) []string {
@@ -300,6 +405,7 @@ func sanitizeSharedChatContent(answer string, sourceURLs map[string]string) stri
 		}
 		return label
 	})
+	text = shareURLTrailingBacktickPattern.ReplaceAllString(text, "$1")
 	text = shareInternalFieldPattern.ReplaceAllString(text, "")
 	text = redactProtectedShareRoutes(text)
 	text = shareLocalPathPattern.ReplaceAllString(text, "[redacted path]")
@@ -409,7 +515,7 @@ func shareTitle(question string, summary string) string {
 }
 
 func publicExternalURL(raw string) (string, bool) {
-	raw = strings.TrimSpace(strings.TrimRight(raw, ".,);]"))
+	raw = strings.TrimSpace(strings.TrimRight(raw, "`.,);]:"))
 	if raw == "" {
 		return "", false
 	}
@@ -494,13 +600,59 @@ func formatShareTime(t time.Time) string {
 }
 
 type publicShareTemplateData struct {
-	Title        string
-	Summary      string
-	Categories   []string
-	Content      string
-	OriginalURLs []string
-	CreatedAt    string
-	Version      WebVersionInfo
+	Title           string
+	Summary         string
+	Categories      []string
+	ContentHTML     template.HTML
+	OriginalSources []publicShareOriginalSource
+	CreatedAt       string
+	Version         WebVersionInfo
+}
+
+var publicShareMarkdown = goldmark.New(
+	goldmark.WithExtensions(
+		extension.GFM,
+	),
+	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+	goldmark.WithRendererOptions(
+		html.WithHardWraps(),
+		html.WithXHTML(),
+	),
+)
+
+func renderPublicShareMarkdown(markdown string) template.HTML {
+	markdown = linkPublicShareURLs(markdown)
+	var buf bytes.Buffer
+	if err := publicShareMarkdown.Convert([]byte(markdown), &buf); err != nil {
+		return template.HTML(template.HTMLEscapeString(markdown))
+	}
+	return template.HTML(buf.String())
+}
+
+func linkPublicShareURLs(markdown string) string {
+	return shareURLPattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		cleanURL, ok := publicExternalURL(match)
+		if !ok {
+			return match
+		}
+		trailing := publicURLTrailingPunctuation(match)
+		return "<" + cleanURL + ">" + trailing
+	})
+}
+
+func publicURLTrailingPunctuation(raw string) string {
+	var trailing []rune
+	for len(raw) > 0 {
+		r, size := utf8.DecodeLastRuneInString(raw)
+		switch r {
+		case '.', ',', ')', ';', ']', ':':
+			trailing = append([]rune{r}, trailing...)
+			raw = raw[:len(raw)-size]
+		default:
+			return string(trailing)
+		}
+	}
+	return string(trailing)
 }
 
 var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!doctype html>
@@ -523,7 +675,21 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
     .summary { font-size: 1.04rem; color: #3d4d42; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip { border: 1px solid #cbd8ce; color: #245c3a; background: #edf5ef; border-radius: 999px; padding: 3px 10px; font-size: 0.82rem; }
-    .content { white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px solid #d9dfd7; border-bottom: 1px solid #d9dfd7; padding: 18px 0; line-height: 1.68; color: #1e2a22; }
+    .content { overflow-wrap: anywhere; border-top: 1px solid #d9dfd7; border-bottom: 1px solid #d9dfd7; padding: 18px 0; line-height: 1.68; color: #1e2a22; }
+    .content > *:first-child { margin-top: 0; }
+    .content > *:last-child { margin-bottom: 0; }
+    .content p, .content ul, .content ol, .content blockquote, .content pre { margin: 0 0 1rem; }
+    .content h1, .content h2, .content h3, .content h4 { margin: 1.4rem 0 0.55rem; letter-spacing: 0; text-transform: none; color: #111a14; }
+    .content h1 { font-size: 1.65rem; }
+    .content h2 { font-size: 1.35rem; }
+    .content h3 { font-size: 1.15rem; }
+    .content h4 { font-size: 1rem; }
+    .content ul, .content ol { padding-left: 1.45rem; }
+    .content li { margin: 0.25rem 0; }
+    .content blockquote { border-left: 3px solid #cbd8ce; padding-left: 1rem; color: #4a5c50; }
+    .content code { border: 1px solid #d9dfd7; background: #eef3ed; border-radius: 4px; padding: 0.05rem 0.25rem; font-size: 0.92em; }
+    .content pre { border: 1px solid #d9dfd7; background: #eef3ed; border-radius: 8px; padding: 0.85rem; overflow-x: auto; }
+    .content pre code { border: 0; background: transparent; padding: 0; }
     .sources { display: grid; gap: 10px; }
     .sources ul { margin: 0; padding-left: 1.2rem; display: grid; gap: 8px; }
     a { color: #0f6b40; overflow-wrap: anywhere; }
@@ -534,6 +700,9 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
       h1 { color: #f0fbf2; }
       h2, .stamp, footer { color: #8fa393; }
       .summary, .content { color: #c9d8cd; }
+      .content h1, .content h2, .content h3, .content h4 { color: #f0fbf2; }
+      .content blockquote { border-color: #29553a; color: #afc1b4; }
+      .content code, .content pre { border-color: #203328; background: #0e1c14; }
       .brand, a { color: #64d58d; }
       .chip { border-color: #29553a; color: #95e6b0; background: #102317; }
     }
@@ -553,12 +722,12 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
         {{range .Categories}}<span class="chip">{{.}}</span>{{end}}
       </div>
       {{end}}
-      <section class="content" aria-label="Shared answer">{{.Content}}</section>
-      {{if .OriginalURLs}}
+      <section class="content" aria-label="Shared answer">{{.ContentHTML}}</section>
+      {{if .OriginalSources}}
       <section class="sources" aria-label="Original URLs">
         <h2>Original URLs</h2>
         <ul>
-          {{range .OriginalURLs}}<li><a href="{{.}}" rel="noreferrer noopener" target="_blank">{{.}}</a></li>{{end}}
+          {{range .OriginalSources}}<li><a href="{{.URL}}" rel="noreferrer noopener" target="_blank">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>{{if .Summary}}<p>{{.Summary}}</p>{{else if .Title}}<p>{{.URL}}</p>{{end}}</li>{{end}}
         </ul>
       </section>
       {{end}}

@@ -101,6 +101,7 @@ require (
 	github.com/tailscale/wireguard-go v0.0.0-20250716170648-1d0488a3d7da // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+	github.com/yuin/goldmark v1.8.2 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.46.0 // indirect
