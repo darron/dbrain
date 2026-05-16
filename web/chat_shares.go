@@ -792,7 +792,7 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
       {{end}}
     </main>
     <footer>
-      <span>dbrain</span>
+      <span><a href="https://github.com/darron/dbrain">dbrain</a></span>
       {{if .Version.ReleaseVersion}}<span>{{.Version.ReleaseVersion}}</span>{{end}}
       {{if .Version.Short}}<span>{{.Version.Short}}</span>{{end}}
     </footer>
