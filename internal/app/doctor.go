@@ -18,6 +18,8 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/remote"
+	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/spf13/cobra"
 )
 
@@ -297,7 +299,11 @@ func fetchLaunchdServiceFullDiskAccess(ctx context.Context, root *rootOptions, l
 	if !info.WebReachable || strings.TrimSpace(info.WebURL) == "" {
 		return serviceFullDiskAccessResponse{}, fmt.Errorf("remote web is not reachable")
 	}
-	return fetchServiceFullDiskAccess(ctx, fullDiskAccessStatusURL(info.WebURL), "")
+	authHeader, err := serviceAuthHeader(ctx, cfg, http.MethodGet, serviceFullDiskAccessPath)
+	if err != nil {
+		return serviceFullDiskAccessResponse{}, err
+	}
+	return fetchServiceFullDiskAccess(ctx, fullDiskAccessStatusURL(info.WebURL), "", authHeader)
 }
 
 func launchdServiceConfig(root *rootOptions, label string) (config.Config, error) {
@@ -348,7 +354,25 @@ func fullDiskAccessStatusURL(webURL string) string {
 	return parsed.String()
 }
 
-func fetchServiceFullDiskAccess(ctx context.Context, rawURL string, tlsServerName string) (serviceFullDiskAccessResponse, error) {
+func serviceAuthHeader(ctx context.Context, cfg config.Config, method string, requestPath string) (string, error) {
+	if !runtimeenv.FirstBoolDefault(cfg.RootDir, false, "DBRAIN_AUTH_ENABLED") {
+		return "", nil
+	}
+	secret, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_AUTH_SESSION_KEY")
+	if err != nil {
+		return "", fmt.Errorf("resolve web auth session key for service probe: %w", err)
+	}
+	if strings.TrimSpace(secret) == "" {
+		return "", fmt.Errorf("web auth is enabled but DBRAIN_AUTH_SESSION_KEY or auth.session_key is not configured")
+	}
+	header, err := serviceauth.SignHeader(method, requestPath, secret, time.Now())
+	if err != nil {
+		return "", fmt.Errorf("sign service probe request: %w", err)
+	}
+	return header, nil
+}
+
+func fetchServiceFullDiskAccess(ctx context.Context, rawURL string, tlsServerName string, authHeader string) (serviceFullDiskAccessResponse, error) {
 	if strings.TrimSpace(rawURL) == "" {
 		return serviceFullDiskAccessResponse{}, fmt.Errorf("service Full Disk Access URL is empty")
 	}
@@ -357,6 +381,9 @@ func fetchServiceFullDiskAccess(ctx context.Context, rawURL string, tlsServerNam
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return serviceFullDiskAccessResponse{}, err
+	}
+	if strings.TrimSpace(authHeader) != "" {
+		req.Header.Set(serviceauth.HeaderName, authHeader)
 	}
 	transport := cloneDefaultHTTPTransport()
 	if strings.TrimSpace(tlsServerName) != "" {

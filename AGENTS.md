@@ -429,6 +429,30 @@ The web UI is used remotely from phones over Tailscale, not just on desktop.
 - prefer compact evidence lists for research/chat results and keep graph-heavy
   views optional on small screens
 
+### Inspect rendered user-facing pages, not just data structures
+
+For browser-visible features, especially unauthenticated/public pages, verify the
+actual rendered artifact from a user's or recipient's point of view.
+
+- fetch or open the rendered page and look for duplicate content, raw Markdown
+  leakage, awkward layout, confusing headings, missing empty states, and broken
+  links
+- when Markdown is rendered to HTML, do not also show the same answer as a raw
+  Markdown summary/excerpt unless that excerpt is intentionally a distinct
+  preview/list field
+- for public share pages, keep source/original-URL sections scannable and useful
+  for audit: preserve full external URLs there, while using concise labels such
+  as hostnames in prose when that improves readability
+- test real-world URL shapes in rendered content: trailing punctuation, closing
+  brackets/parens, literal or encoded backticks, angle-bracketed URLs,
+  bracketed Markdown URLs, and URLs that appear in code spans
+- add regression tests for product-quality bugs that humans had to spot by eye,
+  including duplicate excerpts, raw Markdown leakage, broken public links, and
+  internal identifiers or protected routes appearing on public pages
+- when requesting a second-agent review for web/public changes, ask for both
+  security findings and recipient-facing product review: duplicate content,
+  cluttered link text, source presentation, layout, and confusing copy
+
 ## Content Handling
 
 `dbrain` is a research tool. The goal is to preserve and analyze source

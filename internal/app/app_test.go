@@ -24,6 +24,7 @@ import (
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
+	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
@@ -699,6 +700,48 @@ func TestLaunchdRestartOpensFullDiskAccessWhenProbeFails(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected output to contain %q, got %q", expected, output)
 		}
+	}
+}
+
+func TestFetchServiceFullDiskAccessUsesSignedServiceAuth(t *testing.T) {
+	t.Setenv("DBRAIN_AUTH_ENABLED", "")
+	t.Setenv("DBRAIN_AUTH_SESSION_KEY", "")
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+	const sessionKey = "test-session-key-32-characters-long"
+	if err := os.WriteFile(cfg.ConfigPath, []byte("auth:\n  enabled: true\n  session_key: "+sessionKey+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	authHeader, err := serviceAuthHeader(context.Background(), cfg, http.MethodGet, serviceFullDiskAccessPath)
+	if err != nil {
+		t.Fatalf("serviceAuthHeader: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !serviceauth.VerifyHeader(r.Method, r.URL.Path, sessionKey, r.Header.Get(serviceauth.HeaderName), time.Now()) {
+			http.Error(w, "missing or invalid service auth", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(serviceFullDiskAccessResponse{
+			OK:         true,
+			Readable:   true,
+			Path:       "/tmp/NoteStore.sqlite",
+			Executable: "/opt/homebrew/bin/dbrain",
+			PID:        1234,
+		})
+	}))
+	defer server.Close()
+
+	response, err := fetchServiceFullDiskAccess(context.Background(), server.URL+serviceFullDiskAccessPath, "", authHeader)
+	if err != nil {
+		t.Fatalf("fetchServiceFullDiskAccess: %v", err)
+	}
+	if !response.OK || !response.Readable || response.PID != 1234 {
+		t.Fatalf("unexpected response: %#v", response)
 	}
 }
 

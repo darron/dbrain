@@ -443,7 +443,10 @@ dbrain launchd uninstall --label com.darron.dbrain-dev
 `dbrain launchd restart` also asks the restarted `serve remote` web process to
 check whether it can read the Apple Notes SQLite store. If the service-process
 probe fails, it opens Full Disk Access settings so the newly upgraded Homebrew
-binary can be enabled before the next scheduled sync. Use
+binary can be enabled before the next scheduled sync. When web OAuth is enabled,
+the local CLI authenticates this narrow diagnostic call with a short-lived
+service signature derived from `auth.session_key`; the doctor API is still not
+publicly callable without auth. Use
 `--check-full-disk-access=false` to skip the check or
 `--open-full-disk-access=false` to report the failure without opening System
 Settings.

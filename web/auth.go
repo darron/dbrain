@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/store"
 	"golang.org/x/oauth2"
 )
@@ -308,6 +309,13 @@ func fetchGitHubOAuthUser(ctx context.Context, client *http.Client) (githubOAuth
 func (a *authManager) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logged := newWebAccessLogWriter(w)
+		if a.serviceAuthAllowed(r) {
+			user := authUser{Provider: "service", Username: "local-cli"}
+			ctx := context.WithValue(r.Context(), authContextKey{}, user)
+			next.ServeHTTP(logged, r.WithContext(ctx))
+			a.logAccess(r, logged.statusCode(), user, true)
+			return
+		}
 		session, ok, err := a.sessionFromRequest(r.Context(), r)
 		if err != nil {
 			http.Error(logged, "auth session check failed", http.StatusInternalServerError)
@@ -337,6 +345,22 @@ func (a *authManager) requireAuth(next http.Handler) http.Handler {
 		http.Redirect(logged, r, loginURL, http.StatusSeeOther)
 		a.logAccess(r, logged.statusCode(), authUser{}, false)
 	})
+}
+
+func (a *authManager) serviceAuthAllowed(r *http.Request) bool {
+	if a == nil || !serviceAuthRoute(r.URL.Path) {
+		return false
+	}
+	return serviceauth.VerifyHeader(r.Method, r.URL.Path, a.cfg.SessionKey, r.Header.Get(serviceauth.HeaderName), time.Now())
+}
+
+func serviceAuthRoute(requestPath string) bool {
+	switch requestPath {
+	case "/api/doctor/full-disk-access":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *authManager) sessionFromRequest(ctx context.Context, r *http.Request) (authSession, bool, error) {
