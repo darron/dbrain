@@ -32,6 +32,8 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 			CreatedAt: "2026-05-15T12:00:00Z",
 			Answer: strings.Join([]string{
 				"Agent memory systems need durable retrieval and citations [" + sourceKey + "].",
+				"### Markdown Heading",
+				"- Render **bold** and `code` as HTML.",
 				"source_key: " + sourceKey,
 				"Local path: /Users/darron/src/dbrain/data/brain.db",
 				"Internal route: /api/get?lookup=" + url.QueryEscape(sourceKey),
@@ -97,7 +99,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 		t.Fatalf("expected public page 200, got %d: %s", public.Code, public.Body.String())
 	}
 	page := public.Body.String()
-	for _, want := range []string{"https://example.com/agent-memory", "Agent memory systems", "Original URLs"} {
+	for _, want := range []string{"https://example.com/agent-memory", "Agent memory systems", "Original URLs", "<h3 id=\"markdown-heading\">Markdown Heading</h3>", "<strong>bold</strong>", "<code>code</code>"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("expected public page to contain %q:\n%s", want, page)
 		}

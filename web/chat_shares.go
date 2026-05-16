@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"html/template"
 	"net"
@@ -12,6 +13,10 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/store"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer/html"
 )
 
 const (
@@ -129,7 +134,7 @@ func (s *server) handlePublicShare(w http.ResponseWriter, r *http.Request) {
 		Title:        fallbackShareTitle(share.Title),
 		Summary:      share.Summary,
 		Categories:   share.Categories,
-		Content:      share.SanitizedContent,
+		ContentHTML:  renderPublicShareMarkdown(share.SanitizedContent),
 		OriginalURLs: share.OriginalURLs,
 		CreatedAt:    share.CreatedAt.Format("2006-01-02 15:04 MST"),
 		Version:      webVersionInfo(),
@@ -497,10 +502,30 @@ type publicShareTemplateData struct {
 	Title        string
 	Summary      string
 	Categories   []string
-	Content      string
+	ContentHTML  template.HTML
 	OriginalURLs []string
 	CreatedAt    string
 	Version      WebVersionInfo
+}
+
+var publicShareMarkdown = goldmark.New(
+	goldmark.WithExtensions(
+		extension.GFM,
+		extension.Linkify,
+	),
+	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+	goldmark.WithRendererOptions(
+		html.WithHardWraps(),
+		html.WithXHTML(),
+	),
+)
+
+func renderPublicShareMarkdown(markdown string) template.HTML {
+	var buf bytes.Buffer
+	if err := publicShareMarkdown.Convert([]byte(markdown), &buf); err != nil {
+		return template.HTML(template.HTMLEscapeString(markdown))
+	}
+	return template.HTML(buf.String())
 }
 
 var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!doctype html>
@@ -523,7 +548,21 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
     .summary { font-size: 1.04rem; color: #3d4d42; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip { border: 1px solid #cbd8ce; color: #245c3a; background: #edf5ef; border-radius: 999px; padding: 3px 10px; font-size: 0.82rem; }
-    .content { white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px solid #d9dfd7; border-bottom: 1px solid #d9dfd7; padding: 18px 0; line-height: 1.68; color: #1e2a22; }
+    .content { overflow-wrap: anywhere; border-top: 1px solid #d9dfd7; border-bottom: 1px solid #d9dfd7; padding: 18px 0; line-height: 1.68; color: #1e2a22; }
+    .content > *:first-child { margin-top: 0; }
+    .content > *:last-child { margin-bottom: 0; }
+    .content p, .content ul, .content ol, .content blockquote, .content pre { margin: 0 0 1rem; }
+    .content h1, .content h2, .content h3, .content h4 { margin: 1.4rem 0 0.55rem; letter-spacing: 0; text-transform: none; color: #111a14; }
+    .content h1 { font-size: 1.65rem; }
+    .content h2 { font-size: 1.35rem; }
+    .content h3 { font-size: 1.15rem; }
+    .content h4 { font-size: 1rem; }
+    .content ul, .content ol { padding-left: 1.45rem; }
+    .content li { margin: 0.25rem 0; }
+    .content blockquote { border-left: 3px solid #cbd8ce; padding-left: 1rem; color: #4a5c50; }
+    .content code { border: 1px solid #d9dfd7; background: #eef3ed; border-radius: 4px; padding: 0.05rem 0.25rem; font-size: 0.92em; }
+    .content pre { border: 1px solid #d9dfd7; background: #eef3ed; border-radius: 8px; padding: 0.85rem; overflow-x: auto; }
+    .content pre code { border: 0; background: transparent; padding: 0; }
     .sources { display: grid; gap: 10px; }
     .sources ul { margin: 0; padding-left: 1.2rem; display: grid; gap: 8px; }
     a { color: #0f6b40; overflow-wrap: anywhere; }
@@ -534,6 +573,9 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
       h1 { color: #f0fbf2; }
       h2, .stamp, footer { color: #8fa393; }
       .summary, .content { color: #c9d8cd; }
+      .content h1, .content h2, .content h3, .content h4 { color: #f0fbf2; }
+      .content blockquote { border-color: #29553a; color: #afc1b4; }
+      .content code, .content pre { border-color: #203328; background: #0e1c14; }
       .brand, a { color: #64d58d; }
       .chip { border-color: #29553a; color: #95e6b0; background: #102317; }
     }
@@ -553,7 +595,7 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
         {{range .Categories}}<span class="chip">{{.}}</span>{{end}}
       </div>
       {{end}}
-      <section class="content" aria-label="Shared answer">{{.Content}}</section>
+      <section class="content" aria-label="Shared answer">{{.ContentHTML}}</section>
       {{if .OriginalURLs}}
       <section class="sources" aria-label="Original URLs">
         <h2>Original URLs</h2>
