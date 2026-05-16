@@ -115,6 +115,20 @@ export function saveChatTranscript(payload) {
   });
 }
 
+export function createChatShare(turn) {
+  return fetchJSON("/api/chat/shares", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ turn })
+  });
+}
+
+export function listChatShares() {
+  return fetchJSON("/api/chat/shares");
+}
+
 function drainSSEBuffer(buffer, onEvent) {
   let boundary = buffer.indexOf("\n\n");
   while (boundary !== -1) {

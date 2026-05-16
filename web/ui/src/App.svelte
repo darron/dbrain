@@ -8,9 +8,10 @@
   import OperationsPanel from "./components/OperationsPanel.svelte";
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
-  import { addLink, getBootstrap, getLookup, getSourceActivity, researchBrain, saveChatTranscript, searchBrain, synthesizeResearch } from "./lib/api.js";
+  import { addLink, createChatShare, getBootstrap, getLookup, getSourceActivity, listChatShares, researchBrain, saveChatTranscript, searchBrain, synthesizeResearch } from "./lib/api.js";
   import { buildChatRetrievalQuestion, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
+  import { formatTime } from "./lib/time.js";
   import { pageHref, readRouteState, writeRouteState } from "./lib/urlState.js";
 
   const defaultBacklog = { x_hydration_pending: 0, link_discovery_pending: 0, source_extraction_pending: 0, source_summary_pending: 0 };
@@ -33,7 +34,7 @@
   let sourceActivityError = "";
 
   // Search/research state
-  let inputMode = "search"; // "search" | "research" | "chat"
+  let inputMode = "search"; // "search" | "research" | "chat" | "shares"
   let viewMode = "graph";   // "graph" | "list"
   let searchQuery = "";
   let searchState = "idle";
@@ -64,6 +65,13 @@
   let chatSaveState = "idle";
   let chatSaveError = "";
   let chatSavedPath = "";
+  let chatShareByTurn = {};
+  let chatShareStateByTurn = {};
+  let chatShareErrorByTurn = {};
+  let chatShareCopiedByTurn = {};
+  let sharesState = "idle";
+  let sharesError = "";
+  let shares = [];
 
   // Graph state
   let graphNodes = [];
@@ -87,9 +95,9 @@
   $: currentChatTurn = chatTurns[chatTurns.length - 1] || null;
   $: chatBusy = chatState === "researching" || chatState === "synthesizing";
   $: chatVisibleEvidence = currentChatTurn?.research_pack?.evidence || [];
-  $: activeResults = inputMode === "search" ? searchResults : inputMode === "research" ? (researchPack.evidence || []) : chatVisibleEvidence;
-  $: activeState = inputMode === "search" ? searchState : inputMode === "research" ? researchState : chatBusy ? "loading" : chatState === "error" ? "error" : chatTurns.length > 0 ? "ready" : "idle";
-  $: activeError = inputMode === "search" ? searchError : inputMode === "research" ? researchError : chatError;
+  $: activeResults = inputMode === "search" ? searchResults : inputMode === "research" ? (researchPack.evidence || []) : inputMode === "chat" ? chatVisibleEvidence : [];
+  $: activeState = inputMode === "search" ? searchState : inputMode === "research" ? researchState : inputMode === "shares" ? sharesState : chatBusy ? "loading" : chatState === "error" ? "error" : chatTurns.length > 0 ? "ready" : "idle";
+  $: activeError = inputMode === "search" ? searchError : inputMode === "research" ? researchError : inputMode === "shares" ? sharesError : chatError;
   $: hasResults = inputMode !== "chat" && activeState === "ready" && activeResults.length > 0;
   $: showDetailPanel = Boolean(detail || detailState !== "idle" || detailError);
   $: synthesisWarnings = synthesisDone?.answer_warnings || synthesisStart?.answer_warnings || [];
@@ -242,6 +250,26 @@
       await submitResearch();
     } else {
       await submitChat();
+    }
+  }
+
+  async function openShares() {
+    inputMode = "shares";
+    if (sharesState === "idle") {
+      await loadShares();
+    }
+  }
+
+  async function loadShares() {
+    sharesState = "loading";
+    sharesError = "";
+    try {
+      const response = await listChatShares();
+      shares = Array.isArray(response?.shares) ? response.shares : [];
+      sharesState = "ready";
+    } catch (error) {
+      sharesError = error.message;
+      sharesState = "error";
     }
   }
 
@@ -561,6 +589,48 @@
     }
   }
 
+  async function shareChatTurn(turn) {
+    if (!turn?.id || turn.status !== "ready" || !turn.answer || chatShareStateByTurn[turn.id] === "loading") return;
+    chatShareStateByTurn = { ...chatShareStateByTurn, [turn.id]: "loading" };
+    chatShareErrorByTurn = { ...chatShareErrorByTurn, [turn.id]: "" };
+    chatShareCopiedByTurn = { ...chatShareCopiedByTurn, [turn.id]: false };
+    try {
+      const share = await createChatShare(turn);
+      chatShareByTurn = { ...chatShareByTurn, [turn.id]: share };
+      chatShareStateByTurn = { ...chatShareStateByTurn, [turn.id]: "ready" };
+      await copyShareURL(turn.id, share);
+      if (inputMode === "shares") {
+        await loadShares();
+      } else {
+        sharesState = "idle";
+      }
+    } catch (error) {
+      chatShareErrorByTurn = { ...chatShareErrorByTurn, [turn.id]: error.message };
+      chatShareStateByTurn = { ...chatShareStateByTurn, [turn.id]: "error" };
+    }
+  }
+
+  async function copyShareURL(turnID, share) {
+    const url = absoluteShareURL(share);
+    if (!url || typeof navigator === "undefined" || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      chatShareCopiedByTurn = { ...chatShareCopiedByTurn, [turnID]: true };
+    } catch {
+      chatShareCopiedByTurn = { ...chatShareCopiedByTurn, [turnID]: false };
+    }
+  }
+
+  async function copyListedShare(share) {
+    const url = absoluteShareURL(share);
+    if (!url || typeof navigator === "undefined" || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // The visible link remains available when clipboard access is denied.
+    }
+  }
+
   function abortChat() {
     if (chatController) {
       chatController.abort();
@@ -722,6 +792,17 @@
     return text.slice(0, max).trimEnd() + "…";
   }
 
+  function absoluteShareURL(share) {
+    const path = String(share?.url || "");
+    if (!path) return "";
+    if (typeof window === "undefined") return path;
+    try {
+      return new URL(path, window.location.origin).href;
+    } catch {
+      return path;
+    }
+  }
+
   async function runAddLink() {
     const url = linkURL.trim();
     linkState = "loading";
@@ -845,6 +926,9 @@
             <button class="search-tab" class:active={inputMode === "chat"} on:click={() => { inputMode = "chat"; }} type="button">
               Chat
             </button>
+            <button class="search-tab" class:active={inputMode === "shares"} on:click={openShares} type="button">
+              Shares
+            </button>
           </div>
 
           {#if inputMode === "search" && hasResults}
@@ -871,9 +955,14 @@
               New chat
             </button>
           {/if}
+          {#if inputMode === "shares"}
+            <button class="btn-ghost compact-action" type="button" disabled={sharesState === "loading"} on:click={loadShares}>
+              {sharesState === "loading" ? "Refreshing…" : "Refresh"}
+            </button>
+          {/if}
         </div>
 
-        {#if inputMode !== "chat" || chatTurns.length === 0}
+        {#if (inputMode !== "chat" && inputMode !== "shares") || (inputMode === "chat" && chatTurns.length === 0)}
           <!-- Visible search bar on home; active chat moves its composer into the thread. -->
           <form class="search-bar" on:submit|preventDefault={handleSubmit}>
             {#if inputMode === "search"}
@@ -942,7 +1031,12 @@
         <!-- Home guide -->
         <div class="home-guide">
           <p class="panel-kicker" style="margin-bottom:0.5rem">Local Brain Surface</p>
-          {#if inputMode === "chat"}
+          {#if inputMode === "shares"}
+            <h2>Shared chat answers.</h2>
+            <p class="message muted" style="margin-top:0.5rem">
+              Newest shares appear first.
+            </p>
+          {:else if inputMode === "chat"}
             <h2>Start a session to research, clarify, and iterate against your local brain.</h2>
             <p class="message muted" style="margin-top:0.5rem">
               Chat history stays in this browser session. Evidence carries forward; previous model answers do not.
@@ -954,10 +1048,52 @@
             </p>
           {/if}
         </div>
-      {:else if hasResults || showDetailPanel || activeState === "loading" || (inputMode === "research" && activeState === "ready") || (inputMode === "chat" && chatTurns.length > 0)}
+      {:else if hasResults || showDetailPanel || activeState === "loading" || inputMode === "shares" || (inputMode === "research" && activeState === "ready") || (inputMode === "chat" && chatTurns.length > 0)}
         <div class="content-area" class:has-detail={showDetailPanel}>
           <div class="content-main">
-            {#if inputMode === "chat"}
+            {#if inputMode === "shares"}
+              <div class="shares-panel">
+                <div class="shares-header">
+                  <div>
+                    <p class="panel-kicker" style="margin:0">Shares</p>
+                    <p class="message muted">{shares.length} public chat answers</p>
+                  </div>
+                </div>
+
+                {#if sharesState === "loading"}
+                  <p class="message muted">Loading shares…</p>
+                {:else if sharesState === "error"}
+                  <p class="message error">{sharesError}</p>
+                {:else if shares.length === 0}
+                  <div class="answer-card">
+                    <p class="message muted">No shared chat answers yet.</p>
+                  </div>
+                {:else}
+                  <div class="share-list">
+                    {#each shares as share}
+                      <article class="share-list-card">
+                        <div class="share-list-main">
+                          <a class="share-title" href={share.url} target="_blank" rel="noreferrer">{share.title || "Shared dbrain answer"}</a>
+                          <span>{formatTime(share.updated_at || share.created_at)}</span>
+                        </div>
+                        <p>{share.summary}</p>
+                        {#if share.categories?.length > 0}
+                          <div class="share-categories" aria-label="Share categories">
+                            {#each share.categories as category}
+                              <span>{category}</span>
+                            {/each}
+                          </div>
+                        {/if}
+                        <div class="share-actions">
+                          <a class="link-chip" href={share.url} target="_blank" rel="noreferrer">Open</a>
+                          <button class="btn-ghost compact-action" type="button" on:click={() => copyListedShare(share)}>Copy URL</button>
+                        </div>
+                      </article>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {:else if inputMode === "chat"}
               <div class="chat-thread">
                 <div class="chat-thread-header">
                   <div>
@@ -979,7 +1115,14 @@
                     <div class="answer-card synthesis-card chat-answer">
                       <div class="synthesis-header">
                         <p class="panel-kicker" style="margin:0">dbrain</p>
-                        <span>{turn.done?.model || turn.start?.model || turn.status}</span>
+                        <div class="answer-actions">
+                          <span>{turn.done?.model || turn.start?.model || turn.status}</span>
+                          {#if turn.status === "ready" && turn.answer}
+                            <button class="btn-ghost compact-action" type="button" disabled={chatShareStateByTurn[turn.id] === "loading"} on:click={() => shareChatTurn(turn)}>
+                              {chatShareStateByTurn[turn.id] === "loading" ? "Sharing…" : "Share"}
+                            </button>
+                          {/if}
+                        </div>
                       </div>
 
                       {#if turn.status === "researching"}
@@ -1000,6 +1143,16 @@
                           onLookup={loadDetail}
                           onPinSourceKey={togglePinnedEvidence}
                         />
+                      {/if}
+
+                      {#if chatShareByTurn[turn.id] || chatShareErrorByTurn[turn.id]}
+                        <p class="chat-share-note" class:error={chatShareErrorByTurn[turn.id]}>
+                          {#if chatShareErrorByTurn[turn.id]}
+                            {chatShareErrorByTurn[turn.id]}
+                          {:else}
+                            Share URL: <a href={chatShareByTurn[turn.id].url} target="_blank" rel="noreferrer">{absoluteShareURL(chatShareByTurn[turn.id])}</a>{chatShareCopiedByTurn[turn.id] ? " copied" : ""}
+                          {/if}
+                        </p>
                       {/if}
 
                       {#if chatWarnings(turn).length > 0}
@@ -1163,30 +1316,32 @@
               />
             {/if}
 
-            <!-- Add link section at bottom of content-main -->
-            <div class="add-link-section" style="margin-top:auto">
-              <button
-                class="add-link-toggle"
-                class:open={showAddLink}
-                on:click={() => (showAddLink = !showAddLink)}
-                type="button"
-              >
-                <span>+ Add Link</span>
-                <span class="chevron">▾</span>
-              </button>
-              {#if showAddLink}
-                <div class="add-link-form">
-                  <AddLinkPanel
-                    bind:url={linkURL}
-                    state={linkState}
-                    error={linkError}
-                    result={linkResponse}
-                    onAdd={runAddLink}
-                    onSelect={loadDetail}
-                  />
-                </div>
-              {/if}
-            </div>
+            {#if inputMode !== "shares"}
+              <!-- Add link section at bottom of content-main -->
+              <div class="add-link-section" style="margin-top:auto">
+                <button
+                  class="add-link-toggle"
+                  class:open={showAddLink}
+                  on:click={() => (showAddLink = !showAddLink)}
+                  type="button"
+                >
+                  <span>+ Add Link</span>
+                  <span class="chevron">▾</span>
+                </button>
+                {#if showAddLink}
+                  <div class="add-link-form">
+                    <AddLinkPanel
+                      bind:url={linkURL}
+                      state={linkState}
+                      error={linkError}
+                      result={linkResponse}
+                      onAdd={runAddLink}
+                      onSelect={loadDetail}
+                    />
+                  </div>
+                {/if}
+              </div>
+            {/if}
           </div>
 
           {#if showDetailPanel}

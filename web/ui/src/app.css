@@ -1226,6 +1226,93 @@ textarea { resize: vertical; }
   color: var(--danger);
 }
 
+.chat-share-note {
+  color: var(--text-lo);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.chat-share-note.error {
+  color: var(--danger);
+}
+
+.shares-panel {
+  display: grid;
+  gap: 0.8rem;
+  padding: 1rem 1.25rem 1.25rem;
+  min-width: 0;
+}
+
+.shares-header,
+.share-list-main,
+.share-actions,
+.answer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.shares-header,
+.share-list-main {
+  justify-content: space-between;
+}
+
+.share-list {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.share-list-card {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--s1);
+  min-width: 0;
+}
+
+.share-list-card p {
+  color: var(--text);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.share-title {
+  min-width: 0;
+  color: var(--text-hi);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.share-list-main span {
+  color: var(--text-lo);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.share-categories {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.share-categories span {
+  padding: 0.16rem 0.48rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-lo);
+  background: rgba(74, 222, 128, 0.04);
+  font-size: 0.74rem;
+}
+
+.share-actions {
+  flex-wrap: wrap;
+}
+
 .chat-thread {
   display: grid;
   gap: 1rem;
@@ -1474,6 +1561,11 @@ textarea { resize: vertical; }
 .synthesis-header span {
   color: var(--text-lo);
   font-size: 0.76rem;
+}
+
+.answer-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .answer-card .answer-text {
@@ -1825,6 +1917,7 @@ textarea { resize: vertical; }
 
   .research-summary,
   .chat-thread,
+  .shares-panel,
   .result-list {
     padding: 0.5rem;
   }
@@ -1849,9 +1942,16 @@ textarea { resize: vertical; }
 
   .synthesis-header,
   .evidence-compact-header,
-  .chat-thread-header {
+  .chat-thread-header,
+  .share-list-main {
     flex-direction: column;
     gap: 0.25rem;
+  }
+
+  .answer-actions,
+  .share-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .chat-question {
