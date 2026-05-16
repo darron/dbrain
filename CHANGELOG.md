@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Public Chat Shares (2026-05-15)
+
+- **Added**: Completed browser Chat answers can now be shared as stable public `/share/{slug}` pages, with deterministic summaries, categories, original external URLs, and per-owner share history in the web UI.
+- **Hardening**: Public share pages bypass web auth only for `/share/{slug}`, render with server-side escaping, avoid booting the authenticated SPA, and redact internal source keys, lookup IDs, note paths, local filesystem paths, and protected app routes.
+- **Schema/Tests**: Added DB-backed share storage with HMAC slugs derived from a local random share salt, plus migration and web auth boundary regression tests.
+- **Location**: `internal/store/`, `web/`, `web/ui/`
+
 ### Authenticated Access Logging (2026-05-14)
 
 - **Operations**: Web requests now emit app-layer access logs with the authenticated GitHub identity after session validation, which keeps Funnel traffic attributable even without Tailscale identity headers.

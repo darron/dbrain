@@ -212,6 +212,25 @@ type ChatTranscriptSaveResponse struct {
 	Bytes int64  `json:"bytes"`
 }
 
+type ChatShareCreateRequest struct {
+	Turn ChatTranscriptTurn `json:"turn"`
+}
+
+type ChatShareResponse struct {
+	Slug         string   `json:"slug"`
+	URL          string   `json:"url"`
+	Title        string   `json:"title"`
+	Summary      string   `json:"summary"`
+	Categories   []string `json:"categories"`
+	OriginalURLs []string `json:"original_urls"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
+}
+
+type ChatShareListResponse struct {
+	Shares []ChatShareResponse `json:"shares"`
+}
+
 type LinkAddRequest struct {
 	URL    string   `json:"url"`
 	URLs   []string `json:"urls"`

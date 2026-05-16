@@ -201,10 +201,12 @@ func (s *server) newMux() http.Handler {
 	appMux.HandleFunc("/api/research", s.handleResearch)
 	appMux.HandleFunc("/api/research/synthesize", s.handleResearchSynthesize)
 	appMux.HandleFunc("/api/chat/transcripts", s.handleChatTranscriptSave)
+	appMux.HandleFunc("/api/chat/shares", s.handleChatShares)
 	appMux.HandleFunc("/api/links", s.handleLinks)
 	appMux.HandleFunc("/api/tag", s.handleTag)
 	appMux.HandleFunc("/api/media/signed-url", s.handleMediaSignedURL)
 	appMux.HandleFunc("/media/asset/", s.handleMediaAsset)
+	appMux.HandleFunc("/share/", s.handlePublicShare)
 	appMux.Handle("/", http.HandlerFunc(s.handleStatic))
 
 	if s.auth == nil {
@@ -212,6 +214,7 @@ func (s *server) newMux() http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/share/", s.handlePublicShare)
 	mux.HandleFunc("/login", s.auth.handleLogin)
 	mux.HandleFunc("/logout", s.auth.handleLogout)
 	mux.HandleFunc("/auth/", s.auth.handleAuth)
