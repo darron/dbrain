@@ -16,6 +16,15 @@ development date for the change set.
 - **Fixed**: Public chat share "Original URLs" now strips Markdown syntax and boilerplate labels such as "What It Is" from source snippets, and cleans adjacent Markdown URL artifacts such as encoded `][https://...` joins, including for already-created shares.
 - **Location**: `web/`
 
+### Browser Link Saver Extensions (2026-05-16)
+
+- **Added**: Unpacked Manifest V3 Chrome extension that saves the active tab URL to dbrain through the existing `POST /api/links` API, using the current browser session for OAuth-protected web installs.
+- **Added**: Safari Web Extension packaging path with an Xcode converter script, reusing the same WebExtension source for Safari's required host-app project.
+- **Fixed**: The remote web origin guard now permits Chrome/Safari extension origins only for `POST /api/links`, so the link saver can use the authenticated browser session without opening other write endpoints to extension-origin POSTs.
+- **Fixed**: Browser extension host permissions now preserve non-default dbrain ports such as `127.0.0.1:8742`, and error handling avoids surfacing raw server response text in the toolbar tooltip while throttling repeated login-tab opens.
+- **Operations**: Extension options store the dbrain base URL and request host access only for that configured origin when supported; toolbar clicks show short success/error badges and open dbrain login on `401`.
+- **Location**: `browser/chrome-extension/`, `browser/safari-extension/`
+
 ### Public Chat Shares (2026-05-15)
 
 - **Added**: Completed browser Chat answers can now be shared as stable public `/share/{slug}` pages, with deterministic summaries, categories, original external URLs, and per-owner share history in the web UI.

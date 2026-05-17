@@ -17,6 +17,9 @@ corpus.
   Tailscale Funnel, tailnet policy, DNS, and public-auth operations.
 - [MCP.md](MCP.md): MCP tools, research semantics, transports, client config,
   and evals.
+- [browser/chrome-extension/README.md](browser/chrome-extension/README.md) and
+  [browser/safari-extension/README.md](browser/safari-extension/README.md):
+  browser extensions for saving the active tab URL to dbrain.
 - [docs/architecture.md](docs/architecture.md): package and data-flow architecture.
 - [docs/schema-migrations.md](docs/schema-migrations.md): SQLite schema and
   migration guidance.

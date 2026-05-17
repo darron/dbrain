@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>dbrain Link Saver Options</title>
+		<link rel="stylesheet" href="options.css">
+	</head>
+	<body>
+		<main>
+			<h1>dbrain Link Saver</h1>
+			<p>Set the web origin that should receive saved URLs.</p>
+
+			<form id="options-form">
+				<label for="base-url">dbrain base URL</label>
+				<input id="base-url" name="base-url" type="url" placeholder="http://127.0.0.1:8742" autocomplete="url" required>
+				<div class="actions">
+					<button class="primary" type="submit">Save</button>
+					<button id="open-dbrain" type="button">Open dbrain</button>
+				</div>
+				<p id="status" role="status" aria-live="polite"></p>
+			</form>
+		</main>
+		<script src="options.js"></script>
+	</body>
+</html>
