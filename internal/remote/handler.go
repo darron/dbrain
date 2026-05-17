@@ -68,8 +68,28 @@ func originGuard(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if browserExtensionLinkAddOrigin(origin, r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 	})
+}
+
+func browserExtensionLinkAddOrigin(origin string, requestPath string) bool {
+	if requestPath != "/api/links" {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "chrome-extension", "safari-web-extension":
+		return parsed.Host != ""
+	default:
+		return false
+	}
 }
 
 func sameOrigin(origin string, expected string) bool {
