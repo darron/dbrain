@@ -2,7 +2,9 @@
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8742";
 const BADGE_RESET_MS = 2500;
+const LOGIN_OPEN_THROTTLE_MS = 5000;
 const ext = globalThis.browser || globalThis.chrome;
+let lastLoginOpenAt = 0;
 
 ext.runtime.onInstalled.addListener(async () => {
 	const config = await getConfig();
@@ -34,11 +36,13 @@ async function saveCurrentTab(tab) {
 		const detail = successDetail(response);
 		await showStatus(tabID, "OK", "#1f7a3d", detail);
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
 		console.error("dbrain link save failed", err);
-		await showStatus(tabID, "ERR", "#b3261e", message);
+		const title = err instanceof AuthRequiredError
+			? err.message
+			: "Save failed. Check the extension service worker console.";
+		await showStatus(tabID, "ERR", "#b3261e", title);
 		if (err instanceof AuthRequiredError) {
-			await ext.tabs.create({ url: err.loginURL });
+			await openLoginTab(err.loginURL);
 		}
 	}
 }
@@ -96,7 +100,7 @@ function normalizeBaseURL(raw) {
 
 function originPattern(baseUrl) {
 	const parsed = new URL(baseUrl);
-	return `${parsed.protocol}//${parsed.hostname}/*`;
+	return `${parsed.protocol}//${parsed.host}/*`;
 }
 
 function successDetail(body) {
@@ -148,6 +152,15 @@ async function showStatus(tabID, text, color, title) {
 		void ext.action.setBadgeText({ ...target, text: "" });
 		void ext.action.setTitle({ ...target, title: "Save current page to dbrain" });
 	}, BADGE_RESET_MS);
+}
+
+async function openLoginTab(loginURL) {
+	const now = Date.now();
+	if (now - lastLoginOpenAt < LOGIN_OPEN_THROTTLE_MS) {
+		return;
+	}
+	lastLoginOpenAt = now;
+	await ext.tabs.create({ url: loginURL });
 }
 
 async function getConfig() {

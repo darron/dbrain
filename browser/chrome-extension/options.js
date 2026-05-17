@@ -68,7 +68,7 @@ function normalizeBaseURL(raw) {
 
 function originPattern(baseUrl) {
 	const parsed = new URL(baseUrl);
-	return `${parsed.protocol}//${parsed.hostname}/*`;
+	return `${parsed.protocol}//${parsed.host}/*`;
 }
 
 async function ensureOriginPermission(origin) {
