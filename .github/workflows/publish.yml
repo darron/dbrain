@@ -1,0 +1,20 @@
+name: Publish nono pack
+on:
+  push:
+    tags:
+      - "v*"
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: always-further/agent-sign@38b94e4e4d2c1b33ad5b8e7c4946e2e77fce7d0a # main
+        with:
+          publish: "true"
+          package-name: dbrain-mcp
+          package-namespace: darron
+          package-version: ${{ github.ref_name }}
+          package-path: skills/dbrain-mcp
