@@ -90,6 +90,93 @@ func TestBuildIncludesSourceExactTagEvidence(t *testing.T) {
 	}
 }
 
+func TestBuildFindsTranscriptBackedMediaEvidence(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if !st.HasFTS() {
+		t.Skip("FTS is not available")
+	}
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	upsert, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-recording-red-balloon",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-recording-red-balloon",
+		CanonicalURL: "https://x.com/darron/status/test-recording-red-balloon",
+		Title:        "Darron recording",
+		AuthorHandle: "darron",
+		AuthorName:   "Darron",
+		Text:         "Short clip.",
+		ArticleTitle: model.XMediaTranscriptArticleTitle,
+		ArticleText:  "Transcript:\n\nDarron is saying the red balloon promise out loud.",
+		SummaryText:  "A short saved video clip.",
+		ContentHash:  "test-recording-red-balloon-hash",
+		NotePath:     "items/x/2026/test-recording-red-balloon.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	if _, err := st.SaveXHydration(ctx, upsert.ItemID, model.XHydration{
+		FullText:  "Short clip.",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"source":"graphql",
+			"snapshot":{
+				"id":"test-recording-red-balloon",
+				"text":"Short clip.",
+				"media_objects":[
+					{"type":"video","url":"https://video.twimg.com/ext/red-balloon.mp4","expanded_url":"https://x.com/darron/status/test-recording-red-balloon/video/1","width":1280,"height":720}
+				]
+			}
+		}`,
+	}); err != nil {
+		t.Fatalf("save x hydration: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(ctx, upsert.ItemID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+		t.Fatalf("save transcript state: %v", err)
+	}
+
+	includeTopic := false
+	pack, err := Build(ctx, cfg, st, Options{
+		Question:       "Is there a recording of Darron saying red balloon promise?",
+		Limit:          4,
+		MaxCharsPerDoc: 240,
+		IncludeTopic:   &includeTopic,
+		DisablePlanner: true,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(pack.Evidence) == 0 || pack.Evidence[0].SourceKey != "x:test-recording-red-balloon" {
+		t.Fatalf("expected transcript-backed media evidence first, got %#v", pack.Evidence)
+	}
+	if !strings.Contains(pack.Evidence[0].Excerpt, "red balloon promise") {
+		t.Fatalf("expected transcript phrase in excerpt, got %q", pack.Evidence[0].Excerpt)
+	}
+	if len(pack.Evidence[0].Media) != 1 || pack.Evidence[0].Media[0].MediaType != "video" {
+		t.Fatalf("expected embedded media ref, got %#v", pack.Evidence[0].Media)
+	}
+}
+
 func TestBuildChatFollowupIgnoresPriorEvidenceTitleNoise(t *testing.T) {
 	t.Parallel()
 

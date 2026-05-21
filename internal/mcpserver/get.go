@@ -90,6 +90,9 @@ func (s *Server) getItemPayload(ctx context.Context, item model.Item, mode strin
 		"content_sections":      sections,
 		"item":                  retrieval.ItemMetadata(item),
 	}
+	if media := retrieval.MediaRefs(item.Media); len(media) > 0 {
+		payload["media"] = media
+	}
 	if query != "" {
 		payload["query"] = query
 	}

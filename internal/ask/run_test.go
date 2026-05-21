@@ -286,6 +286,16 @@ func TestEvidenceFromItemIncludesDerivedSummaryAndOCRExcerpt(t *testing.T) {
 		XPostText:    "short post text without the visual keyword",
 		SummaryText:  "derived media summary",
 		OCRText:      "The image says Mark Carney in visible text.",
+		Media: []model.ItemMediaRef{{
+			MediaAssetID:   42,
+			Ordinal:        1,
+			RemoteURL:      "https://pbs.twimg.com/media/photo.jpg",
+			MediaType:      "photo",
+			DownloadStatus: "downloaded",
+			LocalPath:      "media/x/photo/private.jpg",
+			ArchiveBucket:  "private-bucket",
+			ArchiveKey:     "private-key",
+		}},
 	}
 
 	candidate := evidenceFromItem(config.Config{VaultDir: "/vault"}, item, model.SearchResult{}, 80, []string{"mark", "carney"})
@@ -294,6 +304,9 @@ func TestEvidenceFromItemIncludesDerivedSummaryAndOCRExcerpt(t *testing.T) {
 	}
 	if !strings.Contains(candidate.Excerpt, "Mark Carney") {
 		t.Fatalf("expected OCR query match in excerpt, got %q", candidate.Excerpt)
+	}
+	if len(candidate.Media) != 1 || candidate.Media[0].MediaAssetID != 42 || candidate.Media[0].MediaType != "photo" {
+		t.Fatalf("expected sanitized media ref in evidence, got %+v", candidate.Media)
 	}
 }
 

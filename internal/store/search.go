@@ -227,6 +227,7 @@ func (s *Store) searchFTS(ctx context.Context, query string, limit int) ([]model
 
 func (s *Store) searchFTSQuery(ctx context.Context, ftsQuery string, limit int) ([]model.SearchResult, error) {
 	rows, err := s.db.QueryContext(ctx, `
+		WITH ranked AS (
 		SELECT
 			i.source_key,
 			i.source_type,
@@ -238,7 +239,8 @@ func (s *Store) searchFTSQuery(ctx context.Context, ftsQuery string, limit int) 
 			i.primary_domain,
 			i.note_path,
 			i.user_tags,
-			substr(trim(replace(COALESCE(
+			NULLIF(snippet(items_fts, -1, '', '', ' ... ', 32), '') AS match_snippet,
+			COALESCE(
 				NULLIF(summary_enrichment.text, ''),
 				NULLIF(i.summary_text, ''),
 				NULLIF(ocr_enrichment.text, ''),
@@ -246,7 +248,9 @@ func (s *Store) searchFTSQuery(ctx context.Context, ftsQuery string, limit int) 
 				NULLIF(transcript_enrichment.text, ''),
 				NULLIF(i.article_text, ''),
 				i.text
-			), char(10), ' ')), 1, 200) AS snippet
+			) AS best_text,
+			bm25(items_fts) AS rank,
+			i.last_seen_at
 		FROM items_fts f
 		JOIN items i ON i.id = f.rowid
 		LEFT JOIN item_enrichments summary_enrichment
@@ -256,7 +260,25 @@ func (s *Store) searchFTSQuery(ctx context.Context, ftsQuery string, limit int) 
 		LEFT JOIN item_enrichments transcript_enrichment
 			ON transcript_enrichment.item_id = i.id AND transcript_enrichment.role = ?
 		WHERE items_fts MATCH ?
-		ORDER BY bm25(items_fts), i.last_seen_at DESC
+		)
+		SELECT
+			source_key,
+			source_type,
+			external_id,
+			title,
+			author_handle,
+			author_name,
+			canonical_url,
+			primary_domain,
+			note_path,
+			user_tags,
+			substr(trim(replace(CASE
+				WHEN match_snippet IS NOT NULL AND best_text != '' AND instr(best_text, match_snippet) = 0 THEN match_snippet || ' ... ' || best_text
+				WHEN match_snippet IS NOT NULL THEN match_snippet
+				ELSE best_text
+			END, char(10), ' ')), 1, 200) AS snippet
+		FROM ranked
+		ORDER BY rank, last_seen_at DESC
 		LIMIT ?`,
 		model.ItemEnrichmentRoleSummary,
 		model.ItemEnrichmentRoleOCR,

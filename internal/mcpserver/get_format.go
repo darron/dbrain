@@ -3,6 +3,8 @@ package mcpserver
 import (
 	"fmt"
 	"strings"
+
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func formatGetPayload(payload map[string]interface{}) string {
@@ -16,6 +18,24 @@ func formatGetPayload(payload map[string]interface{}) string {
 	if note, _ := payload["note"].(string); strings.TrimSpace(note) != "" {
 		b.WriteString("Note: ")
 		b.WriteString(note)
+		b.WriteString("\n")
+	}
+	if media, ok := payload["media"].([]retrieval.MediaRef); ok && len(media) > 0 {
+		b.WriteString("Media: ")
+		parts := make([]string, 0, len(media))
+		for _, ref := range media {
+			label := strings.TrimSpace(ref.MediaType)
+			if label == "" {
+				label = "media"
+			}
+			if strings.TrimSpace(ref.ArchiveURL) != "" {
+				label += " " + strings.TrimSpace(ref.ArchiveURL)
+			} else if strings.TrimSpace(ref.RemoteURL) != "" {
+				label += " " + strings.TrimSpace(ref.RemoteURL)
+			}
+			parts = append(parts, label)
+		}
+		b.WriteString(strings.Join(parts, "; "))
 		b.WriteString("\n")
 	}
 	b.WriteString("Content mode: ")

@@ -144,6 +144,24 @@ func writeResearchEvidenceLine(b *strings.Builder, doc ask.Evidence, maxChars in
 		b.WriteString(text)
 		b.WriteString("\n")
 	}
+	if len(doc.Media) > 0 {
+		b.WriteString("  Media: ")
+		parts := make([]string, 0, len(doc.Media))
+		for _, ref := range doc.Media {
+			label := strings.TrimSpace(ref.MediaType)
+			if label == "" {
+				label = "media"
+			}
+			if strings.TrimSpace(ref.ArchiveURL) != "" {
+				label += " " + strings.TrimSpace(ref.ArchiveURL)
+			} else if strings.TrimSpace(ref.RemoteURL) != "" {
+				label += " " + strings.TrimSpace(ref.RemoteURL)
+			}
+			parts = append(parts, label)
+		}
+		b.WriteString(strings.Join(parts, "; "))
+		b.WriteString("\n")
+	}
 }
 
 func formatResearchBuckets(buckets []brainresearch.Bucket, limit int) string {

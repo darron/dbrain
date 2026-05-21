@@ -7,6 +7,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -77,6 +78,7 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 			SourceType:  item.SourceType,
 			PublishedAt: item.PublishedAt,
 			UserTags:    item.UserTags,
+			Media:       retrieval.MediaRefs(item.Media),
 		},
 		ItemID: item.ID,
 		MatchText: compactMatchText(

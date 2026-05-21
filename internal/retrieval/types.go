@@ -29,7 +29,21 @@ type EvidenceDocument struct {
 	EntityMatches []string       `json:"entity_matches,omitempty"`
 	RelatedTo     string         `json:"related_to,omitempty"`
 	Relationship  string         `json:"relationship,omitempty"`
+	Media         []MediaRef     `json:"media,omitempty"`
 	Retrieval     *RetrievalInfo `json:"retrieval,omitempty"`
+}
+
+type MediaRef struct {
+	MediaAssetID   int64  `json:"media_asset_id"`
+	Ordinal        int    `json:"ordinal"`
+	ExpandedURL    string `json:"expanded_url,omitempty"`
+	RemoteURL      string `json:"remote_url,omitempty"`
+	MediaType      string `json:"media_type"`
+	DownloadStatus string `json:"download_status,omitempty"`
+	ArchiveURL     string `json:"archive_url,omitempty"`
+	ArchiveStatus  string `json:"archive_status,omitempty"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
 }
 
 type RelatedDocument struct {

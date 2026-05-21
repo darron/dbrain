@@ -1035,8 +1035,9 @@ func TestServerGetToolIncludesMediaTranscriptAndOCRSections(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 
+	ctx := context.Background()
 	now := time.Now().UTC()
-	if _, err := st.UpsertItem(context.Background(), model.Item{
+	upsert, err := st.UpsertItem(ctx, model.Item{
 		SourceKey:              "x:test-mcp-get-media-enrichments",
 		SourceType:             "x_bookmark",
 		ExternalID:             "test-mcp-get-media-enrichments",
@@ -1057,8 +1058,38 @@ func TestServerGetToolIncludesMediaTranscriptAndOCRSections(t *testing.T) {
 		ImportedAt:             now,
 		UpdatedAt:              now,
 		LastSeenAt:             now,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("upsert item: %v", err)
+	}
+	if _, err := st.SaveXHydration(ctx, upsert.ItemID, model.XHydration{
+		FullText:  "MCP media post",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON: `{
+			"source":"graphql",
+			"snapshot":{
+				"id":"test-mcp-get-media-enrichments",
+				"text":"MCP media post",
+				"media_objects":[
+					{"type":"photo","url":"https://pbs.twimg.com/media/mcp-get-media.jpg","expanded_url":"https://x.com/example/status/test-mcp-get-media-enrichments/photo/1","width":1200,"height":800}
+				]
+			}
+		}`,
+	}); err != nil {
+		t.Fatalf("save x hydration: %v", err)
+	}
+	if _, err := st.SaveItemOCR(ctx, upsert.ItemID, model.OCRResult{
+		Text:      "raw image OCR evidence",
+		Status:    model.ItemOCRStatusOK,
+		Model:     "test-vision",
+		Tool:      "test-ocr",
+		FetchedAt: now,
+	}, "mcp-get-media-ocr-input"); err != nil {
+		t.Fatalf("save item ocr: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(ctx, upsert.ItemID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+		t.Fatalf("save x media transcription state: %v", err)
 	}
 
 	server := New(cfg, st)
@@ -1087,6 +1118,14 @@ func TestServerGetToolIncludesMediaTranscriptAndOCRSections(t *testing.T) {
 	}
 	if !foundTranscript || !foundOCR {
 		t.Fatalf("expected transcript and OCR evidence sections, got %#v", sections)
+	}
+	media := structured["media"].([]interface{})
+	if len(media) != 1 {
+		t.Fatalf("expected one media ref, got %#v", structured["media"])
+	}
+	mediaRef := media[0].(map[string]interface{})
+	if mediaRef["media_type"] != "photo" || !strings.Contains(mediaRef["remote_url"].(string), "mcp-get-media.jpg") {
+		t.Fatalf("unexpected media ref %#v", mediaRef)
 	}
 }
 

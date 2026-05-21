@@ -119,7 +119,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	limit := clampLimit(parseIntDefault(r.URL.Query().Get("limit"), defaultSearchLimit), 1, maxSearchLimit)
 	if query == "" {
-		writeJSON(w, http.StatusOK, SearchResponse{Query: "", Limit: limit, Results: []model.SearchResult{}})
+		writeJSON(w, http.StatusOK, SearchResponse{Query: "", Limit: limit, Results: []SearchResultResponse{}})
 		return
 	}
 
@@ -128,12 +128,46 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	responseResults, err := s.searchResultsWebResponse(r.Context(), results)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, SearchResponse{
 		Query:   query,
 		Limit:   limit,
-		Results: results,
+		Results: responseResults,
 	})
+}
+
+func (s *server) searchResultsWebResponse(ctx context.Context, results []model.SearchResult) ([]SearchResultResponse, error) {
+	sourceKeys := make([]string, 0, len(results))
+	for _, result := range results {
+		sourceKeys = append(sourceKeys, result.SourceKey)
+	}
+	mediaBySourceKey, err := s.store.ListItemMediaRefsForSourceKeys(ctx, sourceKeys)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SearchResultResponse, 0, len(results))
+	for _, result := range results {
+		out = append(out, SearchResultResponse{
+			SourceKey:     result.SourceKey,
+			SourceType:    result.SourceType,
+			ExternalID:    result.ExternalID,
+			Title:         result.Title,
+			AuthorHandle:  result.AuthorHandle,
+			AuthorName:    result.AuthorName,
+			CanonicalURL:  result.CanonicalURL,
+			PrimaryDomain: result.PrimaryDomain,
+			NotePath:      result.NotePath,
+			UserTags:      result.UserTags,
+			Snippet:       result.Snippet,
+			Media:         mediaWebResponse(mediaBySourceKey[result.SourceKey]),
+		})
+	}
+	return out, nil
 }
 
 func (s *server) handleSchedulerSyncAll(w http.ResponseWriter, r *http.Request) {

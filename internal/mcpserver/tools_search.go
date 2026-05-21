@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
@@ -45,11 +48,39 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (map[strin
 	}
 	results = filterSearchResults(ctx, s.st, results, args.SourceTypes)
 	results = dedupeSearchResults(results, limit)
-	content := formatSearchResults(results)
+	responseResults, err := s.searchResultsWithMedia(ctx, results)
+	if err != nil {
+		return nil, err
+	}
+	content := formatSearchResults(responseResults)
 	return toolOKResult(content, map[string]interface{}{
-		"results":           results,
+		"results":           responseResults,
 		"count":             len(results),
 		"tag_aliases":       tagAliases,
 		"exact_tag_matches": exactTagMatches,
 	}), nil
+}
+
+type searchResultWithMedia struct {
+	model.SearchResult
+	Media []retrieval.MediaRef `json:"media,omitempty"`
+}
+
+func (s *Server) searchResultsWithMedia(ctx context.Context, results []model.SearchResult) ([]searchResultWithMedia, error) {
+	sourceKeys := make([]string, 0, len(results))
+	for _, result := range results {
+		sourceKeys = append(sourceKeys, result.SourceKey)
+	}
+	mediaBySourceKey, err := s.st.ListItemMediaRefsForSourceKeys(ctx, sourceKeys)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]searchResultWithMedia, 0, len(results))
+	for _, result := range results {
+		out = append(out, searchResultWithMedia{
+			SearchResult: result,
+			Media:        retrieval.MediaRefs(mediaBySourceKey[result.SourceKey]),
+		})
+	}
+	return out, nil
 }

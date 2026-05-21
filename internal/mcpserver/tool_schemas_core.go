@@ -28,6 +28,7 @@ func getOutputSchema() map[string]interface{} {
 		"related_items":         arraySchema(genericObjectSchema("Slim child item metadata, for example quoted posts.")),
 		"related_sources":       arraySchema(itemSourceRefSchema()),
 		"backlinks":             arraySchema(sourceBacklinkSchema()),
+		"media":                 arraySchema(mediaRefSchema()),
 	}, "kind", "title", "source_key", "note", "content_mode", "available_sections", "content_sections")
 }
 
@@ -77,6 +78,7 @@ func searchResultSchema() map[string]interface{} {
 		"note_path":      scalarSchema("string", "Relative rendered note path."),
 		"user_tags":      scalarSchema("string", "Comma-separated user tags for item or source rows."),
 		"snippet":        scalarSchema("string", "Search snippet."),
+		"media":          arraySchema(mediaRefSchema()),
 	}, "source_key", "title", "canonical_url", "note_path")
 }
 
@@ -98,8 +100,24 @@ func evidenceSchema() map[string]interface{} {
 		"entity_matches": arraySchema(scalarSchema("string", "Derived entities that matched the query and reference this note.")),
 		"related_to":     scalarSchema("string", "Parent source key when added as related evidence."),
 		"relationship":   scalarSchema("string", "How this evidence relates to another node."),
+		"media":          arraySchema(mediaRefSchema()),
 		"retrieval":      retrievalInfoSchema(),
 	}, "source_key", "kind", "title", "url", "note_path", "summary", "excerpt")
+}
+
+func mediaRefSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"media_asset_id":  scalarSchema("integer", "Stable local media asset id for the archived/proxied asset."),
+		"ordinal":         scalarSchema("integer", "Media position on the owning item."),
+		"expanded_url":    scalarSchema("string", "Provider page URL for this media object when available."),
+		"remote_url":      scalarSchema("string", "Original provider media URL when available."),
+		"media_type":      scalarSchema("string", "Media type such as photo, video, animated_gif, or audio."),
+		"download_status": scalarSchema("string", "Local media download state."),
+		"archive_url":     scalarSchema("string", "Archive URL when the media has been archived."),
+		"archive_status":  scalarSchema("string", "Archive state."),
+		"width":           scalarSchema("integer", "Media width in pixels when known."),
+		"height":          scalarSchema("integer", "Media height in pixels when known."),
+	}, "media_asset_id", "media_type")
 }
 
 func retrievalInfoSchema() map[string]interface{} {

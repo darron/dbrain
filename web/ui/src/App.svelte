@@ -5,6 +5,7 @@
   import DetailPanel from "./components/DetailPanel.svelte";
   import GraphView from "./components/GraphView.svelte";
   import MarkdownView from "./components/MarkdownView.svelte";
+  import MediaEvidenceBlock from "./components/MediaEvidenceBlock.svelte";
   import OperationsPanel from "./components/OperationsPanel.svelte";
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
@@ -786,6 +787,10 @@
     return truncateText(evidence?.summary || evidence?.excerpt || "", 280);
   }
 
+  function evidenceWithMedia(rows = []) {
+    return (Array.isArray(rows) ? rows : []).filter((row) => Array.isArray(row?.media) && row.media.length > 0);
+  }
+
   function truncateText(value, max) {
     const text = String(value || "").replace(/\s+/g, " ").trim();
     if (text.length <= max) return text;
@@ -1177,6 +1182,14 @@
                           {/each}
                         </div>
                       {/if}
+
+                      {#if evidenceWithMedia(chatEvidence(turn)).length > 0}
+                        <div class="answer-media-evidence">
+                          {#each evidenceWithMedia(chatEvidence(turn)) as evidence}
+                            <MediaEvidenceBlock item={evidence} onSelect={loadDetail} />
+                          {/each}
+                        </div>
+                      {/if}
                     </div>
 
                     {#if chatEvidence(turn).length > 0}
@@ -1200,6 +1213,9 @@
                               <button class="pin-chip" class:active={isPinnedEvidence(evidence.source_key)} type="button" on:click={() => togglePinnedEvidence(evidence.source_key)}>
                                 Pin
                               </button>
+                              <div class="evidence-card-media">
+                                <MediaEvidenceBlock item={evidence} onSelect={loadDetail} showHeader={false} />
+                              </div>
                             </div>
                           {/each}
                         </div>
@@ -1275,6 +1291,13 @@
                         {/each}
                       </div>
                     {/if}
+                    {#if evidenceWithMedia(activeResults).length > 0}
+                      <div class="answer-media-evidence">
+                        {#each evidenceWithMedia(activeResults) as evidence}
+                          <MediaEvidenceBlock item={evidence} onSelect={loadDetail} />
+                        {/each}
+                      </div>
+                    {/if}
                   </div>
                 {/if}
 
@@ -1286,13 +1309,16 @@
                     </div>
                     <div class="evidence-compact-list">
                       {#each activeResults as evidence}
-                        <button class="evidence-card" class:selected={selectedLookup === evidence.source_key} type="button" on:click={() => loadDetail(evidence.source_key)}>
-                          <span class="result-key">{evidence.source_type || evidence.kind || "source"}</span>
-                          <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
-                          {#if evidencePreview(evidence)}
-                            <p>{evidencePreview(evidence)}</p>
-                          {/if}
-                        </button>
+                        <article class="evidence-card" class:selected={selectedLookup === evidence.source_key}>
+                          <button class="evidence-card-main" type="button" on:click={() => loadDetail(evidence.source_key)}>
+                            <span class="result-key">{evidence.source_type || evidence.kind || "source"}</span>
+                            <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
+                            {#if evidencePreview(evidence)}
+                              <p>{evidencePreview(evidence)}</p>
+                            {/if}
+                          </button>
+                          <MediaEvidenceBlock item={evidence} onSelect={loadDetail} showHeader={false} />
+                        </article>
                       {/each}
                     </div>
                   </div>
