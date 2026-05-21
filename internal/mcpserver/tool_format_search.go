@@ -7,7 +7,7 @@ import (
 	"github.com/darron/dbrain/internal/queryterms"
 )
 
-func formatSearchResults(results []model.SearchResult) string {
+func formatSearchResults(results []searchResultWithMedia) string {
 	if len(results) == 0 {
 		return "No results."
 	}
@@ -32,6 +32,24 @@ func formatSearchResults(results []model.SearchResult) string {
 		if strings.TrimSpace(result.Snippet) != "" {
 			b.WriteString("  Snippet: ")
 			b.WriteString(strings.TrimSpace(result.Snippet))
+			b.WriteString("\n")
+		}
+		if len(result.Media) > 0 {
+			b.WriteString("  Media: ")
+			parts := make([]string, 0, len(result.Media))
+			for _, ref := range result.Media {
+				label := strings.TrimSpace(ref.MediaType)
+				if label == "" {
+					label = "media"
+				}
+				if strings.TrimSpace(ref.ArchiveURL) != "" {
+					label += " " + strings.TrimSpace(ref.ArchiveURL)
+				} else if strings.TrimSpace(ref.RemoteURL) != "" {
+					label += " " + strings.TrimSpace(ref.RemoteURL)
+				}
+				parts = append(parts, label)
+			}
+			b.WriteString(strings.Join(parts, "; "))
 			b.WriteString("\n")
 		}
 	}

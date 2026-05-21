@@ -425,6 +425,47 @@ func TestRebuildFTSUsesItemEnrichmentMirror(t *testing.T) {
 	}
 }
 
+func TestSearchSnippetUsesTranscriptMatchText(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	if !st.HasFTS() {
+		t.Skip("FTS is not available")
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-search-transcript-snippet",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-search-transcript-snippet",
+		CanonicalURL: "https://x.com/example/status/test-search-transcript-snippet",
+		Title:        "Transcript Snippet Item",
+		Text:         "body without the quote",
+		ArticleTitle: model.XMediaTranscriptArticleTitle,
+		ArticleText:  "Transcript:\n\nThe recording says the red balloon promise out loud.",
+		SummaryText:  "Generic summary that does not include the quoted recording phrase.",
+		ContentHash:  "test-search-transcript-snippet-hash",
+		NotePath:     "items/x/2026/test-search-transcript-snippet.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	results, err := st.Search(ctx, "red balloon promise", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 || results[0].SourceKey != "x:test-search-transcript-snippet" {
+		t.Fatalf("expected transcript-backed search result, got %+v", results)
+	}
+	if !strings.Contains(results[0].Snippet, "red balloon promise") {
+		t.Fatalf("expected snippet to expose transcript match, got %q", results[0].Snippet)
+	}
+}
+
 func TestSyncItemFTSByIDUsesItemEnrichmentMirror(t *testing.T) {
 	t.Parallel()
 

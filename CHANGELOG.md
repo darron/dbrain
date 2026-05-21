@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Inline Media Evidence For Search And Chat (2026-05-20)
+
+- **Search**: Item/source search snippets now prefer the actual FTS match window, so transcript- and OCR-backed hits show the matching passage instead of an unrelated summary.
+- **Research/MCP**: Search results, research evidence, and `dbrain_get` payloads now include sanitized media references for related photos, videos, GIFs, and audio without exposing local paths or archive storage keys.
+- **Web**: Search, research, and chat evidence cards now render inline media previews/players for media-backed results, with compact title/author/type metadata and clickable summary/transcript-match context under each media block.
+- **Location**: `internal/store/`, `internal/retrieval/`, `internal/ask/`, `internal/brainresearch/`, `internal/mcpserver/`, `web/`
+
 ### Launchd Full Disk Access Probe Auth (2026-05-16)
 
 - **Fixed**: `dbrain launchd restart` now authenticates its service-process Full Disk Access probe when web OAuth is enabled, so `/api/doctor/full-disk-access` no longer returns a diagnostic-only `401` after the GitHub OAuth rollout.

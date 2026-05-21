@@ -55,6 +55,100 @@ func (s *Store) ListItemMediaRefs(ctx context.Context, itemID int64) ([]model.It
 	return refs, nil
 }
 
+func (s *Store) ListItemMediaRefsForSourceKeys(ctx context.Context, sourceKeys []string) (map[string][]model.ItemMediaRef, error) {
+	seen := make(map[string]struct{}, len(sourceKeys))
+	keys := make([]string, 0, len(sourceKeys))
+	for _, key := range sourceKeys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	out := make(map[string][]model.ItemMediaRef, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, 0, len(keys))
+	args := make([]any, 0, len(keys))
+	for _, key := range keys {
+		placeholders = append(placeholders, "?")
+		args = append(args, key)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			i.source_key,
+			l.item_id,
+			l.media_asset_id,
+			l.ordinal,
+			l.expanded_url,
+			a.remote_url,
+			a.media_type,
+			a.download_status,
+			a.download_error_count,
+			a.last_download_attempt_at,
+			a.local_path,
+			a.archive_provider,
+			a.archive_bucket,
+			a.archive_key,
+			a.archive_url,
+			a.archive_status,
+			a.width,
+			a.height,
+			a.local_pruned_at
+		FROM items i
+		JOIN item_media_links l ON l.item_id = i.id
+		JOIN media_assets a ON a.id = l.media_asset_id
+		WHERE i.source_key IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY i.source_key ASC, l.ordinal ASC, l.media_asset_id ASC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list item media refs for source keys: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var sourceKey string
+		var ref model.ItemMediaRef
+		var localPrunedAt string
+		var lastDownloadAt string
+		if err := rows.Scan(
+			&sourceKey,
+			&ref.ItemID,
+			&ref.MediaAssetID,
+			&ref.Ordinal,
+			&ref.ExpandedURL,
+			&ref.RemoteURL,
+			&ref.MediaType,
+			&ref.DownloadStatus,
+			&ref.DownloadErrors,
+			&lastDownloadAt,
+			&ref.LocalPath,
+			&ref.ArchiveProvider,
+			&ref.ArchiveBucket,
+			&ref.ArchiveKey,
+			&ref.ArchiveURL,
+			&ref.ArchiveStatus,
+			&ref.Width,
+			&ref.Height,
+			&localPrunedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan item media refs for source keys: %w", err)
+		}
+		ref.LastDownloadAt = parseStoredTime(lastDownloadAt)
+		ref.LocalPrunedAt = parseStoredTime(localPrunedAt)
+		out[sourceKey] = append(out[sourceKey], ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate item media refs for source keys: %w", err)
+	}
+	return out, nil
+}
+
 type itemMediaLinkRow struct {
 	ItemID       int64
 	MediaAssetID int64

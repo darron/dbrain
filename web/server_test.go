@@ -1148,6 +1148,56 @@ func TestWebHandlerServesArchivedMediaAndSignedURL(t *testing.T) {
 			t.Fatalf("unexpected sanitized media ref %+v", response.Item.Media[0])
 		}
 	})
+
+	t.Run("search media payload hides storage metadata", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/search?q=Video+post&limit=5", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		for _, forbidden := range []string{`"local_path"`, `"archive_bucket"`, `"archive_key"`, "media/x/video/ab/test.mp4"} {
+			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+				t.Fatalf("search media response exposed storage metadata %q: %s", forbidden, rec.Body.String())
+			}
+		}
+		var response SearchResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode search response: %v", err)
+		}
+		if len(response.Results) == 0 || len(response.Results[0].Media) != 1 {
+			t.Fatalf("expected search result with sanitized media, got %+v", response.Results)
+		}
+		if response.Results[0].Media[0].MediaAssetID != refs[0].MediaAssetID || response.Results[0].Media[0].MediaType != "video" {
+			t.Fatalf("unexpected search media ref %+v", response.Results[0].Media[0])
+		}
+	})
+
+	t.Run("research evidence includes media payload", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/research", strings.NewReader(`{"question":"Video post","limit":4,"disable_planner":true}`))
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		for _, forbidden := range []string{`"local_path"`, `"archive_bucket"`, `"archive_key"`, "media/x/video/ab/test.mp4"} {
+			if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+				t.Fatalf("research media response exposed storage metadata %q: %s", forbidden, rec.Body.String())
+			}
+		}
+		var response brainresearch.Pack
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode research response: %v", err)
+		}
+		if len(response.Evidence) == 0 || len(response.Evidence[0].Media) != 1 {
+			t.Fatalf("expected research evidence with media, got %+v", response.Evidence)
+		}
+		if response.Evidence[0].Media[0].MediaAssetID != refs[0].MediaAssetID || response.Evidence[0].Media[0].MediaType != "video" {
+			t.Fatalf("unexpected research media ref %+v", response.Evidence[0].Media[0])
+		}
+	})
 }
 
 func openTestStore(t *testing.T) (config.Config, *store.Store) {

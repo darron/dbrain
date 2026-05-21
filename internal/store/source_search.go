@@ -88,6 +88,7 @@ func (s *Store) searchSourcesFTS(ctx context.Context, query string, limit int) (
 
 func (s *Store) searchSourcesFTSQuery(ctx context.Context, ftsQuery string, limit int) ([]model.SearchResult, error) {
 	rows, err := s.db.QueryContext(ctx, `
+		WITH ranked AS (
 		SELECT
 			s.source_key,
 			s.source_type,
@@ -99,11 +100,32 @@ func (s *Store) searchSourcesFTSQuery(ctx context.Context, ftsQuery string, limi
 			s.domain,
 			s.note_path,
 			s.user_tags,
-			substr(trim(replace(COALESCE(NULLIF(s.summary_text, ''), s.extracted_text), char(10), ' ')), 1, 200) AS snippet
+			NULLIF(snippet(sources_fts, -1, '', '', ' ... ', 32), '') AS match_snippet,
+			COALESCE(NULLIF(s.summary_text, ''), s.extracted_text) AS best_text,
+			bm25(sources_fts) AS rank,
+			s.updated_at
 		FROM sources_fts f
 		JOIN sources s ON s.id = f.rowid
 		WHERE sources_fts MATCH ?
-		ORDER BY bm25(sources_fts), s.updated_at DESC
+		)
+		SELECT
+			source_key,
+			source_type,
+			external_id,
+			title,
+			author_handle,
+			author_name,
+			canonical_url,
+			domain,
+			note_path,
+			user_tags,
+			substr(trim(replace(CASE
+				WHEN match_snippet IS NOT NULL AND best_text != '' AND instr(best_text, match_snippet) = 0 THEN match_snippet || ' ... ' || best_text
+				WHEN match_snippet IS NOT NULL THEN match_snippet
+				ELSE best_text
+			END, char(10), ' ')), 1, 200) AS snippet
+		FROM ranked
+		ORDER BY rank, updated_at DESC
 		LIMIT ?`, ftsQuery, limit)
 	if err != nil {
 		return nil, fmt.Errorf("source fts search: %w", err)

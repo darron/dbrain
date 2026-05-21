@@ -7,6 +7,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func (b *Builder) buildExactTagEvidence(ctx context.Context, topic string, hints ask.QueryHints, sourceTypes []string, maxChars int) ([]ask.Evidence, error) {
@@ -78,7 +79,7 @@ func exactTagEvidenceFromItem(vaultDir string, item model.Item, result model.Sea
 		item.Text,
 		item.OCRText,
 	}, "\n"))
-	retrieval := exactTagExampleRetrieval(tag, terms, matchText)
+	retrievalInfo := exactTagExampleRetrieval(tag, terms, matchText)
 	return ask.Evidence{
 		SourceKey:   item.SourceKey,
 		Kind:        "item",
@@ -91,7 +92,8 @@ func exactTagEvidenceFromItem(vaultDir string, item model.Item, result model.Sea
 		SourceType:  item.SourceType,
 		PublishedAt: item.PublishedAt,
 		UserTags:    item.UserTags,
-		Retrieval:   &retrieval,
+		Media:       retrieval.MediaRefs(item.Media),
+		Retrieval:   &retrievalInfo,
 	}
 }
 
@@ -111,7 +113,7 @@ func exactTagEvidenceFromSource(vaultDir string, source model.SourceDocument, re
 		source.SummaryText,
 		source.ExtractedText,
 	}, "\n"))
-	retrieval := exactTagExampleRetrieval(tag, terms, matchText)
+	retrievalInfo := exactTagExampleRetrieval(tag, terms, matchText)
 	return ask.Evidence{
 		SourceKey:    source.SourceKey,
 		Kind:         "source",
@@ -124,7 +126,7 @@ func exactTagEvidenceFromSource(vaultDir string, source model.SourceDocument, re
 		ExtractedAt:  formatTime(source.ExtractedAt),
 		SummarizedAt: formatTime(source.SummarizedAt),
 		UserTags:     source.UserTags,
-		Retrieval:    &retrieval,
+		Retrieval:    &retrievalInfo,
 	}
 }
 

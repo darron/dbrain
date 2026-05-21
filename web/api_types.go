@@ -45,9 +45,24 @@ type AuthUserInfo struct {
 }
 
 type SearchResponse struct {
-	Query   string               `json:"query"`
-	Limit   int                  `json:"limit"`
-	Results []model.SearchResult `json:"results"`
+	Query   string                 `json:"query"`
+	Limit   int                    `json:"limit"`
+	Results []SearchResultResponse `json:"results"`
+}
+
+type SearchResultResponse struct {
+	SourceKey     string             `json:"source_key"`
+	SourceType    string             `json:"source_type"`
+	ExternalID    string             `json:"external_id"`
+	Title         string             `json:"title"`
+	AuthorHandle  string             `json:"author_handle"`
+	AuthorName    string             `json:"author_name"`
+	CanonicalURL  string             `json:"canonical_url"`
+	PrimaryDomain string             `json:"primary_domain"`
+	NotePath      string             `json:"note_path"`
+	UserTags      string             `json:"user_tags"`
+	Snippet       string             `json:"snippet"`
+	Media         []MediaRefResponse `json:"media,omitempty"`
 }
 
 type SchedulerSyncAllResponse struct {
