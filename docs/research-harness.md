@@ -251,6 +251,14 @@ requires a configured model when evidence exists, builds a capped evidence
 input, records truncation metadata, and precomputes citations from included
 evidence rows.
 
+The existing synthesis types are a useful foundation for traces.
+`PreparedSynthesis` already carries schema version, prompt version, truncation
+metadata, citations, warnings, and answer status before the model call.
+`SynthesisResult` carries the answer, answer status, warnings, truncation
+metadata, citations, prompt version, model, tool, and tool version after
+synthesis. Trace code should reuse those types directly instead of inventing
+parallel synthesis metadata.
+
 The synthesis prompt requires the model to:
 
 - answer from the provided dbrain research pack only
@@ -450,6 +458,10 @@ in principle.
 
 Synthesis is explicitly answer-from-evidence-only. It has citation metadata,
 truncation metadata, no-evidence handling, and source-key discipline.
+
+The implementation already has typed `PreparedSynthesis`, `SynthesisResult`,
+and `TruncationMetadata` structures, so the trace work can reuse existing
+synthesis metadata rather than starting from scratch.
 
 ### Chat Does Not Promote Answers To Evidence
 
@@ -678,18 +690,24 @@ Add a trace model:
 
 ```go
 type ResearchTrace struct {
-    SchemaVersion string
-    RunID         string
-    Surface       string // cli, web_research, web_chat, mcp
-    Question      string
-    StartedAt     time.Time
-    CompletedAt   time.Time
-    Events        []ResearchTraceEvent
-    Pack          brainresearch.Pack
-    Synthesis     *brainresearch.SynthesisResult
-    StopReason    string
+    SchemaVersion      string
+    RunID              string
+    Surface            string // cli, web_chat, web_research_api, mcp
+    Question           string
+    StartedAt          time.Time
+    CompletedAt        time.Time
+    Events             []ResearchTraceEvent
+    Pack               brainresearch.Pack
+    PreparedSynthesis  *brainresearch.PreparedSynthesis
+    Synthesis          *brainresearch.SynthesisResult
+    StopReason         string
 }
 ```
+
+Do not duplicate synthesis metadata into a new shape unless the runner needs
+additional fields. Embed or reference `brainresearch.PreparedSynthesis` and
+`brainresearch.SynthesisResult` so trace output cannot drift from the actual
+synthesis path.
 
 Trace events should capture:
 
@@ -721,14 +739,31 @@ write:
 Do not index traces into the brain by default. They are diagnostics and eval
 seed material, not source evidence.
 
+Everything under `data/` is local runtime state, not source material to import
+back into the brain. New trace directories should follow the existing
+`data/chat-transcripts/` convention: private, gitignored, and non-indexed by
+default.
+
+Trace writes must be concurrency-safe. Use unique run IDs, one directory per
+run, write files to temporary names, and atomically rename them into place after
+the JSON and Markdown are complete. Do not add a shared SQLite or JSON index in
+the first trace version. If an index is added later, treat it as derived and
+repairable from the per-run files.
+
+Default trace saving needs an explicit disk policy. Start with a conservative,
+configurable retention policy such as keeping at least the latest 500 runs and
+offering a 180-day age-based prune rule, plus a `--keep-all-traces` or config
+override during active tuning. Any pruning command should report how many trace
+directories were deleted.
+
 User surfaces:
 
 - CLI: save traces by default; provide `--no-trace` only for rare noise control
 - web Chat: save traces by default alongside transcript export
 - MCP/agent use: expose trace path when a traced run is executed through a
   runner surface
-- web Research tab: no new investment; remove it from the UI while preserving
-  the underlying APIs used by Chat and evals
+- web UI: remove the Research tab from primary navigation in this phase while
+  preserving the underlying APIs used by Chat and evals
 
 Required tests:
 
@@ -737,6 +772,12 @@ Required tests:
 - default traced runs write both Markdown and JSON files
 - `--no-trace` suppresses trace writing
 - synthesized Chat traces include the answer, citation metadata, and warnings
+- concurrent traced runs create distinct complete run directories
+- retention pruning respects configured keep counts/ages and never deletes the
+  active run
+- Research tab is absent from primary navigation while Chat remains available
+- prior model answer text cannot appear as an evidence row or synthesis-input
+  fact in the next traced Chat turn
 
 ### Phase 2: Make Evals Match The Harness
 
@@ -782,6 +823,18 @@ The proposal output should be conservative. It can suggest source keys,
 expected top keys, expected text, forbidden noisy keys, and planner-off cases,
 but a human should review before saving to `evals/local/*.json`.
 
+Build a minimal Harness Lab alongside this eval work instead of waiting for the
+polished UI phase. The first useful version can be small:
+
+- load a saved trace JSON
+- rerun `brainresearch.Build` with the same question/options
+- diff old versus new evidence source keys
+- show added, removed, and reordered evidence rows
+- link to "propose eval case" for that trace
+
+This gives deterministic strategy work a visible feedback loop while the full
+runner is still being built.
+
 Required tests:
 
 - eval cases can assert query plan fields
@@ -790,6 +843,7 @@ Required tests:
 - transcript proposal does not write cases without explicit output/apply flags
 - trace proposal can generate reviewed research cases from default-saved traces
 - synthesis and citation assertions fail when source-key coverage regresses
+- minimal Harness Lab can load a trace and show an evidence-key diff
 
 ### Phase 3: Promote Deterministic Strategy To A Maintained Surface
 
@@ -831,6 +885,24 @@ Required tests:
 
 Implement the server-side runner once tracing and evals exist.
 
+Make the Judge a typed, isolated decision component rather than burying retry
+rules inside the runner loop:
+
+```go
+type JudgeResult struct {
+    Verdict         string // enough_evidence, no_evidence, weak_evidence
+    Reason          string
+    MissingConcepts []string
+    WeakRows        []string
+    RetryAction     string // none, focused_retry, related_expansion
+}
+```
+
+Inputs should be the final query plan, required concepts, top evidence rows,
+retrieval signals, matched/missing terms, exact-tag evidence, and the recall
+note. Outputs should drive the stop reason, retry decision, and trace warning
+without requiring the rest of the runner to know the scoring details.
+
 First runner behavior:
 
 1. Build the initial pack.
@@ -855,8 +927,8 @@ User surfaces:
   proven
 - web Chat: use the runner server-side instead of the current Svelte-only
   orchestration, and stream progress events while it works
-- web Research: remove the tab from navigation; keep the API/core behavior for
-  Chat, CLI diagnostics, MCP, and evals
+- web Research API: keep the API/core behavior for Chat, CLI diagnostics, MCP,
+  and evals, but do not reintroduce the separate navigation tab
 - MCP: keep `dbrain_research_pack` stable; optionally add a separate
   `dbrain_research_run` later if agents need the full traced runner output
 
@@ -867,13 +939,15 @@ Required tests:
 - stop reasons
 - no-evidence behavior
 - weak-evidence retry behavior
+- JudgeResult verdicts, missing concepts, and retry actions
 - related expansion budget
 - trace event ordering
 - trace default-on behavior
 - user-facing runs always attempt synthesis
 - web Chat progress events cover planning, retrieval, inspection, synthesis,
   verification, and trace persistence
-- web chat still avoids prior model answers as evidence
+- web chat still avoids prior model answers as evidence, including in the final
+  synthesis input
 
 ### Phase 5: Strengthen Citation And Answer Verification
 
@@ -884,6 +958,21 @@ Add deterministic checks before returning or saving a synthesized answer:
 - citation list should match source keys used in the answer where practical
 - no-evidence packs must not produce normal answers
 - truncated packs should surface warnings clearly
+
+Hard-gate failures should have explicit user-visible behavior:
+
+- Chat must not render a verification-failed answer as a normal completed
+  answer.
+- The user should see a compact failure state explaining the failed gate, such
+  as missing citations, citation keys not present in the pack, or no-evidence
+  synthesis.
+- The rejected answer, if one exists, can be stored in the trace for debugging
+  but should be clearly marked as rejected and should not be shareable as a
+  normal answer.
+- The runner should stop with `verification_failed` when a hard gate fails after
+  synthesis.
+- Soft-gate failures should return the answer with visible warnings and trace
+  events, not silently disappear.
 
 Then add optional model-based answer review:
 
@@ -947,6 +1036,12 @@ thing even when they use different words." The risk is that semantic search can
 feel impressive while quietly returning vague near-matches. That is why it
 should wait until traces and evals can prove whether it helps or hurts.
 
+Operational trigger: do not start this phase until Chat is using the runner,
+default trace saving is working, Harness Lab can compare trace reruns, and
+`dbrain eval research` has at least 25 reviewed local cases with planner-off
+coverage across the major query families. Lexical-only evals should be stable
+before adding a second retrieval lane.
+
 Pragmatic shape:
 
 1. Keep SQLite FTS as the baseline.
@@ -972,8 +1067,8 @@ lexical-only results against hybrid results on real local traces.
 
 ### Phase 8: Make The UI And Skill Reflect The Runner
 
-Chat should be the default web surface. Remove the old Research tab from normal
-navigation rather than maintaining two overlapping user experiences.
+Chat should already be the default web surface by this point. This phase makes
+the runner state and eval workflow visible enough for routine tuning.
 
 While Chat is running, the UI should expose harness state without making normal
 use noisy:
@@ -1002,9 +1097,9 @@ The visible progress timeline should at minimum show:
 - verifying citations
 - saving trace
 
-Add a separate diagnostic/eval surface, tentatively `Harness Lab`, for comparing
-old and new behavior. This should not replace Chat. It should let a developer
-or power user:
+Expand the minimal Harness Lab into a fuller diagnostic/eval surface for
+comparing old and new behavior. This should not replace Chat. It should let a
+developer or power user:
 
 - load a saved trace or transcript
 - rerun it against the current harness
@@ -1028,8 +1123,10 @@ Required tests:
 
 - web UI can render runner trace summaries
 - web Chat displays progress while the runner is active
-- Research tab is absent from primary navigation while Chat remains available
-- Harness Lab can load a trace and show old/new response comparison
+- Research tab remains absent from primary navigation while Chat remains
+  available
+- Harness Lab can load a trace and show old/new response and evidence
+  comparison
 - mobile layout does not overflow long source keys or URLs
 - skill guidance stays aligned with MCP tool behavior
 - public/shared chat pages do not expose trace-only local internals
@@ -1079,6 +1176,8 @@ The harness is materially better when these are true:
 - Chat shows progress while planning, retrieving, inspecting, synthesizing,
   verifying, and saving traces.
 - Traces are saved by default as readable Markdown plus JSON sidecars.
+- Trace retention is explicit, configurable, and safe under concurrent Chat/CLI
+  runs.
 - Research packs can retrieve the relevant chunk of a long source, not only the
   source summary or first excerpt.
 - Corrective chat follow-ups stop anchoring on prior bad evidence.
@@ -1113,6 +1212,14 @@ Resolved decisions:
   navigation.
 - User-facing runs synthesize by default.
 - Traces are saved by default while the harness is being tuned.
+- Trace writes must be concurrency-safe and use per-run directories with atomic
+  file replacement.
+- Trace retention must be explicit and configurable from the first trace
+  implementation.
+- Minimal Harness Lab belongs with eval work, not after the whole runner is
+  complete.
+- Citation verification failures must be visible to the user and must not
+  produce normal shareable answers.
 
 Remaining questions:
 

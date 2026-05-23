@@ -11,7 +11,8 @@ development date for the change set.
   harness, covering `internal/brainresearch`, web Chat/Research, MCP usage,
   eval coverage, known gaps, and a phased improvement plan that makes Chat the
   default web surface, saves traces by default, and centers `dbrain eval
-  research`.
+  research`, trace retention, citation verification UX, and Harness Lab
+  comparison work.
 - **Location**: `docs/research-harness.md`, `README.md`, `docs/architecture.md`
 
 ### Inline Media Evidence For Search And Chat (2026-05-20)
