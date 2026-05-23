@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Research Harness Documentation (2026-05-23)
+
+- **Docs**: Added a current-state and roadmap document for the research/chat
+  harness, covering `internal/brainresearch`, web Chat/Research, MCP usage,
+  eval coverage, known gaps, and a phased improvement plan that makes Chat the
+  default web surface, saves traces by default, and centers `dbrain eval
+  research`.
+- **Location**: `docs/research-harness.md`, `README.md`, `docs/architecture.md`
+
 ### Inline Media Evidence For Search And Chat (2026-05-20)
 
 - **Search**: Item/source search snippets now prefer the actual FTS match window, so transcript- and OCR-backed hits show the matching passage instead of an unrelated summary.

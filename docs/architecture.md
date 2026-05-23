@@ -228,6 +228,8 @@ Operational expectations:
 - `README.md`: user-facing setup, safety model, command reference, and license.
 - `docs/schema-migrations.md`: schema migration, backup, restore, and downgrade
   policy.
+- `docs/research-harness.md`: current research/chat harness behavior,
+  limitations, and improvement roadmap.
 - `docs/maintenance-operations.md`: local delete, purge, prune, restore, and
   reset operation audit.
 - `docs/release-build.md`: release build checklist and embedded web asset

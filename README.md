@@ -21,6 +21,8 @@ corpus.
   [browser/safari-extension/README.md](browser/safari-extension/README.md):
   browser extensions for saving the active tab URL to dbrain.
 - [docs/architecture.md](docs/architecture.md): package and data-flow architecture.
+- [docs/research-harness.md](docs/research-harness.md): current research/chat
+  harness behavior, limitations, and improvement roadmap.
 - [docs/schema-migrations.md](docs/schema-migrations.md): SQLite schema and
   migration guidance.
 - [docs/web-route-capabilities.md](docs/web-route-capabilities.md): web route
