@@ -1415,6 +1415,109 @@ textarea { resize: vertical; }
   color: var(--danger);
 }
 
+.harness-panel {
+  display: grid;
+  gap: 0.8rem;
+  padding: 1rem 1.25rem 1.25rem;
+  min-width: 0;
+}
+
+.harness-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.harness-grid {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.36fr) minmax(0, 1fr);
+  gap: 0.8rem;
+  align-items: start;
+  min-width: 0;
+}
+
+.trace-list,
+.trace-compare {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.trace-row {
+  display: grid;
+  gap: 0.18rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--s1);
+  color: var(--text);
+  text-align: left;
+}
+
+.trace-row:hover,
+.trace-row.selected {
+  border-color: var(--border-hi);
+  background: rgba(74, 222, 128, 0.08);
+  transform: none;
+}
+
+.trace-row strong,
+.trace-row span,
+.trace-row small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.trace-row strong {
+  color: var(--text-hi);
+  font-size: 0.86rem;
+}
+
+.trace-row span,
+.trace-row small {
+  color: var(--text-lo);
+  font-size: 0.76rem;
+}
+
+.diff-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.diff-stats span {
+  padding: 0.16rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-lo);
+  font-size: 0.74rem;
+}
+
+.proposal-command {
+  display: block;
+  max-width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--accent);
+  font-family: "JetBrains Mono", "SF Mono", "Menlo", monospace;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.answer-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  min-width: 0;
+}
+
 .shares-panel {
   display: grid;
   gap: 0.8rem;
@@ -1549,6 +1652,44 @@ textarea { resize: vertical; }
   max-width: 100%;
 }
 
+.progress-timeline {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.progress-timeline li {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.32fr) minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: baseline;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.035);
+}
+
+.progress-timeline li.active:last-child {
+  border-color: var(--border-hi);
+  background: rgba(74, 222, 128, 0.09);
+}
+
+.progress-timeline span {
+  color: var(--accent);
+  font-size: 0.7rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.progress-timeline small {
+  min-width: 0;
+  color: var(--text-lo);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
 .chat-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1655,6 +1796,12 @@ textarea { resize: vertical; }
 .evidence-card strong {
   color: var(--text-hi);
   font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.evidence-card small {
+  color: var(--text-lo);
+  font-size: 0.74rem;
   overflow-wrap: anywhere;
 }
 
@@ -2112,6 +2259,7 @@ textarea { resize: vertical; }
 
   .research-summary,
   .chat-thread,
+  .harness-panel,
   .shares-panel,
   .result-list {
     padding: 0.5rem;
@@ -2147,6 +2295,17 @@ textarea { resize: vertical; }
   .share-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .harness-header,
+  .harness-grid,
+  .answer-compare-grid,
+  .progress-timeline li {
+    grid-template-columns: 1fr;
+  }
+
+  .harness-header {
+    display: grid;
   }
 
   .chat-question {

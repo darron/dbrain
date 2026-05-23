@@ -63,6 +63,8 @@ export function researchBrain(question, options = {}) {
       related_limit: 2,
       max_chars_per_doc: 4000,
       use_model_planner: true,
+      use_semantic: options.useSemantic === true,
+      disable_semantic: options.disableSemantic === true,
       ...bodyOptions
     })
   });
@@ -79,7 +81,12 @@ export async function synthesizeResearch(question, researchPack, options = {}) {
       question,
       research_pack: researchPack,
       model: options.model || "",
-      max_evidence_chars: options.maxEvidenceChars || 24000
+      max_evidence_chars: options.maxEvidenceChars || 24000,
+      answer_review: options.answerReview === true,
+      answer_review_model: options.answerReviewModel || "",
+      trace_enabled: options.traceEnabled !== false,
+      trace_surface: options.traceSurface || "",
+      trace_continuity: options.traceContinuity || null
     })
   });
 
@@ -89,6 +96,51 @@ export async function synthesizeResearch(question, researchPack, options = {}) {
   }
   if (!response.body) {
     throw new Error("Synthesis stream is unavailable");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = drainSSEBuffer(buffer, options.onEvent);
+  }
+  buffer += decoder.decode();
+  drainSSEBuffer(buffer + "\n\n", options.onEvent);
+}
+
+export async function runResearch(question, options = {}) {
+  const response = await fetch("/api/research/run", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    signal: options.signal,
+    body: JSON.stringify({
+      question,
+      limit: options.limit || 10,
+      related_limit: options.relatedLimit || 2,
+      max_chars_per_doc: options.maxCharsPerDoc || 4000,
+      use_model_planner: options.useModelPlanner !== false,
+      use_semantic: options.useSemantic === true,
+      disable_semantic: options.disableSemantic === true,
+      model: options.model || "",
+      max_evidence_chars: options.maxEvidenceChars || 24000,
+      trace_enabled: options.traceEnabled !== false,
+      trace_surface: options.traceSurface || "",
+      trace_continuity: options.traceContinuity || null
+    })
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `Request failed with status ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error("Research runner stream is unavailable");
   }
 
   const reader = response.body.getReader();
@@ -127,6 +179,25 @@ export function createChatShare(turn) {
 
 export function listChatShares() {
   return fetchJSON("/api/chat/shares");
+}
+
+export function listResearchTraces(options = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(options.limit || 25));
+  return fetchJSON(`/api/research/traces?${params.toString()}`);
+}
+
+export function compareResearchTrace(tracePath, options = {}) {
+  return fetchJSON("/api/research/trace-compare", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      trace_path: tracePath,
+      run_current: options.runCurrent === true
+    })
+  });
 }
 
 function drainSSEBuffer(buffer, onEvent) {

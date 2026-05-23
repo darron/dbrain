@@ -74,7 +74,15 @@ func (b *Builder) buildModelResearchPlan(ctx context.Context, question string, h
 	defer func() {
 		_ = os.Remove(inputPath)
 	}()
-	if _, err := inputFile.WriteString(plannerInput(question, hints, deterministic)); err != nil {
+	input := plannerInput(question, hints, deterministic)
+	emitPlannerInput(opts.Observer, input)
+	emitEvent(opts.Observer, "planner_requested", map[string]interface{}{
+		"prompt_version": researchPlannerPromptVersion,
+		"model":          modelName,
+		"timeout_ms":     timeout.Milliseconds(),
+		"input_chars":    len(input),
+	})
+	if _, err := inputFile.WriteString(input); err != nil {
 		_ = inputFile.Close()
 		return modelResearchPlan{}, modelName, fmt.Errorf("write planner input: %w", err)
 	}
@@ -96,6 +104,14 @@ func (b *Builder) buildModelResearchPlan(ctx context.Context, question string, h
 	if err != nil {
 		return modelResearchPlan{}, modelName, fmt.Errorf("model planner %s: %w", researchPlannerPromptVersion, err)
 	}
+	emitPlannerOutput(opts.Observer, firstNonEmpty(result.Summary.RawJSON, result.Summary.Text, result.Extract.RawJSON))
+	emitEvent(opts.Observer, "planner_returned", map[string]interface{}{
+		"prompt_version": researchPlannerPromptVersion,
+		"model":          firstNonEmpty(result.Summary.Model, modelName),
+		"tool":           result.Summary.Tool,
+		"tool_version":   result.Summary.ToolVersion,
+		"output_chars":   len(firstNonEmpty(result.Summary.RawJSON, result.Summary.Text, result.Extract.RawJSON)),
+	})
 	if result.Summary.Status != "ok" || strings.TrimSpace(result.Summary.Text) == "" {
 		return modelResearchPlan{}, modelName, fmt.Errorf("model planner %s returned no plan", researchPlannerPromptVersion)
 	}

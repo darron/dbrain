@@ -1,4 +1,72 @@
-# MCP Retrieval Evals
+# Research And MCP Evals
+
+`dbrain eval research` runs full research/chat harness regression checks against
+`internal/brainresearch`. Use it for the main Chat quality loop: query-plan
+shape, planner-disabled baselines, retrieval signals, prepared synthesis status,
+and citation source-key coverage.
+
+Create a starter file:
+
+```sh
+./bin/dbrain eval research --write-example evals/local/research.json
+```
+
+Run it:
+
+```sh
+./bin/dbrain eval research --file evals/local/research.json
+./bin/dbrain eval research --file evals/local/research.json --json
+```
+
+Turn saved traces or chat transcripts into reviewed case proposals:
+
+```sh
+./bin/dbrain eval research propose --from-trace data/research-runs/<run-id>
+./bin/dbrain eval research propose --from-transcript data/chat-transcripts/<file>.md
+./bin/dbrain eval research propose --from-transcript data/chat-transcripts/<file>.md --output evals/local/research.json --apply
+```
+
+Transcript proposals do not infer answer-text assertions by default because
+saved model answers are not evidence. Use `--include-answer-text` only for
+human-reviewed answer-text checks. Trace proposals can include citation
+source-key assertions from the saved synthesis trace.
+
+Compare a saved trace against a fresh pack build:
+
+```sh
+./bin/dbrain eval research diff --trace data/research-runs/<run-id>
+```
+
+Useful research assertions:
+
+- `disable_planner` runs the deterministic baseline.
+- `planner_model` exercises a specific planner model when configured.
+- `expect_planner`, `expect_query_family`, `expect_query_terms`,
+  `expect_query_variants`, `forbid_query_variants`, `expect_concepts`, and
+  `forbid_concepts` guard query planning behavior.
+- `min_retrieval_signals` verifies that returned evidence carries scoring
+  provenance.
+- `expect_answer_status`, `expect_citation_source_keys`, and
+  `forbid_citation_source_keys` check prepared synthesis and citation coverage
+  without treating model prose as evidence.
+
+Important local research cases should usually exist in two forms: one planner
+enabled case for normal behavior and one `disable_planner` baseline case so
+planner outages do not collapse retrieval quality.
+
+Useful `expect_query_family` values:
+
+- `entity_topic_overview`
+- `person_news_event_lookup`
+- `model_tool_selection`
+- `software_project_lookup`
+- `comparison`
+- `timeline_history`
+- `media_transcript_ocr_lookup`
+- `corrective_followup`
+- `exact_title_source_lookup`
+
+## MCP Retrieval Evals
 
 `dbrain eval mcp` runs read-only retrieval regression checks against the same
 retrieve-only path used by the MCP research tools.

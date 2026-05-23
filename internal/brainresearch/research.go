@@ -7,6 +7,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/researchhybrid"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
 )
@@ -30,6 +31,13 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 	}
 
 	hints := ask.Hints(question)
+	emitEvent(opts.Observer, "question_normalized", map[string]interface{}{
+		"question":        question,
+		"search_question": searchQuestion,
+		"text_query":      hints.TextQuery,
+		"terms":           hints.Terms,
+		"tag_queries":     hints.TagQueries,
+	})
 	limit := defaultInt(opts.Limit, 8)
 	maxChars := defaultInt(opts.MaxCharsPerDoc, 700)
 	topic, topicSource, hasTopic := resolveTopic(searchQuestion, opts.Topic)
@@ -49,10 +57,30 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 	}
 
 	strategy := b.buildResearchStrategy(ctx, searchQuestion, hints, opts)
+	retrievalLanes := researchhybrid.LaneStatuses(researchhybrid.Options{
+		UseSemantic:     opts.UseSemantic,
+		DisableSemantic: opts.DisableSemantic,
+	})
+	emitEvent(opts.Observer, "query_plan_built", map[string]interface{}{
+		"query_family":    strategy.Family,
+		"planner":         strategy.Planner,
+		"planner_model":   strategy.PlannerModel,
+		"planner_error":   strategy.PlannerError,
+		"variants":        strategy.Variants,
+		"concepts":        strategy.Concepts,
+		"variant_count":   len(strategy.Variants),
+		"concept_count":   len(strategy.Concepts),
+		"planner_failed":  strategy.PlannerError != "",
+		"retrieval_lanes": retrievalLanes,
+	})
 	evidence, err := b.collectStrategyEvidence(ctx, strategy, opts, limit, maxChars)
 	if err != nil {
 		return Pack{}, err
 	}
+	emitEvent(opts.Observer, "evidence_selected", map[string]interface{}{
+		"count":       len(evidence),
+		"source_keys": evidenceSourceKeys(evidence),
+	})
 
 	corpusCoverage, err := b.buildCorpusCoverage(ctx, topic, hints, opts.SourceTypes, limit, opts.RelatedLimit)
 	if err != nil {
@@ -69,6 +97,7 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 		Mode:          "evidence_only",
 		QueryPlan: QueryPlan{
 			TextQuery:         hints.TextQuery,
+			QueryFamily:       strategy.Family,
 			QueryTerms:        hints.Terms,
 			TagQueries:        hints.TagQueries,
 			QueryVariants:     strategy.Variants,
@@ -77,6 +106,7 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 			PlannerModel:      strategy.PlannerModel,
 			PlannerError:      strategy.PlannerError,
 			SourceTypes:       opts.SourceTypes,
+			RetrievalLanes:    retrievalLanes,
 			Limit:             limit,
 			MaxCharsPerDoc:    maxChars,
 			IncludeRelated:    opts.IncludeRelated,
@@ -118,6 +148,23 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 		pack.Coverage.TopicEdgeCount = len(graph.Edges)
 	}
 	pack.Coverage.RecallNote = recallNote(pack.Coverage)
+	emitEvent(opts.Observer, "pack_built", map[string]interface{}{
+		"mode":           pack.Mode,
+		"evidence_count": pack.Coverage.EvidenceCount,
+		"recall_note":    pack.Coverage.RecallNote,
+		"used_topic":     pack.UsedTopicBrief,
+	})
 
 	return pack, nil
+}
+
+func evidenceSourceKeys(rows []ask.Evidence) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.SourceKey) == "" {
+			continue
+		}
+		out = append(out, row.SourceKey)
+	}
+	return out
 }

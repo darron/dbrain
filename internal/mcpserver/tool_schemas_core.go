@@ -123,6 +123,7 @@ func mediaRefSchema() map[string]interface{} {
 func retrievalInfoSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
 		"score":         scalarSchema("integer", "Final retrieval score used to rank this evidence row."),
+		"lanes":         arraySchema(retrievalLaneSchema()),
 		"signals":       arraySchema(retrievalSignalSchema()),
 		"matched_terms": arraySchema(scalarSchema("string", "Query terms found in title, tags, summary, excerpt, URL, or author fields.")),
 		"missing_terms": arraySchema(scalarSchema("string", "Query terms not found in the returned evidence fields.")),

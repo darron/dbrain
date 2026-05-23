@@ -18,6 +18,7 @@ func newEvalCommand(root *rootOptions) *cobra.Command {
 		RunE:  helpCommand,
 	}
 	cmd.AddCommand(newEvalMCPCommand(root))
+	cmd.AddCommand(newEvalResearchCommand(root))
 	return cmd
 }
 

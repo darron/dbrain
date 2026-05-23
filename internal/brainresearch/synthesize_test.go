@@ -10,6 +10,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func TestPrepareSynthesisBudgetsEvidenceDeterministically(t *testing.T) {
@@ -57,6 +58,42 @@ func TestPrepareSynthesisBudgetsEvidenceDeterministically(t *testing.T) {
 	}
 	if len(prepared.Citations) == 0 || prepared.Citations[0].SourceKey != "src:one" {
 		t.Fatalf("expected citations from included evidence, got %+v", prepared.Citations)
+	}
+}
+
+func TestPrepareSynthesisLabelsEvidenceContentSections(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	pack := Pack{
+		SchemaVersion: SchemaVersion,
+		Question:      "What did the long source say about GFANZ?",
+		QueryPlan:     QueryPlan{TextQuery: "gfanz", QueryTerms: []string{"gfanz"}},
+		Coverage:      Coverage{EvidenceCount: 1},
+		Evidence: []ask.Evidence{{
+			SourceKey:    "src:long",
+			Kind:         "source",
+			Title:        "Long source",
+			Summary:      "Derived summary without the rare term.",
+			Excerpt:      "Raw extract window says Mark Carney discussed GFANZ.",
+			EvidenceRole: "raw_extract_window",
+			Chunk:        &retrieval.EvidenceChunk{ParentSourceKey: "src:long", Index: 3, Role: "raw_extract_window", Hash: "abc123", Heading: "GFANZ section"},
+			ContentSections: []retrieval.ContentSection{
+				{Name: "summary_text", Role: "derived", Text: "Derived summary without the rare term.", Chars: 38},
+				{Name: "extracted_text_window", Role: "raw", Text: "Raw extract window says Mark Carney discussed GFANZ.", Chars: 52},
+			},
+		}},
+	}
+
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: pack, Model: "cli/test/research", MaxEvidenceChars: 2000})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis: %v", err)
+	}
+	for _, want := range []string{"evidence_role: raw_extract_window", "chunk:", "role: raw_extract_window", "content_sections:", "name: summary_text", "role: derived", "name: extracted_text_window", "role: raw", "GFANZ"} {
+		if !strings.Contains(prepared.Input, want) {
+			t.Fatalf("expected synthesis input to contain %q:\n%s", want, prepared.Input)
+		}
 	}
 }
 

@@ -5,6 +5,101 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Research Harness Lab And Retrieval Lanes (2026-05-23)
+
+- **Web**: Chat is now the default home surface and the old Research mode is no
+  longer in the primary mode tabs; Chat turns show a runner progress timeline
+  instead of only the latest status line.
+- **Harness Lab**: Added trace listing and comparison APIs plus a web Harness
+  tab that loads saved research traces, shows old answer/current rerun slots,
+  compares old/current evidence, and exposes the eval-proposal command.
+- **Retrieval**: Evidence rows now carry retrieval lane provenance, exact-tag
+  examples are marked as their own lane, and the optional semantic lane is
+  explicit but disabled until local hybrid retrieval has enough reviewed evals.
+- **Location**: `internal/researchhybrid/`, `internal/researchtrace/`,
+  `internal/brainresearch/`, `web/`, `web/ui/`, `skills/dbrain-mcp/`
+
+### Research Evidence Roles And Chunk Windows (2026-05-23)
+
+- **Research**: Evidence rows now carry `evidence_role`, optional chunk
+  metadata, and role-labelled `content_sections` so synthesis and UI surfaces
+  can distinguish derived summaries from raw extract/OCR/transcript windows.
+- **Retrieval**: Source evidence now falls back to a raw extracted-text window
+  when an existing summary is present but misses the query terms, preserving the
+  summary separately while returning the relevant raw chunk as evidence.
+- **Synthesis/UI**: Research synthesis input labels content section roles and
+  chunk metadata, and web evidence cards surface the evidence role beside the
+  source type.
+- **Location**: `internal/ask/`, `internal/retrieval/`, `internal/brainresearch/`, `web/ui/`
+
+### Research Citation Verification (2026-05-23)
+
+- **Research**: Strengthened bounded-runner answer verification: cited source
+  keys must exist in the final pack with exact casing/prefixes, evidence-backed
+  answers must contain source-key citations, and no-evidence packs cannot
+  return normal completed answers.
+- **Web**: Runner streams now return compact `verification_failed` diagnostics,
+  top-level `answer_warnings`, and rejected-answer traces without emitting the
+  answer as a normal Chat completion.
+- **Review**: Added an optional advisory answer-review hook for runner mode,
+  including `dbrain research --runner --answer-review`; review warnings are
+  visible in runner output and persisted as trace events but do not override
+  deterministic citation gates.
+- **Location**: `internal/researchrun/`, `internal/app/`, `web/`, `web/ui/`
+
+### Bounded Research Runner (2026-05-23)
+
+- **Research**: Added `internal/researchrun`, a bounded research runner that
+  builds an initial pack, judges coverage with typed verdicts/retry actions,
+  performs at most one focused retry or related expansion, always prepares
+  synthesis for user-facing runs, verifies citation source keys against the
+  final evidence pack, and saves traces by default.
+- **CLI/Web**: Added `dbrain research --runner` and `/api/research/run`; web
+  Chat now uses the server-side runner and streams progress events for
+  planning, retrieval, inspection, synthesis, verification, and trace
+  persistence instead of looking hung.
+- **Hardening**: Verification-failed turns are rejected by chat share/export
+  paths, `verification_failed` survives UI session reload normalization, and
+  the existing MCP `dbrain_research_pack` remains read-only and trace-free.
+- **Location**: `internal/researchrun/`, `internal/app/`, `web/`, `web/ui/`
+
+### Research Deterministic Query Families (2026-05-23)
+
+- **Research**: Deterministic research strategy now classifies queries into
+  named families such as entity overview, person/news event lookup,
+  model/tool selection, software project lookup, comparison, timeline/history,
+  media transcript/OCR lookup, corrective follow-up, and exact source lookup;
+  the family is included in `query_plan.query_family`.
+- **Evals**: `dbrain eval research` can assert `expect_query_family`, and the
+  eval docs now list the maintained family names for planner-disabled
+  regression coverage.
+- **Location**: `internal/brainresearch/`, `internal/queryterms/`,
+  `internal/researcheval/`, `evals/`
+
+### Research Eval Harness (2026-05-23)
+
+- **Research**: Added `dbrain eval research` for full research/chat harness
+  regression cases covering query-plan assertions, planner-disabled baselines,
+  retrieval signal counts, prepared synthesis answer status, and citation
+  source-key coverage.
+- **Diagnostics**: Added `dbrain eval research propose` for conservative eval
+  proposals from saved chat transcripts or research traces, with transcript
+  answer-text assertions omitted unless explicitly requested, plus
+  `dbrain eval research diff` for comparing saved trace evidence keys against a
+  fresh pack build.
+- **Location**: `internal/researcheval/`, `internal/app/`, `evals/`
+
+### Research Trace Persistence (2026-05-23)
+
+- **Research**: Added Phase 1 trace persistence for the research/chat harness:
+  CLI and web synthesis runs now save completed Markdown/JSON traces with
+  planner and synthesis sidecars, redaction, completion markers, concurrent
+  run-safe directories, and default retention pruning.
+- **Web**: Chat synthesis sends continuity metadata, receives the saved trace
+  path, and shows a compact trace-saved status on completed turns.
+- **Location**: `internal/researchtrace/`, `internal/brainresearch/`,
+  `internal/app/`, `web/`, `web/ui/`
+
 ### Research Harness Documentation (2026-05-23)
 
 - **Docs**: Added a current-state and roadmap document for the research/chat

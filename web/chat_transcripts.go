@@ -30,6 +30,10 @@ func (s *server) handleChatTranscriptSave(w http.ResponseWriter, r *http.Request
 	firstQuestion := "chat"
 	validTurns := 0
 	for _, turn := range req.Turns {
+		if strings.TrimSpace(turn.Status) == "verification_failed" {
+			writeMessage(w, http.StatusBadRequest, "verification-failed turns cannot be exported as chat transcripts")
+			return
+		}
 		if strings.TrimSpace(turn.Question) != "" || strings.TrimSpace(turn.Answer) != "" {
 			validTurns++
 			if strings.TrimSpace(turn.Question) != "" {

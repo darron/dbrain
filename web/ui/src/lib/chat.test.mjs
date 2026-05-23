@@ -159,7 +159,7 @@ test("collectPriorEvidence prioritizes pinned evidence before recent fallback", 
 test("normalizeStoredChatSession filters unusable turns and pins", () => {
   const session = normalizeStoredChatSession({
     turns: [
-      { id: "ok", question: "Saved?", status: "synthesizing", research_pack: { evidence: [] } },
+      { id: "ok", question: "Saved?", status: "verification_failed", done: { trace_path: "research-runs/run-1" }, progress: [{ stage: "verification" }], research_pack: { evidence: [] } },
       { id: "", question: "missing id" },
       { id: "missing-question", question: "" }
     ],
@@ -167,6 +167,8 @@ test("normalizeStoredChatSession filters unusable turns and pins", () => {
   });
 
   assert.equal(session.turns.length, 1);
-  assert.equal(session.turns[0].status, "synthesizing");
+  assert.equal(session.turns[0].status, "verification_failed");
+  assert.equal(session.turns[0].done.trace_path, "research-runs/run-1");
+  assert.deepEqual(session.turns[0].progress, [{ stage: "verification" }]);
   assert.deepEqual(session.pinnedEvidenceKeys, ["src:one", "src:two"]);
 });

@@ -2210,6 +2210,9 @@ func TestServerResearchPackTool(t *testing.T) {
 	if _, ok := structured["topic_brief"].(map[string]interface{}); !ok {
 		t.Fatalf("expected topic_brief payload, got %#v", structured)
 	}
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "research-runs")); !os.IsNotExist(err) {
+		t.Fatalf("dbrain_research_pack must remain trace-free, research-runs stat err=%v", err)
+	}
 }
 
 func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {

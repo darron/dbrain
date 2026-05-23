@@ -14,6 +14,7 @@ func Terms(question string) []string {
 
 	terms := make([]string, 0, len(parts))
 	seen := map[string]struct{}{}
+	skipNext := false
 	for _, part := range parts {
 		part = strings.TrimFunc(part, func(r rune) bool {
 			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
@@ -23,6 +24,17 @@ func Terms(question string) []string {
 			continue
 		}
 		part = canonicalTerm(part)
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		switch part {
+		case "not", "wrong", "exclude", "without":
+			skipNext = true
+			continue
+		case "instead", "correct", "correction":
+			continue
+		}
 		if _, skip := stopwords[part]; skip {
 			continue
 		}

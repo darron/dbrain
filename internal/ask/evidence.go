@@ -30,7 +30,7 @@ func buildEvidence(ctx context.Context, cfg config.Config, st *store.Store, resu
 		}
 		return evidenceCandidate{}, false, nil
 	}
-	if !hasAnyText(result.Snippet, source.SummaryText, source.Description) {
+	if !hasAnyText(result.Snippet, source.SummaryText, source.Description) || !hasEnoughQueryCoverage([]string{result.Snippet, source.SummaryText, source.Description}, terms) {
 		extractedText, err := st.GetSourceExtractedText(ctx, result.SourceKey)
 		if err != nil {
 			return evidenceCandidate{}, false, nil
@@ -64,21 +64,25 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 			item.OCRText,
 		)...,
 	)
+	sections, chunk, role := itemEvidenceSections(item, excerpt, maxChars, terms)
 
 	return evidenceCandidate{
 		Evidence: Evidence{
-			SourceKey:   item.SourceKey,
-			Kind:        "item",
-			Title:       item.Title,
-			URL:         item.CanonicalURL,
-			NotePath:    filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath)),
-			Summary:     trimTo(item.SummaryText, maxChars),
-			Excerpt:     excerpt,
-			Author:      author,
-			SourceType:  item.SourceType,
-			PublishedAt: item.PublishedAt,
-			UserTags:    item.UserTags,
-			Media:       retrieval.MediaRefs(item.Media),
+			SourceKey:       item.SourceKey,
+			Kind:            "item",
+			Title:           item.Title,
+			URL:             item.CanonicalURL,
+			NotePath:        filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath)),
+			Summary:         trimTo(item.SummaryText, maxChars),
+			Excerpt:         excerpt,
+			Author:          author,
+			SourceType:      item.SourceType,
+			PublishedAt:     item.PublishedAt,
+			UserTags:        item.UserTags,
+			EvidenceRole:    role,
+			Chunk:           chunk,
+			ContentSections: sections,
+			Media:           retrieval.MediaRefs(item.Media),
 		},
 		ItemID: item.ID,
 		MatchText: compactMatchText(
@@ -98,22 +102,27 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 	excerpt := evidenceExcerpt(maxChars, terms,
 		sourceExcerptValues(
 			[]string{result.Snippet, source.SummaryText, source.Description},
+			terms,
 			source.ExtractedText,
 		)...,
 	)
+	sections, chunk, role := sourceEvidenceSections(source, excerpt, maxChars, terms)
 	return evidenceCandidate{
 		Evidence: Evidence{
-			SourceKey:    source.SourceKey,
-			Kind:         "source",
-			Title:        firstNonEmpty(source.Title, source.CanonicalURL),
-			URL:          source.CanonicalURL,
-			NotePath:     filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath)),
-			Summary:      trimTo(source.SummaryText, maxChars),
-			Excerpt:      excerpt,
-			SourceType:   source.SourceType,
-			ExtractedAt:  formatTime(source.ExtractedAt),
-			SummarizedAt: formatTime(source.SummarizedAt),
-			UserTags:     source.UserTags,
+			SourceKey:       source.SourceKey,
+			Kind:            "source",
+			Title:           firstNonEmpty(source.Title, source.CanonicalURL),
+			URL:             source.CanonicalURL,
+			NotePath:        filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath)),
+			Summary:         trimTo(source.SummaryText, maxChars),
+			Excerpt:         excerpt,
+			SourceType:      source.SourceType,
+			ExtractedAt:     formatTime(source.ExtractedAt),
+			SummarizedAt:    formatTime(source.SummarizedAt),
+			UserTags:        source.UserTags,
+			EvidenceRole:    role,
+			Chunk:           chunk,
+			ContentSections: sections,
 		},
 		SourceID: source.ID,
 		MatchText: compactMatchText(
@@ -158,6 +167,8 @@ func collectRelatedEvidence(ctx context.Context, cfg config.Config, st *store.St
 				rel.RelatedTo = candidate.SourceKey
 				rel.Relationship = "linked source"
 				scoreCandidate(&rel, question, terms)
+				addRetrievalLane(&rel, RetrievalLane{Name: "lexical", Status: "used"})
+				addRetrievalLane(&rel, RetrievalLane{Name: "graph_related", Status: "used", Reason: "linked source"})
 				addRetrievalSignal(&rel, "graph_related", "linked source from "+candidate.SourceKey, 1)
 				applyEntityMatches(&rel, entityMatches)
 				related = append(related, rel)
@@ -187,6 +198,8 @@ func collectRelatedEvidence(ctx context.Context, cfg config.Config, st *store.St
 				rel.RelatedTo = candidate.SourceKey
 				rel.Relationship = "referenced by"
 				scoreCandidate(&rel, question, terms)
+				addRetrievalLane(&rel, RetrievalLane{Name: "lexical", Status: "used"})
+				addRetrievalLane(&rel, RetrievalLane{Name: "graph_related", Status: "used", Reason: "referenced by"})
 				addRetrievalSignal(&rel, "graph_related", "referencing item for "+candidate.SourceKey, 1)
 				applyEntityMatches(&rel, entityMatches)
 				related = append(related, rel)

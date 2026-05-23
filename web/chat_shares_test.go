@@ -147,6 +147,27 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 	}
 }
 
+func TestChatShareRejectsVerificationFailedTurn(t *testing.T) {
+	cfg, st := openTestStore(t)
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"turn":{"status":"verification_failed","question":"What changed?","answer":"Unverified answer."}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/shares", body)
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "completed chat answers") {
+		t.Fatalf("expected completed-answer diagnostic, got %s", rec.Body.String())
+	}
+}
+
 func TestPublicExternalURLCleansEncodedBackticksAndPunctuation(t *testing.T) {
 	tests := []struct {
 		name string

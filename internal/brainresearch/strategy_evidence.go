@@ -7,6 +7,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/researchhybrid"
 )
 
 func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy researchStrategy, opts Options, limit int, maxChars int) ([]ask.Evidence, error) {
@@ -42,12 +43,27 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		if err != nil {
 			return nil, err
 		}
+		emitEvent(opts.Observer, "variant_retrieved", map[string]interface{}{
+			"query":           variant.Query,
+			"reason":          variant.Reason,
+			"candidate_count": len(resp.Evidence),
+			"source_keys":     evidenceSourceKeys(resp.Evidence),
+		})
 		for rank, doc := range resp.Evidence {
 			if strings.TrimSpace(doc.SourceKey) == "" {
 				continue
 			}
 			scored := scoreEvidenceWithResearchStrategy(doc, strategy, variant, rank)
 			current, exists := seen[doc.SourceKey]
+			if exists {
+				emitEvent(opts.Observer, "evidence_deduped", map[string]interface{}{
+					"source_key":     doc.SourceKey,
+					"query":          variant.Query,
+					"existing_score": current.score,
+					"new_score":      scored.score,
+					"selected":       scored.score > current.score,
+				})
+			}
 			if !exists || scored.score > current.score {
 				scored.order = order
 				if exists {
@@ -77,5 +93,5 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 	for _, scored := range ordered {
 		out = append(out, scored.doc)
 	}
-	return out, nil
+	return researchhybrid.Merge(out, nil, limit), nil
 }

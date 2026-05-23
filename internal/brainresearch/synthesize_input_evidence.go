@@ -1,6 +1,7 @@
 package brainresearch
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/darron/dbrain/internal/ask"
@@ -26,7 +27,7 @@ func evidenceChunk(doc ask.Evidence) string {
 		text = strings.TrimSpace(doc.Excerpt)
 		textKind = "excerpt"
 	}
-	if text == "" {
+	if text == "" && len(doc.ContentSections) == 0 {
 		return ""
 	}
 	var b strings.Builder
@@ -52,6 +53,25 @@ func evidenceChunk(doc ask.Evidence) string {
 		b.WriteString("\n  user_tags: ")
 		b.WriteString(doc.UserTags)
 	}
+	if doc.EvidenceRole != "" {
+		b.WriteString("\n  evidence_role: ")
+		b.WriteString(doc.EvidenceRole)
+	}
+	if doc.Chunk != nil {
+		b.WriteString("\n  chunk:")
+		b.WriteString("\n    role: ")
+		b.WriteString(doc.Chunk.Role)
+		b.WriteString("\n    index: ")
+		b.WriteString(strconv.Itoa(doc.Chunk.Index))
+		if doc.Chunk.Hash != "" {
+			b.WriteString("\n    hash: ")
+			b.WriteString(doc.Chunk.Hash)
+		}
+		if doc.Chunk.Heading != "" {
+			b.WriteString("\n    heading: ")
+			b.WriteString(doc.Chunk.Heading)
+		}
+	}
 	if doc.Relationship != "" {
 		b.WriteString("\n  relationship: ")
 		b.WriteString(doc.Relationship)
@@ -60,6 +80,37 @@ func evidenceChunk(doc ask.Evidence) string {
 			b.WriteString(doc.RelatedTo)
 			b.WriteString(")")
 		}
+	}
+	if len(doc.ContentSections) > 0 {
+		b.WriteString("\n  content_sections:")
+		for _, section := range doc.ContentSections {
+			if strings.TrimSpace(section.Text) == "" {
+				continue
+			}
+			b.WriteString("\n    - name: ")
+			b.WriteString(section.Name)
+			b.WriteString("\n      role: ")
+			b.WriteString(section.Role)
+			if section.Status != "" {
+				b.WriteString("\n      status: ")
+				b.WriteString(section.Status)
+			}
+			if section.Model != "" {
+				b.WriteString("\n      model: ")
+				b.WriteString(section.Model)
+			}
+			if section.Tool != "" {
+				b.WriteString("\n      tool: ")
+				b.WriteString(section.Tool)
+			}
+			b.WriteString("\n      text: |\n")
+			for _, line := range strings.Split(section.Text, "\n") {
+				b.WriteString("        ")
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
+		return b.String()
 	}
 	b.WriteString("\n  ")
 	b.WriteString(textKind)

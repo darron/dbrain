@@ -27,6 +27,7 @@ func researchQueryPlanSchema() map[string]interface{} {
 		"planner_model":       scalarSchema("string", "Model used for query planning when model-assisted planning ran."),
 		"planner_error":       scalarSchema("string", "Non-fatal planner error when deterministic fallback was used."),
 		"source_types":        arraySchema(scalarSchema("string", "Optional source type filters.")),
+		"retrieval_lanes":     arraySchema(retrievalLaneSchema()),
 		"limit":               scalarSchema("integer", "Maximum evidence documents requested."),
 		"max_chars_per_doc":   scalarSchema("integer", "Maximum summary/excerpt characters per evidence document."),
 		"include_related":     scalarSchema("boolean", "Whether graph-related evidence was requested."),
@@ -35,6 +36,16 @@ func researchQueryPlanSchema() map[string]interface{} {
 		"topic_source":        scalarSchema("string", "How the topic was selected: explicit, inferred, or normalized_question."),
 		"include_topic_brief": scalarSchema("boolean", "Whether a topic brief was requested for this pack."),
 	}, "text_query", "query_terms", "tag_queries", "limit", "max_chars_per_doc", "include_related", "include_topic_brief")
+}
+
+func retrievalLaneSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"name":     scalarSchema("string", "Retrieval lane name, such as lexical, exact_tag, graph_related, entity, or semantic."),
+		"status":   scalarSchema("string", "Lane status, such as used or disabled."),
+		"reason":   scalarSchema("string", "Why the lane was disabled or included."),
+		"provider": scalarSchema("string", "Provider used by the lane when applicable."),
+		"store":    scalarSchema("string", "Vector or index store used by the lane when applicable."),
+	}, "name")
 }
 
 func researchQueryVariantSchema() map[string]interface{} {

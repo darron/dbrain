@@ -36,6 +36,8 @@ type Evidence = retrieval.EvidenceDocument
 
 type RetrievalInfo = retrieval.RetrievalInfo
 
+type RetrievalLane = retrieval.RetrievalLane
+
 type RetrievalSignal = retrieval.RetrievalSignal
 
 type Response struct {

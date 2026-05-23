@@ -5,6 +5,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
 )
@@ -35,6 +36,15 @@ type Options struct {
 	PlannerBinary   string
 	UseModelPlanner bool
 	DisablePlanner  bool
+	UseSemantic     bool
+	DisableSemantic bool
+	Observer        Observer
+}
+
+type Observer interface {
+	Event(name string, data map[string]interface{})
+	PlannerInput(input string)
+	PlannerOutput(output string)
 }
 
 type Pack struct {
@@ -52,22 +62,24 @@ type Pack struct {
 }
 
 type QueryPlan struct {
-	TextQuery         string         `json:"text_query"`
-	QueryTerms        []string       `json:"query_terms"`
-	TagQueries        []string       `json:"tag_queries"`
-	QueryVariants     []QueryVariant `json:"query_variants,omitempty"`
-	Concepts          []QueryConcept `json:"concepts,omitempty"`
-	Planner           string         `json:"planner,omitempty"`
-	PlannerModel      string         `json:"planner_model,omitempty"`
-	PlannerError      string         `json:"planner_error,omitempty"`
-	SourceTypes       []string       `json:"source_types,omitempty"`
-	Limit             int            `json:"limit"`
-	MaxCharsPerDoc    int            `json:"max_chars_per_doc"`
-	IncludeRelated    bool           `json:"include_related"`
-	RelatedLimit      int            `json:"related_limit,omitempty"`
-	Topic             string         `json:"topic,omitempty"`
-	TopicSource       string         `json:"topic_source,omitempty"`
-	IncludeTopicBrief bool           `json:"include_topic_brief"`
+	TextQuery         string                    `json:"text_query"`
+	QueryFamily       string                    `json:"query_family,omitempty"`
+	QueryTerms        []string                  `json:"query_terms"`
+	TagQueries        []string                  `json:"tag_queries"`
+	QueryVariants     []QueryVariant            `json:"query_variants,omitempty"`
+	Concepts          []QueryConcept            `json:"concepts,omitempty"`
+	Planner           string                    `json:"planner,omitempty"`
+	PlannerModel      string                    `json:"planner_model,omitempty"`
+	PlannerError      string                    `json:"planner_error,omitempty"`
+	SourceTypes       []string                  `json:"source_types,omitempty"`
+	RetrievalLanes    []retrieval.RetrievalLane `json:"retrieval_lanes,omitempty"`
+	Limit             int                       `json:"limit"`
+	MaxCharsPerDoc    int                       `json:"max_chars_per_doc"`
+	IncludeRelated    bool                      `json:"include_related"`
+	RelatedLimit      int                       `json:"related_limit,omitempty"`
+	Topic             string                    `json:"topic,omitempty"`
+	TopicSource       string                    `json:"topic_source,omitempty"`
+	IncludeTopicBrief bool                      `json:"include_topic_brief"`
 }
 
 type QueryVariant struct {
@@ -124,6 +136,7 @@ type SuggestedAction struct {
 type researchStrategy struct {
 	Variants     []QueryVariant
 	Concepts     []QueryConcept
+	Family       string
 	Planner      string
 	PlannerModel string
 	PlannerError string
