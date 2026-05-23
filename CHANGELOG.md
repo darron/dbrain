@@ -12,8 +12,9 @@ development date for the change set.
   eval coverage, known gaps, and a phased improvement plan that makes Chat the
   default web surface, saves traces by default, and centers `dbrain eval
   research`, trace retention, citation verification UX, and Harness Lab
-  comparison work.
-- **Location**: `docs/research-harness.md`, `README.md`, `docs/architecture.md`
+  comparison work; updated agent guidance for non-indexed diagnostic research
+  traces.
+- **Location**: `docs/research-harness.md`, `AGENTS.md`
 
 ### Inline Media Evidence For Search And Chat (2026-05-20)
 
