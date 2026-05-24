@@ -208,6 +208,46 @@ func TestEvidenceFromSourceUsesQueryWindowForExcerpt(t *testing.T) {
 	}
 }
 
+func TestEvidenceFromSourceFallsBackToExtractedTitle(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		SourceKey:     "src:canada-title",
+		CanonicalURL:  "https://canada.ca/example",
+		SourceType:    "web",
+		NotePath:      "sources/canada-title.md",
+		SummaryText:   "This source discusses Global Innovation Clusters and renewed funding.",
+		ExtractedText: "Title: Government of Canada announces renewed funding for the Global Innovation Clusters\n\nURL Source: https://canada.ca/example\n\nMarkdown Content:\n# Government of Canada announces renewed funding for the Global Innovation Clusters",
+	}
+
+	result := model.SearchResult{Snippet: "### What It Is This is a government news release about renewed funding for the Global Innovation Clusters."}
+	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, result, 160, []string{"global", "innovation", "clusters", "funding"})
+	if candidate.Title != "Government of Canada announces renewed funding for the Global Innovation Clusters" {
+		t.Fatalf("expected extracted title fallback, got %q", candidate.Title)
+	}
+	if !strings.Contains(candidate.MatchText, "Government of Canada announces renewed funding") {
+		t.Fatalf("expected match text to include extracted title, got %q", candidate.MatchText)
+	}
+}
+
+func TestEvidenceFromSourceUsesSnippetTitleBeforeRawExtract(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		SourceKey:    "src:canada-snippet-title",
+		CanonicalURL: "https://canada.ca/example",
+		SourceType:   "web",
+		NotePath:     "sources/canada-snippet-title.md",
+		SummaryText:  "This source discusses Global Innovation Clusters and renewed funding.",
+	}
+	result := model.SearchResult{Snippet: "Title: Government of Canada announces renewed funding for the Global Innovation Clusters"}
+
+	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, result, 160, []string{"global", "innovation", "clusters", "funding"})
+	if candidate.Title != "Government of Canada announces renewed funding for the Global Innovation Clusters" {
+		t.Fatalf("expected snippet title fallback, got %q", candidate.Title)
+	}
+}
+
 func TestEvidenceFromSourcePrefersRarerQueryTermForExcerpt(t *testing.T) {
 	t.Parallel()
 

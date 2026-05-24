@@ -30,12 +30,18 @@ func buildEvidence(ctx context.Context, cfg config.Config, st *store.Store, resu
 		}
 		return evidenceCandidate{}, false, nil
 	}
-	if !hasAnyText(result.Snippet, source.SummaryText, source.Description) || !hasEnoughQueryCoverage([]string{result.Snippet, source.SummaryText, source.Description}, terms) {
+	needsRawEvidence := !hasAnyText(result.Snippet, source.SummaryText, source.Description) || !hasEnoughQueryCoverage([]string{result.Snippet, source.SummaryText, source.Description}, terms)
+	if needsRawEvidence {
 		extractedText, err := st.GetSourceExtractedText(ctx, result.SourceKey)
 		if err != nil {
 			return evidenceCandidate{}, false, nil
 		}
 		source.ExtractedText = extractedText
+	} else if strings.TrimSpace(source.Title) == "" && sourceTitleFromExtractedText(result.Snippet) == "" {
+		extractedText, err := st.GetSourceExtractedTextPrefix(ctx, result.SourceKey, 2000)
+		if err == nil {
+			source.ExtractedText = extractedText
+		}
 	}
 	return evidenceFromSource(cfg, source, result, maxChars, terms), true, nil
 }
@@ -107,11 +113,12 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 		)...,
 	)
 	sections, chunk, role := sourceEvidenceSections(source, excerpt, maxChars, terms)
+	title := sourceEvidenceTitle(source, result)
 	return evidenceCandidate{
 		Evidence: Evidence{
 			SourceKey:       source.SourceKey,
 			Kind:            "source",
-			Title:           firstNonEmpty(source.Title, source.CanonicalURL),
+			Title:           title,
 			URL:             source.CanonicalURL,
 			NotePath:        filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath)),
 			Summary:         trimTo(source.SummaryText, maxChars),
@@ -126,7 +133,7 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 		},
 		SourceID: source.ID,
 		MatchText: compactMatchText(
-			source.Title,
+			title,
 			source.CanonicalURL,
 			source.Description,
 			source.UserTags,
@@ -135,6 +142,31 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 			excerpt,
 		),
 	}
+}
+
+func sourceEvidenceTitle(source model.SourceDocument, result model.SearchResult) string {
+	return firstNonEmpty(source.Title, result.Title, sourceTitleFromExtractedText(result.Snippet), sourceTitleFromExtractedText(source.ExtractedText), source.CanonicalURL)
+}
+
+func sourceTitleFromExtractedText(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if title, ok := strings.CutPrefix(line, "Title:"); ok {
+			return strings.TrimSpace(title)
+		}
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "url source:") || strings.HasPrefix(lower, "published time:") || lower == "markdown content:" {
+			continue
+		}
+		return ""
+	}
+	return ""
 }
 
 func collectRelatedEvidence(ctx context.Context, cfg config.Config, st *store.Store, selected []evidenceCandidate, question string, terms []string, opts Options, seen map[string]struct{}, entityMatches map[string]entityMatch) ([]evidenceCandidate, error) {

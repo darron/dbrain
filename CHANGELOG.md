@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Retrieval Eval Follow-Up (2026-05-24)
+
+- **Retrieval**: Source evidence titles now fall back to titles embedded in
+  extracted reader text when the stored source title is blank, improving web
+  evidence cards and eval assertions for reader-backed pages.
+- **Source extraction**: Plain-text reader imports now recognize leading
+  `Title:` lines as source titles for future stored sources.
+- **Location**: `internal/ask/`, `internal/sourceenrich/`
+
 ### Research Harness Lab And Retrieval Lanes (2026-05-23)
 
 - **Web**: Chat is now the default home surface and the old Research mode is no
