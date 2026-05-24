@@ -197,3 +197,12 @@ When improving dbrain MCP retrieval, use corpus-local eval cases instead of hard
 Use `evals/mcp.example.json` as the shareable template and keep private corpus cases under ignored `evals/local/*.json`. Eval cases can assert expected source keys, acceptable source-key alternatives, expected top source keys, minimum evidence count, expected/forbidden evidence text, expected top-result text, source-type filters, related-evidence expansion, representative `exact_tag_evidence` examples from `dbrain_research_pack`, top-result matched/missing terms, and a rough latency budget.
 
 Use `dbrain eval research` for full harness behavior: query-family planning, planner-disabled baselines, source-key citation preparation, retrieval lanes, and trace diffs. Saved web Chat traces live under `data/research-runs/` as Markdown plus JSON sidecars; promote useful failures into reviewed research eval cases instead of tuning from memory.
+
+When a bad or surprising Chat answer appears, use the trace as the debugging
+unit:
+
+1. Open the saved trace in the Harness tab or inspect `data/research-runs/<run-id>/run.md`.
+2. Compare it against the current harness with `./bin/dbrain eval research diff --trace data/research-runs/<run-id>`.
+3. Generate a draft eval with `./bin/dbrain eval research propose --from-trace data/research-runs/<run-id>`.
+4. Review the generated assertions before saving them under ignored `evals/local/*.json`; do not commit private source keys or local corpus expectations.
+5. Keep both a model-assisted case and a planner-disabled deterministic case when the issue may involve retrieval planning, query expansion, citation preparation, or fallback behavior.

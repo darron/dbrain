@@ -12,6 +12,9 @@ development date for the change set.
   evidence cards and eval assertions for reader-backed pages.
 - **Source extraction**: Plain-text reader imports now recognize leading
   `Title:` lines as source titles for future stored sources.
+- **Agent guidance**: The `dbrain-mcp` skill now spells out the trace-to-eval
+  workflow for surprising Chat answers, including trace diffing, eval proposal
+  generation, and keeping planner-enabled plus planner-disabled cases.
 - **Location**: `internal/ask/`, `internal/sourceenrich/`
 
 ### Research Harness Lab And Retrieval Lanes (2026-05-23)
