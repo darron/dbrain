@@ -1,0 +1,43 @@
+[
+  {
+    "name": "known topic retrieves and cites expected source",
+    "question": "What does my brain know about Example Topic?",
+    "limit": 8,
+    "include_related": true,
+    "related_limit": 2,
+    "min_evidence": 2,
+    "expect_any_source_keys": [
+      "src:replace-with-known-source"
+    ],
+    "expect_planner": "deterministic",
+    "expect_query_family": "entity_topic_overview",
+    "expect_query_terms": [
+      "example",
+      "topic"
+    ],
+    "min_retrieval_signals": 1,
+    "expect_answer_status": "ok",
+    "expect_citation_source_keys": [
+      "src:replace-with-known-source"
+    ],
+    "max_latency_ms": 5000
+  },
+  {
+    "name": "known topic planner-disabled baseline",
+    "question": "What does my brain know about Example Topic?",
+    "limit": 8,
+    "disable_planner": true,
+    "min_evidence": 1,
+    "expect_any_source_keys": [
+      "src:replace-with-known-source"
+    ],
+    "expect_planner": "deterministic",
+    "expect_query_family": "entity_topic_overview",
+    "expect_query_terms": [
+      "example",
+      "topic"
+    ],
+    "min_retrieval_signals": 1,
+    "max_latency_ms": 5000
+  }
+]

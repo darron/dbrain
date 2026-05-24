@@ -17,6 +17,30 @@ func canonicalTerm(term string) string {
 		return "kill"
 	case "charged", "charges", "charging":
 		return "charge"
+	case "tools":
+		return "tool"
+	case "projects":
+		return "project"
+	case "packages":
+		return "package"
+	case "libraries":
+		return "library"
+	case "comparisons", "compared", "compare":
+		return "comparison"
+	case "histories", "historical":
+		return "history"
+	case "transcripts":
+		return "transcript"
+	case "screenshots":
+		return "screenshot"
+	case "images":
+		return "image"
+	case "photos":
+		return "photo"
+	case "videos":
+		return "video"
+	case "recordings":
+		return "recording"
 	}
 	return term
 }

@@ -9,8 +9,8 @@
   import OperationsPanel from "./components/OperationsPanel.svelte";
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
-  import { addLink, createChatShare, getBootstrap, getLookup, getSourceActivity, listChatShares, researchBrain, saveChatTranscript, searchBrain, synthesizeResearch } from "./lib/api.js";
-  import { buildChatRetrievalQuestion, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
+  import { addLink, compareResearchTrace, createChatShare, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, synthesizeResearch } from "./lib/api.js";
+  import { buildChatRetrievalQuestion, collectPriorEvidence, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
   import { formatTime } from "./lib/time.js";
   import { pageHref, readRouteState, writeRouteState } from "./lib/urlState.js";
@@ -35,7 +35,7 @@
   let sourceActivityError = "";
 
   // Search/research state
-  let inputMode = "search"; // "search" | "research" | "chat" | "shares"
+  let inputMode = "chat"; // "search" | "research" | "chat" | "harness" | "shares"
   let viewMode = "graph";   // "graph" | "list"
   let searchQuery = "";
   let searchState = "idle";
@@ -73,6 +73,13 @@
   let sharesState = "idle";
   let sharesError = "";
   let shares = [];
+  let harnessState = "idle";
+  let harnessError = "";
+  let harnessTraces = [];
+  let harnessCompareState = "idle";
+  let harnessCompareError = "";
+  let harnessComparison = null;
+  let selectedTracePath = "";
 
   // Graph state
   let graphNodes = [];
@@ -97,8 +104,8 @@
   $: chatBusy = chatState === "researching" || chatState === "synthesizing";
   $: chatVisibleEvidence = currentChatTurn?.research_pack?.evidence || [];
   $: activeResults = inputMode === "search" ? searchResults : inputMode === "research" ? (researchPack.evidence || []) : inputMode === "chat" ? chatVisibleEvidence : [];
-  $: activeState = inputMode === "search" ? searchState : inputMode === "research" ? researchState : inputMode === "shares" ? sharesState : chatBusy ? "loading" : chatState === "error" ? "error" : chatTurns.length > 0 ? "ready" : "idle";
-  $: activeError = inputMode === "search" ? searchError : inputMode === "research" ? researchError : inputMode === "shares" ? sharesError : chatError;
+  $: activeState = inputMode === "search" ? searchState : inputMode === "research" ? researchState : inputMode === "shares" ? sharesState : inputMode === "harness" ? harnessState : chatBusy ? "loading" : chatState === "error" ? "error" : chatTurns.length > 0 ? "ready" : "idle";
+  $: activeError = inputMode === "search" ? searchError : inputMode === "research" ? researchError : inputMode === "shares" ? sharesError : inputMode === "harness" ? harnessError : chatError;
   $: hasResults = inputMode !== "chat" && activeState === "ready" && activeResults.length > 0;
   $: showDetailPanel = Boolean(detail || detailState !== "idle" || detailError);
   $: synthesisWarnings = synthesisDone?.answer_warnings || synthesisStart?.answer_warnings || [];
@@ -114,6 +121,10 @@
   $: releaseURL = releaseVersion ? `https://github.com/darron/dbrain/releases/tag/${encodeURIComponent(releaseVersion)}` : "https://github.com/darron/dbrain/releases";
   $: commitURL = commitSHA ? `https://github.com/darron/dbrain/commit/${encodeURIComponent(commitSHA)}` : "";
   $: versionReady = bootstrapState === "ready" && Boolean(releaseLabel || shortSHA || gitDirty);
+
+  function isResearchRunnerFailure(stopReason) {
+    return ["synthesis_unavailable", "synthesis_failed", "timeout_exceeded", "max_steps_reached", "trace_failed", "verification_failed"].includes(stopReason);
+  }
 
   onMount(async () => {
     const storedChat = loadChatSession();
@@ -261,6 +272,11 @@
     }
   }
 
+  async function openHarness() {
+    inputMode = "harness";
+    await loadHarnessTraces();
+  }
+
   async function loadShares() {
     sharesState = "loading";
     sharesError = "";
@@ -271,6 +287,36 @@
     } catch (error) {
       sharesError = error.message;
       sharesState = "error";
+    }
+  }
+
+  async function loadHarnessTraces(options = {}) {
+    const quiet = options?.quiet === true;
+    if (!quiet) {
+      harnessState = "loading";
+    }
+    harnessError = "";
+    try {
+      const response = await listResearchTraces({ limit: 50 });
+      harnessTraces = Array.isArray(response?.traces) ? response.traces : [];
+      harnessState = "ready";
+    } catch (error) {
+      harnessError = error.message;
+      harnessState = "error";
+    }
+  }
+
+  async function compareTrace(tracePath, runCurrent = false) {
+    if (!tracePath) return;
+    selectedTracePath = tracePath;
+    harnessCompareState = "loading";
+    harnessCompareError = "";
+    try {
+      harnessComparison = await compareResearchTrace(tracePath, { runCurrent });
+      harnessCompareState = "ready";
+    } catch (error) {
+      harnessCompareError = error.message;
+      harnessCompareState = "error";
     }
   }
 
@@ -411,6 +457,7 @@
     try {
       await synthesizeResearch(question, pack, {
         signal: controller.signal,
+        traceSurface: "web_research_api",
         onEvent: (event, payload) => {
           if (event === "start") {
             synthesisStart = payload;
@@ -470,6 +517,7 @@
       research_pack: { question: retrievalQuestion, evidence: [], coverage: {}, query_plan: {}, next_steps: [] },
       start: null,
       done: null,
+      progress: [],
       citations: [],
       error: "",
       created_at: createdAt
@@ -481,27 +529,52 @@
     chatController = new AbortController();
     const controller = chatController;
     try {
-      const pack = await researchBrain(retrievalQuestion, { signal: controller.signal });
-      const mergedPack = mergeResearchPackForChat(question, pack, priorTurns, pinnedEvidenceKeys);
-      updateChatTurn(id, { research_pack: mergedPack, status: "synthesizing" });
-      chatState = "synthesizing";
-
-      await synthesizeResearch(question, mergedPack, {
+      const mergedPriorEvidence = collectPriorEvidence(priorTurns, pinnedEvidenceKeys).map((row) => row.source_key).filter(Boolean);
+      await runResearchRunner(retrievalQuestion, {
         signal: controller.signal,
+        traceSurface: "web_chat",
+        traceContinuity: {
+          original_question: question,
+          retrieval_question: retrievalQuestion,
+          prior_question_ids: priorTurns.map((candidate) => candidate.id).filter(Boolean).slice(-8),
+          pinned_evidence_keys: pinnedEvidenceKeys,
+          merged_prior_evidence: mergedPriorEvidence
+        },
         onEvent: (event, payload) => {
-          if (event === "start") {
-            updateChatTurn(id, { start: payload });
+          if (event === "progress") {
+            const current = chatTurns.find((candidate) => candidate.id === id);
+            const progress = [...(current?.progress || []), payload].slice(-12);
+            const nextStatus = payload.stage === "synthesis" ? "synthesizing" : "researching";
+            const tracePath = payload?.data?.trace_path;
+            const patch = { progress, status: nextStatus };
+            if (tracePath) {
+              patch.done = { ...(current?.done || {}), trace_path: tracePath };
+              void loadHarnessTraces({ quiet: true });
+            }
+            updateChatTurn(id, patch);
+            chatState = nextStatus;
           } else if (event === "answer") {
             updateChatTurn(id, { answer: payload.text || "" });
           } else if (event === "citation") {
             const current = chatTurns.find((candidate) => candidate.id === id);
             updateChatTurn(id, { citations: [...(current?.citations || []), payload] });
           } else if (event === "done") {
+            const failed = isResearchRunnerFailure(payload.stop_reason);
+            const status = payload.stop_reason === "verification_failed" ? "verification_failed" : failed ? "error" : "ready";
             updateChatTurn(id, {
+              research_pack: payload.research_pack || chatTurns.find((candidate) => candidate.id === id)?.research_pack,
               done: payload,
               citations: payload.citations || chatTurns.find((candidate) => candidate.id === id)?.citations || [],
-              status: "ready"
+              status
             });
+            if (payload.trace_path) {
+              void loadHarnessTraces({ quiet: true });
+            }
+            chatState = status === "error" ? "error" : "ready";
+          } else if (event === "verification_failed") {
+            const message = payload.error || "Citation verification failed";
+            updateChatTurn(id, { done: payload, error: message, status: "verification_failed" });
+            chatError = "";
             chatState = "ready";
           } else if (event === "error") {
             updateChatTurn(id, { done: payload, error: payload.error || "Synthesis failed", status: "error" });
@@ -510,10 +583,11 @@
           }
         }
       });
-      if (chatTurns.find((candidate) => candidate.id === id)?.status === "synthesizing") {
+      const finalStatus = chatTurns.find((candidate) => candidate.id === id)?.status;
+      if (finalStatus === "synthesizing" || finalStatus === "researching") {
         updateChatTurn(id, { status: "ready" });
       }
-      if (chatState === "synthesizing") {
+      if (chatState === "synthesizing" || chatState === "researching") {
         chatState = "ready";
       }
     } catch (error) {
@@ -538,11 +612,12 @@
   }
 
   function chatWarnings(turn) {
-    const warnings = turn?.done?.answer_warnings || turn?.start?.answer_warnings || [];
+    const warnings = turn?.done?.answer_warnings || turn?.done?.synthesis?.answer_warnings || turn?.done?.warnings || turn?.start?.answer_warnings || [];
     return warnings.map(formatSynthesisWarning);
   }
 
   function chatCitations(turn) {
+    if (turn?.status === "verification_failed") return [];
     return turn?.done?.citations || turn?.citations || [];
   }
 
@@ -787,6 +862,59 @@
     return truncateText(evidence?.summary || evidence?.excerpt || "", 280);
   }
 
+  function evidenceTypeLabel(evidence) {
+    const base = evidence?.source_type || evidence?.kind || evidence?.relationship || "source";
+    const role = evidence?.evidence_role || evidence?.chunk?.role || "";
+    return role ? `${base} / ${role}` : base;
+  }
+
+  function evidenceSignalSummary(evidence) {
+    const signals = Array.isArray(evidence?.retrieval?.signals) ? evidence.retrieval.signals : [];
+    return signals.slice(0, 3).map((signal) => signal?.name).filter(Boolean).join(" / ");
+  }
+
+  function currentProgressStep(turn) {
+    const rows = Array.isArray(turn?.progress) ? turn.progress : [];
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
+      const stage = String(row?.stage || "").trim();
+      if (!stage) continue;
+      return row;
+    }
+    return null;
+  }
+
+  function chatHeaderStatus(turn) {
+    const model = turn?.done?.model || turn?.start?.model || "";
+    if (model) return model;
+    if ((turn?.status === "researching" || turn?.status === "synthesizing") && currentProgressStep(turn)) {
+      return "";
+    }
+    return turn?.status || "";
+  }
+
+  function formatProgressStage(row) {
+    const stage = String(row?.stage || "").replace(/_/g, " ");
+    const status = String(row?.status || "").replace(/_/g, " ");
+    return status ? `${stage} / ${status}` : stage;
+  }
+
+  function formatTraceSummary(trace) {
+    const parts = [];
+    if (trace?.stop_reason) parts.push(trace.stop_reason);
+    if (trace?.evidence_count != null) parts.push(`${trace.evidence_count} evidence`);
+    if (trace?.answer_status) parts.push(trace.answer_status);
+    return parts.join(" / ");
+  }
+
+  function comparisonOldEvidence() {
+    return harnessComparison?.trace?.pack?.evidence || [];
+  }
+
+  function comparisonCurrentEvidence() {
+    return harnessComparison?.current?.research_pack?.evidence || harnessComparison?.diff?.top_evidence || [];
+  }
+
   function evidenceWithMedia(rows = []) {
     return (Array.isArray(rows) ? rows : []).filter((row) => Array.isArray(row?.media) && row.media.length > 0);
   }
@@ -925,11 +1053,11 @@
             <button class="search-tab" class:active={inputMode === "search"} on:click={() => { inputMode = "search"; }} type="button">
               Search
             </button>
-            <button class="search-tab" class:active={inputMode === "research"} on:click={() => { inputMode = "research"; }} type="button">
-              Research
-            </button>
             <button class="search-tab" class:active={inputMode === "chat"} on:click={() => { inputMode = "chat"; }} type="button">
               Chat
+            </button>
+            <button class="search-tab" class:active={inputMode === "harness"} on:click={openHarness} type="button">
+              Harness
             </button>
             <button class="search-tab" class:active={inputMode === "shares"} on:click={openShares} type="button">
               Shares
@@ -965,9 +1093,14 @@
               {sharesState === "loading" ? "Refreshing…" : "Refresh"}
             </button>
           {/if}
+          {#if inputMode === "harness"}
+            <button class="btn-ghost compact-action" type="button" disabled={harnessState === "loading"} on:click={loadHarnessTraces}>
+              {harnessState === "loading" ? "Refreshing…" : "Refresh"}
+            </button>
+          {/if}
         </div>
 
-        {#if (inputMode !== "chat" && inputMode !== "shares") || (inputMode === "chat" && chatTurns.length === 0)}
+        {#if (inputMode !== "chat" && inputMode !== "shares" && inputMode !== "harness") || (inputMode === "chat" && chatTurns.length === 0)}
           <!-- Visible search bar on home; active chat moves its composer into the thread. -->
           <form class="search-bar" on:submit|preventDefault={handleSubmit}>
             {#if inputMode === "search"}
@@ -1041,6 +1174,11 @@
             <p class="message muted" style="margin-top:0.5rem">
               Newest shares appear first.
             </p>
+          {:else if inputMode === "harness"}
+            <h2>Compare saved research traces against the current harness.</h2>
+            <p class="message muted" style="margin-top:0.5rem">
+              Load a trace to inspect old evidence, current evidence, and eval proposal commands.
+            </p>
           {:else if inputMode === "chat"}
             <h2>Start a session to research, clarify, and iterate against your local brain.</h2>
             <p class="message muted" style="margin-top:0.5rem">
@@ -1053,7 +1191,7 @@
             </p>
           {/if}
         </div>
-      {:else if hasResults || showDetailPanel || activeState === "loading" || inputMode === "shares" || (inputMode === "research" && activeState === "ready") || (inputMode === "chat" && chatTurns.length > 0)}
+      {:else if hasResults || showDetailPanel || activeState === "loading" || inputMode === "shares" || inputMode === "harness" || (inputMode === "research" && activeState === "ready") || (inputMode === "chat" && chatTurns.length > 0)}
         <div class="content-area" class:has-detail={showDetailPanel}>
           <div class="content-main">
             {#if inputMode === "shares"}
@@ -1098,6 +1236,142 @@
                   </div>
                 {/if}
               </div>
+            {:else if inputMode === "harness"}
+              <div class="harness-panel">
+                <div class="harness-header">
+                  <div>
+                    <p class="panel-kicker" style="margin:0">Harness Lab</p>
+                    <p class="message muted">{harnessTraces.length} saved traces available</p>
+                  </div>
+                  {#if selectedTracePath}
+                    <button class="btn-ghost compact-action" type="button" disabled={harnessCompareState === "loading"} on:click={() => compareTrace(selectedTracePath, true)}>
+                      {harnessCompareState === "loading" ? "Running…" : "Rerun current"}
+                    </button>
+                  {/if}
+                </div>
+
+                {#if harnessState === "loading"}
+                  <p class="message muted">Loading traces…</p>
+                {:else if harnessState === "error"}
+                  <p class="message error">{harnessError}</p>
+                {:else if harnessTraces.length === 0}
+                  <div class="answer-card">
+                    <p class="message muted">No saved research traces yet.</p>
+                  </div>
+                {:else}
+                  <div class="harness-grid">
+                    <div class="trace-list">
+                      {#each harnessTraces as trace}
+                        <button class="trace-row" class:selected={selectedTracePath === trace.relative_path} type="button" on:click={() => compareTrace(trace.relative_path)}>
+                          <strong>{trace.question || trace.run_id}</strong>
+                          <span>{formatTraceSummary(trace)}</span>
+                          <small>{trace.relative_path}</small>
+                        </button>
+                      {/each}
+                    </div>
+
+                    <div class="trace-compare">
+                      {#if harnessCompareState === "loading"}
+                        <div class="answer-card">
+                          <p class="message muted">Comparing trace against the current retrieval harness…</p>
+                        </div>
+                      {:else if harnessCompareState === "error"}
+                        <div class="answer-card">
+                          <p class="message error">{harnessCompareError}</p>
+                        </div>
+                      {:else if harnessComparison}
+                        <div class="answer-card">
+                          <div class="synthesis-header">
+                            <p class="panel-kicker" style="margin:0">{harnessComparison.diff ? "Trace Diff" : "Saved Trace"}</p>
+                            <span>{harnessComparison.diff?.question || harnessComparison.trace?.question}</span>
+                          </div>
+                          {#if harnessComparison.diff_error}
+                            <p class="message error">Current diff unavailable: {harnessComparison.diff_error}</p>
+                          {/if}
+                          {#if harnessComparison.diff}
+                            <div class="diff-stats">
+                              <span>Added {harnessComparison.diff.added?.length || 0}</span>
+                              <span>Removed {harnessComparison.diff.removed?.length || 0}</span>
+                              <span>Reordered {harnessComparison.diff.reordered?.length || 0}</span>
+                            </div>
+                          {/if}
+                          {#if harnessComparison.diff?.proposal_command}
+                            <code class="proposal-command">{harnessComparison.diff.proposal_command}</code>
+                          {/if}
+                        </div>
+
+                        <div class="answer-compare-grid">
+                          <div class="answer-card">
+                            <p class="panel-kicker" style="margin:0">Old Answer</p>
+                            {#if harnessComparison.old_answer}
+                              <MarkdownView markdown={harnessComparison.old_answer} linkSourceKeys={true} onLookup={loadDetail} />
+                            {:else}
+                              <p class="message muted">No answer was saved in this trace.</p>
+                            {/if}
+                          </div>
+                          <div class="answer-card">
+                            <p class="panel-kicker" style="margin:0">Current Answer</p>
+                            {#if harnessComparison.current?.answer}
+                              <MarkdownView markdown={harnessComparison.current.answer} linkSourceKeys={true} onLookup={loadDetail} />
+                            {:else if harnessComparison.current_error}
+                              <p class="message error">{harnessComparison.current_error}</p>
+                            {:else if harnessComparison.current?.stop_reason}
+                              <p class="message muted">Current rerun stopped: {harnessComparison.current.stop_reason}</p>
+                            {:else}
+                              <p class="message muted">Use Rerun current to synthesize a fresh answer for comparison.</p>
+                            {/if}
+                          </div>
+                        </div>
+
+                        <div class="answer-compare-grid">
+                          <div class="evidence-compact">
+                            <div class="evidence-compact-header">
+                              <p class="panel-kicker" style="margin:0">Old Evidence</p>
+                              <span>{comparisonOldEvidence().length} rows</span>
+                            </div>
+                            <div class="evidence-compact-list">
+                              {#each comparisonOldEvidence() as evidence}
+                                <article class="evidence-card">
+                                  <button class="evidence-card-main" type="button" on:click={() => loadDetail(evidence.source_key)}>
+	                                    <span class="result-key">{evidenceTypeLabel(evidence)}</span>
+	                                    <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
+	                                    {#if evidenceSignalSummary(evidence)}
+	                                      <small>{evidenceSignalSummary(evidence)}</small>
+	                                    {/if}
+	                                  </button>
+                                </article>
+                              {/each}
+                            </div>
+                          </div>
+                          <div class="evidence-compact">
+                            <div class="evidence-compact-header">
+                              <p class="panel-kicker" style="margin:0">Current Evidence</p>
+                              <span>{comparisonCurrentEvidence().length} rows</span>
+                            </div>
+                            <div class="evidence-compact-list">
+                              {#each comparisonCurrentEvidence() as evidence}
+                                <article class="evidence-card">
+                                  <button class="evidence-card-main" type="button" on:click={() => loadDetail(evidence.source_key)}>
+	                                    <span class="result-key">{evidenceTypeLabel(evidence)}</span>
+	                                    <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
+	                                    {#if evidenceSignalSummary(evidence)}
+	                                      <small>{evidenceSignalSummary(evidence)}</small>
+	                                    {/if}
+	                                  </button>
+                                </article>
+                              {/each}
+                            </div>
+                          </div>
+                        </div>
+                      {:else}
+                        <div class="answer-card">
+                          <p class="message muted">Select a trace to inspect its saved answer and evidence diff.</p>
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+              </div>
             {:else if inputMode === "chat"}
               <div class="chat-thread">
                 <div class="chat-thread-header">
@@ -1121,7 +1395,9 @@
                       <div class="synthesis-header">
                         <p class="panel-kicker" style="margin:0">dbrain</p>
                         <div class="answer-actions">
-                          <span>{turn.done?.model || turn.start?.model || turn.status}</span>
+                          {#if chatHeaderStatus(turn)}
+                            <span>{chatHeaderStatus(turn)}</span>
+                          {/if}
                           {#if turn.status === "ready" && turn.answer}
                             <button class="btn-ghost compact-action" type="button" disabled={chatShareStateByTurn[turn.id] === "loading"} on:click={() => shareChatTurn(turn)}>
                               {chatShareStateByTurn[turn.id] === "loading" ? "Sharing…" : "Share"}
@@ -1130,12 +1406,25 @@
                         </div>
                       </div>
 
-                      {#if turn.status === "researching"}
-                        <p class="message muted">Retrieving evidence from the local brain…</p>
-                      {:else if turn.status === "synthesizing" && !turn.answer}
-                        <p class="message muted">Generating local answer…</p>
+                      {#if turn.done?.trace_path}
+                        <p class="message muted">Trace saved: {turn.done.trace_path}</p>
+                      {/if}
+
+                      {#if turn.status === "researching" && !currentProgressStep(turn)}
+                        <p class="message muted">{turn.progress?.[turn.progress.length - 1]?.message || "Retrieving evidence from the local brain…"}</p>
+                      {:else if turn.status === "synthesizing" && !turn.answer && !currentProgressStep(turn)}
+                        <p class="message muted">{turn.progress?.[turn.progress.length - 1]?.message || "Generating local answer…"}</p>
+                      {:else if turn.status === "verification_failed"}
+                        <p class="message error">Generated answer rejected: {turn.error || "citation verification failed"}</p>
                       {:else if turn.status === "error"}
                         <p class="message error">{turn.error || "Chat turn failed"}</p>
+                      {/if}
+
+                      {#if currentProgressStep(turn) && (turn.status === "researching" || turn.status === "synthesizing")}
+                        <div class="progress-current" aria-label="Research runner progress">
+                          <span>{formatProgressStage(currentProgressStep(turn))}</span>
+                          <small>{currentProgressStep(turn).message}</small>
+                        </div>
                       {/if}
 
                       {#if turn.answer}
@@ -1204,9 +1493,12 @@
                           {#each chatEvidence(turn) as evidence}
                             <div class="evidence-card chat-evidence-card" class:selected={selectedLookup === evidence.source_key}>
                               <button class="evidence-card-main" type="button" on:click={() => loadDetail(evidence.source_key)}>
-                                <span class="result-key">{evidence.source_type || evidence.kind || evidence.relationship || "source"}</span>
-                                <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
-                                {#if evidencePreview(evidence)}
+	                                <span class="result-key">{evidenceTypeLabel(evidence)}</span>
+	                                <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
+	                                {#if evidenceSignalSummary(evidence)}
+	                                  <small>{evidenceSignalSummary(evidence)}</small>
+	                                {/if}
+	                                {#if evidencePreview(evidence)}
                                   <p>{evidencePreview(evidence)}</p>
                                 {/if}
                               </button>
@@ -1311,9 +1603,12 @@
                       {#each activeResults as evidence}
                         <article class="evidence-card" class:selected={selectedLookup === evidence.source_key}>
                           <button class="evidence-card-main" type="button" on:click={() => loadDetail(evidence.source_key)}>
-                            <span class="result-key">{evidence.source_type || evidence.kind || "source"}</span>
-                            <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
-                            {#if evidencePreview(evidence)}
+	                            <span class="result-key">{evidenceTypeLabel(evidence)}</span>
+	                            <strong>{evidence.title || evidence.url || evidence.source_key}</strong>
+	                            {#if evidenceSignalSummary(evidence)}
+	                              <small>{evidenceSignalSummary(evidence)}</small>
+	                            {/if}
+	                            {#if evidencePreview(evidence)}
                               <p>{evidencePreview(evidence)}</p>
                             {/if}
                           </button>
@@ -1342,7 +1637,7 @@
               />
             {/if}
 
-            {#if inputMode !== "shares"}
+            {#if inputMode !== "shares" && inputMode !== "harness"}
               <!-- Add link section at bottom of content-main -->
               <div class="add-link-section" style="margin-top:auto">
                 <button

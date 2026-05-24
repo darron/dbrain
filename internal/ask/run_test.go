@@ -9,6 +9,7 @@ import (
 	"github.com/darron/dbrain/internal/entities"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/queryterms"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func TestQueryTermsBuildTagAlias(t *testing.T) {
@@ -207,6 +208,46 @@ func TestEvidenceFromSourceUsesQueryWindowForExcerpt(t *testing.T) {
 	}
 }
 
+func TestEvidenceFromSourceFallsBackToExtractedTitle(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		SourceKey:     "src:canada-title",
+		CanonicalURL:  "https://canada.ca/example",
+		SourceType:    "web",
+		NotePath:      "sources/canada-title.md",
+		SummaryText:   "This source discusses Global Innovation Clusters and renewed funding.",
+		ExtractedText: "Title: Government of Canada announces renewed funding for the Global Innovation Clusters\n\nURL Source: https://canada.ca/example\n\nMarkdown Content:\n# Government of Canada announces renewed funding for the Global Innovation Clusters",
+	}
+
+	result := model.SearchResult{Snippet: "### What It Is This is a government news release about renewed funding for the Global Innovation Clusters."}
+	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, result, 160, []string{"global", "innovation", "clusters", "funding"})
+	if candidate.Title != "Government of Canada announces renewed funding for the Global Innovation Clusters" {
+		t.Fatalf("expected extracted title fallback, got %q", candidate.Title)
+	}
+	if !strings.Contains(candidate.MatchText, "Government of Canada announces renewed funding") {
+		t.Fatalf("expected match text to include extracted title, got %q", candidate.MatchText)
+	}
+}
+
+func TestEvidenceFromSourceUsesSnippetTitleBeforeRawExtract(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		SourceKey:    "src:canada-snippet-title",
+		CanonicalURL: "https://canada.ca/example",
+		SourceType:   "web",
+		NotePath:     "sources/canada-snippet-title.md",
+		SummaryText:  "This source discusses Global Innovation Clusters and renewed funding.",
+	}
+	result := model.SearchResult{Snippet: "Title: Government of Canada announces renewed funding for the Global Innovation Clusters"}
+
+	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, result, 160, []string{"global", "innovation", "clusters", "funding"})
+	if candidate.Title != "Government of Canada announces renewed funding for the Global Innovation Clusters" {
+		t.Fatalf("expected snippet title fallback, got %q", candidate.Title)
+	}
+}
+
 func TestEvidenceFromSourcePrefersRarerQueryTermForExcerpt(t *testing.T) {
 	t.Parallel()
 
@@ -254,6 +295,9 @@ func TestEvidenceFromSourceUsesCompactSummaryBeforeRawExtract(t *testing.T) {
 	if !strings.Contains(candidate.MatchText, source.SummaryText) {
 		t.Fatalf("expected compact match text to include summary")
 	}
+	if candidate.EvidenceRole != "derived_summary" {
+		t.Fatalf("expected derived summary evidence role, got %q", candidate.EvidenceRole)
+	}
 }
 
 func TestEvidenceFromSourceFallsBackToRawExtractWhenCompactTextIsAbsent(t *testing.T) {
@@ -271,6 +315,40 @@ func TestEvidenceFromSourceFallsBackToRawExtractWhenCompactTextIsAbsent(t *testi
 	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, model.SearchResult{}, 160, []string{"mark", "carney", "gfanz"})
 	if !strings.Contains(candidate.Excerpt, "Mark Carney") || !strings.Contains(candidate.Excerpt, "GFANZ") {
 		t.Fatalf("expected raw extract fallback when compact fields are absent, got %q", candidate.Excerpt)
+	}
+	if candidate.Chunk == nil || candidate.Chunk.Role != "raw_extract_window" || candidate.Chunk.ParentSourceKey != "src:raw-only" {
+		t.Fatalf("expected raw chunk metadata, got %+v", candidate.Chunk)
+	}
+	if !hasEvidenceSection(candidate.ContentSections, "extracted_text_window", "raw") {
+		t.Fatalf("expected raw extracted text content section, got %+v", candidate.ContentSections)
+	}
+}
+
+func TestEvidenceFromSourceFallsBackToRawExtractWhenSummaryMissesQuery(t *testing.T) {
+	t.Parallel()
+
+	source := model.SourceDocument{
+		SourceKey:     "src:summary-misses-query",
+		CanonicalURL:  "https://example.com/summary-misses-query",
+		Title:         "Long source",
+		SourceType:    "web",
+		NotePath:      "sources/summary-misses-query.md",
+		SummaryText:   "This source has a broad derived summary about politics and finance.",
+		ExtractedText: strings.Repeat("boilerplate navigation newsletter ", 120) + "The buried primary extract says Mark Carney discussed GFANZ policy in detail.",
+	}
+
+	candidate := evidenceFromSource(config.Config{VaultDir: "/vault"}, source, model.SearchResult{}, 180, []string{"mark", "carney", "gfanz"})
+	if !strings.Contains(candidate.Excerpt, "Mark Carney") || !strings.Contains(candidate.Excerpt, "GFANZ") {
+		t.Fatalf("expected raw extract window when summary misses query, got %q", candidate.Excerpt)
+	}
+	if candidate.Summary != source.SummaryText {
+		t.Fatalf("summary should remain separately available, got %q", candidate.Summary)
+	}
+	if candidate.EvidenceRole != "raw_extract_window" || candidate.Chunk == nil {
+		t.Fatalf("expected raw_extract_window role and chunk, role=%q chunk=%+v", candidate.EvidenceRole, candidate.Chunk)
+	}
+	if !hasEvidenceSection(candidate.ContentSections, "summary_text", "derived") || !hasEvidenceSection(candidate.ContentSections, "extracted_text_window", "raw") {
+		t.Fatalf("expected derived summary and raw extract sections, got %+v", candidate.ContentSections)
 	}
 }
 
@@ -308,6 +386,9 @@ func TestEvidenceFromItemIncludesDerivedSummaryAndOCRExcerpt(t *testing.T) {
 	if len(candidate.Media) != 1 || candidate.Media[0].MediaAssetID != 42 || candidate.Media[0].MediaType != "photo" {
 		t.Fatalf("expected sanitized media ref in evidence, got %+v", candidate.Media)
 	}
+	if !hasEvidenceSection(candidate.ContentSections, "summary_text", "derived") || !hasEvidenceSection(candidate.ContentSections, "ocr_text", "raw_ocr") {
+		t.Fatalf("expected item evidence role sections, got %+v", candidate.ContentSections)
+	}
 }
 
 func TestEvidenceFromItemChoosesStrongestQueryWindowAcrossFields(t *testing.T) {
@@ -327,6 +408,15 @@ func TestEvidenceFromItemChoosesStrongestQueryWindowAcrossFields(t *testing.T) {
 	if !strings.Contains(candidate.Excerpt, "GFANZ") {
 		t.Fatalf("expected excerpt to include strongest matching OCR evidence, got %q", candidate.Excerpt)
 	}
+}
+
+func hasEvidenceSection(sections []retrieval.ContentSection, name string, role string) bool {
+	for _, section := range sections {
+		if section.Name == name && section.Role == role && strings.TrimSpace(section.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func TestExplainEvidenceScoreReportsTermCoverageAndDemotesMissingFocusedTerms(t *testing.T) {

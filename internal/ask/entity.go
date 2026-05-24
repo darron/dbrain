@@ -126,6 +126,8 @@ func collectEntityCandidates(ctx context.Context, cfg config.Config, st *store.S
 		}
 		candidate.Relationship = "entity match"
 		scoreCandidate(&candidate, question, terms)
+		addRetrievalLane(&candidate, RetrievalLane{Name: "lexical", Status: "used"})
+		addRetrievalLane(&candidate, RetrievalLane{Name: "entity", Status: "used"})
 		applyEntityMatches(&candidate, entityMatches)
 		candidates = append(candidates, candidate)
 	}

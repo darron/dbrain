@@ -42,6 +42,22 @@ func conceptForTerm(term string) QueryConcept {
 		return QueryConcept{Key: "alternative", Preferred: "alternative", Terms: []string{"alternative", "alternatives", "replacement", "replacements", "instead of"}, Required: true}
 	case "model", "models", "llm", "llms":
 		return QueryConcept{Key: "model", Preferred: "model", Terms: []string{"model", "models", "llm", "llms", "qwen", "gpt", "claude", "gemini", "minimax", "deepseek", "ollama", "openrouter"}, Required: true}
+	case "tool", "tools":
+		return QueryConcept{Key: "tool", Preferred: "tool", Terms: []string{"tool", "tools", "utility", "utilities"}, Required: true}
+	case "project", "projects", "package", "packages", "library", "libraries":
+		return QueryConcept{Key: "project", Preferred: "project", Terms: []string{"project", "projects", "package", "packages", "library", "libraries", "repo", "repository"}, Required: true}
+	case "compare", "comparison", "versus", "vs":
+		return QueryConcept{Key: "comparison", Preferred: "comparison", Terms: []string{"compare", "comparison", "versus", "vs"}, Required: false}
+	case "timeline", "history", "historical", "evolution":
+		return QueryConcept{Key: "timeline", Preferred: "timeline", Terms: []string{"timeline", "history", "historical", "evolution"}, Required: false}
+	case "transcript", "transcripts":
+		return QueryConcept{Key: "transcript", Preferred: "transcript", Terms: []string{"transcript", "transcripts", "transcription"}, Required: true}
+	case "ocr", "screenshot", "screenshots", "image", "images", "photo", "photos":
+		return QueryConcept{Key: "ocr", Preferred: "ocr", Terms: []string{"ocr", "screenshot", "screenshots", "image", "images", "photo", "photos", "vision"}, Required: true}
+	case "video", "videos", "audio", "recording", "recordings":
+		return QueryConcept{Key: "video", Preferred: "video", Terms: []string{"video", "videos", "audio", "recording", "recordings", "clip"}, Required: true}
+	case "not", "wrong", "exclude", "without", "instead", "correct", "correction":
+		return QueryConcept{Key: term, Preferred: term, Terms: []string{term}, Required: false}
 	default:
 		if len([]rune(term)) < 3 {
 			return QueryConcept{}

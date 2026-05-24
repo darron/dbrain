@@ -109,6 +109,7 @@ function normalizeStoredTurn(turn = {}) {
     research_pack: normalizePack(turn.research_pack),
     start: turn.start && typeof turn.start === "object" ? turn.start : null,
     done: turn.done && typeof turn.done === "object" ? turn.done : null,
+    progress: Array.isArray(turn.progress) ? turn.progress : [],
     citations: Array.isArray(turn.citations) ? turn.citations : [],
     error: String(turn.error || ""),
     created_at: String(turn.created_at || "")
@@ -132,6 +133,7 @@ function normalizeStatus(status) {
     case "synthesizing":
     case "ready":
     case "error":
+    case "verification_failed":
       return status;
     default:
       return "ready";

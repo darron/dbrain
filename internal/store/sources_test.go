@@ -101,6 +101,26 @@ func TestUpsertSourceQueuesManualSourceForEnrichment(t *testing.T) {
 	}
 }
 
+func TestGetSourceExtractedTextPrefix(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:prefix-title", "https://example.com/prefix-title")
+	extractedText := "Title: Prefix Title\n\nURL Source: https://example.com/prefix-title\n\n" + strings.Repeat("large body ", 1000)
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET extracted_text = ? WHERE id = ?`, extractedText, sourceID); err != nil {
+		t.Fatalf("update extracted text: %v", err)
+	}
+
+	prefix, err := st.GetSourceExtractedTextPrefix(ctx, "src:prefix-title", 32)
+	if err != nil {
+		t.Fatalf("GetSourceExtractedTextPrefix: %v", err)
+	}
+	if prefix != "Title: Prefix Title\n\nURL Source:" {
+		t.Fatalf("unexpected prefix %q", prefix)
+	}
+}
+
 func TestHTTP429SourceExtractionFailureUsesCooldownWithoutImmediateFinalAttempt(t *testing.T) {
 	t.Parallel()
 

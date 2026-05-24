@@ -104,6 +104,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 		}
 		seen[candidate.SourceKey] = struct{}{}
 		scoreCandidate(&candidate, searchQuestion, searchTerms)
+		addRetrievalLane(&candidate, RetrievalLane{Name: "lexical", Status: "used"})
 		applyEntityMatches(&candidate, entityMatches)
 		candidates = append(candidates, candidate)
 	}

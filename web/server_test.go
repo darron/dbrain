@@ -19,6 +19,7 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/researchtrace"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -26,6 +27,23 @@ import (
 type fakeArchiveProxy struct {
 	body      []byte
 	signedURL string
+}
+
+func TestWebResearchTimeoutDefaultsLeaveRoomForExactTagRetrieval(t *testing.T) {
+	t.Parallel()
+
+	if defaultWebResearchStageTimeout < 2*time.Minute {
+		t.Fatalf("expected web research stage timeout to cover slower exact-tag retrieval, got %s", defaultWebResearchStageTimeout)
+	}
+	if defaultWebResearchSynthesisTimeout < 2*time.Minute {
+		t.Fatalf("expected web research synthesis timeout to allow full local synthesis, got %s", defaultWebResearchSynthesisTimeout)
+	}
+	if defaultWebResearchRunnerTimeout < defaultWebResearchStageTimeout*2+defaultWebResearchSynthesisTimeout {
+		t.Fatalf("expected web research runner timeout to leave room for retrieval, retry, and synthesis; runner=%s stage=%s synthesis=%s", defaultWebResearchRunnerTimeout, defaultWebResearchStageTimeout, defaultWebResearchSynthesisTimeout)
+	}
+	if defaultResearchTimeout < defaultWebResearchStageTimeout {
+		t.Fatalf("expected legacy web research timeout to be at least the runner stage timeout, got legacy=%s stage=%s", defaultResearchTimeout, defaultWebResearchStageTimeout)
+	}
 }
 
 func (f *fakeArchiveProxy) GetObject(_ context.Context, _, _ string, rangeHeader string) (archiveObject, error) {
@@ -535,6 +553,35 @@ func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 		}
 	})
 
+	t.Run("reject verification failed chat transcript", func(t *testing.T) {
+		request := ChatTranscriptSaveRequest{
+			Turns: []ChatTranscriptTurn{
+				{
+					ID:        "chat:turn-failed",
+					Question:  "What do I know about Tanka?",
+					Status:    "verification_failed",
+					Answer:    "Unverified answer.",
+					CreatedAt: "2026-05-02T16:00:00Z",
+				},
+			},
+		}
+		body, err := json.Marshal(request)
+		if err != nil {
+			t.Fatalf("marshal transcript request: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/chat/transcripts", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "verification-failed") {
+			t.Fatalf("expected verification failure diagnostic, got %s", rec.Body.String())
+		}
+	})
+
 	t.Run("add link", func(t *testing.T) {
 		body := bytes.NewBufferString(`{"url":"https://example.com/manual?utm_source=test"}`)
 		rec := httptest.NewRecorder()
@@ -719,6 +766,14 @@ func TestResearchSynthesizeStreamsFinalAnswer(t *testing.T) {
 		ResearchPack:     pack,
 		Model:            "ollama/qwen-test",
 		MaxEvidenceChars: 4000,
+		TraceSurface:     "web_chat",
+		TraceContinuity: &researchtrace.ChatContinuity{
+			OriginalQuestion:    "What do I know about agent memory?",
+			RetrievalQuestion:   "Current question: What do I know about agent memory?",
+			PriorQuestionIDs:    []string{"chat:prior"},
+			PinnedEvidenceKeys:  []string{"src:test"},
+			MergedPriorEvidence: []string{"src:test"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
@@ -753,12 +808,423 @@ func TestResearchSynthesizeStreamsFinalAnswer(t *testing.T) {
 	if answer.Text != "Agent memory requires durable retrieval [src:test]." {
 		t.Fatalf("unexpected answer text %q", answer.Text)
 	}
-	var done brainresearch.SynthesisResult
+	var done struct {
+		brainresearch.SynthesisResult
+		TracePath string `json:"trace_path"`
+	}
 	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
 		t.Fatalf("decode done event: %v", err)
 	}
 	if done.AnswerStatus != "ok" || done.Model != "ollama/qwen-test" || len(done.Citations) != 1 || done.Citations[0].SourceKey != "src:test" {
 		t.Fatalf("unexpected done event: %+v", done)
+	}
+	if !strings.HasPrefix(done.TracePath, "research-runs/") {
+		t.Fatalf("expected relative trace path in done event, got %+v", done)
+	}
+	traceDir := filepath.Join(cfg.DataDir, filepath.FromSlash(done.TracePath))
+	for _, name := range []string{"run.md", "run.json", "synthesis-input.md", ".complete"} {
+		if _, err := os.Stat(filepath.Join(traceDir, name)); err != nil {
+			t.Fatalf("expected web trace file %s: %v", name, err)
+		}
+	}
+	traceJSON, err := os.ReadFile(filepath.Join(traceDir, "run.json"))
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, value := range []string{`"surface": "web_chat"`, `"chat_continuity"`, `"synthesis_input_path": "synthesis-input.md"`, `"stop_reason": "enough_evidence"`} {
+		if !strings.Contains(string(traceJSON), value) {
+			t.Fatalf("expected trace json to contain %q:\n%s", value, string(traceJSON))
+		}
+	}
+	for _, value := range []string{"Agent memory requires durable retrieval [src:test].", `"source_key": "src:test"`} {
+		if !strings.Contains(string(traceJSON), value) {
+			t.Fatalf("expected synthesized chat trace to contain %q:\n%s", value, string(traceJSON))
+		}
+	}
+}
+
+func TestResearchRunStreamsProgressAnswerAndTrace(t *testing.T) {
+	ctx := t.Context()
+	cfg, st := openTestStore(t)
+	_, sourceKey := seedTestData(t, ctx, cfg, st)
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected ollama path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen-test","message":{"role":"assistant","content":"Agent memory requires durable retrieval and citations [` + sourceKey + `]."}}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", ollama.URL)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	sentinel := "PREVIOUS_MODEL_ANSWER_SHOULD_NOT_ENTER_SYNTHESIS_INPUT"
+	requestBody, err := json.Marshal(ResearchRunRequest{
+		Question:         "Current question: What do I know about agent memory?\n\nRecent user questions:\n- How should retrieval cite sources?",
+		Limit:            4,
+		DisablePlanner:   true,
+		Model:            "ollama/qwen-test",
+		MaxEvidenceChars: 4000,
+		TraceSurface:     "web_chat",
+		TraceContinuity: &researchtrace.ChatContinuity{
+			OriginalQuestion:    "What do I know about agent memory?",
+			RetrievalQuestion:   "Current question: What do I know about agent memory?",
+			PriorQuestionIDs:    []string{"chat:prior-" + sentinel},
+			PinnedEvidenceKeys:  []string{sourceKey},
+			MergedPriorEvidence: []string{sourceKey},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/run", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("expected text/event-stream content type, got %q", got)
+	}
+	events := parseSSEEvents(t, rec.Body.String())
+	for _, event := range []string{"progress", "answer", "citation", "done"} {
+		if _, ok := events[event]; !ok {
+			t.Fatalf("expected %s event in stream:\n%s", event, rec.Body.String())
+		}
+	}
+	if _, ok := events["error"]; ok {
+		t.Fatalf("successful runner must not emit error: %+v", events)
+	}
+
+	progressStages := map[string]bool{}
+	for _, raw := range events["progress"] {
+		var event struct {
+			Stage  string `json:"stage"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			t.Fatalf("decode progress event: %v", err)
+		}
+		progressStages[event.Stage] = true
+	}
+	for _, stage := range []string{"planning", "retrieval", "inspection", "judge", "prepare_synthesis", "synthesis", "verification", "trace"} {
+		if !progressStages[stage] {
+			t.Fatalf("expected progress stage %q, got %+v\nstream:\n%s", stage, progressStages, rec.Body.String())
+		}
+	}
+
+	var done struct {
+		SchemaVersion string                         `json:"schema_version"`
+		AnswerStatus  string                         `json:"answer_status"`
+		ResearchPack  brainresearch.Pack             `json:"research_pack"`
+		Synthesis     *brainresearch.SynthesisResult `json:"synthesis"`
+		TracePath     string                         `json:"trace_path"`
+		StopReason    string                         `json:"stop_reason"`
+		Verification  struct {
+			Passed bool `json:"passed"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
+		t.Fatalf("decode done event: %v", err)
+	}
+	if done.SchemaVersion != "research_run.v1" || done.AnswerStatus != "ok" || done.StopReason != "enough_evidence" || !done.Verification.Passed {
+		t.Fatalf("unexpected done event: %+v", done)
+	}
+	if len(done.ResearchPack.Evidence) == 0 || done.ResearchPack.Evidence[0].SourceKey != sourceKey {
+		t.Fatalf("expected final pack to include seeded evidence, got %+v", done.ResearchPack.Evidence)
+	}
+	if done.Synthesis == nil || done.Synthesis.Answer == "" || len(done.Synthesis.Citations) == 0 || done.Synthesis.Citations[0].SourceKey != sourceKey {
+		t.Fatalf("unexpected synthesis payload: %+v", done.Synthesis)
+	}
+	if !strings.HasPrefix(done.TracePath, "research-runs/") {
+		t.Fatalf("expected relative trace path in done event, got %+v", done)
+	}
+	traceDir := filepath.Join(cfg.DataDir, filepath.FromSlash(done.TracePath))
+	for _, name := range []string{"run.md", "run.json", "synthesis-input.md", ".complete"} {
+		if _, err := os.Stat(filepath.Join(traceDir, name)); err != nil {
+			t.Fatalf("expected runner trace file %s: %v", name, err)
+		}
+	}
+	synthesisInput, err := os.ReadFile(filepath.Join(traceDir, "synthesis-input.md"))
+	if err != nil {
+		t.Fatalf("read synthesis input: %v", err)
+	}
+	if !bytes.Contains(synthesisInput, []byte("## Question\nWhat do I know about agent memory?")) {
+		t.Fatalf("expected synthesis input to use original chat question:\n%s", string(synthesisInput))
+	}
+	if bytes.Contains(synthesisInput, []byte(sentinel)) {
+		t.Fatalf("previous model answer sentinel leaked into synthesis input:\n%s", string(synthesisInput))
+	}
+	traceJSON, err := os.ReadFile(filepath.Join(traceDir, "run.json"))
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, value := range []string{`"surface": "web_chat"`, `"schema_version": "research_trace.v1"`, `"schema_version": "research_pack.v1"`, `"stop_reason": "enough_evidence"`, `"synthesis_input_path": "synthesis-input.md"`} {
+		if !strings.Contains(string(traceJSON), value) {
+			t.Fatalf("expected trace json to contain %q:\n%s", value, string(traceJSON))
+		}
+	}
+}
+
+func TestResearchRunStreamsVerificationFailure(t *testing.T) {
+	ctx := t.Context()
+	cfg, st := openTestStore(t)
+	seedTestData(t, ctx, cfg, st)
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen-test","message":{"role":"assistant","content":"Agent memory cites missing evidence [src:missing-web-run]."}}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", ollama.URL)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	requestBody, err := json.Marshal(ResearchRunRequest{
+		Question:         "What do I know about agent memory?",
+		Limit:            4,
+		DisablePlanner:   true,
+		Model:            "ollama/qwen-test",
+		MaxEvidenceChars: 4000,
+		TraceSurface:     "web_chat",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/run", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events := parseSSEEvents(t, rec.Body.String())
+	if _, ok := events["answer"]; ok {
+		t.Fatalf("verification-failed runner must not emit normal answer event: %+v", events)
+	}
+	if _, ok := events["verification_failed"]; !ok {
+		t.Fatalf("expected verification_failed event:\n%s", rec.Body.String())
+	}
+	var failed struct {
+		AnswerStatus string   `json:"answer_status"`
+		StopReason   string   `json:"stop_reason"`
+		Errors       []string `json:"errors"`
+		Error        string   `json:"error"`
+		TracePath    string   `json:"trace_path"`
+	}
+	if err := json.Unmarshal([]byte(events["verification_failed"][0]), &failed); err != nil {
+		t.Fatalf("decode verification_failed event: %v", err)
+	}
+	if failed.AnswerStatus != "error" || failed.StopReason != "verification_failed" || !strings.Contains(failed.Error, "src:missing-web-run") {
+		t.Fatalf("unexpected verification_failed payload: %+v", failed)
+	}
+	var done struct {
+		StopReason   string                   `json:"stop_reason"`
+		Citations    []brainresearch.Citation `json:"citations"`
+		Verification struct {
+			Passed bool     `json:"passed"`
+			Errors []string `json:"errors"`
+		} `json:"verification"`
+		TracePath string `json:"trace_path"`
+	}
+	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
+		t.Fatalf("decode done event: %v", err)
+	}
+	if done.StopReason != "verification_failed" || done.Verification.Passed || len(done.Verification.Errors) == 0 {
+		t.Fatalf("unexpected verification failed done event: %+v", done)
+	}
+	if len(done.Citations) != 0 {
+		t.Fatalf("verification-failed runner must not expose rejected citations: %+v", done.Citations)
+	}
+	traceJSON, err := os.ReadFile(filepath.Join(cfg.DataDir, filepath.FromSlash(done.TracePath), "run.json"))
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, value := range []string{`"stop_reason": "verification_failed"`, `"code": "verification_failed"`, "src:missing-web-run"} {
+		if !strings.Contains(string(traceJSON), value) {
+			t.Fatalf("expected verification trace to contain %q:\n%s", value, string(traceJSON))
+		}
+	}
+}
+
+func TestResearchTraceListAndCompare(t *testing.T) {
+	ctx := t.Context()
+	cfg, st := openTestStore(t)
+	_, sourceKey := seedTestData(t, ctx, cfg, st)
+	pack, err := brainresearch.Build(ctx, cfg, st, brainresearch.Options{
+		Question:       "What do I know about agent memory?",
+		Limit:          4,
+		DisablePlanner: true,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	result, err := researchtrace.Write(cfg, researchtrace.ResearchTrace{
+		SchemaVersion: researchtrace.SchemaVersion,
+		RunID:         "web-trace-compare",
+		Surface:       "web_chat",
+		Question:      "What do I know about agent memory?",
+		StartedAt:     time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+		CompletedAt:   time.Date(2026, 5, 23, 12, 0, 1, 0, time.UTC),
+		Pack:          &pack,
+		Synthesis: &brainresearch.SynthesisResult{
+			SchemaVersion: brainresearch.SynthesisSchemaVersion,
+			Question:      "What do I know about agent memory?",
+			Answer:        "Agent memory answer [" + sourceKey + "].",
+			AnswerStatus:  "ok",
+			Citations:     []brainresearch.Citation{{SourceKey: sourceKey}},
+		},
+		StopReason: "enough_evidence",
+	}, researchtrace.ArtifactContents{}, researchtrace.WriteOptions{Retention: researchtrace.RetentionOptions{KeepAll: true}})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	_, err = researchtrace.Write(cfg, researchtrace.ResearchTrace{
+		SchemaVersion: researchtrace.SchemaVersion,
+		RunID:         "web-trace-compare-newer",
+		Surface:       "web_chat",
+		Question:      "What changed in agent memory?",
+		StartedAt:     time.Date(2026, 5, 23, 12, 1, 0, 0, time.UTC),
+		CompletedAt:   time.Date(2026, 5, 23, 12, 1, 1, 0, time.UTC),
+		Pack:          &pack,
+		Synthesis: &brainresearch.SynthesisResult{
+			SchemaVersion: brainresearch.SynthesisSchemaVersion,
+			Question:      "What changed in agent memory?",
+			Answer:        "Newer agent memory answer [" + sourceKey + "].",
+			AnswerStatus:  "ok",
+			Citations:     []brainresearch.Citation{{SourceKey: sourceKey}},
+		},
+		StopReason: "enough_evidence",
+	}, researchtrace.ArtifactContents{}, researchtrace.WriteOptions{Retention: researchtrace.RetentionOptions{KeepAll: true}})
+	if err != nil {
+		t.Fatalf("write newer trace: %v", err)
+	}
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/research/traces?limit=10", nil)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store trace list response, got %q", got)
+	}
+	var listResponse struct {
+		Traces []researchtrace.TraceSummary `json:"traces"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listResponse); err != nil {
+		t.Fatalf("decode traces list: %v", err)
+	}
+	if len(listResponse.Traces) != 2 {
+		t.Fatalf("expected trace listing, got %+v", listResponse)
+	}
+	if listResponse.Traces[0].RelativePath != "research-runs/web-trace-compare-newer" || listResponse.Traces[1].RelativePath != "research-runs/web-trace-compare" {
+		t.Fatalf("expected newest trace listing first, got %+v", listResponse)
+	}
+
+	body, err := json.Marshal(ResearchTraceCompareRequest{TracePath: result.RelativePath})
+	if err != nil {
+		t.Fatalf("marshal compare body: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/research/trace-compare", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store trace compare response, got %q", got)
+	}
+	var response struct {
+		OldAnswer string `json:"old_answer"`
+		Diff      struct {
+			OldSourceKeys []string `json:"old_source_keys"`
+			NewSourceKeys []string `json:"new_source_keys"`
+		} `json:"diff"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode compare: %v", err)
+	}
+	if !strings.Contains(response.OldAnswer, sourceKey) {
+		t.Fatalf("expected old answer, got %#v", response)
+	}
+	if len(response.Diff.OldSourceKeys) == 0 || len(response.Diff.NewSourceKeys) == 0 {
+		t.Fatalf("expected old/new source-key diff, got %#v", response.Diff)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/research/trace-compare", bytes.NewBufferString(`{"trace_path":"../outside.json"}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected traversal rejection, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResearchTraceCompareReturnsSavedTraceWhenDiffFails(t *testing.T) {
+	cfg, st := openTestStore(t)
+	result, err := researchtrace.Write(cfg, researchtrace.ResearchTrace{
+		SchemaVersion: researchtrace.SchemaVersion,
+		RunID:         "web-trace-diff-fails",
+		Surface:       "web_chat",
+		Question:      "Trace without pack",
+		StartedAt:     time.Date(2026, 5, 23, 12, 2, 0, 0, time.UTC),
+		CompletedAt:   time.Date(2026, 5, 23, 12, 2, 1, 0, time.UTC),
+		Synthesis: &brainresearch.SynthesisResult{
+			SchemaVersion: brainresearch.SynthesisSchemaVersion,
+			Question:      "Trace without pack",
+			Answer:        "Saved answer from a trace whose diff cannot rerun.",
+			AnswerStatus:  "ok",
+		},
+		StopReason: "verification_failed",
+	}, researchtrace.ArtifactContents{}, researchtrace.WriteOptions{Retention: researchtrace.RetentionOptions{KeepAll: true}})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	body, err := json.Marshal(ResearchTraceCompareRequest{TracePath: result.RelativePath})
+	if err != nil {
+		t.Fatalf("marshal compare body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/trace-compare", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		OldAnswer string `json:"old_answer"`
+		DiffError string `json:"diff_error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode compare: %v", err)
+	}
+	if !strings.Contains(response.OldAnswer, "Saved answer") {
+		t.Fatalf("expected saved answer to remain available: %+v", response)
+	}
+	if !strings.Contains(response.DiffError, "does not contain a research pack") {
+		t.Fatalf("expected diff error in 200 response: %+v", response)
 	}
 }
 
@@ -823,6 +1289,7 @@ func TestResearchSynthesizeReturnsUnavailableWithoutConfiguredModel(t *testing.T
 		AnswerStatus string   `json:"answer_status"`
 		Warnings     []string `json:"answer_warnings"`
 		Error        string   `json:"error"`
+		TracePath    string   `json:"trace_path"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode unavailable response: %v", err)
@@ -866,12 +1333,18 @@ func TestResearchSynthesizeNoEvidenceSkipsModel(t *testing.T) {
 	if _, ok := events["answer"]; ok {
 		t.Fatalf("no-evidence synthesis should not emit answer: %+v", events)
 	}
-	var done brainresearch.SynthesisResult
+	var done struct {
+		brainresearch.SynthesisResult
+		TracePath string `json:"trace_path"`
+	}
 	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
 		t.Fatalf("decode done event: %v", err)
 	}
 	if done.AnswerStatus != "no_evidence" || len(done.Warnings) == 0 {
 		t.Fatalf("unexpected no-evidence done event: %+v", done)
+	}
+	if !strings.HasPrefix(done.TracePath, "research-runs/") {
+		t.Fatalf("expected no-evidence trace path, got %+v", done)
 	}
 }
 
@@ -928,12 +1401,16 @@ func TestResearchSynthesizeStreamsPostStartError(t *testing.T) {
 		AnswerStatus string   `json:"answer_status"`
 		Warnings     []string `json:"answer_warnings"`
 		Error        string   `json:"error"`
+		TracePath    string   `json:"trace_path"`
 	}
 	if err := json.Unmarshal([]byte(events["error"][0]), &payload); err != nil {
 		t.Fatalf("decode error event: %v", err)
 	}
 	if payload.AnswerStatus != "error" || !strings.Contains(payload.Error, "503") {
 		t.Fatalf("unexpected error payload: %+v", payload)
+	}
+	if !strings.HasPrefix(payload.TracePath, "research-runs/") {
+		t.Fatalf("expected error trace path, got %+v", payload)
 	}
 }
 

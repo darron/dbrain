@@ -12,6 +12,7 @@ import (
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -75,6 +76,9 @@ func TestBuildIncludesSourceExactTagEvidence(t *testing.T) {
 	if pack.SchemaVersion != SchemaVersion {
 		t.Fatalf("unexpected schema version: %q", pack.SchemaVersion)
 	}
+	if len(pack.QueryPlan.RetrievalLanes) != 2 || pack.QueryPlan.RetrievalLanes[0].Name != "lexical" || pack.QueryPlan.RetrievalLanes[1].Name != "semantic" || pack.QueryPlan.RetrievalLanes[1].Status != "disabled" {
+		t.Fatalf("expected lexical used and semantic disabled lane metadata, got %#v", pack.QueryPlan.RetrievalLanes)
+	}
 	if len(pack.ExactTagEvidence) != 1 {
 		t.Fatalf("expected one source exact tag example, got %#v", pack.ExactTagEvidence)
 	}
@@ -87,6 +91,9 @@ func TestBuildIncludesSourceExactTagEvidence(t *testing.T) {
 	}
 	if example.Retrieval == nil || len(example.Retrieval.Signals) == 0 {
 		t.Fatalf("expected retrieval signal on exact tag example, got %#v", example)
+	}
+	if len(example.Retrieval.Lanes) != 1 || example.Retrieval.Lanes[0].Name != "exact_tag" {
+		t.Fatalf("expected exact tag lane on tag example, got %#v", example.Retrieval)
 	}
 }
 
@@ -112,6 +119,25 @@ func TestBuildFindsTranscriptBackedMediaEvidence(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Now().UTC()
+	if _, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "x:test-generic-red-balloon-title",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-generic-red-balloon-title",
+		CanonicalURL: "https://x.com/darron/status/test-generic-red-balloon-title",
+		Title:        "Red balloon promise discussion",
+		AuthorHandle: "darron",
+		AuthorName:   "Darron",
+		Text:         "A generic saved post with the title words but no recording claim.",
+		SummaryText:  "This generic note mentions a red balloon promise but has no transcript evidence.",
+		ContentHash:  "test-generic-red-balloon-title-hash",
+		NotePath:     "items/x/2026/test-generic-red-balloon-title.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert generic item: %v", err)
+	}
 	upsert, err := st.UpsertItem(ctx, model.Item{
 		SourceKey:    "x:test-recording-red-balloon",
 		SourceType:   "x_bookmark",
@@ -168,6 +194,9 @@ func TestBuildFindsTranscriptBackedMediaEvidence(t *testing.T) {
 	}
 	if len(pack.Evidence) == 0 || pack.Evidence[0].SourceKey != "x:test-recording-red-balloon" {
 		t.Fatalf("expected transcript-backed media evidence first, got %#v", pack.Evidence)
+	}
+	if pack.QueryPlan.QueryFamily != queryFamilyMediaEvidence {
+		t.Fatalf("expected media query family, got %#v", pack.QueryPlan)
 	}
 	if !strings.Contains(pack.Evidence[0].Excerpt, "red balloon promise") {
 		t.Fatalf("expected transcript phrase in excerpt, got %q", pack.Evidence[0].Excerpt)
@@ -284,6 +313,9 @@ func TestBuildResearchStrategyExpandsPeopleEventQuery(t *testing.T) {
 	if !hasQueryVariant(strategy.Variants, "calgary father charged killing children") {
 		t.Fatalf("expected charged killing children variant, got %#v", strategy.Variants)
 	}
+	if strategy.Family != queryFamilyPeopleEventLookup {
+		t.Fatalf("expected people-event family, got %#v", strategy)
+	}
 	if !hasQueryVariant(strategy.Variants, "calgary father son daughter") {
 		t.Fatalf("expected son/daughter variant, got %#v", strategy.Variants)
 	}
@@ -300,6 +332,9 @@ func TestBuildResearchStrategyExpandsGenericTechnicalQuery(t *testing.T) {
 
 	if !hasQueryVariant(strategy.Variants, "k8s helm alternatives") {
 		t.Fatalf("expected normalized query variant, got %#v", strategy.Variants)
+	}
+	if strategy.Family != queryFamilyComparison {
+		t.Fatalf("expected comparison family, got %#v", strategy)
 	}
 	if !hasQueryVariant(strategy.Variants, "kubernetes helm alternative") {
 		t.Fatalf("expected preferred concept variant, got %#v", strategy.Variants)
@@ -321,6 +356,9 @@ func TestBuildResearchStrategyDropsCorpusFrameTermsWhenPlannerFallsBack(t *testi
 	if strategy.Variants[0].Query != "model hermes agent" {
 		t.Fatalf("expected clean normalized model query first, got %#v", strategy.Variants)
 	}
+	if strategy.Family != queryFamilyModelToolSelection {
+		t.Fatalf("expected model/tool family, got %#v", strategy)
+	}
 	if !hasQueryVariant(strategy.Variants, "llm model stack hermes agent") ||
 		!hasQueryVariant(strategy.Variants, "qwen gpt hermes agent") {
 		t.Fatalf("expected model-strategy fallback variants, got %#v", strategy.Variants)
@@ -332,6 +370,104 @@ func TestBuildResearchStrategyDropsCorpusFrameTermsWhenPlannerFallsBack(t *testi
 	}
 	if !hasConceptKey(strategy.Concepts, "model") || !hasConceptKey(strategy.Concepts, "hermes") || !hasConceptKey(strategy.Concepts, "agent") {
 		t.Fatalf("expected model/hermes/agent concepts, got %#v", strategy.Concepts)
+	}
+}
+
+func TestDeterministicStrategyNamesMaintainedQueryFamilies(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		question      string
+		family        string
+		wantVariant   string
+		wantConcept   string
+		forbidVariant string
+	}{
+		{
+			name:        "entity topic overview",
+			question:    "What do I know about Mark Carney?",
+			family:      queryFamilyEntityTopicOverview,
+			wantVariant: "mark carney",
+			wantConcept: "mark",
+		},
+		{
+			name:        "person news event lookup",
+			question:    "Can you find the Calgary father that killed two kids?",
+			family:      queryFamilyPeopleEventLookup,
+			wantVariant: "calgary father charged killing children",
+			wantConcept: "children",
+		},
+		{
+			name:        "model tool selection",
+			question:    "What models should I use with Hermes agent?",
+			family:      queryFamilyModelToolSelection,
+			wantVariant: "llm model stack hermes agent",
+			wantConcept: "model",
+		},
+		{
+			name:        "software project lookup",
+			question:    "Chrome DevTools MCP browser automation project",
+			family:      queryFamilySoftwareProject,
+			wantVariant: "github chrome devtools mcp browser automation",
+			wantConcept: "project",
+		},
+		{
+			name:        "comparison",
+			question:    "K8s Helm alternatives",
+			family:      queryFamilyComparison,
+			wantVariant: "kubernetes helm alternatives",
+			wantConcept: "alternative",
+		},
+		{
+			name:        "timeline history",
+			question:    "history of Litestream SQLite backups",
+			family:      queryFamilyTimeline,
+			wantVariant: "litestream sqlite backups timeline",
+			wantConcept: "timeline",
+		},
+		{
+			name:        "media transcript OCR lookup",
+			question:    "video transcript red balloon promise",
+			family:      queryFamilyMediaEvidence,
+			wantVariant: "transcript red balloon promise",
+			wantConcept: "transcript",
+		},
+		{
+			name:          "corrective followup",
+			question:      "Current question: not Marmot, what about Litestream instead?\nPrior evidence titles for query focus:\n- Marmot V2 | web",
+			family:        queryFamilyCorrectiveFollowup,
+			wantVariant:   "litestream",
+			wantConcept:   "litestream",
+			forbidVariant: "marmot",
+		},
+		{
+			name:        "exact title source lookup",
+			question:    "Open exact source src:phase3-exact-source",
+			family:      queryFamilyExactLookup,
+			wantVariant: "src:phase3-exact-source",
+			wantConcept: "exact",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			searchQuestion := ask.SearchText(tt.question)
+			hints := ask.Hints(searchQuestion)
+			strategy := buildResearchStrategy(searchQuestion, hints)
+			if strategy.Family != tt.family {
+				t.Fatalf("family=%q, want %q; strategy=%#v", strategy.Family, tt.family, strategy)
+			}
+			if tt.wantVariant != "" && !hasQueryVariant(strategy.Variants, tt.wantVariant) {
+				t.Fatalf("expected variant %q, got %#v", tt.wantVariant, strategy.Variants)
+			}
+			if tt.wantConcept != "" && !hasConceptKey(strategy.Concepts, tt.wantConcept) {
+				t.Fatalf("expected concept %q, got %#v", tt.wantConcept, strategy.Concepts)
+			}
+			if tt.forbidVariant != "" && hasQueryVariantContaining(strategy.Variants, tt.forbidVariant) {
+				t.Fatalf("did not expect variant term %q in %#v", tt.forbidVariant, strategy.Variants)
+			}
+		})
 	}
 }
 
@@ -365,10 +501,12 @@ printf '%s\n' '{"input":{"model":"cli/test/planner"},"extracted":{"content":"pla
 	}
 	t.Setenv("DBRAIN_TEST_EXPECT_INPUT_DIR", cfg.TempDir)
 	hints := ask.Hints("K8s Helm alternatives")
+	observer := &testResearchObserver{}
 	strategy := b.buildResearchStrategy(context.Background(), "K8s Helm alternatives", hints, Options{
 		PlannerModel:   "cli/test/planner",
 		PlannerTimeout: 5 * time.Second,
 		PlannerBinary:  fakeSummarize,
+		Observer:       observer,
 	})
 
 	if strategy.Planner != "model_assisted" {
@@ -385,6 +523,12 @@ printf '%s\n' '{"input":{"model":"cli/test/planner"},"extracted":{"content":"pla
 	}
 	if !hasConceptTerm(strategy.Concepts, "alternative", "kustomize") {
 		t.Fatalf("expected merged model concept aliases, got %#v", strategy.Concepts)
+	}
+	if !strings.Contains(observer.plannerInput, "K8s Helm alternatives") {
+		t.Fatalf("expected planner input to be observed, got %q", observer.plannerInput)
+	}
+	if !strings.Contains(observer.plannerOutput, "cli/test/planner") || !strings.Contains(observer.plannerOutput, "helm tanka kustomize") {
+		t.Fatalf("expected raw planner output to be observed, got %q", observer.plannerOutput)
 	}
 }
 
@@ -531,9 +675,100 @@ func TestBuildRanksPeopleEventEvidenceByConceptCoverage(t *testing.T) {
 	}
 }
 
+func TestBuildReturnsRawChunkWindowForLongSource(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	source, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:long-raw-window",
+		OriginalURL:   "https://example.com/long-raw-window",
+		CanonicalURL:  "https://example.com/long-raw-window",
+		NormalizedURL: "https://example.com/long-raw-window",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/long-raw-window.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	raw := strings.Repeat("navigation newsletter unrelated text ", 120) + "The rare quasar passage says Mark Carney discussed GFANZ policy from a primary extract."
+	if _, err := st.SaveSourceExtraction(ctx, source.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/long-raw-window",
+		FinalURL:     "https://example.com/long-raw-window",
+		Title:        "Long raw source",
+		Content:      raw,
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "test-extract",
+		ToolVersion:  "test",
+	}, "long-raw-window-hash"); err != nil {
+		t.Fatalf("save source extraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(ctx, source.SourceID, model.SummaryResult{
+		Text:          "A broad derived summary that omits the rare term.",
+		Status:        "ok",
+		Model:         "test-summary-model",
+		PromptVersion: "test",
+		Tool:          "test-summary",
+		ToolVersion:   "test",
+		FetchedAt:     now,
+	}); err != nil {
+		t.Fatalf("save source summary: %v", err)
+	}
+
+	includeTopic := false
+	pack, err := Build(ctx, cfg, st, Options{
+		Question:       "quasar Mark Carney GFANZ",
+		Limit:          3,
+		MaxCharsPerDoc: 220,
+		IncludeTopic:   &includeTopic,
+		DisablePlanner: true,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(pack.Evidence) == 0 {
+		t.Fatal("expected evidence")
+	}
+	got := pack.Evidence[0]
+	if got.SourceKey != "src:long-raw-window" || got.EvidenceRole != "raw_extract_window" || got.Chunk == nil {
+		t.Fatalf("expected raw chunk evidence, got %+v", got)
+	}
+	if !strings.Contains(got.Excerpt, "quasar") || !strings.Contains(got.Excerpt, "GFANZ") {
+		t.Fatalf("expected raw chunk excerpt with query terms, got %q", got.Excerpt)
+	}
+	if !hasContentSection(got.ContentSections, "summary_text", "derived") || !hasContentSection(got.ContentSections, "extracted_text_window", "raw") {
+		t.Fatalf("expected role-labelled content sections, got %+v", got.ContentSections)
+	}
+}
+
 func hasQueryVariant(variants []QueryVariant, query string) bool {
 	for _, variant := range variants {
 		if variant.Query == query {
+			return true
+		}
+	}
+	return false
+}
+
+func hasContentSection(sections []retrieval.ContentSection, name string, role string) bool {
+	for _, section := range sections {
+		if section.Name == name && section.Role == role && strings.TrimSpace(section.Text) != "" {
 			return true
 		}
 	}
@@ -590,4 +825,22 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type testResearchObserver struct {
+	plannerInput  string
+	plannerOutput string
+	events        []string
+}
+
+func (o *testResearchObserver) Event(name string, _ map[string]interface{}) {
+	o.events = append(o.events, name)
+}
+
+func (o *testResearchObserver) PlannerInput(input string) {
+	o.plannerInput = input
+}
+
+func (o *testResearchObserver) PlannerOutput(output string) {
+	o.plannerOutput = output
 }

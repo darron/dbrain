@@ -4154,6 +4154,13 @@ func TestResearchCommandOutputsResearchPack(t *testing.T) {
 			t.Fatalf("expected research output to contain %q, got %q", value, output)
 		}
 	}
+	traceDir := assertResearchTraceDir(t, cfg, output)
+	assertTraceFile(t, traceDir, "run.md")
+	assertTraceFile(t, traceDir, "run.json")
+	assertTraceFile(t, traceDir, ".complete")
+	if _, err := os.Stat(filepath.Join(traceDir, "synthesis-input.md")); !os.IsNotExist(err) {
+		t.Fatalf("retrieval-only trace should not write synthesis input, err=%v", err)
+	}
 }
 
 func TestResearchCommandSynthesizesByDefault(t *testing.T) {
@@ -4255,6 +4262,135 @@ func TestResearchCommandSynthesizesByDefault(t *testing.T) {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected synthesized research output to contain %q, got %q", value, output)
 		}
+	}
+	traceDir := assertResearchTraceDir(t, cfg, output)
+	assertTraceFile(t, traceDir, "run.md")
+	assertTraceFile(t, traceDir, "run.json")
+	assertTraceFile(t, traceDir, "planner-input.md")
+	assertTraceFile(t, traceDir, "planner-output.json")
+	assertTraceFile(t, traceDir, "synthesis-input.md")
+	assertTraceFile(t, traceDir, ".complete")
+	traceJSON, err := os.ReadFile(filepath.Join(traceDir, "run.json"))
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, value := range []string{`"surface": "cli"`, `"stop_reason": "enough_evidence"`, `"synthesis"`, `"synthesis_input_path": "synthesis-input.md"`} {
+		if !strings.Contains(string(traceJSON), value) {
+			t.Fatalf("expected trace json to contain %q:\n%s", value, string(traceJSON))
+		}
+	}
+}
+
+func TestResearchCommandNoTraceSuppressesTraceWriting(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		_ = st.Close()
+	}()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "research", "nothing here", "--retrieval-only", "--no-trace"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "Trace:") {
+		t.Fatalf("no-trace output should not include trace path: %s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "research-runs")); !os.IsNotExist(err) {
+		t.Fatalf("expected no research-runs directory, err=%v", err)
+	}
+}
+
+func TestResearchCommandRunnerPersistsNoEvidenceTrace(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "research", "nothing here", "--runner", "--no-planner"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, value := range []string{"Research pack: nothing here", "Stop reason: no_evidence", "Trace: research-runs/"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected runner output to contain %q, got %q", value, output)
+		}
+	}
+	traceDir := assertResearchTraceDir(t, cfg, output)
+	assertTraceFile(t, traceDir, "run.md")
+	assertTraceFile(t, traceDir, "run.json")
+	assertTraceFile(t, traceDir, "synthesis-input.md")
+	assertTraceFile(t, traceDir, ".complete")
+	traceJSON, err := os.ReadFile(filepath.Join(traceDir, "run.json"))
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, value := range []string{`"surface": "cli"`, `"stop_reason": "no_evidence"`, `"prepared_synthesis"`, `"synthesis_input_path": "synthesis-input.md"`} {
+		if !strings.Contains(string(traceJSON), value) {
+			t.Fatalf("expected runner trace json to contain %q:\n%s", value, string(traceJSON))
+		}
+	}
+}
+
+func assertResearchTraceDir(t *testing.T, cfg config.Config, output string) string {
+	t.Helper()
+	marker := "Trace: "
+	idx := strings.LastIndex(output, marker)
+	if idx < 0 {
+		t.Fatalf("expected research output to include trace path, got %q", output)
+	}
+	line := strings.TrimSpace(output[idx+len(marker):])
+	if newline := strings.IndexByte(line, '\n'); newline >= 0 {
+		line = strings.TrimSpace(line[:newline])
+	}
+	if !strings.HasPrefix(line, "research-runs/") {
+		t.Fatalf("trace path should be relative under research-runs, got %q", line)
+	}
+	traceDir := filepath.Join(cfg.DataDir, filepath.FromSlash(line))
+	if _, err := os.Stat(traceDir); err != nil {
+		t.Fatalf("expected trace dir %s: %v", traceDir, err)
+	}
+	return traceDir
+}
+
+func assertTraceFile(t *testing.T, traceDir string, name string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(traceDir, name)); err != nil {
+		t.Fatalf("expected trace file %s: %v", name, err)
 	}
 }
 

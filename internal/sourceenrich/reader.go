@@ -125,6 +125,9 @@ func extractKnownReaderDomainSource(ctx context.Context, source model.SourceDocu
 func firstMarkdownTitle(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
+		if title, ok := strings.CutPrefix(line, "Title:"); ok {
+			return strings.TrimSpace(title)
+		}
 		if strings.HasPrefix(line, "#") {
 			return strings.TrimSpace(strings.TrimLeft(line, "#"))
 		}

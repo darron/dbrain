@@ -49,14 +49,14 @@ func excerptValuesWithRawFallback(terms []string, compact []string, raw ...strin
 	return values
 }
 
-func sourceExcerptValues(compact []string, raw ...string) []string {
+func sourceExcerptValues(compact []string, terms []string, raw ...string) []string {
 	values := make([]string, 0, len(compact)+len(raw))
 	for _, value := range compact {
 		if strings.TrimSpace(value) != "" {
 			values = append(values, value)
 		}
 	}
-	if len(values) == 0 {
+	if len(values) == 0 || !hasEnoughQueryCoverage(values, terms) {
 		for _, value := range raw {
 			if strings.TrimSpace(value) != "" {
 				values = append(values, value)

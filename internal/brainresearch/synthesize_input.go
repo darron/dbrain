@@ -44,6 +44,22 @@ func (b *synthesisInputBuilder) build() string {
 		out.WriteString("\n- planner_error: ")
 		out.WriteString(b.pack.QueryPlan.PlannerError)
 	}
+	if len(b.pack.QueryPlan.RetrievalLanes) > 0 {
+		out.WriteString("\n- retrieval_lanes:")
+		for _, lane := range b.pack.QueryPlan.RetrievalLanes {
+			out.WriteString("\n  - ")
+			out.WriteString(lane.Name)
+			if strings.TrimSpace(lane.Status) != "" {
+				out.WriteString(": ")
+				out.WriteString(lane.Status)
+			}
+			if strings.TrimSpace(lane.Reason) != "" {
+				out.WriteString(" (")
+				out.WriteString(lane.Reason)
+				out.WriteString(")")
+			}
+		}
+	}
 	if len(b.pack.QueryPlan.QueryVariants) > 0 {
 		out.WriteString("\n- query_variants:")
 		for _, variant := range b.pack.QueryPlan.QueryVariants {

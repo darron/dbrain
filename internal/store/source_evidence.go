@@ -13,8 +13,8 @@ func (s *Store) GetSourceEvidence(ctx context.Context, lookup string) (model.Sou
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			id, source_key, canonical_url, normalized_url, source_type, domain, title, description, site_name,
-			extract_status, extracted_at,
-			summary_text, summary_status, summarized_at,
+			extract_status, extracted_at, extract_tool,
+			summary_text, summary_status, summarized_at, summary_model, summary_tool,
 			note_path, user_tags, created_at, updated_at
 		FROM sources
 		WHERE source_key = ?
@@ -37,9 +37,12 @@ func (s *Store) GetSourceEvidence(ctx context.Context, lookup string) (model.Sou
 		&source.SiteName,
 		&source.ExtractStatus,
 		&extractedAt,
+		&source.ExtractTool,
 		&source.SummaryText,
 		&source.SummaryStatus,
 		&summarizedAt,
+		&source.SummaryModel,
+		&source.SummaryTool,
 		&source.NotePath,
 		&source.UserTags,
 		&createdAt,

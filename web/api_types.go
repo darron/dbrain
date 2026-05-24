@@ -5,6 +5,7 @@ import (
 
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/researchtrace"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -194,13 +195,46 @@ type ResearchRequest struct {
 	PlannerModel      string   `json:"planner_model"`
 	UseModelPlanner   bool     `json:"use_model_planner"`
 	DisablePlanner    bool     `json:"disable_planner"`
+	UseSemantic       bool     `json:"use_semantic"`
+	DisableSemantic   bool     `json:"disable_semantic"`
 }
 
 type ResearchSynthesisRequest struct {
-	Question         string             `json:"question"`
-	ResearchPack     brainresearch.Pack `json:"research_pack"`
-	Model            string             `json:"model"`
-	MaxEvidenceChars int                `json:"max_evidence_chars"`
+	Question         string                        `json:"question"`
+	ResearchPack     brainresearch.Pack            `json:"research_pack"`
+	Model            string                        `json:"model"`
+	MaxEvidenceChars int                           `json:"max_evidence_chars"`
+	TraceEnabled     *bool                         `json:"trace_enabled,omitempty"`
+	TraceSurface     string                        `json:"trace_surface,omitempty"`
+	TraceContinuity  *researchtrace.ChatContinuity `json:"trace_continuity,omitempty"`
+}
+
+type ResearchRunRequest struct {
+	Question          string                        `json:"question"`
+	Topic             string                        `json:"topic"`
+	Limit             int                           `json:"limit"`
+	SourceTypes       []string                      `json:"source_types"`
+	RelatedLimit      int                           `json:"related_limit"`
+	SeedLimit         int                           `json:"seed_limit"`
+	IncludeTopicBrief *bool                         `json:"include_topic_brief"`
+	MaxCharsPerDoc    int                           `json:"max_chars_per_doc"`
+	PlannerModel      string                        `json:"planner_model"`
+	UseModelPlanner   bool                          `json:"use_model_planner"`
+	DisablePlanner    bool                          `json:"disable_planner"`
+	UseSemantic       bool                          `json:"use_semantic"`
+	DisableSemantic   bool                          `json:"disable_semantic"`
+	Model             string                        `json:"model"`
+	MaxEvidenceChars  int                           `json:"max_evidence_chars"`
+	AnswerReview      bool                          `json:"answer_review"`
+	AnswerReviewModel string                        `json:"answer_review_model"`
+	TraceEnabled      *bool                         `json:"trace_enabled,omitempty"`
+	TraceSurface      string                        `json:"trace_surface,omitempty"`
+	TraceContinuity   *researchtrace.ChatContinuity `json:"trace_continuity,omitempty"`
+}
+
+type ResearchTraceCompareRequest struct {
+	TracePath  string `json:"trace_path"`
+	RunCurrent bool   `json:"run_current"`
 }
 
 type ChatTranscriptSaveRequest struct {

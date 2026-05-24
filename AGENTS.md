@@ -71,8 +71,10 @@ authoritative memory from model prose.
   later research/chat turns
 - follow-up chat may reuse prior evidence context, pinned sources, and previous
   user questions, but not previous model answers as facts
-- browser chat state should default to session-only storage unless a later
-  accepted design adds durable transcripts
+- browser chat state should default to session-only storage; accepted
+  diagnostic research traces may be saved server-side under `data/research-runs`
+  when a design requires it, but they must stay non-indexed, gitignored,
+  retention-bound, visible to the user, and opt-out for shared-device use
 - synthesis should cite dbrain source keys and keep retrieval failure/no-evidence
   states distinct from model failure states
 

@@ -26,6 +26,8 @@ func (s *Server) toolResearchPack(ctx context.Context, raw json.RawMessage) (map
 		PlannerModel      string   `json:"planner_model"`
 		UseModelPlanner   bool     `json:"use_model_planner"`
 		DisablePlanner    bool     `json:"disable_planner"`
+		UseSemantic       bool     `json:"use_semantic"`
+		DisableSemantic   bool     `json:"disable_semantic"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("decode research pack args: %w", err)
@@ -44,6 +46,8 @@ func (s *Server) toolResearchPack(ctx context.Context, raw json.RawMessage) (map
 		PlannerModel:    args.PlannerModel,
 		UseModelPlanner: args.UseModelPlanner || !args.DisablePlanner,
 		DisablePlanner:  args.DisablePlanner,
+		UseSemantic:     args.UseSemantic,
+		DisableSemantic: args.DisableSemantic,
 	})
 	if err != nil {
 		return nil, err

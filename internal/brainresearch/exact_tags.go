@@ -7,6 +7,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/researchhybrid"
 	"github.com/darron/dbrain/internal/retrieval"
 )
 
@@ -133,6 +134,10 @@ func exactTagEvidenceFromSource(vaultDir string, source model.SourceDocument, re
 func exactTagExampleRetrieval(tag string, terms []string, matchText string) ask.RetrievalInfo {
 	info := ask.RetrievalInfo{
 		Score: 12,
+		Lanes: []ask.RetrievalLane{{
+			Name:   researchhybrid.LaneExactTag,
+			Status: researchhybrid.StatusUsed,
+		}},
 		Signals: []ask.RetrievalSignal{{
 			Name:   "exact_user_tag_example",
 			Detail: tag,

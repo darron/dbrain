@@ -69,6 +69,8 @@ func toolDefinitions() []map[string]interface{} {
 					"planner_model":       map[string]interface{}{"type": "string", "description": "Optional model for query planning; empty uses the configured summary model."},
 					"use_model_planner":   map[string]interface{}{"type": "boolean", "description": "Use the configured model for bounded query planning before retrieval. Defaults to true unless disable_planner is set.", "default": true},
 					"disable_planner":     map[string]interface{}{"type": "boolean", "description": "Disable model-assisted query planning and use deterministic planning only.", "default": false},
+					"use_semantic":        map[string]interface{}{"type": "boolean", "description": "Request optional semantic retrieval when a local lane is configured. Currently reports disabled until a validated local embedding lane is added.", "default": false},
+					"disable_semantic":    map[string]interface{}{"type": "boolean", "description": "Disable optional semantic retrieval for deterministic lexical debugging.", "default": false},
 				},
 				"required": []string{"question"},
 			},

@@ -13,24 +13,37 @@ type ContentSection struct {
 }
 
 type EvidenceDocument struct {
-	SourceKey     string         `json:"source_key"`
-	Kind          string         `json:"kind"`
-	Title         string         `json:"title"`
-	URL           string         `json:"url"`
-	NotePath      string         `json:"note_path"`
-	Summary       string         `json:"summary"`
-	Excerpt       string         `json:"excerpt"`
-	Author        string         `json:"author,omitempty"`
-	SourceType    string         `json:"source_type,omitempty"`
-	PublishedAt   string         `json:"published_at,omitempty"`
-	ExtractedAt   string         `json:"extracted_at,omitempty"`
-	SummarizedAt  string         `json:"summarized_at,omitempty"`
-	UserTags      string         `json:"user_tags,omitempty"`
-	EntityMatches []string       `json:"entity_matches,omitempty"`
-	RelatedTo     string         `json:"related_to,omitempty"`
-	Relationship  string         `json:"relationship,omitempty"`
-	Media         []MediaRef     `json:"media,omitempty"`
-	Retrieval     *RetrievalInfo `json:"retrieval,omitempty"`
+	SourceKey       string           `json:"source_key"`
+	Kind            string           `json:"kind"`
+	Title           string           `json:"title"`
+	URL             string           `json:"url"`
+	NotePath        string           `json:"note_path"`
+	Summary         string           `json:"summary"`
+	Excerpt         string           `json:"excerpt"`
+	Author          string           `json:"author,omitempty"`
+	SourceType      string           `json:"source_type,omitempty"`
+	PublishedAt     string           `json:"published_at,omitempty"`
+	ExtractedAt     string           `json:"extracted_at,omitempty"`
+	SummarizedAt    string           `json:"summarized_at,omitempty"`
+	UserTags        string           `json:"user_tags,omitempty"`
+	EvidenceRole    string           `json:"evidence_role,omitempty"`
+	Chunk           *EvidenceChunk   `json:"chunk,omitempty"`
+	ContentSections []ContentSection `json:"content_sections,omitempty"`
+	EntityMatches   []string         `json:"entity_matches,omitempty"`
+	RelatedTo       string           `json:"related_to,omitempty"`
+	Relationship    string           `json:"relationship,omitempty"`
+	Media           []MediaRef       `json:"media,omitempty"`
+	Retrieval       *RetrievalInfo   `json:"retrieval,omitempty"`
+}
+
+type EvidenceChunk struct {
+	ParentSourceKey string `json:"parent_source_key,omitempty"`
+	Index           int    `json:"index,omitempty"`
+	StartChar       int    `json:"start_char,omitempty"`
+	EndChar         int    `json:"end_char,omitempty"`
+	Role            string `json:"role,omitempty"`
+	Hash            string `json:"hash,omitempty"`
+	Heading         string `json:"heading,omitempty"`
 }
 
 type MediaRef struct {
@@ -77,9 +90,18 @@ type RelatedDocument struct {
 
 type RetrievalInfo struct {
 	Score        int               `json:"score"`
+	Lanes        []RetrievalLane   `json:"lanes,omitempty"`
 	Signals      []RetrievalSignal `json:"signals,omitempty"`
 	MatchedTerms []string          `json:"matched_terms,omitempty"`
 	MissingTerms []string          `json:"missing_terms,omitempty"`
+}
+
+type RetrievalLane struct {
+	Name     string `json:"name"`
+	Status   string `json:"status,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Store    string `json:"store,omitempty"`
 }
 
 type RetrievalSignal struct {

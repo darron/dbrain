@@ -46,6 +46,7 @@ func (b *Builder) buildResearchStrategy(ctx context.Context, question string, hi
 func buildDeterministicResearchStrategy(question string, hints ask.QueryHints) researchStrategy {
 	terms := uniqueStrings(hints.Terms)
 	concepts := buildQueryConcepts(terms)
-	variants := buildQueryVariants(question, hints.TextQuery, terms, concepts)
-	return researchStrategy{Variants: variants, Concepts: concepts, Planner: "deterministic"}
+	family := classifyQueryFamily(question, terms, concepts)
+	variants := buildQueryVariants(question, hints.TextQuery, concepts, family)
+	return researchStrategy{Variants: variants, Concepts: concepts, Family: family, Planner: "deterministic"}
 }

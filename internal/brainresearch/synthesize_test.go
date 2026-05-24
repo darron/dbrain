@@ -10,6 +10,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func TestPrepareSynthesisBudgetsEvidenceDeterministically(t *testing.T) {
@@ -55,13 +56,54 @@ func TestPrepareSynthesisBudgetsEvidenceDeterministically(t *testing.T) {
 	if !strings.Contains(prepared.Input, "## Query Plan") || !strings.Contains(prepared.Input, "source_key: src:one") {
 		t.Fatalf("unexpected synthesis input:\n%s", prepared.Input)
 	}
+	for _, forbidden := range []string{"note_path:", "sources/web/one.md", "items/x/tag.md"} {
+		if strings.Contains(prepared.Input, forbidden) {
+			t.Fatalf("synthesis input exposed local note path marker %q:\n%s", forbidden, prepared.Input)
+		}
+	}
 	if len(prepared.Citations) == 0 || prepared.Citations[0].SourceKey != "src:one" {
 		t.Fatalf("expected citations from included evidence, got %+v", prepared.Citations)
 	}
 }
 
+func TestPrepareSynthesisLabelsEvidenceContentSections(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	pack := Pack{
+		SchemaVersion: SchemaVersion,
+		Question:      "What did the long source say about GFANZ?",
+		QueryPlan:     QueryPlan{TextQuery: "gfanz", QueryTerms: []string{"gfanz"}},
+		Coverage:      Coverage{EvidenceCount: 1},
+		Evidence: []ask.Evidence{{
+			SourceKey:    "src:long",
+			Kind:         "source",
+			Title:        "Long source",
+			Summary:      "Derived summary without the rare term.",
+			Excerpt:      "Raw extract window says Mark Carney discussed GFANZ.",
+			EvidenceRole: "raw_extract_window",
+			Chunk:        &retrieval.EvidenceChunk{ParentSourceKey: "src:long", Index: 3, Role: "raw_extract_window", Hash: "abc123", Heading: "GFANZ section"},
+			ContentSections: []retrieval.ContentSection{
+				{Name: "summary_text", Role: "derived", Text: "Derived summary without the rare term.", Chars: 38},
+				{Name: "extracted_text_window", Role: "raw", Text: "Raw extract window says Mark Carney discussed GFANZ.", Chars: 52},
+			},
+		}},
+	}
+
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: pack, Model: "cli/test/research", MaxEvidenceChars: 2000})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis: %v", err)
+	}
+	for _, want := range []string{"evidence_role: raw_extract_window", "chunk:", "role: raw_extract_window", "content_sections:", "name: summary_text", "role: derived", "name: extracted_text_window", "role: raw", "GFANZ"} {
+		if !strings.Contains(prepared.Input, want) {
+			t.Fatalf("expected synthesis input to contain %q:\n%s", want, prepared.Input)
+		}
+	}
+}
+
 func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
-	if SynthesisPromptVersion != "brain-research-synthesis-v2" {
+	if SynthesisPromptVersion != "brain-research-synthesis-v3" {
 		t.Fatalf("unexpected synthesis prompt version: %q", SynthesisPromptVersion)
 	}
 	for _, want := range []string{
@@ -69,9 +111,15 @@ func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
 		"Do not criticize the corpus for not being unbiased",
 		"Accuracy matters more than appearing objective",
 		"separate supported facts, source claims, opinions, and uncertainty",
+		"Do not include local note paths, filesystem paths, or a separate Sources section",
 	} {
 		if !strings.Contains(synthesisPrompt, want) {
 			t.Fatalf("synthesis prompt missing %q:\n%s", want, synthesisPrompt)
+		}
+	}
+	for _, forbidden := range []string{"source keys and note paths", "Include a short Sources section"} {
+		if strings.Contains(synthesisPrompt, forbidden) {
+			t.Fatalf("synthesis prompt retained local path instruction %q:\n%s", forbidden, synthesisPrompt)
 		}
 	}
 }

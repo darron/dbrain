@@ -103,3 +103,25 @@ func (s *Store) GetSourceExtractedText(ctx context.Context, lookup string) (stri
 	}
 	return extractedText, nil
 }
+
+func (s *Store) GetSourceExtractedTextPrefix(ctx context.Context, lookup string, maxChars int) (string, error) {
+	if maxChars <= 0 {
+		maxChars = 2000
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT substr(extracted_text, 1, ?)
+		FROM sources
+		WHERE source_key = ?
+			OR canonical_url = ?
+			OR normalized_url = ?
+			OR note_path = ?
+		LIMIT 1`, maxChars, lookup, lookup, lookup, lookup)
+	var extractedText string
+	if err := row.Scan(&extractedText); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("source not found: %s", lookup)
+		}
+		return "", fmt.Errorf("load source extracted text prefix %s: %w", lookup, err)
+	}
+	return extractedText, nil
+}

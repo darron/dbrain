@@ -39,6 +39,22 @@ func addRetrievalSignal(candidate *evidenceCandidate, name string, detail string
 	})
 }
 
+func addRetrievalLane(candidate *evidenceCandidate, lane RetrievalLane) {
+	lane.Name = strings.TrimSpace(lane.Name)
+	if lane.Name == "" {
+		return
+	}
+	if candidate.Retrieval == nil {
+		candidate.Retrieval = &RetrievalInfo{}
+	}
+	for _, current := range candidate.Retrieval.Lanes {
+		if strings.EqualFold(current.Name, lane.Name) {
+			return
+		}
+	}
+	candidate.Retrieval.Lanes = append(candidate.Retrieval.Lanes, lane)
+}
+
 func explainEvidenceScore(question string, terms []string, evidence Evidence, matchText string) RetrievalInfo {
 	score := 0
 	signals := make([]RetrievalSignal, 0, len(terms)+4)
