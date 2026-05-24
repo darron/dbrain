@@ -1068,6 +1068,26 @@ func TestResearchTraceListAndCompare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("write trace: %v", err)
 	}
+	_, err = researchtrace.Write(cfg, researchtrace.ResearchTrace{
+		SchemaVersion: researchtrace.SchemaVersion,
+		RunID:         "web-trace-compare-newer",
+		Surface:       "web_chat",
+		Question:      "What changed in agent memory?",
+		StartedAt:     time.Date(2026, 5, 23, 12, 1, 0, 0, time.UTC),
+		CompletedAt:   time.Date(2026, 5, 23, 12, 1, 1, 0, time.UTC),
+		Pack:          &pack,
+		Synthesis: &brainresearch.SynthesisResult{
+			SchemaVersion: brainresearch.SynthesisSchemaVersion,
+			Question:      "What changed in agent memory?",
+			Answer:        "Newer agent memory answer [" + sourceKey + "].",
+			AnswerStatus:  "ok",
+			Citations:     []brainresearch.Citation{{SourceKey: sourceKey}},
+		},
+		StopReason: "enough_evidence",
+	}, researchtrace.ArtifactContents{}, researchtrace.WriteOptions{Retention: researchtrace.RetentionOptions{KeepAll: true}})
+	if err != nil {
+		t.Fatalf("write newer trace: %v", err)
+	}
 	handler, err := NewHandler(cfg, st)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
@@ -1079,14 +1099,20 @@ func TestResearchTraceListAndCompare(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store trace list response, got %q", got)
+	}
 	var listResponse struct {
 		Traces []researchtrace.TraceSummary `json:"traces"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &listResponse); err != nil {
 		t.Fatalf("decode traces list: %v", err)
 	}
-	if len(listResponse.Traces) != 1 || listResponse.Traces[0].RelativePath != "research-runs/web-trace-compare" {
+	if len(listResponse.Traces) != 2 {
 		t.Fatalf("expected trace listing, got %+v", listResponse)
+	}
+	if listResponse.Traces[0].RelativePath != "research-runs/web-trace-compare-newer" || listResponse.Traces[1].RelativePath != "research-runs/web-trace-compare" {
+		t.Fatalf("expected newest trace listing first, got %+v", listResponse)
 	}
 
 	body, err := json.Marshal(ResearchTraceCompareRequest{TracePath: result.RelativePath})
@@ -1099,6 +1125,9 @@ func TestResearchTraceListAndCompare(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store trace compare response, got %q", got)
 	}
 	var response struct {
 		OldAnswer string `json:"old_answer"`

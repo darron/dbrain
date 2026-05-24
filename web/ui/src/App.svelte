@@ -274,9 +274,7 @@
 
   async function openHarness() {
     inputMode = "harness";
-    if (harnessState === "idle") {
-      await loadHarnessTraces();
-    }
+    await loadHarnessTraces();
   }
 
   async function loadShares() {
@@ -292,8 +290,11 @@
     }
   }
 
-  async function loadHarnessTraces() {
-    harnessState = "loading";
+  async function loadHarnessTraces(options = {}) {
+    const quiet = options?.quiet === true;
+    if (!quiet) {
+      harnessState = "loading";
+    }
     harnessError = "";
     try {
       const response = await listResearchTraces({ limit: 50 });
@@ -544,7 +545,13 @@
             const current = chatTurns.find((candidate) => candidate.id === id);
             const progress = [...(current?.progress || []), payload].slice(-12);
             const nextStatus = payload.stage === "synthesis" ? "synthesizing" : "researching";
-            updateChatTurn(id, { progress, status: nextStatus });
+            const tracePath = payload?.data?.trace_path;
+            const patch = { progress, status: nextStatus };
+            if (tracePath) {
+              patch.done = { ...(current?.done || {}), trace_path: tracePath };
+              void loadHarnessTraces({ quiet: true });
+            }
+            updateChatTurn(id, patch);
             chatState = nextStatus;
           } else if (event === "answer") {
             updateChatTurn(id, { answer: payload.text || "" });
@@ -560,6 +567,9 @@
               citations: payload.citations || chatTurns.find((candidate) => candidate.id === id)?.citations || [],
               status
             });
+            if (payload.trace_path) {
+              void loadHarnessTraces({ quiet: true });
+            }
             chatState = failed ? "error" : "ready";
           } else if (event === "verification_failed") {
             const message = payload.error || "Citation verification failed";
@@ -862,19 +872,24 @@
     return signals.slice(0, 3).map((signal) => signal?.name).filter(Boolean).join(" / ");
   }
 
-  function progressTimeline(turn) {
+  function currentProgressStep(turn) {
     const rows = Array.isArray(turn?.progress) ? turn.progress : [];
-    const seen = new Set();
-    const out = [];
-    for (const row of rows) {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
       const stage = String(row?.stage || "").trim();
       if (!stage) continue;
-      const key = `${stage}:${row?.status || ""}:${row?.message || ""}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(row);
+      return row;
     }
-    return out.slice(-10);
+    return null;
+  }
+
+  function chatHeaderStatus(turn) {
+    const model = turn?.done?.model || turn?.start?.model || "";
+    if (model) return model;
+    if ((turn?.status === "researching" || turn?.status === "synthesizing") && currentProgressStep(turn)) {
+      return "";
+    }
+    return turn?.status || "";
   }
 
   function formatProgressStage(row) {
@@ -1372,7 +1387,9 @@
                       <div class="synthesis-header">
                         <p class="panel-kicker" style="margin:0">dbrain</p>
                         <div class="answer-actions">
-                          <span>{turn.done?.model || turn.start?.model || turn.status}</span>
+                          {#if chatHeaderStatus(turn)}
+                            <span>{chatHeaderStatus(turn)}</span>
+                          {/if}
                           {#if turn.status === "ready" && turn.answer}
                             <button class="btn-ghost compact-action" type="button" disabled={chatShareStateByTurn[turn.id] === "loading"} on:click={() => shareChatTurn(turn)}>
                               {chatShareStateByTurn[turn.id] === "loading" ? "Sharing…" : "Share"}
@@ -1381,9 +1398,13 @@
                         </div>
                       </div>
 
-                      {#if turn.status === "researching"}
+                      {#if turn.done?.trace_path}
+                        <p class="message muted">Trace saved: {turn.done.trace_path}</p>
+                      {/if}
+
+                      {#if turn.status === "researching" && !currentProgressStep(turn)}
                         <p class="message muted">{turn.progress?.[turn.progress.length - 1]?.message || "Retrieving evidence from the local brain…"}</p>
-                      {:else if turn.status === "synthesizing" && !turn.answer}
+                      {:else if turn.status === "synthesizing" && !turn.answer && !currentProgressStep(turn)}
                         <p class="message muted">{turn.progress?.[turn.progress.length - 1]?.message || "Generating local answer…"}</p>
                       {:else if turn.status === "verification_failed"}
                         <p class="message error">{turn.error || "Citation verification failed"}</p>
@@ -1391,15 +1412,11 @@
                         <p class="message error">{turn.error || "Chat turn failed"}</p>
                       {/if}
 
-                      {#if progressTimeline(turn).length > 0}
-                        <ol class="progress-timeline" aria-label="Research runner progress">
-                          {#each progressTimeline(turn) as step}
-                            <li class:active={turn.status === "researching" || turn.status === "synthesizing"}>
-                              <span>{formatProgressStage(step)}</span>
-                              <small>{step.message}</small>
-                            </li>
-                          {/each}
-                        </ol>
+                      {#if currentProgressStep(turn) && (turn.status === "researching" || turn.status === "synthesizing")}
+                        <div class="progress-current" aria-label="Research runner progress">
+                          <span>{formatProgressStage(currentProgressStep(turn))}</span>
+                          <small>{currentProgressStep(turn).message}</small>
+                        </div>
                       {/if}
 
                       {#if turn.answer}
@@ -1422,10 +1439,6 @@
                             Share URL: <a href={chatShareByTurn[turn.id].url} target="_blank" rel="noreferrer">{absoluteShareURL(chatShareByTurn[turn.id])}</a>{chatShareCopiedByTurn[turn.id] ? " copied" : ""}
                           {/if}
                         </p>
-                      {/if}
-
-                      {#if turn.done?.trace_path}
-                        <p class="message muted">Trace saved: {turn.done.trace_path}</p>
                       {/if}
 
                       {#if chatWarnings(turn).length > 0}

@@ -13,7 +13,7 @@ var (
 	dbrainTokenRE = regexp.MustCompile(`\bdbrain_[A-Za-z0-9._~+/=-]{12,}`)
 	apiKeyRE      = regexp.MustCompile(`\b(sk|ork|or)-[A-Za-z0-9._~+/=-]{12,}`)
 	envSecretRE   = regexp.MustCompile(`(?i)\b([A-Z0-9_]*(TOKEN|SECRET|API_KEY|ACCESS_KEY|SESSION_KEY)[A-Z0-9_]*\s*[:=]\s*)[^"'\s]+`)
-	absPathRE     = regexp.MustCompile(`/[A-Za-z0-9._~+@%=-][^ \n\t"')\]]*`)
+	absPathRE     = regexp.MustCompile(`/[A-Za-z0-9._~+@%=-][^ \n\t\\\\"')\]]*`)
 )
 
 func redactText(cfg config.Config, text string) string {
@@ -50,7 +50,7 @@ func redactPaths(cfg config.Config, text string) string {
 		value := text[start:end]
 		b.WriteString(text[last:start])
 		last = end
-		if start > 0 && (text[start-1] == ':' || text[start-1] == '/') {
+		if !looksLikeAbsolutePathBoundary(text, start) {
 			b.WriteString(value)
 			continue
 		}
@@ -81,6 +81,21 @@ func redactPaths(cfg config.Config, text string) string {
 	}
 	b.WriteString(text[last:])
 	return b.String()
+}
+
+func looksLikeAbsolutePathBoundary(text string, start int) bool {
+	if start <= 0 {
+		return true
+	}
+	prev := text[start-1]
+	switch prev {
+	case ':', '/':
+		return false
+	case ' ', '\n', '\t', '\r', '"', '\'', '(', '[', '{', '=':
+		return true
+	default:
+		return false
+	}
 }
 
 func cleanPath(value string) string {

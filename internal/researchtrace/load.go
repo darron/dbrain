@@ -21,6 +21,7 @@ type TraceSummary struct {
 	StopReason    string    `json:"stop_reason,omitempty"`
 	EvidenceCount int       `json:"evidence_count,omitempty"`
 	AnswerStatus  string    `json:"answer_status,omitempty"`
+	LoadError     string    `json:"load_error,omitempty"`
 }
 
 func Load(cfg config.Config, path string) (ResearchTrace, string, error) {
@@ -32,8 +33,8 @@ func Load(cfg config.Config, path string) (ResearchTrace, string, error) {
 	if err != nil {
 		return ResearchTrace{}, "", fmt.Errorf("read trace %s: %w", path, err)
 	}
-	var trace ResearchTrace
-	if err := json.Unmarshal(data, &trace); err != nil {
+	trace, err := Decode(data)
+	if err != nil {
 		return ResearchTrace{}, "", fmt.Errorf("parse trace %s: %w", path, err)
 	}
 	return trace, resolved, nil
@@ -62,6 +63,7 @@ func List(cfg config.Config, limit int) ([]TraceSummary, error) {
 		}
 		trace, _, err := Load(cfg, filepath.Join("research-runs", entry.Name()))
 		if err != nil {
+			summaries = append(summaries, summarizeUnreadableTrace(entry.Name(), filepath.ToSlash(filepath.Join("research-runs", entry.Name())), filepath.Join(dir, CompleteMarker), err))
 			continue
 		}
 		summaries = append(summaries, summarizeTrace(trace, filepath.ToSlash(filepath.Join("research-runs", entry.Name()))))
@@ -135,6 +137,83 @@ func summarizeTrace(trace ResearchTrace, relativePath string) TraceSummary {
 	return summary
 }
 
+func summarizeUnreadableTrace(runID string, relativePath string, completePath string, loadErr error) TraceSummary {
+	summary := TraceSummary{
+		RunID:        runID,
+		RelativePath: relativePath,
+		StopReason:   "trace_unreadable",
+		LoadError:    loadErr.Error(),
+	}
+	if data, err := os.ReadFile(completePath); err == nil {
+		if completedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data))); err == nil {
+			summary.CompletedAt = completedAt
+		}
+	}
+	return summary
+}
+
 func traceRoot(cfg config.Config) string {
 	return filepath.Join(cfg.DataDir, "research-runs")
+}
+
+func Decode(data []byte) (ResearchTrace, error) {
+	var trace ResearchTrace
+	if err := unmarshalTrace(data, &trace); err != nil {
+		return ResearchTrace{}, err
+	}
+	return trace, nil
+}
+
+func unmarshalTrace(data []byte, trace *ResearchTrace) error {
+	if err := json.Unmarshal(data, trace); err != nil {
+		repaired := repairLegacyRedactedJSON(data)
+		if string(repaired) == string(data) {
+			return err
+		}
+		if repairErr := json.Unmarshal(repaired, trace); repairErr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func repairLegacyRedactedJSON(data []byte) []byte {
+	const marker = `[redacted-path]"`
+	text := string(data)
+	if !strings.Contains(text, marker) {
+		return data
+	}
+	var b strings.Builder
+	b.Grow(len(text) + strings.Count(text, marker))
+	for index := 0; index < len(text); {
+		next := strings.Index(text[index:], marker)
+		if next < 0 {
+			b.WriteString(text[index:])
+			break
+		}
+		start := index + next
+		quote := start + len(marker) - 1
+		b.WriteString(text[index:quote])
+		if shouldEscapeLegacyRedactedQuote(text, quote) {
+			b.WriteByte('\\')
+		}
+		b.WriteByte('"')
+		index = quote + 1
+	}
+	return []byte(b.String())
+}
+
+func shouldEscapeLegacyRedactedQuote(text string, quote int) bool {
+	for index := quote + 1; index < len(text); index++ {
+		switch text[index] {
+		case ' ', '\t':
+			continue
+		case ',', '}', ']', '\n', '\r', ':':
+			return false
+		default:
+			return true
+		}
+	}
+	return false
 }

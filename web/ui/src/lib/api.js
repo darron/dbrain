@@ -184,12 +184,13 @@ export function listChatShares() {
 export function listResearchTraces(options = {}) {
   const params = new URLSearchParams();
   params.set("limit", String(options.limit || 25));
-  return fetchJSON(`/api/research/traces?${params.toString()}`);
+  return fetchJSON(`/api/research/traces?${params.toString()}`, { cache: "no-store" });
 }
 
 export function compareResearchTrace(tracePath, options = {}) {
   return fetchJSON("/api/research/trace-compare", {
     method: "POST",
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json"
     },

@@ -2,7 +2,6 @@ package researcheval
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,8 +84,8 @@ func loadTraceJSON(path string) (researchtrace.ResearchTrace, string, error) {
 	if err != nil {
 		return researchtrace.ResearchTrace{}, "", fmt.Errorf("read trace %s: %w", path, err)
 	}
-	var trace researchtrace.ResearchTrace
-	if err := json.Unmarshal(data, &trace); err != nil {
+	trace, err := researchtrace.Decode(data)
+	if err != nil {
 		return researchtrace.ResearchTrace{}, "", fmt.Errorf("parse trace %s: %w", path, err)
 	}
 	return trace, path, nil

@@ -51,6 +51,7 @@ func TestWritePersistsMarkdownJSONArtifactsAndRedactsPrivateOperationalData(t *t
 				Title:     "Agent memory source",
 				URL:       "https://example.com/source/path",
 				NotePath:  "sources/web/test.md",
+				Summary:   `A "red-team/blue-team" phrase is not an absolute path and must not corrupt trace JSON.`,
 			}},
 		},
 		Synthesis: &brainresearch.SynthesisResult{
@@ -187,22 +188,51 @@ func TestPruneKeepsNewestAndActiveCompletedRunsOnly(t *testing.T) {
 
 func TestListAndLoadRejectPathTraversal(t *testing.T) {
 	cfg := testConfig(t)
-	recorder := NewRecorder("web_chat", "trace list question")
-	recorder.SetStopReason("no_evidence")
-	result, err := Write(cfg, recorder.trace, ArtifactContents{}, WriteOptions{Retention: RetentionOptions{KeepAll: true}})
-	if err != nil {
-		t.Fatalf("Write: %v", err)
+	var firstResult WriteResult
+	for _, tc := range []struct {
+		runID       string
+		question    string
+		completedAt time.Time
+	}{
+		{
+			runID:       "older-trace",
+			question:    "trace list question",
+			completedAt: time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			runID:       "newer-trace",
+			question:    "newer trace list question",
+			completedAt: time.Date(2026, 5, 23, 12, 1, 0, 0, time.UTC),
+		},
+	} {
+		recorder := NewRecorder("web_chat", tc.question)
+		recorder.trace.RunID = tc.runID
+		recorder.trace.CompletedAt = tc.completedAt
+		recorder.SetStopReason("no_evidence")
+		result, err := Write(cfg, recorder.trace, ArtifactContents{}, WriteOptions{Retention: RetentionOptions{KeepAll: true}})
+		if err != nil {
+			t.Fatalf("Write %s: %v", tc.runID, err)
+		}
+		if tc.runID == "older-trace" {
+			firstResult = result
+		}
 	}
 
 	traces, err := List(cfg, 10)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(traces) != 1 || traces[0].RelativePath != result.RelativePath || traces[0].Question != "trace list question" {
+	if len(traces) != 2 {
+		t.Fatalf("expected two trace summaries, got %#v", traces)
+	}
+	if traces[0].RelativePath != "research-runs/newer-trace" || traces[0].Question != "newer trace list question" {
+		t.Fatalf("newest trace should sort first: %#v", traces)
+	}
+	if traces[1].RelativePath != firstResult.RelativePath || traces[1].Question != "trace list question" {
 		t.Fatalf("unexpected trace summaries: %#v", traces)
 	}
 
-	trace, resolved, err := Load(cfg, result.RelativePath)
+	trace, resolved, err := Load(cfg, firstResult.RelativePath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -211,6 +241,71 @@ func TestListAndLoadRejectPathTraversal(t *testing.T) {
 	}
 	if _, _, err := Load(cfg, "../outside.json"); err == nil {
 		t.Fatalf("expected path traversal to be rejected")
+	}
+}
+
+func TestLoadRepairsLegacyRedactedJSONAndListIncludesUnreadableRuns(t *testing.T) {
+	cfg := testConfig(t)
+	root := filepath.Join(cfg.DataDir, "research-runs")
+	completedAt := time.Date(2026, 5, 23, 12, 2, 0, 0, time.UTC)
+	legacyDir := filepath.Join(root, "legacy-redacted")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatalf("create legacy trace dir: %v", err)
+	}
+	legacyJSON := `{
+  "schema_version": "research_trace.v1",
+  "run_id": "legacy-redacted",
+  "surface": "web_chat",
+  "question": "legacy repaired trace",
+  "started_at": "2026-05-23T12:01:59Z",
+  "completed_at": "2026-05-23T12:02:00Z",
+  "pack": {
+    "schema_version": "brain_research_pack.v1",
+    "question": "legacy repaired trace",
+    "evidence": [
+      {"source_key": "src:test", "summary": "A \"red-team[redacted-path]" phrase was corrupted by old redaction."}
+    ]
+  },
+  "stop_reason": "enough_evidence"
+}`
+	if err := os.WriteFile(filepath.Join(legacyDir, "run.json"), []byte(legacyJSON), 0o600); err != nil {
+		t.Fatalf("write legacy run json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, CompleteMarker), []byte(completedAt.Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+		t.Fatalf("write legacy complete marker: %v", err)
+	}
+
+	trace, _, err := Load(cfg, "research-runs/legacy-redacted")
+	if err != nil {
+		t.Fatalf("Load should repair legacy malformed JSON: %v", err)
+	}
+	if trace.Question != "legacy repaired trace" || trace.Pack == nil || len(trace.Pack.Evidence) != 1 {
+		t.Fatalf("unexpected repaired trace: %#v", trace)
+	}
+
+	brokenDir := filepath.Join(root, "unreadable-trace")
+	if err := os.MkdirAll(brokenDir, 0o700); err != nil {
+		t.Fatalf("create unreadable trace dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "run.json"), []byte(`{"schema_version":`), 0o600); err != nil {
+		t.Fatalf("write unreadable run json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, CompleteMarker), []byte(completedAt.Add(time.Minute).Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+		t.Fatalf("write unreadable complete marker: %v", err)
+	}
+
+	traces, err := List(cfg, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(traces) != 2 {
+		t.Fatalf("expected repaired and unreadable traces to list, got %#v", traces)
+	}
+	if traces[0].RunID != "unreadable-trace" || traces[0].LoadError == "" || traces[0].StopReason != "trace_unreadable" {
+		t.Fatalf("expected unreadable trace summary first, got %#v", traces)
+	}
+	if traces[1].RunID != "legacy-redacted" || traces[1].LoadError != "" {
+		t.Fatalf("expected repaired trace summary, got %#v", traces)
 	}
 }
 

@@ -17,6 +17,7 @@ func (s *server) handleResearchTraces(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	limit := parseIntParam(r, "limit", 25)
 	if limit > 100 {
 		limit = 100
@@ -34,6 +35,7 @@ func (s *server) handleResearchTraceCompare(w http.ResponseWriter, r *http.Reque
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	var req ResearchTraceCompareRequest
 	limitedBody := http.MaxBytesReader(w, r.Body, defaultSynthesisBytes)
 	if err := json.NewDecoder(limitedBody).Decode(&req); err != nil {

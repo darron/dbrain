@@ -1652,38 +1652,27 @@ textarea { resize: vertical; }
   max-width: 100%;
 }
 
-.progress-timeline {
-  display: grid;
-  gap: 0.3rem;
-  margin: 0.2rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.progress-timeline li {
+.progress-current {
   display: grid;
   grid-template-columns: minmax(8rem, 0.32fr) minmax(0, 1fr);
   gap: 0.45rem;
   align-items: baseline;
+  margin: 0.2rem 0 0;
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(74, 222, 128, 0.035);
-}
-
-.progress-timeline li.active:last-child {
   border-color: var(--border-hi);
   background: rgba(74, 222, 128, 0.09);
 }
 
-.progress-timeline span {
+.progress-current span {
   color: var(--accent);
   font-size: 0.7rem;
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
 
-.progress-timeline small {
+.progress-current small {
   min-width: 0;
   color: var(--text-lo);
   font-size: 0.76rem;
@@ -2300,7 +2289,7 @@ textarea { resize: vertical; }
   .harness-header,
   .harness-grid,
   .answer-compare-grid,
-  .progress-timeline li {
+  .progress-current {
     grid-template-columns: 1fr;
   }
 

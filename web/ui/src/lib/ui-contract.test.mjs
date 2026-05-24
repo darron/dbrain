@@ -12,5 +12,8 @@ test("chat is default and research is absent from primary mode tabs", () => {
   assert.doesNotMatch(appSource, /class:active=\{inputMode === "research"\}[\s\S]{0,120}>\s*Research\s*</);
   assert.match(appSource, />\s*Chat\s*</);
   assert.match(appSource, />\s*Harness\s*</);
-  assert.match(appSource, /progress-timeline/);
+  assert.match(appSource, /progress-current/);
+  assert.match(appSource, /turn\.status === "researching" && !currentProgressStep\(turn\)/);
+  assert.match(appSource, /turn\.status === "synthesizing" && !turn\.answer && !currentProgressStep\(turn\)/);
+  assert.match(appSource, /void loadHarnessTraces\(\{ quiet: true \}\)/);
 });

@@ -53,8 +53,10 @@ test("trace lab API helpers use safe JSON request shapes", async () => {
   }
 
   assert.equal(calls[0].url, "/api/research/traces?limit=12");
+  assert.equal(calls[0].options.cache, "no-store");
   assert.equal(calls[1].url, "/api/research/trace-compare");
   assert.equal(calls[1].options.method, "POST");
+  assert.equal(calls[1].options.cache, "no-store");
   assert.deepEqual(JSON.parse(calls[1].options.body), {
     trace_path: "research-runs/run-1",
     run_current: true
