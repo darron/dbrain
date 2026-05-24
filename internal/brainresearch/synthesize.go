@@ -13,7 +13,7 @@ import (
 
 const (
 	SynthesisSchemaVersion           = "research_synthesis.v1"
-	SynthesisPromptVersion           = "brain-research-synthesis-v2"
+	SynthesisPromptVersion           = "brain-research-synthesis-v3"
 	DefaultMaxEvidenceChars          = 24000
 	defaultExactTagReservedChars     = 2000
 	defaultTopicBriefMinRemaining    = 2000

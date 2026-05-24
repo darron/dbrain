@@ -33,7 +33,7 @@ func VerifyCitations(pack brainresearch.Pack, result brainresearch.SynthesisResu
 		citationKeys[key] = struct{}{}
 		if _, ok := allowed[key]; !ok {
 			verification.Passed = false
-			verification.Errors = append(verification.Errors, fmt.Sprintf("citation source_key %s is not present in final evidence pack", key))
+			verification.Errors = append(verification.Errors, sourceKeyMissingError("citation source_key", key, allowed))
 		}
 	}
 	answerKeys := answerSourceKeys(answer)
@@ -44,11 +44,7 @@ func VerifyCitations(pack brainresearch.Pack, result brainresearch.SynthesisResu
 	for _, key := range answerKeys {
 		if _, ok := allowed[key]; !ok {
 			verification.Passed = false
-			if exact := exactAllowedKey(allowed, key); exact != "" {
-				verification.Errors = append(verification.Errors, fmt.Sprintf("answer citation %s must use exact source key %s", key, exact))
-			} else {
-				verification.Errors = append(verification.Errors, fmt.Sprintf("answer citation %s is not present in final evidence pack", key))
-			}
+			verification.Errors = append(verification.Errors, sourceKeyMissingError("answer citation", key, allowed))
 			continue
 		}
 		if _, ok := citationKeys[key]; !ok {
@@ -87,6 +83,16 @@ func answerSourceKeys(answer string) []string {
 	return keys
 }
 
+func sourceKeyMissingError(label string, candidate string, allowed map[string]struct{}) string {
+	if exact := exactAllowedKey(allowed, candidate); exact != "" {
+		return fmt.Sprintf("%s %s must use exact source key %s", label, candidate, exact)
+	}
+	if near := nearestAllowedKey(allowed, candidate); near != "" {
+		return fmt.Sprintf("%s %s is not present in final evidence pack; nearest evidence source key is %s", label, candidate, near)
+	}
+	return fmt.Sprintf("%s %s is not present in final evidence pack", label, candidate)
+}
+
 func exactAllowedKey(allowed map[string]struct{}, candidate string) string {
 	for key := range allowed {
 		if strings.EqualFold(key, candidate) && key != candidate {
@@ -94,4 +100,97 @@ func exactAllowedKey(allowed map[string]struct{}, candidate string) string {
 		}
 	}
 	return ""
+}
+
+func nearestAllowedKey(allowed map[string]struct{}, candidate string) string {
+	const maxDistance = 2
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return ""
+	}
+	candidateNamespace := sourceKeyNamespace(candidate)
+	if candidateNamespace == "" {
+		return ""
+	}
+	bestKey := ""
+	bestDistance := maxDistance + 1
+	candidateFolded := strings.ToLower(candidate)
+	for key := range allowed {
+		if sourceKeyNamespace(key) != candidateNamespace {
+			continue
+		}
+		distance := boundedEditDistance(strings.ToLower(key), candidateFolded, maxDistance)
+		if distance > maxDistance {
+			continue
+		}
+		if bestKey == "" || distance < bestDistance || (distance == bestDistance && key < bestKey) {
+			bestKey = key
+			bestDistance = distance
+		}
+	}
+	return bestKey
+}
+
+func sourceKeyNamespace(key string) string {
+	prefix, _, ok := strings.Cut(strings.TrimSpace(key), ":")
+	if !ok || prefix == "" {
+		return ""
+	}
+	return strings.ToLower(prefix)
+}
+
+func boundedEditDistance(left string, right string, maxDistance int) int {
+	if maxDistance < 0 {
+		return maxDistance + 1
+	}
+	if left == right {
+		return 0
+	}
+	if absInt(len(left)-len(right)) > maxDistance {
+		return maxDistance + 1
+	}
+	prev := make([]int, len(right)+1)
+	curr := make([]int, len(right)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(left); i++ {
+		curr[0] = i
+		rowMin := curr[0]
+		for j := 1; j <= len(right); j++ {
+			cost := 0
+			if left[i-1] != right[j-1] {
+				cost = 1
+			}
+			curr[j] = minInt(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
+			if curr[j] < rowMin {
+				rowMin = curr[j]
+			}
+		}
+		if rowMin > maxDistance {
+			return maxDistance + 1
+		}
+		prev, curr = curr, prev
+	}
+	if prev[len(right)] > maxDistance {
+		return maxDistance + 1
+	}
+	return prev[len(right)]
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func minInt(values ...int) int {
+	best := values[0]
+	for _, value := range values[1:] {
+		if value < best {
+			best = value
+		}
+	}
+	return best
 }

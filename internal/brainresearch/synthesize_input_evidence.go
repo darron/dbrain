@@ -45,10 +45,6 @@ func evidenceChunk(doc ask.Evidence) string {
 		b.WriteString("\n  url: ")
 		b.WriteString(doc.URL)
 	}
-	if doc.NotePath != "" {
-		b.WriteString("\n  note_path: ")
-		b.WriteString(doc.NotePath)
-	}
 	if doc.UserTags != "" {
 		b.WriteString("\n  user_tags: ")
 		b.WriteString(doc.UserTags)

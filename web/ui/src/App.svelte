@@ -570,12 +570,12 @@
             if (payload.trace_path) {
               void loadHarnessTraces({ quiet: true });
             }
-            chatState = failed ? "error" : "ready";
+            chatState = status === "error" ? "error" : "ready";
           } else if (event === "verification_failed") {
             const message = payload.error || "Citation verification failed";
             updateChatTurn(id, { done: payload, error: message, status: "verification_failed" });
-            chatError = message;
-            chatState = "error";
+            chatError = "";
+            chatState = "ready";
           } else if (event === "error") {
             updateChatTurn(id, { done: payload, error: payload.error || "Synthesis failed", status: "error" });
             chatError = payload.error || "Synthesis failed";
@@ -617,6 +617,7 @@
   }
 
   function chatCitations(turn) {
+    if (turn?.status === "verification_failed") return [];
     return turn?.done?.citations || turn?.citations || [];
   }
 
@@ -1281,14 +1282,19 @@
                       {:else if harnessComparison}
                         <div class="answer-card">
                           <div class="synthesis-header">
-                            <p class="panel-kicker" style="margin:0">Trace Diff</p>
-                            <span>{harnessComparison.diff?.question}</span>
+                            <p class="panel-kicker" style="margin:0">{harnessComparison.diff ? "Trace Diff" : "Saved Trace"}</p>
+                            <span>{harnessComparison.diff?.question || harnessComparison.trace?.question}</span>
                           </div>
-                          <div class="diff-stats">
-                            <span>Added {harnessComparison.diff?.added?.length || 0}</span>
-                            <span>Removed {harnessComparison.diff?.removed?.length || 0}</span>
-                            <span>Reordered {harnessComparison.diff?.reordered?.length || 0}</span>
-                          </div>
+                          {#if harnessComparison.diff_error}
+                            <p class="message error">Current diff unavailable: {harnessComparison.diff_error}</p>
+                          {/if}
+                          {#if harnessComparison.diff}
+                            <div class="diff-stats">
+                              <span>Added {harnessComparison.diff.added?.length || 0}</span>
+                              <span>Removed {harnessComparison.diff.removed?.length || 0}</span>
+                              <span>Reordered {harnessComparison.diff.reordered?.length || 0}</span>
+                            </div>
+                          {/if}
                           {#if harnessComparison.diff?.proposal_command}
                             <code class="proposal-command">{harnessComparison.diff.proposal_command}</code>
                           {/if}
@@ -1307,6 +1313,8 @@
                             <p class="panel-kicker" style="margin:0">Current Answer</p>
                             {#if harnessComparison.current?.answer}
                               <MarkdownView markdown={harnessComparison.current.answer} linkSourceKeys={true} onLookup={loadDetail} />
+                            {:else if harnessComparison.current_error}
+                              <p class="message error">{harnessComparison.current_error}</p>
                             {:else if harnessComparison.current?.stop_reason}
                               <p class="message muted">Current rerun stopped: {harnessComparison.current.stop_reason}</p>
                             {:else}
@@ -1407,7 +1415,7 @@
                       {:else if turn.status === "synthesizing" && !turn.answer && !currentProgressStep(turn)}
                         <p class="message muted">{turn.progress?.[turn.progress.length - 1]?.message || "Generating local answer…"}</p>
                       {:else if turn.status === "verification_failed"}
-                        <p class="message error">{turn.error || "Citation verification failed"}</p>
+                        <p class="message error">Generated answer rejected: {turn.error || "citation verification failed"}</p>
                       {:else if turn.status === "error"}
                         <p class="message error">{turn.error || "Chat turn failed"}</p>
                       {/if}

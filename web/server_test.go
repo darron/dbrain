@@ -29,6 +29,23 @@ type fakeArchiveProxy struct {
 	signedURL string
 }
 
+func TestWebResearchTimeoutDefaultsLeaveRoomForExactTagRetrieval(t *testing.T) {
+	t.Parallel()
+
+	if defaultWebResearchStageTimeout < 2*time.Minute {
+		t.Fatalf("expected web research stage timeout to cover slower exact-tag retrieval, got %s", defaultWebResearchStageTimeout)
+	}
+	if defaultWebResearchSynthesisTimeout < 2*time.Minute {
+		t.Fatalf("expected web research synthesis timeout to allow full local synthesis, got %s", defaultWebResearchSynthesisTimeout)
+	}
+	if defaultWebResearchRunnerTimeout < defaultWebResearchStageTimeout*2+defaultWebResearchSynthesisTimeout {
+		t.Fatalf("expected web research runner timeout to leave room for retrieval, retry, and synthesis; runner=%s stage=%s synthesis=%s", defaultWebResearchRunnerTimeout, defaultWebResearchStageTimeout, defaultWebResearchSynthesisTimeout)
+	}
+	if defaultResearchTimeout < defaultWebResearchStageTimeout {
+		t.Fatalf("expected legacy web research timeout to be at least the runner stage timeout, got legacy=%s stage=%s", defaultResearchTimeout, defaultWebResearchStageTimeout)
+	}
+}
+
 func (f *fakeArchiveProxy) GetObject(_ context.Context, _, _ string, rangeHeader string) (archiveObject, error) {
 	if rangeHeader != "" {
 		return archiveObject{
@@ -1012,7 +1029,8 @@ func TestResearchRunStreamsVerificationFailure(t *testing.T) {
 		t.Fatalf("unexpected verification_failed payload: %+v", failed)
 	}
 	var done struct {
-		StopReason   string `json:"stop_reason"`
+		StopReason   string                   `json:"stop_reason"`
+		Citations    []brainresearch.Citation `json:"citations"`
 		Verification struct {
 			Passed bool     `json:"passed"`
 			Errors []string `json:"errors"`
@@ -1024,6 +1042,9 @@ func TestResearchRunStreamsVerificationFailure(t *testing.T) {
 	}
 	if done.StopReason != "verification_failed" || done.Verification.Passed || len(done.Verification.Errors) == 0 {
 		t.Fatalf("unexpected verification failed done event: %+v", done)
+	}
+	if len(done.Citations) != 0 {
+		t.Fatalf("verification-failed runner must not expose rejected citations: %+v", done.Citations)
 	}
 	traceJSON, err := os.ReadFile(filepath.Join(cfg.DataDir, filepath.FromSlash(done.TracePath), "run.json"))
 	if err != nil {
@@ -1152,6 +1173,58 @@ func TestResearchTraceListAndCompare(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected traversal rejection, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResearchTraceCompareReturnsSavedTraceWhenDiffFails(t *testing.T) {
+	cfg, st := openTestStore(t)
+	result, err := researchtrace.Write(cfg, researchtrace.ResearchTrace{
+		SchemaVersion: researchtrace.SchemaVersion,
+		RunID:         "web-trace-diff-fails",
+		Surface:       "web_chat",
+		Question:      "Trace without pack",
+		StartedAt:     time.Date(2026, 5, 23, 12, 2, 0, 0, time.UTC),
+		CompletedAt:   time.Date(2026, 5, 23, 12, 2, 1, 0, time.UTC),
+		Synthesis: &brainresearch.SynthesisResult{
+			SchemaVersion: brainresearch.SynthesisSchemaVersion,
+			Question:      "Trace without pack",
+			Answer:        "Saved answer from a trace whose diff cannot rerun.",
+			AnswerStatus:  "ok",
+		},
+		StopReason: "verification_failed",
+	}, researchtrace.ArtifactContents{}, researchtrace.WriteOptions{Retention: researchtrace.RetentionOptions{KeepAll: true}})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	body, err := json.Marshal(ResearchTraceCompareRequest{TracePath: result.RelativePath})
+	if err != nil {
+		t.Fatalf("marshal compare body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/trace-compare", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		OldAnswer string `json:"old_answer"`
+		DiffError string `json:"diff_error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode compare: %v", err)
+	}
+	if !strings.Contains(response.OldAnswer, "Saved answer") {
+		t.Fatalf("expected saved answer to remain available: %+v", response)
+	}
+	if !strings.Contains(response.DiffError, "does not contain a research pack") {
+		t.Fatalf("expected diff error in 200 response: %+v", response)
 	}
 }
 

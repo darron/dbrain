@@ -307,6 +307,18 @@ func TestVerifyCitationsRejectsKeysOutsideFinalPack(t *testing.T) {
 		t.Fatalf("expected exact-prefix verification failure: %+v", verification)
 	}
 
+	nearMissPack := brainresearch.Pack{
+		Evidence: []ask.Evidence{{SourceKey: "src:3fcc0a4088e1"}},
+	}
+	verification = VerifyCitations(nearMissPack, brainresearch.SynthesisResult{
+		Answer:       "Near-miss citation key [src:3fcc0a88e1].",
+		AnswerStatus: "ok",
+		Citations:    []brainresearch.Citation{{SourceKey: "src:3fcc0a4088e1"}},
+	})
+	if verification.Passed || !strings.Contains(strings.Join(verification.Errors, "\n"), "nearest evidence source key is src:3fcc0a4088e1") {
+		t.Fatalf("expected near-miss source key suggestion: %+v", verification)
+	}
+
 	verification = VerifyCitations(pack, brainresearch.SynthesisResult{
 		Answer:       "Answer has evidence but no source key marker.",
 		AnswerStatus: "ok",

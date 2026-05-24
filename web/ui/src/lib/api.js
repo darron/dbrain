@@ -1,5 +1,10 @@
 async function fetchJSON(url, options = {}) {
-  const response = await fetch(url, options);
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    throw new Error(`Could not reach dbrain web API: ${error.message || error}`);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload.error || `Request failed with status ${response.status}`);

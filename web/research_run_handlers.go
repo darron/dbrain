@@ -63,6 +63,9 @@ func (s *server) handleResearchRun(w http.ResponseWriter, r *http.Request) {
 		Model:              req.Model,
 		CLI:                defaultWebCLI,
 		MaxEvidenceChars:   req.MaxEvidenceChars,
+		SynthesisTimeout:   defaultWebResearchSynthesisTimeout,
+		RunnerTimeout:      defaultWebResearchRunnerTimeout,
+		StageTimeout:       defaultWebResearchStageTimeout,
 		EnableAnswerReview: req.AnswerReview,
 		AnswerReviewModel:  req.AnswerReviewModel,
 		TraceEnabled:       req.TraceEnabled,
@@ -135,6 +138,9 @@ func runnerErrorStop(stopReason string) bool {
 }
 
 func runnerCitations(result researchrun.Result) interface{} {
+	if result.StopReason == researchrun.StopVerificationFailed {
+		return nil
+	}
 	if result.Synthesis == nil {
 		return nil
 	}

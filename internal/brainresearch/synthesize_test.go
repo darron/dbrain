@@ -56,6 +56,11 @@ func TestPrepareSynthesisBudgetsEvidenceDeterministically(t *testing.T) {
 	if !strings.Contains(prepared.Input, "## Query Plan") || !strings.Contains(prepared.Input, "source_key: src:one") {
 		t.Fatalf("unexpected synthesis input:\n%s", prepared.Input)
 	}
+	for _, forbidden := range []string{"note_path:", "sources/web/one.md", "items/x/tag.md"} {
+		if strings.Contains(prepared.Input, forbidden) {
+			t.Fatalf("synthesis input exposed local note path marker %q:\n%s", forbidden, prepared.Input)
+		}
+	}
 	if len(prepared.Citations) == 0 || prepared.Citations[0].SourceKey != "src:one" {
 		t.Fatalf("expected citations from included evidence, got %+v", prepared.Citations)
 	}
@@ -98,7 +103,7 @@ func TestPrepareSynthesisLabelsEvidenceContentSections(t *testing.T) {
 }
 
 func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
-	if SynthesisPromptVersion != "brain-research-synthesis-v2" {
+	if SynthesisPromptVersion != "brain-research-synthesis-v3" {
 		t.Fatalf("unexpected synthesis prompt version: %q", SynthesisPromptVersion)
 	}
 	for _, want := range []string{
@@ -106,9 +111,15 @@ func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
 		"Do not criticize the corpus for not being unbiased",
 		"Accuracy matters more than appearing objective",
 		"separate supported facts, source claims, opinions, and uncertainty",
+		"Do not include local note paths, filesystem paths, or a separate Sources section",
 	} {
 		if !strings.Contains(synthesisPrompt, want) {
 			t.Fatalf("synthesis prompt missing %q:\n%s", want, synthesisPrompt)
+		}
+	}
+	for _, forbidden := range []string{"source keys and note paths", "Include a short Sources section"} {
+		if strings.Contains(synthesisPrompt, forbidden) {
+			t.Fatalf("synthesis prompt retained local path instruction %q:\n%s", forbidden, synthesisPrompt)
 		}
 	}
 }

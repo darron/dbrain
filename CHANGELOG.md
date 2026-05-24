@@ -13,6 +13,15 @@ development date for the change set.
 - **Harness Lab**: Added trace listing and comparison APIs plus a web Harness
   tab that loads saved research traces, shows old answer/current rerun slots,
   compares old/current evidence, and exposes the eval-proposal command.
+- **Harness Lab**: Trace inspection now still returns the saved trace when the
+  current diff/rerun fails, and Chat verification failures clearly mark generated
+  answers as rejected without showing rejected citation chips as accepted output.
+- **Web**: Chat and Harness Lab runner paths now use a longer retrieval stage
+  budget so exact-tag-heavy queries do not fail at the old short deadline before
+  synthesis starts.
+- **Synthesis**: Research synthesis no longer asks models to print local note
+  paths or a separate `Sources` section; citation metadata remains available to
+  the UI through structured source-key data.
 - **Retrieval**: Evidence rows now carry retrieval lane provenance, exact-tag
   examples are marked as their own lane, and the optional semantic lane is
   explicit but disabled until local hybrid retrieval has enough reviewed evals.

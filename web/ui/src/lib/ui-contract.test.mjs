@@ -16,4 +16,6 @@ test("chat is default and research is absent from primary mode tabs", () => {
   assert.match(appSource, /turn\.status === "researching" && !currentProgressStep\(turn\)/);
   assert.match(appSource, /turn\.status === "synthesizing" && !turn\.answer && !currentProgressStep\(turn\)/);
   assert.match(appSource, /void loadHarnessTraces\(\{ quiet: true \}\)/);
+  assert.match(appSource, /Generated answer rejected:/);
+  assert.match(appSource, /turn\?\.status === "verification_failed"\) return \[\]/);
 });

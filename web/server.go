@@ -19,19 +19,22 @@ import (
 )
 
 const (
-	defaultAddr            = "127.0.0.1:8742"
-	defaultSearchLimit     = 25
-	defaultResearchLimit   = 8
-	defaultSynthesisBytes  = 5 << 20
-	defaultTranscriptBytes = 10 << 20
-	defaultEventLimit      = 8
-	defaultActivityWindow  = 24 * time.Hour
-	defaultSSEHeartbeat    = 5 * time.Second
-	defaultResearchTimeout = 45 * time.Second
-	defaultWebCLI          = "codex"
-	maxSearchLimit         = 50
-	maxResearchLimit       = 50
-	maxEventLimit          = 20
+	defaultAddr                        = "127.0.0.1:8742"
+	defaultSearchLimit                 = 25
+	defaultResearchLimit               = 8
+	defaultSynthesisBytes              = 5 << 20
+	defaultTranscriptBytes             = 10 << 20
+	defaultEventLimit                  = 8
+	defaultActivityWindow              = 24 * time.Hour
+	defaultSSEHeartbeat                = 5 * time.Second
+	defaultResearchTimeout             = 2 * time.Minute
+	defaultWebResearchRunnerTimeout    = 6 * time.Minute
+	defaultWebResearchStageTimeout     = 2 * time.Minute
+	defaultWebResearchSynthesisTimeout = 2 * time.Minute
+	defaultWebCLI                      = "codex"
+	maxSearchLimit                     = 50
+	maxResearchLimit                   = 50
+	maxEventLimit                      = 20
 )
 
 //go:embed all:ui/dist

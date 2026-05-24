@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/darron/dbrain/internal/researcheval"
 	"github.com/darron/dbrain/internal/researchrun"
@@ -52,26 +51,25 @@ func (s *server) handleResearchTraceCompare(w http.ResponseWriter, r *http.Reque
 		writeMessage(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	diff, err := researcheval.DiffTrace(r.Context(), s.cfg, s.store, req.TracePath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-
 	response := map[string]interface{}{
 		"trace":         trace,
 		"resolved_path": resolved,
-		"diff":          diff,
 		"old_answer":    traceAnswer(trace),
 		"old_status":    traceAnswerStatus(trace),
+	}
+	diff, err := researcheval.DiffTrace(r.Context(), s.cfg, s.store, req.TracePath)
+	if err != nil {
+		response["diff_error"] = err.Error()
+	} else {
+		response["diff"] = diff
 	}
 	if req.RunCurrent {
 		current, err := runTraceCurrentHarness(r, s, trace)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
+			response["current_error"] = err.Error()
+		} else {
+			response["current"] = current
 		}
-		response["current"] = current
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -97,8 +95,9 @@ func runTraceCurrentHarness(r *http.Request, s *server, trace researchtrace.Rese
 		DisableSemantic:  opts.DisableSemantic,
 		TraceEnabled:     &traceDisabled,
 		Surface:          "web_harness_lab",
-		RunnerTimeout:    90 * time.Second,
-		SynthesisTimeout: 2 * time.Minute,
+		RunnerTimeout:    defaultWebResearchRunnerTimeout,
+		StageTimeout:     defaultWebResearchStageTimeout,
+		SynthesisTimeout: defaultWebResearchSynthesisTimeout,
 	})
 	if err != nil {
 		return nil, err

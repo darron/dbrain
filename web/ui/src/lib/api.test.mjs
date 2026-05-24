@@ -62,3 +62,19 @@ test("trace lab API helpers use safe JSON request shapes", async () => {
     run_current: true
   });
 });
+
+test("trace lab API helper explains network fetch failures", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError("Failed to fetch");
+  };
+
+  try {
+    await assert.rejects(
+      () => compareResearchTrace("research-runs/run-1"),
+      /Could not reach dbrain web API: Failed to fetch/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
