@@ -1984,6 +1984,47 @@ func TestServerStatsSourcesTool(t *testing.T) {
 	}
 }
 
+func TestServerStatsBacklogToolReturnsEmptyBucketArrays(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_stats_backlog","arguments":{}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	if structured["source_extraction_pending_by_type"] == nil {
+		t.Fatalf("expected source_extraction_pending_by_type to be an empty array, got null: %#v", structured)
+	}
+	if structured["source_summary_pending_by_type"] == nil {
+		t.Fatalf("expected source_summary_pending_by_type to be an empty array, got null: %#v", structured)
+	}
+	if got := len(structured["source_extraction_pending_by_type"].([]interface{})); got != 0 {
+		t.Fatalf("expected no extraction buckets, got %d: %#v", got, structured)
+	}
+	if got := len(structured["source_summary_pending_by_type"].([]interface{})); got != 0 {
+		t.Fatalf("expected no summary buckets, got %d: %#v", got, structured)
+	}
+}
+
 func TestServerTopicMapTool(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
