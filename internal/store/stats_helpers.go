@@ -51,7 +51,7 @@ func (s *Store) countGroupedWhere(ctx context.Context, table string, groupBy str
 }
 
 func scanCountBuckets(rows rowScanner, grouped bool) ([]CountBucket, error) {
-	var buckets []CountBucket
+	buckets := make([]CountBucket, 0)
 	for rows.Next() {
 		var bucket CountBucket
 		if grouped {

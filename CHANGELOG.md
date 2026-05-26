@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### MCP Stats Schema Fix (2026-05-26)
+
+- **MCP**: Empty stats bucket lists now serialize as JSON arrays instead of
+  `null`, keeping `dbrain_stats_backlog` structured output compatible with its
+  advertised schema.
+- **Location**: `internal/mcpserver/`, `internal/store/`
+
 ### Retrieval Eval Follow-Up (2026-05-24)
 
 - **Retrieval**: Source evidence titles now fall back to titles embedded in
