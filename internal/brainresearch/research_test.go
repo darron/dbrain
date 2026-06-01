@@ -76,7 +76,7 @@ func TestBuildIncludesSourceExactTagEvidence(t *testing.T) {
 	if pack.SchemaVersion != SchemaVersion {
 		t.Fatalf("unexpected schema version: %q", pack.SchemaVersion)
 	}
-	if len(pack.QueryPlan.RetrievalLanes) != 2 || pack.QueryPlan.RetrievalLanes[0].Name != "lexical" || pack.QueryPlan.RetrievalLanes[1].Name != "semantic" || pack.QueryPlan.RetrievalLanes[1].Status != "disabled" {
+	if len(pack.QueryPlan.RetrievalLanes) < 2 || pack.QueryPlan.RetrievalLanes[0].Name != "lexical" || pack.QueryPlan.RetrievalLanes[1].Name != "semantic" || pack.QueryPlan.RetrievalLanes[1].Status != "disabled" {
 		t.Fatalf("expected lexical used and semantic disabled lane metadata, got %#v", pack.QueryPlan.RetrievalLanes)
 	}
 	if len(pack.ExactTagEvidence) != 1 {
@@ -94,6 +94,215 @@ func TestBuildIncludesSourceExactTagEvidence(t *testing.T) {
 	}
 	if len(example.Retrieval.Lanes) != 1 || example.Retrieval.Lanes[0].Name != "exact_tag" {
 		t.Fatalf("expected exact tag lane on tag example, got %#v", example.Retrieval)
+	}
+}
+
+func TestBuildPromotesExactTagCandidatesIntoPrimaryEvidence(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	saveSource := func(key string, title string, summary string, tags string) {
+		t.Helper()
+		url := "https://example.com/" + strings.TrimPrefix(key, "src:")
+		source, err := st.UpsertSource(ctx, model.SourceCandidate{
+			SourceKey:     key,
+			OriginalURL:   url,
+			CanonicalURL:  url,
+			NormalizedURL: url,
+			SourceType:    "web",
+			Domain:        "example.com",
+			NotePath:      "sources/web/" + strings.TrimPrefix(key, "src:") + ".md",
+		})
+		if err != nil {
+			t.Fatalf("upsert source %s: %v", key, err)
+		}
+		if _, err := st.SaveSourceExtraction(ctx, source.SourceID, model.ExtractResult{
+			CanonicalURL: url,
+			FinalURL:     url,
+			Title:        title,
+			Content:      summary,
+			Status:       "ok",
+			FetchedAt:    now,
+			Tool:         "test",
+			ToolVersion:  "test",
+		}, key+"-extract-hash"); err != nil {
+			t.Fatalf("save source extraction %s: %v", key, err)
+		}
+		if _, err := st.SaveSourceSummary(ctx, source.SourceID, model.SummaryResult{
+			Text:          summary,
+			Status:        "ok",
+			Model:         "test-model",
+			PromptVersion: "test",
+			Tool:          "test",
+			ToolVersion:   "test",
+			FetchedAt:     now,
+		}); err != nil {
+			t.Fatalf("save source summary %s: %v", key, err)
+		}
+		if tags != "" {
+			if err := st.SaveSourceUserTags(ctx, source.SourceID, tags); err != nil {
+				t.Fatalf("save source tags %s: %v", key, err)
+			}
+		}
+	}
+
+	saveSource(
+		"src:strict-mac-recorder-one",
+		"Mac screen recording software roundup",
+		"This source mentions screen recording software for Mac but has no saved category tag.",
+		"",
+	)
+	saveSource(
+		"src:strict-mac-recorder-two",
+		"Another Mac screen recording software note",
+		"This source also mentions screen recording software for Mac and competes lexically.",
+		"",
+	)
+	saveSource(
+		"src:tagged-demo-recorder",
+		"Tagged demo product",
+		"Create polished demo videos with cursor follow, zooms, and voiceover for product walkthroughs.",
+		"demo-video,screen-recorder,macos-apps,developer-tools",
+	)
+
+	includeTopic := false
+	pack, err := Build(ctx, cfg, st, Options{
+		Question:       "screen recording software mac",
+		Limit:          3,
+		MaxCharsPerDoc: 180,
+		IncludeTopic:   &includeTopic,
+		DisablePlanner: true,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var tagged *ask.Evidence
+	for i := range pack.Evidence {
+		if pack.Evidence[i].SourceKey == "src:tagged-demo-recorder" {
+			tagged = &pack.Evidence[i]
+			break
+		}
+	}
+	if tagged == nil {
+		t.Fatalf("expected exact-tagged source to survive primary evidence cap, got %#v", pack.Evidence)
+	}
+	if tagged.Retrieval == nil || !hasRetrievalLane(tagged.Retrieval.Lanes, "exact_tag") {
+		t.Fatalf("expected exact-tag lane on promoted evidence, got %#v", tagged)
+	}
+	if !hasRetrievalSignal(tagged.Retrieval.Signals, "exact_tag_primary_candidate") {
+		t.Fatalf("expected exact-tag primary boost signal, got %#v", tagged.Retrieval)
+	}
+	if !hasRetrievalLane(pack.QueryPlan.RetrievalLanes, "exact_tag") {
+		t.Fatalf("expected query plan to report exact-tag lane, got %#v", pack.QueryPlan.RetrievalLanes)
+	}
+}
+
+func TestExactTagEvidenceExamplesRankByQueryCoverage(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	saveTaggedSource := func(key string, title string, summary string, tags string, fetchedAt time.Time) {
+		t.Helper()
+		url := "https://example.com/" + strings.TrimPrefix(key, "src:")
+		source, err := st.UpsertSource(ctx, model.SourceCandidate{
+			SourceKey:     key,
+			OriginalURL:   url,
+			CanonicalURL:  url,
+			NormalizedURL: url,
+			SourceType:    "web",
+			Domain:        "example.com",
+			NotePath:      "sources/web/" + strings.TrimPrefix(key, "src:") + ".md",
+		})
+		if err != nil {
+			t.Fatalf("upsert source %s: %v", key, err)
+		}
+		if _, err := st.SaveSourceExtraction(ctx, source.SourceID, model.ExtractResult{
+			CanonicalURL: url,
+			FinalURL:     url,
+			Title:        title,
+			Content:      summary,
+			Status:       "ok",
+			FetchedAt:    fetchedAt,
+			Tool:         "test",
+			ToolVersion:  "test",
+		}, key+"-extract-hash"); err != nil {
+			t.Fatalf("save source extraction %s: %v", key, err)
+		}
+		if _, err := st.SaveSourceSummary(ctx, source.SourceID, model.SummaryResult{
+			Text:          summary,
+			Status:        "ok",
+			Model:         "test-model",
+			PromptVersion: "test",
+			Tool:          "test",
+			ToolVersion:   "test",
+			FetchedAt:     fetchedAt,
+		}); err != nil {
+			t.Fatalf("save source summary %s: %v", key, err)
+		}
+		if err := st.SaveSourceUserTags(ctx, source.SourceID, tags); err != nil {
+			t.Fatalf("save source tags %s: %v", key, err)
+		}
+	}
+
+	saveTaggedSource("src:z-noise-one", "Recent screen recording note", "A generic capture workflow note with clips and sharing steps.", "screen-recording", now.Add(3*time.Minute))
+	saveTaggedSource("src:y-noise-two", "Recent recording workflow", "Another capture workflow mention with editing and captions.", "screen-recording", now.Add(2*time.Minute))
+	saveTaggedSource("src:x-noise-three", "Recent screen capture note", "Capture-only workflow notes with no platform detail.", "screen-recording", now.Add(time.Minute))
+	saveTaggedSource("src:a-relevant", "Kite demo recorder", "Create polished demo videos with cursor follow for a native app.", "screen-recorder,macos-apps,developer-tools", now.Add(-time.Hour))
+
+	hints := ask.Hints("screen recording software mac")
+	examples, err := New(cfg, st).buildExactTagEvidence(ctx, "", hints, nil, 160)
+	if err != nil {
+		t.Fatalf("buildExactTagEvidence: %v", err)
+	}
+	if len(examples) != maxExactTagEvidence {
+		t.Fatalf("expected capped exact tag examples, got %#v", examples)
+	}
+	if examples[0].SourceKey != "src:a-relevant" {
+		t.Fatalf("expected query-covered exact tag example first, got %#v", examples)
+	}
+}
+
+func TestBuildResearchStrategyExpandsSoftwareMacAndRecorderAliases(t *testing.T) {
+	t.Parallel()
+
+	hints := ask.Hints("screen recording software mac")
+	strategy := buildResearchStrategy("screen recording software mac", hints)
+
+	if !hasConceptTerm(strategy.Concepts, "software", "app") ||
+		!hasConceptTerm(strategy.Concepts, "software", "tools") ||
+		!hasConceptTerm(strategy.Concepts, "mac", "macos") ||
+		!hasConceptTerm(strategy.Concepts, "video", "recorder") {
+		t.Fatalf("expected software/mac/recorder aliases, got %#v", strategy.Concepts)
 	}
 }
 
@@ -812,6 +1021,15 @@ func hasConceptTerm(concepts []QueryConcept, key string, term string) bool {
 func hasRetrievalSignal(signals []ask.RetrievalSignal, name string) bool {
 	for _, signal := range signals {
 		if signal.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRetrievalLane(lanes []ask.RetrievalLane, name string) bool {
+	for _, lane := range lanes {
+		if lane.Name == name {
 			return true
 		}
 	}

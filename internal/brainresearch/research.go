@@ -8,6 +8,7 @@ import (
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/researchhybrid"
+	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
 )
@@ -73,9 +74,12 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 		"planner_failed":  strategy.PlannerError != "",
 		"retrieval_lanes": retrievalLanes,
 	})
-	evidence, err := b.collectStrategyEvidence(ctx, strategy, opts, limit, maxChars)
+	evidence, err := b.collectStrategyEvidence(ctx, strategy, hints, opts, limit, maxChars)
 	if err != nil {
 		return Pack{}, err
+	}
+	if evidenceUsesLane(evidence, researchhybrid.LaneExactTag) {
+		retrievalLanes = append(retrievalLanes, retrieval.RetrievalLane{Name: researchhybrid.LaneExactTag, Status: researchhybrid.StatusUsed})
 	}
 	emitEvent(opts.Observer, "evidence_selected", map[string]interface{}{
 		"count":       len(evidence),
@@ -167,4 +171,22 @@ func evidenceSourceKeys(rows []ask.Evidence) []string {
 		out = append(out, row.SourceKey)
 	}
 	return out
+}
+
+func evidenceUsesLane(rows []ask.Evidence, laneName string) bool {
+	laneName = strings.TrimSpace(laneName)
+	if laneName == "" {
+		return false
+	}
+	for _, row := range rows {
+		if row.Retrieval == nil {
+			continue
+		}
+		for _, lane := range row.Retrieval.Lanes {
+			if strings.EqualFold(lane.Name, laneName) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -62,6 +62,62 @@ func TestSearchMatchesAndReturnsUserTags(t *testing.T) {
 	}
 }
 
+func TestSearchExactUserTagsOrdersByLastSeenAt(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	saveTaggedItem := func(key string, seenAt time.Time) {
+		t.Helper()
+		result, err := st.UpsertItem(ctx, model.Item{
+			SourceKey:    key,
+			SourceType:   "x_bookmark",
+			ExternalID:   strings.TrimPrefix(key, "x:"),
+			CanonicalURL: "https://x.com/example/status/" + strings.TrimPrefix(key, "x:"),
+			Title:        "Tagged item " + key,
+			Text:         "body without the tag query",
+			ContentHash:  key + "-hash",
+			NotePath:     "items/x/2026/" + strings.TrimPrefix(key, "x:") + ".md",
+			RawJSON:      `{}`,
+			ImportedAt:   seenAt,
+			UpdatedAt:    seenAt,
+			LastSeenAt:   seenAt,
+		})
+		if err != nil {
+			t.Fatalf("upsert item %s: %v", key, err)
+		}
+		if err := st.SaveItemUserTags(ctx, result.ItemID, "demo-video, screen-recording"); err != nil {
+			t.Fatalf("save user tags %s: %v", key, err)
+		}
+	}
+
+	saveTaggedItem("x:z-old-tagged", now.Add(-time.Hour))
+	saveTaggedItem("x:a-new-tagged", now)
+
+	results, err := st.SearchExactUserTag(ctx, "screen-recording", 5)
+	if err != nil {
+		t.Fatalf("SearchExactUserTag: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected two exact tag results, got %#v", results)
+	}
+	if results[0].SourceKey != "x:a-new-tagged" || results[1].SourceKey != "x:z-old-tagged" {
+		t.Fatalf("expected exact tag results in last_seen_at order, got %#v", results)
+	}
+
+	results, err = st.SearchUserTags(ctx, "screen-recording", 5)
+	if err != nil {
+		t.Fatalf("SearchUserTags: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected two fuzzy tag results, got %#v", results)
+	}
+	if results[0].SourceKey != "x:a-new-tagged" || results[1].SourceKey != "x:z-old-tagged" {
+		t.Fatalf("expected fuzzy tag results in last_seen_at order, got %#v", results)
+	}
+}
+
 func TestSearchMatchesAndReturnsSourceUserTags(t *testing.T) {
 	t.Parallel()
 
