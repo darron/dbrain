@@ -101,6 +101,7 @@ func (r *runner) run() (Result, error) {
 	judge := Judge(pack, JudgeOptions{
 		MinEvidenceForEnough: r.opts.MinEvidenceForEnough,
 		AllowRetry:           true,
+		FocusQuestion:        r.synthesisQuestion(),
 	})
 	r.result.Judge = judge
 	r.emit("judge", "done", judge.Reason, map[string]interface{}{
@@ -122,7 +123,10 @@ func (r *runner) run() (Result, error) {
 		} else {
 			pack = retryPack
 			r.setPack(pack)
-			judge = Judge(pack, JudgeOptions{MinEvidenceForEnough: r.opts.MinEvidenceForEnough})
+			judge = Judge(pack, JudgeOptions{
+				MinEvidenceForEnough: r.opts.MinEvidenceForEnough,
+				FocusQuestion:        r.synthesisQuestion(),
+			})
 			r.result.Judge = judge
 			r.emit("retry", "done", "bounded retry completed", map[string]interface{}{
 				"evidence_count": len(pack.Evidence),

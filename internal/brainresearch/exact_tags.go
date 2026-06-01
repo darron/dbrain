@@ -3,6 +3,7 @@ package brainresearch
 import (
 	"context"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/darron/dbrain/internal/ask"
@@ -16,29 +17,39 @@ func (b *Builder) buildExactTagEvidence(ctx context.Context, topic string, hints
 	if topicAlias := tagAlias(topic); topicAlias != "" {
 		tagQueries = append(tagQueries, topicAlias)
 	}
+	candidates, err := b.buildExactTagCandidates(ctx, tagQueries, sourceTypes, maxChars, hints.Terms, maxExactTagEvidence*3)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) > maxExactTagEvidence {
+		candidates = candidates[:maxExactTagEvidence]
+	}
+	return candidates, nil
+}
+
+func (b *Builder) buildExactTagCandidates(ctx context.Context, tagQueries []string, sourceTypes []string, maxChars int, terms []string, perTagLimit int) ([]ask.Evidence, error) {
 	tagQueries = uniqueStrings(tagQueries)
 	if len(tagQueries) == 0 {
 		return nil, nil
 	}
-
-	examples := make([]ask.Evidence, 0, maxExactTagEvidence)
+	if perTagLimit <= 0 {
+		perTagLimit = maxExactTagEvidence * 3
+	}
+	candidates := make([]ask.Evidence, 0, maxExactTagEvidence)
 	seen := map[string]struct{}{}
 	for _, tagQuery := range tagQueries {
-		results, err := b.st.SearchExactUserTag(ctx, tagQuery, maxExactTagEvidence*3)
+		results, err := b.st.SearchExactUserTag(ctx, tagQuery, perTagLimit)
 		if err != nil {
 			return nil, err
 		}
 		results = filterSearchResults(ctx, b.st, results, sourceTypes)
 		for _, result := range results {
-			if len(examples) >= maxExactTagEvidence {
-				return examples, nil
-			}
 			if _, exists := seen[result.SourceKey]; exists {
 				continue
 			}
 			if item, err := b.st.GetItem(ctx, result.SourceKey); err == nil {
 				seen[result.SourceKey] = struct{}{}
-				examples = append(examples, exactTagEvidenceFromItem(b.cfg.VaultDir, item, result, tagQuery, maxChars, hints.Terms))
+				candidates = append(candidates, exactTagEvidenceFromItem(b.cfg.VaultDir, item, result, tagQuery, maxChars, terms))
 				continue
 			}
 			source, err := b.st.GetSource(ctx, result.SourceKey)
@@ -46,10 +57,24 @@ func (b *Builder) buildExactTagEvidence(ctx context.Context, topic string, hints
 				continue
 			}
 			seen[result.SourceKey] = struct{}{}
-			examples = append(examples, exactTagEvidenceFromSource(b.cfg.VaultDir, source, result, tagQuery, maxChars, hints.Terms))
+			candidates = append(candidates, exactTagEvidenceFromSource(b.cfg.VaultDir, source, result, tagQuery, maxChars, terms))
 		}
 	}
-	return examples, nil
+	sortExactTagEvidence(candidates)
+	return candidates, nil
+}
+
+func sortExactTagEvidence(candidates []ask.Evidence) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return exactTagSortScore(candidates[i]) > exactTagSortScore(candidates[j])
+	})
+}
+
+func exactTagSortScore(doc ask.Evidence) int {
+	if doc.Retrieval == nil {
+		return 0
+	}
+	return doc.Retrieval.Score
 }
 
 func exactTagEvidenceFromItem(vaultDir string, item model.Item, result model.SearchResult, tag string, maxChars int, terms []string) ask.Evidence {
@@ -149,7 +174,7 @@ func exactTagExampleRetrieval(tag string, terms []string, matchText string) ask.
 		if term == "" {
 			continue
 		}
-		if strings.Contains(matchText, term) {
+		if exactTagTermMatches(term, matchText) {
 			info.MatchedTerms = append(info.MatchedTerms, term)
 		} else {
 			info.MissingTerms = append(info.MissingTerms, term)
@@ -164,4 +189,22 @@ func exactTagExampleRetrieval(tag string, terms []string, matchText string) ask.
 		})
 	}
 	return info
+}
+
+func exactTagTermMatches(term string, matchText string) bool {
+	concept := conceptForTerm(term)
+	aliases := []string{term}
+	if concept.Key != "" && len(concept.Terms) > 0 {
+		aliases = concept.Terms
+	}
+	for _, alias := range aliases {
+		alias = strings.ToLower(strings.TrimSpace(alias))
+		if alias == "" {
+			continue
+		}
+		if containsTerm(matchText, alias) {
+			return true
+		}
+	}
+	return false
 }

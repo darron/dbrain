@@ -31,9 +31,10 @@ func TagQueries(terms []string) []string {
 		queries = append(queries, query)
 	}
 	add(strings.Join(parts, "-"))
-	if len(parts) > 2 {
-		for i := 0; i < len(parts)-1; i++ {
-			add(parts[i] + "-" + parts[i+1])
+	for i := 0; i < len(parts)-1; i++ {
+		add(parts[i] + "-" + parts[i+1])
+		if parts[i+1] == "recording" {
+			add(parts[i] + "-recorder")
 		}
 	}
 	return queries

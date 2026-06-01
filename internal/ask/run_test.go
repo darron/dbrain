@@ -41,6 +41,18 @@ func TestTagQueriesIncludeAdjacentPairs(t *testing.T) {
 	}
 }
 
+func TestTagQueriesIncludeRecordingNounAlias(t *testing.T) {
+	t.Parallel()
+
+	tags := queryterms.TagQueries([]string{"screen", "recording", "software", "mac"})
+	if !containsString(tags, "screen-recording") {
+		t.Fatalf("expected screen-recording tag query, got %#v", tags)
+	}
+	if !containsString(tags, "screen-recorder") {
+		t.Fatalf("expected screen-recorder tag query, got %#v", tags)
+	}
+}
+
 func TestChatRetrievalScaffoldingDoesNotPolluteQueryTerms(t *testing.T) {
 	t.Parallel()
 

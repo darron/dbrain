@@ -5,6 +5,26 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Research Exact-Tag Recall (2026-06-01)
+
+- **Retrieval**: Exact user-tag matches now enter the primary research evidence
+  candidate pool with explicit `exact_tag` lane provenance, helping relevant
+  saved/tagged items survive over-specified lexical queries.
+- **Retrieval**: Exact-tag examples are ranked by query-term coverage before
+  capping, and tag search results use recency-aware ordering instead of
+  arbitrary source-key ordering.
+- **Retrieval**: Research query concepts now treat common app/software wording
+  as equivalent where appropriate, including `app`/`tools` for software,
+  `macos` for Mac, and `screen-recorder` as a tag alias for screen-recording
+  queries.
+- **Research runner**: Evidence-quality retry checks now focus missing-concept
+  evaluation on the current synthesis question, so chat expansion terms from
+  recent messages do not discard otherwise relevant evidence.
+- **Dev**: Added `task test-ci` for running the full Go suite in a clean
+  CI-like environment without ambient local `DBRAIN_*` or TSNet settings.
+- **Location**: `internal/brainresearch/`, `internal/researchrun/`,
+  `internal/store/`, `web/`, `Taskfile.yml`
+
 ### MCP Stats Schema Fix (2026-05-26)
 
 - **MCP**: Empty stats bucket lists now serialize as JSON arrays instead of

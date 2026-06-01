@@ -42,6 +42,8 @@ func conceptForTerm(term string) QueryConcept {
 		return QueryConcept{Key: "alternative", Preferred: "alternative", Terms: []string{"alternative", "alternatives", "replacement", "replacements", "instead of"}, Required: true}
 	case "model", "models", "llm", "llms":
 		return QueryConcept{Key: "model", Preferred: "model", Terms: []string{"model", "models", "llm", "llms", "qwen", "gpt", "claude", "gemini", "minimax", "deepseek", "ollama", "openrouter"}, Required: true}
+	case "software", "app", "apps", "application", "applications", "program", "programs":
+		return QueryConcept{Key: "software", Preferred: "software", Terms: []string{"software", "app", "apps", "application", "applications", "tool", "tools", "utility", "utilities", "program", "programs"}, Required: true}
 	case "tool", "tools":
 		return QueryConcept{Key: "tool", Preferred: "tool", Terms: []string{"tool", "tools", "utility", "utilities"}, Required: true}
 	case "project", "projects", "package", "packages", "library", "libraries":
@@ -54,8 +56,10 @@ func conceptForTerm(term string) QueryConcept {
 		return QueryConcept{Key: "transcript", Preferred: "transcript", Terms: []string{"transcript", "transcripts", "transcription"}, Required: true}
 	case "ocr", "screenshot", "screenshots", "image", "images", "photo", "photos":
 		return QueryConcept{Key: "ocr", Preferred: "ocr", Terms: []string{"ocr", "screenshot", "screenshots", "image", "images", "photo", "photos", "vision"}, Required: true}
-	case "video", "videos", "audio", "recording", "recordings":
-		return QueryConcept{Key: "video", Preferred: "video", Terms: []string{"video", "videos", "audio", "recording", "recordings", "clip"}, Required: true}
+	case "video", "videos", "audio", "recording", "recordings", "recorder", "recorders":
+		return QueryConcept{Key: "video", Preferred: "video", Terms: []string{"video", "videos", "audio", "record", "records", "recording", "recordings", "recorder", "recorders", "clip"}, Required: true}
+	case "mac", "macs", "macos", "macbook", "macbooks", "osx":
+		return QueryConcept{Key: "mac", Preferred: "mac", Terms: []string{"mac", "macs", "macos", "mac os", "macbook", "macbooks", "osx", "os x"}, Required: true}
 	case "not", "wrong", "exclude", "without", "instead", "correct", "correction":
 		return QueryConcept{Key: term, Preferred: term, Terms: []string{term}, Required: false}
 	default:

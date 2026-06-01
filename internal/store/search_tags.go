@@ -29,7 +29,21 @@ func (s *Store) SearchUserTags(ctx context.Context, tagQuery string, limit int) 
 			primary_domain,
 			note_path,
 			user_tags,
-			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), NULLIF(ocr_text, ''), NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet
+			snippet
+		FROM (
+		SELECT
+			source_key,
+			source_type,
+			external_id,
+			title,
+			author_handle,
+			author_name,
+			canonical_url,
+			primary_domain,
+			note_path,
+			user_tags,
+			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), NULLIF(ocr_text, ''), NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet,
+			last_seen_at AS sort_at
 		FROM items
 		WHERE lower(user_tags) LIKE ?
 		UNION ALL
@@ -44,10 +58,12 @@ func (s *Store) SearchUserTags(ctx context.Context, tagQuery string, limit int) 
 			domain AS primary_domain,
 			note_path,
 			user_tags,
-			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), extracted_text), char(10), ' ')), 1, 200) AS snippet
+			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), extracted_text), char(10), ' ')), 1, 200) AS snippet,
+			updated_at AS sort_at
 		FROM sources
 		WHERE lower(user_tags) LIKE ?
-		ORDER BY source_key DESC
+		)
+		ORDER BY sort_at DESC, source_key ASC
 		LIMIT ?`, like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("tag search: %w", err)
@@ -79,7 +95,21 @@ func (s *Store) SearchExactUserTag(ctx context.Context, tag string, limit int) (
 			primary_domain,
 			note_path,
 			user_tags,
-			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), NULLIF(ocr_text, ''), NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet
+			snippet
+		FROM (
+		SELECT
+			source_key,
+			source_type,
+			external_id,
+			title,
+			author_handle,
+			author_name,
+			canonical_url,
+			primary_domain,
+			note_path,
+			user_tags,
+			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), NULLIF(ocr_text, ''), NULLIF(article_text, ''), text), char(10), ' ')), 1, 200) AS snippet,
+			last_seen_at AS sort_at
 		FROM items
 		WHERE instr(',' || replace(replace(lower(user_tags), ', ', ','), ' ,', ',') || ',', ',' || ? || ',') > 0
 		UNION ALL
@@ -94,10 +124,12 @@ func (s *Store) SearchExactUserTag(ctx context.Context, tag string, limit int) (
 			domain AS primary_domain,
 			note_path,
 			user_tags,
-			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), extracted_text), char(10), ' ')), 1, 200) AS snippet
+			substr(trim(replace(COALESCE(NULLIF(summary_text, ''), extracted_text), char(10), ' ')), 1, 200) AS snippet,
+			updated_at AS sort_at
 		FROM sources
 		WHERE instr(',' || replace(replace(lower(user_tags), ', ', ','), ' ,', ',') || ',', ',' || ? || ',') > 0
-		ORDER BY source_key DESC
+		)
+		ORDER BY sort_at DESC, source_key ASC
 		LIMIT ?`, tag, tag, limit)
 	if err != nil {
 		return nil, fmt.Errorf("exact tag search: %w", err)

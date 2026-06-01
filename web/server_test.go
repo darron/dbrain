@@ -937,10 +937,10 @@ func TestResearchRunStreamsProgressAnswerAndTrace(t *testing.T) {
 	if done.SchemaVersion != "research_run.v1" || done.AnswerStatus != "ok" || done.StopReason != "enough_evidence" || !done.Verification.Passed {
 		t.Fatalf("unexpected done event: %+v", done)
 	}
-	if len(done.ResearchPack.Evidence) == 0 || done.ResearchPack.Evidence[0].SourceKey != sourceKey {
+	if !evidenceContainsSourceKey(done.ResearchPack.Evidence, sourceKey) {
 		t.Fatalf("expected final pack to include seeded evidence, got %+v", done.ResearchPack.Evidence)
 	}
-	if done.Synthesis == nil || done.Synthesis.Answer == "" || len(done.Synthesis.Citations) == 0 || done.Synthesis.Citations[0].SourceKey != sourceKey {
+	if done.Synthesis == nil || done.Synthesis.Answer == "" || !citationsContainSourceKey(done.Synthesis.Citations, sourceKey) {
 		t.Fatalf("unexpected synthesis payload: %+v", done.Synthesis)
 	}
 	if !strings.HasPrefix(done.TracePath, "research-runs/") {
@@ -1444,6 +1444,24 @@ func parseSSEEvents(t *testing.T, body string) map[string][]string {
 	}
 	flush()
 	return events
+}
+
+func evidenceContainsSourceKey(rows []ask.Evidence, sourceKey string) bool {
+	for _, row := range rows {
+		if row.SourceKey == sourceKey {
+			return true
+		}
+	}
+	return false
+}
+
+func citationsContainSourceKey(rows []brainresearch.Citation, sourceKey string) bool {
+	for _, row := range rows {
+		if row.SourceKey == sourceKey {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWebHandlerServesArchivedMediaAndSignedURL(t *testing.T) {
