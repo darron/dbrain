@@ -34,6 +34,14 @@ func TestJudgeVerdictsAndRetryActions(t *testing.T) {
 		t.Fatalf("unexpected missing-concept judge: %+v", missing)
 	}
 
+	expansionOnlyMissing := Judge(brainresearch.Pack{Evidence: []ask.Evidence{{
+		SourceKey: "x:focused",
+		Retrieval: &ask.RetrievalInfo{MissingTerms: []string{"cite"}},
+	}}}, JudgeOptions{AllowRetry: true, FocusQuestion: "What do I know about agent memory?"})
+	if expansionOnlyMissing.Verdict != JudgeEnoughEvidence || expansionOnlyMissing.RetryAction != RetryNone {
+		t.Fatalf("unexpected focus-filtered judge: %+v", expansionOnlyMissing)
+	}
+
 	related := Judge(brainresearch.Pack{Evidence: []ask.Evidence{{
 		SourceKey: "x:one",
 	}}}, JudgeOptions{AllowRetry: true, MinEvidenceForEnough: 2})

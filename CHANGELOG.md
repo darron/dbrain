@@ -17,7 +17,13 @@ development date for the change set.
   as equivalent where appropriate, including `app`/`tools` for software,
   `macos` for Mac, and `screen-recorder` as a tag alias for screen-recording
   queries.
-- **Location**: `internal/brainresearch/`, `internal/store/`
+- **Research runner**: Evidence-quality retry checks now focus missing-concept
+  evaluation on the current synthesis question, so chat expansion terms from
+  recent messages do not discard otherwise relevant evidence.
+- **Dev**: Added `task test-ci` for running the full Go suite in a clean
+  CI-like environment without ambient local `DBRAIN_*` or TSNet settings.
+- **Location**: `internal/brainresearch/`, `internal/researchrun/`,
+  `internal/store/`, `web/`, `Taskfile.yml`
 
 ### MCP Stats Schema Fix (2026-05-26)
 

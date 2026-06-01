@@ -74,9 +74,6 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 					order++
 				}
 				seen[doc.SourceKey] = scored
-			} else if exists {
-				current.doc = mergeEvidenceRetrieval(current.doc, scored.doc)
-				seen[doc.SourceKey] = current
 			}
 		}
 	}

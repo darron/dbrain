@@ -47,6 +47,21 @@ tasks:
     cmds:
       - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test -cover -race ./...
 
+  test-ci:
+    desc: Run the Go test suite with a clean CI-like environment
+    cmds:
+      - >
+        env -i
+        HOME="${HOME}"
+        USER="${USER:-$(id -un)}"
+        LOGNAME="${LOGNAME:-${USER:-$(id -un)}}"
+        PATH="${PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+        TMPDIR="${TMPDIR:-/tmp}"
+        SHELL="${SHELL:-/bin/sh}"
+        GOCACHE={{.GOCACHE}}
+        GOMODCACHE={{.GOMODCACHE}}
+        go test -cover -race ./...
+
   test-go:
     desc: Run the Go test suite without race or coverage
     cmds:

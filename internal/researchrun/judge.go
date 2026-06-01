@@ -10,6 +10,7 @@ import (
 type JudgeOptions struct {
 	MinEvidenceForEnough int
 	AllowRetry           bool
+	FocusQuestion        string
 }
 
 func Judge(pack brainresearch.Pack, opts JudgeOptions) JudgeResult {
@@ -37,7 +38,7 @@ func Judge(pack brainresearch.Pack, opts JudgeOptions) JudgeResult {
 	}
 
 	top := firstEvidence(directRows, pack.ExactTagEvidence)
-	missing := missingConcepts(top)
+	missing := focusMissingConcepts(missingConcepts(top), opts.FocusQuestion)
 	if len(missing) > 0 {
 		result := JudgeResult{
 			Verdict:         JudgeWeakEvidence,
@@ -100,6 +101,29 @@ func missingConcepts(row ask.Evidence) []string {
 		return nil
 	}
 	return append([]string(nil), row.Retrieval.MissingTerms...)
+}
+
+func focusMissingConcepts(missing []string, focusQuestion string) []string {
+	focusTerms := ask.Hints(focusQuestion).Terms
+	if len(missing) == 0 || len(focusTerms) == 0 {
+		return missing
+	}
+	focusSet := make(map[string]struct{}, len(focusTerms))
+	for _, term := range focusTerms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" {
+			continue
+		}
+		focusSet[term] = struct{}{}
+	}
+	out := missing[:0]
+	for _, term := range missing {
+		if _, ok := focusSet[strings.ToLower(strings.TrimSpace(term))]; !ok {
+			continue
+		}
+		out = append(out, term)
+	}
+	return out
 }
 
 func weakRows(rows []ask.Evidence, reason string) []WeakEvidenceRow {
