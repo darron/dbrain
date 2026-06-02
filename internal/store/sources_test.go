@@ -183,6 +183,61 @@ func TestHTTP429SourceExtractionFailureUsesCooldownWithoutImmediateFinalAttempt(
 	}
 }
 
+func TestListSourcesForEnrichmentQueuesMakerWorldAccessDeniedForAPIRepair(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	insert := func(sourceKey string, domain string, status string, failureKind string) {
+		t.Helper()
+		sourceSlug := strings.TrimPrefix(sourceKey, "src:")
+		sourceURL := "https://" + domain + "/en/models/1564952-" + sourceSlug
+		if _, err := st.db.ExecContext(ctx, `
+			INSERT INTO sources (
+				source_key, canonical_url, normalized_url, source_type, domain, note_path,
+				extract_status, extract_failure_kind, extract_failure_count, extract_first_failed_at, extract_last_failed_at,
+				created_at, updated_at
+			) VALUES (?, ?, ?, 'web', ?, ?, ?, ?, 3, ?, ?, ?, ?)`,
+			sourceKey,
+			sourceURL,
+			sourceURL,
+			domain,
+			"sources/web/"+sourceSlug+".md",
+			status,
+			failureKind,
+			now,
+			now,
+			now,
+			now,
+		); err != nil {
+			t.Fatalf("insert %s: %v", sourceKey, err)
+		}
+	}
+
+	insert("src:makerworld-dead", "makerworld.com", model.SourceExtractStatusDead, model.SourceFailureKindHTTPAccessDenied)
+	insert("src:makerworld-error", "www.makerworld.com", model.SourceExtractStatusError, model.SourceFailureKindHTTPAccessDenied)
+	insert("src:makerworld-dns", "makerworld.com", model.SourceExtractStatusDead, model.SourceFailureKindDNSNXDomain)
+	insert("src:other-dead", "example.com", model.SourceExtractStatusDead, model.SourceFailureKindHTTPAccessDenied)
+
+	pending, err := st.ListSourcesForEnrichment(ctx, 10, false, false, "dbrain-v1", "summarize", "0.13.0")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if got, want := sourceKeys(pending), []string{"src:makerworld-dead", "src:makerworld-error"}; !sameStringSet(got, want) {
+		t.Fatalf("expected MakerWorld API repair candidates %v, got %v", want, got)
+	}
+
+	backlog, err := st.Backlog(ctx, "dbrain-v1", "summarize", "0.13.0")
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog.SourceExtractionPending != 2 {
+		t.Fatalf("expected 2 MakerWorld extraction repair candidates, got %+v", backlog)
+	}
+}
+
 func TestListItemsForLinkDiscoveryIncludesAppleNotes(t *testing.T) {
 	t.Parallel()
 

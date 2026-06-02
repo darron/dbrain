@@ -3,6 +3,9 @@ package sourceenrich
 import "github.com/darron/dbrain/internal/model"
 
 func needsEnrichment(source model.SourceDocument, opts Options, promptVersion string, toolName string, toolVersion string) bool {
+	if makerWorldNeedsAPIRepair(source) {
+		return true
+	}
 	if source.ExtractStatus == "" || source.ExtractStatus == model.SourceExtractStatusError {
 		return true
 	}
@@ -31,6 +34,19 @@ func needsEnrichment(source model.SourceDocument, opts Options, promptVersion st
 		return true
 	}
 	return false
+}
+
+func makerWorldNeedsAPIRepair(source model.SourceDocument) bool {
+	if source.SourceType != "web" {
+		return false
+	}
+	if _, ok := makerWorldModelID(firstNonEmpty(source.CanonicalURL, source.NormalizedURL)); !ok {
+		return false
+	}
+	if source.ExtractFailureKind != model.SourceFailureKindHTTPAccessDenied {
+		return false
+	}
+	return source.ExtractStatus == model.SourceExtractStatusDead || source.ExtractStatus == model.SourceExtractStatusError
 }
 
 func selectSourceDocuments(ordered []int64, byID map[int64]model.SourceDocument, opts Options, promptVersion string, toolName string, toolVersion string) []model.SourceDocument {
