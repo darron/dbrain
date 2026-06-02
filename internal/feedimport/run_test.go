@@ -442,6 +442,65 @@ func TestFailureBackoffAndDeadThreshold(t *testing.T) {
 	}
 }
 
+func TestParseErrorBacksOffInsteadOfBlockingFeed(t *testing.T) {
+	ctx := context.Background()
+	cfg, st := openFeedTestStore(t)
+	createImporterTestFeed(t, ctx, st)
+	feed, err := st.GetFeed(ctx, "feed:test")
+	if err != nil {
+		t.Fatalf("GetFeed: %v", err)
+	}
+
+	body := []byte(`<?xml version="1.0" encoding="UTF-8"?><rss><channel><title>Broken</title><item><description><![CDATA[truncated`)
+	now := fixedNow()
+	fetcher := &fakeFetcher{results: []FetchResult{{
+		RequestURL:        feed.NormalizedURL,
+		FinalURL:          feed.NormalizedURL,
+		HTTPStatus:        http.StatusOK,
+		DecodedBody:       body,
+		DecodedBodyHash:   sha256Hex(body),
+		WireResponseBytes: body,
+		DecodedSizeBytes:  int64(len(body)),
+	}}}
+
+	stats, err := CheckFeed(ctx, cfg, st, feed, Options{Fetcher: fetcher, Now: func() time.Time { return now }})
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if stats.FeedsFailed != 1 || stats.Errors != 1 {
+		t.Fatalf("unexpected stats for parse error: %+v", stats)
+	}
+	failed, err := st.GetFeed(ctx, "feed:test")
+	if err != nil {
+		t.Fatalf("GetFeed failed: %v", err)
+	}
+	if failed.HealthStatus != store.FeedHealthError {
+		t.Fatalf("parse error should be retryable error, got health_status=%q", failed.HealthStatus)
+	}
+	if failed.FailureKind != "parse_error" || failed.ErrorCount != 1 || failed.LastHTTPStatus != http.StatusOK {
+		t.Fatalf("unexpected parse failure state: %+v", failed)
+	}
+	if !failed.NextFetchAfter.Equal(now.Add(initialBackoff)) {
+		t.Fatalf("next_fetch_after = %s, want %s", failed.NextFetchAfter, now.Add(initialBackoff))
+	}
+
+	justBeforeBackoff := now.Add(initialBackoff).Add(-time.Second)
+	due, err := st.ListFeedsDue(ctx, justBeforeBackoff, 10, false)
+	if err != nil {
+		t.Fatalf("ListFeedsDue before backoff: %v", err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("feed should not be due before parse-error backoff expires, got %+v", due)
+	}
+	due, err = st.ListFeedsDue(ctx, now.Add(initialBackoff), 10, false)
+	if err != nil {
+		t.Fatalf("ListFeedsDue after backoff: %v", err)
+	}
+	if len(due) != 1 || due[0].FeedKey != "feed:test" {
+		t.Fatalf("parse-error feed should re-enter normal due queue after backoff, got %+v", due)
+	}
+}
+
 func TestDiscoverFromHTMLReturnsNormalizedFeedCandidates(t *testing.T) {
 	candidates, err := DiscoverFromHTML("https://example.com/blog/", `
 		<html><head>

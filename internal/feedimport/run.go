@@ -228,14 +228,15 @@ func CheckFeed(ctx context.Context, cfg config.Config, st *store.Store, feed sto
 		parseStatus = "parse_error"
 		parseErr = err.Error()
 		recordFeedFetch(ctx, st, opts, feedFetchRecord(feed.ID, fetch, now, parseStatus, parseErr))
+		next := nextFailureFetchAfter(now, feed, fetch.RetryAfter)
 		_ = st.UpdateFeedFailure(ctx, store.FeedFailureState{
 			FeedID:         feed.ID,
-			HealthStatus:   store.FeedHealthBlocked,
+			HealthStatus:   store.FeedHealthError,
 			FailureKind:    "parse_error",
 			LastHTTPStatus: fetch.HTTPStatus,
 			Error:          err.Error(),
 			FailedAt:       now,
-			NextFetchAfter: time.Time{},
+			NextFetchAfter: next,
 		})
 		stats.FeedsFailed++
 		stats.Errors++

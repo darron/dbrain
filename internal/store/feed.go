@@ -456,6 +456,22 @@ func (s *Store) UpdateFeedFailure(ctx context.Context, state FeedFailureState) e
 	return err
 }
 
+func (s *Store) repairBlockedParseErrorFeeds() error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(`
+		UPDATE feeds
+		SET health_status = ?,
+			next_fetch_after = '',
+			updated_at = ?
+		WHERE health_status = ?
+			AND failure_kind = 'parse_error'`,
+		FeedHealthError, now, FeedHealthBlocked,
+	); err != nil {
+		return fmt.Errorf("repair blocked parse-error feeds: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ApplyFeedEntry(ctx context.Context, entry FeedEntry) (FeedEntryApplyResult, error) {
 	return withBusyRetry(ctx, func() (FeedEntryApplyResult, error) {
 		return s.applyFeedEntry(ctx, entry)

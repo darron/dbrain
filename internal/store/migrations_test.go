@@ -404,6 +404,85 @@ func TestOpenRepairsAuthUserSchemaWhenVersionSixWasUsedByOlderMigration(t *testi
 	assertCurrentSchemaMigration(t, st.db)
 }
 
+func TestMigrationRepairsBlockedParseErrorFeeds(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	ctx := t.Context()
+	result, err := st.UpsertFeed(ctx, FeedUpsert{
+		FeedKey:             "feed:parse-error",
+		URL:                 "https://example.com/feed.xml",
+		NormalizedURL:       "https://example.com/feed.xml",
+		PollIntervalSeconds: 3600,
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertFeed: %v", err)
+	}
+	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	if _, err := st.db.Exec(`
+		UPDATE feeds
+		SET health_status = ?,
+			failure_kind = 'parse_error',
+			first_failed_at = ?,
+			last_failed_at = ?,
+			last_http_status = 200,
+			last_error = 'XML syntax error on line 2161: unexpected EOF in CDATA section',
+			error_count = 1,
+			next_fetch_after = '',
+			updated_at = ?
+		WHERE id = ?`,
+		FeedHealthBlocked, now, now, now, result.FeedID,
+	); err != nil {
+		t.Fatalf("seed blocked parse-error feed: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version >= ?`, 10); err != nil {
+		t.Fatalf("remove feed repair migration metadata: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 9`); err != nil {
+		t.Fatalf("set old user_version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() {
+		_ = st.Close()
+	}()
+
+	feed, err := st.GetFeed(ctx, "feed:parse-error")
+	if err != nil {
+		t.Fatalf("GetFeed: %v", err)
+	}
+	if feed.HealthStatus != FeedHealthError {
+		t.Fatalf("expected parse-error feed to be retryable, got health_status=%q", feed.HealthStatus)
+	}
+	if feed.FailureKind != "parse_error" || feed.ErrorCount != 1 || feed.LastError == "" {
+		t.Fatalf("expected parse failure diagnostics to be preserved, got %+v", feed)
+	}
+	if !feed.NextFetchAfter.IsZero() {
+		t.Fatalf("expected repaired parse-error feed to be due immediately, next_fetch_after=%s", feed.NextFetchAfter)
+	}
+	due, err := st.ListFeedsDue(ctx, time.Date(2026, 6, 2, 12, 1, 0, 0, time.UTC), 10, false)
+	if err != nil {
+		t.Fatalf("ListFeedsDue: %v", err)
+	}
+	if len(due) != 1 || due[0].FeedKey != "feed:parse-error" {
+		t.Fatalf("expected repaired parse-error feed in normal due queue, got %+v", due)
+	}
+	assertCurrentSchemaMigration(t, st.db)
+}
+
 func TestOpenReadOnlySkipsSchemaMigration(t *testing.T) {
 	t.Parallel()
 

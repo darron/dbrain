@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Feed Parse Retry Classification (2026-06-02)
+
+- **Fixed**: Feed parse failures now enter normal retry backoff instead of
+  becoming permanently `blocked`, so transient truncated feed bodies do not
+  silently remove a subscription from future `sync all` runs.
+- **Location**: `internal/feedimport/`
+
 ### Research Exact-Tag Recall (2026-06-01)
 
 - **Retrieval**: Exact user-tag matches now enter the primary research evidence
