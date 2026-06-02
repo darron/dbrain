@@ -2857,6 +2857,110 @@ func TestRunSourceIDsFetchesFeedLinkedSourceWithMarkdownAccept(t *testing.T) {
 	}
 }
 
+func TestRunSourceIDsFeedLinkedContextPromotesEmptyHTTPExtractToOK(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><head><title>Article Shell</title></head><body><nav>menus and chrome</nav><script>window.__data = {}</script></body></html>`))
+	}))
+	defer server.Close()
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    "feed-entry:test-empty-linked-page",
+		SourceType:   "feed_entry",
+		ExternalID:   "guid:test-empty-linked-page",
+		CanonicalURL: server.URL + "/empty-linked-page",
+		Title:        "Feed body has the article",
+		ArticleTitle: "Feed body has the article",
+		ArticleText:  "This substantive article text came from the feed entry body after the linked page yielded only script and navigation chrome.",
+		ContentHash:  "feed-entry-test-empty-linked-page",
+		NotePath:     vault.NoteRelativePath("feed", "2026", "test-empty-linked-page"),
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upserted, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("upsert feed entry item: %v", err)
+	}
+
+	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
+		SourceKey:     "src:feed-empty-linked-page",
+		OriginalURL:   server.URL + "/empty-linked-page",
+		CanonicalURL:  server.URL + "/empty-linked-page",
+		NormalizedURL: server.URL + "/empty-linked-page",
+		SourceType:    "web",
+		Domain:        "127.0.0.1",
+		NotePath:      vault.SourceNoteRelativePath("web", "feed-empty-linked-page"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
+		Summarize: false,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesExtracted != 1 {
+		t.Fatalf("expected 1 extracted source, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if source.ExtractStatus != model.SourceExtractStatusOK {
+		t.Fatalf("expected merged feed context to make extract status ok, got %q with text %q", source.ExtractStatus, source.ExtractedText)
+	}
+	if !strings.Contains(source.ExtractedText, "# Feed Entry Context") || !strings.Contains(source.ExtractedText, "substantive article text came from the feed entry body") {
+		t.Fatalf("expected feed entry context to provide source text, got %q", source.ExtractedText)
+	}
+	if strings.TrimSpace(source.ContentHash) == "" {
+		t.Fatal("expected merged feed context to produce a content hash")
+	}
+
+	const summaryTool = "test-summary-tool"
+	const summaryToolVersion = "test-summary-version"
+	if _, err := st.SaveSourceSummary(context.Background(), link.SourceID, model.SummaryResult{
+		Text:          "summary from feed context",
+		Model:         "test-summary-model",
+		PromptVersion: SummaryPromptVersion,
+		Status:        model.SourceSummaryStatusOK,
+		FetchedAt:     time.Now().UTC(),
+		Tool:          summaryTool,
+		ToolVersion:   summaryToolVersion,
+	}); err != nil {
+		t.Fatalf("SaveSourceSummary: %v", err)
+	}
+
+	pending, err := st.ListSourcesForEnrichment(context.Background(), 10, false, true, SummaryPromptVersion, summaryTool, summaryToolVersion)
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected current feed-linked source to stop requeueing, got %d candidates", len(pending))
+	}
+}
+
 func installSourceEnrichFakeSummarize(t *testing.T, root string) {
 	t.Helper()
 

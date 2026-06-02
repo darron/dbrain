@@ -10,7 +10,10 @@ development date for the change set.
 - **Fixed**: Feed parse failures now enter normal retry backoff instead of
   becoming permanently `blocked`, so transient truncated feed bodies do not
   silently remove a subscription from future `sync all` runs.
-- **Location**: `internal/feedimport/`
+- **Fixed**: Feed-linked source extraction now recomputes extract status after
+  merging feed-entry article text, preventing non-empty extracts from being
+  saved as `empty` and summarized repeatedly by the source worker.
+- **Location**: `internal/feedimport/`, `internal/sourceenrich/`
 
 ### Research Exact-Tag Recall (2026-06-01)
 

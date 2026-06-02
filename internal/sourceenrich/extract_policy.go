@@ -75,6 +75,7 @@ func normalizeExtract(source model.SourceDocument, extract model.ExtractResult) 
 	}
 	normalized := extract
 	normalized.Content = cleaned
+	normalized.Status = extractStatusForContent(cleaned)
 	return normalized, true
 }
 
