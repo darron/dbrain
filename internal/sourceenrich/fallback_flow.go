@@ -123,6 +123,7 @@ func mergeFeedEntryContext(ctx context.Context, st interface {
 	b.WriteString("\n\n# Feed Entry Context\n\n")
 	b.WriteString(contextText)
 	merged.Content = strings.TrimSpace(b.String())
+	merged.Status = extractStatusForContent(merged.Content)
 	if strings.TrimSpace(merged.Description) == "" {
 		merged.Description = "Linked source text plus feed entry context."
 	}
