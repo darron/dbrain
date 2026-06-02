@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 9
+const currentSchemaVersion = 10
 
 type schemaMigration struct {
 	Version int
@@ -100,6 +100,13 @@ var schemaMigrations = []schemaMigration{
 		Name:    "public_chat_shares",
 		Run: func(s *Store) error {
 			return s.ensurePublicChatShareTables()
+		},
+	},
+	{
+		Version: 10,
+		Name:    "feed_parse_error_retry_repair",
+		Run: func(s *Store) error {
+			return s.repairBlockedParseErrorFeeds()
 		},
 	},
 }
