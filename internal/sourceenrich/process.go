@@ -65,6 +65,11 @@ func processSingleSource(ctx context.Context, cfg config.Config, st *store.Store
 		}
 	}
 
+	makerWorldResult, handled := processMakerWorldAPIExtract(processCtx)
+	if handled {
+		return makerWorldResult
+	}
+
 	preflightResult, handled := processPreflightTerminal(processCtx)
 	if handled {
 		return preflightResult

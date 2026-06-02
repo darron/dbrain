@@ -2961,6 +2961,136 @@ func TestRunSourceIDsFeedLinkedContextPromotesEmptyHTTPExtractToOK(t *testing.T)
 	}
 }
 
+func TestRunPendingRepairsDeadMakerWorldSourceWithAPIExtract(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	var apiHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiHits++
+		if r.URL.Path != "/v1/design-service/design/1564952" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": 1564952,
+			"title": "Princess Donut Riding Mongo - Dungeon Crawler Carl",
+			"slug": "princess-donut-riding-mongo-dungeon-crawler-carl",
+			"modelId": "USeb556d9509ec93",
+			"coverUrl": "https://makerworld.bblmw.com/model/cover.jpg",
+			"summary": "<p>Inspired by Dungeon Crawler Carl, this model captures Princess Donut riding Mongo.</p>",
+			"likeCount": 1496,
+			"collectionCount": 4424,
+			"printCount": 3187,
+			"commentCount": 530,
+			"downloadCount": 6101,
+			"rawModelFileDownloadCount": 1990,
+			"tags": ["Cat", "dinosaur", "dungeoncrawlercarl"],
+			"categories": [{"name": "Sculptures"}, {"name": "Art"}],
+			"license": "Standard Digital File License",
+			"designCreator": {"uid": 4265856461, "name": "Loligo", "handle": "Loligo"},
+			"isPrintable": true,
+			"instances": [{
+				"id": 1645054,
+				"title": "0.12mm layer, 2 walls, 15% infill",
+				"summary": "<p>Supports required around Mongo teeth.</p>",
+				"downloadCount": 4045,
+				"printCount": 2924,
+				"prediction": 21125,
+				"weight": 66,
+				"hasZipStl": true,
+				"instanceCreator": {"name": "Loligo", "handle": "Loligo"},
+				"instanceFilaments": [{"type": "PLA", "color": "#FFFFFF", "usedG": "66"}]
+			}],
+			"designExtension": {
+				"model_files": [{"modelName": "Princess Donut.stl", "modelSize": 24839084, "modelType": "stl", "note": "main model file"}],
+				"design_pictures": [{"name": "cover.jpg", "url": "https://makerworld.bblmw.com/model/cover.jpg"}]
+			},
+			"licenseDescriptionInfo": {
+				"title": "Standard Digital File License",
+				"content": "Do not redistribute the digital file."
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	oldBaseURL := makerWorldAPIBaseURL
+	makerWorldAPIBaseURL = server.URL + "/v1/design-service/design/"
+	t.Cleanup(func() {
+		makerWorldAPIBaseURL = oldBaseURL
+	})
+
+	now := time.Now().UTC()
+	result, err := st.UpsertSource(context.Background(), model.SourceCandidate{
+		SourceKey:     "src:makerworld-dead",
+		OriginalURL:   "https://makerworld.com/en/models/1564952-princess-donut-riding-mongo-dungeon-crawler-carl",
+		CanonicalURL:  "https://makerworld.com/en/models/1564952-princess-donut-riding-mongo-dungeon-crawler-carl",
+		NormalizedURL: "https://makerworld.com/en/models/1564952-princess-donut-riding-mongo-dungeon-crawler-carl",
+		SourceType:    "web",
+		Domain:        "makerworld.com",
+		NotePath:      vault.SourceNoteRelativePath("web", "makerworld-dead"),
+	})
+	if err != nil {
+		t.Fatalf("UpsertSource: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(context.Background(), result.SourceID, model.ExtractResult{
+		Status:      model.SourceExtractStatusDead,
+		Error:       "marking source dead after 3 consecutive http access denied failures: run summarize: Failed to fetch HTML document (status 403)",
+		FetchedAt:   now,
+		Tool:        summarizecli.ToolName,
+		ToolVersion: "test-1.0.0",
+	}, ""); err != nil {
+		t.Fatalf("SaveSourceExtraction dead: %v", err)
+	}
+
+	stats, _, err := RunPending(context.Background(), cfg, st, Options{
+		Limit:     10,
+		Summarize: false,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunPending: %v", err)
+	}
+	if stats.SourcesExtracted != 1 || stats.Errors != 0 {
+		t.Fatalf("expected MakerWorld source extraction success, got %+v", stats)
+	}
+	if apiHits != 1 {
+		t.Fatalf("expected one MakerWorld API hit, got %d", apiHits)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), result.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.ExtractStatus != model.SourceExtractStatusOK {
+		t.Fatalf("expected recovered extract status ok, got %q error=%q", source.ExtractStatus, source.ExtractError)
+	}
+	if source.ExtractTool != makerWorldExtractToolName {
+		t.Fatalf("expected MakerWorld extract tool, got %q", source.ExtractTool)
+	}
+	if source.ExtractFailureKind != "" || source.ExtractFailureCount != 0 {
+		t.Fatalf("expected failure state reset after MakerWorld recovery, got kind=%q count=%d", source.ExtractFailureKind, source.ExtractFailureCount)
+	}
+	if !strings.Contains(source.ExtractedText, "Princess Donut Riding Mongo") ||
+		!strings.Contains(source.ExtractedText, "Supports required around Mongo teeth") ||
+		!strings.Contains(source.ExtractedText, "Princess Donut.stl") {
+		t.Fatalf("expected MakerWorld metadata in extracted text, got %q", source.ExtractedText)
+	}
+}
+
 func installSourceEnrichFakeSummarize(t *testing.T, root string) {
 	t.Helper()
 

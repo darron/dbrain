@@ -13,7 +13,11 @@ development date for the change set.
 - **Fixed**: Feed-linked source extraction now recomputes extract status after
   merging feed-entry article text, preventing non-empty extracts from being
   saved as `empty` and summarized repeatedly by the source worker.
-- **Location**: `internal/feedimport/`, `internal/sourceenrich/`
+- **Source extraction**: MakerWorld model pages now use Bambu's public design
+  API when the website blocks normal HTML fetches, and existing
+  `dead/http_access_denied` MakerWorld sources are queued for repair.
+- **Location**: `internal/feedimport/`, `internal/sourceenrich/`,
+  `internal/store/`
 
 ### Research Exact-Tag Recall (2026-06-01)
 

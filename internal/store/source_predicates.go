@@ -41,6 +41,7 @@ func (p sourceEnrichmentPolicy) extractBacklogWhere() (string, []any) {
 	return `(
 		extract_status = ''
 		OR ` + sourceExtractCoverageRepairWhere() + `
+		OR ` + sourceMakerWorldAPIRepairWhere() + `
 		OR (
 			extract_status = '` + model.SourceExtractStatusError + `'
 			AND (
@@ -101,6 +102,15 @@ func sourceExtractCoverageRepairWhere() string {
 		AND extract_tool_version = 'local-article-preview-cache'
 		AND length(trim(extracted_text)) > 0
 		AND length(trim(extracted_text)) < 300
+	)`
+}
+
+func sourceMakerWorldAPIRepairWhere() string {
+	return `(
+		source_type = 'web'
+		AND lower(domain) IN ('makerworld.com', 'www.makerworld.com')
+		AND extract_status IN ('` + model.SourceExtractStatusError + `', '` + model.SourceExtractStatusDead + `')
+		AND extract_failure_kind = '` + model.SourceFailureKindHTTPAccessDenied + `'
 	)`
 }
 
