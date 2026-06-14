@@ -162,19 +162,21 @@ projection over the same underlying evidence.
 
 Add an OKF bundle projection alongside the vault.
 
-The default generated bundle should live outside the existing Obsidian vault:
+For an explicit root, the generated OKF bundle should be a sibling projection
+of the generated vault:
+
+```text
+<root>/okf/current/
+```
+
+For the default XDG install, the generated OKF bundle should live next to the
+default vault under the resolved `DataDir`:
 
 ```text
 <data-dir>/okf/current/
 ```
 
-For an explicit root, that would be:
-
-```text
-<root>/data/okf/current/
-```
-
-For the default install, that would be:
+Which normally resolves to:
 
 ```text
 ~/.local/share/dbrain/okf/current/
@@ -189,6 +191,12 @@ Rationale:
 - it allows wholesale regeneration and deletion of the OKF bundle without
   risking the vault
 - it keeps OKF bundles shareable as directories, zip files, or git worktrees
+- in explicit-root mode, `vault/` and `okf/` are sibling generated projections
+  over `brain.db`; in XDG/default mode, both live as siblings under the
+  resolved data directory
+- the `current/` subdirectory reserves room for future generated bundle variants
+  such as `portable/`, `public/`, or archived snapshots without renaming the
+  base `okf/` directory
 
 Configuration can later expose:
 
@@ -200,6 +208,11 @@ okf:
 
 But the MVP can start with CLI flags and no config migration.
 
+When implementation needs a configured path, add an OKF path alongside
+`VaultDir` rather than deriving explicit-root output from `DataDir`. The
+explicit-root default should be `<root>/okf/current/`; the default/XDG path
+should be `<data-dir>/okf/current/`.
+
 ## Concept Taxonomy
 
 OKF does not register central type names. `dbrain` should use descriptive,
@@ -210,22 +223,17 @@ Recommended type mapping:
 
 | `dbrain` row/view | OKF `type` | Notes |
 |---|---|---|
-| item from X bookmark | `dbrain X Item` | Imported saved/bookmarked post signal. |
-| quoted X child | `dbrain X Item` | First-class item if present in SQLite. |
-| Apple Note item | `dbrain Apple Note` | User-authored local memory. |
-| Safari tab item | `dbrain Safari Tab` | Imported tab signal, append-only. |
-| GitHub star item | `dbrain GitHub Item` | Star/watch signal. |
-| YouTube item | `dbrain YouTube Item` | Watch-later/history/liked signal. |
-| feed/manual item | `dbrain Item` | Generic imported item. |
-| source row | `dbrain Source` | Extracted/summarized linked source. |
-| entity note | `dbrain Entity` | Derived entity view, not raw evidence. |
-| topic note | `dbrain Topic` | Derived topic view, not raw evidence. |
-| media asset concept, later | `dbrain Media Asset` | Optional, not MVP. |
+| item row | `Item` | Imported local signal such as X, Apple Notes, Safari tabs, GitHub, YouTube, feed, or manual link. |
+| source row | `Source` | Extracted/summarized linked source. |
+| entity note | `Entity` | Derived entity view, not raw evidence. |
+| topic note | `Topic` | Derived topic view, not raw evidence. |
+| bundle metadata | `Bundle Metadata` | Root-level generated metadata concept for the export run. |
 
 Do not use only `Reference` for every source. OKF sample bundles use
 `Reference` for referenceable supporting docs, but `dbrain` sources are broader:
 articles, GitHub repos, YouTube pages, X articles, feed entries, and other
-external evidence. `dbrain Source` is more honest.
+external evidence. `Source` is more honest, and `dbrain_source_type` preserves
+the finer origin distinction.
 
 ## Frontmatter Mapping
 
@@ -236,7 +244,7 @@ by `dbrain` extension fields.
 
 ```yaml
 ---
-type: dbrain Source
+type: Source
 title: Example title
 description: One sentence suitable for indexes and previews.
 resource: https://example.com/canonical
@@ -244,12 +252,11 @@ tags:
   - source/web
   - domain/example.com
 timestamp: "2026-06-14T12:00:00Z"
+dbrain_concept_id: "source/src%3Aexample"
 dbrain_kind: source
 dbrain_source_key: "src:..."
 dbrain_source_type: web
 dbrain_note_path: sources/web/example.md
-exported_at: "2026-06-14T18:00:00Z"
-okf_profile: private
 ---
 ```
 
@@ -265,14 +272,35 @@ Rules:
   no external URL, use a stable local URI such as
   `dbrain://item/<url-escaped-source-key>` or omit `resource` and keep
   `dbrain_source_key`.
+- `dbrain_concept_id`: stable producer identity derived from the source key or
+  entity/topic key. Paths are friendly locations; this field is the durable
+  `dbrain` identity if paths later move.
 - `tags`: include normalized user tags and stable operational tags. Avoid
   leaking empty labels.
 - `timestamp`: use the last meaningful content timestamp, not the export time.
   Use `updated_at`, `summarized_at`, `extracted_at`, `last_seen_at`,
   `saved_at`, or `published_at` depending on concept type.
-- `exported_at`: producer-defined field for the export run time.
 - unknown extra fields are legal under OKF; consumers should tolerate the
   `dbrain_*` extension fields emitted by this exporter.
+
+Bundle-level metadata such as `okf_version`, `okf_profile`, `exported_at`, and
+producer version should live in a root-level `bundle.md` concept, not every
+concept frontmatter. Regenerating an unchanged concept should produce identical
+bytes.
+
+Recommended deterministic description templates:
+
+| Concept | Fallback description template |
+|---|---|
+| X item | `Saved X item from <author/title>.` |
+| Apple Note item | `Imported Apple Note titled "<title>".` |
+| Safari tab item | `Imported Safari tab for <host or title>.` |
+| GitHub item | `Imported GitHub signal for <repo/title>.` |
+| YouTube item | `Imported YouTube signal for <title>.` |
+| Feed/manual item | `Imported item from <source type or domain>.` |
+| Source | `Linked source from <domain or source type>.` |
+| Entity | `Derived entity from local dbrain references.` |
+| Topic | `Derived topic view over local dbrain evidence.` |
 
 ### Item Extension Fields
 
@@ -280,6 +308,7 @@ Recommended item fields:
 
 ```yaml
 dbrain_kind: item
+dbrain_concept_id: "item/x%3A204..."
 dbrain_source_key: "x:204..."
 dbrain_source_type: x_bookmark
 dbrain_external_id: "204..."
@@ -300,6 +329,7 @@ Recommended source fields:
 
 ```yaml
 dbrain_kind: source
+dbrain_concept_id: "source/src%3A..."
 dbrain_source_key: "src:..."
 dbrain_source_type: web
 dbrain_note_path: sources/web/example.md
@@ -367,9 +397,16 @@ Short human-readable context for this imported item.
 
 ...
 
+# Media
+
+- Original item: https://x.com/example/status/204...
+- Media source: https://pbs.twimg.com/media/...
+- Expanded media URL: https://x.com/example/status/204.../photo/1
+- Archived media: https://cdn.example.com/media/...
+
 # Related Concepts
 
-- [Linked source title](../../sources/web/example.md) - linked source
+- [Linked source title](../../../sources/web/example.md) - linked source
 - [Quoted post](./quoted-child.md) - quoted post
 
 # Citations
@@ -414,6 +451,13 @@ Rules:
 - Do not overwrite raw evidence with summaries.
 - Put derived summaries under clearly labelled sections.
 - Preserve provenance for OCR/transcripts/model-derived text.
+- For media, include every relevant URL available: the owning item/tweet URL,
+  the media source/remote URL, the expanded post-media URL, and the stored
+  uploaded/archive URL (`archive_url` when `archive_status = archived`). The
+  OKF MVP should link to URLs already tracked in SQLite rather than copying
+  media files into the bundle or emitting local filesystem paths. If an
+  uploaded URL is unavailable, still include the media status and original
+  remote/expanded URLs.
 - Include numbered citations under `# Citations`.
 - Use ordinary Markdown links for concept relationships.
 - Do not emit Obsidian `[[...]]` links in OKF bundles.
@@ -431,7 +475,7 @@ bundle-root paths.
 Examples:
 
 - item to source:
-  `../../sources/web/example.md`
+  `../../../sources/web/example.md`
 - source backlink to item:
   `../../items/x/2026/204....md`
 - topic to item/source:
@@ -452,7 +496,7 @@ Recommended MVP layout:
 ```text
 current/
 +-- index.md
-+-- log.md
++-- bundle.md
 +-- items/
 |   +-- index.md
 |   +-- x/
@@ -482,32 +526,36 @@ current/
     +-- ...
 ```
 
-Root `index.md` should declare the OKF version if we decide to use the spec's
-version mechanism:
+No generated `index.md` should contain frontmatter. Put bundle metadata in
+`bundle.md` instead:
 
 ```yaml
 ---
+type: Bundle Metadata
+title: dbrain OKF Bundle
+description: Metadata for a generated dbrain OKF export.
 okf_version: "0.1"
+okf_profile: private
+exported_at: "2026-06-14T18:00:00Z"
+dbrain_version: "..."
 ---
 ```
-
-Non-root `index.md` files should not have frontmatter.
 
 Each index should group entries by OKF `type` and include the concept
 description:
 
 ```markdown
-# dbrain Source
+# Source
 
 * [Example source](sources/web/example.md) - Short description.
 
-# dbrain X Item
+# Item
 
 * [Example post](items/x/2026/204....md) - Short description.
 ```
 
-`log.md` should be optional in the MVP. If generated, it should record export
-runs and major scope changes, not every row.
+Do not generate `log.md` in the MVP. It is an OKF reserved filename, and the
+plan does not need a producer-specific history format yet.
 
 ## Export Profiles
 
@@ -517,13 +565,17 @@ Recommended profiles:
 
 | Profile | Default? | Contents |
 |---|---:|---|
-| `private` | yes | Full local evidence: summaries, extracts, note text, OCR, transcripts, relationships, local dbrain keys. |
+| `private` | yes | Full local evidence: summaries, extracts, Apple Notes, note text, OCR, transcripts, relationships, local dbrain keys. |
 | `portable` | no | Full concept metadata and summaries, but raw long extracts/transcripts may be capped. |
 | `public` | no | External URLs, titles, descriptions, selected summaries, no local note paths, no private Apple Notes, no raw transcripts/OCR unless explicitly allowed. |
 
 The MVP should implement `private` only, but the renderer should be designed so
 profile decisions are centralized rather than scattered across item/source
 renderers.
+
+Private export includes Apple Notes by default because it is a local/private
+bundle profile. Excluding Apple Notes belongs in a later portable/public
+profile or explicit source-type filter, not the MVP default.
 
 ## Proposed Commands
 
@@ -549,10 +601,10 @@ Useful export flags:
 --entities
 --topics
 --source-type x_bookmark --source-type github
---since 2026-06-01T00:00:00Z
 --limit 100
 --include-raw
 --max-raw-chars 0
+--conformance spec|reference
 --link-style relative|absolute
 --json
 ```
@@ -567,30 +619,15 @@ dbrain okf visualize <dir>
 `okf export` should be safe to rerun. It may delete and regenerate the target
 bundle only when the target is under the configured OKF output directory or
 when `--replace` is explicitly passed. Avoid destructive behavior for arbitrary
-paths.
+paths. MVP export should be full-regeneration only; do not ship `--since` or
+partial incremental regeneration until stale-concept deletion semantics are
+designed.
+
+Validation should default to `--conformance spec`. `--conformance reference`
+is a stricter interoperability check for producers/CI, not the baseline OKF
+acceptance rule.
 
 ## Implementation Plan
-
-### Phase 0: Sample Current Output
-
-Goal: prove the mapping with a tiny bundle before building broad machinery.
-
-Tasks:
-
-- Add a private dev-only script or temporary test fixture that renders:
-  - one item with a linked source
-  - one source with a backlink
-  - one item with OCR/transcript content if fixtures are easy
-- Compare the output against OKF spec conformance.
-- Check that the generated bundle renders acceptably on GitHub/plain Markdown.
-- Decide whether root `index.md` should include only `okf_version` or no
-  frontmatter until the draft spec clarifies the reserved-index/version tension.
-
-Exit criteria:
-
-- a small fixture bundle has parseable frontmatter and a correct link graph
-- raw evidence and derived summaries are visibly separate
-- no existing vault output is changed
 
 ### Phase 1: Core Export Package
 
@@ -612,13 +649,16 @@ internal/okf/
 Responsibilities:
 
 - represent OKF documents as typed Go structs
-- write frontmatter using `gopkg.in/yaml.v3`, not ad hoc string escaping
-- derive stable concept IDs from existing note paths or source keys
+- write frontmatter using the existing `gopkg.in/yaml.v3` dependency, not ad
+  hoc string escaping
+- derive stable concept IDs from source keys, entity keys, or topic keys
 - convert relationships into Markdown links
 - render items and sources without mutating current vault renderers
 - generate OKF `index.md` files
 - validate spec conformance
 - return export stats
+- expose package-level read/search helpers shaped for later
+  `dbrain_okf_search` and `dbrain_okf_get`, even though MCP wiring is deferred
 
 Likely store additions:
 
@@ -635,6 +675,8 @@ Exit criteria:
 - `internal/okf` can export item/source fixtures to a temp bundle
 - validator passes the bundle
 - generated indexes are deterministic
+- bundle `index.md` files have no frontmatter and `bundle.md` carries export
+  metadata
 - no schema migration required
 
 ### Phase 2: CLI Surface
@@ -680,7 +722,7 @@ Entities:
 
 Topics:
 
-- export generated topic maps as `dbrain Topic`
+- export generated topic maps as `Topic`
 - link to seed and related notes
 - include graph relationships in Markdown
 - keep topic synthesis clearly labelled as derived
@@ -713,18 +755,25 @@ Tests to add:
 
 - frontmatter serialization uses YAML mappings and preserves unknown fields
 - concept documents with only `type` pass spec validation
-- optional strict profile requires `title`, `description`, and `timestamp`
+- `--conformance reference` requires `title`, `description`, and `timestamp`
 - `index.md` and `log.md` are treated as reserved files
-- non-root `index.md` files have no frontmatter
-- root `index.md` version declaration behavior is covered once chosen
+- generated `index.md` files have no frontmatter
+- root `bundle.md` carries `okf_version`, `okf_profile`, `exported_at`, and
+  producer metadata
 - item export includes `type`, `title`, `description`, `resource`, `tags`,
-  `timestamp`, and dbrain extension fields
+  `timestamp`, `dbrain_concept_id`, and dbrain extension fields
 - source export includes raw extracted text separately from derived summary
 - X media transcript and OCR text are distinct sections
+- media output includes all relevant tracked URLs available: owning item/tweet
+  URL, media remote/source URL, expanded post-media URL, and stored
+  `archive_url`; OKF output does not expose local media paths
 - Markdown links are relative and resolve within the bundle
+- link goldens cover both deep item-to-source links and shallower backlinks
 - Obsidian wiki links are absent from OKF output
 - broken generated links are counted and reported
 - generated indexes are deterministic
+- at least one generated fixture is checked for compatibility with the Google
+  reference parser behavior or an equivalent reference-compatibility fixture
 - CLI `okf export --limit` works on a temp root
 - CLI `okf validate` rejects malformed YAML and missing `type`
 
@@ -743,6 +792,10 @@ If CLI behavior is added:
 task build
 ```
 
+`task test-ci` is expected to be green. If it fails while implementing OKF,
+diagnose and handle the failure inside the branch unless it is clearly external
+infrastructure noise.
+
 ## Risks And Decisions
 
 ### Risk: Treating The Existing Vault As OKF
@@ -753,9 +806,9 @@ separate.
 
 ### Risk: Raw Evidence Leakage
 
-The `private` profile should be explicit in command output. A later `public`
-profile must strip local note paths, Apple Notes content, private transcripts,
-and other local-only fields by default.
+The `private` profile should be explicit in command output and includes Apple
+Notes by default. A later `public` profile must strip local note paths, Apple
+Notes content, private transcripts, and other local-only fields by default.
 
 ### Risk: Spec Draft Drift
 
@@ -767,14 +820,20 @@ validator, and make the renderer tolerant of future optional fields.
 The reference validator currently requires more than the spec. `dbrain` should
 offer both:
 
-- `--profile spec`: only spec conformance
-- `--profile reference`: stricter title/description/timestamp checks
+- `--conformance spec`: only spec conformance
+- `--conformance reference`: stricter title/description/timestamp checks
 
 ### Risk: Large Extracted Text
 
 Full extracted source text can make huge Markdown files. MVP private export can
 include it, but the renderer should already support `--max-raw-chars` so
 portable/public profiles do not need a rewrite.
+
+### Risk: Incremental Export Semantics
+
+Incremental export sounds attractive but creates deletion/staleness questions.
+MVP should use full regeneration only. Add `--since` later only with an
+explicit stale-concept deletion strategy.
 
 ### Risk: Model-Derived Topic/Entity Prose
 
@@ -791,15 +850,20 @@ MVP is done when:
 - Every concept document has parseable YAML frontmatter and non-empty `type`.
 - `title`, `description`, `resource`, `tags`, and `timestamp` are populated
   whenever available.
+- Every item/source concept has a stable `dbrain_concept_id`.
 - Raw evidence and derived summaries are separate sections.
+- Media references include all relevant tracked URLs available, including the
+  owning item/tweet URL, media remote/source URL, expanded post-media URL, and
+  uploaded/archive URL, and never expose local media paths.
 - Item/source relationships are expressed as standard Markdown links.
-- `index.md` files are generated at every directory level without non-root
-  frontmatter.
+- `index.md` files are generated at every directory level without frontmatter.
+- `bundle.md` carries bundle metadata that would otherwise churn every concept.
 - `dbrain okf validate <tmpdir>` reports conformance, concept counts, index
   counts, and broken-link counts.
 - Existing vault rendering is unchanged.
 - Tests cover at least one item-source linked fixture and one raw/derived
-  evidence fixture.
+  evidence fixture, plus one media fixture with original, remote/expanded, and
+  archived URLs.
 
 ## Recommended First Implementation Slice
 
