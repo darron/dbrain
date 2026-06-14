@@ -48,7 +48,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "version"} {
+	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "okf", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -971,6 +971,7 @@ func TestConfigPathsCommandJSON(t *testing.T) {
 		"data_dir":        cfg.DataDir,
 		"database":        cfg.DBPath,
 		"vault_dir":       cfg.VaultDir,
+		"okf_dir":         cfg.OKFDir,
 		"temp_dir":        cfg.TempDir,
 		"cache_dir":       cfg.CacheDir,
 		"log_dir":         cfg.LogDir,

@@ -5,6 +5,25 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Open Knowledge Format Export (2026-06-14)
+
+- **OKF export**: Added `dbrain okf export` and `dbrain okf validate` for
+  deterministic private Open Knowledge Format Markdown bundles with generated
+  indexes, bundle metadata, path-collision checks, staging validation, export
+  locking, and atomic replacement.
+- **OKF concepts**: Exported items, linked sources, derived entities, and
+  generated topic maps preserve stable dbrain producer ids, avoid volatile
+  pipeline state in frontmatter, keep raw evidence separate from summaries, and
+  reference uploaded/archive media URLs without leaking local media paths.
+- **MCP**: Added read-only `dbrain_okf_search` and `dbrain_okf_get` tools for
+  consuming an existing generated OKF bundle; export and validation remain CLI
+  operations only.
+- **Config**: Added `OKFDir` beside the rendered vault path so explicit-root
+  installs use `<root>/okf/current/` and XDG installs use the matching
+  data-dir sibling.
+- **Location**: `internal/okf/`, `internal/app/okf.go`,
+  `internal/mcpserver/`, `internal/config/`
+
 ### Feed Parse Retry Classification (2026-06-02)
 
 - **Fixed**: Feed parse failures now enter normal retry backoff instead of

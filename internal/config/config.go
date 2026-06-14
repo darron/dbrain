@@ -18,6 +18,7 @@ type Config struct {
 	LogDir         string
 	MediaDir       string
 	VaultDir       string
+	OKFDir         string
 	DBPath         string
 }
 
@@ -51,6 +52,7 @@ func LoadConfigFile(path string) (Config, error) {
 	}
 	dataDir := filepath.Join(dataBase, "dbrain")
 	vaultDir := filepath.Join(dataDir, "vault")
+	okfDir := filepath.Join(dataDir, "okf", "current")
 
 	return Config{
 		RootDir:        configDir,
@@ -63,6 +65,7 @@ func LoadConfigFile(path string) (Config, error) {
 		LogDir:         filepath.Join(dataDir, "logs"),
 		MediaDir:       filepath.Join(vaultDir, "media"),
 		VaultDir:       vaultDir,
+		OKFDir:         okfDir,
 		DBPath:         filepath.Join(dataDir, "brain.db"),
 	}, nil
 }
@@ -84,6 +87,7 @@ func loadExplicitRoot(root string) (Config, error) {
 		LogDir:         filepath.Join(absRoot, "logs"),
 		MediaDir:       filepath.Join(absRoot, "vault", "media"),
 		VaultDir:       filepath.Join(absRoot, "vault"),
+		OKFDir:         filepath.Join(absRoot, "okf", "current"),
 		DBPath:         filepath.Join(absRoot, "data", "brain.db"),
 	}
 
@@ -103,6 +107,7 @@ func loadDefault() (Config, error) {
 	configDir := filepath.Join(configBase, "dbrain")
 	dataDir := filepath.Join(dataBase, "dbrain")
 	vaultDir := filepath.Join(dataDir, "vault")
+	okfDir := filepath.Join(dataDir, "okf", "current")
 
 	return Config{
 		RootDir:        configDir,
@@ -115,6 +120,7 @@ func loadDefault() (Config, error) {
 		LogDir:         filepath.Join(dataDir, "logs"),
 		MediaDir:       filepath.Join(vaultDir, "media"),
 		VaultDir:       vaultDir,
+		OKFDir:         okfDir,
 		DBPath:         filepath.Join(dataDir, "brain.db"),
 	}, nil
 }
@@ -147,8 +153,12 @@ func (c Config) EnsureDirs() error {
 		c.LogDir,
 		c.VaultDir,
 		c.MediaDir,
+		c.OKFDir,
 		filepath.Join(c.VaultDir, "items"),
 	} {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create dir %s: %w", dir, err)
 		}

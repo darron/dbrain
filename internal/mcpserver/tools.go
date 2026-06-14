@@ -22,6 +22,10 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (map[s
 		return s.toolGet(ctx, params.Arguments)
 	case "dbrain_get_many":
 		return s.toolGetMany(ctx, params.Arguments)
+	case "dbrain_okf_search":
+		return s.toolOKFSearch(params.Arguments)
+	case "dbrain_okf_get":
+		return s.toolOKFGet(params.Arguments)
 	case "dbrain_research_pack":
 		return s.toolResearchPack(ctx, params.Arguments)
 	case "dbrain_entity_map":

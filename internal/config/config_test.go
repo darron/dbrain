@@ -32,6 +32,7 @@ func TestLoadDefaultUsesXDGLayout(t *testing.T) {
 		"CacheDir":       filepath.Join(dataDir, "cache"),
 		"LogDir":         filepath.Join(dataDir, "logs"),
 		"VaultDir":       filepath.Join(dataDir, "vault"),
+		"OKFDir":         filepath.Join(dataDir, "okf", "current"),
 		"MediaDir":       filepath.Join(dataDir, "vault", "media"),
 		"DBPath":         filepath.Join(dataDir, "brain.db"),
 	}
@@ -45,6 +46,7 @@ func TestLoadDefaultUsesXDGLayout(t *testing.T) {
 		"CacheDir":       cfg.CacheDir,
 		"LogDir":         cfg.LogDir,
 		"VaultDir":       cfg.VaultDir,
+		"OKFDir":         cfg.OKFDir,
 		"MediaDir":       cfg.MediaDir,
 		"DBPath":         cfg.DBPath,
 	}
@@ -74,6 +76,7 @@ func TestLoadExplicitRootKeepsRepoLayout(t *testing.T) {
 		"CacheDir":       filepath.Join(root, "cache"),
 		"LogDir":         filepath.Join(root, "logs"),
 		"VaultDir":       filepath.Join(root, "vault"),
+		"OKFDir":         filepath.Join(root, "okf", "current"),
 		"MediaDir":       filepath.Join(root, "vault", "media"),
 		"DBPath":         filepath.Join(root, "data", "brain.db"),
 	}
@@ -87,6 +90,7 @@ func TestLoadExplicitRootKeepsRepoLayout(t *testing.T) {
 		"CacheDir":       cfg.CacheDir,
 		"LogDir":         cfg.LogDir,
 		"VaultDir":       cfg.VaultDir,
+		"OKFDir":         cfg.OKFDir,
 		"MediaDir":       cfg.MediaDir,
 		"DBPath":         cfg.DBPath,
 	}
@@ -127,6 +131,7 @@ func TestLoadConfigFileUsesFileAndXDGDataLayout(t *testing.T) {
 		"CacheDir":       filepath.Join(dataDir, "cache"),
 		"LogDir":         filepath.Join(dataDir, "logs"),
 		"VaultDir":       filepath.Join(dataDir, "vault"),
+		"OKFDir":         filepath.Join(dataDir, "okf", "current"),
 		"MediaDir":       filepath.Join(dataDir, "vault", "media"),
 		"DBPath":         filepath.Join(dataDir, "brain.db"),
 	}
@@ -140,6 +145,7 @@ func TestLoadConfigFileUsesFileAndXDGDataLayout(t *testing.T) {
 		"CacheDir":       cfg.CacheDir,
 		"LogDir":         cfg.LogDir,
 		"VaultDir":       cfg.VaultDir,
+		"OKFDir":         cfg.OKFDir,
 		"MediaDir":       cfg.MediaDir,
 		"DBPath":         cfg.DBPath,
 	}
@@ -166,7 +172,7 @@ func TestEnsureDirsCreatesConfigAndDataDirs(t *testing.T) {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
 
-	for _, dir := range []string{cfg.ConfigDir, cfg.DataDir, cfg.TempDir, cfg.CacheDir, cfg.LogDir, cfg.VaultDir, cfg.MediaDir, filepath.Join(cfg.VaultDir, "items")} {
+	for _, dir := range []string{cfg.ConfigDir, cfg.DataDir, cfg.TempDir, cfg.CacheDir, cfg.LogDir, cfg.VaultDir, cfg.MediaDir, cfg.OKFDir, filepath.Join(cfg.VaultDir, "items")} {
 		info, err := os.Stat(dir)
 		if err != nil {
 			t.Fatalf("Stat(%s): %v", dir, err)
