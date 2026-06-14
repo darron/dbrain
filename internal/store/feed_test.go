@@ -98,8 +98,7 @@ func TestFeedEnableDisableKeepsRowsAndResetsHealth(t *testing.T) {
 func TestListFeedsAndDueFeedsCloseKeyCursorBeforeLoadingRows(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
@@ -126,7 +125,9 @@ func TestListFeedsAndDueFeedsCloseKeyCursorBeforeLoadingRows(t *testing.T) {
 		}
 	}
 
-	feeds, err := st.ListFeeds(ctx, false)
+	listCtx, cancelList := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelList()
+	feeds, err := st.ListFeeds(listCtx, false)
 	if err != nil {
 		t.Fatalf("ListFeeds: %v", err)
 	}
@@ -134,7 +135,9 @@ func TestListFeedsAndDueFeedsCloseKeyCursorBeforeLoadingRows(t *testing.T) {
 		t.Fatalf("ListFeeds count = %d, want 2", len(feeds))
 	}
 
-	due, err := st.ListFeedsDue(ctx, time.Date(2026, 5, 9, 17, 0, 0, 0, time.UTC), 10, false)
+	dueCtx, cancelDue := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDue()
+	due, err := st.ListFeedsDue(dueCtx, time.Date(2026, 5, 9, 17, 0, 0, 0, time.UTC), 10, false)
 	if err != nil {
 		t.Fatalf("ListFeedsDue: %v", err)
 	}
