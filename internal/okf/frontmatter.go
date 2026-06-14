@@ -50,7 +50,7 @@ func renderFrontmatter(doc Document) (string, error) {
 	node := &yaml.Node{Kind: yaml.MappingNode}
 	for _, field := range fields {
 		name := strings.TrimSpace(field.Name)
-		if name == "" || field.Value == nil {
+		if name == "" || shouldSkipFrontmatterValue(field.Value) {
 			continue
 		}
 		valueNode, err := yamlNodeForValue(field.Value)
@@ -80,7 +80,7 @@ func renderFrontmatter(doc Document) (string, error) {
 func yamlNodeForValue(value any) (*yaml.Node, error) {
 	switch v := value.(type) {
 	case string:
-		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v}, nil
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: strings.TrimSpace(v)}, nil
 	case bool:
 		if v {
 			return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"}, nil
@@ -102,5 +102,24 @@ func yamlNodeForValue(value any) (*yaml.Node, error) {
 		return node, nil
 	default:
 		return nil, fmt.Errorf("unsupported value type %T", value)
+	}
+}
+
+func shouldSkipFrontmatterValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v) == ""
+	case []string:
+		for _, entry := range v {
+			if strings.TrimSpace(entry) != "" {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
 }

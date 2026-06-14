@@ -110,3 +110,22 @@ func TestOKFExportRejectsUnimplementedProfiles(t *testing.T) {
 		t.Fatalf("unexpected error: %v stderr=%q stdout=%q", err, stderr.String(), stdout.String())
 	}
 }
+
+func TestOKFExportRejectsNoSelectedConceptKinds(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "--no-debug", "okf", "export", "--items=false", "--sources=false", "--entities=false", "--topics=false"})
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatalf("expected no concept kinds selected to fail")
+	}
+	if !strings.Contains(err.Error(), "no OKF concept kinds selected") {
+		t.Fatalf("unexpected error: %v stderr=%q stdout=%q", err, stderr.String(), stdout.String())
+	}
+}

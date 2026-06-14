@@ -189,7 +189,7 @@ func writeItemRelated(b *strings.Builder, item itemDoc, snapshot store.OKFExport
 		conceptID := sourceConceptByID[ref.SourceID]
 		targetPath := pathByConceptID[conceptID]
 		if targetPath == "" {
-			omitted = append(omitted, OmittedLink{FromPath: item.Path, TargetConceptID: conceptID, Reason: "omitted by export filter"})
+			omitted = append(omitted, omittedByFilter(item.Path, ref.NotePath, conceptID))
 			continue
 		}
 		rel, err := RelativeLink(item.Path, targetPath)
@@ -204,7 +204,7 @@ func writeItemRelated(b *strings.Builder, item itemDoc, snapshot store.OKFExport
 		conceptID := itemConceptByID[ref.ItemID]
 		targetPath := pathByConceptID[conceptID]
 		if targetPath == "" {
-			omitted = append(omitted, OmittedLink{FromPath: item.Path, TargetConceptID: conceptID, Reason: "omitted by export filter"})
+			omitted = append(omitted, omittedByFilter(item.Path, ref.NotePath, conceptID))
 			continue
 		}
 		rel, err := RelativeLink(item.Path, targetPath)

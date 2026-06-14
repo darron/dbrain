@@ -175,7 +175,7 @@ func writeTopicEntities(b *strings.Builder, topic topicDoc, pathByConceptID map[
 		conceptID := EntityConceptID(entity.Kind, entity.Key)
 		targetPath := pathByConceptID[conceptID]
 		if targetPath == "" {
-			omitted = append(omitted, OmittedLink{FromPath: topic.Path, TargetConceptID: conceptID, Reason: "omitted by export filter"})
+			omitted = append(omitted, omittedByFilter(topic.Path, entity.NotePath, conceptID))
 			body.WriteString("- ")
 			body.WriteString(firstNonEmpty(entity.Name, entity.Key))
 		} else {
@@ -212,7 +212,7 @@ func writeTopicNodes(b *strings.Builder, topic topicDoc, pathByConceptID map[str
 			return nil, err
 		}
 		if !linked {
-			omitted = append(omitted, OmittedLink{FromPath: topic.Path, TargetConceptID: conceptIDBySourceKey[node.SourceKey], Reason: "omitted by export filter"})
+			omitted = append(omitted, omittedByFilter(topic.Path, firstNonEmpty(node.NotePath, node.SourceKey), conceptIDBySourceKey[node.SourceKey]))
 		}
 	}
 	writeSection(b, "Evidence Nodes", body.String())
@@ -252,10 +252,10 @@ func writeTopicRelationships(b *strings.Builder, topic topicDoc, pathByConceptID
 		}
 		body.WriteString("\n")
 		if !fromLinked {
-			appendTopicOmitted(&omitted, seenOmitted, topic.Path, conceptIDBySourceKey[edge.From])
+			appendTopicOmitted(&omitted, seenOmitted, topic.Path, edge.From, conceptIDBySourceKey[edge.From])
 		}
 		if !toLinked {
-			appendTopicOmitted(&omitted, seenOmitted, topic.Path, conceptIDBySourceKey[edge.To])
+			appendTopicOmitted(&omitted, seenOmitted, topic.Path, edge.To, conceptIDBySourceKey[edge.To])
 		}
 	}
 	writeSection(b, "Relationships", body.String())
@@ -305,11 +305,11 @@ func writeTopicSourceKeyLabelLink(b *strings.Builder, fromPath, sourceKey, label
 	return true, nil
 }
 
-func appendTopicOmitted(omitted *[]OmittedLink, seen map[string]struct{}, fromPath, conceptID string) {
-	key := fromPath + "\x00" + conceptID
+func appendTopicOmitted(omitted *[]OmittedLink, seen map[string]struct{}, fromPath, targetPath, conceptID string) {
+	key := fromPath + "\x00" + targetPath + "\x00" + conceptID
 	if _, ok := seen[key]; ok {
 		return
 	}
 	seen[key] = struct{}{}
-	*omitted = append(*omitted, OmittedLink{FromPath: fromPath, TargetConceptID: conceptID, Reason: "omitted by export filter"})
+	*omitted = append(*omitted, omittedByFilter(fromPath, targetPath, conceptID))
 }

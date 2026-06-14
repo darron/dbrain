@@ -15,6 +15,9 @@ development date for the change set.
   generated topic maps preserve stable dbrain producer ids, avoid volatile
   pipeline state in frontmatter, keep raw evidence separate from summaries, and
   reference uploaded/archive media URLs without leaking local media paths.
+- **Fixed**: OKF export now uses a crash-safe advisory lock, omits empty
+  extension frontmatter fields, records target diagnostics for omitted filtered
+  links, and rejects exports where every concept kind is explicitly disabled.
 - **MCP**: Added read-only `dbrain_okf_search` and `dbrain_okf_get` tools for
   consuming an existing generated OKF bundle; export and validation remain CLI
   operations only.

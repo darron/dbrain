@@ -107,7 +107,7 @@ func writeSourceBacklinks(b *strings.Builder, source sourceDoc, snapshot store.O
 		conceptID := itemConceptByID[ref.ItemID]
 		targetPath := pathByConceptID[conceptID]
 		if targetPath == "" {
-			omitted = append(omitted, OmittedLink{FromPath: source.Path, TargetConceptID: conceptID, Reason: "omitted by export filter"})
+			omitted = append(omitted, omittedByFilter(source.Path, ref.NotePath, conceptID))
 			continue
 		}
 		rel, err := RelativeLink(source.Path, targetPath)

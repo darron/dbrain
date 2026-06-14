@@ -121,6 +121,9 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 	if strings.Contains(firstBytes, "summary_status:") || strings.Contains(firstBytes, "ocr_status:") || strings.Contains(firstBytes, "last_seen_at:") || strings.Contains(firstBytes, "extract_status:") || strings.Contains(firstBytes, "summarized_at:") {
 		t.Fatalf("volatile status leaked into frontmatter/body unexpectedly:\n%s", firstBytes)
 	}
+	if strings.Contains(firstBytes, `site_name: ""`) || strings.Contains(firstBytes, `dbrain_external_id: ""`) {
+		t.Fatalf("empty string frontmatter field leaked into OKF output:\n%s", firstBytes)
+	}
 	for _, want := range []string{
 		"type: Item",
 		"dbrain_concept_id: item/x%3A204",
@@ -325,6 +328,11 @@ func TestBuildBundleDerivedViewsRecordOmittedFilteredLinks(t *testing.T) {
 	if bundle.Stats.OmittedByFilterLinks == 0 {
 		t.Fatalf("expected omitted-by-filter derived links, got stats %+v", bundle.Stats)
 	}
+	for _, link := range bundle.Manifest.OmittedLinks {
+		if strings.TrimSpace(link.TargetPath) == "" {
+			t.Fatalf("omitted link missing target_path: %+v", link)
+		}
+	}
 	root := t.TempDir()
 	if err := writeBundle(root, bundle); err != nil {
 		t.Fatalf("writeBundle: %v", err)
@@ -335,6 +343,35 @@ func TestBuildBundleDerivedViewsRecordOmittedFilteredLinks(t *testing.T) {
 	}
 	if !validation.Conformant || validation.BrokenInternalLinks != 0 || validation.OmittedByFilterLinks == 0 {
 		t.Fatalf("unexpected validation result: %+v", validation)
+	}
+}
+
+func TestAcquireLockBlocksConcurrentAndRecoversStaleFile(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	lockPath := filepath.Join(parent, ".dbrain-okf-export.lock")
+
+	unlock, err := acquireLock(parent)
+	if err != nil {
+		t.Fatalf("acquireLock first: %v", err)
+	}
+	if _, err := acquireLock(parent); err == nil {
+		unlock()
+		t.Fatalf("concurrent acquireLock succeeded, want lock contention failure")
+	}
+	unlock()
+
+	if err := os.WriteFile(lockPath, []byte("stale-pid\n"), 0o644); err != nil {
+		t.Fatalf("write stale lock file: %v", err)
+	}
+	unlock, err = acquireLock(parent)
+	if err != nil {
+		t.Fatalf("acquireLock with stale lock file: %v", err)
+	}
+	unlock()
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("lock file should remain as reusable advisory lock file: %v", err)
 	}
 }
 

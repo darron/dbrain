@@ -3,6 +3,7 @@ package okf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/runlock"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
 	"github.com/darron/dbrain/internal/vault"
@@ -162,17 +164,15 @@ func writeBundle(root string, bundle Bundle) error {
 
 func acquireLock(parent string) (func(), error) {
 	lockPath := filepath.Join(parent, ".dbrain-okf-export.lock")
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil, fmt.Errorf("okf export lock already held: %s", lockPath)
-		}
-		return nil, fmt.Errorf("create okf export lock: %w", err)
+	lock, err := runlock.Acquire(lockPath, fmt.Sprintf("pid=%d\n", os.Getpid()))
+	if errors.Is(err, runlock.ErrAlreadyLocked) {
+		return nil, fmt.Errorf("okf export lock already held: %s", lockPath)
 	}
-	_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
-	_ = file.Close()
+	if err != nil {
+		return nil, err
+	}
 	return func() {
-		_ = os.Remove(lockPath)
+		_ = lock.Close()
 	}, nil
 }
 

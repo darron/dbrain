@@ -1,6 +1,7 @@
 # Open Knowledge Format Markdown Extension Plan
 
-Status: proposal
+Status: implemented private MVP; portable/public profiles and reference
+compatibility checks remain deferred
 Date: 2026-06-14
 Confidence: moderate-high for the `dbrain` architecture, moderate for OKF
 stability because OKF v0.1 is still a draft.
@@ -242,7 +243,8 @@ relationships, and indexes describe one consistent database view.
 
 Regeneration should be atomic and non-destructive:
 
-- acquire an export lock before reading and writing
+- acquire a crash-safe advisory export lock before reading and writing, so a
+  killed exporter cannot permanently block future runs with a stale lock file
 - write the new bundle into a staging directory under the OKF output directory
 - validate the staged bundle
 - atomically swap or rename the staged bundle into `current/`
@@ -251,7 +253,9 @@ Regeneration should be atomic and non-destructive:
 
 Filtered exports from `--limit` or `--source-type` may intentionally omit linked
 concepts. The validator should classify those as omitted-by-filter links rather
-than accidental broken links.
+than accidental broken links. The omitted-link manifest should include the best
+available target diagnostic, such as the expected OKF path, vault note path,
+source key, or `dbrain_concept_id`.
 
 ## Deterministic Output Rules
 
@@ -268,8 +272,9 @@ Determinism requirements:
 - write frontmatter from ordered structs or explicit `yaml.Node` values, not
   Go maps with undefined iteration order
 - sort and deduplicate tags, relationships, citations, media refs, and indexes
-- query rows with a total deterministic order such as output path then source
-  key; never rely on update time alone
+- read rows with deterministic SQL ordering and sort generated concepts by
+  output path then source key before rendering; final bundle output order is the
+  compatibility contract
 - normalize timestamps to UTC RFC3339 with a fixed precision
 - escape Markdown link text and link destinations deterministically
 - ensure two consecutive exports of the same fixture produce byte-identical
@@ -340,6 +345,8 @@ Rules:
   future round-trip support.
 - `tags`: include normalized user tags and stable operational tags. Avoid
   leaking empty labels.
+- omit empty string extension fields rather than writing `field: ""`; absence
+  is less noisy and avoids making unknown empty values look intentional.
 - `timestamp`: use the last meaningful content timestamp, not the export time.
   Prefer source/content timestamps such as `published_at`, `saved_at`, or a
   stable upstream updated time. Do not use worker status timestamps,
@@ -668,6 +675,8 @@ Useful export flags:
 --limit 100
 --include-raw
 --max-raw-chars 0
+--entities
+--topics
 --json
 ```
 
@@ -676,8 +685,6 @@ Later:
 ```text
 --profile portable
 --profile public
---entities
---topics
 --conformance reference
 --link-style absolute
 dbrain okf index <dir>
@@ -785,8 +792,11 @@ Exit criteria:
 - `--limit` and `--source-type` allow smoke exports
 - invalid output paths fail closed with a clear diagnostic
 - non-private profiles fail with a clear "not implemented" diagnostic in MVP
+- explicitly disabling every concept kind fails with a clear diagnostic instead
+  of silently re-enabling the default item/source export
 - export writes to staging, validates, and atomically swaps into place
-- concurrent export attempts are blocked by the export lock
+- concurrent export attempts are blocked by the export lock, and stale lock
+  files left by crashed processes do not permanently block later exports
 
 ### Phase 3: Derived Views
 
@@ -1002,6 +1012,6 @@ Do this first:
 9. Add `dbrain okf validate <dir>`.
 10. Run `task fmt`, `task lint`, `task test`, `task test-ci`, and `task build`.
 
-Do not start with OKF import, MCP search/get tools, web visualization, or schema
-migrations. Export is the lowest-risk path because it proves the concept
-mapping without changing the authoritative database model.
+Do not start with OKF import, web visualization, or schema migrations. Export
+is the lowest-risk path because it proves the concept mapping without changing
+the authoritative database model.

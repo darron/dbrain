@@ -125,7 +125,7 @@ func writeEntityLinks(b *strings.Builder, entity entityDoc, pathByConceptID map[
 		conceptID := EntityConceptID(string(link.Kind), link.Key)
 		targetPath := pathByConceptID[conceptID]
 		if targetPath == "" {
-			omitted = append(omitted, OmittedLink{FromPath: entity.Path, TargetConceptID: conceptID, Reason: "omitted by export filter"})
+			omitted = append(omitted, omittedByFilter(entity.Path, link.NotePath, conceptID))
 			writePlainEntityReference(&body, firstNonEmpty(link.Name, link.Key), link.Relationship, string(link.Kind), link.Key)
 			continue
 		}
@@ -159,7 +159,7 @@ func writeEntityReferences(b *strings.Builder, entity entityDoc, pathByConceptID
 		conceptID := conceptIDBySourceKey[ref.SourceKey]
 		targetPath := pathByConceptID[conceptID]
 		if targetPath == "" {
-			omitted = append(omitted, OmittedLink{FromPath: entity.Path, TargetConceptID: conceptID, Reason: "omitted by export filter"})
+			omitted = append(omitted, omittedByFilter(entity.Path, firstNonEmpty(ref.NotePath, ref.SourceKey), conceptID))
 			writePlainEntityReference(&body, firstNonEmpty(ref.Title, ref.URL, ref.SourceKey), ref.Relationship, ref.SourceType, ref.SourceKey)
 			continue
 		}

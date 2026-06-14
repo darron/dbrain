@@ -57,6 +57,10 @@ func newOKFExportCommand(root *rootOptions) *cobra.Command {
 				includeItems = itemsOnly
 				includeSources = sourcesOnly
 			}
+			if (cmd.Flags().Changed("items") || cmd.Flags().Changed("sources") || cmd.Flags().Changed("entities") || cmd.Flags().Changed("topics")) &&
+				!includeItems && !includeSources && !includeEntities && !includeTopics {
+				return fmt.Errorf("no OKF concept kinds selected; enable at least one of --items, --sources, --entities, or --topics")
+			}
 
 			result, err := okf.Export(cmd.Context(), cfg, st, okf.ExportOptions{
 				OutDir:          outDir,
