@@ -402,6 +402,7 @@ For code changes, run:
 - `task fmt`
 - `task lint`
 - `task test`
+- `task test-ci`
 
 If CLI behavior changed materially, also rebuild and spot-check the command:
 
