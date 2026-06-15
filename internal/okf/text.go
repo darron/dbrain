@@ -5,6 +5,11 @@ import (
 	"unicode"
 )
 
+const (
+	validationSkipBegin = "<!-- dbrain-okf-validate-skip-begin -->"
+	validationSkipEnd   = "<!-- dbrain-okf-validate-skip-end -->"
+)
+
 func cleanText(value string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
@@ -70,6 +75,22 @@ func writeSection(b *strings.Builder, heading string, body string) {
 	b.WriteString(heading)
 	b.WriteString("\n\n")
 	b.WriteString(body)
+	b.WriteString("\n")
+}
+
+func writeUnvalidatedSection(b *strings.Builder, heading string, body string) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return
+	}
+	b.WriteString("\n# ")
+	b.WriteString(heading)
+	b.WriteString("\n\n")
+	b.WriteString(validationSkipBegin)
+	b.WriteString("\n")
+	b.WriteString(body)
+	b.WriteString("\n")
+	b.WriteString(validationSkipEnd)
 	b.WriteString("\n")
 }
 

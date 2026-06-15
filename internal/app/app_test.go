@@ -21,6 +21,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
@@ -2340,6 +2341,7 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 		"--x-media-limit", "3",
 		"--x-photo-ocr-limit", "5",
 		"--x-media-download-timeout", "45m",
+		"--okf-export",
 	})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
@@ -2356,6 +2358,9 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 	}
 	if captured.XMediaTimeout != 45*time.Minute {
 		t.Fatalf("expected x media download timeout 45m, got %s", captured.XMediaTimeout)
+	}
+	if !captured.OKFExportEnabled {
+		t.Fatalf("expected OKF export enabled")
 	}
 	stderrText := stderr.String()
 	for _, want := range []string{
@@ -2421,6 +2426,7 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 		"DBRAIN_SAFARI_TABS_DEVICE=dfone",
 		"DBRAIN_SAFARI_TABS_LIMIT=8",
 		"DBRAIN_SAFARI_TABS_OLDER_THAN=2h",
+		"DBRAIN_OKF_EXPORT_ENABLED=true",
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatalf("write .env: %v", err)
@@ -2432,6 +2438,9 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 	}
 	if !resolved.archiveMedia || !resolved.appleNotes || !resolved.safariTabs {
 		t.Fatalf("expected archive/apple-notes/safari-tabs enabled, got archive=%v apple=%v safari=%v", resolved.archiveMedia, resolved.appleNotes, resolved.safariTabs)
+	}
+	if !resolved.okfExport {
+		t.Fatalf("expected OKF export enabled from env")
 	}
 	if resolved.appleNotesDBPath != "/tmp/notes.sqlite" {
 		t.Fatalf("appleNotesDBPath = %q", resolved.appleNotesDBPath)
@@ -2518,6 +2527,8 @@ func clearSyncEnvForTest(t *testing.T) {
 		"DBRAIN_SAFARI_TABS_DEVICE",
 		"DBRAIN_SAFARI_TABS_LIMIT",
 		"DBRAIN_SAFARI_TABS_OLDER_THAN",
+		"DBRAIN_OKF_EXPORT_ENABLED",
+		"DBRAIN_SYNC_OKF_EXPORT",
 	} {
 		t.Setenv(key, "")
 	}
@@ -2967,6 +2978,38 @@ func TestWriteSyncStatsIncludesFeedLevelChangedAndUnchanged(t *testing.T) {
 
 	output := dst.String()
 	for _, value := range []string{"Sync Summary", "Feeds", "checked=1 entries=0", "changed=0 unchanged=1 created=0 updated=0"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
+		}
+	}
+}
+
+func TestWriteSyncStatsIncludesOKFExportStage(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:   time.Date(2026, time.June, 14, 18, 0, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, time.June, 14, 18, 1, 0, 0, time.UTC),
+		Duration:    time.Minute,
+		OKFExport: &syncjob.OKFExportStage{
+			Stats: okf.ExportResult{
+				ConceptsWritten: 25000,
+				IndexesWritten:  8,
+				ItemsWritten:    14000,
+				SourcesWritten:  10000,
+				EntitiesWritten: 900,
+				TopicsWritten:   3,
+			},
+		},
+	}
+
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	for _, value := range []string{"Sync Summary", "OKF Export", "concepts=25000 indexes=8", "items=14000 sources=10000 entities=900 topics=3"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}

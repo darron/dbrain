@@ -11,6 +11,9 @@ func resolveSyncAllFlags(rootDir string, flags syncAllFlags) (syncAllFlags, erro
 	if !flags.archiveMedia {
 		flags.archiveMedia = firstEnvBool(rootDir, "DBRAIN_AUTO_ARCHIVE_MEDIA", "DBRAIN_ARCHIVE_AUTO")
 	}
+	if !flags.okfExport {
+		flags.okfExport = firstEnvBool(rootDir, "DBRAIN_OKF_EXPORT_ENABLED", "DBRAIN_SYNC_OKF_EXPORT")
+	}
 	if !flags.appleNotes {
 		flags.appleNotes = firstEnvBool(rootDir, "DBRAIN_APPLE_NOTES_ENABLED")
 	}

@@ -519,12 +519,18 @@ Rules:
 - Do not emit operational statuses by default. Include blocked/missing status
   details in body text only when they explain absent raw evidence or summaries.
 - For media, include every relevant URL available: the owning item/tweet URL,
-  the media source/remote URL, the expanded post-media URL, and the stored
-  uploaded/archive URL (`archive_url` when `archive_status = archived`). The
-  OKF MVP should link to URLs already tracked in SQLite rather than copying
-  media files into the bundle or emitting local filesystem paths. If an
-  uploaded URL is unavailable, still include the media status and original
-  remote/expanded URLs.
+  the media source/remote URL, the expanded post-media URL, and the
+  uploaded/archive URL when `archive_status = archived`. Prefer the stored
+  `archive_url`; if older rows only have `archive_key`, derive a direct object
+  URL from the configured media public base URL (`DBRAIN_R2_PUBLIC_BASE_URL` /
+  `DBRAIN_MEDIA_PUBLIC_BASE_URL`). For private bundles where archived media is
+  available through dbrain rather than an anonymous object URL, derive a
+  proxy-backed URL from `DBRAIN_MEDIA_PROXY_BASE_URL`, `DBRAIN_WEB_BASE_URL`, or
+  `DBRAIN_AUTH_BASE_URL` as `/media/asset/{id}`. The OKF MVP should link to
+  already tracked or derivable uploaded/archive URLs rather than copying media
+  files into the bundle or emitting local filesystem paths. If an uploaded URL
+  is unavailable, still include the media status and original remote/expanded
+  URLs.
 - Include numbered citations under `# Citations`.
 - Use ordinary Markdown links for concept relationships.
 - Do not emit Obsidian `[[...]]` links in OKF bundles.
@@ -697,6 +703,13 @@ stale-concept deletion semantics are designed. Regeneration should use the
 staging, validation, lock, and atomic-swap rules above rather than deleting the
 current bundle in place.
 
+`sync all` may run OKF export as an opt-in final stage after import, enrichment,
+categorization, and media archival have finished. The shipped controls are
+`sync all --okf-export`, `--skip-okf-export`,
+`DBRAIN_OKF_EXPORT_ENABLED=true`, and `okf.export.enabled: true` in
+`config.yaml`. The sync-stage export should be a full private bundle with
+items, sources, entities, topics, and raw evidence included.
+
 Validation should implement spec conformance first. Reference-compatibility
 checks are a later producer/CI feature and should use pinned local fixtures,
 not the network or a live checkout of Google's draft repository.
@@ -859,8 +872,10 @@ Tests to add:
 - source export includes raw extracted text separately from derived summary
 - X media transcript and OCR text are distinct sections
 - media output includes all relevant tracked URLs available: owning item/tweet
-  URL, media remote/source URL, expanded post-media URL, and stored
-  `archive_url`; OKF output does not expose local media paths
+  URL, media remote/source URL, expanded post-media URL, and uploaded/archive
+  URL from stored `archive_url`, configured public base URL plus `archive_key`,
+  or configured private dbrain media proxy/root base URL plus media asset id;
+  OKF output does not expose local media paths
 - Markdown links are relative and resolve within the bundle
 - link goldens cover both deep item-to-source links and shallower backlinks
 - Markdown link escaping covers titles and URLs containing brackets,
@@ -875,6 +890,10 @@ Tests to add:
 - export writes to a staging directory, validates before swap, and preserves the
   previous bundle on validation failure
 - concurrent exports cannot interleave because the export lock is held
+- raw/source-payload sections are marked as evidence payload and are not treated
+  as generated OKF internal-link topology during validation
+- `sync all --okf-export` and `okf.export.enabled: true` run the full private
+  OKF export as the final sync stage
 - later reference-compatibility tests use pinned local fixtures only, with no
   network or live Google repository dependency
 - CLI `okf export --limit` works on a temp root
@@ -980,7 +999,9 @@ MVP is done when:
 - Raw evidence and derived summaries are separate sections.
 - Media references include all relevant tracked URLs available, including the
   owning item/tweet URL, media remote/source URL, expanded post-media URL, and
-  uploaded/archive URL, and never expose local media paths.
+  uploaded/archive URL from stored `archive_url`, configured public base URL
+  plus `archive_key`, or configured private dbrain media proxy/root base URL
+  plus media asset id, and never expose local media paths.
 - Item/source relationships are expressed as standard Markdown links.
 - `index.md` files are generated at every directory level without frontmatter.
 - `bundle.md` carries bundle metadata that would otherwise churn every concept.

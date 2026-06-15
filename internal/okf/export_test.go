@@ -39,7 +39,7 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 		OCRText:              "Raw OCR evidence.",
 		OCRStatus:            "current",
 		ArticleTitle:         model.XMediaTranscriptArticleTitle,
-		ArticleText:          "Raw transcript evidence.",
+		ArticleText:          "Remote URL: https://video.twimg.com/test.mp4\nLocal Path: `media/x/video/local.mp4`\n\nTranscript:\n\nRaw transcript evidence.",
 		UserTags:             "tag-one, tag two",
 		NotePath:             "items/x/2026/204.md",
 	}
@@ -89,6 +89,7 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 		},
 		ItemMedia: map[int64][]model.ItemMediaRef{
 			item.ID: {{
+				MediaAssetID:   200,
 				Ordinal:        0,
 				ExpandedURL:    "https://x.com/example/status/204/photo/1",
 				RemoteURL:      "https://pbs.twimg.com/media/test.jpg",
@@ -96,7 +97,7 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 				DownloadStatus: "downloaded",
 				LocalPath:      "media/x/photo/local.jpg",
 				ArchiveStatus:  model.MediaArchiveStatusArchived,
-				ArchiveURL:     "https://cdn.example.com/media/test.jpg",
+				ArchiveKey:     "media/test.jpg",
 				Width:          1200,
 				Height:         800,
 			}},
@@ -104,7 +105,7 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 		ItemChildren: map[int64][]model.SourceBacklink{},
 	}
 
-	opts := ExportOptions{Profile: ProfilePrivate, IncludeItems: true, IncludeSources: true, IncludeRaw: true, Now: now, DbrainVersion: "test"}
+	opts := ExportOptions{Profile: ProfilePrivate, IncludeItems: true, IncludeSources: true, IncludeRaw: true, MediaPublicBaseURL: "https://cdn.example.com/", Now: now, DbrainVersion: "test"}
 	first, err := BuildBundle(snapshot, opts)
 	if err != nil {
 		t.Fatalf("BuildBundle first: %v", err)
@@ -144,6 +145,12 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 	if strings.Contains(firstBytes, "media/x/photo/local.jpg") {
 		t.Fatalf("local media path leaked into OKF output:\n%s", firstBytes)
 	}
+	if strings.Contains(firstBytes, "media/x/video/local.mp4") {
+		t.Fatalf("generated transcript local media path leaked into OKF output:\n%s", firstBytes)
+	}
+	if strings.Contains(firstBytes, "Local Path:") {
+		t.Fatalf("generated transcript local path metadata leaked into OKF output:\n%s", firstBytes)
+	}
 
 	root := t.TempDir()
 	if err := writeBundle(root, first); err != nil {
@@ -165,6 +172,24 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 	}
 	if !strings.Contains(string(index), `A title with \] brackets`) {
 		t.Fatalf("index did not escape link text:\n%s", string(index))
+	}
+}
+
+func TestArchivedMediaURLDerivesProxyFromRootBase(t *testing.T) {
+	t.Parallel()
+
+	ref := model.ItemMediaRef{
+		MediaAssetID:   42,
+		ArchiveStatus:  model.MediaArchiveStatusArchived,
+		ArchiveKey:     "media/x/photo/test.jpg",
+		ArchiveURL:     "",
+		DownloadStatus: model.MediaDownloadStatusDownloaded,
+	}
+	got := archivedMediaURL(ref, ExportOptions{
+		MediaProxyBaseURL: "https://dbrain.example.test/",
+	})
+	if got != "https://dbrain.example.test/media/asset/42" {
+		t.Fatalf("archivedMediaURL() = %q", got)
 	}
 }
 
@@ -397,6 +422,36 @@ func TestValidateBundleSpecMinimumAndPathSafety(t *testing.T) {
 		if err := ValidateConceptPath(rel); err == nil {
 			t.Fatalf("ValidateConceptPath(%q) succeeded, want failure", rel)
 		}
+	}
+}
+
+func TestValidateBundleSkipsMarkedEvidenceLinksOnly(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	body := "---\ntype: Thing\ntitle: Thing\ndescription: Thing\n---\n" +
+		"# Extracted Text\n\n" +
+		validationSkipBegin + "\n" +
+		"Source payload link: [contributing](CONTRIBUTING.md)\n" +
+		validationSkipEnd + "\n\n" +
+		"# Related Concepts\n\n" +
+		"- [Missing concept](missing.md)\n"
+	if err := os.WriteFile(filepath.Join(root, "concept.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write concept: %v", err)
+	}
+	result, err := ValidateBundle(root)
+	if err != nil {
+		t.Fatalf("ValidateBundle: %v", err)
+	}
+	if result.Conformant || result.BrokenInternalLinks != 1 {
+		t.Fatalf("expected exactly one generated broken link, got %+v", result)
+	}
+	joined := strings.Join(result.Errors, "\n")
+	if strings.Contains(joined, "CONTRIBUTING.md") {
+		t.Fatalf("skipped source payload link was validated unexpectedly: %s", joined)
+	}
+	if !strings.Contains(joined, "missing.md") {
+		t.Fatalf("generated broken link was not reported: %s", joined)
 	}
 }
 

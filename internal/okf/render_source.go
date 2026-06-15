@@ -72,14 +72,14 @@ func writeSourceDetails(b *strings.Builder, source model.SourceDocument) {
 
 func writeSourceSummary(b *strings.Builder, source model.SourceDocument) {
 	if text := strings.TrimSpace(source.SummaryText); text != "" {
-		writeSection(b, "Derived Summary", text)
+		writeUnvalidatedSection(b, "Derived Summary", text)
 		return
 	}
 	if strings.TrimSpace(source.SummaryStatus) == "blocked" || strings.TrimSpace(source.SummaryError) != "" {
 		var status strings.Builder
 		writeBullet(&status, "Summary status", code(source.SummaryStatus))
 		writeBullet(&status, "Summary error", source.SummaryError)
-		writeSection(b, "Derived Summary", status.String())
+		writeUnvalidatedSection(b, "Derived Summary", status.String())
 	}
 }
 
@@ -93,11 +93,11 @@ func writeSourceRaw(b *strings.Builder, source model.SourceDocument, opts Export
 			var status strings.Builder
 			writeBullet(&status, "Extract status", code(source.ExtractStatus))
 			writeBullet(&status, "Extract error", source.ExtractError)
-			writeSection(b, "Extracted Text", status.String())
+			writeUnvalidatedSection(b, "Extracted Text", status.String())
 		}
 		return
 	}
-	writeSection(b, "Extracted Text", text)
+	writeUnvalidatedSection(b, "Extracted Text", text)
 }
 
 func writeSourceBacklinks(b *strings.Builder, source sourceDoc, snapshot store.OKFExportSnapshot, pathByConceptID map[string]string, itemConceptByID map[int64]string) ([]OmittedLink, error) {

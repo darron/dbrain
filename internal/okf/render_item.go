@@ -39,7 +39,7 @@ func renderItemDocument(item itemDoc, snapshot store.OKFExportSnapshot, opts Exp
 	writeItemSource(&body, item.Item)
 	writeItemSummary(&body, item.Item)
 	writeItemRawEvidence(&body, item.Item, opts)
-	writeItemMedia(&body, item.Item, snapshot.ItemMedia[item.Item.ID])
+	writeItemMedia(&body, item.Item, snapshot.ItemMedia[item.Item.ID], opts)
 	omitted, err := writeItemRelated(&body, item, snapshot, pathByConceptID, sourceConceptByID, itemConceptByID)
 	if err != nil {
 		return Document{}, nil, err
@@ -89,14 +89,14 @@ func writeItemSource(b *strings.Builder, item model.Item) {
 
 func writeItemSummary(b *strings.Builder, item model.Item) {
 	if text := strings.TrimSpace(item.SummaryText); text != "" {
-		writeSection(b, "Derived Summary", text)
+		writeUnvalidatedSection(b, "Derived Summary", text)
 		return
 	}
 	if strings.TrimSpace(item.SummaryStatus) == "blocked" || strings.TrimSpace(item.SummaryError) != "" {
 		var status strings.Builder
 		writeBullet(&status, "Summary status", code(item.SummaryStatus))
 		writeBullet(&status, "Summary error", item.SummaryError)
-		writeSection(b, "Derived Summary", status.String())
+		writeUnvalidatedSection(b, "Derived Summary", status.String())
 	}
 }
 
@@ -118,7 +118,7 @@ func writeItemRawEvidence(b *strings.Builder, item model.Item, opts ExportOption
 	if item.ArticleTitle != "" || item.ArticleText != "" {
 		if strings.TrimSpace(item.ArticleTitle) == model.XMediaTranscriptArticleTitle {
 			raw.WriteString("## Media Transcript\n\n")
-			raw.WriteString(truncateRaw(item.ArticleText, opts.MaxRawChars))
+			raw.WriteString(stripGeneratedMediaLocalPathLines(truncateRaw(item.ArticleText, opts.MaxRawChars)))
 			raw.WriteString("\n\n")
 		} else {
 			raw.WriteString("## Cached Source Extract\n\n")
@@ -139,10 +139,23 @@ func writeItemRawEvidence(b *strings.Builder, item model.Item, opts ExportOption
 		raw.WriteString(text)
 		raw.WriteString("\n\n")
 	}
-	writeSection(b, "Raw Evidence", raw.String())
+	writeUnvalidatedSection(b, "Raw Evidence", raw.String())
 }
 
-func writeItemMedia(b *strings.Builder, item model.Item, media []model.ItemMediaRef) {
+func stripGeneratedMediaLocalPathLines(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Local Path:") || strings.HasPrefix(trimmed, "Local path:") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func writeItemMedia(b *strings.Builder, item model.Item, media []model.ItemMediaRef, opts ExportOptions) {
 	if len(media) == 0 {
 		return
 	}
@@ -159,7 +172,7 @@ func writeItemMedia(b *strings.Builder, item model.Item, media []model.ItemMedia
 		writeBullet(&body, "Media source", ref.RemoteURL)
 		writeBullet(&body, "Expanded media URL", ref.ExpandedURL)
 		if strings.TrimSpace(ref.ArchiveStatus) == model.MediaArchiveStatusArchived {
-			writeBullet(&body, "Archived media", ref.ArchiveURL)
+			writeBullet(&body, "Archived media", archivedMediaURL(ref, opts))
 		}
 		writeBullet(&body, "Archive status", code(ref.ArchiveStatus))
 		writeBullet(&body, "Download status", code(ref.DownloadStatus))

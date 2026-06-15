@@ -148,7 +148,8 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 2. For keyword or tag exploration, call `dbrain_search`, then inspect promising results with `dbrain_get_many` using `content_mode="evidence"` and the same `query` when there are multiple source keys, or `dbrain_get` for one source key.
 3. For graph expansion, call `dbrain_related` on strong evidence items or sources.
 4. For entity or topic browsing, use `dbrain_entity_map`, `dbrain_topic_map`, or `dbrain_topic_brief`.
-5. For operational status, use `dbrain_stats_activity`, `dbrain_stats_backlog`, `dbrain_stats_items`, or `dbrain_stats_sources`.
+5. For generated Open Knowledge Format bundle inspection, use `dbrain_okf_search` and `dbrain_okf_get`. These read the last exported OKF bundle from the configured OKF directory; they do not export, validate, or read live SQLite directly.
+6. For operational status, use `dbrain_stats_activity`, `dbrain_stats_backlog`, `dbrain_stats_items`, or `dbrain_stats_sources`.
 
 ## Research Practice
 
@@ -168,6 +169,7 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 - Use `user_tags` as retrieval hints. Item and source tags can match searches, disambiguate broad topics, and indicate the user's own categorization, but they do not replace source text. When `exact_tag_evidence` is present, treat it as representative examples for the matching tag lane, not as a complete list.
 - For named entities, search the likely hyphenated tag alias too, for example `Mark Carney` should include `mark-carney`. `dbrain_search` and `dbrain_research_pack` report exact tag aliases/counts so you can see whether the tag path hit.
 - Prefer `dbrain_research_pack` over several primitive searches. Inspect `query_plan.planner`, `query_plan.query_variants`, and `query_plan.concepts` to understand what the harness tried. Its suggested `dbrain_get` / `dbrain_get_many` next-step arguments include the query when available; preserve it unless you intentionally want un-windowed leading sections. If the pack is weak, then run narrow follow-up searches or `dbrain_related` using the pack's suggested next tools.
+- Use `dbrain_okf_search` and `dbrain_okf_get` only when the user asks to inspect generated OKF Markdown, bundle paths, exported concepts, or exchange-format output. Prefer DB-first tools for normal research because OKF can be stale until `dbrain okf export` or `sync all --okf-export` runs. `dbrain_okf_get` accepts an OKF path, `dbrain_concept_id`, or source key; pass `include_markdown=true` only when the rendered Markdown matters.
 - Do not mutate dbrain state unless the user explicitly asks. The MCP server is intended to be read-only.
 
 ## Fallback
@@ -177,6 +179,8 @@ If MCP tools are not available in the current Codex session, use the local CLI f
 ```bash
 ./bin/dbrain research "QUESTION" --retrieval-only
 ./bin/dbrain serve mcp
+./bin/dbrain okf export --entities --topics
+./bin/dbrain okf validate "$(./bin/dbrain config paths --json | jq -r .okf_dir)"
 ```
 
 If the MCP config was just installed, a new Codex session may be required before the `dbrain_*` MCP tools are discoverable.
@@ -197,6 +201,12 @@ When improving dbrain MCP retrieval, use corpus-local eval cases instead of hard
 Use `evals/mcp.example.json` as the shareable template and keep private corpus cases under ignored `evals/local/*.json`. Eval cases can assert expected source keys, acceptable source-key alternatives, expected top source keys, minimum evidence count, expected/forbidden evidence text, expected top-result text, source-type filters, related-evidence expansion, representative `exact_tag_evidence` examples from `dbrain_research_pack`, top-result matched/missing terms, and a rough latency budget.
 
 Use `dbrain eval research` for full harness behavior: query-family planning, planner-disabled baselines, source-key citation preparation, retrieval lanes, and trace diffs. Saved web Chat traces live under `data/research-runs/` as Markdown plus JSON sidecars; promote useful failures into reviewed research eval cases instead of tuning from memory.
+
+For OKF MCP tool coverage, run the focused protocol tests after changing OKF search/get behavior:
+
+```bash
+go test ./internal/mcpserver -run OKF
+```
 
 When a bad or surprising Chat answer appears, use the trace as the debugging
 unit:

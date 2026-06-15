@@ -21,6 +21,7 @@ type stageOptions struct {
 	Sources    sourcesStageOptions
 	Archive    archiveStageOptions
 	Categorize categorizeStageOptions
+	OKFExport  okfExportStageOptions
 }
 
 type commonStageOptions struct {
@@ -139,6 +140,12 @@ type categorizeStageOptions struct {
 	Images      bool
 }
 
+type okfExportStageOptions struct {
+	Enabled       bool
+	PublicBaseURL string
+	ProxyBaseURL  string
+}
+
 func newStageOptions(opts Options) stageOptions {
 	return stageOptions{
 		Common: commonStageOptions{
@@ -242,6 +249,11 @@ func newStageOptions(opts Options) stageOptions {
 			Model:       opts.CategorizeModel,
 			Timeout:     opts.CategorizeTimeout,
 			Images:      opts.CategorizeImages,
+		},
+		OKFExport: okfExportStageOptions{
+			Enabled:       opts.OKFExportEnabled,
+			PublicBaseURL: opts.ArchivePublicBaseURL,
+			ProxyBaseURL:  opts.OKFMediaProxyBaseURL,
 		},
 	}
 }

@@ -63,17 +63,19 @@ func newOKFExportCommand(root *rootOptions) *cobra.Command {
 			}
 
 			result, err := okf.Export(cmd.Context(), cfg, st, okf.ExportOptions{
-				OutDir:          outDir,
-				Profile:         profile,
-				IncludeItems:    includeItems,
-				IncludeSources:  includeSources,
-				IncludeEntities: includeEntities,
-				IncludeTopics:   includeTopics,
-				SourceTypes:     sourceTypes,
-				Limit:           limit,
-				IncludeRaw:      includeRaw,
-				MaxRawChars:     maxRawChars,
-				DbrainVersion:   version.Current().Short,
+				OutDir:             outDir,
+				Profile:            profile,
+				IncludeItems:       includeItems,
+				IncludeSources:     includeSources,
+				IncludeEntities:    includeEntities,
+				IncludeTopics:      includeTopics,
+				SourceTypes:        sourceTypes,
+				Limit:              limit,
+				IncludeRaw:         includeRaw,
+				MaxRawChars:        maxRawChars,
+				MediaPublicBaseURL: firstNonEmptyEnv(cfg.RootDir, "DBRAIN_R2_PUBLIC_BASE_URL", "DBRAIN_MEDIA_PUBLIC_BASE_URL"),
+				MediaProxyBaseURL:  firstNonEmptyEnv(cfg.RootDir, "DBRAIN_MEDIA_PROXY_BASE_URL", "DBRAIN_WEB_BASE_URL", "DBRAIN_AUTH_BASE_URL"),
+				DbrainVersion:      version.Current().Short,
 			})
 			if err != nil {
 				return err

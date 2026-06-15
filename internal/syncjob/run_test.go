@@ -16,6 +16,7 @@ import (
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/xapi"
@@ -653,6 +654,61 @@ func TestRunExecutesArchiveStageAtEndWhenEnabled(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(output), []byte("Media archive complete")) {
 		t.Fatalf("expected archive completion output, got %q", output)
+	}
+}
+
+func TestRunExecutesOKFExportAfterArchiveWhenEnabled(t *testing.T) {
+	cfg, st := testSyncStore(t)
+
+	origArchive := runMediaArchive
+	origOKFExport := runOKFExport
+	t.Cleanup(func() {
+		runMediaArchive = origArchive
+		runOKFExport = origOKFExport
+	})
+
+	var calls []string
+	runMediaArchive = func(context.Context, config.Config, *store.Store, mediaarchive.Options) (mediaarchive.Stats, error) {
+		calls = append(calls, "archive")
+		return mediaarchive.Stats{Candidates: 1, Uploaded: 1, Archived: 1}, nil
+	}
+	runOKFExport = func(_ context.Context, cfg config.Config, _ *store.Store, opts okf.ExportOptions) (okf.ExportResult, error) {
+		calls = append(calls, "okf")
+		if cfg.OKFDir == "" {
+			t.Fatal("expected configured OKF dir")
+		}
+		if opts.Profile != okf.ProfilePrivate || !opts.IncludeItems || !opts.IncludeSources || !opts.IncludeEntities || !opts.IncludeTopics || !opts.IncludeRaw || opts.MediaPublicBaseURL != "https://cdn.example.com" || opts.MediaProxyBaseURL != "https://dbrain.example.test" {
+			t.Fatalf("unexpected OKF export options: %+v", opts)
+		}
+		return okf.ExportResult{Bundle: cfg.OKFDir, ConceptsWritten: 7, ItemsWritten: 2, SourcesWritten: 3, EntitiesWritten: 1, TopicsWritten: 1}, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(context.Background(), cfg, st, Options{
+		ArchiveMediaEnabled:  true,
+		ArchiveBucket:        "dbrain",
+		ArchivePublicBaseURL: "https://cdn.example.com",
+		ArchiveEndpoint:      "https://example.invalid",
+		ArchiveAccessKeyID:   "key",
+		ArchiveSecretKey:     "secret",
+		OKFExportEnabled:     true,
+		OKFMediaProxyBaseURL: "https://dbrain.example.test",
+		Progress:             &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Equal(calls, []string{"archive", "okf"}) {
+		t.Fatalf("unexpected stage order: %v", calls)
+	}
+	if stats.OKFExport == nil || stats.OKFExport.Stats.ConceptsWritten != 7 {
+		t.Fatalf("expected okf export stats, got %+v", stats.OKFExport)
+	}
+	output := progress.String()
+	for _, want := range []string{"==> export okf", "OKF export complete"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected progress output to contain %q, got %q", want, output)
+		}
 	}
 }
 

@@ -94,6 +94,7 @@ Available Commands:
   import      Import source data into the brain
   launchd     Install or print a macOS launchd service for dbrain
   link        Add and manage manually submitted links
+  okf         Export and inspect Open Knowledge Format bundles
   ocr         Extract text from downloaded images
   repair      Repair derived local artifacts
   research    Research the local brain with evidence and local synthesis
@@ -204,7 +205,8 @@ uncategorized items and linked sources with the same categorizer used by
 `dbrain categorize batch` and `dbrain categorize sources`, unless
 `--skip-categorize` is passed. If enabled, the media archive stage runs after
 categorization so image categorization can still use local photo files before
-they are uploaded/pruned. Image
+they are uploaded/pruned. If enabled, OKF export runs as the final stage and
+writes a full private bundle under the configured OKF directory. Image
 categorization is enabled for items by default; use `--categorize-images=false`
 to disable it for text-only models. `--categorize-limit` is applied separately
 to items and sources, so `--categorize-limit 25` can process up to 25 item rows
@@ -232,9 +234,14 @@ dbrain sync all --length short --timeout 5m
 dbrain sync all --apple-notes --length short --timeout 5m
 dbrain sync all --safari-tabs --safari-tabs-device dfone --length short --timeout 5m
 dbrain sync all --skip-categorize --length short --timeout 5m
+dbrain sync all --okf-export --length short --timeout 5m
 dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m
 dbrain sync all --watch --poll-interval 1m --idle-exit-after 30m --length short --timeout 5m
 ```
+
+Use `--skip-okf-export` to suppress a configured OKF export for one run.
+`DBRAIN_OKF_EXPORT_ENABLED=true` / `okf.export.enabled: true` enables the same
+final export stage by default.
 
 ### `dbrain feed`
 
@@ -290,6 +297,44 @@ mark/prune already-uploaded media or upload directly to an S3-compatible bucket
 first when `--upload` or archive-upload env vars are configured. `--prune-local`
 deletes a local media file only after all rows sharing that `local_path` are
 archived.
+
+### `dbrain okf export`
+
+Writes a deterministic private Open Knowledge Format bundle from the local
+SQLite brain. The default output directory is the configured `okf/current`
+projection beside the rendered vault. Export uses a lock, staging directory,
+validation, and atomic replacement before publishing the new bundle.
+
+```sh
+dbrain okf export
+dbrain okf export --entities --topics --json
+dbrain okf export --limit 100 --out /tmp/dbrain-okf-smoke
+```
+
+Important flags:
+
+- `--profile`: export profile; currently only `private` is implemented.
+- `--items`, `--sources`, `--entities`, `--topics`: choose concept kinds.
+  With no kind flags, items and sources are included by default.
+- `--include-raw`: include raw evidence sections in private export; default
+  `true`.
+- `--max-raw-chars`: cap each raw evidence section; `0` means unlimited.
+- `--source-type`: repeatable source-type filter.
+- `--limit`: smoke-test limit for items/sources.
+
+Private OKF bundles may include raw evidence, OCR text, transcripts, Apple
+Notes content, and archived-media links. Treat the output like `data/` and
+`vault/` unless it has been deliberately scrubbed.
+
+### `dbrain okf validate`
+
+Validates an existing generated OKF bundle. This is a local structural check; it
+does not regenerate the bundle and does not call external reference tools.
+
+```sh
+dbrain okf validate okf/current
+dbrain okf validate okf/current --json
+```
 
 ### `dbrain sqlite archive`
 

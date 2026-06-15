@@ -15,20 +15,22 @@ const (
 )
 
 type ExportOptions struct {
-	OutDir          string
-	Profile         string
-	IncludeItems    bool
-	IncludeSources  bool
-	IncludeEntities bool
-	IncludeTopics   bool
-	SourceTypes     []string
-	Limit           int
-	IncludeRaw      bool
-	MaxRawChars     int
-	Now             time.Time
-	DbrainVersion   string
-	Entities        []entities.Entity
-	Topics          []topics.TopicMap
+	OutDir             string
+	Profile            string
+	IncludeItems       bool
+	IncludeSources     bool
+	IncludeEntities    bool
+	IncludeTopics      bool
+	SourceTypes        []string
+	Limit              int
+	IncludeRaw         bool
+	MaxRawChars        int
+	MediaPublicBaseURL string
+	MediaProxyBaseURL  string
+	Now                time.Time
+	DbrainVersion      string
+	Entities           []entities.Entity
+	Topics             []topics.TopicMap
 }
 
 type ExportResult struct {

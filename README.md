@@ -3,9 +3,9 @@
 ![Banner showing dbrain](docs/banner.jpg)
 
 `dbrain` is a local-first second-brain scaffold for incremental imports from X
-bookmarks, Apple Notes, GitHub stars, YouTube, Safari tabs and manually submitted web links,
-with Markdown note rendering for Obsidian and local query over the imported
-corpus.
+bookmarks, Apple Notes, GitHub stars, YouTube, Safari tabs and manually
+submitted web links, with Markdown note rendering for Obsidian, Open Knowledge
+Format export, and local query over the imported corpus.
 
 ## Documentation Map
 
@@ -23,6 +23,8 @@ corpus.
 - [docs/architecture.md](docs/architecture.md): package and data-flow architecture.
 - [docs/research-harness.md](docs/research-harness.md): current research/chat
   harness behavior, limitations, and improvement roadmap.
+- [docs/open-knowledge-format-plan.md](docs/open-knowledge-format-plan.md):
+  OKF export design, profile scope, validation rules, and implementation notes.
 - [docs/schema-migrations.md](docs/schema-migrations.md): SQLite schema and
   migration guidance.
 - [docs/web-route-capabilities.md](docs/web-route-capabilities.md): web route
@@ -107,6 +109,7 @@ Common entry points:
 - `dbrain serve remote`
 - `dbrain serve mcp`
 - `dbrain sync all`
+- `dbrain okf export`
 - `dbrain research <question>`
 - `dbrain search <query>`
 - `dbrain get <source-key-or-id>`
@@ -115,8 +118,9 @@ Common entry points:
 ## Safety And Trust Model
 
 `dbrain` is local-first, but it stores high-signal personal data. Treat
-`brain.db`, rendered vault notes, media files, logs, temp files, chat
-transcripts, and tsnet state as private local state. Keep `data/`, `vault/`,
+`brain.db`, rendered vault notes, generated OKF bundles, media files, logs,
+temp files, chat transcripts, and tsnet state as private local state. Keep
+`data/`, `vault/`, `okf/`,
 `tmp/`, `cache/`, `logs/`, `.env`, `.envrc`, `.gocache/`, `.gomodcache/`,
 `web/ui/node_modules/`, and `bin/` out of git and public release archives unless
 you intentionally scrub and include them.
@@ -198,6 +202,7 @@ Installed/default layout:
 - `~/.local/share/dbrain/vault/sources/...`: rendered Markdown notes for linked sources
 - `~/.local/share/dbrain/vault/entities/...`: derived entity notes and entity index
 - `~/.local/share/dbrain/vault/topics/...`: generated topic/MOC notes
+- `~/.local/share/dbrain/okf/current/...`: generated private OKF bundle
 - `~/.local/share/dbrain/tmp`: temporary working files
 - `~/.local/share/dbrain/cache`: cache files
 - `~/.local/share/dbrain/logs`: log files
@@ -218,6 +223,7 @@ For local development or isolated runs, pass `--root <dir>` or set
 - `<dir>/categories.yaml`
 - `<dir>/data/brain.db`
 - `<dir>/vault/...`
+- `<dir>/okf/current/...`
 - `<dir>/tmp`, `<dir>/cache`, and `<dir>/logs`
 
 For repo-local development, this keeps commands pointed at the checkout:
@@ -376,6 +382,7 @@ references: `env:NAME`,
 | `DBRAIN_SOURCE_READER_BASE_URL` / `DBRAIN_HTTP_READER_BASE_URL` | `source.reader.base_url` | `https://r.jina.ai/` | Reader/textifier base URL for difficult domains. |
 | `DBRAIN_SOURCE_WAYBACK_ENABLED` / `DBRAIN_WAYBACK_ENABLED` | `source.wayback.enabled` | `true` | Use Internet Archive Wayback as a final source extraction fallback before terminalizing repeated failures. |
 | `DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL` / `DBRAIN_WAYBACK_AVAILABILITY_URL` | `source.wayback.availability_url` | `https://archive.org/wayback/available?url={escaped_url}` | Wayback Availability API URL template used for final source fallback. |
+| `DBRAIN_OKF_EXPORT_ENABLED` / `DBRAIN_SYNC_OKF_EXPORT` | `okf.export.enabled` | `false` | Export a full private OKF bundle at the end of `sync all`; use `--skip-okf-export` for a one-off opt-out. |
 | `DBRAIN_APPLE_NOTES_ENABLED` | `apple_notes.enabled` | `false` | Include Apple Notes import in `sync all` when enabled; the standalone import command remains explicit. |
 | `DBRAIN_APPLE_NOTES_DB_PATH` | `apple_notes.db_path` | `` | Optional Apple Notes `NoteStore.sqlite` path override. |
 | `DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS` | `apple_notes.exclude_folders` | `` | Comma-separated or YAML-list Apple Notes folders/paths to skip. |
@@ -400,7 +407,9 @@ references: `env:NAME`,
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB` | `scheduler.sync_all.skip_github` | `false` | Skip GitHub import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE` | `scheduler.sync_all.skip_youtube` | `false` | Skip YouTube import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE` | `scheduler.sync_all.skip_categorize` | `false` | Skip final categorization in scheduled `sync all` runs. |
-| `DBRAIN_MEDIA_PROXY_BASE_URL` / `DBRAIN_WEB_BASE_URL` | `media.proxy.base_url` | `http://127.0.0.1:8742` | Base URL for local archived-media proxy links in rendered notes. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_OKF_EXPORT` | `scheduler.sync_all.okf_export` | `false` | Export a full private OKF bundle at the end of scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_OKF_EXPORT` | `scheduler.sync_all.skip_okf_export` | `false` | Skip OKF export for scheduled `sync all` runs when a broader OKF export setting is enabled. |
+| `DBRAIN_MEDIA_PROXY_BASE_URL` / `DBRAIN_WEB_BASE_URL` | `media.proxy.base_url` | `http://127.0.0.1:8742` | Base URL for local archived-media proxy links in rendered notes and private OKF exports; private OKF export falls back to `DBRAIN_AUTH_BASE_URL` when these are unset. |
 | `DBRAIN_AUTO_ARCHIVE_MEDIA` / `DBRAIN_ARCHIVE_AUTO` | `archive.auto` | `false` | Run media archive automatically at the end of `sync all`. |
 | `DBRAIN_ARCHIVE_UPLOAD` / `DBRAIN_R2_UPLOAD` | `archive.upload` | `false` | Upload eligible media before marking/pruning in `archive media`. |
 | `DBRAIN_ARCHIVE_PROVIDER` / `DBRAIN_R2_PROVIDER` | `archive.provider` | `cloudflare_r2` | Archive provider label. |
@@ -685,16 +694,41 @@ research, browsing, topic maps, retrieval packs, and operational stats. The
 server is DB-first by default, tag-aware, and includes OCR/transcript evidence
 when those enrichments exist.
 
+The MCP surface also exposes read-only `dbrain_okf_search` and `dbrain_okf_get`
+tools for agents that need to inspect the generated OKF bundle. These tools read
+the existing bundle under the configured OKF directory; they do not regenerate
+or validate it. Use `dbrain okf export` or `sync all --okf-export` to refresh
+the bundle first.
+
 See [MCP.md](MCP.md) for the full agent workflow, tool contract, eval setup,
 client configuration, importer contract, logging behavior, and skill setup.
+
+## Open Knowledge Format
+
+`dbrain okf export` writes a deterministic private Open Knowledge Format bundle
+under the configured OKF directory, defaulting to `okf/current` beside the
+rendered vault. The bundle is regenerated through a staging directory, validated,
+and atomically swapped into place.
+
+```sh
+dbrain okf export --entities --topics
+dbrain okf validate "$(dbrain config paths --json | jq -r .okf_dir)"
+dbrain sync all --okf-export
+```
+
+OKF export is intentionally output-only. It does not import OKF bundles back
+into dbrain. Private bundles may include raw evidence, OCR text, transcripts,
+Apple Notes content, and archived-media links, so treat `okf/` like `data/` and
+`vault/` unless you deliberately scrub it for sharing.
 
 ## Skill
 
 This repo includes Codex skills for agents:
 
 - `skills/dbrain-mcp/SKILL.md` helps agents query the local dbrain corpus
-  through MCP. See [MCP.md](MCP.md#skill) for installation notes and the
-  recommended Codex MCP configuration.
+  through MCP, including read-only inspection of generated OKF bundles. See
+  [MCP.md](MCP.md#skill) for installation notes and the recommended Codex MCP
+  configuration.
 - `skills/dbrain-model-bakeoff/SKILL.md` helps agents compare summary and
   categorization models with the read-only bakeoff devtool.
 

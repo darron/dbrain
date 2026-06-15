@@ -75,7 +75,8 @@ func ValidateBundle(root string) (ValidationResult, error) {
 		}
 		result.Documents = append(result.Documents, doc)
 
-		for _, dest := range markdownDestinations(string(data)) {
+		linkText := stripValidationSkippedRanges(string(data))
+		for _, dest := range markdownDestinations(linkText) {
 			if isExternalDestination(dest) {
 				continue
 			}
@@ -96,6 +97,24 @@ func ValidateBundle(root string) (ValidationResult, error) {
 	}
 	result.Conformant = len(result.Errors) == 0
 	return result, nil
+}
+
+func stripValidationSkippedRanges(text string) string {
+	var out strings.Builder
+	for {
+		start := strings.Index(text, validationSkipBegin)
+		if start < 0 {
+			out.WriteString(text)
+			return out.String()
+		}
+		out.WriteString(text[:start])
+		afterStart := text[start+len(validationSkipBegin):]
+		end := strings.Index(afterStart, validationSkipEnd)
+		if end < 0 {
+			return out.String()
+		}
+		text = afterStart[end+len(validationSkipEnd):]
+	}
 }
 
 func markdownFiles(root string) ([]string, error) {

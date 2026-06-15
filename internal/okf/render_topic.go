@@ -102,7 +102,7 @@ func writeTopicSynthesis(b *strings.Builder, topic topics.TopicMap) {
 	writeTopicStringList(&body, "Angles", topic.Synthesis.Angles)
 	writeTopicSignals(&body, topic.Synthesis.Signals)
 	writeTopicStringList(&body, "Open Questions", topic.Synthesis.OpenQuestions)
-	writeSection(b, "Derived Synthesis", body.String())
+	writeUnvalidatedSection(b, "Derived Synthesis", body.String())
 }
 
 func writeTopicStringList(b *strings.Builder, heading string, values []string) {

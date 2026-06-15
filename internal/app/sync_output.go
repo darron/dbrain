@@ -110,6 +110,10 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 		s := stats.MediaArchive.Stats
 		rows = append(rows, []string{"Media Archive", formatSyncDuration(stats.MediaArchive.Duration), fmt.Sprintf("uploaded=%d archived=%d", s.Uploaded, s.Archived), fmt.Sprintf("pruned_files=%d unchanged=%d", s.LocalFilesPruned, s.Unchanged), strconv.Itoa(s.Errors)})
 	}
+	if stats.OKFExport != nil {
+		s := stats.OKFExport.Stats
+		rows = append(rows, []string{"OKF Export", formatSyncDuration(stats.OKFExport.Duration), fmt.Sprintf("concepts=%d indexes=%d", s.ConceptsWritten, s.IndexesWritten), fmt.Sprintf("items=%d sources=%d entities=%d topics=%d", s.ItemsWritten, s.SourcesWritten, s.EntitiesWritten, s.TopicsWritten), strconv.Itoa(len(s.Errors))})
+	}
 	return rows
 }
 

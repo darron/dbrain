@@ -153,6 +153,7 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 	flags.appleNotes = schedulerBool(rootDir, "APPLE_NOTES")
 	flags.safariTabs = schedulerBool(rootDir, "SAFARI_TABS")
 	flags.archiveMedia = schedulerBool(rootDir, "ARCHIVE_MEDIA")
+	flags.okfExport = schedulerBool(rootDir, "OKF_EXPORT")
 	flags.force = schedulerBool(rootDir, "FORCE")
 	flags.summarize = !schedulerBool(rootDir, "SKIP_SUMMARIZE")
 	flags.categorizeImages = !schedulerBool(rootDir, "SKIP_CATEGORIZE_IMAGES")
@@ -168,6 +169,7 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 	flags.skipSafariTabs = schedulerBool(rootDir, "SKIP_SAFARI_TABS")
 	flags.skipSources = schedulerBool(rootDir, "SKIP_SOURCES")
 	flags.skipCategorize = schedulerBool(rootDir, "SKIP_CATEGORIZE")
+	flags.skipOKFExport = schedulerBool(rootDir, "SKIP_OKF_EXPORT")
 
 	return flags, nil
 }
@@ -418,6 +420,9 @@ func logScheduledSyncStats(logOut io.Writer, stats syncjob.Stats) error {
 	}
 	if stats.Categorize != nil {
 		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: categorize succeeded=%d skipped=%d errors=%d\n", stats.Categorize.Stats.Succeeded, stats.Categorize.Stats.Skipped, stats.Categorize.Stats.Errors)
+	}
+	if stats.OKFExport != nil {
+		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: okf bundle=%s concepts=%d errors=%d\n", stats.OKFExport.Stats.Bundle, stats.OKFExport.Stats.ConceptsWritten, len(stats.OKFExport.Stats.Errors))
 	}
 	return nil
 }
