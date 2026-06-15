@@ -15,6 +15,7 @@ func cleanText(value string) string {
 }
 
 func firstSentence(value string) string {
+	value = stripLocalPathMetadataLines(value)
 	value = cleanText(value)
 	if value == "" {
 		return ""
@@ -58,6 +59,7 @@ func normalizeTag(value string) string {
 }
 
 func truncateRaw(value string, maxChars int) string {
+	value = stripLocalPathMetadataLines(value)
 	value = strings.TrimSpace(value)
 	if maxChars <= 0 || len([]rune(value)) <= maxChars {
 		return value
@@ -67,6 +69,7 @@ func truncateRaw(value string, maxChars int) string {
 }
 
 func writeSection(b *strings.Builder, heading string, body string) {
+	body = stripLocalPathMetadataLines(body)
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return
@@ -79,6 +82,7 @@ func writeSection(b *strings.Builder, heading string, body string) {
 }
 
 func writeUnvalidatedSection(b *strings.Builder, heading string, body string) {
+	body = stripLocalPathMetadataLines(body)
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return
@@ -108,4 +112,26 @@ func writeBullet(b *strings.Builder, label, value string) {
 
 func code(value string) string {
 	return "`" + strings.ReplaceAll(strings.TrimSpace(value), "`", "'") + "`"
+}
+
+func stripLocalPathMetadataLines(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if isLocalPathMetadataLine(line) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func isLocalPathMetadataLine(line string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(line))
+	trimmed = strings.TrimLeft(trimmed, "-*+_` \t")
+	trimmed = strings.TrimSpace(trimmed)
+	if strings.HasPrefix(trimmed, "local path:") || strings.HasPrefix(trimmed, "local_path:") {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "local:") && strings.Contains(trimmed, "media/")
 }

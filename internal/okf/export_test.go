@@ -52,9 +52,9 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 		Domain:               "example.com",
 		Title:                "Example Source",
 		Description:          "A source description. Second sentence.",
-		ExtractedText:        "Raw extracted source text.",
+		ExtractedText:        "Raw extracted source text.\n*   Local Path: `media/x/video/source-local.mp4`\n*   Local: `media/x/video/source-short-local.mp4`\nMore raw source text.",
 		ExtractStatus:        "current",
-		SummaryText:          "Derived source summary.",
+		SummaryText:          "Derived source summary.\nLocal Path: `media/x/video/source-summary-local.mp4`",
 		SummaryStatus:        "current",
 		SummaryModel:         "openrouter/test",
 		SummaryPromptVersion: "source-summary-v1",
@@ -148,8 +148,11 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 	if strings.Contains(firstBytes, "media/x/video/local.mp4") {
 		t.Fatalf("generated transcript local media path leaked into OKF output:\n%s", firstBytes)
 	}
+	if strings.Contains(firstBytes, "media/x/video/source-local.mp4") || strings.Contains(firstBytes, "media/x/video/source-short-local.mp4") || strings.Contains(firstBytes, "media/x/video/source-summary-local.mp4") {
+		t.Fatalf("source local media path leaked into OKF output:\n%s", firstBytes)
+	}
 	if strings.Contains(firstBytes, "Local Path:") {
-		t.Fatalf("generated transcript local path metadata leaked into OKF output:\n%s", firstBytes)
+		t.Fatalf("local path metadata leaked into OKF output:\n%s", firstBytes)
 	}
 
 	root := t.TempDir()

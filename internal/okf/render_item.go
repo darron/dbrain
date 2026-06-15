@@ -118,7 +118,7 @@ func writeItemRawEvidence(b *strings.Builder, item model.Item, opts ExportOption
 	if item.ArticleTitle != "" || item.ArticleText != "" {
 		if strings.TrimSpace(item.ArticleTitle) == model.XMediaTranscriptArticleTitle {
 			raw.WriteString("## Media Transcript\n\n")
-			raw.WriteString(stripGeneratedMediaLocalPathLines(truncateRaw(item.ArticleText, opts.MaxRawChars)))
+			raw.WriteString(truncateRaw(item.ArticleText, opts.MaxRawChars))
 			raw.WriteString("\n\n")
 		} else {
 			raw.WriteString("## Cached Source Extract\n\n")
@@ -140,19 +140,6 @@ func writeItemRawEvidence(b *strings.Builder, item model.Item, opts ExportOption
 		raw.WriteString("\n\n")
 	}
 	writeUnvalidatedSection(b, "Raw Evidence", raw.String())
-}
-
-func stripGeneratedMediaLocalPathLines(text string) string {
-	lines := strings.Split(text, "\n")
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "Local Path:") || strings.HasPrefix(trimmed, "Local path:") {
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func writeItemMedia(b *strings.Builder, item model.Item, media []model.ItemMediaRef, opts ExportOptions) {
