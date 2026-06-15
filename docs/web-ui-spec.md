@@ -166,7 +166,7 @@ Response:
 
 - Go tests for HTTP handlers using `httptest`.
 - Build verification that embedded assets compile into the binary.
-- Existing `task test`, `task lint`, and `task build`.
+- Existing `task test-ci`, `task lint`, and `task build`.
 
 ## Acceptance Criteria
 

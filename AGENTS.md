@@ -401,8 +401,12 @@ For code changes, run:
 
 - `task fmt`
 - `task lint`
-- `task test`
 - `task test-ci`
+
+`task test-ci` is the standard full test gate because it runs the same
+`go test -cover -race ./...` coverage as `task test` under a clean CI-like
+environment. Use `task test` only when you intentionally need the current shell
+environment while debugging a local failure.
 
 If CLI behavior changed materially, also rebuild and spot-check the command:
 

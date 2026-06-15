@@ -66,7 +66,7 @@ Before tagging or packaging a release that includes UI changes:
    ```sh
    task fmt
    task lint
-   task test
+   task test-ci
    task build
    ```
 

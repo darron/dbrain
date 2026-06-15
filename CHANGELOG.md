@@ -30,6 +30,8 @@ development date for the change set.
 - **Config**: Added `OKFDir` beside the rendered vault path so explicit-root
   installs use `<root>/okf/current/` and XDG installs use the matching
   data-dir sibling.
+- **Dev**: Standardized the full test gate on `task test-ci`; `task test`
+  remains available for local ambient-environment debugging.
 - **Location**: `internal/okf/`, `internal/app/okf.go`,
   `internal/mcpserver/`, `internal/config/`
 

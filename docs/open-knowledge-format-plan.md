@@ -904,7 +904,6 @@ For implementation changes, run the standard gates:
 ```text
 task fmt
 task lint
-task test
 task test-ci
 ```
 
@@ -914,9 +913,10 @@ If CLI behavior is added:
 task build
 ```
 
-`task test-ci` is expected to be green. If it fails while implementing OKF,
-diagnose and handle the failure inside the branch unless it is clearly external
-infrastructure noise.
+`task test-ci` is the standard full test gate because it runs the same
+`go test -cover -race ./...` coverage as `task test` under a clean CI-like
+environment. If it fails while implementing OKF, diagnose and handle the failure
+inside the branch unless it is clearly external infrastructure noise.
 
 ## Risks And Decisions
 
@@ -1031,7 +1031,7 @@ Do this first:
 7. Add staged export with lock, validation, and atomic swap.
 8. Add `dbrain okf export --limit N --out <dir>`.
 9. Add `dbrain okf validate <dir>`.
-10. Run `task fmt`, `task lint`, `task test`, `task test-ci`, and `task build`.
+10. Run `task fmt`, `task lint`, `task test-ci`, and `task build`.
 
 Do not start with OKF import, web visualization, or schema migrations. Export
 is the lowest-risk path because it proves the concept mapping without changing

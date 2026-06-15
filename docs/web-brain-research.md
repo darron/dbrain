@@ -726,7 +726,7 @@ Evidence rows should make provenance obvious:
 - CLI tests asserting `dbrain ask` is unavailable after removal.
 - MCP tool-list tests asserting the existing `dbrain_ask` tool is absent after
   removal.
-- Existing gates: `task fmt`, `task lint`, `task test`, and `task build`.
+- Existing gates: `task fmt`, `task lint`, `task test-ci`, and `task build`.
 
 ## Acceptance Criteria
 

@@ -1099,4 +1099,12 @@ Requires `task`, `go`, and `golangci-lint`.
 
 ### `task test`
 
-Requires `task` and `go`.
+Requires `task` and `go`. Runs the same `go test -cover -race ./...` command as
+`task test-ci`, but with the current shell environment still present. Use it for
+local ambient-env debugging rather than as the standard gate.
+
+### `task test-ci`
+
+Requires `task` and `go`. This is the standard full test gate. It runs
+`go test -cover -race ./...` with a clean CI-like environment so local secrets,
+provider variables, and personal config do not hide test isolation bugs.

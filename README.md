@@ -186,7 +186,8 @@ delete, purge, prune, restore, and reset paths.
 - `task build`
 - `task fmt`
 - `task lint`
-- `task test`
+- `task test-ci`
+- `task test` for local ambient-env debugging
 - `task test-mcp`
 - `task web-build`
 - `task web-install`
