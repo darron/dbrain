@@ -11,6 +11,7 @@ import (
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/worker"
 	"github.com/darron/dbrain/internal/xapi"
@@ -97,6 +98,8 @@ type Options struct {
 	CategorizeModel       string
 	CategorizeTimeout     time.Duration
 	CategorizeImages      bool
+	OKFExportEnabled      bool
+	OKFMediaProxyBaseURL  string
 	CLI                   string
 	Length                string
 	Timeout               time.Duration
@@ -121,6 +124,7 @@ type Stats struct {
 	Sources      *SourcesStage      `json:"sources,omitempty"`
 	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
 	Categorize   *CategorizeStage   `json:"categorize,omitempty"`
+	OKFExport    *OKFExportStage    `json:"okf_export,omitempty"`
 }
 
 type XBookmarksStage struct {
@@ -188,4 +192,9 @@ type CategorizeStage struct {
 	Stats       itemcategorize.Stats `json:"stats"`
 	ItemStats   itemcategorize.Stats `json:"item_stats"`
 	SourceStats itemcategorize.Stats `json:"source_stats"`
+}
+
+type OKFExportStage struct {
+	Duration time.Duration    `json:"duration"`
+	Stats    okf.ExportResult `json:"stats"`
 }

@@ -68,6 +68,7 @@ type syncAllFlags struct {
 	categorizeModel              string
 	categorizeTimeout            time.Duration
 	categorizeImages             bool
+	okfExport                    bool
 	skipXBookmarks               bool
 	skipX                        bool
 	skipXMedia                   bool
@@ -80,6 +81,7 @@ type syncAllFlags struct {
 	skipFeeds                    bool
 	skipSources                  bool
 	skipCategorize               bool
+	skipOKFExport                bool
 	jsonOut                      bool
 }
 
@@ -197,6 +199,8 @@ func syncOptionsFromFlags(ctx context.Context, cfg config.Config, flags syncAllF
 		CategorizeModel:              flags.categorizeModel,
 		CategorizeTimeout:            flags.categorizeTimeout,
 		CategorizeImages:             flags.categorizeImages,
+		OKFExportEnabled:             flags.okfExport && !flags.skipOKFExport,
+		OKFMediaProxyBaseURL:         firstNonEmptyEnv(cfg.RootDir, "DBRAIN_MEDIA_PROXY_BASE_URL", "DBRAIN_WEB_BASE_URL", "DBRAIN_AUTH_BASE_URL"),
 		CLI:                          flags.cliProvider,
 		Length:                       flags.length,
 		Timeout:                      flags.timeout,

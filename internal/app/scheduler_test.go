@@ -29,6 +29,7 @@ scheduler:
     categorize_limit: 5
     categorize_model: ollama/test-categorizer
     ocr_model: ollama/test-ocr
+    okf_export: true
     skip_apple_notes: true
     skip_github: true
     skip_youtube: true
@@ -55,6 +56,9 @@ scheduler:
 	}
 	if !got.Flags.skipAppleNotes || !got.Flags.skipGitHub || !got.Flags.skipYouTube || !got.Flags.skipXBookmarks {
 		t.Fatalf("expected skip flags from config, got %+v", got.Flags)
+	}
+	if !got.Flags.okfExport {
+		t.Fatalf("expected OKF export flag from config, got %+v", got.Flags)
 	}
 	if !got.Flags.watchLater || !got.Flags.liked || !got.Flags.summarize || !got.Flags.categorizeImages {
 		t.Fatalf("expected sync all defaults to match CLI defaults, got %+v", got.Flags)
@@ -95,6 +99,7 @@ func TestRunScheduledSyncAllUsesSyncOptions(t *testing.T) {
 		skipXMedia:        true,
 		skipLinks:         true,
 		skipSources:       false,
+		okfExport:         true,
 		summarize:         false,
 	}, &out)
 	if err != nil {
@@ -108,6 +113,9 @@ func TestRunScheduledSyncAllUsesSyncOptions(t *testing.T) {
 	}
 	if !captured.SourcesEnabled {
 		t.Fatalf("expected sources stage enabled")
+	}
+	if !captured.OKFExportEnabled {
+		t.Fatalf("expected OKF export enabled")
 	}
 }
 

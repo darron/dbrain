@@ -143,6 +143,9 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	if err != nil {
 		return err
 	}
+	if listener == nil {
+		return fmt.Errorf("tsnet listener unavailable")
+	}
 
 	httpServer := &http.Server{
 		Handler:           handler,

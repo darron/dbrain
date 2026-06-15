@@ -18,7 +18,8 @@ The server provides:
 
 - **Tools**: `search`, `get`, `get many`, `ask`, `entity map`, `related`,
   `stats items`, `stats sources`, `stats activity`, `stats backlog`,
-  `topic map`, `topic brief`, and `research pack`.
+  `topic map`, `topic brief`, `research pack`, `dbrain_okf_search`, and
+  `dbrain_okf_get`.
 - **Resources**: `dbrain://mcp/overview`, `dbrain://stats/activity`,
   `dbrain://stats/backlog`, `dbrain://stats/items`, and
   `dbrain://stats/sources`.
@@ -125,6 +126,24 @@ per-lookup errors without failing the whole batch.
 Suggested follow-up arguments from `dbrain_research_pack` include the research
 query so detail fetches keep the same query-windowing behavior.
 
+### `dbrain_okf_search` and `dbrain_okf_get`
+
+Use the OKF tools only when an agent needs to inspect the generated Open
+Knowledge Format bundle. Normal research should stay DB-first with
+`dbrain_research_pack`, `dbrain_search`, and `dbrain_get`.
+
+`dbrain_okf_search` searches concepts from the configured OKF directory and
+returns concept path, OKF type, title, description, dbrain concept id, source
+key, source type, and a small snippet. An empty query lists top bundle concepts.
+
+`dbrain_okf_get` reads one OKF concept by bundle path, `dbrain_concept_id`, or
+`dbrain_source_key`. It returns parsed concept metadata and capped body text;
+set `include_markdown=true` only when the full rendered Markdown shape matters.
+
+These MCP tools are read-only and do not regenerate, validate, or export the
+bundle. Refresh it with `dbrain okf export`, `sync all --okf-export`, or
+`DBRAIN_OKF_EXPORT_ENABLED=true` before relying on it for current output.
+
 ## Tags
 
 Item and source `user_tags` are indexed for search and returned in MCP search
@@ -152,6 +171,9 @@ before deduping.
   `dbrain_get` when you want to inspect individual nodes more closely.
 - **Topic briefs**: `dbrain_topic_brief` or `brain_topic_brief`, plus
   `dbrain://topic-note/{query}` when a rendered note preview is useful.
+- **OKF bundle inspection**: `dbrain_okf_search` and `dbrain_okf_get` when the
+  user asks about generated OKF Markdown, bundle paths, or exchange/export
+  output. These tools inspect the last generated bundle, not live SQLite.
 - **Pipeline monitoring**: `dbrain_stats_activity`, `dbrain_stats_backlog`, and
   optionally `dbrain_stats_sources`.
 

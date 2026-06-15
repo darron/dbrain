@@ -46,6 +46,7 @@ func newConfigPathsCommand(root *rootOptions) *cobra.Command {
 				"data_dir":        cfg.DataDir,
 				"database":        cfg.DBPath,
 				"vault_dir":       cfg.VaultDir,
+				"okf_dir":         cfg.OKFDir,
 				"media_dir":       cfg.MediaDir,
 				"temp_dir":        cfg.TempDir,
 				"cache_dir":       cfg.CacheDir,
@@ -55,7 +56,7 @@ func newConfigPathsCommand(root *rootOptions) *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), paths)
 			}
 
-			for _, key := range []string{"root_dir", "config_dir", "config_file", "categories_file", "data_dir", "database", "vault_dir", "media_dir", "temp_dir", "cache_dir", "log_dir"} {
+			for _, key := range []string{"root_dir", "config_dir", "config_file", "categories_file", "data_dir", "database", "vault_dir", "okf_dir", "media_dir", "temp_dir", "cache_dir", "log_dir"} {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", key, paths[key])
 			}
 			return nil

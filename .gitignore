@@ -8,5 +8,6 @@
 web/ui/node_modules/
 .DS_Store
 /tmp/
+/okf/
 evals/local/*.json
 !evals/local/.gitkeep

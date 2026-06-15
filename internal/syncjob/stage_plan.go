@@ -22,6 +22,7 @@ const (
 	syncStageSources      syncStageID = "sources"
 	syncStageCategorize   syncStageID = "categorize"
 	syncStageMediaArchive syncStageID = "media_archive"
+	syncStageOKFExport    syncStageID = "okf_export"
 )
 
 type syncStage struct {
@@ -105,6 +106,12 @@ func defaultSyncStagePlan() []syncStage {
 			},
 			Enabled: func(opts stageOptions) bool { return opts.Archive.Enabled },
 			Run:     runMediaArchiveSyncStage,
+		},
+		{
+			ID:      syncStageOKFExport,
+			After:   []syncStageID{syncStageCategorize, syncStageMediaArchive},
+			Enabled: func(opts stageOptions) bool { return opts.OKFExport.Enabled },
+			Run:     runOKFExportSyncStage,
 		},
 	}
 }
@@ -205,5 +212,11 @@ func runCategorizeSyncStage(ctx context.Context, cfg config.Config, st *store.St
 func runMediaArchiveSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
 	stage, err := executeMediaArchiveStage(ctx, cfg, st, opts)
 	stats.MediaArchive = stage
+	return err
+}
+
+func runOKFExportSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeOKFExportStage(ctx, cfg, st, opts)
+	stats.OKFExport = stage
 	return err
 }

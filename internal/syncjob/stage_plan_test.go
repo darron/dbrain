@@ -24,6 +24,7 @@ func TestDefaultSyncStagePlanOrder(t *testing.T) {
 		syncStageSources,
 		syncStageCategorize,
 		syncStageMediaArchive,
+		syncStageOKFExport,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("stage count mismatch: got %d want %d (%v)", len(got), len(want), got)
@@ -76,6 +77,7 @@ func TestDefaultSyncStagePlanEnabledPredicates(t *testing.T) {
 		{syncStageSources, func(opts *stageOptions) { opts.Sources.Enabled = true }},
 		{syncStageCategorize, func(opts *stageOptions) { opts.Categorize.Enabled = true }},
 		{syncStageMediaArchive, func(opts *stageOptions) { opts.Archive.Enabled = true }},
+		{syncStageOKFExport, func(opts *stageOptions) { opts.OKFExport.Enabled = true }},
 	}
 	for _, check := range stageChecks {
 		opts := stageOptions{}

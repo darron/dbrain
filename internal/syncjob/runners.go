@@ -7,6 +7,7 @@ import (
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/worker"
 	"github.com/darron/dbrain/internal/xapi"
@@ -30,4 +31,5 @@ var (
 	runAppleNotesImport = applenotes.Run
 	runSafariTabsImport = safaritabs.Run
 	runFeedImport       = feedimport.Run
+	runOKFExport        = okf.Export
 )

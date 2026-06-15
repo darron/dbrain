@@ -57,6 +57,7 @@ func bindSyncAllFlags(cmd *cobra.Command, flags *syncAllFlags) {
 	cmd.Flags().DurationVar(&flags.timeout, "timeout", 5*time.Minute, "Timeout for summarize-backed extraction and summarization stages")
 	cmd.Flags().BoolVar(&flags.archiveMedia, "archive-media", false, "Upload finalized media to configured S3-compatible storage and prune local copies at the end of sync")
 	cmd.Flags().IntVar(&flags.archiveMediaLimit, "archive-media-limit", 5000, "Maximum finalized media assets to archive at the end of sync")
+	cmd.Flags().BoolVar(&flags.okfExport, "okf-export", false, "Export a private OKF bundle after sync completes")
 	cmd.Flags().IntVar(&flags.categorizeLimit, "categorize-limit", 0, "Maximum uncategorized items and sources to categorize per record type at the end of sync; 0 means all queued records")
 	cmd.Flags().IntVar(&flags.categorizeConcurrency, "categorize-concurrency", 2, "Number of concurrent categorization requests")
 	cmd.Flags().StringVar(&flags.categorizeModel, "categorize-model", "", "Categorization model override; defaults to DBRAIN_CATEGORIZE_MODEL or the categorizer default")
@@ -74,5 +75,6 @@ func bindSyncAllFlags(cmd *cobra.Command, flags *syncAllFlags) {
 	cmd.Flags().BoolVar(&flags.skipFeeds, "skip-feeds", false, "Skip RSS/Atom/JSON Feed imports")
 	cmd.Flags().BoolVar(&flags.skipSources, "skip-sources", false, "Skip the final source backlog worker stage")
 	cmd.Flags().BoolVar(&flags.skipCategorize, "skip-categorize", false, "Skip final item/source categorization")
+	cmd.Flags().BoolVar(&flags.skipOKFExport, "skip-okf-export", false, "Skip configured OKF export")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Print sync stats as JSON")
 }

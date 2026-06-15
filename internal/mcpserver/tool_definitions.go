@@ -52,6 +52,34 @@ func toolDefinitions() []map[string]interface{} {
 			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
 		},
 		{
+			"name":        "dbrain_okf_search",
+			"description": "Search the generated Open Knowledge Format bundle at the configured OKF directory. Read-only; does not regenerate or validate the bundle.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string", "description": "Search query. Empty lists top bundle concepts."},
+					"limit": map[string]interface{}{"type": "integer", "description": "Maximum number of OKF concepts.", "default": 10},
+				},
+			},
+			"outputSchema": okfSearchOutputSchema(),
+			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
+		},
+		{
+			"name":        "dbrain_okf_get",
+			"description": "Read a concept from the generated Open Knowledge Format bundle by path, dbrain concept id, or source key. Read-only; does not regenerate or validate the bundle.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"lookup":           map[string]interface{}{"type": "string", "description": "OKF path, dbrain_concept_id, or dbrain_source_key."},
+					"include_markdown": map[string]interface{}{"type": "boolean", "description": "Include rendered Markdown in structured output.", "default": false},
+					"max_chars":        map[string]interface{}{"type": "integer", "description": "Maximum body/markdown characters returned. Hard-capped for MCP responses.", "default": 8000},
+				},
+				"required": []string{"lookup"},
+			},
+			"outputSchema": okfGetOutputSchema(),
+			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
+		},
+		{
 			"name":        "dbrain_research_pack",
 			"description": "Build a compact read-only research pack for a question. Expands text queries with bounded model-assisted query planning when configured, hyphenated tag aliases, entity matches, optional graph links, and an optional topic brief so agents can answer broad corpus questions with one call.",
 			"inputSchema": map[string]interface{}{
