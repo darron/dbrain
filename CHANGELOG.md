@@ -20,7 +20,8 @@ development date for the change set.
   dbrain media proxy/root URL plus the media asset id.
 - **Fixed**: OKF export now uses a crash-safe advisory lock, omits empty
   extension frontmatter fields, records target diagnostics for omitted filtered
-  links, and rejects exports where every concept kind is explicitly disabled.
+  links, strips generated local-media-path metadata from raw source/item body
+  text, and rejects exports where every concept kind is explicitly disabled.
 - **Sync integration**: `sync all --okf-export` or
   `DBRAIN_OKF_EXPORT_ENABLED=true` now writes a full private OKF bundle after
   the sync pipeline finishes; `--skip-okf-export` provides a one-off opt-out.
