@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -20,8 +21,9 @@ import (
 )
 
 const (
-	localShareOwnerProvider = "local"
-	localShareOwnerSubject  = "local"
+	localShareOwnerProvider  = "local"
+	localShareOwnerSubject   = "local"
+	maxPublicShareCategories = 4
 )
 
 var (
@@ -84,7 +86,8 @@ func (s *server) handleChatShareCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	input := buildPublicChatShareInput(owner, req.Turn)
+	vocab, _ := categoryvocab.Load(s.cfg.CategoriesPath)
+	input := buildPublicChatShareInput(owner, req.Turn, vocab)
 	share, err := s.store.SavePublicChatShare(r.Context(), input)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -175,12 +178,12 @@ func (s *server) chatShareOwner(r *http.Request) (chatShareOwner, bool) {
 	}, true
 }
 
-func buildPublicChatShareInput(owner chatShareOwner, turn ChatTranscriptTurn) store.PublicChatShareInput {
+func buildPublicChatShareInput(owner chatShareOwner, turn ChatTranscriptTurn, vocab categoryvocab.Vocab) store.PublicChatShareInput {
 	keyURLs := sourceKeyURLMap(turn)
 	content := sanitizeSharedChatContent(turn.Answer, keyURLs)
 	originalURLs := mergeShareURLs(collectOriginalURLs(turn), extractExternalURLs(content))
 	summary := summarizeSharedContent(content)
-	categories := categorizeSharedContent(content, turn)
+	categories := categorizeSharedContent(content, turn, vocab)
 	title := shareTitle(turn.Question, summary)
 	metadata := publicChatShareMetadata{
 		Question: sanitizeSharedChatContent(turn.Question, keyURLs),
@@ -473,61 +476,163 @@ func summarizeSharedContent(content string) string {
 	return strings.TrimSpace(string(runes[:cut])) + "..."
 }
 
-func categorizeSharedContent(content string, turn ChatTranscriptTurn) []string {
-	lower := strings.ToLower(content + " " + turn.Question)
-	score := map[string]int{}
-	keywords := map[string][]string{
-		"ai":             {"agent", "model", "llm", "prompt", "inference", "retrieval", "embedding"},
-		"software":       {"code", "api", "database", "sqlite", "server", "github", "deploy", "bug", "test"},
-		"infrastructure": {"tailscale", "kubernetes", "docker", "cloudflare", "s3", "r2", "oauth", "auth"},
-		"media":          {"video", "audio", "ocr", "transcript", "image", "youtube"},
-		"research":       {"evidence", "source", "citation", "summary", "study", "article"},
-		"security":       {"token", "secret", "vulnerability", "exploit", "malware", "phishing"},
-	}
-	for category, terms := range keywords {
-		for _, term := range terms {
-			if strings.Contains(lower, term) {
-				score[category]++
-			}
-		}
-	}
-	for _, evidence := range turn.ResearchPack.Evidence {
-		switch strings.TrimSpace(evidence.SourceType) {
-		case "github_star", "github":
-			score["software"]++
-		case "youtube_watch_later", "youtube_liked", "youtube":
-			score["media"]++
-		case "web", "feed_entry":
-			score["research"]++
-		}
-	}
-	type ranked struct {
+func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvocab.Vocab) []string {
+	type rankedCategory struct {
 		category string
 		score    int
+		first    int
 	}
-	var rankings []ranked
-	for category, value := range score {
-		if value > 0 {
-			rankings = append(rankings, ranked{category: category, score: value})
+
+	scores := map[string]rankedCategory{}
+	sequence := 0
+	answerCited := sourceKeysInShareText(turn.Answer)
+	citationKeys := sourceKeysFromShareCitations(turn)
+	primaryEvidence := map[string]struct{}{}
+
+	addTag := func(raw string, weight int) {
+		for _, token := range vocab.ApplyToTokens([]string{raw}) {
+			if !usefulShareCategory(token) {
+				continue
+			}
+			current, ok := scores[token]
+			if !ok {
+				current = rankedCategory{category: token, first: sequence}
+				sequence++
+			}
+			current.score += weight
+			scores[token] = current
+		}
+	}
+	addCSV := func(raw string, weight int) {
+		for _, token := range strings.Split(raw, ",") {
+			addTag(token, weight)
+		}
+	}
+	evidenceWeight := func(sourceKey string, base int) int {
+		sourceKey = strings.TrimSpace(sourceKey)
+		if sourceKey == "" {
+			return base
+		}
+		if _, ok := answerCited[sourceKey]; ok {
+			return 100
+		}
+		if _, ok := citationKeys[sourceKey]; ok {
+			return 60
+		}
+		return base
+	}
+
+	for _, evidence := range turn.ResearchPack.Evidence {
+		key := strings.TrimSpace(evidence.SourceKey)
+		if key != "" {
+			primaryEvidence[key] = struct{}{}
+		}
+		addCSV(evidence.UserTags, evidenceWeight(key, 25))
+	}
+	for _, evidence := range turn.ResearchPack.ExactTagEvidence {
+		key := strings.TrimSpace(evidence.SourceKey)
+		if _, ok := primaryEvidence[key]; ok {
+			continue
+		}
+		addCSV(evidence.UserTags, evidenceWeight(key, 18))
+	}
+	for _, bucket := range turn.ResearchPack.Coverage.TopUserTags {
+		weight := bucket.Count * 8
+		if weight <= 0 {
+			weight = 8
+		}
+		if weight > 32 {
+			weight = 32
+		}
+		addTag(bucket.Key, weight)
+	}
+	if len(scores) == 0 {
+		for _, tag := range turn.ResearchPack.QueryPlan.TagQueries {
+			addTag(tag, 6)
+		}
+		addTag(turn.ResearchPack.Topic, 6)
+	}
+
+	rankings := make([]rankedCategory, 0, len(scores))
+	for _, ranking := range scores {
+		if ranking.score > 0 {
+			rankings = append(rankings, ranking)
 		}
 	}
 	sort.Slice(rankings, func(i, j int) bool {
-		if rankings[i].score == rankings[j].score {
-			return rankings[i].category < rankings[j].category
+		if rankings[i].score != rankings[j].score {
+			return rankings[i].score > rankings[j].score
 		}
-		return rankings[i].score > rankings[j].score
+		if rankings[i].first != rankings[j].first {
+			return rankings[i].first < rankings[j].first
+		}
+		return rankings[i].category < rankings[j].category
 	})
-	categories := make([]string, 0, min(3, len(rankings)))
+
+	categories := make([]string, 0, min(maxPublicShareCategories, len(rankings)))
 	for _, ranking := range rankings {
 		categories = append(categories, ranking.category)
-		if len(categories) == 3 {
+		if len(categories) == maxPublicShareCategories {
 			break
 		}
 	}
-	if len(categories) == 0 {
-		categories = []string{"general"}
-	}
 	return categories
+}
+
+func sourceKeysInShareText(text string) map[string]struct{} {
+	keys := map[string]struct{}{}
+	for _, key := range shareSourceKeyPattern.FindAllString(text, -1) {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			keys[key] = struct{}{}
+		}
+	}
+	return keys
+}
+
+func sourceKeysFromShareCitations(turn ChatTranscriptTurn) map[string]struct{} {
+	keys := map[string]struct{}{}
+	for _, citation := range turn.Citations {
+		key := strings.TrimSpace(citation.SourceKey)
+		if key != "" {
+			keys[key] = struct{}{}
+		}
+	}
+	return keys
+}
+
+func usefulShareCategory(token string) bool {
+	token = categoryvocab.Normalize(token)
+	if token == "" {
+		return false
+	}
+	if _, ok := genericShareCategories[token]; ok {
+		return false
+	}
+	return true
+}
+
+var genericShareCategories = map[string]struct{}{
+	"ai":             {},
+	"article":        {},
+	"articles":       {},
+	"citation":       {},
+	"citations":      {},
+	"evidence":       {},
+	"general":        {},
+	"github":         {},
+	"infrastructure": {},
+	"media":          {},
+	"research":       {},
+	"security":       {},
+	"software":       {},
+	"source":         {},
+	"sources":        {},
+	"summary":        {},
+	"summaries":      {},
+	"web":            {},
+	"x":              {},
+	"youtube":        {},
 }
 
 func shareTitle(question string, summary string) string {
@@ -818,7 +923,7 @@ var publicShareTemplate = template.Must(template.New("public-share").Parse(`<!do
     <main>
       <h1>{{.Title}}</h1>
       {{if .Categories}}
-      <div class="chips" aria-label="Categories">
+      <div class="chips" aria-label="Share topics">
         {{range .Categories}}<span class="chip">{{.}}</span>{{end}}
       </div>
       {{end}}

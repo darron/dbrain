@@ -5,6 +5,16 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Public Chat Share Topics (2026-06-15)
+
+- **Fixed**: Public chat share topic chips now come from weighted research-pack
+  evidence tags, prioritizing answer-cited sources and applying the configured
+  category vocabulary instead of using generic keyword/source-type guesses.
+- **Hardening**: Share topic derivation now suppresses generic labels such as
+  `research`, `media`, `software`, and source-platform noise, with regression
+  coverage for citation weighting, coverage fallback, and vocabulary cleanup.
+- **Location**: `web/chat_shares.go`, `web/chat_shares_test.go`
+
 ### Open Knowledge Format Export (2026-06-14)
 
 - **OKF export**: Added `dbrain okf export` and `dbrain okf validate` for

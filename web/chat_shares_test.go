@@ -11,6 +11,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/brainresearch"
+	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -56,6 +57,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 						NotePath:   "sources/test-agent-memory.md",
 						Summary:    "Summary about durable retrieval.",
 						SourceType: "web",
+						UserTags:   "agent-memory, durable-retrieval, research",
 					},
 				},
 			},
@@ -79,8 +81,11 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 	if createResponse.URL == "" || !strings.HasPrefix(createResponse.URL, "/share/") || createResponse.Slug == "" {
 		t.Fatalf("unexpected create response: %+v", createResponse)
 	}
-	if len(createResponse.Categories) == 0 || createResponse.Summary == "" {
+	if createResponse.Summary == "" {
 		t.Fatalf("expected summary/categories in response: %+v", createResponse)
+	}
+	if got, want := strings.Join(createResponse.Categories, ","), "agent-memory,durable-retrieval"; got != want {
+		t.Fatalf("expected evidence-derived share categories %q, got %q", want, got)
 	}
 
 	list := httptest.NewRecorder()
@@ -102,7 +107,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 		t.Fatalf("expected public page 200, got %d: %s", public.Code, public.Body.String())
 	}
 	page := public.Body.String()
-	for _, want := range []string{"https://example.com/agent-memory", ">https://example.com/agent-memory</a>: Summary about durable retrieval.", "Agent memory systems", "Original URLs", "Summary about durable retrieval.", "<h3 id=\"markdown-heading\">Markdown Heading</h3>", "<strong>bold</strong>", "<code>code</code>", "href=\"https://example.com/with-backtick\"", "href=\"https://example.com/with-colon\"", "href=\"https://example.com/bracketed\">example.com</a>", "href=\"https://www.example.org/angled\">example.org</a>", "href=\"https://example.net/code-source\">example.net</a>"} {
+	for _, want := range []string{"https://example.com/agent-memory", ">https://example.com/agent-memory</a>: Summary about durable retrieval.", "Agent memory systems", "Original URLs", "Summary about durable retrieval.", "<span class=\"chip\">agent-memory</span>", "<span class=\"chip\">durable-retrieval</span>", "<h3 id=\"markdown-heading\">Markdown Heading</h3>", "<strong>bold</strong>", "<code>code</code>", "href=\"https://example.com/with-backtick\"", "href=\"https://example.com/with-colon\"", "href=\"https://example.com/bracketed\">example.com</a>", "href=\"https://www.example.org/angled\">example.org</a>", "href=\"https://example.net/code-source\">example.net</a>"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("expected public page to contain %q:\n%s", want, page)
 		}
@@ -122,6 +127,7 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 		"&lt;https://",
 		"[<a href",
 		"]</a>",
+		"<span class=\"chip\">research</span>",
 	} {
 		if strings.Contains(page, forbidden) {
 			t.Fatalf("public page leaked %q:\n%s", forbidden, page)
@@ -147,6 +153,92 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 	}
 }
 
+func TestCategorizeSharedContentWeightsAnswerCitedEvidenceTags(t *testing.T) {
+	turn := ChatTranscriptTurn{
+		Question: "barcelona toronto police",
+		Answer:   "The key incident involved Toronto police in Barcelona [src:cited]. This answer mentions github, youtube, evidence, source, citation, and software.",
+		Citations: []brainresearch.Citation{
+			{SourceKey: "src:cited", URL: "https://example.com/cited"},
+			{SourceKey: "src:included", URL: "https://example.com/included"},
+		},
+		ResearchPack: brainresearch.Pack{
+			Evidence: []ask.Evidence{
+				{
+					SourceKey:  "src:included",
+					SourceType: "github",
+					UserTags:   "software, infrastructure, included-only",
+				},
+				{
+					SourceKey:  "src:cited",
+					SourceType: "web",
+					UserTags:   "toronto-police, barcelona, criminal-law, research",
+				},
+			},
+		},
+	}
+
+	got := categorizeSharedContent("old keyword fallback should not matter", turn, categoryvocab.Vocab{})
+	want := "toronto-police,barcelona,criminal-law,included-only"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("categorizeSharedContent() = %q, want %q", strings.Join(got, ","), want)
+	}
+	for _, forbidden := range []string{"research", "software", "media", "infrastructure"} {
+		if containsString(got, forbidden) {
+			t.Fatalf("share categories should not include generic %q: %#v", forbidden, got)
+		}
+	}
+}
+
+func TestCategorizeSharedContentFallsBackToCoverageTopUserTags(t *testing.T) {
+	turn := ChatTranscriptTurn{
+		Question: "summarize ai harness",
+		Answer:   "No evidence rows carried tags.",
+		ResearchPack: brainresearch.Pack{
+			Coverage: brainresearch.Coverage{
+				TopUserTags: []brainresearch.Bucket{
+					{Key: "research", Count: 50},
+					{Key: "large-language-models", Count: 4},
+					{Key: "ai-agents", Count: 3},
+				},
+			},
+		},
+	}
+
+	got := categorizeSharedContent("", turn, categoryvocab.Vocab{})
+	want := "large-language-models,ai-agents"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("categorizeSharedContent() = %q, want %q", strings.Join(got, ","), want)
+	}
+}
+
+func TestCategorizeSharedContentAppliesCategoryVocabulary(t *testing.T) {
+	vocab, err := categoryvocab.Parse([]byte(strings.Join([]string{
+		"aliases:",
+		"  llm: large-language-models",
+		"  ai-agent: ai-agents",
+		"drop:",
+		"  - github-repository",
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("parse vocab: %v", err)
+	}
+	turn := ChatTranscriptTurn{
+		Answer: "Evidence citation [src:vocab].",
+		ResearchPack: brainresearch.Pack{
+			Evidence: []ask.Evidence{{
+				SourceKey: "src:vocab",
+				UserTags:  "LLM, AI Agent, github-repository",
+			}},
+		},
+	}
+
+	got := categorizeSharedContent("", turn, vocab)
+	want := "large-language-models,ai-agents"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("categorizeSharedContent() = %q, want %q", strings.Join(got, ","), want)
+	}
+}
+
 func TestChatShareRejectsVerificationFailedTurn(t *testing.T) {
 	cfg, st := openTestStore(t)
 	handler, err := NewHandler(cfg, st)
@@ -166,6 +258,15 @@ func TestChatShareRejectsVerificationFailedTurn(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "completed chat answers") {
 		t.Fatalf("expected completed-answer diagnostic, got %s", rec.Body.String())
 	}
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPublicExternalURLCleansEncodedBackticksAndPunctuation(t *testing.T) {
