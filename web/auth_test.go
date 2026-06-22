@@ -203,6 +203,7 @@ func TestAuthEnabledProtectsKnownNonMCPRoutes(t *testing.T) {
 		{name: "bootstrap", method: http.MethodGet, target: "/api/bootstrap", api: true},
 		{name: "search", method: http.MethodGet, target: "/api/search?q=memory", api: true},
 		{name: "get", method: http.MethodGet, target: "/api/get?key=item:test", api: true},
+		{name: "whats new", method: http.MethodGet, target: "/api/whats-new?since=24h", api: true},
 		{name: "backlog stats", method: http.MethodGet, target: "/api/stats/backlog", api: true},
 		{name: "activity stats", method: http.MethodGet, target: "/api/stats/activity", api: true},
 		{name: "source activity stats", method: http.MethodGet, target: "/api/stats/source-activity", api: true},
@@ -255,6 +256,32 @@ func TestAuthEnabledProtectsKnownNonMCPRoutes(t *testing.T) {
 				t.Fatalf("unexpected redirect location %q, want %q", location, wantLocation)
 			}
 		})
+	}
+}
+
+func TestWhatsNewEndpointRequiresAuthWhenWebAuthEnabled(t *testing.T) {
+	cfg, st := openTestStore(t)
+	writeAuthConfig(t, cfg, validAuthConfigYAML())
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/whats-new?since=24h", nil)
+	req.Header.Set("Accept", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected api route to return 401 before handler execution, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode auth response: %v", err)
+	}
+	if body["error"] != "authentication required" || body["redirect"] != "/login" {
+		t.Fatalf("unexpected auth response body: %#v", body)
 	}
 }
 

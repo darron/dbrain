@@ -111,6 +111,7 @@ Common entry points:
 - `dbrain sync all`
 - `dbrain okf export`
 - `dbrain research <question>`
+- `dbrain whats-new --since 24h`
 - `dbrain search <query>`
 - `dbrain get <source-key-or-id>`
 - `dbrain config env`
@@ -694,6 +695,15 @@ the default workflow over.
 research, browsing, topic maps, retrieval packs, and operational stats. The
 server is DB-first by default, tag-aware, and includes OCR/transcript evidence
 when those enrichments exist.
+
+For recent-local-change review, use CLI `dbrain whats-new --since 24h`, web
+`GET /api/whats-new?since=24h`, or MCP `dbrain_whats_new`. Use
+`view=entities` for compact grouped review when asking "what should I pay
+attention to?" and use the default `events` view for raw pipeline-event
+debugging. The review feed is read-only and cursor-paged across imports,
+enrichments, failures, and blocked pipeline work. Pagination is event-based;
+clients that merge multiple `view=entities` pages should de-duplicate by
+`entity_key`.
 
 The MCP surface also exposes read-only `dbrain_okf_search` and `dbrain_okf_get`
 tools for agents that need to inspect the generated OKF bundle. These tools read

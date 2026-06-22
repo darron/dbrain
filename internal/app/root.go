@@ -138,6 +138,7 @@ func NewRootCommand() *cobra.Command {
 		newGetCommand(opts),
 		newCategorizeCommand(opts),
 		newOKFCommand(opts),
+		newWhatsNewCommand(opts),
 		newVersionCommand(),
 	)
 

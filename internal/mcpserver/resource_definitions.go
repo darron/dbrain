@@ -108,6 +108,7 @@ The local dbrain MCP server is read-only.
 - ` + "`dbrain_topic_brief`" + `: build a richer topic brief with grouped pivots and markdown preview
 - ` + "`dbrain_research_pack`" + `: bundle retrieve-only evidence, query/tag hints, exact tag and corpus coverage counts, suggested follow-ups, and an optional topic brief
 - ` + "`dbrain_related`" + `: follow item-to-source links or source backlinks
+- ` + "`dbrain_whats_new`" + `: review recent local imports, enrichments, failures, and blocked work from a timestamp or cursor
 - ` + "`dbrain_stats_items`" + `: count item signals
 - ` + "`dbrain_stats_sources`" + `: count sources by filters or status
 - ` + "`dbrain_stats_activity`" + `: inspect recent pipeline activity
@@ -144,5 +145,5 @@ The local dbrain MCP server is read-only.
 3. Entity browse: call ` + "`dbrain_entity_map`" + ` or read ` + "`dbrain://entity/{query}`" + ` to find people, repos, orgs, and sites connected to the corpus.
 4. Topic map: call ` + "`dbrain_topic_map`" + ` or read ` + "`dbrain://topic/{query}`" + ` for a compact graph around a concept.
 5. Topic brief: call ` + "`dbrain_topic_brief`" + ` or read ` + "`dbrain://topic-note/{query}`" + ` for grouped pivots and a rendered note preview.
-6. Monitor: call ` + "`dbrain_stats_activity`" + ` and ` + "`dbrain_stats_backlog`" + `, then use ` + "`dbrain_stats_sources`" + ` for deeper breakdowns.`
+6. Monitor and review: call ` + "`dbrain_whats_new`" + ` for a cursor-paged review feed of recent local evidence changes, call ` + "`dbrain_stats_activity`" + ` and ` + "`dbrain_stats_backlog`" + ` for aggregate health, then use ` + "`dbrain_stats_sources`" + ` for deeper breakdowns.`
 }

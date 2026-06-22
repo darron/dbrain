@@ -61,6 +61,7 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain tsnet reset`
 - `dbrain tsnet status`
 - `dbrain version`
+- `dbrain whats-new`
 - `dbrain worker sources`
 
 On macOS, `dbrain` will automatically use `caffeinate` when the command is
@@ -106,6 +107,7 @@ Available Commands:
   topic       Build and write topic maps from the local brain
   transcribe  Transcribe downloaded local media
   version     Print build and version information
+  whats-new   Show newly imported, enriched, blocked, or failed local evidence
   worker      Run long-lived background-style worker loops
 
 Environment:
@@ -874,6 +876,27 @@ dbrain stats backlog
 
 No external tools required. Shows policy-aware enrichment coverage across the
 main pipeline stages.
+
+### `dbrain whats-new`
+
+No external tools required. Reads a cursor-paged review feed from `brain.db`
+for newly imported, updated, enriched, failed, or blocked evidence. Pass
+exactly one of `--since` or `--cursor`. `--since` accepts RFC3339 timestamps,
+local-offset RFC3339 timestamps, or relative durations such as `24h` and `7d`.
+Use `--view entities` for compact item/source groups when asking what changed
+or what deserves attention; the default `events` view preserves raw pipeline
+event chronology. Pagination and `--limit` still apply to raw review events, so
+callers that combine multiple pages should de-duplicate entity rows by
+`entity_key`. Continue pagination only while `truncated` is true; `next_cursor`
+is still emitted on the final page for high-watermark bookkeeping.
+
+```sh
+dbrain whats-new --since 24h
+dbrain whats-new --since 2d --view entities
+dbrain whats-new --since 2026-06-21T15:00:00Z --json
+dbrain whats-new --since 24h --view entities --json
+dbrain whats-new --cursor "$CURSOR" --limit 100 --types imports,enrichments
+```
 
 ### `dbrain eval mcp`
 

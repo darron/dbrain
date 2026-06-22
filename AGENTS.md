@@ -412,6 +412,22 @@ If CLI behavior changed materially, also rebuild and spot-check the command:
 
 - `task build`
 
+### Let requested reviewer agents inspect the checkout
+
+When the user asks for an external reviewer such as Claude or Amp, drive the
+approved CLI directly from the repo root instead of waiting for the user to run
+it manually.
+
+- prefer prompts that tell the reviewer to inspect `git status`, diffs,
+  untracked files, relevant code, tests, schemas, docs, and plan/spec documents
+  itself
+- include the plan/spec document path when one exists so the reviewer can check
+  implementation against intent
+- do not paste massive diffs by default when the reviewer can read the checkout
+- preserve the boundary that reviewers do not edit files unless explicitly
+  requested
+- still triage reviewer output against local evidence before changing code
+
 ### Watch for user-visible operational confusion
 
 When changing workers, stats, or dashboards:

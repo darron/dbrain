@@ -49,7 +49,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "okf", "version"} {
+	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -75,6 +75,157 @@ func runRootCommand(t *testing.T, root string, args ...string) string {
 		t.Fatalf("ExecuteContext %v: %v (stderr=%q)", fullArgs, err, stderr.String())
 	}
 	return stdout.String()
+}
+
+func runRootCommandErr(t *testing.T, root string, args ...string) (string, string, error) {
+	t.Helper()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	fullArgs := append([]string{"--root", root, "--no-caffeinate", "--no-debug"}, args...)
+	cmd.SetArgs(fullArgs)
+	err := cmd.ExecuteContext(context.Background())
+	return stdout.String(), stderr.String(), err
+}
+
+func TestWhatsNewCommandOutputsJSON(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	now := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	seedWhatsNewCLIItem(t, root, "x:cli-json", "CLI JSON item", now)
+
+	stdout := runRootCommand(t, root, "whats-new", "--since", now.Add(-time.Minute).Format(time.RFC3339), "--json")
+	var page store.ReviewEventPage
+	if err := json.Unmarshal([]byte(stdout), &page); err != nil {
+		t.Fatalf("unmarshal whats-new JSON: %v output=%q", err, stdout)
+	}
+	if len(page.Events) != 1 || page.Events[0].EventKind != store.ReviewEventKindItemImported || page.Events[0].EntityKey != "x:cli-json" {
+		t.Fatalf("unexpected whats-new JSON page: %+v", page)
+	}
+	if page.Events == nil || page.Counts == nil {
+		t.Fatalf("expected non-nil JSON arrays, got %+v", page)
+	}
+}
+
+func TestWhatsNewCommandOutputsEntityJSONView(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	now := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	seedWhatsNewCLIItem(t, root, "x:cli-entity", "CLI Entity item", now)
+
+	stdout := runRootCommand(t, root, "whats-new", "--since", now.Add(-time.Minute).Format(time.RFC3339), "--view", "entities", "--json")
+	var page store.ReviewEventPage
+	if err := json.Unmarshal([]byte(stdout), &page); err != nil {
+		t.Fatalf("unmarshal whats-new entity JSON: %v output=%q", err, stdout)
+	}
+	if len(page.Events) != 0 {
+		t.Fatalf("entity JSON view should suppress raw events, got %+v", page.Events)
+	}
+	if len(page.Entities) != 1 || page.Entities[0].EntityKey != "x:cli-entity" {
+		t.Fatalf("unexpected entity JSON page: %+v", page)
+	}
+}
+
+func TestWhatsNewCommandOutputsHumanDigest(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	now := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	seedWhatsNewCLIItem(t, root, "x:cli-human", "CLI Human item", now)
+
+	stdout := runRootCommand(t, root, "whats-new", "--since", now.Add(-time.Minute).Format(time.RFC3339))
+	for _, want := range []string{"What's new since", "Counts", "Review", "[item_imported]", "CLI Human item", "Next cursor:", "High watermark:", "Truncated: false"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected human output to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
+func TestWhatsNewCommandOutputsHumanEntityDigest(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	now := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	seedWhatsNewCLIItem(t, root, "x:cli-entity-human", "CLI Entity Human item", now)
+
+	stdout := runRootCommand(t, root, "whats-new", "--since", now.Add(-time.Minute).Format(time.RFC3339), "--view", "entities")
+	for _, want := range []string{"What's new since", "Counts", "Entities", "CLI Entity Human item", "events: item_imported", "Next cursor:", "High watermark:"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected entity human output to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
+func TestWhatsNewCommandRejectsCursorAndSinceTogether(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cursor, err := store.EncodeReviewCursor(store.ReviewCursor{EventAt: time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("encode cursor: %v", err)
+	}
+	_, _, err = runRootCommandErr(t, root, "whats-new", "--since", "24h", "--cursor", cursor)
+	if err == nil || !strings.Contains(err.Error(), "exactly one of --since or --cursor is required") {
+		t.Fatalf("expected since/cursor exclusivity error, got %v", err)
+	}
+}
+
+func TestWhatsNewCommandRejectsUnknownTypeFilter(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	_, _, err := runRootCommandErr(t, root, "whats-new", "--since", "24h", "--types", "imports,bogus")
+	if err == nil || !strings.Contains(err.Error(), "unknown review event type") {
+		t.Fatalf("expected unknown type filter error, got %v", err)
+	}
+}
+
+func TestTruncateWhatsNewTextPreservesUTF8(t *testing.T) {
+	t.Parallel()
+
+	got := truncateWhatsNewText("abc éfghij", 8)
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected truncated text to end with ellipsis marker, got %q", got)
+	}
+	if !strings.Contains(got, "é") {
+		t.Fatalf("expected truncation to preserve complete UTF-8 runes, got %q", got)
+	}
+	if strings.ToValidUTF8(got, "\uFFFD") != got {
+		t.Fatalf("expected valid UTF-8, got %q", got)
+	}
+}
+
+func seedWhatsNewCLIItem(t *testing.T, root string, sourceKey string, title string, at time.Time) {
+	t.Helper()
+
+	cfg, err := loadConfig(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    sourceKey,
+		SourceType:   "x_bookmark",
+		ExternalID:   sourceKey,
+		CanonicalURL: "https://example.com/" + sourceKey,
+		Title:        title,
+		ContentHash:  sourceKey + "-hash",
+		NotePath:     "items/cli/" + sourceKey + ".md",
+		RawJSON:      `{}`,
+		UpdatedAt:    at,
+		LastSeenAt:   at,
+	}); err != nil {
+		t.Fatalf("seed whats-new item: %v", err)
+	}
 }
 
 func TestAuthMCPTokenAddCreatesDBBackedBearerToken(t *testing.T) {

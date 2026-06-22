@@ -18,8 +18,8 @@ The server provides:
 
 - **Tools**: `search`, `get`, `get many`, `ask`, `entity map`, `related`,
   `stats items`, `stats sources`, `stats activity`, `stats backlog`,
-  `topic map`, `topic brief`, `research pack`, `dbrain_okf_search`, and
-  `dbrain_okf_get`.
+  `whats new`, `topic map`, `topic brief`, `research pack`,
+  `dbrain_okf_search`, and `dbrain_okf_get`.
 - **Resources**: `dbrain://mcp/overview`, `dbrain://stats/activity`,
   `dbrain://stats/backlog`, `dbrain://stats/items`, and
   `dbrain://stats/sources`.
@@ -144,6 +144,31 @@ These MCP tools are read-only and do not regenerate, validate, or export the
 bundle. Refresh it with `dbrain okf export`, `sync all --okf-export`, or
 `DBRAIN_OKF_EXPORT_ENABLED=true` before relying on it for current output.
 
+### `dbrain_whats_new`
+
+Use `dbrain_whats_new` when an agent needs to review what changed locally since
+a timestamp or prior review cursor before deciding what to inspect next. Pass
+exactly one of `since` or `cursor`. `since` accepts RFC3339 timestamps,
+local-offset RFC3339 timestamps, or relative durations such as `24h` and `7d`.
+
+The tool returns the same structured page shape as CLI JSON and
+`GET /api/whats-new`: `view`, `events`, `entities`, `counts`, `next_cursor`,
+`high_watermark`, and `truncated`. Use `view: "entities"` for compact grouped
+review when answering questions like "what should I pay attention to?" or
+"what's new over the last couple of days"; it suppresses raw event rows and
+returns one grouped record per item/source on the page with compact preferred
+summaries/excerpts and collapsed event kinds. Fetch details with
+`dbrain_get_many` or `dbrain_get` before quoting or relying on full raw
+evidence. Use the default `view: "events"` when debugging raw pipeline
+chronology. `types` can limit the feed to `imports`, `enrichments`, `failures`,
+or `all`. Pagination and `limit` are event-based in both views; when combining
+multiple `view: "entities"` pages, de-duplicate by `entity_key` and prefer the
+row with a stronger summary, higher importance, or later `latest_event_at`.
+Continue pagination only while `truncated` is true; `next_cursor` is still
+returned on the final page for high-watermark bookkeeping. The feed is DB-only
+and read-only; it does not run imports, enrichment, model calls, or note
+rendering.
+
 ## Tags
 
 Item and source `user_tags` are indexed for search and returned in MCP search
@@ -174,8 +199,9 @@ before deduping.
 - **OKF bundle inspection**: `dbrain_okf_search` and `dbrain_okf_get` when the
   user asks about generated OKF Markdown, bundle paths, or exchange/export
   output. These tools inspect the last generated bundle, not live SQLite.
-- **Pipeline monitoring**: `dbrain_stats_activity`, `dbrain_stats_backlog`, and
-  optionally `dbrain_stats_sources`.
+- **Pipeline monitoring and review**: `dbrain_whats_new` for a reviewable
+  cursor feed of recent local evidence changes, plus `dbrain_stats_activity`,
+  `dbrain_stats_backlog`, and optionally `dbrain_stats_sources`.
 
 ## Eval
 

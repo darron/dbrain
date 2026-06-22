@@ -89,6 +89,7 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 		"dbrain_topic_map":     false,
 		"dbrain_topic_brief":   false,
 		"dbrain_entity_map":    false,
+		"dbrain_whats_new":     false,
 	}
 	for _, entry := range tools {
 		tool := entry.(map[string]interface{})
@@ -1982,6 +1983,225 @@ func TestServerStatsSourcesTool(t *testing.T) {
 	if got := int(structured["total"].(float64)); got != 1 {
 		t.Fatalf("expected total 1, got %#v", structured)
 	}
+}
+
+func TestServerWhatsNewToolReturnsEvents(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-whats-new",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-whats-new",
+		CanonicalURL: "https://x.com/example/status/test-mcp-whats-new",
+		Title:        "MCP What's New Item",
+		ContentHash:  "mcp-whats-new-item",
+		NotePath:     "items/x/2026/test-mcp-whats-new.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_whats_new","arguments":{"since":"24h","limit":5,"types":["imports"]}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	if result["isError"].(bool) {
+		t.Fatalf("expected non-error tool result: %#v", result)
+	}
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Events:") || !strings.Contains(text, "item_imported") {
+		t.Fatalf("expected whats-new digest text with event counts, got %q", text)
+	}
+
+	structured := result["structuredContent"].(map[string]interface{})
+	events := structured["events"].([]interface{})
+	if len(events) == 0 {
+		t.Fatalf("expected review events, got %#v", structured)
+	}
+	counts := structured["counts"].([]interface{})
+	if len(counts) == 0 {
+		t.Fatalf("expected count buckets, got %#v", structured)
+	}
+	if structured["next_cursor"] == "" || structured["high_watermark"] == "" {
+		t.Fatalf("expected cursor metadata, got %#v", structured)
+	}
+	first := events[0].(map[string]interface{})
+	if first["event_kind"] != store.ReviewEventKindItemImported || first["entity_key"] != "x:test-mcp-whats-new" {
+		t.Fatalf("unexpected review event: %#v", first)
+	}
+	if _, ok := first["tags"].([]interface{}); !ok {
+		t.Fatalf("expected tags array in event payload: %#v", first)
+	}
+	if _, ok := first["reasons"].([]interface{}); !ok {
+		t.Fatalf("expected reasons array in event payload: %#v", first)
+	}
+}
+
+func TestServerWhatsNewToolReturnsEntityView(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:test-mcp-whats-new-entity",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-whats-new-entity",
+		CanonicalURL: "https://x.com/example/status/test-mcp-whats-new-entity",
+		Title:        "MCP What's New Entity",
+		ContentHash:  "mcp-whats-new-entity",
+		NotePath:     "items/x/2026/test-mcp-whats-new-entity.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_whats_new","arguments":{"since":"24h","limit":5,"view":"entities"}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	if result["isError"].(bool) {
+		t.Fatalf("expected non-error tool result: %#v", result)
+	}
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Entities:") || !strings.Contains(text, "item_imported") {
+		t.Fatalf("expected entity digest text, got %q", text)
+	}
+
+	structured := result["structuredContent"].(map[string]interface{})
+	events := structured["events"].([]interface{})
+	if len(events) != 0 {
+		t.Fatalf("entity view should suppress raw events, got %#v", events)
+	}
+	entities := structured["entities"].([]interface{})
+	if len(entities) != 1 {
+		t.Fatalf("expected grouped entity, got %#v", structured)
+	}
+	entity := entities[0].(map[string]interface{})
+	if entity["entity_key"] != "x:test-mcp-whats-new-entity" || int(entity["event_count"].(float64)) != 1 {
+		t.Fatalf("unexpected grouped entity: %#v", entity)
+	}
+	if _, ok := entity["event_kinds"].([]interface{}); !ok {
+		t.Fatalf("expected entity event kinds array: %#v", entity)
+	}
+}
+
+func TestServerWhatsNewToolReturnsEmptyArrays(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_whats_new","arguments":{"since":"1h"}}}`
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	structured := result["structuredContent"].(map[string]interface{})
+	events, ok := structured["events"].([]interface{})
+	if !ok {
+		t.Fatalf("expected events to be an empty array, got %#v", structured["events"])
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no review events, got %#v", events)
+	}
+	counts, ok := structured["counts"].([]interface{})
+	if !ok {
+		t.Fatalf("expected counts to be an empty array, got %#v", structured["counts"])
+	}
+	if len(counts) != 0 {
+		t.Fatalf("expected no count buckets, got %#v", counts)
+	}
+}
+
+func TestServerWhatsNewToolReportsInvalidFilters(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	server := New(cfg, st)
+	input := framedJSON(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_whats_new","arguments":{}}}`) +
+		framedJSON(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dbrain_whats_new","arguments":{"since":"24h","types":["mutations"]}}}`)
+
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	responses := parseResponses(t, out.Bytes())
+	assertToolError(t, responses[0], "exactly one of since or cursor", "Inspect the error message")
+	assertToolError(t, responses[1], "unknown review event type", "Inspect the error message")
 }
 
 func TestServerStatsBacklogToolReturnsEmptyBucketArrays(t *testing.T) {
