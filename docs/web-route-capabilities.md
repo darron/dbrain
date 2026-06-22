@@ -1,12 +1,12 @@
 # Web Route Capabilities
 
-Date: 2026-05-04
+Date: 2026-06-21
 
 The web UI is a local administration surface. When mounted through
 `dbrain serve remote`, the same routes are exposed through tsnet/Tailscale.
-There is currently no separate dbrain login or per-route authorization layer;
-remote access depends on Tailscale ACLs, node tags, and the server's
-same-origin checks.
+By default, remote access depends on Tailscale ACLs, node tags, and the
+server's same-origin checks. Optional GitHub OAuth can add a dbrain session
+gate for the web UI when configured.
 
 ## Capability Matrix
 
@@ -16,6 +16,7 @@ same-origin checks.
 | `/api/bootstrap` | `GET` | Read DB | Returns app name, FTS status, backlog/activity, and source activity. |
 | `/api/search` | `GET` | Read DB | Searches item/source FTS and metadata. |
 | `/api/get` | `GET` | Read DB; read local note files | Returns item/source details, linked records, rendered note content, and note read errors. Item media refs omit local paths and archive bucket/key values. |
+| `/api/whats-new` | `GET` | Read DB | Returns a cursor-paged review feed for recent imports, enrichments, failures, and blocked pipeline work. Requires exactly one of `since` or `cursor`; pass `view=entities` for compact grouped item/source review. |
 | `/api/stats/backlog` | `GET` | Read DB | Uses current source summary prompt/tool metadata for backlog freshness. |
 | `/api/stats/activity` | `GET` | Read DB | Returns recent activity for the requested time window. |
 | `/api/stats/source-activity` | `GET` | Read DB | Returns recent source events, failure facets, and repeated-failure rows. |
@@ -32,8 +33,9 @@ same-origin checks.
 
 - Treat local `serve web` and remote `serve remote --web` as trusted write
   surfaces, not as read-only viewers.
-- Do not expose remote web through Tailscale Funnel or a public proxy unless a
-  future design adds dbrain-level authentication and route authorization.
+- Do not expose remote web through Tailscale Funnel or a public proxy unless
+  dbrain-level authentication is configured and the full route surface has been
+  reviewed for that deployment.
 - Bootstrap, transcript-save, detail media, and signed media URL responses avoid
   absolute host paths and archive bucket/key details. Detail responses still
   include note-relative paths and note-read diagnostics for operator

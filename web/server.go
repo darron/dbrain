@@ -195,6 +195,7 @@ func (s *server) newMux() http.Handler {
 	appMux.HandleFunc("/api/bootstrap", s.handleBootstrap)
 	appMux.HandleFunc("/api/search", s.handleSearch)
 	appMux.HandleFunc("/api/get", s.handleGet)
+	appMux.HandleFunc("/api/whats-new", s.handleWhatsNew)
 	appMux.HandleFunc("/api/stats/backlog", s.handleBacklog)
 	appMux.HandleFunc("/api/stats/activity", s.handleActivity)
 	appMux.HandleFunc("/api/stats/source-activity", s.handleSourceActivity)

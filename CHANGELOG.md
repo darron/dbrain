@@ -5,6 +5,25 @@ development date for the change set.
 
 ## Recent Improvements
 
+### What's New Review Feed (2026-06-21)
+
+- **CLI/API/MCP**: Added a read-only `whats-new` review feed for newly
+  imported, updated, enriched, failed, or blocked local evidence, exposed as
+  `dbrain whats-new`, `GET /api/whats-new`, and MCP `dbrain_whats_new`.
+- **Review semantics**: The feed is cursor-paged, normalizes event timestamps
+  to UTC, supports `since` timestamps or relative durations, groups event
+  filters into `imports`, `enrichments`, and `failures`, and preserves empty
+  arrays in JSON/MCP structured output.
+- **Agent review mode**: Added `view=entities` / `--view entities` for compact
+  item/source grouping with preferred summaries and collapsed event kinds, so
+  agents can answer "what should I pay attention to?" without reconstructing
+  entities from raw pipeline events.
+- **Schema**: Added review-event indexes for import, source activity, feed
+  entry, and item-enrichment timestamps so existing databases can serve review
+  pages without scanning the main corpus blindly.
+- **Location**: `internal/store/review_events*`, `internal/app/whats_new*`,
+  `web/whats_new_handlers.go`, `internal/mcpserver/*whats_new*`
+
 ### Public Chat Share Topics (2026-06-15)
 
 - **Fixed**: Public chat share topic chips now come from weighted research-pack

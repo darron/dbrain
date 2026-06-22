@@ -1,5 +1,7 @@
 package mcpserver
 
+import "github.com/darron/dbrain/internal/store"
+
 func toolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
@@ -162,6 +164,22 @@ func toolDefinitions() []map[string]interface{} {
 				"required": []string{"lookup"},
 			},
 			"outputSchema": relatedOutputSchema(),
+			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
+		},
+		{
+			"name":        "dbrain_whats_new",
+			"description": "Review newly imported, enriched, failed, or blocked local evidence after a timestamp or continuation cursor.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"since":  map[string]interface{}{"type": "string", "description": "Lower bound timestamp or relative duration such as 2026-06-21T15:00:00Z, 24h, or 7d. Mutually exclusive with cursor."},
+					"cursor": map[string]interface{}{"type": "string", "description": "Continuation cursor returned by a previous dbrain_whats_new call. Mutually exclusive with since."},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Maximum review events to return.", "default": 50},
+					"types":  map[string]interface{}{"type": "array", "items": enumSchema("Event type group.", "imports", "enrichments", "failures", "all"), "description": "Event type groups to include."},
+					"view":   enumSchema("Output view. Use entities for compact grouped review and events for raw pipeline events.", store.ReviewEventViewEvents, store.ReviewEventViewEntities),
+				},
+			},
+			"outputSchema": whatsNewOutputSchema(),
 			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": true},
 		},
 		{

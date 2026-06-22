@@ -1695,6 +1695,148 @@ func TestWebHandlerServesArchivedMediaAndSignedURL(t *testing.T) {
 	})
 }
 
+func TestWhatsNewEndpointReturnsReviewEvents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg, st := openTestStore(t)
+	seedTestData(t, ctx, cfg, st)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/whats-new?since=24h&limit=25&types=imports,enrichments,failures", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, forbidden := range []string{`"events": null`, `"counts": null`, `"reasons": null`, `"tags": null`} {
+		if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("whats-new response exposed null array field %q: %s", forbidden, rec.Body.String())
+		}
+	}
+
+	var response store.ReviewEventPage
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode whats-new response: %v", err)
+	}
+	if len(response.Events) == 0 {
+		t.Fatalf("expected review events")
+	}
+	if response.NextCursor == "" {
+		t.Fatalf("expected continuation cursor")
+	}
+	if response.HighWatermark.IsZero() {
+		t.Fatalf("expected high watermark")
+	}
+	if response.Counts == nil {
+		t.Fatalf("expected non-nil count buckets")
+	}
+
+	seenKinds := map[string]bool{}
+	for _, event := range response.Events {
+		seenKinds[event.EventKind] = true
+		if event.EventID == "" || event.EntityKey == "" || event.EventAt.IsZero() {
+			t.Fatalf("expected populated event identity and timestamp, got %+v", event)
+		}
+	}
+	for _, want := range []string{store.ReviewEventKindItemImported, store.ReviewEventKindSourceFailed} {
+		if !seenKinds[want] {
+			t.Fatalf("expected whats-new response to include %q, got kinds=%v", want, seenKinds)
+		}
+	}
+}
+
+func TestWhatsNewEndpointReturnsEntityView(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg, st := openTestStore(t)
+	seedTestData(t, ctx, cfg, st)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/whats-new?since=24h&limit=25&view=entities", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, forbidden := range []string{`"events": null`, `"entities": null`, `"event_kinds": null`, `"counts": null`} {
+		if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("whats-new entity response exposed null array field %q: %s", forbidden, rec.Body.String())
+		}
+	}
+
+	var response store.ReviewEventPage
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode whats-new entity response: %v", err)
+	}
+	if len(response.Events) != 0 {
+		t.Fatalf("entity view should suppress raw event rows, got %+v", response.Events)
+	}
+	if len(response.Entities) == 0 {
+		t.Fatalf("expected grouped entities")
+	}
+	if response.NextCursor == "" || response.HighWatermark.IsZero() {
+		t.Fatalf("expected cursor metadata, got %+v", response)
+	}
+}
+
+func TestWhatsNewEndpointRejectsInvalidSince(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := openTestStore(t)
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/whats-new?since=2026-06-21", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "since must be RFC3339") {
+		t.Fatalf("expected invalid since diagnostic, got %s", rec.Body.String())
+	}
+}
+
+func TestWhatsNewEndpointRejectsCursorAndSinceTogether(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := openTestStore(t)
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	cursorToken, err := store.EncodeReviewCursor(store.ReviewCursor{EventAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("encode cursor: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/whats-new?since=24h&cursor="+cursorToken, nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "exactly one of since or cursor") {
+		t.Fatalf("expected mutually exclusive cursor diagnostic, got %s", rec.Body.String())
+	}
+}
+
 func openTestStore(t *testing.T) (config.Config, *store.Store) {
 	t.Helper()
 
