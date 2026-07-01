@@ -112,16 +112,17 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 	}
 
 	runResult, err := summarizecli.Run(ctx, summarizecli.Options{
-		Binary:    opts.Binary,
-		Input:     input,
-		Summarize: true,
-		Model:     opts.Model,
-		CLI:       summaryCLI(opts),
-		Prompt:    buildSummaryPrompt(source, extract),
-		Length:    opts.Length,
-		Language:  opts.Language,
-		Timeout:   opts.Timeout,
-		RootDir:   cfg.RootDir,
+		Binary:          opts.Binary,
+		Input:           input,
+		Summarize:       true,
+		Model:           opts.Model,
+		CLI:             summaryCLI(opts),
+		Prompt:          buildSummaryPrompt(source, extract),
+		Length:          opts.Length,
+		Language:        opts.Language,
+		Timeout:         opts.Timeout,
+		RootDir:         cfg.RootDir,
+		InferenceParams: opts.InferenceParams,
 	})
 	if err != nil {
 		if isUserCancellation(ctx, err) {
@@ -159,17 +160,18 @@ func summarizeExtract(ctx context.Context, cfg config.Config, source model.Sourc
 	defer cleanup()
 
 	return summarizecli.Run(ctx, summarizecli.Options{
-		Binary:    opts.Binary,
-		Input:     input,
-		Summarize: true,
-		Model:     opts.Model,
-		CLI:       summaryCLI(opts),
-		Prompt:    buildSummaryPrompt(source, extract),
-		Length:    opts.Length,
-		Language:  opts.Language,
-		Timeout:   opts.Timeout,
-		RootDir:   cfg.RootDir,
-		Env:       env,
+		Binary:          opts.Binary,
+		Input:           input,
+		Summarize:       true,
+		Model:           opts.Model,
+		CLI:             summaryCLI(opts),
+		Prompt:          buildSummaryPrompt(source, extract),
+		Length:          opts.Length,
+		Language:        opts.Language,
+		Timeout:         opts.Timeout,
+		RootDir:         cfg.RootDir,
+		Env:             env,
+		InferenceParams: opts.InferenceParams,
 	})
 }
 

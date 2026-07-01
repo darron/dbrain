@@ -149,13 +149,13 @@ when `mcp.auth.enabled` is set; startup logs warn loudly when HTTP or tsnet MCP
 is served without that guard.
 
 Model-backed commands can send local evidence to the configured model provider.
-Local Ollama calls stay on the configured Ollama endpoint. Hosted OpenRouter or
-OpenAI-compatible calls may receive source extracts, note text, item text,
-transcripts, OCR text, tags, and images depending on the command. Web, CLI, and
-MCP research use model-assisted query planning by default when a planner or
-summary model is configured; use `--no-planner`, `disable_planner=true`, or
-retrieval-only modes when you want deterministic local retrieval without planner
-model calls.
+Local Ollama, LM Studio, oMLX, and configured OpenAI-compatible backend aliases
+stay on their configured endpoints. Hosted OpenRouter or OpenAI-compatible
+calls may receive source extracts, note text, item text, transcripts, OCR text,
+tags, and images depending on the command. Web, CLI, and MCP research use
+model-assisted query planning by default when a planner or summary model is
+configured; use `--no-planner`, `disable_planner=true`, or retrieval-only modes
+when you want deterministic local retrieval without planner model calls.
 
 Archive features use S3-compatible storage only when configured. Media archives
 and SQLite snapshots can contain personal content. A public media base URL makes
@@ -372,6 +372,14 @@ references: `env:NAME`,
 | `DBRAIN_OCR_MODEL` / `DBRAIN_X_PHOTO_OCR_MODEL` | `ocr.model` | `openrouter/google/gemini-3.1-flash-lite-preview` | Default model for X photo OCR. |
 | `DBRAIN_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | `ollama.base_url` | `http://127.0.0.1:11434` | Ollama endpoint for local model calls. |
 | `DBRAIN_OLLAMA_API_KEY` / `OLLAMA_API_KEY` | `ollama.api_key` | `ollama` | API key label used for Ollama-compatible local calls. |
+| `DBRAIN_LMSTUDIO_BASE_URL` | `lmstudio.base_url` | `http://127.0.0.1:1234/v1` | LM Studio OpenAI-compatible endpoint for local model calls. |
+| `DBRAIN_LMSTUDIO_API_KEY` | `lmstudio.api_key` | `lm-studio` | API key label used for LM Studio local calls. |
+| `DBRAIN_OMLX_BASE_URL` | `omlx.base_url` | `http://127.0.0.1:8000/v1` | oMLX OpenAI-compatible endpoint for local text model calls. |
+| `DBRAIN_OMLX_API_KEY` | `omlx.api_key` | `` | Optional API key for oMLX local calls. |
+| `(config only)` | `llm_backends.<alias>.transport` | `openai_chat_completions` | Configured OpenAI-compatible backend alias transport. |
+| `(config only)` | `llm_backends.<alias>.base_url` | `` | Configured OpenAI-compatible backend endpoint, for example `http://127.0.0.1:8080/v1`. |
+| `(config only)` | `llm_backends.<alias>.api_key` | `` | Optional API key or secret ref for a configured backend alias. |
+| `(config only)` | `llm_backends.<alias>.local` | `false` | Marks a configured backend alias as local for provenance and bakeoff reporting. |
 | `OPENAI_BASE_URL` | `openai.base_url` or `env.OPENAI_BASE_URL` | `` | OpenAI-compatible base URL used by the summarize adapter when already exported. |
 | `OPENAI_API_KEY` | `openai.api_key` or `env.OPENAI_API_KEY` | `` | OpenAI-compatible API key used by the summarize adapter when already exported. |
 | `OPENAI_USE_CHAT_COMPLETIONS` | `openai.use_chat_completions` or `env.OPENAI_USE_CHAT_COMPLETIONS` | `` | Forces summarize/OpenAI-compatible calls onto chat completions when set. |
@@ -674,6 +682,36 @@ elsewhere. The X photo OCR stage also honors `DBRAIN_OCR_MODEL` /
 `OPENAI_BASE_URL` or `OPENAI_API_KEY`, `dbrain` leaves those alone. When
 `--model` is set, it also takes precedence over `--cli`, so local-model runs do
 not accidentally inherit the default CLI provider.
+
+Pass `--model lmstudio/qwen/qwen3.6-35b-a3b` to use a locally running LM Studio
+server through its OpenAI-compatible API. Replace `qwen/qwen3.6-35b-a3b` with
+the model id returned by `curl -s http://localhost:1234/v1/models`. The default
+LM Studio endpoint is
+`http://127.0.0.1:1234/v1`; override it with `DBRAIN_LMSTUDIO_BASE_URL` or
+`lmstudio.base_url`.
+
+Pass `--model omlx/qwen3.5-coder` to use an oMLX OpenAI-compatible text backend
+at `http://127.0.0.1:8000/v1`; override it with `DBRAIN_OMLX_BASE_URL` or
+`omlx.base_url`. For other OpenAI-compatible local servers, configure an alias
+under `llm_backends.<alias>` and use `--model <alias>/<model-id>`.
+
+LM Studio, oMLX, and configured OpenAI-compatible aliases do not consume the
+repo `Modelfile` as an Ollama-style wrapper. For dbrain calls, task prompts
+stay in the application and are sent as normal chat system messages. Per-model
+runtime defaults are tuning, not the authoritative dbrain prompt source.
+
+Hosted OCR is still configured through `ocr.model` and OpenRouter settings. You
+do not need Ollama, LM Studio, oMLX, or any local backend for the default
+OpenRouter/Gemini OCR path.
+
+Examples:
+
+```sh
+dbrain source run --model omlx/qwen3.5-coder --limit 5
+dbrain categorize run --model omlx/qwen3.5-coder --limit 5
+dbrain research "What do I know about local models?" --planner-model omlx/qwen3.5-coder --model omlx/qwen3.5-coder
+go run ./cmd/devtools/model_bakeoff --model ollama/dbrain:2026042701 --model lmstudio/qwen/qwen3.6-35b-a3b --model omlx/qwen3.5-coder --parity-preset dbrain-modelfile
+```
 
 For a new machine or GPU-backed A/B run, start with small scoped commands
 before pointing a whole sync at Ollama. A practical progression is:

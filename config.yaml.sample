@@ -38,6 +38,21 @@ ollama:
   base_url: "http://127.0.0.1:11434" # DBRAIN_OLLAMA_BASE_URL, OLLAMA_BASE_URL, OLLAMA_HOST
   api_key: "ollama" # DBRAIN_OLLAMA_API_KEY, OLLAMA_API_KEY; secret ref supported
 
+lmstudio:
+  base_url: "http://127.0.0.1:1234/v1" # DBRAIN_LMSTUDIO_BASE_URL
+  api_key: "lm-studio" # DBRAIN_LMSTUDIO_API_KEY; secret ref supported
+
+omlx:
+  base_url: "http://127.0.0.1:8000/v1" # DBRAIN_OMLX_BASE_URL
+  api_key: "" # DBRAIN_OMLX_API_KEY; optional, secret ref supported
+
+llm_backends:
+  localai:
+    transport: "openai_chat_completions"
+    base_url: "http://127.0.0.1:8080/v1"
+    api_key: "" # optional; supports direct values, env:, op://, and keychain:// refs
+    local: true
+
 openai:
   base_url: "" # OPENAI_BASE_URL
   api_key: "" # OPENAI_API_KEY; secret ref supported

@@ -58,8 +58,34 @@ go run ./cmd/devtools/model_bakeoff \
   --output /tmp/dbrain-categorize-item-bakeoff.md
 ```
 
-Use the `ollama/` prefix for local Ollama models because the existing dbrain
-model config parser expects provider-qualified model names.
+Use provider-qualified model names. Use `ollama/<model>` for local Ollama,
+`lmstudio/<api-model-id>` for local LM Studio (the id returned by
+`curl -s http://localhost:1234/v1/models`), `omlx/<model>` for oMLX, and
+`<alias>/<model>` for aliases configured under `llm_backends.<alias>`.
+
+For local backend parity checks:
+
+```bash
+go run ./cmd/devtools/model_bakeoff \
+  --mode source-summary \
+  --lookup src:example \
+  --model ollama/dbrain:2026042701 \
+  --model lmstudio/qwen/qwen3.6-35b-a3b \
+  --model omlx/qwen3.5-coder \
+  --parity-preset dbrain-modelfile \
+  --timeout 5m \
+  --output /tmp/dbrain-local-backends.md
+```
+
+For a configured alias:
+
+```bash
+go run ./cmd/devtools/model_bakeoff \
+  --mode categorize-source \
+  --lookup src:example \
+  --model localai/test-model \
+  --json > /tmp/dbrain-localai-bakeoff.json
+```
 
 5. Summarize the reports for the user:
    - success and error counts by model
@@ -78,3 +104,9 @@ model config parser expects provider-qualified model names.
 - If sandboxing blocks temp files or local Ollama access, rerun the exact
   bakeoff command with approval instead of changing the command semantics.
 - Use `--json` when a structured result is easier to post-process.
+- Use `--parity-preset dbrain-modelfile` only for explicit local-provider
+  parity checks.
+- Reports record provider, API model, transport, local/hosted flag, parameter
+  strictness, prompt parity status, and runtime-context collection status.
+- Run large local models in separate invocations when memory co-residency would
+  bias timing.

@@ -2,9 +2,12 @@ package summarizecli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/darron/dbrain/internal/llmprovider"
 )
 
 func PreferredCLIProvider() string {
@@ -70,6 +73,27 @@ func parseOpenRouterModel(model string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func parseLMStudioModel(model string) (string, bool) {
+	ref := llmprovider.ParseModelRef(model)
+	return ref.APIModel, ref.Provider == llmprovider.ProviderLMStudio && ref.ProviderQualified
+}
+
+func unsupportedProviderModelError(model string) error {
+	provider, ok := llmprovider.EmptyProviderRef(model)
+	if !ok {
+		return nil
+	}
+	return fmt.Errorf("unsupported %s model %q", providerDisplayName(provider), strings.TrimSpace(model))
+}
+
+func providerDisplayName(provider llmprovider.Provider) string {
+	reg := llmprovider.NewRegistry()
+	if spec, ok := reg.Spec(provider); ok && strings.TrimSpace(spec.DisplayName) != "" {
+		return spec.DisplayName
+	}
+	return string(provider)
 }
 
 func promptWithLengthAndLanguageHints(prompt string, length string, language string) string {

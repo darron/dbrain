@@ -2,12 +2,14 @@ package modelbakeoff
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
 func RenderMarkdown(result Result, maxTextChars int) string {
 	var b strings.Builder
 	b.WriteString("# dbrain Model Bakeoff\n\n")
+	fmt.Fprintf(&b, "- Schema: `%s`\n", result.SchemaVersion)
 	fmt.Fprintf(&b, "- Mode: `%s`\n", result.Mode)
 	fmt.Fprintf(&b, "- Targets: `%d`\n", len(result.Targets))
 	fmt.Fprintf(&b, "- Models: `%s`\n", strings.Join(result.Models, "`, `"))
@@ -53,6 +55,33 @@ func RenderMarkdown(result Result, maxTextChars int) string {
 			b.WriteString("\n\n")
 			fmt.Fprintf(&b, "- Status: `%s`\n", run.Status)
 			fmt.Fprintf(&b, "- Duration: `%dms`\n", run.DurationMS)
+			if run.Provider != "" {
+				fmt.Fprintf(&b, "- Provider: `%s`\n", run.Provider)
+			}
+			if run.APIModel != "" {
+				fmt.Fprintf(&b, "- API model: `%s`\n", run.APIModel)
+			}
+			if run.Transport != "" {
+				fmt.Fprintf(&b, "- Transport: `%s`\n", run.Transport)
+			}
+			if run.Local != nil {
+				fmt.Fprintf(&b, "- Local backend: `%t`\n", *run.Local)
+			}
+			if run.ParamStrictness != "" {
+				fmt.Fprintf(&b, "- Param strictness: `%s`\n", run.ParamStrictness)
+			}
+			if run.PromptParityStatus != "" {
+				fmt.Fprintf(&b, "- Prompt parity: `%s`\n", run.PromptParityStatus)
+			}
+			if run.ReasoningModeStatus != "" {
+				fmt.Fprintf(&b, "- Reasoning mode: `%s`\n", run.ReasoningModeStatus)
+			}
+			if run.RuntimeContext.Status != "" {
+				fmt.Fprintf(&b, "- Runtime context: `%s`\n", run.RuntimeContext.Status)
+			}
+			writeParamMap(&b, "Requested params", run.RequestedParams)
+			writeParamMap(&b, "Sent params", run.SentParams)
+			writeOmittedParams(&b, run.OmittedParams)
 			if run.WordOverlap > 0 {
 				fmt.Fprintf(&b, "- Baseline overlap: `%.1f%%`\n", run.WordOverlap*100)
 			}
@@ -74,6 +103,50 @@ func RenderMarkdown(result Result, maxTextChars int) string {
 	}
 
 	return b.String()
+}
+
+func writeParamMap(b *strings.Builder, label string, params map[string]any) {
+	if len(params) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "- %s: ", label)
+	first := true
+	for _, key := range sortedKeys(params) {
+		if !first {
+			b.WriteString(", ")
+		}
+		first = false
+		fmt.Fprintf(b, "`%s=%v`", key, params[key])
+	}
+	b.WriteByte('\n')
+}
+
+func writeOmittedParams(b *strings.Builder, omitted map[string]string) {
+	if len(omitted) == 0 {
+		return
+	}
+	b.WriteString("- Omitted params:\n")
+	for _, key := range sortedStringKeys(omitted) {
+		fmt.Fprintf(b, "  - `%s`: %s\n", key, omitted[key])
+	}
+}
+
+func sortedKeys(params map[string]any) []string {
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedStringKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func truncate(value string, maxChars int) string {

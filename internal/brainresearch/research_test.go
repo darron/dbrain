@@ -2,6 +2,9 @@ package brainresearch
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -738,6 +741,61 @@ printf '%s\n' '{"input":{"model":"cli/test/planner"},"extracted":{"content":"pla
 	}
 	if !strings.Contains(observer.plannerOutput, "cli/test/planner") || !strings.Contains(observer.plannerOutput, "helm tanka kustomize") {
 		t.Fatalf("expected raw planner output to be observed, got %q", observer.plannerOutput)
+	}
+}
+
+func TestBuildResearchStrategyPlannerCanUseOMLXThroughSummarizeCLI(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	var hit bool
+	var capturedModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		capturedModel = payload.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"concepts\":[{\"key\":\"local_models\",\"preferred\":\"local models\",\"terms\":[\"local models\"],\"required\":true}],\"query_variants\":[{\"query\":\"local models\",\"reason\":\"direct question term\"}]}"}}]}`))
+	}))
+	defer server.Close()
+
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+omlx:
+  base_url: `+server.URL+`/v1
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	b := New(cfg, nil)
+	hints := ask.Hints("local models")
+	strategy := b.buildResearchStrategy(context.Background(), "local models", hints, Options{
+		PlannerModel:    "omlx/qwen3.5-coder",
+		UseModelPlanner: true,
+		PlannerTimeout:  2 * time.Second,
+	})
+
+	if !hit {
+		t.Fatal("expected oMLX planner endpoint to be called")
+	}
+	if capturedModel != "qwen3.5-coder" {
+		t.Fatalf("captured model = %q", capturedModel)
+	}
+	if strategy.Planner != "model_assisted" || strategy.PlannerModel != "omlx/qwen3.5-coder" || strategy.PlannerError != "" {
+		t.Fatalf("unexpected planner metadata: %#v", strategy)
+	}
+	if !hasQueryVariant(strategy.Variants, "local models") {
+		t.Fatalf("expected model planner variant, got %#v", strategy.Variants)
 	}
 }
 

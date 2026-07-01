@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/llmprovider"
 	"github.com/darron/dbrain/internal/modelbakeoff"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -33,6 +34,7 @@ func run(ctx context.Context, args []string) error {
 	var jsonOut bool
 	var maxTextChars int
 	var includeImages bool
+	var parityPreset string
 
 	fs := flag.NewFlagSet("model_bakeoff", flag.ContinueOnError)
 	fs.StringVar(&root, "root", "", "dbrain root override; defaults to the normal installed config/data locations")
@@ -46,6 +48,7 @@ func run(ctx context.Context, args []string) error {
 	fs.BoolVar(&jsonOut, "json", false, "Write full JSON results to stdout instead of a Markdown report")
 	fs.IntVar(&maxTextChars, "max-text-chars", 4000, "Maximum summary chars per model in the Markdown report; 0 disables truncation")
 	fs.BoolVar(&includeImages, "images", false, "Include item images for categorize-item vision-capable models")
+	fs.StringVar(&parityPreset, "parity-preset", llmprovider.ParityPresetNone, "Optional parity preset: none, dbrain-modelfile")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -70,6 +73,7 @@ func run(ctx context.Context, args []string) error {
 		Length:        length,
 		Language:      language,
 		IncludeImages: includeImages,
+		ParityPreset:  parityPreset,
 	})
 	if err != nil {
 		return err

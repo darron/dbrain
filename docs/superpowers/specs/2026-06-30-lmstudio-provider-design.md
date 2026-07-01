@@ -30,7 +30,7 @@ requires controlling the other behavior currently hidden in the Ollama
 
 Observed local runtime state on 2026-06-30:
 
-- LM Studio CLI is installed at `/Users/darron/.lmstudio/bin/lms`.
+- LM Studio CLI is available locally as `lms`.
 - LM Studio server is running on port `1234`.
 - LM Studio has `qwen/qwen3.6-35b-a3b` loaded with context `65536`.
 - Ollama has overlapping Qwen 3.6 models downloaded but no model currently
@@ -44,7 +44,7 @@ Repo state:
 
 - `Modelfile` uses `FROM qwen3.6:35b-a3b-nvfp4`, a durable dbrain-oriented
   `SYSTEM` prompt, and sampler parameters: `temperature 0.6`, `top_p 0.95`,
-  `top_k 20`, `min_p 0`, `presence_penalty 1.5`, and `repeat_penalty 1`.
+  `top_k 20`, `min_p 0`, and `repeat_penalty 1`.
 - Direct summaries route `ollama/*` to native Ollama `/api/chat` and
   `openrouter/*` to OpenAI-compatible chat completions.
 - Categorization has separate native Ollama and OpenRouter paths.
@@ -201,8 +201,10 @@ For the cleanest provider/runtime comparison, a follow-up strict-parity bakeoff
 may compare the same base Qwen model in both runtimes with all dbrain prompts
 and sampler parameters sent explicitly by dbrain. The current-production
 replacement bakeoff may still compare `ollama/dbrain:2026042701` against LM
-Studio, but its report must state whether the Ollama `Modelfile` prompt was
-active.
+Studio, but it is an operational replacement comparison until the implementation
+has verified effective prompt parity. It must not be described as a strict fair
+bakeoff unless the report states the effective prompt on both sides is
+equivalent.
 
 ### Inference Parameters
 
@@ -211,33 +213,44 @@ categorization paths do not send sampler parameters, which means Ollama inherits
 the `Modelfile` defaults while LM Studio inherits whatever per-model defaults
 are configured in the app.
 
-Add explicit local inference parameters for LM Studio and for bakeoff parity
-paths. The dbrain local parity defaults should match the current `Modelfile`:
+Add an explicit local inference-parameter contract for bakeoff parity paths.
+The candidate dbrain parity preset should start from the repo `Modelfile`:
 
 ```yaml
 temperature: 0.6
 top_p: 0.95
 top_k: 20
 min_p: 0
-presence_penalty: 1.5
 repeat_penalty: 1
 ```
 
-Direct Ollama requests should send the supported values through the native chat
-options mechanism. LM Studio requests should send the supported
-OpenAI-compatible chat-completions fields. If a parameter is not supported by
-one runtime, omit it from both strict-parity requests or label it as omitted in
-the bakeoff report; do not silently call the run fair.
+The implementation must distinguish three sets:
 
-These explicit local defaults should apply to the local direct paths used for
-Ollama/LM Studio parity work. Do not change OpenRouter sampler behavior in this
-feature unless a separate design accepts that blast radius. Do not silently
-impose the dbrain `Modelfile` sampler preset on unrelated existing Ollama model
-runs that are not part of LM Studio parity work.
+- `requested_params`: the dbrain parity preset requested by the bakeoff.
+- `sent_params`: parameters actually sent to a provider for that run.
+- `omitted_params`: requested parameters omitted because the provider path does
+  not support them or support was not verified.
 
-Bakeoff reports should include the sampler parameters dbrain sent, model ids,
-runtime labels, and context lengths where available. Operator-configured LM
-Studio per-model defaults can still exist, but they should be treated as runtime
+Direct Ollama requests should send supported sampler values under the native
+`options` object for `/api/chat`. LM Studio requests should send supported
+OpenAI-compatible chat-completions fields at the request level. `min_p` is in
+the repo `Modelfile`, but it should not be sent to LM Studio unless a live
+smoke test confirms the selected LM Studio server accepts it with the intended
+semantics. If a parameter is not supported by both runtime paths, omit it from
+both strict-parity requests or label the run as non-strict in the report; do not
+silently call the run fair.
+
+The explicit parity preset should be active only when a caller opts into parity
+comparison, initially through a `model_bakeoff --parity-preset dbrain-modelfile`
+flag. Normal source summary, categorization, research, Apple Notes, and X media
+summary calls should not silently impose the dbrain `Modelfile` sampler preset
+on unrelated `ollama/*` or `lmstudio/*` runs. Do not change OpenRouter sampler
+behavior in this feature unless a separate design accepts that blast radius.
+
+Bakeoff reports should include the requested, sent, and omitted parameters;
+model ids; runtime labels; effective prompt-parity status; reasoning/think
+mode status; and context lengths where available. Operator-configured LM Studio
+per-model defaults can still exist, but they should be treated as runtime
 tuning and not as the authoritative source of dbrain prompt or sampler parity.
 
 ### Summary And Research Flow
@@ -249,7 +262,7 @@ Extend `internal/summarizecli`:
 - Send requests to `<lmstudio.base_url>/chat/completions`.
 - Use the existing `messages` shape with dbrain's system prompt plus user
   content.
-- Send the explicit local inference parameters used for parity runs.
+- Accept optional caller-supplied inference parameters for parity runs.
 - Parse OpenAI-compatible `choices[0].message.content`.
 - Record:
   - `Tool: "lmstudio-direct"`
@@ -268,17 +281,26 @@ Extend `internal/itemcategorize`:
 - Add an LM Studio chat-completions path using the same JSON-only system prompt
   as Ollama/OpenRouter.
 - Use `lmstudio.base_url` and `lmstudio.api_key`.
-- Send the explicit local inference parameters used for parity runs.
+- Accept optional caller-supplied inference parameters for parity runs.
 - Preserve exact provider-qualified model provenance in results.
 
 The existing categorization parser currently receives prefix-stripped provider
-model names. LM Studio must not copy that behavior blindly. For v1,
-`itemcategorize.Result.Model` is the authoritative categorization provenance
-field and must retain the provider-qualified model string, for example:
+model names. That is already inconsistent with the summary path and with
+bakeoff provenance needs. For v1, `itemcategorize.Result.Model` should become
+the authoritative categorization provenance field for provider-qualified model
+strings across all direct providers, not only LM Studio.
 
 ```text
+ollama/dbrain:2026042701
+openrouter/google/gemini-2.5-flash
 lmstudio/qwen/qwen3.6-35b-a3b
 ```
+
+Provider prefixes are still stripped for API requests, but the original
+provider-qualified model string should be passed through to the result. Plain
+unqualified model strings should remain unchanged. This is primarily a
+JSON/reporting fix; categorization currently persists merged tags to the DB, not
+`Result.Model`.
 
 If the implementation adds `Tool` and `ToolVersion` fields to categorization
 results, they should mirror the summary path, for example `lmstudio-direct` and
@@ -322,7 +344,7 @@ There are two different bakeoff procedures:
    same time. Compare the resulting reports side by side.
 
 Use the LM Studio model id returned by `/v1/models`, not necessarily the model
-key passed to `lms load`. On the current machine that id is
+key passed to `lms load`. In the observed local setup that id is
 `qwen/qwen3.6-35b-a3b`, but examples should require substituting the confirmed
 API model id:
 
@@ -331,6 +353,7 @@ go run ./cmd/devtools/model_bakeoff \
   --mode source-summary \
   --lookup <representative-src-key> \
   --model ollama/dbrain:2026042701 \
+  --parity-preset dbrain-modelfile \
   --timeout 5m \
   --output /tmp/dbrain-source-summary-ollama.md
 
@@ -338,6 +361,7 @@ go run ./cmd/devtools/model_bakeoff \
   --mode source-summary \
   --lookup <representative-src-key> \
   --model lmstudio/<api-model-id-from-v1-models> \
+  --parity-preset dbrain-modelfile \
   --timeout 5m \
   --output /tmp/dbrain-source-summary-lmstudio.md
 ```
@@ -348,20 +372,35 @@ source key and for `categorize-item` using a representative item key.
 The report should make provider/runtime differences obvious:
 
 - model string
+- provider and stripped API model id
 - status
 - duration
 - output characters
 - error message
 - baseline overlap
 - raw response snippet where already available
-- sampler parameters sent by dbrain
-- runtime context where available, including LM Studio model id and context
-  length
+- requested, sent, and omitted sampler parameters
+- effective prompt-parity status
+- reasoning/think mode status
+- runtime context where available, including LM Studio model id, Ollama model
+  id, context length, and whether runtime context could not be collected
+
+This requires changes in `internal/modelbakeoff`, not only
+`cmd/devtools/model_bakeoff`:
+
+- Bump `SchemaVersion` from `model_bakeoff.v1` to `model_bakeoff.v2`.
+- Extend `ModelRun` with provider, API model id, parameter, prompt-parity, and
+  runtime-context fields.
+- Add `--parity-preset`, initially accepting `none` and `dbrain-modelfile`.
+- Populate the fields from the provider parser, the request-building path, and
+  read-only runtime probes where available.
+- Keep runtime probes optional and non-fatal. CI/unit tests should use fake
+  provider context; normal tests must not require local LM Studio or Ollama.
 
 The testing procedure should be serialized:
 
 1. Capture `ollama ps`.
-2. Capture `/Users/darron/.lmstudio/bin/lms ps`.
+2. Capture `lms ps`.
 3. Confirm the LM Studio API model id with `curl -s http://localhost:1234/v1/models`.
 4. Run one provider/model path at a time for timing and quality comparisons.
 5. Avoid running two heavyweight local models concurrently unless that is the
@@ -374,16 +413,17 @@ The testing procedure should be serialized:
 Document a manual LM Studio setup path:
 
 ```sh
-/Users/darron/.lmstudio/bin/lms server status
-/Users/darron/.lmstudio/bin/lms ps
-/Users/darron/.lmstudio/bin/lms ls
-/Users/darron/.lmstudio/bin/lms load <model_key_from_lms_ls> --identifier qwen/qwen3.6-35b-a3b --context-length 65536 --gpu max
+lms server status
+lms ps
+lms ls
+lms load <model_key_from_lms_ls> --identifier qwen/qwen3.6-35b-a3b --context-length 65536 --gpu max
 curl -s http://localhost:1234/v1/models
 ```
 
 The exact `lms load` model key may differ from the API identifier shown by
 `/v1/models`, so documentation should tell the operator to use `lms ls` and
 `curl -s http://localhost:1234/v1/models` to confirm the actual API model id.
+If `lms` is not on `PATH`, use the installation-specific CLI path.
 
 No dbrain command should run `lms load` implicitly in v1.
 
@@ -412,13 +452,18 @@ Unit tests:
   - URL path is `/v1/chat/completions`
   - model id has provider prefix stripped
   - system prompt is present
-  - local inference parameters are present when parity defaults are enabled
+  - optional parity inference parameters are present only when supplied by the
+    caller
   - authorization header is set when configured
   - result records `lmstudio-direct` provenance
 - Send an item/source categorization request to a fake server and assert JSON
   parsing and provider-qualified `Result.Model` provenance.
-- Assert categorization does not regress to passing prefix-stripped LM Studio
-  model ids into `parseCategorizationJSON`.
+- Assert categorization does not regress to passing prefix-stripped provider
+  model ids into `parseCategorizationJSON` for `ollama/*`, `openrouter/*`, or
+  `lmstudio/*`.
+- Assert bakeoff schema `model_bakeoff.v2` includes provider, API model id,
+  requested/sent/omitted parameters, prompt-parity status, reasoning/think mode
+  status, and runtime-context fields.
 - Assert OpenRouter preflight does not fire for `lmstudio/*`.
 - Assert unsupported image categorization returns a clear error if image support
   is not implemented.
@@ -427,9 +472,18 @@ Implementation verification:
 
 - Verify Ollama `Modelfile` `SYSTEM` plus request-level `system` behavior before
   running final bakeoffs, and record the result in docs or implementation notes.
-- Confirm LM Studio accepts the explicit sampler fields that dbrain sends. Any
-  unsupported parity field must be omitted from both runtimes or called out in
-  the bakeoff report.
+- Confirm LM Studio accepts the explicit sampler fields that dbrain sends for
+  parity runs. Any unsupported parity field must be omitted from both runtimes
+  or called out in the bakeoff report.
+- Confirm reasoning/think behavior for the selected LM Studio model. Ollama
+  direct paths currently send `think: false`; LM Studio parity runs need an
+  equivalent control when available, or the report must label the comparison as
+  non-strict for reasoning mode.
+- Confirm context-window parity or label it as non-strict. The current LM Studio
+  setup uses context `65536`; the effective Ollama context for
+  `dbrain:2026042701` must be recorded or the report must say it is unknown.
+- Do not use provider-specific JSON mode or structured-output features on only
+  one side of a parity categorization bakeoff.
 
 Read-only live smoke checks:
 
@@ -440,6 +494,7 @@ go run ./cmd/devtools/model_bakeoff \
   --mode source-summary \
   --lookup <representative-src-key> \
   --model lmstudio/<api-model-id-from-v1-models> \
+  --parity-preset dbrain-modelfile \
   --timeout 5m \
   --output /tmp/dbrain-source-summary-lmstudio.md
 ```
@@ -490,12 +545,17 @@ Documentation should answer the Modelfile question directly:
 - A user can set `categorize.model: lmstudio/qwen/qwen3.6-35b-a3b` and get
   text categorization through LM Studio.
 - Stored summary/categorization provenance clearly says LM Studio, not Ollama
-  or OpenRouter; categorization `Result.Model` keeps the `lmstudio/` prefix.
-- Direct local Ollama and LM Studio parity runs send explicit sampler parameters
-  or clearly label any unsupported/omitted parameter.
+  or OpenRouter; categorization `Result.Model` keeps provider prefixes for
+  provider-qualified `ollama/*`, `openrouter/*`, and `lmstudio/*` models.
+- Direct local Ollama and LM Studio parity runs record requested, sent, and
+  omitted sampler parameters. Strict-fair reports only claim parity for
+  parameters actually sent with equivalent semantics on both sides.
 - The implementation verifies and documents whether Ollama request-level system
   prompts override or compose with the `Modelfile` `SYSTEM`.
 - `model_bakeoff` can run LM Studio model strings in all existing modes.
+- `model_bakeoff` emits `model_bakeoff.v2` reports with provider, API model id,
+  requested/sent/omitted parameters, prompt-parity status, reasoning/think mode
+  status, and runtime-context fields.
 - The documented fair 35B procedure uses isolated one-provider runs; mixed
   multi-model invocations are labeled as functional smoke tests unless memory
   co-residency is explicitly intended.
@@ -511,6 +571,15 @@ Documentation should answer the Modelfile question directly:
 - Some sampler parameters may not be accepted by both runtimes. Bakeoff reports
   must capture what dbrain actually sent and avoid claiming strict parity when
   request parameters differ.
+- The Ollama model artifact and LM Studio model artifact may not be byte-identical
+  even when their names look equivalent. Reports should distinguish runtime
+  comparison from artifact-identity comparison.
+- Reasoning/think mode and context-window differences can dominate latency and
+  output shape. Strict-fair reports must label those as equivalent, unknown, or
+  non-strict.
+- Provider-specific JSON/structured-output modes can bias categorization
+  reliability. Do not use them for one side of a parity bakeoff unless both
+  paths have equivalent structured-output support.
 - LM Studio may accept but mishandle image payloads for a text model. OCR and
   image categorization must require explicit verification.
 - Hidden per-model LM Studio prompt defaults could bias tests. The recommended

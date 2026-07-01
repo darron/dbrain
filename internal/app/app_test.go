@@ -2795,6 +2795,32 @@ func TestExtractCommandHelpIncludesLinksAndSources(t *testing.T) {
 	}
 }
 
+func TestCategorizeCommandHelpIncludesLMStudioModels(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"categorize", "item", "--help"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "lmstudio/*") {
+		t.Fatalf("expected categorize help output to contain %q, got %q", "lmstudio/*", output)
+	}
+	if !strings.Contains(output, "omlx/*") {
+		t.Fatalf("expected categorize help output to contain %q, got %q", "omlx/*", output)
+	}
+	if !strings.Contains(output, "configured alias") {
+		t.Fatalf("expected categorize help output to contain %q, got %q", "configured alias", output)
+	}
+}
+
 func TestTranscribeCommandHelpIncludesXMedia(t *testing.T) {
 	t.Parallel()
 

@@ -65,3 +65,57 @@ func TestRenderMarkdownIncludesSummaryAndCategorizationRuns(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderMarkdownIncludesProviderParityAndRuntimeContext(t *testing.T) {
+	local := true
+	result := Result{
+		SchemaVersion: SchemaVersion,
+		Mode:          ModeSourceSummary,
+		Models:        []string{"lmstudio/qwen/qwen3.6-35b-a3b"},
+		Targets: []TargetRun{
+			{
+				Lookup:    "src:test",
+				SourceKey: "src:test",
+				Title:     "Test source",
+				Runs: []ModelRun{
+					{
+						Model:               "lmstudio/qwen/qwen3.6-35b-a3b",
+						Provider:            "lmstudio",
+						APIModel:            "qwen/qwen3.6-35b-a3b",
+						Transport:           "openai_chat_completions",
+						Local:               &local,
+						Status:              "ok",
+						RequestedParams:     map[string]any{"temperature": 0.6, "min_p": 0.0},
+						SentParams:          map[string]any{"temperature": 0.6},
+						OmittedParams:       map[string]string{"min_p": "not documented"},
+						ParamStrictness:     "non-strict",
+						PromptParityStatus:  "unknown",
+						ReasoningModeStatus: "ollama-think-disabled-lmstudio-unknown",
+						RuntimeContext: RuntimeContext{
+							Status: "not-collected",
+						},
+						Summary: &model.SummaryResult{Text: "### What It Is\n\nA concise summary."},
+					},
+				},
+			},
+		},
+	}
+
+	report := RenderMarkdown(result, 0)
+	for _, expected := range []string{
+		"Schema: `model_bakeoff.v2`",
+		"Provider: `lmstudio`",
+		"API model: `qwen/qwen3.6-35b-a3b`",
+		"Transport: `openai_chat_completions`",
+		"Local backend: `true`",
+		"Param strictness: `non-strict`",
+		"Prompt parity: `unknown`",
+		"Reasoning mode: `ollama-think-disabled-lmstudio-unknown`",
+		"Runtime context: `not-collected`",
+		"`min_p`: not documented",
+	} {
+		if !strings.Contains(report, expected) {
+			t.Fatalf("expected report to contain %q, got:\n%s", expected, report)
+		}
+	}
+}

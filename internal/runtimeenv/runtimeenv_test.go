@@ -158,6 +158,45 @@ http:
 	}
 }
 
+func TestConfigMapReadsLLMBackends(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeConfig(t, root, `
+llm_backends:
+  localai:
+    transport: openai_chat_completions
+    base_url: http://127.0.0.1:8080/v1
+    api_key: env:LOCALAI_API_KEY
+    local: true
+`)
+
+	got, ok := ConfigMap(root, "llm_backends")
+	if !ok {
+		t.Fatal("expected llm_backends config map")
+	}
+	localai, ok := got["localai"].(map[string]any)
+	if !ok {
+		t.Fatalf("localai map missing: %#v", got["localai"])
+	}
+	if localai["transport"] != "openai_chat_completions" {
+		t.Fatalf("transport = %#v", localai["transport"])
+	}
+	if localai["api_key"] != "env:LOCALAI_API_KEY" {
+		t.Fatalf("api_key ref = %#v", localai["api_key"])
+	}
+}
+
+func TestConfigMapMissingPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeConfig(t, root, `summary: {model: ""}`)
+	if got, ok := ConfigMap(root, "llm_backends"); ok || got != nil {
+		t.Fatalf("ConfigMap missing path = %#v, %v", got, ok)
+	}
+}
+
 func TestEnvironmentOverridesConfig(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, `

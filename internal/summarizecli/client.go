@@ -20,6 +20,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Length) == "" {
 		opts.Length = "medium"
 	}
+	if err := unsupportedProviderModelError(opts.Model); err != nil {
+		return Result{}, err
+	}
 	var err error
 	opts.Env, err = envWithRuntimeConfig(ctx, opts.RootDir, opts.Env, opts.Model)
 	if err != nil {
@@ -29,9 +32,13 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		opts.Language = summaryLanguageWithEnv(opts.Env)
 	}
 
+	directSummary, err := usesDirectSummaryForRoot(opts.RootDir, opts.Model)
+	if err != nil {
+		return Result{}, err
+	}
 	if inputText, ok, err := localSummaryInput(opts); err != nil {
 		return Result{}, err
-	} else if ok && opts.Summarize && UsesDirectSummary(opts.Model) {
+	} else if ok && opts.Summarize && directSummary {
 		return runDirectSummary(ctx, opts, inputText)
 	}
 

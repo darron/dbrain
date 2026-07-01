@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/darron/dbrain/internal/llmprovider"
 )
 
 func TestPreferredCLIProviderUsesCLIState(t *testing.T) {
@@ -106,6 +108,29 @@ printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"https://e
 	if string(data) != "2" {
 		t.Fatalf("expected 2 attempts, got %q", string(data))
 	}
+}
+
+type chatCompletionsRequest struct {
+	Model         string        `json:"model"`
+	Messages      []chatMessage `json:"messages"`
+	Stream        bool          `json:"stream"`
+	Temperature   *float64      `json:"temperature,omitempty"`
+	TopP          *float64      `json:"top_p,omitempty"`
+	TopK          *int          `json:"top_k,omitempty"`
+	RepeatPenalty *float64      `json:"repeat_penalty,omitempty"`
+}
+
+type ollamaChatRequest struct {
+	Model    string         `json:"model"`
+	Messages []chatMessage  `json:"messages"`
+	Stream   bool           `json:"stream"`
+	Think    *bool          `json:"think,omitempty"`
+	Options  map[string]any `json:"options,omitempty"`
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 func TestRunCLIHonorsTimeout(t *testing.T) {
@@ -339,10 +364,59 @@ func TestRunDirectOpenRouterSummaryHonorsTimeout(t *testing.T) {
 	}
 }
 
+func TestRunPlainSummaryModelStillUsesExternalSummarizeCLI(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-plain-cli"
+  exit 0
+fi
+prev=""
+model=""
+for arg in "$@"; do
+  if [ "$prev" = "--model" ]; then
+    model="$arg"
+  fi
+  prev="$arg"
+done
+if [ "$model" != "google/gemini-plain" ]; then
+  echo "unexpected model: $model" >&2
+  exit 1
+fi
+printf '%s\n' '{"input":{"model":"google/gemini-plain"},"extracted":{"url":"README.md","title":"Readme","description":"","siteName":"","content":"body"},"summary":"external cli summary"}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Binary:    binary,
+		Input:     "README.md",
+		Summarize: true,
+		Model:     "google/gemini-plain",
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Tool != ToolName || result.Summary.ToolVersion != "test-plain-cli" {
+		t.Fatalf("expected external summarize CLI tool, got %+v", result.Summary)
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return fn(r)
+}
+
+func requireJSONNumberOption(t *testing.T, options map[string]any, key string, want float64) {
+	t.Helper()
+	got, ok := options[key].(float64)
+	if !ok || got != want {
+		t.Fatalf("options[%s] = %#v, want %v", key, options[key], want)
+	}
 }
 
 func TestRunTranslatesOllamaModelToOpenAICompatibleRequest(t *testing.T) {
@@ -588,6 +662,9 @@ openai:
   use_chat_completions: true
 openrouter:
   api_key: router-key
+lmstudio:
+  base_url: http://10.0.0.7:1234
+  api_key: studio-key
 summary:
   language: English
 `), 0o600); err != nil {
@@ -604,6 +681,8 @@ summary:
 	t.Setenv("OPENAI_USE_CHAT_COMPLETIONS", "")
 	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("DBRAIN_LMSTUDIO_BASE_URL", "")
+	t.Setenv("DBRAIN_LMSTUDIO_API_KEY", "")
 	t.Setenv("DBRAIN_SUMMARY_LANGUAGE", "")
 	t.Setenv("DBRAIN_OUTPUT_LANGUAGE", "")
 	t.Setenv("SUMMARIZE_LANGUAGE", "")
@@ -634,6 +713,17 @@ summary:
 	}
 	if got := env["DBRAIN_OPENROUTER_API_KEY"]; got != "router-key" {
 		t.Fatalf("expected OpenRouter API key from config, got %q", got)
+	}
+
+	env, err = envWithRuntimeConfig(context.Background(), root, nil, "lmstudio/qwen/qwen3.6-35b-a3b")
+	if err != nil {
+		t.Fatalf("envWithRuntimeConfig lmstudio: %v", err)
+	}
+	if got := env["DBRAIN_LMSTUDIO_BASE_URL"]; got != "http://10.0.0.7:1234" {
+		t.Fatalf("expected LM Studio base URL from config, got %q", got)
+	}
+	if got := env["DBRAIN_LMSTUDIO_API_KEY"]; got != "studio-key" {
+		t.Fatalf("expected LM Studio API key from config, got %q", got)
 	}
 
 	env, err = envWithRuntimeConfig(context.Background(), root, nil, "openai/gpt-test")
@@ -726,5 +816,353 @@ func TestResolveModelAndEnvDoesNotMutateInputMap(t *testing.T) {
 	}
 	if got := strings.TrimSpace(input["OPENAI_BASE_URL"]); got != "" {
 		t.Fatalf("expected input map to remain untouched, got OPENAI_BASE_URL=%q", got)
+	}
+}
+
+func TestRunDirectLMStudioSummaryForLocalFileInput(t *testing.T) {
+	var captured chatCompletionsRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "http://lmstudio.test/v1/chat/completions" {
+			t.Fatalf("unexpected URL: %s", r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-lmstudio-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `{"model":"qwen/qwen3.6-35b-a3b","choices":[{"message":{"role":"assistant","content":"direct lm studio summary"}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(respBody))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = oldClient })
+
+	t.Setenv("DBRAIN_LMSTUDIO_BASE_URL", "http://lmstudio.test")
+	t.Setenv("DBRAIN_LMSTUDIO_API_KEY", "test-lmstudio-key")
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Title: Example\n\nBody content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "lmstudio/qwen/qwen3.6-35b-a3b",
+		Prompt:    "System prompt",
+		Length:    "medium",
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Text != "direct lm studio summary" {
+		t.Fatalf("unexpected summary text: %q", result.Summary.Text)
+	}
+	if result.Summary.Model != "lmstudio/qwen/qwen3.6-35b-a3b" {
+		t.Fatalf("unexpected summary model: %q", result.Summary.Model)
+	}
+	if result.Summary.Tool != DirectLMStudioToolName {
+		t.Fatalf("unexpected summary tool: %q", result.Summary.Tool)
+	}
+	if result.Summary.ToolVersion != directLMStudioVersion {
+		t.Fatalf("unexpected summary tool version: %q", result.Summary.ToolVersion)
+	}
+	if captured.Model != "qwen/qwen3.6-35b-a3b" {
+		t.Fatalf("unexpected model sent to LM Studio: %q", captured.Model)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", len(captured.Messages))
+	}
+	if captured.Messages[0].Role != "system" || !strings.Contains(captured.Messages[0].Content, "System prompt") {
+		t.Fatalf("unexpected system prompt: %+v", captured.Messages[0])
+	}
+}
+
+func TestRunDirectOMLXSummaryForLocalFileInput(t *testing.T) {
+	var captured chatCompletionsRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "http://omlx.test/v1/chat/completions" {
+			t.Fatalf("unexpected URL: %s", r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("expected no authorization header, got %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `{"model":"qwen3.5-coder","choices":[{"message":{"role":"assistant","content":"direct omlx summary"}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(respBody))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = oldClient })
+
+	t.Setenv("DBRAIN_OMLX_BASE_URL", "http://omlx.test")
+	t.Setenv("DBRAIN_OMLX_API_KEY", "")
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Title: Example\n\nBody content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "omlx/qwen3.5-coder",
+		Prompt:    "System prompt",
+		Length:    "medium",
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Text != "direct omlx summary" {
+		t.Fatalf("unexpected summary text: %q", result.Summary.Text)
+	}
+	if result.Summary.Model != "omlx/qwen3.5-coder" {
+		t.Fatalf("unexpected summary model: %q", result.Summary.Model)
+	}
+	if result.Summary.Tool != llmprovider.ToolOMLXDirect {
+		t.Fatalf("unexpected summary tool: %q", result.Summary.Tool)
+	}
+	if result.Summary.ToolVersion != llmprovider.ToolVersionOMLXDirect {
+		t.Fatalf("unexpected summary tool version: %q", result.Summary.ToolVersion)
+	}
+	if captured.Model != "qwen3.5-coder" {
+		t.Fatalf("unexpected model sent to oMLX: %q", captured.Model)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", len(captured.Messages))
+	}
+	if captured.Messages[0].Role != "system" || !strings.Contains(captured.Messages[0].Content, "System prompt") {
+		t.Fatalf("unexpected system prompt: %+v", captured.Messages[0])
+	}
+}
+
+func TestRunDirectConfiguredAliasSummaryForLocalFileInput(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+llm_backends:
+  localai:
+    base_url: http://localai.test/v1
+    transport: openai_chat_completions
+    local: true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var captured chatCompletionsRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "http://localai.test/v1/chat/completions" {
+			t.Fatalf("unexpected URL: %s", r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("expected no authorization header, got %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `{"model":"test-model","choices":[{"message":{"role":"assistant","content":"direct alias summary"}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(respBody))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = oldClient })
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Title: Example\n\nBody content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		RootDir:   root,
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "localai/test-model",
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Summary.Text != "direct alias summary" {
+		t.Fatalf("unexpected summary text: %q", result.Summary.Text)
+	}
+	if result.Summary.Model != "localai/test-model" {
+		t.Fatalf("unexpected summary model: %q", result.Summary.Model)
+	}
+	if result.Summary.Tool != "localai-direct" {
+		t.Fatalf("unexpected summary tool: %q", result.Summary.Tool)
+	}
+	if result.Summary.ToolVersion != "localai-direct-v1" {
+		t.Fatalf("unexpected summary tool version: %q", result.Summary.ToolVersion)
+	}
+	if captured.Model != "test-model" {
+		t.Fatalf("unexpected model sent to alias backend: %q", captured.Model)
+	}
+}
+
+func TestRunConfiguredAliasRegistryErrorDoesNotFallBackToCLI(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+llm_backends:
+  localai:
+    transport: openai_chat_completions
+    local: true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	binary := filepath.Join(root, "summarize")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "test-1.0.0"
+  exit 0
+fi
+printf '%s\n' '{"input":{"model":"localai/test-model"},"extracted":{"url":"README.md","title":"Readme","description":"","siteName":"","content":"body"},"summary":"unexpected cli fallback"}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Body content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	_, err := Run(context.Background(), Options{
+		RootDir:   root,
+		Binary:    binary,
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "localai/test-model",
+		Timeout:   2 * time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "llm_backends.localai base_url is required") {
+		t.Fatalf("expected alias config error, got %v", err)
+	}
+}
+
+func TestRunDirectOllamaSummaryUsesOptionalParityParams(t *testing.T) {
+	var captured ollamaChatRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `{"message":{"content":"summary"}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(respBody))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = oldClient })
+
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", "http://ollama.test")
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Body content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	params := llmprovider.DbrainParityForProvider(llmprovider.ProviderOllama)
+	_, err := Run(context.Background(), Options{
+		Input:           inputPath,
+		Summarize:       true,
+		Model:           "ollama/qwen3.6:35b",
+		Timeout:         2 * time.Second,
+		InferenceParams: params,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(captured.Options) != 5 {
+		t.Fatalf("expected all Modelfile options, got %#v", captured.Options)
+	}
+	requireJSONNumberOption(t, captured.Options, "temperature", 0.6)
+	requireJSONNumberOption(t, captured.Options, "top_p", 0.95)
+	requireJSONNumberOption(t, captured.Options, "top_k", 20)
+	requireJSONNumberOption(t, captured.Options, "min_p", 0)
+	requireJSONNumberOption(t, captured.Options, "repeat_penalty", 1)
+}
+
+func TestRunDirectLMStudioSummaryUsesOptionalParityParams(t *testing.T) {
+	var captured chatCompletionsRequest
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `{"choices":[{"message":{"content":"summary"}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(respBody))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = oldClient })
+
+	t.Setenv("DBRAIN_LMSTUDIO_BASE_URL", "http://lmstudio.test/v1")
+
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Body content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	params := llmprovider.DbrainParityForProvider(llmprovider.ProviderLMStudio)
+	_, err := Run(context.Background(), Options{
+		Input:           inputPath,
+		Summarize:       true,
+		Model:           "lmstudio/qwen/qwen3.6-35b-a3b",
+		Timeout:         2 * time.Second,
+		InferenceParams: params,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if captured.Temperature == nil || *captured.Temperature != 0.6 {
+		t.Fatalf("temperature = %#v, want 0.6", captured.Temperature)
+	}
+	if captured.TopP == nil || *captured.TopP != 0.95 {
+		t.Fatalf("top_p = %#v, want 0.95", captured.TopP)
+	}
+	if captured.TopK == nil || *captured.TopK != 20 {
+		t.Fatalf("top_k = %#v, want 20", captured.TopK)
+	}
+	if captured.RepeatPenalty == nil || *captured.RepeatPenalty != 1.0 {
+		t.Fatalf("repeat_penalty = %#v, want 1.0", captured.RepeatPenalty)
+	}
+}
+
+func TestRunRejectsEmptyLMStudioModel(t *testing.T) {
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Body content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	_, err := Run(context.Background(), Options{
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "lmstudio/",
+		Timeout:   2 * time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported LM Studio model "lmstudio/"`) {
+		t.Fatalf("expected unsupported LM Studio model error, got %v", err)
+	}
+}
+
+func TestRunRejectsEmptyOMLXModel(t *testing.T) {
+	inputDir := t.TempDir()
+	inputPath := filepath.Join(inputDir, "summary-input.md")
+	if err := os.WriteFile(inputPath, []byte("Body content"), 0o644); err != nil {
+		t.Fatalf("write summary input: %v", err)
+	}
+
+	_, err := Run(context.Background(), Options{
+		Input:     inputPath,
+		Summarize: true,
+		Model:     "omlx/",
+		Timeout:   2 * time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported oMLX model "omlx/"`) {
+		t.Fatalf("expected unsupported oMLX model error, got %v", err)
 	}
 }

@@ -40,6 +40,39 @@ func loadConfigValueOK(rootDir string, key string) (string, bool) {
 	return "", false
 }
 
+// ConfigMap returns a shallow copy of a nested YAML map from the runtime config.
+// It intentionally does not resolve secret references.
+func ConfigMap(rootDir string, path ...string) (map[string]any, bool) {
+	if strings.TrimSpace(rootDir) == "" || len(path) == 0 {
+		return nil, false
+	}
+	cfg, ok := loadConfigForRoot(rootDir)
+	if !ok {
+		return nil, false
+	}
+	var current any = cfg
+	for _, part := range path {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		next, ok := lookupMapValue(m, part)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	m, ok := current.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]any, len(m))
+	for key, value := range m {
+		out[key] = value
+	}
+	return out, true
+}
+
 func loadConfigList(rootDir string, key string) ([]string, bool) {
 	if strings.TrimSpace(rootDir) == "" || strings.TrimSpace(key) == "" {
 		return nil, false

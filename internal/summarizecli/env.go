@@ -37,40 +37,12 @@ func ollamaBaseURLWithEnv(env map[string]string) string {
 	return normalizeBaseURLWithV1(value)
 }
 
-func ollamaNativeBaseURLWithEnv(env map[string]string) string {
-	return strings.TrimSuffix(ollamaBaseURLWithEnv(env), "/v1")
-}
-
 func ollamaAPIKeyWithEnv(env map[string]string) string {
 	value := firstEnvValue(env, "DBRAIN_OLLAMA_API_KEY", "OLLAMA_API_KEY", "OPENAI_API_KEY")
 	if value == "" {
 		value = defaultOllamaAPIKey
 	}
 	return value
-}
-
-func openRouterBaseURLWithEnv(env map[string]string) string {
-	value := firstEnvValue(env, "DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL")
-	if value == "" {
-		value = defaultOpenRouterBaseURL
-	}
-	return normalizeBaseURLWithPath(value, "/api/v1", defaultOpenRouterBaseURL)
-}
-
-func openRouterAPIKeyWithEnv(env map[string]string) string {
-	return firstEnvValue(env, "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
-}
-
-func openRouterRefererWithEnv(env map[string]string) string {
-	return firstEnvValue(env, "DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER")
-}
-
-func openRouterTitleWithEnv(env map[string]string) string {
-	return firstEnvValue(env, "DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE")
-}
-
-func userAgentWithEnv(env map[string]string) string {
-	return firstEnvValue(env, "DBRAIN_USER_AGENT")
 }
 
 func summaryLanguageWithEnv(env map[string]string) string {
@@ -125,6 +97,8 @@ func envWithRuntimeConfig(ctx context.Context, rootDir string, env map[string]st
 		{"DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"},
 		{"DBRAIN_OPENROUTER_REFERER", "OPENROUTER_HTTP_REFERER"},
 		{"DBRAIN_OPENROUTER_TITLE", "OPENROUTER_X_TITLE"},
+		{"DBRAIN_LMSTUDIO_BASE_URL"},
+		{"DBRAIN_LMSTUDIO_API_KEY"},
 		{"DBRAIN_USER_AGENT"},
 		{"DBRAIN_SUMMARY_LANGUAGE", "DBRAIN_OUTPUT_LANGUAGE", "SUMMARIZE_LANGUAGE"},
 	} {
@@ -167,6 +141,11 @@ func runtimeValue(ctx context.Context, rootDir string, model string, keys ...str
 			return runtimeenv.FirstNonEmptySecret(ctx, rootDir, keys...)
 		case "DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY":
 			if _, ok := parseOpenRouterModel(model); !ok {
+				return "", nil
+			}
+			return runtimeenv.FirstNonEmptySecret(ctx, rootDir, keys...)
+		case "DBRAIN_LMSTUDIO_API_KEY":
+			if _, ok := parseLMStudioModel(model); !ok {
 				return "", nil
 			}
 			return runtimeenv.FirstNonEmptySecret(ctx, rootDir, keys...)
