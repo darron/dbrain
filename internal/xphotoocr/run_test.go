@@ -84,6 +84,46 @@ func TestRunHostedOCRWritesItemOCRAndNote(t *testing.T) {
 	}
 }
 
+func TestRunHostedOCRUsesConfigWithoutLocalBackendConfig(t *testing.T) {
+	cfg, st, _ := seedDownloadedPhotoItem(t, "x:test-photo-hosted-no-local-backend", "2049000000000000999")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer hosted-key" {
+			t.Fatalf("auth = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"google/gemini-3.1-flash-lite-preview","choices":[{"message":{"content":"Hosted OCR still works."}}]}`))
+	}))
+	defer server.Close()
+
+	if err := os.WriteFile(filepath.Join(cfg.RootDir, "config.yaml"), []byte(`
+openrouter:
+  base_url: `+server.URL+`
+  api_key: hosted-key
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("DBRAIN_OPENROUTER_BASE_URL", "")
+	t.Setenv("OPENROUTER_BASE_URL", "")
+	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Limit:   10,
+		Model:   "openrouter/google/gemini-3.1-flash-lite-preview",
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.HostedAttempts != 1 || stats.PhotosOCRed != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
 func TestRunOllamaOCRWritesItemOCRAndNote(t *testing.T) {
 	t.Parallel()
 

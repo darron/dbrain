@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/categoryvocab"
+	"github.com/darron/dbrain/internal/llmprovider"
 	"github.com/darron/dbrain/internal/model"
 )
 
@@ -12,6 +13,8 @@ const (
 	defaultOllamaBase     = "http://127.0.0.1:11434"
 	defaultOllamaKey      = "ollama"
 	defaultOpenRouterBase = "https://openrouter.ai/api/v1"
+	defaultLMStudioBase   = "http://127.0.0.1:1234/v1"
+	defaultLMStudioKey    = "lm-studio"
 	defaultTimeout        = 90 * time.Second
 	maxArticleChars       = 3000
 	maxTranscriptChars    = 3000
@@ -40,20 +43,28 @@ Rules:
 
 // Options configures a categorize run.
 type Options struct {
-	Model           string
-	Timeout         time.Duration
-	Concurrency     int
-	Limit           int
-	Force           bool
-	Apply           bool // save result back to user_tags
-	IncludeImages   bool // embed local or archived photos as base64 for vision models
-	OpenRouterBase  string
-	OpenRouterKey   string
-	OpenRouterRef   string
-	OpenRouterTitle string
-	UserAgent       string
-	OllamaBase      string
-	OllamaKey       string
+	RootDir           string
+	Model             string
+	Timeout           time.Duration
+	Concurrency       int
+	Limit             int
+	Force             bool
+	Apply             bool // save result back to user_tags
+	IncludeImages     bool // embed local or archived photos as base64 for vision models
+	OpenRouterBase    string
+	OpenRouterKey     string
+	OpenRouterRef     string
+	OpenRouterTitle   string
+	UserAgent         string
+	OllamaBase        string
+	OllamaKey         string
+	LMStudioBase      string
+	LMStudioKey       string
+	ProviderOverrides map[llmprovider.Provider]llmprovider.ProviderOverrides
+	// InferenceParams carries optional provider-specific sampler parameters
+	// used by parity-aware bakeoff runs. Normal categorize callers leave
+	// this empty so provider/runtime defaults apply.
+	InferenceParams llmprovider.ParityParams
 	// R2/S3 credentials for fetching archived photos not present locally.
 	S3Endpoint  string
 	S3Region    string
@@ -101,55 +112,4 @@ type Stats struct {
 	Applied   int `json:"applied"`
 	Skipped   int `json:"skipped"`
 	Errors    int `json:"errors"`
-}
-
-// chatContent is either a plain string (text-only) or a []contentPart (multimodal).
-type contentPart struct {
-	Type     string    `json:"type"`
-	Text     string    `json:"text,omitempty"`
-	ImageURL *imageURL `json:"image_url,omitempty"`
-}
-
-type imageURL struct {
-	URL string `json:"url"`
-}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"` // string or []contentPart
-}
-
-type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-}
-
-type chatResponse struct {
-	Model   string `json:"model"`
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-}
-
-type ollamaMessage struct {
-	Role    string   `json:"role"`
-	Content string   `json:"content"`
-	Images  []string `json:"images,omitempty"`
-}
-
-type ollamaRequest struct {
-	Model    string          `json:"model"`
-	Messages []ollamaMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
-	Think    *bool           `json:"think,omitempty"`
-}
-
-type ollamaResponse struct {
-	Model   string `json:"model"`
-	Message struct {
-		Content string `json:"content"`
-	} `json:"message"`
 }

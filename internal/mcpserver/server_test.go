@@ -2476,6 +2476,68 @@ func TestServerResearchPackTool(t *testing.T) {
 	}
 }
 
+func TestResearchPackPlannerModelOMLXPassesThroughMCP(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	var hit bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"concepts\":[{\"key\":\"local_models\",\"preferred\":\"local models\",\"terms\":[\"local models\"],\"required\":true}],\"query_variants\":[{\"query\":\"local models\",\"reason\":\"direct question term\"}]}"}}]}`))
+	}))
+	defer server.Close()
+
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+omlx:
+  base_url: `+server.URL+`/v1
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	mcp := New(cfg, st)
+	result, err := mcp.toolResearchPack(context.Background(), json.RawMessage(`{
+		"question": "What do I know about local models?",
+		"limit": 2,
+		"max_chars_per_doc": 120,
+		"planner_model": "omlx/qwen3.5-coder",
+		"use_model_planner": true,
+		"include_topic_brief": false,
+		"disable_semantic": true
+	}`))
+	if err != nil {
+		t.Fatalf("toolResearchPack: %v", err)
+	}
+	if !hit {
+		t.Fatal("expected oMLX planner endpoint to be called")
+	}
+	pack, ok := result["structuredContent"].(ResearchPack)
+	if !ok {
+		t.Fatalf("structuredContent = %#v", result["structuredContent"])
+	}
+	if pack.SchemaVersion != "research_pack.v1" {
+		t.Fatalf("schema = %q", pack.SchemaVersion)
+	}
+	if pack.QueryPlan.PlannerModel != "omlx/qwen3.5-coder" || pack.QueryPlan.Planner != "model_assisted" {
+		t.Fatalf("query plan = %#v", pack.QueryPlan)
+	}
+}
+
 func TestServerResearchPackInfersCollectorQuestionAndTagAlias(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

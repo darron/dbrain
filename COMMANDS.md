@@ -624,6 +624,8 @@ dbrain transcribe x-media --limit 50
 
 Extracts text from downloaded X photos. Hosted OCR defaults to the configured
 OpenRouter/Gemini model, with local fallback support where configured.
+You do not need Ollama, LM Studio, oMLX, or any configured local backend for the
+default OpenRouter/Gemini OCR path.
 
 ```sh
 dbrain ocr x-photos --limit 50
@@ -674,6 +676,45 @@ go run ./cmd/devtools/model_bakeoff \
   --model ollama/qwen3.6:27b \
   --model ollama/gemma4:31b \
   --json > /tmp/dbrain-categorize-source-bakeoff.json
+```
+
+For explicit local-provider parity checks across Ollama, LM Studio, oMLX, or a
+configured OpenAI-compatible alias, pass `--parity-preset dbrain-modelfile`.
+The report records provider, API model, transport, local/hosted flag, and
+parameter strictness. Discover runner-specific model IDs before comparing:
+
+```sh
+ollama list
+curl -s http://localhost:1234/v1/models
+curl -s -H "Authorization: Bearer $DBRAIN_OMLX_API_KEY" http://127.0.0.1:8000/v1/models
+```
+
+Run providers in separate invocations when memory co-residency would bias
+timing:
+
+```sh
+go run ./cmd/devtools/model_bakeoff \
+  --mode source-summary \
+  --lookup "$SOURCE_KEY" \
+  --model lmstudio/qwen/qwen3.6-35b-a3b \
+  --parity-preset dbrain-modelfile \
+  --timeout 5m \
+  --output /tmp/dbrain-source-summary-lmstudio.md
+
+go run ./cmd/devtools/model_bakeoff \
+  --mode source-summary \
+  --lookup "$SOURCE_KEY" \
+  --model ollama/dbrain:2026042701 \
+  --model lmstudio/qwen/qwen3.6-35b-a3b \
+  --model omlx/Qwen3.6-35B-A3B-MLX-4bit \
+  --parity-preset dbrain-modelfile \
+  --output /tmp/dbrain-local-backends.md
+
+go run ./cmd/devtools/model_bakeoff \
+  --mode categorize-source \
+  --lookup "$SOURCE_KEY" \
+  --model localai/test-model \
+  --json > /tmp/dbrain-localai-bakeoff.json
 ```
 
 ### `dbrain import youtube`

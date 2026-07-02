@@ -2,12 +2,12 @@ package itemcategorize
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/darron/dbrain/internal/version"
+	"github.com/darron/dbrain/internal/llmclient"
+	"github.com/darron/dbrain/internal/llmprovider"
+	"github.com/darron/dbrain/internal/runtimeenv"
 )
 
 func effectiveSystemPrompt(opts Options) string {
@@ -18,96 +18,181 @@ func effectiveSystemPrompt(opts Options) string {
 	return systemPrompt + "\n\n" + vocab
 }
 
+func parseLMStudioModel(model string) (string, bool) {
+	ref := llmprovider.ParseModelRef(model)
+	return ref.APIModel, ref.Provider == llmprovider.ProviderLMStudio && ref.ProviderQualified
+}
+
 func callLLM(ctx context.Context, bundle string, photoData [][]byte, opts Options) (Result, error) {
-	if ollamaModel, ok := parseOllamaModel(opts.Model); ok {
-		return callOllama(ctx, bundle, photoData, ollamaModel, opts)
+	if err := unsupportedProviderModelErrorForRoot(opts.RootDir, opts.Model); err != nil {
+		return Result{}, err
 	}
-	if openrouterModel, ok := parseOpenRouterModel(opts.Model); ok {
-		return callOpenRouter(ctx, bundle, photoData, openrouterModel, opts)
-	}
-	// Fall back: treat the model as a plain OpenRouter model name.
-	return callOpenRouter(ctx, bundle, photoData, opts.Model, opts)
-}
-
-func callOllama(ctx context.Context, bundle string, photoData [][]byte, ollamaModel string, opts Options) (Result, error) {
-	think := false
-	sysMsg := ollamaMessage{Role: "system", Content: effectiveSystemPrompt(opts)}
-	userMsg := ollamaMessage{Role: "user", Content: bundle}
-	for _, data := range photoData {
-		userMsg.Images = append(userMsg.Images, base64.StdEncoding.EncodeToString(data))
-	}
-
-	reqBody := ollamaRequest{
-		Model:    ollamaModel,
-		Messages: []ollamaMessage{sysMsg, userMsg},
-		Stream:   false,
-		Think:    &think,
-	}
-
-	endpoint := strings.TrimRight(opts.OllamaBase, "/") + "/api/chat"
-	raw, err := doPost(ctx, endpoint, opts.OllamaKey, nil, reqBody, opts.Timeout)
+	reg, err := llmprovider.RegistryForRoot(opts.RootDir)
 	if err != nil {
-		return Result{}, fmt.Errorf("ollama categorize: %w", err)
-	}
-
-	var resp ollamaResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return Result{}, fmt.Errorf("parse ollama response: %w", err)
-	}
-
-	return parseCategorizationJSON(resp.Message.Content, ollamaModel, opts.Vocab)
-}
-
-func callOpenRouter(ctx context.Context, bundle string, photoData [][]byte, openrouterModel string, opts Options) (Result, error) {
-	if strings.TrimSpace(opts.OpenRouterKey) == "" {
-		return Result{}, fmt.Errorf("OPENROUTER_API_KEY / DBRAIN_OPENROUTER_API_KEY not set")
-	}
-
-	sysMsg := chatMessage{Role: "system", Content: effectiveSystemPrompt(opts)}
-
-	var userContent any
-	if len(photoData) > 0 {
-		parts := []contentPart{{Type: "text", Text: bundle}}
-		for _, data := range photoData {
-			dataURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
-			parts = append(parts, contentPart{
-				Type:     "image_url",
-				ImageURL: &imageURL{URL: dataURL},
-			})
+		if modelHasRegisteredProviderPrefix(opts.RootDir, opts.Model) {
+			return Result{}, err
 		}
-		userContent = parts
 	} else {
-		userContent = bundle
+		ref := reg.ParseModelRef(opts.Model)
+		if ref.ProviderQualified && ref.Spec != nil {
+			return callProvider(ctx, bundle, photoData, ref.Original, ref.Original, opts)
+		}
 	}
+	// Fall back: treat the model as a plain OpenRouter model name. Use the
+	// raw opts.Model for both the API model id and the result provenance.
+	return callOpenRouter(ctx, bundle, photoData, opts.Model, opts.Model, opts)
+}
 
-	reqBody := chatRequest{
-		Model:    openrouterModel,
-		Messages: []chatMessage{sysMsg, {Role: "user", Content: userContent}},
-		Stream:   false,
-	}
-
-	endpoint := strings.TrimRight(opts.OpenRouterBase, "/") + "/chat/completions"
-	headers := map[string]string{}
-	if opts.OpenRouterRef != "" {
-		headers["HTTP-Referer"] = opts.OpenRouterRef
-	}
-	if opts.OpenRouterTitle != "" {
-		headers["X-Title"] = opts.OpenRouterTitle
-	}
-	headers["User-Agent"] = version.UserAgent(opts.UserAgent)
-
-	raw, err := doPost(ctx, endpoint, opts.OpenRouterKey, headers, reqBody, opts.Timeout)
+func unsupportedProviderModelErrorForRoot(rootDir string, model string) error {
+	reg, err := llmprovider.RegistryForRoot(rootDir)
 	if err != nil {
-		return Result{}, fmt.Errorf("openrouter categorize: %w", err)
+		if modelHasRegisteredProviderPrefix(rootDir, model) {
+			return err
+		}
+		return nil
+	}
+	provider, ok := reg.EmptyProviderRef(model)
+	if !ok {
+		return nil
+	}
+	return fmt.Errorf("unsupported %s model %q", providerDisplayName(reg, provider), strings.TrimSpace(model))
+}
+
+func providerDisplayName(reg llmprovider.Registry, provider llmprovider.Provider) string {
+	if spec, ok := reg.Spec(provider); ok && strings.TrimSpace(spec.DisplayName) != "" {
+		return spec.DisplayName
+	}
+	switch provider {
+	case llmprovider.ProviderLMStudio:
+		return "LM Studio"
+	case llmprovider.ProviderOpenRouter:
+		return "OpenRouter"
+	case llmprovider.ProviderOllama:
+		return "Ollama"
+	default:
+		return string(provider)
+	}
+}
+
+func callOllama(ctx context.Context, bundle string, photoData [][]byte, ollamaModel string, resultModel string, opts Options) (Result, error) {
+	return callProvider(ctx, bundle, photoData, providerModelRef(llmprovider.ProviderOllama, ollamaModel, resultModel), resultModel, opts)
+}
+
+func callOpenRouter(ctx context.Context, bundle string, photoData [][]byte, openrouterModel string, resultModel string, opts Options) (Result, error) {
+	return callProvider(ctx, bundle, photoData, providerModelRef(llmprovider.ProviderOpenRouter, openrouterModel, resultModel), resultModel, opts)
+}
+
+func callProvider(ctx context.Context, bundle string, photoData [][]byte, modelName string, resultModel string, opts Options) (Result, error) {
+	if err := validateCategorizeProviderCapabilities(opts.RootDir, modelName, photoData); err != nil {
+		return Result{}, err
 	}
 
-	var resp chatResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return Result{}, fmt.Errorf("parse openrouter response: %w", err)
+	userParts := []llmclient.ContentPart{{Type: llmclient.ContentText, Text: bundle}}
+	for _, data := range photoData {
+		userParts = append(userParts, llmclient.ContentPart{
+			Type:      llmclient.ContentImage,
+			ImageData: data,
+			MIMEType:  "image/jpeg",
+		})
 	}
-	if len(resp.Choices) == 0 {
-		return Result{}, fmt.Errorf("openrouter categorize: no choices returned")
+	response, err := llmclient.Chat(ctx, llmclient.Request{
+		Model:             modelName,
+		Messages:          []llmclient.Message{llmclient.SystemMessage(effectiveSystemPrompt(opts)), {Role: "user", Parts: userParts}},
+		SamplerParams:     opts.InferenceParams.Sent,
+		Timeout:           opts.Timeout,
+		Task:              llmprovider.TaskCategorize,
+		RootDir:           opts.RootDir,
+		ProviderOverrides: providerOverrides(opts),
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("%s categorize: %w", providerLabel(modelName), err)
 	}
 
-	return parseCategorizationJSON(resp.Choices[0].Message.Content, openrouterModel, opts.Vocab)
+	displayModel := strings.TrimSpace(resultModel)
+	if displayModel == "" {
+		displayModel = modelName
+	}
+	return parseCategorizationJSON(response.Text, displayModel, opts.Vocab)
+}
+
+func validateCategorizeProviderCapabilities(rootDir string, modelName string, photoData [][]byte) error {
+	if len(photoData) == 0 {
+		return nil
+	}
+	reg, err := llmprovider.RegistryForRoot(rootDir)
+	if err != nil {
+		return err
+	}
+	ref := reg.ParseModelRef(modelName)
+	if ref.ProviderQualified && ref.Spec != nil && ref.Spec.Capabilities.Images == llmprovider.CapabilityUnsupported {
+		return fmt.Errorf("%s categorization with images is not supported for this provider path: %s", ref.Provider, ref.Original)
+	}
+	return nil
+}
+
+func providerModelRef(provider llmprovider.Provider, apiModel string, resultModel string) string {
+	resultModel = strings.TrimSpace(resultModel)
+	if hasProviderPrefix(resultModel, provider) {
+		return resultModel
+	}
+	return string(provider) + "/" + strings.TrimSpace(apiModel)
+}
+
+func hasProviderPrefix(model string, provider llmprovider.Provider) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	prefix := string(provider)
+	return strings.HasPrefix(lower, prefix+"/") || strings.HasPrefix(lower, prefix+":")
+}
+
+func providerLabel(model string) string {
+	prefix := modelProviderPrefix(model)
+	if prefix == "" {
+		return "openrouter"
+	}
+	return prefix
+}
+
+func modelHasRegisteredProviderPrefix(rootDir string, model string) bool {
+	prefix := modelProviderPrefix(model)
+	if prefix == "" {
+		return false
+	}
+	switch llmprovider.Provider(prefix) {
+	case llmprovider.ProviderOllama, llmprovider.ProviderOpenRouter, llmprovider.ProviderLMStudio, llmprovider.ProviderOMLX:
+		return true
+	}
+	raw, ok := runtimeenv.ConfigMap(rootDir, "llm_backends")
+	if !ok {
+		return false
+	}
+	for alias := range raw {
+		if strings.EqualFold(alias, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func modelProviderPrefix(model string) string {
+	value := strings.TrimSpace(model)
+	if value == "" {
+		return ""
+	}
+	slash := strings.Index(value, "/")
+	colon := strings.Index(value, ":")
+	index := -1
+	switch {
+	case slash >= 0 && colon >= 0 && slash < colon:
+		index = slash
+	case slash >= 0 && colon >= 0:
+		index = colon
+	case slash >= 0:
+		index = slash
+	case colon >= 0:
+		index = colon
+	}
+	if index <= 0 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(value[:index]))
 }

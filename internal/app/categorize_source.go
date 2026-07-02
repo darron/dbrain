@@ -68,7 +68,7 @@ func newCategorizeSourceCommand(root *rootOptions) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&lookup, "lookup", "", "Source to categorize (source_key, canonical_url, normalized_url, note_path)")
-	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, or auto from DBRAIN_CATEGORIZE_MODEL)")
+	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, lmstudio/*, omlx/*, configured alias, or auto from DBRAIN_CATEGORIZE_MODEL)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Save categories and tags back to the source's user_tags")
 	cmd.Flags().DurationVar(&timeout, "timeout", 90*time.Second, "LLM request timeout")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print result as JSON")
@@ -148,7 +148,7 @@ func newCategorizeSourcesCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, or auto from DBRAIN_CATEGORIZE_MODEL)")
+	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, lmstudio/*, omlx/*, configured alias, or auto from DBRAIN_CATEGORIZE_MODEL)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Save categories and tags back to each source's user_tags")
 	cmd.Flags().BoolVar(&force, "force", false, "Re-categorize evidence-bearing sources even if they already have user_tags")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of sources to process")

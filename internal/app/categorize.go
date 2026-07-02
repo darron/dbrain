@@ -80,7 +80,7 @@ func newCategorizeItemCommand(root *rootOptions) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&lookup, "lookup", "", "Item to categorize (source_key, external_id, canonical_url)")
-	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, or auto from DBRAIN_CATEGORIZE_MODEL)")
+	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, lmstudio/*, omlx/*, configured alias, or auto from DBRAIN_CATEGORIZE_MODEL)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Save categories and tags back to the item's user_tags")
 	cmd.Flags().BoolVar(&includeImages, "images", true, "Embed local or archived photos as base64 for vision-capable models; use --images=false to disable")
 	cmd.Flags().DurationVar(&timeout, "timeout", 90*time.Second, "LLM request timeout")
@@ -163,7 +163,7 @@ func newCategorizeBatchCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, or auto from DBRAIN_CATEGORIZE_MODEL)")
+	cmd.Flags().StringVar(&model, "model", "", "LLM model (ollama/*, openrouter/*, lmstudio/*, omlx/*, configured alias, or auto from DBRAIN_CATEGORIZE_MODEL)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Save categories and tags back to each item's user_tags")
 	cmd.Flags().BoolVar(&includeImages, "images", true, "Embed local or archived photos as base64 for vision-capable models; use --images=false to disable")
 	cmd.Flags().BoolVar(&force, "force", false, "Re-categorize items even if they already have user_tags")

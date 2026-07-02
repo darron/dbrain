@@ -5,23 +5,28 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/darron/dbrain/internal/llmprovider"
 	"github.com/darron/dbrain/internal/model"
 )
 
 type Options struct {
-	Limit                     int
-	Concurrency               int
-	Force                     bool
-	AcceptCurrentSummary      bool
-	Summarize                 bool
-	Model                     string
-	CLI                       string
-	Length                    string
-	Language                  string
-	Timeout                   time.Duration
-	ProgressInterval          time.Duration
-	Logger                    *slog.Logger
-	ExactSummaryFreshness     bool
+	Limit                 int
+	Concurrency           int
+	Force                 bool
+	AcceptCurrentSummary  bool
+	Summarize             bool
+	Model                 string
+	CLI                   string
+	Length                string
+	Language              string
+	Timeout               time.Duration
+	ProgressInterval      time.Duration
+	Logger                *slog.Logger
+	ExactSummaryFreshness bool
+	// InferenceParams carries optional provider-specific sampler parameters
+	// for parity-aware bakeoff runs. Normal source-summary callers leave
+	// this empty so provider/runtime defaults apply.
+	InferenceParams           llmprovider.ParityParams
 	EnvFor                    func(source model.SourceDocument) map[string]string
 	ArgsFor                   func(source model.SourceDocument) []string
 	ResolveHost               func(ctx context.Context, host string) error

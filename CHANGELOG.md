@@ -5,6 +5,21 @@ development date for the change set.
 
 ## Recent Improvements
 
+### LLM Backend Abstraction (2026-07-01)
+
+- Added a shared LLM backend registry/client for direct local and hosted model
+  calls, including first-class `omlx/<model>` and configured
+  OpenAI-compatible backend aliases, while preserving existing Ollama,
+  OpenRouter, LM Studio, external `summarize` CLI, and OpenRouter/Gemini OCR
+  behavior.
+- Documented runner-specific setup and live-tested example model strings for
+  Ollama, LM Studio, oMLX, OpenRouter, and configured OpenAI-compatible aliases.
+
+### LM Studio Provider (2026-06-30)
+
+- Added first-class LM Studio local model support for direct summaries, text categorization, and model bakeoff reports, including provider-qualified provenance and opt-in local parity metadata.
+- Categorization provenance now records provider-qualified Ollama and OpenRouter model ids, matching summary provenance and avoiding ambiguous bare model names after provider swaps.
+
 ### What's New Review Feed (2026-06-21)
 
 - **CLI/API/MCP**: Added a read-only `whats-new` review feed for newly

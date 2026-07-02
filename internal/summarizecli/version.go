@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const versionProbeTimeout = 15 * time.Second
+
 func Version(ctx context.Context, binary string) string {
 	value := strings.TrimSpace(binary)
 	if value == "" {
@@ -33,7 +35,7 @@ func Version(ctx context.Context, binary string) string {
 }
 
 func detectVersion(ctx context.Context, binary string) string {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, versionProbeTimeout)
 	defer cancel()
 
 	for _, args := range [][]string{{"--version"}, {"version"}} {

@@ -4,12 +4,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/darron/dbrain/internal/llmprovider"
 	"github.com/darron/dbrain/internal/model"
 )
 
 const ToolName = "summarize"
 const DirectSummaryToolName = "ollama-direct"
 const DirectOpenRouterToolName = "openrouter-direct"
+const DirectLMStudioToolName = "lmstudio-direct"
 
 const (
 	commandRetryAttempts     = 4
@@ -19,8 +21,11 @@ const (
 	defaultOllamaBaseURL     = "http://127.0.0.1:11434/v1"
 	defaultOllamaAPIKey      = "ollama"
 	defaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+	defaultLMStudioBaseURL   = "http://127.0.0.1:1234/v1"
+	defaultLMStudioAPIKey    = "lm-studio"
 	directOllamaVersion      = "ollama-direct-v1"
 	directOpenRouterVersion  = "openrouter-direct-v1"
+	directLMStudioVersion    = "lmstudio-direct-v1"
 )
 
 type Options struct {
@@ -37,6 +42,10 @@ type Options struct {
 	Language  string
 	Timeout   time.Duration
 	RootDir   string
+	// InferenceParams carries optional provider-specific sampler parameters
+	// used by parity-aware bakeoff runs. Normal summary callers leave this
+	// empty so provider/runtime defaults apply.
+	InferenceParams llmprovider.ParityParams
 }
 
 type Result struct {
@@ -60,48 +69,6 @@ type outputEnvelope struct {
 
 type cliState struct {
 	LastSuccessfulProvider string `json:"lastSuccessfulProvider"`
-}
-
-type chatCompletionsRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-}
-
-type ollamaChatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-	Think    *bool         `json:"think,omitempty"`
-}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type chatCompletionsResponse struct {
-	Model   string `json:"model"`
-	Choices []struct {
-		Message chatMessage `json:"message"`
-	} `json:"choices"`
-}
-
-type ollamaChatResponse struct {
-	Model   string      `json:"model"`
-	Message chatMessage `json:"message"`
-}
-
-type directSummaryTarget struct {
-	model        string
-	displayName  string
-	baseURL      string
-	apiKey       string
-	toolName     string
-	toolVersion  string
-	headers      map[string]string
-	label        string
-	nativeOllama bool
 }
 
 var (

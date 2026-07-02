@@ -22,15 +22,16 @@ func processDirectSummaryExtract(processCtx sourceProcessContext) (sourceProcess
 
 	inputURL, usingReaderInput := sourceExtractionInput(source, opts)
 	extractResult, err := runSummarizeWithRedirectRetry(ctx, source, opts, summarizecli.Options{
-		Binary:    opts.Binary,
-		Input:     inputURL,
-		Summarize: false,
-		Length:    opts.Length,
-		Language:  opts.Language,
-		Timeout:   opts.Timeout,
-		RootDir:   cfg.RootDir,
-		Env:       processCtx.sourceEnv,
-		Args:      processCtx.sourceArgs,
+		Binary:          opts.Binary,
+		Input:           inputURL,
+		Summarize:       false,
+		Length:          opts.Length,
+		Language:        opts.Language,
+		Timeout:         opts.Timeout,
+		RootDir:         cfg.RootDir,
+		Env:             processCtx.sourceEnv,
+		Args:            processCtx.sourceArgs,
+		InferenceParams: opts.InferenceParams,
 	})
 	if err != nil {
 		return processExtractRunError(processCtx, err, "source extraction failed"), true
@@ -76,18 +77,19 @@ func processDefaultCLIExtract(processCtx sourceProcessContext) sourceProcessResu
 
 	inputURL, usingReaderInput := sourceExtractionInput(source, opts)
 	runResult, err := runSummarizeWithRedirectRetry(ctx, source, opts, summarizecli.Options{
-		Binary:    opts.Binary,
-		Input:     inputURL,
-		Summarize: opts.Summarize,
-		Model:     opts.Model,
-		CLI:       cli,
-		Prompt:    summaryPrompt,
-		Length:    opts.Length,
-		Language:  opts.Language,
-		Timeout:   opts.Timeout,
-		RootDir:   cfg.RootDir,
-		Env:       processCtx.sourceEnv,
-		Args:      processCtx.sourceArgs,
+		Binary:          opts.Binary,
+		Input:           inputURL,
+		Summarize:       opts.Summarize,
+		Model:           opts.Model,
+		CLI:             cli,
+		Prompt:          summaryPrompt,
+		Length:          opts.Length,
+		Language:        opts.Language,
+		Timeout:         opts.Timeout,
+		RootDir:         cfg.RootDir,
+		Env:             processCtx.sourceEnv,
+		Args:            processCtx.sourceArgs,
+		InferenceParams: opts.InferenceParams,
 	})
 	if err != nil {
 		return processExtractRunError(processCtx, err, "source enrichment failed")

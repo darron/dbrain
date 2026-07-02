@@ -8,6 +8,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/itemcategorize"
+	"github.com/darron/dbrain/internal/llmprovider"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -23,6 +24,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	opts.Mode = strings.TrimSpace(opts.Mode)
 	opts.Lookups = cleanList(opts.Lookups)
 	opts.Models = cleanList(opts.Models)
+	opts.ParityPreset = strings.TrimSpace(opts.ParityPreset)
+	switch opts.ParityPreset {
+	case "", llmprovider.ParityPresetNone, llmprovider.ParityPresetDbrainModelfile:
+	default:
+		return Result{}, fmt.Errorf("unsupported parity preset %q", opts.ParityPreset)
+	}
 	if opts.Mode == "" {
 		opts.Mode = ModeSourceSummary
 	}
@@ -34,6 +41,10 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 2 * time.Minute
+	}
+	reg, err := llmprovider.RegistryForRoot(cfg.RootDir)
+	if err != nil {
+		return Result{}, err
 	}
 
 	result := Result{
@@ -51,7 +62,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 		target.Runs = make([]ModelRun, 0, len(opts.Models))
 		for _, candidateModel := range opts.Models {
-			run := runModel(ctx, cfg, st, opts, target, candidateModel)
+			run := runModel(ctx, cfg, st, opts, target, candidateModel, reg)
 			target.Runs = append(target.Runs, run)
 			if run.Status != "ok" {
 				result.Errors++
@@ -98,12 +109,11 @@ func loadTarget(ctx context.Context, st *store.Store, mode string, lookup string
 	}
 }
 
-func runModel(ctx context.Context, cfg config.Config, st *store.Store, opts Options, target TargetRun, candidateModel string) ModelRun {
+func runModel(ctx context.Context, cfg config.Config, st *store.Store, opts Options, target TargetRun, candidateModel string, reg llmprovider.Registry) ModelRun {
 	started := time.Now()
-	run := ModelRun{
-		Model:  candidateModel,
-		Status: "ok",
-	}
+	ref := reg.ParseModelRef(candidateModel)
+	parity := parityParamsForRun(opts.ParityPreset, ref)
+	run := newModelRunMetadata(candidateModel, ref, parity, opts.ParityPreset)
 	finish := func(run ModelRun) ModelRun {
 		run.DurationMS = time.Since(started).Milliseconds()
 		return run
@@ -118,10 +128,11 @@ func runModel(ctx context.Context, cfg config.Config, st *store.Store, opts Opti
 			return finish(run)
 		}
 		summary, err := sourceenrich.SummarizeSourceReadOnly(ctx, cfg, source, sourceenrich.Options{
-			Model:    candidateModel,
-			Length:   opts.Length,
-			Language: opts.Language,
-			Timeout:  opts.Timeout,
+			Model:           candidateModel,
+			Length:          opts.Length,
+			Language:        opts.Language,
+			Timeout:         opts.Timeout,
+			InferenceParams: parity,
 		})
 		if err != nil {
 			run.Status = "error"
@@ -138,10 +149,11 @@ func runModel(ctx context.Context, cfg config.Config, st *store.Store, opts Opti
 			return finish(run)
 		}
 		cat, err := itemcategorize.Run(ctx, cfg, st, item, itemcategorize.Options{
-			Model:         candidateModel,
-			Timeout:       opts.Timeout,
-			Apply:         false,
-			IncludeImages: opts.IncludeImages,
+			Model:           candidateModel,
+			Timeout:         opts.Timeout,
+			Apply:           false,
+			IncludeImages:   opts.IncludeImages,
+			InferenceParams: parity,
 		})
 		if err != nil {
 			run.Status = "error"
@@ -159,9 +171,10 @@ func runModel(ctx context.Context, cfg config.Config, st *store.Store, opts Opti
 			return finish(run)
 		}
 		cat, err := itemcategorize.RunSource(ctx, cfg, st, source, itemcategorize.Options{
-			Model:   candidateModel,
-			Timeout: opts.Timeout,
-			Apply:   false,
+			Model:           candidateModel,
+			Timeout:         opts.Timeout,
+			Apply:           false,
+			InferenceParams: parity,
 		})
 		if err != nil {
 			run.Status = "error"
@@ -176,6 +189,63 @@ func runModel(ctx context.Context, cfg config.Config, st *store.Store, opts Opti
 		run.Error = fmt.Sprintf("unsupported mode %q", opts.Mode)
 	}
 	return finish(run)
+}
+
+func newModelRunMetadata(candidateModel string, ref llmprovider.ModelRef, parity llmprovider.ParityParams, preset string) ModelRun {
+	run := ModelRun{
+		Model:           candidateModel,
+		Provider:        string(ref.Provider),
+		APIModel:        ref.APIModel,
+		Status:          "ok",
+		RequestedParams: parity.Requested,
+		SentParams:      parity.Sent,
+		OmittedParams:   parity.Omitted,
+		ParamStrictness: parity.Strictness,
+		RuntimeContext:  runtimeContextForRun(ref),
+	}
+	if ref.Spec != nil {
+		run.Transport = string(ref.Spec.Transport)
+		local := ref.Spec.Local
+		run.Local = &local
+		run.PromptParityStatus = promptParityStatusForSpec(preset, ref.Spec)
+		run.ReasoningModeStatus = ref.Spec.ReasoningPolicy.StatusWithDirectCall
+	}
+	return run
+}
+
+func parityParamsForRun(preset string, ref llmprovider.ModelRef) llmprovider.ParityParams {
+	switch strings.TrimSpace(preset) {
+	case "", llmprovider.ParityPresetNone:
+		return llmprovider.EmptyParityParams()
+	case llmprovider.ParityPresetDbrainModelfile:
+		if ref.Spec == nil {
+			return llmprovider.EmptyParityParams()
+		}
+		return llmprovider.DbrainParityForSpec(*ref.Spec)
+	default:
+		return llmprovider.EmptyParityParams()
+	}
+}
+
+func promptParityStatusForSpec(preset string, spec *llmprovider.ProviderSpec) string {
+	if spec == nil || strings.TrimSpace(preset) == "" || preset == llmprovider.ParityPresetNone {
+		return ""
+	}
+	if !spec.Local {
+		return "not-applicable"
+	}
+	return spec.PromptPolicy.ParityStatusWithPreset
+}
+
+// runtimeContextForRun captures the minimal known runtime context for a run.
+// v1 does not probe live runtime metadata; Status is always "not-collected"
+// so reports stay honest about what dbrain actually verified.
+func runtimeContextForRun(ref llmprovider.ModelRef) RuntimeContext {
+	return RuntimeContext{
+		Status:   "not-collected",
+		Provider: string(ref.Provider),
+		APIModel: ref.APIModel,
+	}
 }
 
 func cleanList(values []string) []string {
