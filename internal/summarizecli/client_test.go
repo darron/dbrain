@@ -1123,11 +1123,11 @@ func TestRunDirectLMStudioSummaryUsesOptionalParityParams(t *testing.T) {
 	if captured.TopP == nil || *captured.TopP != 0.95 {
 		t.Fatalf("top_p = %#v, want 0.95", captured.TopP)
 	}
-	if captured.TopK == nil || *captured.TopK != 20 {
-		t.Fatalf("top_k = %#v, want 20", captured.TopK)
+	if captured.TopK != nil {
+		t.Fatalf("top_k = %#v, want omitted", captured.TopK)
 	}
-	if captured.RepeatPenalty == nil || *captured.RepeatPenalty != 1.0 {
-		t.Fatalf("repeat_penalty = %#v, want 1.0", captured.RepeatPenalty)
+	if captured.RepeatPenalty != nil {
+		t.Fatalf("repeat_penalty = %#v, want omitted", captured.RepeatPenalty)
 	}
 }
 

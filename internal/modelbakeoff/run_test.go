@@ -25,8 +25,10 @@ func TestParityPromptAndReasoningMetadataHelpers(t *testing.T) {
 	if lmStudioParity.Strictness != llmprovider.StrictnessNonStrict {
 		t.Fatalf("lmstudio parity strictness = %q", lmStudioParity.Strictness)
 	}
-	if _, ok := lmStudioParity.Omitted["min_p"]; !ok {
-		t.Fatalf("expected min_p omission for LM Studio, got %#v", lmStudioParity.Omitted)
+	for _, key := range []string{"top_k", "repeat_penalty", "min_p"} {
+		if _, ok := lmStudioParity.Omitted[key]; !ok {
+			t.Fatalf("expected %s omission for LM Studio, got %#v", key, lmStudioParity.Omitted)
+		}
 	}
 
 	if got := promptParityStatusForSpec(llmprovider.ParityPresetDbrainModelfile, lmStudioRef.Spec); got != "requires-live-verification" {

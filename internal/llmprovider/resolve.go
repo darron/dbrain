@@ -151,7 +151,11 @@ func normalizeBaseURL(raw string, transport Transport, provider Provider) string
 			suffix = "/api/v1"
 		}
 		if !strings.HasSuffix(value, suffix) {
-			value += suffix
+			if provider == ProviderOpenRouter && strings.HasSuffix(value, "/api") {
+				value += "/v1"
+			} else {
+				value += suffix
+			}
 		}
 	}
 	return value

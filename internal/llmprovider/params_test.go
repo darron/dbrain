@@ -44,22 +44,26 @@ func TestParityParamsForProviders(t *testing.T) {
 	}
 
 	lmstudio := DbrainParityForProvider(ProviderLMStudio)
-	if lmstudio.Sent["temperature"] != 0.6 || lmstudio.Sent["top_p"] != 0.95 || lmstudio.Sent["top_k"] != 20 || lmstudio.Sent["repeat_penalty"] != 1.0 {
+	if lmstudio.Sent["temperature"] != 0.6 || lmstudio.Sent["top_p"] != 0.95 {
 		t.Fatalf("lmstudio sent params = %#v", lmstudio.Sent)
 	}
-	if lmstudio.Omitted["min_p"] == "" {
-		t.Fatalf("expected min_p omission reason, got %#v", lmstudio.Omitted)
+	for _, key := range []string{"top_k", "repeat_penalty", "min_p"} {
+		if lmstudio.Omitted[key] == "" {
+			t.Fatalf("expected %s omission reason, got %#v", key, lmstudio.Omitted)
+		}
 	}
 	if lmstudio.Strictness != StrictnessNonStrict {
 		t.Fatalf("lmstudio strictness = %q", lmstudio.Strictness)
 	}
 
 	omlx := DbrainParityForProvider(ProviderOMLX)
-	if omlx.Sent["temperature"] != 0.6 || omlx.Sent["top_p"] != 0.95 || omlx.Sent["top_k"] != 20 || omlx.Sent["repeat_penalty"] != 1.0 {
+	if omlx.Sent["temperature"] != 0.6 || omlx.Sent["top_p"] != 0.95 {
 		t.Fatalf("omlx sent params = %#v", omlx.Sent)
 	}
-	if omlx.Omitted["min_p"] == "" {
-		t.Fatalf("expected omlx min_p omission reason, got %#v", omlx.Omitted)
+	for _, key := range []string{"top_k", "repeat_penalty", "min_p"} {
+		if omlx.Omitted[key] == "" {
+			t.Fatalf("expected omlx %s omission reason, got %#v", key, omlx.Omitted)
+		}
 	}
 	if omlx.Strictness != StrictnessNonStrict {
 		t.Fatalf("omlx strictness = %q", omlx.Strictness)
@@ -78,10 +82,12 @@ func TestAccountParamsForSpec(t *testing.T) {
 	ollamaSpec, _ := reg.Spec(ProviderOllama)
 	openAISpec, _ := reg.Spec(ProviderOMLX)
 	requested := map[string]any{
-		"temperature": 0.4,
-		"top_p":       0.9,
-		"min_p":       0.1,
-		"unknown":     "value",
+		"temperature":    0.4,
+		"top_p":          0.9,
+		"top_k":          20,
+		"repeat_penalty": 1.0,
+		"min_p":          0.1,
+		"unknown":        "value",
 	}
 
 	ollama := AccountParamsForSpec(ollamaSpec, requested)
@@ -99,8 +105,10 @@ func TestAccountParamsForSpec(t *testing.T) {
 	if _, ok := openai.Sent["min_p"]; ok {
 		t.Fatalf("openai min_p should be omitted, sent=%#v", openai.Sent)
 	}
-	if openai.Omitted["min_p"] == "" || openai.Omitted["unknown"] == "" {
-		t.Fatalf("expected omitted min_p and unknown, got %#v", openai.Omitted)
+	for _, key := range []string{"top_k", "repeat_penalty", "min_p", "unknown"} {
+		if openai.Omitted[key] == "" {
+			t.Fatalf("expected omitted %s, got %#v", key, openai.Omitted)
+		}
 	}
 	if openai.Strictness != StrictnessNonStrict {
 		t.Fatalf("openai strictness = %q", openai.Strictness)

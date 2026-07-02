@@ -628,10 +628,12 @@ func DbrainParityForSpec(spec ProviderSpec) ParamAccounting {
 			Sent: map[string]any{
 				"temperature": requested["temperature"],
 				"top_p": requested["top_p"],
-				"top_k": requested["top_k"],
-				"repeat_penalty": requested["repeat_penalty"],
 			},
-			Omitted: map[string]string{"min_p": "not verified for OpenAI-compatible local chat completions; requires live verification before sending"},
+			Omitted: map[string]string{
+				"top_k": "not verified for OpenAI-compatible chat completions",
+				"repeat_penalty": "not verified for OpenAI-compatible chat completions",
+				"min_p": "not verified for OpenAI-compatible chat completions",
+			},
 			Strictness: StrictnessNonStrict,
 		}
 	default:
@@ -645,11 +647,12 @@ Also add a generic `AccountParamsForSpec(spec ProviderSpec, requested map[string
 helper in `internal/llmprovider` and have both bakeoff parity code and
 `internal/llmclient` use it. Do not duplicate omit reasons in `llmclient`.
 For arbitrary requested sampler params, send `temperature`, `top_p`, `top_k`,
-and `repeat_penalty` when present. Send `min_p` only for
-`TransportOllamaChat`; omit `min_p` with a stable reason for
-`TransportOpenAIChat`. Preserve unknown requested keys in `Requested`, omit
-them with a stable "not mapped for this transport" reason, and mark strictness
-non-strict when any requested key is omitted.
+`repeat_penalty`, and `min_p` for `TransportOllamaChat`. For
+`TransportOpenAIChat`, send only the standard `temperature` and `top_p` fields
+until a backend path is live-verified to accept additional sampler parameters.
+Preserve unknown requested keys in `Requested`, omit them with a stable "not
+mapped for this transport" reason, and mark strictness non-strict when any
+requested key is omitted.
 
 - [ ] **Step 10: Add target resolver tests**
 

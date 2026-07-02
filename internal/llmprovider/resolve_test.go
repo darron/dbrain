@@ -168,6 +168,25 @@ func TestResolveTargetNormalizesOpenAIBaseURLIdempotently(t *testing.T) {
 	}
 }
 
+func TestResolveTargetNormalizesOpenRouterAPIBaseURLIdempotently(t *testing.T) {
+	t.Parallel()
+
+	target, err := ResolveTarget(context.Background(), ResolveOptions{
+		Model: "openrouter/google/gemini-test",
+		Task:  TaskSummary,
+		Env:   map[string]string{"DBRAIN_OPENROUTER_API_KEY": "router-key"},
+		Overrides: map[Provider]ProviderOverrides{
+			ProviderOpenRouter: {BaseURL: "https://openrouter.ai/api"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("BaseURL = %q", target.BaseURL)
+	}
+}
+
 func writeProviderConfig(t *testing.T, root string, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(content), 0o600); err != nil {

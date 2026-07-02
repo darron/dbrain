@@ -55,9 +55,10 @@ func DbrainModelfilePreset() map[string]any {
 // Ollama: all Modelfile sampler values are sent through the native /api/chat
 // options object, so strict parity is achievable.
 //
-// LM Studio: min_p is omitted because it is not documented for the
-// OpenAI-compatible chat completions surface and requires live verification
-// before being sent. The run is therefore labelled non-strict.
+// LM Studio/oMLX/configured local OpenAI-compatible backends: temperature and
+// top_p are sent as standard chat-completions fields. top_k, repeat_penalty,
+// and min_p are omitted until a backend path is verified to accept them. The
+// run is therefore labelled non-strict.
 //
 // Other providers (including OpenRouter) receive no local parity parameters
 // from this preset.
@@ -88,9 +89,9 @@ func AccountParamsForSpec(spec ProviderSpec, requested map[string]any) ParamAcco
 	}
 	for key, value := range requested {
 		switch key {
-		case "temperature", "top_p", "top_k", "repeat_penalty":
+		case "temperature", "top_p":
 			out.Sent[key] = value
-		case "min_p":
+		case "top_k", "repeat_penalty", "min_p":
 			if spec.Transport == TransportOllamaChat {
 				out.Sent[key] = value
 			} else {
