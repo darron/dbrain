@@ -12,6 +12,8 @@ development date for the change set.
   OpenAI-compatible backend aliases, while preserving existing Ollama,
   OpenRouter, LM Studio, external `summarize` CLI, and OpenRouter/Gemini OCR
   behavior.
+- Documented runner-specific setup and live-tested example model strings for
+  Ollama, LM Studio, oMLX, OpenRouter, and configured OpenAI-compatible aliases.
 
 ### LM Studio Provider (2026-06-30)
 

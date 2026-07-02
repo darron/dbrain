@@ -1,6 +1,6 @@
 ---
 name: dbrain-model-bakeoff
-description: Use when comparing dbrain summary or categorization models, running read-only model bakeoffs across source-summary, categorize-source, and categorize-item modes, or producing a speed and quality comparison for local Ollama models.
+description: Use when comparing dbrain summary or categorization models, running read-only model bakeoffs across source-summary, categorize-source, and categorize-item modes, or producing a speed and quality comparison for Ollama, LM Studio, oMLX, OpenRouter, or configured OpenAI-compatible backends.
 metadata:
   short-description: Compare dbrain summary and categorization models
 ---
@@ -13,10 +13,13 @@ the local dbrain database.
 ## Workflow
 
 1. Work from the dbrain repo unless the user gives another path.
-2. Verify the requested local models are available:
+2. Verify the requested runner models are available. Use only the discovery
+   commands that match the requested runners:
 
 ```bash
 ollama list
+curl -s http://localhost:1234/v1/models
+curl -s -H "Authorization: Bearer $DBRAIN_OMLX_API_KEY" http://127.0.0.1:8000/v1/models
 ```
 
 3. Pick representative targets from the local DB:
@@ -61,7 +64,9 @@ go run ./cmd/devtools/model_bakeoff \
 Use provider-qualified model names. Use `ollama/<model>` for local Ollama,
 `lmstudio/<api-model-id>` for local LM Studio (the id returned by
 `curl -s http://localhost:1234/v1/models`), `omlx/<model>` for oMLX, and
-`<alias>/<model>` for aliases configured under `llm_backends.<alias>`.
+`<alias>/<model>` for aliases configured under `llm_backends.<alias>`. When the
+oMLX server has auth enabled, set `DBRAIN_OMLX_API_KEY` or configure
+`omlx.api_key` before running the bakeoff.
 
 For local backend parity checks:
 
@@ -71,7 +76,7 @@ go run ./cmd/devtools/model_bakeoff \
   --lookup src:example \
   --model ollama/dbrain:2026042701 \
   --model lmstudio/qwen/qwen3.6-35b-a3b \
-  --model omlx/qwen3.5-coder \
+  --model omlx/Qwen3.6-35B-A3B-MLX-4bit \
   --parity-preset dbrain-modelfile \
   --timeout 5m \
   --output /tmp/dbrain-local-backends.md

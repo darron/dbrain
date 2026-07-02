@@ -44,7 +44,7 @@ lmstudio:
 
 omlx:
   base_url: "http://127.0.0.1:8000/v1" # DBRAIN_OMLX_BASE_URL
-  api_key: "" # DBRAIN_OMLX_API_KEY; optional, secret ref supported
+  api_key: "" # DBRAIN_OMLX_API_KEY; set when oMLX auth is enabled; secret ref supported
 
 llm_backends:
   localai:

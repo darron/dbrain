@@ -30,7 +30,7 @@ func configEnvSpecs() []envSpec {
 		{Key: "DBRAIN_LMSTUDIO_BASE_URL", ConfigPath: "lmstudio.base_url", Default: "http://127.0.0.1:1234/v1", Description: "LM Studio OpenAI-compatible endpoint for local model calls."},
 		{Key: "DBRAIN_LMSTUDIO_API_KEY", ConfigPath: "lmstudio.api_key", Default: "lm-studio", Description: "API key label used for LM Studio local calls; supports secret refs."},
 		{Key: "DBRAIN_OMLX_BASE_URL", ConfigPath: "omlx.base_url", Default: "http://127.0.0.1:8000/v1", Description: "oMLX OpenAI-compatible endpoint for local text model calls."},
-		{Key: "DBRAIN_OMLX_API_KEY", ConfigPath: "omlx.api_key", Default: "", Description: "Optional API key for oMLX local calls; omitted from Authorization when empty; supports secret refs."},
+		{Key: "DBRAIN_OMLX_API_KEY", ConfigPath: "omlx.api_key", Default: "", Description: "API key for oMLX local calls when oMLX auth is enabled; omitted from Authorization when empty; supports secret refs."},
 		{Key: "(config only)", ConfigPath: "llm_backends.<alias>.transport", Default: "openai_chat_completions", Description: "Configured OpenAI-compatible backend alias transport."},
 		{Key: "(config only)", ConfigPath: "llm_backends.<alias>.base_url", Default: "", Description: "Configured OpenAI-compatible backend endpoint, for example http://127.0.0.1:8080/v1."},
 		{Key: "(config only)", ConfigPath: "llm_backends.<alias>.api_key", Default: "", Description: "Optional API key or secret ref for a configured backend alias."},
