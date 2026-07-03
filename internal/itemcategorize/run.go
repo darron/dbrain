@@ -16,9 +16,13 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, item model.Ite
 	}
 
 	refs, _ := st.ListItemMediaRefs(ctx, item.ID)
+	sources, err := st.ListSourceDocumentsForItem(ctx, item.ID)
+	if err != nil {
+		return Result{}, fmt.Errorf("list linked sources: %w", err)
+	}
 
 	s3client := buildS3Client(opts)
-	bundle := buildContentBundle(item)
+	bundle := buildContentBundleWithSources(item, sources)
 	photoData := loadPhotoBytes(ctx, cfg, refs, s3client, opts.IncludeImages)
 
 	result, err := callLLM(ctx, bundle, photoData, opts)

@@ -69,6 +69,18 @@ func TestDefaultRegistryParsesBuiltInProviderSpecs(t *testing.T) {
 	}
 }
 
+func TestDefaultRegistryOMLXAllowsModelDependentImages(t *testing.T) {
+	t.Parallel()
+
+	ref := ParseModelRef("omlx/Qwen3.6-35B-A3B-MLX-4bit")
+	if ref.Spec == nil {
+		t.Fatal("missing oMLX provider spec")
+	}
+	if ref.Spec.Capabilities.Images != CapabilityModelDependentOrUnverified {
+		t.Fatalf("oMLX image capability = %q", ref.Spec.Capabilities.Images)
+	}
+}
+
 func TestRegistryParsesConfiguredOpenAICompatibleAlias(t *testing.T) {
 	t.Parallel()
 

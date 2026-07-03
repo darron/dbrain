@@ -6,6 +6,8 @@ import (
 	"github.com/darron/dbrain/internal/model"
 )
 
+const maxLinkedSourcesForItemCategorization = 3
+
 func buildContentBundle(item model.Item) string {
 	var sb strings.Builder
 
@@ -69,6 +71,47 @@ func buildContentBundle(item model.Item) string {
 	}
 
 	return strings.TrimSpace(sb.String())
+}
+
+func buildContentBundleWithSources(item model.Item, sources []model.SourceDocument) string {
+	bundle := buildContentBundle(item)
+	if len(sources) == 0 {
+		return bundle
+	}
+
+	var linked strings.Builder
+	included := 0
+	for _, source := range sources {
+		if included >= maxLinkedSourcesForItemCategorization {
+			break
+		}
+		if !sourceHasCategorizationEvidence(source) {
+			continue
+		}
+		sourceBundle := buildSourceContentBundle(source)
+		if sourceBundle == "" {
+			continue
+		}
+		if linked.Len() == 0 {
+			linked.WriteString("Linked source evidence:")
+		}
+		linked.WriteString("\n\n---\n")
+		linked.WriteString(sourceBundle)
+		included++
+	}
+	if linked.Len() == 0 {
+		return bundle
+	}
+	if bundle == "" {
+		return linked.String()
+	}
+	return bundle + "\n\n" + linked.String()
+}
+
+func sourceHasCategorizationEvidence(source model.SourceDocument) bool {
+	return strings.TrimSpace(source.SummaryText) != "" ||
+		strings.TrimSpace(source.ExtractedText) != "" ||
+		strings.TrimSpace(source.Description) != ""
 }
 
 func buildSourceContentBundle(source model.SourceDocument) string {

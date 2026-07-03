@@ -105,6 +105,9 @@ scheduler:
     source_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_LIMIT; 0 uses sync all default
     source_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_CONCURRENCY
     categorize_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_LIMIT
+    categorize_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_CONCURRENCY; 0 uses sync all default
+    categorize_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_TIMEOUT; optional per-record timeout, for example 90s
+    skip_categorize_images: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE_IMAGES; useful for text-only local backends
     skip_apple_notes: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_APPLE_NOTES; useful when launchd lacks Full Disk Access
     skip_github: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB
     skip_youtube: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE

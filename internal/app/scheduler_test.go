@@ -27,9 +27,12 @@ scheduler:
     source_limit: 12
     source_concurrency: 2
     categorize_limit: 5
+    categorize_concurrency: 1
+    categorize_timeout: 42s
     categorize_model: ollama/test-categorizer
     ocr_model: ollama/test-ocr
     okf_export: true
+    skip_categorize_images: true
     skip_apple_notes: true
     skip_github: true
     skip_youtube: true
@@ -54,14 +57,17 @@ scheduler:
 	if got.Flags.categorizeLimit != 5 || got.Flags.categorizeModel != "ollama/test-categorizer" || got.Flags.ocrModel != "ollama/test-ocr" {
 		t.Fatalf("unexpected model/categorize flags: %+v", got.Flags)
 	}
+	if got.Flags.categorizeConcurrency != 1 || got.Flags.categorizeTimeout != 42*time.Second {
+		t.Fatalf("unexpected categorize controls: %+v", got.Flags)
+	}
 	if !got.Flags.skipAppleNotes || !got.Flags.skipGitHub || !got.Flags.skipYouTube || !got.Flags.skipXBookmarks {
 		t.Fatalf("expected skip flags from config, got %+v", got.Flags)
 	}
 	if !got.Flags.okfExport {
 		t.Fatalf("expected OKF export flag from config, got %+v", got.Flags)
 	}
-	if !got.Flags.watchLater || !got.Flags.liked || !got.Flags.summarize || !got.Flags.categorizeImages {
-		t.Fatalf("expected sync all defaults to match CLI defaults, got %+v", got.Flags)
+	if !got.Flags.watchLater || !got.Flags.liked || !got.Flags.summarize || got.Flags.categorizeImages {
+		t.Fatalf("expected scheduled sync defaults plus image skip override, got %+v", got.Flags)
 	}
 }
 

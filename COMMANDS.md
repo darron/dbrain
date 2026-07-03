@@ -209,10 +209,12 @@ uncategorized items and linked sources with the same categorizer used by
 categorization so image categorization can still use local photo files before
 they are uploaded/pruned. If enabled, OKF export runs as the final stage and
 writes a full private bundle under the configured OKF directory. Image
-categorization is enabled for items by default; use `--categorize-images=false`
-to disable it for text-only models. `--categorize-limit` is applied separately
-to items and sources, so `--categorize-limit 25` can process up to 25 item rows
-and 25 source rows.
+categorization is enabled for items by default; oMLX receives image parts when
+the selected oMLX model supports them. Use `--categorize-images=false` to
+disable image embedding for text-only models; check the oMLX UI or model card
+when unsure whether a selected oMLX model is vision-capable.
+`--categorize-limit` is applied separately to items and sources, so
+`--categorize-limit 25` can process up to 25 item rows and 25 source rows.
 
 X hydration uses `--x-limit`. X media transcription and X photo OCR can be
 bounded independently with `--x-media-limit` and `--x-photo-ocr-limit`; either
@@ -514,6 +516,10 @@ scheduler:
     jitter: 5m
     source_limit: 100
     source_concurrency: 2
+    categorize_limit: 25
+    categorize_concurrency: 2
+    categorize_timeout: 90s
+    skip_categorize_images: true
     skip_github: false
     skip_youtube: false
     skip_categorize: false
@@ -521,8 +527,10 @@ scheduler:
 
 The scheduled run uses the normal `sync all` preflight checks, so secret-backed
 providers still need their configured `env:`, `op://`, or `keychain://`
-references to resolve. Use the `skip_*` fields for stages you do not want the
-background service to run. If the background service does not have macOS Full
+references to resolve. Use `skip_categorize_images: true` when scheduled runs
+target a text-only or slow local categorization backend. Use the other `skip_*`
+fields for stages you do not want the background service to run. If the
+background service does not have macOS Full
 Disk Access for Apple Notes, either grant access to the binary/service context
 that launchd runs or set `scheduler.sync_all.skip_apple_notes: true`.
 
@@ -1013,7 +1021,7 @@ dbrain get x:2045912259210485815
 ### `dbrain categorize item`
 
 Sends a single item's full content bundle (post text, summary, transcript, OCR
-text, article body, and images when enabled) to a local Ollama or OpenRouter
+text, article body, and images when enabled) to the configured categorization
 LLM and returns suggested categories and tags. Use `--apply` to save the result
 directly to the item's `user_tags` field and re-index FTS. Image categorization
 is enabled by default and embeds local or R2-stored photos as base64 for

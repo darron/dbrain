@@ -201,8 +201,14 @@ func BuiltInProviderSpecs() []ProviderSpec {
 			ReasoningPolicy: ReasoningPolicy{
 				StatusWithDirectCall: "unknown",
 			},
-			Capabilities: TextOnlyCapabilities(),
-			ConfigPath:   []string{"omlx"},
+			Capabilities: Capabilities{
+				Text:         true,
+				Images:       CapabilityModelDependentOrUnverified,
+				JSONMode:     CapabilityModelDependentOrUnverified,
+				ToolCalling:  CapabilityModelDependentOrUnverified,
+				ReasoningCtl: CapabilityModelDependentOrUnverified,
+			},
+			ConfigPath: []string{"omlx"},
 		},
 	}
 }

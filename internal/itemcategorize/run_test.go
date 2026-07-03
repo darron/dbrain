@@ -15,6 +15,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/llmprovider"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
 )
 
 func TestMergeUserTagsPreservesExistingAndDedupesGenerated(t *testing.T) {
@@ -202,6 +203,226 @@ func TestCallOMLXTextCategorization(t *testing.T) {
 	}
 }
 
+func TestRunSendsImagesForOMLXProvider(t *testing.T) {
+	// Uses t.Setenv below, so this test must remain serial.
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	item := model.Item{
+		SourceKey:    "x:test-omlx-photo",
+		SourceType:   "x_bookmark",
+		ExternalID:   "123",
+		CanonicalURL: "https://x.com/example/status/123",
+		Title:        "Photo-backed post",
+		XPostText:    "This post has text and an attached photo.",
+		ContentHash:  "x:test-omlx-photo-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/123.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upsert, err := st.UpsertItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	item.ID = upsert.ItemID
+	if _, err := st.SaveXHydration(context.Background(), item.ID, model.XHydration{
+		FullText:  item.XPostText,
+		Language:  "en",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON:   `{"snapshot":{"media_objects":[{"type":"photo","url":"https://pbs.twimg.com/media/test.jpg","expanded_url":"https://x.com/example/status/123/photo/1","width":1200,"height":800}]}}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected one media ref, got %#v", refs)
+	}
+	localPath := "media/x/photo/test-omlx-photo.jpg"
+	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, "media", "x", "photo"), 0o755); err != nil {
+		t.Fatalf("mkdir media path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.VaultDir, filepath.FromSlash(localPath)), []byte("jpeg-bytes"), 0o644); err != nil {
+		t.Fatalf("write local photo: %v", err)
+	}
+	if _, err := st.SaveMediaDownload(context.Background(), refs[0].MediaAssetID, model.MediaDownloadResult{
+		MIMEType:     "image/jpeg",
+		ByteSize:     int64(len("jpeg-bytes")),
+		ContentHash:  "photo-hash",
+		LocalPath:    localPath,
+		Status:       model.MediaDownloadStatusDownloaded,
+		AttemptedAt:  now,
+		DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload: %v", err)
+	}
+
+	var captured chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"categories\":[\"ai\"],\"tags\":[\"omlx\"],\"primary_category\":\"ai\"}"}}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("DBRAIN_OMLX_BASE_URL", server.URL)
+	t.Setenv("DBRAIN_OMLX_API_KEY", "")
+
+	result, err := Run(context.Background(), cfg, st, item, Options{
+		Model:         "omlx/qwen3.5-coder",
+		IncludeImages: true,
+		Timeout:       2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Model != "omlx/qwen3.5-coder" {
+		t.Fatalf("result model = %q", result.Model)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("messages = %+v", captured.Messages)
+	}
+	if !hasTextPart(captured.Messages[1].Content) {
+		t.Fatalf("expected oMLX user content to include text part, got %#v", captured.Messages[1].Content)
+	}
+	if !hasImageURLPart(captured.Messages[1].Content) {
+		t.Fatalf("expected oMLX user content to include image_url part, got %#v", captured.Messages[1].Content)
+	}
+}
+
+func TestRunIncludesLinkedSourceEvidence(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 3, 18, 48, 0, 0, time.UTC)
+	item := model.Item{
+		SourceKey:    "x:test-linked-article",
+		SourceType:   "x_bookmark",
+		ExternalID:   "2073100352921215386",
+		CanonicalURL: "https://x.com/example/status/2073100352921215386",
+		Title:        "x.com/i/article/2073090223194755072",
+		XPostText:    "https://t.co/hPiZr1kG7r",
+		ContentHash:  "x:test-linked-article-hash",
+		LinksJSON:    `[{"url":"https://x.com/i/article/2073090223194755072"}]`,
+		NotePath:     "items/x/2026/2073100352921215386.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upsert, err := st.UpsertItem(ctx, item)
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	item.ID = upsert.ItemID
+
+	link, err := st.UpsertSourceLink(ctx, item.ID, model.SourceCandidate{
+		OriginalURL:   "https://x.com/i/article/2073090223194755072",
+		CanonicalURL:  "https://x.com/i/article/2073090223194755072",
+		NormalizedURL: "https://x.com/i/article/2073090223194755072",
+		SourceType:    "x_article",
+		Domain:        "x.com",
+		SourceKey:     "src:test-linked-article",
+		NotePath:      "sources/x_article/test-linked-article.md",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, link.SourceID, model.ExtractResult{
+		FinalURL:    "https://x.com/i/article/2073090223194755072",
+		Title:       "A Field Guide to Fable: Finding Your Unknowns",
+		Description: "A technical article about using Fable to build a second brain.",
+		SiteName:    "X Articles",
+		Content:     "Fable article body about second-brain workflows, unknown unknowns, and local knowledge tools.",
+		Status:      model.SourceExtractStatusOK,
+		FetchedAt:   now.Add(time.Minute),
+		Tool:        "x-article",
+		ToolVersion: "test",
+	}, "source-hash"); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(ctx, link.SourceID, model.SummaryResult{
+		Text:          "Fable helps identify unknowns in a second-brain system by turning local evidence into structured research context.",
+		Model:         "ollama/dbrain:test",
+		PromptVersion: "test",
+		Status:        model.SourceSummaryStatusOK,
+		FetchedAt:     now.Add(2 * time.Minute),
+		Tool:          "source-summary",
+		ToolVersion:   "test",
+	}); err != nil {
+		t.Fatalf("SaveSourceSummary: %v", err)
+	}
+
+	var captured chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"categories\":[\"ai\"],\"tags\":[\"fable\",\"second-brain\"],\"primary_category\":\"ai\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	_, err = Run(ctx, cfg, st, item, Options{
+		Model:          "openrouter/google/gemini-test",
+		OpenRouterBase: server.URL,
+		OpenRouterKey:  "test-openrouter-key",
+		Timeout:        2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(captured.Messages) < 2 {
+		t.Fatalf("messages = %+v", captured.Messages)
+	}
+	userText := messageText(captured.Messages[1].Content)
+	for _, want := range []string{
+		"Linked source evidence",
+		"A Field Guide to Fable: Finding Your Unknowns",
+		"Fable helps identify unknowns",
+		"second-brain workflows",
+	} {
+		if !strings.Contains(userText, want) {
+			t.Fatalf("expected user prompt to include %q, got:\n%s", want, userText)
+		}
+	}
+}
+
 func TestCallConfiguredAliasTextCategorization(t *testing.T) {
 	root := t.TempDir()
 	var captured chatRequest
@@ -329,30 +550,85 @@ func TestCallLLMOpenRouterImagesStillSendImageParts(t *testing.T) {
 	if len(captured.Messages) != 2 {
 		t.Fatalf("messages = %+v", captured.Messages)
 	}
-	parts, ok := captured.Messages[1].Content.([]any)
-	if !ok {
-		t.Fatalf("expected multimodal content parts, got %#v", captured.Messages[1].Content)
-	}
-	var sawImage bool
-	for _, part := range parts {
-		m, ok := part.(map[string]any)
-		if ok && m["type"] == "image_url" {
-			sawImage = true
-		}
-	}
-	if !sawImage {
-		t.Fatalf("expected image_url part, got %#v", parts)
+	if !hasImageURLPart(captured.Messages[1].Content) {
+		t.Fatalf("expected image_url part, got %#v", captured.Messages[1].Content)
 	}
 }
 
-func TestCallLLMRejectsImagesForOMLX(t *testing.T) {
-	_, err := callLLM(context.Background(), "content bundle", [][]byte{{1, 2, 3}}, Options{
+func TestCallLLMOMLXImagesSendImageParts(t *testing.T) {
+	// Uses t.Setenv below, so this test must remain serial.
+	var captured chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"categories\":[\"ai\"],\"tags\":[\"omlx-vision\"],\"primary_category\":\"ai\"}"}}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("DBRAIN_OMLX_BASE_URL", server.URL)
+	t.Setenv("DBRAIN_OMLX_API_KEY", "")
+
+	result, err := callLLM(context.Background(), "content bundle", [][]byte{{1, 2, 3}}, Options{
 		Model:   "omlx/qwen3.5-coder",
 		Timeout: 2 * time.Second,
 	})
-	if err == nil || !strings.Contains(err.Error(), "omlx") || !strings.Contains(err.Error(), "omlx/qwen3.5-coder") {
-		t.Fatalf("expected oMLX image rejection with model, got %v", err)
+	if err != nil {
+		t.Fatalf("callLLM: %v", err)
 	}
+	if result.Model != "omlx/qwen3.5-coder" {
+		t.Fatalf("result model = %q", result.Model)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("messages = %+v", captured.Messages)
+	}
+	if !hasTextPart(captured.Messages[1].Content) {
+		t.Fatalf("expected oMLX text part, got %#v", captured.Messages[1].Content)
+	}
+	if !hasImageURLPart(captured.Messages[1].Content) {
+		t.Fatalf("expected oMLX image_url part, got %#v", captured.Messages[1].Content)
+	}
+}
+
+func hasTextPart(content any) bool {
+	return hasPartType(content, "text")
+}
+
+func hasImageURLPart(content any) bool {
+	return hasPartType(content, "image_url")
+}
+
+func messageText(content any) string {
+	switch typed := content.(type) {
+	case string:
+		return typed
+	case []any:
+		var parts []string
+		for _, part := range typed {
+			if m, ok := part.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
+func hasPartType(content any, partType string) bool {
+	parts, ok := content.([]any)
+	if !ok {
+		return false
+	}
+	for _, part := range parts {
+		m, ok := part.(map[string]any)
+		if ok && m["type"] == partType {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProviderOverridesExplicitValuesWin(t *testing.T) {
