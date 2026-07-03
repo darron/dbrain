@@ -44,6 +44,18 @@ type remoteDeps struct {
 	buildHandler     func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error)
 }
 
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		// Remote web includes long-lived SSE research/chat streams. Go's
+		// WriteTimeout is an absolute response deadline, not an idle timeout,
+		// so handler-level runner/stage/model timeouts must bound that work.
+		WriteTimeout: 0,
+	}
+}
+
 func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer) error {
 	return serveWithDeps(ctx, cfg, opts, logOut, defaultRemoteDeps())
 }
@@ -147,12 +159,7 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 		return fmt.Errorf("tsnet listener unavailable")
 	}
 
-	httpServer := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      60 * time.Second,
-	}
+	httpServer := newHTTPServer(handler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- httpServer.Serve(listener)

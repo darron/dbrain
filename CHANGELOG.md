@@ -5,6 +5,12 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Remote Web Chat Streaming (2026-07-03)
+
+- **Fixed**: `serve remote` no longer applies a 60-second absolute response
+  write timeout, so long-running web Chat/Research SSE streams can use their
+  own runner/stage/model timeouts instead of failing as browser network errors.
+
 ### Sync LLM Routing and Linked Article Categorization (2026-07-03)
 
 - **Fixed**: `sync all` now resolves `summary.model` once and passes that same
