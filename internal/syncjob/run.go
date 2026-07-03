@@ -6,10 +6,12 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/summaryconfig"
 )
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
 	opts = normalizeOptions(opts)
+	opts.Model = summaryconfig.Model(cfg.RootDir, opts.Model)
 	stages := newStageOptions(opts)
 
 	stats := Stats{StartedAt: time.Now().UTC()}

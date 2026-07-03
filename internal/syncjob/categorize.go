@@ -78,6 +78,7 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 				"total", total,
 				"remaining", remaining,
 				"errors", itemErrors.Load(),
+				"model", ir.Result.Model,
 				"tags", strings.Join(ir.Result.Tags, ","),
 				"categories", strings.Join(ir.Result.Categories, ","),
 			)
@@ -142,6 +143,7 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 				"total", total,
 				"remaining", remaining,
 				"errors", sourceErrors.Load(),
+				"model", sr.Result.Model,
 				"tags", strings.Join(sr.Result.Tags, ","),
 				"categories", strings.Join(sr.Result.Categories, ","),
 			)

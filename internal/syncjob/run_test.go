@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -98,6 +99,35 @@ func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(output), []byte("X media transcription complete")) {
 		t.Fatalf("expected completion output to contain x media summary, got %q", output)
+	}
+}
+
+func TestRunPassesResolvedSummaryModelToXMediaStage(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	if err := os.WriteFile(cfg.ConfigPath, []byte(`
+summary:
+  model: "omlx/Qwen3.6-35B-A3B-MLX-4bit"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origXMedia := runXMediaStage
+	t.Cleanup(func() {
+		runXMediaStage = origXMedia
+	})
+
+	runXMediaStage = func(_ context.Context, _ config.Config, _ *store.Store, opts xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+		if opts.SummaryModel != "omlx/Qwen3.6-35B-A3B-MLX-4bit" {
+			t.Fatalf("expected resolved summary model, got %q", opts.SummaryModel)
+		}
+		return xmediatranscribe.Stats{ItemsProcessed: 1, ItemsSummarized: 1}, nil
+	}
+
+	if _, err := Run(context.Background(), cfg, st, Options{
+		XMediaEnabled: true,
+		Summarize:     true,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 }
 
@@ -756,6 +786,7 @@ func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 			Result: itemcategorize.Result{
 				Tags:       []string{"canada"},
 				Categories: []string{"Canadian Politics"},
+				Model:      "omlx/Qwen3.6-35B-A3B-MLX-4bit",
 			},
 		})
 		return itemcategorize.Stats{Queued: 2, Succeeded: 2, Applied: 2}, nil, nil
@@ -789,6 +820,7 @@ func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 			Result: itemcategorize.Result{
 				Tags:       []string{"payments"},
 				Categories: []string{"financial-technology"},
+				Model:      "omlx/Qwen3.6-35B-A3B-MLX-4bit",
 			},
 		})
 		return itemcategorize.Stats{Queued: 1, Succeeded: 1, Applied: 1}, nil, nil
@@ -840,6 +872,9 @@ func TestRunExecutesCategorizeStageBeforeArchiveWhenEnabled(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(logOutput), []byte("processed=1")) || !bytes.Contains([]byte(logOutput), []byte("total=2")) {
 		t.Fatalf("expected categorize progress counters, got %q", logOutput)
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("model=omlx/Qwen3.6-35B-A3B-MLX-4bit")) {
+		t.Fatalf("expected categorize logs to include model provenance, got %q", logOutput)
 	}
 }
 

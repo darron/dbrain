@@ -311,6 +311,118 @@ func TestRunSendsImagesForOMLXProvider(t *testing.T) {
 	}
 }
 
+func TestRunIncludesLinkedSourceEvidence(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 3, 18, 48, 0, 0, time.UTC)
+	item := model.Item{
+		SourceKey:    "x:test-linked-article",
+		SourceType:   "x_bookmark",
+		ExternalID:   "2073100352921215386",
+		CanonicalURL: "https://x.com/example/status/2073100352921215386",
+		Title:        "x.com/i/article/2073090223194755072",
+		XPostText:    "https://t.co/hPiZr1kG7r",
+		ContentHash:  "x:test-linked-article-hash",
+		LinksJSON:    `[{"url":"https://x.com/i/article/2073090223194755072"}]`,
+		NotePath:     "items/x/2026/2073100352921215386.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upsert, err := st.UpsertItem(ctx, item)
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	item.ID = upsert.ItemID
+
+	link, err := st.UpsertSourceLink(ctx, item.ID, model.SourceCandidate{
+		OriginalURL:   "https://x.com/i/article/2073090223194755072",
+		CanonicalURL:  "https://x.com/i/article/2073090223194755072",
+		NormalizedURL: "https://x.com/i/article/2073090223194755072",
+		SourceType:    "x_article",
+		Domain:        "x.com",
+		SourceKey:     "src:test-linked-article",
+		NotePath:      "sources/x_article/test-linked-article.md",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSourceLink: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, link.SourceID, model.ExtractResult{
+		FinalURL:    "https://x.com/i/article/2073090223194755072",
+		Title:       "A Field Guide to Fable: Finding Your Unknowns",
+		Description: "A technical article about using Fable to build a second brain.",
+		SiteName:    "X Articles",
+		Content:     "Fable article body about second-brain workflows, unknown unknowns, and local knowledge tools.",
+		Status:      model.SourceExtractStatusOK,
+		FetchedAt:   now.Add(time.Minute),
+		Tool:        "x-article",
+		ToolVersion: "test",
+	}, "source-hash"); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(ctx, link.SourceID, model.SummaryResult{
+		Text:          "Fable helps identify unknowns in a second-brain system by turning local evidence into structured research context.",
+		Model:         "ollama/dbrain:test",
+		PromptVersion: "test",
+		Status:        model.SourceSummaryStatusOK,
+		FetchedAt:     now.Add(2 * time.Minute),
+		Tool:          "source-summary",
+		ToolVersion:   "test",
+	}); err != nil {
+		t.Fatalf("SaveSourceSummary: %v", err)
+	}
+
+	var captured chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"categories\":[\"ai\"],\"tags\":[\"fable\",\"second-brain\"],\"primary_category\":\"ai\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	_, err = Run(ctx, cfg, st, item, Options{
+		Model:          "openrouter/google/gemini-test",
+		OpenRouterBase: server.URL,
+		OpenRouterKey:  "test-openrouter-key",
+		Timeout:        2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(captured.Messages) < 2 {
+		t.Fatalf("messages = %+v", captured.Messages)
+	}
+	userText := messageText(captured.Messages[1].Content)
+	for _, want := range []string{
+		"Linked source evidence",
+		"A Field Guide to Fable: Finding Your Unknowns",
+		"Fable helps identify unknowns",
+		"second-brain workflows",
+	} {
+		if !strings.Contains(userText, want) {
+			t.Fatalf("expected user prompt to include %q, got:\n%s", want, userText)
+		}
+	}
+}
+
 func TestCallConfiguredAliasTextCategorization(t *testing.T) {
 	root := t.TempDir()
 	var captured chatRequest
@@ -484,6 +596,25 @@ func hasTextPart(content any) bool {
 
 func hasImageURLPart(content any) bool {
 	return hasPartType(content, "image_url")
+}
+
+func messageText(content any) string {
+	switch typed := content.(type) {
+	case string:
+		return typed
+	case []any:
+		var parts []string
+		for _, part := range typed {
+			if m, ok := part.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 func hasPartType(content any, partType string) bool {
