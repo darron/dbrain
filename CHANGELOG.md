@@ -5,6 +5,12 @@ development date for the change set.
 
 ## Recent Improvements
 
+### oMLX Image Categorization (2026-07-03)
+
+- Fixed `omlx/<model>` categorization so image-backed items can send
+  OpenAI-compatible image parts to oMLX vision-capable models instead of being
+  rejected as text-only before the request reaches oMLX.
+
 ### LLM Backend Abstraction (2026-07-01)
 
 - Added a shared LLM backend registry/client for direct local and hosted model

@@ -181,7 +181,7 @@ func TestChatRejectsImagesForTextOnlyProvider(t *testing.T) {
 	t.Parallel()
 
 	_, err := Chat(context.Background(), Request{
-		Model: "omlx/qwen3.5-coder",
+		Model: "lmstudio/qwen/qwen3.6-35b-a3b",
 		Messages: []Message{{
 			Role: "user",
 			Parts: []ContentPart{
@@ -192,9 +192,62 @@ func TestChatRejectsImagesForTextOnlyProvider(t *testing.T) {
 		Timeout: time.Second,
 		Task:    llmprovider.TaskCategorize,
 	})
-	if err == nil || !strings.Contains(err.Error(), "oMLX") || !strings.Contains(err.Error(), "images") {
+	if err == nil || !strings.Contains(err.Error(), "LM Studio") || !strings.Contains(err.Error(), "images") {
 		t.Fatalf("expected image capability error, got %v", err)
 	}
+}
+
+func TestChatOMLXAllowsImages(t *testing.T) {
+	t.Parallel()
+
+	var captured openAIChatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen3.5-coder","choices":[{"message":{"content":"vision response"}}]}`))
+	}))
+	defer server.Close()
+
+	resp, err := Chat(context.Background(), Request{
+		Model: "omlx/qwen3.5-coder",
+		Messages: []Message{{
+			Role: "user",
+			Parts: []ContentPart{
+				{Type: ContentText, Text: "caption this"},
+				{Type: ContentImage, ImageData: []byte{1, 2, 3}, MIMEType: "image/jpeg"},
+			},
+		}},
+		Timeout: time.Second,
+		Task:    llmprovider.TaskCategorize,
+		Env:     map[string]string{"DBRAIN_OMLX_BASE_URL": server.URL + "/v1"},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Text != "vision response" {
+		t.Fatalf("response = %+v", resp)
+	}
+	if !openAIRequestHasImageURL(captured) {
+		t.Fatalf("expected image_url part in request: %+v", captured.Messages)
+	}
+}
+
+func openAIRequestHasImageURL(req openAIChatRequest) bool {
+	for _, message := range req.Messages {
+		parts, ok := message.Content.([]any)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			m, ok := part.(map[string]any)
+			if ok && m["type"] == "image_url" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestChatOpenAICompatibleNoChoicesError(t *testing.T) {
