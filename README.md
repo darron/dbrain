@@ -374,7 +374,7 @@ references: `env:NAME`,
 | `DBRAIN_OLLAMA_API_KEY` / `OLLAMA_API_KEY` | `ollama.api_key` | `ollama` | API key label used for Ollama-compatible local calls. |
 | `DBRAIN_LMSTUDIO_BASE_URL` | `lmstudio.base_url` | `http://127.0.0.1:1234/v1` | LM Studio OpenAI-compatible endpoint for local model calls. |
 | `DBRAIN_LMSTUDIO_API_KEY` | `lmstudio.api_key` | `lm-studio` | API key label used for LM Studio local calls. |
-| `DBRAIN_OMLX_BASE_URL` | `omlx.base_url` | `http://127.0.0.1:8000/v1` | oMLX OpenAI-compatible endpoint for local text model calls. |
+| `DBRAIN_OMLX_BASE_URL` | `omlx.base_url` | `http://127.0.0.1:8000/v1` | oMLX OpenAI-compatible endpoint for local model calls, including images when the selected oMLX model supports them. |
 | `DBRAIN_OMLX_API_KEY` | `omlx.api_key` | `` | API key for oMLX local calls when oMLX auth is enabled; omitted when empty. |
 | `(config only)` | `llm_backends.<alias>.transport` | `openai_chat_completions` | Configured OpenAI-compatible backend alias transport. |
 | `(config only)` | `llm_backends.<alias>.base_url` | `` | Configured OpenAI-compatible backend endpoint, for example `http://127.0.0.1:8080/v1`. |
@@ -692,6 +692,12 @@ endpoints. They do not consume the repo `Modelfile` as an Ollama-style wrapper.
 For dbrain calls, task prompts stay in the application and are sent as normal
 chat system messages. Per-model runtime defaults are tuning, not the
 authoritative dbrain prompt source.
+
+oMLX image categorization uses the same OpenAI-compatible image parts as hosted
+vision models when the selected oMLX model supports image input. LM Studio and
+configured aliases remain text-only unless their provider spec is explicitly
+changed. Check the oMLX UI or the model card when choosing whether an oMLX
+model should receive images.
 
 Use `DBRAIN_LMSTUDIO_BASE_URL` / `lmstudio.base_url` to point at a different LM
 Studio server. Use `DBRAIN_OMLX_BASE_URL` / `omlx.base_url` for oMLX, and set
