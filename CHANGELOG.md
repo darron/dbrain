@@ -5,6 +5,23 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Sync LLM Routing and Linked Article Categorization (2026-07-03)
+
+- **Fixed**: `sync all` now resolves `summary.model` once and passes that same
+  model into X media transcript summaries, avoiding mixed local backends during
+  one run.
+- **Fixed**: Item categorization now includes capped linked source evidence, so
+  X article wrapper posts are categorized from the extracted article instead of
+  the short URL shell.
+- **Observability**: Item/source categorization debug logs now include the
+  result model, making backend provenance visible in long sync runs.
+
+### Scheduler Local Backend Controls (2026-07-03)
+
+- **Docs/config**: Documented scheduled categorization concurrency, timeout,
+  and `skip_categorize_images` controls so local text-only or slow
+  OpenAI-compatible backends can avoid accidental image-heavy scheduled runs.
+
 ### oMLX Image Categorization (2026-07-03)
 
 - Fixed `omlx/<model>` categorization so image-backed items can send

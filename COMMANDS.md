@@ -516,6 +516,10 @@ scheduler:
     jitter: 5m
     source_limit: 100
     source_concurrency: 2
+    categorize_limit: 25
+    categorize_concurrency: 2
+    categorize_timeout: 90s
+    skip_categorize_images: true
     skip_github: false
     skip_youtube: false
     skip_categorize: false
@@ -523,8 +527,10 @@ scheduler:
 
 The scheduled run uses the normal `sync all` preflight checks, so secret-backed
 providers still need their configured `env:`, `op://`, or `keychain://`
-references to resolve. Use the `skip_*` fields for stages you do not want the
-background service to run. If the background service does not have macOS Full
+references to resolve. Use `skip_categorize_images: true` when scheduled runs
+target a text-only or slow local categorization backend. Use the other `skip_*`
+fields for stages you do not want the background service to run. If the
+background service does not have macOS Full
 Disk Access for Apple Notes, either grant access to the binary/service context
 that launchd runs or set `scheduler.sync_all.skip_apple_notes: true`.
 
