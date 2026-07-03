@@ -353,6 +353,21 @@ func TestServeWithDepsSelectsListenMode(t *testing.T) {
 	}
 }
 
+func TestRemoteHTTPServerTimeoutsAllowLongWebStreams(t *testing.T) {
+	t.Parallel()
+
+	server := newHTTPServer(http.NotFoundHandler())
+	if server.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 10s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout != time.Minute {
+		t.Fatalf("ReadTimeout = %s, want 1m", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %s, want disabled for long-lived SSE streams", server.WriteTimeout)
+	}
+}
+
 func TestServeWithDepsShutdownOrder(t *testing.T) {
 	t.Parallel()
 
