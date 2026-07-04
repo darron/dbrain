@@ -125,6 +125,68 @@ func TestRunScheduledSyncAllUsesSyncOptions(t *testing.T) {
 	}
 }
 
+func TestRunScheduledSyncAllUsesSchedulerMetricsInvocation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+metrics:
+  enabled: true
+  path: scheduled-metrics.jsonl
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	defer func() {
+		runSyncAll = oldRunSyncAll
+	}()
+
+	var captured syncjob.Options
+	runSyncAll = func(_ context.Context, _ config.Config, _ *store.Store, opts syncjob.Options) (syncjob.Stats, error) {
+		captured = opts
+		if !opts.Metrics.Enabled() {
+			t.Fatal("expected metrics enabled")
+		}
+		if opts.Metrics.Invocation != "scheduler:interval" {
+			t.Fatalf("metrics invocation = %q, want scheduler:interval", opts.Metrics.Invocation)
+		}
+		if err := opts.Metrics.Emit(map[string]any{"event": "test.scheduler.metrics", "status": "ok"}); err != nil {
+			t.Fatalf("emit metrics: %v", err)
+		}
+		now := time.Now().UTC()
+		return syncjob.Stats{StartedAt: now, CompletedAt: now}, nil
+	}
+
+	var out bytes.Buffer
+	err = runScheduledSyncAll(context.Background(), cfg, syncAllFlags{
+		skipGitHub:     true,
+		skipXPhotoOCR:  true,
+		skipCategorize: true,
+		skipYouTube:    true,
+		skipXBookmarks: true,
+		skipX:          true,
+		skipXMedia:     true,
+		skipLinks:      true,
+		skipSources:    true,
+	}, &out)
+	if err != nil {
+		t.Fatalf("runScheduledSyncAll: %v", err)
+	}
+	if captured.Metrics.RunID == "" || captured.Metrics.Command != "sync all" {
+		t.Fatalf("unexpected metrics context: %+v", captured.Metrics)
+	}
+	events := readAppMetricEvents(t, filepath.Join(root, "logs", "scheduled-metrics.jsonl"))
+	if len(events) != 1 || events[0]["invocation"] != "scheduler:interval" {
+		t.Fatalf("unexpected metrics events: %#v", events)
+	}
+}
+
 func TestSyncSchedulerStatusTracksRuns(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

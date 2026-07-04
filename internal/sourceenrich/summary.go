@@ -68,10 +68,10 @@ func runSummarizeWithRedirectRetry(ctx context.Context, source model.SourceDocum
 	return summarizecli.Run(ctx, retryOpts)
 }
 
-func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, toolVersion string) (bool, string, error) {
+func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, toolVersion string) (bool, string, SourceResult, error) {
 	summaryToolName := summarizecli.SummaryToolName(opts.Model)
 	if reason, ok := skipSummaryReason(source, extract); ok {
-		changed, err := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+		summary := model.SummaryResult{
 			Status:        model.SourceSummaryStatusSkipped,
 			Error:         reason,
 			Model:         opts.Model,
@@ -79,36 +79,39 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
 			FetchedAt:     time.Now().UTC(),
-		})
+		}
+		changed, err := st.SaveSourceSummary(ctx, source.ID, summary)
 		if err == nil && changed {
 			debugLog(opts.Logger, "source summary skipped", "source_key", source.SourceKey, "url", source.CanonicalURL, "reason", reason)
 		}
-		return changed, model.SourceSummaryStatusSkipped, err
+		return changed, model.SourceSummaryStatusSkipped, sourceSummaryResult(cfg.RootDir, source, summary, changed), err
 	}
 
 	input, cleanup, err := summaryInputFile(cfg, extract)
 	if err != nil {
-		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+		summary := model.SummaryResult{
 			Status:        model.SourceSummaryStatusError,
 			Error:         err.Error(),
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
-		})
-		return changed, model.SourceSummaryStatusError, saveErr
+		}
+		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, summary)
+		return changed, model.SourceSummaryStatusError, sourceSummaryResult(cfg.RootDir, source, summary, changed), saveErr
 	}
 	defer cleanup()
 	if strings.TrimSpace(input) == "" {
-		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+		summary := model.SummaryResult{
 			Status:        model.SourceSummaryStatusBlocked,
 			Error:         "no extracted content available for summary",
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
-		})
-		return changed, model.SourceSummaryStatusBlocked, saveErr
+		}
+		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, summary)
+		return changed, model.SourceSummaryStatusBlocked, sourceSummaryResult(cfg.RootDir, source, summary, changed), saveErr
 	}
 
 	runResult, err := summarizecli.Run(ctx, summarizecli.Options{
@@ -122,26 +125,28 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 		Language:        opts.Language,
 		Timeout:         opts.Timeout,
 		RootDir:         cfg.RootDir,
+		Metrics:         opts.Metrics,
 		InferenceParams: opts.InferenceParams,
 	})
 	if err != nil {
 		if isUserCancellation(ctx, err) {
-			return false, "", context.Canceled
+			return false, "", SourceResult{}, context.Canceled
 		}
 		status := model.SourceSummaryStatusError
 		if reason, blocked := blockedSummaryReason(err); blocked {
 			status = model.SourceSummaryStatusBlocked
 			err = errors.New(reason)
 		}
-		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+		summary := model.SummaryResult{
 			Status:        status,
 			Error:         err.Error(),
 			Model:         opts.Model,
 			PromptVersion: SummaryPromptVersion,
 			Tool:          summaryToolName,
 			ToolVersion:   toolVersion,
-		})
-		return changed, status, saveErr
+		}
+		changed, saveErr := st.SaveSourceSummary(ctx, source.ID, summary)
+		return changed, status, sourceSummaryResult(cfg.RootDir, source, summary, changed), saveErr
 	}
 
 	runResult.Summary.PromptVersion = SummaryPromptVersion
@@ -149,7 +154,7 @@ func summarizeFromExtract(ctx context.Context, cfg config.Config, st *store.Stor
 	if err == nil && changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
 		debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
 	}
-	return changed, runResult.Summary.Status, err
+	return changed, runResult.Summary.Status, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed), err
 }
 
 func summarizeExtract(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options, env map[string]string) (summarizecli.Result, error) {
@@ -171,6 +176,7 @@ func summarizeExtract(ctx context.Context, cfg config.Config, source model.Sourc
 		Timeout:         opts.Timeout,
 		RootDir:         cfg.RootDir,
 		Env:             env,
+		Metrics:         opts.Metrics,
 		InferenceParams: opts.InferenceParams,
 	})
 }

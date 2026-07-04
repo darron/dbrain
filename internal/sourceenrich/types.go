@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/llmprovider"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/model"
 )
 
@@ -23,6 +24,7 @@ type Options struct {
 	ProgressInterval      time.Duration
 	Logger                *slog.Logger
 	ExactSummaryFreshness bool
+	Metrics               metrics.RunContext
 	// InferenceParams carries optional provider-specific sampler parameters
 	// for parity-aware bakeoff runs. Normal source-summary callers leave
 	// this empty so provider/runtime defaults apply.
@@ -45,6 +47,9 @@ type Options struct {
 	WhisperBinary             string
 	WhisperModelPath          string
 	MacWhisperBinary          string
+	// OnSourceResult is called when a source enrichment candidate completes.
+	// Callers must treat it as concurrent when Concurrency > 1.
+	OnSourceResult func(SourceResult)
 }
 
 type Stats struct {
@@ -54,4 +59,21 @@ type Stats struct {
 	SourcesRendered   int `json:"sources_rendered"`
 	SourcesUnchanged  int `json:"sources_unchanged"`
 	Errors            int `json:"errors"`
+}
+
+type SourceResult struct {
+	SourceID           int64
+	SourceKey          string
+	Duration           time.Duration
+	Error              string
+	Extracted          bool
+	SummaryCreated     bool
+	SummaryStatus      string
+	SummaryModel       string
+	SummaryProvider    string
+	SummaryAPIModel    string
+	SummaryTransport   string
+	SummaryTool        string
+	SummaryToolVersion string
+	SummaryChars       int
 }

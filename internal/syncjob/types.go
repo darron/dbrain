@@ -11,6 +11,7 @@ import (
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/worker"
@@ -105,6 +106,7 @@ type Options struct {
 	Timeout               time.Duration
 	Logger                *slog.Logger
 	Progress              io.Writer
+	Metrics               metrics.RunContext
 }
 
 type Stats struct {

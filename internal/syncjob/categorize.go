@@ -34,6 +34,7 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 		S3AccessKey:     archiveOpts.AccessKeyID,
 		S3SecretKey:     archiveOpts.SecretKey,
 		OpenRouterTitle: "dbrain sync categorize",
+		Metrics:         common.Metrics,
 		OnStart: func(total int) {
 			itemTotal.Store(int64(total))
 			if common.Logger != nil {
@@ -49,6 +50,7 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 			}
 		},
 		OnResult: func(ir itemcategorize.ItemResult) {
+			emitCategorizeItemMetric(common.Metrics, ir, stageOpts)
 			processed := itemProcessed.Add(1)
 			total := itemTotal.Load()
 			remaining := total - processed
@@ -85,7 +87,12 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("categorize items: %w", err)
+		categorizeStats := mergeCategorizeStats(itemStats, itemcategorize.Stats{})
+		return &CategorizeStage{
+			Duration:  time.Since(start),
+			Stats:     categorizeStats,
+			ItemStats: itemStats,
+		}, fmt.Errorf("categorize items: %w", err)
 	}
 
 	var sourceProcessed atomic.Int64
@@ -99,6 +106,7 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 		Force:           common.Force,
 		Apply:           true,
 		OpenRouterTitle: "dbrain sync categorize",
+		Metrics:         common.Metrics,
 		OnStart: func(total int) {
 			sourceTotal.Store(int64(total))
 			if common.Logger != nil {
@@ -114,6 +122,7 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 			}
 		},
 		OnSourceResult: func(sr itemcategorize.SourceResult) {
+			emitCategorizeSourceMetric(common.Metrics, sr, stageOpts)
 			processed := sourceProcessed.Add(1)
 			total := sourceTotal.Load()
 			remaining := total - processed
@@ -150,7 +159,13 @@ func executeCategorizeStage(ctx context.Context, cfg config.Config, st *store.St
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("categorize sources: %w", err)
+		categorizeStats := mergeCategorizeStats(itemStats, sourceStats)
+		return &CategorizeStage{
+			Duration:    time.Since(start),
+			Stats:       categorizeStats,
+			ItemStats:   itemStats,
+			SourceStats: sourceStats,
+		}, fmt.Errorf("categorize sources: %w", err)
 	}
 
 	categorizeStats := mergeCategorizeStats(itemStats, sourceStats)

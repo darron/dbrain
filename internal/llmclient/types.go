@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/llmprovider"
+	"github.com/darron/dbrain/internal/metrics"
 )
 
 type ContentType string
@@ -45,6 +46,7 @@ type Request struct {
 	ProviderOverrides map[llmprovider.Provider]llmprovider.ProviderOverrides
 	Resolve           llmprovider.ResolveOptions
 	HTTPClient        *http.Client
+	Metrics           metrics.RunContext
 }
 
 type Response struct {

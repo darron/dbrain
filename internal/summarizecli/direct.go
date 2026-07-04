@@ -80,6 +80,7 @@ func runDirectSummary(ctx context.Context, opts Options, inputText string) (Resu
 		Task:             llmprovider.TaskSummary,
 		RootDir:          opts.RootDir,
 		Env:              opts.Env,
+		Metrics:          opts.Metrics,
 	})
 	if err != nil {
 		return Result{}, err

@@ -58,6 +58,7 @@ func processPreferredLocalExtract(processCtx sourceProcessContext) (sourceProces
 		return result, false, true
 	} else if changed {
 		result.Stats.SourcesExtracted++
+		result.SourceResult.Extracted = true
 		debugLog(opts.Logger, "source extraction saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", localExtract.Status, "content_chars", len(localExtract.Content), "tool", localExtract.Tool)
 	} else {
 		result.Stats.SourcesUnchanged++
@@ -92,7 +93,10 @@ func processPreferredLocalExtract(processCtx sourceProcessContext) (sourceProces
 			return result, false, true
 		} else if changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
 			result.Stats.SourcesSummarized++
+			result.SourceResult = mergeSourceResult(result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed))
 			debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
+		} else {
+			result.SourceResult = mergeSourceResult(result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed))
 		}
 	}
 
@@ -121,6 +125,7 @@ func processStoredExtractSummary(processCtx sourceProcessContext) (sourceProcess
 			return result, true
 		} else if changed {
 			result.Stats.SourcesExtracted++
+			result.SourceResult.Extracted = true
 		}
 	}
 	if failure, invalid := rejectExtractFailure(source, storedExtract); invalid {
@@ -142,7 +147,7 @@ func processStoredExtractSummary(processCtx sourceProcessContext) (sourceProcess
 		return result, true
 	}
 	debugLog(opts.Logger, "using stored extract for summary", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(storedExtract.Content))
-	if changed, status, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, processCtx.summaryToolVersion); err != nil {
+	if changed, status, summaryResult, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, processCtx.summaryToolVersion); err != nil {
 		if isUserCancellation(ctx, err) {
 			result.Err = context.Canceled
 			return result, true
@@ -151,6 +156,9 @@ func processStoredExtractSummary(processCtx sourceProcessContext) (sourceProcess
 		return result, true
 	} else if changed && status == model.SourceSummaryStatusOK {
 		result.Stats.SourcesSummarized++
+		result.SourceResult = mergeSourceResult(result.SourceResult, summaryResult)
+	} else {
+		result.SourceResult = mergeSourceResult(result.SourceResult, summaryResult)
 	}
 	result.TouchedSourceID = source.ID
 	return result, true

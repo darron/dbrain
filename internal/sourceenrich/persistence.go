@@ -15,8 +15,9 @@ func renderSourceNote(ctx context.Context, cfg config.Config, st *store.Store, s
 	return err
 }
 
-func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, extractToolVersion string, summaryToolVersion string) (Stats, error) {
+func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config, st *store.Store, source model.SourceDocument, extract model.ExtractResult, opts Options, extractToolVersion string, summaryToolVersion string) (Stats, SourceResult, error) {
 	var stats Stats
+	var sourceResult SourceResult
 
 	if failure, invalid := rejectExtractFailure(source, extract); invalid {
 		if failure.Status == model.SourceExtractStatusError {
@@ -30,30 +31,34 @@ func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config,
 		stats.Errors++
 		debugLog(opts.Logger, "source extraction rejected", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", failure.Status, "reason", failure.Error)
 		if err := saveSourceFailure(ctx, st, source, failure, opts, extractToolVersion, summaryToolVersion); err != nil {
-			return stats, err
+			return stats, sourceResult, err
 		}
-		return stats, nil
+		return stats, sourceResult, nil
 	}
 
 	contentHash := hashText(extract.Content)
 	if changed, err := st.SaveSourceExtraction(ctx, source.ID, extract, contentHash); err != nil {
-		return stats, err
+		return stats, sourceResult, err
 	} else if changed {
 		stats.SourcesExtracted++
+		sourceResult.Extracted = true
 		debugLog(opts.Logger, "source extraction saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", extract.Status, "content_chars", len(extract.Content), "tool", extract.Tool)
 	} else {
 		stats.SourcesUnchanged++
 	}
 
 	if !opts.Summarize {
-		return stats, nil
+		return stats, sourceResult, nil
 	}
 
-	if changed, status, err := summarizeFromExtract(ctx, cfg, st, source, extract, opts, summaryToolVersion); err != nil {
-		return stats, err
+	if changed, status, summaryResult, err := summarizeFromExtract(ctx, cfg, st, source, extract, opts, summaryToolVersion); err != nil {
+		return stats, sourceResult, err
 	} else if changed && status == model.SourceSummaryStatusOK {
 		stats.SourcesSummarized++
+		sourceResult = mergeSourceResult(sourceResult, summaryResult)
+	} else {
+		sourceResult = mergeSourceResult(sourceResult, summaryResult)
 	}
 
-	return stats, nil
+	return stats, sourceResult, nil
 }

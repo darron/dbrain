@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
@@ -55,7 +56,9 @@ func Batch(ctx context.Context, cfg config.Config, st *store.Store, opts Options
 						return
 					}
 					ir := ItemResult{Item: item}
+					start := time.Now()
 					res, runErr := Run(ctx, cfg, st, item, opts)
+					ir.Duration = time.Since(start)
 					if runErr != nil {
 						ir.Error = runErr.Error()
 						mu.Lock()
@@ -139,7 +142,9 @@ func BatchSources(ctx context.Context, cfg config.Config, st *store.Store, opts 
 						return
 					}
 					sr := SourceResult{Source: source}
+					start := time.Now()
 					res, runErr := RunSource(ctx, cfg, st, source, opts)
+					sr.Duration = time.Since(start)
 					if runErr != nil {
 						sr.Error = runErr.Error()
 						mu.Lock()

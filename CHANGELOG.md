@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Durable Sync Metrics (2026-07-03)
+
+- **Observability**: Added opt-in append-only JSONL metrics for manual and
+  scheduled `sync all` runs via `metrics.*` config / `DBRAIN_METRICS_*`,
+  including run, stage, categorization, source-summary, and direct model-call
+  timing events.
+- **Privacy**: Metrics omit prompt/source text, summaries, tags, categories,
+  URLs, titles, headers, API keys, and raw item/source keys by default; raw
+  subject keys require explicit `metrics.include_subject_keys: true`.
+- **Docs/config**: Documented metrics setup in `config.yaml.sample`, README,
+  and `COMMANDS.md`.
+
 ### Remote Web Chat Streaming (2026-07-03)
 
 - **Fixed**: `serve remote` no longer applies a 60-second absolute response

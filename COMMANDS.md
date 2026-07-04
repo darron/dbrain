@@ -247,6 +247,25 @@ Use `--skip-okf-export` to suppress a configured OKF export for one run.
 `DBRAIN_OKF_EXPORT_ENABLED=true` / `okf.export.enabled: true` enables the same
 final export stage by default.
 
+Durable local metrics can be enabled without adding external infrastructure:
+
+```yaml
+metrics:
+  enabled: true
+  path: metrics.jsonl
+  detail: model_call
+```
+
+`metrics.path` defaults to `<log_dir>/metrics.jsonl`, and relative paths are
+resolved under `log_dir`. Detail `stage` writes `sync.run.*` and
+`sync.stage.completed` events. Detail `item` also writes per-item/per-source
+categorization and source-summary completion events. Detail `model_call` adds
+`llm.call.completed` events for direct shared-client model calls. Metrics omit
+prompt text, source text, summaries, tags, categories, titles, URLs, headers,
+API keys, and raw item/source keys by default; set
+`metrics.include_subject_keys: true` only when raw dbrain keys are needed for a
+controlled local analysis.
+
 ### `dbrain feed`
 
 Subscribes to RSS, Atom, and JSON Feed URLs and materializes linked entries as
@@ -533,6 +552,8 @@ fields for stages you do not want the background service to run. If the
 background service does not have macOS Full
 Disk Access for Apple Notes, either grant access to the binary/service context
 that launchd runs or set `scheduler.sync_all.skip_apple_notes: true`.
+Scheduled runs use the same `metrics.*` config as manual `sync all` and mark
+their metric envelope with `invocation: "scheduler:interval"`.
 
 `dbrain doctor full-disk-access` helps with the macOS approval loop. It reads
 the LaunchAgent plist, reports the binary that launchd runs, optionally probes

@@ -5,6 +5,7 @@ import (
 
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/llmprovider"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/model"
 )
 
@@ -61,6 +62,7 @@ type Options struct {
 	LMStudioBase      string
 	LMStudioKey       string
 	ProviderOverrides map[llmprovider.Provider]llmprovider.ProviderOverrides
+	Metrics           metrics.RunContext
 	// InferenceParams carries optional provider-specific sampler parameters
 	// used by parity-aware bakeoff runs. Normal categorize callers leave
 	// this empty so provider/runtime defaults apply.
@@ -88,21 +90,28 @@ type Result struct {
 	Tags            []string `json:"tags"`
 	PrimaryCategory string   `json:"primary_category"`
 	Model           string   `json:"model"`
+	Provider        string   `json:"provider,omitempty"`
+	APIModel        string   `json:"api_model,omitempty"`
+	Transport       string   `json:"transport,omitempty"`
+	Tool            string   `json:"tool,omitempty"`
+	ToolVersion     string   `json:"tool_version,omitempty"`
 	RawResponse     string   `json:"raw_response,omitempty"`
 }
 
 // ItemResult pairs an item with its categorization result or error.
 type ItemResult struct {
-	Item   model.Item `json:"item"`
-	Result Result     `json:"result,omitempty"`
-	Error  string     `json:"error,omitempty"`
+	Item     model.Item    `json:"item"`
+	Result   Result        `json:"result,omitempty"`
+	Error    string        `json:"error,omitempty"`
+	Duration time.Duration `json:"duration"`
 }
 
 // SourceResult pairs a source with its categorization result or error.
 type SourceResult struct {
-	Source model.SourceDocument `json:"source"`
-	Result Result               `json:"result,omitempty"`
-	Error  string               `json:"error,omitempty"`
+	Source   model.SourceDocument `json:"source"`
+	Result   Result               `json:"result,omitempty"`
+	Error    string               `json:"error,omitempty"`
+	Duration time.Duration        `json:"duration"`
 }
 
 // Stats summarises a batch categorize run.

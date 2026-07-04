@@ -378,11 +378,20 @@ func runScheduledSyncAll(ctx context.Context, cfg config.Config, flags syncAllFl
 	return runScheduledSyncAllUnlocked(ctx, cfg, flags, logOut)
 }
 
-func runScheduledSyncAllUnlocked(ctx context.Context, cfg config.Config, flags syncAllFlags, logOut io.Writer) error {
+func runScheduledSyncAllUnlocked(ctx context.Context, cfg config.Config, flags syncAllFlags, logOut io.Writer) (err error) {
 	resolvedFlags, err := resolveSyncAllFlags(cfg.RootDir, flags)
 	if err != nil {
 		return err
 	}
+	metricsRun, closeMetrics, err := openSyncMetrics(cfg, "scheduler:interval")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := closeMetrics(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		return err
@@ -395,6 +404,7 @@ func runScheduledSyncAllUnlocked(ctx context.Context, cfg config.Config, flags s
 	if err != nil {
 		return err
 	}
+	options.Metrics = metricsRun
 	stats, err := runSyncAll(ctx, cfg, st, options)
 	if err != nil {
 		return err

@@ -1,10 +1,14 @@
 package syncjob
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -16,14 +20,386 @@ import (
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/safaritabs"
+	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/worker"
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
 	"github.com/darron/dbrain/internal/xphotoocr"
 )
+
+func TestRunEmitsMetricsRunAndStageEvents(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	origXMedia := runXMediaStage
+	t.Cleanup(func() {
+		runXMediaStage = origXMedia
+	})
+	runXMediaStage = func(_ context.Context, _ config.Config, _ *store.Store, opts xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+		if opts.SummaryModel != "test-summary" {
+			t.Fatalf("SummaryModel = %q, want test-summary", opts.SummaryModel)
+		}
+		return xmediatranscribe.Stats{ItemsProcessed: 2, ItemsSummarized: 1, Errors: 0}, nil
+	}
+
+	_, err = Run(context.Background(), cfg, st, Options{
+		XMediaEnabled: true,
+		Summarize:     true,
+		Model:         "test-summary",
+		Metrics: metrics.RunContext{
+			RunID:      "sync_test_00000000",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readSyncMetricEvents(t, metricsPath)
+	if got := metricEventNames(events); !slices.Equal(got, []string{"sync.run.started", "sync.stage.completed", "sync.run.completed"}) {
+		t.Fatalf("metric events = %v", got)
+	}
+	stage := events[1]
+	if stage["stage"] != "x_media" || stage["status"] != "ok" {
+		t.Fatalf("unexpected stage event: %#v", stage)
+	}
+	counts := stage["counts"].(map[string]any)
+	if counts["items_processed"] != float64(2) || counts["items_summarized"] != float64(1) {
+		t.Fatalf("unexpected stage counts: %#v", counts)
+	}
+	if events[0]["run_id"] != "sync_test_00000000" || events[0]["invocation"] != "cli" {
+		t.Fatalf("unexpected run envelope: %#v", events[0])
+	}
+}
+
+func TestRunEmitsCategorizationDetailMetrics(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailItem})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	origItems := runItemCategorize
+	origSources := runSourceCategorize
+	t.Cleanup(func() {
+		runItemCategorize = origItems
+		runSourceCategorize = origSources
+	})
+
+	runItemCategorize = func(_ context.Context, _ config.Config, _ *store.Store, opts itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.ItemResult, error) {
+		result := itemcategorize.ItemResult{
+			Item: model.Item{
+				ID:        42,
+				SourceKey: "x:secret-item-key",
+			},
+			Result: itemcategorize.Result{
+				Model:      "omlx/qwen3.5-coder",
+				Provider:   "omlx",
+				APIModel:   "qwen3.5-coder",
+				Transport:  "openai_chat_completions",
+				Tool:       "omlx-direct",
+				Categories: []string{"private-category"},
+				Tags:       []string{"private-tag"},
+			},
+			Duration: 1500 * time.Millisecond,
+		}
+		if opts.OnStart != nil {
+			opts.OnStart(1)
+		}
+		if opts.OnResult != nil {
+			opts.OnResult(result)
+		}
+		return itemcategorize.Stats{Queued: 1, Succeeded: 1, Applied: 1}, []itemcategorize.ItemResult{result}, nil
+	}
+	runSourceCategorize = func(_ context.Context, _ config.Config, _ *store.Store, opts itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.SourceResult, error) {
+		result := itemcategorize.SourceResult{
+			Source: model.SourceDocument{
+				ID:        77,
+				SourceKey: "src:secret-source-key",
+			},
+			Result: itemcategorize.Result{
+				Model:      "omlx/qwen3.5-coder",
+				Provider:   "omlx",
+				APIModel:   "qwen3.5-coder",
+				Transport:  "openai_chat_completions",
+				Tool:       "omlx-direct",
+				Categories: []string{"private-source-category"},
+				Tags:       []string{"private-source-tag"},
+			},
+			Duration: 2200 * time.Millisecond,
+		}
+		if opts.OnStart != nil {
+			opts.OnStart(1)
+		}
+		if opts.OnSourceResult != nil {
+			opts.OnSourceResult(result)
+		}
+		return itemcategorize.Stats{Queued: 1, Succeeded: 1, Applied: 1}, []itemcategorize.SourceResult{result}, nil
+	}
+
+	_, err = Run(context.Background(), cfg, st, Options{
+		CategorizeEnabled: true,
+		CategorizeModel:   "omlx/qwen3.5-coder",
+		Metrics: metrics.RunContext{
+			RunID:      "sync_test_00000000",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readSyncMetricEvents(t, metricsPath)
+	if got := metricEventNames(events); !slices.Equal(got, []string{
+		"sync.run.started",
+		"categorize.item.completed",
+		"categorize.source.completed",
+		"sync.stage.completed",
+		"sync.run.completed",
+	}) {
+		t.Fatalf("metric events = %v", got)
+	}
+	itemEvent := events[1]
+	if itemEvent["subject_key"] != nil || itemEvent["subject_kind"] != "item" || itemEvent["model"] != "omlx/qwen3.5-coder" || itemEvent["duration_ms"] != float64(1500) {
+		t.Fatalf("unexpected item metric: %#v", itemEvent)
+	}
+	output := itemEvent["output"].(map[string]any)
+	if output["categories"] != float64(1) || output["tags"] != float64(1) {
+		t.Fatalf("unexpected output counts: %#v", output)
+	}
+	raw, err := os.ReadFile(metricsPath)
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	for _, forbidden := range []string{"x:secret-item-key", "src:secret-source-key", "private-tag", "private-category", "private-source-tag", "private-source-category"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("metrics leaked %q:\n%s", forbidden, raw)
+		}
+	}
+}
+
+func TestRunEmitsSourceSummaryDetailMetrics(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailItem})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	origWorker := runSourceWorker
+	origPending := runSourceEnrichPending
+	t.Cleanup(func() {
+		runSourceWorker = origWorker
+		runSourceEnrichPending = origPending
+	})
+
+	runSourceWorker = func(ctx context.Context, _ worker.SourceBacklogFunc, process worker.SourceRunFunc, _ worker.SourceOptions) (worker.SourceStats, error) {
+		stats, err := process(ctx, 1)
+		return worker.SourceStats{WorkCycles: 1, SourcesSummarized: stats.SourcesSummarized}, err
+	}
+	runSourceEnrichPending = func(_ context.Context, _ config.Config, _ *store.Store, opts sourceenrich.Options) (sourceenrich.Stats, []int64, error) {
+		if opts.OnSourceResult == nil {
+			t.Fatal("expected source result callback")
+		}
+		opts.OnSourceResult(sourceenrich.SourceResult{
+			SourceID:         99,
+			SourceKey:        "src:secret-summary-key",
+			Duration:         2500 * time.Millisecond,
+			SummaryCreated:   true,
+			SummaryStatus:    "ok",
+			SummaryModel:     "omlx/qwen3.5-coder",
+			SummaryTool:      "omlx-direct",
+			SummaryChars:     1234,
+			SummaryProvider:  "omlx",
+			SummaryAPIModel:  "qwen3.5-coder",
+			SummaryTransport: "openai_chat_completions",
+		})
+		return sourceenrich.Stats{SourcesQueued: 1, SourcesSummarized: 1}, []int64{99}, nil
+	}
+
+	_, err = Run(context.Background(), cfg, st, Options{
+		SourcesEnabled: true,
+		Summarize:      true,
+		Model:          "omlx/qwen3.5-coder",
+		Metrics: metrics.RunContext{
+			RunID:      "sync_test_00000000",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readSyncMetricEvents(t, metricsPath)
+	if got := metricEventNames(events); !slices.Equal(got, []string{
+		"sync.run.started",
+		"summary.source.completed",
+		"sync.stage.completed",
+		"sync.run.completed",
+	}) {
+		t.Fatalf("metric events = %v", got)
+	}
+	sourceEvent := events[1]
+	if sourceEvent["subject_key"] != nil || sourceEvent["subject_kind"] != "source" || sourceEvent["model"] != "omlx/qwen3.5-coder" || sourceEvent["duration_ms"] != float64(2500) {
+		t.Fatalf("unexpected source metric: %#v", sourceEvent)
+	}
+	output := sourceEvent["output"].(map[string]any)
+	if output["summary_chars"] != float64(1234) {
+		t.Fatalf("unexpected source output counts: %#v", output)
+	}
+	raw, err := os.ReadFile(metricsPath)
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	if strings.Contains(string(raw), "src:secret-summary-key") {
+		t.Fatalf("metrics leaked raw source key:\n%s", raw)
+	}
+}
+
+func TestRunSkipsSourceSummaryMetricWhenSummaryNotCreated(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailItem})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	origWorker := runSourceWorker
+	origPending := runSourceEnrichPending
+	t.Cleanup(func() {
+		runSourceWorker = origWorker
+		runSourceEnrichPending = origPending
+	})
+
+	runSourceWorker = func(ctx context.Context, _ worker.SourceBacklogFunc, process worker.SourceRunFunc, _ worker.SourceOptions) (worker.SourceStats, error) {
+		stats, err := process(ctx, 1)
+		return worker.SourceStats{WorkCycles: 1, SourcesSummarized: stats.SourcesSummarized}, err
+	}
+	runSourceEnrichPending = func(_ context.Context, _ config.Config, _ *store.Store, opts sourceenrich.Options) (sourceenrich.Stats, []int64, error) {
+		if opts.OnSourceResult == nil {
+			t.Fatal("expected source result callback")
+		}
+		opts.OnSourceResult(sourceenrich.SourceResult{
+			SourceID:       99,
+			SourceKey:      "src:secret-summary-key",
+			Duration:       2500 * time.Millisecond,
+			SummaryCreated: false,
+			SummaryStatus:  "skipped",
+			SummaryModel:   "omlx/qwen3.5-coder",
+			SummaryTool:    "omlx-direct",
+		})
+		return sourceenrich.Stats{SourcesQueued: 1}, []int64{99}, nil
+	}
+
+	_, err = Run(context.Background(), cfg, st, Options{
+		SourcesEnabled: true,
+		Summarize:      true,
+		Model:          "omlx/qwen3.5-coder",
+		Metrics: metrics.RunContext{
+			RunID:      "sync_test_00000000",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readSyncMetricEvents(t, metricsPath)
+	if got := metricEventNames(events); !slices.Equal(got, []string{
+		"sync.run.started",
+		"sync.stage.completed",
+		"sync.run.completed",
+	}) {
+		t.Fatalf("metric events = %v", got)
+	}
+}
+
+func TestRunEmitsCategorizeStageMetricsOnError(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	origItems := runItemCategorize
+	origSources := runSourceCategorize
+	t.Cleanup(func() {
+		runItemCategorize = origItems
+		runSourceCategorize = origSources
+	})
+
+	runItemCategorize = func(_ context.Context, _ config.Config, _ *store.Store, _ itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.ItemResult, error) {
+		return itemcategorize.Stats{Queued: 1, Succeeded: 1, Applied: 1}, nil, nil
+	}
+	runSourceCategorize = func(_ context.Context, _ config.Config, _ *store.Store, _ itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.SourceResult, error) {
+		return itemcategorize.Stats{Queued: 1, Errors: 1}, nil, errors.New("source categorize failed")
+	}
+
+	_, err = Run(context.Background(), cfg, st, Options{
+		CategorizeEnabled: true,
+		CategorizeModel:   "omlx/qwen3.5-coder",
+		Metrics: metrics.RunContext{
+			RunID:      "sync_test_00000000",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "source categorize failed") {
+		t.Fatalf("Run err = %v, want source categorize failed", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readSyncMetricEvents(t, metricsPath)
+	if got := metricEventNames(events); !slices.Equal(got, []string{
+		"sync.run.started",
+		"sync.stage.completed",
+		"sync.run.completed",
+	}) {
+		t.Fatalf("metric events = %v", got)
+	}
+	stage := events[1]
+	if stage["stage"] != "categorize" || stage["status"] != "error" {
+		t.Fatalf("unexpected stage metric: %#v", stage)
+	}
+	counts := events[2]["counts"].(map[string]any)
+	if counts["stages_error"] != float64(1) {
+		t.Fatalf("unexpected run counts: %#v", counts)
+	}
+}
 
 func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 	cfg, st := testSyncStore(t)
@@ -984,4 +1360,38 @@ func testSyncStore(t *testing.T) (config.Config, *store.Store) {
 	})
 
 	return cfg, st
+}
+
+func readSyncMetricEvents(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open metrics: %v", err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	var events []map[string]any
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var event map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("parse metrics line %q: %v", scanner.Text(), err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan metrics: %v", err)
+	}
+	return events
+}
+
+func metricEventNames(events []map[string]any) []string {
+	names := make([]string, 0, len(events))
+	for _, event := range events {
+		if name, _ := event["event"].(string); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/llmprovider"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/model"
 )
 
@@ -42,6 +43,7 @@ type Options struct {
 	Language  string
 	Timeout   time.Duration
 	RootDir   string
+	Metrics   metrics.RunContext
 	// InferenceParams carries optional provider-specific sampler parameters
 	// used by parity-aware bakeoff runs. Normal summary callers leave this
 	// empty so provider/runtime defaults apply.

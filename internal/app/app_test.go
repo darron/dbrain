@@ -2525,6 +2525,114 @@ func TestSyncAllCommandPassesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 	}
 }
 
+func TestSyncAllCommandOpensConfiguredMetricsSink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+metrics:
+  enabled: true
+  path: sync-metrics.jsonl
+  detail: stage
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() {
+		runSyncAll = oldRunSyncAll
+	})
+
+	var captured syncjob.Options
+	runSyncAll = func(_ context.Context, _ config.Config, _ *store.Store, opts syncjob.Options) (syncjob.Stats, error) {
+		captured = opts
+		if !opts.Metrics.Enabled() {
+			t.Fatal("expected metrics enabled")
+		}
+		if opts.Metrics.Invocation != "cli" {
+			t.Fatalf("metrics invocation = %q, want cli", opts.Metrics.Invocation)
+		}
+		if err := opts.Metrics.Emit(map[string]any{"event": "test.metrics", "status": "ok"}); err != nil {
+			t.Fatalf("emit metrics: %v", err)
+		}
+		now := time.Unix(0, 0).UTC()
+		return syncjob.Stats{StartedAt: now, CompletedAt: now}, nil
+	}
+
+	cmd := newSyncAllCommand(&rootOptions{root: root})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"--json",
+		"--skip-github",
+		"--skip-x-photo-ocr",
+		"--skip-categorize",
+		"--skip-youtube",
+		"--skip-x-bookmarks",
+		"--skip-x",
+		"--skip-x-media",
+		"--skip-links",
+		"--skip-sources",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v (stderr=%q)", err, stderr.String())
+	}
+	var jsonStats syncjob.Stats
+	if err := json.Unmarshal(stdout.Bytes(), &jsonStats); err != nil {
+		t.Fatalf("stdout was not valid sync stats JSON: %v\n%s", err, stdout.String())
+	}
+	if jsonStats.StartedAt.IsZero() || jsonStats.CompletedAt.IsZero() {
+		t.Fatalf("unexpected stdout stats: %+v", jsonStats)
+	}
+	if captured.Metrics.RunID == "" || captured.Metrics.Command != "sync all" {
+		t.Fatalf("unexpected metrics context: %+v", captured.Metrics)
+	}
+	path := filepath.Join(root, "logs", "sync-metrics.jsonl")
+	events := readAppMetricEvents(t, path)
+	if len(events) != 1 || events[0]["event"] != "test.metrics" || events[0]["invocation"] != "cli" {
+		t.Fatalf("unexpected metrics events: %#v", events)
+	}
+}
+
+func TestSyncAllCommandFailsBeforeWorkWhenMetricsPathCannotOpen(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+metrics:
+  enabled: true
+  path: /dev/null/metrics.jsonl
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() {
+		runSyncAll = oldRunSyncAll
+	})
+
+	called := false
+	runSyncAll = func(_ context.Context, _ config.Config, _ *store.Store, _ syncjob.Options) (syncjob.Stats, error) {
+		called = true
+		return syncjob.Stats{}, nil
+	}
+
+	cmd := newSyncAllCommand(&rootOptions{root: root})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--json"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("ExecuteContext succeeded, want metrics open error")
+	}
+	if called {
+		t.Fatal("runSyncAll was called after metrics open failed")
+	}
+	if !strings.Contains(err.Error(), "open metrics file") && !strings.Contains(err.Error(), "create metrics directory") {
+		t.Fatalf("unexpected error: %v (stderr=%q)", err, stderr.String())
+	}
+}
+
 func TestSyncAllCommandFailsWhenRunLockHeld(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -2611,6 +2719,26 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 	if resolved.safariTabsDBPath != "/tmp/cloudtabs.db" || resolved.safariTabsDevice != "dfone" || resolved.safariTabsLimit != 8 || resolved.safariTabsOlderThan != 2*time.Hour {
 		t.Fatalf("unexpected Safari tabs settings: db=%q device=%q limit=%d older=%s", resolved.safariTabsDBPath, resolved.safariTabsDevice, resolved.safariTabsLimit, resolved.safariTabsOlderThan)
 	}
+}
+
+func readAppMetricEvents(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	var events []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("parse metrics line %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
 }
 
 func TestResolveSyncAllFlagsKeepsExplicitValues(t *testing.T) {

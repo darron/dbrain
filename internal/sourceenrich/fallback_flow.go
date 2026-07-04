@@ -25,7 +25,7 @@ func processPreflightTerminal(processCtx sourceProcessContext) (sourceProcessRes
 		debugLog(opts.Logger, "source wayback recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", recoverErr.Error())
 	} else if recovered {
 		debugLog(opts.Logger, "source extraction recovered via wayback", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", extract.FinalURL, "content_chars", len(extract.Content))
-		waybackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
+		waybackStats, sourceResult, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 		if err != nil {
 			result.Err = err
 			return result, true
@@ -34,6 +34,7 @@ func processPreflightTerminal(processCtx sourceProcessContext) (sourceProcessRes
 		result.Stats.SourcesSummarized += waybackStats.SourcesSummarized
 		result.Stats.SourcesUnchanged += waybackStats.SourcesUnchanged
 		result.Stats.Errors += waybackStats.Errors
+		result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 		result.TouchedSourceID = source.ID
 		return result, true
 	}
@@ -91,7 +92,7 @@ func processFeedLinkedHTTPExtract(processCtx sourceProcessContext) (sourceProces
 	}
 
 	debugLog(opts.Logger, "using feed-linked HTTP extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(extract.Content), "tool", extract.Tool)
-	stats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
+	stats, sourceResult, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 	if err != nil {
 		result.Err = err
 		return result, true
@@ -100,6 +101,7 @@ func processFeedLinkedHTTPExtract(processCtx sourceProcessContext) (sourceProces
 	result.Stats.SourcesSummarized += stats.SourcesSummarized
 	result.Stats.SourcesUnchanged += stats.SourcesUnchanged
 	result.Stats.Errors += stats.Errors
+	result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 	result.TouchedSourceID = source.ID
 	return result, true
 }
@@ -223,7 +225,7 @@ func processHTTPReaderFallback(processCtx sourceProcessContext) (sourceProcessRe
 			debugLog(opts.Logger, "source extraction using reader fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "reader_url", readerURL, "content_chars", len(readerExtract.Content))
 		}
 		readerExtract = normalizeReaderExtract(source, readerExtract)
-		readerStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, readerExtract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
+		readerStats, sourceResult, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, readerExtract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 		if err != nil {
 			result.Err = err
 			return result, true
@@ -232,6 +234,7 @@ func processHTTPReaderFallback(processCtx sourceProcessContext) (sourceProcessRe
 		result.Stats.SourcesSummarized += readerStats.SourcesSummarized
 		result.Stats.SourcesUnchanged += readerStats.SourcesUnchanged
 		result.Stats.Errors += readerStats.Errors
+		result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 		result.TouchedSourceID = source.ID
 		return result, true
 	}

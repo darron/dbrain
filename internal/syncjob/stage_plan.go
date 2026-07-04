@@ -122,8 +122,10 @@ func runSyncStagePlan(ctx context.Context, cfg config.Config, st *store.Store, o
 			continue
 		}
 		if err := stage.Run(ctx, cfg, st, opts, stats); err != nil {
+			emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, err)
 			return err
 		}
+		emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, nil)
 	}
 	return nil
 }
@@ -202,11 +204,8 @@ func runSourcesSyncStage(ctx context.Context, cfg config.Config, st *store.Store
 
 func runCategorizeSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
 	stage, err := executeCategorizeStage(ctx, cfg, st, opts)
-	if err != nil {
-		return err
-	}
 	stats.Categorize = stage
-	return nil
+	return err
 }
 
 func runMediaArchiveSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
