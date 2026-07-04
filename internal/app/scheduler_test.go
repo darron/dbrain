@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -265,5 +266,36 @@ func TestSyncSchedulerSkipsWhenSyncAllLockHeld(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "scheduler sync all skipped") {
 		t.Fatalf("expected skip log, got %q", out.String())
+	}
+}
+
+func TestSyncSchedulerPrefixesLogLinesWithTimestamps(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	lock, err := acquireSyncAllLock(cfg, "test")
+	if err != nil {
+		t.Fatalf("acquireSyncAllLock: %v", err)
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
+	var out bytes.Buffer
+	s := newSyncScheduler(cfg, schedulerSyncConfig{
+		Enabled:  true,
+		Interval: time.Hour,
+	}, &out)
+	s.run(context.Background(), "test")
+
+	got := out.String()
+	want := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}) scheduler sync all skipped:`)
+	if !want.MatchString(got) {
+		t.Fatalf("expected scheduler log line to start with timestamp, got %q", got)
 	}
 }

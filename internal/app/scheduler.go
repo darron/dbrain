@@ -220,6 +220,7 @@ func newSyncScheduler(cfg config.Config, opts schedulerSyncConfig, logOut io.Wri
 	if logOut == nil {
 		logOut = io.Discard
 	}
+	logOut = newTimestampedLineWriter(logOut, time.Now)
 	status := schedulerstate.SyncAllStatus{
 		Enabled:    opts.Enabled,
 		Interval:   opts.Interval.String(),
