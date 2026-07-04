@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Scheduled Sync Log Timestamps (2026-07-04)
+
+- **Observability**: Scheduled `sync all` logs emitted by `serve remote` now
+  prefix each scheduler log line with an RFC3339 timestamp, making
+  `launchd.err.log` useful without changing interactive `dbrain sync all`
+  terminal output.
+
 ### X Hydration Candidate Selection (2026-07-04)
 
 - **Fixed**: X hydration repair candidate selection now looks up linked media
