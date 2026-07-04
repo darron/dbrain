@@ -198,8 +198,136 @@ func TestCallOMLXTextCategorization(t *testing.T) {
 	if result.Model != "omlx/qwen3.5-coder" {
 		t.Fatalf("result model = %q", result.Model)
 	}
+	if result.Provider != "omlx" || result.APIModel != "qwen3.5-coder" || result.Transport != "openai_chat_completions" || result.Tool != "omlx-direct" {
+		t.Fatalf("unexpected result provenance: %+v", result)
+	}
 	if result.PrimaryCategory != "ai" || len(result.Tags) != 1 || result.Tags[0] != "omlx" {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestBatchItemResultDurationPopulated(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	inserted, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:duration-test",
+		SourceType:   "x_bookmark",
+		ExternalID:   "duration-test",
+		CanonicalURL: "https://x.com/example/status/duration-test",
+		Title:        "Duration test",
+		XPostText:    "An AI infrastructure note.",
+		ContentHash:  "duration-test-hash",
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if inserted.ItemID == 0 {
+		t.Fatal("expected item id")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"categories\":[\"ai\"],\"tags\":[\"duration\"],\"primary_category\":\"ai\"}"}}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("DBRAIN_OMLX_BASE_URL", server.URL)
+	t.Setenv("DBRAIN_OMLX_API_KEY", "")
+
+	_, results, err := Batch(context.Background(), cfg, st, Options{
+		Model:   "omlx/qwen3.5-coder",
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Batch: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	if results[0].Duration <= 0 {
+		t.Fatalf("Duration = %s, want positive", results[0].Duration)
+	}
+}
+
+func TestBatchSourceResultDurationPopulated(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	ctx := context.Background()
+	upsert, err := st.UpsertSource(ctx, model.SourceCandidate{
+		OriginalURL:   "https://example.com/duration-source",
+		CanonicalURL:  "https://example.com/duration-source",
+		NormalizedURL: "https://example.com/duration-source",
+		SourceType:    "article",
+		Domain:        "example.com",
+		SourceKey:     "src:duration-source",
+		NotePath:      "sources/article/duration-source.md",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSource: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, upsert.SourceID, model.ExtractResult{
+		FinalURL:    "https://example.com/duration-source",
+		Title:       "Duration Source",
+		Content:     "A source about local LLM timing and categorization.",
+		Status:      model.SourceExtractStatusOK,
+		FetchedAt:   time.Now().UTC(),
+		Tool:        "test",
+		ToolVersion: "test",
+	}, "duration-source-hash"); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"categories\":[\"ai\"],\"tags\":[\"duration\"],\"primary_category\":\"ai\"}"}}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("DBRAIN_OMLX_BASE_URL", server.URL)
+	t.Setenv("DBRAIN_OMLX_API_KEY", "")
+
+	_, results, err := BatchSources(ctx, cfg, st, Options{
+		Model:   "omlx/qwen3.5-coder",
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("BatchSources: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	if results[0].Duration <= 0 {
+		t.Fatalf("Duration = %s, want positive", results[0].Duration)
 	}
 }
 

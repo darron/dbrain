@@ -103,6 +103,7 @@ func callProvider(ctx context.Context, bundle string, photoData [][]byte, modelN
 		Task:              llmprovider.TaskCategorize,
 		RootDir:           opts.RootDir,
 		ProviderOverrides: providerOverrides(opts),
+		Metrics:           opts.Metrics,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("%s categorize: %w", providerLabel(modelName), err)
@@ -112,7 +113,16 @@ func callProvider(ctx context.Context, bundle string, photoData [][]byte, modelN
 	if displayModel == "" {
 		displayModel = modelName
 	}
-	return parseCategorizationJSON(response.Text, displayModel, opts.Vocab)
+	result, err := parseCategorizationJSON(response.Text, displayModel, opts.Vocab)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Provider = string(response.Provider)
+	result.APIModel = response.APIModel
+	result.Transport = string(response.Transport)
+	result.Tool = response.Tool
+	result.ToolVersion = response.ToolVersion
+	return result, nil
 }
 
 func validateCategorizeProviderCapabilities(rootDir string, modelName string, photoData [][]byte) error {

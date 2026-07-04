@@ -27,7 +27,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 		Use:   "all",
 		Short: "Run the incremental brain refresh pipeline end to end",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			cfg, err := loadConfig(root.root, root.configFile)
 			if err != nil {
 				return err
@@ -39,8 +39,18 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			if err := cfg.EnsureDirs(); err != nil {
 				return err
 			}
+			metricsRun, closeMetrics, err := openSyncMetrics(cfg, "cli")
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if closeErr := closeMetrics(); err == nil && closeErr != nil {
+					err = closeErr
+				}
+			}()
 			lock, err := acquireSyncAllLock(cfg, "cli")
 			if err != nil {
+				emitSyncMetricsSkipped(metricsRun, err)
 				return err
 			}
 			defer func() {
@@ -72,6 +82,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			options.Metrics = metricsRun
 			stats, err := runSyncAll(cmd.Context(), cfg, st, options)
 			if err != nil {
 				return err

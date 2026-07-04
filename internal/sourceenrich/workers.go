@@ -13,6 +13,7 @@ import (
 type sourceProcessResult struct {
 	Stats           Stats
 	TouchedSourceID int64
+	SourceResult    SourceResult
 	Err             error
 }
 
@@ -27,10 +28,13 @@ func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *stor
 	if opts.Concurrency <= 1 || len(sources) == 1 {
 		results := make([]sourceProcessResult, 0, len(sources))
 		for _, source := range sources {
-			tracker.start(source, time.Now())
+			startedAt := time.Now()
+			tracker.start(source, startedAt)
 			result := processSingleSource(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
+			result = finalizeSourceProcessResult(source, result, time.Since(startedAt))
 			tracker.finish(source, result)
 			results = append(results, result)
+			notifySourceResult(opts, result.SourceResult)
 			if result.Err != nil {
 				return results, result.Err
 			}
@@ -55,9 +59,12 @@ func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *stor
 		go func() {
 			defer wg.Done()
 			for source := range jobs {
-				tracker.start(source, time.Now())
+				startedAt := time.Now()
+				tracker.start(source, startedAt)
 				result := processSingleSource(ctx, cfg, st, source, opts, extractToolVersion, summaryToolVersion)
+				result = finalizeSourceProcessResult(source, result, time.Since(startedAt))
 				tracker.finish(source, result)
+				notifySourceResult(opts, result.SourceResult)
 				select {
 				case results <- result:
 				case <-ctx.Done():
@@ -96,4 +103,21 @@ func processSourcesConcurrently(ctx context.Context, cfg config.Config, st *stor
 		}
 	}
 	return out, firstErr
+}
+
+func finalizeSourceProcessResult(source model.SourceDocument, result sourceProcessResult, duration time.Duration) sourceProcessResult {
+	result.SourceResult.SourceID = source.ID
+	result.SourceResult.SourceKey = source.SourceKey
+	result.SourceResult.Duration = duration
+	if result.Err != nil && result.SourceResult.Error == "" {
+		result.SourceResult.Error = result.Err.Error()
+	}
+	return result
+}
+
+func notifySourceResult(opts Options, result SourceResult) {
+	if opts.OnSourceResult == nil {
+		return
+	}
+	opts.OnSourceResult(result)
 }

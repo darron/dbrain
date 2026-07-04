@@ -156,7 +156,7 @@ func processMakerWorldAPIExtract(processCtx sourceProcessContext) (sourceProcess
 	}
 
 	debugLog(opts.Logger, "using makerworld API extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(extract.Content), "tool", extract.Tool)
-	stats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
+	stats, sourceResult, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 	if err != nil {
 		result.Err = err
 		return result, true
@@ -165,6 +165,7 @@ func processMakerWorldAPIExtract(processCtx sourceProcessContext) (sourceProcess
 	result.Stats.SourcesSummarized += stats.SourcesSummarized
 	result.Stats.SourcesUnchanged += stats.SourcesUnchanged
 	result.Stats.Errors += stats.Errors
+	result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 	result.TouchedSourceID = source.ID
 	return result, true
 }

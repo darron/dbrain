@@ -9,6 +9,7 @@ import (
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/safaritabs"
+	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/worker"
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
@@ -17,19 +18,20 @@ import (
 )
 
 var (
-	runXBookmarkImport  = xapi.RunBookmarks
-	runXHydrate         = xapi.Run
-	runXMediaStage      = xmediatranscribe.Run
-	runXPhotoOCRStage   = xphotoocr.Run
-	runLinkExtract      = linkextract.Run
-	runGitHubImport     = githubimport.Run
-	runYouTubeImport    = youtubeimport.Run
-	runSourceWorker     = worker.RunSources
-	runMediaArchive     = mediaarchive.Run
-	runItemCategorize   = itemcategorize.Batch
-	runSourceCategorize = itemcategorize.BatchSources
-	runAppleNotesImport = applenotes.Run
-	runSafariTabsImport = safaritabs.Run
-	runFeedImport       = feedimport.Run
-	runOKFExport        = okf.Export
+	runXBookmarkImport     = xapi.RunBookmarks
+	runXHydrate            = xapi.Run
+	runXMediaStage         = xmediatranscribe.Run
+	runXPhotoOCRStage      = xphotoocr.Run
+	runLinkExtract         = linkextract.Run
+	runGitHubImport        = githubimport.Run
+	runYouTubeImport       = youtubeimport.Run
+	runSourceWorker        = worker.RunSources
+	runSourceEnrichPending = sourceenrich.RunPending
+	runMediaArchive        = mediaarchive.Run
+	runItemCategorize      = itemcategorize.Batch
+	runSourceCategorize    = itemcategorize.BatchSources
+	runAppleNotesImport    = applenotes.Run
+	runSafariTabsImport    = safaritabs.Run
+	runFeedImport          = feedimport.Run
+	runOKFExport           = okf.Export
 )

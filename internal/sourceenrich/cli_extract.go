@@ -31,6 +31,7 @@ func processDirectSummaryExtract(processCtx sourceProcessContext) (sourceProcess
 		RootDir:         cfg.RootDir,
 		Env:             processCtx.sourceEnv,
 		Args:            processCtx.sourceArgs,
+		Metrics:         opts.Metrics,
 		InferenceParams: opts.InferenceParams,
 	})
 	if err != nil {
@@ -48,7 +49,7 @@ func processDirectSummaryExtract(processCtx sourceProcessContext) (sourceProcess
 	if normalized, changed := normalizeExtract(source, extractResult.Extract); changed {
 		extractResult.Extract = normalized
 	}
-	extractStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extractResult.Extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
+	extractStats, sourceResult, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, extractResult.Extract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 	if err != nil {
 		result.Err = err
 		return result, true
@@ -57,6 +58,7 @@ func processDirectSummaryExtract(processCtx sourceProcessContext) (sourceProcess
 	result.Stats.SourcesSummarized += extractStats.SourcesSummarized
 	result.Stats.SourcesUnchanged += extractStats.SourcesUnchanged
 	result.Stats.Errors += extractStats.Errors
+	result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 
 	result.TouchedSourceID = source.ID
 	return result, true
@@ -89,6 +91,7 @@ func processDefaultCLIExtract(processCtx sourceProcessContext) sourceProcessResu
 		RootDir:         cfg.RootDir,
 		Env:             processCtx.sourceEnv,
 		Args:            processCtx.sourceArgs,
+		Metrics:         opts.Metrics,
 		InferenceParams: opts.InferenceParams,
 	})
 	if err != nil {
@@ -122,6 +125,7 @@ func processDefaultCLIExtract(processCtx sourceProcessContext) sourceProcessResu
 		return result
 	} else if changed {
 		result.Stats.SourcesExtracted++
+		result.SourceResult.Extracted = true
 		debugLog(opts.Logger, "source extraction saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "status", runResult.Extract.Status, "content_chars", len(runResult.Extract.Content), "tool", runResult.Extract.Tool)
 	} else {
 		result.Stats.SourcesUnchanged++
@@ -134,7 +138,10 @@ func processDefaultCLIExtract(processCtx sourceProcessContext) sourceProcessResu
 			return result
 		} else if changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
 			result.Stats.SourcesSummarized++
+			result.SourceResult = mergeSourceResult(result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed))
 			debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
+		} else {
+			result.SourceResult = mergeSourceResult(result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed))
 		}
 	}
 
@@ -158,7 +165,7 @@ func processExtractRunError(processCtx sourceProcessContext, runErr error, logMe
 		debugLog(opts.Logger, "source protected fetch recovery failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", fallbackErr.Error())
 	} else if recovered {
 		debugLog(opts.Logger, "source extraction recovered via fallback fetch", "source_key", source.SourceKey, "url", source.CanonicalURL, "final_url", fallbackExtract.FinalURL, "tool", fallbackExtract.Tool, "content_chars", len(fallbackExtract.Content))
-		fallbackStats, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, fallbackExtract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
+		fallbackStats, sourceResult, err := persistExtractAndSummaryFromExtract(ctx, cfg, st, source, fallbackExtract, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion)
 		if err != nil {
 			result.Err = err
 			return result
@@ -167,6 +174,7 @@ func processExtractRunError(processCtx sourceProcessContext, runErr error, logMe
 		result.Stats.SourcesSummarized += fallbackStats.SourcesSummarized
 		result.Stats.SourcesUnchanged += fallbackStats.SourcesUnchanged
 		result.Stats.Errors += fallbackStats.Errors
+		result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 		result.TouchedSourceID = source.ID
 		return result
 	}

@@ -1,6 +1,7 @@
 package llmclient
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/llmprovider"
+	"github.com/darron/dbrain/internal/metrics"
 )
 
 func TestChatOpenAICompatibleLocalOMLXOmitsAuthorization(t *testing.T) {
@@ -98,6 +100,82 @@ func TestChatOllamaSendsNativeOptionsAndDisablesThinking(t *testing.T) {
 	if resp.Transport != llmprovider.TransportOllamaChat {
 		t.Fatalf("transport = %q", resp.Transport)
 	}
+}
+
+func TestChatEmitsModelCallMetricsWithoutPromptText(t *testing.T) {
+	t.Parallel()
+
+	var captured openAIChatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen3.5-coder","choices":[{"message":{"content":"metric response"}}]}`))
+	}))
+	defer server.Close()
+
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailModelCall})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	resp, err := Chat(context.Background(), Request{
+		Model: "omlx/qwen3.5-coder",
+		Messages: []Message{
+			SystemMessage("private system prompt"),
+			UserTextMessage("private body text"),
+		},
+		Timeout: 2 * time.Second,
+		Task:    llmprovider.TaskSummary,
+		Env:     map[string]string{"DBRAIN_OMLX_BASE_URL": server.URL + "/v1"},
+		Metrics: metrics.RunContext{
+			RunID:      "sync_test_00000000",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Text != "metric response" {
+		t.Fatalf("response = %+v", resp)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readLLMMetricEvents(t, metricsPath)
+	if len(events) != 1 {
+		t.Fatalf("events = %#v", events)
+	}
+	event := events[0]
+	if event["event"] != "llm.call.completed" || event["status"] != "ok" || event["model"] != "omlx/qwen3.5-coder" || event["provider"] != "omlx" {
+		t.Fatalf("unexpected metric event: %#v", event)
+	}
+	if event["api_model"] != "qwen3.5-coder" || event["transport"] != "openai_chat_completions" || event["local"] != true {
+		t.Fatalf("unexpected provider fields: %#v", event)
+	}
+	request := event["request"].(map[string]any)
+	if request["text_parts"] != float64(2) || request["image_parts"] != float64(0) {
+		t.Fatalf("unexpected request counts: %#v", request)
+	}
+	output := event["output"].(map[string]any)
+	if output["chars"] != float64(len("metric response")) {
+		t.Fatalf("unexpected output counts: %#v", output)
+	}
+	raw, err := os.ReadFile(metricsPath)
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	for _, forbidden := range []string{"private system prompt", "private body text", "metric response"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("metrics leaked %q:\n%s", forbidden, raw)
+		}
+	}
+	_ = captured
 }
 
 func TestChatOpenRouterSendsRequiredAuthAndCategorizeHeaders(t *testing.T) {
@@ -346,4 +424,33 @@ func writeClientConfig(t *testing.T, root string, content string) {
 	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile config.yaml: %v", err)
 	}
+}
+
+func readLLMMetricEvents(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open metrics: %v", err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	var events []map[string]any
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode metric %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan metrics: %v", err)
+	}
+	return events
 }

@@ -4,6 +4,8 @@ import (
 	"io"
 	"log/slog"
 	"time"
+
+	"github.com/darron/dbrain/internal/metrics"
 )
 
 type stageOptions struct {
@@ -35,6 +37,7 @@ type commonStageOptions struct {
 	Timeout   time.Duration
 	Logger    *slog.Logger
 	Progress  io.Writer
+	Metrics   metrics.RunContext
 }
 
 type xBookmarksStageOptions struct {
@@ -159,6 +162,7 @@ func newStageOptions(opts Options) stageOptions {
 			Timeout:   opts.Timeout,
 			Logger:    opts.Logger,
 			Progress:  opts.Progress,
+			Metrics:   opts.Metrics,
 		},
 		XBookmarks: xBookmarksStageOptions{
 			Enabled: opts.XBookmarksEnabled,

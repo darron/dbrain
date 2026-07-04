@@ -223,7 +223,7 @@ func executeSourcesStage(ctx context.Context, cfg config.Config, st *store.Store
 			return st.Backlog(ctx, "", "", "")
 		},
 		func(ctx context.Context, _ int) (sourceenrich.Stats, error) {
-			batchStats, _, err := sourceenrich.RunPending(ctx, cfg, st, sourceenrich.Options{
+			batchStats, _, err := runSourceEnrichPending(ctx, cfg, st, sourceenrich.Options{
 				Limit:       stageOpts.Limit,
 				Concurrency: stageOpts.Concurrency,
 				Force:       common.Force,
@@ -233,6 +233,10 @@ func executeSourcesStage(ctx context.Context, cfg config.Config, st *store.Store
 				Length:      common.Length,
 				Timeout:     common.Timeout,
 				Logger:      common.Logger,
+				Metrics:     common.Metrics,
+				OnSourceResult: func(result sourceenrich.SourceResult) {
+					emitSourceSummaryMetric(common.Metrics, result, common, stageOpts)
+				},
 			})
 			return batchStats, err
 		},
