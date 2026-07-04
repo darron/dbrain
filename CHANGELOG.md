@@ -5,6 +5,12 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Categorization Vault Tags (2026-07-04)
+
+- **Fixed**: Applying item/source categorization now refreshes the rendered
+  vault Markdown notes, and item notes now include `user_tags` frontmatter so
+  DB, search, OKF, and human-facing notes stay aligned.
+
 ### Durable Sync Metrics (2026-07-03)
 
 - **Observability**: Added opt-in append-only JSONL metrics for manual and

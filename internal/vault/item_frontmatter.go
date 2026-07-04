@@ -29,6 +29,7 @@ func writeItemFrontmatter(b *strings.Builder, item model.Item, links []string) {
 	writeYAMLScalar(b, "synced_at", item.SyncedAt)
 	writeYAMLScalar(b, "primary_category", item.PrimaryCategory)
 	writeYAMLScalar(b, "primary_domain", item.PrimaryDomain)
+	writeYAMLScalar(b, "user_tags", item.UserTags)
 	if isXItem(item) {
 		writeYAMLScalar(b, "x_post_status", item.XPostStatus)
 		writeYAMLScalar(b, "x_post_fetched_at", formatTime(item.XPostFetchedAt))
