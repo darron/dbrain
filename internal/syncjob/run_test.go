@@ -86,6 +86,84 @@ func TestRunEmitsMetricsRunAndStageEvents(t *testing.T) {
 	}
 }
 
+func TestRunEmitsResolvedModelConfigInMetrics(t *testing.T) {
+	t.Setenv("DBRAIN_CATEGORIZE_MODEL", "ollama/test-categorize")
+	t.Setenv("DBRAIN_OCR_MODEL", "ollama/test-ocr")
+	cfg, st := testSyncStore(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	origOCR := runXPhotoOCRStage
+	origItems := runItemCategorize
+	origSources := runSourceCategorize
+	t.Cleanup(func() {
+		runXPhotoOCRStage = origOCR
+		runItemCategorize = origItems
+		runSourceCategorize = origSources
+	})
+
+	runXPhotoOCRStage = func(_ context.Context, _ config.Config, _ *store.Store, opts xphotoocr.Options) (xphotoocr.Stats, error) {
+		if opts.Model != "ollama/test-ocr" {
+			t.Fatalf("ocr model = %q, want resolved env model", opts.Model)
+		}
+		return xphotoocr.Stats{ItemsProcessed: 1, PhotosOCRed: 1}, nil
+	}
+	runItemCategorize = func(_ context.Context, _ config.Config, _ *store.Store, opts itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.ItemResult, error) {
+		if opts.Model != "ollama/test-categorize" {
+			t.Fatalf("item categorize model = %q, want resolved env model", opts.Model)
+		}
+		return itemcategorize.Stats{Queued: 1, Succeeded: 1, Applied: 1}, nil, nil
+	}
+	runSourceCategorize = func(_ context.Context, _ config.Config, _ *store.Store, opts itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.SourceResult, error) {
+		if opts.Model != "ollama/test-categorize" {
+			t.Fatalf("source categorize model = %q, want resolved env model", opts.Model)
+		}
+		return itemcategorize.Stats{}, nil, nil
+	}
+
+	_, err = Run(context.Background(), cfg, st, Options{
+		XPhotoOCREnabled:  true,
+		CategorizeEnabled: true,
+		Metrics: metrics.RunContext{
+			RunID:      "sync_test_00000000",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readSyncMetricEvents(t, metricsPath)
+	if got := metricEventNames(events); !slices.Equal(got, []string{
+		"sync.run.started",
+		"sync.stage.completed",
+		"sync.stage.completed",
+		"sync.run.completed",
+	}) {
+		t.Fatalf("metric events = %v", got)
+	}
+	runConfig := events[0]["config"].(map[string]any)
+	if runConfig["categorize_model"] != "ollama/test-categorize" {
+		t.Fatalf("run categorize_model = %#v, want resolved model", runConfig["categorize_model"])
+	}
+	ocrConfig := events[1]["config"].(map[string]any)
+	if events[1]["stage"] != "x_photo_ocr" || ocrConfig["ocr_model"] != "ollama/test-ocr" {
+		t.Fatalf("unexpected ocr metric: %#v", events[1])
+	}
+	categorizeConfig := events[2]["config"].(map[string]any)
+	if events[2]["stage"] != "categorize" || categorizeConfig["categorize_model"] != "ollama/test-categorize" {
+		t.Fatalf("unexpected categorize metric: %#v", events[2])
+	}
+}
+
 func TestRunEmitsCategorizationDetailMetrics(t *testing.T) {
 	cfg, st := testSyncStore(t)
 	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")

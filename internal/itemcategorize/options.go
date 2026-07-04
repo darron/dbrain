@@ -18,9 +18,7 @@ func resolveOpts(ctx context.Context, cfg config.Config, opts *Options) error {
 		vocab, _ := categoryvocab.Load(cfg.CategoriesPath)
 		opts.Vocab = vocab
 	}
-	if strings.TrimSpace(opts.Model) == "" {
-		opts.Model = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_CATEGORIZE_MODEL"), defaultModel)
-	}
+	opts.Model = ResolveModel(cfg.RootDir, opts.Model)
 	if opts.Timeout <= 0 {
 		opts.Timeout = defaultTimeout
 	}
@@ -88,6 +86,13 @@ func resolveOpts(ctx context.Context, cfg config.Config, opts *Options) error {
 		opts.S3Region = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION"), "auto")
 	}
 	return nil
+}
+
+func ResolveModel(rootDir string, model string) string {
+	if value := strings.TrimSpace(model); value != "" {
+		return value
+	}
+	return firstNonEmpty(runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_CATEGORIZE_MODEL"), defaultModel)
 }
 
 // normalizeChatCompletionsBase ensures a chat-completions base URL carries an

@@ -16,6 +16,8 @@ development date for the change set.
   subject keys require explicit `metrics.include_subject_keys: true`.
 - **Docs/config**: Documented metrics setup in `config.yaml.sample`, README,
   and `COMMANDS.md`.
+- **Fixed**: Sync metrics now report resolved OCR and categorization models
+  from config/env/defaults instead of empty raw CLI override fields.
 
 ### Remote Web Chat Streaming (2026-07-03)
 
