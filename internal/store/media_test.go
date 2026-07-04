@@ -916,6 +916,49 @@ func TestListItemsForXHydrationIncludesDownloadedVideoThumbsForRepair(t *testing
 	}
 }
 
+func TestXHydrationCandidateQueryLooksUpDownloadedMediaByItemFirst(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+
+	rows, err := st.db.QueryContext(ctx, `
+		EXPLAIN QUERY PLAN
+		SELECT id
+		FROM items
+		WHERE `+xItemSourceTypeWhere+`
+			AND external_id != ''
+			AND `+xHydrationCandidateWhere+`
+		ORDER BY
+			CASE WHEN x_post_status = '' THEN 0 ELSE 1 END,
+			last_seen_at DESC,
+			x_post_fetched_at ASC,
+			id DESC
+		LIMIT 100`)
+	if err != nil {
+		t.Fatalf("explain x hydration candidates: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatalf("scan query plan: %v", err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate query plan: %v", err)
+	}
+
+	joined := strings.Join(plan, "\n")
+	if strings.Contains(joined, "idx_media_assets_download_retry") {
+		t.Fatalf("downloaded media repair should not scan media_assets by status for each item:\n%s", joined)
+	}
+}
+
 func TestListItemsForXHydrationIncludesQuotedPostBackfillRepair(t *testing.T) {
 	t.Parallel()
 

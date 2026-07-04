@@ -5,6 +5,12 @@ development date for the change set.
 
 ## Recent Improvements
 
+### X Hydration Candidate Selection (2026-07-04)
+
+- **Fixed**: X hydration repair candidate selection now looks up linked media
+  from the current item first, avoiding repeated `media_assets` status scans
+  across large already-hydrated X corpora during `hydrate x` and `sync all`.
+
 ### Categorization Vault Tags (2026-07-04)
 
 - **Fixed**: Applying item/source categorization now refreshes the rendered
