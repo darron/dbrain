@@ -12,3 +12,4 @@ web/ui/node_modules/
 /okf/
 evals/local/*.json
 !evals/local/.gitkeep
+/logs/
