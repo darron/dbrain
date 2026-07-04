@@ -6,6 +6,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -35,6 +36,9 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, item model.Ite
 		if err := st.SaveItemUserTags(ctx, item.ID, tags); err != nil {
 			return result, fmt.Errorf("save user_tags: %w", err)
 		}
+		if _, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey); err != nil {
+			return result, fmt.Errorf("refresh item note: %w", err)
+		}
 	}
 
 	return result, nil
@@ -55,6 +59,9 @@ func RunSource(ctx context.Context, cfg config.Config, st *store.Store, source m
 		tags := MergeUserTags(source.UserTags, result)
 		if err := st.SaveSourceUserTags(ctx, source.ID, tags); err != nil {
 			return result, fmt.Errorf("save source user_tags: %w", err)
+		}
+		if _, err := projection.NewRenderer(cfg, st).RefreshSourceByID(ctx, source.ID); err != nil {
+			return result, fmt.Errorf("refresh source note: %w", err)
 		}
 	}
 

@@ -15,7 +15,9 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/llmprovider"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vault"
 )
 
 func TestMergeUserTagsPreservesExistingAndDedupesGenerated(t *testing.T) {
@@ -329,6 +331,179 @@ func TestBatchSourceResultDurationPopulated(t *testing.T) {
 	if results[0].Duration <= 0 {
 		t.Fatalf("Duration = %s, want positive", results[0].Duration)
 	}
+}
+
+func TestRunApplyRefreshesRenderedItemTags(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	item := model.Item{
+		SourceKey:    "x:test-rendered-item-tags",
+		SourceType:   "x_bookmark",
+		ExternalID:   "2072695564131504623",
+		CanonicalURL: "https://x.com/example/status/2072695564131504623",
+		Title:        "Rendered Item Tags",
+		XPostText:    "A post about local knowledge tools.",
+		ContentHash:  "test-rendered-item-tags-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/x/2026/2072695564131504623.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upsert, err := st.UpsertItem(ctx, item)
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	item.ID = upsert.ItemID
+
+	if _, err := projection.NewRenderer(cfg, st).RefreshItem(ctx, item.SourceKey); err != nil {
+		t.Fatalf("initial RefreshItem: %v", err)
+	}
+	before := readCategorizeRenderedNote(t, cfg, item.NotePath)
+	if strings.Contains(before, "local-memory") {
+		t.Fatalf("precondition failed: rendered item already has generated tag:\n%s", before)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"categories\":[\"ai\"],\"tags\":[\"local-memory\"],\"primary_category\":\"ai\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	if _, err := Run(ctx, cfg, st, item, Options{
+		Model:          "openrouter/google/gemini-test",
+		OpenRouterBase: server.URL,
+		OpenRouterKey:  "test-openrouter-key",
+		Apply:          true,
+		Timeout:        2 * time.Second,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	updated, err := st.GetItem(ctx, item.SourceKey)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if updated.UserTags != "local-memory,ai" {
+		t.Fatalf("stored user_tags = %q, want generated tags", updated.UserTags)
+	}
+
+	after := readCategorizeRenderedNote(t, cfg, item.NotePath)
+	if !strings.Contains(after, `user_tags: "local-memory,ai"`) {
+		t.Fatalf("rendered item note missing current user_tags:\n%s", after)
+	}
+}
+
+func TestRunSourceApplyRefreshesRenderedSourceTags(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	candidate := model.SourceCandidate{
+		OriginalURL:   "https://example.com/rendered-source-tags",
+		CanonicalURL:  "https://example.com/rendered-source-tags",
+		NormalizedURL: "https://example.com/rendered-source-tags",
+		SourceType:    "web",
+		Domain:        "example.com",
+		SourceKey:     "src:test-rendered-source-tags",
+		NotePath:      vault.SourceNoteRelativePath("web", "rendered-source-tags"),
+	}
+	upsert, err := st.UpsertSource(ctx, candidate)
+	if err != nil {
+		t.Fatalf("UpsertSource: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, upsert.SourceID, model.ExtractResult{
+		FinalURL:    candidate.CanonicalURL,
+		Title:       "Rendered Source Tags",
+		Content:     "A source about local knowledge tools and categorization.",
+		Status:      model.SourceExtractStatusOK,
+		FetchedAt:   now,
+		Tool:        "test",
+		ToolVersion: "test",
+	}, "rendered-source-tags-hash"); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+	source, err := st.GetSourceByID(ctx, upsert.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+
+	if _, err := projection.NewRenderer(cfg, st).RefreshSourceByID(ctx, source.ID); err != nil {
+		t.Fatalf("initial RefreshSourceByID: %v", err)
+	}
+	before := readCategorizeRenderedNote(t, cfg, source.NotePath)
+	if strings.Contains(before, "source-memory") {
+		t.Fatalf("precondition failed: rendered source already has generated tag:\n%s", before)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"categories\":[\"research\"],\"tags\":[\"source-memory\"],\"primary_category\":\"research\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	if _, err := RunSource(ctx, cfg, st, source, Options{
+		Model:          "openrouter/google/gemini-test",
+		OpenRouterBase: server.URL,
+		OpenRouterKey:  "test-openrouter-key",
+		Apply:          true,
+		Timeout:        2 * time.Second,
+	}); err != nil {
+		t.Fatalf("RunSource: %v", err)
+	}
+
+	updated, err := st.GetSourceByID(ctx, source.ID)
+	if err != nil {
+		t.Fatalf("GetSourceByID after categorize: %v", err)
+	}
+	if updated.UserTags != "source-memory,research" {
+		t.Fatalf("stored source user_tags = %q, want generated tags", updated.UserTags)
+	}
+
+	after := readCategorizeRenderedNote(t, cfg, source.NotePath)
+	if !strings.Contains(after, `user_tags: "source-memory,research"`) {
+		t.Fatalf("rendered source note missing current user_tags:\n%s", after)
+	}
+}
+
+func readCategorizeRenderedNote(t *testing.T, cfg config.Config, notePath string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(cfg.VaultDir, filepath.FromSlash(notePath)))
+	if err != nil {
+		t.Fatalf("read rendered note %s: %v", notePath, err)
+	}
+	return string(body)
 }
 
 func TestRunSendsImagesForOMLXProvider(t *testing.T) {

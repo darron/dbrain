@@ -385,6 +385,21 @@ When adding, fixing, or materially changing user-visible behavior, update
 - if a change intentionally does not need a changelog entry, be ready to explain
   why in the final response or PR notes
 
+### Use direnv for dev-branch runtime validation
+
+When validating a dev branch or repo-local install, run `dbrain` through the
+repo's direnv environment so `DBRAIN_ROOT`, config paths, local DB, vault, logs,
+and model/backend overrides match the checked-out development hierarchy.
+
+- prefer `direnv exec . ./bin/dbrain ...` for repo-local CLI smoke tests
+- verify the target with `direnv exec . ./bin/dbrain --no-debug config paths --json`
+  before querying SQLite rows or inspecting rendered vault files
+- do not infer dev runtime paths from the current shell or from production XDG
+  defaults; those can point at `~/.config/dbrain` and
+  `~/.local/share/dbrain`
+- when the user explicitly asks about production, resolve production paths
+  separately and make that boundary clear before running commands
+
 ### Prefer local models when practical
 
 `dbrain` should keep working with local inference whenever practical.
