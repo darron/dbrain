@@ -110,10 +110,40 @@ func (r *Recorder) PlannerInput(input string) {
 	r.artifacts.PlannerInput = input
 }
 
+func (r *Recorder) PlannerInputAttempt(attempt string, input string) {
+	attempt = strings.TrimSpace(attempt)
+	if attempt == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.artifacts.PlannerAttempts == nil {
+		r.artifacts.PlannerAttempts = map[string]PlannerAttemptContents{}
+	}
+	contents := r.artifacts.PlannerAttempts[attempt]
+	contents.Input = input
+	r.artifacts.PlannerAttempts[attempt] = contents
+}
+
 func (r *Recorder) PlannerOutput(output string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.artifacts.PlannerOutput = output
+}
+
+func (r *Recorder) PlannerOutputAttempt(attempt string, output string) {
+	attempt = strings.TrimSpace(attempt)
+	if attempt == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.artifacts.PlannerAttempts == nil {
+		r.artifacts.PlannerAttempts = map[string]PlannerAttemptContents{}
+	}
+	contents := r.artifacts.PlannerAttempts[attempt]
+	contents.Output = output
+	r.artifacts.PlannerAttempts[attempt] = contents
 }
 
 func (r *Recorder) Snapshot() (ResearchTrace, ArtifactContents) {
@@ -155,11 +185,19 @@ func inferStopReason(trace ResearchTrace) string {
 }
 
 func computeMetrics(trace ResearchTrace, artifacts ArtifactContents) TraceMetrics {
+	plannerAttemptBytes := 0
+	plannerAttemptOutputCount := 0
+	for _, attempt := range artifacts.PlannerAttempts {
+		plannerAttemptBytes += len(attempt.Input) + len(attempt.Output)
+		if strings.TrimSpace(attempt.Output) != "" {
+			plannerAttemptOutputCount++
+		}
+	}
 	metrics := TraceMetrics{
 		StageDurationsMS:          map[string]int64{},
 		CharactersSentToPlanner:   len(artifacts.PlannerInput),
 		CharactersSentToSynthesis: len(artifacts.SynthesisInput),
-		TraceArtifactBytes:        int64(len(artifacts.PlannerInput) + len(artifacts.PlannerOutput) + len(artifacts.SynthesisInput)),
+		TraceArtifactBytes:        int64(len(artifacts.PlannerInput) + len(artifacts.PlannerOutput) + plannerAttemptBytes + len(artifacts.SynthesisInput)),
 	}
 	if !trace.StartedAt.IsZero() && !trace.CompletedAt.IsZero() {
 		metrics.TotalDurationMS = trace.CompletedAt.Sub(trace.StartedAt).Milliseconds()
@@ -182,7 +220,9 @@ func computeMetrics(trace ResearchTrace, artifacts ArtifactContents) TraceMetric
 			metrics.CandidateCountBeforeDedupe += intFromAny(event.Data["candidate_count"])
 		}
 	}
-	if strings.TrimSpace(artifacts.PlannerOutput) != "" {
+	if plannerAttemptOutputCount > 0 {
+		metrics.ModelCallCount += plannerAttemptOutputCount
+	} else if strings.TrimSpace(artifacts.PlannerOutput) != "" {
 		metrics.ModelCallCount++
 	}
 	if trace.Synthesis != nil && trace.Synthesis.AnswerStatus != "no_evidence" && trace.Synthesis.Model != "" {

@@ -38,6 +38,7 @@ type JudgeResult struct {
 	Reason          string            `json:"reason,omitempty"`
 	MissingConcepts []string          `json:"missing_concepts,omitempty"`
 	WeakRows        []WeakEvidenceRow `json:"weak_rows,omitempty"`
+	AnchorSupport   map[string]int    `json:"anchor_support,omitempty"`
 	RetryAction     RetryAction       `json:"retry_action"`
 	RetryVariant    string            `json:"retry_variant,omitempty"`
 	ExpansionLookup string            `json:"expansion_lookup,omitempty"`
@@ -85,6 +86,7 @@ type ProgressEvent struct {
 
 type Options struct {
 	Question             string
+	RawQuestion          string
 	SynthesisQuestion    string
 	Topic                string
 	Limit                int
@@ -112,6 +114,7 @@ type Options struct {
 	RunnerTimeout        time.Duration
 	StageTimeout         time.Duration
 	MaxSteps             int
+	StopAfterJudge       bool
 	MinEvidenceForEnough int
 	TraceEnabled         *bool
 	Surface              string

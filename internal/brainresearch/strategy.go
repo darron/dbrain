@@ -8,11 +8,12 @@ import (
 )
 
 func buildResearchStrategy(question string, hints ask.QueryHints) researchStrategy {
-	return buildDeterministicResearchStrategy(question, hints)
+	return buildDeterministicResearchStrategy(question, hints, nil)
 }
 
 func (b *Builder) buildResearchStrategy(ctx context.Context, question string, hints ask.QueryHints, opts Options) researchStrategy {
-	strategy := buildDeterministicResearchStrategy(question, hints)
+	anchors := opts.ContinuityAnchors
+	strategy := buildDeterministicResearchStrategy(question, hints, anchors)
 	strategy.Planner = "deterministic"
 	if opts.DisablePlanner {
 		return strategy
@@ -35,6 +36,7 @@ func (b *Builder) buildResearchStrategy(ctx context.Context, question string, hi
 
 	strategy.Planner = "model_assisted"
 	strategy.Concepts = mergeQueryConcepts(strategy.Concepts, planned.Concepts)
+	strategy.Concepts = applyConceptRolePolicy(strategy.Concepts)
 	strategy.Variants = mergeQueryVariants(strategy.Variants, planned.QueryVariants)
 	if preferred := preferredConceptQuery(strategy.Concepts); preferred != "" {
 		strategy.Variants = mergeQueryVariants(strategy.Variants, []QueryVariant{{Query: preferred, Reason: "model_concept_terms"}})
@@ -43,9 +45,9 @@ func (b *Builder) buildResearchStrategy(ctx context.Context, question string, hi
 	return strategy
 }
 
-func buildDeterministicResearchStrategy(question string, hints ask.QueryHints) researchStrategy {
+func buildDeterministicResearchStrategy(question string, hints ask.QueryHints, anchors []ProtectedAnchor) researchStrategy {
 	terms := uniqueStrings(hints.Terms)
-	concepts := buildQueryConcepts(terms)
+	concepts := buildQueryConceptsWithAnchors(terms, anchors)
 	family := classifyQueryFamily(question, terms, concepts)
 	variants := buildQueryVariants(question, hints.TextQuery, concepts, family)
 	return researchStrategy{Variants: variants, Concepts: concepts, Family: family, Planner: "deterministic"}

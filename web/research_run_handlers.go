@@ -3,11 +3,16 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/researchrun"
+	"github.com/darron/dbrain/internal/researchtrace"
 )
+
+var runnerContinuityPronounRE = regexp.MustCompile(`\b(it|its|that|them|there|these|this|those|they|their)\b`)
 
 func (s *server) handleResearchRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -45,8 +50,11 @@ func (s *server) handleResearchRun(w http.ResponseWriter, r *http.Request) {
 	if surface == "" {
 		surface = "web_research_run"
 	}
+	rawQuestion := runnerRawQuestion(req)
+	chatContinuity := runnerChatContinuity(req, rawQuestion)
 	result, err := researchrun.Run(r.Context(), s.cfg, s.store, researchrun.Options{
 		Question:           req.Question,
+		RawQuestion:        rawQuestion,
 		SynthesisQuestion:  runnerSynthesisQuestion(req),
 		Topic:              req.Topic,
 		Limit:              clampLimit(limit, 1, maxResearchLimit),
@@ -70,7 +78,7 @@ func (s *server) handleResearchRun(w http.ResponseWriter, r *http.Request) {
 		AnswerReviewModel:  req.AnswerReviewModel,
 		TraceEnabled:       req.TraceEnabled,
 		Surface:            surface,
-		ChatContinuity:     req.TraceContinuity,
+		ChatContinuity:     chatContinuity,
 		Progress: func(event researchrun.ProgressEvent) {
 			writeSSE(w, flusher, "progress", event)
 		},
@@ -187,8 +195,67 @@ func brainResearchRunSchemaVersion() string {
 }
 
 func runnerSynthesisQuestion(req ResearchRunRequest) string {
-	if req.TraceContinuity != nil && strings.TrimSpace(req.TraceContinuity.OriginalQuestion) != "" {
+	return runnerRawQuestion(req)
+}
+
+func runnerRawQuestion(req ResearchRunRequest) string {
+	if req.TraceContinuity != nil && traceOriginalQuestionUsable(req.TraceContinuity.OriginalQuestion) {
 		return strings.TrimSpace(req.TraceContinuity.OriginalQuestion)
 	}
+	if current := currentQuestionFromComposedRetrieval(req.Question); current != "" {
+		return current
+	}
 	return req.Question
+}
+
+func currentQuestionFromComposedRetrieval(question string) string {
+	for _, line := range strings.Split(question, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(line), "current question:") {
+			return strings.TrimSpace(line[len("current question:"):])
+		}
+	}
+	return ""
+}
+
+func traceOriginalQuestionUsable(question string) bool {
+	question = strings.TrimSpace(question)
+	if question == "" {
+		return false
+	}
+	lower := strings.ToLower(question)
+	for _, marker := range []string{
+		"current question:",
+		"prior evidence titles",
+		"recent user questions:",
+		"pinned evidence keys:",
+	} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func runnerChatContinuity(req ResearchRunRequest, rawQuestion string) *researchtrace.ChatContinuity {
+	if req.TraceContinuity == nil {
+		return nil
+	}
+	continuity := *req.TraceContinuity
+	if !runnerAllowsContinuityAnchors(rawQuestion) {
+		continuity.ContinuityAnchors = nil
+	}
+	return &continuity
+}
+
+func runnerAllowsContinuityAnchors(question string) bool {
+	question = strings.TrimSpace(question)
+	if question == "" || brainresearch.HasCurrentProtectedAnchor(question) {
+		return false
+	}
+	words := strings.Fields(strings.ToLower(question))
+	if len(words) == 0 || len(words) > 12 {
+		return false
+	}
+	return runnerContinuityPronounRE.MatchString(strings.ToLower(question))
 }

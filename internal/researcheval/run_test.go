@@ -286,6 +286,127 @@ func TestDiffTraceReportsEvidenceKeyChanges(t *testing.T) {
 	}
 }
 
+func TestRunnerEvalPreservesAnchoredEvidenceThroughRetry(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := newResearchEvalStore(t)
+	seedResearchEvalKristofFixture(t, st)
+
+	report, err := Run(context.Background(), cfg, st, Options{Cases: []Case{{
+		Name:           "runner preserves anchored evidence through retry",
+		Question:       "Can you synthesize essays from @Kristof_Poland?",
+		RawQuestion:    "Can you synthesize essays from @Kristof_Poland?",
+		Limit:          4,
+		DisablePlanner: true,
+		RunWithRunner:  true,
+		// Runner retries happen before StopAfterJudge, so these assertions cover the post-merge pack without calling synthesis.
+		StopAfterJudge:      true,
+		ExpectJudgeVerdict:  "weak_evidence",
+		ExpectSourceKeys:    []string{"x:kristof-1", "x:kristof-2"},
+		ForbidSourceKeys:    []string{"src:generic-synthesis"},
+		ExpectAnySourceKeys: []string{"x:kristof-1", "x:kristof-2"},
+	}}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Passed != 1 || report.Failed != 0 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+	if report.Cases[0].AnswerStatus != "" || report.Cases[0].CitationSourceKeys != nil {
+		t.Fatalf("stop-after-judge runner eval should not synthesize: %+v", report.Cases[0])
+	}
+}
+
+func TestTraceDiffUsesRawQuestionFromChatContinuity(t *testing.T) {
+	t.Parallel()
+
+	composed := "Prior evidence titles:\n- Generic synthesis archive\n\nCurrent question: Synthesize those"
+	trace := researchtrace.ResearchTrace{
+		Question: composed,
+		ChatContinuity: &researchtrace.ChatContinuity{
+			OriginalQuestion:  "Synthesize those",
+			RetrievalQuestion: composed,
+			ContinuityAnchors: []brainresearch.ProtectedAnchor{researchEvalKristofAnchor()},
+		},
+		Pack: &brainresearch.Pack{
+			Question: composed,
+			QueryPlan: brainresearch.QueryPlan{
+				TextQuery:         composed,
+				QueryVariants:     []brainresearch.QueryVariant{{Query: composed, Reason: "trace"}},
+				ProtectedAnchors:  []brainresearch.ProtectedAnchor{researchEvalKristofAnchor()},
+				Planner:           "deterministic",
+				Limit:             5,
+				MaxCharsPerDoc:    700,
+				IncludeTopicBrief: false,
+			},
+		},
+	}
+
+	opts := OptionsFromTrace(trace)
+	if opts.Question != composed {
+		t.Fatalf("expected trace replay question to remain composed retrieval text, got %q", opts.Question)
+	}
+	if opts.RawQuestion != "Synthesize those" {
+		t.Fatalf("expected raw question from chat continuity, got %q", opts.RawQuestion)
+	}
+	if len(opts.ContinuityAnchors) != 1 || opts.ContinuityAnchors[0].ResolvedID != "x-author:kristof_poland" {
+		t.Fatalf("expected typed continuity anchor from trace, got %#v", opts.ContinuityAnchors)
+	}
+}
+
+func TestRunnerEvalUsesTypedContinuityAnchorForPronounFollowUp(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := newResearchEvalStore(t)
+	seedResearchEvalKristofFixture(t, st)
+	composed := "Prior evidence titles:\n- Generic synthesis archive\n\nCurrent question: Synthesize those"
+
+	report, err := Run(context.Background(), cfg, st, Options{Cases: []Case{{
+		Name:              "runner pronoun follow-up uses typed continuity anchor",
+		Question:          composed,
+		RawQuestion:       "Synthesize those",
+		ContinuityAnchors: []brainresearch.ProtectedAnchor{researchEvalKristofAnchor()},
+		Limit:             4,
+		DisablePlanner:    true,
+		RunWithRunner:     true,
+		StopAfterJudge:    true,
+		ExpectSourceKeys:  []string{"x:kristof-1", "x:kristof-2"},
+		ForbidSourceKeys:  []string{"x:other-author", "src:generic-synthesis"},
+	}}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Passed != 1 || report.Failed != 0 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+}
+
+func TestRunnerEvalReplacesStaleAnchorOnTopicShift(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := newResearchEvalStore(t)
+	seedResearchEvalKristofFixture(t, st)
+
+	report, err := Run(context.Background(), cfg, st, Options{Cases: []Case{{
+		Name:              "runner current handle replaces stale continuity anchor",
+		Question:          "Current question: Synthesize @Other_Author",
+		RawQuestion:       "Synthesize @Other_Author",
+		ContinuityAnchors: []brainresearch.ProtectedAnchor{researchEvalKristofAnchor()},
+		Limit:             4,
+		DisablePlanner:    true,
+		RunWithRunner:     true,
+		StopAfterJudge:    true,
+		ExpectSourceKeys:  []string{"x:other-author"},
+		ForbidSourceKeys:  []string{"x:kristof-1", "x:kristof-2"},
+	}}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Passed != 1 || report.Failed != 0 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+}
+
 func newResearchEvalStore(t *testing.T) (config.Config, *store.Store) {
 	t.Helper()
 
@@ -327,6 +448,120 @@ func seedResearchEvalItem(t *testing.T, st *store.Store, sourceKey string, title
 	})
 	if err != nil {
 		t.Fatalf("upsert item: %v", err)
+	}
+}
+
+func seedResearchEvalKristofFixture(t *testing.T, st *store.Store) {
+	t.Helper()
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	items := []model.Item{
+		{
+			SourceKey:    "x:kristof-1",
+			SourceType:   "x_bookmark",
+			ExternalID:   "kristof-1",
+			CanonicalURL: "https://x.com/Kristof_Poland/status/kristof-1",
+			Title:        "Kristof Poland economics note",
+			AuthorHandle: "Kristof_Poland",
+			AuthorName:   "Krzysztof Szczawinski",
+			Text:         "Direct Kristof Poland note about economics and planning.",
+			SummaryText:  "Direct Kristof Poland note about economics and planning.",
+			ContentHash:  "kristof-1-hash",
+			NotePath:     "items/x/kristof-1.md",
+			RawJSON:      `{}`,
+			ImportedAt:   now,
+			UpdatedAt:    now,
+			LastSeenAt:   now,
+		},
+		{
+			SourceKey:    "x:kristof-2",
+			SourceType:   "x_bookmark",
+			ExternalID:   "kristof-2",
+			CanonicalURL: "https://x.com/Kristof_Poland/status/kristof-2",
+			Title:        "Kristof Poland political note",
+			AuthorHandle: "Kristof_Poland",
+			AuthorName:   "Krzysztof Szczawinski",
+			Text:         "Second Kristof Poland note about politics and incentives.",
+			SummaryText:  "Second Kristof Poland note about politics and incentives.",
+			ContentHash:  "kristof-2-hash",
+			NotePath:     "items/x/kristof-2.md",
+			RawJSON:      `{}`,
+			ImportedAt:   now,
+			UpdatedAt:    now,
+			LastSeenAt:   now,
+		},
+		{
+			SourceKey:    "x:other-author",
+			SourceType:   "x_bookmark",
+			ExternalID:   "other-author",
+			CanonicalURL: "https://x.com/Other_Author/status/other-author",
+			Title:        "Other Author synthesis note",
+			AuthorHandle: "Other_Author",
+			AuthorName:   "Other Author",
+			Text:         "Other Author note about essays and synthesis.",
+			SummaryText:  "Other Author note about essays and synthesis.",
+			ContentHash:  "other-author-hash",
+			NotePath:     "items/x/other-author.md",
+			RawJSON:      `{}`,
+			ImportedAt:   now,
+			UpdatedAt:    now,
+			LastSeenAt:   now,
+		},
+	}
+	for _, item := range items {
+		if _, err := st.UpsertItem(ctx, item); err != nil {
+			t.Fatalf("upsert fixture item %s: %v", item.SourceKey, err)
+		}
+	}
+	source, err := st.UpsertSource(ctx, model.SourceCandidate{
+		SourceKey:     "src:generic-synthesis",
+		OriginalURL:   "https://example.com/generic-synthesis",
+		CanonicalURL:  "https://example.com/generic-synthesis",
+		NormalizedURL: "https://example.com/generic-synthesis",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/generic-synthesis.md",
+	})
+	if err != nil {
+		t.Fatalf("upsert generic source: %v", err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, source.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/generic-synthesis",
+		FinalURL:     "https://example.com/generic-synthesis",
+		Title:        "Generic synthesis archive",
+		Content:      "Generic essays and synthesis guidance for second-brain workflows.",
+		Status:       "ok",
+		FetchedAt:    now,
+		Tool:         "test",
+		ToolVersion:  "test",
+	}, "generic-synthesis-hash"); err != nil {
+		t.Fatalf("save generic extraction: %v", err)
+	}
+	if _, err := st.SaveSourceSummary(ctx, source.SourceID, model.SummaryResult{
+		Text:          "Generic essays and synthesis guidance for second-brain workflows.",
+		Status:        "ok",
+		Model:         "test/model",
+		PromptVersion: "test",
+		Tool:          "test",
+		ToolVersion:   "test",
+		FetchedAt:     now,
+	}); err != nil {
+		t.Fatalf("save generic summary: %v", err)
+	}
+}
+
+func researchEvalKristofAnchor() brainresearch.ProtectedAnchor {
+	return brainresearch.ProtectedAnchor{
+		Kind:        "handle",
+		Relation:    "authored_by",
+		Raw:         "@Kristof_Poland",
+		Canonical:   "kristof_poland",
+		ResolvedID:  "x-author:kristof_poland",
+		Source:      "chat_continuity",
+		Confidence:  "exact",
+		ExactTerms:  []string{"@Kristof_Poland", "Kristof_Poland", "kristof_poland", "x-author:kristof_poland"},
+		PhraseTerms: []string{"kristof poland"},
 	}
 }
 

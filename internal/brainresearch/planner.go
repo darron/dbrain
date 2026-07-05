@@ -75,7 +75,7 @@ func (b *Builder) buildModelResearchPlan(ctx context.Context, question string, h
 		_ = os.Remove(inputPath)
 	}()
 	input := plannerInput(question, hints, deterministic)
-	emitPlannerInput(opts.Observer, input)
+	emitPlannerInput(opts.Observer, opts.Attempt, input)
 	emitEvent(opts.Observer, "planner_requested", map[string]interface{}{
 		"prompt_version": researchPlannerPromptVersion,
 		"model":          modelName,
@@ -104,7 +104,7 @@ func (b *Builder) buildModelResearchPlan(ctx context.Context, question string, h
 	if err != nil {
 		return modelResearchPlan{}, modelName, fmt.Errorf("model planner %s: %w", researchPlannerPromptVersion, err)
 	}
-	emitPlannerOutput(opts.Observer, firstNonEmpty(result.Summary.RawJSON, result.Summary.Text, result.Extract.RawJSON))
+	emitPlannerOutput(opts.Observer, opts.Attempt, firstNonEmpty(result.Summary.RawJSON, result.Summary.Text, result.Extract.RawJSON))
 	emitEvent(opts.Observer, "planner_returned", map[string]interface{}{
 		"prompt_version": researchPlannerPromptVersion,
 		"model":          firstNonEmpty(result.Summary.Model, modelName),

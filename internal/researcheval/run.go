@@ -7,8 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/researchrun"
+	"github.com/darron/dbrain/internal/researchtrace"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -45,6 +48,9 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	if strings.TrimSpace(tc.Question) == "" {
 		return CaseResult{}, fmt.Errorf("research eval case %q has empty question", name)
 	}
+	if tc.RunWithRunner {
+		return runCaseWithRunner(ctx, cfg, st, name, tc)
+	}
 
 	started := time.Now()
 	pack, err := brainresearch.Build(ctx, cfg, st, brainOptions(tc))
@@ -52,45 +58,7 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 		return CaseResult{}, fmt.Errorf("run research eval case %q: %w", name, err)
 	}
 
-	result := CaseResult{
-		Name:           name,
-		Question:       tc.Question,
-		DurationMS:     time.Since(started).Milliseconds(),
-		EvidenceCount:  len(pack.Evidence),
-		Planner:        pack.QueryPlan.Planner,
-		PlannerModel:   pack.QueryPlan.PlannerModel,
-		PlannerError:   pack.QueryPlan.PlannerError,
-		RetrievalLanes: retrievalLaneStatuses(pack),
-		QueryFamily:    pack.QueryPlan.QueryFamily,
-		QueryTerms:     append([]string(nil), pack.QueryPlan.QueryTerms...),
-		QueryVariants:  queryVariantStrings(pack.QueryPlan.QueryVariants),
-		Concepts:       conceptStrings(pack.QueryPlan.Concepts),
-	}
-
-	sourceKeys := map[string]struct{}{}
-	for _, ev := range pack.Evidence {
-		if ev.SourceKey == "" {
-			continue
-		}
-		sourceKeys[ev.SourceKey] = struct{}{}
-		result.SourceKeys = append(result.SourceKeys, ev.SourceKey)
-		summary := EvidenceSummary{
-			SourceKey: ev.SourceKey,
-			Kind:      ev.Kind,
-			Title:     ev.Title,
-		}
-		if ev.Retrieval != nil {
-			summary.Score = ev.Retrieval.Score
-			summary.MatchedTerms = append([]string(nil), ev.Retrieval.MatchedTerms...)
-			summary.MissingTerms = append([]string(nil), ev.Retrieval.MissingTerms...)
-			for _, signal := range ev.Retrieval.Signals {
-				result.RetrievalSignalCount++
-				summary.Signals = append(summary.Signals, signal.Name)
-			}
-		}
-		result.TopEvidence = append(result.TopEvidence, summary)
-	}
-	sort.Strings(result.SourceKeys)
+	result, sourceKeys := caseResultFromPack(name, tc.Question, started, pack)
 
 	if needsPreparedSynthesis(tc) {
 		prepared, prepErr := brainresearch.PrepareSynthesis(cfg, brainresearch.SynthesisOptions{
@@ -115,24 +83,143 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	return result, nil
 }
 
+func runCaseWithRunner(ctx context.Context, cfg config.Config, st *store.Store, name string, tc Case) (CaseResult, error) {
+	started := time.Now()
+	runResult, err := researchrun.Run(ctx, cfg, st, runnerOptions(tc))
+	if err != nil {
+		return CaseResult{}, fmt.Errorf("run research runner eval case %q: %w", name, err)
+	}
+
+	result, sourceKeys := caseResultFromPack(name, tc.Question, started, runResult.Pack)
+	result.StopReason = runResult.StopReason
+	result.JudgeVerdict = string(runResult.Judge.Verdict)
+	result.RetryAction = string(runResult.Judge.RetryAction)
+	if runResult.Synthesis != nil {
+		result.AnswerStatus = runResult.Synthesis.AnswerStatus
+		result.CitationSourceKeys = citationSourceKeys(runResult.Synthesis.Citations)
+	} else if runResult.PreparedSynthesis != nil {
+		result.AnswerStatus = runResult.PreparedSynthesis.Status
+		result.CitationSourceKeys = citationSourceKeys(runResult.PreparedSynthesis.Citations)
+	}
+
+	checkCaseAssertions(tc, runResult.Pack, result.SourceKeys, sourceKeys, &result)
+	result.Passed = len(result.Failures) == 0
+	return result, nil
+}
+
+func caseResultFromPack(name string, question string, started time.Time, pack brainresearch.Pack) (CaseResult, map[string]struct{}) {
+	result := CaseResult{
+		Name:           name,
+		Question:       question,
+		DurationMS:     time.Since(started).Milliseconds(),
+		Planner:        pack.QueryPlan.Planner,
+		PlannerModel:   pack.QueryPlan.PlannerModel,
+		PlannerError:   pack.QueryPlan.PlannerError,
+		RetrievalLanes: retrievalLaneStatuses(pack),
+		QueryFamily:    pack.QueryPlan.QueryFamily,
+		QueryTerms:     append([]string(nil), pack.QueryPlan.QueryTerms...),
+		QueryVariants:  queryVariantStrings(pack.QueryPlan.QueryVariants),
+		Concepts:       conceptStrings(pack.QueryPlan.Concepts),
+	}
+
+	sourceKeys := map[string]struct{}{}
+	appendEvidence := func(ev ask.Evidence) {
+		if ev.SourceKey == "" {
+			return
+		}
+		if _, exists := sourceKeys[ev.SourceKey]; exists {
+			return
+		}
+		sourceKeys[ev.SourceKey] = struct{}{}
+		result.SourceKeys = append(result.SourceKeys, ev.SourceKey)
+		summary := EvidenceSummary{
+			SourceKey: ev.SourceKey,
+			Kind:      ev.Kind,
+			Title:     ev.Title,
+		}
+		if ev.Retrieval != nil {
+			summary.Score = ev.Retrieval.Score
+			summary.MatchedTerms = append([]string(nil), ev.Retrieval.MatchedTerms...)
+			summary.MissingTerms = append([]string(nil), ev.Retrieval.MissingTerms...)
+			for _, signal := range ev.Retrieval.Signals {
+				result.RetrievalSignalCount++
+				summary.Signals = append(summary.Signals, signal.Name)
+			}
+		}
+		result.TopEvidence = append(result.TopEvidence, summary)
+	}
+	for _, ev := range pack.Evidence {
+		appendEvidence(ev)
+	}
+	for _, ev := range pack.ExactTagEvidence {
+		appendEvidence(ev)
+	}
+	result.EvidenceCount = len(result.SourceKeys)
+	sort.Strings(result.SourceKeys)
+	return result, sourceKeys
+}
+
 func brainOptions(tc Case) brainresearch.Options {
 	timeout := time.Duration(tc.PlannerTimeoutMS) * time.Millisecond
 	return brainresearch.Options{
-		Question:        tc.Question,
-		Limit:           tc.Limit,
-		SourceTypes:     tc.SourceTypes,
-		IncludeRelated:  tc.IncludeRelated,
-		RelatedLimit:    tc.RelatedLimit,
-		SeedLimit:       tc.SeedLimit,
-		IncludeTopic:    tc.IncludeTopicBrief,
-		MaxCharsPerDoc:  tc.MaxCharsPerDoc,
-		PlannerModel:    tc.PlannerModel,
-		PlannerTimeout:  timeout,
-		PlannerBinary:   tc.PlannerBinary,
-		UseModelPlanner: !tc.DisablePlanner,
-		DisablePlanner:  tc.DisablePlanner,
-		UseSemantic:     tc.UseSemantic,
-		DisableSemantic: tc.DisableSemantic,
+		Question:          tc.Question,
+		RawQuestion:       tc.RawQuestion,
+		Limit:             tc.Limit,
+		SourceTypes:       tc.SourceTypes,
+		IncludeRelated:    tc.IncludeRelated,
+		RelatedLimit:      tc.RelatedLimit,
+		SeedLimit:         tc.SeedLimit,
+		IncludeTopic:      tc.IncludeTopicBrief,
+		MaxCharsPerDoc:    tc.MaxCharsPerDoc,
+		PlannerModel:      tc.PlannerModel,
+		PlannerTimeout:    timeout,
+		PlannerBinary:     tc.PlannerBinary,
+		UseModelPlanner:   !tc.DisablePlanner,
+		DisablePlanner:    tc.DisablePlanner,
+		UseSemantic:       tc.UseSemantic,
+		DisableSemantic:   tc.DisableSemantic,
+		ContinuityAnchors: append([]brainresearch.ProtectedAnchor(nil), tc.ContinuityAnchors...),
+	}
+}
+
+func runnerOptions(tc Case) researchrun.Options {
+	timeout := time.Duration(tc.PlannerTimeoutMS) * time.Millisecond
+	traceEnabled := false
+	return researchrun.Options{
+		Question:          tc.Question,
+		RawQuestion:       tc.RawQuestion,
+		SynthesisQuestion: firstNonEmpty(tc.RawQuestion, tc.Question),
+		Limit:             tc.Limit,
+		SourceTypes:       tc.SourceTypes,
+		RelatedLimit:      tc.RelatedLimit,
+		SeedLimit:         tc.SeedLimit,
+		IncludeTopic:      tc.IncludeTopicBrief,
+		MaxCharsPerDoc:    tc.MaxCharsPerDoc,
+		PlannerModel:      tc.PlannerModel,
+		PlannerTimeout:    timeout,
+		PlannerBinary:     tc.PlannerBinary,
+		UseModelPlanner:   !tc.DisablePlanner,
+		DisablePlanner:    tc.DisablePlanner,
+		UseSemantic:       tc.UseSemantic,
+		DisableSemantic:   tc.DisableSemantic,
+		Model:             synthesisModelForCase(tc),
+		StopAfterJudge:    tc.StopAfterJudge,
+		TraceEnabled:      &traceEnabled,
+		Surface:           "research_eval",
+		ChatContinuity:    chatContinuityForCase(tc),
+	}
+}
+
+func chatContinuityForCase(tc Case) *researchtrace.ChatContinuity {
+	if len(tc.ContinuityAnchors) == 0 && strings.TrimSpace(tc.RawQuestion) == "" {
+		return nil
+	}
+	// brainresearch.Build owns the current-turn-anchor precedence rule; evals pass
+	// continuity through unchanged so topic-shift tests exercise that boundary.
+	return &researchtrace.ChatContinuity{
+		OriginalQuestion:  strings.TrimSpace(tc.RawQuestion),
+		RetrievalQuestion: strings.TrimSpace(tc.Question),
+		ContinuityAnchors: append([]brainresearch.ProtectedAnchor(nil), tc.ContinuityAnchors...),
 	}
 }
 
@@ -221,6 +308,12 @@ func checkCaseAssertions(tc Case, pack brainresearch.Pack, sortedSourceKeys []st
 	}
 	if tc.MinRetrievalSignals > 0 && result.RetrievalSignalCount < tc.MinRetrievalSignals {
 		result.Failures = append(result.Failures, fmt.Sprintf("retrieval_signal_count=%d below min_retrieval_signals=%d", result.RetrievalSignalCount, tc.MinRetrievalSignals))
+	}
+	if expected := strings.TrimSpace(tc.ExpectJudgeVerdict); expected != "" && !strings.EqualFold(result.JudgeVerdict, expected) {
+		result.Failures = append(result.Failures, fmt.Sprintf("judge_verdict=%q, want %q", result.JudgeVerdict, expected))
+	}
+	if forbidden := strings.TrimSpace(tc.ForbidRetryAction); forbidden != "" && strings.EqualFold(result.RetryAction, forbidden) {
+		result.Failures = append(result.Failures, fmt.Sprintf("forbidden retry_action returned %q", result.RetryAction))
 	}
 	if expected := strings.TrimSpace(tc.ExpectAnswerStatus); expected != "" && !strings.EqualFold(result.AnswerStatus, expected) {
 		result.Failures = append(result.Failures, fmt.Sprintf("answer_status=%q, want %q", result.AnswerStatus, expected))

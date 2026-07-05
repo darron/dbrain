@@ -31,6 +31,23 @@ export function buildChatRetrievalQuestion(question, turns = [], pinnedEvidenceK
   return parts.join("\n\n");
 }
 
+export function buildChatTraceContinuity(question, retrievalQuestion, turns = [], pinnedEvidenceKeys = []) {
+  const continuity = {
+    original_question: cleanText(question),
+    retrieval_question: String(retrievalQuestion || "").trim(),
+    prior_question_ids: turns.map((candidate) => candidate?.id).filter(Boolean).slice(-8),
+    pinned_evidence_keys: (pinnedEvidenceKeys || []).filter(Boolean),
+    merged_prior_evidence: collectPriorEvidence(turns, pinnedEvidenceKeys).map((row) => row.source_key).filter(Boolean)
+  };
+
+  if (shouldCarryContinuityAnchors(question)) {
+    const anchors = collectContinuityAnchors(turns);
+    if (anchors.length > 0) continuity.continuity_anchors = anchors;
+  }
+
+  return continuity;
+}
+
 export function mergeResearchPackForChat(question, currentPack = {}, turns = [], pinnedEvidenceKeys = [], options = {}) {
   const maxPriorEvidence = positiveInt(options.maxPriorEvidence, defaultMaxPriorEvidence);
   const maxMergedEvidence = positiveInt(options.maxMergedEvidence, defaultMaxMergedEvidence);
@@ -149,6 +166,7 @@ function shouldIncludePriorExpansion(question) {
   if (!cleaned) return false;
   const lower = cleaned.toLowerCase();
   const words = lower.split(/\s+/).filter(Boolean);
+  if (hasCurrentProtectedAnchor(cleaned)) return false;
   if (words.length <= 5) return true;
   if (/\b(actually|correction|did not|didn't|missed|no,|not that|there is data|that's wrong|that is wrong|you missed)\b/.test(lower)) return false;
   if (/\b(also|another|else|expand|follow-up|from there|how about|more|other|same|what about)\b/.test(lower)) return true;
@@ -156,6 +174,77 @@ function shouldIncludePriorExpansion(question) {
     return /\b(it|its|that|them|there|these|this|those)\b/.test(lower);
   }
   return false;
+}
+
+function hasCurrentProtectedAnchor(question) {
+  return /(^|[^A-Za-z0-9_])@[A-Za-z0-9_]{2,32}/.test(question) ||
+    /\b(?:src|x|apple-note|feed-entry|gh-star|github_star|yt|youtube|safari-tab|manual):[a-z0-9][a-z0-9:_./-]*/i.test(question) ||
+    /(^|[^A-Za-z0-9_])#[A-Za-z][A-Za-z0-9_-]{2,64}/.test(question) ||
+    hasPromotedUnderscoreAlias(question);
+}
+
+function hasPromotedUnderscoreAlias(question) {
+  if (!/\b[A-Za-z][A-Za-z0-9]+_[A-Za-z][A-Za-z0-9_]+\b/.test(question)) return false;
+  const lower = question.toLowerCase();
+  if (/[`{};=]/.test(question)) return false;
+  if (lower.includes("user_id") || lower.includes("created_at") || lower.includes("max_retries")) return false;
+  for (const term of ["@", "tweet", "tweets", "post", "posts", "author", "handle", "collection", "essays"]) {
+    if (lower.includes(term)) return true;
+  }
+  return quotedUnderscoreAlias(question);
+}
+
+function quotedUnderscoreAlias(question) {
+  for (const quote of ["\"", "'"]) {
+    let inQuote = false;
+    let buffer = "";
+    for (const char of question) {
+      if (char === quote) {
+        if (inQuote && /\b[A-Za-z][A-Za-z0-9]+_[A-Za-z][A-Za-z0-9_]+\b/.test(buffer)) return true;
+        inQuote = !inQuote;
+        buffer = "";
+        continue;
+      }
+      if (inQuote) buffer += char;
+    }
+  }
+  return false;
+}
+
+function shouldCarryContinuityAnchors(question) {
+  const cleaned = cleanText(question);
+  if (!cleaned || hasCurrentProtectedAnchor(cleaned)) return false;
+  const lower = cleaned.toLowerCase();
+  const words = lower.split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length <= 12 && /\b(it|its|that|them|there|these|this|those|they|their)\b/.test(lower);
+}
+
+function collectContinuityAnchors(turns = [], limit = 8) {
+  const anchors = [];
+  const seen = new Set();
+  for (const turn of [...turns].reverse()) {
+    let foundInTurn = false;
+    const protectedAnchors = Array.isArray(turn?.research_pack?.query_plan?.protected_anchors)
+      ? turn.research_pack.query_plan.protected_anchors
+      : [];
+    for (const anchor of protectedAnchors) {
+      if (!anchor || typeof anchor !== "object") continue;
+      const key = [
+        anchor.kind || "",
+        anchor.relation || "",
+        anchor.resolved_id || "",
+        anchor.canonical || "",
+        anchor.raw || ""
+      ].join("\u0000").toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      anchors.push(anchor);
+      foundInTurn = true;
+      if (anchors.length >= limit) return anchors;
+    }
+    if (foundInTurn) break;
+  }
+  return anchors;
 }
 
 function formatEvidenceSearchHint(row = {}) {

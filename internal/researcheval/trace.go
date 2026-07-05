@@ -93,6 +93,13 @@ func loadTraceJSON(path string) (researchtrace.ResearchTrace, string, error) {
 
 func OptionsFromTrace(trace researchtrace.ResearchTrace) brainresearch.Options {
 	opts := brainresearch.Options{Question: strings.TrimSpace(trace.Question)}
+	if trace.ChatContinuity != nil {
+		if retrievalQuestion := strings.TrimSpace(trace.ChatContinuity.RetrievalQuestion); retrievalQuestion != "" {
+			opts.Question = retrievalQuestion
+		}
+		opts.RawQuestion = strings.TrimSpace(trace.ChatContinuity.OriginalQuestion)
+		opts.ContinuityAnchors = append([]brainresearch.ProtectedAnchor(nil), trace.ChatContinuity.ContinuityAnchors...)
+	}
 	if trace.Pack == nil {
 		return opts
 	}

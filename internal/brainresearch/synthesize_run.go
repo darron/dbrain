@@ -34,6 +34,7 @@ func RunPreparedSynthesis(ctx context.Context, cfg config.Config, prepared Prepa
 			Warnings:      prepared.Warnings,
 			Truncation:    prepared.Truncation,
 			Citations:     prepared.Citations,
+			AnchorContext: prepared.AnchorContext,
 			PromptVersion: SynthesisPromptVersion,
 			Model:         prepared.Model,
 		}, nil
@@ -88,6 +89,7 @@ func RunPreparedSynthesis(ctx context.Context, cfg config.Config, prepared Prepa
 		Warnings:      prepared.Warnings,
 		Truncation:    prepared.Truncation,
 		Citations:     prepared.Citations,
+		AnchorContext: prepared.AnchorContext,
 		PromptVersion: SynthesisPromptVersion,
 		Model:         firstNonEmpty(runResult.Summary.Model, prepared.Model),
 		Tool:          runResult.Summary.Tool,

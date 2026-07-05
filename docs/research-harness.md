@@ -1,7 +1,7 @@
 # Research And Chat Harness
 
 Status: current-state documentation and implementation plan
-Date: 2026-05-23
+Date: 2026-07-04
 
 ## Summary
 
@@ -55,6 +55,62 @@ Proposed product decisions for this plan:
   harness should not try to "balance" or disprove that corpus unless the user
   explicitly asks for adversarial analysis, bias review, or external
   verification.
+
+## July 2026 Chat Harness Hardening
+
+Explicit handles, source keys, tags, and resolved entity aliases are now treated
+as protected anchors before query normalization can flatten them into ordinary
+search terms. Examples include `@Kristof_Poland`, `Kristof_Poland`,
+`x:...`, `src:...`, `feed-entry:...`, and resolved `x-author:...` aliases.
+Protected anchors are stored on `query_plan.protected_anchors` with raw,
+canonical, resolved, exact-term, phrase-term, and source metadata so retrieval,
+judge, synthesis, traces, and evals use the same contract.
+
+`query_plan.concepts` now carries a `role` field. Anchor and content concepts
+can be required; intent/frame concepts such as `synthesize`, `dbrain`, or
+follow-up pronouns are not treated as missing evidence by the runner judge.
+That distinction prevents the runner from retrying against generic intent words
+and replacing directly relevant local evidence with unrelated "synthesis" or
+PKM documents.
+
+For protected-anchor queries, evidence selection keeps anchored rows when any
+anchored rows are available. The bounded retry path is non-destructive: focused
+and related retry packs are merged into the initial pack instead of replacing
+it, initial anchored rows are preserved, duplicate source keys are deduped, and
+generic retry rows that do not match the anchor are rejected when anchored
+evidence exists.
+
+Web Chat carries two question boundaries. The composed retrieval question can
+include prior-turn query-focus context, while the raw current user question is
+used for protected-anchor detection. Pronoun follow-ups can carry typed
+continuity anchors from the previous research pack, but a new explicit handle
+or source key in the current raw question replaces stale continuity anchors.
+
+Saved traces now preserve planner artifacts by attempt:
+`planner-initial-input.md`, `planner-initial-output.json`,
+`planner-retry-1-input.md`, and `planner-retry-1-output.json`, while retaining
+the legacy aggregate `planner-input.md` and `planner-output.json` files for
+older readers. Trace replay uses chat continuity's raw question and typed
+continuity anchors instead of reconstructing eval inputs from a bad final retry
+pack.
+
+`dbrain eval research diff --trace` remains a `brainresearch.Build`-level
+sanity check for current retrieval behavior. Runner-level evals are the
+authoritative regression surface for judged retries, merge behavior, and
+answer verification.
+
+Runner-level research evals can opt into the actual `internal/researchrun`
+state machine with `run_with_runner` and can stop after judge/retry merge with
+`stop_after_judge`, avoiding model calls and persistent traces in CI. These
+evals cover the destructive retry class of bug at the layer where web Chat
+failed, not only in lower-level pack construction.
+
+The synthesis stage records per-anchor context status: supported source keys,
+prepared citation keys, dropped keys, and partially trimmed keys. If prepared
+context contains cited evidence for a protected anchor, the answer-stage guard
+rejects conservative false-negative claims such as "no sources", "no evidence",
+or "corpus lacks" near that anchor. This keeps a model from saying the corpus
+has no material for an author while citing that author's local rows.
 
 ## Evidence Used For This Document
 

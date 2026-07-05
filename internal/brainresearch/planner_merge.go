@@ -33,9 +33,9 @@ func mergeQueryConcepts(base []QueryConcept, extra []QueryConcept) []QueryConcep
 		out = append(out, concept)
 	}
 	if len(out) > maxPlannerConcepts {
-		out = out[:maxPlannerConcepts]
+		out = trimConceptsPreservingAnchors(out, maxPlannerConcepts)
 	}
-	return out
+	return applyConceptRolePolicy(out)
 }
 
 func mergeQueryConcept(current QueryConcept, next QueryConcept) QueryConcept {
@@ -44,6 +44,28 @@ func mergeQueryConcept(current QueryConcept, next QueryConcept) QueryConcept {
 		current.Preferred = next.Preferred
 	}
 	current.Required = current.Required || next.Required
+	current.Role = mergeConceptRole(current.Role, next.Role)
+	return current
+}
+
+func mergeConceptRole(current string, next string) string {
+	rank := map[string]int{
+		conceptRoleFrame:   1,
+		conceptRoleIntent:  2,
+		conceptRoleContent: 3,
+		conceptRoleAnchor:  4,
+	}
+	current = strings.TrimSpace(current)
+	next = strings.TrimSpace(next)
+	if current == "" {
+		current = conceptRoleContent
+	}
+	if next == "" {
+		next = conceptRoleContent
+	}
+	if rank[next] > rank[current] {
+		return next
+	}
 	return current
 }
 
@@ -80,11 +102,33 @@ func sanitizeMergedConcept(concept QueryConcept) QueryConcept {
 	if len(terms) == 0 {
 		return QueryConcept{}
 	}
+	role := sanitizeMergedConceptRole(key, concept.Role)
 	return QueryConcept{
 		Key:       key,
 		Preferred: terms[0],
 		Terms:     terms,
 		Required:  concept.Required,
+		Role:      role,
+	}
+}
+
+func sanitizeMergedConceptRole(key string, incoming string) string {
+	classified := classifyConceptRole(key)
+	incoming = strings.TrimSpace(incoming)
+	if incoming == "" {
+		return classified
+	}
+	if incoming == conceptRoleAnchor {
+		return conceptRoleAnchor
+	}
+	if classified != conceptRoleContent {
+		return classified
+	}
+	switch incoming {
+	case conceptRoleFrame, conceptRoleIntent, conceptRoleContent:
+		return incoming
+	default:
+		return classified
 	}
 }
 
@@ -126,4 +170,26 @@ func limitQueryVariants(variants []QueryVariant) []QueryVariant {
 		return variants[:maxQueryVariants]
 	}
 	return variants
+}
+
+func trimConceptsPreservingAnchors(concepts []QueryConcept, limit int) []QueryConcept {
+	if limit <= 0 || len(concepts) <= limit {
+		return concepts
+	}
+	out := make([]QueryConcept, 0, limit)
+	for _, concept := range concepts {
+		if concept.Role == conceptRoleAnchor {
+			out = append(out, concept)
+		}
+	}
+	for _, concept := range concepts {
+		if len(out) >= limit {
+			break
+		}
+		if concept.Role == conceptRoleAnchor {
+			continue
+		}
+		out = append(out, concept)
+	}
+	return out
 }
