@@ -17,7 +17,7 @@ const (
 	queryFamilyExactLookup         = "exact_title_source_lookup"
 )
 
-var sourceKeyCandidateRE = regexp.MustCompile(`(?i)\b(?:src|x|apple-note|gh-star|github_star|yt|youtube|safari-tab|manual):[a-z0-9][a-z0-9:_./-]*`)
+var sourceKeyCandidateRE = regexp.MustCompile(`(?i)\b(?:src|x|apple-note|feed-entry|gh-star|github_star|yt|youtube|safari-tab|manual):[a-z0-9][a-z0-9:_./-]*`)
 
 func classifyQueryFamily(question string, terms []string, concepts []QueryConcept) string {
 	lowerQuestion := strings.ToLower(question)
@@ -64,6 +64,21 @@ func hasAnyTerm(terms []string, candidates ...string) bool {
 }
 
 func sourceKeyCandidates(question string) []string {
-	matches := sourceKeyCandidateRE.FindAllString(strings.TrimSpace(question), -1)
+	text := strings.TrimSpace(question)
+	indices := sourceKeyCandidateRE.FindAllStringIndex(text, -1)
+	matches := make([]string, 0, len(indices))
+	for _, idx := range indices {
+		if len(idx) != 2 {
+			continue
+		}
+		if idx[0] > 0 && text[idx[0]-1] == '/' {
+			continue
+		}
+		value := strings.TrimRight(text[idx[0]:idx[1]], ".,;!?)]}`")
+		if value == "" {
+			continue
+		}
+		matches = append(matches, value)
+	}
 	return uniqueStrings(matches)
 }

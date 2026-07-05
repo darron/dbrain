@@ -38,17 +38,19 @@ type ResearchTraceEvent struct {
 }
 
 type ChatContinuity struct {
-	OriginalQuestion    string   `json:"original_question,omitempty"`
-	RetrievalQuestion   string   `json:"retrieval_question,omitempty"`
-	PriorQuestionIDs    []string `json:"prior_question_ids,omitempty"`
-	PinnedEvidenceKeys  []string `json:"pinned_evidence_keys,omitempty"`
-	MergedPriorEvidence []string `json:"merged_prior_evidence,omitempty"`
+	OriginalQuestion    string                          `json:"original_question,omitempty"`
+	RetrievalQuestion   string                          `json:"retrieval_question,omitempty"`
+	PriorQuestionIDs    []string                        `json:"prior_question_ids,omitempty"`
+	PinnedEvidenceKeys  []string                        `json:"pinned_evidence_keys,omitempty"`
+	MergedPriorEvidence []string                        `json:"merged_prior_evidence,omitempty"`
+	ContinuityAnchors   []brainresearch.ProtectedAnchor `json:"continuity_anchors,omitempty"`
 }
 
 type TraceArtifacts struct {
-	PlannerInputPath   string `json:"planner_input_path,omitempty"`
-	PlannerOutputPath  string `json:"planner_output_path,omitempty"`
-	SynthesisInputPath string `json:"synthesis_input_path,omitempty"`
+	PlannerInputPath    string                         `json:"planner_input_path,omitempty"`
+	PlannerOutputPath   string                         `json:"planner_output_path,omitempty"`
+	PlannerAttemptPaths map[string]PlannerAttemptPaths `json:"planner_attempt_paths,omitempty"`
+	SynthesisInputPath  string                         `json:"synthesis_input_path,omitempty"`
 }
 
 type TraceFailure struct {
@@ -73,9 +75,20 @@ type TraceMetrics struct {
 }
 
 type ArtifactContents struct {
-	PlannerInput   string
-	PlannerOutput  string
-	SynthesisInput string
+	PlannerInput    string
+	PlannerOutput   string
+	PlannerAttempts map[string]PlannerAttemptContents
+	SynthesisInput  string
+}
+
+type PlannerAttemptPaths struct {
+	InputPath  string `json:"input_path,omitempty"`
+	OutputPath string `json:"output_path,omitempty"`
+}
+
+type PlannerAttemptContents struct {
+	Input  string
+	Output string
 }
 
 type RetentionOptions struct {

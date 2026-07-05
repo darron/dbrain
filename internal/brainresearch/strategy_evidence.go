@@ -12,18 +12,19 @@ import (
 
 const exactTagPrimaryBoost = 64
 
-func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy researchStrategy, hints ask.QueryHints, opts Options, limit int, maxChars int) ([]ask.Evidence, error) {
+type scoredResearchEvidence struct {
+	doc   ask.Evidence
+	score int
+	order int
+}
+
+func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy researchStrategy, hints ask.QueryHints, opts Options, limit int, maxChars int, anchors []ProtectedAnchor) ([]ask.Evidence, error) {
 	variants := strategy.Variants
 	if len(variants) == 0 {
 		variants = []QueryVariant{{Query: opts.Question, Reason: "original_question"}}
 	}
 
-	type scoredEvidence struct {
-		doc   ask.Evidence
-		score int
-		order int
-	}
-	seen := map[string]scoredEvidence{}
+	seen := map[string]scoredResearchEvidence{}
 	order := 0
 	perVariantLimit := max(limit, 8)
 	entityIndex, err := entities.BuildIndex(ctx, b.st)
@@ -118,7 +119,7 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		})
 	}
 
-	ordered := make([]scoredEvidence, 0, len(seen))
+	ordered := make([]scoredResearchEvidence, 0, len(seen))
 	for _, doc := range seen {
 		ordered = append(ordered, doc)
 	}
@@ -128,6 +129,7 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		}
 		return ordered[i].order < ordered[j].order
 	})
+	ordered = filterToProtectedAnchorEvidenceWhenAvailable(ordered, anchors)
 	if len(ordered) > limit {
 		ordered = ordered[:limit]
 	}
@@ -136,6 +138,22 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		out = append(out, scored.doc)
 	}
 	return out, nil
+}
+
+func filterToProtectedAnchorEvidenceWhenAvailable(ordered []scoredResearchEvidence, anchors []ProtectedAnchor) []scoredResearchEvidence {
+	if len(anchors) == 0 {
+		return ordered
+	}
+	matching := make([]scoredResearchEvidence, 0, len(ordered))
+	for _, scored := range ordered {
+		if EvidenceMatchesAnyProtectedAnchor(scored.doc, anchors) {
+			matching = append(matching, scored)
+		}
+	}
+	if len(matching) == 0 {
+		return ordered
+	}
+	return matching
 }
 
 func boostExactTagPrimaryCandidate(doc *ask.Evidence) {

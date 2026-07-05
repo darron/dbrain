@@ -851,6 +851,137 @@ func TestMergeQueryConceptsTreatsModelOnlyExpansionsAsOptional(t *testing.T) {
 	}
 }
 
+func TestBuildResearchStrategyRolesIntentAndFrameTermsForAnchoredSynthesis(t *testing.T) {
+	t.Parallel()
+
+	question := "Can you synthesize the Tweets from @Kristof_Poland - they're in the dbrain."
+	hints := ask.Hints(question)
+	concepts := buildQueryConceptsWithAnchors(hints.Terms, []ProtectedAnchor{anchorFromHandle("@Kristof_Poland", "current_user_text")})
+
+	anchor := conceptByKey(concepts, "kristof_poland")
+	if anchor == nil || anchor.Role != "anchor" || !anchor.Required {
+		t.Fatalf("expected required kristof_poland anchor concept, got concepts=%#v anchor=%#v", concepts, anchor)
+	}
+	intent := conceptByKey(concepts, "synthesize")
+	if intent == nil || intent.Role != "intent" || intent.Required {
+		t.Fatalf("expected synthesize to be optional intent when anchor exists, got concepts=%#v intent=%#v", concepts, intent)
+	}
+	for _, frameKey := range []string{"they", "re"} {
+		if frame := conceptByKey(concepts, frameKey); frame == nil || frame.Role != "frame" || frame.Required {
+			t.Fatalf("expected %q to be retained as an optional frame, got %#v in %#v", frameKey, frame, concepts)
+		}
+	}
+}
+
+func TestBuildResearchStrategyRetainsFrameTermsAsOptionalConcepts(t *testing.T) {
+	t.Parallel()
+
+	concepts := buildQueryConceptsWithAnchors([]string{"what", "dbrain", "research", "notes"}, nil)
+	for _, key := range []string{"what", "dbrain", "research", "notes"} {
+		concept := conceptByKey(concepts, key)
+		if concept == nil {
+			t.Fatalf("expected frame concept %q to be retained as optional metadata, got %#v", key, concepts)
+		}
+		if concept.Role != "frame" || concept.Required {
+			t.Fatalf("expected frame concept %q to be optional, got %#v in %#v", key, concept, concepts)
+		}
+	}
+}
+
+func TestBuildResearchStrategyAllowsIntentTermsWhenNoStrongerTopicExists(t *testing.T) {
+	t.Parallel()
+
+	concepts := buildQueryConceptsWithAnchors(ask.Hints("Find notes about synthesis essays").Terms, nil)
+	synthesis := conceptByKey(concepts, "synthesis")
+	essays := conceptByKey(concepts, "essays")
+	if synthesis == nil {
+		t.Fatalf("expected synthesis to remain searchable without stronger anchor/content, got %#v", concepts)
+	}
+	if essays == nil || !essays.Required {
+		t.Fatalf("expected essays content concept to remain required, got concepts=%#v essays=%#v", concepts, essays)
+	}
+	if !synthesis.Required && essays == nil {
+		t.Fatalf("expected query to retain at least one required concept, got %#v", concepts)
+	}
+}
+
+func TestBuildPopulatesProtectedAnchorsInQueryPlan(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	pack, err := Build(context.Background(), cfg, st, Options{
+		Question:       "Can you synthesize the Tweets from Kristof_Poland?",
+		RawQuestion:    "Can you synthesize the Tweets from @Kristof_Poland - they're in the dbrain.",
+		Limit:          4,
+		DisablePlanner: true,
+		AnchorResolver: fakeAnchorResolver{},
+	})
+	if err != nil {
+		t.Fatalf("build pack: %v", err)
+	}
+	if len(pack.QueryPlan.ProtectedAnchors) != 1 {
+		t.Fatalf("expected one protected anchor in query plan, got %#v", pack.QueryPlan.ProtectedAnchors)
+	}
+	anchor := pack.QueryPlan.ProtectedAnchors[0]
+	if anchor.Canonical != "kristof_poland" || anchor.Kind != "handle" || anchor.Relation != "authored_by" {
+		t.Fatalf("unexpected protected anchor: %#v", anchor)
+	}
+	concept := conceptByKey(pack.QueryPlan.Concepts, "kristof_poland")
+	if concept == nil || concept.Role != "anchor" || !concept.Required {
+		t.Fatalf("expected required anchor concept from protected anchor, got concepts=%#v concept=%#v", pack.QueryPlan.Concepts, concept)
+	}
+}
+
+func TestMergeQueryConceptsCannotReRequireIntentAfterPlannerMerge(t *testing.T) {
+	t.Parallel()
+
+	base := buildQueryConceptsWithAnchors([]string{"synthesize", "tweets"}, []ProtectedAnchor{
+		anchorFromHandle("@Kristof_Poland", "current_user_text"),
+	})
+	merged := applyConceptRolePolicy(mergeQueryConcepts(base, []QueryConcept{
+		{Key: "synthesize", Preferred: "synthesize", Terms: []string{"synthesize", "synthesis"}, Required: true, Role: "content"},
+		{Key: "summary", Preferred: "summary", Terms: []string{"summary"}, Required: true, Role: "content"},
+	}))
+
+	for _, key := range []string{"synthesize", "summary"} {
+		concept := conceptByKey(merged, key)
+		if concept == nil {
+			t.Fatalf("expected planner concept %q to remain searchable, got %#v", key, merged)
+		}
+		if concept.Role != "intent" || concept.Required {
+			t.Fatalf("planner must not re-upgrade %q into a hard content constraint, got %#v in %#v", key, concept, merged)
+		}
+	}
+}
+
+func TestSanitizeMergedConceptPreservesIncomingIntentRole(t *testing.T) {
+	t.Parallel()
+
+	concept := sanitizeMergedConcept(QueryConcept{
+		Key:       "answer_shape",
+		Preferred: "answer shape",
+		Terms:     []string{"answer shape"},
+		Required:  true,
+		Role:      conceptRoleIntent,
+	})
+	if concept.Role != conceptRoleIntent {
+		t.Fatalf("expected incoming intent role to survive sanitize, got %#v", concept)
+	}
+}
+
 func TestBuildRanksPeopleEventEvidenceByConceptCoverage(t *testing.T) {
 	t.Parallel()
 
@@ -1060,6 +1191,15 @@ func hasConceptKey(concepts []QueryConcept, key string) bool {
 		}
 	}
 	return false
+}
+
+func conceptByKey(concepts []QueryConcept, key string) *QueryConcept {
+	for i := range concepts {
+		if concepts[i].Key == key {
+			return &concepts[i]
+		}
+	}
+	return nil
 }
 
 func hasConceptTerm(concepts []QueryConcept, key string, term string) bool {

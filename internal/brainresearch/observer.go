@@ -9,15 +9,35 @@ func emitEvent(observer Observer, name string, data map[string]interface{}) {
 	observer.Event(name, data)
 }
 
-func emitPlannerInput(observer Observer, input string) {
+func emitPlannerInput(observer Observer, attempt string, input string) {
 	if observerIsNil(observer) {
+		return
+	}
+	attemptAware := false
+	if attempt != "" {
+		if attemptObserver, ok := observer.(AttemptPlannerInputObserver); ok {
+			attemptAware = true
+			attemptObserver.PlannerInputAttempt(attempt, input)
+		}
+	}
+	if attempt != "" && attempt != "initial" && attemptAware {
 		return
 	}
 	observer.PlannerInput(input)
 }
 
-func emitPlannerOutput(observer Observer, output string) {
+func emitPlannerOutput(observer Observer, attempt string, output string) {
 	if observerIsNil(observer) {
+		return
+	}
+	attemptAware := false
+	if attempt != "" {
+		if attemptObserver, ok := observer.(AttemptPlannerOutputObserver); ok {
+			attemptAware = true
+			attemptObserver.PlannerOutputAttempt(attempt, output)
+		}
+	}
+	if attempt != "" && attempt != "initial" && attemptAware {
 		return
 	}
 	observer.PlannerOutput(output)

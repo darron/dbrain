@@ -9,7 +9,7 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 )
 
-var answerSourceKeyPattern = regexp.MustCompile(`(?i)\b(?:src|x|apple-note|gh-star|yt|item):[A-Za-z0-9][A-Za-z0-9._~:/@?&=+%#-]*`)
+var answerSourceKeyPattern = regexp.MustCompile(`(?i)\b(?:src|x|apple-note|feed-entry|gh-star|github_star|yt|youtube|safari-tab|manual|item):[A-Za-z0-9][A-Za-z0-9._~:/@?&=+%#-]*`)
 
 func VerifyCitations(pack brainresearch.Pack, result brainresearch.SynthesisResult) VerificationResult {
 	allowed := map[string]struct{}{}

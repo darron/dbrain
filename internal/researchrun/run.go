@@ -72,7 +72,7 @@ func (r *runner) run() (Result, error) {
 	if !r.enter("retrieval", "retrieving initial evidence") {
 		return r.finish()
 	}
-	pack, err := r.buildPack(false, r.opts.Question)
+	pack, err := r.buildPack(false, r.opts.Question, "initial")
 	if err != nil {
 		if r.timedOut(err) {
 			r.stop(StopTimeoutExceeded, "retrieve", err)
@@ -113,7 +113,7 @@ func (r *runner) run() (Result, error) {
 		if !r.enter("retry", "running one bounded retry") {
 			return r.finish()
 		}
-		retryPack, retryErr := r.runRetry(judge)
+		retryPack, retryQuestion, mergeDecision, retryErr := r.runRetry(pack, judge)
 		if retryErr != nil {
 			if r.timedOut(retryErr) {
 				r.stop(StopTimeoutExceeded, "retry", retryErr)
@@ -129,14 +129,28 @@ func (r *runner) run() (Result, error) {
 			})
 			r.result.Judge = judge
 			r.emit("retry", "done", "bounded retry completed", map[string]interface{}{
-				"evidence_count": len(pack.Evidence),
-				"source_keys":    sourceKeys(pack.Evidence),
-				"verdict":        judge.Verdict,
+				"evidence_count":                len(pack.Evidence),
+				"source_keys":                   sourceKeys(pack.Evidence),
+				"verdict":                       judge.Verdict,
+				"retry_question":                retryQuestion,
+				"preserved_initial_source_keys": mergeDecision.PreservedInitialSourceKeys,
+				"accepted_retry_source_keys":    mergeDecision.AcceptedRetrySourceKeys,
+				"rejected_retry_source_keys":    mergeDecision.RejectedRetrySourceKeys,
+				"final_source_keys":             mergeDecision.FinalSourceKeys,
+				"retry_merge_decision_reason":   mergeDecision.Reason,
 			})
 		}
 	}
 
 	stopReason := r.stopReasonFromJudge(pack, judge)
+	if r.opts.StopAfterJudge {
+		r.result.StopReason = stopReason
+		r.emit("judge", "stopped", "stopped after judge", map[string]interface{}{
+			"verdict":      judge.Verdict,
+			"retry_action": judge.RetryAction,
+		})
+		return r.finish()
+	}
 	if !r.enter("prepare_synthesis", "preparing synthesis input") {
 		return r.finish()
 	}
@@ -193,7 +207,10 @@ func (r *runner) run() (Result, error) {
 	if !r.enter("verification", "verifying citations") {
 		return r.finish()
 	}
-	verification := VerifyCitations(pack, synthesis)
+	verification := mergeVerificationResults(
+		GuardAnchoredAnswer(pack, prepared, synthesis),
+		VerifyCitations(pack, synthesis),
+	)
 	r.result.Verification = verification
 	r.result.Warnings = appendUniqueStrings(r.result.Warnings, verification.Warnings...)
 	if !verification.Passed {
@@ -237,43 +254,112 @@ func (r *runner) run() (Result, error) {
 	return r.finish()
 }
 
-func (r *runner) buildPack(includeRelated bool, question string) (brainresearch.Pack, error) {
+func (r *runner) buildPack(includeRelated bool, question string, attempt string) (brainresearch.Pack, error) {
 	ctx, cancel := r.stageContext()
 	defer cancel()
 	return brainresearch.Build(ctx, r.cfg, r.st, brainresearch.Options{
-		Question:        question,
-		Topic:           r.opts.Topic,
-		Limit:           r.opts.Limit,
-		SourceTypes:     r.opts.SourceTypes,
-		IncludeRelated:  includeRelated,
-		RelatedLimit:    r.opts.RelatedLimit,
-		SeedLimit:       r.opts.SeedLimit,
-		IncludeTopic:    r.opts.IncludeTopic,
-		MaxCharsPerDoc:  r.opts.MaxCharsPerDoc,
-		PlannerModel:    r.opts.PlannerModel,
-		PlannerTimeout:  r.opts.PlannerTimeout,
-		PlannerBinary:   r.opts.PlannerBinary,
-		UseModelPlanner: r.opts.UseModelPlanner,
-		DisablePlanner:  r.opts.DisablePlanner,
-		UseSemantic:     r.opts.UseSemantic,
-		DisableSemantic: r.opts.DisableSemantic,
-		Observer:        r.recorder,
+		Question:          question,
+		RawQuestion:       r.rawQuestion(),
+		Topic:             r.opts.Topic,
+		Limit:             r.opts.Limit,
+		SourceTypes:       r.opts.SourceTypes,
+		IncludeRelated:    includeRelated,
+		RelatedLimit:      r.opts.RelatedLimit,
+		SeedLimit:         r.opts.SeedLimit,
+		IncludeTopic:      r.opts.IncludeTopic,
+		MaxCharsPerDoc:    r.opts.MaxCharsPerDoc,
+		PlannerModel:      r.opts.PlannerModel,
+		PlannerTimeout:    r.opts.PlannerTimeout,
+		PlannerBinary:     r.opts.PlannerBinary,
+		UseModelPlanner:   r.opts.UseModelPlanner,
+		DisablePlanner:    r.opts.DisablePlanner,
+		UseSemantic:       r.opts.UseSemantic,
+		DisableSemantic:   r.opts.DisableSemantic,
+		ContinuityAnchors: r.continuityAnchors(),
+		Attempt:           attempt,
+		Observer:          r.recorder,
 	})
 }
 
-func (r *runner) runRetry(judge JudgeResult) (brainresearch.Pack, error) {
+func (r *runner) runRetry(initialPack brainresearch.Pack, judge JudgeResult) (brainresearch.Pack, string, brainresearch.MergeRetryDecision, error) {
 	switch judge.RetryAction {
 	case RetryFocusedVariant:
-		question := strings.TrimSpace(judge.RetryVariant)
+		question := focusedRetryQuestion(initialPack, judge, r.opts.Question)
 		if question == "" {
 			question = r.opts.Question
 		}
-		return r.buildPack(false, question)
+		retryPack, err := r.buildPack(false, question, "retry-1")
+		if err != nil {
+			return initialPack, question, brainresearch.MergeRetryDecision{}, err
+		}
+		merged, decision := brainresearch.MergeRetryPack(initialPack, retryPack, brainresearch.MergeRetryOptions{
+			MissingConcepts: judge.MissingConcepts,
+			RetryAction:     string(judge.RetryAction),
+			RetryQuestion:   question,
+		})
+		return merged, question, decision, nil
 	case RetryRelatedExpansion:
-		return r.buildPack(true, r.opts.Question)
+		question := strings.TrimSpace(r.opts.Question)
+		retryPack, err := r.buildPack(true, question, "retry-1")
+		if err != nil {
+			return initialPack, question, brainresearch.MergeRetryDecision{}, err
+		}
+		merged, decision := brainresearch.MergeRetryPack(initialPack, retryPack, brainresearch.MergeRetryOptions{
+			MissingConcepts: judge.MissingConcepts,
+			RetryAction:     string(judge.RetryAction),
+			RetryQuestion:   question,
+		})
+		return merged, question, decision, nil
 	default:
-		return r.result.Pack, nil
+		return initialPack, "", brainresearch.MergeRetryDecision{}, nil
 	}
+}
+
+func focusedRetryQuestion(pack brainresearch.Pack, judge JudgeResult, fallback string) string {
+	parts := make([]string, 0, len(pack.QueryPlan.ProtectedAnchors)+len(judge.MissingConcepts))
+	for _, anchor := range pack.QueryPlan.ProtectedAnchors {
+		if term := protectedAnchorRetryTerm(anchor); term != "" {
+			parts = append(parts, term)
+		}
+	}
+	if len(judge.MissingConcepts) > 0 {
+		parts = append(parts, judge.MissingConcepts...)
+	} else if strings.TrimSpace(judge.RetryVariant) != "" {
+		parts = append(parts, strings.Fields(judge.RetryVariant)...)
+	}
+	parts = uniqueRetryQuestionParts(parts)
+	if len(parts) == 0 {
+		return strings.TrimSpace(fallback)
+	}
+	return strings.Join(parts, " ")
+}
+
+func protectedAnchorRetryTerm(anchor brainresearch.ProtectedAnchor) string {
+	for _, value := range append([]string{anchor.Raw, anchor.ResolvedID, anchor.Canonical}, anchor.ExactTerms...) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func uniqueRetryQuestionParts(parts []string) []string {
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key := strings.ToLower(part)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, part)
+	}
+	return out
 }
 
 func (r *runner) runSynthesis(prepared brainresearch.PreparedSynthesis, pack brainresearch.Pack) (brainresearch.SynthesisResult, error) {
@@ -295,6 +381,20 @@ func (r *runner) synthesisQuestion() string {
 		return strings.TrimSpace(r.opts.SynthesisQuestion)
 	}
 	return r.opts.Question
+}
+
+func (r *runner) rawQuestion() string {
+	if strings.TrimSpace(r.opts.RawQuestion) != "" {
+		return strings.TrimSpace(r.opts.RawQuestion)
+	}
+	return r.synthesisQuestion()
+}
+
+func (r *runner) continuityAnchors() []brainresearch.ProtectedAnchor {
+	if r.opts.ChatContinuity == nil || len(r.opts.ChatContinuity.ContinuityAnchors) == 0 {
+		return nil
+	}
+	return append([]brainresearch.ProtectedAnchor(nil), r.opts.ChatContinuity.ContinuityAnchors...)
 }
 
 func (r *runner) answerReviewEnabled() bool {

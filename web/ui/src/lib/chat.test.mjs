@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildChatTraceContinuity,
   buildChatRetrievalQuestion,
   collectPriorEvidence,
   mergeEvidenceRows,
@@ -96,6 +97,158 @@ test("buildChatRetrievalQuestion does not anchor corrective follow-ups to prior 
   assert.match(query, /Current question: There is data/);
   assert.doesNotMatch(query, /Woman killed by husband/);
   assert.doesNotMatch(query, /src:wrong/);
+});
+
+test("buildChatRetrievalQuestion suppresses prior evidence for current handle searches", () => {
+  const turns = [
+    {
+      question: "What do I know about NotebookLM?",
+      research_pack: {
+        evidence: [{ source_key: "src:notebook", title: "NotebookLM maxxing" }]
+      }
+    }
+  ];
+
+  const query = buildChatRetrievalQuestion("Synthesize @Kristof_Poland", turns, []);
+
+  assert.equal(query, "Current question: Synthesize @Kristof_Poland");
+  assert.doesNotMatch(query, /Recent user questions/);
+  assert.doesNotMatch(query, /Prior evidence titles/);
+  assert.doesNotMatch(query, /NotebookLM/);
+});
+
+test("buildChatRetrievalQuestion suppresses prior evidence for current underscore aliases", () => {
+  const turns = [
+    {
+      question: "What do I know about NotebookLM?",
+      research_pack: {
+        evidence: [{ source_key: "src:notebook", title: "NotebookLM maxxing" }]
+      }
+    }
+  ];
+
+  const query = buildChatRetrievalQuestion("Synthesize Kristof_Poland essays", turns, []);
+
+  assert.equal(query, "Current question: Synthesize Kristof_Poland essays");
+	assert.doesNotMatch(query, /Recent user questions/);
+	assert.doesNotMatch(query, /Prior evidence titles/);
+	assert.doesNotMatch(query, /NotebookLM/);
+});
+
+test("buildChatRetrievalQuestion does not treat technical underscores as protected anchors", () => {
+  const turns = [
+    {
+      question: "What do I know about NotebookLM?",
+      research_pack: {
+        evidence: [{ source_key: "src:notebook", title: "NotebookLM maxxing" }]
+      }
+    }
+  ];
+
+  const query = buildChatRetrievalQuestion("Synthesize notes about api_gateway configuration", turns, []);
+
+  assert.match(query, /Current question: Synthesize notes about api_gateway configuration/);
+  assert.match(query, /Prior evidence titles/);
+  assert.match(query, /NotebookLM/);
+});
+
+test("buildChatTraceContinuity carries prior typed anchors only for pronoun followups", () => {
+  const anchor = {
+    kind: "handle",
+    relation: "authored_by",
+    raw: "@Kristof_Poland",
+    canonical: "kristof_poland"
+  };
+  const turns = [
+    {
+      id: "chat:prior",
+      question: "Can you synthesize @Kristof_Poland?",
+      research_pack: {
+        query_plan: { protected_anchors: [anchor] },
+        evidence: [{ source_key: "x:kristof-1", title: "Kristof row" }]
+      }
+    }
+  ];
+
+  const continuity = buildChatTraceContinuity("Synthesize those", "Current question: Synthesize those", turns, ["x:kristof-1"]);
+
+  assert.equal(continuity.original_question, "Synthesize those");
+  assert.equal(continuity.retrieval_question, "Current question: Synthesize those");
+  assert.deepEqual(continuity.prior_question_ids, ["chat:prior"]);
+  assert.deepEqual(continuity.pinned_evidence_keys, ["x:kristof-1"]);
+  assert.deepEqual(continuity.merged_prior_evidence, ["x:kristof-1"]);
+  assert.deepEqual(continuity.continuity_anchors, [anchor]);
+});
+
+test("buildChatTraceContinuity replaces stale prior anchors when current turn has an explicit anchor", () => {
+  const turns = [
+    {
+      id: "chat:prior",
+      question: "Can you synthesize @Kristof_Poland?",
+      research_pack: {
+        query_plan: {
+          protected_anchors: [{ kind: "handle", relation: "authored_by", raw: "@Kristof_Poland", canonical: "kristof_poland" }]
+        },
+        evidence: [{ source_key: "x:kristof-1", title: "Kristof row" }]
+      }
+    }
+  ];
+
+  const continuity = buildChatTraceContinuity("Synthesize @Other_Author", "Current question: Synthesize @Other_Author", turns, []);
+
+  assert.equal(continuity.original_question, "Synthesize @Other_Author");
+	assert.ok(!("continuity_anchors" in continuity), `unexpected continuity anchors: ${JSON.stringify(continuity)}`);
+});
+
+test("buildChatTraceContinuity carries only the most recent anchored turn", () => {
+  const older = { kind: "handle", relation: "authored_by", raw: "@Older_Author", canonical: "older_author" };
+  const recent = { kind: "handle", relation: "authored_by", raw: "@Kristof_Poland", canonical: "kristof_poland" };
+  const turns = [
+    {
+      id: "chat:older",
+      research_pack: {
+        query_plan: { protected_anchors: [older] },
+        evidence: [{ source_key: "x:older", title: "Older row" }]
+      }
+    },
+    {
+      id: "chat:recent",
+      research_pack: {
+        query_plan: { protected_anchors: [recent] },
+        evidence: [{ source_key: "x:kristof-1", title: "Kristof row" }]
+      }
+    }
+  ];
+
+  const continuity = buildChatTraceContinuity("Synthesize those", "Current question: Synthesize those", turns, []);
+
+	assert.deepEqual(continuity.continuity_anchors, [recent]);
+	assert.deepEqual(continuity.prior_question_ids, ["chat:older", "chat:recent"]);
+});
+
+test("buildChatTraceContinuity keeps prior anchors for pronoun followups with code-like underscores", () => {
+  const anchor = {
+    kind: "handle",
+    relation: "authored_by",
+    raw: "@Kristof_Poland",
+    canonical: "kristof_poland"
+  };
+  const turns = [
+    {
+      id: "chat:prior",
+      question: "Can you synthesize @Kristof_Poland?",
+      research_pack: {
+        query_plan: { protected_anchors: [anchor] },
+        evidence: [{ source_key: "x:kristof-1", title: "Kristof row" }]
+      }
+    }
+  ];
+
+  const retrieval = buildChatRetrievalQuestion("Can you update those user_id tokens?", turns, []);
+  const continuity = buildChatTraceContinuity("Can you update those user_id tokens?", retrieval, turns, []);
+
+  assert.match(retrieval, /Prior evidence titles/);
+  assert.deepEqual(continuity.continuity_anchors, [anchor]);
 });
 
 test("mergeEvidenceRows keeps current evidence first and de-duplicates prior evidence", () => {

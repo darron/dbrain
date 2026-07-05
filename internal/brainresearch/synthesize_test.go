@@ -102,6 +102,59 @@ func TestPrepareSynthesisLabelsEvidenceContentSections(t *testing.T) {
 	}
 }
 
+func TestPrepareSynthesisKeepsAtLeastOneAnchoredRowInContext(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	pack := anchorSynthesisPack([]ask.Evidence{
+		{SourceKey: "x:kristof-anchor", Kind: "item", Title: "Kristof row", Author: "Krzysztof Szczawinski @Kristof_Poland", Summary: "Anchored row with direct evidence."},
+		{SourceKey: "src:other", Kind: "source", Title: "Other row", Summary: "Other context."},
+	})
+
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: pack, Model: "cli/test/research", MaxEvidenceChars: 2000})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis: %v", err)
+	}
+	if !hasCitation(prepared.Citations, "x:kristof-anchor") {
+		t.Fatalf("expected anchored row citation to survive, citations=%+v input=\n%s", prepared.Citations, prepared.Input)
+	}
+	if hasString(prepared.Warnings, "anchor_evidence_truncated") {
+		t.Fatalf("did not expect anchor truncation warning, got %+v", prepared.Warnings)
+	}
+	if len(prepared.AnchorContext.Anchors) != 1 || !hasString(prepared.AnchorContext.Anchors[0].CitationSourceKeys, "x:kristof-anchor") {
+		t.Fatalf("expected anchor context to report cited anchored row, got %+v", prepared.AnchorContext)
+	}
+}
+
+func TestPrepareSynthesisWarnsWhenAnchorRowsDropFromTokenBudget(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	pack := anchorSynthesisPack([]ask.Evidence{
+		{SourceKey: "src:large", Kind: "source", Title: "Large row", Summary: strings.Repeat("large context ", 80)},
+		{SourceKey: "x:kristof-anchor", Kind: "item", Title: "Kristof row", Author: "Krzysztof Szczawinski @Kristof_Poland", Summary: "Anchored row that should be dropped by budget."},
+	})
+
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: pack, Model: "cli/test/research", MaxEvidenceChars: 320})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis: %v", err)
+	}
+	if !hasString(prepared.Warnings, "anchor_evidence_truncated") {
+		t.Fatalf("expected anchor_evidence_truncated warning, got %+v context=%+v truncation=%+v", prepared.Warnings, prepared.AnchorContext, prepared.Truncation)
+	}
+	if hasCitation(prepared.Citations, "x:kristof-anchor") {
+		t.Fatalf("expected anchored row to be absent from citations under tiny budget, citations=%+v", prepared.Citations)
+	}
+	if len(prepared.AnchorContext.Anchors) != 1 ||
+		!hasString(prepared.AnchorContext.Anchors[0].SupportedSourceKeys, "x:kristof-anchor") ||
+		!hasString(prepared.AnchorContext.Anchors[0].DroppedSourceKeys, "x:kristof-anchor") ||
+		!hasString(prepared.AnchorContext.Anchors[0].Reasons, "token_budget") {
+		t.Fatalf("expected dropped anchored row in anchor context, got %+v", prepared.AnchorContext)
+	}
+}
+
 func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
 	if SynthesisPromptVersion != "brain-research-synthesis-v3" {
 		t.Fatalf("unexpected synthesis prompt version: %q", SynthesisPromptVersion)
@@ -165,6 +218,36 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 	if result.PromptVersion != SynthesisPromptVersion || result.ToolVersion != "test-1.0.0" {
 		t.Fatalf("unexpected provenance: %+v", result)
 	}
+}
+
+func anchorSynthesisPack(evidence []ask.Evidence) Pack {
+	return Pack{
+		SchemaVersion: SchemaVersion,
+		Question:      "Can you synthesize @Kristof_Poland?",
+		QueryPlan: QueryPlan{
+			TextQuery: "Kristof_Poland",
+			ProtectedAnchors: []ProtectedAnchor{{
+				Kind:        "handle",
+				Relation:    "authored_by",
+				Raw:         "@Kristof_Poland",
+				Canonical:   "kristof_poland",
+				ExactTerms:  []string{"@Kristof_Poland", "Kristof_Poland", "kristof_poland"},
+				PhraseTerms: []string{"kristof poland"},
+			}},
+			Concepts: []QueryConcept{{Key: "kristof_poland", Preferred: "@Kristof_Poland", Terms: []string{"@Kristof_Poland", "Kristof_Poland", "kristof_poland"}, Required: true, Role: "anchor"}},
+		},
+		Coverage: Coverage{EvidenceCount: len(evidence)},
+		Evidence: evidence,
+	}
+}
+
+func hasCitation(citations []Citation, sourceKey string) bool {
+	for _, citation := range citations {
+		if citation.SourceKey == sourceKey {
+			return true
+		}
+	}
+	return false
 }
 
 func installResearchFakeSummarize(t *testing.T, root string) string {

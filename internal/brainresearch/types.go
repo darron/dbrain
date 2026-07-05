@@ -1,6 +1,7 @@
 package brainresearch
 
 import (
+	"context"
 	"time"
 
 	"github.com/darron/dbrain/internal/ask"
@@ -22,29 +23,45 @@ type Builder struct {
 }
 
 type Options struct {
-	Question        string
-	Topic           string
-	Limit           int
-	SourceTypes     []string
-	IncludeRelated  bool
-	RelatedLimit    int
-	SeedLimit       int
-	IncludeTopic    *bool
-	MaxCharsPerDoc  int
-	PlannerModel    string
-	PlannerTimeout  time.Duration
-	PlannerBinary   string
-	UseModelPlanner bool
-	DisablePlanner  bool
-	UseSemantic     bool
-	DisableSemantic bool
-	Observer        Observer
+	Question          string
+	RawQuestion       string
+	Topic             string
+	Limit             int
+	SourceTypes       []string
+	IncludeRelated    bool
+	RelatedLimit      int
+	SeedLimit         int
+	IncludeTopic      *bool
+	MaxCharsPerDoc    int
+	PlannerModel      string
+	PlannerTimeout    time.Duration
+	PlannerBinary     string
+	UseModelPlanner   bool
+	DisablePlanner    bool
+	UseSemantic       bool
+	DisableSemantic   bool
+	ContinuityAnchors []ProtectedAnchor
+	Attempt           string
+	AnchorResolver    AnchorResolver
+	Observer          Observer
+}
+
+type AnchorResolver interface {
+	ResolveAnchors(ctx context.Context, anchors []ProtectedAnchor) ([]ProtectedAnchor, error)
 }
 
 type Observer interface {
 	Event(name string, data map[string]interface{})
 	PlannerInput(input string)
 	PlannerOutput(output string)
+}
+
+type AttemptPlannerInputObserver interface {
+	PlannerInputAttempt(attempt string, input string)
+}
+
+type AttemptPlannerOutputObserver interface {
+	PlannerOutputAttempt(attempt string, output string)
 }
 
 type Pack struct {
@@ -68,6 +85,7 @@ type QueryPlan struct {
 	TagQueries        []string                  `json:"tag_queries"`
 	QueryVariants     []QueryVariant            `json:"query_variants,omitempty"`
 	Concepts          []QueryConcept            `json:"concepts,omitempty"`
+	ProtectedAnchors  []ProtectedAnchor         `json:"protected_anchors,omitempty"`
 	Planner           string                    `json:"planner,omitempty"`
 	PlannerModel      string                    `json:"planner_model,omitempty"`
 	PlannerError      string                    `json:"planner_error,omitempty"`
@@ -92,6 +110,20 @@ type QueryConcept struct {
 	Preferred string   `json:"preferred,omitempty"`
 	Terms     []string `json:"terms"`
 	Required  bool     `json:"required"`
+	Role      string   `json:"role,omitempty"`
+}
+
+type ProtectedAnchor struct {
+	Kind           string   `json:"kind"`
+	Relation       string   `json:"relation,omitempty"`
+	Raw            string   `json:"raw"`
+	Canonical      string   `json:"canonical,omitempty"`
+	ResolvedID     string   `json:"resolved_id,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	Confidence     string   `json:"confidence,omitempty"`
+	ExactTerms     []string `json:"exact_terms,omitempty"`
+	PhraseTerms    []string `json:"phrase_terms,omitempty"`
+	ExpansionTerms []string `json:"expansion_terms,omitempty"`
 }
 
 type Coverage struct {

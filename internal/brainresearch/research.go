@@ -26,6 +26,12 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 	if question == "" {
 		return Pack{}, fmt.Errorf("question is required")
 	}
+	rawQuestion := strings.TrimSpace(firstNonEmpty(opts.RawQuestion, opts.Question))
+	anchors := extractProtectedAnchors(rawQuestion)
+	if len(anchors) == 0 && len(opts.ContinuityAnchors) > 0 {
+		anchors = append([]ProtectedAnchor(nil), opts.ContinuityAnchors...)
+	}
+	anchors = b.resolveProtectedAnchors(ctx, anchors, opts)
 	searchQuestion := ask.SearchText(question)
 	if searchQuestion == "" {
 		searchQuestion = question
@@ -33,11 +39,13 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 
 	hints := ask.Hints(question)
 	emitEvent(opts.Observer, "question_normalized", map[string]interface{}{
-		"question":        question,
-		"search_question": searchQuestion,
-		"text_query":      hints.TextQuery,
-		"terms":           hints.Terms,
-		"tag_queries":     hints.TagQueries,
+		"question":          question,
+		"search_question":   searchQuestion,
+		"text_query":        hints.TextQuery,
+		"terms":             hints.Terms,
+		"tag_queries":       hints.TagQueries,
+		"raw_question":      rawQuestion,
+		"protected_anchors": anchors,
 	})
 	limit := defaultInt(opts.Limit, 8)
 	maxChars := defaultInt(opts.MaxCharsPerDoc, 700)
@@ -57,24 +65,27 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 		includeTopic = false
 	}
 
-	strategy := b.buildResearchStrategy(ctx, searchQuestion, hints, opts)
+	strategyOpts := opts
+	strategyOpts.ContinuityAnchors = anchors
+	strategy := b.buildResearchStrategy(ctx, searchQuestion, hints, strategyOpts)
 	retrievalLanes := researchhybrid.LaneStatuses(researchhybrid.Options{
 		UseSemantic:     opts.UseSemantic,
 		DisableSemantic: opts.DisableSemantic,
 	})
 	emitEvent(opts.Observer, "query_plan_built", map[string]interface{}{
-		"query_family":    strategy.Family,
-		"planner":         strategy.Planner,
-		"planner_model":   strategy.PlannerModel,
-		"planner_error":   strategy.PlannerError,
-		"variants":        strategy.Variants,
-		"concepts":        strategy.Concepts,
-		"variant_count":   len(strategy.Variants),
-		"concept_count":   len(strategy.Concepts),
-		"planner_failed":  strategy.PlannerError != "",
-		"retrieval_lanes": retrievalLanes,
+		"query_family":      strategy.Family,
+		"planner":           strategy.Planner,
+		"planner_model":     strategy.PlannerModel,
+		"planner_error":     strategy.PlannerError,
+		"variants":          strategy.Variants,
+		"concepts":          strategy.Concepts,
+		"protected_anchors": anchors,
+		"variant_count":     len(strategy.Variants),
+		"concept_count":     len(strategy.Concepts),
+		"planner_failed":    strategy.PlannerError != "",
+		"retrieval_lanes":   retrievalLanes,
 	})
-	evidence, err := b.collectStrategyEvidence(ctx, strategy, hints, opts, limit, maxChars)
+	evidence, err := b.collectStrategyEvidence(ctx, strategy, hints, opts, limit, maxChars, anchors)
 	if err != nil {
 		return Pack{}, err
 	}
@@ -106,6 +117,7 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 			TagQueries:        hints.TagQueries,
 			QueryVariants:     strategy.Variants,
 			Concepts:          strategy.Concepts,
+			ProtectedAnchors:  anchors,
 			Planner:           strategy.Planner,
 			PlannerModel:      strategy.PlannerModel,
 			PlannerError:      strategy.PlannerError,

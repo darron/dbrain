@@ -10,7 +10,7 @@
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
   import { addLink, compareResearchTrace, createChatShare, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, synthesizeResearch } from "./lib/api.js";
-  import { buildChatRetrievalQuestion, collectPriorEvidence, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
+  import { buildChatRetrievalQuestion, buildChatTraceContinuity, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
   import { formatTime } from "./lib/time.js";
   import { pageHref, readRouteState, writeRouteState } from "./lib/urlState.js";
@@ -529,17 +529,10 @@
     chatController = new AbortController();
     const controller = chatController;
     try {
-      const mergedPriorEvidence = collectPriorEvidence(priorTurns, pinnedEvidenceKeys).map((row) => row.source_key).filter(Boolean);
       await runResearchRunner(retrievalQuestion, {
         signal: controller.signal,
         traceSurface: "web_chat",
-        traceContinuity: {
-          original_question: question,
-          retrieval_question: retrievalQuestion,
-          prior_question_ids: priorTurns.map((candidate) => candidate.id).filter(Boolean).slice(-8),
-          pinned_evidence_keys: pinnedEvidenceKeys,
-          merged_prior_evidence: mergedPriorEvidence
-        },
+        traceContinuity: buildChatTraceContinuity(question, retrievalQuestion, priorTurns, pinnedEvidenceKeys),
         onEvent: (event, payload) => {
           if (event === "progress") {
             const current = chatTurns.find((candidate) => candidate.id === id);

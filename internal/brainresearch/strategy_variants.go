@@ -151,9 +151,13 @@ func preferredConceptQueryExcluding(concepts []QueryConcept, excluded ...string)
 	for _, key := range excluded {
 		excludedSet[strings.ToLower(strings.TrimSpace(key))] = struct{}{}
 	}
+	hasStrong := hasStrongConcept(concepts)
 	terms := make([]string, 0, len(concepts))
 	for _, concept := range concepts {
 		if _, skip := excludedSet[strings.ToLower(concept.Key)]; skip {
+			continue
+		}
+		if hasStrong && (concept.Role == conceptRoleIntent || concept.Role == conceptRoleFrame) {
 			continue
 		}
 		if concept.Preferred != "" {
@@ -171,11 +175,10 @@ func focusedConceptVariants(concepts []QueryConcept) []QueryVariant {
 		if !concept.Required {
 			continue
 		}
-		if concept.Preferred != "" {
-			required = append(required, concept.Preferred)
+		if concept.Role == conceptRoleIntent || concept.Role == conceptRoleFrame {
 			continue
 		}
-		required = append(required, concept.Key)
+		required = append(required, conceptPreferredTerm(concept))
 	}
 	if len(required) <= 3 {
 		return nil

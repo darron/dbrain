@@ -973,6 +973,250 @@ func TestResearchRunStreamsProgressAnswerAndTrace(t *testing.T) {
 	}
 }
 
+func TestResearchRunUsesRawCurrentQuestionForProtectedAnchors(t *testing.T) {
+	ctx := t.Context()
+	cfg, st := openTestStore(t)
+	sourceKey := seedWebXAuthorItem(t, ctx, cfg, st, "x:other-author", "Other_Author", "Other Author", "Other Author essays")
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen-test","message":{"role":"assistant","content":"Other Author evidence [` + sourceKey + `]."}}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", ollama.URL)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rawQuestion := "Can you synthesize @Other_Author?"
+	requestBody, err := json.Marshal(ResearchRunRequest{
+		Question:       "Current question: " + rawQuestion + "\n\nPrior evidence titles for query focus:\n- @Kristof_Poland old row",
+		Limit:          4,
+		DisablePlanner: true,
+		Model:          "ollama/qwen-test",
+		TraceSurface:   "web_chat",
+		TraceContinuity: &researchtrace.ChatContinuity{
+			OriginalQuestion:  rawQuestion,
+			RetrievalQuestion: "Current question: " + rawQuestion,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/run", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events := parseSSEEvents(t, rec.Body.String())
+	var done struct {
+		ResearchPack brainresearch.Pack `json:"research_pack"`
+		TracePath    string             `json:"trace_path"`
+		Verification struct {
+			Passed bool `json:"passed"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
+		t.Fatalf("decode done event: %v", err)
+	}
+	if !done.Verification.Passed {
+		t.Fatalf("expected verified result, stream:\n%s", rec.Body.String())
+	}
+	if !protectedAnchorsContainCanonical(done.ResearchPack.QueryPlan.ProtectedAnchors, "other_author") {
+		t.Fatalf("expected current raw @Other_Author anchor, got %+v", done.ResearchPack.QueryPlan.ProtectedAnchors)
+	}
+	if protectedAnchorsContainCanonical(done.ResearchPack.QueryPlan.ProtectedAnchors, "kristof_poland") {
+		t.Fatalf("stale prior @Kristof_Poland leaked into protected anchors: %+v", done.ResearchPack.QueryPlan.ProtectedAnchors)
+	}
+	traceJSON, err := os.ReadFile(filepath.Join(cfg.DataDir, filepath.FromSlash(done.TracePath), "run.json"))
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	if !strings.Contains(string(traceJSON), `"original_question": "Can you synthesize @Other_Author?"`) {
+		t.Fatalf("expected trace to preserve raw original question:\n%s", string(traceJSON))
+	}
+}
+
+func TestResearchRunUsesContinuityAnchorsForPronounFollowup(t *testing.T) {
+	ctx := t.Context()
+	cfg, st := openTestStore(t)
+	sourceKey := seedWebXAuthorItem(t, ctx, cfg, st, "x:kristof-followup", "Kristof_Poland", "Krzysztof Szczawinski", "Kristof follow-up essays")
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen-test","message":{"role":"assistant","content":"Kristof follow-up evidence [` + sourceKey + `]."}}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", ollama.URL)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	requestBody, err := json.Marshal(ResearchRunRequest{
+		Question:       "Current question: Synthesize those",
+		Limit:          4,
+		DisablePlanner: true,
+		Model:          "ollama/qwen-test",
+		TraceSurface:   "web_chat",
+		TraceContinuity: &researchtrace.ChatContinuity{
+			OriginalQuestion:  "Synthesize those",
+			RetrievalQuestion: "Current question: Synthesize those",
+			ContinuityAnchors: []brainresearch.ProtectedAnchor{{
+				Kind:       "handle",
+				Relation:   "authored_by",
+				Raw:        "@Kristof_Poland",
+				Canonical:  "kristof_poland",
+				ExactTerms: []string{"@Kristof_Poland", "Kristof_Poland", "kristof_poland"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/run", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events := parseSSEEvents(t, rec.Body.String())
+	var done struct {
+		ResearchPack brainresearch.Pack `json:"research_pack"`
+		Verification struct {
+			Passed bool `json:"passed"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
+		t.Fatalf("decode done event: %v", err)
+	}
+	if !done.Verification.Passed {
+		t.Fatalf("expected verified result, stream:\n%s", rec.Body.String())
+	}
+	if !protectedAnchorsContainCanonical(done.ResearchPack.QueryPlan.ProtectedAnchors, "kristof_poland") {
+		t.Fatalf("expected continuity anchor in protected anchors, got %+v", done.ResearchPack.QueryPlan.ProtectedAnchors)
+	}
+}
+
+func TestRunnerChatContinuityKeepsPronounAnchorsForCodeLikeUnderscores(t *testing.T) {
+	anchor := brainresearch.ProtectedAnchor{
+		Kind:      "handle",
+		Relation:  "authored_by",
+		Raw:       "@Kristof_Poland",
+		Canonical: "kristof_poland",
+	}
+	continuity := runnerChatContinuity(ResearchRunRequest{
+		TraceContinuity: &researchtrace.ChatContinuity{ContinuityAnchors: []brainresearch.ProtectedAnchor{anchor}},
+	}, "Can you update those user_id tokens?")
+	if continuity == nil || len(continuity.ContinuityAnchors) != 1 || continuity.ContinuityAnchors[0].Canonical != "kristof_poland" {
+		t.Fatalf("expected code-like underscore to keep pronoun continuity anchors, got %#v", continuity)
+	}
+}
+
+func TestRunnerRawQuestionRecoversCurrentQuestionWhenOriginalQuestionMissing(t *testing.T) {
+	anchor := brainresearch.ProtectedAnchor{
+		Kind:      "handle",
+		Relation:  "authored_by",
+		Raw:       "@Kristof_Poland",
+		Canonical: "kristof_poland",
+	}
+	req := ResearchRunRequest{
+		Question: "Current question: Synthesize those\n\nRecent user questions:\n- Can you synthesize @Kristof_Poland?\n\nPrior evidence titles:\n- Kristof row",
+		TraceContinuity: &researchtrace.ChatContinuity{
+			RetrievalQuestion: "Current question: Synthesize those",
+			ContinuityAnchors: []brainresearch.ProtectedAnchor{anchor},
+		},
+	}
+	raw := runnerRawQuestion(req)
+	if raw != "Synthesize those" {
+		t.Fatalf("expected raw current question, got %q", raw)
+	}
+	continuity := runnerChatContinuity(req, raw)
+	if continuity == nil || len(continuity.ContinuityAnchors) != 1 || continuity.ContinuityAnchors[0].Canonical != "kristof_poland" {
+		t.Fatalf("expected recovered raw pronoun question to keep continuity anchor, got %#v", continuity)
+	}
+}
+
+func TestResearchRunProtectsFeedEntrySourceKeyRawQuestion(t *testing.T) {
+	ctx := t.Context()
+	cfg, st := openTestStore(t)
+	sourceKey := seedWebGenericItem(t, ctx, cfg, st, "feed-entry:abc123def456", "feed_entry", "Feed entry source-key evidence")
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen-test","message":{"role":"assistant","content":"Feed entry evidence [` + sourceKey + `]."}}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", ollama.URL)
+
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	rawQuestion := "Summarize " + sourceKey
+	requestBody, err := json.Marshal(ResearchRunRequest{
+		Question:       "Current question: " + rawQuestion + "\n\nPrior evidence titles for query focus:\n- @Kristof_Poland old row",
+		Limit:          4,
+		DisablePlanner: true,
+		Model:          "ollama/qwen-test",
+		TraceSurface:   "web_chat",
+		TraceContinuity: &researchtrace.ChatContinuity{
+			OriginalQuestion:  rawQuestion,
+			RetrievalQuestion: "Current question: " + rawQuestion,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/run", bytes.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events := parseSSEEvents(t, rec.Body.String())
+	var done struct {
+		ResearchPack brainresearch.Pack `json:"research_pack"`
+		Verification struct {
+			Passed bool `json:"passed"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
+		t.Fatalf("decode done event: %v", err)
+	}
+	if !done.Verification.Passed {
+		t.Fatalf("expected verified result, stream:\n%s", rec.Body.String())
+	}
+	if !protectedAnchorsContainCanonical(done.ResearchPack.QueryPlan.ProtectedAnchors, sourceKey) {
+		t.Fatalf("expected feed-entry source-key anchor, got %+v", done.ResearchPack.QueryPlan.ProtectedAnchors)
+	}
+}
+
+func TestRunnerRawQuestionRejectsComposedTraceOriginalQuestion(t *testing.T) {
+	t.Parallel()
+
+	raw := runnerRawQuestion(ResearchRunRequest{
+		Question: "Current question: Synthesize @Other_Author",
+		TraceContinuity: &researchtrace.ChatContinuity{
+			OriginalQuestion: "Current question: Synthesize @Kristof_Poland\n\nPrior evidence titles:\n- stale row",
+		},
+	})
+	if raw != "Synthesize @Other_Author" {
+		t.Fatalf("expected composed trace original question to be ignored, got %q", raw)
+	}
+}
+
 func TestResearchRunStreamsVerificationFailure(t *testing.T) {
 	ctx := t.Context()
 	cfg, st := openTestStore(t)
@@ -2003,4 +2247,79 @@ func seedTestData(t *testing.T, ctx context.Context, cfg config.Config, st *stor
 	}
 
 	return itemID, "src:test-agent-memory"
+}
+
+func seedWebXAuthorItem(t *testing.T, ctx context.Context, cfg config.Config, st *store.Store, sourceKey string, handle string, name string, title string) string {
+	t.Helper()
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    sourceKey,
+		SourceType:   "x_bookmark",
+		ExternalID:   strings.TrimPrefix(sourceKey, "x:"),
+		CanonicalURL: "https://x.com/" + handle + "/status/" + strings.TrimPrefix(sourceKey, "x:"),
+		Title:        title,
+		AuthorHandle: handle,
+		AuthorName:   name,
+		Language:     "en",
+		Text:         title + " with direct local evidence.",
+		SummaryText:  title + " with direct local evidence.",
+		ContentHash:  sourceKey + "-hash",
+		NotePath:     "items/x/" + strings.TrimPrefix(sourceKey, "x:") + ".md",
+		RawJSON:      "{}",
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	if _, err := st.UpsertItem(ctx, item); err != nil {
+		t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+	}
+	itemNotePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath))
+	if err := os.MkdirAll(filepath.Dir(itemNotePath), 0o755); err != nil {
+		t.Fatalf("create item note dir: %v", err)
+	}
+	if err := os.WriteFile(itemNotePath, []byte("# "+title+"\n\nLocal note content.\n"), 0o644); err != nil {
+		t.Fatalf("write item note: %v", err)
+	}
+	return item.SourceKey
+}
+
+func seedWebGenericItem(t *testing.T, ctx context.Context, cfg config.Config, st *store.Store, sourceKey string, sourceType string, title string) string {
+	t.Helper()
+
+	now := time.Now().UTC()
+	item := model.Item{
+		SourceKey:    sourceKey,
+		SourceType:   sourceType,
+		ExternalID:   strings.TrimPrefix(sourceKey, sourceType+":"),
+		CanonicalURL: "https://example.com/" + strings.ReplaceAll(sourceKey, ":", "/"),
+		Title:        title,
+		Language:     "en",
+		Text:         title + " with direct local evidence.",
+		SummaryText:  title + " with direct local evidence.",
+		ContentHash:  sourceKey + "-hash",
+		NotePath:     "items/generic/" + strings.NewReplacer(":", "-", "/", "-").Replace(sourceKey) + ".md",
+		RawJSON:      "{}",
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	if _, err := st.UpsertItem(ctx, item); err != nil {
+		t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+	}
+	itemNotePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath))
+	if err := os.MkdirAll(filepath.Dir(itemNotePath), 0o755); err != nil {
+		t.Fatalf("create item note dir: %v", err)
+	}
+	if err := os.WriteFile(itemNotePath, []byte("# "+title+"\n\nLocal note content.\n"), 0o644); err != nil {
+		t.Fatalf("write item note: %v", err)
+	}
+	return item.SourceKey
+}
+
+func protectedAnchorsContainCanonical(anchors []brainresearch.ProtectedAnchor, canonical string) bool {
+	for _, anchor := range anchors {
+		if anchor.Canonical == canonical {
+			return true
+		}
+	}
+	return false
 }

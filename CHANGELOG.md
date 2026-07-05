@@ -5,6 +5,19 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Chat Harness Anchored Synthesis (2026-07-04)
+
+- **Fixed**: Web Chat and the research runner now preserve explicit
+  handle/entity/source-key evidence through judged retries, keep raw current
+  questions separate from composed retrieval context, and reject false "no
+  sources" answers when prepared synthesis context contains cited protected
+  anchor evidence.
+- **Evals/traces**: Research evals can exercise the runner through judge/retry
+  merge without model calls or persistent traces, and saved traces now retain
+  attempt-specific planner input/output artifacts for initial and retry packs.
+- **Location**: `internal/brainresearch/`, `internal/researchrun/`,
+  `internal/researchtrace/`, `internal/researcheval/`, `web/`
+
 ### Scheduled Sync Log Timestamps (2026-07-04)
 
 - **Observability**: Scheduled `sync all` logs emitted by `serve remote` now

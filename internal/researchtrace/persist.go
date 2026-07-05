@@ -77,6 +77,42 @@ func Write(cfg config.Config, trace ResearchTrace, artifacts ArtifactContents, o
 		}
 		bytesWritten += n
 	}
+	if len(artifacts.PlannerAttempts) > 0 {
+		trace.Artifacts.PlannerAttemptPaths = map[string]PlannerAttemptPaths{}
+		attempts := make([]string, 0, len(artifacts.PlannerAttempts))
+		for attempt := range artifacts.PlannerAttempts {
+			attempts = append(attempts, attempt)
+		}
+		sort.Strings(attempts)
+		for _, attempt := range attempts {
+			contents := artifacts.PlannerAttempts[attempt]
+			label := artifactAttemptLabel(attempt)
+			paths := PlannerAttemptPaths{}
+			if strings.TrimSpace(contents.Input) != "" {
+				paths.InputPath = "planner-" + label + "-input.md"
+				n, err := writeTraceFile(cfg, tmpDir, paths.InputPath, contents.Input)
+				if err != nil {
+					return WriteResult{}, err
+				}
+				bytesWritten += n
+			}
+			if strings.TrimSpace(contents.Output) != "" {
+				ext := ".txt"
+				if json.Valid([]byte(strings.TrimSpace(contents.Output))) {
+					ext = ".json"
+				}
+				paths.OutputPath = "planner-" + label + "-output" + ext
+				n, err := writeTraceFile(cfg, tmpDir, paths.OutputPath, contents.Output)
+				if err != nil {
+					return WriteResult{}, err
+				}
+				bytesWritten += n
+			}
+			if paths.InputPath != "" || paths.OutputPath != "" {
+				trace.Artifacts.PlannerAttemptPaths[attempt] = paths
+			}
+		}
+	}
 	if strings.TrimSpace(artifacts.SynthesisInput) != "" {
 		trace.Artifacts.SynthesisInputPath = "synthesis-input.md"
 		n, err := writeTraceFile(cfg, tmpDir, trace.Artifacts.SynthesisInputPath, artifacts.SynthesisInput)
@@ -129,6 +165,28 @@ func Write(cfg config.Config, trace ResearchTrace, artifacts ArtifactContents, o
 		Directory:    finalDir,
 		Bytes:        bytesWritten,
 	}, nil
+}
+
+func artifactAttemptLabel(attempt string) string {
+	attempt = strings.TrimSpace(strings.ToLower(attempt))
+	var b strings.Builder
+	for _, r := range attempt {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	label := strings.Trim(b.String(), "-_.")
+	if label == "" {
+		return "unknown"
+	}
+	return label
 }
 
 func Prune(cfg config.Config, opts RetentionOptions, activeRunID string) (PruneResult, error) {
