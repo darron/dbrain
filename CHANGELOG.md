@@ -5,6 +5,20 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Documentation Reference Refresh (2026-07-06)
+
+- **Docs/config**: Refreshed README, COMMANDS, MCP, TAILSCALE, and config
+  sample references for the current MCP tool surface, visible CLI commands,
+  scheduled `sync all` controls, launchd-backed remote serving, and local model
+  backends including Ollama, LM Studio, oMLX, and configured OpenAI-compatible
+  aliases.
+- **Docs/roadmap**: Replaced the stale README checklist with a current public
+  roadmap that separates live product gaps, pipeline gaps, evaluation backlog,
+  and explicit non-goals.
+- **Docs/diagram**: Replaced the README banner with a current architecture
+  diagram covering import-only sources, local authority, enrichment/model lanes,
+  MCP/web/CLI/Tailscale surfaces, launchd scheduling, and archive/restore.
+
 ### Chat Harness Anchored Synthesis (2026-07-04)
 
 - **Fixed**: Web Chat and the research runner now preserve explicit

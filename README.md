@@ -53,7 +53,9 @@ dbrain version
 
 ## Requirements
 
-Install the common local toolchain with Homebrew:
+Install the common local toolchain with Homebrew. `ollama` is included here as
+one local model option; LM Studio, oMLX, or another configured
+OpenAI-compatible backend can be used instead for model-backed dbrain work.
 
 ```sh
 brew install go go-task/tap/go-task golangci-lint sqlite yt-dlp ffmpeg node deno ollama tesseract
@@ -71,7 +73,9 @@ Runtime tools and services:
 - **`uv`**: recommended for `summarize` helper environments and transcriber setup flows.
 - **`whisper-cli`**: optional fallback for YouTube audio transcription when captions are unavailable.
 - **`~/.summarize/cache/whisper-cpp/models/ggml-base.bin`**: optional model file used by the `whisper-cli` fallback.
-- **`ollama`**: optional local model runtime for source summaries, answer synthesis, OCR, and categorization.
+- **Local model runtime**: optional for source summaries, answer synthesis, OCR,
+  and categorization. dbrain supports Ollama, LM Studio, oMLX, and configured
+  OpenAI-compatible backend aliases.
 - **`tesseract`**: optional local fallback for OCR.
 - **`sqlite3`**: optional, but useful for inspecting `brain.db`.
 - **`task`**: required for the top-level development tasks.
@@ -246,6 +250,12 @@ summary:
   model: ollama/qwen3.6:35b-a3b
   language: English
 
+lmstudio:
+  base_url: http://127.0.0.1:1234/v1
+
+omlx:
+  base_url: http://127.0.0.1:8000/v1
+
 openrouter:
   api_key: op://Private/dbrain/OPENROUTER_API_KEY
   base_url: https://openrouter.ai/api/v1
@@ -348,14 +358,15 @@ docs or issue comments.
 Lookup order is shell environment, `.envrc` or `.env` in the active config/root
 directory, then `config.yaml`. `--root` wins over `DBRAIN_ROOT`.
 
-Secret config values for GitHub import/OAuth, OpenRouter/OpenAI/Ollama API
-keys, auth session signing, and R2/S3 credentials may be direct values or typed
-references: `env:NAME`,
+Secret config values for GitHub import/OAuth, OpenRouter/OpenAI/Ollama,
+LM Studio, or oMLX API keys, auth session signing, and R2/S3 credentials may be
+direct values or typed references: `env:NAME`,
 `op://vault/item/field`, or `keychain://service/account`.
 
 | Environment variable(s) | config.yaml key | Default | Purpose |
 | --- | --- | --- | --- |
 | `DBRAIN_ROOT` | `(env only)` | `` | CLI root override. `--root` wins when both are set. |
+| `DBRAIN_CONFIG_FILE` | `(env only)` | `` | CLI config file override. `--config-file` wins when both are set. |
 | `XDG_CONFIG_HOME` | `(env only)` | `~/.config` | Base directory for default config files. |
 | `XDG_DATA_HOME` | `(env only)` | `~/.local/share` | Base directory for default database, vault, cache, tmp, and logs. |
 | `GITHUB_TOKEN` | `github.token` or `env.GITHUB_TOKEN` | `` | GitHub API token for importing stars. |
@@ -397,6 +408,7 @@ references: `env:NAME`,
 | `DBRAIN_SOURCE_READER_BASE_URL` / `DBRAIN_HTTP_READER_BASE_URL` | `source.reader.base_url` | `https://r.jina.ai/` | Reader/textifier base URL for difficult domains. |
 | `DBRAIN_SOURCE_WAYBACK_ENABLED` / `DBRAIN_WAYBACK_ENABLED` | `source.wayback.enabled` | `true` | Use Internet Archive Wayback as a final source extraction fallback before terminalizing repeated failures. |
 | `DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL` / `DBRAIN_WAYBACK_AVAILABILITY_URL` | `source.wayback.availability_url` | `https://archive.org/wayback/available?url={escaped_url}` | Wayback Availability API URL template used for final source fallback. |
+| `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK` / `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS` | `feeds.allow_private_network` | `false` | Allow feed fetches to localhost/private/link-local IPs for local testing; disabled by default. |
 | `DBRAIN_OKF_EXPORT_ENABLED` / `DBRAIN_SYNC_OKF_EXPORT` | `okf.export.enabled` | `false` | Export a full private OKF bundle at the end of `sync all`; use `--skip-okf-export` for a one-off opt-out. |
 | `DBRAIN_APPLE_NOTES_ENABLED` | `apple_notes.enabled` | `false` | Include Apple Notes import in `sync all` when enabled; the standalone import command remains explicit. |
 | `DBRAIN_APPLE_NOTES_DB_PATH` | `apple_notes.db_path` | `` | Optional Apple Notes `NoteStore.sqlite` path override. |
@@ -418,12 +430,48 @@ references: `env:NAME`,
 | `DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL` | `scheduler.sync_all.interval` | `1h` | Interval between scheduled `sync all` runs when the scheduler is enabled. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START` | `scheduler.sync_all.run_on_start` | `false` | Run `sync all` once when `serve remote` starts, then continue on the interval. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_JITTER` | `scheduler.sync_all.jitter` | `0` | Optional bounded delay added to each interval so multiple nodes do not sync at exactly the same time. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_X_BOOKMARKS_LIMIT` | `scheduler.sync_all.x_bookmarks_limit` | `0` | Optional scheduled X bookmark import limit for smoke runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_X_LIMIT` | `scheduler.sync_all.x_limit` | `0` | Optional scheduled X hydration limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_X_MEDIA_LIMIT` | `scheduler.sync_all.x_media_limit` | `0` | Optional scheduled X media transcription limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_X_PHOTO_OCR_LIMIT` | `scheduler.sync_all.x_photo_ocr_limit` | `0` | Optional scheduled X photo OCR limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_X_CONCURRENCY` | `scheduler.sync_all.x_concurrency` | `0` | Optional scheduled X hydration concurrency; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_LINK_DISCOVER_LIMIT` | `scheduler.sync_all.link_discover_limit` | `0` | Optional scheduled outbound-link discovery limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_LINK_LIMIT` | `scheduler.sync_all.link_limit` | `0` | Optional scheduled linked-source enrichment limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_LINK_CONCURRENCY` | `scheduler.sync_all.link_concurrency` | `0` | Optional scheduled linked-source enrichment concurrency; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_GITHUB_LIMIT` | `scheduler.sync_all.github_limit` | `0` | Optional scheduled GitHub import limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_YOUTUBE_LIMIT` | `scheduler.sync_all.youtube_limit` | `0` | Optional scheduled YouTube import limit; 0 uses the `sync all` default. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_LIMIT` | `scheduler.sync_all.source_limit` | `0` | Optional scheduled source-worker limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_CONCURRENCY` | `scheduler.sync_all.source_concurrency` | `0` | Optional scheduled source-worker concurrency; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_ARCHIVE_MEDIA_LIMIT` | `scheduler.sync_all.archive_media_limit` | `0` | Optional scheduled media archive limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_LIMIT` | `scheduler.sync_all.categorize_limit` | `0` | Optional scheduled categorization limit per record type; 0 uses the `sync all` default. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_CONCURRENCY` | `scheduler.sync_all.categorize_concurrency` | `0` | Optional scheduled categorization concurrency; 0 uses the `sync all` default. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_TIMEOUT` | `scheduler.sync_all.categorize_timeout` | `0` | Optional per-record categorization timeout for scheduled runs; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_X_TIMEOUT` | `scheduler.sync_all.x_timeout` | `0` | Optional scheduled X helper timeout; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_X_MEDIA_DOWNLOAD_TIMEOUT` | `scheduler.sync_all.x_media_download_timeout` | `0` | Optional scheduled X media download timeout; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_TIMEOUT` | `scheduler.sync_all.timeout` | `0` | Optional scheduled source summary timeout; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_OCR_MODEL` | `scheduler.sync_all.ocr_model` | `` | Optional scheduled X photo OCR model override. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_MODEL` | `scheduler.sync_all.model` | `` | Optional scheduled summary model override. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_MODEL` | `scheduler.sync_all.categorize_model` | `` | Optional scheduled categorization model override. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_CLI` | `scheduler.sync_all.cli` | `` | Optional scheduled summarize CLI provider override. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_LENGTH` | `scheduler.sync_all.length` | `` | Optional scheduled summary length override. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_BROWSER` | `scheduler.sync_all.browser` | `` | Optional scheduled browser override for cookie-backed imports. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_PROFILE` | `scheduler.sync_all.profile` | `` | Optional scheduled browser profile override. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_APPLE_NOTES` | `scheduler.sync_all.apple_notes` | `false` | Include configured Apple Notes import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SAFARI_TABS` | `scheduler.sync_all.safari_tabs` | `false` | Include configured Safari tabs import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_ARCHIVE_MEDIA` | `scheduler.sync_all.archive_media` | `false` | Run media archive at the end of scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_FORCE` | `scheduler.sync_all.force` | `false` | Force scheduled stages to reprocess existing rows where supported. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SUMMARIZE` | `scheduler.sync_all.skip_summarize` | `false` | Skip summarize-backed source summaries during scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE_IMAGES` | `scheduler.sync_all.skip_categorize_images` | `false` | Disable image embedding during scheduled categorization, useful for text-only or slow local backends. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_BOOKMARKS` | `scheduler.sync_all.skip_x_bookmarks` | `false` | Skip X bookmark import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X` | `scheduler.sync_all.skip_x` | `false` | Skip X hydration in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_MEDIA` | `scheduler.sync_all.skip_x_media` | `false` | Skip X media transcription in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR` | `scheduler.sync_all.skip_x_photo_ocr` | `false` | Skip X photo OCR in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_LINKS` | `scheduler.sync_all.skip_links` | `false` | Skip outbound link discovery and enrichment in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB` | `scheduler.sync_all.skip_github` | `false` | Skip GitHub import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE` | `scheduler.sync_all.skip_youtube` | `false` | Skip YouTube import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_APPLE_NOTES` | `scheduler.sync_all.skip_apple_notes` | `false` | Skip configured Apple Notes import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SAFARI_TABS` | `scheduler.sync_all.skip_safari_tabs` | `false` | Skip configured Safari tabs import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SOURCES` | `scheduler.sync_all.skip_sources` | `false` | Skip the final source backlog worker stage in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE` | `scheduler.sync_all.skip_categorize` | `false` | Skip final categorization in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_OKF_EXPORT` | `scheduler.sync_all.okf_export` | `false` | Export a full private OKF bundle at the end of scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_OKF_EXPORT` | `scheduler.sync_all.skip_okf_export` | `false` | Skip OKF export for scheduled `sync all` runs when a broader OKF export setting is enabled. |
@@ -737,18 +785,20 @@ go run ./cmd/devtools/model_bakeoff --mode source-summary --lookup "$SOURCE_KEY"
 ```
 
 For a new machine or GPU-backed A/B run, start with small scoped commands
-before pointing a whole sync at Ollama. A practical progression is:
+before pointing a whole sync at Ollama, LM Studio, oMLX, or another local
+OpenAI-compatible runner. A practical progression is:
 
 ```sh
 dbrain research "What validates Kubernetes manifests?" --model ollama/qwen3.5:9b
+dbrain research "What validates Kubernetes manifests?" --model lmstudio/qwen/qwen3.6-35b-a3b
 dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen3.5:9b --timeout 10m
 dbrain sync all --source-limit 25 --model ollama/qwen3.5:9b --timeout 10m
 ```
 
-Good starting local models to compare on a stronger Mac are `qwen3.5:9b`,
-`qwen2.5:7b-instruct`, and `gemma4:e4b`. Compare wall-clock time, summary
-quality, and whether long GitHub/web extracts stay coherent before switching
-the default workflow over.
+Good starting local models to compare on a stronger Mac include Qwen, Gemma,
+and MLX-quantized variants exposed through whichever local runner you use.
+Compare wall-clock time, summary quality, and whether long GitHub/web extracts
+stay coherent before switching the default workflow over.
 
 ## MCP
 
@@ -810,70 +860,81 @@ This repo includes Codex skills for agents:
 Third-party dependency notices are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## TODO
+## Roadmap
 
-### MCP TODO
+Completed checklist items live in the changelog, command reference, MCP guide,
+and feature docs. This section is intentionally limited to current public
+backlog and explicit non-goals.
 
-- [x] Add deterministic fixture coverage for MCP retrieval tests covering tags,
-  OCR text, transcript text, linked sources, and source-type filters.
-- [x] Add protocol-level tool-surface coverage so the core agent workflow tools
-  (`dbrain_research_pack`, `dbrain_get`, `dbrain_get_many`, `dbrain_related`,
-  maps, and search) stay advertised by `tools/list`.
-- [x] Return structured, actionable MCP tool errors so clients and agents can
-  recover from missing lookups, unsupported modes, or unknown tools.
-- [x] Add a representative exact-tag evidence lane so broad entity questions
-  expose saved tagged items even when linked source documents dominate ranking.
-- [x] Add exact-tag evidence assertions to local MCP eval cases so users can
-  catch regressions in the representative tagged-item lane.
-- [x] Add a `task test-mcp` command so CI and open-source users can validate MCP
-  retrieval behavior without a private corpus.
-- [x] Keep model-backed summary tests deterministic when local summary-model
-  environment variables are set.
-- [x] Document the importer contract for new data sources: when importers
-  populate the common item/source/text/tag/enrichment fields, MCP should
-  discover them without source-specific code.
-- [x] Add example local eval recipes for entity/tag, OCR, transcript, difficult
-  domain, and broad-topic/noisy-result retrieval cases.
-- [x] Show tags from saved-item backlinks when inspecting source nodes, so a
-  selected `src:...` result exposes the user's tags from items that reference it.
-- [x] Add stateless Streamable HTTP as a parallel MCP transport so remote agents
-  can query the same read-only brain over a Tailscale-protected endpoint.
-- [x] Add built-in `tsnet` serving for read-only MCP and the read/write web UI,
-  including persistent state, lock protection, typed bootstrap secrets, and
-  guarded state reset/status commands.
+### Current product gaps
 
-### Product TODO
+- Add first-class logo and share-preview assets, including web home/logo
+  behavior and useful Messaging previews.
+- Add image-description/caption enrichment alongside OCR for images where text
+  extraction alone is not enough.
+- Keep improving topic/MOC synthesis quality and periodic refresh workflows as
+  the corpus fills out.
+- Improve web browsing controls: source type, kind, status, tag, and recency
+  filters; better tag visibility in search/list/detail/graph views; and deeper
+  operations/backlog drill-downs.
+- Continue breaking the web UI into smaller Svelte components with a thin
+  shared API client layer.
+- Improve the web note reader with richer Markdown rendering, better code-block
+  presentation, and cleaner outbound link handling.
+- Add explicit source-of-truth audit commands such as
+  `dbrain audit github-stars`, `dbrain audit youtube-watch-later`,
+  `dbrain audit x-bookmarks`, and `dbrain audit all --json`, while preserving
+  append-only local memory semantics.
+- Add optional importers when they become high-value enough to justify first-
+  class support: X profile/likes, Apple News bookmarks, native Substack data
+  beyond RSS/manual links, Bluesky, Mastodon, Instagram, MakerWorld bookmarks,
+  Goodreads, and Apple Podcasts.
 
-- [ ] Continue improving topic/MOC synthesis quality and better periodic refresh workflows as the corpus fills out.
-- [x] Add optional embedded `tsnet` serving for remote web and MCP access
-  without requiring users to configure `tailscale serve` themselves.
-- [x] Add source-level `user_tags`, source categorization commands, and
-  source-tag search/MCP visibility separate from backlink item tags.
-- [ ] Keep breaking the web UI into smaller Svelte components with a thin shared API client layer instead of letting the browser surface collapse into one large page component.
-- [ ] Improve the web note reader further with richer Markdown rendering, better code-block presentation, and cleaner outbound link handling for vault notes.
-- [x] Make external links in the web UI open in a new window/tab with safe defaults (`target="_blank"` plus `rel="noopener noreferrer"`), so note exploration does not constantly navigate away from the local brain surface.
-- [x] Add URL-backed state and deeper note-to-note navigation in the web UI so searches, selected notes, and related pivots survive refreshes and remote sessions.
-- [ ] Improve web UI tag visibility in search, graph, list, and detail views so selected items and linked sources show their own tags plus backlink tags without extra discovery.
-- [ ] Expand the web operations/dashboard view with deeper worker drill-down and richer backlog trend views so repeated failures are easier to triage.
-- [ ] Add first-class filters and browsing controls in the web UI for source type, kind, status, tag, and recency so the corpus is easier to slice than with one text box.
-- [ ] Add semantic retrieval on top of SQLite/FTS, likely embeddings plus related-item expansion.
-- [ ] Add a translation stage for non-English X content, storing both original and translated text.
-- [ ] Broaden media ingestion beyond the current X image/video downloads, with content-hash deduplication across repeated saves and reposted duplicates.
-- [ ] Add Apple Podcasts as a first-class imported signal/source type so podcast episodes can enter the same item/extract/summary pipeline as YouTube and web sources.
+### Pipeline gaps
 
-### Pipeline TODO
+- Tighten X link-discovery candidate selection so self-links like `/photo/1` or
+  `/video/1` do not get rescanned as source candidates.
+- Audit X media transcription throughput with per-video duration, byte, and
+  transcript metrics before raising default concurrency.
+- Add a pre-summary staging path for oversized extracts so giant PDFs and long
+  documents can be chunked, pre-compressed, or locally preprocessed before model
+  calls hit provider context limits.
+- Add an oversized-X-video policy with byte-size and/or duration gates,
+  lower-bitrate transcription variants, and terminal `too_large` / `too_long`
+  outcomes instead of endless retries.
+- Reclassify terminal no-content X media transcript outcomes such as `no_audio`,
+  `noise`, and `too_short` away from generic failures.
+- Add optional X thread expansion when a bookmarked post is clearly part of a
+  longer thread.
+- Broaden media ingestion beyond current X image/video downloads, with
+  content-hash deduplication across repeated saves and reposted duplicates.
+- Add a translation stage for non-English X content when preserving both
+  original and translated text becomes more useful than the current
+  summary-language setting.
 
-- [ ] Tighten X link-discovery candidate selection so items whose only links are X self-links like `/photo/1` or `/video/1` do not get rescanned and inflate `items_scanned` without producing real source candidates.
-- [x] Harden the YouTube pipeline for transcript-missing videos and improve the fallback/transcription path.
-- [ ] Audit X media transcription throughput by recording per-video duration/bytes/transcript chars and testing cautious MacWhisper parallelism; avoid raising default concurrency until local GPU/CPU contention is understood.
-- [x] Add an OCR bakeoff/audit command that can run the same image set through multiple OCR backends, report side-by-side output quality and timings, and avoid changing persisted item OCR state.
-- [x] Add a summary/categorization bakeoff devtool that can run the same source extract or content bundle through multiple models/backends, report side-by-side outputs and timings, and avoid changing persisted summary/tag state.
-- [x] Improve provider provenance so stored summaries always record the exact backend/model used.
-- [x] Make backlog/admin summary freshness stats policy-aware instead of exact-model-aware, so switching between acceptable local/hosted summary models does not make the whole corpus look stale.
-- [ ] Add explicit source-of-truth audit commands such as `dbrain audit github-stars`, `dbrain audit youtube-watch-later`, `dbrain audit x-bookmarks`, and `dbrain audit all --json`, while treating the local DB as append-only by default.
-- [ ] Add a pre-summary staging path for oversized extracts so giant PDFs and long documents can be chunked, pre-compressed, or locally preprocessed before hosted summary calls hit provider context limits.
-- [ ] Add an oversized-X-video policy for media download/transcription with byte-size and/or duration gating, lower-bitrate transcription variants, and terminal `too_large` / `too_long` states instead of endless retry.
-- [ ] Maybe reclassify non-actionable X media transcript outcomes like `no_audio`, `noise`, and `too_short` out of the generic failed bucket so transcription stats distinguish real pipeline errors from terminal no-content cases.
-- [ ] Add an optional X thread expansion path when a bookmarked post is clearly part of a longer thread.
-- [x] Add a config-driven scheduler inside `serve remote` so launchd-backed installs can run `sync all` periodically and skip overlapping runs.
-- [x] No longer needed for now: keep `Obscura` (`https://github.com/h4ckf0r0day/obscura`) only as an external reference if source extraction gets stuck again. The current protected-fetch and Wayback fallback path covers the original gap well enough.
+### Evaluation backlog
+
+- Add semantic/graph retrieval only after evals show SQLite/FTS, entities,
+  tags, backlinks, OCR, transcripts, and source graphs are not enough. Graphiti,
+  SurrealDB, and STORM-style systems are research inputs, not default
+  dependencies.
+- Evaluate better local vision/OCR models only against saved image/video
+  failures. Moondream, macOS OCR helpers, hosted OCR, oMLX, and other local
+  runners are candidates, not automatic dependencies.
+- Add an Archive.is-style fallback only if Wayback, protected fetch, reader
+  extraction, and manual URL import leave a real paywalled-source gap.
+- Consider off-laptop continuous durability, such as SQLite streaming
+  replication, only if scheduled `serve remote` plus S3/R2 archive/restore is
+  not enough.
+
+### Not planned
+
+- Do not close, mutate, reorder, or manage upstream Safari tabs from `dbrain`.
+  Safari tabs are import-only evidence; tab cleanup remains a user/browser
+  action.
+- Do not add a new database, graph system, or agent research engine just because
+  it is interesting. It needs to beat the current local-first retrieval stack in
+  evals.
+- Do not keep large historical completed checklists in the README. Use
+  `CHANGELOG.md`, `COMMANDS.md`, `MCP.md`, and focused docs as the source of
+  completed-feature truth.
