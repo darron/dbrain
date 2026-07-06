@@ -8,6 +8,7 @@
 web/ui/node_modules/
 .DS_Store
 /.omo/
+/.superpowers/
 /tmp/
 /okf/
 evals/local/*.json
