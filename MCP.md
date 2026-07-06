@@ -16,10 +16,11 @@ remote agents.
 
 The server provides:
 
-- **Tools**: `search`, `get`, `get many`, `ask`, `entity map`, `related`,
-  `stats items`, `stats sources`, `stats activity`, `stats backlog`,
-  `whats new`, `topic map`, `topic brief`, `research pack`,
-  `dbrain_okf_search`, and `dbrain_okf_get`.
+- **Tools**: `dbrain_search`, `dbrain_get`, `dbrain_get_many`,
+  `dbrain_research_pack`, `dbrain_related`, `dbrain_entity_map`,
+  `dbrain_topic_map`, `dbrain_topic_brief`, `dbrain_whats_new`,
+  `dbrain_stats_items`, `dbrain_stats_sources`, `dbrain_stats_activity`,
+  `dbrain_stats_backlog`, `dbrain_okf_search`, and `dbrain_okf_get`.
 - **Resources**: `dbrain://mcp/overview`, `dbrain://stats/activity`,
   `dbrain://stats/backlog`, `dbrain://stats/items`, and
   `dbrain://stats/sources`.
@@ -48,17 +49,18 @@ flag weak or conflicting evidence plainly. They should not criticize the corpus
 for not being unbiased or inject external balance, alternate viewpoints, or
 model prior knowledge unless the user explicitly asks for that.
 
-`ask` defaults to retrieval-only in the MCP surface so agent clients do not
-silently spend model usage unless they explicitly request answer synthesis. The
-tool list includes `outputSchema` metadata so MCP clients can reason about the
-structured payloads without learning them from examples.
+The MCP surface is read-only and retrieval-oriented. It does not expose the old
+`dbrain_ask` synthesis tool; agents should use `dbrain_research_pack` for broad
+questions, then inspect cited evidence with `dbrain_get_many` or `dbrain_get`.
+The tool list includes `outputSchema` metadata so MCP clients can reason about
+the structured payloads without learning them from examples.
 
 Evidence excerpts are query-aware. When a match appears deep in a raw source
-extract, item OCR text, or media transcript stored as article text, the
-retrieved evidence window is centered near the match instead of blindly
-returning the start of the raw document. Item-level derived summaries are also
-surfaced as summaries in retrieval evidence, while raw OCR, transcript, and text
-remain available through `dbrain_get`.
+extract, item OCR text, or media transcript, the retrieved evidence window is
+centered near the match instead of blindly returning the start of the raw
+document. Item-level derived summaries are also surfaced as summaries in
+retrieval evidence, while raw OCR, transcript, and text remain available through
+`dbrain_get`.
 
 ## Core Tools
 
@@ -79,8 +81,8 @@ evidence plus:
 
 The `coverage.recall_note` field warns when returned evidence is only a capped
 working set relative to the larger matching corpus. That lets an agent start
-from one read-only call instead of manually orchestrating `ask`, `search`,
-`topic brief`, and follow-up note fetches.
+from one read-only call instead of manually orchestrating `dbrain_search`,
+`dbrain_topic_brief`, and follow-up note fetches.
 
 `topic`, `include_topic_brief`, `include_related`, and `max_chars_per_doc`
 control how much context the pack returns. Each evidence row's `retrieval`
@@ -246,10 +248,12 @@ without custom MCP code when they write into the shared data model:
 - Link items to sources through source-link records so MCP graph expansion can
   move from a post/bookmark/episode to the referenced article, repository,
   paper, or transcript source.
-- Store media-derived text in the existing item enrichment fields where
-  possible: image text in `ocr_text`, short-form video/audio transcripts in
-  `article_text` with `article_title = "X Media Transcript"` until a generic
-  transcript field exists, and derived item summaries in `summary_text`.
+- Store media-derived text in the current item enrichment fields where possible:
+  image text in `ocr_text`, short-form video/audio transcripts in the
+  `x_media_transcript` enrichment role, and derived item summaries in
+  `summary_text`. Legacy X transcript rows may still mirror text through
+  `article_text` with `article_title = "X Media Transcript"`, but new importer
+  code should target the enrichment roles rather than the compatibility mirror.
 - Keep source-specific metadata in raw JSON or source-specific columns, but make
   the durable searchable evidence available through the common text, summary,
   tag, and link fields.

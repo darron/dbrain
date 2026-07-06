@@ -11,32 +11,51 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain auth mcp token add <name>`
 - `dbrain auth mcp token list`
 - `dbrain auth mcp token revoke <id-or-name-or-fingerprint>`
+- `dbrain categorize analyze`
 - `dbrain categorize batch`
 - `dbrain categorize item`
 - `dbrain categorize repair`
 - `dbrain categorize source`
 - `dbrain categorize sources`
+- `dbrain categorize vocab`
+- `dbrain completion <shell>`
 - `dbrain config env`
 - `dbrain config paths`
+- `dbrain doctor full-disk-access`
 - `dbrain entity generate <query>`
 - `dbrain entity index`
 - `dbrain entity map [query]`
 - `dbrain eval mcp`
+- `dbrain eval research`
+- `dbrain eval research diff`
+- `dbrain eval research propose`
 - `dbrain extract links`
 - `dbrain extract sources`
 - `dbrain feed add <url>`
 - `dbrain feed check [feed-key-or-url]`
+- `dbrain feed disable <feed-key-or-url>`
+- `dbrain feed enable <feed-key-or-url>`
 - `dbrain feed list`
+- `dbrain feed refresh <feed-key-or-url>`
 - `dbrain feed status <feed-key-or-url>`
 - `dbrain get <source-key-or-id>`
 - `dbrain hydrate x`
 - `dbrain import apple-notes`
+- `dbrain import apple-notes probe`
+- `dbrain import apple-notes snapshot --dir <path>`
 - `dbrain import github stars`
 - `dbrain import safari-tabs`
+- `dbrain import safari-tabs devices`
 - `dbrain import x-bookmarks`
 - `dbrain import youtube`
+- `dbrain launchd install`
+- `dbrain launchd plist`
+- `dbrain launchd restart`
+- `dbrain launchd uninstall`
 - `dbrain link add <url>`
 - `dbrain ocr x-photos`
+- `dbrain okf export`
+- `dbrain okf validate <dir>`
 - `dbrain repair fts`
 - `dbrain repair notes`
 - `dbrain repair sources`
@@ -79,18 +98,25 @@ global flags, and the environment/config lookup footer. The root help currently
 looks like:
 
 ```text
+Local-first second-brain tooling for importing, enriching, searching, and serving a personal research corpus.
+
 Usage:
   dbrain [flags]
   dbrain [command]
 
 Available Commands:
   archive     Manage archived media and other durable storage tiers
+  auth        Manage authentication approvals and tokens
   categorize  Categorize items or linked sources with an LLM
+  completion  Generate the autocompletion script for the specified shell
   config      Show active configuration and storage paths
+  doctor      Diagnose local dbrain runtime issues
   entity      Derive and render entities from the local brain
   eval        Run local retrieval quality checks
   extract     Extract and summarize linked sources
+  feed        Manage RSS, Atom, and JSON Feed subscriptions
   get         Load an item or source note
+  help        Help about any command
   hydrate     Hydrate canonical source data
   import      Import source data into the brain
   launchd     Install or print a macOS launchd service for dbrain
@@ -106,9 +132,21 @@ Available Commands:
   sync        Run multi-stage refresh flows
   topic       Build and write topic maps from the local brain
   transcribe  Transcribe downloaded local media
+  tsnet       Inspect or reset built-in Tailscale state
   version     Print build and version information
   whats-new   Show newly imported, enriched, blocked, or failed local evidence
   worker      Run long-lived background-style worker loops
+
+Flags:
+      --caffeinate           Force keep-awake behavior while the command is running
+      --config-file string   Config file path override (wins over --root, DBRAIN_CONFIG_FILE, and DBRAIN_ROOT)
+      --debug                Enable structured debug logging to stderr (default true)
+  -h, --help                 help for dbrain
+      --no-caffeinate        Disable automatic keep-awake behavior for this command
+      --no-debug             Disable structured debug logging to stderr
+      --root string          Brain root directory override (defaults to DBRAIN_ROOT, then ~/.config/dbrain and ~/.local/share/dbrain)
+
+Use "dbrain [command] --help" for more information about a command.
 
 Environment:
   --config-file wins over --root, DBRAIN_CONFIG_FILE, and DBRAIN_ROOT.
@@ -130,7 +168,7 @@ dbrain config paths
 
 Prints the supported environment variables and matching `config.yaml` keys. Use
 `--json` for automation. This command is the authoritative source for the table
-in this README.
+in `README.md`.
 
 ```sh
 dbrain config env
@@ -165,6 +203,7 @@ limited runs skip unchanged-current notes and advance through the backlog.
 
 ```sh
 dbrain import apple-notes probe
+dbrain import apple-notes snapshot --dir /tmp/dbrain-notes-snapshot
 dbrain import apple-notes --dry-run --show-titles
 dbrain import apple-notes --limit 25
 dbrain import apple-notes
@@ -174,6 +213,10 @@ dbrain import apple-notes --exclude-folder Private
 dbrain import apple-notes --exclude-folder Private --forget-excluded
 dbrain import apple-notes --skip-attachment-ocr
 ```
+
+`import apple-notes probe` checks database access and schema shape without
+decoding note bodies. `import apple-notes snapshot --dir <path>` copies the
+Notes DB/WAL/SHM triplet into a dbrain-owned directory for local debugging.
 
 ### `dbrain import safari-tabs`
 
@@ -222,8 +265,9 @@ limit falls back to `--x-limit` when left at 0. In the default configuration
 this combines the requirements of X bookmark import, X hydration, X media
 transcription, X photo OCR, link/source enrichment, YouTube import, and
 categorization. A practical local setup usually includes a supported
-Chrome/Chromium profile with valid cookies plus Ollama or an OpenRouter key,
-`mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports `--skip-*` flags when
+Chrome/Chromium profile with valid cookies plus a configured model backend such
+as Ollama, LM Studio, oMLX, or OpenRouter, along with `mw`, `ffprobe`,
+`summarize`, and `yt-dlp`. It supports `--skip-*` flags when
 you only want part of the pipeline. Apple Notes is not run by default; enable it
 with `--apple-notes` or
 `DBRAIN_APPLE_NOTES_ENABLED=true`. Safari tabs are also disabled by default;
@@ -980,6 +1024,22 @@ dbrain eval mcp --write-example evals/local/mcp.json
 dbrain eval mcp --file evals/local/mcp.json
 ```
 
+### `dbrain eval research`
+
+No external tools required unless the cases exercise model-backed synthesis.
+Runs regression cases against the full research/chat harness. Use
+`--write-example <path>` to create a starter file, `--file <path>` to run a
+case set, and `--json` for structured output. The `propose` subcommand can
+draft candidate cases from saved transcripts or research traces, and `diff`
+compares a saved trace against a fresh pack build.
+
+```sh
+dbrain eval research --write-example evals/local/research.json
+dbrain eval research --file evals/local/research.json
+dbrain eval research propose --from-trace data/research-runs/<run-id> --output evals/local/research.proposed.json
+dbrain eval research diff --trace data/research-runs/<run-id>
+```
+
 ### `dbrain version`
 
 No external tools required. Prints build metadata including commit, build time,
@@ -1037,6 +1097,17 @@ ID, with DB-first evidence sections used by MCP and CLI research flows.
 
 ```sh
 dbrain get x:2045912259210485815
+```
+
+### `dbrain categorize analyze`
+
+No external tools required. Reads existing item/source tags and reports token
+frequency so you can decide what belongs in `categories.yaml`. Use `--draft`
+when you want a starter YAML shape instead of the plain frequency report.
+
+```sh
+dbrain categorize analyze --min-count 3
+dbrain categorize analyze --draft
 ```
 
 ### `dbrain categorize item`
@@ -1103,9 +1174,11 @@ dbrain categorize sources --force --limit 100 --json
 
 Analyzes existing item/source `user_tags`, sends the highest-frequency unmapped
 tokens to a local Ollama model, and asks for conservative `categories.yaml`
-cleanup suggestions. The default is review-only; pass `--apply` to merge safe
-suggestions into `categories.yaml`, and `--repair` to immediately rewrite
-existing item/source tags with the updated vocabulary.
+cleanup suggestions. Unlike the main summary/research/categorization paths,
+this vocabulary cleanup helper is currently Ollama-only. The default is
+review-only; pass `--apply` to merge safe suggestions into `categories.yaml`,
+and `--repair` to immediately rewrite existing item/source tags with the updated
+vocabulary.
 
 The command intentionally keeps a hard safety filter around LLM output. It
 accepts boring lexical cleanup such as plural/singular variants and near-typos,

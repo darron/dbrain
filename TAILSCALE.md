@@ -38,6 +38,45 @@ tsnet:
   hostname: dbrain-dev
 ```
 
+Remote web is the same trusted read/write administration UI as
+`dbrain serve web`. Tailscale ACLs, device trust, node tags, and optional
+dbrain GitHub OAuth decide who can reach it. Enable web auth even on the
+tailnet when more than one person or device class can reach the node.
+
+## Long-Running Remote
+
+`serve remote` is also the intended long-running process for launchd-backed
+installs and scheduled sync work. Keep one stable hostname and state directory,
+then configure the scheduler separately:
+
+```yaml
+scheduler:
+  sync_all:
+    enabled: true
+    interval: 1h
+    run_on_start: false
+```
+
+The scheduler runs inside the already-running `serve remote` process and skips
+overlapping `sync all` runs. Use the scheduler-specific config keys documented
+by `dbrain config env` for per-stage limits, models, browser profile, optional
+Apple Notes/Safari tabs, and skip flags.
+
+Launchd helpers generate and manage a macOS user service around the same
+command/config boundary:
+
+```sh
+dbrain launchd plist --label com.darron.dbrain --stdout-log ~/.local/share/dbrain/logs/launchd.out.log --stderr-log ~/.local/share/dbrain/logs/launchd.err.log
+dbrain launchd install --label com.darron.dbrain --stdout-log ~/.local/share/dbrain/logs/launchd.out.log --stderr-log ~/.local/share/dbrain/logs/launchd.err.log
+dbrain launchd restart --label com.darron.dbrain
+```
+
+Check scheduler state through the web surface:
+
+```sh
+curl -s https://dbrain-dev.<tailnet>.ts.net/api/scheduler/sync-all
+```
+
 ## Public Funnel Remote
 
 Funnel is public internet exposure on the same `tsnet` node identity, hostname,
@@ -162,7 +201,13 @@ Check dbrain's resolved view of the tsnet node:
 ```sh
 dbrain tsnet status --tsnet-hostname dbrain-dev
 dbrain tsnet status --tsnet-hostname dbrain-dev --tsnet-funnel
+dbrain tsnet status --tsnet-hostname dbrain-dev --json
 ```
+
+`tsnet status` resolves the same hostname, state directory, listener, TLS,
+Funnel, web, and MCP settings as `serve remote`. When possible, it also reports
+configured web/MCP URLs, whether each surface is reachable, certificate health,
+and whether the node still needs login.
 
 Smoke-test MCP:
 

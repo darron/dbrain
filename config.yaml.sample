@@ -109,16 +109,51 @@ scheduler:
     interval: "1h" # DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL
     run_on_start: false # DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START
     jitter: "" # DBRAIN_SCHEDULER_SYNC_ALL_JITTER; optional, for example 5m
+    x_bookmarks_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_BOOKMARKS_LIMIT
+    x_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_LIMIT
+    x_media_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_MEDIA_LIMIT
+    x_photo_ocr_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_PHOTO_OCR_LIMIT
+    x_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_CONCURRENCY
+    link_discover_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_LINK_DISCOVER_LIMIT
+    link_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_LINK_LIMIT
+    link_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_LINK_CONCURRENCY
+    github_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_GITHUB_LIMIT
+    youtube_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_YOUTUBE_LIMIT
     source_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_LIMIT; 0 uses sync all default
     source_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_CONCURRENCY
+    archive_media_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_ARCHIVE_MEDIA_LIMIT
     categorize_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_LIMIT
     categorize_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_CONCURRENCY; 0 uses sync all default
     categorize_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_TIMEOUT; optional per-record timeout, for example 90s
+    x_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_X_TIMEOUT
+    x_media_download_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_X_MEDIA_DOWNLOAD_TIMEOUT
+    timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_TIMEOUT; optional source summary timeout
+    ocr_model: "" # DBRAIN_SCHEDULER_SYNC_ALL_OCR_MODEL
+    model: "" # DBRAIN_SCHEDULER_SYNC_ALL_MODEL
+    categorize_model: "" # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_MODEL
+    cli: "" # DBRAIN_SCHEDULER_SYNC_ALL_CLI
+    length: "" # DBRAIN_SCHEDULER_SYNC_ALL_LENGTH
+    browser: "" # DBRAIN_SCHEDULER_SYNC_ALL_BROWSER
+    profile: "" # DBRAIN_SCHEDULER_SYNC_ALL_PROFILE
+    apple_notes: false # DBRAIN_SCHEDULER_SYNC_ALL_APPLE_NOTES
+    safari_tabs: false # DBRAIN_SCHEDULER_SYNC_ALL_SAFARI_TABS
+    archive_media: false # DBRAIN_SCHEDULER_SYNC_ALL_ARCHIVE_MEDIA
+    force: false # DBRAIN_SCHEDULER_SYNC_ALL_FORCE
+    skip_summarize: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SUMMARIZE
     skip_categorize_images: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE_IMAGES; useful for text-only local backends
+    skip_x_bookmarks: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_BOOKMARKS
+    skip_x: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X
+    skip_x_media: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_MEDIA
+    skip_x_photo_ocr: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR
+    skip_links: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_LINKS
     skip_apple_notes: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_APPLE_NOTES; useful when launchd lacks Full Disk Access
+    skip_safari_tabs: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SAFARI_TABS
     skip_github: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB
     skip_youtube: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE
+    skip_sources: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SOURCES
     skip_categorize: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE
+    okf_export: false # DBRAIN_SCHEDULER_SYNC_ALL_OKF_EXPORT
+    skip_okf_export: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_OKF_EXPORT
 
 tsnet:
   web: true # DBRAIN_TSNET_WEB
