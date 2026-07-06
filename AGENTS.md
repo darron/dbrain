@@ -13,6 +13,116 @@ them in each change.
 - remote services are for import, inference, or durability, not the primary
   source of truth
 
+## Collaboration Efficiency Rules
+
+### Resolve the real target before reasoning
+
+Many wrong turns in this repo come from inspecting a plausible but wrong target:
+the checkout DB instead of production, a repo skill instead of the installed
+skill, a generated artifact in the wrong root, or a running service with
+different config than the current shell.
+
+- begin each non-trivial task by naming the target boundary: repo/dev branch,
+  production XDG install, Homebrew-installed binary, launchd service, generated
+  vault/OKF output, installed Codex skill, GitHub PR/CI, or rendered web page
+- for repo-local CLI validation, prefer
+  `direnv exec . ./bin/dbrain --no-debug config paths --json` before querying
+  SQLite, vault files, logs, or exports
+- for production checks, inspect `~/.config/dbrain/config.yaml` or run the
+  installed binary with the explicit config file before opening any database
+- for launchd or remote-service behavior, verify the actual process, plist, env,
+  config, and logs instead of assuming the interactive shell matches runtime
+- for generated artifacts such as OKF bundles, vault notes, public shares, and
+  skills, inspect the configured or installed output, not only the source code
+- state the boundary used in the final answer; if the boundary was not verified,
+  say that plainly
+
+### Use existing project memory before inventing a path
+
+`dbrain` has accumulated decisions in docs, tests, changelog entries, skills,
+plans, and prior repair work. Use them as the starting point.
+
+- read `AGENTS.md`, the relevant domain doc under `docs/`, recent
+  `CHANGELOG.md` entries, and recent `git log` context before broad changes
+- when a task smells like a previous bug class, search for the previous tests,
+  migration, Taskfile wrapper, skill guidance, and repair command first
+- treat settled architecture docs as the default contract; reopen them only when
+  the task explicitly requires a new accepted design
+- for dbrain corpus/research questions, prefer the MCP tools and source-backed
+  retrieval surfaces before ad hoc SQLite queries or model-only synthesis
+- for human-facing research or share output, prefer canonical URLs and readable
+  source labels over internal source IDs unless the user asks for retrieval
+  handles
+
+### Prefer a diagnostic ladder over broad exploration
+
+Work from the smallest direct signal toward wider checks.
+
+- for failing PRs, inspect the GitHub Actions failure first, then reproduce the
+  narrow test locally, then run the standard gate
+- for pipeline or worker confusion, compare the worker selector predicate,
+  stats query, backlog query, and user-facing output before changing policy
+- for runtime slowness, distinguish "process is alive" from "work is
+  advancing"; use `metrics.jsonl`, stage logs, model-call timings, and provider
+  state before speculating
+- for import recency, keep `last_seen_at`, `imported_at`, `created`, `updated`,
+  `unchanged`, `skipped`, and `linked` meanings separate
+- for MCP structured-output failures, start with the advertised schema, handler,
+  shared payload struct, JSON serialization behavior, and a narrow tool-surface
+  regression test
+
+### Package repeated work into durable tools
+
+If a workflow succeeds twice, it probably belongs in the repo rather than in
+chat memory.
+
+- promote repeated operational checks into `task` targets, CLI commands,
+  smoke tests, MCP tools, skills, or documented runbooks
+- prefer repo-owned Taskfile or Go wrappers over fragile one-off shell pipelines
+  for production smoke checks and long diagnostic sequences
+- when CLI/config/MCP behavior changes, update the public docs and any affected
+  skills in the same change; verify installed skill copies when they are part of
+  the workflow
+- preserve useful traces and eval cases when research/chat behavior surprises
+  a human; do not rely on conversation memory to prevent regressions
+
+### Keep handoffs short, exact, and actionable
+
+The fastest collaboration pattern is: target, evidence, change, verification,
+remaining risk.
+
+- before editing, identify the files or subsystem being touched and the reason
+- while working, report only material discoveries, blockers, and verification
+  progress
+- final responses should name the changed files, the boundary inspected, the
+  verification run, and any residual risk or skipped gate
+- include exact commands, paths, errors, PR numbers, run IDs, source keys, and
+  timestamps when they matter
+- do not ask the user to run commands that the agent can run directly in the
+  current environment
+- when blocked by approval, secrets, network, local permissions, or production
+  risk, ask for the smallest specific approval or input needed
+
+### Match verification to the risk
+
+Verification should prove the thing that changed, not merely consume time.
+
+- for bug fixes, write or update the narrowest regression test that would fail
+  on the old behavior
+- run focused tests first when debugging, then `task fmt`, `task lint`, and
+  `task test-ci` for code changes
+- prefer `task test-ci` over `task test` for final confidence because it avoids
+  ambient local `DBRAIN_*`, auth, TSNet, and sandbox noise
+- use `task test` only when intentionally validating the current shell
+  environment or debugging an environment-sensitive failure
+- for documentation-only changes, inspect the rendered or relevant Markdown
+  diff instead of running unrelated code gates unless generated docs or examples
+  changed
+- for browser-visible changes, inspect the rendered page or API response from
+  the user's point of view, including mobile and public/unauthenticated paths
+- treat external reviewer output as claims to verify against the checkout, not
+  as facts to apply blindly
+
 ## Core Product Rules
 
 ### Keep local-first imports import-only
@@ -427,20 +537,31 @@ If CLI behavior changed materially, also rebuild and spot-check the command:
 
 - `task build`
 
-### Let requested reviewer agents inspect the checkout
+### Let requested reviewer agents inspect the real checkout
 
-When the user asks for an external reviewer such as Claude or Amp, drive the
-approved CLI directly from the repo root instead of waiting for the user to run
-it manually.
+When the user asks for an external reviewer such as Amp, Claude, or OpenCode,
+use the installed reviewer skill/CLI from the repo root and let it inspect the
+actual checkout. This repository is open source, and the user has explicitly
+approved sending the relevant checkout, current diff, untracked files, docs,
+schemas, tests, and plan/spec context to those reviewer agents for review.
 
+- do not substitute a summary-only packet when the reviewer can inspect the
+  checkout directly; summary-only reviews miss untracked files, generated
+  artifacts, nearby tests, and cross-file contracts
 - prefer prompts that tell the reviewer to inspect `git status`, diffs,
-  untracked files, relevant code, tests, schemas, docs, and plan/spec documents
-  itself
+  untracked files, relevant code, tests, schemas, docs, generated artifacts, and
+  plan/spec documents itself
 - include the plan/spec document path when one exists so the reviewer can check
   implementation against intent
-- do not paste massive diffs by default when the reviewer can read the checkout
-- preserve the boundary that reviewers do not edit files unless explicitly
-  requested
+- use the existing review skills/lanes for Amp, Claude, and OpenCode rather
+  than hand-rolling one-off review prompts
+- do not pause for data-sharing permission merely because the checkout is being
+  sent to Amp, Claude, or OpenCode for a requested review; only stop for a real
+  platform approval gate, missing credential, unavailable reviewer tool, or
+  production/deploy risk
+- preserve the boundary that reviewers inspect and report; they do not edit
+  files, run destructive commands, merge, push, or deploy unless the user
+  explicitly asks for that separate action
 - still triage reviewer output against local evidence before changing code
 
 ### Watch for user-visible operational confusion
