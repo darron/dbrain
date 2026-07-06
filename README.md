@@ -1,6 +1,6 @@
 # dbrain
 
-![Banner showing dbrain](docs/banner.jpg)
+![Diagram showing dbrain as a local-first evidence engine](docs/banner.svg)
 
 `dbrain` is a local-first second-brain scaffold for incremental imports from X
 bookmarks, Apple Notes, GitHub stars, YouTube, Safari tabs and manually
