@@ -16,7 +16,7 @@ func bindSyncAllFlags(cmd *cobra.Command, flags *syncAllFlags) {
 	cmd.Flags().IntVar(&flags.xConcurrency, "x-concurrency", 4, "Number of concurrent X post fetches")
 	cmd.Flags().DurationVar(&flags.xTimeout, "x-timeout", 30*time.Second, "Timeout for X browser helpers and HTTP requests")
 	cmd.Flags().DurationVar(&flags.xMediaTimeout, "x-media-download-timeout", mediadownload.DefaultTimeout, "Timeout for each X media file download; separate from --x-timeout")
-	cmd.Flags().StringVar(&flags.ocrModel, "ocr-model", "", "Model override for X photo OCR; supports ollama/<name> and openrouter/<provider>/<model>")
+	cmd.Flags().StringVar(&flags.ocrModel, "ocr-model", "", "Model override for X photo OCR; supports focr/default, franken_ocr/default, ollama/<name>, and openrouter/<provider>/<model>")
 	cmd.Flags().IntVar(&flags.linkDiscoverLimit, "link-discover-limit", 500, "Maximum imported items to scan for outbound links")
 	cmd.Flags().IntVar(&flags.linkLimit, "link-limit", 100, "Maximum deduped discovered sources to enrich per link extraction run")
 	cmd.Flags().IntVar(&flags.linkConcurrency, "link-concurrency", 4, "Number of concurrent link source extract/summarize jobs")

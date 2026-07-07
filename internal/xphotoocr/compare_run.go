@@ -63,6 +63,7 @@ func compareClientOptions(ctx context.Context, cfg config.Config, opts CompareOp
 	return resolveOptions(ctx, cfg, Options{
 		Model:           modelName,
 		Timeout:         opts.Timeout,
+		FOCRBinary:      opts.FOCRBinary,
 		TesseractBinary: opts.TesseractBinary,
 		OpenRouterBase:  opts.OpenRouterBase,
 		OpenRouterKey:   opts.OpenRouterKey,

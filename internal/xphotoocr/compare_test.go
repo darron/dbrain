@@ -77,6 +77,39 @@ func TestCompareRunsModelsWithoutPersistingOCR(t *testing.T) {
 	}
 }
 
+func TestCompareRunsFrankenOCRWithoutPersistingOCR(t *testing.T) {
+	cfg, st, item := seedDownloadedPhotoItem(t, "x:test-photo-compare-franken-ocr", "2049000000000000202")
+	focr := installFakeFOCR(t, "Compare Franken OCR text.\n", "")
+
+	result, err := Compare(context.Background(), cfg, st, CompareOptions{
+		Limit:      5,
+		Models:     []string{"focr/default"},
+		FOCRBinary: focr,
+		Timeout:    2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if result.SchemaVersion != CompareSchemaVersion || len(result.Images) != 1 || len(result.Images[0].Runs) != 1 {
+		t.Fatalf("unexpected result shape: %+v", result)
+	}
+	run := result.Images[0].Runs[0]
+	if run.Status != "ok" || run.Tool != frankenOCRTool || run.ReportedModel != "focr/default" {
+		t.Fatalf("unexpected Franken OCR run: %+v", run)
+	}
+	if !strings.Contains(run.Text, "Compare Franken OCR text") {
+		t.Fatalf("expected Franken OCR text, got %q", run.Text)
+	}
+
+	refreshed, err := st.GetItem(context.Background(), item.SourceKey)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if refreshed.OCRStatus != "" || refreshed.OCRText != "" {
+		t.Fatalf("compare should not persist OCR state, got status=%q text=%q", refreshed.OCRStatus, refreshed.OCRText)
+	}
+}
+
 func TestComparePhotoInputPathDownloadsMissingTempFile(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

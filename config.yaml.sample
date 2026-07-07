@@ -34,6 +34,9 @@ categorize:
 ocr:
   model: "openrouter/google/gemini-3.1-flash-lite-preview" # DBRAIN_OCR_MODEL, DBRAIN_X_PHOTO_OCR_MODEL
 
+focr:
+  binary: "focr" # DBRAIN_FOCR_BINARY; used when ocr.model is focr/default or franken_ocr/default
+
 ollama:
   base_url: "http://127.0.0.1:11434" # DBRAIN_OLLAMA_BASE_URL, OLLAMA_BASE_URL, OLLAMA_HOST
   api_key: "ollama" # DBRAIN_OLLAMA_API_KEY, OLLAMA_API_KEY; secret ref supported

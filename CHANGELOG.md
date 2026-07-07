@@ -5,6 +5,17 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Franken OCR X Photo Provider (2026-07-07)
+
+- **Local OCR**: Added `focr/default` / `franken_ocr/default` as a local
+  `franken_ocr` provider for X photo OCR, preserving stdout as raw OCR
+  evidence while keeping `focr` stderr diagnostics out of stored text and
+  rendered notes.
+- **Config/tools**: Added `DBRAIN_FOCR_BINARY` / `focr.binary`, direct
+  `dbrain ocr x-photos --focr-binary`, and read-only OCR compare support for
+  testing `franken_ocr` against saved X images before making it broader
+  attachment OCR infrastructure.
+
 ### Documentation Reference Refresh (2026-07-06)
 
 - **Docs/config**: Refreshed README, COMMANDS, MCP, TAILSCALE, and config

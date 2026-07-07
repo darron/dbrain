@@ -33,6 +33,7 @@ func run(ctx context.Context, args []string) error {
 	var jsonOut bool
 	var maxTextChars int
 	var downloadMissing bool
+	var focrBinary string
 	var tesseractBinary string
 	var openRouterBase string
 	var openRouterKey string
@@ -50,6 +51,7 @@ func run(ctx context.Context, args []string) error {
 	fs.BoolVar(&jsonOut, "json", false, "Write full JSON results to stdout instead of a Markdown report")
 	fs.IntVar(&maxTextChars, "max-text-chars", 4000, "Maximum OCR text chars per model in the Markdown report; 0 disables truncation")
 	fs.BoolVar(&downloadMissing, "download-missing", false, "Temporarily download pruned/missing image files from saved remote URLs without changing DB/media state")
+	fs.StringVar(&focrBinary, "focr-binary", "focr", "focr binary when comparing model 'focr/default' or 'franken_ocr/default'")
 	fs.StringVar(&tesseractBinary, "tesseract-binary", "tesseract", "Tesseract binary when comparing model 'tesseract'")
 	fs.StringVar(&openRouterBase, "openrouter-base", "", "OpenRouter API base override")
 	fs.StringVar(&openRouterKey, "openrouter-key", "", "OpenRouter API key override; normally read from config/env")
@@ -77,6 +79,7 @@ func run(ctx context.Context, args []string) error {
 		Concurrency:     concurrency,
 		Timeout:         timeout,
 		DownloadMissing: downloadMissing,
+		FOCRBinary:      focrBinary,
 		TesseractBinary: tesseractBinary,
 		OpenRouterBase:  openRouterBase,
 		OpenRouterKey:   openRouterKey,

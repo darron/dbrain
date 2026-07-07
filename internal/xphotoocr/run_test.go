@@ -179,6 +179,114 @@ func TestRunOllamaOCRWritesItemOCRAndNote(t *testing.T) {
 	}
 }
 
+func TestRunFrankenOCRWritesItemOCRAndNote(t *testing.T) {
+	t.Parallel()
+
+	cfg, st, item := seedDownloadedPhotoItem(t, "x:test-photo-franken-ocr", "2049000000000000102")
+	focr := installFakeFOCR(t, "Local Franken OCR text.\n", "[focr] run-store note (telemetry only)\n")
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Limit:      10,
+		Model:      "focr/default",
+		FOCRBinary: focr,
+		Timeout:    2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.ItemsUpdated != 1 || stats.PhotosOCRed != 1 || stats.HostedAttempts != 0 || stats.HostedFallbacks != 0 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+
+	refreshed, err := st.GetItem(context.Background(), item.SourceKey)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if refreshed.OCRTool != frankenOCRTool {
+		t.Fatalf("expected Franken OCR tool, got %q", refreshed.OCRTool)
+	}
+	if refreshed.OCRModel != "focr/default" {
+		t.Fatalf("expected Franken OCR model, got %q", refreshed.OCRModel)
+	}
+	if !strings.Contains(refreshed.OCRText, "Local Franken OCR text") {
+		t.Fatalf("expected Franken OCR text, got %q", refreshed.OCRText)
+	}
+	if strings.Contains(refreshed.OCRText, "run-store note") {
+		t.Fatalf("expected stderr diagnostics to stay out of OCR text, got %q", refreshed.OCRText)
+	}
+
+	noteBytes, err := os.ReadFile(filepath.Join(cfg.VaultDir, filepath.FromSlash(refreshed.NotePath)))
+	if err != nil {
+		t.Fatalf("ReadFile note: %v", err)
+	}
+	note := string(noteBytes)
+	if !strings.Contains(note, "## OCR / Vision Extract") || !strings.Contains(note, "Local Franken OCR text") {
+		t.Fatalf("expected OCR section in note, got %q", note)
+	}
+	if strings.Contains(note, "run-store note") {
+		t.Fatalf("expected stderr diagnostics to stay out of rendered note, got %q", note)
+	}
+}
+
+func TestRunFrankenOCRDropsMarkdownFigureReferences(t *testing.T) {
+	t.Parallel()
+
+	cfg, st, item := seedDownloadedPhotoItem(t, "x:test-photo-franken-ocr-figures", "2049000000000000103")
+	focr := installFakeFOCR(t, "![](images/0.jpg)\n\nVisible local OCR text.\n", "")
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Limit:      10,
+		Model:      "focr/default",
+		FOCRBinary: focr,
+		Timeout:    2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.ItemsUpdated != 1 || stats.PhotosOCRed != 1 || stats.Errors != 0 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+
+	refreshed, err := st.GetItem(context.Background(), item.SourceKey)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if strings.Contains(refreshed.OCRText, "![](images/0.jpg)") {
+		t.Fatalf("expected Franken OCR figure references to be stripped, got %q", refreshed.OCRText)
+	}
+	if !strings.Contains(refreshed.OCRText, "Visible local OCR text.") {
+		t.Fatalf("expected visible OCR text to remain, got %q", refreshed.OCRText)
+	}
+}
+
+func TestRunFrankenOCRDoesNotStoreOnlyFigureReferences(t *testing.T) {
+	t.Parallel()
+
+	cfg, st, item := seedDownloadedPhotoItem(t, "x:test-photo-franken-ocr-only-figures", "2049000000000000104")
+	focr := installFakeFOCR(t, "![](images/0.jpg)\n", "")
+
+	stats, err := Run(context.Background(), cfg, st, Options{
+		Limit:      10,
+		Model:      "focr/default",
+		FOCRBinary: focr,
+		Timeout:    2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.ItemsUpdated != 0 || stats.PhotosOCRed != 0 || stats.Errors != 1 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+
+	refreshed, err := st.GetItem(context.Background(), item.SourceKey)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if refreshed.OCRStatus != "error" || refreshed.OCRText != "" {
+		t.Fatalf("expected only figure references to persist as empty error state, got status=%q text=%q", refreshed.OCRStatus, refreshed.OCRText)
+	}
+}
+
 func TestRunFallsBackToTesseractAndPreservesOCRAcrossLaterBlankUpsert(t *testing.T) {
 	t.Parallel()
 
@@ -377,6 +485,27 @@ func installFakeTesseract(t *testing.T, stdout string) string {
 	script := "#!/bin/sh\nprintf '%s' " + shellQuote(stdout) + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake tesseract: %v", err)
+	}
+	return path
+}
+
+func installFakeFOCR(t *testing.T, stdout string, stderr string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "focr")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"ocr\" ]; then\n" +
+		"  printf '%s' \"unexpected focr command: $*\" >&2\n" +
+		"  exit 2\n" +
+		"fi\n" +
+		"if [ ! -f \"$2\" ]; then\n" +
+		"  printf '%s' \"missing focr image: $2\" >&2\n" +
+		"  exit 3\n" +
+		"fi\n" +
+		"printf '%s' " + shellQuote(stdout) + "\n" +
+		"printf '%s' " + shellQuote(stderr) + " >&2\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake focr: %v", err)
 	}
 	return path
 }

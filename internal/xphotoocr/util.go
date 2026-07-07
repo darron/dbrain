@@ -51,6 +51,8 @@ func collapseToolVersion(values map[string]struct{}) string {
 			versions = append(versions, openRouterVisionVersion)
 		case ollamaVisionTool:
 			versions = append(versions, ollamaVisionVersion)
+		case frankenOCRTool:
+			versions = append(versions, frankenOCRVersion)
 		case tesseractTool:
 			versions = append(versions, tesseractVersion)
 		}

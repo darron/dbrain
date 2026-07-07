@@ -26,6 +26,7 @@ func newOCRXPhotosCommand(root *rootOptions) *cobra.Command {
 	var concurrency int
 	var timeout time.Duration
 	var model string
+	var focrBinary string
 	var tesseractBinary string
 	var jsonOut bool
 
@@ -56,6 +57,7 @@ func newOCRXPhotosCommand(root *rootOptions) *cobra.Command {
 				Concurrency:     concurrency,
 				Timeout:         timeout,
 				Model:           model,
+				FOCRBinary:      focrBinary,
 				TesseractBinary: tesseractBinary,
 				Logger:          newLogger(commandDebugEnabled(cmd), cmd.ErrOrStderr()),
 			})
@@ -85,7 +87,8 @@ func newOCRXPhotosCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "Re-run OCR even if item OCR text already exists")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of concurrent X photo OCR jobs to run")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Per-image timeout for hosted OCR and local fallback")
-	cmd.Flags().StringVar(&model, "model", "", "OCR model override; supports ollama/<name> and openrouter/<provider>/<model>")
+	cmd.Flags().StringVar(&model, "model", "", "OCR model override; supports focr/default, franken_ocr/default, ollama/<name>, and openrouter/<provider>/<model>")
+	cmd.Flags().StringVar(&focrBinary, "focr-binary", "", "focr binary for local Franken OCR; defaults to DBRAIN_FOCR_BINARY or PATH lookup")
 	cmd.Flags().StringVar(&tesseractBinary, "tesseract-binary", "tesseract", "Tesseract binary for local OCR fallback")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print OCR stats as JSON")
 

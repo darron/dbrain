@@ -90,6 +90,18 @@ func TestPreflightOCRSkipsLocalModel(t *testing.T) {
 	}
 }
 
+func TestPreflightOCRSkipsFrankenOCRModel(t *testing.T) {
+	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	root := t.TempDir()
+	cfg := config.Config{RootDir: root}
+	runtimeenv.RegisterConfigFile(root, filepath.Join(root, "config.yaml"))
+
+	if err := preflightOCRModel(context.Background(), cfg, "focr/default"); err != nil {
+		t.Fatalf("expected local Franken OCR model to skip OpenRouter preflight: %v", err)
+	}
+}
+
 func TestPreflightRequireR2FailsWhenConfiguredWithoutCredentials(t *testing.T) {
 	t.Setenv("DBRAIN_R2_BUCKET", "test-bucket")
 	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "")

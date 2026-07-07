@@ -699,9 +699,13 @@ Extracts text from downloaded X photos. Hosted OCR defaults to the configured
 OpenRouter/Gemini model, with local fallback support where configured.
 You do not need Ollama, LM Studio, oMLX, or any configured local backend for the
 default OpenRouter/Gemini OCR path.
+For local CPU OCR with `franken_ocr`, install `focr`, run `focr pull` once, and
+use `--model focr/default`. If `focr` is not on PATH, pass `--focr-binary` or
+set `DBRAIN_FOCR_BINARY` / `focr.binary`.
 
 ```sh
 dbrain ocr x-photos --limit 50
+dbrain ocr x-photos --model focr/default --focr-binary /Users/darron/.local/bin/focr --limit 5
 ```
 
 For a read-only OCR bakeoff against the downloaded X photo corpus, use the
@@ -711,6 +715,7 @@ changing persisted OCR state.
 
 ```sh
 go run ./cmd/devtools/ocr_model_compare --limit 30 --output /tmp/dbrain-ocr-compare.md
+go run ./cmd/devtools/ocr_model_compare --models openrouter/google/gemini-3.1-flash-lite-preview,focr/default --focr-binary /Users/darron/.local/bin/focr --limit 30 --output /tmp/dbrain-ocr-compare.md
 ```
 
 Useful variants:

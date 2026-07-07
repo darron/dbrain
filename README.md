@@ -336,6 +336,8 @@ These selected features fail early when their required secrets are missing:
   `OPENROUTER_API_KEY`, or `openrouter.api_key`.
 - OpenRouter-backed OCR requires the same OpenRouter key when the OCR model is
   an `openrouter/...` model.
+- Franken OCR-backed local OCR uses the installed `focr` binary and does not
+  require an OpenRouter key.
 - R2/S3 archive paths require an access key and secret when archive upload,
   bucket, endpoint, or public archive URL settings are configured.
 
@@ -381,6 +383,7 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SUMMARY_LANGUAGE` / `DBRAIN_OUTPUT_LANGUAGE` / `SUMMARIZE_LANGUAGE` | `summary.language` | `en` | Output language for summaries; use `auto` to match source language. |
 | `DBRAIN_CATEGORIZE_MODEL` | `categorize.model` | `openrouter/google/gemini-2.5-flash` | Default LLM model for item/source categorization. |
 | `DBRAIN_OCR_MODEL` / `DBRAIN_X_PHOTO_OCR_MODEL` | `ocr.model` | `openrouter/google/gemini-3.1-flash-lite-preview` | Default model for X photo OCR. |
+| `DBRAIN_FOCR_BINARY` | `focr.binary` | `focr` | `focr` binary for local Franken OCR when X photo OCR uses `focr/default` or `franken_ocr/default`. |
 | `DBRAIN_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | `ollama.base_url` | `http://127.0.0.1:11434` | Ollama endpoint for local model calls. |
 | `DBRAIN_OLLAMA_API_KEY` / `OLLAMA_API_KEY` | `ollama.api_key` | `ollama` | API key label used for Ollama-compatible local calls. |
 | `DBRAIN_LMSTUDIO_BASE_URL` | `lmstudio.base_url` | `http://127.0.0.1:1234/v1` | LM Studio OpenAI-compatible endpoint for local model calls. |
@@ -769,6 +772,10 @@ OpenRouter remains the hosted catch-up path. The X photo OCR stage also honors
 `DBRAIN_OCR_MODEL` / `DBRAIN_X_PHOTO_OCR_MODEL`; the current default is
 `openrouter/google/gemini-3.1-flash-lite-preview`. You do not need Ollama, LM
 Studio, oMLX, or any local backend for the default OpenRouter/Gemini OCR path.
+For local CPU OCR with `franken_ocr`, install and pull the model with `focr
+pull`, then use `--ocr-model focr/default` or set `ocr.model:
+"focr/default"`. If `focr` is not on the service PATH, set
+`DBRAIN_FOCR_BINARY` or `focr.binary` to the absolute binary path.
 If you already export `OPENAI_BASE_URL` or `OPENAI_API_KEY`, `dbrain` leaves
 those alone. When `--model` is set, it also takes precedence over `--cli`, so
 local-model runs do not accidentally inherit the default CLI provider.
@@ -781,6 +788,7 @@ dbrain research "What do I know about local models?" --model lmstudio/qwen/qwen3
 DBRAIN_OMLX_API_KEY=... dbrain research "What do I know about local models?" --model omlx/Qwen3.6-35B-A3B-MLX-4bit
 dbrain extract sources --limit 5 --concurrency 1 --model lmstudio/qwen/qwen3.6-35b-a3b --timeout 10m
 dbrain categorize item --lookup "$ITEM_KEY" --images=false --model ollama/dbrain:2026042701
+dbrain ocr x-photos --model focr/default --focr-binary /Users/darron/.local/bin/focr --limit 5
 go run ./cmd/devtools/model_bakeoff --mode source-summary --lookup "$SOURCE_KEY" --model ollama/dbrain:2026042701 --model lmstudio/qwen/qwen3.6-35b-a3b --model omlx/Qwen3.6-35B-A3B-MLX-4bit --parity-preset dbrain-modelfile
 ```
 

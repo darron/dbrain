@@ -129,6 +129,74 @@ func ocrWithOpenRouter(ctx context.Context, absolutePath string, opts Options) (
 	return strings.TrimSpace(out.Choices[0].Message.Content), firstNonEmpty(strings.TrimSpace(opts.Model), strings.TrimSpace(out.Model)), nil
 }
 
+func ocrWithFrankenOCR(ctx context.Context, absolutePath string, opts Options, focrModel string) (string, string, error) {
+	ocrCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+
+	args := []string{"ocr"}
+	if shouldPassFrankenOCRModel(focrModel) {
+		args = append(args, "--model", focrModel)
+	}
+	args = append(args, absolutePath)
+
+	cmd := exec.CommandContext(ocrCtx, opts.FOCRBinary, args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return "", "", context.Canceled
+		}
+		if ocrCtx.Err() != nil {
+			return "", "", ocrCtx.Err()
+		}
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return "", "", fmt.Errorf("focr: %s", errMsg)
+	}
+
+	text := cleanFrankenOCRText(stdout.String())
+	if text == "" {
+		return "", "", fmt.Errorf("focr returned no text")
+	}
+	return text, firstNonEmpty(strings.TrimSpace(opts.Model), "focr/"+strings.TrimSpace(focrModel)), nil
+}
+
+func shouldPassFrankenOCRModel(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	switch strings.ToLower(model) {
+	case "default", "unlimited-ocr":
+		return false
+	default:
+		return true
+	}
+}
+
+func cleanFrankenOCRText(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if isMarkdownImageReferenceLine(strings.TrimSpace(line)) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+func isMarkdownImageReferenceLine(line string) bool {
+	if !strings.HasPrefix(line, "![") || !strings.HasSuffix(line, ")") {
+		return false
+	}
+	return strings.Contains(line, "](")
+}
+
 func ocrWithTesseract(ctx context.Context, absolutePath, binary string, timeout time.Duration) (string, error) {
 	ocrCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

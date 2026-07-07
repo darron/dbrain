@@ -49,6 +49,32 @@ func parseOllamaModel(model string) (string, bool) {
 	}
 }
 
+func parseFrankenOCRModel(model string) (string, bool) {
+	value := strings.TrimSpace(model)
+	if value == "" {
+		return "", false
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case lower == "focr" || lower == "franken_ocr":
+		return "default", true
+	case strings.HasPrefix(lower, "focr/"):
+		resolved := strings.TrimSpace(value[len("focr/"):])
+		return resolved, resolved != ""
+	case strings.HasPrefix(lower, "focr:"):
+		resolved := strings.TrimSpace(value[len("focr:"):])
+		return resolved, resolved != ""
+	case strings.HasPrefix(lower, "franken_ocr/"):
+		resolved := strings.TrimSpace(value[len("franken_ocr/"):])
+		return resolved, resolved != ""
+	case strings.HasPrefix(lower, "franken_ocr:"):
+		resolved := strings.TrimSpace(value[len("franken_ocr:"):])
+		return resolved, resolved != ""
+	default:
+		return "", false
+	}
+}
+
 func ResolveModel(cfg config.Config, model string) string {
 	if strings.TrimSpace(model) != "" {
 		return strings.TrimSpace(model)
@@ -62,6 +88,9 @@ func resolveOptions(ctx context.Context, cfg config.Config, opts Options) (Optio
 	}
 	if strings.TrimSpace(opts.TesseractBinary) == "" {
 		opts.TesseractBinary = "tesseract"
+	}
+	if strings.TrimSpace(opts.FOCRBinary) == "" {
+		opts.FOCRBinary = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_FOCR_BINARY"), "focr")
 	}
 	if strings.TrimSpace(opts.OpenRouterBase) == "" {
 		opts.OpenRouterBase = firstNonEmpty(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"), defaultOpenRouterBaseURL)

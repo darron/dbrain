@@ -25,6 +25,7 @@ func configEnvSpecs() []envSpec {
 		{Key: "DBRAIN_SUMMARY_LANGUAGE / DBRAIN_OUTPUT_LANGUAGE / SUMMARIZE_LANGUAGE", ConfigPath: "summary.language", Default: "en", Description: "Output language for summaries; use auto to match source language."},
 		{Key: "DBRAIN_CATEGORIZE_MODEL", ConfigPath: "categorize.model", Default: "openrouter/google/gemini-2.5-flash", Description: "Default LLM model for item/source categorization."},
 		{Key: "DBRAIN_OCR_MODEL / DBRAIN_X_PHOTO_OCR_MODEL", ConfigPath: "ocr.model", Default: "openrouter/google/gemini-3.1-flash-lite-preview", Description: "Default model for X photo OCR."},
+		{Key: "DBRAIN_FOCR_BINARY", ConfigPath: "focr.binary", Default: "focr", Description: "focr binary for local Franken OCR when X photo OCR uses focr/default or franken_ocr/default."},
 		{Key: "DBRAIN_OLLAMA_BASE_URL / OLLAMA_BASE_URL / OLLAMA_HOST", ConfigPath: "ollama.base_url", Default: "http://127.0.0.1:11434", Description: "Ollama endpoint for local model calls."},
 		{Key: "DBRAIN_OLLAMA_API_KEY / OLLAMA_API_KEY", ConfigPath: "ollama.api_key", Default: "ollama", Description: "API key label used for Ollama-compatible local calls; supports secret refs."},
 		{Key: "DBRAIN_LMSTUDIO_BASE_URL", ConfigPath: "lmstudio.base_url", Default: "http://127.0.0.1:1234/v1", Description: "LM Studio OpenAI-compatible endpoint for local model calls."},

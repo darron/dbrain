@@ -10,6 +10,7 @@ type CompareOptions struct {
 	Concurrency     int
 	Timeout         time.Duration
 	DownloadMissing bool
+	FOCRBinary      string
 	TesseractBinary string
 	OpenRouterBase  string
 	OpenRouterKey   string

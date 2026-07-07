@@ -14,6 +14,8 @@ const (
 	openRouterVisionVersion  = "openrouter-vision-v1"
 	ollamaVisionTool         = "ollama-vision"
 	ollamaVisionVersion      = "ollama-vision-v1"
+	frankenOCRTool           = "franken_ocr"
+	frankenOCRVersion        = "franken_ocr-v1"
 	tesseractTool            = "tesseract"
 	tesseractVersion         = "tesseract-v1"
 	ocrPrompt                = "Extract readable text from this image. Return only the visible text, preserving obvious line breaks. If there is no readable text, return one concise factual sentence describing the image. Do not add markdown, labels, commentary, or object descriptions when readable text is present."
@@ -25,6 +27,7 @@ type Options struct {
 	Concurrency     int
 	Timeout         time.Duration
 	Model           string
+	FOCRBinary      string
 	TesseractBinary string
 	OpenRouterBase  string
 	OpenRouterKey   string
