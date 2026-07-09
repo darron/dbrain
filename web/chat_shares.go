@@ -245,6 +245,21 @@ type publicShareOriginalSource struct {
 func collectOriginalURLs(turn ChatTranscriptTurn) []string {
 	seen := map[string]struct{}{}
 	var urls []string
+	answerCited := sourceKeysInShareText(turn.Answer)
+	citationKeys := sourceKeysFromShareCitations(turn)
+	shouldIncludeEvidence := func(sourceKey string) bool {
+		sourceKey = strings.TrimSpace(sourceKey)
+		if sourceKey == "" {
+			return false
+		}
+		if _, ok := answerCited[sourceKey]; ok {
+			return true
+		}
+		if _, ok := citationKeys[sourceKey]; ok {
+			return true
+		}
+		return false
+	}
 	add := func(rawURL string) {
 		cleanURL, ok := publicExternalURL(rawURL)
 		if !ok {
@@ -257,10 +272,14 @@ func collectOriginalURLs(turn ChatTranscriptTurn) []string {
 		urls = append(urls, cleanURL)
 	}
 	for _, evidence := range turn.ResearchPack.Evidence {
-		add(evidence.URL)
+		if shouldIncludeEvidence(evidence.SourceKey) {
+			add(evidence.URL)
+		}
 	}
 	for _, evidence := range turn.ResearchPack.ExactTagEvidence {
-		add(evidence.URL)
+		if shouldIncludeEvidence(evidence.SourceKey) {
+			add(evidence.URL)
+		}
 	}
 	for _, citation := range turn.Citations {
 		add(citation.URL)
