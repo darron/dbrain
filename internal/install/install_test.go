@@ -1,9 +1,11 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -337,6 +339,192 @@ func TestRunDryRunDoesNotCreateLayoutOrFiles(t *testing.T) {
 	}
 }
 
+func TestRunPreparesOllamaModelBeforeWritingConfig(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	runner := &recordingCommandRunner{
+		failures: map[string]runnerFailure{
+			"ollama show qwen3.6:35b-a3b-nvfp4": {output: "model not found", err: errors.New("exit status 1")},
+		},
+	}
+
+	result, err := Run(context.Background(), Options{
+		Config:             cfg,
+		ConfigTemplate:     []byte(testConfigTemplate),
+		CategoriesTemplate: []byte("topics: []\n"),
+		Force:              true,
+		CommandRunner:      runner,
+		Selections: Selections{
+			SummaryModel:    "ollama/dbrain:2026042701",
+			CategorizeModel: "ollama/dbrain:2026042701",
+		},
+		OllamaModels: []OllamaModelSetup{{
+			Model:         "dbrain:2026042701",
+			PullModel:     "qwen3.6:35b-a3b-nvfp4",
+			Modelfile:     DefaultDbrainModelfile,
+			ModelfileName: "Modelfile.dbrain-2026042701",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	modelfilePath := filepath.Join(cfg.ConfigDir, "Modelfile.dbrain-2026042701")
+	if got := mustReadFile(t, result.FS, modelfilePath); !bytes.Equal(got, DefaultDbrainModelfile) {
+		t.Fatalf("embedded Modelfile was not materialized correctly")
+	}
+	wantCalls := []string{
+		"ollama show qwen3.6:35b-a3b-nvfp4",
+		"ollama pull qwen3.6:35b-a3b-nvfp4",
+		"ollama create dbrain:2026042701 -f " + modelfilePath,
+	}
+	if !reflect.DeepEqual(runner.calls, wantCalls) {
+		t.Fatalf("ollama calls = %#v, want %#v", runner.calls, wantCalls)
+	}
+	if !containsChange(result.Changes, ChangeUpdated, modelfilePath) && !containsChange(result.Changes, ChangeCreated, modelfilePath) {
+		t.Fatalf("expected Modelfile change, got %#v", result.Changes)
+	}
+	if !containsChange(result.Changes, ChangePrepared, "ollama/dbrain:2026042701") {
+		t.Fatalf("expected prepared model change, got %#v", result.Changes)
+	}
+	configText := string(mustReadFile(t, result.FS, cfg.ConfigPath))
+	if !strings.Contains(configText, `model: "ollama/dbrain:2026042701"`) {
+		t.Fatalf("expected generated config to use prepared model:\n%s", configText)
+	}
+}
+
+func TestRunDoesNotWriteConfigWhenOllamaCreateFails(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	runner := &recordingCommandRunner{
+		failures: map[string]runnerFailure{
+			"ollama create dbrain:2026042701 -f " + filepath.Join(cfg.ConfigDir, "Modelfile.dbrain-2026042701"): {
+				output: "create failed",
+				err:    errors.New("exit status 1"),
+			},
+		},
+	}
+
+	_, err = Run(context.Background(), Options{
+		Config:             cfg,
+		ConfigTemplate:     []byte(testConfigTemplate),
+		CategoriesTemplate: []byte("topics: []\n"),
+		Force:              true,
+		CommandRunner:      runner,
+		Selections:         Selections{SummaryModel: "ollama/dbrain:2026042701"},
+		OllamaModels: []OllamaModelSetup{{
+			Model:         "dbrain:2026042701",
+			PullModel:     "qwen3.6:35b-a3b-nvfp4",
+			Modelfile:     DefaultDbrainModelfile,
+			ModelfileName: "Modelfile.dbrain-2026042701",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ollama create dbrain:2026042701") {
+		t.Fatalf("expected ollama create failure, got %v", err)
+	}
+	if _, statErr := (OSFS{}).Stat(cfg.ConfigPath); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("config should not be written after model setup failure, stat err=%v", statErr)
+	}
+}
+
+func TestRunPullsPublicOllamaModelWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	runner := &recordingCommandRunner{
+		failures: map[string]runnerFailure{
+			"ollama show gemma4:12b-mlx": {output: "model not found", err: errors.New("exit status 1")},
+		},
+	}
+
+	result, err := Run(context.Background(), Options{
+		Config:             cfg,
+		ConfigTemplate:     []byte(testConfigTemplate),
+		CategoriesTemplate: []byte("topics: []\n"),
+		Force:              true,
+		CommandRunner:      runner,
+		Selections:         Selections{SummaryModel: "ollama/gemma4:12b-mlx"},
+		OllamaModels:       []OllamaModelSetup{{Model: "gemma4:12b-mlx"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	wantCalls := []string{
+		"ollama show gemma4:12b-mlx",
+		"ollama pull gemma4:12b-mlx",
+	}
+	if !reflect.DeepEqual(runner.calls, wantCalls) {
+		t.Fatalf("ollama calls = %#v, want %#v", runner.calls, wantCalls)
+	}
+	if !containsChange(result.Changes, ChangePrepared, "ollama/gemma4:12b-mlx") {
+		t.Fatalf("expected prepared model change, got %#v", result.Changes)
+	}
+}
+
+func TestRunDryRunReportsOllamaModelPreparationWithoutCommands(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	runner := &recordingCommandRunner{}
+
+	result, err := Run(context.Background(), Options{
+		Config:             cfg,
+		ConfigTemplate:     []byte(testConfigTemplate),
+		CategoriesTemplate: []byte("topics: []\n"),
+		Force:              true,
+		DryRun:             true,
+		CommandRunner:      runner,
+		OllamaModels: []OllamaModelSetup{{
+			Model:         "dbrain:2026042701",
+			PullModel:     "qwen3.6:35b-a3b-nvfp4",
+			Modelfile:     DefaultDbrainModelfile,
+			ModelfileName: "Modelfile.dbrain-2026042701",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("dry run should not execute ollama commands, got %#v", runner.calls)
+	}
+	if !containsChange(result.Changes, ChangePrepared, "ollama/dbrain:2026042701") {
+		t.Fatalf("expected dry-run prepared change, got %#v", result.Changes)
+	}
+	if _, statErr := (OSFS{}).Stat(filepath.Join(cfg.ConfigDir, "Modelfile.dbrain-2026042701")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("dry run should not write Modelfile, stat err=%v", statErr)
+	}
+}
+
+func TestEmbeddedDbrainModelfileMatchesRepoRoot(t *testing.T) {
+	t.Parallel()
+
+	rootModelfile, err := os.ReadFile(filepath.Join("..", "..", "Modelfile"))
+	if err != nil {
+		t.Fatalf("read root Modelfile: %v", err)
+	}
+	if !bytes.Equal(rootModelfile, DefaultDbrainModelfile) {
+		t.Fatalf("embedded dbrain Modelfile is out of sync with repo root Modelfile")
+	}
+}
+
 func TestRunWarnsWhenAuthSessionKeyIsWrittenWithoutKeychain(t *testing.T) {
 	t.Parallel()
 
@@ -478,6 +666,25 @@ type recordingSecretStore struct {
 func (s *recordingSecretStore) PutSecret(_ context.Context, service string, account string, value string) error {
 	s.values[service+"/"+account] = value
 	return nil
+}
+
+type runnerFailure struct {
+	output string
+	err    error
+}
+
+type recordingCommandRunner struct {
+	calls    []string
+	failures map[string]runnerFailure
+}
+
+func (r *recordingCommandRunner) CombinedOutput(_ context.Context, name string, args ...string) ([]byte, error) {
+	call := strings.TrimSpace(name + " " + strings.Join(args, " "))
+	r.calls = append(r.calls, call)
+	if failure, ok := r.failures[call]; ok {
+		return []byte(failure.output), failure.err
+	}
+	return []byte("ok"), nil
 }
 
 type fakeProbe struct {

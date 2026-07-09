@@ -74,11 +74,20 @@ type Options struct {
 	CategoriesTemplate []byte
 	Runtime            Runtime
 	Selections         Selections
+	OllamaModels       []OllamaModelSetup
 	Tools              []Tool
 	FS                 FileSystem
+	CommandRunner      CommandRunner
 	SecretStore        SecretStore
 	Force              bool
 	DryRun             bool
+}
+
+type OllamaModelSetup struct {
+	Model         string
+	PullModel     string
+	Modelfile     []byte
+	ModelfileName string
 }
 
 type Result struct {
@@ -93,9 +102,10 @@ type Result struct {
 type ChangeKind string
 
 const (
-	ChangeCreated ChangeKind = "created"
-	ChangeUpdated ChangeKind = "updated"
-	ChangeSkipped ChangeKind = "skipped"
+	ChangeCreated  ChangeKind = "created"
+	ChangeUpdated  ChangeKind = "updated"
+	ChangeSkipped  ChangeKind = "skipped"
+	ChangePrepared ChangeKind = "prepared"
 )
 
 type Change struct {
@@ -109,6 +119,10 @@ type FileSystem interface {
 	WriteFile(path string, data []byte, perm os.FileMode) error
 	ReadFile(path string) ([]byte, error)
 	Stat(path string) (os.FileInfo, error)
+}
+
+type CommandRunner interface {
+	CombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
 type OSFS struct{}

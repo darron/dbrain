@@ -73,6 +73,30 @@ the generated web auth session key is written into the `0600` config with a
 warning; prompted third-party secrets are skipped rather than written directly
 to YAML.
 
+For local model installs, the installer has curated model profiles. The default
+`dbrain` profile writes the local Ollama dbrain wrapper tag to `summary.model`
+and `categorize.model`, writes the embedded dbrain Modelfile into the config
+directory, pulls the public base model if needed, and creates the local wrapper
+tag. The tested oMLX equivalent uses Qwen3.6 35B A3B MLX 4-bit, and the
+smaller Ollama profile pulls Gemma 4 12B MLX for machines where memory is the
+constraint:
+
+```sh
+dbrain install --yes --local-model-profile dbrain
+
+dbrain install --yes --local-model-profile dbrain-omlx
+
+dbrain install --yes --local-model-profile small-ollama
+```
+
+The Ollama profiles call the local `ollama` CLI. They do not push or depend on
+a redistributed dbrain wrapper tag. To bypass the profile or use a custom tag,
+pass the provider-qualified model directly:
+
+```sh
+dbrain install --yes --summary-model ollama/dbrain:2026042701 --categorize-model ollama/dbrain:2026042701
+```
+
 If you use global `--config-file <path>` with `dbrain install`, the config and
 categories files are created next to that file while data, logs, cache, temp
 files, and vault content keep the normal XDG data layout. Use `--base-path`
@@ -768,8 +792,24 @@ the runner explicit:
 Ollama calls use the native Ollama chat API with thinking disabled. Override the
 target with `DBRAIN_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, or `OLLAMA_HOST` when
 the daemon is elsewhere. Ollama is also the only local runner here that consumes
-an Ollama `Modelfile`; a model such as `dbrain:2026042701` can bundle default
-runtime behavior through that wrapper.
+an Ollama `Modelfile`; the dbrain wrapper can bundle default runtime behavior
+through a local tag such as `dbrain:2026042701`.
+
+The supported dbrain wrapper setup is local creation from the embedded dbrain
+Modelfile. This avoids requiring a redistributed Modelfile-derived registry
+artifact. `dbrain install --local-model-profile dbrain` writes the embedded
+Modelfile to the config directory, pulls the public base model when it is
+missing, and runs the equivalent of:
+
+```sh
+ollama pull qwen3.6:35b-a3b-nvfp4
+ollama create dbrain:2026042701 -f <config-dir>/Modelfile.dbrain-2026042701
+```
+
+Do not make installation depend on a redistributed dbrain wrapper tag. Use the
+local profile-created wrapper path above, use the comparable
+`dbrain-omlx` profile with `omlx/Qwen3.6-35B-A3B-MLX-4bit`, or use the
+`small-ollama` install profile.
 
 LM Studio, oMLX, and configured OpenAI-compatible aliases use chat completions
 endpoints. They do not consume the repo `Modelfile` as an Ollama-style wrapper.
@@ -823,10 +863,12 @@ dbrain extract sources --limit 10 --concurrency 2 --model ollama/qwen3.5:9b --ti
 dbrain sync all --source-limit 25 --model ollama/qwen3.5:9b --timeout 10m
 ```
 
-Good starting local models to compare on a stronger Mac include Qwen, Gemma,
-and MLX-quantized variants exposed through whichever local runner you use.
-Compare wall-clock time, summary quality, and whether long GitHub/web extracts
-stay coherent before switching the default workflow over.
+Good starting local models to compare on a stronger Mac include the local
+Ollama dbrain wrapper and the tested oMLX profile
+`omlx/Qwen3.6-35B-A3B-MLX-4bit`. For smaller Ollama installs,
+`gemma4:12b-mlx` is the current first fallback. Compare wall-clock time,
+summary quality, and whether long GitHub/web extracts stay coherent before
+switching the default workflow over.
 
 ## MCP
 

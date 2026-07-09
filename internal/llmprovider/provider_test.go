@@ -17,6 +17,7 @@ func TestParseModelRefProviderQualified(t *testing.T) {
 		ok       bool
 	}{
 		{name: "ollama slash", input: "ollama/dbrain:2026042701", provider: ProviderOllama, apiModel: "dbrain:2026042701", original: "ollama/dbrain:2026042701", ok: true},
+		{name: "ollama namespaced slash", input: "ollama/example/custom:latest", provider: ProviderOllama, apiModel: "example/custom:latest", original: "ollama/example/custom:latest", ok: true},
 		{name: "ollama colon", input: "ollama:qwen3.6:35b", provider: ProviderOllama, apiModel: "qwen3.6:35b", original: "ollama:qwen3.6:35b", ok: true},
 		{name: "openrouter slash", input: "openrouter/google/gemini-2.5-flash", provider: ProviderOpenRouter, apiModel: "google/gemini-2.5-flash", original: "openrouter/google/gemini-2.5-flash", ok: true},
 		{name: "lm studio slash", input: "lmstudio/qwen/qwen3.6-35b-a3b", provider: ProviderLMStudio, apiModel: "qwen/qwen3.6-35b-a3b", original: "lmstudio/qwen/qwen3.6-35b-a3b", ok: true},

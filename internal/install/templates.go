@@ -7,3 +7,6 @@ var DefaultConfigTemplate []byte
 
 //go:embed templates/categories.yaml
 var DefaultCategoriesTemplate []byte
+
+//go:embed templates/Modelfile.dbrain
+var DefaultDbrainModelfile []byte

@@ -194,6 +194,16 @@ the macOS app), Ollama, LM Studio, oMLX, `tesseract`, `ffprobe`, `yt-dlp`,
 separately from command presence so the generated config can reflect tools
 that are installed but not currently serving models.
 
+For local model setup, `--local-model-profile dbrain` writes the local Ollama
+dbrain wrapper tag `ollama/dbrain:2026042701` to `summary.model` and
+`categorize.model`, materializes the embedded dbrain Modelfile under the config
+directory, pulls `qwen3.6:35b-a3b-nvfp4` when needed, and creates the local
+`dbrain:2026042701` tag. `--local-model-profile dbrain-omlx` writes the tested
+oMLX equivalent
+`omlx/Qwen3.6-35B-A3B-MLX-4bit`, and `--local-model-profile small-ollama`
+writes and pulls `ollama/gemma4:12b-mlx` for lower-memory installs. The oMLX
+profile expects the selected oMLX server to already expose that model.
+
 Tailscale/tsnet transport setup and GitHub web login setup are intentionally
 separate. Tailscale options write `tsnet.*`; GitHub login writes `auth.*`.
 On macOS, prompted third-party secrets are stored in Keychain and referenced as
@@ -214,6 +224,10 @@ dbrain install --yes --enable-apple-notes --enable-safari-tabs --enable-schedule
 dbrain install --yes --enable-tailscale --tsnet-hostname dbrain
 dbrain install --yes --enable-github-login --auth-base-url https://dbrain.example.ts.net --github-client-id Iv1.example
 dbrain install --yes --enable-scheduler --install-launchd
+dbrain install --yes --local-model-profile dbrain
+dbrain install --yes --local-model-profile dbrain-omlx
+dbrain install --yes --local-model-profile small-ollama
+dbrain install --yes --summary-model ollama/dbrain:2026042701 --categorize-model ollama/dbrain:2026042701
 ```
 
 ### `dbrain import x-bookmarks`
