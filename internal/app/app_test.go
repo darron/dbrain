@@ -1044,6 +1044,7 @@ func TestInstallCommandWritesBasePathConfigAndReportsDetectedTools(t *testing.T)
 		"--enable-github-login",
 		"--auth-base-url", "https://dbrain-test.example.ts.net",
 		"--github-client-id", "Iv1.test",
+		"--local-model-profile", "none",
 	})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
@@ -1115,23 +1116,33 @@ func TestNormalizeInstallPromptErrorTreatsAbortAsCleanExit(t *testing.T) {
 	}
 }
 
-func TestDefaultInstallSelectionsOnlyUsesDetectedLLMForInteractivePromptDefaults(t *testing.T) {
+func TestDefaultInstallSelectionsUsesDetectedLocalModelDefaults(t *testing.T) {
 	tools := []installer.Tool{
-		{ID: installer.ToolOllamaAPI, Name: "Ollama API", Available: true, Models: []string{"ocr-only:latest"}},
+		{ID: installer.ToolOllama, Name: "Ollama CLI", Available: true, Path: "/opt/homebrew/bin/ollama"},
+		{ID: installer.ToolOllamaAPI, Name: "Ollama API", Available: true, Models: []string{"qwen-test:latest"}},
+		{ID: installer.ToolLMStudioAPI, Name: "LM Studio API", Available: true, Models: []string{"qwen/lmstudio-test"}},
 		{ID: installer.ToolTesseract, Name: "Tesseract", Available: true, Path: "/opt/homebrew/bin/tesseract"},
 	}
 
 	selections := defaultInstallSelections(installFlags{}, tools)
-	if selections.SummaryModel != "" || selections.CategorizeModel != "" {
-		t.Fatalf("detected LLM should not be selected in noninteractive defaults: %#v", selections)
+	if selections.SummaryModel != installDbrainOllamaModel || selections.CategorizeModel != selections.SummaryModel {
+		t.Fatalf("detected Ollama CLI should select dbrain model by default: %#v", selections)
 	}
 	if selections.OCRModel != "tesseract" {
 		t.Fatalf("detected tesseract should set OCR model, got %#v", selections)
 	}
+	if selections.SkipXPhotoOCR || selections.SkipCategorize {
+		t.Fatalf("local defaults should keep OCR/categorization enabled, got %#v", selections)
+	}
+}
 
-	applyDetectedPromptDefaults(&selections, tools)
-	if selections.SummaryModel != "ollama/ocr-only:latest" || selections.CategorizeModel != selections.SummaryModel {
-		t.Fatalf("interactive prompt defaults should include detected model suggestion, got %#v", selections)
+func TestDefaultInstallSelectionsSkipsHostedStagesWithoutModelsOrOpenRouter(t *testing.T) {
+	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+
+	selections := defaultInstallSelections(installFlags{}, nil)
+	if !selections.SkipXPhotoOCR || !selections.SkipCategorize {
+		t.Fatalf("expected hosted-only stages to be skipped without local models or OpenRouter key, got %#v", selections)
 	}
 }
 
@@ -1165,6 +1176,16 @@ func TestDefaultInstallSelectionsUsesLocalModelProfileWhenRequested(t *testing.T
 	if selections.SummaryModel != "ollama/custom:latest" || selections.CategorizeModel != "ollama/custom:latest" {
 		t.Fatalf("explicit summary model should win over profile, got %#v", selections)
 	}
+
+	selections = defaultInstallSelections(installFlags{localModelProfile: installModelProfileNone}, []installer.Tool{{
+		ID:        installer.ToolOllamaAPI,
+		Name:      "Ollama API",
+		Available: true,
+		Models:    []string{"qwen-test:latest"},
+	}})
+	if selections.SummaryModel != "" || selections.CategorizeModel != "" || !selections.SkipCategorize {
+		t.Fatalf("none profile should opt out of detected model defaults, got %#v", selections)
+	}
 }
 
 func TestSuggestedInstallModelPrefersDbrainProfilesThenSmallOllama(t *testing.T) {
@@ -1192,8 +1213,8 @@ func TestSuggestedInstallModelPrefersDbrainProfilesThenSmallOllama(t *testing.T)
 			Available: true,
 			Models:    []string{installDbrainOMLXAPIModel},
 		},
-	}); got != installDbrainOMLXModel {
-		t.Fatalf("suggested oMLX dbrain model = %q, want %q", got, installDbrainOMLXModel)
+	}); got != installSmallOllamaModel {
+		t.Fatalf("suggested Ollama model should beat oMLX when both are available, got %q", got)
 	}
 
 	if got := suggestedInstallModel([]installer.Tool{{
@@ -1218,8 +1239,25 @@ func TestSuggestedInstallModelPrefersDbrainProfilesThenSmallOllama(t *testing.T)
 			Available: true,
 			Models:    []string{"qwen/test"},
 		},
-	}); got != "lmstudio/qwen/test" {
-		t.Fatalf("unrelated Ollama model should not beat LM Studio fallback, got %q", got)
+	}); got != "ollama/unrelated:latest" {
+		t.Fatalf("Ollama should beat LM Studio fallback, got %q", got)
+	}
+
+	if got := suggestedInstallModel([]installer.Tool{
+		{
+			ID:        installer.ToolOllamaAPI,
+			Name:      "Ollama API",
+			Available: true,
+			Models:    []string{"qwen-test:latest"},
+		},
+		{
+			ID:        installer.ToolOMLXAPI,
+			Name:      "oMLX API",
+			Available: true,
+			Models:    []string{installDbrainOMLXAPIModel},
+		},
+	}); got != "ollama/qwen-test:latest" {
+		t.Fatalf("generic Ollama should beat exact oMLX fallback, got %q", got)
 	}
 }
 
@@ -1236,6 +1274,11 @@ func TestInstallOllamaModelSetupsFollowSelectedProfile(t *testing.T) {
 	}
 	if setups[0].Model != installDbrainOllamaAPIModel || setups[0].PullModel != installDbrainOllamaBase || setups[0].ModelfileName != installDbrainModelfileName || len(setups[0].Modelfile) == 0 {
 		t.Fatalf("unexpected dbrain setup: %#v", setups[0])
+	}
+
+	setups = installOllamaModelSetups(installFlags{}, dbrainSelections)
+	if len(setups) != 1 || setups[0].Model != installDbrainOllamaAPIModel || setups[0].PullModel != installDbrainOllamaBase || len(setups[0].Modelfile) == 0 {
+		t.Fatalf("default dbrain selection should request dbrain setup: %#v", setups)
 	}
 
 	smallSelections := installer.Selections{SummaryModel: installSmallOllamaModel}
@@ -3123,6 +3166,8 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 		"DBRAIN_SAFARI_TABS_LIMIT=8",
 		"DBRAIN_SAFARI_TABS_OLDER_THAN=2h",
 		"DBRAIN_OKF_EXPORT_ENABLED=true",
+		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR=true",
+		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE=true",
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatalf("write .env: %v", err)
@@ -3137,6 +3182,9 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 	}
 	if !resolved.okfExport {
 		t.Fatalf("expected OKF export enabled from env")
+	}
+	if !resolved.skipXPhotoOCR || !resolved.skipCategorize {
+		t.Fatalf("expected scheduler skip flags to apply to sync defaults, got x_photo_ocr=%v categorize=%v", resolved.skipXPhotoOCR, resolved.skipCategorize)
 	}
 	if resolved.appleNotesDBPath != "/tmp/notes.sqlite" {
 		t.Fatalf("appleNotesDBPath = %q", resolved.appleNotesDBPath)
@@ -3245,6 +3293,8 @@ func clearSyncEnvForTest(t *testing.T) {
 		"DBRAIN_SAFARI_TABS_OLDER_THAN",
 		"DBRAIN_OKF_EXPORT_ENABLED",
 		"DBRAIN_SYNC_OKF_EXPORT",
+		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR",
+		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE",
 	} {
 		t.Setenv(key, "")
 	}

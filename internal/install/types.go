@@ -2,7 +2,9 @@ package install
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/zalando/go-keyring"
@@ -65,6 +67,8 @@ type Selections struct {
 	SummaryModel      string
 	CategorizeModel   string
 	OCRModel          string
+	SkipXPhotoOCR     bool
+	SkipCategorize    bool
 	Secrets           map[SecretKind]string
 }
 
@@ -139,12 +143,24 @@ func (OSFS) Stat(path string) (os.FileInfo, error) { return os.Stat(path) }
 
 type SecretStore interface {
 	PutSecret(ctx context.Context, service string, account string, value string) error
+	SecretExists(ctx context.Context, service string, account string) (bool, error)
 }
 
 type KeychainSecretStore struct{}
 
 func (KeychainSecretStore) PutSecret(_ context.Context, service string, account string, value string) error {
 	return keyring.Set(service, account, value)
+}
+
+func (KeychainSecretStore) SecretExists(_ context.Context, service string, account string) (bool, error) {
+	value, err := keyring.Get(service, account)
+	if errors.Is(err, keyring.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(value) != "", nil
 }
 
 type secretSpec struct {

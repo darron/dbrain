@@ -88,7 +88,6 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 
 			selections := defaultInstallSelections(flags, tools)
 			if shouldPromptInstall(cmd, flags.yes) {
-				applyDetectedPromptDefaults(&selections, tools)
 				if err := promptInstallSelections(cmd, &selections, tools); err != nil {
 					return err
 				}
@@ -213,9 +212,13 @@ func installConfigFileTarget(path string) (config.Config, error) {
 }
 
 func defaultInstallSelections(flags installFlags, tools []installer.Tool) installer.Selections {
+	localModelProfile := defaultInstallLocalModelProfile(flags, tools)
 	summaryModel := strings.TrimSpace(flags.summaryModel)
 	if summaryModel == "" {
-		summaryModel = installModelForProfile(flags.localModelProfile)
+		summaryModel = installModelForProfile(localModelProfile)
+	}
+	if summaryModel == "" && localModelProfile != installModelProfileNone {
+		summaryModel = suggestedInstallModel(tools)
 	}
 	categorizeModel := strings.TrimSpace(flags.categorizeModel)
 	if categorizeModel == "" && summaryModel != "" {
@@ -225,7 +228,7 @@ func defaultInstallSelections(flags installFlags, tools []installer.Tool) instal
 	if ocrModel == "" && toolAvailable(tools, installer.ToolTesseract) {
 		ocrModel = "tesseract"
 	}
-	return installer.Selections{
+	selections := installer.Selections{
 		EnableAppleNotes:  flags.enableAppleNotes,
 		EnableSafariTabs:  flags.enableSafariTabs,
 		EnableScheduler:   flags.enableScheduler,
@@ -240,6 +243,22 @@ func defaultInstallSelections(flags installFlags, tools []installer.Tool) instal
 		OCRModel:          ocrModel,
 		Secrets:           map[installer.SecretKind]string{},
 	}
+	applyUnavailableHostedStageDefaults(&selections)
+	return selections
+}
+
+func defaultInstallLocalModelProfile(flags installFlags, tools []installer.Tool) string {
+	profile := normalizeInstallModelProfile(flags.localModelProfile)
+	if profile != "" {
+		return profile
+	}
+	if strings.TrimSpace(flags.summaryModel) != "" {
+		return ""
+	}
+	if toolAvailable(tools, installer.ToolOllama) {
+		return installModelProfileDbrain
+	}
+	return ""
 }
 
 func shouldPromptInstall(cmd *cobra.Command, yes bool) bool {
@@ -316,7 +335,7 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Store entered secrets in macOS Keychain?").
-				Description("Secret refs are written to config as keychain://dbrain/<account>. Blank secret fields are skipped.").
+				Description("Secret refs are written to config as keychain://dbrain/<account>. Blank fields reuse existing Keychain entries when present.").
 				Value(&useKeychain),
 			huh.NewInput().
 				Title("GitHub token").
@@ -365,6 +384,7 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 	if strings.TrimSpace(githubClientSecret) != "" {
 		selections.Secrets[installer.SecretGitHubClientSecret] = githubClientSecret
 	}
+	applyUnavailableHostedStageDefaults(selections)
 	return nil
 }
 
@@ -375,57 +395,76 @@ func normalizeInstallPromptError(err error) error {
 	return err
 }
 
-func applyDetectedPromptDefaults(selections *installer.Selections, tools []installer.Tool) {
+func applyUnavailableHostedStageDefaults(selections *installer.Selections) {
 	if selections == nil {
 		return
 	}
-	if strings.TrimSpace(selections.SummaryModel) == "" {
-		selections.SummaryModel = suggestedInstallModel(tools)
+	openRouterConfigured := installOpenRouterConfigured(*selections)
+	selections.SkipXPhotoOCR = strings.TrimSpace(selections.OCRModel) == "" && !openRouterConfigured
+	selections.SkipCategorize = strings.TrimSpace(selections.CategorizeModel) == "" && !openRouterConfigured
+}
+
+func installOpenRouterConfigured(selections installer.Selections) bool {
+	if strings.TrimSpace(selections.Secrets[installer.SecretOpenRouterAPIKey]) != "" {
+		return true
 	}
-	if strings.TrimSpace(selections.CategorizeModel) == "" {
-		selections.CategorizeModel = selections.SummaryModel
+	for _, key := range []string{"DBRAIN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
 	}
-	if strings.TrimSpace(selections.OCRModel) == "" && toolAvailable(tools, installer.ToolTesseract) {
-		selections.OCRModel = "tesseract"
-	}
+	return false
 }
 
 func suggestedInstallModel(tools []installer.Tool) string {
-	if model := suggestedPreferredInstallModel(tools); model != "" {
+	if model := suggestedPreferredOllamaInstallModel(tools); model != "" {
+		return model
+	}
+	if model := firstAvailableToolModel(tools, installer.ToolOllamaAPI, "ollama/"); model != "" {
+		return model
+	}
+	if model := suggestedPreferredOMLXInstallModel(tools); model != "" {
 		return model
 	}
 	for _, candidate := range []struct {
 		id     installer.ToolID
 		prefix string
 	}{
-		{installer.ToolLMStudioAPI, "lmstudio/"},
 		{installer.ToolOMLXAPI, "omlx/"},
-		{installer.ToolOllamaAPI, "ollama/"},
+		{installer.ToolLMStudioAPI, "lmstudio/"},
 	} {
-		for _, tool := range tools {
-			if tool.ID == candidate.id && tool.Available && len(tool.Models) > 0 {
-				return candidate.prefix + tool.Models[0]
-			}
+		if model := firstAvailableToolModel(tools, candidate.id, candidate.prefix); model != "" {
+			return model
 		}
 	}
 	return ""
 }
 
-func suggestedPreferredInstallModel(tools []installer.Tool) string {
+func suggestedPreferredOllamaInstallModel(tools []installer.Tool) string {
 	if model := firstAvailableModel(tools, installer.ToolOllamaAPI, func(model string) bool {
 		return model == installDbrainOllamaAPIModel
 	}, "ollama/"); model != "" {
-		return model
-	}
-	if model := firstAvailableModel(tools, installer.ToolOMLXAPI, func(model string) bool {
-		return model == installDbrainOMLXAPIModel
-	}, "omlx/"); model != "" {
 		return model
 	}
 	if model := firstAvailableModel(tools, installer.ToolOllamaAPI, func(model string) bool {
 		return model == installSmallOllamaAPIModel
 	}, "ollama/"); model != "" {
 		return model
+	}
+	return ""
+}
+
+func suggestedPreferredOMLXInstallModel(tools []installer.Tool) string {
+	return firstAvailableModel(tools, installer.ToolOMLXAPI, func(model string) bool {
+		return model == installDbrainOMLXAPIModel
+	}, "omlx/")
+}
+
+func firstAvailableToolModel(tools []installer.Tool, id installer.ToolID, prefix string) string {
+	for _, tool := range tools {
+		if tool.ID == id && tool.Available && len(tool.Models) > 0 {
+			return prefix + tool.Models[0]
+		}
 	}
 	return ""
 }
@@ -470,8 +509,9 @@ func installModelForProfile(profile string) string {
 }
 
 func installOllamaModelSetups(flags installFlags, selections installer.Selections) []installer.OllamaModelSetup {
-	switch normalizeInstallModelProfile(flags.localModelProfile) {
-	case installModelProfileDbrain, installModelProfileDbrainOllama:
+	profile := normalizeInstallModelProfile(flags.localModelProfile)
+	switch {
+	case profile == installModelProfileDbrain || profile == installModelProfileDbrainOllama || (profile == "" && installSelectionsUseModel(selections, installDbrainOllamaModel)):
 		if !installSelectionsUseModel(selections, installDbrainOllamaModel) {
 			return nil
 		}
@@ -481,7 +521,7 @@ func installOllamaModelSetups(flags installFlags, selections installer.Selection
 			Modelfile:     installer.DefaultDbrainModelfile,
 			ModelfileName: installDbrainModelfileName,
 		}}
-	case installModelProfileSmallOllama:
+	case profile == installModelProfileSmallOllama || (profile == "" && installSelectionsUseModel(selections, installSmallOllamaModel)):
 		if !installSelectionsUseModel(selections, installSmallOllamaModel) {
 			return nil
 		}

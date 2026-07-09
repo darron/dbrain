@@ -72,9 +72,19 @@ login. On macOS, prompted third-party secrets are written as Keychain-backed
 `keychain://dbrain/...` config refs. If Keychain is disabled or unavailable,
 the generated web auth session key is written into the `0600` config with a
 warning; prompted third-party secrets are skipped rather than written directly
-to YAML.
+to YAML. If a known `dbrain` Keychain secret already exists, install reuses the
+existing `keychain://dbrain/...` reference when you leave the prompt blank.
 
-For local model installs, the installer has curated model profiles. The default
+When the installer detects the Ollama CLI, plain `dbrain install` uses the
+local dbrain Ollama profile by default: it writes the embedded Modelfile, pulls
+the public base model if needed, creates `dbrain:2026042701`, and writes
+`ollama/dbrain:2026042701` to `summary.model` and `categorize.model`. If Ollama
+is not available, served local model endpoints are fallback defaults, with LM
+Studio used only after Ollama/oMLX options. If no local OCR model/tool is
+selected and no OpenRouter key is configured, generated installs skip X photo
+OCR so a first `dbrain sync all` does not fail on the hosted OCR default.
+
+For explicit local model setup, the installer has curated model profiles. The
 `dbrain` profile writes the local Ollama dbrain wrapper tag to `summary.model`
 and `categorize.model`, writes the embedded dbrain Modelfile into the config
 directory, pulls the public base model if needed, and creates the local wrapper
@@ -838,6 +848,8 @@ OpenRouter remains the hosted catch-up path. The X photo OCR stage also honors
 `DBRAIN_OCR_MODEL` / `DBRAIN_X_PHOTO_OCR_MODEL`; the current default is
 `openrouter/google/gemini-3.1-flash-lite-preview`. You do not need Ollama, LM
 Studio, oMLX, or any local backend for the default OpenRouter/Gemini OCR path.
+Fresh installs that do not configure OpenRouter or a local OCR tool skip X
+photo OCR by default; set an OCR model or OpenRouter key to enable it.
 If you already export `OPENAI_BASE_URL` or `OPENAI_API_KEY`, `dbrain` leaves
 those alone. When `--model` is set, it also takes precedence over `--cli`, so
 local-model runs do not accidentally inherit the default CLI provider.
