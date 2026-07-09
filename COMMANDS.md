@@ -48,6 +48,7 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain import safari-tabs devices`
 - `dbrain import x-bookmarks`
 - `dbrain import youtube`
+- `dbrain install`
 - `dbrain launchd install`
 - `dbrain launchd plist`
 - `dbrain launchd restart`
@@ -119,6 +120,7 @@ Available Commands:
   help        Help about any command
   hydrate     Hydrate canonical source data
   import      Import source data into the brain
+  install     Run first-time local dbrain setup
   launchd     Install or print a macOS launchd service for dbrain
   link        Add and manage manually submitted links
   okf         Export and inspect Open Knowledge Format bundles
@@ -173,6 +175,45 @@ in `README.md`.
 ```sh
 dbrain config env
 dbrain config env --markdown
+```
+
+### `dbrain install`
+
+Runs first-time local setup. By default, it uses the existing XDG split layout:
+config in `~/.config/dbrain` and data, database, vault, logs, cache, temp, and
+OKF output in `~/.local/share/dbrain`. Use `--base-path <dir>` for a
+single-directory install where the current user has write permission.
+If you pass global `--config-file <path>` instead, the installer writes the
+config and categories next to that file while data, logs, cache, temp files,
+and the vault keep the normal XDG data layout. Use `--base-path` when you want
+everything colocated under one directory.
+
+The installer detects local helpers and runtimes including MacWhisper (`mw` and
+the macOS app), Ollama, LM Studio, oMLX, `tesseract`, `ffprobe`, `yt-dlp`,
+1Password CLI, and macOS `security`. Local model endpoints are checked
+separately from command presence so the generated config can reflect tools
+that are installed but not currently serving models.
+
+Tailscale/tsnet transport setup and GitHub web login setup are intentionally
+separate. Tailscale options write `tsnet.*`; GitHub login writes `auth.*`.
+On macOS, prompted third-party secrets are stored in Keychain and referenced as
+`keychain://dbrain/...` instead of being written directly to YAML. The generated
+web auth session key is stored in Keychain when available; otherwise it is
+generated into the `0600` config file and reported as a warning.
+If Keychain is disabled or unavailable, prompted third-party secrets such as
+GitHub tokens, OpenRouter keys, Tailscale auth keys, and GitHub OAuth client
+secrets are skipped rather than written to config. Re-running install with
+`--force` and GitHub login can rotate the generated session key and log out
+existing web sessions.
+
+```sh
+dbrain install
+dbrain install --yes
+dbrain install --base-path ~/dbrain --yes
+dbrain install --yes --enable-apple-notes --enable-safari-tabs --enable-scheduler
+dbrain install --yes --enable-tailscale --tsnet-hostname dbrain
+dbrain install --yes --enable-github-login --auth-base-url https://dbrain.example.ts.net --github-client-id Iv1.example
+dbrain install --yes --enable-scheduler --install-launchd
 ```
 
 ### `dbrain import x-bookmarks`

@@ -12,6 +12,19 @@ development date for the change set.
   embeds render through `/media/asset/{id}` instead of failing when production
   credentials are stored as `keychain://` or other secret refs.
 
+### First-Run Installer (2026-07-08)
+
+- **CLI**: Added `dbrain install` for first-time setup with XDG defaults or a
+  user-supplied `--base-path`, bundled config/category templates, local helper
+  detection, and noninteractive `--yes` support.
+- **Setup**: The installer can enable Apple Notes, Safari tabs, scheduled
+  `sync all`, Tailscale/tsnet transport, and GitHub web login while keeping
+  Tailscale settings under `tsnet.*` and login settings under `auth.*`.
+- **Secrets**: On macOS, prompted third-party secrets are stored as Keychain
+  refs; generated web auth session keys are created automatically when GitHub
+  login is enabled.
+- **Location**: `internal/install/`, `internal/app/install.go`
+
 ### Documentation Reference Refresh (2026-07-06)
 
 - **Docs/config**: Refreshed README, COMMANDS, MCP, TAILSCALE, and config
