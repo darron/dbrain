@@ -42,6 +42,7 @@ Or tap once and install by formula name:
 
 ```sh
 brew tap darron/tap
+brew trust --formula darron/tap/dbrain
 brew install dbrain
 ```
 
