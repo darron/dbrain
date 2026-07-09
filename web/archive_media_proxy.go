@@ -34,10 +34,22 @@ type s3ArchiveProxy struct {
 	presign *s3.PresignClient
 }
 
-func newArchiveProxy(cfg config.Config) (archiveProxy, error) {
+func newArchiveProxy(ctx context.Context, cfg config.Config) (archiveProxy, error) {
 	endpoint := strings.TrimSpace(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"))
-	accessKeyID := strings.TrimSpace(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"))
-	secretKey := strings.TrimSpace(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"))
+	accessKeyID, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_R2_ACCESS_KEY_ID", "DBRAIN_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+	if err != nil {
+		return nil, err
+	}
+	secretKey, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_R2_SECRET_ACCESS_KEY", "DBRAIN_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+	if err != nil {
+		return nil, err
+	}
+	sessionToken, err := runtimeenv.FirstNonEmptySecret(ctx, cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN")
+	if err != nil {
+		return nil, err
+	}
+	accessKeyID = strings.TrimSpace(accessKeyID)
+	secretKey = strings.TrimSpace(secretKey)
 	if endpoint == "" || accessKeyID == "" || secretKey == "" {
 		return nil, nil
 	}
@@ -47,7 +59,7 @@ func newArchiveProxy(cfg config.Config) (archiveProxy, error) {
 		Region:       firstNonEmptyString(strings.TrimSpace(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_REGION", "DBRAIN_S3_REGION")), "auto"),
 		AccessKeyID:  accessKeyID,
 		SecretKey:    secretKey,
-		SessionToken: strings.TrimSpace(runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_R2_SESSION_TOKEN", "DBRAIN_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN")),
+		SessionToken: strings.TrimSpace(sessionToken),
 		PathStyle:    true,
 	})
 	if err != nil {

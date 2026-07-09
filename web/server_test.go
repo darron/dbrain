@@ -79,6 +79,49 @@ func (f *fakeArchiveProxy) PresignGetObject(_ context.Context, _, _ string, ttl 
 	return f.signedURL, time.Date(2026, time.April, 25, 22, 5, 0, 0, time.UTC).Add(ttl), nil
 }
 
+func TestNewArchiveProxyResolvesSecretRefsFromRuntimeConfig(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+r2:
+  endpoint: https://account.example.r2.cloudflarestorage.com
+  region: auto
+  access_key_id: env:DBRAIN_TEST_R2_ACCESS_KEY
+  secret_access_key: env:DBRAIN_TEST_R2_SECRET_KEY
+  session_token: env:DBRAIN_TEST_R2_SESSION_TOKEN
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("DBRAIN_TEST_R2_ACCESS_KEY", "resolved-access")
+	t.Setenv("DBRAIN_TEST_R2_SECRET_KEY", "resolved-secret")
+	t.Setenv("DBRAIN_TEST_R2_SESSION_TOKEN", "resolved-token")
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	proxy, err := newArchiveProxy(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newArchiveProxy: %v", err)
+	}
+	s3Proxy, ok := proxy.(*s3ArchiveProxy)
+	if !ok {
+		t.Fatalf("expected s3 archive proxy, got %T", proxy)
+	}
+	creds, err := s3Proxy.client.Options().Credentials.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("retrieve credentials: %v", err)
+	}
+	if creds.AccessKeyID != "resolved-access" {
+		t.Fatalf("access key = %q, want resolved secret ref", creds.AccessKeyID)
+	}
+	if creds.SecretAccessKey != "resolved-secret" {
+		t.Fatalf("secret key = %q, want resolved secret ref", creds.SecretAccessKey)
+	}
+	if creds.SessionToken != "resolved-token" {
+		t.Fatalf("session token = %q, want resolved secret ref", creds.SessionToken)
+	}
+}
+
 func TestWebHandlerServesBootstrapSearchGetAndResearch(t *testing.T) {
 	t.Parallel()
 

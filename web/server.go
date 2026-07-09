@@ -128,7 +128,12 @@ func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
 }
 
 func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptions) (http.Handler, error) {
-	archive, err := newArchiveProxy(cfg)
+	startupCtx := opts.Context
+	if startupCtx == nil {
+		startupCtx = context.Background()
+	}
+
+	archive, err := newArchiveProxy(startupCtx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("configure archive proxy: %w", err)
 	}
@@ -140,10 +145,6 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 	indexHTML, err := fs.ReadFile(staticFS, "index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded ui index: %w", err)
-	}
-	startupCtx := opts.Context
-	if startupCtx == nil {
-		startupCtx = context.Background()
 	}
 	authCfg, err := loadAuthConfig(startupCtx, cfg)
 	if err != nil {

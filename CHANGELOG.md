@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Web Archived Media Embeds (2026-07-08)
+
+- **Fixed**: The web archived-media proxy now resolves R2/S3 credential secret
+  references from config before building its client, so archived X photo/video
+  embeds render through `/media/asset/{id}` instead of failing when production
+  credentials are stored as `keychain://` or other secret refs.
+
 ### Documentation Reference Refresh (2026-07-06)
 
 - **Docs/config**: Refreshed README, COMMANDS, MCP, TAILSCALE, and config
