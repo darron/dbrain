@@ -5,6 +5,22 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Installer Local Model Profiles (2026-07-09)
+
+- **CLI**: Added `dbrain install --local-model-profile
+  dbrain|dbrain-ollama|dbrain-omlx|small-ollama|none` so first-run setup can
+  write curated local model defaults without requiring users to know exact
+  provider-qualified model strings.
+- **Local models**: The dbrain profile targets the local wrapper tag
+  `ollama/dbrain:2026042701`, created from `qwen3.6:35b-a3b-nvfp4` and the repo
+  `Modelfile`; the comparable oMLX profile targets
+  `omlx/Qwen3.6-35B-A3B-MLX-4bit`, and the smaller Ollama profile targets
+  `ollama/gemma4:12b-mlx`. Explicit `--summary-model` / `--categorize-model`
+  flags still take precedence.
+- **Docs**: Documented local wrapper creation with `ollama create ... -f
+  Modelfile` so installs do not depend on redistributing or pushing the large
+  Modelfile-derived artifact.
+
 ### Web Archived Media Embeds (2026-07-08)
 
 - **Fixed**: The web archived-media proxy now resolves R2/S3 credential secret
