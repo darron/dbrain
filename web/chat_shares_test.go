@@ -153,6 +153,77 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 	}
 }
 
+func TestBuildPublicChatShareInputIncludesOnlyCitedOriginalURLs(t *testing.T) {
+	turn := ChatTranscriptTurn{
+		ID:       "chat:turn-cited",
+		Question: "Summarize j-space",
+		Status:   "ready",
+		Answer: strings.Join([]string{
+			"J-space is described in the Anthropic research note [src:used].",
+			"Additional context is available at https://example.net/manual.",
+		}, "\n"),
+		Citations: []brainresearch.Citation{
+			{
+				SourceKey: "x:cited",
+				Title:     "Anthropic status",
+				URL:       "https://x.com/AnthropicAI/status/2074185348142280912",
+				Kind:      "item",
+			},
+		},
+		ResearchPack: brainresearch.Pack{
+			Evidence: []ask.Evidence{
+				{
+					SourceKey: "src:used",
+					Kind:      "source",
+					Title:     "A global workspace in language models",
+					URL:       "https://www.anthropic.com/research/global-workspace",
+					Summary:   "Used summary.",
+				},
+				{
+					SourceKey: "src:unrelated",
+					Kind:      "source",
+					Title:     "AI sandboxing is having its Kubernetes moment",
+					URL:       "https://www.cncf.io/blog/2026/04/30/ai-sandboxing-is-having-its-kubernetes-moment/",
+					Summary:   "Unrelated retrieval candidate.",
+				},
+			},
+			ExactTagEvidence: []ask.Evidence{
+				{
+					SourceKey: "src:also-unrelated",
+					Kind:      "source",
+					Title:     "SpaceX acquires Cursor",
+					URL:       "https://cnbc.com/2026/06/16/spacex-spcx-cursor-acquisition-ipo.html",
+					Summary:   "Another unrelated retrieval candidate.",
+				},
+			},
+		},
+	}
+
+	input := buildPublicChatShareInput(chatShareOwner{
+		Provider: "local",
+		Subject:  "local",
+		Username: "local",
+	}, turn, categoryvocab.Vocab{})
+
+	wantURLs := []string{
+		"https://example.net/manual",
+		"https://www.anthropic.com/research/global-workspace",
+		"https://x.com/AnthropicAI/status/2074185348142280912",
+	}
+	if got := strings.Join(input.OriginalURLs, "\n"); got != strings.Join(wantURLs, "\n") {
+		t.Fatalf("OriginalURLs =\n%s\nwant\n%s", got, strings.Join(wantURLs, "\n"))
+	}
+	for _, forbidden := range []string{
+		"https://www.cncf.io/blog/2026/04/30/ai-sandboxing-is-having-its-kubernetes-moment/",
+		"https://cnbc.com/2026/06/16/spacex-spcx-cursor-acquisition-ipo.html",
+		"Unrelated retrieval candidate",
+	} {
+		if strings.Contains(input.MetadataJSON, forbidden) || containsString(input.OriginalURLs, forbidden) {
+			t.Fatalf("share input included unrelated source %q: urls=%v metadata=%s", forbidden, input.OriginalURLs, input.MetadataJSON)
+		}
+	}
+}
+
 func TestCategorizeSharedContentWeightsAnswerCitedEvidenceTags(t *testing.T) {
 	turn := ChatTranscriptTurn{
 		Question: "barcelona toronto police",

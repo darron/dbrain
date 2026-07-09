@@ -21,6 +21,13 @@ development date for the change set.
   Modelfile` so installs do not depend on redistributing or pushing the large
   Modelfile-derived artifact.
 
+### Public Chat Share Sources (2026-07-09)
+
+- **Fixed**: Public chat shares now list only cited sources and URLs present in
+  the shared answer, rather than every retrieval-pack candidate considered
+  during the chat turn.
+- **Location**: `web/chat_shares.go`
+
 ### Web Archived Media Embeds (2026-07-08)
 
 - **Fixed**: The web archived-media proxy now resolves R2/S3 credential secret
