@@ -200,17 +200,24 @@ func storeSecretRefs(ctx context.Context, opts Options) (map[SecretKind]string, 
 }
 
 func selectionWarnings(selections Selections) []string {
+	warnings := []string{}
+	if selections.SkipXPhotoOCR {
+		warnings = append(warnings, "X photo OCR is disabled because no OCR model or OpenRouter API key was configured.")
+	}
+	if selections.SkipCategorize {
+		warnings = append(warnings, "Categorization is disabled because no categorization model or OpenRouter API key was configured.")
+	}
 	if !selections.EnableGitHubLogin {
-		return nil
+		return warnings
 	}
 	baseURL := strings.TrimSpace(selections.AuthBaseURL)
 	if baseURL == "" || strings.HasPrefix(baseURL, "http://127.0.0.1") || strings.HasPrefix(baseURL, "http://localhost") {
-		return []string{"auth.base_url is a localhost HTTP URL; GitHub OAuth callbacks will only work from the same machine, not remote/Tailscale browsers."}
+		return append(warnings, "auth.base_url is a localhost HTTP URL; GitHub OAuth callbacks will only work from the same machine, not remote/Tailscale browsers.")
 	}
 	if !strings.HasPrefix(baseURL, "https://") {
-		return []string{"auth.base_url is not HTTPS; GitHub OAuth callbacks for remote access should use an HTTPS URL."}
+		return append(warnings, "auth.base_url is not HTTPS; GitHub OAuth callbacks for remote access should use an HTTPS URL.")
 	}
-	return nil
+	return warnings
 }
 
 func generateSessionKey() (string, error) {

@@ -398,6 +398,40 @@ func TestRunPreparesOllamaModelBeforeWritingConfig(t *testing.T) {
 	}
 }
 
+func TestRunWritesConfiguredSyncSkips(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	result, err := Run(context.Background(), Options{
+		Config:             cfg,
+		ConfigTemplate:     []byte(testConfigTemplate),
+		CategoriesTemplate: []byte("topics: []\n"),
+		Force:              true,
+		Selections: Selections{
+			SkipXPhotoOCR:  true,
+			SkipCategorize: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	configText := string(mustReadFile(t, result.FS, cfg.ConfigPath))
+	for _, expected := range []string{
+		`skip_x_photo_ocr: true`,
+		`skip_categorize: true`,
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected generated config to contain %q:\n%s", expected, configText)
+		}
+	}
+}
+
 func TestRunDoesNotWriteConfigWhenOllamaCreateFails(t *testing.T) {
 	t.Parallel()
 

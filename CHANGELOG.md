@@ -7,6 +7,15 @@ development date for the change set.
 
 ### Installer Local Model Profiles (2026-07-09)
 
+- **Fixed**: Fresh installs now apply detected local model defaults before the
+  interactive/noninteractive split. When the Ollama CLI is present, plain
+  install now defaults to the dbrain Ollama profile and creates
+  `dbrain:2026042701` before writing config that references it; LM Studio is
+  only a fallback when Ollama is unavailable.
+- **Fixed**: Installs without a local OCR tool/model or OpenRouter key now write
+  configured `sync all` skips for hosted-only X photo OCR; installs with no
+  categorization model or OpenRouter key likewise skip categorization instead of
+  failing at first-run preflight.
 - **CLI**: Added `dbrain install --local-model-profile
   dbrain|dbrain-ollama|dbrain-omlx|small-ollama|none` so first-run setup can
   write curated local model defaults without requiring users to know exact

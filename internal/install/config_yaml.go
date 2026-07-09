@@ -31,6 +31,8 @@ func buildConfig(template []byte, selections Selections, tools []Tool, secretRef
 	setBool(root, []string{"scheduler", "sync_all", "enabled"}, selections.EnableScheduler)
 	setBool(root, []string{"scheduler", "sync_all", "apple_notes"}, selections.EnableAppleNotes)
 	setBool(root, []string{"scheduler", "sync_all", "safari_tabs"}, selections.EnableSafariTabs)
+	setBool(root, []string{"scheduler", "sync_all", "skip_x_photo_ocr"}, selections.SkipXPhotoOCR)
+	setBool(root, []string{"scheduler", "sync_all", "skip_categorize"}, selections.SkipCategorize)
 	if selections.EnableTailscale {
 		setBool(root, []string{"tsnet", "web"}, true)
 		setBool(root, []string{"tsnet", "mcp"}, true)

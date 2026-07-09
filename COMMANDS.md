@@ -194,6 +194,16 @@ the macOS app), Ollama, LM Studio, oMLX, `tesseract`, `ffprobe`, `yt-dlp`,
 separately from command presence so the generated config can reflect tools
 that are installed but not currently serving models.
 
+When the Ollama CLI is detected, plain `dbrain install` uses the local dbrain
+Ollama profile by default: it writes the embedded Modelfile, pulls the public
+base model if needed, creates `dbrain:2026042701`, and writes
+`ollama/dbrain:2026042701` to `summary.model` and `categorize.model`. If
+Ollama is not available, served local model endpoints are fallback defaults,
+with LM Studio used only after Ollama/oMLX options. If no local OCR model/tool
+is selected and no OpenRouter key is configured, generated installs skip X
+photo OCR for configured `sync all` runs instead of failing on the hosted OCR
+default.
+
 For local model setup, `--local-model-profile dbrain` writes the local Ollama
 dbrain wrapper tag `ollama/dbrain:2026042701` to `summary.model` and
 `categorize.model`, materializes the embedded dbrain Modelfile under the config
@@ -753,7 +763,9 @@ dbrain transcribe x-media --limit 50
 Extracts text from downloaded X photos. Hosted OCR defaults to the configured
 OpenRouter/Gemini model, with local fallback support where configured.
 You do not need Ollama, LM Studio, oMLX, or any configured local backend for the
-default OpenRouter/Gemini OCR path.
+default OpenRouter/Gemini OCR path. Fresh installs that do not configure
+OpenRouter or a local OCR tool skip X photo OCR for configured `sync all` runs
+until an OCR model or OpenRouter key is provided.
 
 ```sh
 dbrain ocr x-photos --limit 50

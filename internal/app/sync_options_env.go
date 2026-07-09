@@ -14,6 +14,12 @@ func resolveSyncAllFlags(rootDir string, flags syncAllFlags) (syncAllFlags, erro
 	if !flags.okfExport {
 		flags.okfExport = firstEnvBool(rootDir, "DBRAIN_OKF_EXPORT_ENABLED", "DBRAIN_SYNC_OKF_EXPORT")
 	}
+	if !flags.skipXPhotoOCR {
+		flags.skipXPhotoOCR = firstEnvBool(rootDir, "DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR")
+	}
+	if !flags.skipCategorize {
+		flags.skipCategorize = firstEnvBool(rootDir, "DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE")
+	}
 	if !flags.appleNotes {
 		flags.appleNotes = firstEnvBool(rootDir, "DBRAIN_APPLE_NOTES_ENABLED")
 	}

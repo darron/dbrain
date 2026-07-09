@@ -65,6 +65,8 @@ type Selections struct {
 	SummaryModel      string
 	CategorizeModel   string
 	OCRModel          string
+	SkipXPhotoOCR     bool
+	SkipCategorize    bool
 	Secrets           map[SecretKind]string
 }
 
