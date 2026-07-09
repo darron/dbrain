@@ -1135,6 +1135,129 @@ func TestDefaultInstallSelectionsOnlyUsesDetectedLLMForInteractivePromptDefaults
 	}
 }
 
+func TestDefaultInstallSelectionsUsesLocalModelProfileWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	selections := defaultInstallSelections(installFlags{localModelProfile: installModelProfileSmallOllama}, nil)
+	if selections.SummaryModel != installSmallOllamaModel || selections.CategorizeModel != installSmallOllamaModel {
+		t.Fatalf("small profile selections = %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{localModelProfile: installModelProfileDbrain}, nil)
+	if selections.SummaryModel != installDbrainOllamaModel || selections.CategorizeModel != installDbrainOllamaModel {
+		t.Fatalf("dbrain profile selections = %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{localModelProfile: installModelProfileDbrainOllama}, nil)
+	if selections.SummaryModel != installDbrainOllamaModel || selections.CategorizeModel != installDbrainOllamaModel {
+		t.Fatalf("dbrain Ollama profile selections = %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{localModelProfile: installModelProfileDbrainOMLX}, nil)
+	if selections.SummaryModel != installDbrainOMLXModel || selections.CategorizeModel != installDbrainOMLXModel {
+		t.Fatalf("dbrain oMLX profile selections = %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{
+		localModelProfile: installModelProfileDbrain,
+		summaryModel:      "ollama/custom:latest",
+	}, nil)
+	if selections.SummaryModel != "ollama/custom:latest" || selections.CategorizeModel != "ollama/custom:latest" {
+		t.Fatalf("explicit summary model should win over profile, got %#v", selections)
+	}
+}
+
+func TestSuggestedInstallModelPrefersDbrainProfilesThenSmallOllama(t *testing.T) {
+	t.Parallel()
+
+	if got := suggestedInstallModel([]installer.Tool{{
+		ID:        installer.ToolOllamaAPI,
+		Name:      "Ollama API",
+		Available: true,
+		Models:    []string{installSmallOllamaAPIModel, installDbrainOllamaAPIModel},
+	}}); got != installDbrainOllamaModel {
+		t.Fatalf("suggested dbrain model = %q, want %q", got, installDbrainOllamaModel)
+	}
+
+	if got := suggestedInstallModel([]installer.Tool{
+		{
+			ID:        installer.ToolOllamaAPI,
+			Name:      "Ollama API",
+			Available: true,
+			Models:    []string{installSmallOllamaAPIModel},
+		},
+		{
+			ID:        installer.ToolOMLXAPI,
+			Name:      "oMLX API",
+			Available: true,
+			Models:    []string{installDbrainOMLXAPIModel},
+		},
+	}); got != installDbrainOMLXModel {
+		t.Fatalf("suggested oMLX dbrain model = %q, want %q", got, installDbrainOMLXModel)
+	}
+
+	if got := suggestedInstallModel([]installer.Tool{{
+		ID:        installer.ToolOllamaAPI,
+		Name:      "Ollama API",
+		Available: true,
+		Models:    []string{installSmallOllamaAPIModel},
+	}}); got != installSmallOllamaModel {
+		t.Fatalf("suggested small model = %q, want %q", got, installSmallOllamaModel)
+	}
+
+	if got := suggestedInstallModel([]installer.Tool{
+		{
+			ID:        installer.ToolOllamaAPI,
+			Name:      "Ollama API",
+			Available: true,
+			Models:    []string{"unrelated:latest"},
+		},
+		{
+			ID:        installer.ToolLMStudioAPI,
+			Name:      "LM Studio API",
+			Available: true,
+			Models:    []string{"qwen/test"},
+		},
+	}); got != "lmstudio/qwen/test" {
+		t.Fatalf("unrelated Ollama model should not beat LM Studio fallback, got %q", got)
+	}
+}
+
+func TestInstallOllamaModelSetupsFollowSelectedProfile(t *testing.T) {
+	t.Parallel()
+
+	dbrainSelections := installer.Selections{
+		SummaryModel:    installDbrainOllamaModel,
+		CategorizeModel: installDbrainOllamaModel,
+	}
+	setups := installOllamaModelSetups(installFlags{localModelProfile: installModelProfileDbrain}, dbrainSelections)
+	if len(setups) != 1 {
+		t.Fatalf("dbrain setup count = %d, want 1", len(setups))
+	}
+	if setups[0].Model != installDbrainOllamaAPIModel || setups[0].PullModel != installDbrainOllamaBase || setups[0].ModelfileName != installDbrainModelfileName || len(setups[0].Modelfile) == 0 {
+		t.Fatalf("unexpected dbrain setup: %#v", setups[0])
+	}
+
+	smallSelections := installer.Selections{SummaryModel: installSmallOllamaModel}
+	setups = installOllamaModelSetups(installFlags{localModelProfile: installModelProfileSmallOllama}, smallSelections)
+	if len(setups) != 1 || setups[0].Model != installSmallOllamaAPIModel || setups[0].PullModel != installSmallOllamaAPIModel || len(setups[0].Modelfile) != 0 {
+		t.Fatalf("unexpected small setup: %#v", setups)
+	}
+
+	customSelections := installer.Selections{SummaryModel: "ollama/custom:latest", CategorizeModel: "ollama/custom:latest"}
+	if setups := installOllamaModelSetups(installFlags{localModelProfile: installModelProfileDbrain, summaryModel: "ollama/custom:latest"}, customSelections); len(setups) != 0 {
+		t.Fatalf("explicit custom model should not request dbrain setup: %#v", setups)
+	}
+}
+
+func TestValidateInstallModelProfileRejectsUnknownProfile(t *testing.T) {
+	t.Parallel()
+
+	if err := validateInstallModelProfile("bogus"); err == nil || !strings.Contains(err.Error(), "unknown local model profile") {
+		t.Fatalf("expected unknown profile error, got %v", err)
+	}
+}
+
 func TestInstallCommandDryRunSkipsFilesAndLaunchd(t *testing.T) {
 	home := t.TempDir()
 	basePath := filepath.Join(t.TempDir(), "brain")

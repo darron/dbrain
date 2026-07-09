@@ -51,6 +51,12 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		}
 	}
 
+	modelChanges, err := prepareOllamaModels(ctx, fsys, cfg, opts)
+	if err != nil {
+		return result, err
+	}
+	result.Changes = append(result.Changes, modelChanges...)
+
 	secretRefs, warnings, err := storeSecretRefs(ctx, opts)
 	result.Warnings = append(result.Warnings, warnings...)
 	if err != nil {
