@@ -398,6 +398,92 @@ func TestRunPreparesOllamaModelBeforeWritingConfig(t *testing.T) {
 	}
 }
 
+func TestRunReusesExistingKeychainSecrets(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	secrets := &recordingSecretStore{values: map[string]string{
+		"dbrain/github-token":       "ghp_existing",
+		"dbrain/openrouter-api-key": "sk-or-existing",
+	}}
+
+	result, err := Run(context.Background(), Options{
+		Config:             cfg,
+		ConfigTemplate:     []byte(testConfigTemplate),
+		CategoriesTemplate: []byte("topics: []\n"),
+		Runtime:            Runtime{GOOS: "darwin"},
+		Force:              true,
+		SecretStore:        secrets,
+		Selections: Selections{
+			UseKeychain:     true,
+			SkipXPhotoOCR:   true,
+			SkipCategorize:  true,
+			Secrets:         map[SecretKind]string{},
+			EnableTailscale: false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	configText := string(mustReadFile(t, result.FS, cfg.ConfigPath))
+	for _, expected := range []string{
+		`token: "keychain://dbrain/github-token"`,
+		`api_key: "keychain://dbrain/openrouter-api-key"`,
+		`skip_x_photo_ocr: false`,
+		`skip_categorize: false`,
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected generated config to contain %q:\n%s", expected, configText)
+		}
+	}
+	if _, ok := secrets.values["dbrain/tsnet-auth-key"]; ok {
+		t.Fatalf("did not expect unrelated Tailscale key to be written or reused")
+	}
+}
+
+func TestRunReusesExistingAuthSessionKey(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	secrets := &recordingSecretStore{values: map[string]string{
+		"dbrain/auth-session-key": "existing-session-key",
+	}}
+
+	result, err := Run(context.Background(), Options{
+		Config:             cfg,
+		ConfigTemplate:     []byte(testConfigTemplate),
+		CategoriesTemplate: []byte("topics: []\n"),
+		Runtime:            Runtime{GOOS: "darwin"},
+		Force:              true,
+		SecretStore:        secrets,
+		Selections: Selections{
+			EnableGitHubLogin: true,
+			UseKeychain:       true,
+			Secrets:           map[SecretKind]string{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := secrets.puts["dbrain/auth-session-key"]; got != 0 {
+		t.Fatalf("existing auth session key should be reused, put count=%d", got)
+	}
+	configText := string(mustReadFile(t, result.FS, cfg.ConfigPath))
+	if !strings.Contains(configText, `session_key: "keychain://dbrain/auth-session-key"`) {
+		t.Fatalf("expected generated config to reuse auth session key ref:\n%s", configText)
+	}
+}
+
 func TestRunWritesConfiguredSyncSkips(t *testing.T) {
 	t.Parallel()
 
@@ -695,11 +781,23 @@ func TestDetectToolsUsesLMStudioHomeFallbackWithoutDuplicate(t *testing.T) {
 
 type recordingSecretStore struct {
 	values map[string]string
+	puts   map[string]int
 }
 
 func (s *recordingSecretStore) PutSecret(_ context.Context, service string, account string, value string) error {
+	if s.values == nil {
+		s.values = map[string]string{}
+	}
+	if s.puts == nil {
+		s.puts = map[string]int{}
+	}
+	s.puts[service+"/"+account]++
 	s.values[service+"/"+account] = value
 	return nil
+}
+
+func (s *recordingSecretStore) SecretExists(_ context.Context, service string, account string) (bool, error) {
+	return strings.TrimSpace(s.values[service+"/"+account]) != "", nil
 }
 
 type runnerFailure struct {

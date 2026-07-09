@@ -16,6 +16,10 @@ development date for the change set.
   configured `sync all` skips for hosted-only X photo OCR; installs with no
   categorization model or OpenRouter key likewise skip categorization instead of
   failing at first-run preflight.
+- **Fixed**: Re-running install now reuses existing known `dbrain` Keychain
+  secrets when prompt fields are left blank, including GitHub PATs, OpenRouter
+  keys, Tailscale auth keys for Tailscale-enabled installs, GitHub OAuth client
+  secrets, and existing web auth session keys.
 - **CLI**: Added `dbrain install --local-model-profile
   dbrain|dbrain-ollama|dbrain-omlx|small-ollama|none` so first-run setup can
   write curated local model defaults without requiring users to know exact

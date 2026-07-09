@@ -43,7 +43,6 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Tools:          append([]Tool(nil), opts.Tools...),
 		FS:             fsys,
 	}
-	result.Warnings = append(result.Warnings, selectionWarnings(opts.Selections)...)
 
 	if !opts.DryRun {
 		if err := ensureDirs(fsys, cfg); err != nil {
@@ -58,10 +57,12 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	result.Changes = append(result.Changes, modelChanges...)
 
 	secretRefs, warnings, err := storeSecretRefs(ctx, opts)
-	result.Warnings = append(result.Warnings, warnings...)
 	if err != nil {
 		return result, err
 	}
+	opts.Selections = applySecretRefsToSelections(opts.Selections, secretRefs)
+	result.Warnings = append(result.Warnings, selectionWarnings(opts.Selections)...)
+	result.Warnings = append(result.Warnings, warnings...)
 
 	configData, err := buildConfig(opts.ConfigTemplate, opts.Selections, opts.Tools, secretRefs)
 	if err != nil {
@@ -139,26 +140,27 @@ func writeManagedFile(fsys FileSystem, path string, data []byte, perm os.FileMod
 func storeSecretRefs(ctx context.Context, opts Options) (map[SecretKind]string, []string, error) {
 	refs := map[SecretKind]string{}
 	var warnings []string
-	if opts.Selections.EnableGitHubLogin && strings.TrimSpace(opts.Selections.Secrets[SecretAuthSessionKey]) == "" {
-		if opts.Selections.Secrets == nil {
-			opts.Selections.Secrets = map[SecretKind]string{}
-		}
+	secrets := opts.Selections.Secrets
+	if secrets == nil {
+		secrets = map[SecretKind]string{}
+	}
+	if (!opts.Selections.UseKeychain || opts.Runtime.GOOS != "darwin") && opts.Selections.EnableGitHubLogin && strings.TrimSpace(secrets[SecretAuthSessionKey]) == "" {
 		sessionKey, err := generateSessionKey()
 		if err != nil {
 			return refs, warnings, err
 		}
-		opts.Selections.Secrets[SecretAuthSessionKey] = sessionKey
+		secrets[SecretAuthSessionKey] = sessionKey
 	}
-	if len(opts.Selections.Secrets) == 0 {
+	if len(secrets) == 0 && (!opts.Selections.UseKeychain || opts.Runtime.GOOS != "darwin") {
 		return refs, warnings, nil
 	}
 	if !opts.Selections.UseKeychain || opts.Runtime.GOOS != "darwin" {
-		if sessionKey := strings.TrimSpace(opts.Selections.Secrets[SecretAuthSessionKey]); sessionKey != "" {
+		if sessionKey := strings.TrimSpace(secrets[SecretAuthSessionKey]); sessionKey != "" {
 			refs[SecretAuthSessionKey] = sessionKey
 			warnings = append(warnings, "auth.session_key was written directly into the 0600 config because Keychain storage is disabled or unavailable.")
 		}
 		dropped := []string{}
-		for kind, value := range opts.Selections.Secrets {
+		for kind, value := range secrets {
 			if kind != SecretAuthSessionKey && strings.TrimSpace(value) != "" {
 				dropped = append(dropped, string(kind))
 			}
@@ -177,7 +179,7 @@ func storeSecretRefs(ctx context.Context, opts Options) (map[SecretKind]string, 
 	for _, spec := range secretSpecs {
 		specs[spec.Kind] = spec
 	}
-	for kind, value := range opts.Selections.Secrets {
+	for kind, value := range secrets {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			continue
@@ -196,7 +198,60 @@ func storeSecretRefs(ctx context.Context, opts Options) (map[SecretKind]string, 
 		}
 		refs[kind] = "keychain://" + spec.Service + "/" + spec.Account
 	}
+	for _, spec := range secretSpecs {
+		if strings.TrimSpace(refs[spec.Kind]) != "" || !shouldReuseExistingKeychainSecret(opts.Selections, spec.Kind) {
+			continue
+		}
+		exists, err := opts.SecretStore.SecretExists(ctx, spec.Service, spec.Account)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("Could not inspect existing Keychain secret %s/%s: %v.", spec.Service, spec.Account, err))
+			continue
+		}
+		if exists {
+			refs[spec.Kind] = "keychain://" + spec.Service + "/" + spec.Account
+		}
+	}
+	if opts.Selections.EnableGitHubLogin && strings.TrimSpace(refs[SecretAuthSessionKey]) == "" {
+		sessionKey, err := generateSessionKey()
+		if err != nil {
+			return refs, warnings, err
+		}
+		spec := specs[SecretAuthSessionKey]
+		if opts.DryRun {
+			refs[SecretAuthSessionKey] = "keychain://" + spec.Service + "/" + spec.Account
+			return refs, warnings, nil
+		}
+		if err := opts.SecretStore.PutSecret(ctx, spec.Service, spec.Account, sessionKey); err != nil {
+			return refs, warnings, fmt.Errorf("store %s in keychain: %w", SecretAuthSessionKey, err)
+		}
+		refs[SecretAuthSessionKey] = "keychain://" + spec.Service + "/" + spec.Account
+	}
 	return refs, warnings, nil
+}
+
+func shouldReuseExistingKeychainSecret(selections Selections, kind SecretKind) bool {
+	switch kind {
+	case SecretGitHubToken, SecretOpenRouterAPIKey:
+		return true
+	case SecretTSNetAuthKey:
+		return selections.EnableTailscale
+	case SecretAuthSessionKey, SecretGitHubClientSecret:
+		return selections.EnableGitHubLogin
+	default:
+		return false
+	}
+}
+
+func applySecretRefsToSelections(selections Selections, refs map[SecretKind]string) Selections {
+	if strings.TrimSpace(refs[SecretOpenRouterAPIKey]) != "" {
+		if strings.TrimSpace(selections.OCRModel) == "" {
+			selections.SkipXPhotoOCR = false
+		}
+		if strings.TrimSpace(selections.CategorizeModel) == "" {
+			selections.SkipCategorize = false
+		}
+	}
+	return selections
 }
 
 func selectionWarnings(selections Selections) []string {

@@ -72,7 +72,8 @@ login. On macOS, prompted third-party secrets are written as Keychain-backed
 `keychain://dbrain/...` config refs. If Keychain is disabled or unavailable,
 the generated web auth session key is written into the `0600` config with a
 warning; prompted third-party secrets are skipped rather than written directly
-to YAML.
+to YAML. If a known `dbrain` Keychain secret already exists, install reuses the
+existing `keychain://dbrain/...` reference when you leave the prompt blank.
 
 When the installer detects the Ollama CLI, plain `dbrain install` uses the
 local dbrain Ollama profile by default: it writes the embedded Modelfile, pulls

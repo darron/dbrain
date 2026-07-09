@@ -335,7 +335,7 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Store entered secrets in macOS Keychain?").
-				Description("Secret refs are written to config as keychain://dbrain/<account>. Blank secret fields are skipped.").
+				Description("Secret refs are written to config as keychain://dbrain/<account>. Blank fields reuse existing Keychain entries when present.").
 				Value(&useKeychain),
 			huh.NewInput().
 				Title("GitHub token").

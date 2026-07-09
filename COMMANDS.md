@@ -224,7 +224,9 @@ If Keychain is disabled or unavailable, prompted third-party secrets such as
 GitHub tokens, OpenRouter keys, Tailscale auth keys, and GitHub OAuth client
 secrets are skipped rather than written to config. Re-running install with
 `--force` and GitHub login can rotate the generated session key and log out
-existing web sessions.
+existing web sessions unless an existing `dbrain/auth-session-key` Keychain
+entry is already present. Existing known `dbrain` Keychain secrets are reused
+when the matching prompt field is left blank.
 
 ```sh
 dbrain install
