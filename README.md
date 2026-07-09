@@ -51,6 +51,33 @@ Verify the installed binary:
 dbrain version
 ```
 
+Run the first-time setup wizard:
+
+```sh
+dbrain install
+```
+
+For a non-XDG single-directory install, pass a user-writable base path:
+
+```sh
+dbrain install --base-path ~/dbrain --yes
+```
+
+The installer creates the config/data/vault/log/cache layout, detects local
+helpers such as MacWhisper, Ollama, LM Studio, oMLX, `tesseract`, `ffprobe`,
+and `yt-dlp`, writes a config from the bundled sample, and can enable Apple
+Notes, Safari tabs, scheduled sync, Tailscale/tsnet transport, and GitHub web
+login. On macOS, prompted third-party secrets are written as Keychain-backed
+`keychain://dbrain/...` config refs. If Keychain is disabled or unavailable,
+the generated web auth session key is written into the `0600` config with a
+warning; prompted third-party secrets are skipped rather than written directly
+to YAML.
+
+If you use global `--config-file <path>` with `dbrain install`, the config and
+categories files are created next to that file while data, logs, cache, temp
+files, and vault content keep the normal XDG data layout. Use `--base-path`
+when you want the whole install colocated under one directory.
+
 ## Requirements
 
 Install the common local toolchain with Homebrew. `ollama` is included here as
@@ -112,6 +139,7 @@ Common entry points:
 - `dbrain serve web`
 - `dbrain serve remote`
 - `dbrain serve mcp`
+- `dbrain install`
 - `dbrain sync all`
 - `dbrain okf export`
 - `dbrain research <question>`

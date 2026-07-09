@@ -114,6 +114,7 @@ func NewRootCommand() *cobra.Command {
 		newArchiveCommand(opts),
 		newAuthCommand(opts),
 		newConfigCommand(opts),
+		newInstallCommand(opts),
 		newDoctorCommand(opts),
 		newSQLiteCommand(opts),
 		newTSNetCommand(opts),

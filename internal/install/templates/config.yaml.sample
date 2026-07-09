@@ -1,0 +1,198 @@
+# dbrain config file.
+# Lookup order: shell environment > .envrc/.env in config/root dir > config.yaml.
+# Install default: ~/.config/dbrain/config.yaml
+# File override: dbrain --config-file ~/.config/dbrain/config.yaml
+# Dev override: export DBRAIN_ROOT=.  # DBRAIN_ROOT (env only; --root wins)
+# Env file override: export DBRAIN_CONFIG_FILE=~/.config/dbrain/config.yaml
+# XDG config base: ~/.config          # XDG_CONFIG_HOME (env only)
+# XDG data base: ~/.local/share       # XDG_DATA_HOME (env only)
+# Secret fields accept direct values, env:NAME, op://vault/item/field, or keychain://service/account.
+
+github:
+  token: "" # GITHUB_TOKEN; secret ref supported
+
+auth:
+  enabled: false # DBRAIN_AUTH_ENABLED; opt into web UI login
+  providers: ["github"] # DBRAIN_AUTH_PROVIDERS; only github is supported
+  base_url: "http://127.0.0.1:8742" # DBRAIN_AUTH_BASE_URL; OAuth callback origin; use https:// for non-localhost
+  session_key: "" # DBRAIN_AUTH_SESSION_KEY; secret ref supported, required when enabled; generate with: openssl rand -hex 32
+  github:
+    client_id: "" # DBRAIN_AUTH_GITHUB_CLIENT_ID
+    client_secret: "" # DBRAIN_AUTH_GITHUB_CLIENT_SECRET; secret ref supported
+
+mcp:
+  auth:
+    enabled: false # DBRAIN_MCP_AUTH_ENABLED; require DB-backed Bearer tokens for HTTP/tsnet MCP
+
+summary:
+  model: "" # DBRAIN_SUMMARY_MODEL, SUMMARIZE_MODEL
+  language: "en" # DBRAIN_SUMMARY_LANGUAGE, DBRAIN_OUTPUT_LANGUAGE, SUMMARIZE_LANGUAGE
+
+categorize:
+  model: "openrouter/google/gemini-2.5-flash" # DBRAIN_CATEGORIZE_MODEL
+
+ocr:
+  model: "openrouter/google/gemini-3.1-flash-lite-preview" # DBRAIN_OCR_MODEL, DBRAIN_X_PHOTO_OCR_MODEL
+
+ollama:
+  base_url: "http://127.0.0.1:11434" # DBRAIN_OLLAMA_BASE_URL, OLLAMA_BASE_URL, OLLAMA_HOST
+  api_key: "ollama" # DBRAIN_OLLAMA_API_KEY, OLLAMA_API_KEY; secret ref supported
+
+lmstudio:
+  base_url: "http://127.0.0.1:1234/v1" # DBRAIN_LMSTUDIO_BASE_URL
+  api_key: "lm-studio" # DBRAIN_LMSTUDIO_API_KEY; secret ref supported
+
+omlx:
+  base_url: "http://127.0.0.1:8000/v1" # DBRAIN_OMLX_BASE_URL
+  api_key: "" # DBRAIN_OMLX_API_KEY; set when oMLX auth is enabled; secret ref supported
+
+llm_backends:
+  localai:
+    transport: "openai_chat_completions"
+    base_url: "http://127.0.0.1:8080/v1"
+    api_key: "" # optional; supports direct values, env:, op://, and keychain:// refs
+    local: true
+
+openai:
+  base_url: "" # OPENAI_BASE_URL
+  api_key: "" # OPENAI_API_KEY; secret ref supported
+  use_chat_completions: "" # OPENAI_USE_CHAT_COMPLETIONS
+
+http:
+  user_agent: "" # DBRAIN_USER_AGENT; default is dbrain/<short-sha> for outbound API calls
+
+metrics:
+  enabled: false # DBRAIN_METRICS_ENABLED; append-only local JSONL metrics for sync all
+  path: "" # DBRAIN_METRICS_PATH; default is <log_dir>/metrics.jsonl; relative paths resolve under log_dir
+  detail: "stage" # DBRAIN_METRICS_DETAIL; stage, item, or model_call
+  include_subject_keys: false # DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS; raw item/source keys are omitted by default
+  strict: false # DBRAIN_METRICS_STRICT; fail the command on write errors after startup succeeds
+
+openrouter:
+  base_url: "https://openrouter.ai/api/v1" # DBRAIN_OPENROUTER_BASE_URL, OPENROUTER_BASE_URL
+  api_key: "" # DBRAIN_OPENROUTER_API_KEY, OPENROUTER_API_KEY; secret ref supported
+  referer: "https://local.dbrain" # DBRAIN_OPENROUTER_REFERER, OPENROUTER_HTTP_REFERER
+  title: "dbrain" # DBRAIN_OPENROUTER_TITLE, OPENROUTER_X_TITLE
+
+source:
+  reader:
+    domains: "canada.ca" # DBRAIN_SOURCE_READER_DOMAINS, DBRAIN_HTTP_READER_DOMAINS
+    base_url: "https://r.jina.ai/" # DBRAIN_SOURCE_READER_BASE_URL, DBRAIN_HTTP_READER_BASE_URL
+  wayback:
+    enabled: true # DBRAIN_SOURCE_WAYBACK_ENABLED, DBRAIN_WAYBACK_ENABLED
+    availability_url: "https://archive.org/wayback/available?url={escaped_url}" # DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL, DBRAIN_WAYBACK_AVAILABILITY_URL
+
+feeds:
+  allow_private_network: false # DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK; enable only for local feed testing
+
+apple_notes:
+  enabled: false # DBRAIN_APPLE_NOTES_ENABLED; opt into sync all
+  db_path: "" # DBRAIN_APPLE_NOTES_DB_PATH; default is ~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite
+  exclude_folders: [] # DBRAIN_APPLE_NOTES_EXCLUDE_FOLDERS
+  exclude_accounts: [] # DBRAIN_APPLE_NOTES_EXCLUDE_ACCOUNTS
+  exclude_shared: false # DBRAIN_APPLE_NOTES_EXCLUDE_SHARED
+  index_attachments: true # DBRAIN_APPLE_NOTES_INDEX_ATTACHMENTS; set false to keep attachment metadata only
+  attachment_ocr: true # DBRAIN_APPLE_NOTES_ATTACHMENT_OCR; local OCR for image attachments
+  attachment_max_bytes: 52428800 # DBRAIN_APPLE_NOTES_ATTACHMENT_MAX_BYTES; 50 MiB default
+  tesseract_binary: "tesseract" # DBRAIN_APPLE_NOTES_TESSERACT_BINARY
+
+safari_tabs:
+  enabled: false # DBRAIN_SAFARI_TABS_ENABLED; opt into sync all
+  db_path: "" # DBRAIN_SAFARI_TABS_DB_PATH; default is ~/Library/Containers/com.apple.Safari/Data/Library/Safari/CloudTabs.db
+  device: "" # DBRAIN_SAFARI_TABS_DEVICE; device name or UUID, for example dfone
+  limit: 0 # DBRAIN_SAFARI_TABS_LIMIT; 0 imports all matching tabs
+  older_than: "" # DBRAIN_SAFARI_TABS_OLDER_THAN; optional duration, for example 168h
+
+scheduler:
+  sync_all:
+    enabled: false # DBRAIN_SCHEDULER_SYNC_ALL_ENABLED; run sync all from serve remote
+    interval: "1h" # DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL
+    run_on_start: false # DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START
+    jitter: "" # DBRAIN_SCHEDULER_SYNC_ALL_JITTER; optional, for example 5m
+    x_bookmarks_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_BOOKMARKS_LIMIT
+    x_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_LIMIT
+    x_media_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_MEDIA_LIMIT
+    x_photo_ocr_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_PHOTO_OCR_LIMIT
+    x_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_CONCURRENCY
+    link_discover_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_LINK_DISCOVER_LIMIT
+    link_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_LINK_LIMIT
+    link_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_LINK_CONCURRENCY
+    github_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_GITHUB_LIMIT
+    youtube_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_YOUTUBE_LIMIT
+    source_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_LIMIT; 0 uses sync all default
+    source_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_SOURCE_CONCURRENCY
+    archive_media_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_ARCHIVE_MEDIA_LIMIT
+    categorize_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_LIMIT
+    categorize_concurrency: 0 # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_CONCURRENCY; 0 uses sync all default
+    categorize_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_TIMEOUT; optional per-record timeout, for example 90s
+    x_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_X_TIMEOUT
+    x_media_download_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_X_MEDIA_DOWNLOAD_TIMEOUT
+    timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_TIMEOUT; optional source summary timeout
+    ocr_model: "" # DBRAIN_SCHEDULER_SYNC_ALL_OCR_MODEL
+    model: "" # DBRAIN_SCHEDULER_SYNC_ALL_MODEL
+    categorize_model: "" # DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_MODEL
+    cli: "" # DBRAIN_SCHEDULER_SYNC_ALL_CLI
+    length: "" # DBRAIN_SCHEDULER_SYNC_ALL_LENGTH
+    browser: "" # DBRAIN_SCHEDULER_SYNC_ALL_BROWSER
+    profile: "" # DBRAIN_SCHEDULER_SYNC_ALL_PROFILE
+    apple_notes: false # DBRAIN_SCHEDULER_SYNC_ALL_APPLE_NOTES
+    safari_tabs: false # DBRAIN_SCHEDULER_SYNC_ALL_SAFARI_TABS
+    archive_media: false # DBRAIN_SCHEDULER_SYNC_ALL_ARCHIVE_MEDIA
+    force: false # DBRAIN_SCHEDULER_SYNC_ALL_FORCE
+    skip_summarize: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SUMMARIZE
+    skip_categorize_images: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE_IMAGES; useful for text-only local backends
+    skip_x_bookmarks: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_BOOKMARKS
+    skip_x: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X
+    skip_x_media: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_MEDIA
+    skip_x_photo_ocr: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR
+    skip_links: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_LINKS
+    skip_apple_notes: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_APPLE_NOTES; useful when launchd lacks Full Disk Access
+    skip_safari_tabs: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SAFARI_TABS
+    skip_github: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB
+    skip_youtube: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE
+    skip_sources: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SOURCES
+    skip_categorize: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE
+    okf_export: false # DBRAIN_SCHEDULER_SYNC_ALL_OKF_EXPORT
+    skip_okf_export: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_OKF_EXPORT
+
+tsnet:
+  web: true # DBRAIN_TSNET_WEB
+  mcp: true # DBRAIN_TSNET_MCP
+  mcp_path: "/mcp" # DBRAIN_TSNET_MCP_PATH
+  hostname: "dbrain" # DBRAIN_TSNET_HOSTNAME
+  state_dir: "" # DBRAIN_TSNET_STATE_DIR; default is <data_dir>/tsnet/<hostname>
+  listen: "" # DBRAIN_TSNET_LISTEN; default is :443 with TLS/Funnel, :80 without TLS
+  tls: true # DBRAIN_TSNET_TLS
+  funnel: false # DBRAIN_TSNET_FUNNEL; public Tailscale Funnel exposure, requires TLS and port 443/8443/10000
+  startup_timeout: "45s" # DBRAIN_TSNET_STARTUP_TIMEOUT
+  auth_key: "" # DBRAIN_TSNET_AUTH_KEY
+  auth_key_ref: "" # DBRAIN_TSNET_AUTH_KEY_REF; env:, op://, or keychain://
+  auth_key_command: [] # config file only; no env equivalent; requires allow_secret_command=true
+  allow_secret_command: false # DBRAIN_TSNET_ALLOW_SECRET_COMMAND
+  advertise_tags: [] # DBRAIN_TSNET_ADVERTISE_TAGS
+  control_url: "" # DBRAIN_TSNET_CONTROL_URL; experimental
+  verbose: false # DBRAIN_TSNET_VERBOSE
+
+media:
+  proxy:
+    base_url: "http://127.0.0.1:8742" # DBRAIN_MEDIA_PROXY_BASE_URL, DBRAIN_WEB_BASE_URL
+  public_base_url: "" # DBRAIN_R2_PUBLIC_BASE_URL, DBRAIN_MEDIA_PUBLIC_BASE_URL
+
+archive:
+  auto: false # DBRAIN_AUTO_ARCHIVE_MEDIA, DBRAIN_ARCHIVE_AUTO
+  upload: false # DBRAIN_ARCHIVE_UPLOAD, DBRAIN_R2_UPLOAD
+  provider: "cloudflare_r2" # DBRAIN_ARCHIVE_PROVIDER, DBRAIN_R2_PROVIDER
+  bucket: "" # DBRAIN_ARCHIVE_BUCKET, DBRAIN_S3_BUCKET
+
+r2:
+  bucket: "" # DBRAIN_R2_BUCKET, DBRAIN_ARCHIVE_BUCKET, DBRAIN_S3_BUCKET
+  public_base_url: "" # DBRAIN_R2_PUBLIC_BASE_URL, DBRAIN_MEDIA_PUBLIC_BASE_URL
+  endpoint: "" # DBRAIN_R2_ENDPOINT, DBRAIN_S3_ENDPOINT
+  region: "auto" # DBRAIN_R2_REGION, DBRAIN_S3_REGION, AWS_REGION, AWS_DEFAULT_REGION
+  access_key_id: "" # DBRAIN_R2_ACCESS_KEY_ID, DBRAIN_S3_ACCESS_KEY_ID, AWS_ACCESS_KEY_ID; secret ref supported
+  secret_access_key: "" # DBRAIN_R2_SECRET_ACCESS_KEY, DBRAIN_S3_SECRET_ACCESS_KEY, AWS_SECRET_ACCESS_KEY; secret ref supported
+  session_token: "" # DBRAIN_R2_SESSION_TOKEN, DBRAIN_S3_SESSION_TOKEN, AWS_SESSION_TOKEN; secret ref supported
+
+env:
+  GITHUB_TOKEN: "" # GITHUB_TOKEN exact-key fallback form; secret ref supported
+  DBRAIN_OPENROUTER_API_KEY: "" # DBRAIN_OPENROUTER_API_KEY exact-key fallback form; secret ref supported

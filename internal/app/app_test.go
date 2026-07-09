@@ -12,14 +12,17 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/feedimport"
+	installer "github.com/darron/dbrain/internal/install"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/remote"
@@ -49,7 +52,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
+	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "install", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -1000,6 +1003,317 @@ func TestLaunchdPlistCommandPreservesConfigFileSelector(t *testing.T) {
 	}
 	if strings.Contains(output, "<string>--root</string>") || strings.Contains(output, devRoot) {
 		t.Fatalf("config-file launchd plist should not include dev root, got %q", output)
+	}
+}
+
+func TestInstallCommandWritesBasePathConfigAndReportsDetectedTools(t *testing.T) {
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	for _, name := range []string{"mw", "ffprobe", "yt-dlp", "tesseract"} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", binDir)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--force",
+		"--no-keychain",
+		"--enable-apple-notes",
+		"--enable-safari-tabs",
+		"--enable-scheduler",
+		"--enable-tailscale",
+		"--tsnet-hostname", "dbrain-test",
+		"--enable-github-login",
+		"--auth-base-url", "https://dbrain-test.example.ts.net",
+		"--github-client-id", "Iv1.test",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+
+	configPath := filepath.Join(basePath, "config.yaml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	configText := string(raw)
+	for _, expected := range []string{
+		"apple_notes:",
+		"enabled: true",
+		"safari_tabs:",
+		"scheduler:",
+		"tsnet:",
+		`hostname: "dbrain-test"`,
+		"auth:",
+		`base_url: "https://dbrain-test.example.ts.net"`,
+		`client_id: "Iv1.test"`,
+		`tesseract_binary: "` + filepath.Join(binDir, "tesseract") + `"`,
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected config to contain %q:\n%s", expected, configText)
+		}
+	}
+	sessionKeyLine := ""
+	for _, line := range strings.Split(configText, "\n") {
+		if strings.Contains(line, "session_key:") {
+			sessionKeyLine = line
+			break
+		}
+	}
+	if sessionKeyLine == "" || strings.Contains(sessionKeyLine, `session_key: ""`) || strings.Contains(sessionKeyLine, "keychain://") {
+		t.Fatalf("expected non-empty plaintext session_key for --no-keychain GitHub login, got %q in:\n%s", sessionKeyLine, configText)
+	}
+	for _, unexpected := range []string{`model: "ollama/`, `model: "lmstudio/`, `model: "omlx/`} {
+		if strings.Contains(configText, unexpected) {
+			t.Fatalf("unattended install should not select detected LLM model %q:\n%s", unexpected, configText)
+		}
+	}
+
+	output := stdout.String()
+	for _, expected := range []string{
+		"dbrain install complete",
+		configPath,
+		"MacWhisper CLI",
+		"Tesseract",
+		"Scheduler enabled",
+		"GitHub login enabled",
+		"Tailscale enabled",
+		"auth.session_key was written directly",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected install output to contain %q, got %q", expected, output)
+		}
+	}
+}
+
+func TestNormalizeInstallPromptErrorTreatsAbortAsCleanExit(t *testing.T) {
+	if err := normalizeInstallPromptError(huh.ErrUserAborted); err != nil {
+		t.Fatalf("user abort should be a clean exit, got %v", err)
+	}
+	other := errors.New("other prompt failure")
+	if err := normalizeInstallPromptError(other); !errors.Is(err, other) {
+		t.Fatalf("unexpected prompt error normalization: %v", err)
+	}
+}
+
+func TestDefaultInstallSelectionsOnlyUsesDetectedLLMForInteractivePromptDefaults(t *testing.T) {
+	tools := []installer.Tool{
+		{ID: installer.ToolOllamaAPI, Name: "Ollama API", Available: true, Models: []string{"ocr-only:latest"}},
+		{ID: installer.ToolTesseract, Name: "Tesseract", Available: true, Path: "/opt/homebrew/bin/tesseract"},
+	}
+
+	selections := defaultInstallSelections(installFlags{}, tools)
+	if selections.SummaryModel != "" || selections.CategorizeModel != "" {
+		t.Fatalf("detected LLM should not be selected in noninteractive defaults: %#v", selections)
+	}
+	if selections.OCRModel != "tesseract" {
+		t.Fatalf("detected tesseract should set OCR model, got %#v", selections)
+	}
+
+	applyDetectedPromptDefaults(&selections, tools)
+	if selections.SummaryModel != "ollama/ocr-only:latest" || selections.CategorizeModel != selections.SummaryModel {
+		t.Fatalf("interactive prompt defaults should include detected model suggestion, got %#v", selections)
+	}
+}
+
+func TestInstallCommandDryRunSkipsFilesAndLaunchd(t *testing.T) {
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "")
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--dry-run",
+		"--no-detect",
+		"--enable-scheduler",
+		"--install-launchd",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install dry-run command: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(basePath, "config.yaml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run unexpectedly created config, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", defaultLaunchdLabel+".plist")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run unexpectedly created launchd plist, err=%v", err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "Dry run skipped launchd") {
+		t.Fatalf("expected dry-run launchd warning, got %q", output)
+	}
+}
+
+func TestInstallCommandWarnsWhenLaunchdRequestedWithoutScheduler(t *testing.T) {
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+
+	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--force",
+		"--no-detect",
+		"--install-launchd",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "Launchd installation was skipped because scheduler.sync_all is not enabled.") {
+		t.Fatalf("expected launchd scheduler warning, got %q", output)
+	}
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", defaultLaunchdLabel+".plist")
+	if _, err := os.Stat(plistPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("launchd plist should not be written when scheduler is disabled, err=%v", err)
+	}
+}
+
+func TestInstallCommandConfigFileUsesXDGDataLayout(t *testing.T) {
+	home := t.TempDir()
+	xdgData := filepath.Join(home, ".local", "share")
+	xdgConfig := filepath.Join(home, ".config")
+	configDir := filepath.Join(t.TempDir(), "custom-config")
+	configPath := filepath.Join(configDir, "brain.yaml")
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	t.Setenv("XDG_DATA_HOME", xdgData)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--config-file", configPath,
+		"--no-debug",
+		"install",
+		"--yes",
+		"--force",
+		"--no-detect",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+	for _, path := range []string{
+		configPath,
+		filepath.Join(configDir, "categories.yaml"),
+		filepath.Join(xdgData, "dbrain"),
+		filepath.Join(xdgData, "dbrain", "vault", "items"),
+		filepath.Join(xdgData, "dbrain", "logs"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected install path %s to exist: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "data")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config-file install should keep data under XDG_DATA_HOME, err=%v", err)
+	}
+	if output := stdout.String(); !strings.Contains(output, configPath) {
+		t.Fatalf("expected output to mention config path %s, got %q", configPath, output)
+	}
+}
+
+func TestInstallCommandWritesLaunchdPlistWhenSchedulerEnabled(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("dbrain install --install-launchd is macOS-only")
+	}
+
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--force",
+		"--no-detect",
+		"--enable-scheduler",
+		"--install-launchd",
+		"--bin", "/bin/echo",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", defaultLaunchdLabel+".plist")
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read plist: %v", err)
+	}
+	plist := string(data)
+	for _, expected := range []string{
+		"<string>/bin/echo</string>",
+		"<string>--root</string>",
+		"<string>" + basePath + "</string>",
+		filepath.Join(basePath, "logs", "launchd.out.log"),
+	} {
+		if !strings.Contains(plist, expected) {
+			t.Fatalf("expected plist to contain %q, got %s", expected, plist)
+		}
+	}
+}
+
+func TestPrintInstallResultUsesNonLaunchdSchedulerHintOffDarwin(t *testing.T) {
+	var stdout bytes.Buffer
+	printInstallResult(&stdout, installer.Result{}, installer.Selections{EnableScheduler: true}, "linux")
+
+	output := stdout.String()
+	if strings.Contains(output, "launchd") {
+		t.Fatalf("non-darwin scheduler hint should not mention launchd, got %q", output)
+	}
+	if !strings.Contains(output, "Configure your OS service manager") {
+		t.Fatalf("expected non-darwin service manager hint, got %q", output)
 	}
 }
 

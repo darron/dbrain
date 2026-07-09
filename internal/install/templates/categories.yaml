@@ -1,0 +1,222 @@
+# categories.yaml
+# All forms are normalised to lowercase-hyphen automatically.
+# Only list non-obvious synonyms that normalisation alone can't resolve.
+# Run: dbrain categorize repair --dry-run  (preview)
+#      dbrain categorize repair             (apply)
+
+aliases:
+  # === Go programming language ===
+  go-language: golang
+  go-lang: golang
+  go-programming: golang
+  go-programming-language: golang
+  go: golang
+
+  # === Other known synonyms ===
+  argocd: argo-cd
+  flux-cd: fluxcd
+  huggingface: hugging-face
+  nodejs: node-js
+  vuejs: vue-js
+  letsencrypt: lets-encrypt
+  let-s-encrypt: lets-encrypt
+  http-2: http2
+  autoscaling: auto-scaling
+  copytrading: copy-trading
+  devsecops: devsecops
+  j-d-vance: jd-vance
+  jdvance: jd-vance
+  usa-id: usaid
+  data-dog: datadog
+  git-hub: github
+  mattpocock: matt-pocock
+  nousresearch: nous-research
+  spikesguides: spikes-guides
+  yossi-benyakar: yossi-ben-yakar
+  badlogic-games: badlogicgames
+  open-code: opencode
+  open-telemetry: opentelemetry
+  neo-ai-forecast: neo-aiforecast
+  sub-agents: subagents
+  antisemitism: anti-semitism
+  counterterrorism: counter-terrorism
+  mac-os: macos
+  firearm-regulation: firearms-regulation
+  tom-s-hardware: toms-hardware
+  liberal-party-of-canada: liberal-party
+  nic-rh: nic-roberts-huntley
+  nick-roberts-huntley: nic-roberts-huntley
+  cyber-security: cybersecurity
+  ctvnews: ctv-news
+  jihadwatch: jihad-watch
+
+  # === Source categorization cleanup ===
+  # License names emitted frequently by GitHub/source categorization.
+  apache-license-2-0: apache-2-0
+  apache-2-0-license: apache-2-0
+  apache-2-license: apache-2-0
+  apache-license: apache-2-0
+  apache-license-2: apache-2-0
+  apachelicense-2-0: apache-2-0
+  apachelicense20: apache-2-0
+  apach-license-2-0: apache-2-0
+  apachely-license-2-0: apache-2-0
+  apacher-license-2-0: apache-2-0
+  agpl: agpl-3-0
+  agplv3: agpl-3-0
+  agpl-license: agpl-3-0
+  agpl-3-license: agpl-3-0
+  gnu-affero-general-public-license: agpl-3-0
+  gnu-affero-general-public-license-v3-0: agpl-3-0
+  gnu-agpl-license: agpl-3-0
+  bsd-3-clause: bsd-license
+  mozilla-public-license-2-0: mozilla-public-license
+  mozilla-license: mozilla-public-license
+
+  # Tooling/source categories that came back in many near-identical forms.
+  dev-tools: developer-tools
+  development-tools: developer-tools
+  software-tools: developer-tools
+  programming-tools: developer-tools
+  software-development-tools: developer-tools
+  cli: cli-tools
+  cli-tool: cli-tools
+  cli-utility: cli-tools
+  cli-utilities: cli-tools
+  cli-application: cli-tools
+  cli-applications: cli-tools
+  command-line: cli-tools
+  command-line-tool: cli-tools
+  command-line-tools: cli-tools
+  command-line-utility: cli-tools
+  command-line-utilities: cli-tools
+  command-line-interface: cli-tools
+  command-line-interfaces: cli-tools
+  cicd: ci-cd
+  ci-pipelines: ci-cd
+  ci-cd-automation: ci-cd
+  devops-tools: devops
+  devops-automation: devops
+  model-context-protocol: mcp
+  mcp-protocol: mcp
+  mcp-server: mcp
+  mcp-servers: mcp
+  helm-chart: helm-charts
+  custom-resource-definition: custom-resource-definitions
+  crd: custom-resource-definitions
+  crds: custom-resource-definitions
+  elastic-search: elasticsearch
+  postgres: postgresql
+  faas: serverless-computing
+  serverless: serverless-computing
+  cloud-native-computing: cloud-native
+  kubernetes-operators: kubernetes-operator
+  software-supply-chain-security: supply-chain-security
+  supply-chain-integrity: supply-chain-security
+
+  # Organization/cloud/product spelling variants.
+  cloud-native-computing-foundation: cncf
+  cnfc: cncf
+  cnfc-sandbox: cncf-sandbox
+  gcp: google-cloud-platform
+  amazon-web-services: aws
+  aws-services: aws
+  microsoft-azure: azure
+  open-shift: openshift
+
+  # Topic/category variants.
+  fintech: financial-technology
+  firearm-regulations: firearms-regulation
+  gun-control: firearms-regulation
+  gun-politics: firearms-regulation
+  oss: open-source-software
+  open-source: open-source-software
+  open-source-libraries: open-source-software
+  open-source-tools: open-source-software
+  rust-programming: rust
+  rust-language: rust
+  rust-lang: rust
+  python-programming: python
+  ruby-programming: ruby
+  yaml-configuration: yaml
+  json-configuration: json
+  toml-config: toml
+
+  # === LLM-suggested cleanup (2026-05-10) ===
+  amazon-eks: aws-eks
+  eks: aws-eks
+  go-libraries: go-library
+  golang-library: go-library
+  google-kubernetes-engine: gke
+  hashicorp-terraform: terraform
+  javascript-libraries: javascript-library
+  k8s: kubernetes
+  kubernetes-utilities: kubernetes-tools
+  llm: large-language-models
+  llms: large-language-models
+  local-llms: local-llm
+  mtls: mutual-tls
+  prometheus-exporter: prometheus
+  prometheus-metrics: prometheus
+  python-libraries: python-library
+  sre: site-reliability-engineering
+  ssl-certificates: tls-certificates
+  ssl-tls: tls
+  ssl-tls-certificates: tls-certificates
+  twitter-x: twitter
+  x-twitter: twitter
+
+  # === LLM-suggested cleanup (2026-05-10) ===
+  ai-agent: ai-agents
+
+drop:
+  # Source import noise — describes how item arrived, not what it's about
+  - github-star
+  - github-stars
+  - github-repository
+  - github-project
+  - x-bookmark
+  - x-quote
+  - x-com
+  # Generic catch-alls with no signal
+  - bookmark
+  - bookmarks
+  - link-sharing
+  - link-share
+  - links
+  - external-link
+  - external-links
+  - digital-links
+  - media-links
+  - web-links
+  - social-media-links
+  - social-media-link
+  - twitter-link
+  - user-content
+  - unknown-content
+  - article-link
+  - twitter-articles
+  - access-denied
+  - vpn-block
+  - archived-repository
+  - pkg-go-dev
+  - godoc
+
+  # LLM-suggested cleanup (2026-05-10)
+  - blog-post
+  - code-repositories
+  - code-repository
+  - git-repositories
+  - git-repository
+  - github-repo
+  - github-repositories
+  - repository
+  - social-media-post
+  - social-media-posts
+  - social-post
+  - software-repository
+  - source-code-repository
+  - tweet
+  - twitter-article
+  - twitter-quote
+  - x-post
