@@ -32,7 +32,7 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resolvedFlags, err := resolveSyncAllFlags(cfg.RootDir, flags)
+			resolvedFlags, err := resolveSyncAllFlags(cfg.RootDir, flags, syncAllOverridesFromCommand(cmd))
 			if err != nil {
 				return err
 			}
@@ -99,4 +99,26 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 	bindSyncAllFlags(cmd, &flags)
 
 	return cmd
+}
+
+func syncAllOverridesFromCommand(cmd *cobra.Command) syncAllFlagOverrides {
+	if cmd == nil {
+		return syncAllFlagOverrides{}
+	}
+	return syncAllFlagOverrides{
+		skipXBookmarks: cmd.Flags().Changed("skip-x-bookmarks"),
+		skipX:          cmd.Flags().Changed("skip-x"),
+		skipXMedia:     cmd.Flags().Changed("skip-x-media"),
+		skipXPhotoOCR:  cmd.Flags().Changed("skip-x-photo-ocr"),
+		skipGitHub:     cmd.Flags().Changed("skip-github"),
+		skipYouTube:    cmd.Flags().Changed("skip-youtube"),
+		skipFeeds:      cmd.Flags().Changed("skip-feeds"),
+		skipCategorize: cmd.Flags().Changed("skip-categorize"),
+		watchLater:     cmd.Flags().Changed("watch-later"),
+		liked:          cmd.Flags().Changed("liked"),
+		appleNotes:     cmd.Flags().Changed("apple-notes"),
+		safariTabs:     cmd.Flags().Changed("safari-tabs"),
+		browser:        cmd.Flags().Changed("browser"),
+		profile:        cmd.Flags().Changed("profile"),
+	}
 }

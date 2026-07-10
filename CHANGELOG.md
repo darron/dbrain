@@ -5,6 +5,23 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Installer Import Selection (2026-07-09)
+
+- **Installer**: Fresh installs now present an explicit checklist for X
+  bookmarks, GitHub stars, YouTube Watch Later, liked YouTube videos, feeds,
+  Apple Notes, and Safari tabs; no importer is silently selected.
+- **Config**: Installer choices are persisted under `sync_all.imports` and are
+  shared by manual and scheduled `sync all` runs, with environment and
+  one-run CLI overrides plus backward-compatible legacy defaults.
+- **Safety**: Declining X disables bookmark import, hydration, media
+  transcription, and photo OCR together. Unselected importers no longer run
+  their preflight checks, and install reports missing configuration only for
+  selected sources.
+- **Browser config**: X and YouTube selections now collect a shared browser and
+  optional profile used by both manual and scheduled runs.
+- **Updates**: Re-running install merges managed selections into an existing
+  config instead of requiring a destructive full overwrite.
+
 ### Installer Local Model Profiles (2026-07-09)
 
 - **Fixed**: Fresh installs now apply detected local model defaults before the

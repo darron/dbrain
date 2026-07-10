@@ -73,18 +73,23 @@ func TestRunCreatesExplicitBaseLayoutAndConfigFromSelections(t *testing.T) {
 		Runtime:            Runtime{GOOS: "darwin"},
 		Force:              true,
 		Selections: Selections{
-			EnableAppleNotes:  true,
-			EnableSafariTabs:  true,
-			EnableScheduler:   true,
-			EnableTailscale:   true,
-			TSNetHostname:     "dbrain-alice",
-			EnableGitHubLogin: true,
-			AuthBaseURL:       "https://dbrain-alice.example.ts.net",
-			GitHubClientID:    "Iv1.example",
-			UseKeychain:       true,
-			SummaryModel:      "lmstudio/qwen/qwen3.6-35b-a3b",
-			CategorizeModel:   "lmstudio/qwen/qwen3.6-35b-a3b",
-			OCRModel:          "tesseract",
+			ImportXBookmarks:        true,
+			ImportGitHubStars:       true,
+			ImportYouTubeWatchLater: true,
+			ImportYouTubeLiked:      true,
+			ImportFeeds:             true,
+			EnableAppleNotes:        true,
+			EnableSafariTabs:        true,
+			EnableScheduler:         true,
+			EnableTailscale:         true,
+			TSNetHostname:           "dbrain-alice",
+			EnableGitHubLogin:       true,
+			AuthBaseURL:             "https://dbrain-alice.example.ts.net",
+			GitHubClientID:          "Iv1.example",
+			UseKeychain:             true,
+			SummaryModel:            "lmstudio/qwen/qwen3.6-35b-a3b",
+			CategorizeModel:         "lmstudio/qwen/qwen3.6-35b-a3b",
+			OCRModel:                "tesseract",
 			Secrets: map[SecretKind]string{
 				SecretGitHubToken:        "ghp_test_secret",
 				SecretOpenRouterAPIKey:   "sk-or-test-secret",
@@ -126,6 +131,11 @@ func TestRunCreatesExplicitBaseLayoutAndConfigFromSelections(t *testing.T) {
 		`enabled: true`,
 		`tesseract_binary: "/opt/homebrew/bin/tesseract"`,
 		`api_key: "keychain://dbrain/openrouter-api-key"`,
+		`x_bookmarks: true`,
+		`github_stars: true`,
+		`youtube_watch_later: true`,
+		`youtube_liked: true`,
+		`feeds: true`,
 		`apple_notes: true`,
 		`safari_tabs: true`,
 		`base_url: "https://dbrain-alice.example.ts.net"`,
@@ -167,7 +177,7 @@ func TestRunCreatesExplicitBaseLayoutAndConfigFromSelections(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotOverwriteExistingConfigWithoutForce(t *testing.T) {
+func TestRunMergesSelectionsIntoExistingConfigWithoutForce(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -179,7 +189,7 @@ func TestRunDoesNotOverwriteExistingConfigWithoutForce(t *testing.T) {
 	if err := fs.MkdirAll(cfg.ConfigDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := fs.WriteFile(cfg.ConfigPath, []byte("github:\n  token: keep-me\n"), 0o600); err != nil {
+	if err := fs.WriteFile(cfg.ConfigPath, []byte("github:\n  token: keep-me\ncustom:\n  preserve: yes\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -188,18 +198,29 @@ func TestRunDoesNotOverwriteExistingConfigWithoutForce(t *testing.T) {
 		ConfigTemplate:     []byte(testConfigTemplate),
 		CategoriesTemplate: []byte("topics: []\n"),
 		FS:                 fs,
-		Selections:         Selections{EnableAppleNotes: true},
+		Selections: Selections{
+			ImportFeeds:      true,
+			EnableAppleNotes: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	configText := string(mustReadFile(t, result.FS, cfg.ConfigPath))
-	if configText != "github:\n  token: keep-me\n" {
-		t.Fatalf("config overwritten without force:\n%s", configText)
+	for _, expected := range []string{
+		"token: keep-me",
+		"custom:",
+		"preserve: yes",
+		"feeds: true",
+		"apple_notes: true",
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected merged config to preserve/write %q:\n%s", expected, configText)
+		}
 	}
-	if !containsChange(result.Changes, ChangeSkipped, cfg.ConfigPath) {
-		t.Fatalf("expected skipped change for existing config, got %#v", result.Changes)
+	if !containsChange(result.Changes, ChangeUpdated, cfg.ConfigPath) {
+		t.Fatalf("expected updated change for merged config, got %#v", result.Changes)
 	}
 }
 
@@ -419,11 +440,12 @@ func TestRunReusesExistingKeychainSecrets(t *testing.T) {
 		Force:              true,
 		SecretStore:        secrets,
 		Selections: Selections{
-			UseKeychain:     true,
-			SkipXPhotoOCR:   true,
-			SkipCategorize:  true,
-			Secrets:         map[SecretKind]string{},
-			EnableTailscale: false,
+			ImportGitHubStars: true,
+			UseKeychain:       true,
+			SkipXPhotoOCR:     true,
+			SkipCategorize:    true,
+			Secrets:           map[SecretKind]string{},
+			EnableTailscale:   false,
 		},
 	})
 	if err != nil {
@@ -515,6 +537,135 @@ func TestRunWritesConfiguredSyncSkips(t *testing.T) {
 		if !strings.Contains(configText, expected) {
 			t.Fatalf("expected generated config to contain %q:\n%s", expected, configText)
 		}
+	}
+}
+
+func TestSelectionWarningsOnlyReportSelectedImportRequirements(t *testing.T) {
+	t.Parallel()
+
+	noImports := strings.Join(selectionWarnings(Selections{SkipXPhotoOCR: true}, nil), "\n")
+	if !strings.Contains(noImports, "No import sources were selected") {
+		t.Fatalf("expected no-import warning, got %q", noImports)
+	}
+	if strings.Contains(noImports, "GitHub stars") || strings.Contains(noImports, "recommended media tools") || strings.Contains(noImports, "Safari tabs") {
+		t.Fatalf("unselected sources should not report requirements: %q", noImports)
+	}
+
+	selected := Selections{
+		ImportXBookmarks:  true,
+		ImportGitHubStars: true,
+		EnableSafariTabs:  true,
+		SkipXPhotoOCR:     true,
+	}
+	warnings := strings.Join(selectionWarnings(selected, []Tool{
+		{ID: ToolMacWhisper, Name: "MacWhisper CLI"},
+		{ID: ToolFFprobe, Name: "ffprobe"},
+		{ID: ToolYTDLP, Name: "yt-dlp"},
+	}), "\n")
+	for _, expected := range []string{
+		"no GitHub token",
+		"safari_tabs.device is empty",
+		"MacWhisper CLI, ffprobe, yt-dlp",
+		"X photo OCR is disabled",
+	} {
+		if !strings.Contains(warnings, expected) {
+			t.Fatalf("expected selected-source warning %q, got %q", expected, warnings)
+		}
+	}
+}
+
+func TestExistingConfigSatisfiesSelectedGitHubTokenRequirement(t *testing.T) {
+	t.Parallel()
+
+	selections := applyExistingConfigToSelections(Selections{ImportGitHubStars: true}, []byte("github:\n  token: env:GITHUB_TOKEN\n"))
+	if !selections.GitHubTokenConfigured {
+		t.Fatal("existing GitHub token reference should satisfy installer requirement")
+	}
+	if warnings := strings.Join(selectionWarnings(selections, nil), "\n"); strings.Contains(warnings, "no GitHub token") {
+		t.Fatalf("existing GitHub token should suppress missing-token warning: %q", warnings)
+	}
+}
+
+func TestSeedSelectionsFromConfigUsesEffectiveImportPolicy(t *testing.T) {
+	t.Parallel()
+
+	selections, err := SeedSelectionsFromConfig(Selections{}, []byte(`sync_all:
+  browser: "firefox"
+  profile: "research"
+  imports:
+    x_bookmarks: true
+    github_stars: false
+    youtube_watch_later: true
+    youtube_liked: false
+    feeds: true
+    apple_notes: true
+    safari_tabs: true
+scheduler:
+  sync_all:
+    enabled: true
+apple_notes:
+  enabled: true
+safari_tabs:
+  enabled: true
+  device: "phone"
+`))
+	if err != nil {
+		t.Fatalf("SeedSelectionsFromConfig: %v", err)
+	}
+	if !selections.ImportXBookmarks || selections.ImportGitHubStars || !selections.ImportYouTubeWatchLater || selections.ImportYouTubeLiked || !selections.ImportFeeds {
+		t.Fatalf("unexpected import selections: %#v", selections)
+	}
+	if !selections.EnableAppleNotes || !selections.EnableSafariTabs || selections.SafariTabsDevice != "phone" {
+		t.Fatalf("unexpected local import selections: %#v", selections)
+	}
+	if selections.SyncBrowser != "firefox" || selections.SyncProfile != "research" {
+		t.Fatalf("unexpected browser selections: %#v", selections)
+	}
+	if !selections.EnableScheduler {
+		t.Fatalf("unexpected scheduler selection: %#v", selections)
+	}
+}
+
+func TestSeedSelectionsFromLegacyConfigPreservesLegacySyncDefaults(t *testing.T) {
+	t.Parallel()
+
+	selections, err := SeedSelectionsFromConfig(Selections{}, []byte(`apple_notes:
+  enabled: false
+safari_tabs:
+  enabled: false
+scheduler:
+  sync_all:
+    apple_notes: true
+    safari_tabs: true
+`))
+	if err != nil {
+		t.Fatalf("SeedSelectionsFromConfig: %v", err)
+	}
+	if !selections.ImportXBookmarks || !selections.ImportGitHubStars || !selections.ImportYouTubeWatchLater || !selections.ImportYouTubeLiked || !selections.ImportFeeds {
+		t.Fatalf("legacy default imports were not preserved: %#v", selections)
+	}
+	if !selections.EnableAppleNotes || !selections.EnableSafariTabs {
+		t.Fatalf("legacy local import settings were not preserved: %#v", selections)
+	}
+}
+
+func TestSeedSelectionsFromConfigSharedPolicyOverridesLegacySchedulerSources(t *testing.T) {
+	t.Parallel()
+
+	selections, err := SeedSelectionsFromConfig(Selections{}, []byte(`sync_all:
+  imports:
+    apple_notes: false
+    safari_tabs: false
+scheduler:
+  sync_all:
+    apple_notes: true
+    safari_tabs: true
+`))
+	if err != nil {
+		t.Fatalf("SeedSelectionsFromConfig: %v", err)
+	}
+	if selections.EnableAppleNotes || selections.EnableSafariTabs {
+		t.Fatalf("explicit shared policy should override legacy scheduler source flags: %#v", selections)
 	}
 }
 

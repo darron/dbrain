@@ -1036,8 +1036,14 @@ func TestInstallCommandWritesBasePathConfigAndReportsDetectedTools(t *testing.T)
 		"--base-path", basePath,
 		"--force",
 		"--no-keychain",
+		"--enable-x-bookmarks",
+		"--enable-github-stars",
+		"--enable-youtube-watch-later",
+		"--enable-youtube-liked",
+		"--enable-feeds",
 		"--enable-apple-notes",
 		"--enable-safari-tabs",
+		"--safari-tabs-device", "test-phone",
 		"--enable-scheduler",
 		"--enable-tailscale",
 		"--tsnet-hostname", "dbrain-test",
@@ -1058,9 +1064,16 @@ func TestInstallCommandWritesBasePathConfigAndReportsDetectedTools(t *testing.T)
 	}
 	configText := string(raw)
 	for _, expected := range []string{
+		"sync_all:",
+		"x_bookmarks: true",
+		"github_stars: true",
+		"youtube_watch_later: true",
+		"youtube_liked: true",
+		"feeds: true",
 		"apple_notes:",
 		"enabled: true",
 		"safari_tabs:",
+		`device: "test-phone"`,
 		"scheduler:",
 		"tsnet:",
 		`hostname: "dbrain-test"`,
@@ -1103,6 +1116,141 @@ func TestInstallCommandWritesBasePathConfigAndReportsDetectedTools(t *testing.T)
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected install output to contain %q, got %q", expected, output)
 		}
+	}
+}
+
+func TestInstallCommandWritesExplicitDisabledImportPolicy(t *testing.T) {
+	clearSyncEnvForTest(t)
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--force",
+		"--no-detect",
+		"--no-keychain",
+		"--local-model-profile", "none",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(basePath, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	configText := string(raw)
+	for _, expected := range []string{
+		"x_bookmarks: false",
+		"github_stars: false",
+		"youtube_watch_later: false",
+		"youtube_liked: false",
+		"feeds: false",
+		"apple_notes: false",
+		"safari_tabs: false",
+		`browser: "chrome"`,
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected generated config to contain %q:\n%s", expected, configText)
+		}
+	}
+
+	resolved, err := resolveSyncAllFlags(basePath, syncAllFlags{watchLater: true, liked: true})
+	if err != nil {
+		t.Fatalf("resolve generated import policy: %v", err)
+	}
+	if !resolved.skipXBookmarks || !resolved.skipX || !resolved.skipXMedia || !resolved.skipXPhotoOCR || !resolved.skipGitHub || !resolved.skipYouTube || !resolved.skipFeeds {
+		t.Fatalf("fresh disabled policy did not suppress import stages: %+v", resolved)
+	}
+	if resolved.appleNotes || resolved.safariTabs || resolved.watchLater || resolved.liked {
+		t.Fatalf("fresh disabled policy unexpectedly enabled an importer: %+v", resolved)
+	}
+	if output := stdout.String(); !strings.Contains(output, "No import sources were selected") || !strings.Contains(output, "X bookmarks") || !strings.Contains(output, "disabled") {
+		t.Fatalf("install summary did not explain disabled imports: %q", output)
+	}
+}
+
+func TestInstallCommandReinstallPreservesImportSelectionsAndBrowser(t *testing.T) {
+	clearSyncEnvForTest(t)
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	runInstall := func(args ...string) {
+		t.Helper()
+		cmd := NewRootCommand()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(append([]string{
+			"--no-debug",
+			"install",
+			"--yes",
+			"--base-path", basePath,
+			"--no-detect",
+			"--no-keychain",
+			"--local-model-profile", "none",
+		}, args...))
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("install command: %v", err)
+		}
+	}
+
+	runInstall(
+		"--force",
+		"--enable-x-bookmarks",
+		"--enable-youtube-watch-later",
+		"--enable-feeds",
+		"--enable-apple-notes",
+		"--enable-safari-tabs",
+		"--safari-tabs-device", "phone",
+		"--enable-scheduler",
+		"--browser", "firefox",
+		"--profile", "research",
+	)
+	runInstall(
+		"--enable-github-stars",
+	)
+
+	raw, err := os.ReadFile(filepath.Join(basePath, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	configText := string(raw)
+	for _, expected := range []string{
+		"x_bookmarks: true",
+		"github_stars: true",
+		"youtube_watch_later: true",
+		"youtube_liked: false",
+		"feeds: true",
+		"apple_notes: true",
+		"safari_tabs: true",
+		`device: "phone"`,
+		`browser: "firefox"`,
+		`profile: "research"`,
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected reinstall to preserve/write %q:\n%s", expected, configText)
+		}
+	}
+	schedulerConfig, err := schedulerSyncConfigFromRuntime(basePath)
+	if err != nil {
+		t.Fatalf("read scheduler config: %v", err)
+	}
+	if !schedulerConfig.Enabled {
+		t.Fatal("expected reinstall to preserve scheduler.sync_all.enabled")
 	}
 }
 
@@ -3162,7 +3310,7 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 		"DBRAIN_APPLE_NOTES_TESSERACT_BINARY=/opt/bin/tesseract",
 		"DBRAIN_SAFARI_TABS_ENABLED=true",
 		"DBRAIN_SAFARI_TABS_DB_PATH=/tmp/cloudtabs.db",
-		"DBRAIN_SAFARI_TABS_DEVICE=dfone",
+		"DBRAIN_SAFARI_TABS_DEVICE=phone",
 		"DBRAIN_SAFARI_TABS_LIMIT=8",
 		"DBRAIN_SAFARI_TABS_OLDER_THAN=2h",
 		"DBRAIN_OKF_EXPORT_ENABLED=true",
@@ -3201,7 +3349,7 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 	if resolved.appleNotesAttachmentMaxBytes != 12345 || resolved.appleNotesTesseractBinary != "/opt/bin/tesseract" {
 		t.Fatalf("unexpected Apple Notes attachment settings: max=%d tesseract=%q", resolved.appleNotesAttachmentMaxBytes, resolved.appleNotesTesseractBinary)
 	}
-	if resolved.safariTabsDBPath != "/tmp/cloudtabs.db" || resolved.safariTabsDevice != "dfone" || resolved.safariTabsLimit != 8 || resolved.safariTabsOlderThan != 2*time.Hour {
+	if resolved.safariTabsDBPath != "/tmp/cloudtabs.db" || resolved.safariTabsDevice != "phone" || resolved.safariTabsLimit != 8 || resolved.safariTabsOlderThan != 2*time.Hour {
 		t.Fatalf("unexpected Safari tabs settings: db=%q device=%q limit=%d older=%s", resolved.safariTabsDBPath, resolved.safariTabsDevice, resolved.safariTabsLimit, resolved.safariTabsOlderThan)
 	}
 }
@@ -3293,6 +3441,15 @@ func clearSyncEnvForTest(t *testing.T) {
 		"DBRAIN_SAFARI_TABS_OLDER_THAN",
 		"DBRAIN_OKF_EXPORT_ENABLED",
 		"DBRAIN_SYNC_OKF_EXPORT",
+		"DBRAIN_SYNC_ALL_IMPORT_X_BOOKMARKS",
+		"DBRAIN_SYNC_ALL_IMPORT_GITHUB_STARS",
+		"DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_WATCH_LATER",
+		"DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_LIKED",
+		"DBRAIN_SYNC_ALL_IMPORT_FEEDS",
+		"DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES",
+		"DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS",
+		"DBRAIN_SYNC_ALL_BROWSER",
+		"DBRAIN_SYNC_ALL_PROFILE",
 		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR",
 		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE",
 	} {
@@ -3719,7 +3876,7 @@ func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
 		Duration:    time.Minute,
 		SafariTabs: &syncjob.SafariTabsStage{
 			Stats: safaritabs.Stats{
-				DeviceName:    "dfone",
+				DeviceName:    "phone",
 				TabsImported:  498,
 				TabsCreated:   1,
 				TabsUpdated:   2,
@@ -3737,7 +3894,7 @@ func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
 	}
 
 	output := dst.String()
-	for _, value := range []string{"Sync Summary", "Safari Tabs", "created=1 updated=2", "unchanged=495 rendered=498 skipped=2 links=492 device=dfone", "1"} {
+	for _, value := range []string{"Sync Summary", "Safari Tabs", "created=1 updated=2", "unchanged=495 rendered=498 skipped=2 links=492 device=phone", "1"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}

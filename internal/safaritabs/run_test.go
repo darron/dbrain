@@ -24,7 +24,7 @@ func TestRunImportsDeviceTabsAsItems(t *testing.T) {
 	createTestCloudTabsDB(t, cloudTabsPath, []testDevice{
 		{
 			UUID: "device-iphone",
-			Name: "dfone",
+			Name: "phone",
 			Type: "com.apple.iphone",
 			Tabs: []testTab{
 				{UUID: "tab-one", Title: "Example One", URL: "https://example.com/one", LastViewed: lastViewed},
@@ -52,7 +52,7 @@ func TestRunImportsDeviceTabsAsItems(t *testing.T) {
 
 	stats, err := Run(ctx, cfg, st, Options{
 		DBPath: cloudTabsPath,
-		Device: "dfone",
+		Device: "phone",
 	})
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -96,7 +96,7 @@ func TestRunSupportsOlderThanAndDryRun(t *testing.T) {
 	createTestCloudTabsDB(t, cloudTabsPath, []testDevice{
 		{
 			UUID: "device-iphone",
-			Name: "dfone",
+			Name: "phone",
 			Type: "com.apple.iphone",
 			Tabs: []testTab{
 				{UUID: "old-tab", Title: "Old", URL: "https://example.com/old", LastViewed: now.Add(-14 * 24 * time.Hour)},
@@ -108,7 +108,7 @@ func TestRunSupportsOlderThanAndDryRun(t *testing.T) {
 
 	stats, err := Run(ctx, cfg, nil, Options{
 		DBPath:     cloudTabsPath,
-		Device:     "dfone",
+		Device:     "phone",
 		OlderThan:  7 * 24 * time.Hour,
 		DryRun:     true,
 		ShowTitles: true,
