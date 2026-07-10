@@ -183,6 +183,10 @@ Common entry points:
 - `dbrain get <source-key-or-id>`
 - `dbrain config env`
 
+On an empty brain, human-facing `dbrain sync all` prints the resolved
+first-sync plan and asks for confirmation before unbounded imports such as all X
+bookmarks or all GitHub stars.
+
 ## Safety And Trust Model
 
 `dbrain` is local-first, but it stores high-signal personal data. Treat

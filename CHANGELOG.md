@@ -7,6 +7,9 @@ development date for the change set.
 
 ### Installer Local Model Profiles (2026-07-09)
 
+- **CLI**: `dbrain sync all` now prints a first-sync plan for an empty brain and
+  asks for confirmation before starting unbounded external imports such as all
+  X bookmarks or all GitHub stars in an interactive terminal.
 - **Fixed**: Fresh installs now apply detected local model defaults before the
   interactive/noninteractive split. When the Ollama CLI is present, plain
   install now defaults to the dbrain Ollama profile and creates

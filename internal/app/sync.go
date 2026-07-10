@@ -83,6 +83,13 @@ func newSyncAllCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 			options.Metrics = metricsRun
+			proceed, err := confirmInitialSyncPlanIfNeeded(cmd.Context(), cmd, st, options, resolvedFlags.jsonOut)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
+			}
 			stats, err := runSyncAll(cmd.Context(), cfg, st, options)
 			if err != nil {
 				return err

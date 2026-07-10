@@ -344,6 +344,11 @@ Feeds are enabled in `sync all` by default. If no feeds are subscribed or due,
 the feed stage reports that there is no feed work. Use `--skip-feeds` to skip
 the stage or `--feed-limit` to cap checks in one run.
 
+On an empty brain, human-facing `sync all` prints the resolved first-sync plan
+before external import work starts. If the plan includes unbounded imports such
+as all X bookmarks or all GitHub stars, an interactive terminal asks for
+confirmation before proceeding. Non-interactive and `--json` runs do not prompt.
+
 ```sh
 dbrain sync all --length short --timeout 5m
 dbrain sync all --apple-notes --length short --timeout 5m
