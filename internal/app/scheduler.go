@@ -167,6 +167,7 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 	flags.skipYouTube = schedulerBool(rootDir, "SKIP_YOUTUBE")
 	flags.skipAppleNotes = schedulerBool(rootDir, "SKIP_APPLE_NOTES")
 	flags.skipSafariTabs = schedulerBool(rootDir, "SKIP_SAFARI_TABS")
+	flags.skipFeeds = schedulerBool(rootDir, "SKIP_FEEDS")
 	flags.skipSources = schedulerBool(rootDir, "SKIP_SOURCES")
 	flags.skipCategorize = schedulerBool(rootDir, "SKIP_CATEGORIZE")
 	flags.skipOKFExport = schedulerBool(rootDir, "SKIP_OKF_EXPORT")

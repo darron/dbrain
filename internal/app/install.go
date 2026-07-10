@@ -20,28 +20,36 @@ import (
 )
 
 type installFlags struct {
-	basePath          string
-	yes               bool
-	force             bool
-	dryRun            bool
-	noDetect          bool
-	noKeychain        bool
-	enableAppleNotes  bool
-	enableSafariTabs  bool
-	enableScheduler   bool
-	enableTailscale   bool
-	tsnetHostname     string
-	enableGitHubLogin bool
-	authBaseURL       string
-	githubClientID    string
-	localModelProfile string
-	summaryModel      string
-	categorizeModel   string
-	ocrModel          string
-	installLaunchd    bool
-	startLaunchd      bool
-	launchdLabel      string
-	launchdBinPath    string
+	basePath                string
+	yes                     bool
+	force                   bool
+	dryRun                  bool
+	noDetect                bool
+	noKeychain              bool
+	enableXBookmarks        bool
+	enableGitHubStars       bool
+	enableYouTubeWatchLater bool
+	enableYouTubeLiked      bool
+	enableFeeds             bool
+	enableAppleNotes        bool
+	enableSafariTabs        bool
+	safariTabsDevice        string
+	syncBrowser             string
+	syncProfile             string
+	enableScheduler         bool
+	enableTailscale         bool
+	tsnetHostname           string
+	enableGitHubLogin       bool
+	authBaseURL             string
+	githubClientID          string
+	localModelProfile       string
+	summaryModel            string
+	categorizeModel         string
+	ocrModel                string
+	installLaunchd          bool
+	startLaunchd            bool
+	launchdLabel            string
+	launchdBinPath          string
 }
 
 const (
@@ -66,7 +74,7 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Run first-time local dbrain setup",
-		Long:  "Run first-time local dbrain setup. The installer creates the resolved config/data/vault/log layout, detects local helper tools, writes a config file from the bundled sample, optionally stores supplied secrets in macOS Keychain, and can prepare scheduler config.",
+		Long:  "Run first-time local dbrain setup. The installer creates the resolved config/data/vault/log layout, detects local helper tools, records explicit sync all import selections, safely merges managed settings into an existing config, optionally stores supplied secrets in macOS Keychain, and can prepare scheduler config.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateInstallModelProfile(flags.localModelProfile); err != nil {
@@ -87,6 +95,19 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 			}
 
 			selections := defaultInstallSelections(flags, tools)
+			if !flags.force {
+				existingConfig, readErr := os.ReadFile(cfg.ConfigPath)
+				switch {
+				case readErr == nil:
+					selections, err = installer.SeedSelectionsFromConfig(selections, existingConfig)
+					if err != nil {
+						return fmt.Errorf("read install selections from %s: %w", cfg.ConfigPath, err)
+					}
+					applyExplicitInstallSelectionFlags(cmd, flags, &selections)
+				case !errors.Is(readErr, os.ErrNotExist):
+					return fmt.Errorf("read existing config %s: %w", cfg.ConfigPath, readErr)
+				}
+			}
 			if shouldPromptInstall(cmd, flags.yes) {
 				if err := promptInstallSelections(cmd, &selections, tools); err != nil {
 					return err
@@ -126,8 +147,16 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Show planned setup without writing files")
 	cmd.Flags().BoolVar(&flags.noDetect, "no-detect", false, "Skip local helper and model endpoint detection")
 	cmd.Flags().BoolVar(&flags.noKeychain, "no-keychain", false, "Do not store prompted secrets in macOS Keychain")
-	cmd.Flags().BoolVar(&flags.enableAppleNotes, "enable-apple-notes", false, "Enable Apple Notes imports in config and scheduled sync")
-	cmd.Flags().BoolVar(&flags.enableSafariTabs, "enable-safari-tabs", false, "Enable Safari tab imports in config and scheduled sync")
+	cmd.Flags().BoolVar(&flags.enableXBookmarks, "enable-x-bookmarks", false, "Include X bookmarks and related X enrichment in sync all")
+	cmd.Flags().BoolVar(&flags.enableGitHubStars, "enable-github-stars", false, "Include GitHub starred repositories in sync all")
+	cmd.Flags().BoolVar(&flags.enableYouTubeWatchLater, "enable-youtube-watch-later", false, "Include YouTube Watch Later in sync all")
+	cmd.Flags().BoolVar(&flags.enableYouTubeLiked, "enable-youtube-liked", false, "Include liked YouTube videos in sync all")
+	cmd.Flags().BoolVar(&flags.enableFeeds, "enable-feeds", false, "Include subscribed RSS, Atom, and JSON feeds in sync all")
+	cmd.Flags().BoolVar(&flags.enableAppleNotes, "enable-apple-notes", false, "Include Apple Notes imports in sync all")
+	cmd.Flags().BoolVar(&flags.enableSafariTabs, "enable-safari-tabs", false, "Include Safari tab imports in sync all")
+	cmd.Flags().StringVar(&flags.safariTabsDevice, "safari-tabs-device", "", "Safari iCloud device name or UUID for selected Safari tab imports")
+	cmd.Flags().StringVar(&flags.syncBrowser, "browser", "", "Browser for selected cookie-backed X and YouTube imports; defaults to the existing sync_all.browser or chrome")
+	cmd.Flags().StringVar(&flags.syncProfile, "profile", "", "Optional browser profile for selected cookie-backed imports")
 	cmd.Flags().BoolVar(&flags.enableScheduler, "enable-scheduler", false, "Enable scheduler.sync_all in config")
 	cmd.Flags().BoolVar(&flags.enableTailscale, "enable-tailscale", false, "Configure built-in tsnet/Tailscale transport settings")
 	cmd.Flags().StringVar(&flags.tsnetHostname, "tsnet-hostname", "dbrain", "Tailscale machine hostname for built-in tsnet")
@@ -229,22 +258,70 @@ func defaultInstallSelections(flags installFlags, tools []installer.Tool) instal
 		ocrModel = "tesseract"
 	}
 	selections := installer.Selections{
-		EnableAppleNotes:  flags.enableAppleNotes,
-		EnableSafariTabs:  flags.enableSafariTabs,
-		EnableScheduler:   flags.enableScheduler,
-		EnableTailscale:   flags.enableTailscale,
-		TSNetHostname:     strings.TrimSpace(flags.tsnetHostname),
-		EnableGitHubLogin: flags.enableGitHubLogin,
-		AuthBaseURL:       strings.TrimSpace(flags.authBaseURL),
-		GitHubClientID:    strings.TrimSpace(flags.githubClientID),
-		UseKeychain:       runtime.GOOS == "darwin" && !flags.noKeychain,
-		SummaryModel:      summaryModel,
-		CategorizeModel:   categorizeModel,
-		OCRModel:          ocrModel,
-		Secrets:           map[installer.SecretKind]string{},
+		ImportXBookmarks:        flags.enableXBookmarks,
+		ImportGitHubStars:       flags.enableGitHubStars,
+		ImportYouTubeWatchLater: flags.enableYouTubeWatchLater,
+		ImportYouTubeLiked:      flags.enableYouTubeLiked,
+		ImportFeeds:             flags.enableFeeds,
+		EnableAppleNotes:        flags.enableAppleNotes,
+		EnableSafariTabs:        flags.enableSafariTabs,
+		SafariTabsDevice:        strings.TrimSpace(flags.safariTabsDevice),
+		SyncBrowser:             strings.TrimSpace(flags.syncBrowser),
+		SyncProfile:             strings.TrimSpace(flags.syncProfile),
+		EnableScheduler:         flags.enableScheduler,
+		EnableTailscale:         flags.enableTailscale,
+		TSNetHostname:           strings.TrimSpace(flags.tsnetHostname),
+		EnableGitHubLogin:       flags.enableGitHubLogin,
+		AuthBaseURL:             strings.TrimSpace(flags.authBaseURL),
+		GitHubClientID:          strings.TrimSpace(flags.githubClientID),
+		UseKeychain:             runtime.GOOS == "darwin" && !flags.noKeychain,
+		SummaryModel:            summaryModel,
+		CategorizeModel:         categorizeModel,
+		OCRModel:                ocrModel,
+		Secrets:                 map[installer.SecretKind]string{},
 	}
 	applyUnavailableHostedStageDefaults(&selections)
 	return selections
+}
+
+func applyExplicitInstallSelectionFlags(cmd *cobra.Command, flags installFlags, selections *installer.Selections) {
+	if cmd == nil || selections == nil {
+		return
+	}
+	changed := cmd.Flags().Changed
+	if changed("enable-x-bookmarks") {
+		selections.ImportXBookmarks = flags.enableXBookmarks
+	}
+	if changed("enable-github-stars") {
+		selections.ImportGitHubStars = flags.enableGitHubStars
+	}
+	if changed("enable-youtube-watch-later") {
+		selections.ImportYouTubeWatchLater = flags.enableYouTubeWatchLater
+	}
+	if changed("enable-youtube-liked") {
+		selections.ImportYouTubeLiked = flags.enableYouTubeLiked
+	}
+	if changed("enable-feeds") {
+		selections.ImportFeeds = flags.enableFeeds
+	}
+	if changed("enable-apple-notes") {
+		selections.EnableAppleNotes = flags.enableAppleNotes
+	}
+	if changed("enable-safari-tabs") {
+		selections.EnableSafariTabs = flags.enableSafariTabs
+	}
+	if changed("safari-tabs-device") {
+		selections.SafariTabsDevice = strings.TrimSpace(flags.safariTabsDevice)
+	}
+	if changed("browser") {
+		selections.SyncBrowser = strings.TrimSpace(flags.syncBrowser)
+	}
+	if changed("profile") {
+		selections.SyncProfile = strings.TrimSpace(flags.syncProfile)
+	}
+	if changed("enable-scheduler") {
+		selections.EnableScheduler = flags.enableScheduler
+	}
 }
 
 func defaultInstallLocalModelProfile(flags installFlags, tools []installer.Tool) string {
@@ -270,13 +347,29 @@ func shouldPromptInstall(cmd *cobra.Command, yes bool) bool {
 }
 
 func promptInstallSelections(cmd *cobra.Command, selections *installer.Selections, tools []installer.Tool) error {
-	features := []string{}
+	imports := []string{}
+	if selections.ImportXBookmarks {
+		imports = append(imports, "x_bookmarks")
+	}
+	if selections.ImportGitHubStars {
+		imports = append(imports, "github_stars")
+	}
+	if selections.ImportYouTubeWatchLater {
+		imports = append(imports, "youtube_watch_later")
+	}
+	if selections.ImportYouTubeLiked {
+		imports = append(imports, "youtube_liked")
+	}
+	if selections.ImportFeeds {
+		imports = append(imports, "feeds")
+	}
 	if selections.EnableAppleNotes {
-		features = append(features, "apple_notes")
+		imports = append(imports, "apple_notes")
 	}
 	if selections.EnableSafariTabs {
-		features = append(features, "safari_tabs")
+		imports = append(imports, "safari_tabs")
 	}
+	features := []string{}
 	if selections.EnableScheduler {
 		features = append(features, "scheduler")
 	}
@@ -298,26 +391,44 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 				Title("dbrain install").
 				Description(installToolSummary(tools)),
 			huh.NewMultiSelect[string]().
-				Title("Imports and background work").
+				Title("What should dbrain import during sync all?").
 				Options(
+					huh.NewOption("X bookmarks (including hydration and media)", "x_bookmarks").Selected(selections.ImportXBookmarks),
+					huh.NewOption("GitHub starred repositories", "github_stars").Selected(selections.ImportGitHubStars),
+					huh.NewOption("YouTube Watch Later", "youtube_watch_later").Selected(selections.ImportYouTubeWatchLater),
+					huh.NewOption("Liked YouTube videos", "youtube_liked").Selected(selections.ImportYouTubeLiked),
+					huh.NewOption("RSS, Atom, and JSON feeds", "feeds").Selected(selections.ImportFeeds),
 					huh.NewOption("Apple Notes import", "apple_notes").Selected(selections.EnableAppleNotes),
 					huh.NewOption("Safari tabs import", "safari_tabs").Selected(selections.EnableSafariTabs),
+				).
+				Value(&imports),
+		),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Browser for X and YouTube").
+				Description("Used for cookie-backed imports.").
+				Placeholder("chrome").
+				Value(&selections.SyncBrowser),
+			huh.NewInput().
+				Title("Browser profile").
+				Description("Optional profile name or path for the selected browser.").
+				Value(&selections.SyncProfile),
+		).WithHideFunc(func() bool { return !browserBackedImportSelected(imports) }),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Safari tabs device").
+				Description("Required for Safari tab imports; use a device name or UUID.").
+				Value(&selections.SafariTabsDevice),
+		).WithHideFunc(func() bool { return !containsString(imports, "safari_tabs") }),
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Background work and remote access").
+				Options(
 					huh.NewOption("Scheduled sync all", "scheduler").Selected(selections.EnableScheduler),
 					huh.NewOption("Tailscale remote access", "tailscale").Selected(selections.EnableTailscale),
 					huh.NewOption("GitHub web login", "github_login").Selected(selections.EnableGitHubLogin),
 				).
 				Value(&features),
-			huh.NewInput().
-				Title("Tailscale hostname").
-				Placeholder("dbrain").
-				Value(&selections.TSNetHostname),
-			huh.NewInput().
-				Title("GitHub auth base URL").
-				Placeholder("https://dbrain.example.ts.net").
-				Value(&selections.AuthBaseURL),
-			huh.NewInput().
-				Title("GitHub OAuth client ID").
-				Value(&selections.GitHubClientID),
 			huh.NewInput().
 				Title("Summary model").
 				Description("Default prefers detected dbrain profiles; use small-ollama for lower memory.").
@@ -333,38 +444,64 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 				Value(&selections.OCRModel),
 		),
 		huh.NewGroup(
+			huh.NewInput().
+				Title("Tailscale hostname").
+				Placeholder("dbrain").
+				Value(&selections.TSNetHostname),
+		).WithHideFunc(func() bool { return !containsString(features, "tailscale") }),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("GitHub auth base URL").
+				Placeholder("https://dbrain.example.ts.net").
+				Value(&selections.AuthBaseURL),
+			huh.NewInput().
+				Title("GitHub OAuth client ID").
+				Value(&selections.GitHubClientID),
+		).WithHideFunc(func() bool { return !containsString(features, "github_login") }),
+		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Store entered secrets in macOS Keychain?").
 				Description("Secret refs are written to config as keychain://dbrain/<account>. Blank fields reuse existing Keychain entries when present.").
 				Value(&useKeychain),
 			huh.NewInput().
-				Title("GitHub token").
-				Description("Optional. Used for GitHub star imports.").
-				EchoMode(huh.EchoModePassword).
-				Value(&githubToken),
-			huh.NewInput().
 				Title("OpenRouter API key").
 				Description("Optional. Used for hosted LLM/OCR/categorization.").
 				EchoMode(huh.EchoModePassword).
 				Value(&openRouterKey),
+		),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("GitHub token").
+				Description("Required for GitHub star imports.").
+				EchoMode(huh.EchoModePassword).
+				Value(&githubToken),
+		).WithHideFunc(func() bool { return !containsString(imports, "github_stars") }),
+		huh.NewGroup(
 			huh.NewInput().
 				Title("Tailscale auth key").
 				Description("Optional. Used for unattended tsnet startup.").
 				EchoMode(huh.EchoModePassword).
 				Value(&tsnetKey),
+		).WithHideFunc(func() bool { return !containsString(features, "tailscale") }),
+		huh.NewGroup(
 			huh.NewInput().
 				Title("GitHub OAuth client secret").
 				Description("Optional. Used when GitHub web login is enabled.").
 				EchoMode(huh.EchoModePassword).
 				Value(&githubClientSecret),
-		),
+		).WithHideFunc(func() bool { return !containsString(features, "github_login") }),
 	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
 	if err := normalizeInstallPromptError(form.Run()); err != nil {
 		return err
 	}
 
-	selections.EnableAppleNotes = containsString(features, "apple_notes")
-	selections.EnableSafariTabs = containsString(features, "safari_tabs")
+	selections.ImportXBookmarks = containsString(imports, "x_bookmarks")
+	selections.ImportGitHubStars = containsString(imports, "github_stars")
+	selections.ImportYouTubeWatchLater = containsString(imports, "youtube_watch_later")
+	selections.ImportYouTubeLiked = containsString(imports, "youtube_liked")
+	selections.ImportFeeds = containsString(imports, "feeds")
+	selections.EnableAppleNotes = containsString(imports, "apple_notes")
+	selections.EnableSafariTabs = containsString(imports, "safari_tabs")
 	selections.EnableScheduler = containsString(features, "scheduler")
 	selections.EnableTailscale = containsString(features, "tailscale")
 	selections.EnableGitHubLogin = containsString(features, "github_login")
@@ -570,6 +707,12 @@ func containsString(values []string, needle string) bool {
 	return false
 }
 
+func browserBackedImportSelected(imports []string) bool {
+	return containsString(imports, "x_bookmarks") ||
+		containsString(imports, "youtube_watch_later") ||
+		containsString(imports, "youtube_liked")
+}
+
 func installToolSummary(tools []installer.Tool) string {
 	available := []string{}
 	for _, tool := range tools {
@@ -592,6 +735,19 @@ func printInstallResult(w io.Writer, result installer.Result, selections install
 	_, _ = fmt.Fprintln(w, titleStyle.Render("dbrain install complete"))
 	_, _ = fmt.Fprintf(w, "Config: %s\n", result.ConfigPath)
 	_, _ = fmt.Fprintf(w, "Categories: %s\n\n", result.CategoriesPath)
+
+	imports := table.New().
+		Headers("Import source", "sync all").
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("240")))
+	for _, entry := range installImportSummary(selections) {
+		status := "disabled"
+		if entry.enabled {
+			status = "enabled"
+		}
+		imports.Row(entry.name, status)
+	}
+	_, _ = fmt.Fprintln(w, imports.Render())
 
 	if len(result.Changes) > 0 {
 		changes := table.New().
@@ -638,6 +794,23 @@ func printInstallResult(w io.Writer, result installer.Result, selections install
 	}
 	if selections.EnableGitHubLogin {
 		_, _ = fmt.Fprintln(w, "GitHub login enabled in config under auth.*.")
+	}
+}
+
+type installImportSummaryEntry struct {
+	name    string
+	enabled bool
+}
+
+func installImportSummary(selections installer.Selections) []installImportSummaryEntry {
+	return []installImportSummaryEntry{
+		{name: "X bookmarks", enabled: selections.ImportXBookmarks},
+		{name: "GitHub stars", enabled: selections.ImportGitHubStars},
+		{name: "YouTube Watch Later", enabled: selections.ImportYouTubeWatchLater},
+		{name: "Liked YouTube videos", enabled: selections.ImportYouTubeLiked},
+		{name: "RSS/Atom/JSON feeds", enabled: selections.ImportFeeds},
+		{name: "Apple Notes", enabled: selections.EnableAppleNotes},
+		{name: "Safari tabs", enabled: selections.EnableSafariTabs},
 	}
 }
 

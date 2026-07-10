@@ -1020,7 +1020,7 @@ func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
 		if opts.DryRun {
 			t.Fatal("expected sync Safari Tabs import to write by default")
 		}
-		if opts.DBPath != "/tmp/CloudTabs.db" || opts.Device != "dfone" {
+		if opts.DBPath != "/tmp/CloudTabs.db" || opts.Device != "phone" {
 			t.Fatalf("unexpected Safari Tabs source options: %+v", opts)
 		}
 		if opts.Limit != 25 || opts.OlderThan != 7*24*time.Hour {
@@ -1034,11 +1034,11 @@ func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
 			Phase:     "imported",
 			Index:     1,
 			Total:     2,
-			SourceKey: "safari-tab:dfone:test",
+			SourceKey: "safari-tab:phone:test",
 			Status:    "created",
 			Rendered:  true,
 		})
-		return safaritabs.Stats{DeviceName: "dfone", TabsSeen: 2, TabsMatched: 1, TabsImported: 1, TabsCreated: 1, TabsRendered: 1, LinksFound: 1}, nil
+		return safaritabs.Stats{DeviceName: "phone", TabsSeen: 2, TabsMatched: 1, TabsImported: 1, TabsCreated: 1, TabsRendered: 1, LinksFound: 1}, nil
 	}
 	runLinkExtract = func(_ context.Context, _ config.Config, _ *store.Store, _ linkextract.Options) (linkextract.Stats, error) {
 		calls = append(calls, "links")
@@ -1049,7 +1049,7 @@ func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
 	stats, err := Run(context.Background(), cfg, st, Options{
 		SafariTabsEnabled:   true,
 		SafariTabsDBPath:    "/tmp/CloudTabs.db",
-		SafariTabsDevice:    "dfone",
+		SafariTabsDevice:    "phone",
 		SafariTabsLimit:     25,
 		SafariTabsOlderThan: 7 * 24 * time.Hour,
 		LinksEnabled:        true,
@@ -1065,7 +1065,7 @@ func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
 		t.Fatalf("expected Safari Tabs stage stats, got %+v", stats.SafariTabs)
 	}
 	output := progress.String()
-	for _, value := range []string{"==> import safari-tabs", "Safari tabs loaded: candidates=2", "Safari Tab 1/2 imported source=safari-tab:dfone:test status=created rendered=true", "Safari Tabs import complete: device=dfone seen=2 matched=1 created=1 updated=0 unchanged=0 rendered=1 skipped=0 links=1 errors=0", "==> extract links"} {
+	for _, value := range []string{"==> import safari-tabs", "Safari tabs loaded: candidates=2", "Safari Tab 1/2 imported source=safari-tab:phone:test status=created rendered=true", "Safari Tabs import complete: device=phone seen=2 matched=1 created=1 updated=0 unchanged=0 rendered=1 skipped=0 links=1 errors=0", "==> extract links"} {
 		if !bytes.Contains([]byte(output), []byte(value)) {
 			t.Fatalf("expected progress output to contain %q, got %q", value, output)
 		}

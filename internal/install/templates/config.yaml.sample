@@ -85,6 +85,18 @@ source:
 feeds:
   allow_private_network: false # DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK; enable only for local feed testing
 
+sync_all:
+  browser: "chrome" # DBRAIN_SYNC_ALL_BROWSER; shared browser for cookie-backed X and YouTube imports
+  profile: "" # DBRAIN_SYNC_ALL_PROFILE; optional shared browser profile
+  imports:
+    x_bookmarks: true # DBRAIN_SYNC_ALL_IMPORT_X_BOOKMARKS
+    github_stars: true # DBRAIN_SYNC_ALL_IMPORT_GITHUB_STARS
+    youtube_watch_later: true # DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_WATCH_LATER
+    youtube_liked: true # DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_LIKED
+    feeds: true # DBRAIN_SYNC_ALL_IMPORT_FEEDS
+    apple_notes: false # DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES; falls back to apple_notes.enabled when omitted
+    safari_tabs: false # DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS; falls back to safari_tabs.enabled when omitted
+
 apple_notes:
   enabled: false # DBRAIN_APPLE_NOTES_ENABLED; opt into sync all
   db_path: "" # DBRAIN_APPLE_NOTES_DB_PATH; default is ~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite
@@ -99,7 +111,7 @@ apple_notes:
 safari_tabs:
   enabled: false # DBRAIN_SAFARI_TABS_ENABLED; opt into sync all
   db_path: "" # DBRAIN_SAFARI_TABS_DB_PATH; default is ~/Library/Containers/com.apple.Safari/Data/Library/Safari/CloudTabs.db
-  device: "" # DBRAIN_SAFARI_TABS_DEVICE; device name or UUID, for example dfone
+  device: "" # DBRAIN_SAFARI_TABS_DEVICE; device name or UUID, for example phone
   limit: 0 # DBRAIN_SAFARI_TABS_LIMIT; 0 imports all matching tabs
   older_than: "" # DBRAIN_SAFARI_TABS_OLDER_THAN; optional duration, for example 168h
 
@@ -148,6 +160,7 @@ scheduler:
     skip_links: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_LINKS
     skip_apple_notes: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_APPLE_NOTES; useful when launchd lacks Full Disk Access
     skip_safari_tabs: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SAFARI_TABS
+    skip_feeds: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_FEEDS
     skip_github: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_GITHUB
     skip_youtube: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE
     skip_sources: false # DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SOURCES

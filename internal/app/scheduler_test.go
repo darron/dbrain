@@ -38,6 +38,7 @@ scheduler:
     skip_github: true
     skip_youtube: true
     skip_x_bookmarks: true
+    skip_feeds: true
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -61,7 +62,7 @@ scheduler:
 	if got.Flags.categorizeConcurrency != 1 || got.Flags.categorizeTimeout != 42*time.Second {
 		t.Fatalf("unexpected categorize controls: %+v", got.Flags)
 	}
-	if !got.Flags.skipAppleNotes || !got.Flags.skipGitHub || !got.Flags.skipYouTube || !got.Flags.skipXBookmarks {
+	if !got.Flags.skipAppleNotes || !got.Flags.skipGitHub || !got.Flags.skipYouTube || !got.Flags.skipXBookmarks || !got.Flags.skipFeeds {
 		t.Fatalf("expected skip flags from config, got %+v", got.Flags)
 	}
 	if !got.Flags.okfExport {
@@ -123,6 +124,58 @@ func TestRunScheduledSyncAllUsesSyncOptions(t *testing.T) {
 	}
 	if !captured.OKFExportEnabled {
 		t.Fatalf("expected OKF export enabled")
+	}
+}
+
+func TestRunScheduledSyncAllUsesSharedImportPolicy(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+sync_all:
+  imports:
+    x_bookmarks: false
+    github_stars: false
+    youtube_watch_later: true
+    youtube_liked: false
+    feeds: false
+    apple_notes: true
+    safari_tabs: false
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	defer func() {
+		runSyncAll = oldRunSyncAll
+	}()
+
+	var captured syncjob.Options
+	runSyncAll = func(_ context.Context, _ config.Config, _ *store.Store, opts syncjob.Options) (syncjob.Stats, error) {
+		captured = opts
+		return syncjob.Stats{StartedAt: time.Now().UTC(), CompletedAt: time.Now().UTC()}, nil
+	}
+
+	if err := runScheduledSyncAll(context.Background(), cfg, syncAllFlags{
+		skipCategorize: true,
+		skipLinks:      true,
+		skipSources:    true,
+	}, io.Discard); err != nil {
+		t.Fatalf("runScheduledSyncAll: %v", err)
+	}
+	if captured.XBookmarksEnabled || captured.XEnabled || captured.XMediaEnabled || captured.XPhotoOCREnabled || captured.GitHubEnabled || captured.FeedsEnabled {
+		t.Fatalf("shared import policy did not disable scheduled stages: %+v", captured)
+	}
+	if !captured.YouTubeEnabled || !captured.WatchLater || captured.Liked {
+		t.Fatalf("shared YouTube selection was not applied to scheduled sync: %+v", captured)
+	}
+	if !captured.AppleNotesEnabled || captured.SafariTabsEnabled {
+		t.Fatalf("shared local import selection was not applied to scheduled sync: %+v", captured)
 	}
 }
 

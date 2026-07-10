@@ -61,15 +61,31 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return result, err
 	}
 	opts.Selections = applySecretRefsToSelections(opts.Selections, secretRefs)
-	result.Warnings = append(result.Warnings, selectionWarnings(opts.Selections)...)
 	result.Warnings = append(result.Warnings, warnings...)
 
-	configData, err := buildConfig(opts.ConfigTemplate, opts.Selections, opts.Tools, secretRefs)
+	configTemplate := opts.ConfigTemplate
+	mergeExistingConfig := false
+	if !opts.Force {
+		if _, statErr := fsys.Stat(cfg.ConfigPath); statErr == nil {
+			existingConfig, readErr := fsys.ReadFile(cfg.ConfigPath)
+			if readErr != nil {
+				return result, fmt.Errorf("read existing config %s: %w", cfg.ConfigPath, readErr)
+			}
+			configTemplate = existingConfig
+			mergeExistingConfig = true
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return result, fmt.Errorf("stat %s: %w", cfg.ConfigPath, statErr)
+		}
+	}
+	opts.Selections = applyExistingConfigToSelections(opts.Selections, configTemplate)
+
+	configData, err := buildConfig(configTemplate, opts.Selections, opts.Tools, secretRefs)
 	if err != nil {
 		return result, err
 	}
+	result.Warnings = append(result.Warnings, selectionWarnings(opts.Selections, opts.Tools)...)
 
-	if change, err := writeManagedFile(fsys, cfg.ConfigPath, configData, 0o600, opts.Force, opts.DryRun); err != nil {
+	if change, err := writeManagedFile(fsys, cfg.ConfigPath, configData, 0o600, opts.Force || mergeExistingConfig, opts.DryRun); err != nil {
 		return result, err
 	} else {
 		result.Changes = append(result.Changes, change)
@@ -231,7 +247,9 @@ func storeSecretRefs(ctx context.Context, opts Options) (map[SecretKind]string, 
 
 func shouldReuseExistingKeychainSecret(selections Selections, kind SecretKind) bool {
 	switch kind {
-	case SecretGitHubToken, SecretOpenRouterAPIKey:
+	case SecretGitHubToken:
+		return selections.ImportGitHubStars
+	case SecretOpenRouterAPIKey:
 		return true
 	case SecretTSNetAuthKey:
 		return selections.EnableTailscale
@@ -243,6 +261,7 @@ func shouldReuseExistingKeychainSecret(selections Selections, kind SecretKind) b
 }
 
 func applySecretRefsToSelections(selections Selections, refs map[SecretKind]string) Selections {
+	selections.GitHubTokenConfigured = strings.TrimSpace(refs[SecretGitHubToken]) != ""
 	if strings.TrimSpace(refs[SecretOpenRouterAPIKey]) != "" {
 		if strings.TrimSpace(selections.OCRModel) == "" {
 			selections.SkipXPhotoOCR = false
@@ -254,9 +273,39 @@ func applySecretRefsToSelections(selections Selections, refs map[SecretKind]stri
 	return selections
 }
 
-func selectionWarnings(selections Selections) []string {
+func applyExistingConfigToSelections(selections Selections, configTemplate []byte) Selections {
+	if configHasNonEmptyScalar(configTemplate, "github", "token") {
+		selections.GitHubTokenConfigured = true
+	}
+	if configHasNonEmptyScalar(configTemplate, "openrouter", "api_key") {
+		if strings.TrimSpace(selections.OCRModel) == "" {
+			selections.SkipXPhotoOCR = false
+		}
+		if strings.TrimSpace(selections.CategorizeModel) == "" {
+			selections.SkipCategorize = false
+		}
+	}
+	return selections
+}
+
+func selectionWarnings(selections Selections, tools []Tool) []string {
 	warnings := []string{}
-	if selections.SkipXPhotoOCR {
+	if !anyImportSelected(selections) {
+		warnings = append(warnings, "No import sources were selected; sync all will only process existing local backlog.")
+	}
+	if selections.ImportGitHubStars && !selections.GitHubTokenConfigured {
+		warnings = append(warnings, "GitHub stars are selected but no GitHub token is configured.")
+	}
+	if selections.EnableSafariTabs && strings.TrimSpace(selections.SafariTabsDevice) == "" {
+		warnings = append(warnings, "Safari tabs are selected but safari_tabs.device is empty.")
+	}
+	if selections.ImportXBookmarks && len(tools) > 0 {
+		missing := missingTools(tools, ToolMacWhisper, ToolFFprobe, ToolYTDLP)
+		if len(missing) > 0 {
+			warnings = append(warnings, "X bookmarks are selected but recommended media tools are missing: "+strings.Join(missing, ", ")+".")
+		}
+	}
+	if selections.ImportXBookmarks && selections.SkipXPhotoOCR {
 		warnings = append(warnings, "X photo OCR is disabled because no OCR model or OpenRouter API key was configured.")
 	}
 	if selections.SkipCategorize {
@@ -273,6 +322,43 @@ func selectionWarnings(selections Selections) []string {
 		return append(warnings, "auth.base_url is not HTTPS; GitHub OAuth callbacks for remote access should use an HTTPS URL.")
 	}
 	return warnings
+}
+
+func anyImportSelected(selections Selections) bool {
+	return selections.ImportXBookmarks ||
+		selections.ImportGitHubStars ||
+		selections.ImportYouTubeWatchLater ||
+		selections.ImportYouTubeLiked ||
+		selections.ImportFeeds ||
+		selections.EnableAppleNotes ||
+		selections.EnableSafariTabs
+}
+
+func missingTools(tools []Tool, ids ...ToolID) []string {
+	wanted := make(map[ToolID]bool, len(ids))
+	labels := make(map[ToolID]string, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	for _, tool := range tools {
+		if strings.TrimSpace(tool.Name) != "" {
+			labels[tool.ID] = strings.TrimSpace(tool.Name)
+		}
+		if tool.Available {
+			delete(wanted, tool.ID)
+		}
+	}
+	names := make([]string, 0, len(wanted))
+	for _, id := range ids {
+		if wanted[id] {
+			name := labels[id]
+			if name == "" {
+				name = string(id)
+			}
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func generateSessionKey() (string, error) {

@@ -55,21 +55,30 @@ const (
 )
 
 type Selections struct {
-	EnableAppleNotes  bool
-	EnableSafariTabs  bool
-	EnableScheduler   bool
-	EnableTailscale   bool
-	TSNetHostname     string
-	EnableGitHubLogin bool
-	AuthBaseURL       string
-	GitHubClientID    string
-	UseKeychain       bool
-	SummaryModel      string
-	CategorizeModel   string
-	OCRModel          string
-	SkipXPhotoOCR     bool
-	SkipCategorize    bool
-	Secrets           map[SecretKind]string
+	ImportXBookmarks        bool
+	ImportGitHubStars       bool
+	ImportYouTubeWatchLater bool
+	ImportYouTubeLiked      bool
+	ImportFeeds             bool
+	EnableAppleNotes        bool
+	EnableSafariTabs        bool
+	SafariTabsDevice        string
+	SyncBrowser             string
+	SyncProfile             string
+	EnableScheduler         bool
+	EnableTailscale         bool
+	TSNetHostname           string
+	EnableGitHubLogin       bool
+	AuthBaseURL             string
+	GitHubClientID          string
+	UseKeychain             bool
+	SummaryModel            string
+	CategorizeModel         string
+	OCRModel                string
+	SkipXPhotoOCR           bool
+	SkipCategorize          bool
+	GitHubTokenConfigured   bool
+	Secrets                 map[SecretKind]string
 }
 
 type Options struct {

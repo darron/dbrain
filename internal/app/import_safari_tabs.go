@@ -73,7 +73,7 @@ func newImportSafariTabsCommand(root *rootOptions) *cobra.Command {
 	}
 	cmd.AddCommand(newImportSafariTabsDevicesCommand(root))
 	cmd.Flags().StringVar(&dbPath, "db", "", "Safari CloudTabs.db path override")
-	cmd.Flags().StringVar(&device, "device", "", "Safari iCloud device name or UUID to import, for example dfone")
+	cmd.Flags().StringVar(&device, "device", "", "Safari iCloud device name or UUID to import, for example phone")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum tabs to import after filtering")
 	cmd.Flags().DurationVar(&olderThan, "older-than", 0, "Only import tabs last viewed before this duration ago; 0 imports all matching tabs")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview matching Safari tabs without storing content")

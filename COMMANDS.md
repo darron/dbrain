@@ -194,6 +194,18 @@ the macOS app), Ollama, LM Studio, oMLX, `tesseract`, `ffprobe`, `yt-dlp`,
 separately from command presence so the generated config can reflect tools
 that are installed but not currently serving models.
 
+Interactive install begins with an explicit source checklist for X bookmarks,
+GitHub stars, YouTube Watch Later, liked YouTube videos, subscribed feeds,
+Apple Notes, and Safari tabs. All choices begin unchecked on a fresh install.
+The resulting positive selections are written under `sync_all.imports` and are
+shared by manual and scheduled `sync all` runs. Selecting X enables its whole
+family of bookmark import, hydration, media transcription, and photo OCR;
+leaving X unchecked prevents all four stages. Re-running install without
+`--force` merges these managed selections into the existing YAML while
+preserving unrelated config. When X or either YouTube list is selected, install
+also asks for the shared cookie browser and optional profile written to
+`sync_all.browser` and `sync_all.profile`.
+
 When the Ollama CLI is detected, plain `dbrain install` uses the local dbrain
 Ollama profile by default: it writes the embedded Modelfile, pulls the public
 base model if needed, creates `dbrain:2026042701`, and writes
@@ -232,7 +244,9 @@ when the matching prompt field is left blank.
 dbrain install
 dbrain install --yes
 dbrain install --base-path ~/dbrain --yes
-dbrain install --yes --enable-apple-notes --enable-safari-tabs --enable-scheduler
+dbrain install --yes --enable-github-stars --enable-feeds
+dbrain install --yes --enable-youtube-watch-later --enable-youtube-liked
+dbrain install --yes --enable-apple-notes --enable-safari-tabs --safari-tabs-device phone --enable-scheduler
 dbrain install --yes --enable-tailscale --tsnet-hostname dbrain
 dbrain install --yes --enable-github-login --auth-base-url https://dbrain.example.ts.net --github-client-id Iv1.example
 dbrain install --yes --enable-scheduler --install-launchd
@@ -300,10 +314,10 @@ Safari can make newly synced tabs appear in a follow-up import within seconds.
 
 ```sh
 dbrain import safari-tabs devices
-dbrain import safari-tabs --device dfone --dry-run --show-titles
-dbrain import safari-tabs --device dfone
-dbrain import safari-tabs --device dfone --older-than 168h
-dbrain import safari-tabs --device dfone --limit 100
+dbrain import safari-tabs --device phone --dry-run --show-titles
+dbrain import safari-tabs --device phone
+dbrain import safari-tabs --device phone --older-than 168h
+dbrain import safari-tabs --device phone --limit 100
 ```
 
 ### `dbrain sync all`
@@ -326,6 +340,14 @@ when unsure whether a selected oMLX model is vision-capable.
 `--categorize-limit` is applied separately to items and sources, so
 `--categorize-limit 25` can process up to 25 item rows and 25 source rows.
 
+The durable `sync_all.imports` map controls which source importers both manual
+and scheduled runs may contact. Existing configs without this map retain the
+legacy defaults: X, GitHub stars, both YouTube lists, and feeds are enabled;
+Apple Notes and Safari tabs continue to follow their existing `*.enabled`
+settings. Environment variables named `DBRAIN_SYNC_ALL_IMPORT_*` override the
+map, and explicit CLI flags remain one-run overrides. Scheduler-specific
+`skip_*` settings are applied afterward as scheduled-run-only restrictions.
+
 X hydration uses `--x-limit`. X media transcription and X photo OCR can be
 bounded independently with `--x-media-limit` and `--x-photo-ocr-limit`; either
 limit falls back to `--x-limit` when left at 0. In the default configuration
@@ -347,7 +369,7 @@ the stage or `--feed-limit` to cap checks in one run.
 ```sh
 dbrain sync all --length short --timeout 5m
 dbrain sync all --apple-notes --length short --timeout 5m
-dbrain sync all --safari-tabs --safari-tabs-device dfone --length short --timeout 5m
+dbrain sync all --safari-tabs --safari-tabs-device phone --length short --timeout 5m
 dbrain sync all --skip-categorize --length short --timeout 5m
 dbrain sync all --okf-export --length short --timeout 5m
 dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m

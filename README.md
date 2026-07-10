@@ -66,9 +66,11 @@ dbrain install --base-path ~/dbrain --yes
 
 The installer creates the config/data/vault/log/cache layout, detects local
 helpers such as MacWhisper, Ollama, LM Studio, oMLX, `tesseract`, `ffprobe`,
-and `yt-dlp`, writes a config from the bundled sample, and can enable Apple
-Notes, Safari tabs, scheduled sync, Tailscale/tsnet transport, and GitHub web
-login. On macOS, prompted third-party secrets are written as Keychain-backed
+and `yt-dlp`, asks which import sources `sync all` may contact, writes those
+choices into `sync_all.imports`, and separately configures scheduled sync,
+Tailscale/tsnet transport, and GitHub web login. Fresh interactive and `--yes`
+installs leave every importer disabled until selected. On macOS, prompted
+third-party secrets are written as Keychain-backed
 `keychain://dbrain/...` config refs. If Keychain is disabled or unavailable,
 the generated web auth session key is written into the `0600` config with a
 warning; prompted third-party secrets are skipped rather than written directly
@@ -472,6 +474,15 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SOURCE_WAYBACK_ENABLED` / `DBRAIN_WAYBACK_ENABLED` | `source.wayback.enabled` | `true` | Use Internet Archive Wayback as a final source extraction fallback before terminalizing repeated failures. |
 | `DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL` / `DBRAIN_WAYBACK_AVAILABILITY_URL` | `source.wayback.availability_url` | `https://archive.org/wayback/available?url={escaped_url}` | Wayback Availability API URL template used for final source fallback. |
 | `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK` / `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS` | `feeds.allow_private_network` | `false` | Allow feed fetches to localhost/private/link-local IPs for local testing; disabled by default. |
+| `DBRAIN_SYNC_ALL_BROWSER` | `sync_all.browser` | `chrome` | Shared browser for cookie-backed X and YouTube imports in manual and scheduled `sync all` runs. |
+| `DBRAIN_SYNC_ALL_PROFILE` | `sync_all.profile` | `` | Optional shared browser profile name or path for cookie-backed imports. |
+| `DBRAIN_SYNC_ALL_IMPORT_X_BOOKMARKS` | `sync_all.imports.x_bookmarks` | `true` | Include X bookmark import plus X hydration, media transcription, and photo OCR in `sync all`. |
+| `DBRAIN_SYNC_ALL_IMPORT_GITHUB_STARS` | `sync_all.imports.github_stars` | `true` | Include GitHub starred repository import in `sync all`. |
+| `DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_WATCH_LATER` | `sync_all.imports.youtube_watch_later` | `true` | Include YouTube Watch Later import in `sync all`. |
+| `DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_LIKED` | `sync_all.imports.youtube_liked` | `true` | Include liked YouTube video import in `sync all`. |
+| `DBRAIN_SYNC_ALL_IMPORT_FEEDS` | `sync_all.imports.feeds` | `true` | Include subscribed RSS, Atom, and JSON Feed imports in `sync all`. |
+| `DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES` | `sync_all.imports.apple_notes` | `apple_notes.enabled` | Shared `sync all` Apple Notes selection; falls back to `apple_notes.enabled` when omitted. |
+| `DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS` | `sync_all.imports.safari_tabs` | `safari_tabs.enabled` | Shared `sync all` Safari tabs selection; falls back to `safari_tabs.enabled` when omitted. |
 | `DBRAIN_OKF_EXPORT_ENABLED` / `DBRAIN_SYNC_OKF_EXPORT` | `okf.export.enabled` | `false` | Export a full private OKF bundle at the end of `sync all`; use `--skip-okf-export` for a one-off opt-out. |
 | `DBRAIN_APPLE_NOTES_ENABLED` | `apple_notes.enabled` | `false` | Include Apple Notes import in `sync all` when enabled; the standalone import command remains explicit. |
 | `DBRAIN_APPLE_NOTES_DB_PATH` | `apple_notes.db_path` | `` | Optional Apple Notes `NoteStore.sqlite` path override. |
@@ -534,6 +545,7 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_YOUTUBE` | `scheduler.sync_all.skip_youtube` | `false` | Skip YouTube import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_APPLE_NOTES` | `scheduler.sync_all.skip_apple_notes` | `false` | Skip configured Apple Notes import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SAFARI_TABS` | `scheduler.sync_all.skip_safari_tabs` | `false` | Skip configured Safari tabs import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_FEEDS` | `scheduler.sync_all.skip_feeds` | `false` | Skip subscribed feed imports in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_SOURCES` | `scheduler.sync_all.skip_sources` | `false` | Skip the final source backlog worker stage in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE` | `scheduler.sync_all.skip_categorize` | `false` | Skip final categorization in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_OKF_EXPORT` | `scheduler.sync_all.okf_export` | `false` | Export a full private OKF bundle at the end of scheduled `sync all` runs. |
