@@ -24,6 +24,7 @@ const (
 	ToolTesseract     ToolID = "tesseract"
 	ToolFFprobe       ToolID = "ffprobe"
 	ToolYTDLP         ToolID = "yt_dlp"
+	ToolSummarize     ToolID = "summarize"
 	ToolOnePassword   ToolID = "onepassword"
 	ToolSecurity      ToolID = "security"
 )
