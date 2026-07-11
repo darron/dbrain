@@ -68,6 +68,9 @@ func TestRunAssertsQueryPlanPlannerModesAndCitations(t *testing.T) {
 	if len(report.Cases[0].TopEvidence) == 0 || len(report.Cases[0].TopEvidence[0].Signals) == 0 {
 		t.Fatalf("expected top retrieval signals in result: %+v", report.Cases[0])
 	}
+	if report.Cases[0].CitationSourceKeysMode != "prompt_admitted" || !containsFold(report.Cases[0].EvidenceFlow.PromptAdmittedSourceKeys, "x:eval-alpha") {
+		t.Fatalf("expected explicit prompt-admitted evidence flow: %+v", report.Cases[0])
+	}
 }
 
 func TestRunFailsCitationAssertionWhenCoverageRegresses(t *testing.T) {
@@ -129,7 +132,7 @@ func TestTraceProposalGeneratesCasesFromSavedTrace(t *testing.T) {
 		t.Fatalf("unexpected proposal: %+v", proposal)
 	}
 	first := proposal.Cases[0]
-	if first.ExpectAnswerStatus != "ok" || !containsFold(first.ExpectCitationSourceKeys, "x:trace-alpha") {
+	if first.ExpectAnswerStatus != "ok" || !containsFold(first.ExpectCitationSourceKeys, "x:trace-alpha") || !containsFold(first.ExpectPromptAdmittedSourceKeys, "x:trace-alpha") {
 		t.Fatalf("expected answer and citation assertions from trace: %+v", first)
 	}
 	if len(first.ExpectAnswerText) != 0 {
@@ -247,7 +250,7 @@ Query plan:
 	if len(proposal.Cases[0].ExpectAnswerText) != 0 {
 		t.Fatalf("answer text should be omitted by default: %+v", proposal.Cases[0])
 	}
-	if proposal.Cases[0].ExpectAnswerStatus != "ok" || !containsFold(proposal.Cases[0].ExpectCitationSourceKeys, "x:alpha") {
+	if proposal.Cases[0].ExpectAnswerStatus != "ok" || !containsFold(proposal.Cases[0].ExpectCitationSourceKeys, "x:alpha") || !containsFold(proposal.Cases[0].ExpectPromptAdmittedSourceKeys, "x:alpha") {
 		t.Fatalf("expected conservative status/citation assertions: %+v", proposal.Cases[0])
 	}
 

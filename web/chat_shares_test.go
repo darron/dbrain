@@ -164,11 +164,13 @@ func TestBuildPublicChatShareInputIncludesOnlyCitedOriginalURLs(t *testing.T) {
 		}, "\n"),
 		Citations: []brainresearch.Citation{
 			{
-				SourceKey: "x:cited",
-				Title:     "Anthropic status",
-				URL:       "https://x.com/AnthropicAI/status/2074185348142280912",
-				Kind:      "item",
+				SourceKey: "src:used",
+				Title:     "A global workspace in language models",
+				URL:       "https://www.anthropic.com/research/global-workspace",
+				Kind:      "source",
 			},
+			{SourceKey: "src:unrelated", URL: "https://www.cncf.io/blog/2026/04/30/ai-sandboxing-is-having-its-kubernetes-moment/"},
+			{SourceKey: "src:also-unrelated", URL: "https://cnbc.com/2026/06/16/spacex-spcx-cursor-acquisition-ipo.html"},
 		},
 		ResearchPack: brainresearch.Pack{
 			Evidence: []ask.Evidence{
@@ -208,7 +210,6 @@ func TestBuildPublicChatShareInputIncludesOnlyCitedOriginalURLs(t *testing.T) {
 	wantURLs := []string{
 		"https://example.net/manual",
 		"https://www.anthropic.com/research/global-workspace",
-		"https://x.com/AnthropicAI/status/2074185348142280912",
 	}
 	if got := strings.Join(input.OriginalURLs, "\n"); got != strings.Join(wantURLs, "\n") {
 		t.Fatalf("OriginalURLs =\n%s\nwant\n%s", got, strings.Join(wantURLs, "\n"))
@@ -249,7 +250,7 @@ func TestCategorizeSharedContentWeightsAnswerCitedEvidenceTags(t *testing.T) {
 	}
 
 	got := categorizeSharedContent("old keyword fallback should not matter", turn, categoryvocab.Vocab{})
-	want := "toronto-police,barcelona,criminal-law,included-only"
+	want := "toronto-police,barcelona,criminal-law"
 	if strings.Join(got, ",") != want {
 		t.Fatalf("categorizeSharedContent() = %q, want %q", strings.Join(got, ","), want)
 	}
@@ -260,18 +261,12 @@ func TestCategorizeSharedContentWeightsAnswerCitedEvidenceTags(t *testing.T) {
 	}
 }
 
-func TestCategorizeSharedContentFallsBackToCoverageTopUserTags(t *testing.T) {
+func TestCategorizeSharedContentFallsBackToQueryTags(t *testing.T) {
 	turn := ChatTranscriptTurn{
 		Question: "summarize ai harness",
 		Answer:   "No evidence rows carried tags.",
 		ResearchPack: brainresearch.Pack{
-			Coverage: brainresearch.Coverage{
-				TopUserTags: []brainresearch.Bucket{
-					{Key: "research", Count: 50},
-					{Key: "large-language-models", Count: 4},
-					{Key: "ai-agents", Count: 3},
-				},
-			},
+			QueryPlan: brainresearch.QueryPlan{TagQueries: []string{"large-language-models", "ai-agents"}},
 		},
 	}
 

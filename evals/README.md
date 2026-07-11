@@ -46,9 +46,17 @@ Useful research assertions:
   `forbid_concepts` guard query planning behavior.
 - `min_retrieval_signals` verifies that returned evidence carries scoring
   provenance.
-- `expect_answer_status`, `expect_citation_source_keys`, and
-  `forbid_citation_source_keys` check prepared synthesis and citation coverage
-  without treating model prose as evidence.
+- `expect_relevance_excluded_source_keys`, `expect_prompt_admitted_source_keys`,
+  `expect_budget_dropped_source_keys`, and their `forbid_...` forms assert the
+  exact pre-synthesis evidence lifecycle without treating model prose as
+  evidence.
+- `expect_answer_cited_source_keys` and `forbid_answer_cited_source_keys`
+  require `run_with_runner` because only a completed synthesis can establish
+  which prompt sources the answer actually cited.
+- `expect_citation_source_keys` remains supported for existing cases. Results
+  report `citation_source_keys_mode`: `prompt_admitted` for no-call preparation
+  and `answer_cited` after runner synthesis. New cases should use the explicit
+  stage assertions above.
 
 Important local research cases should usually exist in two forms: one planner
 enabled case for normal behavior and one `disable_planner` baseline case so

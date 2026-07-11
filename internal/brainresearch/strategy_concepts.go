@@ -37,7 +37,40 @@ func buildQueryConceptsWithAnchors(terms []string, anchors []ProtectedAnchor) []
 		seen[concept.Key] = struct{}{}
 		concepts = append(concepts, concept)
 	}
+	for _, concept := range conceptsForShortTokenPhrases(terms) {
+		if _, ok := seen[concept.Key]; ok {
+			continue
+		}
+		seen[concept.Key] = struct{}{}
+		concepts = append(concepts, concept)
+	}
 	return applyConceptRolePolicy(concepts)
+}
+
+// conceptsForShortTokenPhrases preserves specific names such as "J space" or
+// "R language" after ordinary concept normalization drops one-letter tokens.
+// Without the phrase, the broad neighbor ("space") can dominate retrieval.
+func conceptsForShortTokenPhrases(terms []string) []QueryConcept {
+	var concepts []QueryConcept
+	for i, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if len([]rune(term)) != 1 || term == "a" || term == "i" || i+1 >= len(terms) {
+			continue
+		}
+		next := strings.ToLower(strings.TrimSpace(terms[i+1]))
+		if len([]rune(next)) < 2 {
+			continue
+		}
+		phrase := term + " " + next
+		concepts = append(concepts, QueryConcept{
+			Key:       term + "_" + next,
+			Preferred: phrase,
+			Terms:     []string{phrase, term + "-" + next, term + next},
+			Required:  true,
+			Role:      conceptRoleContent,
+		})
+	}
+	return concepts
 }
 
 func conceptsForAnchors(anchors []ProtectedAnchor) []QueryConcept {

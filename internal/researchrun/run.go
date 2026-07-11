@@ -91,8 +91,19 @@ func (r *runner) run() (Result, error) {
 	if !r.enter("inspection", "inspecting top evidence") {
 		return r.finish()
 	}
+	inspectionCtx, cancelInspection := r.stageContext()
+	pack, inspection := brainresearch.InspectPack(inspectionCtx, r.cfg, r.st, pack, brainresearch.InspectionOptions{
+		Limit:    r.opts.InspectionLimit,
+		MaxChars: r.opts.InspectionMaxChars,
+	})
+	cancelInspection()
+	r.setPack(pack)
 	r.emit("inspection", "done", "top evidence inspected", map[string]interface{}{
-		"source_keys": sourceKeys(firstN(pack.Evidence, 3)),
+		"source_keys":    inspection.InspectedSourceKeys,
+		"original_order": inspection.OriginalOrder,
+		"final_order":    inspection.FinalOrder,
+		"reordered":      inspection.Reordered,
+		"errors":         inspection.Errors,
 	})
 
 	if !r.enter("judge", "judging evidence coverage") {
@@ -122,7 +133,21 @@ func (r *runner) run() (Result, error) {
 			r.emit("retry", "error", retryErr.Error(), nil)
 		} else {
 			pack = retryPack
+			r.result.Retried = true
+			retryInspectionCtx, cancelRetryInspection := r.stageContext()
+			pack, retryInspection := brainresearch.InspectPack(retryInspectionCtx, r.cfg, r.st, pack, brainresearch.InspectionOptions{
+				Limit:    r.opts.InspectionLimit,
+				MaxChars: r.opts.InspectionMaxChars,
+			})
+			cancelRetryInspection()
 			r.setPack(pack)
+			r.emit("retry_inspection", "done", "merged retry evidence inspected", map[string]interface{}{
+				"source_keys":    retryInspection.InspectedSourceKeys,
+				"original_order": retryInspection.OriginalOrder,
+				"final_order":    retryInspection.FinalOrder,
+				"reordered":      retryInspection.Reordered,
+				"errors":         retryInspection.Errors,
+			})
 			judge = Judge(pack, JudgeOptions{
 				MinEvidenceForEnough: r.opts.MinEvidenceForEnough,
 				FocusQuestion:        r.synthesisQuestion(),
@@ -180,6 +205,7 @@ func (r *runner) run() (Result, error) {
 		"citation_count":  len(prepared.Citations),
 		"input_chars":     len(prepared.Input),
 		"evidence_budget": prepared.Truncation.EvidenceBudgetChars,
+		"relevance":       prepared.Relevance,
 	})
 
 	if !r.enter("synthesis", "running synthesis") {
@@ -209,7 +235,7 @@ func (r *runner) run() (Result, error) {
 	}
 	verification := mergeVerificationResults(
 		GuardAnchoredAnswer(pack, prepared, synthesis),
-		VerifyCitations(pack, synthesis),
+		VerifyPreparedCitations(prepared, synthesis),
 	)
 	r.result.Verification = verification
 	r.result.Warnings = appendUniqueStrings(r.result.Warnings, verification.Warnings...)
@@ -530,13 +556,6 @@ func sourceKeys(rows []ask.Evidence) []string {
 		}
 	}
 	return keys
-}
-
-func firstN(rows []ask.Evidence, n int) []ask.Evidence {
-	if len(rows) <= n {
-		return rows
-	}
-	return rows[:n]
 }
 
 func appendUniqueStrings(base []string, values ...string) []string {

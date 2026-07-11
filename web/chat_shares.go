@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/yuin/goldmark"
@@ -39,7 +40,7 @@ var (
 	shareMarkdownBlockquotePattern     = regexp.MustCompile(`(?m)^\s*>\s?`)
 	shareMarkdownFencePattern          = regexp.MustCompile("(?m)^\\s*```[A-Za-z0-9_-]*\\s*$")
 	shareSnippetLeadingBoilerplate     = regexp.MustCompile(`(?i)^(?:what it is|what this is)\b[:.\s-]*`)
-	shareSourceKeyPattern              = regexp.MustCompile(`\b(?:src:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|apple-note:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+|gh-star:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|x:[A-Za-z0-9_-]+|youtube:[A-Za-z0-9_-]+|item:[A-Za-z0-9_-]+)\b`)
+	shareSourceKeyPattern              = regexp.MustCompile(`(?i)\b(?:src|x|apple-note|feed-entry|gh-star|github_star|yt|youtube|safari-tab|manual|item):[A-Za-z0-9][A-Za-z0-9._~:/@?&=+%#-]*`)
 	shareInternalFieldPattern          = regexp.MustCompile(`(?im)^\s*(?:[-*]\s*)?(?:source[_ ]?key|lookup|item[_ ]?id|source[_ ]?id|note[_ ]?path|db[_ ]?key|filesystem[_ ]?path)\s*[:=].*$`)
 	shareLocalPathPattern              = regexp.MustCompile(`(?:/Users|/private|/var|/tmp|/Volumes)/[^\s)\]]+`)
 	shareAbsoluteProtectedRoutePattern = regexp.MustCompile("(?i)https?://[^\\s<>\"'`]+/(?:api|media|auth|login|logout)(?:[/?#][^\\s)\\]`]*)?")
@@ -246,19 +247,13 @@ func collectOriginalURLs(turn ChatTranscriptTurn) []string {
 	seen := map[string]struct{}{}
 	var urls []string
 	answerCited := sourceKeysInShareText(turn.Answer)
-	citationKeys := sourceKeysFromShareCitations(turn)
 	shouldIncludeEvidence := func(sourceKey string) bool {
 		sourceKey = strings.TrimSpace(sourceKey)
 		if sourceKey == "" {
 			return false
 		}
-		if _, ok := answerCited[sourceKey]; ok {
-			return true
-		}
-		if _, ok := citationKeys[sourceKey]; ok {
-			return true
-		}
-		return false
+		_, ok := answerCited[sourceKey]
+		return ok
 	}
 	add := func(rawURL string) {
 		cleanURL, ok := publicExternalURL(rawURL)
@@ -282,7 +277,9 @@ func collectOriginalURLs(turn ChatTranscriptTurn) []string {
 		}
 	}
 	for _, citation := range turn.Citations {
-		add(citation.URL)
+		if shouldIncludeEvidence(citation.SourceKey) {
+			add(citation.URL)
+		}
 	}
 	sort.Strings(urls)
 	return urls
@@ -505,10 +502,12 @@ func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvo
 	scores := map[string]rankedCategory{}
 	sequence := 0
 	answerCited := sourceKeysInShareText(turn.Answer)
-	citationKeys := sourceKeysFromShareCitations(turn)
 	primaryEvidence := map[string]struct{}{}
 
 	addTag := func(raw string, weight int) {
+		if weight <= 0 {
+			return
+		}
 		for _, token := range vocab.ApplyToTokens([]string{raw}) {
 			if !usefulShareCategory(token) {
 				continue
@@ -527,18 +526,15 @@ func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvo
 			addTag(token, weight)
 		}
 	}
-	evidenceWeight := func(sourceKey string, base int) int {
+	evidenceWeight := func(sourceKey string) int {
 		sourceKey = strings.TrimSpace(sourceKey)
 		if sourceKey == "" {
-			return base
+			return 0
 		}
 		if _, ok := answerCited[sourceKey]; ok {
 			return 100
 		}
-		if _, ok := citationKeys[sourceKey]; ok {
-			return 60
-		}
-		return base
+		return 0
 	}
 
 	for _, evidence := range turn.ResearchPack.Evidence {
@@ -546,24 +542,14 @@ func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvo
 		if key != "" {
 			primaryEvidence[key] = struct{}{}
 		}
-		addCSV(evidence.UserTags, evidenceWeight(key, 25))
+		addCSV(evidence.UserTags, evidenceWeight(key))
 	}
 	for _, evidence := range turn.ResearchPack.ExactTagEvidence {
 		key := strings.TrimSpace(evidence.SourceKey)
 		if _, ok := primaryEvidence[key]; ok {
 			continue
 		}
-		addCSV(evidence.UserTags, evidenceWeight(key, 18))
-	}
-	for _, bucket := range turn.ResearchPack.Coverage.TopUserTags {
-		weight := bucket.Count * 8
-		if weight <= 0 {
-			weight = 8
-		}
-		if weight > 32 {
-			weight = 32
-		}
-		addTag(bucket.Key, weight)
+		addCSV(evidence.UserTags, evidenceWeight(key))
 	}
 	if len(scores) == 0 {
 		for _, tag := range turn.ResearchPack.QueryPlan.TagQueries {
@@ -600,19 +586,8 @@ func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvo
 
 func sourceKeysInShareText(text string) map[string]struct{} {
 	keys := map[string]struct{}{}
-	for _, key := range shareSourceKeyPattern.FindAllString(text, -1) {
+	for _, key := range brainresearch.AnswerSourceKeys(text) {
 		key = strings.TrimSpace(key)
-		if key != "" {
-			keys[key] = struct{}{}
-		}
-	}
-	return keys
-}
-
-func sourceKeysFromShareCitations(turn ChatTranscriptTurn) map[string]struct{} {
-	keys := map[string]struct{}{}
-	for _, citation := range turn.Citations {
-		key := strings.TrimSpace(citation.SourceKey)
 		if key != "" {
 			keys[key] = struct{}{}
 		}

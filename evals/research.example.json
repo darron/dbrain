@@ -17,7 +17,7 @@
     ],
     "min_retrieval_signals": 1,
     "expect_answer_status": "ok",
-    "expect_citation_source_keys": [
+    "expect_prompt_admitted_source_keys": [
       "src:replace-with-known-source"
     ],
     "max_latency_ms": 5000

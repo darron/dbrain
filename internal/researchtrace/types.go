@@ -26,6 +26,7 @@ type ResearchTrace struct {
 	Pack              *brainresearch.Pack              `json:"pack,omitempty"`
 	PreparedSynthesis *brainresearch.PreparedSynthesis `json:"prepared_synthesis,omitempty"`
 	Synthesis         *brainresearch.SynthesisResult   `json:"synthesis,omitempty"`
+	EvidenceFlow      *brainresearch.EvidenceFlow      `json:"evidence_flow,omitempty"`
 	Artifacts         TraceArtifacts                   `json:"artifacts,omitempty"`
 	StopReason        string                           `json:"stop_reason"`
 	Failure           *TraceFailure                    `json:"failure,omitempty"`
