@@ -5,6 +5,16 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Installer Summarize Prerequisite (2026-07-11)
+
+- **Installer**: First-time setup now detects the required `summarize` CLI and
+  prints an actionable `brew install summarize` warning when it is missing; X
+  setup now gives missing MacWhisper and media tools explicit install paths.
+- **Docs**: Homebrew runtime requirements now appear before `dbrain install`,
+  including the official `summarize` formula and optional Ollama and Chrome
+  setup needed before installer detection, with MacWhisper linked prominently
+  for X media transcription.
+
 ### Installer Import Selection (2026-07-09)
 
 - **Installer**: Fresh installs now present an explicit checklist for X
