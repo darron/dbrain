@@ -131,8 +131,8 @@ func PrepareSynthesis(cfg config.Config, opts SynthesisOptions) (PreparedSynthes
 		budget = DefaultMaxEvidenceChars
 	}
 
+	topicBriefExcluded := opts.Pack.TopicBrief != nil
 	synthesisPack, relevance := selectSynthesisPack(opts.Pack)
-	topicBriefExcluded := synthesisPack.TopicBrief != nil
 	synthesisPack.TopicBrief = nil
 	builder := synthesisInputBuilder{
 		pack:      synthesisPack,
@@ -246,7 +246,7 @@ func classifyRowsByRequiredConcepts(pack Pack, concepts []QueryConcept, excludeP
 			continue
 		}
 		decision := SynthesisRelevanceDecision{SourceKey: key, Decision: "selected", Reason: "all_required_concepts_matched"}
-		text := researchEvidenceText(row)
+		text := synthesisEvidenceText(row)
 		for _, concept := range concepts {
 			if !concept.Required || (concept.Role != "" && concept.Role != conceptRoleContent && concept.Role != conceptRoleAnchor) {
 				continue
@@ -298,7 +298,23 @@ func classifyRowsByRequiredConcepts(pack Pack, concepts []QueryConcept, excludeP
 
 func isCompoundSelectionQuestion(question string) bool {
 	lower := strings.ToLower(strings.Join(strings.Fields(question), " "))
-	return strings.Count(lower, "?") > 1 || strings.Contains(lower, " and also ") || strings.Contains(lower, " what about ") || strings.Contains(lower, ";")
+	return strings.Count(lower, "?") > 1 ||
+		strings.Contains(lower, " and also ") ||
+		strings.Contains(lower, " what about ") ||
+		strings.Contains(lower, " as well as ") ||
+		strings.Contains(lower, " additionally ") ||
+		strings.Contains(lower, " plus ") ||
+		strings.Contains(lower, ";")
+}
+
+func synthesisEvidenceText(row ask.Evidence) string {
+	parts := []string{researchEvidenceText(row)}
+	for _, section := range row.ContentSections {
+		if text := strings.TrimSpace(section.Text); text != "" {
+			parts = append(parts, strings.ToLower(text))
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func hasUncertainExcludedEvidence(pack Pack, excluded map[string]struct{}) bool {

@@ -119,9 +119,9 @@ func InspectPack(ctx context.Context, cfg config.Config, st *store.Store, pack P
 			if leftRaw != rightRaw {
 				return leftRaw > rightRaw
 			}
-			// Direct/raw evidence quality only breaks ties after inspection has
-			// verified at least one required concept in raw content. Otherwise
-			// hydration is observational and the retrieval ranking stays primary.
+			// Raw concept verification is the primary inspection ordering class.
+			// Direct/raw evidence quality breaks ties only within a positive raw
+			// coverage class; without raw verification retrieval ranking stays primary.
 			if leftRaw > 0 && leftQuality != rightQuality {
 				return leftQuality > rightQuality
 			}
