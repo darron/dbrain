@@ -263,6 +263,7 @@ func TestPrepareSynthesisFiltersGeneralConjunctiveDistractorsAndTopicBrief(t *te
 		Evidence: []ask.Evidence{
 			{SourceKey: "src:one", Kind: "source", Title: "Claude Code harness engineering guide"},
 			{SourceKey: "src:two", Kind: "source", Summary: "Practical harness engineering for Claude agents."},
+			{SourceKey: "src:raw", Kind: "source", Title: "Archived project note", ContentSections: []retrieval.ContentSection{{Name: "extracted_text_window", Role: "raw", Text: "Claude harness engineering implementation details."}}},
 			{SourceKey: "src:ads", Kind: "source", Title: "Advertising market news"},
 		},
 		ExactTagEvidence: []ask.Evidence{
@@ -278,8 +279,11 @@ func TestPrepareSynthesisFiltersGeneralConjunctiveDistractorsAndTopicBrief(t *te
 	if prepared.Relevance == nil || prepared.Relevance.Reason != "required_concept_intersection" || !prepared.Relevance.TopicBriefExcluded {
 		t.Fatalf("expected general relevance selection with topic-brief exclusion, got %+v", prepared.Relevance)
 	}
-	if !reflect.DeepEqual(prepared.Relevance.SelectedSourceKeys, []string{"src:one", "src:two"}) {
+	if !reflect.DeepEqual(prepared.Relevance.SelectedSourceKeys, []string{"src:one", "src:raw", "src:two"}) {
 		t.Fatalf("expected unique selected keys, got %+v", prepared.Relevance.SelectedSourceKeys)
+	}
+	if !containsString(prepared.Warnings, "uncited_topic_brief_excluded") {
+		t.Fatalf("expected topic-brief exclusion warning when relevance applies, got %+v", prepared.Warnings)
 	}
 	for _, forbidden := range []string{"src:ads", "src:other", "Broad Claude material", "## Topic Brief"} {
 		if strings.Contains(prepared.Input, forbidden) || hasCitation(prepared.Citations, forbidden) {
@@ -288,6 +292,27 @@ func TestPrepareSynthesisFiltersGeneralConjunctiveDistractorsAndTopicBrief(t *te
 	}
 	if pack.TopicBrief == nil {
 		t.Fatal("PrepareSynthesis must not mutate the original pack")
+	}
+}
+
+func TestIsCompoundSelectionQuestion(t *testing.T) {
+	t.Parallel()
+
+	for _, question := range []string{
+		"What happened? What changed?",
+		"Explain alpha and also beta",
+		"Explain alpha; then beta",
+		"Explain alpha as well as beta",
+		"Explain alpha plus beta",
+		"Explain alpha, additionally explain beta",
+		"Explain alpha, what about beta",
+	} {
+		if !isCompoundSelectionQuestion(question) {
+			t.Errorf("expected compound question detection for %q", question)
+		}
+	}
+	if isCompoundSelectionQuestion("What does my brain know about alpha beta?") {
+		t.Fatal("simple conjunctive topic question must not be treated as compound")
 	}
 }
 

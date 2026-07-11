@@ -113,6 +113,52 @@ func TestInspectPackHydrationFailureIsRankingNeutral(t *testing.T) {
 	}
 }
 
+func TestInspectPackMixedHydrationFailureKeepsOriginalOrder(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := inspectionTestStore(t)
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "x:available",
+		SourceType:   "x_bookmark",
+		ExternalID:   "available",
+		CanonicalURL: "https://example.com/available",
+		Title:        "Available harness evidence",
+		Text:         "Raw harness engineering evidence.",
+		SummaryText:  "Harness engineering summary.",
+		ContentHash:  "available-hash",
+		NotePath:     "items/test/available.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert available item: %v", err)
+	}
+	pack := Pack{
+		Question: "harness engineering",
+		Evidence: []ask.Evidence{
+			{SourceKey: "x:missing", Kind: "item", Retrieval: &ask.RetrievalInfo{Score: 20}},
+			{SourceKey: "x:available", Kind: "item", Retrieval: &ask.RetrievalInfo{Score: 10}},
+		},
+		QueryPlan: QueryPlan{Concepts: []QueryConcept{
+			{Key: "harness", Terms: []string{"harness"}, Required: true, Role: conceptRoleContent},
+			{Key: "engineering", Terms: []string{"engineering"}, Required: true, Role: conceptRoleContent},
+		}},
+	}
+
+	inspected, result := InspectPack(context.Background(), cfg, st, pack, InspectionOptions{Limit: 10})
+	if len(result.Errors) != 1 || result.Reordered {
+		t.Fatalf("one failed hydration must keep the entire inspected window ranking-neutral: %#v", result)
+	}
+	if got := evidenceOrder(inspected.Evidence); !reflect.DeepEqual(got, []string{"x:missing", "x:available"}) {
+		t.Fatalf("unexpected mixed-hydration order: %#v", got)
+	}
+	if inspected.Evidence[1].Summary != "Harness engineering summary." {
+		t.Fatalf("successful hydration should still refresh content: %#v", inspected.Evidence[1])
+	}
+}
+
 func evidenceOrder(rows []ask.Evidence) []string {
 	keys := make([]string, 0, len(rows))
 	for _, row := range rows {
