@@ -5,6 +5,11 @@ development date for the change set.
 
 ## Recent Improvements
 
+### dbrain Review Skill Distribution (2026-07-11)
+
+- **Skill packaging**: Moved the `dbrain-review` skill into this repository alongside `dbrain-mcp` so the project is its authoritative source.
+- **Registry publishing**: Release tags now publish both `dbrain-mcp` and `dbrain-review` to the nono registry under the `darron` namespace.
+
 ### Open-source whisper.cpp transcription (2026-07-11)
 
 - **Speech to text**: Added whisper.cpp as a fully supported backend for X media and YouTube caption fallback, with automatic backend selection, Apple Silicon/Metal-compatible Homebrew installation, optional Silero VAD, language selection, and terminal no-speech handling.

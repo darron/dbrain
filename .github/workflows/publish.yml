@@ -1,4 +1,4 @@
-name: Publish nono pack
+name: Publish nono packs
 on:
   push:
     tags:
@@ -8,13 +8,22 @@ permissions:
   contents: read
 jobs:
   publish:
+    name: Publish ${{ matrix.package.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - name: dbrain-mcp
+            path: skills/dbrain-mcp
+          - name: dbrain-review
+            path: skills/dbrain-review
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: always-further/agent-sign@38b94e4e4d2c1b33ad5b8e7c4946e2e77fce7d0a # main
         with:
           publish: "true"
-          package-name: dbrain-mcp
+          package-name: ${{ matrix.package.name }}
           package-namespace: darron
           package-version: ${{ github.ref_name }}
-          package-path: skills/dbrain-mcp
+          package-path: ${{ matrix.package.path }}

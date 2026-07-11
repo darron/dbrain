@@ -23,6 +23,8 @@ Format export, and local query over the imported corpus.
 - [docs/architecture.md](docs/architecture.md): package and data-flow architecture.
 - [docs/research-harness.md](docs/research-harness.md): current research/chat
   harness behavior, limitations, and improvement roadmap.
+- [Agent Skills](#agent-skills): installable `dbrain-mcp` and `dbrain-review`
+  workflows plus repo-local model bakeoff guidance.
 - [docs/open-knowledge-format-plan.md](docs/open-knowledge-format-plan.md):
   OKF export design, profile scope, validation rules, and implementation notes.
 - [docs/schema-migrations.md](docs/schema-migrations.md): SQLite schema and
@@ -970,16 +972,21 @@ into dbrain. Private bundles may include raw evidence, OCR text, transcripts,
 Apple Notes content, and archived-media links, so treat `okf/` like `data/` and
 `vault/` unless you deliberately scrub it for sharing.
 
-## Skill
+## Agent Skills
 
-This repo includes Codex skills for agents:
+Release tags publish these project-owned skills to the nono registry:
 
-- `skills/dbrain-mcp/SKILL.md` helps agents query the local dbrain corpus
+- [`dbrain-mcp`](skills/dbrain-mcp) helps agents query the local dbrain corpus
   through MCP, including read-only inspection of generated OKF bundles. See
   [MCP.md](MCP.md#skill) for installation notes and the recommended Codex MCP
   configuration.
-- `skills/dbrain-model-bakeoff/SKILL.md` helps agents compare summary and
-  categorization models with the read-only bakeoff devtool.
+- [`dbrain-review`](skills/dbrain-review) produces source-linked briefings from
+  recent dbrain activity, defaulting to a weekly review with optional topic
+  focus.
+
+The [`dbrain-model-bakeoff`](skills/dbrain-model-bakeoff) skill is a repo-local
+development workflow for comparing summary and categorization models with the
+read-only bakeoff devtool; it is not part of the release-tag registry publish.
 
 ## License
 
