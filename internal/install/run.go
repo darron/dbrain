@@ -51,7 +51,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 			}
 			download := opts.DownloadFile
 			if download == nil {
-				download = downloadVerifiedFile
+				download = func(ctx context.Context, url, path, sha string) error {
+					return downloadVerifiedFile(ctx, url, path, sha, opts.DownloadProgress)
+				}
 			}
 			if err := download(ctx, model.URL, model.Path, model.SHA256); err != nil {
 				return result, err
@@ -319,8 +321,8 @@ func selectionWarnings(selections Selections, tools []Tool) []string {
 		warnings = append(warnings, "summarize is required for source extraction and summary-backed synthesis but was not found in PATH; install it before syncing with: brew install summarize")
 	}
 	if selections.ImportXBookmarks && len(tools) > 0 {
-		if len(missingTools(tools, ToolMacWhisper)) > 0 {
-			warnings = append(warnings, "X bookmarks are selected but the MacWhisper CLI (mw) is missing; get MacWhisper at https://www.macwhisper.com/ and make mw available in PATH before syncing X media.")
+		if !installTranscriberReady(selections, tools) {
+			warnings = append(warnings, "X bookmarks are selected but no ready speech transcriber was found. Preferred setup: brew install whisper-cpp, then rerun dbrain install to download the verified models. MacWhisper compatibility is also available from https://www.macwhisper.com/.")
 		}
 		missing := missingTools(tools, ToolFFprobe, ToolYTDLP)
 		if len(missing) > 0 {
@@ -347,6 +349,19 @@ func selectionWarnings(selections Selections, tools []Tool) []string {
 		return append(warnings, "auth.base_url is not HTTPS; GitHub OAuth callbacks for remote access should use an HTTPS URL.")
 	}
 	return warnings
+}
+
+func installTranscriberReady(selections Selections, tools []Tool) bool {
+	backend := strings.TrimSpace(selections.TranscriptionBackend)
+	if strings.HasPrefix(backend, "macwhisper") {
+		return len(missingTools(tools, ToolMacWhisper)) == 0
+	}
+	if (backend == "" || backend == "auto" || backend == "whisper.cpp") && len(missingTools(tools, ToolWhisperCPP)) == 0 {
+		if info, err := os.Stat(strings.TrimSpace(selections.WhisperModelPath)); err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return (backend == "" || backend == "auto") && len(missingTools(tools, ToolMacWhisper)) == 0
 }
 
 func anyImportSelected(selections Selections) bool {

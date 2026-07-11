@@ -1,8 +1,10 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -46,12 +48,12 @@ func prepareOllamaModels(ctx context.Context, fsys FileSystem, cfg config.Config
 			continue
 		}
 		if !ollamaModelExists(ctx, runner, pullModel) {
-			if err := runInstallCommand(ctx, runner, "ollama", "pull", pullModel); err != nil {
+			if err := runInstallCommand(ctx, runner, opts.CommandOutput, "ollama", "pull", pullModel); err != nil {
 				return changes, err
 			}
 		}
 		if modelfilePath != "" {
-			if err := runInstallCommand(ctx, runner, "ollama", "create", model, "-f", modelfilePath); err != nil {
+			if err := runInstallCommand(ctx, runner, opts.CommandOutput, "ollama", "create", model, "-f", modelfilePath); err != nil {
 				return changes, err
 			}
 		}
@@ -68,11 +70,26 @@ func ollamaModelExists(ctx context.Context, runner CommandRunner, model string) 
 	return err == nil
 }
 
-func runInstallCommand(ctx context.Context, runner CommandRunner, name string, args ...string) error {
+func runInstallCommand(ctx context.Context, runner CommandRunner, outputWriter io.Writer, name string, args ...string) error {
+	if outputWriter != nil {
+		if streaming, ok := runner.(StreamingCommandRunner); ok {
+			_, _ = fmt.Fprintf(outputWriter, "• Running %s %s\n", name, strings.Join(args, " "))
+			var captured bytes.Buffer
+			output := io.MultiWriter(outputWriter, &captured)
+			if err := streaming.Run(ctx, output, output, name, args...); err != nil {
+				return installCommandError(name, args, captured.Bytes(), err)
+			}
+			return nil
+		}
+	}
 	output, err := runner.CombinedOutput(ctx, name, args...)
 	if err == nil {
 		return nil
 	}
+	return installCommandError(name, args, output, err)
+}
+
+func installCommandError(name string, args []string, output []byte, err error) error {
 	command := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	text := strings.TrimSpace(string(output))
 	if text == "" {
@@ -101,4 +118,11 @@ type OSCommandRunner struct{}
 
 func (OSCommandRunner) CombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func (OSCommandRunner) Run(ctx context.Context, stdout, stderr io.Writer, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
 }

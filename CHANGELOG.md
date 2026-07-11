@@ -15,6 +15,8 @@ development date for the change set.
 - **Speech to text**: Added whisper.cpp as a fully supported backend for X media and YouTube caption fallback, with automatic backend selection, Apple Silicon/Metal-compatible Homebrew installation, optional Silero VAD, language selection, and terminal no-speech handling.
 - **Installer**: `dbrain install` now detects `whisper-cli`, writes shared transcription configuration, reports the exact Homebrew command when it is missing, and can download pinned, checksum-verified Whisper base and Silero VAD models with `--download-whisper-models`.
 - **CLI/docs**: `dbrain transcribe x-media` accepts explicit backend, model, VAD, language, and binary flags; MacWhisper remains available as a compatibility backend.
+- **Fresh-install UX**: When `whisper-cli` is detected and pinned models are missing, interactive setup now offers the verified downloads with yes selected and `--yes` accepts them automatically; Whisper transfers show byte progress and Ollama model preparation streams its native output.
+- **Setup docs**: Moved the recommended `summarize`, Ollama, whisper.cpp, and Chrome prerequisites ahead of first-time setup so clean-machine installs are detected and configured on the first run.
 
 ### Research Harness Inspection And Evidence Flow (2026-07-11)
 

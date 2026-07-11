@@ -23,7 +23,7 @@ func whisperModelDownloads(selections Selections) []whisperModelDownload {
 	}
 }
 
-func downloadVerifiedFile(ctx context.Context, url, path, wantSHA string) error {
+func downloadVerifiedFile(ctx context.Context, url, path, wantSHA string, progress func(DownloadProgress)) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("whisper.cpp model destination is empty")
 	}
@@ -48,6 +48,11 @@ func downloadVerifiedFile(ctx context.Context, url, path, wantSHA string) error 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("download whisper.cpp model: HTTP %s", resp.Status)
 	}
+	total := resp.ContentLength
+	if total < 0 {
+		total = 0
+	}
+	emitDownloadProgress(progress, DownloadProgress{Kind: DownloadProgressStart, Path: path, Total: total})
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".whisper-model-*")
 	if err != nil {
 		return err
@@ -55,7 +60,8 @@ func downloadVerifiedFile(ctx context.Context, url, path, wantSHA string) error 
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, hash), resp.Body); err != nil {
+	reader := &downloadProgressReader{reader: resp.Body, total: total, path: path, progress: progress}
+	if _, err := io.Copy(io.MultiWriter(tmp, hash), reader); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -72,5 +78,29 @@ func downloadVerifiedFile(ctx context.Context, url, path, wantSHA string) error 
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
+	emitDownloadProgress(progress, DownloadProgress{Kind: DownloadProgressDone, Path: path, Current: reader.current, Total: total})
 	return nil
+}
+
+type downloadProgressReader struct {
+	reader   io.Reader
+	path     string
+	current  int64
+	total    int64
+	progress func(DownloadProgress)
+}
+
+func (r *downloadProgressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.current += int64(n)
+		emitDownloadProgress(r.progress, DownloadProgress{Kind: DownloadProgressUpdate, Path: r.path, Current: r.current, Total: r.total})
+	}
+	return n, err
+}
+
+func emitDownloadProgress(progress func(DownloadProgress), event DownloadProgress) {
+	if progress != nil {
+		progress(event)
+	}
 }

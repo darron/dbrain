@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/darron/dbrain/internal/config"
 	installer "github.com/darron/dbrain/internal/install"
+	"github.com/darron/dbrain/internal/sqlitearchive"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -119,11 +120,18 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 					return fmt.Errorf("read existing config %s: %w", cfg.ConfigPath, readErr)
 				}
 			}
+			offerWhisperModels := shouldOfferWhisperModelDownload(tools, selections)
+			downloadWhisperModels := defaultWhisperModelDownload(flags.downloadWhisperModels, flags.yes, offerWhisperModels)
 			if shouldPromptInstall(cmd, flags.yes) {
-				if err := promptInstallSelections(cmd, &selections, tools); err != nil {
+				if offerWhisperModels && !flags.downloadWhisperModels {
+					downloadWhisperModels = true
+				}
+				if err := promptInstallSelections(cmd, &selections, tools, &downloadWhisperModels, offerWhisperModels && !flags.downloadWhisperModels); err != nil {
 					return err
 				}
 			}
+			progressUI := newCLIProgressUI(cmd.ErrOrStderr())
+			defer progressUI.stopActive(false, "")
 
 			result, err := installer.Run(cmd.Context(), installer.Options{
 				Config:                cfg,
@@ -133,7 +141,9 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 				Tools:                 tools,
 				Force:                 flags.force,
 				DryRun:                flags.dryRun,
-				DownloadWhisperModels: flags.downloadWhisperModels,
+				DownloadWhisperModels: downloadWhisperModels,
+				DownloadProgress:      func(event installer.DownloadProgress) { handleInstallDownloadProgress(progressUI, event) },
+				CommandOutput:         cmd.ErrOrStderr(),
 			})
 			if err != nil {
 				return err
@@ -379,7 +389,7 @@ func shouldPromptInstall(cmd *cobra.Command, yes bool) bool {
 	return ok && file != nil && isatty.IsTerminal(file.Fd())
 }
 
-func promptInstallSelections(cmd *cobra.Command, selections *installer.Selections, tools []installer.Tool) error {
+func promptInstallSelections(cmd *cobra.Command, selections *installer.Selections, tools []installer.Tool, downloadWhisperModels *bool, offerWhisperModels bool) error {
 	imports := []string{}
 	if selections.ImportXBookmarks {
 		imports = append(imports, "x_bookmarks")
@@ -436,6 +446,14 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 				).
 				Value(&imports),
 		),
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Download whisper.cpp speech models now?").
+				Description("Installs dbrain's pinned, checksum-verified Whisper base and Silero VAD models.").
+				Affirmative("Download").
+				Negative("Skip").
+				Value(downloadWhisperModels),
+		).WithHideFunc(func() bool { return !offerWhisperModels }),
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Browser for X and YouTube").
@@ -556,6 +574,39 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 	}
 	applyUnavailableHostedStageDefaults(selections)
 	return nil
+}
+
+func shouldOfferWhisperModelDownload(tools []installer.Tool, selections installer.Selections) bool {
+	if !toolAvailable(tools, installer.ToolWhisperCPP) {
+		return false
+	}
+	for _, path := range []string{selections.WhisperModelPath, selections.WhisperVADModelPath} {
+		info, err := os.Stat(strings.TrimSpace(path))
+		if err != nil || !info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultWhisperModelDownload(explicit, yes, offer bool) bool {
+	return explicit || (yes && offer)
+}
+
+func handleInstallDownloadProgress(ui *cliProgressUI, event installer.DownloadProgress) {
+	if ui == nil {
+		return
+	}
+	name := filepath.Base(event.Path)
+	message := "Downloading whisper.cpp model " + name
+	switch event.Kind {
+	case installer.DownloadProgressStart:
+		ui.Handle(sqlitearchive.Event{Kind: sqlitearchive.EventStageStart, Stage: event.Path, Message: message, Total: event.Total})
+	case installer.DownloadProgressUpdate:
+		ui.Handle(sqlitearchive.Event{Kind: sqlitearchive.EventTransferProgress, Stage: event.Path, Message: message, Current: event.Current, Total: event.Total})
+	case installer.DownloadProgressDone:
+		ui.Handle(sqlitearchive.Event{Kind: sqlitearchive.EventStageDone, Stage: event.Path, Message: fmt.Sprintf("Downloaded whisper.cpp model %s (%s)", name, formatBytes(event.Current)), Current: event.Current, Total: event.Total})
+	}
 }
 
 func normalizeInstallPromptError(err error) error {

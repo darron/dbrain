@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 
@@ -102,7 +103,24 @@ type Options struct {
 	DryRun                bool
 	DownloadWhisperModels bool
 	DownloadFile          func(context.Context, string, string, string) error
+	DownloadProgress      func(DownloadProgress)
+	CommandOutput         io.Writer
 }
+
+type DownloadProgress struct {
+	Kind    DownloadProgressKind
+	Path    string
+	Current int64
+	Total   int64
+}
+
+type DownloadProgressKind string
+
+const (
+	DownloadProgressStart  DownloadProgressKind = "start"
+	DownloadProgressUpdate DownloadProgressKind = "update"
+	DownloadProgressDone   DownloadProgressKind = "done"
+)
 
 type OllamaModelSetup struct {
 	Model         string
@@ -144,6 +162,10 @@ type FileSystem interface {
 
 type CommandRunner interface {
 	CombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+type StreamingCommandRunner interface {
+	Run(ctx context.Context, stdout, stderr io.Writer, name string, args ...string) error
 }
 
 type OSFS struct{}
