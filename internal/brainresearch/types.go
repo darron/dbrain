@@ -74,6 +74,7 @@ type Pack struct {
 	UsedTopicBrief   bool              `json:"used_topic_brief"`
 	Evidence         []ask.Evidence    `json:"evidence"`
 	ExactTagEvidence []ask.Evidence    `json:"exact_tag_evidence,omitempty"`
+	Inspection       *InspectionResult `json:"inspection,omitempty"`
 	TopicBrief       *TopicBrief       `json:"topic_brief,omitempty"`
 	NextSteps        []SuggestedAction `json:"next_steps,omitempty"`
 }

@@ -5,6 +5,25 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Research Harness Inspection And Evidence Flow (2026-07-11)
+
+- **Inspection**: The runner now performs one bounded read-only hydration pass
+  over the top primary evidence rows, reranks only that window using direct/raw
+  support, preserves tail order, and leaves original retrieval scores intact.
+- **Relevance**: Conservative required-concept intersection filtering now
+  covers safe conjunctive query families while failing open for partial,
+  compound, comparative, corrective, contradictory, chunked, media, and
+  dependency-uncertain evidence.
+- **Synthesis**: Uncited topic-brief aggregates are excluded from model context;
+  source-key evidence remains available according to relevance and budget
+  decisions.
+- **Tracing and evals**: Added `evidence_flow.v1` with explicit retrieved,
+  inspected, relevance-admitted/excluded, prompt-admitted, budget-dropped,
+  partially-trimmed, and answer-cited stages plus lifecycle invariants and
+  stage-specific eval assertions.
+- **Location**: `internal/ask/`, `internal/brainresearch/`,
+  `internal/researchrun/`, `internal/researchtrace/`, `internal/researcheval/`
+
 ### Chat Harness Relevance And Citation Semantics (2026-07-11)
 
 - **Fixed**: Final synthesis citation metadata now contains only exact source

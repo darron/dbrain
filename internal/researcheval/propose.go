@@ -41,29 +41,31 @@ func ProposeFromTrace(path string, opts ProposalOptions) (Proposal, error) {
 
 	plan := trace.Pack.QueryPlan
 	sourceKeys := evidenceSourceKeys(trace.Pack.Evidence)
-	citationKeys := traceCitationKeys(trace)
-	expectAny := firstNonEmptySlice(citationKeys, sourceKeys)
+	promptKeys := tracePromptAdmittedKeys(trace)
+	answerKeys := traceAnswerCitedKeys(trace)
+	expectAny := firstNonEmptySlice(answerKeys, promptKeys, sourceKeys)
 	primary := Case{
-		Name:                     "trace: " + baseName,
-		Question:                 firstNonEmpty(trace.Question, trace.Pack.Question),
-		Limit:                    plan.Limit,
-		MaxCharsPerDoc:           plan.MaxCharsPerDoc,
-		SourceTypes:              append([]string(nil), plan.SourceTypes...),
-		IncludeRelated:           plan.IncludeRelated,
-		RelatedLimit:             plan.RelatedLimit,
-		IncludeTopicBrief:        boolPtr(plan.IncludeTopicBrief),
-		PlannerModel:             plan.PlannerModel,
-		MinEvidence:              minPositive(1, len(sourceKeys)),
-		ExpectSourceKeys:         sourceKeys,
-		ExpectAnySourceKeys:      expectAny,
-		ExpectPlanner:            plan.Planner,
-		ExpectQueryFamily:        plan.QueryFamily,
-		ExpectQueryTerms:         append([]string(nil), plan.QueryTerms...),
-		ExpectQueryVariants:      queryVariantStrings(plan.QueryVariants),
-		ExpectConcepts:           conceptStrings(plan.Concepts),
-		ExpectAnswerStatus:       traceAnswerStatus(trace),
-		ExpectCitationSourceKeys: citationKeys,
-		MinRetrievalSignals:      minPositive(1, countTraceRetrievalSignals(trace)),
+		Name:                           "trace: " + baseName,
+		Question:                       firstNonEmpty(trace.Question, trace.Pack.Question),
+		Limit:                          plan.Limit,
+		MaxCharsPerDoc:                 plan.MaxCharsPerDoc,
+		SourceTypes:                    append([]string(nil), plan.SourceTypes...),
+		IncludeRelated:                 plan.IncludeRelated,
+		RelatedLimit:                   plan.RelatedLimit,
+		IncludeTopicBrief:              boolPtr(plan.IncludeTopicBrief),
+		PlannerModel:                   plan.PlannerModel,
+		MinEvidence:                    minPositive(1, len(sourceKeys)),
+		ExpectSourceKeys:               sourceKeys,
+		ExpectAnySourceKeys:            expectAny,
+		ExpectPlanner:                  plan.Planner,
+		ExpectQueryFamily:              plan.QueryFamily,
+		ExpectQueryTerms:               append([]string(nil), plan.QueryTerms...),
+		ExpectQueryVariants:            queryVariantStrings(plan.QueryVariants),
+		ExpectConcepts:                 conceptStrings(plan.Concepts),
+		ExpectAnswerStatus:             traceAnswerStatus(trace),
+		ExpectCitationSourceKeys:       promptKeys,
+		ExpectPromptAdmittedSourceKeys: promptKeys,
+		MinRetrievalSignals:            minPositive(1, countTraceRetrievalSignals(trace)),
 	}
 	if plan.Planner == "deterministic" && plan.PlannerModel == "" {
 		primary.DisablePlanner = true
@@ -82,7 +84,7 @@ func ProposeFromTrace(path string, opts ProposalOptions) (Proposal, error) {
 		Cases:         []Case{primary},
 		Notes: []string{
 			"Review these cases before committing them under evals/local.",
-			"Trace proposals include source-key and citation assertions from the saved trace.",
+			"Trace proposals use prompt-admitted source keys for no-call citation assertions; answer-cited keys require run_with_runner and explicit review.",
 		},
 	}
 	if !primary.DisablePlanner && len(expectAny) > 0 {
@@ -95,6 +97,10 @@ func ProposeFromTrace(path string, opts ProposalOptions) (Proposal, error) {
 		disabled.ExpectQueryVariants = nil
 		disabled.ExpectConcepts = nil
 		disabled.ExpectCitationSourceKeys = nil
+		disabled.ExpectPromptAdmittedSourceKeys = nil
+		disabled.ExpectRelevanceExcludedSourceKeys = nil
+		disabled.ExpectBudgetDroppedSourceKeys = nil
+		disabled.ExpectAnswerCitedSourceKeys = nil
 		disabled.ExpectAnswerStatus = ""
 		disabled.MinEvidence = 1
 		proposal.Cases = append(proposal.Cases, disabled)
@@ -120,18 +126,19 @@ func ProposeFromTranscript(path string, opts ProposalOptions) (Proposal, error) 
 		}
 		sourceKeys := uniqueNonEmpty(append(parsed.citationKeys, parsed.evidenceKeys...))
 		tc := Case{
-			Name:                     fmt.Sprintf("transcript turn %d: %s", i+1, shortName(parsed.question)),
-			Question:                 parsed.question,
-			Limit:                    10,
-			IncludeRelated:           true,
-			RelatedLimit:             2,
-			MinEvidence:              minPositive(1, len(sourceKeys)),
-			ExpectAnySourceKeys:      sourceKeys,
-			ExpectCitationSourceKeys: parsed.citationKeys,
-			ExpectQueryTerms:         parsed.queryTerms,
-			ExpectPlanner:            parsed.planner,
-			ExpectAnswerStatus:       parsed.answerStatus(),
-			MinRetrievalSignals:      1,
+			Name:                           fmt.Sprintf("transcript turn %d: %s", i+1, shortName(parsed.question)),
+			Question:                       parsed.question,
+			Limit:                          10,
+			IncludeRelated:                 true,
+			RelatedLimit:                   2,
+			MinEvidence:                    minPositive(1, len(sourceKeys)),
+			ExpectAnySourceKeys:            sourceKeys,
+			ExpectCitationSourceKeys:       parsed.citationKeys,
+			ExpectPromptAdmittedSourceKeys: parsed.citationKeys,
+			ExpectQueryTerms:               parsed.queryTerms,
+			ExpectPlanner:                  parsed.planner,
+			ExpectAnswerStatus:             parsed.answerStatus(),
+			MinRetrievalSignals:            1,
 		}
 		if parsed.plannerModel != "" {
 			tc.PlannerModel = parsed.plannerModel
@@ -324,12 +331,28 @@ func minPositive(min int, value int) int {
 	return min
 }
 
-func traceCitationKeys(trace researchtrace.ResearchTrace) []string {
-	if trace.Synthesis != nil && len(trace.Synthesis.Citations) > 0 {
-		return citationSourceKeys(trace.Synthesis.Citations)
+func tracePromptAdmittedKeys(trace researchtrace.ResearchTrace) []string {
+	if trace.EvidenceFlow != nil && len(trace.EvidenceFlow.PromptAdmittedSourceKeys) > 0 {
+		return append([]string(nil), trace.EvidenceFlow.PromptAdmittedSourceKeys...)
 	}
 	if trace.PreparedSynthesis != nil && len(trace.PreparedSynthesis.Citations) > 0 {
 		return citationSourceKeys(trace.PreparedSynthesis.Citations)
+	}
+	// Traces written before prepared_synthesis/evidence_flow were added only
+	// retained answer citations. Preserve proposal compatibility, while new
+	// traces use the exact prompt-admitted stage above.
+	if trace.Synthesis != nil && len(trace.Synthesis.Citations) > 0 {
+		return citationSourceKeys(trace.Synthesis.Citations)
+	}
+	return nil
+}
+
+func traceAnswerCitedKeys(trace researchtrace.ResearchTrace) []string {
+	if trace.EvidenceFlow != nil && len(trace.EvidenceFlow.AnswerCitedSourceKeys) > 0 {
+		return append([]string(nil), trace.EvidenceFlow.AnswerCitedSourceKeys...)
+	}
+	if trace.Synthesis != nil && len(trace.Synthesis.Citations) > 0 {
+		return citationSourceKeys(trace.Synthesis.Citations)
 	}
 	return nil
 }

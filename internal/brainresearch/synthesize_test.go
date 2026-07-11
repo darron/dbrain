@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -239,6 +240,132 @@ func TestPrepareSynthesisFiltersDistractorsForRequiredShortPhrase(t *testing.T) 
 	}
 	if !hasString(prepared.Relevance.ExcludedSourceKeys, "src:cursor") || !hasString(prepared.Relevance.ExcludedSourceKeys, "x:exact-unrelated") || strings.Contains(prepared.Input, "SpaceX buys Cursor") {
 		t.Fatalf("expected distractor excluded from synthesis input: relevance=%+v input=%s", prepared.Relevance, prepared.Input)
+	}
+}
+
+func TestPrepareSynthesisFiltersGeneralConjunctiveDistractorsAndTopicBrief(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	t.Setenv("DBRAIN_SUMMARY_MODEL", "cli/test/research")
+	pack := Pack{
+		SchemaVersion: SchemaVersion,
+		Question:      "Claude Code harness engineering",
+		QueryPlan: QueryPlan{
+			QueryFamily: queryFamilySoftwareProject,
+			Concepts: []QueryConcept{
+				{Key: "claude", Preferred: "claude", Terms: []string{"claude"}, Required: true, Role: conceptRoleContent},
+				{Key: "harness", Preferred: "harness", Terms: []string{"harness"}, Required: true, Role: conceptRoleContent},
+				{Key: "engineering", Preferred: "engineering", Terms: []string{"engineering"}, Required: true, Role: conceptRoleContent},
+			},
+		},
+		Evidence: []ask.Evidence{
+			{SourceKey: "src:one", Kind: "source", Title: "Claude Code harness engineering guide"},
+			{SourceKey: "src:two", Kind: "source", Summary: "Practical harness engineering for Claude agents."},
+			{SourceKey: "src:ads", Kind: "source", Title: "Advertising market news"},
+		},
+		ExactTagEvidence: []ask.Evidence{
+			{SourceKey: "src:two", Kind: "source", UserTags: "harness-engineering,claude"},
+			{SourceKey: "src:other", Kind: "source", Title: "General AI topics"},
+		},
+		TopicBrief: &TopicBrief{Summary: "Broad Claude material including advertising."},
+	}
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: pack, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis: %v", err)
+	}
+	if prepared.Relevance == nil || prepared.Relevance.Reason != "required_concept_intersection" || !prepared.Relevance.TopicBriefExcluded {
+		t.Fatalf("expected general relevance selection with topic-brief exclusion, got %+v", prepared.Relevance)
+	}
+	if !reflect.DeepEqual(prepared.Relevance.SelectedSourceKeys, []string{"src:one", "src:two"}) {
+		t.Fatalf("expected unique selected keys, got %+v", prepared.Relevance.SelectedSourceKeys)
+	}
+	for _, forbidden := range []string{"src:ads", "src:other", "Broad Claude material", "## Topic Brief"} {
+		if strings.Contains(prepared.Input, forbidden) || hasCitation(prepared.Citations, forbidden) {
+			t.Fatalf("expected %q excluded from synthesis input: %s", forbidden, prepared.Input)
+		}
+	}
+	if pack.TopicBrief == nil {
+		t.Fatal("PrepareSynthesis must not mutate the original pack")
+	}
+}
+
+func TestPrepareSynthesisGeneralSelectionFailsOpenForDistributedFamiliesAndDependencies(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	t.Setenv("DBRAIN_SUMMARY_MODEL", "cli/test/research")
+	base := Pack{
+		SchemaVersion: SchemaVersion,
+		Question:      "compare alpha beta",
+		QueryPlan: QueryPlan{Concepts: []QueryConcept{
+			{Key: "alpha", Terms: []string{"alpha"}, Required: true, Role: conceptRoleContent},
+			{Key: "beta", Terms: []string{"beta"}, Required: true, Role: conceptRoleContent},
+		}},
+		Evidence: []ask.Evidence{
+			{SourceKey: "src:one", Title: "alpha beta", Summary: "alpha beta evidence"},
+			{SourceKey: "src:two", Title: "alpha beta", Summary: "alpha beta evidence"},
+			{SourceKey: "src:other", Title: "gamma", Summary: "gamma evidence"},
+		},
+	}
+	comparison := base
+	comparison.QueryPlan.QueryFamily = queryFamilyComparison
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: comparison, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis comparison: %v", err)
+	}
+	if prepared.Relevance != nil || !hasCitation(prepared.Citations, "src:other") {
+		t.Fatalf("comparison selection must fail open, got relevance=%+v citations=%+v", prepared.Relevance, prepared.Citations)
+	}
+
+	dependent := base
+	dependent.QueryPlan.QueryFamily = queryFamilyEntityTopicOverview
+	dependent.Evidence[2].RelatedTo = "src:one"
+	prepared, err = PrepareSynthesis(cfg, SynthesisOptions{Pack: dependent, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis dependent: %v", err)
+	}
+	if prepared.Relevance != nil || !hasCitation(prepared.Citations, "src:other") {
+		t.Fatalf("selection with cross-boundary dependency must fail open, got relevance=%+v citations=%+v", prepared.Relevance, prepared.Citations)
+	}
+}
+
+func TestPrepareSynthesisGeneralSelectionFailsOpenForPartialConceptEvidence(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	t.Setenv("DBRAIN_SUMMARY_MODEL", "cli/test/research")
+	pack := Pack{
+		SchemaVersion: SchemaVersion,
+		Question:      "What does my brain know about alpha beta?",
+		QueryPlan: QueryPlan{
+			QueryFamily: queryFamilyEntityTopicOverview,
+			Concepts: []QueryConcept{
+				{Key: "alpha", Terms: []string{"alpha"}, Required: true, Role: conceptRoleContent},
+				{Key: "beta", Terms: []string{"beta"}, Required: true, Role: conceptRoleContent},
+			},
+		},
+		TopicBrief: &TopicBrief{Summary: "Uncited aggregate material."},
+		Evidence: []ask.Evidence{
+			{SourceKey: "src:one", Summary: "alpha beta direct evidence"},
+			{SourceKey: "src:two", Summary: "alpha beta corroboration"},
+			{SourceKey: "src:partial", Summary: "alpha-only evidence that may carry distributed context"},
+			{SourceKey: "src:other", Summary: "unrelated gamma evidence"},
+		},
+	}
+
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: pack, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis: %v", err)
+	}
+	if prepared.Relevance != nil || !hasCitation(prepared.Citations, "src:partial") || !hasCitation(prepared.Citations, "src:other") {
+		t.Fatalf("partial concept evidence must fail open, got relevance=%+v citations=%+v", prepared.Relevance, prepared.Citations)
+	}
+	if strings.Contains(prepared.Input, "Uncited aggregate material") || !containsString(prepared.Warnings, "uncited_topic_brief_excluded") {
+		t.Fatalf("topic brief must be excluded even when row filtering fails open: input=%q warnings=%+v", prepared.Input, prepared.Warnings)
 	}
 }
 
