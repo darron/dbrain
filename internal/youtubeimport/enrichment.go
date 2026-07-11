@@ -36,16 +36,18 @@ func summarizeArgsFor(opts Options) func(source model.SourceDocument) []string {
 func fallbackExtractFor(cfg config.Config, opts Options, cookiesArg string) func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
 	return func(ctx context.Context, source model.SourceDocument, extract model.ExtractResult) (model.ExtractResult, bool, error) {
 		fallback, changed, err := sourceenrich.MaybeTranscribeYouTubeAudioFallback(ctx, cfg, source, extract, sourceenrich.Options{
-			Logger:             opts.Logger,
-			Timeout:            opts.Timeout,
-			YouTubeBrowser:     opts.Browser,
-			YouTubeProfile:     opts.Profile,
-			YouTubeCookiesArg:  cookiesArg,
-			YouTubeTranscriber: opts.Transcriber,
-			YTDLPBinary:        opts.YTDLPBinary,
-			WhisperBinary:      opts.WhisperBinary,
-			WhisperModelPath:   opts.WhisperModelPath,
-			MacWhisperBinary:   opts.MacWhisperBinary,
+			Logger:                opts.Logger,
+			Timeout:               opts.Timeout,
+			YouTubeBrowser:        opts.Browser,
+			YouTubeProfile:        opts.Profile,
+			YouTubeCookiesArg:     cookiesArg,
+			YouTubeTranscriber:    opts.Transcriber,
+			YTDLPBinary:           opts.YTDLPBinary,
+			WhisperBinary:         opts.WhisperBinary,
+			WhisperModelPath:      opts.WhisperModelPath,
+			WhisperVADModelPath:   opts.WhisperVADPath,
+			TranscriptionLanguage: opts.TranscriptionLanguage,
+			MacWhisperBinary:      opts.MacWhisperBinary,
 		})
 		if err != nil {
 			debugLog(opts.Logger, "youtube audio fallback failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())

@@ -565,7 +565,7 @@ func TestSelectionWarningsOnlyReportSelectedImportRequirements(t *testing.T) {
 	for _, expected := range []string{
 		"no GitHub token",
 		"safari_tabs.device is empty",
-		"MacWhisper CLI, ffprobe, yt-dlp",
+		"ffprobe, yt-dlp",
 		"X photo OCR is disabled",
 	} {
 		if !strings.Contains(warnings, expected) {
@@ -623,6 +623,18 @@ safari_tabs:
 	}
 	if !selections.EnableScheduler {
 		t.Fatalf("unexpected scheduler selection: %#v", selections)
+	}
+}
+
+func TestSeedSelectionsFromConfigPreservesTranscriptionDefaultsForBlankScalars(t *testing.T) {
+	wantModel := "/cache/whisper-cpp/ggml-base.bin"
+	wantVAD := "/cache/whisper-cpp/ggml-silero-v6.2.0.bin"
+	selections, err := SeedSelectionsFromConfig(Selections{WhisperModelPath: wantModel, WhisperVADModelPath: wantVAD}, []byte("transcription:\n  model_path: ''\n  vad_model_path: ''\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selections.WhisperModelPath != wantModel || selections.WhisperVADModelPath != wantVAD {
+		t.Fatalf("blank config replaced defaults: %+v", selections)
 	}
 }
 

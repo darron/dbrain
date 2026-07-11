@@ -1,6 +1,7 @@
 package sourceenrich
 
 import (
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,7 +38,22 @@ func defaultOptions(cfg config.Config, opts Options) Options {
 		opts.WhisperBinary = "whisper-cli"
 	}
 	if strings.TrimSpace(opts.WhisperModelPath) == "" {
-		opts.WhisperModelPath = defaultWhisperModelPath()
+		opts.WhisperModelPath = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TRANSCRIPTION_MODEL_PATH")
+	}
+	if strings.TrimSpace(opts.WhisperModelPath) == "" {
+		opts.WhisperModelPath = filepath.Join(cfg.CacheDir, "whisper-cpp", "ggml-base.bin")
+	}
+	if strings.TrimSpace(opts.WhisperVADModelPath) == "" {
+		opts.WhisperVADModelPath = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TRANSCRIPTION_VAD_MODEL_PATH")
+	}
+	if strings.TrimSpace(opts.WhisperVADModelPath) == "" {
+		opts.WhisperVADModelPath = filepath.Join(cfg.CacheDir, "whisper-cpp", "ggml-silero-v6.2.0.bin")
+	}
+	if strings.TrimSpace(opts.TranscriptionLanguage) == "" {
+		opts.TranscriptionLanguage = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TRANSCRIPTION_LANGUAGE")
+	}
+	if strings.TrimSpace(opts.TranscriptionLanguage) == "" {
+		opts.TranscriptionLanguage = "auto"
 	}
 	if strings.TrimSpace(opts.MacWhisperBinary) == "" {
 		opts.MacWhisperBinary = "mw"

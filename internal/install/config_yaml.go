@@ -76,6 +76,18 @@ func buildConfig(template []byte, selections Selections, tools []Tool, secretRef
 	if value := strings.TrimSpace(selections.OCRModel); value != "" {
 		setString(root, []string{"ocr", "model"}, value)
 	}
+	if value := strings.TrimSpace(selections.TranscriptionBackend); value != "" {
+		setString(root, []string{"transcription", "backend"}, value)
+	}
+	if value := strings.TrimSpace(selections.TranscriptionLanguage); value != "" {
+		setString(root, []string{"transcription", "language"}, value)
+	}
+	if value := strings.TrimSpace(selections.WhisperModelPath); value != "" {
+		setString(root, []string{"transcription", "model_path"}, value)
+	}
+	if value := strings.TrimSpace(selections.WhisperVADModelPath); value != "" {
+		setString(root, []string{"transcription", "vad_model_path"}, value)
+	}
 	if tesseract := firstAvailableToolPath(tools, ToolTesseract); tesseract != "" {
 		setString(root, []string{"apple_notes", "tesseract_binary"}, tesseract)
 	}
@@ -273,6 +285,21 @@ func SeedSelectionsFromConfig(selections Selections, data []byte) (Selections, e
 	}
 	if value, ok := configScalar(root, "sync_all", "profile"); ok {
 		selections.SyncProfile = strings.TrimSpace(value)
+	}
+	for _, field := range []struct {
+		key    string
+		target *string
+	}{
+		{"backend", &selections.TranscriptionBackend},
+		{"language", &selections.TranscriptionLanguage},
+		{"model_path", &selections.WhisperModelPath},
+		{"vad_model_path", &selections.WhisperVADModelPath},
+	} {
+		if value, ok := configScalar(root, "transcription", field.key); ok {
+			if value = strings.TrimSpace(value); value != "" {
+				*field.target = value
+			}
+		}
 	}
 	return selections, nil
 }

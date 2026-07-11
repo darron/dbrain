@@ -9,14 +9,6 @@ import (
 	"strings"
 )
 
-func defaultWhisperModelPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".summarize", "cache", "whisper-cpp", "models", "ggml-base.bin")
-}
-
 func cookiesFromBrowserArg(browser, profile string) string {
 	browser = strings.TrimSpace(browser)
 	if browser == "" {

@@ -14,6 +14,7 @@ type ToolID string
 
 const (
 	ToolMacWhisper    ToolID = "macwhisper_cli"
+	ToolWhisperCPP    ToolID = "whisper_cpp_cli"
 	ToolMacWhisperApp ToolID = "macwhisper_app"
 	ToolOllama        ToolID = "ollama_cli"
 	ToolOllamaAPI     ToolID = "ollama_api"
@@ -77,23 +78,29 @@ type Selections struct {
 	OCRModel                string
 	SkipXPhotoOCR           bool
 	SkipCategorize          bool
+	TranscriptionBackend    string
+	TranscriptionLanguage   string
+	WhisperModelPath        string
+	WhisperVADModelPath     string
 	GitHubTokenConfigured   bool
 	Secrets                 map[SecretKind]string
 }
 
 type Options struct {
-	Config             config.Config
-	ConfigTemplate     []byte
-	CategoriesTemplate []byte
-	Runtime            Runtime
-	Selections         Selections
-	OllamaModels       []OllamaModelSetup
-	Tools              []Tool
-	FS                 FileSystem
-	CommandRunner      CommandRunner
-	SecretStore        SecretStore
-	Force              bool
-	DryRun             bool
+	Config                config.Config
+	ConfigTemplate        []byte
+	CategoriesTemplate    []byte
+	Runtime               Runtime
+	Selections            Selections
+	OllamaModels          []OllamaModelSetup
+	Tools                 []Tool
+	FS                    FileSystem
+	CommandRunner         CommandRunner
+	SecretStore           SecretStore
+	Force                 bool
+	DryRun                bool
+	DownloadWhisperModels bool
+	DownloadFile          func(context.Context, string, string, string) error
 }
 
 type OllamaModelSetup struct {
