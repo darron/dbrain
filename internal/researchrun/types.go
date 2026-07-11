@@ -95,6 +95,8 @@ type Options struct {
 	SeedLimit            int
 	IncludeTopic         *bool
 	MaxCharsPerDoc       int
+	InspectionLimit      int
+	InspectionMaxChars   int
 	PlannerModel         string
 	PlannerTimeout       time.Duration
 	PlannerBinary        string
@@ -133,4 +135,5 @@ type Result struct {
 	TracePath         string                           `json:"trace_path,omitempty"`
 	StopReason        string                           `json:"stop_reason"`
 	Warnings          []string                         `json:"warnings,omitempty"`
+	Retried           bool                             `json:"retried,omitempty"`
 }

@@ -207,7 +207,20 @@ func printResearchEvalReport(cmd *cobra.Command, report researcheval.Report) {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  query_variants: %v\n", result.QueryVariants)
 		}
 		if len(result.CitationSourceKeys) > 0 {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  citation_source_keys: %v\n", result.CitationSourceKeys)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  citation_source_keys (%s): %v\n", result.CitationSourceKeysMode, result.CitationSourceKeys)
+		}
+		for _, stage := range []struct {
+			name string
+			keys []string
+		}{
+			{name: "relevance_excluded", keys: result.EvidenceFlow.RelevanceExcludedSourceKeys},
+			{name: "prompt_admitted", keys: result.EvidenceFlow.PromptAdmittedSourceKeys},
+			{name: "budget_dropped", keys: result.EvidenceFlow.BudgetDroppedSourceKeys},
+			{name: "answer_cited", keys: result.EvidenceFlow.AnswerCitedSourceKeys},
+		} {
+			if len(stage.keys) > 0 {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s_source_keys: %v\n", stage.name, stage.keys)
+			}
 		}
 		if len(result.TopEvidence) > 0 {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  top_retrieval_signals:\n")

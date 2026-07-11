@@ -315,10 +315,16 @@ func selectionWarnings(selections Selections, tools []Tool) []string {
 	if selections.EnableSafariTabs && strings.TrimSpace(selections.SafariTabsDevice) == "" {
 		warnings = append(warnings, "Safari tabs are selected but safari_tabs.device is empty.")
 	}
+	if len(tools) > 0 && len(missingTools(tools, ToolSummarize)) > 0 {
+		warnings = append(warnings, "summarize is required for source extraction and summary-backed synthesis but was not found in PATH; install it before syncing with: brew install summarize")
+	}
 	if selections.ImportXBookmarks && len(tools) > 0 {
+		if len(missingTools(tools, ToolMacWhisper)) > 0 {
+			warnings = append(warnings, "X bookmarks are selected but the MacWhisper CLI (mw) is missing; get MacWhisper at https://www.macwhisper.com/ and make mw available in PATH before syncing X media.")
+		}
 		missing := missingTools(tools, ToolFFprobe, ToolYTDLP)
 		if len(missing) > 0 {
-			warnings = append(warnings, "X bookmarks are selected but recommended media tools are missing: "+strings.Join(missing, ", ")+".")
+			warnings = append(warnings, "X bookmarks are selected but required media tools are missing: "+strings.Join(missing, ", ")+". Install them before syncing with: brew install ffmpeg yt-dlp")
 		}
 		if strings.EqualFold(strings.TrimSpace(selections.TranscriptionBackend), "whisper.cpp") && firstAvailableToolPath(tools, ToolWhisperCPP) == "" {
 			warnings = append(warnings, "whisper.cpp transcription is selected but whisper-cli is missing; install it with: brew install whisper-cpp")

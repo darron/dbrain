@@ -46,10 +46,32 @@ brew trust --formula darron/tap/dbrain
 brew install dbrain
 ```
 
-Verify the installed binary:
+Before running first-time setup, install the required source extraction CLI:
+
+```sh
+brew install summarize
+```
+
+Homebrew's `summarize` formula installs its required `ffmpeg`, `node`,
+`tesseract`, and `yt-dlp` dependencies. If you want the installer's default
+local Ollama model profile or cookie-backed X and YouTube imports, install
+those choices before setup too so the installer can detect them:
+
+```sh
+brew install ollama
+brew install --cask google-chrome
+```
+
+If you plan to import X bookmarks, install
+[MacWhisper](https://www.macwhisper.com/) before setup and make sure its `mw`
+CLI is available in `PATH`. X imports can still preserve posts without it, but
+X video and animated-GIF transcription requires MacWhisper.
+
+Verify the installed binaries:
 
 ```sh
 dbrain version
+summarize --help
 ```
 
 Run the first-time setup wizard:
@@ -65,12 +87,12 @@ dbrain install --base-path ~/dbrain --yes
 ```
 
 The installer creates the config/data/vault/log/cache layout, detects local
-helpers such as MacWhisper, Ollama, LM Studio, oMLX, `tesseract`, `ffprobe`,
-and `yt-dlp`, asks which import sources `sync all` may contact, writes those
-choices into `sync_all.imports`, and separately configures scheduled sync,
-Tailscale/tsnet transport, and GitHub web login. Fresh interactive and `--yes`
-installs leave every importer disabled until selected. On macOS, prompted
-third-party secrets are written as Keychain-backed
+helpers such as `summarize`, MacWhisper, Ollama, LM Studio, oMLX, `tesseract`,
+`ffprobe`, and `yt-dlp`, asks which import sources `sync all` may contact,
+writes those choices into `sync_all.imports`, and separately configures
+scheduled sync, Tailscale/tsnet transport, and GitHub web login. Fresh
+interactive and `--yes` installs leave every importer disabled until selected.
+On macOS, prompted third-party secrets are written as Keychain-backed
 `keychain://dbrain/...` config refs. If Keychain is disabled or unavailable,
 the generated web auth session key is written into the `0600` config with a
 warning; prompted third-party secrets are skipped rather than written directly
@@ -117,9 +139,9 @@ when you want the whole install colocated under one directory.
 
 ## Requirements
 
-Install the common local toolchain with Homebrew. `ollama` is included here as
-one local model option; LM Studio, oMLX, or another configured
-OpenAI-compatible backend can be used instead for model-backed dbrain work.
+The end-user Homebrew requirements are installed before `dbrain install` in the
+quickstart above. For development in this checkout, install the Go toolchain,
+task runner, linter, and inspection tools separately:
 
 ```sh
 brew install go go-task/tap/go-task golangci-lint sqlite yt-dlp ffmpeg node deno ollama tesseract whisper-cpp

@@ -188,11 +188,16 @@ config and categories next to that file while data, logs, cache, temp files,
 and the vault keep the normal XDG data layout. Use `--base-path` when you want
 everything colocated under one directory.
 
-The installer detects local helpers and runtimes including MacWhisper (`mw` and
-the macOS app), Ollama, LM Studio, oMLX, `tesseract`, `ffprobe`, `yt-dlp`,
-1Password CLI, and macOS `security`. Local model endpoints are checked
-separately from command presence so the generated config can reflect tools
-that are installed but not currently serving models.
+The installer detects local helpers and runtimes including `summarize`,
+MacWhisper (`mw` and the macOS app), Ollama, LM Studio, oMLX, `tesseract`,
+`ffprobe`, `yt-dlp`, 1Password CLI, and macOS `security`. Local model endpoints
+are checked separately from command presence so the generated config can
+reflect tools that are installed but not currently serving models. When tool
+detection runs and `summarize` is absent, install reports the exact
+`brew install summarize` repair command before the first sync can fail. When X
+is selected and `mw` is absent, install links directly to
+<https://www.macwhisper.com/> because X media transcription requires the
+MacWhisper CLI.
 
 Interactive install begins with an explicit source checklist for X bookmarks,
 GitHub stars, YouTube Watch Later, liked YouTube videos, subscribed feeds,

@@ -47,6 +47,24 @@ func renderMarkdown(trace ResearchTrace) string {
 		}
 	}
 
+	if trace.EvidenceFlow != nil {
+		b.WriteString("\n## Evidence Flow\n\n")
+		writeMDLine(&b, "Schema", trace.EvidenceFlow.SchemaVersion)
+		writeMDLine(&b, "Inspection status", trace.EvidenceFlow.InspectionStatus)
+		writeMDLine(&b, "Preparation status", trace.EvidenceFlow.PreparationStatus)
+		writeMDLine(&b, "Synthesis status", trace.EvidenceFlow.SynthesisStatus)
+		writeMDLine(&b, "Retried", fmt.Sprintf("%t", trace.EvidenceFlow.Retried))
+		writeMDList(&b, "Retrieved", trace.EvidenceFlow.RetrievedSourceKeys)
+		writeMDList(&b, "Relevance admitted", trace.EvidenceFlow.RelevanceAdmittedSourceKeys)
+		writeMDList(&b, "Relevance excluded", trace.EvidenceFlow.RelevanceExcludedSourceKeys)
+		writeMDList(&b, "Prompt admitted", trace.EvidenceFlow.PromptAdmittedSourceKeys)
+		writeMDList(&b, "Budget dropped", trace.EvidenceFlow.BudgetDroppedSourceKeys)
+		writeMDList(&b, "Partially trimmed", trace.EvidenceFlow.PartiallyTrimmedSourceKeys)
+		writeMDList(&b, "Answer cited", trace.EvidenceFlow.AnswerCitedSourceKeys)
+		writeMDList(&b, "Invalid answer citations", trace.EvidenceFlow.InvalidAnswerCitationSourceKeys)
+		writeMDList(&b, "Invariant errors", trace.EvidenceFlow.InvariantErrors)
+	}
+
 	if trace.Synthesis != nil {
 		b.WriteString("\n## Synthesis\n\n")
 		writeMDLine(&b, "Answer status", trace.Synthesis.AnswerStatus)

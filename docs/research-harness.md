@@ -112,6 +112,38 @@ rejects conservative false-negative claims such as "no sources", "no evidence",
 or "corpus lacks" near that anchor. This keeps a model from saying the corpus
 has no material for an author while citing that author's local rows.
 
+Answer citation metadata is now distinct from prepared synthesis context.
+`PreparedSynthesis.Citations` records every source made available to the model;
+`SynthesisResult.Citations` contains only exact source keys present in the final
+answer. Citation verification rejects extra result metadata, and public shares
+derive Original URLs and topic tags from answer-cited evidence only. Literal
+external URLs written directly in an answer remain eligible for sharing.
+
+Synthesis prompt v4 explicitly requires unrelated prompt candidates to be
+ignored silently. A deterministic answer guard rejects unsolicited
+"Unrelated Sources" inventories when the user did not ask for that analysis.
+Short discriminative names such as `J space` are preserved as required phrase
+concepts instead of losing the one-letter token and degrading into a generic
+query such as `anthropic space`. The deterministic plan adds an exact quoted
+phrase lane and preserves it when model-planned variants are merged. When at
+least two rows satisfy every required concept for this short-phrase class,
+only those rows enter synthesis context; the full retrieval pack remains in
+the trace and the selection records included and excluded source keys.
+
+The same intersection guard applies conservatively to safe conjunctive
+families such as entity/topic overviews, people/event lookups, software
+projects, and media-evidence questions. It fails open for comparisons,
+timelines, model/tool selection, corrective or compound questions, partial
+concept coverage, contradictory evidence, raw/chunk/media uncertainty, and
+cross-boundary related/chunk dependencies. Selection is based on unique source
+keys, requires at least two fully matching sources and direct evidence, and
+must actually exclude something before it changes synthesis context.
+
+Topic briefs remain useful retrieval diagnostics, but their summaries are
+derived aggregates without source-key-level citation provenance. They are no
+longer included in synthesis input. Preparation records
+`uncited_topic_brief_excluded` instead of giving the model uncitable prose.
+
 ## Evidence Used For This Document
 
 This document is grounded in the current repo and in dbrain MCP evidence.
@@ -151,10 +183,13 @@ The harness is a shared research pipeline:
 5. Run retrieve-only searches for each query variant.
 6. Rerank evidence by retrieval score, query-variant signal, and concept
    coverage.
-7. Add exact-tag evidence and corpus coverage.
-8. Optionally attach a topic brief.
-9. Emit a structured `research_pack.v1`.
-10. Synthesize a cited answer from the pack for the user-facing Chat path.
+7. Hydrate a bounded top-evidence window from authoritative local storage and
+   rerank that window by direct/raw support without changing retrieval scores.
+8. Add exact-tag evidence and corpus coverage.
+9. Optionally attach a topic brief for diagnostics.
+10. Emit a structured `research_pack.v1`.
+11. Select citation-safe synthesis context, apply the evidence budget, and
+    synthesize a cited answer for the user-facing Chat path.
 
 The pack schema is typed in `internal/brainresearch/types.go`. It includes:
 
@@ -285,9 +320,10 @@ returned without a synthesis call for debugging, evals, MCP primitive use, and
 API compatibility.
 
 When synthesis is enabled, `PrepareSynthesis` validates the pack version,
-requires a configured model when evidence exists, builds a capped evidence
-input, records truncation metadata, and precomputes citations from included
-evidence rows.
+requires a configured model when evidence exists, applies conservative
+source-key relevance selection, removes uncited topic-brief prose, builds a
+capped evidence input, records truncation metadata, and precomputes citations
+from included evidence rows.
 
 The existing synthesis types are a useful foundation for traces.
 `PreparedSynthesis` already carries schema version, prompt version, truncation
@@ -436,10 +472,35 @@ This suggests a useful component model for the native harness:
 - **Tracer**: records every query, row, score, decision, model call, citation,
   and warning so bad answers can become eval cases.
 
-The current code has pieces of Planner, Retriever, Synthesizer, and a small
-amount of Verifier. Inspector and Expander mostly exist as separate MCP tools
-that an external agent can call manually. Judge and Tracer are the biggest
-missing native components.
+The runner now has native Planner, Retriever, bounded Inspector, Judge,
+Synthesizer, Verifier, and Tracer components. Inspection is deliberately one
+read-only hydration pass over the top five primary rows by default, repeated
+once for the final merged pack only when the runner takes its single retry. It
+does not launch another search or inflate the original retrieval score.
+Expansion is still limited to the runner's existing bounded retry/related-
+evidence paths and the richer MCP tools available to an external agent.
+
+### Evidence Flow Contract
+
+Every new runner trace and research-eval result includes
+`evidence_flow.v1`. It separates source-key lifecycle stages that older
+`citation_source_keys` output conflated:
+
+- `retrieved_source_keys`: union of primary and exact-tag candidates
+- `relevance_admitted_source_keys` and
+  `relevance_excluded_source_keys`: deterministic selection result
+- `prompt_admitted_source_keys`: rows serialized after budgeting
+- `budget_dropped_source_keys` and `partially_trimmed_source_keys`: budget
+  effects
+- `answer_cited_source_keys`: exact keys present in the final answer
+- `invalid_answer_citation_source_keys`: answer keys absent from the prompt
+
+Row provenance retains primary versus exact-tag lane, rank, and chunk parent,
+index, and role. Inspection records hydration failures, raw-support rows, and
+promotions/demotions. Lifecycle statuses distinguish stages that did not run
+from stages that ran partially, and `retried` records a successful runner retry.
+Stage invariants are validated in traces and evals; for example answer-cited
+keys must be a subset of prompt-admitted keys.
 
 ### Eval Harness
 
@@ -563,12 +624,12 @@ heuristics and tests. It needs a larger case library, especially for:
 Planner-disabled retrieval should be a release gate, not a niche debugging
 mode.
 
-### Chat Is Not Yet A Bounded Research Loop
+### Chat Uses A Small Bounded Research Loop
 
-Chat currently performs one research call and one synthesis call per turn. It
-can merge prior evidence, but it cannot decide to inspect top evidence, expand
-related context, retry with a narrower variant, or ask for a topic brief based
-on weak coverage.
+Chat now plans, retrieves, inspects a bounded top-evidence window, judges the
+pack, can execute one policy-bounded retry, prepares citation-safe context, and
+synthesizes. It can merge prior evidence, but it still does not implement an
+open-ended autonomous loop or repeatedly pivot across topic/entity graphs.
 
 The MCP skill already tells external agents to do that manually:
 
@@ -577,7 +638,8 @@ The MCP skill already tells external agents to do that manually:
 3. expand with `dbrain_related`
 4. use topic/entity maps when appropriate
 
-The web chat does not yet internalize that workflow.
+The web chat internalizes inspection and one bounded retry, while the MCP loop
+remains the deeper manual path for multi-hop expansion.
 
 The deeper gap is that the agent-side scratchpad is not a first-class state
 object. A good agent tracks what it tried, what looked noisy, which aliases are
@@ -908,8 +970,19 @@ for:
 - `expect_planner_error_contains`
 - `min_retrieval_signals`
 - `expect_answer_status`
-- `expect_citation_source_keys`
-- `forbid_citation_source_keys`
+- `expect_relevance_excluded_source_keys`
+- `forbid_relevance_excluded_source_keys`
+- `expect_prompt_admitted_source_keys`
+- `forbid_prompt_admitted_source_keys`
+- `expect_budget_dropped_source_keys`
+- `forbid_budget_dropped_source_keys`
+- `expect_answer_cited_source_keys` with `run_with_runner`
+- `forbid_answer_cited_source_keys` with `run_with_runner`
+
+Legacy `expect_citation_source_keys` and `forbid_citation_source_keys` remain
+supported. Results label their meaning with `citation_source_keys_mode`:
+`prompt_admitted` for no-call prepared synthesis and `answer_cited` after
+runner synthesis.
 
 Important local cases should run both ways:
 

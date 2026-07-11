@@ -17,7 +17,7 @@ const answerReviewPrompt = `Review the synthesized answer against the provided d
 Do not use outside knowledge.
 Return only JSON with:
 {"verdict":"pass|warn|fail","warnings":["..."],"errors":["..."]}
-Use "fail" only for unsupported claims, contradictions, or uncited material claims.
+Use "fail" for unsupported claims, contradictions, uncited material claims, or discussion of evidence unrelated to the user's question.
 Use "warn" for weak wording, incomplete support, or uncertainty that should be visible to the user.`
 
 type answerReviewJSON struct {

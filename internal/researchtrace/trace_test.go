@@ -112,6 +112,44 @@ func TestWritePersistsMarkdownJSONArtifactsAndRedactsPrivateOperationalData(t *t
 	}
 }
 
+func TestRecorderSnapshotIncludesEvidenceFlowInJSONAndMarkdown(t *testing.T) {
+	recorder := NewRecorder("cli", "Which source is admitted?")
+	pack := brainresearch.Pack{
+		SchemaVersion: brainresearch.SchemaVersion,
+		Evidence: []ask.Evidence{
+			{SourceKey: "src:admitted"},
+			{SourceKey: "src:excluded"},
+		},
+	}
+	prepared := brainresearch.PreparedSynthesis{
+		Relevance: &brainresearch.SynthesisRelevanceSelection{
+			Applied:            true,
+			SelectedSourceKeys: []string{"src:admitted"},
+			ExcludedSourceKeys: []string{"src:excluded"},
+		},
+		Citations: []brainresearch.Citation{{SourceKey: "src:admitted"}},
+	}
+	synthesis := brainresearch.SynthesisResult{Citations: []brainresearch.Citation{{SourceKey: "src:admitted"}}}
+	recorder.SetPack(pack)
+	recorder.SetPreparedSynthesis(prepared)
+	recorder.SetSynthesis(synthesis)
+	recorder.Event("runner_retry_done", nil)
+
+	trace, _ := recorder.Snapshot()
+	if trace.EvidenceFlow == nil || !trace.EvidenceFlow.Retried || len(trace.EvidenceFlow.InvariantErrors) != 0 {
+		t.Fatalf("unexpected evidence flow: %#v", trace.EvidenceFlow)
+	}
+	if got := trace.EvidenceFlow.RelevanceExcludedSourceKeys; len(got) != 1 || got[0] != "src:excluded" {
+		t.Fatalf("unexpected excluded source keys: %#v", got)
+	}
+	markdown := renderMarkdown(trace)
+	for _, expected := range []string{"## Evidence Flow", "**Retrieved:**", "- src:excluded", "**Answer cited:**", "- src:admitted"} {
+		if !strings.Contains(markdown, expected) {
+			t.Fatalf("markdown missing %q:\n%s", expected, markdown)
+		}
+	}
+}
+
 func TestConcurrentWritesCreateDistinctCompleteRunDirectories(t *testing.T) {
 	cfg := testConfig(t)
 	const count = 12

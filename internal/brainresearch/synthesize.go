@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 
 const (
 	SynthesisSchemaVersion           = "research_synthesis.v1"
-	SynthesisPromptVersion           = "brain-research-synthesis-v3"
+	SynthesisPromptVersion           = "brain-research-synthesis-v4"
 	DefaultMaxEvidenceChars          = 24000
 	defaultExactTagReservedChars     = 2000
 	defaultTopicBriefMinRemaining    = 2000
@@ -42,9 +43,27 @@ type PreparedSynthesis struct {
 	Input         string                       `json:"-"`
 	Truncation    TruncationMetadata           `json:"truncation"`
 	Citations     []Citation                   `json:"citations,omitempty"`
+	Relevance     *SynthesisRelevanceSelection `json:"relevance_selection,omitempty"`
 	AnchorContext AnchorSynthesisContextStatus `json:"anchor_context,omitempty"`
 	Warnings      []string                     `json:"answer_warnings,omitempty"`
 	Status        string                       `json:"answer_status"`
+}
+
+type SynthesisRelevanceSelection struct {
+	Applied            bool                         `json:"applied,omitempty"`
+	Reason             string                       `json:"reason,omitempty"`
+	SelectedSourceKeys []string                     `json:"selected_source_keys,omitempty"`
+	ExcludedSourceKeys []string                     `json:"excluded_source_keys,omitempty"`
+	TopicBriefExcluded bool                         `json:"topic_brief_excluded,omitempty"`
+	Decisions          []SynthesisRelevanceDecision `json:"decisions,omitempty"`
+}
+
+type SynthesisRelevanceDecision struct {
+	SourceKey       string   `json:"source_key"`
+	Decision        string   `json:"decision"`
+	Reason          string   `json:"reason"`
+	MatchedConcepts []string `json:"matched_concepts,omitempty"`
+	MissingConcepts []string `json:"missing_concepts,omitempty"`
 }
 
 type SynthesisResult struct {
@@ -112,16 +131,25 @@ func PrepareSynthesis(cfg config.Config, opts SynthesisOptions) (PreparedSynthes
 		budget = DefaultMaxEvidenceChars
 	}
 
+	synthesisPack, relevance := selectSynthesisPack(opts.Pack)
+	topicBriefExcluded := synthesisPack.TopicBrief != nil
+	synthesisPack.TopicBrief = nil
 	builder := synthesisInputBuilder{
-		pack:      opts.Pack,
+		pack:      synthesisPack,
 		question:  question,
 		budget:    budget,
-		citations: make([]Citation, 0, len(opts.Pack.Evidence)+len(opts.Pack.ExactTagEvidence)),
+		citations: make([]Citation, 0, len(synthesisPack.Evidence)+len(synthesisPack.ExactTagEvidence)),
 		seen:      map[string]struct{}{},
 	}
 	input := builder.build()
 	status := "ok"
 	warnings := builder.warnings()
+	if relevance != nil {
+		warnings = appendUnique(warnings, "evidence_relevance_filtered")
+	}
+	if topicBriefExcluded {
+		warnings = appendUnique(warnings, "uncited_topic_brief_excluded")
+	}
 	anchorContext := anchoredSynthesisContextStatus(opts.Pack, PreparedSynthesis{
 		Truncation: builder.truncation,
 		Citations:  builder.citations,
@@ -142,10 +170,230 @@ func PrepareSynthesis(cfg config.Config, opts SynthesisOptions) (PreparedSynthes
 		Input:         input,
 		Truncation:    builder.truncation,
 		Citations:     builder.citations,
+		Relevance:     relevance,
 		AnchorContext: anchorContext,
 		Warnings:      warnings,
 		Status:        status,
 	}, nil
+}
+
+func selectSynthesisPack(pack Pack) (Pack, *SynthesisRelevanceSelection) {
+	reason := ""
+	if hasRequiredShortPhraseConcept(pack.QueryPlan.Concepts) {
+		reason = "required_short_phrase"
+	} else if supportsRequiredConceptIntersection(pack.QueryPlan.QueryFamily, pack.QueryPlan.Concepts) {
+		reason = "required_concept_intersection"
+	} else {
+		return pack, nil
+	}
+	decisions, selectedKeys, excludedKeys, hasPartial := classifyRowsByRequiredConcepts(pack, pack.QueryPlan.Concepts, reason == "required_short_phrase")
+	if reason == "required_concept_intersection" && (hasPartial || isCompoundSelectionQuestion(pack.Question) || hasUncertainExcludedEvidence(pack, excludedKeys)) {
+		return pack, nil
+	}
+	if len(selectedKeys) < 2 || len(excludedKeys) == 0 || !hasSelectedDirectEvidence(pack.Evidence, selectedKeys) {
+		return pack, nil
+	}
+	if hasSelectionDependency(pack, selectedKeys, excludedKeys) {
+		return pack, nil
+	}
+	selectedEvidence := filterEvidenceBySourceKeys(pack.Evidence, selectedKeys)
+	selectedExact := filterEvidenceBySourceKeys(pack.ExactTagEvidence, selectedKeys)
+	selection := &SynthesisRelevanceSelection{
+		Applied:            true,
+		Reason:             reason,
+		SelectedSourceKeys: sortedStringSetKeys(selectedKeys),
+		ExcludedSourceKeys: sortedStringSetKeys(excludedKeys),
+		TopicBriefExcluded: pack.TopicBrief != nil,
+		Decisions:          decisions,
+	}
+	pack.Evidence = selectedEvidence
+	pack.ExactTagEvidence = selectedExact
+	pack.TopicBrief = nil
+	return pack, selection
+}
+
+func supportsRequiredConceptIntersection(family string, concepts []QueryConcept) bool {
+	switch strings.TrimSpace(family) {
+	case queryFamilyEntityTopicOverview, queryFamilyPeopleEventLookup, queryFamilySoftwareProject, queryFamilyMediaEvidence:
+	default:
+		return false
+	}
+	count := 0
+	for _, concept := range concepts {
+		if concept.Required && (concept.Role == conceptRoleContent || concept.Role == conceptRoleAnchor || concept.Role == "") {
+			count++
+		}
+	}
+	return count >= 2
+}
+
+func hasRequiredShortPhraseConcept(concepts []QueryConcept) bool {
+	for _, concept := range concepts {
+		parts := strings.Fields(concept.Preferred)
+		if concept.Required && len(parts) == 2 && len([]rune(parts[0])) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyRowsByRequiredConcepts(pack Pack, concepts []QueryConcept, excludePartial bool) ([]SynthesisRelevanceDecision, map[string]struct{}, map[string]struct{}, bool) {
+	rows := append(append([]ask.Evidence{}, pack.Evidence...), pack.ExactTagEvidence...)
+	byKey := map[string]SynthesisRelevanceDecision{}
+	for _, row := range rows {
+		key := strings.TrimSpace(row.SourceKey)
+		if key == "" {
+			continue
+		}
+		decision := SynthesisRelevanceDecision{SourceKey: key, Decision: "selected", Reason: "all_required_concepts_matched"}
+		text := researchEvidenceText(row)
+		for _, concept := range concepts {
+			if !concept.Required || (concept.Role != "" && concept.Role != conceptRoleContent && concept.Role != conceptRoleAnchor) {
+				continue
+			}
+			if conceptMatchesText(concept, text) {
+				decision.MatchedConcepts = appendUnique(decision.MatchedConcepts, concept.Key)
+			} else {
+				decision.MissingConcepts = appendUnique(decision.MissingConcepts, concept.Key)
+			}
+		}
+		if len(decision.MissingConcepts) > 0 {
+			decision.Decision = "excluded"
+			decision.Reason = "missing_required_concepts"
+		}
+		if existing, ok := byKey[key]; ok {
+			decision.MatchedConcepts = uniqueStrings(append(existing.MatchedConcepts, decision.MatchedConcepts...))
+			decision.MissingConcepts = requiredConceptKeysMissing(concepts, decision.MatchedConcepts)
+			if len(decision.MissingConcepts) == 0 {
+				decision.Decision = "selected"
+				decision.Reason = "all_required_concepts_matched"
+			}
+		}
+		byKey[key] = decision
+	}
+	selected := map[string]struct{}{}
+	excluded := map[string]struct{}{}
+	hasPartial := false
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	decisions := make([]SynthesisRelevanceDecision, 0, len(keys))
+	for _, key := range keys {
+		decision := byKey[key]
+		if decision.Decision == "selected" {
+			selected[key] = struct{}{}
+		} else if len(decision.MatchedConcepts) > 0 && !excludePartial {
+			hasPartial = true
+			decision.Decision = "retained_fail_open"
+			decision.Reason = "partial_required_concept_coverage"
+		} else {
+			excluded[key] = struct{}{}
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, selected, excluded, hasPartial
+}
+
+func isCompoundSelectionQuestion(question string) bool {
+	lower := strings.ToLower(strings.Join(strings.Fields(question), " "))
+	return strings.Count(lower, "?") > 1 || strings.Contains(lower, " and also ") || strings.Contains(lower, " what about ") || strings.Contains(lower, ";")
+}
+
+func hasUncertainExcludedEvidence(pack Pack, excluded map[string]struct{}) bool {
+	for _, row := range append(append([]ask.Evidence{}, pack.Evidence...), pack.ExactTagEvidence...) {
+		if _, ok := excluded[strings.TrimSpace(row.SourceKey)]; !ok {
+			continue
+		}
+		if row.Chunk != nil || len(row.Media) > 0 || strings.HasPrefix(row.EvidenceRole, "raw_") {
+			return true
+		}
+		text := strings.ToLower(strings.Join([]string{row.Title, row.Summary, row.Excerpt}, " "))
+		if containsAnySelectionTerm(text, "contradict", "debunk", "correction", "misattributed", "alternative", "however") {
+			return true
+		}
+		for _, section := range row.ContentSections {
+			if strings.HasPrefix(section.Role, "raw") && strings.TrimSpace(section.Text) == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsAnySelectionTerm(text string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func requiredConceptKeysMissing(concepts []QueryConcept, matched []string) []string {
+	matchedSet := stringSliceSet(matched)
+	var missing []string
+	for _, concept := range concepts {
+		if !concept.Required || (concept.Role != "" && concept.Role != conceptRoleContent && concept.Role != conceptRoleAnchor) {
+			continue
+		}
+		if _, ok := matchedSet[concept.Key]; !ok {
+			missing = appendUnique(missing, concept.Key)
+		}
+	}
+	return missing
+}
+
+func hasSelectedDirectEvidence(rows []ask.Evidence, selected map[string]struct{}) bool {
+	for _, row := range rows {
+		if _, ok := selected[strings.TrimSpace(row.SourceKey)]; ok && strings.TrimSpace(row.RelatedTo) == "" && strings.TrimSpace(row.Relationship) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSelectionDependency(pack Pack, selected map[string]struct{}, excluded map[string]struct{}) bool {
+	for _, row := range append(append([]ask.Evidence{}, pack.Evidence...), pack.ExactTagEvidence...) {
+		key := strings.TrimSpace(row.SourceKey)
+		parents := []string{strings.TrimSpace(row.RelatedTo)}
+		if row.Chunk != nil {
+			parents = append(parents, strings.TrimSpace(row.Chunk.ParentSourceKey))
+		}
+		for _, parent := range parents {
+			if parent == "" || parent == key {
+				continue
+			}
+			_, keySelected := selected[key]
+			_, parentSelected := selected[parent]
+			_, keyExcluded := excluded[key]
+			_, parentExcluded := excluded[parent]
+			if (keySelected && parentExcluded) || (keyExcluded && parentSelected) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func filterEvidenceBySourceKeys(rows []ask.Evidence, selected map[string]struct{}) []ask.Evidence {
+	out := make([]ask.Evidence, 0, len(rows))
+	for _, row := range rows {
+		if _, ok := selected[strings.TrimSpace(row.SourceKey)]; ok {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func sortedStringSetKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for key := range set {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func anchoredSynthesisContextStatus(pack Pack, prepared PreparedSynthesis) AnchorSynthesisContextStatus {

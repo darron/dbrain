@@ -11,6 +11,57 @@ development date for the change set.
 - **Installer**: `dbrain install` now detects `whisper-cli`, writes shared transcription configuration, reports the exact Homebrew command when it is missing, and can download pinned, checksum-verified Whisper base and Silero VAD models with `--download-whisper-models`.
 - **CLI/docs**: `dbrain transcribe x-media` accepts explicit backend, model, VAD, language, and binary flags; MacWhisper remains available as a compatibility backend.
 
+### Research Harness Inspection And Evidence Flow (2026-07-11)
+
+- **Inspection**: The runner now performs one bounded read-only hydration pass
+  over the top primary evidence rows, reranks only that window using direct/raw
+  support, preserves tail order, and leaves original retrieval scores intact.
+- **Relevance**: Conservative required-concept intersection filtering now
+  covers safe conjunctive query families while failing open for partial,
+  compound, comparative, corrective, contradictory, chunked, media, and
+  dependency-uncertain evidence.
+- **Synthesis**: Uncited topic-brief aggregates are excluded from model context;
+  source-key evidence remains available according to relevance and budget
+  decisions.
+- **Tracing and evals**: Added `evidence_flow.v1` with explicit retrieved,
+  inspected, relevance-admitted/excluded, prompt-admitted, budget-dropped,
+  partially-trimmed, and answer-cited stages plus lifecycle invariants and
+  stage-specific eval assertions.
+- **Location**: `internal/ask/`, `internal/brainresearch/`,
+  `internal/researchrun/`, `internal/researchtrace/`, `internal/researcheval/`
+
+### Chat Harness Relevance And Citation Semantics (2026-07-11)
+
+- **Fixed**: Final synthesis citation metadata now contains only exact source
+  keys actually cited in the answer; prepared prompt evidence remains recorded
+  separately on `PreparedSynthesis` for traces and diagnostics.
+- **Shares**: Public Original URLs, source metadata, and topic tags now treat
+  answer citations as authoritative, preventing uncited prompt candidates from
+  leaking through the structured citation array.
+- **Synthesis guardrails**: Prompt v4 tells the model to ignore unrelated
+  candidates silently, and verification rejects unsolicited unrelated-source
+  inventories before a turn can be shared.
+- **Retrieval**: Required phrase concepts preserve discriminative one-letter
+  names such as `J space`, keep an exact quoted phrase lane through planner
+  merges, and restrict synthesis context to rows satisfying every required
+  concept when at least two direct matches are available. This avoids broad
+  fallback plans such as `anthropic space` over-ranking unrelated material.
+- **Regression coverage**: Added runtime-shaped tests for prepared-versus-used
+  citations, public share filtering, category filtering, short-token concepts,
+  and unrelated-source answer rejection.
+- **Location**: `internal/brainresearch/`, `internal/researchrun/`,
+  `web/chat_shares.go`, `docs/research-harness.md`
+
+### Installer Summarize Prerequisite (2026-07-11)
+
+- **Installer**: First-time setup now detects the required `summarize` CLI and
+  prints an actionable `brew install summarize` warning when it is missing; X
+  setup now gives missing MacWhisper and media tools explicit install paths.
+- **Docs**: Homebrew runtime requirements now appear before `dbrain install`,
+  including the official `summarize` formula and optional Ollama and Chrome
+  setup needed before installer detection, with MacWhisper linked prominently
+  for X media transcription.
+
 ### Installer Import Selection (2026-07-09)
 
 - **Installer**: Fresh installs now present an explicit checklist for X

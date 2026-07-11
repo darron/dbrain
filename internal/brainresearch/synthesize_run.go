@@ -20,6 +20,7 @@ Accuracy matters more than appearing objective: separate supported facts, source
 Cite each material claim with exact source keys from the research pack in brackets, such as [src:...], [x:...], [apple-note:...], or [gh-star:...].
 Do not add, remove, shorten, or rewrite source key prefixes.
 Do not include local note paths, filesystem paths, or a separate Sources section; the UI renders citation metadata separately.
+Ignore evidence that is unrelated to the question. Do not mention, summarize, cite, or add a note or section about unrelated candidates in the research pack.
 If evidence is weak, partial, list-like, or missing, say so plainly.
 Distinguish user-authored notes from linked third-party sources when the evidence marks that difference.
 Distinguish summaries, excerpts, transcripts, OCR, raw notes, and archived web extracts when relevant.
@@ -81,14 +82,15 @@ func RunPreparedSynthesis(ctx context.Context, cfg config.Config, prepared Prepa
 	if hasString(prepared.Warnings, "evidence_truncated") {
 		status = "ok_truncated"
 	}
+	answer := strings.TrimSpace(runResult.Summary.Text)
 	return SynthesisResult{
 		SchemaVersion: SynthesisSchemaVersion,
 		Question:      prepared.Question,
-		Answer:        strings.TrimSpace(runResult.Summary.Text),
+		Answer:        answer,
 		AnswerStatus:  status,
 		Warnings:      prepared.Warnings,
 		Truncation:    prepared.Truncation,
-		Citations:     prepared.Citations,
+		Citations:     CitationsUsedInAnswer(answer, prepared.Citations),
 		AnchorContext: prepared.AnchorContext,
 		PromptVersion: SynthesisPromptVersion,
 		Model:         firstNonEmpty(runResult.Summary.Model, prepared.Model),

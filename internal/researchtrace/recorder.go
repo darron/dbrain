@@ -157,8 +157,21 @@ func (r *Recorder) Snapshot() (ResearchTrace, ArtifactContents) {
 	if trace.StopReason == "" {
 		trace.StopReason = inferStopReason(trace)
 	}
+	if trace.Pack != nil || trace.PreparedSynthesis != nil || trace.Synthesis != nil {
+		flow := brainresearch.BuildEvidenceFlow(trace.Pack, trace.PreparedSynthesis, trace.Synthesis, traceHasEvent(trace.Events, "runner_retry_done"))
+		trace.EvidenceFlow = &flow
+	}
 	trace.Metrics = computeMetrics(trace, artifacts)
 	return trace, artifacts
+}
+
+func traceHasEvent(events []ResearchTraceEvent, name string) bool {
+	for _, event := range events {
+		if event.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func inferStopReason(trace ResearchTrace) string {

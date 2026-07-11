@@ -88,6 +88,7 @@ func DetectTools(ctx context.Context, opts DetectionOptions) []Tool {
 		detectCommand(opts.Prober, ToolTesseract, "Tesseract", "tesseract"),
 		detectCommand(opts.Prober, ToolFFprobe, "ffprobe", "ffprobe"),
 		detectCommand(opts.Prober, ToolYTDLP, "yt-dlp", "yt-dlp"),
+		detectCommand(opts.Prober, ToolSummarize, "summarize", "summarize"),
 		detectCommand(opts.Prober, ToolOnePassword, "1Password CLI", "op"),
 		detectCommand(opts.Prober, ToolSecurity, "macOS security CLI", "security"),
 	}
