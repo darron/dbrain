@@ -20,7 +20,9 @@ them in each change.
 Agents are explicitly authorized to create and use subagents at their own
 discretion when delegation would improve speed, coverage, or confidence. Human
 approval is not required for each use of a subagent within the scope of the
-requested task.
+requested task. The user has made this a standing preference across all of their
+projects and repositories, not a one-time exception for `dbrain` or this
+session.
 
 - use subagents for concrete, bounded work that can proceed independently, such
   as parallel repository inspection, focused implementation, test diagnosis,
