@@ -547,7 +547,7 @@ func TestSelectionWarningsOnlyReportSelectedImportRequirements(t *testing.T) {
 	if !strings.Contains(noImports, "No import sources were selected") {
 		t.Fatalf("expected no-import warning, got %q", noImports)
 	}
-	if strings.Contains(noImports, "GitHub stars") || strings.Contains(noImports, "recommended media tools") || strings.Contains(noImports, "Safari tabs") {
+	if strings.Contains(noImports, "GitHub stars") || strings.Contains(noImports, "MacWhisper") || strings.Contains(noImports, "required media tools") || strings.Contains(noImports, "Safari tabs") {
 		t.Fatalf("unselected sources should not report requirements: %q", noImports)
 	}
 
@@ -561,16 +561,42 @@ func TestSelectionWarningsOnlyReportSelectedImportRequirements(t *testing.T) {
 		{ID: ToolMacWhisper, Name: "MacWhisper CLI"},
 		{ID: ToolFFprobe, Name: "ffprobe"},
 		{ID: ToolYTDLP, Name: "yt-dlp"},
+		{ID: ToolSummarize, Name: "summarize", Available: true},
 	}), "\n")
 	for _, expected := range []string{
 		"no GitHub token",
 		"safari_tabs.device is empty",
-		"MacWhisper CLI, ffprobe, yt-dlp",
+		"https://www.macwhisper.com/",
+		"ffprobe, yt-dlp",
+		"brew install ffmpeg yt-dlp",
 		"X photo OCR is disabled",
 	} {
 		if !strings.Contains(warnings, expected) {
 			t.Fatalf("expected selected-source warning %q, got %q", expected, warnings)
 		}
+	}
+}
+
+func TestSelectionWarningsReportMissingSummarizeWhenDetectionRan(t *testing.T) {
+	t.Parallel()
+
+	warnings := strings.Join(selectionWarnings(Selections{}, []Tool{
+		{ID: ToolSummarize, Name: "summarize", Available: false, Detail: "summarize not found"},
+	}), "\n")
+	if !strings.Contains(warnings, "brew install summarize") {
+		t.Fatalf("expected actionable missing-summarize warning, got %q", warnings)
+	}
+
+	warnings = strings.Join(selectionWarnings(Selections{}, []Tool{
+		{ID: ToolSummarize, Name: "summarize", Available: true, Path: "/opt/homebrew/bin/summarize"},
+	}), "\n")
+	if strings.Contains(warnings, "brew install summarize") {
+		t.Fatalf("installed summarize should suppress missing-tool warning, got %q", warnings)
+	}
+
+	warnings = strings.Join(selectionWarnings(Selections{}, nil), "\n")
+	if strings.Contains(warnings, "brew install summarize") {
+		t.Fatalf("disabled detection should not report summarize as missing, got %q", warnings)
 	}
 }
 
@@ -874,6 +900,7 @@ func TestDetectToolsFindsCommandsAppsAndLocalEndpoints(t *testing.T) {
 			"tesseract": "/opt/homebrew/bin/tesseract",
 			"ffprobe":   "/opt/homebrew/bin/ffprobe",
 			"yt-dlp":    "/opt/homebrew/bin/yt-dlp",
+			"summarize": "/opt/homebrew/bin/summarize",
 		},
 		exists: map[string]bool{
 			"/Applications/MacWhisper.app": true,
@@ -900,6 +927,7 @@ func TestDetectToolsFindsCommandsAppsAndLocalEndpoints(t *testing.T) {
 	assertTool(t, tools, ToolTesseract, true, "/opt/homebrew/bin/tesseract", nil)
 	assertTool(t, tools, ToolFFprobe, true, "/opt/homebrew/bin/ffprobe", nil)
 	assertTool(t, tools, ToolYTDLP, true, "/opt/homebrew/bin/yt-dlp", nil)
+	assertTool(t, tools, ToolSummarize, true, "/opt/homebrew/bin/summarize", nil)
 }
 
 func TestDetectToolsUsesLMStudioHomeFallbackWithoutDuplicate(t *testing.T) {

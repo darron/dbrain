@@ -1013,7 +1013,7 @@ func TestInstallCommandWritesBasePathConfigAndReportsDetectedTools(t *testing.T)
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	for _, name := range []string{"mw", "ffprobe", "yt-dlp", "tesseract"} {
+	for _, name := range []string{"mw", "ffprobe", "yt-dlp", "tesseract", "summarize"} {
 		path := filepath.Join(binDir, name)
 		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatalf("write fake %s: %v", name, err)
@@ -1108,6 +1108,7 @@ func TestInstallCommandWritesBasePathConfigAndReportsDetectedTools(t *testing.T)
 		configPath,
 		"MacWhisper CLI",
 		"Tesseract",
+		"summarize",
 		"Scheduler enabled",
 		"GitHub login enabled",
 		"Tailscale enabled",
