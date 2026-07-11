@@ -21,6 +21,9 @@ func buildQueryVariants(question string, textQuery string, concepts []QueryConce
 	if preferred := preferredConceptQuery(concepts); preferred != "" && !strings.EqualFold(preferred, textQuery) {
 		add(preferred, "preferred_concept_terms")
 	}
+	for _, query := range shortTokenPhraseQueries(concepts) {
+		add(query, "short_token_phrase")
+	}
 
 	addFamilyVariants(add, family, question, concepts)
 	for _, variant := range focusedConceptVariants(concepts) {
@@ -31,6 +34,18 @@ func buildQueryVariants(question string, textQuery string, concepts []QueryConce
 		add(question, "original_question")
 	}
 	return limitQueryVariants(variants)
+}
+
+func shortTokenPhraseQueries(concepts []QueryConcept) []string {
+	var queries []string
+	for _, concept := range concepts {
+		parts := strings.Fields(concept.Preferred)
+		if len(parts) != 2 || len([]rune(parts[0])) != 1 {
+			continue
+		}
+		queries = append(queries, `"`+parts[0]+"-"+parts[1]+`"`)
+	}
+	return uniqueStrings(queries)
 }
 
 func addFamilyVariants(add func(string, string), family string, question string, concepts []QueryConcept) {

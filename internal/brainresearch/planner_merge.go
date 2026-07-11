@@ -147,20 +147,29 @@ func plannerConceptSearchTerms(concept QueryConcept) []string {
 func mergeQueryVariants(base []QueryVariant, extra []QueryVariant) []QueryVariant {
 	out := make([]QueryVariant, 0, len(base)+len(extra))
 	seen := map[string]struct{}{}
-	for _, variant := range append(base, extra...) {
-		query := sanitizePlannerQuery(variant.Query)
+	add := func(variant QueryVariant, sanitize bool) {
+		query := strings.TrimSpace(strings.Join(strings.Fields(variant.Query), " "))
+		if sanitize {
+			query = sanitizePlannerQuery(query)
+		}
 		if query == "" {
-			continue
+			return
 		}
 		key := strings.ToLower(query)
 		if _, exists := seen[key]; exists {
-			continue
+			return
 		}
 		seen[key] = struct{}{}
 		out = append(out, QueryVariant{
 			Query:  query,
 			Reason: sanitizePlannerReason(variant.Reason),
 		})
+	}
+	for _, variant := range base {
+		add(variant, false)
+	}
+	for _, variant := range extra {
+		add(variant, true)
 	}
 	return limitQueryVariants(out)
 }

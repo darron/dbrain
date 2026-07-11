@@ -209,7 +209,7 @@ func (r *runner) run() (Result, error) {
 	}
 	verification := mergeVerificationResults(
 		GuardAnchoredAnswer(pack, prepared, synthesis),
-		VerifyCitations(pack, synthesis),
+		VerifyPreparedCitations(prepared, synthesis),
 	)
 	r.result.Verification = verification
 	r.result.Warnings = appendUniqueStrings(r.result.Warnings, verification.Warnings...)

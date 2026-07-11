@@ -2,6 +2,7 @@ package brainresearch
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,28 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/retrieval"
 )
+
+func TestPreparedSynthesisOmitsUnusedRelevanceSelection(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := json.Marshal(PreparedSynthesis{SchemaVersion: SynthesisSchemaVersion})
+	if err != nil {
+		t.Fatalf("marshal prepared synthesis: %v", err)
+	}
+	if strings.Contains(string(encoded), "relevance_selection") {
+		t.Fatalf("expected unused additive field to be omitted, got %s", encoded)
+	}
+	encoded, err = json.Marshal(PreparedSynthesis{
+		SchemaVersion: SynthesisSchemaVersion,
+		Relevance:     &SynthesisRelevanceSelection{Applied: true, Reason: "required_short_phrase"},
+	})
+	if err != nil {
+		t.Fatalf("marshal prepared synthesis with selection: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"relevance_selection":{"applied":true,"reason":"required_short_phrase"}`) {
+		t.Fatalf("expected applied relevance selection, got %s", encoded)
+	}
+}
 
 func TestPrepareSynthesisBudgetsEvidenceDeterministically(t *testing.T) {
 	cfg, err := config.Load(t.TempDir())
@@ -156,7 +179,7 @@ func TestPrepareSynthesisWarnsWhenAnchorRowsDropFromTokenBudget(t *testing.T) {
 }
 
 func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
-	if SynthesisPromptVersion != "brain-research-synthesis-v3" {
+	if SynthesisPromptVersion != "brain-research-synthesis-v4" {
 		t.Fatalf("unexpected synthesis prompt version: %q", SynthesisPromptVersion)
 	}
 	for _, want := range []string{
@@ -165,6 +188,7 @@ func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
 		"Accuracy matters more than appearing objective",
 		"separate supported facts, source claims, opinions, and uncertainty",
 		"Do not include local note paths, filesystem paths, or a separate Sources section",
+		"Do not mention, summarize, cite, or add a note or section about unrelated candidates",
 	} {
 		if !strings.Contains(synthesisPrompt, want) {
 			t.Fatalf("synthesis prompt missing %q:\n%s", want, synthesisPrompt)
@@ -174,6 +198,47 @@ func TestSynthesisPromptFramesSelectiveCorpusAndAccuracy(t *testing.T) {
 		if strings.Contains(synthesisPrompt, forbidden) {
 			t.Fatalf("synthesis prompt retained local path instruction %q:\n%s", forbidden, synthesisPrompt)
 		}
+	}
+}
+
+func TestPrepareSynthesisFiltersDistractorsForRequiredShortPhrase(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	t.Setenv("DBRAIN_SUMMARY_MODEL", "cli/test/research")
+	matched := func(key string) ask.Evidence {
+		return ask.Evidence{SourceKey: key, Kind: "source", Title: key, Summary: "Relevant Anthropic J-space evidence.", Retrieval: &ask.RetrievalInfo{Signals: []ask.RetrievalSignal{{Name: "all_required_research_concepts_matched", Weight: 24}}}}
+	}
+	pack := Pack{
+		SchemaVersion: SchemaVersion,
+		Question:      "anthropic j space",
+		QueryPlan: QueryPlan{Concepts: []QueryConcept{
+			{Key: "anthropic", Preferred: "anthropic", Terms: []string{"anthropic"}, Required: true},
+			{Key: "j_space", Preferred: "j space", Terms: []string{"j space", "j-space", "jspace"}, Required: true},
+		}},
+		Evidence: []ask.Evidence{
+			matched("src:j-space"),
+			matched("x:j-space"),
+			{SourceKey: "src:cursor", Kind: "source", Title: "SpaceX buys Cursor", Summary: "Unrelated candidate."},
+		},
+		ExactTagEvidence: []ask.Evidence{
+			{SourceKey: "x:exact-relevant", Kind: "item", Title: "Anthropic J-space follow-up", Summary: "Relevant follow-up evidence.", Retrieval: &ask.RetrievalInfo{Signals: []ask.RetrievalSignal{{Name: "exact_user_tag_example"}}}},
+			{SourceKey: "x:exact-unrelated", Kind: "item", Title: "Anthropic advertising", Summary: "Unrelated candidate.", Retrieval: &ask.RetrievalInfo{Signals: []ask.RetrievalSignal{{Name: "exact_user_tag_example"}}}},
+		},
+	}
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: pack, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis: %v", err)
+	}
+	if !prepared.Relevance.Applied || prepared.Relevance.Reason != "required_short_phrase" {
+		t.Fatalf("expected relevance selection, got %+v", prepared.Relevance)
+	}
+	if hasCitation(prepared.Citations, "src:cursor") || hasCitation(prepared.Citations, "x:exact-unrelated") || !hasCitation(prepared.Citations, "src:j-space") || !hasCitation(prepared.Citations, "x:j-space") || !hasCitation(prepared.Citations, "x:exact-relevant") {
+		t.Fatalf("unexpected prepared citations: %+v", prepared.Citations)
+	}
+	if !hasString(prepared.Relevance.ExcludedSourceKeys, "src:cursor") || !hasString(prepared.Relevance.ExcludedSourceKeys, "x:exact-unrelated") || strings.Contains(prepared.Input, "SpaceX buys Cursor") {
+		t.Fatalf("expected distractor excluded from synthesis input: relevance=%+v input=%s", prepared.Relevance, prepared.Input)
 	}
 }
 
@@ -195,6 +260,7 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 		Coverage:      Coverage{EvidenceCount: 1, RecallNote: "one evidence row"},
 		Evidence: []ask.Evidence{
 			{SourceKey: "src:kubeval", Kind: "source", Title: "kubeval", URL: "https://kubeval.com", NotePath: "sources/web/kubeval.md", Summary: "kubeval validates Kubernetes manifests."},
+			{SourceKey: "src:unrelated", Kind: "source", Title: "Unrelated", URL: "https://example.com/unrelated", NotePath: "sources/web/unrelated.md", Summary: "Unrelated prompt candidate."},
 		},
 	}
 
@@ -214,6 +280,9 @@ func TestSynthesizeRunsConfiguredSummaryPath(t *testing.T) {
 	}
 	if result.Answer != "kubeval validates manifests [src:kubeval]." {
 		t.Fatalf("unexpected answer: %q", result.Answer)
+	}
+	if len(result.Citations) != 1 || result.Citations[0].SourceKey != "src:kubeval" {
+		t.Fatalf("expected answer-used citations only, got %+v", result.Citations)
 	}
 	if result.PromptVersion != SynthesisPromptVersion || result.ToolVersion != "test-1.0.0" {
 		t.Fatalf("unexpected provenance: %+v", result)

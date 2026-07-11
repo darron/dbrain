@@ -112,6 +112,24 @@ rejects conservative false-negative claims such as "no sources", "no evidence",
 or "corpus lacks" near that anchor. This keeps a model from saying the corpus
 has no material for an author while citing that author's local rows.
 
+Answer citation metadata is now distinct from prepared synthesis context.
+`PreparedSynthesis.Citations` records every source made available to the model;
+`SynthesisResult.Citations` contains only exact source keys present in the final
+answer. Citation verification rejects extra result metadata, and public shares
+derive Original URLs and topic tags from answer-cited evidence only. Literal
+external URLs written directly in an answer remain eligible for sharing.
+
+Synthesis prompt v4 explicitly requires unrelated prompt candidates to be
+ignored silently. A deterministic answer guard rejects unsolicited
+"Unrelated Sources" inventories when the user did not ask for that analysis.
+Short discriminative names such as `J space` are preserved as required phrase
+concepts instead of losing the one-letter token and degrading into a generic
+query such as `anthropic space`. The deterministic plan adds an exact quoted
+phrase lane and preserves it when model-planned variants are merged. When at
+least two rows satisfy every required concept for this short-phrase class,
+only those rows enter synthesis context; the full retrieval pack remains in
+the trace and the selection records included and excluded source keys.
+
 ## Evidence Used For This Document
 
 This document is grounded in the current repo and in dbrain MCP evidence.

@@ -851,6 +851,37 @@ func TestMergeQueryConceptsTreatsModelOnlyExpansionsAsOptional(t *testing.T) {
 	}
 }
 
+func TestBuildQueryConceptsPreservesDiscriminativeShortTokenPhrase(t *testing.T) {
+	t.Parallel()
+
+	concepts := buildQueryConcepts([]string{"anthropic", "j", "space"})
+	jSpace := conceptByKey(concepts, "j_space")
+	if jSpace == nil || !jSpace.Required || jSpace.Preferred != "j space" {
+		t.Fatalf("expected required j-space phrase concept, got %#v in %#v", jSpace, concepts)
+	}
+	for _, term := range []string{"j space", "j-space", "jspace"} {
+		if !hasConceptTerm(concepts, "j_space", term) {
+			t.Fatalf("expected j_space alias %q, got %#v", term, concepts)
+		}
+	}
+
+	merged := mergeQueryConcepts(concepts, []QueryConcept{{
+		Key: "j_space", Preferred: "J-Space", Terms: []string{"J Space", "JSpace", "Joint Space"}, Required: true,
+	}})
+	jSpace = conceptByKey(merged, "j_space")
+	if jSpace == nil || !jSpace.Required {
+		t.Fatalf("planner merge weakened deterministic short phrase: %#v", merged)
+	}
+	variants := buildQueryVariants("anthropic j space", "anthropic j space", concepts, queryFamilyEntityTopicOverview)
+	if !hasQueryVariant(variants, `"j-space"`) {
+		t.Fatalf("expected exact short-token phrase retrieval variant, got %#v", variants)
+	}
+	mergedVariants := mergeQueryVariants(variants, []QueryVariant{{Query: "Anthropic joint space", Reason: "planner alias"}})
+	if !hasQueryVariant(mergedVariants, `"j-space"`) {
+		t.Fatalf("model planner merge dropped trusted exact phrase variant: %#v", mergedVariants)
+	}
+}
+
 func TestBuildResearchStrategyRolesIntentAndFrameTermsForAnchoredSynthesis(t *testing.T) {
 	t.Parallel()
 

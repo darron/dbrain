@@ -14,7 +14,7 @@ import (
 
 const (
 	SynthesisSchemaVersion           = "research_synthesis.v1"
-	SynthesisPromptVersion           = "brain-research-synthesis-v3"
+	SynthesisPromptVersion           = "brain-research-synthesis-v4"
 	DefaultMaxEvidenceChars          = 24000
 	defaultExactTagReservedChars     = 2000
 	defaultTopicBriefMinRemaining    = 2000
@@ -42,9 +42,17 @@ type PreparedSynthesis struct {
 	Input         string                       `json:"-"`
 	Truncation    TruncationMetadata           `json:"truncation"`
 	Citations     []Citation                   `json:"citations,omitempty"`
+	Relevance     *SynthesisRelevanceSelection `json:"relevance_selection,omitempty"`
 	AnchorContext AnchorSynthesisContextStatus `json:"anchor_context,omitempty"`
 	Warnings      []string                     `json:"answer_warnings,omitempty"`
 	Status        string                       `json:"answer_status"`
+}
+
+type SynthesisRelevanceSelection struct {
+	Applied            bool     `json:"applied,omitempty"`
+	Reason             string   `json:"reason,omitempty"`
+	SelectedSourceKeys []string `json:"selected_source_keys,omitempty"`
+	ExcludedSourceKeys []string `json:"excluded_source_keys,omitempty"`
 }
 
 type SynthesisResult struct {
@@ -112,16 +120,20 @@ func PrepareSynthesis(cfg config.Config, opts SynthesisOptions) (PreparedSynthes
 		budget = DefaultMaxEvidenceChars
 	}
 
+	synthesisPack, relevance := selectSynthesisPack(opts.Pack)
 	builder := synthesisInputBuilder{
-		pack:      opts.Pack,
+		pack:      synthesisPack,
 		question:  question,
 		budget:    budget,
-		citations: make([]Citation, 0, len(opts.Pack.Evidence)+len(opts.Pack.ExactTagEvidence)),
+		citations: make([]Citation, 0, len(synthesisPack.Evidence)+len(synthesisPack.ExactTagEvidence)),
 		seen:      map[string]struct{}{},
 	}
 	input := builder.build()
 	status := "ok"
 	warnings := builder.warnings()
+	if relevance != nil {
+		warnings = appendUnique(warnings, "evidence_relevance_filtered")
+	}
 	anchorContext := anchoredSynthesisContextStatus(opts.Pack, PreparedSynthesis{
 		Truncation: builder.truncation,
 		Citations:  builder.citations,
@@ -142,10 +154,62 @@ func PrepareSynthesis(cfg config.Config, opts SynthesisOptions) (PreparedSynthes
 		Input:         input,
 		Truncation:    builder.truncation,
 		Citations:     builder.citations,
+		Relevance:     relevance,
 		AnchorContext: anchorContext,
 		Warnings:      warnings,
 		Status:        status,
 	}, nil
+}
+
+func selectSynthesisPack(pack Pack) (Pack, *SynthesisRelevanceSelection) {
+	if !hasRequiredShortPhraseConcept(pack.QueryPlan.Concepts) {
+		return pack, nil
+	}
+	selectedEvidence, excludedEvidence := rowsMatchingAllRequiredConcepts(pack.Evidence, pack.QueryPlan.Concepts)
+	selectedExact, excludedExact := rowsMatchingAllRequiredConcepts(pack.ExactTagEvidence, pack.QueryPlan.Concepts)
+	if len(selectedEvidence)+len(selectedExact) < 2 {
+		return pack, nil
+	}
+	selection := &SynthesisRelevanceSelection{
+		Applied:            true,
+		Reason:             "required_short_phrase",
+		SelectedSourceKeys: evidenceSourceKeys(append(append([]ask.Evidence{}, selectedEvidence...), selectedExact...)),
+		ExcludedSourceKeys: evidenceSourceKeys(append(append([]ask.Evidence{}, excludedEvidence...), excludedExact...)),
+	}
+	pack.Evidence = selectedEvidence
+	pack.ExactTagEvidence = selectedExact
+	return pack, selection
+}
+
+func hasRequiredShortPhraseConcept(concepts []QueryConcept) bool {
+	for _, concept := range concepts {
+		parts := strings.Fields(concept.Preferred)
+		if concept.Required && len(parts) == 2 && len([]rune(parts[0])) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func rowsMatchingAllRequiredConcepts(rows []ask.Evidence, concepts []QueryConcept) ([]ask.Evidence, []ask.Evidence) {
+	selected := make([]ask.Evidence, 0, len(rows))
+	excluded := make([]ask.Evidence, 0, len(rows))
+	for _, row := range rows {
+		text := researchEvidenceText(row)
+		matched := true
+		for _, concept := range concepts {
+			if concept.Required && !conceptMatchesText(concept, text) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			selected = append(selected, row)
+		} else {
+			excluded = append(excluded, row)
+		}
+	}
+	return selected, excluded
 }
 
 func anchoredSynthesisContextStatus(pack Pack, prepared PreparedSynthesis) AnchorSynthesisContextStatus {

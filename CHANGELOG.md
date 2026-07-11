@@ -5,6 +5,28 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Chat Harness Relevance And Citation Semantics (2026-07-11)
+
+- **Fixed**: Final synthesis citation metadata now contains only exact source
+  keys actually cited in the answer; prepared prompt evidence remains recorded
+  separately on `PreparedSynthesis` for traces and diagnostics.
+- **Shares**: Public Original URLs, source metadata, and topic tags now treat
+  answer citations as authoritative, preventing uncited prompt candidates from
+  leaking through the structured citation array.
+- **Synthesis guardrails**: Prompt v4 tells the model to ignore unrelated
+  candidates silently, and verification rejects unsolicited unrelated-source
+  inventories before a turn can be shared.
+- **Retrieval**: Required phrase concepts preserve discriminative one-letter
+  names such as `J space`, keep an exact quoted phrase lane through planner
+  merges, and restrict synthesis context to rows satisfying every required
+  concept when at least two direct matches are available. This avoids broad
+  fallback plans such as `anthropic space` over-ranking unrelated material.
+- **Regression coverage**: Added runtime-shaped tests for prepared-versus-used
+  citations, public share filtering, category filtering, short-token concepts,
+  and unrelated-source answer rejection.
+- **Location**: `internal/brainresearch/`, `internal/researchrun/`,
+  `web/chat_shares.go`, `docs/research-harness.md`
+
 ### Installer Import Selection (2026-07-09)
 
 - **Installer**: Fresh installs now present an explicit checklist for X
