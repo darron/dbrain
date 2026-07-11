@@ -43,6 +43,22 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Tools:          append([]Tool(nil), opts.Tools...),
 		FS:             fsys,
 	}
+	if opts.DownloadWhisperModels {
+		for _, model := range whisperModelDownloads(opts.Selections) {
+			if opts.DryRun {
+				result.Changes = append(result.Changes, Change{Kind: ChangePrepared, Path: model.Path, Message: "would download verified whisper.cpp model"})
+				continue
+			}
+			download := opts.DownloadFile
+			if download == nil {
+				download = downloadVerifiedFile
+			}
+			if err := download(ctx, model.URL, model.Path, model.SHA256); err != nil {
+				return result, err
+			}
+			result.Changes = append(result.Changes, Change{Kind: ChangePrepared, Path: model.Path, Message: "downloaded verified whisper.cpp model"})
+		}
+	}
 
 	if !opts.DryRun {
 		if err := ensureDirs(fsys, cfg); err != nil {
@@ -309,6 +325,9 @@ func selectionWarnings(selections Selections, tools []Tool) []string {
 		missing := missingTools(tools, ToolFFprobe, ToolYTDLP)
 		if len(missing) > 0 {
 			warnings = append(warnings, "X bookmarks are selected but required media tools are missing: "+strings.Join(missing, ", ")+". Install them before syncing with: brew install ffmpeg yt-dlp")
+		}
+		if strings.EqualFold(strings.TrimSpace(selections.TranscriptionBackend), "whisper.cpp") && firstAvailableToolPath(tools, ToolWhisperCPP) == "" {
+			warnings = append(warnings, "whisper.cpp transcription is selected but whisper-cli is missing; install it with: brew install whisper-cpp")
 		}
 	}
 	if selections.ImportXBookmarks && selections.SkipXPhotoOCR {

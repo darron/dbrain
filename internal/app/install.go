@@ -46,6 +46,11 @@ type installFlags struct {
 	summaryModel            string
 	categorizeModel         string
 	ocrModel                string
+	transcriber             string
+	transcriptionLanguage   string
+	whisperModelPath        string
+	whisperVADModelPath     string
+	downloadWhisperModels   bool
 	installLaunchd          bool
 	startLaunchd            bool
 	launchdLabel            string
@@ -95,6 +100,12 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 			}
 
 			selections := defaultInstallSelections(flags, tools)
+			if strings.TrimSpace(selections.WhisperModelPath) == "" {
+				selections.WhisperModelPath = filepath.Join(cfg.CacheDir, "whisper-cpp", "ggml-base.bin")
+			}
+			if strings.TrimSpace(selections.WhisperVADModelPath) == "" {
+				selections.WhisperVADModelPath = filepath.Join(cfg.CacheDir, "whisper-cpp", "ggml-silero-v6.2.0.bin")
+			}
 			if !flags.force {
 				existingConfig, readErr := os.ReadFile(cfg.ConfigPath)
 				switch {
@@ -115,13 +126,14 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 			}
 
 			result, err := installer.Run(cmd.Context(), installer.Options{
-				Config:       cfg,
-				Runtime:      installer.Runtime{GOOS: runtime.GOOS},
-				Selections:   selections,
-				OllamaModels: installOllamaModelSetups(flags, selections),
-				Tools:        tools,
-				Force:        flags.force,
-				DryRun:       flags.dryRun,
+				Config:                cfg,
+				Runtime:               installer.Runtime{GOOS: runtime.GOOS},
+				Selections:            selections,
+				OllamaModels:          installOllamaModelSetups(flags, selections),
+				Tools:                 tools,
+				Force:                 flags.force,
+				DryRun:                flags.dryRun,
+				DownloadWhisperModels: flags.downloadWhisperModels,
 			})
 			if err != nil {
 				return err
@@ -167,6 +179,11 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&flags.summaryModel, "summary-model", "", "Default summary model to write, for example ollama/dbrain:2026042701, lmstudio/<id>, or omlx/<id>")
 	cmd.Flags().StringVar(&flags.categorizeModel, "categorize-model", "", "Default categorization model to write")
 	cmd.Flags().StringVar(&flags.ocrModel, "ocr-model", "", "Default OCR model to write, for example tesseract")
+	cmd.Flags().StringVar(&flags.transcriber, "transcriber", "", "Speech transcription backend: auto, whisper.cpp, or macwhisper")
+	cmd.Flags().StringVar(&flags.transcriptionLanguage, "transcription-language", "", "Spoken language code, or auto for detection")
+	cmd.Flags().StringVar(&flags.whisperModelPath, "whisper-model-path", "", "Path to the whisper.cpp GGML model")
+	cmd.Flags().StringVar(&flags.whisperVADModelPath, "whisper-vad-model-path", "", "Path to the optional whisper.cpp Silero VAD model")
+	cmd.Flags().BoolVar(&flags.downloadWhisperModels, "download-whisper-models", false, "Download pinned, checksum-verified whisper.cpp base and Silero VAD models")
 	cmd.Flags().BoolVar(&flags.installLaunchd, "install-launchd", false, "Write the per-user macOS launchd service plist when scheduler is enabled")
 	cmd.Flags().BoolVar(&flags.startLaunchd, "start-launchd", false, "Load and start the launchd service after writing it")
 	cmd.Flags().StringVar(&flags.launchdLabel, "launchd-label", defaultLaunchdLabel, "launchd label for --install-launchd")
@@ -278,6 +295,10 @@ func defaultInstallSelections(flags installFlags, tools []installer.Tool) instal
 		SummaryModel:            summaryModel,
 		CategorizeModel:         categorizeModel,
 		OCRModel:                ocrModel,
+		TranscriptionBackend:    firstNonEmpty(strings.TrimSpace(flags.transcriber), "auto"),
+		TranscriptionLanguage:   firstNonEmpty(strings.TrimSpace(flags.transcriptionLanguage), "auto"),
+		WhisperModelPath:        strings.TrimSpace(flags.whisperModelPath),
+		WhisperVADModelPath:     strings.TrimSpace(flags.whisperVADModelPath),
 		Secrets:                 map[installer.SecretKind]string{},
 	}
 	applyUnavailableHostedStageDefaults(&selections)
@@ -321,6 +342,18 @@ func applyExplicitInstallSelectionFlags(cmd *cobra.Command, flags installFlags, 
 	}
 	if changed("enable-scheduler") {
 		selections.EnableScheduler = flags.enableScheduler
+	}
+	if changed("transcriber") {
+		selections.TranscriptionBackend = strings.TrimSpace(flags.transcriber)
+	}
+	if changed("transcription-language") {
+		selections.TranscriptionLanguage = strings.TrimSpace(flags.transcriptionLanguage)
+	}
+	if changed("whisper-model-path") {
+		selections.WhisperModelPath = strings.TrimSpace(flags.whisperModelPath)
+	}
+	if changed("whisper-vad-model-path") {
+		selections.WhisperVADModelPath = strings.TrimSpace(flags.whisperVADModelPath)
 	}
 }
 

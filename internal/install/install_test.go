@@ -652,6 +652,18 @@ safari_tabs:
 	}
 }
 
+func TestSeedSelectionsFromConfigPreservesTranscriptionDefaultsForBlankScalars(t *testing.T) {
+	wantModel := "/cache/whisper-cpp/ggml-base.bin"
+	wantVAD := "/cache/whisper-cpp/ggml-silero-v6.2.0.bin"
+	selections, err := SeedSelectionsFromConfig(Selections{WhisperModelPath: wantModel, WhisperVADModelPath: wantVAD}, []byte("transcription:\n  model_path: ''\n  vad_model_path: ''\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selections.WhisperModelPath != wantModel || selections.WhisperVADModelPath != wantVAD {
+		t.Fatalf("blank config replaced defaults: %+v", selections)
+	}
+}
+
 func TestSeedSelectionsFromLegacyConfigPreservesLegacySyncDefaults(t *testing.T) {
 	t.Parallel()
 

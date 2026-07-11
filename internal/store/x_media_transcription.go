@@ -61,7 +61,16 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 	return items, nil
 }
 
+type XMediaTranscriptionState struct {
+	Status, Error, RawJSON, Model, Tool, ToolVersion, InputHash string
+	CompletedAt                                                 time.Time
+}
+
 func (s *Store) SaveXMediaTranscriptionState(ctx context.Context, itemID int64, status string, errorText string, at time.Time) error {
+	return s.SaveXMediaTranscription(ctx, itemID, XMediaTranscriptionState{Status: status, Error: errorText, CompletedAt: at})
+}
+
+func (s *Store) SaveXMediaTranscription(ctx context.Context, itemID int64, state XMediaTranscriptionState) error {
 	_, err := withBusyRetry(ctx, func() (struct{}, error) {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -72,8 +81,8 @@ func (s *Store) SaveXMediaTranscriptionState(ctx context.Context, itemID int64, 
 		}()
 
 		atText := ""
-		if !at.IsZero() {
-			atText = at.UTC().Format(time.RFC3339)
+		if !state.CompletedAt.IsZero() {
+			atText = state.CompletedAt.UTC().Format(time.RFC3339)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE items
@@ -82,8 +91,8 @@ func (s *Store) SaveXMediaTranscriptionState(ctx context.Context, itemID int64, 
 				x_media_transcript_at = ?,
 				updated_at = ?
 			WHERE id = ?`,
-			strings.TrimSpace(status),
-			strings.TrimSpace(errorText),
+			strings.TrimSpace(state.Status),
+			strings.TrimSpace(state.Error),
 			atText,
 			time.Now().UTC().Format(time.RFC3339),
 			itemID,
@@ -106,10 +115,15 @@ func (s *Store) SaveXMediaTranscriptionState(ctx context.Context, itemID int64, 
 		if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
 			ItemID:      itemID,
 			Role:        model.ItemEnrichmentRoleXMediaTranscript,
-			Status:      strings.TrimSpace(status),
+			Status:      strings.TrimSpace(state.Status),
 			Text:        text,
-			Error:       strings.TrimSpace(errorText),
-			CompletedAt: at,
+			RawJSON:     state.RawJSON,
+			Error:       strings.TrimSpace(state.Error),
+			Model:       state.Model,
+			Tool:        state.Tool,
+			ToolVersion: state.ToolVersion,
+			InputHash:   state.InputHash,
+			CompletedAt: state.CompletedAt,
 		}); err != nil {
 			return struct{}{}, err
 		}

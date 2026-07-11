@@ -144,20 +144,27 @@ quickstart above. For development in this checkout, install the Go toolchain,
 task runner, linter, and inspection tools separately:
 
 ```sh
-brew install go go-task/tap/go-task golangci-lint sqlite deno
+brew install go go-task/tap/go-task golangci-lint sqlite yt-dlp ffmpeg node deno ollama tesseract whisper-cpp
+brew install --cask google-chrome
 ```
 
 Runtime tools and services:
 
 - **Chrome or Chromium**: recommended for cookie-backed X and YouTube imports.
-- **`summarize`**: required for source extraction and summary-backed answer synthesis. Install with `brew install summarize` and verify with `summarize --help`.
-- **`mw`**: [MacWhisper](https://www.macwhisper.com/) CLI, required for `dbrain transcribe x-media` and the default X media step in `sync all`.
+- **`summarize`**: required for source extraction and summary-backed answer synthesis. Verify with `summarize --help`.
+- **`whisper-cli`**: the completely open-source whisper.cpp CLI and preferred local speech-to-text backend. Homebrew's Apple Silicon bottle uses the native whisper.cpp acceleration stack, including Metal where supported.
+- **Whisper models**: whisper.cpp still needs separate GGML model files. Configure and download dbrain's pinned, checksum-verified base and Silero VAD models with:
+
+  ```sh
+  dbrain install --yes --transcriber whisper.cpp --download-whisper-models
+  ```
+
+  The installer writes the models under dbrain's cache directory. It does not silently install Homebrew packages; if `whisper-cli` is missing, run `brew install whisper-cpp`.
+- **`mw`**: optional MacWhisper CLI compatibility backend. Select it with `--transcriber macwhisper` or `DBRAIN_TRANSCRIPTION_BACKEND=macwhisper`.
 - **`ffprobe`**: required for X media transcription. It is installed by Homebrew's `ffmpeg` package.
 - **`yt-dlp`**: required for `dbrain import youtube`.
 - **`deno` or `node`**: recommended for YouTube challenge solving through `yt-dlp`.
 - **`uv`**: recommended for `summarize` helper environments and transcriber setup flows.
-- **`whisper-cli`**: optional fallback for YouTube audio transcription when captions are unavailable.
-- **`~/.summarize/cache/whisper-cpp/models/ggml-base.bin`**: optional model file used by the `whisper-cli` fallback.
 - **Local model runtime**: optional for source summaries, answer synthesis, OCR,
   and categorization. dbrain supports Ollama, LM Studio, oMLX, and configured
   OpenAI-compatible backend aliases.
@@ -498,6 +505,10 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SYNC_ALL_BROWSER` | `sync_all.browser` | `chrome` | Shared browser for cookie-backed X and YouTube imports in manual and scheduled `sync all` runs. |
 | `DBRAIN_SYNC_ALL_PROFILE` | `sync_all.profile` | `` | Optional shared browser profile name or path for cookie-backed imports. |
 | `DBRAIN_SYNC_ALL_IMPORT_X_BOOKMARKS` | `sync_all.imports.x_bookmarks` | `true` | Include X bookmark import plus X hydration, media transcription, and photo OCR in `sync all`. |
+| `DBRAIN_TRANSCRIPTION_BACKEND` | `transcription.backend` | `auto` | Speech-to-text backend: `auto`, `whisper.cpp`, or `macwhisper[:model]`. Auto prefers a ready whisper.cpp installation. |
+| `DBRAIN_TRANSCRIPTION_LANGUAGE` | `transcription.language` | `auto` | Spoken language code passed to whisper.cpp, or automatic detection. |
+| `DBRAIN_TRANSCRIPTION_MODEL_PATH` | `transcription.model_path` | dbrain cache `whisper-cpp/ggml-base.bin` | GGML Whisper model used by whisper.cpp. |
+| `DBRAIN_TRANSCRIPTION_VAD_MODEL_PATH` | `transcription.vad_model_path` | dbrain cache `whisper-cpp/ggml-silero-v6.2.0.bin` | Optional Silero VAD model used to suppress non-speech segments. |
 | `DBRAIN_SYNC_ALL_IMPORT_GITHUB_STARS` | `sync_all.imports.github_stars` | `true` | Include GitHub starred repository import in `sync all`. |
 | `DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_WATCH_LATER` | `sync_all.imports.youtube_watch_later` | `true` | Include YouTube Watch Later import in `sync all`. |
 | `DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_LIKED` | `sync_all.imports.youtube_liked` | `true` | Include liked YouTube video import in `sync all`. |

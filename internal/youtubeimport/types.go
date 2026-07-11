@@ -6,24 +6,26 @@ import (
 )
 
 type Options struct {
-	Browser          string
-	Profile          string
-	Limit            int
-	WatchLater       bool
-	Liked            bool
-	Summarize        bool
-	Force            bool
-	Transcriber      string
-	Model            string
-	CLI              string
-	Length           string
-	Timeout          time.Duration
-	Logger           *slog.Logger
-	YTDLPBinary      string
-	WhisperBinary    string
-	WhisperModelPath string
-	MacWhisperBinary string
-	SummarizeBinary  string
+	Browser               string
+	Profile               string
+	Limit                 int
+	WatchLater            bool
+	Liked                 bool
+	Summarize             bool
+	Force                 bool
+	Transcriber           string
+	Model                 string
+	CLI                   string
+	Length                string
+	Timeout               time.Duration
+	Logger                *slog.Logger
+	YTDLPBinary           string
+	WhisperBinary         string
+	WhisperModelPath      string
+	WhisperVADPath        string
+	TranscriptionLanguage string
+	MacWhisperBinary      string
+	SummarizeBinary       string
 }
 
 type Stats struct {

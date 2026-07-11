@@ -5,6 +5,12 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Open-source whisper.cpp transcription (2026-07-11)
+
+- **Speech to text**: Added whisper.cpp as a fully supported backend for X media and YouTube caption fallback, with automatic backend selection, Apple Silicon/Metal-compatible Homebrew installation, optional Silero VAD, language selection, and terminal no-speech handling.
+- **Installer**: `dbrain install` now detects `whisper-cli`, writes shared transcription configuration, reports the exact Homebrew command when it is missing, and can download pinned, checksum-verified Whisper base and Silero VAD models with `--download-whisper-models`.
+- **CLI/docs**: `dbrain transcribe x-media` accepts explicit backend, model, VAD, language, and binary flags; MacWhisper remains available as a compatibility backend.
+
 ### Research Harness Inspection And Evidence Flow (2026-07-11)
 
 - **Inspection**: The runner now performs one bounded read-only hydration pass
