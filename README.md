@@ -48,32 +48,29 @@ brew trust --formula darron/tap/dbrain
 brew install dbrain
 ```
 
-Before running first-time setup, install the required source extraction CLI:
+Before running first-time setup, install the recommended local runtime. This
+gives new installs source extraction, local summaries/categorization, and the
+preferred open-source speech-to-text backend:
 
 ```sh
-brew install summarize
-```
-
-Homebrew's `summarize` formula installs its required `ffmpeg`, `node`,
-`tesseract`, and `yt-dlp` dependencies. If you want the installer's default
-local Ollama model profile or cookie-backed X and YouTube imports, install
-those choices before setup too so the installer can detect them:
-
-```sh
-brew install ollama
+brew install summarize ollama whisper-cpp
 brew install --cask google-chrome
 ```
 
-If you plan to import X bookmarks, install
-[MacWhisper](https://www.macwhisper.com/) before setup and make sure its `mw`
-CLI is available in `PATH`. X imports can still preserve posts without it, but
-X video and animated-GIF transcription requires MacWhisper.
+Homebrew's `summarize` formula installs its required `ffmpeg`, `node`,
+`tesseract`, and `yt-dlp` dependencies. Ollama enables the installer's default
+local model profile. `whisper-cpp` supplies `whisper-cli`, the preferred local
+backend for X media and YouTube audio transcription. Chrome supplies the
+cookie-backed session used by X and YouTube imports. Install these before
+`dbrain install` so the setup wizard can detect and configure them.
 
 Verify the installed binaries:
 
 ```sh
 dbrain version
 summarize --help
+ollama --version
+whisper-cli --help
 ```
 
 Run the first-time setup wizard:
@@ -94,6 +91,11 @@ helpers such as `summarize`, MacWhisper, Ollama, LM Studio, oMLX, `tesseract`,
 writes those choices into `sync_all.imports`, and separately configures
 scheduled sync, Tailscale/tsnet transport, and GitHub web login. Fresh
 interactive and `--yes` installs leave every importer disabled until selected.
+When `whisper-cli` is present and either pinned speech model is missing,
+interactive setup offers to download both checksum-verified models with the
+answer defaulted to yes; `--yes` accepts that default automatically. Whisper
+downloads show byte progress, and Ollama model pulls/creation stream their
+native progress instead of leaving the terminal silent.
 On macOS, prompted third-party secrets are written as Keychain-backed
 `keychain://dbrain/...` config refs. If Keychain is disabled or unavailable,
 the generated web auth session key is written into the `0600` config with a
@@ -155,13 +157,19 @@ Runtime tools and services:
 - **Chrome or Chromium**: recommended for cookie-backed X and YouTube imports.
 - **`summarize`**: required for source extraction and summary-backed answer synthesis. Verify with `summarize --help`.
 - **`whisper-cli`**: the completely open-source whisper.cpp CLI and preferred local speech-to-text backend. Homebrew's Apple Silicon bottle uses the native whisper.cpp acceleration stack, including Metal where supported.
-- **Whisper models**: whisper.cpp still needs separate GGML model files. Configure and download dbrain's pinned, checksum-verified base and Silero VAD models with:
+- **Whisper models**: whisper.cpp still needs separate GGML model files. When
+  `whisper-cli` is detected, interactive install offers dbrain's pinned,
+  checksum-verified base and Silero VAD models by default, while `dbrain
+  install --yes` downloads missing models automatically. For an explicit
+  repair or custom install, use:
 
   ```sh
   dbrain install --yes --transcriber whisper.cpp --download-whisper-models
   ```
 
-  The installer writes the models under dbrain's cache directory. It does not silently install Homebrew packages; if `whisper-cli` is missing, run `brew install whisper-cpp`.
+  The installer writes the models under dbrain's cache directory and shows
+  transfer progress. It does not install Homebrew packages; if `whisper-cli`
+  is missing, run `brew install whisper-cpp` first.
 - **`mw`**: optional MacWhisper CLI compatibility backend. Select it with `--transcriber macwhisper` or `DBRAIN_TRANSCRIPTION_BACKEND=macwhisper`.
 - **`ffprobe`**: required for X media transcription. It is installed by Homebrew's `ffmpeg` package.
 - **`yt-dlp`**: required for `dbrain import youtube`.

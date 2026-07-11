@@ -1285,6 +1285,54 @@ func TestDefaultInstallSelectionsUsesDetectedLocalModelDefaults(t *testing.T) {
 	}
 }
 
+func TestWhisperModelDownloadFreshInstallDefaults(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	selections := installer.Selections{
+		WhisperModelPath:    filepath.Join(dir, "ggml-base.bin"),
+		WhisperVADModelPath: filepath.Join(dir, "ggml-silero-v6.2.0.bin"),
+	}
+	tools := []installer.Tool{{ID: installer.ToolWhisperCPP, Available: true}}
+
+	if !shouldOfferWhisperModelDownload(tools, selections) {
+		t.Fatal("fresh install with whisper-cli should offer missing models")
+	}
+	if !defaultWhisperModelDownload(false, true, true) {
+		t.Fatal("--yes should accept the missing whisper model default")
+	}
+	if defaultWhisperModelDownload(false, false, true) {
+		t.Fatal("interactive install should wait for the user's confirmation")
+	}
+
+	for _, path := range []string{selections.WhisperModelPath, selections.WhisperVADModelPath} {
+		if err := os.WriteFile(path, []byte("cached"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if shouldOfferWhisperModelDownload(tools, selections) {
+		t.Fatal("existing regular model files should suppress the offer")
+	}
+	if shouldOfferWhisperModelDownload(nil, installer.Selections{}) {
+		t.Fatal("missing whisper-cli should suppress automatic model setup")
+	}
+}
+
+func TestInstallWhisperDownloadUsesCLIProgressOutput(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	ui := newCLIProgressUI(&output)
+	path := "/cache/whisper-cpp/ggml-base.bin"
+	handleInstallDownloadProgress(ui, installer.DownloadProgress{Kind: installer.DownloadProgressStart, Path: path, Total: 1024})
+	handleInstallDownloadProgress(ui, installer.DownloadProgress{Kind: installer.DownloadProgressUpdate, Path: path, Current: 1024, Total: 1024})
+	handleInstallDownloadProgress(ui, installer.DownloadProgress{Kind: installer.DownloadProgressDone, Path: path, Current: 1024, Total: 1024})
+
+	for _, want := range []string{"Downloading whisper.cpp model ggml-base.bin", "1.0 KiB/1.0 KiB", "Downloaded whisper.cpp model ggml-base.bin"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing %q in progress output:\n%s", want, output.String())
+		}
+	}
+}
+
 func TestDefaultInstallSelectionsSkipsHostedStagesWithoutModelsOrOpenRouter(t *testing.T) {
 	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")

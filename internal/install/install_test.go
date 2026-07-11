@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -600,6 +601,28 @@ func TestSelectionWarningsReportMissingSummarizeWhenDetectionRan(t *testing.T) {
 	}
 }
 
+func TestSelectionWarningsAcceptReadyWhisperCPPForXMedia(t *testing.T) {
+	t.Parallel()
+	model := filepath.Join(t.TempDir(), "ggml-base.bin")
+	if err := os.WriteFile(model, []byte("model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	warnings := strings.Join(selectionWarnings(Selections{
+		ImportXBookmarks:     true,
+		TranscriptionBackend: "auto",
+		WhisperModelPath:     model,
+	}, []Tool{
+		{ID: ToolWhisperCPP, Available: true, Path: "/opt/homebrew/bin/whisper-cli"},
+		{ID: ToolMacWhisper, Available: false},
+		{ID: ToolFFprobe, Available: true},
+		{ID: ToolYTDLP, Available: true},
+		{ID: ToolSummarize, Available: true},
+	}), "\n")
+	if strings.Contains(warnings, "no ready speech transcriber") || strings.Contains(warnings, "MacWhisper CLI") {
+		t.Fatalf("ready whisper.cpp should satisfy X media transcription: %q", warnings)
+	}
+}
+
 func TestExistingConfigSatisfiesSelectedGitHubTokenRequirement(t *testing.T) {
 	t.Parallel()
 
@@ -781,6 +804,20 @@ func TestRunPullsPublicOllamaModelWhenMissing(t *testing.T) {
 	}
 	if !containsChange(result.Changes, ChangePrepared, "ollama/gemma4:12b-mlx") {
 		t.Fatalf("expected prepared model change, got %#v", result.Changes)
+	}
+}
+
+func TestRunInstallCommandStreamsOllamaOutput(t *testing.T) {
+	t.Parallel()
+	runner := &streamingTestCommandRunner{output: "pulling manifest\n42% downloaded\n"}
+	var output bytes.Buffer
+	if err := runInstallCommand(context.Background(), runner, &output, "ollama", "pull", "large:model"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Running ollama pull large:model", "pulling manifest", "42% downloaded"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing %q in streamed output:\n%s", want, output.String())
+		}
 	}
 }
 
@@ -999,6 +1036,20 @@ type runnerFailure struct {
 type recordingCommandRunner struct {
 	calls    []string
 	failures map[string]runnerFailure
+}
+
+type streamingTestCommandRunner struct {
+	output string
+	err    error
+}
+
+func (r *streamingTestCommandRunner) CombinedOutput(context.Context, string, ...string) ([]byte, error) {
+	return nil, errors.New("unexpected CombinedOutput")
+}
+
+func (r *streamingTestCommandRunner) Run(_ context.Context, stdout, _ io.Writer, _ string, _ ...string) error {
+	_, _ = io.WriteString(stdout, r.output)
+	return r.err
 }
 
 func (r *recordingCommandRunner) CombinedOutput(_ context.Context, name string, args ...string) ([]byte, error) {
