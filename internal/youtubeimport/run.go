@@ -3,6 +3,7 @@ package youtubeimport
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,7 +26,13 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		opts.WhisperBinary = "whisper-cli"
 	}
 	if opts.WhisperModelPath == "" {
-		opts.WhisperModelPath = defaultWhisperModelPath()
+		opts.WhisperModelPath = filepath.Join(cfg.CacheDir, "whisper-cpp", "ggml-base.bin")
+	}
+	if opts.WhisperVADPath == "" {
+		opts.WhisperVADPath = filepath.Join(cfg.CacheDir, "whisper-cpp", "ggml-silero-v6.2.0.bin")
+	}
+	if strings.TrimSpace(opts.TranscriptionLanguage) == "" {
+		opts.TranscriptionLanguage = "auto"
 	}
 	if strings.TrimSpace(opts.MacWhisperBinary) == "" {
 		opts.MacWhisperBinary = "mw"

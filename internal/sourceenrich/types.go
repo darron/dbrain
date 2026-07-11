@@ -46,6 +46,8 @@ type Options struct {
 	YTDLPBinary               string
 	WhisperBinary             string
 	WhisperModelPath          string
+	WhisperVADModelPath       string
+	TranscriptionLanguage     string
 	MacWhisperBinary          string
 	// OnSourceResult is called when a source enrichment candidate completes.
 	// Callers must treat it as concurrent when Concurrency > 1.

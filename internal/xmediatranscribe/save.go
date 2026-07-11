@@ -2,6 +2,7 @@ package xmediatranscribe
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -38,7 +39,18 @@ func saveTranscriptItem(ctx context.Context, cfg config.Config, st *store.Store,
 		item.SummaryInputHash = ""
 		item.SummarizedAt = time.Time{}
 	}
-	if err := st.SaveXMediaTranscriptionState(ctx, item.ID, model.XMediaTranscriptStatusOK, "", time.Now().UTC()); err != nil {
+	provenance := make([]map[string]any, 0, len(blocks))
+	for _, block := range blocks {
+		provenance = append(provenance, map[string]any{"backend": block.Backend, "model": block.Model, "language": block.Language, "vad_enabled": block.VADEnabled})
+	}
+	metadata, err := json.Marshal(provenance)
+	if err != nil {
+		return changed, fmt.Errorf("marshal x media transcription provenance: %w", err)
+	}
+	tool, usedModel := homogeneousTranscriptionProvenance(blocks)
+	if err := st.SaveXMediaTranscription(ctx, item.ID, store.XMediaTranscriptionState{
+		Status: model.XMediaTranscriptStatusOK, RawJSON: string(metadata), Tool: tool, Model: usedModel, CompletedAt: time.Now().UTC(),
+	}); err != nil {
 		return changed, fmt.Errorf("save x media transcription state: %w", err)
 	}
 
@@ -47,4 +59,20 @@ func saveTranscriptItem(ctx context.Context, cfg config.Config, st *store.Store,
 	}
 	debugLog(opts.Logger, "x media transcription saved", "source_key", item.SourceKey, "item_id", item.ID, "changed", changed)
 	return changed, nil
+}
+
+func homogeneousTranscriptionProvenance(blocks []transcriptBlock) (string, string) {
+	if len(blocks) == 0 {
+		return "", ""
+	}
+	tool, usedModel := blocks[0].Backend, blocks[0].Model
+	for _, block := range blocks[1:] {
+		if block.Backend != tool {
+			tool = ""
+		}
+		if block.Model != usedModel {
+			usedModel = ""
+		}
+	}
+	return tool, usedModel
 }

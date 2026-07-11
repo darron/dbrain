@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/darron/dbrain/internal/audiotranscribe"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 )
@@ -49,7 +50,15 @@ func transcribeItemMedia(ctx context.Context, cfg config.Config, refs []model.It
 
 		stats.MediaWithAudio++
 		transcribeCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-		transcript, err := transcribeWithMacWhisper(transcribeCtx, absolutePath, opts)
+		result, err := audiotranscribe.Transcribe(transcribeCtx, absolutePath, audiotranscribe.Config{
+			Backend:             opts.Transcriber,
+			Language:            opts.Language,
+			WhisperBinary:       opts.WhisperBinary,
+			WhisperModelPath:    opts.WhisperModelPath,
+			WhisperVADModelPath: opts.WhisperVADPath,
+			MacWhisperBinary:    opts.MacWhisperBinary,
+			MacWhisperModel:     opts.MacWhisperModel,
+		})
 		cancel()
 		if err != nil {
 			stats.Errors++
@@ -60,8 +69,8 @@ func transcribeItemMedia(ctx context.Context, cfg config.Config, refs []model.It
 			})
 			continue
 		}
-		if shouldSkipTranscript(transcript) {
-			reason := classifyTranscriptSkip(transcript)
+		if result.NoSpeech || shouldSkipTranscript(result.Text) {
+			reason := classifyTranscriptSkip(result.Text)
 			debugLog(opts.Logger, "x media transcript rejected", "local_path", ref.LocalPath, "reason", reason)
 			outcome = chooseItemTranscriptOutcome(outcome, itemTranscriptOutcome{Status: reason})
 			continue
@@ -74,7 +83,11 @@ func transcribeItemMedia(ctx context.Context, cfg config.Config, refs []model.It
 			RemoteURL:   strings.TrimSpace(ref.RemoteURL),
 			ExpandedURL: strings.TrimSpace(ref.ExpandedURL),
 			LocalPath:   strings.TrimSpace(ref.LocalPath),
-			Text:        transcript,
+			Text:        result.Text,
+			Backend:     result.Backend,
+			Model:       result.Model,
+			Language:    result.Language,
+			VADEnabled:  result.VADEnabled,
 		})
 	}
 

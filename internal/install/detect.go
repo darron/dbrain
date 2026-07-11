@@ -81,6 +81,7 @@ func DetectTools(ctx context.Context, opts DetectionOptions) []Tool {
 
 	tools := []Tool{
 		detectCommand(opts.Prober, ToolMacWhisper, "MacWhisper CLI", "mw"),
+		detectCommand(opts.Prober, ToolWhisperCPP, "whisper.cpp CLI", "whisper-cli"),
 		detectCommand(opts.Prober, ToolOllama, "Ollama CLI", "ollama"),
 		detectCommand(opts.Prober, ToolLMStudio, "LM Studio CLI", "lms"),
 		detectCommand(opts.Prober, ToolOMLX, "oMLX CLI", "omlx"),
