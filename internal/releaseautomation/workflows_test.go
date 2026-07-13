@@ -125,6 +125,56 @@ func TestStableReleaseWorkflowPolicyRejectsSecurityMutations(t *testing.T) {
 			new:  `if [[ ! "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then`,
 		},
 		{
+			name: "guard continues after failure",
+			old:  "      - name: Validate final release tag\n        shell: bash\n",
+			new:  "      - name: Validate final release tag\n        shell: bash\n        continue-on-error: true\n",
+		},
+		{
+			name: "guard condition skips validation",
+			old:  "      - name: Validate final release tag\n        shell: bash\n",
+			new:  "      - name: Validate final release tag\n        shell: bash\n        if: false\n",
+		},
+		{
+			name: "verify condition skips validation",
+			old:  "  verify:\n    name: Verify\n",
+			new:  "  verify:\n    name: Verify\n    if: false\n",
+		},
+		{
+			name: "verify continues after failure",
+			old:  "  verify:\n    name: Verify\n",
+			new:  "  verify:\n    name: Verify\n    continue-on-error: true\n",
+		},
+		{
+			name: "build runs after failed verify",
+			old:  "  build:\n    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}\n",
+			new:  "  build:\n    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}\n    if: ${{ always() }}\n",
+		},
+		{
+			name: "build continues after failure",
+			old:  "  build:\n    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}\n",
+			new:  "  build:\n    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}\n    continue-on-error: true\n",
+		},
+		{
+			name: "publish runs after failed build",
+			old:  "  publish:\n    name: Publish release assets\n",
+			new:  "  publish:\n    name: Publish release assets\n    if: ${{ always() }}\n",
+		},
+		{
+			name: "publish continues after failure",
+			old:  "  publish:\n    name: Publish release assets\n",
+			new:  "  publish:\n    name: Publish release assets\n    continue-on-error: true\n",
+		},
+		{
+			name: "tap update runs after failed publish",
+			old:  "  update-homebrew-tap:\n    name: Update Homebrew tap\n",
+			new:  "  update-homebrew-tap:\n    name: Update Homebrew tap\n    if: ${{ always() }}\n",
+		},
+		{
+			name: "tap update continues after failure",
+			old:  "  update-homebrew-tap:\n    name: Update Homebrew tap\n",
+			new:  "  update-homebrew-tap:\n    name: Update Homebrew tap\n    continue-on-error: true\n",
+		},
+		{
 			name: "wrong concurrency group",
 			old:  "group: dbrain-homebrew-tap-update",
 			new:  "group: dbrain-stable-homebrew-tap-update",
@@ -171,6 +221,7 @@ func validateStableReleaseWorkflow(text string) error {
 	p.require(len(verifySteps) > 0, "verify must contain steps")
 	if len(verifySteps) > 0 {
 		guard := verifySteps[0]
+		p.require(exactMappingKeys(guard, "env", "name", "run", "shell"), "final tag guard keys must be exactly name, shell, env, and run")
 		p.require(scalarValue(mappingNode(guard, "name")) == "Validate final release tag", "final tag guard must be the first verify step")
 		p.require(scalarValue(mappingNode(guard, "shell")) == "bash", "final tag guard must use bash")
 		p.require(exactScalarMap(mappingNode(guard, "env"), map[string]string{
@@ -183,6 +234,10 @@ func validateStableReleaseWorkflow(text string) error {
 	p.require(exactNeeds(mappingNode(job("build"), "needs"), "verify"), "build must depend exactly on verify")
 	p.require(exactNeeds(mappingNode(job("publish"), "needs"), "build"), "publish must depend exactly on build")
 	p.require(exactNeeds(mappingNode(job("update-homebrew-tap"), "needs"), "publish"), "tap update must depend exactly on publish")
+	for _, name := range []string{"verify", "build", "publish", "update-homebrew-tap"} {
+		p.require(mappingNode(job(name), "if") == nil, "%s must not override default success gating with job-level if", name)
+		p.require(mappingNode(job(name), "continue-on-error") == nil, "%s must not override failure propagation with job-level continue-on-error", name)
+	}
 	for _, name := range []string{"build", "publish", "update-homebrew-tap"} {
 		p.require(jobTransitivelyNeeds(jobs, name, "verify", nil), "%s must transitively depend on verify", name)
 	}
