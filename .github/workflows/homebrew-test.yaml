@@ -485,7 +485,7 @@ jobs:
           - Formula version: \`${FORMULA_VERSION}\`
           - Prerelease: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}
 
-          > **Launchd:** Homebrew link changes do not replace an already-running process. Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link.
+          > **Launchd:** Homebrew link changes do not replace an already-running process. Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link. Run exactly one restart command after each transition: the command without \`--label\` targets the default \`com.darron.dbrain\` service; for a non-default service, replace \`com.example.dbrain-dev\` below with the exact label installed in its plist.
 
           ### Install
 
@@ -493,8 +493,11 @@ jobs:
           brew unlink dbrain
           brew install darron/tap/dbrain-test
           dbrain version
-          # If dbrain is managed by launchd, restart it manually:
+          # If dbrain is managed by launchd, run exactly one of these:
+          # Default service label (com.darron.dbrain):
           dbrain launchd restart --check-full-disk-access=false
+          # Non-default service; replace com.example.dbrain-dev with its installed label:
+          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
           \`\`\`
 
           ### Upgrade
@@ -503,8 +506,11 @@ jobs:
           brew update
           brew upgrade dbrain-test
           dbrain version
-          # If dbrain is managed by launchd, restart it manually:
+          # If dbrain is managed by launchd, run exactly one of these:
+          # Default service label (com.darron.dbrain):
           dbrain launchd restart --check-full-disk-access=false
+          # Non-default service; replace com.example.dbrain-dev with its installed label:
+          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
           \`\`\`
 
           ### Roll back to stable
@@ -513,8 +519,11 @@ jobs:
           brew unlink dbrain-test
           brew link dbrain
           dbrain version
-          # If dbrain is managed by launchd, restart it manually:
+          # If dbrain is managed by launchd, run exactly one of these:
+          # Default service label (com.darron.dbrain):
           dbrain launchd restart --check-full-disk-access=false
+          # Non-default service; replace com.example.dbrain-dev with its installed label:
+          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
           \`\`\`
 
           ### Remove test formula
@@ -523,7 +532,10 @@ jobs:
           brew uninstall dbrain-test
           brew link dbrain
           dbrain version
-          # If dbrain is managed by launchd, restart it manually:
+          # If dbrain is managed by launchd, run exactly one of these:
+          # Default service label (com.darron.dbrain):
           dbrain launchd restart --check-full-disk-access=false
+          # Non-default service; replace com.example.dbrain-dev with its installed label:
+          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
           \`\`\`
           SUMMARY

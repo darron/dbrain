@@ -60,7 +60,8 @@ func TestFinalReleaseTagPolicy(t *testing.T) {
 
 func TestHomebrewTestCandidateRunbookRestartsLaunchdWithoutRemovingState(t *testing.T) {
 	text := readRepoFile(t, "docs/release-build.md")
-	restart := "dbrain launchd restart --check-full-disk-access=false"
+	defaultRestart := "dbrain launchd restart --check-full-disk-access=false"
+	customRestart := "dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false"
 	sections := []struct {
 		name  string
 		start string
@@ -74,8 +75,11 @@ func TestHomebrewTestCandidateRunbookRestartsLaunchdWithoutRemovingState(t *test
 	for _, section := range sections {
 		t.Run(section.name, func(t *testing.T) {
 			body := markdownSection(t, text, section.start, section.end)
-			if !strings.Contains(body, restart) {
-				t.Fatalf("%s instructions must conditionally restart launchd-managed dbrain", section.name)
+			if !strings.Contains(body, defaultRestart) {
+				t.Errorf("%s instructions must restart the default launchd label", section.name)
+			}
+			if !strings.Contains(body, customRestart) {
+				t.Errorf("%s instructions must show the exact --label form for non-default services", section.name)
 			}
 		})
 	}
@@ -85,6 +89,8 @@ func TestHomebrewTestCandidateRunbookRestartsLaunchdWithoutRemovingState(t *test
 		"Homebrew relinking alone does not replace an already-running dbrain process",
 		"Cellar-specific or custom `--bin` path",
 		"normal Homebrew link",
+		"run exactly one of the two restart commands shown after each transition",
+		"For a non-default service, replace `com.example.dbrain-dev` with the exact label installed in its plist",
 		"Remove only the test formula's Homebrew-managed link and Cellar keg",
 		"configuration, configured XDG roots, the SQLite database, vault, media, cache,",
 		"logs, temporary files, launchd plists or service state, external helper tools,",
@@ -93,6 +99,9 @@ func TestHomebrewTestCandidateRunbookRestartsLaunchdWithoutRemovingState(t *test
 		if !strings.Contains(normalized, required) {
 			t.Errorf("Homebrew test candidate runbook missing safety contract %q", required)
 		}
+	}
+	if strings.Contains(text, "--label <") {
+		t.Error("runbook must not present an angle-bracket label placeholder as shell syntax")
 	}
 }
 
@@ -481,6 +490,9 @@ func TestHomebrewTestWorkflowPolicyRejectsRerunMutations(t *testing.T) {
 		{name: "partial retry uses current attempt", old: "RUN_ATTEMPT: ${{ needs.prepare.outputs.run_attempt }}", new: "RUN_ATTEMPT: ${{ github.run_attempt }}"},
 		{name: "prepare omits canonical attempt", old: "\n      run_attempt: ${{ steps.metadata.outputs.run_attempt }}", new: ""},
 		{name: "summary omits manual restart", old: "\n          dbrain launchd restart --check-full-disk-access=false", new: ""},
+		{name: "summary omits non-default-label restart", old: "\n          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false", new: ""},
+		{name: "summary uses unsafe angle-bracket label placeholder", old: "--label com.example.dbrain-dev", new: "--label <installed-label>"},
+		{name: "summary uses shell-active backticks", old: "\\`--label\\`", new: "`--label`"},
 		{name: "summary omits Cellar warning", old: " Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link.", new: ""},
 	}
 	for _, mutation := range mutations {
@@ -939,7 +951,7 @@ func exactSummaryRun() string {
 - Formula version: \§${FORMULA_VERSION}\§
 - Prerelease: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}
 
-> **Launchd:** Homebrew link changes do not replace an already-running process. Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link.
+> **Launchd:** Homebrew link changes do not replace an already-running process. Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link. Run exactly one restart command after each transition: the command without \§--label\§ targets the default \§com.darron.dbrain\§ service; for a non-default service, replace \§com.example.dbrain-dev\§ below with the exact label installed in its plist.
 
 ### Install
 
@@ -947,8 +959,11 @@ func exactSummaryRun() string {
 brew unlink dbrain
 brew install darron/tap/dbrain-test
 dbrain version
-# If dbrain is managed by launchd, restart it manually:
+# If dbrain is managed by launchd, run exactly one of these:
+# Default service label (com.darron.dbrain):
 dbrain launchd restart --check-full-disk-access=false
+# Non-default service; replace com.example.dbrain-dev with its installed label:
+dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
 \§\§\§
 
 ### Upgrade
@@ -957,8 +972,11 @@ dbrain launchd restart --check-full-disk-access=false
 brew update
 brew upgrade dbrain-test
 dbrain version
-# If dbrain is managed by launchd, restart it manually:
+# If dbrain is managed by launchd, run exactly one of these:
+# Default service label (com.darron.dbrain):
 dbrain launchd restart --check-full-disk-access=false
+# Non-default service; replace com.example.dbrain-dev with its installed label:
+dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
 \§\§\§
 
 ### Roll back to stable
@@ -967,8 +985,11 @@ dbrain launchd restart --check-full-disk-access=false
 brew unlink dbrain-test
 brew link dbrain
 dbrain version
-# If dbrain is managed by launchd, restart it manually:
+# If dbrain is managed by launchd, run exactly one of these:
+# Default service label (com.darron.dbrain):
 dbrain launchd restart --check-full-disk-access=false
+# Non-default service; replace com.example.dbrain-dev with its installed label:
+dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
 \§\§\§
 
 ### Remove test formula
@@ -977,8 +998,11 @@ dbrain launchd restart --check-full-disk-access=false
 brew uninstall dbrain-test
 brew link dbrain
 dbrain version
-# If dbrain is managed by launchd, restart it manually:
+# If dbrain is managed by launchd, run exactly one of these:
+# Default service label (com.darron.dbrain):
 dbrain launchd restart --check-full-disk-access=false
+# Non-default service; replace com.example.dbrain-dev with its installed label:
+dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
 \§\§\§
 SUMMARY`
 	return strings.ReplaceAll(run, "§", "`")

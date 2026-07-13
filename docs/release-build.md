@@ -171,6 +171,12 @@ configuration and label so its binary points at the normal Homebrew link
 (`$(brew --prefix)/bin/dbrain`). Otherwise a restart can continue to use a
 different keg, and version testing is not meaningful.
 
+The restart blocks below show both forms; run exactly one of the two restart
+commands shown after each transition. The command without `--label` restarts
+the default `com.darron.dbrain` service. For a non-default service, replace
+`com.example.dbrain-dev` with the exact label installed in its plist; the
+example value is literal shell text, not angle-bracket placeholder syntax.
+
 ### Install a candidate
 
 The stable and test formulae conflict because both provide the `dbrain`
@@ -181,8 +187,11 @@ may be linked at a time:
 brew unlink dbrain
 brew install darron/tap/dbrain-test
 dbrain version
-# If dbrain is managed by launchd:
+# If dbrain is managed by launchd, run exactly one of these:
+# Default service label (com.darron.dbrain):
 dbrain launchd restart --check-full-disk-access=false
+# Non-default service; replace com.example.dbrain-dev with its installed label:
+dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
 ```
 
 Check `dbrain version` against the workflow summary. It reports both the exact
@@ -196,8 +205,11 @@ After another candidate run advances the moving formula:
 brew update
 brew upgrade dbrain-test
 dbrain version
-# If dbrain is managed by launchd:
+# If dbrain is managed by launchd, run exactly one of these:
+# Default service label (com.darron.dbrain):
 dbrain launchd restart --check-full-disk-access=false
+# Non-default service; replace com.example.dbrain-dev with its installed label:
+dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
 ```
 
 ### Return to stable
@@ -209,8 +221,11 @@ keg:
 brew unlink dbrain-test
 brew link dbrain
 dbrain version
-# If dbrain is managed by launchd:
+# If dbrain is managed by launchd, run exactly one of these:
+# Default service label (com.darron.dbrain):
 dbrain launchd restart --check-full-disk-access=false
+# Non-default service; replace com.example.dbrain-dev with its installed label:
+dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
 ```
 
 ### Remove the test formula
@@ -222,8 +237,11 @@ restore the stable link:
 brew uninstall dbrain-test
 brew link dbrain
 dbrain version
-# If dbrain is managed by launchd:
+# If dbrain is managed by launchd, run exactly one of these:
+# Default service label (com.darron.dbrain):
 dbrain launchd restart --check-full-disk-access=false
+# Non-default service; replace com.example.dbrain-dev with its installed label:
+dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
 ```
 
 `brew unlink` and `brew uninstall dbrain-test` affect only Homebrew-managed
