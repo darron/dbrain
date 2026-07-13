@@ -5,7 +5,7 @@ development date for the change set.
 
 ## Recent Improvements
 
-### Security hardening (2026-07-12)
+### Security hardening (2026-07-13)
 
 - **Local filesystem containment**: Vault note/media reads, writes, uploads,
   OCR/transcription inputs, and cleanup now use root-confined filesystem
@@ -29,6 +29,11 @@ development date for the change set.
   `.yaml` workflow files.
 - **Review workflow**: Added the repo-owned `dbrain-security-review` skill,
   security campaign design/remediation plans, and a sanitized evidence ledger.
+
+### Homebrew Test Release Channel (2026-07-13)
+
+- **Release testing**: Added an owner-dispatched Homebrew test channel that builds an exact commit into durable prerelease assets and one moving `dbrain-test` formula without changing stable `dbrain` distribution.
+- **Release safety**: Stable publication now accepts only exact `vX.Y.Z` tags, serializes tap updates, and tests that candidate formula generation cannot modify `Formula/dbrain.rb` or add runtime-data cleanup hooks.
 
 ### dbrain Review Skill Distribution (2026-07-11)
 

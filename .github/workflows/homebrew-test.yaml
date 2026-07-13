@@ -1,0 +1,541 @@
+name: Homebrew Test Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full 40-character dbrain commit SHA
+        required: true
+        type: string
+      label:
+        description: Human-readable test label
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Validate candidate
+    runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
+    outputs:
+      sha: ${{ steps.metadata.outputs.sha }}
+      short_sha: ${{ steps.metadata.outputs.short_sha }}
+      label: ${{ steps.metadata.outputs.label }}
+      slug: ${{ steps.metadata.outputs.slug }}
+      run_number: ${{ steps.metadata.outputs.run_number }}
+      run_attempt: ${{ steps.metadata.outputs.run_attempt }}
+      formula_version: ${{ steps.metadata.outputs.formula_version }}
+      release_version: ${{ steps.metadata.outputs.release_version }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+    steps:
+      - name: Enforce owner and default branch
+        shell: bash
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "${ACTOR}" = "darron"
+          test "${TRIGGERING_ACTOR}" = "darron"
+          test "${WORKFLOW_REF}" = "refs/heads/main"
+
+      - name: Check out trusted workflow source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Derive candidate metadata
+        id: metadata
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          INPUT_LABEL: ${{ inputs.label }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          go run ./cmd/devtools/homebrew_test_release metadata \
+            --sha "${INPUT_SHA}" --label "${INPUT_LABEL}" \
+            --run-number "${RUN_NUMBER}" --run-attempt "${RUN_ATTEMPT}" \
+            >> "${GITHUB_OUTPUT}"
+
+  verify:
+    name: Verify candidate
+    runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
+    needs: prepare
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate commit
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "${CANDIDATE_SHA}")" = "commit"
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install Task
+        uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa
+        with:
+          version: 3.52.0
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web/ui
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+
+      - name: Build embedded web UI
+        run: task web-build
+
+      - name: Run lint
+        run: task lint
+
+      - name: Run tests
+        run: task test-ci
+
+      - name: Run build
+        run: task build
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
+    needs: [prepare, verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: darwin, goarch: amd64, archive_ext: tar.gz}
+          - {goos: darwin, goarch: arm64, archive_ext: tar.gz}
+          - {goos: linux, goarch: amd64, archive_ext: tar.gz}
+          - {goos: linux, goarch: arm64, archive_ext: tar.gz}
+          - {goos: windows, goarch: amd64, archive_ext: zip}
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate commit
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "${CANDIDATE_SHA}")" = "commit"
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install Task
+        uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa
+        with:
+          version: 3.52.0
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web/ui
+
+      - name: Build embedded web UI
+        run: task web-build
+
+      - name: Build release archive
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          DBRAIN_RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          archive_base="dbrain_${RELEASE_TAG}_${GOOS}_${GOARCH}"
+          binary_name="dbrain"
+
+          task build
+          if [ "${GOOS}" = "windows" ]; then
+            binary_name="dbrain.exe"
+          fi
+
+          package_dir="dist/${archive_base}"
+          mkdir -p "${package_dir}"
+          cp bin/dbrain "${package_dir}/${binary_name}"
+          cp README.md LICENSE "${package_dir}/"
+          if [ -f THIRD_PARTY_NOTICES.md ]; then
+            cp THIRD_PARTY_NOTICES.md "${package_dir}/"
+          fi
+
+          if [ "${ARCHIVE_EXT}" = "zip" ]; then
+            (
+              cd dist
+              zip -r "${archive_base}.zip" "${archive_base}"
+            )
+          else
+            tar -C dist -czf "dist/${archive_base}.tar.gz" "${archive_base}"
+          fi
+
+      - name: Upload archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/dbrain_${{ needs.prepare.outputs.release_tag }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    name: Publish immutable prerelease
+    runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
+    needs: [prepare, build]
+    permissions:
+      contents: write
+    steps:
+      - name: Download candidate archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: dist
+          pattern: candidate-*
+          merge-multiple: true
+
+      - name: Verify exact archive inventory and generate checksums
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "dbrain_${RELEASE_TAG}_darwin_amd64.tar.gz"
+            "dbrain_${RELEASE_TAG}_darwin_arm64.tar.gz"
+            "dbrain_${RELEASE_TAG}_linux_amd64.tar.gz"
+            "dbrain_${RELEASE_TAG}_linux_arm64.tar.gz"
+            "dbrain_${RELEASE_TAG}_windows_amd64.zip"
+          )
+          for archive in "${expected[@]}"; do
+            test -f "dist/${archive}"
+            test ! -L "dist/${archive}"
+          done
+          entry_count=0
+          while IFS= read -r -d '' entry; do
+            entry_count=$((entry_count + 1))
+            case "${entry#dist/}" in
+              "${expected[0]}"|"${expected[1]}"|"${expected[2]}"|"${expected[3]}"|"${expected[4]}") ;;
+              *)
+                echo "unexpected downloaded entry: ${entry}" >&2
+                exit 1
+                ;;
+            esac
+          done < <(find dist -mindepth 1 -maxdepth 1 -print0)
+          test "${entry_count}" -eq "${#expected[@]}"
+          (
+            cd dist
+            sha256sum "${expected[@]}" > dbrain_checksums.txt
+          )
+
+      - name: Publish GitHub prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+          DISPLAY_LABEL: ${{ needs.prepare.outputs.label }}
+          SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>tag-error.txt; then
+            echo "candidate tag already exists: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          if ! grep -q "HTTP 404" tag-error.txt; then
+            cat tag-error.txt >&2
+            exit 1
+          fi
+
+          files=(
+            "dist/dbrain_${RELEASE_TAG}_darwin_amd64.tar.gz"
+            "dist/dbrain_${RELEASE_TAG}_darwin_arm64.tar.gz"
+            "dist/dbrain_${RELEASE_TAG}_linux_amd64.tar.gz"
+            "dist/dbrain_${RELEASE_TAG}_linux_arm64.tar.gz"
+            "dist/dbrain_${RELEASE_TAG}_windows_amd64.zip"
+            "dist/dbrain_checksums.txt"
+          )
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${CANDIDATE_SHA}" \
+            --title "dbrain test: ${DISPLAY_LABEL} (${SHORT_SHA})" \
+            --notes "Homebrew test candidate built from ${CANDIDATE_SHA}. Not a stable release." \
+            --prerelease
+          gh release upload "${RELEASE_TAG}" "${files[@]}" \
+            --repo "${GITHUB_REPOSITORY}"
+
+  update-homebrew-tap:
+    name: Update moving Homebrew test formula
+    runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
+    needs: [prepare, publish]
+    concurrency:
+      group: dbrain-homebrew-tap-update
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Require Homebrew tap token
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${HOMEBREW_TAP_TOKEN}"
+
+      - name: Download candidate archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: dist
+          pattern: candidate-*
+          merge-multiple: true
+
+      - name: Check out trusted workflow source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Set up Go for trusted helper
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: trusted-source/go.mod
+          cache: false
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: darron/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+          persist-credentials: false
+
+      - name: Verify exact archive inventory
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "dbrain_${RELEASE_TAG}_darwin_amd64.tar.gz"
+            "dbrain_${RELEASE_TAG}_darwin_arm64.tar.gz"
+            "dbrain_${RELEASE_TAG}_linux_amd64.tar.gz"
+            "dbrain_${RELEASE_TAG}_linux_arm64.tar.gz"
+            "dbrain_${RELEASE_TAG}_windows_amd64.zip"
+          )
+          for archive in "${expected[@]}"; do
+            test -f "dist/${archive}"
+            test ! -L "dist/${archive}"
+          done
+          entry_count=0
+          while IFS= read -r -d '' entry; do
+            entry_count=$((entry_count + 1))
+            case "${entry#dist/}" in
+              "${expected[0]}"|"${expected[1]}"|"${expected[2]}"|"${expected[3]}"|"${expected[4]}") ;;
+              *)
+                echo "unexpected downloaded entry: ${entry}" >&2
+                exit 1
+                ;;
+            esac
+          done < <(find dist -mindepth 1 -maxdepth 1 -print0)
+          test "${entry_count}" -eq "${#expected[@]}"
+
+      - name: Generate and validate tap changes
+        shell: bash
+        working-directory: trusted-source
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+          DISPLAY_LABEL: ${{ needs.prepare.outputs.label }}
+          RUN_NUMBER: ${{ needs.prepare.outputs.run_number }}
+          RUN_ATTEMPT: ${{ needs.prepare.outputs.run_attempt }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          FORMULA_VERSION: ${{ needs.prepare.outputs.formula_version }}
+        run: |
+          set -euo pipefail
+          tap="../homebrew-tap"
+          formula="${tap}/Formula/dbrain-test.rb"
+          allowlist="${tap}/audit_exceptions/github_prerelease_allowlist.json"
+          stable="${tap}/Formula/dbrain.rb"
+          release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          stable_before="$(sha256sum "${stable}" | awk '{print $1}')"
+
+          darwin_amd64_sha="$(sha256sum "../dist/dbrain_${RELEASE_TAG}_darwin_amd64.tar.gz" | awk '{print $1}')"
+          darwin_arm64_sha="$(sha256sum "../dist/dbrain_${RELEASE_TAG}_darwin_arm64.tar.gz" | awk '{print $1}')"
+          linux_amd64_sha="$(sha256sum "../dist/dbrain_${RELEASE_TAG}_linux_amd64.tar.gz" | awk '{print $1}')"
+          linux_arm64_sha="$(sha256sum "../dist/dbrain_${RELEASE_TAG}_linux_arm64.tar.gz" | awk '{print $1}')"
+
+          go run ./cmd/devtools/homebrew_test_release formula \
+            --output "${formula}" \
+            --existing "${formula}" \
+            --sha "${CANDIDATE_SHA}" --label "${DISPLAY_LABEL}" \
+            --run-number "${RUN_NUMBER}" --run-attempt "${RUN_ATTEMPT}" \
+            --release-base "${release_base}" \
+            --darwin-amd64-sha "${darwin_amd64_sha}" \
+            --darwin-arm64-sha "${darwin_arm64_sha}" \
+            --linux-amd64-sha "${linux_amd64_sha}" \
+            --linux-arm64-sha "${linux_arm64_sha}"
+          go run ./cmd/devtools/homebrew_test_release allowlist \
+            --input "${allowlist}" --output "${allowlist}" \
+            --version "${FORMULA_VERSION}"
+
+          stable_after="$(sha256sum "${stable}" | awk '{print $1}')"
+          test "${stable_before}" = "${stable_after}"
+          (
+            cd "${tap}"
+            git diff --exit-code -- Formula/dbrain.rb
+          )
+
+          mapfile -d '' changed_paths < <(
+            git -C "${tap}" diff --name-only -z
+            git -C "${tap}" diff --cached --name-only -z
+            git -C "${tap}" ls-files --others --exclude-standard -z
+          )
+          test "${#changed_paths[@]}" -gt 0
+          go run ./cmd/devtools/homebrew_test_release validate-paths "${changed_paths[@]}"
+
+      - name: Commit tap update
+        shell: bash
+        env:
+          DISPLAY_LABEL: ${{ needs.prepare.outputs.label }}
+          SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          git -C homebrew-tap add -- \
+            Formula/dbrain-test.rb \
+            audit_exceptions/github_prerelease_allowlist.json
+          git -C homebrew-tap diff --cached --exit-code -- Formula/dbrain.rb
+          git -C homebrew-tap config user.name "github-actions[bot]"
+          git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C homebrew-tap commit -m "Update dbrain test to ${DISPLAY_LABEL} (${SHORT_SHA})"
+
+      - name: Push tap update
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          # Expansion must occur inside Git's credential-helper shell.
+          # shellcheck disable=SC2016
+          git -C homebrew-tap \
+            -c credential.helper= \
+            -c 'credential.helper=!f() { test "$1" = get || exit 0; printf "%s\n" "username=x-access-token" "password=${HOMEBREW_TAP_TOKEN}"; }; f' \
+            push origin HEAD
+
+      - name: Write candidate instructions
+        shell: bash
+        env:
+          DISPLAY_LABEL: ${{ needs.prepare.outputs.label }}
+          SLUG: ${{ needs.prepare.outputs.slug }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+          FORMULA_VERSION: ${{ needs.prepare.outputs.formula_version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          cat >> "${GITHUB_STEP_SUMMARY}" <<SUMMARY
+          ## Homebrew test candidate
+
+          - Label: \`${DISPLAY_LABEL}\`
+          - Slug: \`${SLUG}\`
+          - SHA: \`${CANDIDATE_SHA}\`
+          - Binary release version: \`${RELEASE_VERSION}\`
+          - Formula version: \`${FORMULA_VERSION}\`
+          - Prerelease: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}
+
+          > **Launchd:** Homebrew link changes do not replace an already-running process. Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link. Run exactly one restart command after each transition: the command without \`--label\` targets the default \`com.darron.dbrain\` service; for a non-default service, replace \`com.example.dbrain-dev\` below with the exact label installed in its plist.
+
+          ### Install
+
+          \`\`\`sh
+          brew unlink dbrain
+          brew install darron/tap/dbrain-test
+          dbrain version
+          # If dbrain is managed by launchd, run exactly one of these:
+          # Default service label (com.darron.dbrain):
+          dbrain launchd restart --check-full-disk-access=false
+          # Non-default service; replace com.example.dbrain-dev with its installed label:
+          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
+          \`\`\`
+
+          ### Upgrade
+
+          \`\`\`sh
+          brew update
+          brew upgrade dbrain-test
+          dbrain version
+          # If dbrain is managed by launchd, run exactly one of these:
+          # Default service label (com.darron.dbrain):
+          dbrain launchd restart --check-full-disk-access=false
+          # Non-default service; replace com.example.dbrain-dev with its installed label:
+          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
+          \`\`\`
+
+          ### Roll back to stable
+
+          \`\`\`sh
+          brew unlink dbrain-test
+          brew link dbrain
+          dbrain version
+          # If dbrain is managed by launchd, run exactly one of these:
+          # Default service label (com.darron.dbrain):
+          dbrain launchd restart --check-full-disk-access=false
+          # Non-default service; replace com.example.dbrain-dev with its installed label:
+          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
+          \`\`\`
+
+          ### Remove test formula
+
+          \`\`\`sh
+          brew uninstall dbrain-test
+          brew link dbrain
+          dbrain version
+          # If dbrain is managed by launchd, run exactly one of these:
+          # Default service label (com.darron.dbrain):
+          dbrain launchd restart --check-full-disk-access=false
+          # Non-default service; replace com.example.dbrain-dev with its installed label:
+          dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
+          \`\`\`
+          SUMMARY
