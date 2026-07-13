@@ -19,11 +19,14 @@ jobs:
   prepare:
     name: Validate candidate
     runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
     outputs:
       sha: ${{ steps.metadata.outputs.sha }}
       short_sha: ${{ steps.metadata.outputs.short_sha }}
       label: ${{ steps.metadata.outputs.label }}
       slug: ${{ steps.metadata.outputs.slug }}
+      run_number: ${{ steps.metadata.outputs.run_number }}
+      run_attempt: ${{ steps.metadata.outputs.run_attempt }}
       formula_version: ${{ steps.metadata.outputs.formula_version }}
       release_version: ${{ steps.metadata.outputs.release_version }}
       release_tag: ${{ steps.metadata.outputs.release_tag }}
@@ -68,6 +71,7 @@ jobs:
   verify:
     name: Verify candidate
     runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
     needs: prepare
     steps:
       - name: Check out candidate source
@@ -75,6 +79,15 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
+
+      - name: Verify exact candidate commit
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "${CANDIDATE_SHA}")" = "commit"
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
@@ -114,6 +127,7 @@ jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
     needs: [prepare, verify]
     strategy:
       fail-fast: false
@@ -130,6 +144,15 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
+
+      - name: Verify exact candidate commit
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "${CANDIDATE_SHA}")" = "commit"
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
@@ -197,10 +220,12 @@ jobs:
           path: dist/dbrain_${{ needs.prepare.outputs.release_tag }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
 
   publish:
     name: Publish immutable prerelease
     runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
     needs: [prepare, build]
     permissions:
       contents: write
@@ -285,6 +310,7 @@ jobs:
   update-homebrew-tap:
     name: Update moving Homebrew test formula
     runs-on: ubuntu-latest
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
     needs: [prepare, publish]
     concurrency:
       group: dbrain-homebrew-tap-update
@@ -363,8 +389,8 @@ jobs:
         env:
           CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
           DISPLAY_LABEL: ${{ needs.prepare.outputs.label }}
-          RUN_NUMBER: ${{ github.run_number }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_NUMBER: ${{ needs.prepare.outputs.run_number }}
+          RUN_ATTEMPT: ${{ needs.prepare.outputs.run_attempt }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           FORMULA_VERSION: ${{ needs.prepare.outputs.formula_version }}
         run: |
@@ -459,12 +485,16 @@ jobs:
           - Formula version: \`${FORMULA_VERSION}\`
           - Prerelease: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}
 
+          > **Launchd:** Homebrew link changes do not replace an already-running process. Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link.
+
           ### Install
 
           \`\`\`sh
           brew unlink dbrain
           brew install darron/tap/dbrain-test
           dbrain version
+          # If dbrain is managed by launchd, restart it manually:
+          dbrain launchd restart --check-full-disk-access=false
           \`\`\`
 
           ### Upgrade
@@ -473,6 +503,8 @@ jobs:
           brew update
           brew upgrade dbrain-test
           dbrain version
+          # If dbrain is managed by launchd, restart it manually:
+          dbrain launchd restart --check-full-disk-access=false
           \`\`\`
 
           ### Roll back to stable
@@ -481,6 +513,8 @@ jobs:
           brew unlink dbrain-test
           brew link dbrain
           dbrain version
+          # If dbrain is managed by launchd, restart it manually:
+          dbrain launchd restart --check-full-disk-access=false
           \`\`\`
 
           ### Remove test formula
@@ -488,5 +522,8 @@ jobs:
           \`\`\`sh
           brew uninstall dbrain-test
           brew link dbrain
+          dbrain version
+          # If dbrain is managed by launchd, restart it manually:
+          dbrain launchd restart --check-full-disk-access=false
           \`\`\`
           SUMMARY

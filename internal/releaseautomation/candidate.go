@@ -18,6 +18,8 @@ type Candidate struct {
 	ShortSHA       string
 	Label          string
 	Slug           string
+	RunNumber      int64
+	RunAttempt     int64
 	FormulaVersion string
 	ReleaseVersion string
 	ReleaseTag     string
@@ -61,6 +63,8 @@ func NewCandidate(rawSHA, rawLabel string, runNumber, runAttempt int64) (Candida
 		ShortSHA:       shortSHA,
 		Label:          label,
 		Slug:           slug,
+		RunNumber:      runNumber,
+		RunAttempt:     runAttempt,
 		FormulaVersion: formulaVersion,
 		ReleaseVersion: fmt.Sprintf("test/%s@%s", slug, shortSHA),
 		ReleaseTag:     fmt.Sprintf("homebrew-test-%d-%d-%s-%s", runNumber, runAttempt, slug, shortSHA),
@@ -69,7 +73,7 @@ func NewCandidate(rawSHA, rawLabel string, runNumber, runAttempt int64) (Candida
 
 func (c Candidate) GitHubOutput() string {
 	return fmt.Sprintf(
-		"sha=%s\nshort_sha=%s\nlabel=%s\nslug=%s\nformula_version=%s\nrelease_version=%s\nrelease_tag=%s\n",
-		c.SHA, c.ShortSHA, c.Label, c.Slug, c.FormulaVersion, c.ReleaseVersion, c.ReleaseTag,
+		"sha=%s\nshort_sha=%s\nlabel=%s\nslug=%s\nrun_number=%d\nrun_attempt=%d\nformula_version=%s\nrelease_version=%s\nrelease_tag=%s\n",
+		c.SHA, c.ShortSHA, c.Label, c.Slug, c.RunNumber, c.RunAttempt, c.FormulaVersion, c.ReleaseVersion, c.ReleaseTag,
 	)
 }

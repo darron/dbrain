@@ -20,6 +20,9 @@ func TestNewCandidate(t *testing.T) {
 	if got.FormulaVersion != "0.0.184.2" {
 		t.Fatalf("FormulaVersion = %q", got.FormulaVersion)
 	}
+	if got.RunNumber != 184 || got.RunAttempt != 2 {
+		t.Fatalf("run identity = %#v", got)
+	}
 	if got.ReleaseVersion != "test/security-pass-db@84b3cc07b1a4" {
 		t.Fatalf("ReleaseVersion = %q", got.ReleaseVersion)
 	}
@@ -102,6 +105,8 @@ func TestCandidateGitHubOutput(t *testing.T) {
 		"short_sha=aaaaaaaaaaaa",
 		"label=test=one",
 		"slug=test-one",
+		"run_number=9",
+		"run_attempt=1",
 		"formula_version=0.0.9.1",
 		"release_version=test/test-one@aaaaaaaaaaaa",
 		"release_tag=homebrew-test-9-1-test-one-aaaaaaaaaaaa",
@@ -109,5 +114,27 @@ func TestCandidateGitHubOutput(t *testing.T) {
 		if !strings.Contains(output, want+"\n") {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestCandidateRerunIdentitySemantics(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	original, err := NewCandidate(sha, "security pass", 184, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partialRetry, err := NewCandidate(sha, "security pass", original.RunNumber, original.RunAttempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partialRetry != original {
+		t.Fatalf("partial retry changed canonical identity: got %#v want %#v", partialRetry, original)
+	}
+	fullRerun, err := NewCandidate(sha, "security pass", 184, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fullRerun.ReleaseTag == original.ReleaseTag || fullRerun.FormulaVersion == original.FormulaVersion {
+		t.Fatalf("full prepare rerun reused original identity: original=%#v rerun=%#v", original, fullRerun)
 	}
 }

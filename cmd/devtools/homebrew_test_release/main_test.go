@@ -24,6 +24,8 @@ func TestRunMetadata(t *testing.T) {
 		"short_sha=aaaaaaaaaaaa\n" +
 		"label=Security pass\n" +
 		"slug=security-pass\n" +
+		"run_number=184\n" +
+		"run_attempt=1\n" +
 		"formula_version=0.0.184.1\n" +
 		"release_version=test/security-pass@aaaaaaaaaaaa\n" +
 		"release_tag=homebrew-test-184-1-security-pass-aaaaaaaaaaaa\n"

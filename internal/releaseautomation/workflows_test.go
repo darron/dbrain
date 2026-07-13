@@ -391,6 +391,101 @@ func TestHomebrewTestWorkflowPolicyRejectsSecurityMutations(t *testing.T) {
 	}
 }
 
+func TestHomebrewTestWorkflowPolicyRejectsRerunMutations(t *testing.T) {
+	text := readRepoFile(t, ".github/workflows/homebrew-test.yaml")
+	if err := validateHomebrewTestWorkflow(text); err != nil {
+		t.Fatalf("base workflow invalid: %v", err)
+	}
+	guard := "    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}\n"
+	for _, job := range []string{"prepare", "verify", "build", "publish", "update-homebrew-tap"} {
+		t.Run(job+" missing independent guard", func(t *testing.T) {
+			mutated := mutateJob(t, text, job, guard, "")
+			if err := validateHomebrewTestWorkflow(mutated); err == nil {
+				t.Fatal("job without independent rerun guard passed policy")
+			}
+		})
+		t.Run(job+" failure propagation bypass", func(t *testing.T) {
+			mutated := mutateJob(t, text, job, "success()", "always()")
+			if err := validateHomebrewTestWorkflow(mutated); err == nil {
+				t.Fatal("job using always() bypass passed policy")
+			}
+		})
+	}
+	for _, job := range []string{"publish", "update-homebrew-tap"} {
+		t.Run(job+" bot-triggered partial rerun", func(t *testing.T) {
+			mutated := mutateJob(t, text, job, "github.triggering_actor == 'darron'", "github.triggering_actor == 'darvisf'")
+			if err := validateHomebrewTestWorkflow(mutated); err == nil {
+				t.Fatal("bot-triggered privileged partial rerun passed policy")
+			}
+		})
+	}
+
+	mutations := []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "artifact overwrite false", old: "          overwrite: true", new: "          overwrite: false"},
+		{name: "artifact overwrite missing", old: "\n          overwrite: true", new: ""},
+		{name: "partial retry uses current attempt", old: "RUN_ATTEMPT: ${{ needs.prepare.outputs.run_attempt }}", new: "RUN_ATTEMPT: ${{ github.run_attempt }}"},
+		{name: "prepare omits canonical attempt", old: "\n      run_attempt: ${{ steps.metadata.outputs.run_attempt }}", new: ""},
+		{name: "summary omits manual restart", old: "\n          dbrain launchd restart --check-full-disk-access=false", new: ""},
+		{name: "summary omits Cellar warning", old: " Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link.", new: ""},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			if !strings.Contains(text, mutation.old) {
+				t.Fatalf("mutation anchor missing: %q", mutation.old)
+			}
+			mutated := strings.Replace(text, mutation.old, mutation.new, 1)
+			if err := validateHomebrewTestWorkflow(mutated); err == nil {
+				t.Fatal("rerun/summary mutation unexpectedly passed policy")
+			}
+		})
+	}
+
+	t.Run("annotated tag object accepted in verify", func(t *testing.T) {
+		mutated := mutateJob(t, text, "verify", `= "commit"`, `= "tag"`)
+		if err := validateHomebrewTestWorkflow(mutated); err == nil {
+			t.Fatal("tag-object candidate mutation passed policy")
+		}
+	})
+	t.Run("checked out head mismatch accepted in build", func(t *testing.T) {
+		mutated := mutateJob(t, text, "build", `test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"`, `test "$(git rev-parse HEAD)" != "${CANDIDATE_SHA}"`)
+		if err := validateHomebrewTestWorkflow(mutated); err == nil {
+			t.Fatal("candidate HEAD mismatch mutation passed policy")
+		}
+	})
+}
+
+func mutateJob(t *testing.T, text, job, old, replacement string) string {
+	t.Helper()
+	marker := "\n  " + job + ":\n"
+	start := strings.Index(text, marker)
+	if start < 0 {
+		t.Fatalf("job %q not found", job)
+	}
+	end := len(text)
+	for _, candidate := range []string{"prepare", "verify", "build", "publish", "update-homebrew-tap"} {
+		if candidate == job {
+			continue
+		}
+		index := strings.Index(text[start+len(marker):], "\n  "+candidate+":\n")
+		if index >= 0 {
+			absolute := start + len(marker) + index
+			if absolute < end {
+				end = absolute
+			}
+		}
+	}
+	block := text[start:end]
+	if !strings.Contains(block, old) {
+		t.Fatalf("job %q mutation anchor missing: %q", job, old)
+	}
+	block = strings.Replace(block, old, replacement, 1)
+	return text[:start] + block + text[end:]
+}
+
 type workflowPolicy struct {
 	errors []string
 }
@@ -434,6 +529,10 @@ func validateHomebrewTestWorkflow(text string) error {
 	jobs := mappingNode(root, "jobs")
 	p.require(exactMappingKeys(jobs, "build", "prepare", "publish", "update-homebrew-tap", "verify"), "job set must be exact")
 	job := func(name string) *yaml.Node { return mappingNode(jobs, name) }
+	jobGuard := "${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}"
+	for _, name := range []string{"prepare", "verify", "build", "publish", "update-homebrew-tap"} {
+		p.require(scalarValue(mappingNode(job(name), "if")) == jobGuard, "%s job must independently enforce exact owner/rerun/ref authorization with success gating", name)
+	}
 	for _, name := range []string{"prepare", "verify", "build", "update-homebrew-tap"} {
 		p.require(mappingNode(job(name), "permissions") == nil, "%s must inherit exact root read permission", name)
 	}
@@ -443,6 +542,14 @@ func validateHomebrewTestWorkflow(text string) error {
 	p.require(exactNeeds(mappingNode(job("build"), "needs"), "prepare", "verify"), "build needs must be exactly prepare and verify")
 	p.require(exactNeeds(mappingNode(job("publish"), "needs"), "prepare", "build"), "publish needs must be exactly prepare and build")
 	p.require(exactNeeds(mappingNode(job("update-homebrew-tap"), "needs"), "prepare", "publish"), "tap needs must be exactly prepare and publish")
+	p.require(exactScalarMap(mappingNode(job("prepare"), "outputs"), map[string]string{
+		"sha": "${{ steps.metadata.outputs.sha }}", "short_sha": "${{ steps.metadata.outputs.short_sha }}",
+		"label": "${{ steps.metadata.outputs.label }}", "slug": "${{ steps.metadata.outputs.slug }}",
+		"run_number": "${{ steps.metadata.outputs.run_number }}", "run_attempt": "${{ steps.metadata.outputs.run_attempt }}",
+		"formula_version": "${{ steps.metadata.outputs.formula_version }}", "release_version": "${{ steps.metadata.outputs.release_version }}",
+		"release_tag": "${{ steps.metadata.outputs.release_tag }}",
+	}), "prepare outputs must expose one complete canonical candidate identity")
+	p.require(countScalarValue(root, "${{ github.run_number }}") == 1 && countScalarValue(root, "${{ github.run_attempt }}") == 1, "only prepare may derive candidate identity from current run metadata")
 
 	allowedActions := map[string]bool{
 		checkoutAction: true, setupGoAction: true, setupNodeAction: true,
@@ -487,6 +594,19 @@ func validateHomebrewTestWorkflow(text string) error {
 	assertCheckout("update-homebrew-tap", "Check out Homebrew tap", map[string]string{
 		"repository": "darron/homebrew-tap", "token": tapTokenExpression, "path": "homebrew-tap", "persist-credentials": "false",
 	})
+	for _, name := range []string{"verify", "build"} {
+		verifyCommit := namedStep(job(name), "Verify exact candidate commit")
+		p.require(exactScalarMap(mappingNode(verifyCommit, "env"), map[string]string{"CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"}), "%s exact-commit check must receive only canonical candidate SHA", name)
+		assertExactRun(p, job(name), "Verify exact candidate commit", exactCandidateCommitRun())
+	}
+	p.require(exactStepNames(job("verify"),
+		"Check out candidate source", "Verify exact candidate commit", "Set up Go", "Set up Node", "Install Task",
+		"Install web dependencies", "Install golangci-lint", "Build embedded web UI", "Run lint", "Run tests", "Run build",
+	), "verify must prove exact commit before setup or candidate execution")
+	p.require(exactStepNames(job("build"),
+		"Check out candidate source", "Verify exact candidate commit", "Set up Go", "Set up Node", "Install Task",
+		"Install web dependencies", "Build embedded web UI", "Build release archive", "Upload archive",
+	), "build must prove exact commit before setup or candidate execution")
 
 	tap := job("update-homebrew-tap")
 	p.require(exactScalarMap(mappingNode(tap, "concurrency"), map[string]string{
@@ -502,7 +622,7 @@ func validateHomebrewTestWorkflow(text string) error {
 		p.require(exactScalarMap(with, map[string]string{
 			"name":              "candidate-${{ matrix.goos }}-${{ matrix.goarch }}",
 			"path":              "dist/dbrain_${{ needs.prepare.outputs.release_tag }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}",
-			"if-no-files-found": "error", "retention-days": "7",
+			"if-no-files-found": "error", "retention-days": "7", "overwrite": "true",
 		}), "build upload inputs must be exact")
 		p.require(!strings.Contains(scalarValue(mappingNode(with, "path")), "*"), "build archive path must not contain a glob")
 	}
@@ -511,6 +631,9 @@ func validateHomebrewTestWorkflow(text string) error {
 	p.require(exactStepNames(publish, "Download candidate archives", "Verify exact archive inventory and generate checksums", "Publish GitHub prerelease"), "publish step sequence must be exact")
 	p.require(!jobUsesAction(publish, checkoutAction), "publish must not check out source")
 	assertDownloadStep(p, publish)
+	p.require(exactScalarMap(mappingNode(namedStep(publish, "Verify exact archive inventory and generate checksums"), "env"), map[string]string{
+		"RELEASE_TAG": "${{ needs.prepare.outputs.release_tag }}",
+	}), "publish inventory must receive only canonical release tag")
 	assertExactRun(p, publish, "Verify exact archive inventory and generate checksums", exactArchiveInventoryRun(true))
 	publishStep := namedStep(publish, "Publish GitHub prerelease")
 	p.require(exactScalarMap(mappingNode(publishStep, "env"), map[string]string{
@@ -527,7 +650,17 @@ func validateHomebrewTestWorkflow(text string) error {
 		"Generate and validate tap changes", "Commit tap update", "Push tap update", "Write candidate instructions",
 	), "tap step sequence must be exact")
 	assertDownloadStep(p, tap)
+	p.require(exactScalarMap(mappingNode(namedStep(tap, "Verify exact archive inventory"), "env"), map[string]string{
+		"RELEASE_TAG": "${{ needs.prepare.outputs.release_tag }}",
+	}), "tap inventory must receive only canonical release tag")
 	assertExactRun(p, tap, "Generate and validate tap changes", exactGenerateTapRun())
+	generate := namedStep(tap, "Generate and validate tap changes")
+	p.require(scalarValue(mappingNode(generate, "working-directory")) == "trusted-source", "tap generation must execute only from trusted source checkout")
+	p.require(exactScalarMap(mappingNode(generate, "env"), map[string]string{
+		"CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}", "DISPLAY_LABEL": "${{ needs.prepare.outputs.label }}",
+		"RUN_NUMBER": "${{ needs.prepare.outputs.run_number }}", "RUN_ATTEMPT": "${{ needs.prepare.outputs.run_attempt }}",
+		"RELEASE_TAG": "${{ needs.prepare.outputs.release_tag }}", "FORMULA_VERSION": "${{ needs.prepare.outputs.formula_version }}",
+	}), "tap generation must consume only prepare's canonical candidate identity")
 
 	requireToken := namedStep(tap, "Require Homebrew tap token")
 	p.require(exactScalarMap(mappingNode(requireToken, "env"), map[string]string{"HOMEBREW_TAP_TOKEN": tapTokenExpression}), "token check secret scope must be exact")
@@ -551,6 +684,12 @@ func validateHomebrewTestWorkflow(text string) error {
 	p.require(!strings.Contains(text, "darvisf"), "darvisf must not be an allowed actor")
 	p.require(!strings.Contains(text, "brew uninstall dbrain\n") && !strings.Contains(text, "~/.config/dbrain") && !strings.Contains(text, "~/.local/share/dbrain") && !strings.Contains(text, "launchctl"), "workflow must not remove runtime state")
 	p.require(strings.Contains(text, "brew uninstall dbrain-test"), "summary must remove only dbrain-test")
+	p.require(exactScalarMap(mappingNode(namedStep(tap, "Write candidate instructions"), "env"), map[string]string{
+		"DISPLAY_LABEL": "${{ needs.prepare.outputs.label }}", "SLUG": "${{ needs.prepare.outputs.slug }}",
+		"CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}", "RELEASE_VERSION": "${{ needs.prepare.outputs.release_version }}",
+		"FORMULA_VERSION": "${{ needs.prepare.outputs.formula_version }}", "RELEASE_TAG": "${{ needs.prepare.outputs.release_tag }}",
+	}), "summary must receive only canonical candidate metadata")
+	assertExactRun(p, tap, "Write candidate instructions", exactSummaryRun())
 	assertNoExpressionsInRunScripts(p, root)
 	return p.result()
 }
@@ -589,6 +728,7 @@ func assertExactRun(p *workflowPolicy, job *yaml.Node, stepName, want string) {
 	if step == nil {
 		return
 	}
+	p.require(scalarValue(mappingNode(step, "shell")) == "bash", "%s must run with bash", stepName)
 	got := normalizeRun(scalarValue(mappingNode(step, "run")))
 	p.require(got == normalizeRun(want), "%s run script must exactly match its reviewed fixture", stepName)
 }
@@ -600,6 +740,12 @@ func normalizeRun(run string) string {
 func exactRequireTokenRun() string {
 	return `set -euo pipefail
 test -n "${HOMEBREW_TAP_TOKEN}"`
+}
+
+func exactCandidateCommitRun() string {
+	return `set -euo pipefail
+test "$(git cat-file -t "${CANDIDATE_SHA}")" = "commit"
+test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"`
 }
 
 func exactArchiveInventoryRun(withChecksums bool) string {
@@ -729,6 +875,62 @@ git -C homebrew-tap \
   -c credential.helper= \
   -c 'credential.helper=!f() { test "$1" = get || exit 0; printf "%s\n" "username=x-access-token" "password=${HOMEBREW_TAP_TOKEN}"; }; f' \
   push origin HEAD`
+}
+
+func exactSummaryRun() string {
+	run := `cat >> "${GITHUB_STEP_SUMMARY}" <<SUMMARY
+## Homebrew test candidate
+
+- Label: \§${DISPLAY_LABEL}\§
+- Slug: \§${SLUG}\§
+- SHA: \§${CANDIDATE_SHA}\§
+- Binary release version: \§${RELEASE_VERSION}\§
+- Formula version: \§${FORMULA_VERSION}\§
+- Prerelease: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}
+
+> **Launchd:** Homebrew link changes do not replace an already-running process. Before restarting, inspect and reinstall any plist that uses a Cellar-specific or custom binary path so it points at the normal Homebrew link.
+
+### Install
+
+\§\§\§sh
+brew unlink dbrain
+brew install darron/tap/dbrain-test
+dbrain version
+# If dbrain is managed by launchd, restart it manually:
+dbrain launchd restart --check-full-disk-access=false
+\§\§\§
+
+### Upgrade
+
+\§\§\§sh
+brew update
+brew upgrade dbrain-test
+dbrain version
+# If dbrain is managed by launchd, restart it manually:
+dbrain launchd restart --check-full-disk-access=false
+\§\§\§
+
+### Roll back to stable
+
+\§\§\§sh
+brew unlink dbrain-test
+brew link dbrain
+dbrain version
+# If dbrain is managed by launchd, restart it manually:
+dbrain launchd restart --check-full-disk-access=false
+\§\§\§
+
+### Remove test formula
+
+\§\§\§sh
+brew uninstall dbrain-test
+brew link dbrain
+dbrain version
+# If dbrain is managed by launchd, restart it manually:
+dbrain launchd restart --check-full-disk-access=false
+\§\§\§
+SUMMARY`
+	return strings.ReplaceAll(run, "§", "`")
 }
 
 func assertNoExpressionsInRunScripts(p *workflowPolicy, node *yaml.Node) {
