@@ -23,6 +23,8 @@ executable locally, and leaves the stable formula untouched.
 
 - Manually dispatch a GitHub Actions workflow with an exact commit SHA and an
   arbitrary human-readable test label.
+- Permit only GitHub user `darron` to start or rerun the workflow, even if
+  another collaborator later receives repository write access.
 - Run release-equivalent verification and build the existing platform matrix
   from that exact commit.
 - Publish durable GitHub prerelease assets that Homebrew can download without
@@ -84,6 +86,14 @@ requested candidate SHA is an input, not the workflow ref. This keeps the
 secret-bearing publication logic anchored to reviewed default-branch workflow
 code while allowing the read-only build jobs to inspect and execute the exact
 candidate commit.
+
+GitHub already limits manual workflow dispatch to users with repository write
+access, but that is not the complete authorization contract. The first prepare
+step must additionally require both `github.actor` and
+`github.triggering_actor` to equal `darron`. Checking both identities prevents
+a different future collaborator from starting a run or rerunning a run that
+was originally started by the owner. The actor check occurs before checkout,
+artifact creation, release publication, or secret-bearing work.
 
 ### Candidate identity
 
@@ -271,6 +281,7 @@ No formula hook or workflow step may add cleanup behavior for those paths.
 
 The workflow fails without publication or tap mutation when:
 
+- `github.actor` or `github.triggering_actor` is not exactly `darron`;
 - it is dispatched from a ref other than `main`;
 - the SHA is not exactly 40 hexadecimal characters;
 - the requested commit cannot be checked out from the repository;
@@ -294,6 +305,8 @@ retarget an existing candidate tag to another SHA.
 
 - Candidate code executes without the tap secret and without repository write
   permission.
+- Only GitHub user `darron` may start or rerun the workflow; repository write
+  access alone is insufficient.
 - Secret-bearing jobs do not execute candidate binaries or scripts.
 - Candidate tags are immutable with respect to their requested SHA.
 - Stable and test formulas are separate files with an explicit diff allowlist.
@@ -330,9 +343,9 @@ Implementation follows test-first development. The local tests must prove:
    paths;
 7. the tap diff allowlist rejects `Formula/dbrain.rb` and every unrelated path;
 8. the manual workflow has only `workflow_dispatch`, exact input declarations,
-   read-only build permissions, persisted-credential disabling, prerelease
-   publication, a non-executing secret boundary, and the shared tap concurrency
-   group;
+   owner-only original/rerun actor checks, read-only build permissions,
+   persisted-credential disabling, prerelease publication, a non-executing
+   secret boundary, and the shared tap concurrency group;
 9. the stable workflow rejects non-final `v*` tags before publication and uses
    the same concurrency group; and
 10. documented switch, upgrade, rollback, and uninstall commands match the
@@ -375,6 +388,7 @@ The change is complete when:
 
 - a maintainer can identify an exact committed SHA and arbitrary label as a
   candidate without creating a stable tag;
+- only GitHub user `darron` can start or rerun the candidate workflow;
 - the workflow definition builds that SHA through release-equivalent gates;
 - published candidate assets are durable GitHub prerelease assets;
 - the moving formula installs the normal `dbrain` executable and reports the
