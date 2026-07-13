@@ -23,8 +23,7 @@ executable locally, and leaves the stable formula untouched.
 
 - Manually dispatch a GitHub Actions workflow with an exact commit SHA and an
   arbitrary human-readable test label.
-- Permit only GitHub user `darron` to start or rerun the workflow, even if
-  another collaborator later receives repository write access.
+- Permit only GitHub user `darron` to start or rerun the reviewed workflow.
 - Run release-equivalent verification and build the existing platform matrix
   from that exact commit.
 - Publish durable GitHub prerelease assets that Homebrew can download without
@@ -91,9 +90,17 @@ GitHub already limits manual workflow dispatch to users with repository write
 access, but that is not the complete authorization contract. The first prepare
 step must additionally require both `github.actor` and
 `github.triggering_actor` to equal `darron`. Checking both identities prevents
-a different future collaborator from starting a run or rerunning a run that
-was originally started by the owner. The actor check occurs before checkout,
-artifact creation, release publication, or secret-bearing work.
+the trusted `darvisf` bot account from starting a normal run or rerunning a run
+that was originally started by the owner. The actor check occurs before
+checkout, artifact creation, release publication, or secret-bearing work.
+
+The repository currently grants push access to `darron` and the maintainer's
+trusted `darvisf` bot account. This design trusts both write-capable identities
+not to replace the workflow or misuse repository secrets; an in-workflow actor
+check cannot defend against a collaborator authorized to rewrite the workflow
+itself. If an untrusted write-capable collaborator is added later, move
+`HOMEBREW_TAP_TOKEN` into an appropriately protected GitHub environment or
+remove that access before relying on this channel.
 
 ### Candidate identity
 
@@ -305,8 +312,9 @@ retarget an existing candidate tag to another SHA.
 
 - Candidate code executes without the tap secret and without repository write
   permission.
-- Only GitHub user `darron` may start or rerun the workflow; repository write
-  access alone is insufficient.
+- The reviewed workflow permits only GitHub user `darron` to start or rerun it;
+  the accepted repository model separately trusts the write-capable `darvisf`
+  bot not to replace the workflow or misuse repository secrets.
 - Secret-bearing jobs do not execute candidate binaries or scripts.
 - Candidate tags are immutable with respect to their requested SHA.
 - Stable and test formulas are separate files with an explicit diff allowlist.
