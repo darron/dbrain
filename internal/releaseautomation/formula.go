@@ -13,6 +13,8 @@ import (
 var (
 	sha256Regexp        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	formulaVersionRegex = regexp.MustCompile(`^0\.0\.([1-9][0-9]*)\.([1-9][0-9]*)$`)
+	testFormulaClass    = regexp.MustCompile(`(?m)^class DbrainTest < Formula\s*$`)
+	formulaVersionLine  = regexp.MustCompile(`(?m)^  version "([^"]+)"\s*$`)
 )
 
 var homebrewTargets = []string{
@@ -78,6 +80,35 @@ func parseFormulaVersion(version string) (int64, int64, error) {
 		return 0, 0, fmt.Errorf("parse formula run attempt: %w", err)
 	}
 	return runNumber, runAttempt, nil
+}
+
+// ValidateFormulaAdvance prevents an older workflow run from overwriting a
+// newer moving test formula. A nil existing formula denotes first publication;
+// every existing file must otherwise be a recognizable DbrainTest formula.
+func ValidateFormulaAdvance(existing []byte, incoming string) error {
+	incomingRun, incomingAttempt, err := parseFormulaVersion(incoming)
+	if err != nil {
+		return fmt.Errorf("incoming formula version: %w", err)
+	}
+	if existing == nil {
+		return nil
+	}
+	if len(testFormulaClass.FindAll(existing, -1)) != 1 {
+		return fmt.Errorf("existing formula must contain exactly one class DbrainTest < Formula declaration")
+	}
+	matches := formulaVersionLine.FindAllSubmatch(existing, -1)
+	if len(matches) != 1 {
+		return fmt.Errorf("existing formula must contain exactly one version declaration")
+	}
+	existingVersion := string(matches[0][1])
+	existingRun, existingAttempt, err := parseFormulaVersion(existingVersion)
+	if err != nil {
+		return fmt.Errorf("existing formula version %q: %w", existingVersion, err)
+	}
+	if incomingRun < existingRun || (incomingRun == existingRun && incomingAttempt <= existingAttempt) {
+		return fmt.Errorf("incoming formula version %q must be greater than existing %q", incoming, existingVersion)
+	}
+	return nil
 }
 
 func UpdatePrereleaseAllowlist(existing []byte, version string) ([]byte, error) {

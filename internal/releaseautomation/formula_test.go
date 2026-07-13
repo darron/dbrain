@@ -191,3 +191,40 @@ func TestValidateTapPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateFormulaAdvance(t *testing.T) {
+	formula := func(version string) []byte {
+		return []byte("class DbrainTest < Formula\n  version \"" + version + "\"\nend\n")
+	}
+
+	for _, tt := range []struct {
+		name     string
+		existing []byte
+		incoming string
+		wantErr  string
+	}{
+		{name: "first formula", existing: nil, incoming: "0.0.184.1"},
+		{name: "newer run", existing: formula("0.0.183.9"), incoming: "0.0.184.1"},
+		{name: "newer attempt", existing: formula("0.0.184.1"), incoming: "0.0.184.2"},
+		{name: "older run finishes after newer", existing: formula("0.0.185.1"), incoming: "0.0.184.99", wantErr: "must be greater than existing"},
+		{name: "equal version", existing: formula("0.0.184.1"), incoming: "0.0.184.1", wantErr: "must be greater than existing"},
+		{name: "malformed existing", existing: formula("latest"), incoming: "0.0.184.1", wantErr: "existing formula"},
+		{name: "empty existing file", existing: []byte{}, incoming: "0.0.184.1", wantErr: "existing formula"},
+		{name: "wrong formula class", existing: []byte("class Dbrain < Formula\n  version \"0.0.183.1\"\nend\n"), incoming: "0.0.184.1", wantErr: "existing formula"},
+		{name: "duplicate formula class", existing: []byte("class DbrainTest < Formula\n  version \"0.0.183.1\"\nend\nclass DbrainTest < Formula\nend\n"), incoming: "0.0.184.1", wantErr: "existing formula"},
+		{name: "malformed incoming", existing: nil, incoming: "latest", wantErr: "incoming formula"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateFormulaAdvance(tt.existing, tt.incoming)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err=%v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}

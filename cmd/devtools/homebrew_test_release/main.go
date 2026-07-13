@@ -68,6 +68,7 @@ func runMetadata(args []string, stdout, stderr io.Writer) int {
 func runFormula(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("formula", stderr)
 	output := flags.String("output", "", "generated formula path")
+	existingPath := flags.String("existing", "", "current test formula path")
 	sha := flags.String("sha", "", "full candidate commit SHA")
 	label := flags.String("label", "", "candidate display label")
 	runNumber := flags.Int64("run-number", 0, "GitHub run number")
@@ -85,20 +86,36 @@ func runFormula(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	required := []string{
-		"output", "sha", "label", "run-number", "run-attempt", "release-base",
+		"output", "existing", "sha", "label", "run-number", "run-attempt", "release-base",
 		"darwin-amd64-sha", "darwin-arm64-sha", "linux-amd64-sha", "linux-arm64-sha",
 	}
 	if !hasAllFlags(flags, required...) {
-		fmt.Fprintln(stderr, "formula requires --output, --sha, --label, --run-number, --run-attempt, --release-base, and all four checksum flags")
+		fmt.Fprintln(stderr, "formula requires --output, --existing, --sha, --label, --run-number, --run-attempt, --release-base, and all four checksum flags")
 		return 2
 	}
 	if err := rejectStableFormulaPath(*output); err != nil {
 		fmt.Fprintf(stderr, "formula: %v\n", err)
 		return 1
 	}
+	if filepath.Clean(*existingPath) != filepath.Clean(*output) {
+		fmt.Fprintln(stderr, "formula: existing path must equal output path")
+		return 1
+	}
 
 	candidate, err := releaseautomation.NewCandidate(*sha, *label, *runNumber, *runAttempt)
 	if err != nil {
+		fmt.Fprintf(stderr, "formula: %v\n", err)
+		return 1
+	}
+	existing, err := os.ReadFile(*existingPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(stderr, "read existing formula: %v\n", err)
+			return 1
+		}
+		existing = nil
+	}
+	if err := releaseautomation.ValidateFormulaAdvance(existing, candidate.FormulaVersion); err != nil {
 		fmt.Fprintf(stderr, "formula: %v\n", err)
 		return 1
 	}

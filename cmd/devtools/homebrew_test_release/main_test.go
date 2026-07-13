@@ -74,6 +74,42 @@ func TestRunFormulaWritesRequestedFile(t *testing.T) {
 	}
 }
 
+func TestRunFormulaRejectsNonMonotonicExistingFormula(t *testing.T) {
+	root := t.TempDir()
+	output := filepath.Join(root, "dbrain-test.rb")
+	existing := []byte("class DbrainTest < Formula\n  version \"0.0.185.1\"\nend\n")
+	if err := os.WriteFile(output, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	args := formulaArgs(output)
+	var stdout, stderr bytes.Buffer
+	code := run(args, &stdout, &stderr)
+	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "must be greater than existing") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, existing) {
+		t.Fatalf("existing formula changed on rejected regression:\n%s", got)
+	}
+}
+
+func TestRunFormulaRequiresExistingFormulaToBeOutput(t *testing.T) {
+	root := t.TempDir()
+	output := filepath.Join(root, "dbrain-test.rb")
+	args := replaceArg(formulaArgs(output), "--existing", filepath.Join(root, "different.rb"))
+	var stdout, stderr bytes.Buffer
+	code := run(args, &stdout, &stderr)
+	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "existing path must equal output path") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("output was written despite mismatched existing path: %v", err)
+	}
+}
+
 func TestRunFormulaReconstructsCandidate(t *testing.T) {
 	root := t.TempDir()
 	output := filepath.Join(root, "dbrain-test.rb")
@@ -272,6 +308,7 @@ func formulaArgs(output string) []string {
 	releaseTag := "homebrew-test-184-1-security-pass-84b3cc07b1a4"
 	return []string{
 		"formula", "--output", output,
+		"--existing", output,
 		"--sha", testSHA,
 		"--label", "Security pass",
 		"--run-number", "184",
