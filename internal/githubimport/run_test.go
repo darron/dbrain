@@ -234,6 +234,10 @@ func newGitHubTestServer(t *testing.T) *httptest.Server {
 			"html_url": "https://github.com/example/project/blob/main/README.md",
 		})
 	})
+	mux.HandleFunc("/project", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<html><body><main>WEBSITE HOME TEXT</main></body></html>"))
+	})
 
 	return httptest.NewServer(mux)
 }
@@ -263,18 +267,19 @@ done
 if [ -f "$last" ]; then
   input="$(cat "$last")"
   case "$input" in
-    *"README CONTENT FROM GITHUB API"*) ;;
+    *"README CONTENT FROM GITHUB API"*)
+      printf '%s\n' '{"input":{"model":"cli/test/github"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"README CONTENT FROM GITHUB API"},"summary":"github repo summary"}'
+      exit 0
+      ;;
+    *"WEBSITE HOME TEXT"*)
+      printf '%s\n' '{"input":{"model":"cli/test/github"},"extracted":{"url":"` + homepageURL + `","title":"Project Website","description":"Homepage description","siteName":"Example","content":"WEBSITE HOME TEXT"},"summary":"website summary"}'
+      exit 0
+      ;;
     *)
-      echo "expected github README in summary file" >&2
+      echo "expected github README or homepage in local summary file" >&2
       exit 1
       ;;
   esac
-  printf '%s\n' '{"input":{"model":"cli/test/github"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"README CONTENT FROM GITHUB API"},"summary":"github repo summary"}'
-  exit 0
-fi
-if [ "$last" = "` + homepageURL + `" ]; then
-  printf '%s\n' '{"input":{"model":"cli/test/github"},"extracted":{"url":"` + homepageURL + `","title":"Project Website","description":"Homepage description","siteName":"Example","content":"WEBSITE HOME TEXT"},"summary":"website summary"}'
-  exit 0
 fi
 echo "unexpected summarize input: $last" >&2
 exit 1

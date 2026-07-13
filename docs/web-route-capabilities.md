@@ -5,8 +5,10 @@ Date: 2026-06-21
 The web UI is a local administration surface. When mounted through
 `dbrain serve remote`, the same routes are exposed through tsnet/Tailscale.
 By default, remote access depends on Tailscale ACLs, node tags, and the
-server's same-origin checks. Optional GitHub OAuth can add a dbrain session
-gate for the web UI when configured.
+server's shared mutation Origin checks. Optional GitHub OAuth can add a dbrain
+session gate for the web UI when configured. Funnel startup requires that
+session gate for web and bearer authentication for MCP; it does not permit an
+auth-disabled selected surface.
 
 ## Capability Matrix
 
@@ -33,9 +35,14 @@ gate for the web UI when configured.
 
 - Treat local `serve web` and remote `serve remote --web` as trusted write
   surfaces, not as read-only viewers.
-- Do not expose remote web through Tailscale Funnel or a public proxy unless
-  dbrain-level authentication is configured and the full route surface has been
-  reviewed for that deployment.
+- Funnel refuses to start the web surface without `auth.enabled=true`. Do not
+  expose remote web through another public proxy unless dbrain-level
+  authentication is configured and the full route surface has been reviewed
+  for that deployment.
+- All non-`GET`/non-`HEAD` application requests share one Origin guard. Missing
+  Origin remains allowed for CLI clients; a supplied Origin must match the
+  direct request origin. Browser-extension origins are limited to `/api/links`.
+  The guard deliberately does not trust forwarded-host headers.
 - Bootstrap, transcript-save, detail media, and signed media URL responses avoid
   absolute host paths and archive bucket/key details. Detail responses still
   include note-relative paths and note-read diagnostics for operator

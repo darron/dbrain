@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func NoteRelativePath(sourceKind, year, externalID string) string {
@@ -18,5 +19,10 @@ func NoteRelativePath(sourceKind, year, externalID string) string {
 }
 
 func StatNote(cfg config.Config, relPath string) (os.FileInfo, error) {
-	return os.Stat(filepath.Join(cfg.VaultDir, relPath))
+	root, err := vaultfs.Open(cfg.VaultDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	return root.Stat(relPath)
 }

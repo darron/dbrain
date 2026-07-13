@@ -17,6 +17,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 )
 
 type progressOptions struct {
@@ -34,8 +35,12 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 
 	resp, err := client.Do(req)
 	if err != nil {
+		status := model.MediaDownloadStatusError
+		if safehttp.IsPolicyError(err) {
+			status = model.MediaDownloadStatusBlocked
+		}
 		return model.MediaDownloadResult{
-			Status: model.MediaDownloadStatusError,
+			Status: status,
 			Error:  err.Error(),
 		}, nil
 	}

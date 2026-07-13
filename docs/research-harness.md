@@ -117,7 +117,13 @@ Answer citation metadata is now distinct from prepared synthesis context.
 `SynthesisResult.Citations` contains only exact source keys present in the final
 answer. Citation verification rejects extra result metadata, and public shares
 derive Original URLs and topic tags from answer-cited evidence only. Literal
-external URLs written directly in an answer remain eligible for sharing.
+external URLs written directly in an answer remain eligible for sharing. The
+anonymous renderer rejects URL userinfo and removes credential-like query
+parameters (including tokens, API keys, signatures, secrets, and `X-Amz-*`)
+from every public text/metadata field in newly generated and legacy stored
+shares while preserving ordinary query parameters. Pre-signed URLs are
+intentionally made nonfunctional on public shares; share a stable public URL
+instead when recipients need access.
 
 Synthesis prompt v4 explicitly requires unrelated prompt candidates to be
 ignored silently. A deterministic answer guard rejects unsolicited

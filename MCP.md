@@ -321,7 +321,7 @@ dbrain serve mcp --transport tsnet --tsnet-hostname dbrain
 ```
 
 Add `--tsnet-funnel` only when you intentionally want Tailscale Funnel public
-exposure:
+exposure. Enable `mcp.auth.enabled=true` and create a bearer token first:
 
 ```sh
 dbrain serve mcp --transport tsnet --tsnet-funnel
@@ -356,6 +356,9 @@ Security defaults:
   `--allow-origin`.
 - Optional bearer auth can be enabled with `mcp.auth.enabled=true` or
   `DBRAIN_MCP_AUTH_ENABLED=true`.
+- Funnel refuses to start an MCP surface unless bearer auth is enabled.
+- JSON-RPC batches are limited to 16 requests; larger batches are rejected
+  before any member is dispatched on HTTP or stdio.
 
 Create an MCP bearer token with:
 

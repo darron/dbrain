@@ -10,6 +10,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/researchhybrid"
 	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func (b *Builder) buildExactTagEvidence(ctx context.Context, topic string, hints ask.QueryHints, sourceTypes []string, maxChars int) ([]ask.Evidence, error) {
@@ -111,7 +112,7 @@ func exactTagEvidenceFromItem(vaultDir string, item model.Item, result model.Sea
 		Kind:        "item",
 		Title:       item.Title,
 		URL:         item.CanonicalURL,
-		NotePath:    filepath.Join(vaultDir, filepath.FromSlash(item.NotePath)),
+		NotePath:    safeExactTagNotePath(vaultDir, item.NotePath),
 		Summary:     trimText(item.SummaryText, maxChars),
 		Excerpt:     excerpt,
 		Author:      author,
@@ -145,7 +146,7 @@ func exactTagEvidenceFromSource(vaultDir string, source model.SourceDocument, re
 		Kind:         "source",
 		Title:        firstNonEmpty(source.Title, source.CanonicalURL),
 		URL:          source.CanonicalURL,
-		NotePath:     filepath.Join(vaultDir, filepath.FromSlash(source.NotePath)),
+		NotePath:     safeExactTagNotePath(vaultDir, source.NotePath),
 		Summary:      trimText(source.SummaryText, maxChars),
 		Excerpt:      excerpt,
 		SourceType:   source.SourceType,
@@ -154,6 +155,18 @@ func exactTagEvidenceFromSource(vaultDir string, source model.SourceDocument, re
 		UserTags:     source.UserTags,
 		Retrieval:    &retrievalInfo,
 	}
+}
+
+func safeExactTagNotePath(vaultDir string, notePath string) string {
+	root, err := vaultfs.Open(vaultDir)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = root.Close() }()
+	if _, err := root.Stat(notePath); err != nil {
+		return ""
+	}
+	return filepath.Join(vaultDir, filepath.FromSlash(notePath))
 }
 
 func exactTagExampleRetrieval(tag string, terms []string, matchText string) ask.RetrievalInfo {

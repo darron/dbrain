@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 )
 
 func processPreflightTerminal(processCtx sourceProcessContext) (sourceProcessResult, bool) {
@@ -70,10 +71,25 @@ func processFeedLinkedHTTPExtract(processCtx sourceProcessContext) (sourceProces
 	if sourceURL == "" {
 		return result, false
 	}
-	extract, recovered, err := extractHTTPReadableSource(ctx, sourceURL)
+	extract, recovered, err := extractHTTPReadableSource(ctx, sourceURL, opts)
 	if err != nil || !recovered {
 		if err != nil {
 			debugLog(opts.Logger, "feed-linked source markdown fetch failed; falling back to local or CLI extract", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
+			if safehttp.IsPolicyError(err) {
+				result.Stats.Errors++
+				failure := model.ExtractResult{
+					Status:      model.SourceExtractStatusDead,
+					Error:       err.Error(),
+					Tool:        protectedFetchToolName,
+					ToolVersion: httpReaderToolVersion,
+				}
+				if saveErr := saveSourceFailure(ctx, st, source, failure, opts, processCtx.extractToolVersion, processCtx.summaryToolVersion); saveErr != nil {
+					result.Err = saveErr
+					return result, true
+				}
+				result.TouchedSourceID = source.ID
+				return result, true
+			}
 		}
 		return result, false
 	}

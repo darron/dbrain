@@ -11,12 +11,19 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func comparePhotoInputPath(ctx context.Context, cfg config.Config, opts CompareOptions, ref model.ItemMediaRef) (string, string, func(), error) {
-	absolutePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(ref.LocalPath))
-	if info, err := os.Stat(absolutePath); err == nil && info.Mode().IsRegular() {
-		return absolutePath, "local", nil, nil
+	absolutePath := ""
+	var localCleanup func()
+	root, err := vaultfs.Open(cfg.VaultDir)
+	if err == nil {
+		absolutePath, localCleanup, _ = materializeVaultPhoto(cfg, root, ref.LocalPath, "x-photo-ocr-compare-local")
+		_ = root.Close()
+	}
+	if absolutePath != "" {
+		return absolutePath, "local", localCleanup, nil
 	}
 	if !opts.DownloadMissing {
 		return absolutePath, "missing", nil, fmt.Errorf("local image is unavailable; rerun with --download-missing to fetch a temp copy")

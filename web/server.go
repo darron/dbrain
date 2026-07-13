@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/httpsecurity"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
@@ -173,7 +174,7 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 		auth:            authManager,
 	}
 
-	return s.newMux(), nil
+	return httpsecurity.OriginGuard(s.newMux()), nil
 }
 
 func writeAuthStartupStatus(out io.Writer, authCfg authConfig) {

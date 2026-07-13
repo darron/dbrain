@@ -5,6 +5,31 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Security hardening (2026-07-12)
+
+- **Local filesystem containment**: Vault note/media reads, writes, uploads,
+  OCR/transcription inputs, and cleanup now use root-confined filesystem
+  operations so persisted traversal paths and symlink parents cannot escape the
+  configured vault. Apple Notes attachment extraction is likewise confined to
+  the selected Notes database container.
+- **Restore identity**: SQLite archive restore now rejects corrupt, foreign,
+  future-version, incomplete-migration, and unknown-migration databases before
+  replacing the authoritative local database.
+- **Network and remote surfaces**: Source/media fetches share a redirect- and
+  DNS-rebinding-aware public-destination policy; Funnel startup fails closed
+  unless each selected web/MCP surface has application authentication; web
+  mutations share an Origin guard; service-auth nonces are single-use per
+  process; and JSON-RPC batches are limited to 16 requests.
+- **Public shares**: Anonymous share rendering rejects URL userinfo and removes
+  recognized credential-like query data from newly generated and legacy stored
+  shares, including renderer-created attributes, nested/encoded query values,
+  and browser-normalized URL forms, while preserving ordinary query parameters.
+- **Supply chain**: Release and PR workflow action selectors and tool versions
+  are immutable, with a YAML-aware regression policy covering both `.yml` and
+  `.yaml` workflow files.
+- **Review workflow**: Added the repo-owned `dbrain-security-review` skill,
+  security campaign design/remediation plans, and a sanitized evidence ledger.
+
 ### dbrain Review Skill Distribution (2026-07-11)
 
 - **Skill packaging**: Moved the `dbrain-review` skill into this repository alongside `dbrain-mcp` so the project is its authoritative source.

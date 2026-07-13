@@ -2,12 +2,11 @@ package app
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func newGetCommand(root *rootOptions) *cobra.Command {
@@ -38,10 +37,14 @@ func newGetCommand(root *rootOptions) *cobra.Command {
 					return writeJSON(cmd.OutOrStdout(), item)
 				}
 
-				fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath))
-				content, err := os.ReadFile(fullPath)
+				root, err := vaultfs.Open(cfg.VaultDir)
 				if err != nil {
-					return fmt.Errorf("read note %s: %w", fullPath, err)
+					return err
+				}
+				defer func() { _ = root.Close() }()
+				content, err := root.ReadFile(item.NotePath)
+				if err != nil {
+					return fmt.Errorf("read note %q: %w", item.NotePath, err)
 				}
 				_, _ = fmt.Fprint(cmd.OutOrStdout(), string(content))
 				return nil
@@ -55,10 +58,14 @@ func newGetCommand(root *rootOptions) *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), source)
 			}
 
-			fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath))
-			content, err := os.ReadFile(fullPath)
+			root, err := vaultfs.Open(cfg.VaultDir)
 			if err != nil {
-				return fmt.Errorf("read note %s: %w", fullPath, err)
+				return err
+			}
+			defer func() { _ = root.Close() }()
+			content, err := root.ReadFile(source.NotePath)
+			if err != nil {
+				return fmt.Errorf("read note %q: %w", source.NotePath, err)
 			}
 			_, _ = fmt.Fprint(cmd.OutOrStdout(), string(content))
 			return nil

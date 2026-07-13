@@ -3,7 +3,6 @@ package xphotoocr
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opts Options, item model.Item) ocrItemOutcome {
@@ -36,6 +36,14 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 	}
 
 	blocks := make([]ocrBlock, 0, len(photos))
+	root, rootErr := vaultfs.Open(cfg.VaultDir)
+	if rootErr != nil {
+		outcome.errors++
+		outcome.itemsSkipped++
+		debugLog(opts.Logger, "x photo OCR vault unavailable", "source_key", item.SourceKey, "item_id", item.ID, "error", rootErr.Error())
+		return outcome
+	}
+	defer func() { _ = root.Close() }()
 	lastErr := ""
 	toolsUsed := map[string]struct{}{}
 	modelsUsed := map[string]struct{}{}
@@ -43,8 +51,14 @@ func processOCRItem(ctx context.Context, cfg config.Config, st *store.Store, opt
 		if err := ctx.Err(); err != nil {
 			return outcome
 		}
-		absolutePath := filepath.Join(cfg.VaultDir, filepath.FromSlash(ref.LocalPath))
+		absolutePath, cleanup, err := materializeVaultPhoto(cfg, root, ref.LocalPath, "x-photo-ocr-local")
+		if err != nil {
+			lastErr = err.Error()
+			debugLog(opts.Logger, "x photo OCR file unavailable", "source_key", item.SourceKey, "item_id", item.ID, "local_path", ref.LocalPath, "error", err.Error())
+			continue
+		}
 		block, hostedAttempted, hostedFallback, err := ocrPhoto(ctx, absolutePath, ref, opts)
+		cleanup()
 		if hostedAttempted {
 			outcome.hostedAttempts++
 		}

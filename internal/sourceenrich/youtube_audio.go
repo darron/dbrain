@@ -61,6 +61,9 @@ func MaybeTranscribeYouTubeAudioFallback(ctx context.Context, cfg config.Config,
 }
 
 func transcribeYouTubeAudioFallback(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options) (model.ExtractResult, error) {
+	if err := validateYouTubeSubprocessURL(firstNonEmpty(source.CanonicalURL, source.NormalizedURL)); err != nil {
+		return model.ExtractResult{}, err
+	}
 	opts = defaultOptions(cfg, opts)
 
 	timeout := opts.Timeout

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	neturl "net/url"
 	"strings"
 
@@ -67,8 +66,8 @@ func extractWaybackArchivedSource(ctx context.Context, sourceURL string, opts Op
 		return model.ExtractResult{}, false, nil
 	}
 
-	client := &http.Client{}
-	resp, body, err := fetchWaybackText(ctx, client, availabilityURL, "application/json,*/*;q=0.8")
+	availabilityClient := newConfiguredOriginHTTPClient(opts.WaybackAvailabilityURL, opts)
+	resp, body, err := fetchWaybackText(ctx, availabilityClient, availabilityURL, "application/json,*/*;q=0.8")
 	if err != nil {
 		return model.ExtractResult{}, false, fmt.Errorf("fetch wayback availability: %w", err)
 	}
@@ -93,7 +92,7 @@ func extractWaybackArchivedSource(ctx context.Context, sourceURL string, opts Op
 		return model.ExtractResult{}, false, nil
 	}
 
-	snapshotResp, snapshotBody, err := fetchWaybackText(ctx, client, rawURL, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	snapshotResp, snapshotBody, err := fetchWaybackText(ctx, newPublicHTTPClient(opts), rawURL, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	if err != nil {
 		return model.ExtractResult{}, false, fmt.Errorf("fetch wayback snapshot: %w", err)
 	}

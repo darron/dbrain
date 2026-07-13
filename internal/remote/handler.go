@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
+
+	"github.com/darron/dbrain/internal/httpsecurity"
 )
 
 type HandlerOptions struct {
@@ -28,7 +29,7 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if opts.Web && opts.WebHandler == nil {
 		return nil, fmt.Errorf("web handler is required when web is enabled")
 	}
-	return securityHeaders(opts.TLS, originGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return securityHeaders(opts.TLS, httpsecurity.OriginGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if opts.MCP && (r.URL.Path == mcpPath || strings.HasPrefix(r.URL.Path, mcpPath+"/")) {
 			if r.URL.Path != mcpPath {
 				writeMCPHTTPError(w, http.StatusNotFound, "MCP endpoint not found")
@@ -55,71 +56,6 @@ func securityHeaders(tls bool, next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
-}
-
-func originGuard(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet || r.Method == http.MethodHead {
-			next.ServeHTTP(w, r)
-			return
-		}
-		origin := strings.TrimSpace(r.Header.Get("Origin"))
-		if origin == "" || sameOrigin(origin, requestOrigin(r)) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if browserExtensionLinkAddOrigin(origin, r.URL.Path) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		http.Error(w, "forbidden origin", http.StatusForbidden)
-	})
-}
-
-func browserExtensionLinkAddOrigin(origin string, requestPath string) bool {
-	if requestPath != "/api/links" {
-		return false
-	}
-	parsed, err := url.Parse(strings.TrimSpace(origin))
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(parsed.Scheme) {
-	case "chrome-extension", "safari-web-extension":
-		return parsed.Host != ""
-	default:
-		return false
-	}
-}
-
-func sameOrigin(origin string, expected string) bool {
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return false
-	}
-	return strings.EqualFold(normalizeOrigin(parsed.Scheme+"://"+parsed.Host), normalizeOrigin(expected))
-}
-
-func requestOrigin(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return scheme + "://" + r.Host
-}
-
-func normalizeOrigin(origin string) string {
-	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return origin
-	}
-	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	parsed.Host = strings.ToLower(parsed.Host)
-	parsed.Path = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String()
 }
 
 func writeMCPHTTPError(w http.ResponseWriter, status int, message string) {

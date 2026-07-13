@@ -5,7 +5,35 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/darron/dbrain/internal/safehttp"
 )
+
+func newPublicHTTPClient(options ...Options) *http.Client {
+	policy := httpPolicyForOptions(options)
+	policy.AllowedPrivateOrigins = nil
+	return safehttp.NewClient(policy)
+}
+
+func newConfiguredOriginHTTPClient(rawOrigin string, options ...Options) *http.Client {
+	policy := httpPolicyForOptions(options)
+	policy.AllowedPrivateOrigins = []string{rawOrigin}
+	return safehttp.NewClient(policy)
+}
+
+func httpPolicyForOptions(options []Options) safehttp.Policy {
+	if len(options) == 0 || options[0].httpPolicy == nil {
+		if len(options) > 0 {
+			return safehttp.Policy{Timeout: options[0].Timeout}
+		}
+		return safehttp.Policy{}
+	}
+	policy := *options[0].httpPolicy
+	if policy.Timeout <= 0 {
+		policy.Timeout = options[0].Timeout
+	}
+	return policy
+}
 
 func fetchHTTPText(ctx context.Context, client *http.Client, rawURL string) (*http.Response, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)

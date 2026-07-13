@@ -123,6 +123,18 @@ func ValidatePublicAuthConfig(ctx context.Context, cfg config.Config) error {
 	return validatePublicAuthBaseURL(authCfg.BaseURL)
 }
 
+// RequirePublicAuthConfig rejects settings that cannot protect a public web exposure.
+func RequirePublicAuthConfig(ctx context.Context, cfg config.Config) error {
+	authCfg, err := loadAuthConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	if !authCfg.Enabled {
+		return fmt.Errorf("web auth must be enabled for Tailscale Funnel; set auth.enabled=true, or disable --tsnet-funnel or --web")
+	}
+	return validatePublicAuthBaseURL(authCfg.BaseURL)
+}
+
 func validatePublicAuthBaseURL(raw string) error {
 	u, err := parseAuthBaseURL(raw)
 	if err != nil {

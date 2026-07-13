@@ -11,8 +11,8 @@ import (
 	"github.com/darron/dbrain/internal/model"
 )
 
-func extractHTTPReadableSource(ctx context.Context, rawURL string) (model.ExtractResult, bool, error) {
-	client := &http.Client{}
+func extractHTTPReadableSource(ctx context.Context, rawURL string, options ...Options) (model.ExtractResult, bool, error) {
+	client := newPublicHTTPClient(options...)
 	resp, body, err := fetchHTTPText(ctx, client, rawURL)
 	if err != nil {
 		return model.ExtractResult{}, false, fmt.Errorf("fetch readable source: %w", err)
@@ -41,11 +41,10 @@ func extractConfiguredHTTPReaderSource(ctx context.Context, source model.SourceD
 	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	return extractHTTPReaderSource(fetchCtx, sourceURL, readerURL)
+	return extractHTTPReaderSource(fetchCtx, newConfiguredOriginHTTPClient(opts.HTTPReaderBaseURL, opts), sourceURL, readerURL)
 }
 
-func extractHTTPReaderSource(ctx context.Context, sourceURL string, readerURL string) (model.ExtractResult, bool, error) {
-	client := &http.Client{}
+func extractHTTPReaderSource(ctx context.Context, client *http.Client, sourceURL string, readerURL string) (model.ExtractResult, bool, error) {
 	resp, body, err := fetchHTTPReaderText(ctx, client, readerURL)
 	if err != nil {
 		return model.ExtractResult{}, false, fmt.Errorf("fetch reader source: %w", err)
@@ -106,7 +105,7 @@ func extractKnownReaderDomainSource(ctx context.Context, source model.SourceDocu
 		return readerExtract, true, nil
 	}
 
-	directExtract, directRecovered, directErr := extractHTTPReadableSource(fetchCtx, sourceURL)
+	directExtract, directRecovered, directErr := extractHTTPReadableSource(fetchCtx, sourceURL, opts)
 	if directErr == nil && directRecovered {
 		return directExtract, true, readerErr
 	}

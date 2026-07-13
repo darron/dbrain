@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"mime"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 type S3Uploader struct {
@@ -55,10 +55,14 @@ func (u *S3Uploader) Upload(ctx context.Context, cfg config.Config, asset model.
 		return result, false, nil
 	}
 
-	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(asset.LocalPath))
-	file, err := os.Open(fullPath)
+	root, err := vaultfs.Open(cfg.VaultDir)
 	if err != nil {
-		return model.MediaArchiveResult{}, false, fmt.Errorf("open local media %s: %w", fullPath, err)
+		return model.MediaArchiveResult{}, false, err
+	}
+	defer func() { _ = root.Close() }()
+	file, err := root.Open(asset.LocalPath)
+	if err != nil {
+		return model.MediaArchiveResult{}, false, fmt.Errorf("open local media %q: %w", asset.LocalPath, err)
 	}
 	defer func() {
 		_ = file.Close()
@@ -66,7 +70,7 @@ func (u *S3Uploader) Upload(ctx context.Context, cfg config.Config, asset model.
 
 	info, err := file.Stat()
 	if err != nil {
-		return model.MediaArchiveResult{}, false, fmt.Errorf("stat local media %s: %w", fullPath, err)
+		return model.MediaArchiveResult{}, false, fmt.Errorf("stat local media %q: %w", asset.LocalPath, err)
 	}
 
 	contentType := strings.TrimSpace(asset.MIMEType)

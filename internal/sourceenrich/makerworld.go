@@ -185,7 +185,7 @@ func extractMakerWorldAPISource(ctx context.Context, source model.SourceDocument
 	defer cancel()
 
 	apiURL := strings.TrimRight(makerWorldAPIBaseURL, "/") + "/" + modelID
-	body, err := fetchMakerWorldAPIText(fetchCtx, apiURL)
+	body, err := fetchMakerWorldAPIText(fetchCtx, apiURL, opts)
 	if err != nil {
 		return model.ExtractResult{}, true, err
 	}
@@ -244,7 +244,7 @@ func makerWorldModelID(rawURL string) (string, bool) {
 	return match[1], true
 }
 
-func fetchMakerWorldAPIText(ctx context.Context, apiURL string) (string, error) {
+func fetchMakerWorldAPIText(ctx context.Context, apiURL string, options ...Options) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create makerworld API request: %w", err)
@@ -253,7 +253,7 @@ func fetchMakerWorldAPIText(ctx context.Context, apiURL string) (string, error) 
 	req.Header.Set("accept", "application/json")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := newPublicHTTPClient(options...).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch makerworld API: %w", err)
 	}

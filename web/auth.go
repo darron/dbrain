@@ -40,11 +40,12 @@ var (
 type authContextKey struct{}
 
 type authManager struct {
-	cfg         authConfig
-	store       *store.Store
-	sessions    *authSessionStore
-	githubOAuth *oauth2.Config
-	logOutput   io.Writer
+	cfg                 authConfig
+	store               *store.Store
+	sessions            *authSessionStore
+	serviceAuthVerifier *serviceauth.ReplayVerifier
+	githubOAuth         *oauth2.Config
+	logOutput           io.Writer
 }
 
 type githubOAuthUser struct {
@@ -72,9 +73,10 @@ func newAuthManagerWithCleanup(ctx context.Context, cfg authConfig, st *store.St
 	}
 
 	manager := &authManager{
-		cfg:      cfg,
-		store:    st,
-		sessions: newAuthSessionStore(),
+		cfg:                 cfg,
+		store:               st,
+		sessions:            newAuthSessionStore(),
+		serviceAuthVerifier: &serviceauth.ReplayVerifier{},
 	}
 	if cleanup {
 		manager.sessions.startCleanup(ctx, cfg.SessionTTL/2)
@@ -348,10 +350,10 @@ func (a *authManager) requireAuth(next http.Handler) http.Handler {
 }
 
 func (a *authManager) serviceAuthAllowed(r *http.Request) bool {
-	if a == nil || !serviceAuthRoute(r.URL.Path) {
+	if a == nil || a.serviceAuthVerifier == nil || !serviceAuthRoute(r.URL.Path) {
 		return false
 	}
-	return serviceauth.VerifyHeader(r.Method, r.URL.Path, a.cfg.SessionKey, r.Header.Get(serviceauth.HeaderName), time.Now())
+	return a.serviceAuthVerifier.VerifyAndConsume(r.Method, r.URL.Path, a.cfg.SessionKey, r.Header.Get(serviceauth.HeaderName), time.Now())
 }
 
 func serviceAuthRoute(requestPath string) bool {
