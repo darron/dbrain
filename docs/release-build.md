@@ -114,17 +114,29 @@ and the tap update is skipped.
 
 The **Homebrew Test Candidate** workflow at
 `.github/workflows/homebrew-test.yaml` builds a committed SHA without publishing
-it through the stable `dbrain` formula. Open **Actions**, select **Homebrew Test
-Candidate**, choose the `main` branch, and provide both required inputs:
+it through the stable `dbrain` formula. The candidate commit must already be
+pushed to and reachable in `darron/dbrain` on GitHub before dispatch. It does
+not need to be on `main`; only the reviewed workflow ref must be `main`. Open
+**Actions**, select **Homebrew Test Candidate**, choose the `main` branch, and
+provide both required inputs:
 
-- `sha`: the exact 40-character hexadecimal commit SHA to test. A short SHA,
-  branch name, tag, surrounding whitespace, or uncommitted work is rejected.
+- `sha`: the exact 40-character hexadecimal commit SHA to test, already
+  reachable in the GitHub repository. A short SHA, branch name, tag, surrounding
+  whitespace, local-only commit, or uncommitted work is rejected or cannot be
+  checked out.
 - `label`: an arbitrary human-readable label, such as `security-pass`. The
   trimmed label must be nonempty, at most 64 bytes, and contain no control
   characters or line breaks.
 
-For example, obtain a full committed SHA locally with `git rev-parse HEAD`, then
-start the workflow with inputs like:
+For example, first push the branch containing the candidate commit, then obtain
+its full SHA and use that value as the workflow input:
+
+```sh
+git push origin HEAD
+git rev-parse HEAD
+```
+
+The resulting workflow inputs look like:
 
 ```text
 sha:   84b3cc07b1a4df8b2cdebe24f9982548fd60e805
@@ -210,12 +222,19 @@ keeps stable and candidate pushes from racing and prevents an older queued
 candidate from moving `dbrain-test` backward. Such a rejected older run does
 not change the current formula.
 
-If the GitHub prerelease succeeds but the tap update fails, the prerelease and
-its tag remain durable while `dbrain-test` continues to select the last
-successfully published candidate. Inspect the failed run, fix the workflow or
-helper through a pull request, merge the correction to `main`, and start a new
-**Homebrew Test Candidate** run. The new run gets a new tag and higher formula
-version. Never move, replace, or retarget the old candidate tag.
+If the GitHub prerelease succeeds but the tap update reports failure, the
+prerelease and its tag remain durable. First inspect both the failed run and the
+current `Formula/dbrain-test.rb` in `darron/homebrew-tap`, including its version
+and release URL. A push result can be ambiguous: if the tap already points to
+the reported candidate, do not start another run solely because the push step
+reported failure.
+
+Repair the diagnosed cause. Use a pull request and merge the correction to
+`main` for a workflow or trusted-helper defect. Repair the token, credential,
+repository, or transient GitHub state directly when that is the cause. If the
+tap did not advance, start a new **Homebrew Test Candidate** run after the
+repair; the new run gets a new tag and higher formula version. Never move,
+replace, or retarget the old candidate tag.
 
 The stable `.github/workflows/release.yaml` remains tag-driven, but it publishes
 only tags that match exact final versions of the form `vX.Y.Z`. Labels such as
