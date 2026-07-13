@@ -146,8 +146,11 @@ func runAllowlist(args []string, stdout, stderr io.Writer) int {
 
 	existing, err := os.ReadFile(*input)
 	if err != nil {
-		fmt.Fprintf(stderr, "read allowlist input: %v\n", err)
-		return 1
+		if !os.IsNotExist(err) || filepath.Clean(*input) != filepath.Clean(*output) {
+			fmt.Fprintf(stderr, "read allowlist input: %v\n", err)
+			return 1
+		}
+		existing = nil
 	}
 	updated, err := releaseautomation.UpdatePrereleaseAllowlist(existing, *version)
 	if err != nil {
@@ -206,8 +209,19 @@ func rejectStableFormulaPath(path string) error {
 
 func writeGeneratedFile(path string, data []byte) error {
 	parent := filepath.Dir(path)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return fmt.Errorf("create output parent: %w", err)
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("create output parent: %w", err)
+		}
+		info, statErr := os.Stat(parent)
+		if statErr != nil {
+			return fmt.Errorf("inspect output parent: %w", statErr)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("create output parent: %q is not a directory", parent)
+		}
+	} else if err := os.Chmod(parent, 0o755); err != nil {
+		return fmt.Errorf("set output parent mode: %w", err)
 	}
 	temporary, err := os.CreateTemp(parent, ".homebrew-test-release-*")
 	if err != nil {

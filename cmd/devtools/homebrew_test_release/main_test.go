@@ -108,6 +108,23 @@ func TestRunFormulaRejectsStableFormulaPath(t *testing.T) {
 	}
 }
 
+func TestRunFormulaRejectsTwoMissingDirectoryLevels(t *testing.T) {
+	root := t.TempDir()
+	firstMissing := filepath.Join(root, "missing")
+	output := filepath.Join(firstMissing, "nested", "dbrain-test.rb")
+	var stdout, stderr bytes.Buffer
+	code := run(formulaArgs(output), &stdout, &stderr)
+	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "create output parent") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(firstMissing); !os.IsNotExist(err) {
+		t.Fatalf("first missing directory was created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(output)); !os.IsNotExist(err) {
+		t.Fatalf("direct parent was created despite missing grandparent: %v", err)
+	}
+}
+
 func TestRunAllowlistPreservesExistingEntry(t *testing.T) {
 	root := t.TempDir()
 	input := filepath.Join(root, "existing.json")
@@ -156,6 +173,31 @@ func TestRunAllowlistSupportsInPlaceUpdate(t *testing.T) {
 	}
 	if !bytes.Contains(got, []byte(`"dbrain-test": "0.0.184.1"`)) {
 		t.Fatalf("allowlist=%s", got)
+	}
+}
+
+func TestRunAllowlistCreatesMissingInPlaceAllowlist(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "audit_exceptions", "github_prerelease_allowlist.json")
+	inputPath := filepath.Dir(path) + string(filepath.Separator) + "." + string(filepath.Separator) + filepath.Base(path)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"allowlist", "--input", inputPath, "--output", path, "--version", "0.0.184.1"}, &stdout, &stderr)
+	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "{\n  \"dbrain-test\": \"0.0.184.1\"\n}\n" {
+		t.Fatalf("allowlist=%q", got)
+	}
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("parent mode=%o, want 755", info.Mode().Perm())
 	}
 }
 
