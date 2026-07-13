@@ -17,7 +17,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: homebrew_test_release <metadata|formula|allowlist|validate-paths>")
+		writeDiagnostic(stderr, "usage: homebrew_test_release <metadata|formula|allowlist|validate-paths>\n")
 		return 2
 	}
 	switch args[0] {
@@ -30,7 +30,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "validate-paths":
 		return runValidatePaths(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
+		writeDiagnostic(stderr, "unknown command %q\n", args[0])
 		return 2
 	}
 }
@@ -45,21 +45,21 @@ func runMetadata(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "metadata does not accept positional arguments")
+		writeDiagnostic(stderr, "metadata does not accept positional arguments\n")
 		return 2
 	}
 	if !hasAllFlags(flags, "sha", "label", "run-number", "run-attempt") {
-		fmt.Fprintln(stderr, "metadata requires --sha, --label, --run-number, and --run-attempt")
+		writeDiagnostic(stderr, "metadata requires --sha, --label, --run-number, and --run-attempt\n")
 		return 2
 	}
 
 	candidate, err := releaseautomation.NewCandidate(*sha, *label, *runNumber, *runAttempt)
 	if err != nil {
-		fmt.Fprintf(stderr, "metadata: %v\n", err)
+		writeDiagnostic(stderr, "metadata: %v\n", err)
 		return 1
 	}
 	if _, err := io.WriteString(stdout, candidate.GitHubOutput()); err != nil {
-		fmt.Fprintf(stderr, "write metadata output: %v\n", err)
+		writeDiagnostic(stderr, "write metadata output: %v\n", err)
 		return 1
 	}
 	return 0
@@ -82,7 +82,7 @@ func runFormula(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "formula does not accept positional arguments")
+		writeDiagnostic(stderr, "formula does not accept positional arguments\n")
 		return 2
 	}
 	required := []string{
@@ -90,33 +90,33 @@ func runFormula(args []string, stdout, stderr io.Writer) int {
 		"darwin-amd64-sha", "darwin-arm64-sha", "linux-amd64-sha", "linux-arm64-sha",
 	}
 	if !hasAllFlags(flags, required...) {
-		fmt.Fprintln(stderr, "formula requires --output, --existing, --sha, --label, --run-number, --run-attempt, --release-base, and all four checksum flags")
+		writeDiagnostic(stderr, "formula requires --output, --existing, --sha, --label, --run-number, --run-attempt, --release-base, and all four checksum flags\n")
 		return 2
 	}
 	if err := rejectStableFormulaPath(*output); err != nil {
-		fmt.Fprintf(stderr, "formula: %v\n", err)
+		writeDiagnostic(stderr, "formula: %v\n", err)
 		return 1
 	}
 	if filepath.Clean(*existingPath) != filepath.Clean(*output) {
-		fmt.Fprintln(stderr, "formula: existing path must equal output path")
+		writeDiagnostic(stderr, "formula: existing path must equal output path\n")
 		return 1
 	}
 
 	candidate, err := releaseautomation.NewCandidate(*sha, *label, *runNumber, *runAttempt)
 	if err != nil {
-		fmt.Fprintf(stderr, "formula: %v\n", err)
+		writeDiagnostic(stderr, "formula: %v\n", err)
 		return 1
 	}
 	existing, err := os.ReadFile(*existingPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Fprintf(stderr, "read existing formula: %v\n", err)
+			writeDiagnostic(stderr, "read existing formula: %v\n", err)
 			return 1
 		}
 		existing = nil
 	}
 	if err := releaseautomation.ValidateFormulaAdvance(existing, candidate.FormulaVersion); err != nil {
-		fmt.Fprintf(stderr, "formula: %v\n", err)
+		writeDiagnostic(stderr, "formula: %v\n", err)
 		return 1
 	}
 	formula, err := releaseautomation.RenderTestFormula(releaseautomation.FormulaInput{
@@ -130,11 +130,11 @@ func runFormula(args []string, stdout, stderr io.Writer) int {
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "formula: %v\n", err)
+		writeDiagnostic(stderr, "formula: %v\n", err)
 		return 1
 	}
 	if err := writeGeneratedFile(*output, formula); err != nil {
-		fmt.Fprintf(stderr, "write formula: %v\n", err)
+		writeDiagnostic(stderr, "write formula: %v\n", err)
 		return 1
 	}
 	return 0
@@ -149,33 +149,33 @@ func runAllowlist(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "allowlist does not accept positional arguments")
+		writeDiagnostic(stderr, "allowlist does not accept positional arguments\n")
 		return 2
 	}
 	if !hasAllFlags(flags, "input", "output", "version") {
-		fmt.Fprintln(stderr, "allowlist requires --input, --output, and --version")
+		writeDiagnostic(stderr, "allowlist requires --input, --output, and --version\n")
 		return 2
 	}
 	if err := rejectStableFormulaPath(*output); err != nil {
-		fmt.Fprintf(stderr, "allowlist: %v\n", err)
+		writeDiagnostic(stderr, "allowlist: %v\n", err)
 		return 1
 	}
 
 	existing, err := os.ReadFile(*input)
 	if err != nil {
 		if !os.IsNotExist(err) || filepath.Clean(*input) != filepath.Clean(*output) {
-			fmt.Fprintf(stderr, "read allowlist input: %v\n", err)
+			writeDiagnostic(stderr, "read allowlist input: %v\n", err)
 			return 1
 		}
 		existing = nil
 	}
 	updated, err := releaseautomation.UpdatePrereleaseAllowlist(existing, *version)
 	if err != nil {
-		fmt.Fprintf(stderr, "allowlist: %v\n", err)
+		writeDiagnostic(stderr, "allowlist: %v\n", err)
 		return 1
 	}
 	if err := writeGeneratedFile(*output, updated); err != nil {
-		fmt.Fprintf(stderr, "write allowlist: %v\n", err)
+		writeDiagnostic(stderr, "write allowlist: %v\n", err)
 		return 1
 	}
 	return 0
@@ -187,11 +187,11 @@ func runValidatePaths(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() == 0 {
-		fmt.Fprintln(stderr, "validate-paths requires at least one path")
+		writeDiagnostic(stderr, "validate-paths requires at least one path\n")
 		return 2
 	}
 	if err := releaseautomation.ValidateTapPaths(flags.Args()); err != nil {
-		fmt.Fprintf(stderr, "validate-paths: %v\n", err)
+		writeDiagnostic(stderr, "validate-paths: %v\n", err)
 		return 1
 	}
 	return 0
@@ -201,6 +201,12 @@ func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	return flags
+}
+
+func writeDiagnostic(stderr io.Writer, format string, args ...any) {
+	// A diagnostic write failure cannot be reported recursively to the same
+	// writer, so the CLI deliberately retains its original exit code.
+	_, _ = fmt.Fprintf(stderr, format, args...)
 }
 
 func hasAllFlags(flags *flag.FlagSet, names ...string) bool {
@@ -245,13 +251,15 @@ func writeGeneratedFile(path string, data []byte) error {
 		return fmt.Errorf("create temporary output: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	defer func() {
+		_ = os.Remove(temporaryPath)
+	}()
 	if err := temporary.Chmod(0o644); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return fmt.Errorf("set temporary output mode: %w", err)
 	}
 	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return fmt.Errorf("write temporary output: %w", err)
 	}
 	if err := temporary.Close(); err != nil {

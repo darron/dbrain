@@ -114,9 +114,7 @@ func TestRunFormulaReconstructsCandidate(t *testing.T) {
 	root := t.TempDir()
 	output := filepath.Join(root, "dbrain-test.rb")
 	args := formulaArgs(output)
-	for _, forbidden := range []string{"--release-tag", "caller-tag", "--version", "9.9.9"} {
-		args = append(args, forbidden)
-	}
+	args = append(args, "--release-tag", "caller-tag", "--version", "9.9.9")
 	var stdout, stderr bytes.Buffer
 	code := run(args, &stdout, &stderr)
 	if code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "flag provided but not defined") {
