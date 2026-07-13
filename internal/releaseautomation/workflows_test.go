@@ -22,14 +22,6 @@ const (
 	tapTokenExpression = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
 )
 
-var candidateArchives = []string{
-	"dbrain_${RELEASE_TAG}_darwin_amd64.tar.gz",
-	"dbrain_${RELEASE_TAG}_darwin_arm64.tar.gz",
-	"dbrain_${RELEASE_TAG}_linux_amd64.tar.gz",
-	"dbrain_${RELEASE_TAG}_linux_arm64.tar.gz",
-	"dbrain_${RELEASE_TAG}_windows_amd64.zip",
-}
-
 func readRepoFile(t *testing.T, relative string) string {
 	t.Helper()
 	_, current, _, ok := runtime.Caller(0)
@@ -95,6 +87,31 @@ func TestHomebrewTestWorkflowPolicyRejectsSecurityMutations(t *testing.T) {
 			name: "privileged artifact extraction",
 			old:  "      - name: Verify exact archive inventory and generate checksums\n        shell: bash\n        env:\n          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}\n        run: |\n          set -euo pipefail",
 			new:  "      - name: Verify exact archive inventory and generate checksums\n        shell: bash\n        env:\n          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}\n        run: |\n          set -euo pipefail\n          tar -xf dist/candidate.tar.gz",
+		},
+		{
+			name: "token disclosure in require step",
+			old:  "          test -n \"${HOMEBREW_TAP_TOKEN}\"",
+			new:  "          test -n \"${HOMEBREW_TAP_TOKEN}\"\n          printf '%s\\n' \"${HOMEBREW_TAP_TOKEN}\"",
+		},
+		{
+			name: "token disclosure in push step",
+			old:  "            push origin HEAD",
+			new:  "            push origin HEAD\n          printf '%s\\n' \"${HOMEBREW_TAP_TOKEN}\"",
+		},
+		{
+			name: "extra GitHub API write in publish",
+			old:  "          gh release upload \"${RELEASE_TAG}\" \"${files[@]}\" \\\n            --repo \"${GITHUB_REPOSITORY}\"",
+			new:  "          gh release upload \"${RELEASE_TAG}\" \"${files[@]}\" \\\n            --repo \"${GITHUB_REPOSITORY}\"\n          gh api --method DELETE \"repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}\"",
+		},
+		{
+			name: "variable-indirected candidate execution",
+			old:  "          test \"${entry_count}\" -eq \"${#expected[@]}\"\n          (",
+			new:  "          test \"${entry_count}\" -eq \"${#expected[@]}\"\n          candidate_dir=dist\n          python3 -c 'import os,sys; os.execv(sys.argv[1], [sys.argv[1]])' \"${candidate_dir}/some-file\"\n          (",
+		},
+		{
+			name: "command after required push",
+			old:  "            push origin HEAD",
+			new:  "            push origin HEAD\n          echo after-push",
 		},
 	}
 	for _, mutation := range mutations {
@@ -230,59 +247,43 @@ func validateHomebrewTestWorkflow(text string) error {
 	p.require(exactStepNames(publish, "Download candidate archives", "Verify exact archive inventory and generate checksums", "Publish GitHub prerelease"), "publish step sequence must be exact")
 	p.require(!jobUsesAction(publish, checkoutAction), "publish must not check out source")
 	assertDownloadStep(p, publish)
-	checkPrivilegedArchiveFlow(p, publish, "Verify exact archive inventory and generate checksums")
+	assertExactRun(p, publish, "Verify exact archive inventory and generate checksums", exactArchiveInventoryRun(true))
 	publishStep := namedStep(publish, "Publish GitHub prerelease")
 	p.require(exactScalarMap(mappingNode(publishStep, "env"), map[string]string{
 		"GH_TOKEN": "${{ github.token }}", "RELEASE_TAG": "${{ needs.prepare.outputs.release_tag }}",
 		"CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}", "DISPLAY_LABEL": "${{ needs.prepare.outputs.label }}",
 		"SHORT_SHA": "${{ needs.prepare.outputs.short_sha }}",
 	}), "publish environment must contain only exact trusted metadata and repository token")
-	publishRun := scalarValue(mappingNode(publishStep, "run"))
-	p.require(strings.Contains(publishRun, exactPublishFilesArray()), "publish explicit file array must contain only five archives and checksum manifest")
-	p.require(strings.Count(publishRun, "files=(") == 1 && !strings.Contains(publishRun, "files+="), "publish file array must have one immutable definition")
-	p.require(strings.Contains(publishRun, `gh release upload "${RELEASE_TAG}" "${files[@]}"`), "publish must upload only the explicit file array")
-	p.require(!strings.Contains(publishRun, "dist/dbrain_*"), "publish must not upload a glob")
-	for _, archive := range candidateArchives {
-		p.require(strings.Contains(publishRun, "dist/"+archive), "publish explicit upload list missing %s", archive)
-	}
-	p.require(strings.Contains(publishRun, "dist/dbrain_checksums.txt"), "publish must upload checksum manifest")
+	assertExactRun(p, publish, "Publish GitHub prerelease", exactPublishRun())
 
-	checkPrivilegedArchiveFlow(p, tap, "Verify exact archive inventory")
+	assertExactRun(p, tap, "Verify exact archive inventory", exactArchiveInventoryRun(false))
 	p.require(exactStepNames(tap,
 		"Require Homebrew tap token", "Download candidate archives", "Check out trusted workflow source",
 		"Set up Go for trusted helper", "Check out Homebrew tap", "Verify exact archive inventory",
 		"Generate and validate tap changes", "Commit tap update", "Push tap update", "Write candidate instructions",
 	), "tap step sequence must be exact")
 	assertDownloadStep(p, tap)
-	generateRun := scalarValue(mappingNode(namedStep(tap, "Generate and validate tap changes"), "run"))
-	p.require(strings.Contains(generateRun, `--existing "${formula}"`), "trusted formula command must enforce monotonic replacement against its output path")
-	tapText := marshalNode(tap)
-	for _, forbidden := range []string{"tar -", "tar x", "unzip ", "source dist/", "\n./dist/", "bin/dbrain"} {
-		p.require(!strings.Contains(tapText, forbidden), "tap job may not execute/extract candidate content: %q", forbidden)
-	}
+	assertExactRun(p, tap, "Generate and validate tap changes", exactGenerateTapRun())
 
 	requireToken := namedStep(tap, "Require Homebrew tap token")
 	p.require(exactScalarMap(mappingNode(requireToken, "env"), map[string]string{"HOMEBREW_TAP_TOKEN": tapTokenExpression}), "token check secret scope must be exact")
+	assertExactRun(p, tap, "Require Homebrew tap token", exactRequireTokenRun())
 	commit := namedStep(tap, "Commit tap update")
 	p.require(exactScalarMap(mappingNode(commit, "env"), map[string]string{
 		"DISPLAY_LABEL": "${{ needs.prepare.outputs.label }}", "SHORT_SHA": "${{ needs.prepare.outputs.short_sha }}",
 	}), "commit env must contain only non-secret candidate metadata")
+	assertExactRun(p, tap, "Commit tap update", exactCommitTapRun())
 	push := namedStep(tap, "Push tap update")
 	p.require(exactScalarMap(mappingNode(push, "env"), map[string]string{
 		"HOMEBREW_TAP_TOKEN": tapTokenExpression, "GIT_TERMINAL_PROMPT": "0",
 	}), "push env must contain only terminal guard and tap token")
-	pushRun := scalarValue(mappingNode(push, "run"))
-	p.require(strings.Contains(pushRun, "credential.helper") && strings.Contains(pushRun, `password=${HOMEBREW_TAP_TOKEN}`) && strings.Contains(pushRun, "push origin HEAD"), "push must use non-persisted env credential helper")
-	p.require(!strings.Contains(pushRun, "set-url") && !strings.Contains(pushRun, "https://${HOMEBREW_TAP_TOKEN}"), "push must not put token in URL/config")
+	assertExactRun(p, tap, "Push tap update", exactPushTapRun())
 	p.require(countScalarValue(root, tapTokenExpression) == 3, "tap token expression must appear only in check, checkout input, and final push env")
-	p.require(countRunSubstring(tap, "${HOMEBREW_TAP_TOKEN}") == 2, "tap token shell variable must appear only in check and final push scripts")
 
 	for _, name := range []string{"verify", "build"} {
 		text := marshalNode(job(name))
 		p.require(!strings.Contains(text, "HOMEBREW_TAP_TOKEN") && !strings.Contains(text, "github.token") && !strings.Contains(text, "contents: write"), "%s received write authority", name)
 	}
-	assertPrivilegedDistReferences(p, publish, "publish")
-	assertPrivilegedDistReferences(p, tap, "tap")
 	p.require(!strings.Contains(text, "darvisf"), "darvisf must not be an allowed actor")
 	p.require(!strings.Contains(text, "brew uninstall dbrain\n") && !strings.Contains(text, "~/.config/dbrain") && !strings.Contains(text, "~/.local/share/dbrain") && !strings.Contains(text, "launchctl"), "workflow must not remove runtime state")
 	p.require(strings.Contains(text, "brew uninstall dbrain-test"), "summary must remove only dbrain-test")
@@ -297,31 +298,6 @@ func assertDownloadStep(p *workflowPolicy, job *yaml.Node) {
 		p.require(exactScalarMap(mappingNode(step, "with"), map[string]string{
 			"path": "dist", "pattern": "candidate-*", "merge-multiple": "true",
 		}), "candidate download inputs must be exact")
-	}
-}
-
-func assertPrivilegedDistReferences(p *workflowPolicy, job *yaml.Node, jobName string) {
-	allowedPrefixes := []string{
-		`"dist/dbrain_`, `test -f "dist/`, `test ! -L "dist/`, `case "${entry#dist/}"`,
-		`done < <(find dist `, `cd dist`,
-		`darwin_amd64_sha="$(sha256sum "../dist/`, `darwin_arm64_sha="$(sha256sum "../dist/`,
-		`linux_amd64_sha="$(sha256sum "../dist/`, `linux_arm64_sha="$(sha256sum "../dist/`,
-	}
-	for _, step := range stepNodes(job) {
-		for _, line := range strings.Split(scalarValue(mappingNode(step, "run")), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if !strings.Contains(trimmed, "dist/") && !strings.Contains(trimmed, "../dist/") {
-				continue
-			}
-			allowed := false
-			for _, prefix := range allowedPrefixes {
-				if strings.HasPrefix(trimmed, prefix) {
-					allowed = true
-					break
-				}
-			}
-			p.require(allowed, "%s has unapproved candidate-artifact command: %q", jobName, trimmed)
-		}
 	}
 }
 
@@ -343,45 +319,152 @@ func assertMatrix(p *workflowPolicy, build *yaml.Node) {
 	}
 }
 
-func checkPrivilegedArchiveFlow(p *workflowPolicy, job *yaml.Node, stepName string) {
+func assertExactRun(p *workflowPolicy, job *yaml.Node, stepName, want string) {
 	step := namedStep(job, stepName)
-	p.require(step != nil, "missing privileged inventory step %q", stepName)
+	p.require(step != nil, "missing security-sensitive step %q", stepName)
 	if step == nil {
 		return
 	}
-	run := scalarValue(mappingNode(step, "run"))
-	p.require(strings.Contains(run, exactExpectedArchivesArray()), "%s expected array must contain exactly five archives", stepName)
-	p.require(strings.Contains(run, "find dist -mindepth 1 -maxdepth 1 -print0"), "%s must enumerate every top-level downloaded entry", stepName)
-	p.require(strings.Contains(run, "case \"${entry#dist/}\" in"), "%s must reject names outside exact inventory", stepName)
-	p.require(strings.Contains(run, `"${expected[0]}"|"${expected[1]}"|"${expected[2]}"|"${expected[3]}"|"${expected[4]}") ;;`), "%s case allowlist must be exact", stepName)
-	p.require(strings.Contains(run, "unexpected downloaded entry"), "%s must fail closed on extra entry", stepName)
-	for _, archive := range candidateArchives {
-		p.require(strings.Contains(run, archive), "%s missing exact archive %s", stepName, archive)
-	}
-	for _, forbidden := range []string{"tar -", "tar x", "unzip ", "source dist/", "\n./dist/"} {
-		p.require(!strings.Contains(run, forbidden), "%s executes/extracts candidate data via %q", stepName, forbidden)
-	}
+	got := normalizeRun(scalarValue(mappingNode(step, "run")))
+	p.require(got == normalizeRun(want), "%s run script must exactly match its reviewed fixture", stepName)
 }
 
-func exactExpectedArchivesArray() string {
-	return `expected=(
+func normalizeRun(run string) string {
+	return strings.TrimSpace(strings.ReplaceAll(run, "\r\n", "\n"))
+}
+
+func exactRequireTokenRun() string {
+	return `set -euo pipefail
+test -n "${HOMEBREW_TAP_TOKEN}"`
+}
+
+func exactArchiveInventoryRun(withChecksums bool) string {
+	run := `set -euo pipefail
+expected=(
   "dbrain_${RELEASE_TAG}_darwin_amd64.tar.gz"
   "dbrain_${RELEASE_TAG}_darwin_arm64.tar.gz"
   "dbrain_${RELEASE_TAG}_linux_amd64.tar.gz"
   "dbrain_${RELEASE_TAG}_linux_arm64.tar.gz"
   "dbrain_${RELEASE_TAG}_windows_amd64.zip"
+)
+for archive in "${expected[@]}"; do
+  test -f "dist/${archive}"
+  test ! -L "dist/${archive}"
+done
+entry_count=0
+while IFS= read -r -d '' entry; do
+  entry_count=$((entry_count + 1))
+  case "${entry#dist/}" in
+    "${expected[0]}"|"${expected[1]}"|"${expected[2]}"|"${expected[3]}"|"${expected[4]}") ;;
+    *)
+      echo "unexpected downloaded entry: ${entry}" >&2
+      exit 1
+      ;;
+  esac
+done < <(find dist -mindepth 1 -maxdepth 1 -print0)
+test "${entry_count}" -eq "${#expected[@]}"`
+	if withChecksums {
+		run += `
+(
+  cd dist
+  sha256sum "${expected[@]}" > dbrain_checksums.txt
 )`
+	}
+	return run
 }
 
-func exactPublishFilesArray() string {
-	return `files=(
+func exactPublishRun() string {
+	return `set -euo pipefail
+if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>tag-error.txt; then
+  echo "candidate tag already exists: ${RELEASE_TAG}" >&2
+  exit 1
+fi
+if ! grep -q "HTTP 404" tag-error.txt; then
+  cat tag-error.txt >&2
+  exit 1
+fi
+
+files=(
   "dist/dbrain_${RELEASE_TAG}_darwin_amd64.tar.gz"
   "dist/dbrain_${RELEASE_TAG}_darwin_arm64.tar.gz"
   "dist/dbrain_${RELEASE_TAG}_linux_amd64.tar.gz"
   "dist/dbrain_${RELEASE_TAG}_linux_arm64.tar.gz"
   "dist/dbrain_${RELEASE_TAG}_windows_amd64.zip"
   "dist/dbrain_checksums.txt"
-)`
+)
+gh release create "${RELEASE_TAG}" \
+  --repo "${GITHUB_REPOSITORY}" \
+  --target "${CANDIDATE_SHA}" \
+  --title "dbrain test: ${DISPLAY_LABEL} (${SHORT_SHA})" \
+  --notes "Homebrew test candidate built from ${CANDIDATE_SHA}. Not a stable release." \
+  --prerelease
+gh release upload "${RELEASE_TAG}" "${files[@]}" \
+  --repo "${GITHUB_REPOSITORY}"`
+}
+
+func exactGenerateTapRun() string {
+	return `set -euo pipefail
+tap="../homebrew-tap"
+formula="${tap}/Formula/dbrain-test.rb"
+allowlist="${tap}/audit_exceptions/github_prerelease_allowlist.json"
+stable="${tap}/Formula/dbrain.rb"
+release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+stable_before="$(sha256sum "${stable}" | awk '{print $1}')"
+
+darwin_amd64_sha="$(sha256sum "../dist/dbrain_${RELEASE_TAG}_darwin_amd64.tar.gz" | awk '{print $1}')"
+darwin_arm64_sha="$(sha256sum "../dist/dbrain_${RELEASE_TAG}_darwin_arm64.tar.gz" | awk '{print $1}')"
+linux_amd64_sha="$(sha256sum "../dist/dbrain_${RELEASE_TAG}_linux_amd64.tar.gz" | awk '{print $1}')"
+linux_arm64_sha="$(sha256sum "../dist/dbrain_${RELEASE_TAG}_linux_arm64.tar.gz" | awk '{print $1}')"
+
+go run ./cmd/devtools/homebrew_test_release formula \
+  --output "${formula}" \
+  --existing "${formula}" \
+  --sha "${CANDIDATE_SHA}" --label "${DISPLAY_LABEL}" \
+  --run-number "${RUN_NUMBER}" --run-attempt "${RUN_ATTEMPT}" \
+  --release-base "${release_base}" \
+  --darwin-amd64-sha "${darwin_amd64_sha}" \
+  --darwin-arm64-sha "${darwin_arm64_sha}" \
+  --linux-amd64-sha "${linux_amd64_sha}" \
+  --linux-arm64-sha "${linux_arm64_sha}"
+go run ./cmd/devtools/homebrew_test_release allowlist \
+  --input "${allowlist}" --output "${allowlist}" \
+  --version "${FORMULA_VERSION}"
+
+stable_after="$(sha256sum "${stable}" | awk '{print $1}')"
+test "${stable_before}" = "${stable_after}"
+(
+  cd "${tap}"
+  git diff --exit-code -- Formula/dbrain.rb
+)
+
+mapfile -d '' changed_paths < <(
+  git -C "${tap}" diff --name-only -z
+  git -C "${tap}" diff --cached --name-only -z
+  git -C "${tap}" ls-files --others --exclude-standard -z
+)
+test "${#changed_paths[@]}" -gt 0
+go run ./cmd/devtools/homebrew_test_release validate-paths "${changed_paths[@]}"`
+}
+
+func exactCommitTapRun() string {
+	return `set -euo pipefail
+git -C homebrew-tap add -- \
+  Formula/dbrain-test.rb \
+  audit_exceptions/github_prerelease_allowlist.json
+git -C homebrew-tap diff --cached --exit-code -- Formula/dbrain.rb
+git -C homebrew-tap config user.name "github-actions[bot]"
+git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git -C homebrew-tap commit -m "Update dbrain test to ${DISPLAY_LABEL} (${SHORT_SHA})"`
+}
+
+func exactPushTapRun() string {
+	return `set -euo pipefail
+# Expansion must occur inside Git's credential-helper shell.
+# shellcheck disable=SC2016
+git -C homebrew-tap \
+  -c credential.helper= \
+  -c 'credential.helper=!f() { test "$1" = get || exit 0; printf "%s\n" "username=x-access-token" "password=${HOMEBREW_TAP_TOKEN}"; }; f' \
+  push origin HEAD`
 }
 
 func assertNoExpressionsInRunScripts(p *workflowPolicy, node *yaml.Node) {
@@ -537,16 +620,6 @@ func countScalarValue(node *yaml.Node, value string) int {
 	}
 	for _, child := range node.Content {
 		count += countScalarValue(child, value)
-	}
-	return count
-}
-
-func countRunSubstring(job *yaml.Node, substring string) int {
-	count := 0
-	for _, step := range stepNodes(job) {
-		if strings.Contains(scalarValue(mappingNode(step, "run")), substring) {
-			count++
-		}
 	}
 	return count
 }
