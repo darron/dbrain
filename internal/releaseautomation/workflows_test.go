@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -11,6 +12,10 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+const finalReleaseTagPattern = `^v[0-9]+\.[0-9]+\.[0-9]+$`
+
+var finalReleaseTagRegexp = regexp.MustCompile(finalReleaseTagPattern)
 
 const (
 	checkoutAction     = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
@@ -34,6 +39,210 @@ func readRepoFile(t *testing.T, relative string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestFinalReleaseTagPolicy(t *testing.T) {
+	tests := map[string]bool{
+		"v0.6.0":      true,
+		"v10.20.300":  true,
+		"v0.6.0-rc.1": false,
+		"v0.6.0-test": false,
+		"v0.6":        false,
+		"version-1":   false,
+		"v1.2.3.4":    false,
+	}
+	for tag, want := range tests {
+		if got := finalReleaseTagRegexp.MatchString(tag); got != want {
+			t.Errorf("tag %q match=%v, want %v", tag, got, want)
+		}
+	}
+}
+
+func TestStableReleaseWorkflowPolicy(t *testing.T) {
+	text := readRepoFile(t, ".github/workflows/release.yaml")
+	if err := validateStableReleaseWorkflow(text); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStableReleaseWorkflowPolicyRejectsSecurityMutations(t *testing.T) {
+	text := readRepoFile(t, ".github/workflows/release.yaml")
+	if err := validateStableReleaseWorkflow(text); err != nil {
+		t.Fatalf("base workflow invalid: %v", err)
+	}
+	mutations := []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{
+			name: "accept RC tag",
+			old:  `^v[0-9]+\.[0-9]+\.[0-9]+$`,
+			new:  `^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$`,
+		},
+		{
+			name: "accept test tag",
+			old:  `^v[0-9]+\.[0-9]+\.[0-9]+$`,
+			new:  `^v[0-9]+\.[0-9]+\.[0-9]+(-test)?$`,
+		},
+		{
+			name: "guard moved after checkout",
+			old: `    steps:
+      - name: Validate final release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "stable releases require an exact vX.Y.Z tag; got ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+      - name: Check out repository`,
+			new: `    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Validate final release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "stable releases require an exact vX.Y.Z tag; got ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+      - name: Check out repository`,
+		},
+		{
+			name: "expression spliced into run",
+			old:  `if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then`,
+			new:  `if [[ ! "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then`,
+		},
+		{
+			name: "wrong concurrency group",
+			old:  "group: dbrain-homebrew-tap-update",
+			new:  "group: dbrain-stable-homebrew-tap-update",
+		},
+		{
+			name: "missing concurrency queue",
+			old:  "      queue: max\n",
+			new:  "",
+		},
+		{
+			name: "cancelling concurrency",
+			old:  "cancel-in-progress: false",
+			new:  "cancel-in-progress: true",
+		},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			if !strings.Contains(text, mutation.old) {
+				t.Fatalf("mutation anchor missing: %q", mutation.old)
+			}
+			mutated := strings.Replace(text, mutation.old, mutation.new, 1)
+			if err := validateStableReleaseWorkflow(mutated); err == nil {
+				t.Fatal("mutated workflow unexpectedly passed policy")
+			}
+		})
+	}
+}
+
+func validateStableReleaseWorkflow(text string) error {
+	p := &workflowPolicy{}
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(text), &document); err != nil {
+		return fmt.Errorf("parse workflow: %w", err)
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("workflow root must be a mapping")
+	}
+	root := document.Content[0]
+	jobs := mappingNode(root, "jobs")
+	p.require(exactMappingKeys(jobs, "build", "publish", "update-homebrew-tap", "verify"), "stable job set must be exact")
+	job := func(name string) *yaml.Node { return mappingNode(jobs, name) }
+
+	verifySteps := stepNodes(job("verify"))
+	p.require(len(verifySteps) > 0, "verify must contain steps")
+	if len(verifySteps) > 0 {
+		guard := verifySteps[0]
+		p.require(scalarValue(mappingNode(guard, "name")) == "Validate final release tag", "final tag guard must be the first verify step")
+		p.require(scalarValue(mappingNode(guard, "shell")) == "bash", "final tag guard must use bash")
+		p.require(exactScalarMap(mappingNode(guard, "env"), map[string]string{
+			"RELEASE_TAG": "${{ github.ref_name }}",
+		}), "final tag guard env must derive exactly from github.ref_name")
+		p.require(normalizeRun(scalarValue(mappingNode(guard, "run"))) == normalizeRun(exactStableTagGuardRun()), "final tag guard script must exactly match reviewed policy")
+	}
+	p.require(stepIndex(job("verify"), "Validate final release tag") < stepIndex(job("verify"), "Check out repository"), "final tag guard must precede checkout")
+
+	p.require(exactNeeds(mappingNode(job("build"), "needs"), "verify"), "build must depend exactly on verify")
+	p.require(exactNeeds(mappingNode(job("publish"), "needs"), "build"), "publish must depend exactly on build")
+	p.require(exactNeeds(mappingNode(job("update-homebrew-tap"), "needs"), "publish"), "tap update must depend exactly on publish")
+	for _, name := range []string{"build", "publish", "update-homebrew-tap"} {
+		p.require(jobTransitivelyNeeds(jobs, name, "verify", nil), "%s must transitively depend on verify", name)
+	}
+
+	p.require(exactScalarMap(mappingNode(job("update-homebrew-tap"), "concurrency"), map[string]string{
+		"group": "dbrain-homebrew-tap-update", "cancel-in-progress": "false", "queue": "max",
+	}), "stable tap concurrency must use the exact shared non-cancelling queue")
+	if len(p.errors) == 0 {
+		return nil
+	}
+	return fmt.Errorf("stable release workflow policy failed:\n- %s", strings.Join(p.errors, "\n- "))
+}
+
+func exactStableTagGuardRun() string {
+	return `set -euo pipefail
+if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "stable releases require an exact vX.Y.Z tag; got ${RELEASE_TAG}" >&2
+  exit 1
+fi`
+}
+
+func jobTransitivelyNeeds(jobs *yaml.Node, from, target string, seen map[string]bool) bool {
+	if seen == nil {
+		seen = map[string]bool{}
+	}
+	if seen[from] {
+		return false
+	}
+	seen[from] = true
+	needs := mappingNode(mappingNode(jobs, from), "needs")
+	if scalarValue(needs) == target {
+		return true
+	}
+	if needs != nil && needs.Kind == yaml.SequenceNode {
+		for _, need := range needs.Content {
+			if scalarValue(need) == target {
+				return true
+			}
+		}
+	}
+	for _, dependency := range needNames(needs) {
+		if jobTransitivelyNeeds(jobs, dependency, target, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+func needNames(needs *yaml.Node) []string {
+	if name := scalarValue(needs); name != "" {
+		return []string{name}
+	}
+	if needs == nil || needs.Kind != yaml.SequenceNode {
+		return nil
+	}
+	names := make([]string, 0, len(needs.Content))
+	for _, need := range needs.Content {
+		names = append(names, scalarValue(need))
+	}
+	return names
 }
 
 func TestHomebrewTestWorkflowPolicy(t *testing.T) {
