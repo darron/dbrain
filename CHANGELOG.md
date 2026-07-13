@@ -5,6 +5,11 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Homebrew Test Release Channel (2026-07-13)
+
+- **Release testing**: Added an owner-dispatched Homebrew test channel that builds an exact commit into durable prerelease assets and one moving `dbrain-test` formula without changing stable `dbrain` distribution.
+- **Release safety**: Stable publication now accepts only exact `vX.Y.Z` tags, serializes tap updates, and tests that candidate formula generation cannot modify `Formula/dbrain.rb` or add runtime-data cleanup hooks.
+
 ### dbrain Review Skill Distribution (2026-07-11)
 
 - **Skill packaging**: Moved the `dbrain-review` skill into this repository alongside `dbrain-mcp` so the project is its authoritative source.
