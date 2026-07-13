@@ -28,8 +28,8 @@ func NewCandidate(rawSHA, rawLabel string, runNumber, runAttempt int64) (Candida
 		return Candidate{}, fmt.Errorf("sha must contain exactly 40 hexadecimal characters")
 	}
 	for _, r := range rawLabel {
-		if unicode.IsControl(r) {
-			return Candidate{}, fmt.Errorf("label must not contain control characters")
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) {
+			return Candidate{}, fmt.Errorf("label must not contain control characters or line separators")
 		}
 	}
 	label := strings.TrimSpace(rawLabel)
