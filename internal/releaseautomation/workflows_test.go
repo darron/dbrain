@@ -58,6 +58,57 @@ func TestFinalReleaseTagPolicy(t *testing.T) {
 	}
 }
 
+func TestHomebrewTestCandidateRunbookRestartsLaunchdWithoutRemovingState(t *testing.T) {
+	text := readRepoFile(t, "docs/release-build.md")
+	restart := "dbrain launchd restart --check-full-disk-access=false"
+	sections := []struct {
+		name  string
+		start string
+		end   string
+	}{
+		{name: "install", start: "### Install a candidate", end: "### Upgrade to the next candidate"},
+		{name: "upgrade", start: "### Upgrade to the next candidate", end: "### Return to stable"},
+		{name: "rollback", start: "### Return to stable", end: "### Remove the test formula"},
+		{name: "remove", start: "### Remove the test formula", end: "### Ordering and failure recovery"},
+	}
+	for _, section := range sections {
+		t.Run(section.name, func(t *testing.T) {
+			body := markdownSection(t, text, section.start, section.end)
+			if !strings.Contains(body, restart) {
+				t.Fatalf("%s instructions must conditionally restart launchd-managed dbrain", section.name)
+			}
+		})
+	}
+
+	normalized := strings.Join(strings.Fields(text), " ")
+	for _, required := range []string{
+		"Homebrew relinking alone does not replace an already-running dbrain process",
+		"Cellar-specific or custom `--bin` path",
+		"normal Homebrew link",
+		"Remove only the test formula's Homebrew-managed link and Cellar keg",
+		"configuration, configured XDG roots, the SQLite database, vault, media, cache,",
+		"logs, temporary files, launchd plists or service state, external helper tools,",
+		"or downloaded models",
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Errorf("Homebrew test candidate runbook missing safety contract %q", required)
+		}
+	}
+}
+
+func markdownSection(t *testing.T, text, startHeading, endHeading string) string {
+	t.Helper()
+	start := strings.Index(text, startHeading)
+	if start < 0 {
+		t.Fatalf("missing Markdown heading %q", startHeading)
+	}
+	end := strings.Index(text[start+len(startHeading):], endHeading)
+	if end < 0 {
+		t.Fatalf("missing Markdown heading %q after %q", endHeading, startHeading)
+	}
+	return text[start : start+len(startHeading)+end]
+}
+
 func TestStableReleaseWorkflowPolicy(t *testing.T) {
 	text := readRepoFile(t, ".github/workflows/release.yaml")
 	if err := validateStableReleaseWorkflow(text); err != nil {

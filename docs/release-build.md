@@ -159,6 +159,18 @@ moves to a newer candidate. The formula version is numeric
 when labels do not sort naturally. The installed executable is still named
 `dbrain`; there is no `dbrain-test` executable.
 
+If dbrain is managed by launchd, restart it manually after every Homebrew
+transition below. Homebrew relinking alone does not replace an already-running
+dbrain process. The shell's `dbrain version` confirms which binary is linked,
+but it does not confirm that an existing launchd process has restarted on that
+binary.
+
+Before testing, inspect the installed launchd plist. A plist that uses a
+Cellar-specific or custom `--bin` path must be reinstalled with the same
+configuration and label so its binary points at the normal Homebrew link
+(`$(brew --prefix)/bin/dbrain`). Otherwise a restart can continue to use a
+different keg, and version testing is not meaningful.
+
 ### Install a candidate
 
 The stable and test formulae conflict because both provide the `dbrain`
@@ -169,6 +181,8 @@ may be linked at a time:
 brew unlink dbrain
 brew install darron/tap/dbrain-test
 dbrain version
+# If dbrain is managed by launchd:
+dbrain launchd restart --check-full-disk-access=false
 ```
 
 Check `dbrain version` against the workflow summary. It reports both the exact
@@ -182,6 +196,8 @@ After another candidate run advances the moving formula:
 brew update
 brew upgrade dbrain-test
 dbrain version
+# If dbrain is managed by launchd:
+dbrain launchd restart --check-full-disk-access=false
 ```
 
 ### Return to stable
@@ -193,6 +209,8 @@ keg:
 brew unlink dbrain-test
 brew link dbrain
 dbrain version
+# If dbrain is managed by launchd:
+dbrain launchd restart --check-full-disk-access=false
 ```
 
 ### Remove the test formula
@@ -203,6 +221,9 @@ restore the stable link:
 ```sh
 brew uninstall dbrain-test
 brew link dbrain
+dbrain version
+# If dbrain is managed by launchd:
+dbrain launchd restart --check-full-disk-access=false
 ```
 
 `brew unlink` and `brew uninstall dbrain-test` affect only Homebrew-managed
