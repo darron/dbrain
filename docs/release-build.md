@@ -109,3 +109,116 @@ checksums for `darwin_amd64`, `darwin_arm64`, `linux_amd64`, and `linux_arm64`,
 updates `Formula/dbrain.rb`, and pushes a commit named
 `Update dbrain to <tag>`. If the secret is absent, the release still succeeds
 and the tap update is skipped.
+
+## Homebrew Test Candidates
+
+The **Homebrew Test Candidate** workflow at
+`.github/workflows/homebrew-test.yaml` builds a committed SHA without publishing
+it through the stable `dbrain` formula. Open **Actions**, select **Homebrew Test
+Candidate**, choose the `main` branch, and provide both required inputs:
+
+- `sha`: the exact 40-character hexadecimal commit SHA to test. A short SHA,
+  branch name, tag, surrounding whitespace, or uncommitted work is rejected.
+- `label`: an arbitrary human-readable label, such as `security-pass`. The
+  trimmed label must be nonempty, at most 64 bytes, and contain no control
+  characters or line breaks.
+
+For example, obtain a full committed SHA locally with `git rev-parse HEAD`, then
+start the workflow with inputs like:
+
+```text
+sha:   84b3cc07b1a4df8b2cdebe24f9982548fd60e805
+label: security-pass
+```
+
+Only GitHub user `darron` may dispatch or rerun the reviewed workflow. The
+workflow checks both the original actor and the rerun actor before checkout,
+build, publication, or secret use. `darvisf` is a trusted write-capable bot
+account: it cannot pass the normal dispatch/rerun gate, but its repository write
+access means it is trusted not to replace the workflow or misuse repository
+secrets. If another write-capable account is added and is not equally trusted,
+this workflow is not a sufficient credential boundary.
+
+Each successful run publishes a durable GitHub prerelease with an immutable,
+run-specific tag and then advances one moving Homebrew formula,
+`darron/tap/dbrain-test`. The prerelease remains available after the formula
+moves to a newer candidate. The formula version is numeric
+(`0.0.<run-number>.<run-attempt>`) so `brew upgrade` follows workflow order even
+when labels do not sort naturally. The installed executable is still named
+`dbrain`; there is no `dbrain-test` executable.
+
+### Install a candidate
+
+The stable and test formulae conflict because both provide the `dbrain`
+executable. They may remain installed in separate Homebrew kegs, but only one
+may be linked at a time:
+
+```sh
+brew unlink dbrain
+brew install darron/tap/dbrain-test
+dbrain version
+```
+
+Check `dbrain version` against the workflow summary. It reports both the exact
+candidate commit and the test release identity derived from the label.
+
+### Upgrade to the next candidate
+
+After another candidate run advances the moving formula:
+
+```sh
+brew update
+brew upgrade dbrain-test
+dbrain version
+```
+
+### Return to stable
+
+If the stable formula remains installed, switch links without deleting either
+keg:
+
+```sh
+brew unlink dbrain-test
+brew link dbrain
+dbrain version
+```
+
+### Remove the test formula
+
+Remove only the test formula's Homebrew-managed link and Cellar keg, then
+restore the stable link:
+
+```sh
+brew uninstall dbrain-test
+brew link dbrain
+```
+
+`brew unlink` and `brew uninstall dbrain-test` affect only Homebrew-managed
+links and the selected formula's keg. They do **not** remove or modify dbrain
+configuration, configured XDG roots, the SQLite database, vault, media, cache,
+logs, temporary files, launchd plists or service state, external helper tools,
+or downloaded models. In particular, they do not delete `~/.config/dbrain`,
+`~/.local/share/dbrain`, or data stored under custom XDG paths. The test formula
+has no uninstall, post-uninstall, cleanup, zap, migration, or runtime-data hook.
+
+### Ordering and failure recovery
+
+Stable and test tap-update jobs share the non-cancelling
+`dbrain-homebrew-tap-update` queue. The test formula generator also refuses to
+replace an existing formula with an equal or lower run/attempt version. This
+keeps stable and candidate pushes from racing and prevents an older queued
+candidate from moving `dbrain-test` backward. Such a rejected older run does
+not change the current formula.
+
+If the GitHub prerelease succeeds but the tap update fails, the prerelease and
+its tag remain durable while `dbrain-test` continues to select the last
+successfully published candidate. Inspect the failed run, fix the workflow or
+helper through a pull request, merge the correction to `main`, and start a new
+**Homebrew Test Candidate** run. The new run gets a new tag and higher formula
+version. Never move, replace, or retarget the old candidate tag.
+
+The stable `.github/workflows/release.yaml` remains tag-driven, but it publishes
+only tags that match exact final versions of the form `vX.Y.Z`. Labels such as
+`v1.2.3-rc.1`, `v1.2.3-test`, and other `v*` variants fail before checkout,
+release publication, or tap mutation. A Homebrew test candidate is never
+promoted automatically; stable release creation is a separate action.
