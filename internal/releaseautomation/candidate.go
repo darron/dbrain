@@ -10,6 +10,7 @@ import (
 var (
 	fullSHARegexp = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 	unsafeSlugRun = regexp.MustCompile(`[^a-z0-9._-]+`)
+	periodRun     = regexp.MustCompile(`\.+`)
 )
 
 type Candidate struct {
@@ -26,6 +27,11 @@ func NewCandidate(rawSHA, rawLabel string, runNumber, runAttempt int64) (Candida
 	if !fullSHARegexp.MatchString(rawSHA) {
 		return Candidate{}, fmt.Errorf("sha must contain exactly 40 hexadecimal characters")
 	}
+	for _, r := range rawLabel {
+		if unicode.IsControl(r) {
+			return Candidate{}, fmt.Errorf("label must not contain control characters")
+		}
+	}
 	label := strings.TrimSpace(rawLabel)
 	if label == "" {
 		return Candidate{}, fmt.Errorf("label must not be empty")
@@ -33,17 +39,13 @@ func NewCandidate(rawSHA, rawLabel string, runNumber, runAttempt int64) (Candida
 	if len([]byte(label)) > 64 {
 		return Candidate{}, fmt.Errorf("label must be at most 64 bytes")
 	}
-	for _, r := range label {
-		if unicode.IsControl(r) {
-			return Candidate{}, fmt.Errorf("label must not contain control characters")
-		}
-	}
 	if runNumber < 1 || runAttempt < 1 {
 		return Candidate{}, fmt.Errorf("run number and attempt must be positive")
 	}
 
 	sha := strings.ToLower(rawSHA)
 	slug := unsafeSlugRun.ReplaceAllString(strings.ToLower(label), "-")
+	slug = periodRun.ReplaceAllString(slug, ".")
 	slug = strings.Trim(slug, "-._")
 	if len(slug) > 32 {
 		slug = strings.Trim(slug[:32], "-._")

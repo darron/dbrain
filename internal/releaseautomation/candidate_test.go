@@ -38,6 +38,19 @@ func TestNewCandidateUsesFallbackSlug(t *testing.T) {
 	}
 }
 
+func TestNewCandidateNormalizesConsecutivePeriods(t *testing.T) {
+	got, err := NewCandidate(strings.Repeat("a", 40), "db..test", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Slug != "db.test" {
+		t.Fatalf("Slug = %q, want db.test", got.Slug)
+	}
+	if strings.Contains(got.ReleaseTag, "..") {
+		t.Fatalf("ReleaseTag = %q, must not contain consecutive periods", got.ReleaseTag)
+	}
+}
+
 func TestNewCandidateRejectsInvalidInput(t *testing.T) {
 	validSHA := strings.Repeat("a", 40)
 	tests := []struct {
@@ -47,10 +60,18 @@ func TestNewCandidateRejectsInvalidInput(t *testing.T) {
 		run     int64
 		attempt int64
 	}{
+		{name: "empty sha", sha: "", label: "test", run: 1, attempt: 1},
 		{name: "short sha", sha: strings.Repeat("a", 39), label: "test", run: 1, attempt: 1},
 		{name: "non hex sha", sha: strings.Repeat("z", 40), label: "test", run: 1, attempt: 1},
+		{name: "padded sha", sha: " " + validSHA + " ", label: "test", run: 1, attempt: 1},
 		{name: "empty label", sha: validSHA, label: "   ", run: 1, attempt: 1},
 		{name: "control label", sha: validSHA, label: "bad\nlabel", run: 1, attempt: 1},
+		{name: "leading newline", sha: validSHA, label: "\nbuild", run: 1, attempt: 1},
+		{name: "trailing newline", sha: validSHA, label: "build\n", run: 1, attempt: 1},
+		{name: "leading carriage return", sha: validSHA, label: "\rbuild", run: 1, attempt: 1},
+		{name: "trailing carriage return", sha: validSHA, label: "build\r", run: 1, attempt: 1},
+		{name: "leading tab", sha: validSHA, label: "\tbuild", run: 1, attempt: 1},
+		{name: "trailing tab", sha: validSHA, label: "build\t", run: 1, attempt: 1},
 		{name: "oversize label", sha: validSHA, label: strings.Repeat("x", 65), run: 1, attempt: 1},
 		{name: "zero run", sha: validSHA, label: "test", run: 0, attempt: 1},
 		{name: "zero attempt", sha: validSHA, label: "test", run: 1, attempt: 0},
@@ -72,10 +93,12 @@ func TestCandidateGitHubOutput(t *testing.T) {
 	output := got.GitHubOutput()
 	for _, want := range []string{
 		"sha=" + strings.Repeat("a", 40),
+		"short_sha=aaaaaaaaaaaa",
 		"label=test=one",
 		"slug=test-one",
 		"formula_version=0.0.9.1",
 		"release_version=test/test-one@aaaaaaaaaaaa",
+		"release_tag=homebrew-test-9-1-test-one-aaaaaaaaaaaa",
 	} {
 		if !strings.Contains(output, want+"\n") {
 			t.Fatalf("output missing %q:\n%s", want, output)
