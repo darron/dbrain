@@ -5,6 +5,35 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Security hardening (2026-07-13)
+
+- **Local filesystem containment**: Vault note/media reads, writes, uploads,
+  OCR/transcription inputs, and cleanup now use root-confined filesystem
+  operations so persisted traversal paths and symlink parents cannot escape the
+  configured vault. Apple Notes attachment extraction is likewise confined to
+  the selected Notes database container.
+- **Restore identity**: SQLite archive restore now rejects corrupt, foreign,
+  future-version, incomplete-migration, and unknown-migration databases before
+  replacing the authoritative local database.
+- **Network and remote surfaces**: Source/media fetches share a redirect- and
+  DNS-rebinding-aware public-destination policy; Funnel startup fails closed
+  unless each selected web/MCP surface has application authentication; web
+  mutations share an Origin guard; service-auth nonces are single-use per
+  process; and JSON-RPC batches are limited to 16 requests.
+- **Safe source extraction**: Safe-fetched HTML and text are now extracted
+  in-process instead of being passed to `summarize --extract` as unsupported
+  local files; summary-mode subprocesses receive only the extracted text over
+  stdin while dbrain retains validated URL provenance.
+- **Public shares**: Anonymous share rendering rejects URL userinfo and removes
+  recognized credential-like query data from newly generated and legacy stored
+  shares, including renderer-created attributes, nested/encoded query values,
+  and browser-normalized URL forms, while preserving ordinary query parameters.
+- **Supply chain**: Release and PR workflow action selectors and tool versions
+  are immutable, with a YAML-aware regression policy covering both `.yml` and
+  `.yaml` workflow files.
+- **Review workflow**: Added the repo-owned `dbrain-security-review` skill,
+  security campaign design/remediation plans, and a sanitized evidence ledger.
+
 ### Homebrew Test Release Channel (2026-07-13)
 
 - **Release testing**: Added an owner-dispatched Homebrew test channel that builds an exact commit into durable prerelease assets and one moving `dbrain-test` formula without changing stable `dbrain` distribution.

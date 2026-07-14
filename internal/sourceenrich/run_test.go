@@ -19,6 +19,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
 	"github.com/darron/dbrain/internal/vault"
@@ -263,6 +264,28 @@ func TestClassifyTerminalExtractErrorKeepsEarlyConnectivityFailuresRetryable(t *
 
 	if status, errorText, terminal := classifyTerminalExtractError(source, errors.New("Unable to connect. Is the computer able to access the url?")); terminal {
 		t.Fatalf("expected early connectivity failures to stay retryable, got status=%q error=%q", status, errorText)
+	}
+}
+
+func TestClassifyTerminalExtractErrorMarksSafeHTTPPolicyFailuresDeadImmediately(t *testing.T) {
+	t.Parallel()
+
+	for name, err := range map[string]error{
+		"typed":      &safehttp.PolicyError{Reason: "destination resolved non-public address 127.0.0.1"},
+		"serialized": errors.New("fetch readable source: perform request: Get \"http://example.test\": safe HTTP policy: destination resolved non-public address 127.0.0.1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, errorText, terminal := classifyTerminalExtractError(model.SourceDocument{}, err)
+			if !terminal {
+				t.Fatal("expected safe HTTP policy failure to be terminal immediately")
+			}
+			if status != model.SourceExtractStatusDead {
+				t.Fatalf("status = %q, want dead", status)
+			}
+			if !strings.Contains(errorText, "safe HTTP policy") {
+				t.Fatalf("terminal error = %q, want policy reason", errorText)
+			}
+		})
 	}
 }
 
@@ -803,8 +826,10 @@ func TestRunSourceIDsFallsBackToRemoteFetchAfterShortLocalXArticlePreview(t *tes
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Summarize: false,
-		Timeout:   5 * time.Second,
+		Summarize:          false,
+		Timeout:            5 * time.Second,
+		httpPolicy:         &safehttp.Policy{AllowPrivateNetwork: true},
+		prepareSourceInput: fixedSourceInputPreparer(t, articleURL, strings.Repeat("remote article body ", 40)),
 		ResolveHost: func(context.Context, string) error {
 			return nil
 		},
@@ -830,8 +855,8 @@ func TestRunSourceIDsFallsBackToRemoteFetchAfterShortLocalXArticlePreview(t *tes
 	if source.ExtractStatus != "ok" {
 		t.Fatalf("expected extract status ok, got %q", source.ExtractStatus)
 	}
-	if source.ExtractTool != "summarize" {
-		t.Fatalf("expected remote summarize extract tool, got %q", source.ExtractTool)
+	if source.ExtractTool != protectedFetchToolName {
+		t.Fatalf("expected safe HTTP extract tool, got %q", source.ExtractTool)
 	}
 	if len(strings.TrimSpace(source.ExtractedText)) < minXArticlePreviewExtractChars {
 		t.Fatalf("expected recovered article body to exceed preview threshold, got %d chars", len(strings.TrimSpace(source.ExtractedText)))
@@ -1212,9 +1237,14 @@ func TestRunSourceIDsCancellationDoesNotPersistInterruptFailure(t *testing.T) {
 		cancel()
 	}()
 
+	prepared := fixedSourceInputPreparer(t, "https://example.com/slow", "slow fixture")
 	stats, _, err := RunSourceIDs(ctx, cfg, st, []int64{link.SourceID}, Options{
 		Summarize: false,
 		Timeout:   5 * time.Second,
+		prepareSourceInput: func(ctx context.Context, rawURL string) (preparedSourceInput, error) {
+			<-ctx.Done()
+			return prepared(ctx, rawURL)
+		},
 		ResolveHost: func(context.Context, string) error {
 			return nil
 		},
@@ -1678,10 +1708,11 @@ func TestRunSourceIDsUsesPreferredCLIProviderForGenericSummary(t *testing.T) {
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Limit:     10,
-		Summarize: true,
-		Length:    "short",
-		Timeout:   5 * time.Second,
+		Limit:              10,
+		Summarize:          true,
+		Length:             "short",
+		Timeout:            5 * time.Second,
+		prepareSourceInput: fixedSourceInputPreparer(t, "https://example.com/post", "generic fixture"),
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)
@@ -1752,11 +1783,12 @@ func TestRunSourceIDsRetriesRedirectingSourceWithResolvedURL(t *testing.T) {
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Limit:     10,
-		Summarize: true,
-		Model:     "cli/test/sourceenrich",
-		Length:    "short",
-		Timeout:   5 * time.Second,
+		Limit:              10,
+		Summarize:          true,
+		Model:              "cli/test/sourceenrich",
+		Length:             "short",
+		Timeout:            5 * time.Second,
+		prepareSourceInput: fixedSourceInputPreparer(t, "https://example.com/redirected", "redirected fixture"),
 		ResolveRedirectURL: func(context.Context, string) (string, error) {
 			return "https://example.com/redirected", nil
 		},
@@ -1866,11 +1898,12 @@ func TestRunSourceIDsUsesDirectOllamaSummaryAfterExtraction(t *testing.T) {
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Limit:     10,
-		Summarize: true,
-		Model:     "ollama/qwen3.6:35b",
-		Length:    "medium",
-		Timeout:   5 * time.Second,
+		Limit:              10,
+		Summarize:          true,
+		Model:              "ollama/qwen3.6:35b",
+		Length:             "medium",
+		Timeout:            5 * time.Second,
+		prepareSourceInput: fixedSourceInputPreparer(t, "https://example.com/direct-ollama", "extracted body for direct ollama"),
 		ResolveHost: func(context.Context, string) error {
 			return nil
 		},
@@ -1992,11 +2025,12 @@ func TestRunSourceIDsUsesDirectOpenRouterSummaryAfterExtraction(t *testing.T) {
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Limit:     10,
-		Summarize: true,
-		Model:     "openrouter/qwen/qwen3.5-27b",
-		Length:    "medium",
-		Timeout:   5 * time.Second,
+		Limit:              10,
+		Summarize:          true,
+		Model:              "openrouter/qwen/qwen3.5-27b",
+		Length:             "medium",
+		Timeout:            5 * time.Second,
+		prepareSourceInput: fixedSourceInputPreparer(t, "https://example.com/direct-openrouter", "extracted body for direct ollama"),
 		ResolveHost: func(context.Context, string) error {
 			return nil
 		},
@@ -2129,11 +2163,12 @@ func TestProcessSingleSourceRendersSourceNoteImmediately(t *testing.T) {
 	}
 
 	result := processSingleSource(context.Background(), cfg, st, source, Options{
-		Limit:     10,
-		Summarize: true,
-		Model:     "ollama/qwen3.6:35b",
-		Length:    "medium",
-		Timeout:   5 * time.Second,
+		Limit:              10,
+		Summarize:          true,
+		Model:              "ollama/qwen3.6:35b",
+		Length:             "medium",
+		Timeout:            5 * time.Second,
+		prepareSourceInput: fixedSourceInputPreparer(t, "https://example.com/direct-ollama", "extracted body for direct ollama"),
 		ResolveHost: func(context.Context, string) error {
 			return nil
 		},
@@ -2830,8 +2865,9 @@ func TestRunSourceIDsFetchesFeedLinkedSourceWithMarkdownAccept(t *testing.T) {
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Summarize: false,
-		Timeout:   5 * time.Second,
+		Summarize:  false,
+		Timeout:    5 * time.Second,
+		httpPolicy: &safehttp.Policy{AllowPrivateNetwork: true},
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)
@@ -2914,8 +2950,9 @@ func TestRunSourceIDsFeedLinkedContextPromotesEmptyHTTPExtractToOK(t *testing.T)
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Summarize: false,
-		Timeout:   5 * time.Second,
+		Summarize:  false,
+		Timeout:    5 * time.Second,
+		httpPolicy: &safehttp.Policy{AllowPrivateNetwork: true},
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)
@@ -3057,9 +3094,10 @@ func TestRunPendingRepairsDeadMakerWorldSourceWithAPIExtract(t *testing.T) {
 	}
 
 	stats, _, err := RunPending(context.Background(), cfg, st, Options{
-		Limit:     10,
-		Summarize: false,
-		Timeout:   5 * time.Second,
+		Limit:      10,
+		Summarize:  false,
+		Timeout:    5 * time.Second,
+		httpPolicy: &safehttp.Policy{AllowPrivateNetwork: true},
 	})
 	if err != nil {
 		t.Fatalf("RunPending: %v", err)
@@ -3129,6 +3167,17 @@ printf '%s\n' '{"input":{"model":"cli/test/model"},"extracted":{"url":"","title"
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func fixedSourceInputPreparer(t *testing.T, finalURL string, body string) func(context.Context, string) (preparedSourceInput, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "source-input.html")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write fixed source input: %v", err)
+	}
+	return func(context.Context, string) (preparedSourceInput, error) {
+		return preparedSourceInput{Path: path, FinalURL: finalURL, Cleanup: func() {}}, nil
+	}
+}
+
 func installSourceEnrichGenericFakeSummarize(t *testing.T, root string) {
 	t.Helper()
 
@@ -3156,11 +3205,16 @@ if [ "$cli" != "claude" ]; then
   echo "expected preferred cli provider, got $cli" >&2
   exit 1
 fi
-if [ "$last" != "https://example.com/post" ]; then
-  echo "unexpected summarize input: $last" >&2
+if [ "$last" != "-" ]; then
+  echo "expected safe stdin summarize input: $last" >&2
   exit 1
 fi
-printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com/post","title":"Example","description":"desc","siteName":"Example","content":"body"},"summary":"summary from generic path"}'
+stdin_body="$(cat)"
+if [ "$stdin_body" != "generic fixture" ]; then
+  echo "unexpected safe summary stdin: $stdin_body" >&2
+  exit 1
+fi
+printf '%s\n' '{"input":{"model":"auto"},"extracted":{"kind":"asset","source":"stdin","mediaType":"text/plain","filename":"stdin"},"summary":"summary from generic path"}'
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)
@@ -3186,8 +3240,8 @@ last=""
 for arg in "$@"; do
   last="$arg"
 done
-if [ "$last" != "` + wantURL + `" ]; then
-  echo "unexpected summarize input: $last" >&2
+if [ ! -f "$last" ]; then
+  echo "expected local summarize input: $last" >&2
   exit 1
 fi
 printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"` + wantURL + `","title":"Recovered article","description":"","siteName":"x.com","content":"` + body + `"},"summary":null}'
@@ -3270,7 +3324,7 @@ if [ "$extract_mode" = "1" ]; then
     exit 1
   fi
   case "$last" in
-    "https://example.com/direct-ollama"|"https://example.com/direct-openrouter") ;;
+    /*) test -f "$last" || { echo "missing local extract input: $last" >&2; exit 1; } ;;
     *)
     echo "unexpected extract input: $last" >&2
     exit 1
@@ -3306,15 +3360,16 @@ last=""
 for arg in "$@"; do
   last="$arg"
 done
-if [ "$last" = "https://example.com/original" ]; then
-  echo "Failed to fetch HTML document (status 307)" >&2
+if [ "$last" != "-" ]; then
+  echo "expected safe redirected stdin: $last" >&2
   exit 1
 fi
-if [ "$last" != "https://example.com/redirected" ]; then
-  echo "unexpected summarize input: $last" >&2
+stdin_body="$(cat)"
+if [ "$stdin_body" != "redirected fixture" ]; then
+  echo "unexpected redirected stdin: $stdin_body" >&2
   exit 1
 fi
-printf '%s\n' '{"input":{"model":"auto"},"extracted":{"url":"https://example.com/redirected","title":"Redirected","description":"desc","siteName":"Example","content":"redirected body"},"summary":"summary from redirected path"}'
+printf '%s\n' '{"input":{"model":"auto"},"extracted":{"kind":"asset","source":"stdin","mediaType":"text/plain","filename":"stdin"},"summary":"summary from redirected path"}'
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)

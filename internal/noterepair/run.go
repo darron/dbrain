@@ -13,6 +13,7 @@ import (
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 type Options struct {
@@ -153,20 +154,24 @@ func writeSourceNote(cfg config.Config, source model.SourceDocument, backlinks [
 }
 
 func writeNoteBody(cfg config.Config, relPath string, body string) (bool, error) {
-	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		return false, fmt.Errorf("create note dir: %w", err)
+	root, err := vaultfs.Open(cfg.VaultDir)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.MkdirAll(filepath.Dir(filepath.FromSlash(relPath)), 0o755); err != nil {
+		return false, fmt.Errorf("create note dir for %q: %w", relPath, err)
 	}
 
-	existing, err := os.ReadFile(fullPath)
+	existing, err := root.ReadFile(relPath)
 	if err == nil && string(existing) == body {
 		return false, nil
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("read note %s: %w", fullPath, err)
+		return false, fmt.Errorf("read note %q: %w", relPath, err)
 	}
-	if err := os.WriteFile(fullPath, []byte(body), 0o644); err != nil {
-		return false, fmt.Errorf("write note: %w", err)
+	if err := root.WriteFile(relPath, []byte(body), 0o644); err != nil {
+		return false, fmt.Errorf("write note %q: %w", relPath, err)
 	}
 	return true, nil
 }

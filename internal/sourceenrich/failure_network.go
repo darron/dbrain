@@ -67,14 +67,14 @@ func defaultResolveHost(ctx context.Context, host string) error {
 	return err
 }
 
-func defaultResolveRedirectURL(ctx context.Context, rawURL string) (string, error) {
+func defaultResolveRedirectURL(ctx context.Context, rawURL string, options ...Options) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create redirect resolution request: %w", err)
 	}
 	req.Header.Set("user-agent", "dbrain/1.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := newPublicHTTPClient(options...).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("resolve redirect: %w", err)
 	}

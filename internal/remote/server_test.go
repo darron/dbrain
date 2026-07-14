@@ -310,6 +310,131 @@ auth:
 	}
 }
 
+func TestServeWithDepsRejectsFunnelSurfacesWithoutAuthBeforeNodeSetup(t *testing.T) {
+	tests := []struct {
+		name      string
+		web       bool
+		mcp       bool
+		webAuth   bool
+		mcpAuth   bool
+		wantError []string
+	}{
+		{
+			name: "web auth disabled",
+			web:  true,
+			wantError: []string{
+				"auth.enabled=true",
+				"--tsnet-funnel",
+				"--web",
+			},
+		},
+		{
+			name: "mcp auth disabled",
+			mcp:  true,
+			wantError: []string{
+				"mcp.auth.enabled=true",
+				"--tsnet-funnel",
+				"--mcp",
+			},
+		},
+		{
+			name:    "combined web auth missing",
+			web:     true,
+			mcp:     true,
+			mcpAuth: true,
+			wantError: []string{
+				"auth.enabled=true",
+				"--tsnet-funnel",
+				"--web",
+			},
+		},
+		{
+			name:    "combined mcp auth missing",
+			web:     true,
+			mcp:     true,
+			webAuth: true,
+			wantError: []string{
+				"mcp.auth.enabled=true",
+				"--tsnet-funnel",
+				"--mcp",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := loadRemoteAuthTestConfig(t, tc.webAuth, tc.mcpAuth)
+			events := []string{}
+			node := &fakeRemoteNode{events: &events}
+			opts := testServeOptions(t)
+			opts.Funnel = true
+			opts.Web = tc.web
+			opts.MCP = tc.mcp
+
+			err := serveWithDeps(context.Background(), cfg, opts, &bytes.Buffer{}, preNodeTrackingDeps(node, &events))
+			if err == nil {
+				t.Fatal("expected Funnel auth error")
+			}
+			for _, want := range tc.wantError {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q does not contain actionable guidance %q", err, want)
+				}
+			}
+			if len(events) != 0 {
+				t.Fatalf("expected validation before state, lock, or node setup; got events %v", events)
+			}
+		})
+	}
+}
+
+func TestServeWithDepsAllowsAuthorizedFunnelSurfaces(t *testing.T) {
+	tests := []struct {
+		name    string
+		web     bool
+		mcp     bool
+		webAuth bool
+		mcpAuth bool
+	}{
+		{name: "web", web: true, webAuth: true},
+		{name: "mcp", mcp: true, mcpAuth: true},
+		{name: "combined", web: true, mcp: true, webAuth: true, mcpAuth: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := loadRemoteAuthTestConfig(t, tc.webAuth, tc.mcpAuth)
+			events := []string{}
+			node := &fakeRemoteNode{upErr: errors.New("authorized control reached node"), events: &events}
+			opts := testServeOptions(t)
+			opts.Funnel = true
+			opts.Web = tc.web
+			opts.MCP = tc.mcp
+
+			err := serveWithDeps(context.Background(), cfg, opts, &bytes.Buffer{}, preNodeTrackingDeps(node, &events))
+			if err == nil || !strings.Contains(err.Error(), "authorized control reached node") {
+				t.Fatalf("expected authorized Funnel setup to reach node, got %v", err)
+			}
+			assertEventOrder(t, events, "prepare-state", "lock", "node", "up")
+		})
+	}
+}
+
+func TestServeWithDepsAllowsNonFunnelSurfacesWithoutAuth(t *testing.T) {
+	cfg := loadRemoteAuthTestConfig(t, false, false)
+	events := []string{}
+	node := &fakeRemoteNode{upErr: errors.New("unauthenticated private control reached node"), events: &events}
+	opts := testServeOptions(t)
+	opts.Web = true
+	opts.MCP = true
+	opts.Funnel = false
+
+	err := serveWithDeps(context.Background(), cfg, opts, &bytes.Buffer{}, preNodeTrackingDeps(node, &events))
+	if err == nil || !strings.Contains(err.Error(), "unauthenticated private control reached node") {
+		t.Fatalf("expected unauthenticated non-Funnel setup to reach node, got %v", err)
+	}
+	assertEventOrder(t, events, "prepare-state", "lock", "node", "up")
+}
+
 func TestServeWithDepsSelectsListenMode(t *testing.T) {
 	t.Parallel()
 
@@ -336,7 +461,11 @@ func TestServeWithDepsSelectsListenMode(t *testing.T) {
 			opts.TLS = tc.tls
 			opts.Funnel = tc.funnel
 
-			err := serveWithDeps(context.Background(), config.Config{}, opts, &bytes.Buffer{}, testRemoteDeps(node, &events))
+			cfg := config.Config{}
+			if tc.funnel {
+				cfg = loadRemoteAuthTestConfig(t, true, false)
+			}
+			err := serveWithDeps(context.Background(), cfg, opts, &bytes.Buffer{}, testRemoteDeps(node, &events))
 			if err == nil || !strings.Contains(err.Error(), "listen failed") {
 				t.Fatalf("expected listen error, got %v", err)
 			}
@@ -441,7 +570,7 @@ func TestServeWithDepsWarnsWhenFunnelEnabled(t *testing.T) {
 		return handler, func() {}, nil
 	}
 
-	if err := serveWithDeps(ctx, config.Config{RootDir: t.TempDir()}, opts, &out, deps); err != nil {
+	if err := serveWithDeps(ctx, loadRemoteAuthTestConfig(t, true, false), opts, &out, deps); err != nil {
 		t.Fatalf("serveWithDeps returned error: %v", err)
 	}
 	output := out.String()
@@ -518,6 +647,58 @@ func testServeOptions(t *testing.T) Options {
 		TLS:            true,
 		StartupTimeout: DefaultStartupTimeout,
 	}
+}
+
+func loadRemoteAuthTestConfig(t *testing.T, webAuth bool, mcpAuth bool) config.Config {
+	t.Helper()
+	root := t.TempDir()
+	var body strings.Builder
+	if webAuth {
+		body.WriteString(`
+auth:
+  enabled: true
+  providers: [github]
+  base_url: "https://example.test"
+  session_key: "test-session-key-32-characters-long"
+  github:
+    client_id: "client-id"
+    client_secret: "client-secret"
+`)
+	}
+	if mcpAuth {
+		body.WriteString(`
+mcp:
+  auth:
+    enabled: true
+`)
+	}
+	if body.Len() > 0 {
+		if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(body.String()), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return cfg
+}
+
+func preNodeTrackingDeps(node *fakeRemoteNode, events *[]string) remoteDeps {
+	deps := testRemoteDeps(node, events)
+	deps.prepareStateDir = func(path string) (string, error) {
+		*events = append(*events, "prepare-state")
+		return path, nil
+	}
+	deps.acquireStateLock = func(string) (stateLock, error) {
+		*events = append(*events, "lock")
+		return fakeStateLock{events: events}, nil
+	}
+	deps.newNode = func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode {
+		*events = append(*events, "node")
+		return node
+	}
+	return deps
 }
 
 func testRemoteDeps(node *fakeRemoteNode, events *[]string) remoteDeps {

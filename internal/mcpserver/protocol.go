@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const maxBatchRequests = 16
+
 func (s *Server) processPayload(ctx context.Context, payload []byte) (interface{}, bool) {
 	trimmed := bytes.TrimSpace(payload)
 	if len(trimmed) == 0 {
@@ -29,11 +31,18 @@ func (s *Server) processPayload(ctx context.Context, payload []byte) (interface{
 	if len(batch) == 0 {
 		return rpcError(nil, -32600, "invalid request"), true
 	}
+	return processBatch(ctx, batch, s.handle)
+}
+
+func processBatch(ctx context.Context, batch []json.RawMessage, dispatch func(context.Context, []byte) (response, bool)) (interface{}, bool) {
+	if len(batch) > maxBatchRequests {
+		return rpcError(nil, -32600, fmt.Sprintf("batch exceeds maximum of %d requests; split into smaller batches", maxBatchRequests)), true
+	}
 
 	responses := make([]response, 0, len(batch))
 	for _, raw := range batch {
 		start := time.Now()
-		resp, ok := s.handle(ctx, raw)
+		resp, ok := dispatch(ctx, raw)
 		logMCPRequest(raw, resp, ok, time.Since(start))
 		if ok {
 			responses = append(responses, resp)

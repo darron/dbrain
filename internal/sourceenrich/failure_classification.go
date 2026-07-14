@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 )
 
 func classifyTerminalExtractError(source model.SourceDocument, err error) (string, string, bool) {
@@ -12,6 +13,9 @@ func classifyTerminalExtractError(source model.SourceDocument, err error) (strin
 		return "", "", false
 	}
 	errorText := strings.TrimSpace(err.Error())
+	if safehttp.IsPolicyError(err) || strings.Contains(strings.ToLower(errorText), "safe http policy:") {
+		return model.SourceExtractStatusDead, errorText, true
+	}
 	value := strings.ToLower(errorText)
 	switch {
 	case strings.Contains(value, "status 404"),

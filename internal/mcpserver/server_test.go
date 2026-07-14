@@ -110,6 +110,165 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 	}
 }
 
+func TestProcessPayloadEnforcesBatchLimit(t *testing.T) {
+	server := &Server{}
+
+	t.Run("sixteen requests produce sixteen responses", func(t *testing.T) {
+		result, ok := server.processPayload(t.Context(), testPingBatch(t, 16, false))
+		if !ok {
+			t.Fatal("expected exact-limit batch response")
+		}
+		responses, ok := result.([]response)
+		if !ok {
+			t.Fatalf("exact-limit result type = %T, want []response", result)
+		}
+		if len(responses) != 16 {
+			t.Fatalf("exact-limit responses = %d, want 16", len(responses))
+		}
+		for i, response := range responses {
+			if response.Error != nil || string(response.ID) != fmt.Sprintf("%d", i+1) {
+				t.Fatalf("response %d = %#v", i, response)
+			}
+		}
+	})
+
+	t.Run("seventeen requests return one error without per-request results", func(t *testing.T) {
+		result, ok := server.processPayload(t.Context(), testPingBatch(t, 17, false))
+		if !ok {
+			t.Fatal("expected oversized batch error response")
+		}
+		response, ok := result.(response)
+		if !ok {
+			t.Fatalf("oversized result type = %T, want one response", result)
+		}
+		assertBatchLimitError(t, response)
+	})
+
+	t.Run("mixed notifications at limit preserve response filtering", func(t *testing.T) {
+		result, ok := server.processPayload(t.Context(), testPingBatch(t, 16, true))
+		if !ok {
+			t.Fatal("expected mixed exact-limit batch response")
+		}
+		responses, ok := result.([]response)
+		if !ok {
+			t.Fatalf("mixed result type = %T, want []response", result)
+		}
+		if len(responses) != 8 {
+			t.Fatalf("mixed responses = %d, want 8 request responses", len(responses))
+		}
+		for i, response := range responses {
+			wantID := fmt.Sprintf("%d", 2*i+1)
+			if response.Error != nil || string(response.ID) != wantID {
+				t.Fatalf("mixed response %d = %#v, want id %s", i, response, wantID)
+			}
+		}
+	})
+}
+
+func TestProcessBatchDoesNotDispatchOversizedBatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		batchSize int
+		wantCalls int
+	}{
+		{name: "at limit", batchSize: 16, wantCalls: 16},
+		{name: "over limit", batchSize: 17, wantCalls: 0},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var batch []json.RawMessage
+			if err := json.Unmarshal(testPingBatch(t, test.batchSize, false), &batch); err != nil {
+				t.Fatalf("decode test batch: %v", err)
+			}
+
+			calls := 0
+			processBatch(t.Context(), batch, func(context.Context, []byte) (response, bool) {
+				calls++
+				return response{}, false
+			})
+			if calls != test.wantCalls {
+				t.Fatalf("dispatch calls = %d, want %d", calls, test.wantCalls)
+			}
+		})
+	}
+}
+
+func TestMCPBatchLimitAppliesToHTTPAndStdio(t *testing.T) {
+	payload := testPingBatch(t, 17, false)
+	server := &Server{}
+
+	t.Run("http", func(t *testing.T) {
+		handler := server.HTTPHandler(HTTPOptions{Path: "/mcp"})
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(payload))
+		request.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("HTTP status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+		}
+		var response response
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode HTTP response: %v", err)
+		}
+		assertBatchLimitError(t, response)
+	})
+
+	t.Run("stdio", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := server.Serve(t.Context(), strings.NewReader(string(payload)+"\n"), &out); err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+		responses := parseResponses(t, out.Bytes())
+		if len(responses) != 1 {
+			t.Fatalf("stdio responses = %d, want one: %s", len(responses), out.String())
+		}
+		errorValue, ok := responses[0]["error"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("stdio response omitted error: %#v", responses[0])
+		}
+		if errorValue["code"] != float64(-32600) || errorValue["message"] != "batch exceeds maximum of 16 requests; split into smaller batches" {
+			t.Fatalf("stdio batch error = %#v", errorValue)
+		}
+		if _, ok := responses[0]["result"]; ok {
+			t.Fatalf("stdio oversized batch returned per-request result: %#v", responses[0])
+		}
+	})
+}
+
+func testPingBatch(t *testing.T, count int, mixedNotifications bool) []byte {
+	t.Helper()
+	requests := make([]map[string]interface{}, 0, count)
+	for i := 1; i <= count; i++ {
+		request := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "ping",
+		}
+		if !mixedNotifications || i%2 == 1 {
+			request["id"] = i
+		}
+		requests = append(requests, request)
+	}
+	payload, err := json.Marshal(requests)
+	if err != nil {
+		t.Fatalf("marshal ping batch: %v", err)
+	}
+	return payload
+}
+
+func assertBatchLimitError(t *testing.T, got response) {
+	t.Helper()
+	if got.Error == nil {
+		t.Fatalf("oversized batch returned per-request result: %#v", got)
+	}
+	if got.Error.Code != -32600 || got.Error.Message != "batch exceeds maximum of 16 requests; split into smaller batches" {
+		t.Fatalf("batch error = %#v", got.Error)
+	}
+	if len(got.ID) != 0 || got.Result != nil {
+		t.Fatalf("oversized batch returned request identity/result: %#v", got)
+	}
+}
+
 func TestHTTPHandlerStreamableJSONTransport(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

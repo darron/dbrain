@@ -876,8 +876,10 @@ placeholders, and any Notes-provided attachment-derived text when present:
 The file-content path should be conservative and read-only. It should not block
 the body importer or local note summaries:
 
-- Resolve attachment files from the Notes database/container without writing to
-  the Notes store.
+- Resolve attachment files through a root-confined handle for the directory
+  containing the selected Notes database. Absolute paths are accepted only
+  when they resolve beneath that container; traversal and symlink escapes are
+  classified as `outside_notes_container` without reading the target.
 - Copy or stream attachment bytes into dbrain-controlled temp/state paths before
   extraction when needed.
 - Extract text/PDF attachments locally inside the `dbrain` binary when the

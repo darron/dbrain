@@ -2,8 +2,6 @@ package vault
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/darron/dbrain/internal/config"
@@ -12,24 +10,11 @@ import (
 )
 
 func WriteItem(cfg config.Config, item model.Item) error {
-	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath))
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		return fmt.Errorf("create note dir: %w", err)
-	}
-
 	body, err := RenderItemWithOptions(item, renderOptionsForConfig(cfg))
 	if err != nil {
 		return err
 	}
-
-	existing, err := os.ReadFile(fullPath)
-	if err == nil && string(existing) == body {
-		return nil
-	}
-	if err := os.WriteFile(fullPath, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("write note: %w", err)
-	}
-	return nil
+	return writeRenderedNote(cfg, item.NotePath, body, "item note")
 }
 
 func RenderItem(item model.Item) (string, error) {

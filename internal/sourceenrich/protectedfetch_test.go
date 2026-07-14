@@ -15,6 +15,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
 )
@@ -128,10 +129,11 @@ func TestRunSourceIDsRecoversSucuriProtectedSource(t *testing.T) {
 	}
 
 	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, Options{
-		Limit:     10,
-		Summarize: true,
-		Model:     "cli/test/protected-fetch",
-		Timeout:   5 * time.Second,
+		Limit:      10,
+		Summarize:  true,
+		Model:      "cli/test/protected-fetch",
+		Timeout:    5 * time.Second,
+		httpPolicy: &safehttp.Policy{AllowPrivateNetwork: true},
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)
@@ -179,6 +181,7 @@ func TestExtractWaybackArchivedSource(t *testing.T) {
 	var availabilityRequested atomic.Bool
 	var snapshotRequested atomic.Bool
 	var server *httptest.Server
+	var snapshotURL string
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/wayback/available":
@@ -187,7 +190,7 @@ func TestExtractWaybackArchivedSource(t *testing.T) {
 				t.Fatalf("unexpected availability url query: %q", got)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"archived_snapshots":{"closest":{"available":true,"url":%q,"timestamp":"20260430150000","status":"200"}}}`, server.URL+"/web/20260430150000/https://example.com/missing")
+			_, _ = fmt.Fprintf(w, `{"archived_snapshots":{"closest":{"available":true,"url":%q,"timestamp":"20260430150000","status":"200"}}}`, snapshotURL)
 		case strings.HasPrefix(r.URL.Path, "/web/20260430150000id_/"):
 			snapshotRequested.Store(true)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -209,10 +212,13 @@ func TestExtractWaybackArchivedSource(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	snapshotURL = strings.Replace(server.URL, "127.0.0.1", "snapshot.test", 1) + "/web/20260430150000/https://example.com/missing"
+	policy := syntheticPublicPolicy(server.Listener.Addr().String(), map[string]string{"snapshot.test": "8.8.8.8"})
 
 	extract, recovered, err := extractWaybackArchivedSource(context.Background(), "https://example.com/missing", Options{
 		WaybackFallbackEnabled: true,
 		WaybackAvailabilityURL: server.URL + "/wayback/available?url={escaped_url}",
+		httpPolicy:             &policy,
 	})
 	if err != nil {
 		t.Fatalf("extractWaybackArchivedSource: %v", err)
@@ -322,6 +328,10 @@ func TestRunSourceIDsUsesWaybackOnFinalFailure(t *testing.T) {
 		Summarize:              false,
 		WaybackFallbackEnabled: true,
 		WaybackAvailabilityURL: server.URL + "/wayback/available?url={escaped_url}",
+		httpPolicy:             &safehttp.Policy{AllowPrivateNetwork: true},
+		prepareSourceInput: func(context.Context, string) (preparedSourceInput, error) {
+			return preparedSourceInput{}, fmt.Errorf("run summarize: fetch failed")
+		},
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)
@@ -405,8 +415,10 @@ func TestRunSourceIDsUsesGoReaderFetchForKnownKilledDomains(t *testing.T) {
 </html>`)
 	}))
 	defer server.Close()
+	sourceURL := strings.Replace(server.URL, "127.0.0.1", "source.test", 1) + "/news"
+	policy := syntheticPublicPolicy(server.Listener.Addr().String(), map[string]string{"source.test": "8.8.8.8"})
 
-	installSourceEnrichSummaryOnlyFakeSummarize(t, root, server.URL+"/news")
+	installSourceEnrichSummaryOnlyFakeSummarize(t, root, sourceURL)
 
 	now := time.Now().UTC()
 	item := model.Item{
@@ -429,11 +441,11 @@ func TestRunSourceIDsUsesGoReaderFetchForKnownKilledDomains(t *testing.T) {
 
 	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
 		SourceKey:     "src:http-reader-fallback-test",
-		OriginalURL:   server.URL + "/news",
-		CanonicalURL:  server.URL + "/news",
-		NormalizedURL: server.URL + "/news",
+		OriginalURL:   sourceURL,
+		CanonicalURL:  sourceURL,
+		NormalizedURL: sourceURL,
 		SourceType:    "web",
-		Domain:        "127.0.0.1",
+		Domain:        "source.test",
 		NotePath:      vault.SourceNoteRelativePath("web", "http-reader-fallback-test"),
 	})
 	if err != nil {
@@ -445,8 +457,10 @@ func TestRunSourceIDsUsesGoReaderFetchForKnownKilledDomains(t *testing.T) {
 		Summarize:                 true,
 		Model:                     "cli/test/http-reader",
 		Timeout:                   5 * time.Second,
-		HTTPReaderFallbackDomains: []string{"127.0.0.1"},
+		HTTPReaderFallbackDomains: []string{"source.test"},
 		HTTPReaderBaseURL:         server.URL + "/reader/",
+		httpPolicy:                &policy,
+		ResolveHost:               func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)
@@ -471,7 +485,7 @@ func TestRunSourceIDsUsesGoReaderFetchForKnownKilledDomains(t *testing.T) {
 	if source.ExtractStatus != "ok" {
 		t.Fatalf("expected extract status ok, got %q", source.ExtractStatus)
 	}
-	if source.CanonicalURL != server.URL+"/news" {
+	if source.CanonicalURL != sourceURL {
 		t.Fatalf("expected original canonical url to be preserved, got %q", source.CanonicalURL)
 	}
 	if source.ExtractTool != protectedFetchToolName {
@@ -547,8 +561,10 @@ func TestRunSourceIDsFallsBackToDirectFetchWhenReaderRejectsHeaders(t *testing.T
 </html>`)
 	}))
 	defer server.Close()
+	sourceURL := strings.Replace(server.URL, "127.0.0.1", "source.test", 1) + "/news"
+	policy := syntheticPublicPolicy(server.Listener.Addr().String(), map[string]string{"source.test": "8.8.8.8"})
 
-	installSourceEnrichSummaryOnlyFakeSummarize(t, root, server.URL+"/news")
+	installSourceEnrichSummaryOnlyFakeSummarize(t, root, sourceURL)
 
 	now := time.Now().UTC()
 	item := model.Item{
@@ -571,11 +587,11 @@ func TestRunSourceIDsFallsBackToDirectFetchWhenReaderRejectsHeaders(t *testing.T
 
 	link, err := st.UpsertSourceLink(context.Background(), upserted.ItemID, model.SourceCandidate{
 		SourceKey:     "src:reader-direct-fallback-test",
-		OriginalURL:   server.URL + "/news",
-		CanonicalURL:  server.URL + "/news",
-		NormalizedURL: server.URL + "/news",
+		OriginalURL:   sourceURL,
+		CanonicalURL:  sourceURL,
+		NormalizedURL: sourceURL,
 		SourceType:    "web",
-		Domain:        "127.0.0.1",
+		Domain:        "source.test",
 		NotePath:      vault.SourceNoteRelativePath("web", "reader-direct-fallback-test"),
 	})
 	if err != nil {
@@ -587,8 +603,10 @@ func TestRunSourceIDsFallsBackToDirectFetchWhenReaderRejectsHeaders(t *testing.T
 		Summarize:                 true,
 		Model:                     "cli/test/http-reader",
 		Timeout:                   5 * time.Second,
-		HTTPReaderFallbackDomains: []string{"127.0.0.1"},
+		HTTPReaderFallbackDomains: []string{"source.test"},
 		HTTPReaderBaseURL:         server.URL + "/reader/",
+		httpPolicy:                &policy,
+		ResolveHost:               func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatalf("RunSourceIDs: %v", err)

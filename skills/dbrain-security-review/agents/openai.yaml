@@ -1,0 +1,4 @@
+interface:
+  display_name: "dbrain Security Review"
+  short_description: "Audit dbrain security with verified evidence"
+  default_prompt: "Use $dbrain-security-review to perform an evidence-driven security review of the current dbrain checkout."

@@ -36,7 +36,7 @@ func TestRunImportsStarsAndHomepageSources(t *testing.T) {
 
 	server := newGitHubTestServer(t)
 	defer server.Close()
-	installGitHubFakeSummarize(t, root, server.URL+"/project")
+	installGitHubFakeSummarize(t, root)
 
 	stats, err := Run(context.Background(), cfg, st, Options{
 		Summarize: true,
@@ -78,6 +78,12 @@ func TestRunImportsStarsAndHomepageSources(t *testing.T) {
 	if homepageSource.SourceType != "web" {
 		t.Fatalf("expected homepage source type web, got %q", homepageSource.SourceType)
 	}
+	if homepageSource.ExtractTool != "http-fallback" {
+		t.Fatalf("expected safe HTTP extract tool, got %q", homepageSource.ExtractTool)
+	}
+	if homepageSource.ExtractedText != "WEBSITE HOME TEXT" {
+		t.Fatalf("expected safely extracted homepage text, got %q", homepageSource.ExtractedText)
+	}
 	if homepageSource.SummaryText != "website summary" {
 		t.Fatalf("unexpected homepage summary: %q", homepageSource.SummaryText)
 	}
@@ -103,7 +109,7 @@ func TestRunStopsAtFirstExistingStar(t *testing.T) {
 
 	server := newGitHubTestServer(t)
 	defer server.Close()
-	installGitHubFakeSummarize(t, root, server.URL+"/project")
+	installGitHubFakeSummarize(t, root)
 
 	first, err := Run(context.Background(), cfg, st, Options{
 		Summarize: true,
@@ -159,7 +165,7 @@ func TestRunLoadsTokenFromEnvrc(t *testing.T) {
 
 	server := newGitHubTestServer(t)
 	defer server.Close()
-	installGitHubFakeSummarize(t, root, server.URL+"/project")
+	installGitHubFakeSummarize(t, root)
 
 	t.Setenv("GITHUB_TOKEN", "")
 	envrcPath := filepath.Join(root, ".envrc")
@@ -234,6 +240,10 @@ func newGitHubTestServer(t *testing.T) *httptest.Server {
 			"html_url": "https://github.com/example/project/blob/main/README.md",
 		})
 	})
+	mux.HandleFunc("/project", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<html><body><main>WEBSITE HOME TEXT</main></body></html>"))
+	})
 
 	return httptest.NewServer(mux)
 }
@@ -242,7 +252,7 @@ func serverProjectURL(r *http.Request) string {
 	return "http://" + r.Host + "/project"
 }
 
-func installGitHubFakeSummarize(t *testing.T, root string, homepageURL string) {
+func installGitHubFakeSummarize(t *testing.T, root string) {
 	t.Helper()
 
 	binDir := filepath.Join(root, "bin")
@@ -262,22 +272,26 @@ for arg in "$@"; do
 done
 if [ -f "$last" ]; then
   input="$(cat "$last")"
-  case "$input" in
-    *"README CONTENT FROM GITHUB API"*) ;;
-    *)
-      echo "expected github README in summary file" >&2
-      exit 1
-      ;;
-  esac
-  printf '%s\n' '{"input":{"model":"cli/test/github"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"README CONTENT FROM GITHUB API"},"summary":"github repo summary"}'
-  exit 0
+elif [ "$last" = "-" ]; then
+  input="$(cat)"
+else
+  echo "unexpected summarize input: $last" >&2
+  exit 1
 fi
-if [ "$last" = "` + homepageURL + `" ]; then
-  printf '%s\n' '{"input":{"model":"cli/test/github"},"extracted":{"url":"` + homepageURL + `","title":"Project Website","description":"Homepage description","siteName":"Example","content":"WEBSITE HOME TEXT"},"summary":"website summary"}'
-  exit 0
-fi
-echo "unexpected summarize input: $last" >&2
-exit 1
+case "$input" in
+  *"README CONTENT FROM GITHUB API"*)
+    printf '%s\n' '{"input":{"model":"cli/test/github"},"extracted":{"url":"","title":"","description":"","siteName":"","content":"README CONTENT FROM GITHUB API"},"summary":"github repo summary"}'
+    exit 0
+    ;;
+  *"WEBSITE HOME TEXT"*)
+    printf '%s\n' '{"input":{"model":"cli/test/github"},"extracted":{"kind":"asset","source":"stdin","mediaType":"text/plain","filename":"stdin"},"summary":"website summary"}'
+    exit 0
+    ;;
+  *)
+    echo "expected github README file or homepage stdin" >&2
+    exit 1
+    ;;
+esac
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)

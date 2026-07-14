@@ -285,7 +285,7 @@ func TestWhatsNewEndpointRequiresAuthWhenWebAuthEnabled(t *testing.T) {
 	}
 }
 
-func TestServiceAuthAllowsDoctorFullDiskAccessProbe(t *testing.T) {
+func TestServiceAuthAllowsDoctorFullDiskAccessProbeOnceAndRejectsReplay(t *testing.T) {
 	t.Setenv("DBRAIN_AUTH_BASE_URL", "")
 	t.Setenv("DBRAIN_AUTH_ENABLED", "")
 	t.Setenv("DBRAIN_AUTH_GITHUB_CLIENT_ID", "")
@@ -326,6 +326,14 @@ func TestServiceAuthAllowsDoctorFullDiskAccessProbe(t *testing.T) {
 	if !response.OK || !response.Readable || response.Path != probePath {
 		t.Fatalf("unexpected response: %#v", response)
 	}
+
+	replay := httptest.NewRecorder()
+	replayReq := httptest.NewRequest(http.MethodGet, "/api/doctor/full-disk-access", nil)
+	replayReq.Header.Set(serviceauth.HeaderName, header)
+	handler.ServeHTTP(replay, replayReq)
+	if replay.Code != http.StatusUnauthorized {
+		t.Fatalf("expected replay 401, got %d: %s", replay.Code, replay.Body.String())
+	}
 }
 
 func TestValidatePublicAuthConfigRequiresPublicBaseURL(t *testing.T) {
@@ -348,6 +356,37 @@ auth:
 	writeAuthConfig(t, cfg, validAuthConfigYAML())
 	if err := ValidatePublicAuthConfig(context.Background(), cfg); err != nil {
 		t.Fatalf("ValidatePublicAuthConfig with public base URL: %v", err)
+	}
+}
+
+func TestRequirePublicAuthConfigRequiresEnabledAuth(t *testing.T) {
+	cfg := loadTestConfig(t)
+
+	err := RequirePublicAuthConfig(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected enabled web auth error")
+	}
+	for _, want := range []string{"auth.enabled=true", "--tsnet-funnel", "--web"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain actionable guidance %q", err, want)
+		}
+	}
+}
+
+func TestRequirePublicAuthConfigAcceptsEnabledPublicAuth(t *testing.T) {
+	cfg := loadTestConfig(t)
+	writeAuthConfig(t, cfg, validAuthConfigYAML())
+
+	if err := RequirePublicAuthConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("RequirePublicAuthConfig: %v", err)
+	}
+}
+
+func TestValidatePublicAuthConfigAllowsDisabledAuth(t *testing.T) {
+	cfg := loadTestConfig(t)
+
+	if err := ValidatePublicAuthConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("ValidatePublicAuthConfig with disabled auth: %v", err)
 	}
 }
 

@@ -105,8 +105,12 @@ Funnel requires:
 - HTTPS certificates enabled for the tailnet.
 - `tsnet.tls=true` / `--tsnet-tls=true`.
 - listener port `:443`, `:8443`, or `:10000`.
+- `auth.enabled=true` when the web surface is selected.
+- `mcp.auth.enabled=true` when the MCP surface is selected.
 
-dbrain rejects Funnel with plain HTTP or unsupported ports.
+dbrain rejects Funnel before starting tsnet when TLS, port, or application-auth
+requirements are not satisfied. Tailnet-only and loopback listeners retain the
+existing optional-auth behavior.
 
 ## Funnel Policy
 
@@ -140,7 +144,8 @@ tailnet member should be allowed to publish public Funnel services.
 ## Public Auth
 
 Funnel makes the selected web and MCP surfaces publicly reachable at the network
-layer. dbrain auth still controls application access.
+layer. dbrain therefore refuses to start Funnel until every selected surface
+has its own application authentication enabled.
 
 For the web UI:
 

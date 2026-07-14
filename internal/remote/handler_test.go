@@ -70,15 +70,18 @@ func TestRemoteHandlerOriginGuard(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name   string
-		method string
-		origin string
-		status int
+		name           string
+		method         string
+		origin         string
+		forwardedHost  string
+		forwardedProto string
+		status         int
 	}{
 		{name: "get ignores origin", method: http.MethodGet, origin: "https://evil.test", status: http.StatusOK},
 		{name: "post no origin", method: http.MethodPost, origin: "", status: http.StatusOK},
 		{name: "post same origin", method: http.MethodPost, origin: "https://dbrain.example.ts.net", status: http.StatusOK},
 		{name: "post mismatch", method: http.MethodPost, origin: "https://evil.test", status: http.StatusForbidden},
+		{name: "post does not trust forwarded origin", method: http.MethodPost, origin: "https://public.example", forwardedHost: "public.example", forwardedProto: "https", status: http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -86,6 +89,12 @@ func TestRemoteHandlerOriginGuard(t *testing.T) {
 			req.TLS = &tls.ConnectionState{}
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
+			}
+			if tc.forwardedHost != "" {
+				req.Header.Set("X-Forwarded-Host", tc.forwardedHost)
+			}
+			if tc.forwardedProto != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.forwardedProto)
 			}
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)

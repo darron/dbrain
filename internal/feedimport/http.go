@@ -9,12 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -34,25 +34,12 @@ func NewHTTPFetcherWithOptions(client *http.Client, opts HTTPFetcherOptions) HTT
 	if client != nil {
 		return HTTPFetcher{client: client}
 	}
-	dialContext := safeDialContext
-	if opts.AllowPrivateNetwork {
-		var dialer net.Dialer
-		dialContext = dialer.DialContext
-	}
-	return HTTPFetcher{client: &http.Client{
-		Timeout: DefaultTimeout,
-		Transport: &http.Transport{
-			Proxy:              http.ProxyFromEnvironment,
-			DisableCompression: true,
-			DialContext:        dialContext,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}}
+	return HTTPFetcher{client: safehttp.NewClient(safehttp.Policy{
+		Timeout:             DefaultTimeout,
+		MaxRedirects:        10,
+		AllowPrivateNetwork: opts.AllowPrivateNetwork,
+		DisableCompression:  true,
+	})}
 }
 
 func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (FetchResult, error) {
@@ -139,38 +126,6 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 		result.DecodedBody = nil
 	}
 	return result, nil
-}
-
-func safeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	for _, candidate := range ips {
-		ip := candidate.IP
-		if !isPublicIP(ip) {
-			continue
-		}
-		var dialer net.Dialer
-		return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-	}
-	return nil, fmt.Errorf("no public IPs resolved for %s", host)
-}
-
-func isPublicIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	return !ip.IsUnspecified() &&
-		!ip.IsLoopback() &&
-		!ip.IsPrivate() &&
-		!ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() &&
-		!ip.IsMulticast()
 }
 
 func sha256Hex(body []byte) string {

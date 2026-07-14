@@ -3,11 +3,11 @@ package mediadownload
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -17,6 +17,7 @@ type Options struct {
 	ProgressInterval time.Duration
 	ProgressBytes    int64
 	Logger           *slog.Logger
+	httpPolicy       *safehttp.Policy
 }
 
 const (
@@ -56,7 +57,13 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 		return stats, nil
 	}
 
-	client := &http.Client{Timeout: opts.Timeout}
+	policy := safehttp.Policy{}
+	if opts.httpPolicy != nil {
+		policy = *opts.httpPolicy
+	}
+	policy.Timeout = opts.Timeout
+	policy.AllowedPrivateOrigins = nil
+	client := safehttp.NewClient(policy)
 	for _, ref := range refs {
 		if !shouldDownload(ref, cfg, opts.Force) {
 			continue

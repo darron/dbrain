@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/projection"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func pruneLocalPathIfSafe(ctx context.Context, cfg config.Config, st *store.Store, localPath string, logger *slog.Logger) (bool, int64, error) {
@@ -31,9 +31,13 @@ func pruneLocalPathIfSafe(ctx context.Context, cfg config.Config, st *store.Stor
 		}
 	}
 
-	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(localPath))
-	if err := os.Remove(fullPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, 0, fmt.Errorf("remove local media %s: %w", fullPath, err)
+	root, err := vaultfs.Open(cfg.VaultDir)
+	if err != nil {
+		return false, 0, err
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.Remove(localPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, 0, fmt.Errorf("remove local media %q: %w", localPath, err)
 	}
 
 	rows, err := st.MarkMediaLocalPrunedByPath(ctx, localPath, time.Now().UTC())

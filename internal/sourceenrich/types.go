@@ -8,6 +8,7 @@ import (
 	"github.com/darron/dbrain/internal/llmprovider"
 	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 )
 
 type Options struct {
@@ -38,6 +39,9 @@ type Options struct {
 	HTTPReaderBaseURL         string
 	WaybackFallbackEnabled    bool
 	WaybackAvailabilityURL    string
+	httpPolicy                *safehttp.Policy
+	prepareSourceInput        func(context.Context, string) (preparedSourceInput, error)
+	configuredSourceOrigin    string
 	Binary                    string
 	YouTubeBrowser            string
 	YouTubeProfile            string
@@ -52,6 +56,21 @@ type Options struct {
 	// OnSourceResult is called when a source enrichment candidate completes.
 	// Callers must treat it as concurrent when Concurrency > 1.
 	OnSourceResult func(SourceResult)
+}
+
+type preparedSourceInput struct {
+	Path        string
+	FinalURL    string
+	ContentType string
+	Cleanup     func()
+}
+
+// WithConfiguredSourceOrigin authorizes one exact operator-configured HTTP
+// origin for source fetching. Redirects and unrelated source origins remain
+// subject to the public-destination policy.
+func WithConfiguredSourceOrigin(opts Options, origin string) Options {
+	opts.configuredSourceOrigin = origin
+	return opts
 }
 
 type Stats struct {

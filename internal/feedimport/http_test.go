@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -24,8 +25,8 @@ func TestHTTPFetcherBlocksLocalhostByDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected localhost fetch to be blocked by default")
 	}
-	if !strings.Contains(err.Error(), "no public IPs resolved") {
-		t.Fatalf("expected public-IP guard error, got %v", err)
+	if !safehttp.IsPolicyError(err) {
+		t.Fatalf("expected shared HTTP policy error, got %v", err)
 	}
 }
 

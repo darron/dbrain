@@ -36,7 +36,7 @@ func summarizeHomepageSources(ctx context.Context, cfg config.Config, st *store.
 	if len(sourceIDs) == 0 {
 		return sourceenrich.Stats{}, nil
 	}
-	stats, _, err := sourceenrich.RunSourceIDs(ctx, cfg, st, sourceIDs, sourceenrich.Options{
+	sourceOpts := sourceenrich.Options{
 		Limit:                len(sourceIDs),
 		Force:                opts.Force,
 		AcceptCurrentSummary: true,
@@ -47,7 +47,9 @@ func summarizeHomepageSources(ctx context.Context, cfg config.Config, st *store.
 		Timeout:              opts.Timeout,
 		Logger:               opts.Logger,
 		Binary:               opts.Binary,
-	})
+	}
+	sourceOpts = sourceenrich.WithConfiguredSourceOrigin(sourceOpts, opts.APIBase)
+	stats, _, err := sourceenrich.RunSourceIDs(ctx, cfg, st, sourceIDs, sourceOpts)
 	return stats, err
 }
 

@@ -454,6 +454,9 @@ default. For local feed development, pass `--allow-private-network` to
 `feeds.allow_private_network: true` in `config.yaml` /
 `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK=true`. The plural
 `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS` is also accepted for compatibility.
+This escape hatch applies to the explicitly configured feed fetch. Linked
+article/source and media URLs discovered from feed content still pass the
+public-destination policy, including redirect and DNS checks.
 
 `feed enable` clears previous feed health diagnostics and makes the feed
 eligible for an immediate check. `feed disable` stops future checks without

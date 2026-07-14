@@ -136,7 +136,7 @@ func configEnvSpecs() []envSpec {
 		{Key: "DBRAIN_TSNET_STATE_DIR", ConfigPath: "tsnet.state_dir", Default: "<data_dir>/tsnet/<hostname>", Description: "Durable tsnet state directory; must not be synced via iCloud/Dropbox/etc."},
 		{Key: "DBRAIN_TSNET_LISTEN", ConfigPath: "tsnet.listen", Default: ":443", Description: "Tailnet listen address for serve remote; default changes to :80 when TLS and Funnel are disabled."},
 		{Key: "DBRAIN_TSNET_TLS", ConfigPath: "tsnet.tls", Default: "true", Description: "Use Tailscale HTTPS through tsnet ListenTLS."},
-		{Key: "DBRAIN_TSNET_FUNNEL", ConfigPath: "tsnet.funnel", Default: "false", Description: "Expose the tsnet listener through Tailscale Funnel. Requires TLS and port 443, 8443, or 10000."},
+		{Key: "DBRAIN_TSNET_FUNNEL", ConfigPath: "tsnet.funnel", Default: "false", Description: "Expose the tsnet listener through Tailscale Funnel. Requires TLS, a supported port, web auth for web, and MCP bearer auth for MCP."},
 		{Key: "DBRAIN_TSNET_STARTUP_TIMEOUT", ConfigPath: "tsnet.startup_timeout", Default: "45s", Description: "Maximum time to wait for tsnet startup and authentication."},
 		{Key: "DBRAIN_TSNET_AUTH_KEY", ConfigPath: "tsnet.auth_key", Default: "", Description: "Optional direct Tailscale auth key; prefer a typed secret reference."},
 		{Key: "DBRAIN_TSNET_AUTH_KEY_REF", ConfigPath: "tsnet.auth_key_ref", Default: "", Description: "Typed auth key reference: env:, op://, or keychain://."},

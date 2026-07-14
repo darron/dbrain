@@ -14,6 +14,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vaultfs"
 	"github.com/darron/dbrain/internal/version"
 )
 
@@ -362,15 +363,15 @@ func mediaWebResponse(refs []model.ItemMediaRef) []MediaRefResponse {
 }
 
 func (s *server) loadNote(notePath string) (string, string) {
-	fullPath, err := s.resolveNotePath(notePath)
+	if strings.TrimSpace(notePath) == "" {
+		return "", ""
+	}
+	root, err := vaultfs.Open(s.cfg.VaultDir)
 	if err != nil {
 		return "", err.Error()
 	}
-	if fullPath == "" {
-		return "", ""
-	}
-
-	content, err := os.ReadFile(fullPath)
+	defer func() { _ = root.Close() }()
+	content, err := root.ReadFile(notePath)
 	if err != nil {
 		return "", noteReadError(notePath, err)
 	}
@@ -384,18 +385,4 @@ func noteReadError(notePath string, err error) string {
 		reason = pathErr.Err.Error()
 	}
 	return fmt.Sprintf("read note %s: %s", filepath.ToSlash(notePath), reason)
-}
-
-func (s *server) resolveNotePath(notePath string) (string, error) {
-	notePath = strings.TrimSpace(notePath)
-	if notePath == "" {
-		return "", nil
-	}
-
-	fullPath := filepath.Clean(filepath.Join(s.cfg.VaultDir, filepath.FromSlash(notePath)))
-	vaultRoot := filepath.Clean(s.cfg.VaultDir)
-	if fullPath != vaultRoot && !strings.HasPrefix(fullPath, vaultRoot+string(os.PathSeparator)) {
-		return "", fmt.Errorf("note path escapes vault: %s", notePath)
-	}
-	return fullPath, nil
 }

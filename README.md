@@ -246,11 +246,13 @@ helpers. `serve remote` relies on Tailscale/tsnet identity, ACLs, node tags, and
 same-origin checks by default. Optional GitHub OAuth can add a dbrain session
 gate for the web UI when `auth.enabled` is configured, but the default remains
 the existing no-login local/trusted-network behavior. Do not expose the web UI
-through Tailscale Funnel or a public reverse proxy unless you have explicitly
-reviewed the full route surface and auth boundary. `--tsnet-funnel` is public
-exposure on the same tsnet node identity, hostname, state directory, and auth
-credentials; it is not a separate dbrain feature set. MCP surfaces are
-read-only, but they still expose local brain content to connected clients.
+  through a public reverse proxy unless you have explicitly reviewed the full
+  route surface and auth boundary. `--tsnet-funnel` is public exposure on the
+  same tsnet node identity, hostname, state directory, and auth credentials; it
+  is not a separate dbrain feature set. Funnel startup fails closed unless
+  GitHub OAuth is enabled for a selected web surface and bearer authentication
+  is enabled for a selected MCP surface. MCP surfaces are read-only, but they
+  still expose local brain content to connected clients.
 Optional DB-backed MCP bearer auth can protect Streamable HTTP MCP endpoints
 when `mcp.auth.enabled` is set; startup logs warn loudly when HTTP or tsnet MCP
 is served without that guard.
@@ -763,6 +765,17 @@ in an external helper.
   may also include `{url}` or `{escaped_url}` placeholders for services that
   need a different URL shape.
 
+Imported source URLs, redirects, response-derived fallback URLs, and media URLs
+use a public-destination HTTP policy. It rejects credentials in URLs,
+localhost/private/link-local/special-use addresses, mixed public/private DNS,
+and private redirects; it resolves and dials the validated numeric address so a
+later DNS answer cannot change the destination. These clients intentionally do
+not inherit shell proxy variables. Configured reader and Wayback availability
+services may use their exact configured origin even when it is private, but
+URLs returned by those services are rechecked as public destinations. Policy
+rejections are terminal for the affected source/media row rather than retried as
+ordinary network failures.
+
 For reader domains, `dbrain` first fetches the reader URL with text-oriented
 headers. If the reader service rejects the request, it falls back to fetching
 the original page directly with browser-style headers and extracting readable
@@ -991,6 +1004,11 @@ Release tags publish these project-owned skills to the nono registry:
 - [`dbrain-review`](skills/dbrain-review) produces source-linked briefings from
   recent dbrain activity, defaulting to a weekly review with optional topic
   focus.
+
+The repo-local [`dbrain-security-review`](skills/dbrain-security-review) skill
+defines the evidence-gated workflow for reviewing this checkout, reproducing
+candidate findings safely, writing regression tests, and verifying fixes. It is
+not currently included in the release-tag registry publish.
 
 The [`dbrain-model-bakeoff`](skills/dbrain-model-bakeoff) skill is a repo-local
 development workflow for comparing summary and categorization models with the

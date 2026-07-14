@@ -14,13 +14,14 @@ import (
 
 var sucuriEncodedScriptPattern = regexp.MustCompile(`\bS\s*=\s*(?:'([^']+)'|"([^"]+)")`)
 
-func extractProtectedSource(ctx context.Context, rawURL string) (model.ExtractResult, bool, error) {
+func extractProtectedSource(ctx context.Context, rawURL string, options ...Options) (model.ExtractResult, bool, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return model.ExtractResult{}, false, fmt.Errorf("create cookie jar: %w", err)
 	}
 
-	client := &http.Client{Jar: jar}
+	client := newPublicHTTPClient(options...)
+	client.Jar = jar
 
 	challengeResp, challengeBody, err := fetchHTTPText(ctx, client, rawURL)
 	if err != nil {
