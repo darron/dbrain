@@ -6,7 +6,11 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 11
+const (
+	currentSchemaVersion            = 12
+	auditProvenanceMigrationVersion = 12
+	auditProvenanceMigrationName    = "audit_provenance_v1"
+)
 
 type schemaMigration struct {
 	Version int
@@ -114,6 +118,16 @@ var schemaMigrations = []schemaMigration{
 		Name:    "review_event_indexes",
 		Run: func(s *Store) error {
 			return s.ensureReviewEventIndexes()
+		},
+	},
+	{
+		Version: auditProvenanceMigrationVersion,
+		Name:    auditProvenanceMigrationName,
+		Run: func(s *Store) error {
+			if err := s.ensureItemEnrichmentTables(); err != nil {
+				return err
+			}
+			return s.backfillItemEnrichments()
 		},
 	},
 }

@@ -2609,6 +2609,63 @@ func TestTSNetStateStatusIncludesIdleScheduler(t *testing.T) {
 	}
 }
 
+func TestTSNetStateStatusReportsSanitizedSchedulerAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	for _, statusCode := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		statusCode := statusCode
+		t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
+			t.Parallel()
+			const secretBody = `credential=super-secret-token endpoint=https://private.example/api/scheduler/sync-all`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(statusCode)
+				_, _ = io.WriteString(w, secretBody)
+			}))
+			defer server.Close()
+
+			stateDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			status, err := tsnetStateStatusWithDeps(context.Background(), remote.Options{
+				Web: true, Hostname: "dbrain", StateDir: stateDir, Listen: ":443", TLS: true,
+			}, tsnetStatusDeps{
+				acquireStateLock: func(string) (io.Closer, error) {
+					return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+				},
+				probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+					return tsnetEndpointProbe{Reachable: true, StatusCode: http.StatusOK, EffectiveURL: rawURL, CertHealth: "ok"}
+				},
+				fetchScheduler: func(ctx context.Context, _ string, _ string) (schedulerstate.SyncAllStatus, error) {
+					return fetchTSNetSchedulerStatus(ctx, server.URL, "")
+				},
+				lookupIPs: func(context.Context, string) []string { return nil },
+				readCertState: func(string, bool) tsnetCertState {
+					return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+				},
+			})
+			if err != nil {
+				t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+			}
+			if status.SyncAll != nil {
+				t.Fatalf("SyncAll = %#v, want nil on authentication failure", status.SyncAll)
+			}
+			if status.SyncAllError == nil || status.SyncAllError.Code != "scheduler_auth_failed" || status.SyncAllError.StatusCode != statusCode {
+				t.Fatalf("unexpected scheduler diagnostic: %#v", status.SyncAllError)
+			}
+			payload, err := json.Marshal(status)
+			if err != nil {
+				t.Fatalf("marshal status: %v", err)
+			}
+			for _, forbidden := range []string{"super-secret-token", "private.example", server.URL, secretBody} {
+				if strings.Contains(string(payload), forbidden) {
+					t.Fatalf("scheduler diagnostic leaked %q: %s", forbidden, payload)
+				}
+			}
+		})
+	}
+}
+
 func TestWriteTSNetStatusRendersTables(t *testing.T) {
 	t.Parallel()
 
@@ -2658,6 +2715,28 @@ func TestWriteTSNetStatusRendersTables(t *testing.T) {
 		"interval",
 		"Current elapsed",
 	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected output to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestWriteTSNetStatusRendersSanitizedSchedulerDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	err := writeTSNetStatus(&out, tsnetStateInfo{
+		Hostname: "dbrain-dev",
+		SyncAllError: &tsnetSchedulerStatusDiagnostic{
+			Code:       "scheduler_auth_failed",
+			StatusCode: http.StatusUnauthorized,
+		},
+	})
+	if err != nil {
+		t.Fatalf("writeTSNetStatus: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"Scheduled Sync All", "scheduler_auth_failed", "401"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected output to contain %q, got:\n%s", want, got)
 		}

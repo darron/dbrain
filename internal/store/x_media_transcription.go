@@ -2,9 +2,13 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,7 +68,15 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 
 type XMediaTranscriptionState struct {
 	Status, Error, RawJSON, Model, Tool, ToolVersion, InputHash string
+	InputSettings                                               XMediaTranscriptionInputSettings
 	CompletedAt                                                 time.Time
+}
+
+type XMediaTranscriptionInputSettings struct {
+	Backend    string `json:"backend"`
+	Model      string `json:"model"`
+	Language   string `json:"language"`
+	VADEnabled bool   `json:"vad_enabled"`
 }
 
 func (s *Store) SaveXMediaTranscriptionState(ctx context.Context, itemID int64, status string, errorText string, at time.Time) error {
@@ -113,6 +125,18 @@ func (s *Store) SaveXMediaTranscription(ctx context.Context, itemID int64, state
 		if strings.TrimSpace(articleTitle) == model.XMediaTranscriptArticleTitle {
 			text = articleText
 		}
+		if strings.TrimSpace(state.InputHash) == "" &&
+			strings.TrimSpace(state.Status) == model.XMediaTranscriptStatusOK &&
+			strings.TrimSpace(state.InputSettings.Backend) != "" {
+			contentHashes, err := xMediaTranscriptionContentHashesTx(ctx, tx, itemID)
+			if err != nil {
+				return struct{}{}, err
+			}
+			state.InputHash, err = xMediaTranscriptionInputHash(contentHashes, state.InputSettings)
+			if err != nil {
+				return struct{}{}, fmt.Errorf("compute x media transcript input hash %d: %w", itemID, err)
+			}
+		}
 		if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
 			ItemID:      itemID,
 			Role:        model.ItemEnrichmentRoleXMediaTranscript,
@@ -134,4 +158,70 @@ func (s *Store) SaveXMediaTranscription(ctx context.Context, itemID int64, state
 		return struct{}{}, nil
 	})
 	return err
+}
+
+func xMediaTranscriptionContentHashesTx(ctx context.Context, tx *sql.Tx, itemID int64) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT a.content_hash
+		FROM item_media_links l
+		JOIN media_assets a ON a.id = l.media_asset_id
+		WHERE l.item_id = ?
+			AND a.download_status = ?
+			AND a.local_path != ''
+			AND a.local_pruned_at = ''
+			AND a.media_type IN ('video', 'animated_gif')`,
+		itemID, model.MediaDownloadStatusDownloaded,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list x media transcript input hashes %d: %w", itemID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var hashes []string
+	for rows.Next() {
+		var hash string
+		if err := rows.Scan(&hash); err != nil {
+			return nil, fmt.Errorf("scan x media transcript input hash %d: %w", itemID, err)
+		}
+		hash = strings.TrimSpace(hash)
+		if hash == "" {
+			return nil, fmt.Errorf("x media transcript input %d has no durable content hash", itemID)
+		}
+		hashes = append(hashes, hash)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate x media transcript input hashes %d: %w", itemID, err)
+	}
+	return hashes, nil
+}
+
+func xMediaTranscriptionInputHash(contentHashes []string, settings XMediaTranscriptionInputSettings) (string, error) {
+	hashes := append([]string(nil), contentHashes...)
+	for i := range hashes {
+		hashes[i] = strings.TrimSpace(hashes[i])
+		if hashes[i] == "" {
+			return "", fmt.Errorf("media content hash is required")
+		}
+	}
+	if len(hashes) == 0 {
+		return "", fmt.Errorf("at least one media content hash is required")
+	}
+	settings.Backend = strings.TrimSpace(settings.Backend)
+	settings.Model = strings.TrimSpace(settings.Model)
+	settings.Language = strings.TrimSpace(settings.Language)
+	if settings.Backend == "" || settings.Model == "" || settings.Language == "" {
+		return "", fmt.Errorf("resolved backend, model, and language are required")
+	}
+	sort.Strings(hashes)
+	payload, err := json.Marshal(struct {
+		Version            string                           `json:"version"`
+		MediaContentHashes []string                         `json:"media_content_hashes"`
+		Settings           XMediaTranscriptionInputSettings `json:"settings"`
+	}{
+		Version: "dbrain.x_media_transcript.input.v1", MediaContentHashes: hashes, Settings: settings,
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }

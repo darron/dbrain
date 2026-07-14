@@ -795,6 +795,10 @@ func TestPipelineXMediaTranscriptionClassifiesTerminalRetryAndUnknown(t *testing
 	if err := st.SaveXMediaTranscriptionState(ctx, youngErrorID, model.XMediaTranscriptStatusError, "cooldown", now); err != nil {
 		t.Fatalf("seed young transcript error: %v", err)
 	}
+	missingAttemptID := insertVideoCandidate("x-media-error-missing-attempt")
+	if err := st.SaveXMediaTranscriptionState(ctx, missingAttemptID, model.XMediaTranscriptStatusError, "missing attempt time", time.Time{}); err != nil {
+		t.Fatalf("seed transcript error without attempt time: %v", err)
+	}
 	invalidID := insertVideoCandidate("x-media-invalid")
 	if _, err := st.db.ExecContext(ctx, `
 		UPDATE items
@@ -836,7 +840,7 @@ func TestPipelineXMediaTranscriptionClassifiesTerminalRetryAndUnknown(t *testing
 	}
 
 	row := pipelineRowByKind(t, stats.Transcription, "x_media_transcript")
-	if row.Total != 10 || row.Current != 1 || row.Pending != 1 || row.Blocked != 3 || row.Terminal != 4 || row.Failed != 0 || row.Unknown != 1 || !row.PartitionValid {
+	if row.Total != 11 || row.Current != 1 || row.Pending != 1 || row.Blocked != 4 || row.Terminal != 4 || row.Failed != 0 || row.Unknown != 1 || !row.PartitionValid {
 		t.Fatalf("unexpected transcription partitions: %+v", row)
 	}
 }

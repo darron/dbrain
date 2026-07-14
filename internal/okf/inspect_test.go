@@ -92,6 +92,47 @@ func TestInspectBundleClassifiesManifestAndTraversalFailures(t *testing.T) {
 	}
 }
 
+func TestValidateBundleRetainsManifestReadAndParseErrorsWhileInspectionStaysAggregateOnly(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, dir string)
+	}{
+		{name: "missing", prepare: func(*testing.T, string) {}},
+		{name: "invalid", prepare: func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, manifestFileName), []byte(`{"private":"secret-value"`), 0o600); err != nil {
+				t.Fatalf("write invalid manifest: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			tc.prepare(t, dir)
+
+			validation, err := ValidateBundle(dir)
+			if err != nil {
+				t.Fatalf("ValidateBundle: %v", err)
+			}
+			if validation.Conformant || len(validation.Errors) == 0 {
+				t.Fatalf("manifest failure was discarded: %+v", validation)
+			}
+			summary, err := InspectBundle(t.Context(), openInspectionRoot(t, dir))
+			if err != nil {
+				t.Fatalf("InspectBundle: %v", err)
+			}
+			payload, err := json.Marshal(summary)
+			if err != nil {
+				t.Fatalf("marshal inspection summary: %v", err)
+			}
+			if summary.ManifestValid || summary.ValidationErrorCount == 0 || strings.Contains(string(payload), "secret-value") || strings.Contains(string(payload), dir) {
+				t.Fatalf("inspection summary was not sanitized aggregate evidence: %s", payload)
+			}
+		})
+	}
+}
+
 func TestInspectBundleRejectsManifestPathThroughEscapingDirectorySymlink(t *testing.T) {
 	t.Parallel()
 

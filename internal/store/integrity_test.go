@@ -88,11 +88,11 @@ func TestInspectDatabaseReadOnlyClassifiesMigrationCompatibility(t *testing.T) {
 		want string
 	}{
 		{name: "legacy", edit: `DROP TABLE schema_migrations; PRAGMA user_version=0`, want: "legacy_compatible"},
-		{name: "migration_backed_legacy", edit: `DELETE FROM schema_migrations WHERE version=11; PRAGMA user_version=10`, want: "legacy_compatible"},
+		{name: "migration_backed_legacy", edit: `DELETE FROM schema_migrations WHERE version>10; PRAGMA user_version=10`, want: "legacy_compatible"},
 		{name: "future", edit: `PRAGMA user_version=999`, want: "incompatible"},
-		{name: "missing", edit: `DELETE FROM schema_migrations WHERE version=11`, want: "incompatible"},
+		{name: "missing", edit: `DELETE FROM schema_migrations WHERE version=12`, want: "incompatible"},
 		{name: "invalid", edit: `PRAGMA user_version=0`, want: "incompatible"},
-		{name: "mismatched_name", edit: `UPDATE schema_migrations SET name='wrong' WHERE version=11`, want: "incompatible"},
+		{name: "mismatched_name", edit: `UPDATE schema_migrations SET name='wrong' WHERE version=12`, want: "incompatible"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

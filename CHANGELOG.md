@@ -10,6 +10,7 @@ development date for the change set.
 - **Read-only diagnostics**: All `stats` commands now open SQLite without applying migrations, and active-database inspection reports quick-check, foreign-key, core-schema, and migration compatibility as separate claims.
 - **Truthful pipeline partitions**: Pipeline stats and workers share X transcription, photo OCR, source-repair, and media-archive predicates; terminal outcomes and invalid legacy states are reported separately from genuine failures, with explicit partition validation.
 - **Confined artifact inspection**: Added consistent read-transaction snapshots, metadata-only vault inspection with sanitized errors, and root-confined aggregate OKF validation that requires a readable manifest and export timestamp.
+- **Provenance and scheduler diagnostics**: Successful X media transcripts now retain deterministic input provenance, compatibility mirrors preserve authoritative enrichment metadata, migration-backed audit aggregates separate legacy gaps from regressions, and TSNet status reports sanitized scheduler authentication failures.
 
 ### Security hardening (2026-07-13)
 

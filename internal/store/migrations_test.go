@@ -3,9 +3,13 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/darron/dbrain/internal/model"
 )
 
 func TestOpenRecordsCurrentSchemaMigration(t *testing.T) {
@@ -41,6 +45,109 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 	if count != len(schemaMigrations) {
 		t.Fatalf("expected %d schema migration rows after reopen, got %d", len(schemaMigrations), count)
+	}
+}
+
+func TestMigrationRepairsAuditProvenanceStateIdempotently(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	result, err := st.UpsertItem(t.Context(), model.Item{
+		SourceKey:              "x:audit-provenance-migration",
+		SourceType:             "x_bookmark",
+		ExternalID:             "audit-provenance-migration",
+		CanonicalURL:           "https://x.com/example/status/audit-provenance-migration",
+		Title:                  "Audit provenance migration",
+		ArticleTitle:           model.XMediaTranscriptArticleTitle,
+		ArticleText:            "durable transcript",
+		ContentHash:            "audit-provenance-migration-hash",
+		NotePath:               "items/x/audit-provenance-migration.md",
+		RawJSON:                `{}`,
+		UpdatedAt:              now,
+		LastSeenAt:             now,
+		XMediaTranscriptStatus: model.XMediaTranscriptStatusOK,
+		XMediaTranscriptAt:     now,
+	})
+	if err != nil {
+		t.Fatalf("insert migration fixture: %v", err)
+	}
+	if _, err := st.db.Exec(`
+		UPDATE items
+		SET x_media_transcript_status = ?, x_media_transcript_at = ?
+		WHERE id = ?`, model.XMediaTranscriptStatusOK, now.Format(time.RFC3339), result.ItemID); err != nil {
+		t.Fatalf("seed legacy transcript compatibility columns: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE name = 'audit_provenance_v1'`); err != nil {
+		t.Fatalf("remove audit provenance migration metadata: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = ` + strings.TrimSpace(fmt.Sprint(currentSchemaVersion-1))); err != nil {
+		t.Fatalf("set pre-audit-provenance user_version: %v", err)
+	}
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_item_enrichments_role_status`); err != nil {
+		t.Fatalf("drop enrichment role/status index: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM item_enrichments WHERE item_id = ?`, result.ItemID); err != nil {
+		t.Fatalf("remove pre-fix enrichment row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		st = openStoreAtPath(t, path)
+		if err := st.Close(); err != nil {
+			t.Fatalf("close repaired store attempt %d: %v", attempt+1, err)
+		}
+	}
+
+	db, err = sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("reopen sqlite directly: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var migrationCount int
+	var appliedAt string
+	if err := db.QueryRow(`
+		SELECT COUNT(*), COALESCE(MAX(applied_at), '')
+		FROM schema_migrations
+		WHERE name = 'audit_provenance_v1'`).Scan(&migrationCount, &appliedAt); err != nil {
+		t.Fatalf("load audit provenance migration: %v", err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("audit_provenance_v1 migration count = %d, want 1", migrationCount)
+	}
+	applied, err := time.Parse(time.RFC3339, appliedAt)
+	if err != nil {
+		t.Fatalf("audit_provenance_v1 applied_at %q is not RFC3339: %v", appliedAt, err)
+	}
+	if applied.Location() != time.UTC || !strings.HasSuffix(appliedAt, "Z") {
+		t.Fatalf("audit_provenance_v1 applied_at = %q, want UTC RFC3339", appliedAt)
+	}
+
+	var indexCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_item_enrichments_role_status'`).Scan(&indexCount); err != nil {
+		t.Fatalf("check enrichment index: %v", err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("enrichment role/status index count = %d, want 1", indexCount)
+	}
+	var status, text string
+	if err := db.QueryRow(`SELECT status, text FROM item_enrichments WHERE item_id = ? AND role = ?`, result.ItemID, model.ItemEnrichmentRoleXMediaTranscript).Scan(&status, &text); err != nil {
+		t.Fatalf("load repaired transcript enrichment: %v", err)
+	}
+	if status != model.XMediaTranscriptStatusOK || text != "durable transcript" {
+		t.Fatalf("repaired transcript enrichment = status %q text %q", status, text)
 	}
 }
 

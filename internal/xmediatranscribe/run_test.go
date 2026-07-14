@@ -130,6 +130,15 @@ func TestRunTranscribesDownloadedXVideoAndWritesItemNote(t *testing.T) {
 	if !strings.Contains(item.ArticleText, "hello from the transcript and this is comfortably longer than forty characters") {
 		t.Fatalf("expected transcript in article text, got %q", item.ArticleText)
 	}
+	enrichment, err := st.GetItemEnrichment(context.Background(), itemResult.ItemID, model.ItemEnrichmentRoleXMediaTranscript)
+	if err != nil {
+		t.Fatalf("GetItemEnrichment transcript: %v", err)
+	}
+	if enrichment.RawJSON == "" || enrichment.Model == "" || enrichment.Tool == "" ||
+		enrichment.ToolVersion != "xmediatranscribe-v1" || !strings.HasPrefix(enrichment.InputHash, "sha256:") ||
+		enrichment.CompletedAt.IsZero() {
+		t.Fatalf("incomplete persisted transcript provenance: %+v", enrichment)
+	}
 
 	noteBytes, err := os.ReadFile(filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath)))
 	if err != nil {
