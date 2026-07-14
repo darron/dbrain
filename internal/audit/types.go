@@ -344,7 +344,7 @@ func ValidateReport(report Report) error {
 			return fmt.Errorf("checks[%d]: %w", i, err)
 		}
 		if check.Status != StatusUnknown && check.Status != StatusSkipped {
-			if err := validateRequiredEvidence(entry, check.Evidence); err != nil {
+			if err := validateRequiredEvidence(entry, check.Status, check.Evidence); err != nil {
 				return fmt.Errorf("checks[%d]: %w", i, err)
 			}
 		}
@@ -433,8 +433,16 @@ func expectedRegistryEntries(scope Scope) []RegistryEntry {
 	return out
 }
 
-func validateRequiredEvidence(entry RegistryEntry, evidence Evidence) error {
+func validateRequiredEvidence(entry RegistryEntry, status Status, evidence Evidence) error {
 	optional := map[string]bool{"latest_success_at": true, "succeeded_at": true, "oldest_pending_age_seconds": true, "exported_at": true}
+	if entry.ID == CheckDurabilitySQLiteRestore && status == StatusFail {
+		// A bounded deep restore can terminate before a later phase is
+		// observed. Those phase-specific fields must be omitted rather than
+		// populated with invented failure values.
+		for _, key := range []string{"compressed_bytes", "decompressed_bytes", "quick_check", "foreign_key_violation_count", "schema_compatibility", "migration_compatibility", "cleanup_complete"} {
+			optional[key] = true
+		}
+	}
 	for key := range entry.EvidenceFields {
 		if optional[key] {
 			continue

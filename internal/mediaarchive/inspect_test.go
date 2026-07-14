@@ -30,7 +30,7 @@ func (s *stubInventoryClient) ListObjectsV2(_ context.Context, input *s3.ListObj
 func TestS3InventoryListsOneBoundedMetadataPage(t *testing.T) {
 	client := &stubInventoryClient{output: &s3.ListObjectsV2Output{
 		Contents:    []types.Object{{Key: aws.String("media/a"), Size: aws.Int64(42)}},
-		IsTruncated: aws.Bool(true), NextContinuationToken: aws.String("next"),
+		IsTruncated: aws.Bool(true), ContinuationToken: aws.String("token"), NextContinuationToken: aws.String("next"),
 	}}
 	inventory := newS3Inventory("bucket", client)
 	page, err := inventory.ListPage(t.Context(), DefaultPrefix, "token", 500)
@@ -51,11 +51,84 @@ func TestS3InventoryRejectsObjectsOutsidePrefixAndInvalidSizes(t *testing.T) {
 		{Key: aws.String("media/negative"), Size: aws.Int64(-1)},
 		{Key: aws.String("media/missing-size")},
 	} {
-		client := &stubInventoryClient{output: &s3.ListObjectsV2Output{Contents: []types.Object{object}}}
+		client := &stubInventoryClient{output: &s3.ListObjectsV2Output{Contents: []types.Object{object}, IsTruncated: aws.Bool(false)}}
 		inventory := newS3Inventory("bucket", client)
 		if _, err := inventory.ListPage(t.Context(), DefaultPrefix, "", 500); err == nil {
 			t.Fatalf("expected inconsistent object rejection: %#v", object)
 		}
+	}
+}
+
+func TestS3InventoryRejectsMalformedPaginationMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		page  *s3.ListObjectsV2Output
+	}{
+		{
+			name: "missing truncation marker",
+			page: &s3.ListObjectsV2Output{},
+		},
+		{
+			name: "complete page with next token",
+			page: &s3.ListObjectsV2Output{
+				IsTruncated: aws.Bool(false), NextContinuationToken: aws.String("unexpected"),
+			},
+		},
+		{
+			name: "truncated page without next token",
+			page: &s3.ListObjectsV2Output{IsTruncated: aws.Bool(true)},
+		},
+		{
+			name:  "response token differs from request",
+			token: "requested",
+			page: &s3.ListObjectsV2Output{
+				IsTruncated: aws.Bool(false), ContinuationToken: aws.String("different"),
+			},
+		},
+		{
+			name:  "response omits requested token",
+			token: "requested",
+			page:  &s3.ListObjectsV2Output{IsTruncated: aws.Bool(false)},
+		},
+		{
+			name: "initial response invents continuation token",
+			page: &s3.ListObjectsV2Output{
+				IsTruncated: aws.Bool(false), ContinuationToken: aws.String("invented"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inventory := newS3Inventory("bucket", &stubInventoryClient{output: tt.page})
+			page, err := inventory.ListPage(t.Context(), DefaultPrefix, tt.token, 500)
+			if err == nil {
+				t.Fatalf("expected malformed pagination rejection, got %#v", page)
+			}
+			if len(page.Objects) != 0 {
+				t.Fatalf("malformed response copied objects: %#v", page.Objects)
+			}
+		})
+	}
+}
+
+func TestS3InventoryRejectsOverBudgetContentsBeforeCopy(t *testing.T) {
+	objects := make([]types.Object, 501)
+	for index := range objects {
+		objects[index] = types.Object{Key: aws.String("media/object"), Size: aws.Int64(1)}
+	}
+	client := &stubInventoryClient{output: &s3.ListObjectsV2Output{
+		Contents: objects, IsTruncated: aws.Bool(false),
+	}}
+	inventory := newS3Inventory("bucket", client)
+
+	page, err := inventory.ListPage(t.Context(), DefaultPrefix, "", 500)
+	if err == nil {
+		t.Fatalf("expected oversized custom S3 response rejection, got %#v", page)
+	}
+	if len(page.Objects) != 0 {
+		t.Fatalf("oversized response copied objects: got %d", len(page.Objects))
 	}
 }
 

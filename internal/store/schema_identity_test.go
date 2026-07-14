@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,11 +76,32 @@ func TestValidateRestorableDatabaseRejectsForeignSQLite(t *testing.T) {
 	execSchemaIdentityTestDB(t, path, `CREATE TABLE test_values (value TEXT NOT NULL)`)
 
 	err := ValidateRestorableDatabase(t.Context(), path)
+	if !errors.Is(err, ErrDatabaseIncompatible) {
+		t.Fatalf("foreign database classification = %v", err)
+	}
 	if err == nil {
 		t.Fatal("expected foreign SQLite database to be rejected")
 	}
 	if !strings.Contains(err.Error(), "dbrain core schema") {
 		t.Fatalf("expected dbrain schema diagnostic, got %v", err)
+	}
+}
+
+func TestSchemaIdentityOperationalQueryFailuresAreNotIncompatibility(t *testing.T) {
+	db, err := sql.Open(driverName, filepath.Join(t.TempDir(), "closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, schemaErr := inspectDbrainCoreSchema(&Store{db: db})
+	if schemaErr == nil || errors.Is(schemaErr, ErrDatabaseIncompatible) {
+		t.Fatalf("schema operational classification = %v", schemaErr)
+	}
+	migrationErr := validateAppliedSchemaMigrations(t.Context(), db, 1)
+	if migrationErr == nil || errors.Is(migrationErr, ErrDatabaseIncompatible) {
+		t.Fatalf("migration operational classification = %v", migrationErr)
 	}
 }
 

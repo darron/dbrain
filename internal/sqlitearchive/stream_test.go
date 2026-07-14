@@ -2,6 +2,7 @@ package sqlitearchive
 
 import (
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -60,14 +61,29 @@ type countingCandidateValidator struct{ calls int }
 
 func (v *countingCandidateValidator) Validate(context.Context, *os.File) (CandidateValidation, error) {
 	v.calls++
-	return CandidateValidation{QuickCheck: "ok", SchemaCompatibility: "current_compatible", MigrationCompatibility: "current_compatible"}, nil
+	return CandidateValidation{QuickCheck: "ok", IntegrityObserved: true, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}, nil
 }
 
 type quickViolationValidator struct{ calls int }
 
 func (v *quickViolationValidator) Validate(context.Context, *os.File) (CandidateValidation, error) {
 	v.calls++
-	return CandidateValidation{QuickCheck: "violation", ForeignKeyViolationCount: 0, SchemaCompatibility: "current_compatible", MigrationCompatibility: "current_compatible"}, nil
+	return CandidateValidation{QuickCheck: "violation", IntegrityObserved: true, ForeignKeyViolationCount: 0, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}, nil
+}
+
+type operationalCandidateValidator struct{ err error }
+
+func (v operationalCandidateValidator) Validate(context.Context, *os.File) (CandidateValidation, error) {
+	return CandidateValidation{}, v.err
+}
+
+type closingCandidateValidator struct{}
+
+func (closingCandidateValidator) Validate(_ context.Context, file *os.File) (CandidateValidation, error) {
+	if err := file.Close(); err != nil {
+		return CandidateValidation{}, err
+	}
+	return CandidateValidation{QuickCheck: "ok", IntegrityObserved: true, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}, nil
 }
 
 func TestStoreCandidateValidatorAlwaysRunsInspectionAndRestoreIdentityValidation(t *testing.T) {
@@ -80,7 +96,7 @@ func TestStoreCandidateValidatorAlwaysRunsInspectionAndRestoreIdentityValidation
 	validator := storeCandidateValidator{
 		inspect: func(context.Context, string, bool) (store.DatabaseIntegrity, error) {
 			inspectCalls++
-			return store.DatabaseIntegrity{QuickCheck: "ok", SchemaCompatibility: "current_compatible", MigrationCompatibility: "current_compatible"}, nil
+			return store.DatabaseIntegrity{QuickCheckChecked: true, QuickCheck: "ok", SchemaCompatibility: "current_compatible", MigrationCompatibility: "current_compatible"}, nil
 		},
 		validate: func(context.Context, string) error {
 			identityCalls++
@@ -92,6 +108,42 @@ func TestStoreCandidateValidatorAlwaysRunsInspectionAndRestoreIdentityValidation
 	}
 	if inspectCalls != 1 || identityCalls != 1 {
 		t.Fatalf("inspection calls=%d identity calls=%d", inspectCalls, identityCalls)
+	}
+}
+
+func TestStoreCandidateValidatorKeepsOperationalFailuresUnknown(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "candidate-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	tests := []struct {
+		name      string
+		validator storeCandidateValidator
+	}{
+		{name: "descriptor", validator: storeCandidateValidator{descriptor: func(*os.File) (string, error) { return "", errors.New("descriptor unavailable") }}},
+		{name: "inspect io", validator: storeCandidateValidator{
+			descriptor: func(*os.File) (string, error) { return "candidate", nil },
+			inspect: func(context.Context, string, bool) (store.DatabaseIntegrity, error) {
+				return store.DatabaseIntegrity{}, errors.New("inspect io")
+			},
+			validate: func(context.Context, string) error { return nil },
+		}},
+		{name: "identity io", validator: storeCandidateValidator{
+			descriptor: func(*os.File) (string, error) { return "candidate", nil },
+			inspect: func(context.Context, string, bool) (store.DatabaseIntegrity, error) {
+				return store.DatabaseIntegrity{QuickCheckChecked: true, QuickCheck: "ok", SchemaCompatibility: "current_compatible", MigrationCompatibility: "current_compatible"}, nil
+			},
+			validate: func(context.Context, string) error { return errors.New("identity io") },
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, gotErr := test.validator.Validate(t.Context(), file)
+			if gotErr == nil || errors.Is(gotErr, ErrCandidateInvalid) {
+				t.Fatalf("operational error classification = %v", gotErr)
+			}
+		})
 	}
 }
 
@@ -381,6 +433,17 @@ func TestStreamCandidateClassifiesCorruptGzipAsInvalid(t *testing.T) {
 	}
 }
 
+func TestCompressedContentErrorClassificationExcludesOperationalIO(t *testing.T) {
+	for _, err := range []error{io.EOF, gzip.ErrChecksum, gzip.ErrHeader, io.ErrUnexpectedEOF, flate.CorruptInputError(17)} {
+		if !isInvalidCompressedContent(err) {
+			t.Fatalf("verified compressed-content error was not invalid: %T %v", err, err)
+		}
+	}
+	if isInvalidCompressedContent(os.ErrClosed) {
+		t.Fatal("operational file error classified as invalid content")
+	}
+}
+
 func TestStreamCandidateReadIdleWatchdogInterruptsAndCleansUpstream(t *testing.T) {
 	tmp, err := vaultfs.NewPrivateTemp(t.TempDir())
 	if err != nil {
@@ -447,6 +510,40 @@ func TestStreamCandidateRejectsQuickCheckViolationAfterMandatoryValidation(t *te
 	}, validator)
 	if !errors.Is(err, ErrCandidateInvalid) || validator.calls != 1 {
 		t.Fatalf("quick-check result err=%v validator calls=%d", err, validator.calls)
+	}
+}
+
+func TestStreamCandidateKeepsValidatorIOFailureOperational(t *testing.T) {
+	database := candidateDatabaseBytes(t, "current")
+	archive := gzipBytes(t, database)
+	tmp, err := vaultfs.NewPrivateTemp(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tmp.Cleanup() }()
+	_, err = streamCandidate(t.Context(), streamReadCloser{bytes.NewReader(archive)}, tmp, StreamLimits{
+		MaxCompressedBytes: int64(len(archive) + 1), MaxDatabaseBytes: int64(len(database) + 1),
+		MaxTempBytes: int64(len(archive) + len(database) + 1), ReadIdleTimeout: time.Second,
+	}, operationalCandidateValidator{err: errors.New("validator io")})
+	if err == nil || errors.Is(err, ErrCandidateInvalid) {
+		t.Fatalf("validator IO error classification = %v", err)
+	}
+}
+
+func TestStreamCandidateKeepsCandidateFinalizationFailureOperational(t *testing.T) {
+	database := candidateDatabaseBytes(t, "current")
+	archive := gzipBytes(t, database)
+	tmp, err := vaultfs.NewPrivateTemp(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tmp.Cleanup() }()
+	_, err = streamCandidate(t.Context(), streamReadCloser{bytes.NewReader(archive)}, tmp, StreamLimits{
+		MaxCompressedBytes: int64(len(archive) + 1), MaxDatabaseBytes: int64(len(database) + 1),
+		MaxTempBytes: int64(len(archive) + len(database) + 1), ReadIdleTimeout: time.Second,
+	}, closingCandidateValidator{})
+	if err == nil || errors.Is(err, ErrCandidateInvalid) {
+		t.Fatalf("candidate finalization classification = %v", err)
 	}
 }
 

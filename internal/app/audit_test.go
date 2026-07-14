@@ -22,6 +22,17 @@ import (
 
 var fixedAuditTime = time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 
+type deadlineAuditInventory struct{ remaining time.Duration }
+
+func (i *deadlineAuditInventory) ListPage(ctx context.Context, _ string, _ int) (audit.MediaInventoryPage, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return audit.MediaInventoryPage{}, errors.New("missing page deadline")
+	}
+	i.remaining = time.Until(deadline)
+	return audit.MediaInventoryPage{Complete: true}, nil
+}
+
 func TestLoadAuditConfigIsNoWriteAndPreservesRootPrecedence(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "brain")
 	cfg, meta, err := loadAuditConfig(root, "")
@@ -116,19 +127,38 @@ func TestDeepAuditTimeoutAndLimitResolution(t *testing.T) {
 	}
 	cleanup := runtimeenv.RegisterConfigSnapshot(root, snapshot, nil)
 	defer cleanup()
-	limits, err := resolveDeepAuditLimits(root, auditCLIFlags{}, map[string]bool{})
+	limits, err := resolveDeepAuditLimits(root, auditCLIFlags{}, map[string]bool{}, audit.Features{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if limits.MaxArchiveBytes != 1024 || limits.MaxDatabaseBytes != 2048 || limits.MaxTempBytes != 4096 {
 		t.Fatalf("configured limits = %#v", limits)
 	}
-	limits, err = resolveDeepAuditLimits(root, auditCLIFlags{maxArchiveBytes: 8192}, map[string]bool{"max-archive-bytes": true})
+	limits, err = resolveDeepAuditLimits(root, auditCLIFlags{maxArchiveBytes: 8192}, map[string]bool{"max-archive-bytes": true}, audit.Features{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if limits.MaxArchiveBytes != 8192 {
 		t.Fatalf("explicit raised archive limit = %d", limits.MaxArchiveBytes)
+	}
+	limits, err = resolveDeepAuditLimits(root, auditCLIFlags{}, map[string]bool{}, audit.Features{RemoteRequestTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limits.RequestTimeout != 5*time.Second {
+		t.Fatalf("resolved deep page timeout = %s", limits.RequestTimeout)
+	}
+	inventory := &deadlineAuditInventory{}
+	deps := audit.Dependencies{
+		Clock:    func() time.Time { return fixedAuditTime },
+		Features: audit.Features{Layout: "explicit_root", ConfigVerified: true, MediaRemoteEnabled: true},
+		Runtime:  audit.RuntimeVersion{ReleaseVersion: "v0.6.0", Commit: "abcdef1", GitStatus: "clean", Platform: "darwin/arm64", SecurityBaselineID: "v0.6.0-security-pass", SecurityBaselineEpoch: 1},
+	}
+	if _, err := audit.RunDeep(t.Context(), audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}, deps, audit.DeepDependencies{Media: inventory, Limits: limits}); err != nil {
+		t.Fatal(err)
+	}
+	if inventory.remaining <= 0 || inventory.remaining > 5*time.Second || inventory.remaining < 4*time.Second {
+		t.Fatalf("deep media page received deadline remaining %s", inventory.remaining)
 	}
 }
 
@@ -348,7 +378,7 @@ func TestLocalAuditArchiveTargetsExactJSONContainsNoCredentials(t *testing.T) {
 func TestLocalAuditIdentifiersEmitDeterministicEntriesForEveryReportedCheck(t *testing.T) {
 	report := audit.NewReport(audit.ProfileStandard, fixedAuditTime)
 	report.Checks = []audit.Check{{ID: audit.CheckPipelineOCRPartition}, {ID: audit.CheckBoundaryConfig}}
-	wrapper := newLocalAuditWrapper(report, LocalAuditTarget{}, localAuditIdentifiers(t.Context(), report, nil, 30*time.Second))
+	wrapper := newLocalAuditWrapper(report, LocalAuditTarget{}, localAuditIdentifiers(t.Context(), report, nil, 30*time.Second, nil))
 	if len(wrapper.LocalDetails.Checks) != 2 {
 		t.Fatalf("identifier details = %#v", wrapper.LocalDetails)
 	}
@@ -359,6 +389,30 @@ func TestLocalAuditIdentifiersEmitDeterministicEntriesForEveryReportedCheck(t *t
 		if detail.RowIDs == nil || detail.SourceKeys == nil || detail.CleanupPaths == nil {
 			t.Fatalf("identifier arrays must be non-null: %#v", detail)
 		}
+	}
+}
+
+func TestLocalAuditCleanupPathAppearsOnlyInLocalWrapper(t *testing.T) {
+	report := audit.NewReport(audit.ProfileDeep, fixedAuditTime)
+	report.Checks = []audit.Check{{ID: audit.CheckDurabilitySQLiteRestore, Status: audit.StatusUnknown}}
+	path := filepath.Join(t.TempDir(), "dbrain-audit-generated")
+	values := localAuditIdentifiers(t.Context(), report, nil, 30*time.Second, map[audit.CheckID][]string{
+		audit.CheckDurabilitySQLiteRestore: {path},
+	})
+	wrapper := newLocalAuditWrapper(report, LocalAuditTarget{}, values)
+	wrapperJSON, err := json.Marshal(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(wrapperJSON, []byte(path)) {
+		t.Fatalf("local wrapper omitted cleanup path: %s", wrapperJSON)
+	}
+	reportJSON, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(reportJSON, []byte(path)) {
+		t.Fatalf("portable report leaked cleanup path: %s", reportJSON)
 	}
 }
 
@@ -405,7 +459,7 @@ func TestLocalAuditIdentifiersReadConcreteNonPassRowsFromSnapshot(t *testing.T) 
 		{ID: audit.CheckPipelineHydrationPendingAge, Status: audit.StatusPass},
 		{ID: audit.CheckBoundaryConfig, Status: audit.StatusFail},
 	}
-	values := localAuditIdentifiers(t.Context(), report, snapshot, 30*time.Second)
+	values := localAuditIdentifiers(t.Context(), report, snapshot, 30*time.Second, nil)
 	got := values[audit.CheckPipelineHydrationPartition]
 	if len(got.RowIDs) != 1 || got.RowIDs[0] != item.ItemID || len(got.SourceKeys) != 1 || got.SourceKeys[0] != "x:local-identifier" {
 		t.Fatalf("hydration identifiers = %#v", got)

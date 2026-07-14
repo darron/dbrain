@@ -1,6 +1,7 @@
 package sqlitearchive
 
 import (
+	"compress/flate"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -29,18 +30,24 @@ type StreamLimits struct {
 
 type CandidateValidation struct {
 	QuickCheck               string
+	IntegrityObserved        bool
 	ForeignKeyViolationCount int
 	SchemaCompatibility      string
+	SchemaObserved           bool
 	MigrationCompatibility   string
+	MigrationObserved        bool
 }
 
 type StreamResult struct {
 	CompressedBytes          int64
 	DecompressedBytes        int64
 	QuickCheck               string
+	IntegrityObserved        bool
 	ForeignKeyViolationCount int
 	SchemaCompatibility      string
+	SchemaObserved           bool
 	MigrationCompatibility   string
+	MigrationObserved        bool
 }
 
 type candidateValidator interface {
@@ -48,12 +55,17 @@ type candidateValidator interface {
 }
 
 type storeCandidateValidator struct {
-	inspect  func(context.Context, string, bool) (brainstore.DatabaseIntegrity, error)
-	validate func(context.Context, string) error
+	descriptor func(*os.File) (string, error)
+	inspect    func(context.Context, string, bool) (brainstore.DatabaseIntegrity, error)
+	validate   func(context.Context, string) error
 }
 
 func (v storeCandidateValidator) Validate(ctx context.Context, candidate *os.File) (CandidateValidation, error) {
-	path, err := descriptorPath(candidate)
+	descriptor := v.descriptor
+	if descriptor == nil {
+		descriptor = descriptorPath
+	}
+	path, err := descriptor(candidate)
 	if err != nil {
 		return CandidateValidation{}, err
 	}
@@ -70,17 +82,25 @@ func (v storeCandidateValidator) Validate(ctx context.Context, candidate *os.Fil
 	// completed candidate is never accepted on quick_check/table guesses alone.
 	restorableErr := validate(ctx, path)
 	result := CandidateValidation{
-		QuickCheck: inspection.QuickCheck, ForeignKeyViolationCount: inspection.ForeignKeyViolationCount,
-		SchemaCompatibility: inspection.SchemaCompatibility, MigrationCompatibility: inspection.MigrationCompatibility,
+		QuickCheck: inspection.QuickCheck, IntegrityObserved: inspectErr == nil && inspection.QuickCheckChecked,
+		ForeignKeyViolationCount: inspection.ForeignKeyViolationCount,
+		SchemaCompatibility:      inspection.SchemaCompatibility, SchemaObserved: inspectErr == nil && isCompatibility(inspection.SchemaCompatibility),
+		MigrationCompatibility: inspection.MigrationCompatibility, MigrationObserved: inspectErr == nil && isCompatibility(inspection.MigrationCompatibility),
 	}
 	if inspectErr != nil {
 		return result, fmt.Errorf("inspect candidate database: %w", inspectErr)
 	}
 	if restorableErr != nil {
+		if errors.Is(restorableErr, brainstore.ErrDatabaseIncompatible) {
+			return result, fmt.Errorf("%w: validate restorable database: %v", ErrCandidateInvalid, restorableErr)
+		}
 		return result, fmt.Errorf("validate restorable database: %w", restorableErr)
 	}
+	if !result.IntegrityObserved || !result.SchemaObserved || !result.MigrationObserved {
+		return result, fmt.Errorf("candidate database validation incomplete")
+	}
 	if inspection.QuickCheck != "ok" || inspection.QuickViolationCount > 0 || inspection.ForeignKeyViolationCount > 0 {
-		return result, fmt.Errorf("candidate database integrity violation")
+		return result, fmt.Errorf("%w: candidate database integrity violation", ErrCandidateInvalid)
 	}
 	return result, nil
 }
@@ -124,7 +144,10 @@ func streamCandidate(ctx context.Context, body io.ReadCloser, temp *vaultfs.Priv
 	gzipReader, err := gzip.NewReader(archive)
 	if err != nil {
 		_ = archive.Close()
-		return result, fmt.Errorf("%w: compressed candidate format", ErrCandidateInvalid)
+		if isInvalidCompressedContent(err) {
+			return result, fmt.Errorf("%w: compressed candidate format: %v", ErrCandidateInvalid, err)
+		}
+		return result, fmt.Errorf("open compressed candidate: %w", err)
 	}
 	databaseFile, err := temp.Create("candidate.db")
 	if err != nil {
@@ -150,10 +173,13 @@ func streamCandidate(ctx context.Context, body io.ReadCloser, temp *vaultfs.Priv
 		if ctx.Err() != nil {
 			return result, fmt.Errorf("%w: %v", ErrStreamInterrupted, ctx.Err())
 		}
-		return result, fmt.Errorf("%w: decompress candidate", ErrCandidateInvalid)
+		if isInvalidCompressedContent(err) {
+			return result, fmt.Errorf("%w: decompress candidate: %v", ErrCandidateInvalid, err)
+		}
+		return result, fmt.Errorf("decompress candidate: %w", err)
 	}
 	if databaseCloseErr != nil || gzipCloseErr != nil || archiveCloseErr != nil {
-		return result, fmt.Errorf("%w: finalize candidate decompression", ErrCandidateInvalid)
+		return result, fmt.Errorf("finalize candidate decompression: database=%v gzip=%v archive=%v", databaseCloseErr, gzipCloseErr, archiveCloseErr)
 	}
 
 	candidate, err := temp.Open("candidate.db")
@@ -161,23 +187,46 @@ func streamCandidate(ctx context.Context, body io.ReadCloser, temp *vaultfs.Priv
 		return result, err
 	}
 	validation, validationErr := validator.Validate(ctx, candidate)
-	_ = candidate.Close()
+	candidateCloseErr := candidate.Close()
 	result.QuickCheck = validation.QuickCheck
+	result.IntegrityObserved = validation.IntegrityObserved
 	result.ForeignKeyViolationCount = validation.ForeignKeyViolationCount
 	result.SchemaCompatibility = validation.SchemaCompatibility
+	result.SchemaObserved = validation.SchemaObserved
 	result.MigrationCompatibility = validation.MigrationCompatibility
+	result.MigrationObserved = validation.MigrationObserved
+	if candidateCloseErr != nil {
+		return result, fmt.Errorf("finalize candidate validation: %w", candidateCloseErr)
+	}
 	if validationErr != nil {
 		if ctx.Err() != nil {
 			return result, fmt.Errorf("%w: %v", ErrStreamInterrupted, ctx.Err())
 		}
-		return result, fmt.Errorf("%w: database validation: %v", ErrCandidateInvalid, validationErr)
+		if errors.Is(validationErr, ErrCandidateInvalid) {
+			return result, fmt.Errorf("%w: database validation: %v", ErrCandidateInvalid, validationErr)
+		}
+		return result, fmt.Errorf("database validation: %w", validationErr)
 	}
-	if validation.QuickCheck != "ok" || validation.ForeignKeyViolationCount > 0 ||
-		(validation.SchemaCompatibility != "current_compatible" && validation.SchemaCompatibility != "legacy_compatible") ||
-		(validation.MigrationCompatibility != "current_compatible" && validation.MigrationCompatibility != "legacy_compatible") {
+	if !validation.IntegrityObserved || !validation.SchemaObserved || !validation.MigrationObserved {
+		return result, fmt.Errorf("database validation incomplete")
+	}
+	if validation.QuickCheck != "ok" || validation.ForeignKeyViolationCount > 0 || !isCompatible(validation.SchemaCompatibility) || !isCompatible(validation.MigrationCompatibility) {
 		return result, fmt.Errorf("%w: database validation", ErrCandidateInvalid)
 	}
 	return result, nil
+}
+
+func isCompatibility(value string) bool {
+	return isCompatible(value) || value == "incompatible"
+}
+
+func isCompatible(value string) bool {
+	return value == "current_compatible" || value == "legacy_compatible"
+}
+
+func isInvalidCompressedContent(err error) bool {
+	var corrupt flate.CorruptInputError
+	return errors.Is(err, io.EOF) || errors.Is(err, gzip.ErrChecksum) || errors.Is(err, gzip.ErrHeader) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &corrupt)
 }
 
 func copyBounded(ctx context.Context, dst io.Writer, src io.Reader, limit int64) (int64, error) {

@@ -64,17 +64,35 @@ func (i *S3Inventory) ListPage(ctx context.Context, prefix, token string, maxKey
 	if err != nil {
 		return InventoryPage{Objects: []InventoryObject{}}, fmt.Errorf("list media inventory page: %w", err)
 	}
-	page := InventoryPage{Objects: make([]InventoryObject, 0, len(output.Contents)), Complete: !aws.ToBool(output.IsTruncated)}
+	if output == nil || output.IsTruncated == nil || len(output.Contents) > maxKeys {
+		return InventoryPage{Objects: []InventoryObject{}}, fmt.Errorf("list media inventory page: inconsistent pagination metadata")
+	}
+	responseToken := strings.TrimSpace(aws.ToString(output.ContinuationToken))
+	if responseToken != token {
+		return InventoryPage{Objects: []InventoryObject{}}, fmt.Errorf("list media inventory page: inconsistent continuation token")
+	}
+	truncated := aws.ToBool(output.IsTruncated)
+	nextToken := strings.TrimSpace(aws.ToString(output.NextContinuationToken))
+	if (truncated && nextToken == "") || (!truncated && nextToken != "") {
+		return InventoryPage{Objects: []InventoryObject{}}, fmt.Errorf("list media inventory page: inconsistent pagination metadata")
+	}
+
 	for _, object := range output.Contents {
 		key := strings.TrimSpace(aws.ToString(object.Key))
 		size := aws.ToInt64(object.Size)
 		if key == "" || !strings.HasPrefix(key, prefix) || object.Size == nil || size < 0 {
 			return InventoryPage{Objects: []InventoryObject{}}, fmt.Errorf("list media inventory page: inconsistent object metadata")
 		}
+	}
+
+	page := InventoryPage{Objects: make([]InventoryObject, 0, len(output.Contents)), Complete: !truncated}
+	for _, object := range output.Contents {
+		key := strings.TrimSpace(aws.ToString(object.Key))
+		size := aws.ToInt64(object.Size)
 		page.Objects = append(page.Objects, InventoryObject{Key: key, SizeBytes: size})
 	}
 	if !page.Complete {
-		page.NextToken = strings.TrimSpace(aws.ToString(output.NextContinuationToken))
+		page.NextToken = nextToken
 	}
 	return page, nil
 }

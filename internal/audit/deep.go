@@ -92,9 +92,13 @@ type DeepArchiveResult struct {
 	CompressedBytes          int64
 	DecompressedBytes        int64
 	QuickCheck               string
+	QuickCheckObserved       bool
 	ForeignKeyViolationCount int
+	ForeignKeysObserved      bool
 	SchemaCompatibility      string
+	SchemaObserved           bool
 	MigrationCompatibility   string
+	MigrationObserved        bool
 }
 
 type DeepArchiveVerifier interface {
@@ -117,12 +121,14 @@ type DeepMediaInventory interface {
 }
 
 type DeepDependencies struct {
-	Archives      DeepArchiveReader
-	VerifyArchive DeepArchiveVerifier
-	Media         DeepMediaInventory
-	NewTemp       func() (*vaultfs.PrivateTemp, error)
-	FreeSpace     func(*vaultfs.PrivateTemp) (uint64, error)
-	Limits        DeepLimits
+	Archives             DeepArchiveReader
+	VerifyArchive        DeepArchiveVerifier
+	Media                DeepMediaInventory
+	NewTemp              func() (*vaultfs.PrivateTemp, error)
+	CleanupTemp          func(*vaultfs.PrivateTemp) error
+	RecordCleanupFailure func(string)
+	FreeSpace            func(*vaultfs.PrivateTemp) (uint64, error)
+	Limits               DeepLimits
 }
 
 type deepMediaResult struct {
@@ -183,13 +189,17 @@ func (s *runState) loadDeepMedia(ctx context.Context) {
 	localKeys := make(map[string]struct{}, len(s.media))
 	cutoff := s.now.Add(-s.req.Since)
 	for _, record := range s.media {
-		if !record.ArchivedAtValid || strings.TrimSpace(record.Key) == "" {
+		key := strings.TrimSpace(record.Key)
+		if key == "" {
 			result.invalid++
 			continue
 		}
+		record.Key = key
 		localRecords = append(localRecords, record)
-		localKeys[record.Key] = struct{}{}
-		if record.ArchivedAt.Before(cutoff) {
+		localKeys[key] = struct{}{}
+		if !record.ArchivedAtValid {
+			result.invalid++
+		} else if record.ArchivedAt.Before(cutoff) {
 			result.olderPopulation++
 		} else {
 			result.recentPopulation++
@@ -256,7 +266,10 @@ func (s *runState) loadDeepMedia(ctx context.Context) {
 	for _, record := range localRecords {
 		size, exists := remote[record.Key]
 		result.checked++
-		if record.ArchivedAt.Before(cutoff) {
+		if !record.ArchivedAtValid {
+			// Timestamp validity is reported separately from key/size
+			// reconciliation. It must not suppress durability coverage.
+		} else if record.ArchivedAt.Before(cutoff) {
 			result.olderChecked++
 		} else {
 			result.recentChecked++
@@ -299,6 +312,7 @@ func (s *runState) loadDeepArchive(ctx context.Context) {
 		return
 	}
 	s.deepCleanupComplete = false
+	s.deepCleanupAttempted = false
 	freeSpace := s.deep.FreeSpace
 	if freeSpace == nil {
 		freeSpace = func(value *vaultfs.PrivateTemp) (uint64, error) { return value.AvailableBytes() }
@@ -309,18 +323,31 @@ func (s *runState) loadDeepArchive(ctx context.Context) {
 			err = ErrDeepBudget
 		}
 		s.deepArchiveErr = err
-		s.deepCleanupComplete = temp.Cleanup() == nil
+		s.cleanupDeepTemp(temp)
 		return
 	}
 	body, err := s.deep.Archives.Open(ctx, newest.Key)
 	if err != nil {
 		s.deepArchiveErr = err
-		s.deepCleanupComplete = temp.Cleanup() == nil
+		s.cleanupDeepTemp(temp)
 		return
 	}
 	s.deepArchive, s.deepArchiveErr = s.deep.VerifyArchive.Verify(ctx, body, temp, s.deep.Limits)
 	_ = body.Close()
-	s.deepCleanupComplete = temp.Cleanup() == nil
+	s.cleanupDeepTemp(temp)
+}
+
+func (s *runState) cleanupDeepTemp(temp *vaultfs.PrivateTemp) {
+	s.deepCleanupAttempted = true
+	cleanup := s.deep.CleanupTemp
+	if cleanup == nil {
+		cleanup = func(value *vaultfs.PrivateTemp) error { return value.Cleanup() }
+	}
+	err := cleanup(temp)
+	s.deepCleanupComplete = err == nil
+	if err != nil && s.deep.RecordCleanupFailure != nil {
+		s.deep.RecordCleanupFailure(temp.Dir())
+	}
 }
 
 func executeDeep(_ context.Context, s *runState, entry RegistryEntry) Check {
@@ -336,26 +363,40 @@ func executeDeep(_ context.Context, s *runState, entry RegistryEntry) Check {
 		return baseCheck(entry, s.now, status, ConfidenceHigh, Evidence{"remote_only_count": s.deepMedia.remoteOnly, "inventory_complete": true})
 	case CheckDurabilitySQLiteRestore:
 		result := s.deepArchive
-		quick := result.QuickCheck
-		if quick != "ok" && quick != "violation" {
-			quick = "violation"
+		evidence := Evidence{"archive_authenticity": "unverified"}
+		if result.CompressedBytes > 0 {
+			evidence["compressed_bytes"] = result.CompressedBytes
 		}
-		schema := normalizeCompatibility(result.SchemaCompatibility)
-		migration := normalizeCompatibility(result.MigrationCompatibility)
-		evidence := Evidence{
-			"compressed_bytes": result.CompressedBytes, "decompressed_bytes": result.DecompressedBytes,
-			"quick_check": quick, "foreign_key_violation_count": result.ForeignKeyViolationCount,
-			"schema_compatibility": schema, "migration_compatibility": migration,
-			"archive_authenticity": "unverified", "cleanup_complete": s.deepCleanupComplete,
+		if result.DecompressedBytes > 0 {
+			evidence["decompressed_bytes"] = result.DecompressedBytes
+		}
+		if result.QuickCheckObserved && (result.QuickCheck == "ok" || result.QuickCheck == "violation") {
+			evidence["quick_check"] = result.QuickCheck
+		}
+		if result.ForeignKeysObserved {
+			evidence["foreign_key_violation_count"] = result.ForeignKeyViolationCount
+		}
+		if result.SchemaObserved {
+			if compatibility := normalizeCompatibility(result.SchemaCompatibility); compatibility != "" {
+				evidence["schema_compatibility"] = compatibility
+			}
+		}
+		if result.MigrationObserved {
+			if compatibility := normalizeCompatibility(result.MigrationCompatibility); compatibility != "" {
+				evidence["migration_compatibility"] = compatibility
+			}
+		}
+		if s.deepCleanupAttempted {
+			evidence["cleanup_complete"] = s.deepCleanupComplete
+		}
+		if s.deepCleanupAttempted && !s.deepCleanupComplete {
+			return baseCheck(entry, s.now, StatusUnknown, ConfidenceUnknown, evidence)
 		}
 		if s.deepArchiveErr != nil {
 			if errors.Is(s.deepArchiveErr, ErrDeepCandidateInvalid) {
 				return baseCheck(entry, s.now, StatusFail, ConfidenceHigh, evidence)
 			}
 			return baseCheck(entry, s.now, StatusUnknown, ConfidenceUnknown, evidence)
-		}
-		if !s.deepCleanupComplete {
-			return baseCheck(entry, s.now, StatusWarn, ConfidenceHigh, evidence)
 		}
 		return baseCheck(entry, s.now, StatusPass, ConfidenceHigh, evidence)
 	}
@@ -366,5 +407,5 @@ func normalizeCompatibility(value string) string {
 	if value == "current_compatible" || value == "legacy_compatible" || value == "incompatible" {
 		return value
 	}
-	return "incompatible"
+	return ""
 }

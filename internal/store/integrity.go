@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -49,6 +50,9 @@ func InspectDatabaseReadOnly(ctx context.Context, path string, includeIntegrity 
 
 	st := &Store{db: db}
 	result.MissingTableCount, result.MissingColumnCount, result.schemaCompatibilityErr = inspectDbrainCoreSchema(st)
+	if result.schemaCompatibilityErr != nil && !errors.Is(result.schemaCompatibilityErr, ErrDatabaseIncompatible) {
+		return DatabaseIntegrity{}, result.schemaCompatibilityErr
+	}
 	result.SchemaCompatibility = databaseCompatibilityIncompatible
 	if result.schemaCompatibilityErr == nil {
 		result.SchemaCompatibility = databaseCompatibilityCurrent
@@ -61,7 +65,7 @@ func InspectDatabaseReadOnly(ctx context.Context, path string, includeIntegrity 
 	switch {
 	case result.UserVersion > currentSchemaVersion:
 		result.MigrationCompatibility = databaseCompatibilityIncompatible
-		result.migrationCompatibilityErr = fmt.Errorf("dbrain schema version %d is newer than supported version %d", result.UserVersion, currentSchemaVersion)
+		result.migrationCompatibilityErr = fmt.Errorf("%w: dbrain schema version %d is newer than supported version %d", ErrDatabaseIncompatible, result.UserVersion, currentSchemaVersion)
 	case !hasMigrations && result.UserVersion == 0:
 		result.MigrationCompatibility = databaseCompatibilityLegacy
 		if result.schemaCompatibilityErr == nil {
@@ -69,15 +73,18 @@ func InspectDatabaseReadOnly(ctx context.Context, path string, includeIntegrity 
 		}
 	case !hasMigrations:
 		result.MigrationCompatibility = databaseCompatibilityIncompatible
-		result.migrationCompatibilityErr = fmt.Errorf("dbrain schema version %d has no migration metadata", result.UserVersion)
+		result.migrationCompatibilityErr = fmt.Errorf("%w: dbrain schema version %d has no migration metadata", ErrDatabaseIncompatible, result.UserVersion)
 	case result.UserVersion <= 0:
 		result.MigrationCompatibility = databaseCompatibilityIncompatible
-		result.migrationCompatibilityErr = fmt.Errorf("dbrain migration metadata has invalid schema version %d", result.UserVersion)
+		result.migrationCompatibilityErr = fmt.Errorf("%w: dbrain migration metadata has invalid schema version %d", ErrDatabaseIncompatible, result.UserVersion)
 	default:
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&result.AppliedMigrationCount); err != nil {
 			return DatabaseIntegrity{}, fmt.Errorf("count dbrain migration metadata: %w", err)
 		}
 		result.migrationCompatibilityErr = validateAppliedSchemaMigrations(ctx, db, result.UserVersion)
+		if result.migrationCompatibilityErr != nil && !errors.Is(result.migrationCompatibilityErr, ErrDatabaseIncompatible) {
+			return DatabaseIntegrity{}, result.migrationCompatibilityErr
+		}
 		if result.migrationCompatibilityErr == nil {
 			if result.UserVersion == currentSchemaVersion {
 				result.MigrationCompatibility = databaseCompatibilityCurrent

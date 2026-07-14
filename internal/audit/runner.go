@@ -43,6 +43,7 @@ type runState struct {
 	deepArchive            DeepArchiveResult
 	deepArchiveErr         error
 	deepCleanupComplete    bool
+	deepCleanupAttempted   bool
 }
 
 func (s *runState) observedAt() time.Time {

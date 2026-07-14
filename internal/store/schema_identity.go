@@ -3,8 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
+
+// ErrDatabaseIncompatible marks an observed dbrain schema or migration
+// identity incompatibility. Ordinary open, descriptor, I/O, and availability
+// failures deliberately do not wrap this sentinel.
+var ErrDatabaseIncompatible = errors.New("database is incompatible")
 
 type schemaIdentityTable struct {
 	name    string
@@ -60,7 +66,10 @@ func ValidateRestorableDatabase(ctx context.Context, path string) error {
 	if result.schemaCompatibilityErr != nil {
 		return result.schemaCompatibilityErr
 	}
-	return result.migrationCompatibilityErr
+	if result.migrationCompatibilityErr != nil {
+		return result.migrationCompatibilityErr
+	}
+	return nil
 }
 
 func inspectDbrainCoreSchema(st *Store) (int, int, error) {
@@ -74,7 +83,7 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		if !exists {
 			missingTables++
 			if firstMissing == nil {
-				firstMissing = fmt.Errorf("dbrain core schema table %s is missing", required.name)
+				firstMissing = fmt.Errorf("%w: dbrain core schema table %s is missing", ErrDatabaseIncompatible, required.name)
 			}
 			continue
 		}
@@ -86,7 +95,7 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 			if !columns[column] {
 				missingColumns++
 				if firstMissing == nil {
-					firstMissing = fmt.Errorf("dbrain core schema column %s.%s is missing", required.name, column)
+					firstMissing = fmt.Errorf("%w: dbrain core schema column %s.%s is missing", ErrDatabaseIncompatible, required.name, column)
 				}
 			}
 		}
@@ -117,13 +126,13 @@ func validateAppliedSchemaMigrations(ctx context.Context, db *sql.DB, userVersio
 		}
 		currentName, knownVersion := expected[version]
 		if !knownVersion {
-			return fmt.Errorf("dbrain migration metadata contains unknown version %d", version)
+			return fmt.Errorf("%w: dbrain migration metadata contains unknown version %d", ErrDatabaseIncompatible, version)
 		}
 		if version > userVersion {
-			return fmt.Errorf("dbrain migration version %d exceeds schema user_version %d", version, userVersion)
+			return fmt.Errorf("%w: dbrain migration version %d exceeds schema user_version %d", ErrDatabaseIncompatible, version, userVersion)
 		}
 		if name != currentName && !compatibleSchemaMigrationName(version, name) {
-			return fmt.Errorf("dbrain migration version %d has unknown name %q", version, name)
+			return fmt.Errorf("%w: dbrain migration version %d has unknown name %q", ErrDatabaseIncompatible, version, name)
 		}
 		applied[version] = struct{}{}
 	}
@@ -133,7 +142,7 @@ func validateAppliedSchemaMigrations(ctx context.Context, db *sql.DB, userVersio
 
 	for version := 1; version <= userVersion; version++ {
 		if _, ok := applied[version]; !ok {
-			return fmt.Errorf("dbrain migration metadata is missing version %d", version)
+			return fmt.Errorf("%w: dbrain migration metadata is missing version %d", ErrDatabaseIncompatible, version)
 		}
 	}
 	return nil

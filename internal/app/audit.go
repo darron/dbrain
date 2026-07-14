@@ -150,7 +150,7 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	req := audit.Request{Profile: profile, Since: since, Categories: categories, ExpectCommit: strings.TrimSpace(flags.expectCommit)}
 	deepLimits := audit.DeepLimits{}
 	if profile == audit.ProfileDeep {
-		deepLimits, err = resolveDeepAuditLimits(cfg.RootDir, *flags, deepFlags)
+		deepLimits, err = resolveDeepAuditLimits(cfg.RootDir, *flags, deepFlags, features)
 		if err != nil {
 			return &ExitError{Code: 3, Err: err}
 		}
@@ -175,10 +175,14 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit capabilities: %w", err)}
 	}
 	var report audit.Report
+	localCleanupPaths := map[audit.CheckID][]string{}
 	if profile == audit.ProfileDeep {
 		deepDeps, buildErr := buildDeepAuditDependencies(ctx, cfg, features, deepLimits)
 		if buildErr != nil {
 			return &ExitError{Code: 3, Err: fmt.Errorf("resolve deep audit capabilities: %w", buildErr)}
+		}
+		deepDeps.RecordCleanupFailure = func(path string) {
+			localCleanupPaths[audit.CheckDurabilitySQLiteRestore] = append(localCleanupPaths[audit.CheckDurabilitySQLiteRestore], path)
 		}
 		report, err = audit.RunDeep(ctx, req, deps, deepDeps)
 	} else {
@@ -195,7 +199,7 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 				target.Metrics = metricsCfg.Path
 			}
 			err = writeJSON(cmd.OutOrStdout(), newLocalAuditWrapper(report, target,
-				localAuditIdentifiers(ctx, report, snapshot, localAuditIdentifierTimeout(profile, features.Timeouts))))
+				localAuditIdentifiers(ctx, report, snapshot, localAuditIdentifierTimeout(profile, features.Timeouts), localCleanupPaths)))
 		} else {
 			err = writeJSON(cmd.OutOrStdout(), report)
 		}
@@ -212,10 +216,11 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	return nil
 }
 
-func localAuditIdentifiers(ctx context.Context, report audit.Report, snapshot *store.AuditReadSnapshot, timeout time.Duration) map[audit.CheckID]LocalAuditIdentifiers {
+func localAuditIdentifiers(ctx context.Context, report audit.Report, snapshot *store.AuditReadSnapshot, timeout time.Duration, localCleanupPaths map[audit.CheckID][]string) map[audit.CheckID]LocalAuditIdentifiers {
 	values := make(map[audit.CheckID]LocalAuditIdentifiers, len(report.Checks))
 	for _, check := range report.Checks {
-		values[check.ID] = LocalAuditIdentifiers{RowIDs: []int64{}, SourceKeys: []string{}, CleanupPaths: []string{}}
+		cleanupPaths := append([]string(nil), localCleanupPaths[check.ID]...)
+		values[check.ID] = LocalAuditIdentifiers{RowIDs: []int64{}, SourceKeys: []string{}, CleanupPaths: cleanupPaths}
 		if snapshot == nil || check.Status == audit.StatusPass || check.Status == audit.StatusSkipped {
 			continue
 		}
@@ -247,7 +252,7 @@ func localAuditIdentifiers(ctx context.Context, report audit.Report, snapshot *s
 				sourceKeys = append(sourceKeys, key)
 			}
 		}
-		values[check.ID] = LocalAuditIdentifiers{RowIDs: rowIDs, SourceKeys: sourceKeys, CleanupPaths: []string{}}
+		values[check.ID] = LocalAuditIdentifiers{RowIDs: rowIDs, SourceKeys: sourceKeys, CleanupPaths: cleanupPaths}
 	}
 	return values
 }
@@ -303,7 +308,7 @@ func defaultAuditTimeout(profile audit.Profile) time.Duration {
 	return 10 * time.Minute
 }
 
-func resolveDeepAuditLimits(root string, flags auditCLIFlags, explicit map[string]bool) (audit.DeepLimits, error) {
+func resolveDeepAuditLimits(root string, flags auditCLIFlags, explicit map[string]bool, features audit.Features) (audit.DeepLimits, error) {
 	limits := audit.DefaultDeepLimits()
 	configured := []struct {
 		key     string
@@ -345,6 +350,9 @@ func resolveDeepAuditLimits(root string, flags auditCLIFlags, explicit map[strin
 			return audit.DeepLimits{}, fmt.Errorf("--%s must be positive", item.name)
 		}
 		*item.target = item.value
+	}
+	if timeout := features.RemoteRequestTimeout; timeout > 0 && timeout < limits.RequestTimeout {
+		limits.RequestTimeout = timeout
 	}
 	return limits, nil
 }

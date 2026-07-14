@@ -152,8 +152,10 @@ func (auditArchiveVerifier) Verify(ctx context.Context, body io.ReadCloser, temp
 	})
 	result := audit.DeepArchiveResult{
 		CompressedBytes: value.CompressedBytes, DecompressedBytes: value.DecompressedBytes,
-		QuickCheck: value.QuickCheck, ForeignKeyViolationCount: value.ForeignKeyViolationCount,
-		SchemaCompatibility: value.SchemaCompatibility, MigrationCompatibility: value.MigrationCompatibility,
+		QuickCheck: value.QuickCheck, QuickCheckObserved: value.IntegrityObserved,
+		ForeignKeyViolationCount: value.ForeignKeyViolationCount, ForeignKeysObserved: value.IntegrityObserved,
+		SchemaCompatibility: value.SchemaCompatibility, SchemaObserved: value.SchemaObserved,
+		MigrationCompatibility: value.MigrationCompatibility, MigrationObserved: value.MigrationObserved,
 	}
 	switch {
 	case errors.Is(err, sqlitearchive.ErrCandidateInvalid):

@@ -36,6 +36,8 @@ type fakeDeepVerifier struct {
 	calls  int
 }
 
+func failingDeepCleanup(*vaultfs.PrivateTemp) error { return errors.New("injected cleanup failure") }
+
 type cancelDeepVerifier struct{}
 
 func (cancelDeepVerifier) Verify(ctx context.Context, _ io.ReadCloser, _ *vaultfs.PrivateTemp, _ DeepLimits) (DeepArchiveResult, error) {
@@ -253,6 +255,33 @@ func TestRunDeepReconcilesCompleteMediaInventoryWithoutKeysInEvidence(t *testing
 	}
 }
 
+func TestRunDeepReconcilesKeysEvenWhenArchiveTimestampIsInvalid(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.MediaRemoteEnabled = true
+	deps.Store = fakeStore{media: []ArchivedMediaRecord{
+		{Key: "media/matching", SizeBytes: 10, ArchivedAtValid: false},
+		{Key: "media/missing", SizeBytes: 20, ArchivedAtValid: false},
+		{Key: "media/mismatch", SizeBytes: 30, ArchivedAtValid: false},
+	}}
+	inventory := &fakeDeepInventory{pages: []MediaInventoryPage{{Objects: []MediaInventoryObject{
+		{Key: "media/matching", SizeBytes: 10},
+		{Key: "media/mismatch", SizeBytes: 31},
+	}, Complete: true}}}
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote, CheckDurabilityMediaRemoteOnly}}, deps, DeepDependencies{Media: inventory, Limits: DefaultDeepLimits()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := report.Checks[0]
+	if remote.Status != StatusFail || remote.Evidence["invalid_timestamp_count"] != 3 || remote.Evidence["checked_count"] != 3 || remote.Evidence["missing_count"] != 1 || remote.Evidence["size_mismatch_count"] != 1 {
+		t.Fatalf("remote reconciliation = %#v", remote)
+	}
+	remoteOnly := report.Checks[1]
+	if remoteOnly.Evidence["remote_only_count"] != 0 {
+		t.Fatalf("invalid-timestamp local keys leaked into remote-only: %#v", remoteOnly)
+	}
+}
+
 func TestRunDeepReconcilesEveryDuplicateLocalMediaRecord(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	deps := passingDependencies(now)
@@ -353,7 +382,7 @@ func TestRunDeepCleansGeneratedTempOnArchiveSuccessAndFailure(t *testing.T) {
 				}
 				return tmp, err
 			}
-			verifier := &fakeDeepVerifier{result: DeepArchiveResult{CompressedBytes: 1, DecompressedBytes: 2, QuickCheck: "ok", SchemaCompatibility: "current_compatible", MigrationCompatibility: "current_compatible"}, err: verifierErr}
+			verifier := &fakeDeepVerifier{result: DeepArchiveResult{CompressedBytes: 1, DecompressedBytes: 2, QuickCheck: "ok", QuickCheckObserved: true, ForeignKeysObserved: true, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}, err: verifierErr}
 			report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, CheckIDs: []CheckID{CheckDurabilitySQLiteRestore}}, deps, DeepDependencies{
 				Archives: &fakeDeepArchiveReader{body: []byte("x")}, VerifyArchive: verifier, NewTemp: factory,
 				FreeSpace: func(*vaultfs.PrivateTemp) (uint64, error) { return uint64(DefaultDeepLimits().MaxTempBytes), nil }, Limits: DefaultDeepLimits(),
@@ -371,6 +400,139 @@ func TestRunDeepCleansGeneratedTempOnArchiveSuccessAndFailure(t *testing.T) {
 				t.Fatalf("restore evidence = %#v", report.Checks[0])
 			}
 		})
+	}
+}
+
+func TestValidateReportRejectsPassingRestoreWithMissingPhaseEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.SQLiteBackupSchedulerEnabled = true
+	deps.Features.SQLiteProviderConfigured = true
+	deps.Features.SQLiteCredentialConfigured = true
+	deps.Archives = fakeArchive{value: SQLiteArchiveListing{Complete: true, Objects: []ArchiveObject{{Key: "archive/db/brain-20260714T110000Z.db.gz", ValidKey: true, SizeBytes: 1, LastModified: now.Add(-time.Hour)}}}}
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, CheckIDs: []CheckID{CheckDurabilitySQLiteRestore}}, deps, DeepDependencies{
+		Archives:      &fakeDeepArchiveReader{body: []byte("x")},
+		VerifyArchive: &fakeDeepVerifier{result: DeepArchiveResult{CompressedBytes: 1, DecompressedBytes: 2, QuickCheck: "ok", QuickCheckObserved: true, ForeignKeysObserved: true, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}},
+		NewTemp:       func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(t.TempDir()) },
+		FreeSpace:     func(*vaultfs.PrivateTemp) (uint64, error) { return uint64(DefaultDeepLimits().MaxTempBytes), nil }, Limits: DefaultDeepLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"quick_check", "schema_compatibility", "migration_compatibility", "cleanup_complete"} {
+		mutated := report
+		mutated.Checks = append([]Check(nil), report.Checks...)
+		mutated.Checks[0].Evidence = Evidence{}
+		for evidenceKey, value := range report.Checks[0].Evidence {
+			if evidenceKey != key {
+				mutated.Checks[0].Evidence[evidenceKey] = value
+			}
+		}
+		if err := ValidateReport(mutated); err == nil {
+			t.Fatalf("passing restore accepted missing %s", key)
+		}
+	}
+}
+
+func TestRunDeepCleanupFailureMakesRestoreUnknownAndExposesOnlyLocalCleanupPath(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.SQLiteBackupSchedulerEnabled = true
+	deps.Features.SQLiteProviderConfigured = true
+	deps.Features.SQLiteCredentialConfigured = true
+	deps.Archives = fakeArchive{value: SQLiteArchiveListing{Complete: true, Objects: []ArchiveObject{{Key: "archive/db/brain-20260714T110000Z.db.gz", ValidKey: true, SizeBytes: 1, LastModified: now.Add(-time.Hour)}}}}
+	base := t.TempDir()
+	var generated string
+	var cleanupFailures []string
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, CheckIDs: []CheckID{CheckDurabilitySQLiteRestore}}, deps, DeepDependencies{
+		Archives:      &fakeDeepArchiveReader{body: []byte("x")},
+		VerifyArchive: &fakeDeepVerifier{result: DeepArchiveResult{CompressedBytes: 1, DecompressedBytes: 2, QuickCheck: "ok", ForeignKeysObserved: true, QuickCheckObserved: true, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}},
+		NewTemp: func() (*vaultfs.PrivateTemp, error) {
+			tmp, createErr := vaultfs.NewPrivateTemp(base)
+			if tmp != nil {
+				generated = tmp.Dir()
+			}
+			return tmp, createErr
+		},
+		CleanupTemp:          failingDeepCleanup,
+		RecordCleanupFailure: func(path string) { cleanupFailures = append(cleanupFailures, path) },
+		FreeSpace:            func(*vaultfs.PrivateTemp) (uint64, error) { return uint64(DefaultDeepLimits().MaxTempBytes), nil },
+		Limits:               DefaultDeepLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := report.Checks[0]
+	if check.Status != StatusUnknown || check.Confidence != ConfidenceUnknown || check.Evidence["cleanup_complete"] != false {
+		t.Fatalf("cleanup-failed restore check = %#v", check)
+	}
+	if got := cleanupFailures; !reflect.DeepEqual(got, []string{generated}) {
+		t.Fatalf("local cleanup paths = %#v, want %q", got, generated)
+	}
+	encoded, marshalErr := json.Marshal(report)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if bytes.Contains(encoded, []byte(generated)) {
+		t.Fatalf("shared report leaked cleanup path: %s", encoded)
+	}
+	// The injected failure intentionally left the directory behind; remove it
+	// after asserting the local diagnostic path.
+	if err := os.RemoveAll(generated); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunDeepUnknownRestoreOmitsUnobservedValidationEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.SQLiteBackupSchedulerEnabled = true
+	deps.Features.SQLiteProviderConfigured = true
+	deps.Features.SQLiteCredentialConfigured = true
+	deps.Archives = fakeArchive{value: SQLiteArchiveListing{Complete: true, Objects: []ArchiveObject{{Key: "archive/db/brain-20260714T110000Z.db.gz", ValidKey: true, SizeBytes: 1, LastModified: now.Add(-time.Hour)}}}}
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, CheckIDs: []CheckID{CheckDurabilitySQLiteRestore}}, deps, DeepDependencies{
+		Archives:      &fakeDeepArchiveReader{err: errors.New("remote unavailable")},
+		VerifyArchive: &fakeDeepVerifier{}, NewTemp: func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(t.TempDir()) },
+		FreeSpace: func(*vaultfs.PrivateTemp) (uint64, error) { return uint64(DefaultDeepLimits().MaxTempBytes), nil }, Limits: DefaultDeepLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := report.Checks[0]
+	if check.Status != StatusUnknown || check.Confidence != ConfidenceUnknown {
+		t.Fatalf("unknown restore check = %#v", check)
+	}
+	for _, key := range []string{"quick_check", "foreign_key_violation_count", "schema_compatibility", "migration_compatibility"} {
+		if _, exists := check.Evidence[key]; exists {
+			t.Fatalf("unobserved %s was fabricated: %#v", key, check.Evidence)
+		}
+	}
+}
+
+func TestRunDeepVerifiedPreValidationFailureOmitsUnobservedEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.SQLiteBackupSchedulerEnabled = true
+	deps.Features.SQLiteProviderConfigured = true
+	deps.Features.SQLiteCredentialConfigured = true
+	deps.Archives = fakeArchive{value: SQLiteArchiveListing{Complete: true, Objects: []ArchiveObject{{Key: "archive/db/brain-20260714T110000Z.db.gz", ValidKey: true, SizeBytes: 1, LastModified: now.Add(-time.Hour)}}}}
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, CheckIDs: []CheckID{CheckDurabilitySQLiteRestore}}, deps, DeepDependencies{
+		Archives:      &fakeDeepArchiveReader{body: []byte("not-gzip")},
+		VerifyArchive: &fakeDeepVerifier{result: DeepArchiveResult{CompressedBytes: 8}, err: ErrDeepCandidateInvalid},
+		NewTemp:       func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(t.TempDir()) },
+		FreeSpace:     func(*vaultfs.PrivateTemp) (uint64, error) { return uint64(DefaultDeepLimits().MaxTempBytes), nil }, Limits: DefaultDeepLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := report.Checks[0]
+	if check.Status != StatusFail || check.Confidence != ConfidenceHigh {
+		t.Fatalf("verified invalid restore = %#v", check)
+	}
+	for _, key := range []string{"quick_check", "foreign_key_violation_count", "schema_compatibility", "migration_compatibility"} {
+		if _, exists := check.Evidence[key]; exists {
+			t.Fatalf("unobserved %s was fabricated: %#v", key, check.Evidence)
+		}
 	}
 }
 

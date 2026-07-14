@@ -55,3 +55,17 @@ func TestReportJSONRejectsUnknownClosedValues(t *testing.T) {
 		})
 	}
 }
+
+func TestSQLiteRestorePartialEvidenceIsOptionalOnlyForVerifiedFailure(t *testing.T) {
+	entry, ok := Lookup(CheckDurabilitySQLiteRestore)
+	if !ok {
+		t.Fatal("restore registry entry missing")
+	}
+	partial := Evidence{"archive_authenticity": "unverified", "compressed_bytes": 8, "cleanup_complete": true}
+	if err := validateRequiredEvidence(entry, StatusFail, partial); err != nil {
+		t.Fatalf("verified pre-validation failure rejected reached-phase evidence: %v", err)
+	}
+	if err := validateRequiredEvidence(entry, StatusPass, partial); err == nil {
+		t.Fatal("passing restore accepted missing quick/schema/migration evidence")
+	}
+}
