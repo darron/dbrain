@@ -33,8 +33,10 @@ development date for the change set.
   snapshots, feature resolution, and SQLite `BEGIN` now run inside the
   bootstrap deadline without shortening the later snapshot lifetime. Frozen
   lookup preserves shell, `.envrc`, `.env`, then YAML precedence without
-  repeated reads. Per-class overrides lower local, integrity, manifest,
-  remote-check, and per-request ceilings, including media whole-check limits.
+  repeated reads, and overlapping same-root snapshots now clean up safely in
+  any order without restoring stale YAML or dotenv values. Per-class overrides
+  lower local, integrity, manifest, remote-check, and per-request ceilings,
+  including media whole-check limits.
 
 ### Security hardening (2026-07-13)
 

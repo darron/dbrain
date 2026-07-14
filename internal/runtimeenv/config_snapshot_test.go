@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -82,6 +83,112 @@ func TestRegisteredConfigSnapshotIsReadOnceAndCleanupRestoresPriorRegistration(t
 	cleanup()
 	if got := FirstNonEmpty(root, "DBRAIN_TEST_VALUE"); got != "dotenv" {
 		t.Fatalf("cleanup did not restore ordinary lookup = %q", got)
+	}
+}
+
+func TestRegisteredConfigSnapshotOutOfOrderCleanupRestoresExactPreexistingRegistration(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "original.yaml")
+	if err := os.WriteFile(original, []byte("DBRAIN_STACK_YAML: original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	RegisterConfigFile(root, original)
+	preexisting, ok := registeredConfigFiles.Load(root)
+	if !ok {
+		t.Fatal("preexisting registration missing")
+	}
+	t.Cleanup(func() { registeredConfigFiles.Delete(root) })
+
+	cleanupA := RegisterConfigSnapshot(root,
+		map[string]any{"DBRAIN_STACK_YAML": "a-yaml"},
+		map[string]string{"DBRAIN_STACK_DOTENV": "a-dotenv"})
+	cleanupB := RegisterConfigSnapshot(root,
+		map[string]any{"DBRAIN_STACK_YAML": "b-yaml"},
+		map[string]string{"DBRAIN_STACK_DOTENV": "b-dotenv"})
+
+	cleanupA()
+	cleanupA()
+	if got := FirstNonEmpty(root, "DBRAIN_STACK_YAML"); got != "b-yaml" {
+		t.Fatalf("buried cleanup changed current YAML snapshot: %q", got)
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_STACK_DOTENV"); got != "b-dotenv" {
+		t.Fatalf("buried cleanup changed current dotenv snapshot: %q", got)
+	}
+	cleanupB()
+	cleanupB()
+
+	current, ok := registeredConfigFiles.Load(root)
+	if !ok || current != preexisting {
+		t.Fatalf("registration after cleanup = %#v, want exact preexisting %#v", current, preexisting)
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_STACK_YAML"); got != "original" {
+		t.Fatalf("restored YAML value = %q", got)
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_STACK_DOTENV"); got != "" {
+		t.Fatalf("stale dotenv snapshot leaked: %q", got)
+	}
+}
+
+func TestRegisteredConfigSnapshotThreeLevelOutOfOrderCleanupLeavesNoStaleSnapshot(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(func() { registeredConfigFiles.Delete(root) })
+	cleanupA := RegisterConfigSnapshot(root, map[string]any{"DBRAIN_STACK_VALUE": "a"}, nil)
+	cleanupB := RegisterConfigSnapshot(root, map[string]any{"DBRAIN_STACK_VALUE": "b"}, nil)
+	cleanupC := RegisterConfigSnapshot(root, map[string]any{"DBRAIN_STACK_VALUE": "c"}, nil)
+
+	cleanupB()
+	cleanupA()
+	if got := FirstNonEmpty(root, "DBRAIN_STACK_VALUE"); got != "c" {
+		t.Fatalf("top snapshot changed after buried cleanup: %q", got)
+	}
+	cleanupC()
+	cleanupC()
+	cleanupB()
+	cleanupA()
+	if _, ok := registeredConfigFiles.Load(root); ok {
+		t.Fatal("all cleaned registrations must restore absence")
+	}
+	if got := FirstNonEmpty(root, "DBRAIN_STACK_VALUE"); got != "" {
+		t.Fatalf("stale frozen snapshot leaked: %q", got)
+	}
+}
+
+func TestRegisteredConfigSnapshotConcurrentBuriedCleanupRestoresPreexistingRegistration(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "original.yaml")
+	if err := os.WriteFile(original, []byte("DBRAIN_STACK_VALUE: original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	RegisterConfigFile(root, original)
+	preexisting, _ := registeredConfigFiles.Load(root)
+	t.Cleanup(func() { registeredConfigFiles.Delete(root) })
+
+	cleanupA := RegisterConfigSnapshot(root, map[string]any{"DBRAIN_STACK_VALUE": "a"}, nil)
+	cleanupB := RegisterConfigSnapshot(root, map[string]any{"DBRAIN_STACK_VALUE": "b"}, nil)
+	cleanupC := RegisterConfigSnapshot(root, map[string]any{"DBRAIN_STACK_VALUE": "c"}, nil)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, cleanup := range []func(){cleanupA, cleanupB} {
+		cleanup := cleanup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 10 {
+				cleanup()
+				_ = FirstNonEmpty(root, "DBRAIN_STACK_VALUE")
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := FirstNonEmpty(root, "DBRAIN_STACK_VALUE"); got != "c" {
+		t.Fatalf("concurrent buried cleanup changed top snapshot: %q", got)
+	}
+	cleanupC()
+	current, ok := registeredConfigFiles.Load(root)
+	if !ok || current != preexisting {
+		t.Fatalf("registration after concurrent cleanup = %#v, want %#v", current, preexisting)
 	}
 }
 

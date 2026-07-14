@@ -14,13 +14,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var registeredConfigFiles sync.Map
+var (
+	registeredConfigFiles sync.Map
+	registeredConfigMu    sync.Mutex
+)
 
 type registeredConfig struct {
-	path     string
-	snapshot map[string]any
-	dotenv   map[string]string
-	frozen   bool
+	path      string
+	snapshot  map[string]any
+	dotenv    map[string]string
+	frozen    bool
+	previous  *registeredConfig
+	temporary bool
+	removed   bool
 }
 
 func RegisterConfigFile(rootDir string, path string) {
@@ -29,6 +35,8 @@ func RegisterConfigFile(rootDir string, path string) {
 	if rootDir == "" || path == "" {
 		return
 	}
+	registeredConfigMu.Lock()
+	defer registeredConfigMu.Unlock()
 	registeredConfigFiles.Store(rootDir, &registeredConfig{path: path})
 }
 
@@ -40,22 +48,35 @@ func RegisterConfigSnapshot(rootDir string, snapshot map[string]any, dotenv map[
 	if rootDir == "" {
 		return func() {}
 	}
-	entry := &registeredConfig{snapshot: snapshot, dotenv: dotenv, frozen: true}
-	previous, hadPrevious := registeredConfigFiles.Load(rootDir)
+	registeredConfigMu.Lock()
+	previousValue, _ := registeredConfigFiles.Load(rootDir)
+	previous, _ := previousValue.(*registeredConfig)
+	entry := &registeredConfig{
+		snapshot: snapshot, dotenv: dotenv, frozen: true,
+		previous: previous, temporary: true,
+	}
 	registeredConfigFiles.Store(rootDir, entry)
-	var once sync.Once
+	registeredConfigMu.Unlock()
 	return func() {
-		once.Do(func() {
-			current, ok := registeredConfigFiles.Load(rootDir)
-			if !ok || current != entry {
-				return
-			}
-			if hadPrevious {
-				registeredConfigFiles.Store(rootDir, previous)
-			} else {
-				registeredConfigFiles.Delete(rootDir)
-			}
-		})
+		registeredConfigMu.Lock()
+		defer registeredConfigMu.Unlock()
+		if entry.removed {
+			return
+		}
+		entry.removed = true
+		current, ok := registeredConfigFiles.Load(rootDir)
+		if !ok || current != entry {
+			return
+		}
+		replacement := entry.previous
+		for replacement != nil && replacement.temporary && replacement.removed {
+			replacement = replacement.previous
+		}
+		if replacement == nil {
+			registeredConfigFiles.Delete(rootDir)
+			return
+		}
+		registeredConfigFiles.Store(rootDir, replacement)
 	}
 }
 
