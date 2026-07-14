@@ -109,7 +109,7 @@ func emitSyncStageMetrics(run metrics.RunContext, opts stageOptions, stats *Stat
 	case syncStageOKFExport:
 		emitStage(run, "okf_export", stats.OKFExport, stageErr, nil)
 	}
-	emitSyncImportStageMetric(run, stageID, *stats, stageErr)
+	emitSyncImportStageMetric(run, opts, stageID, *stats, stageErr)
 }
 
 func selectedMetricStages(opts Options) []string {
@@ -160,19 +160,25 @@ func selectedMetricStages(opts Options) []string {
 }
 
 func emitSyncImportMetrics(run metrics.RunContext, stats Stats, stageErrors map[syncStageID]error) {
+	opts := newStageOptions(Options{
+		AppleNotesEnabled: stats.AppleNotes != nil, SafariTabsEnabled: stats.SafariTabs != nil,
+		XBookmarksEnabled: stats.XBookmarks != nil, GitHubEnabled: stats.GitHub != nil,
+		YouTubeEnabled: stats.YouTube != nil, WatchLater: stats.YouTube != nil, Liked: stats.YouTube != nil,
+		FeedsEnabled: stats.Feeds != nil,
+	})
 	for _, stage := range []syncStageID{syncStageAppleNotes, syncStageSafariTabs, syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds} {
-		emitSyncImportStageMetric(run, stage, stats, stageErrors[stage])
+		emitSyncImportStageMetric(run, opts, stage, stats, stageErrors[stage])
 	}
 }
 
-func emitSyncImportStageMetric(run metrics.RunContext, stage syncStageID, stats Stats, stageErr error) {
+func emitSyncImportStageMetric(run metrics.RunContext, opts stageOptions, stage syncStageID, stats Stats, stageErr error) {
 	if !run.Enabled() {
 		return
 	}
-	emit := func(source string, duration time.Duration, counts map[string]int) {
+	emit := func(source string, duration time.Duration, counts map[string]int, sourceFailed bool) {
 		completedAt := time.Now().UTC()
 		status := "ok"
-		if stageErr != nil {
+		if stageErr != nil || sourceFailed {
 			status = "error"
 			if counts["failed"] == 0 {
 				counts["failed"] = 1
@@ -188,32 +194,55 @@ func emitSyncImportStageMetric(run metrics.RunContext, stage syncStageID, stats 
 	case syncStageAppleNotes:
 		if value := stats.AppleNotes; value != nil {
 			s := value.Stats
-			emit("apple_notes", value.Duration, importCounts(s.NotesCreated, s.NotesUpdated, s.NotesUnchanged, s.NotesSkipped, s.LinksDiscovered, s.NotesBlocked, s.Errors))
+			emit("apple_notes", value.Duration, importCounts(s.NotesCreated, s.NotesUpdated, s.NotesUnchanged, s.NotesSkipped, s.LinksDiscovered, s.NotesBlocked, s.Errors), s.Errors > 0)
+		} else if opts.AppleNotes.Enabled {
+			emit("apple_notes", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
 		}
 	case syncStageSafariTabs:
 		if value := stats.SafariTabs; value != nil {
 			s := value.Stats
-			emit("safari_tabs", value.Duration, importCounts(s.TabsCreated, s.TabsUpdated, s.TabsUnchanged, s.TabsSkipped, s.LinksFound, 0, s.Errors))
+			emit("safari_tabs", value.Duration, importCounts(s.TabsCreated, s.TabsUpdated, s.TabsUnchanged, s.TabsSkipped, s.LinksFound, 0, s.Errors), s.Errors > 0)
+		} else if opts.SafariTabs.Enabled {
+			emit("safari_tabs", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
 		}
 	case syncStageXFrontier:
 		if value := stats.XBookmarks; value != nil {
 			s := value.Stats
-			emit("x_bookmarks", value.Duration, importCounts(s.Created, s.Updated, s.Unchanged, 0, 0, 0, 0))
+			emit("x_bookmarks", value.Duration, importCounts(s.Created, s.Updated, s.Unchanged, 0, 0, 0, 0), false)
+		} else if opts.XBookmarks.Enabled {
+			emit("x_bookmarks", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
 		}
 	case syncStageGitHub:
 		if value := stats.GitHub; value != nil {
 			s := value.Stats
-			emit("github_stars", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, 0, s.LinksCreated, 0, s.Errors))
+			emit("github_stars", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, 0, s.LinksCreated, 0, s.Errors), s.Errors > 0)
+		} else if opts.GitHub.Enabled {
+			emit("github_stars", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
 		}
 	case syncStageYouTube:
 		if value := stats.YouTube; value != nil {
-			emit("youtube_watch_later", value.Duration, importCounts(value.Stats.WatchLater.ItemsCreated, value.Stats.WatchLater.ItemsUpdated, value.Stats.WatchLater.ItemsUnchanged, value.Stats.WatchLater.ItemsSkipped, value.Stats.WatchLater.LinksCreated, 0, value.Stats.WatchLater.Errors))
-			emit("youtube_liked", value.Duration, importCounts(value.Stats.Liked.ItemsCreated, value.Stats.Liked.ItemsUpdated, value.Stats.Liked.ItemsUnchanged, value.Stats.Liked.ItemsSkipped, value.Stats.Liked.LinksCreated, 0, value.Stats.Liked.Errors))
+			if opts.YouTube.WatchLater {
+				s := value.Stats.WatchLater
+				emit("youtube_watch_later", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, s.ItemsSkipped, s.LinksCreated, 0, s.Errors), s.Errors > 0)
+			}
+			if opts.YouTube.Liked {
+				s := value.Stats.Liked
+				emit("youtube_liked", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, s.ItemsSkipped, s.LinksCreated, 0, s.Errors), s.Errors > 0)
+			}
+		} else {
+			if opts.YouTube.WatchLater {
+				emit("youtube_watch_later", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+			}
+			if opts.YouTube.Liked {
+				emit("youtube_liked", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+			}
 		}
 	case syncStageFeeds:
 		if value := stats.Feeds; value != nil {
 			s := value.Stats
-			emit("feeds", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, 0, s.SourcesLinked, 0, s.Errors))
+			emit("feeds", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, 0, s.SourcesLinked, 0, s.Errors), s.Errors > 0)
+		} else if opts.Feeds.Enabled {
+			emit("feeds", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
 		}
 	}
 }

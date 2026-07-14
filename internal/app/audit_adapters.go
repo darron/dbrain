@@ -29,12 +29,19 @@ func (a auditSnapshotAdapter) Pipeline(ctx context.Context) (map[audit.PipelineS
 }
 
 func auditPipelineEvidence(rows []store.PipelineStageRow) audit.PipelineEvidence {
+	byKind := make([]audit.KindPartition, 0, len(rows))
+	for _, row := range rows {
+		if row.Kind == "all" {
+			continue
+		}
+		byKind = append(byKind, audit.KindPartition{Kind: row.Kind, Total: row.Total, Current: row.Current, Pending: row.Pending, Blocked: row.Blocked, Terminal: row.Terminal, Failed: row.Failed, Unknown: row.Unknown, PartitionValid: row.PartitionValid})
+	}
 	for _, row := range rows {
 		if row.Kind == "all" {
 			return audit.PipelineEvidence{
 				Total: row.Total, Current: row.Current, Pending: row.Pending, Blocked: row.Blocked,
 				Terminal: row.Terminal, Failed: row.Failed, Unknown: row.Unknown,
-				PartitionValid: row.PartitionValid, ByKind: []audit.KindPartition{},
+				PartitionValid: row.PartitionValid, ByKind: byKind,
 			}
 		}
 	}
@@ -43,10 +50,10 @@ func auditPipelineEvidence(rows []store.PipelineStageRow) audit.PipelineEvidence
 		return audit.PipelineEvidence{
 			Total: row.Total, Current: row.Current, Pending: row.Pending, Blocked: row.Blocked,
 			Terminal: row.Terminal, Failed: row.Failed, Unknown: row.Unknown,
-			PartitionValid: row.PartitionValid, ByKind: []audit.KindPartition{},
+			PartitionValid: row.PartitionValid, ByKind: byKind,
 		}
 	}
-	return audit.PipelineEvidence{PartitionValid: true, ByKind: []audit.KindPartition{}}
+	return audit.PipelineEvidence{PartitionValid: true, ByKind: byKind}
 }
 
 func (a auditSnapshotAdapter) Provenance(ctx context.Context) ([]audit.ProvenanceEvidence, error) {
@@ -122,7 +129,7 @@ func (l auditArchiveLister) List(ctx context.Context) (audit.SQLiteArchiveListin
 	}
 	objects := make([]audit.ArchiveObject, 0, len(value.Objects))
 	for _, object := range value.Objects {
-		objects = append(objects, audit.ArchiveObject{SizeBytes: object.Size, LastModified: object.LastModified})
+		objects = append(objects, audit.ArchiveObject{Key: object.Key, ValidKey: sqlitearchive.IsSQLiteArchiveKey(object.Key, l.prefix), SizeBytes: object.Size, LastModified: object.LastModified})
 	}
 	return audit.SQLiteArchiveListing{ConfigurationState: "required_ready", Complete: value.Complete, Objects: objects}, nil
 }

@@ -12,6 +12,7 @@ import (
 )
 
 const defaultInspectObjectLimit = 10_000
+const defaultInspectPageLimit = 100
 
 type Listing struct {
 	Objects  []Object
@@ -60,7 +61,13 @@ func (i *S3Inspector) ListObjects(ctx context.Context, prefix string, maxObjects
 	}
 	listing := Listing{Objects: []Object{}, Complete: false}
 	var token *string
+	seenTokens := map[string]struct{}{}
+	pages := 0
 	for len(listing.Objects) < maxObjects {
+		if pages >= defaultInspectPageLimit {
+			return listing, fmt.Errorf("list archive metadata: page budget exhausted")
+		}
+		pages++
 		remaining := maxObjects - len(listing.Objects)
 		if remaining > 1000 {
 			remaining = 1000
@@ -85,9 +92,17 @@ func (i *S3Inspector) ListObjects(ctx context.Context, prefix string, maxObjects
 			listing.Complete = true
 			return listing, nil
 		}
+		if len(page.Contents) == 0 {
+			return Listing{}, fmt.Errorf("list archive metadata: truncated page made zero progress")
+		}
 		if page.NextContinuationToken == nil || strings.TrimSpace(aws.ToString(page.NextContinuationToken)) == "" {
 			return Listing{}, fmt.Errorf("list archive metadata: truncated page missing continuation token")
 		}
+		next := strings.TrimSpace(aws.ToString(page.NextContinuationToken))
+		if _, exists := seenTokens[next]; exists {
+			return Listing{}, fmt.Errorf("list archive metadata: repeated continuation token")
+		}
+		seenTokens[next] = struct{}{}
 		token = page.NextContinuationToken
 	}
 	return listing, nil

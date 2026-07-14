@@ -63,26 +63,35 @@ func ValidateRestorableDatabase(ctx context.Context, path string) error {
 	return result.migrationCompatibilityErr
 }
 
-func validateDbrainCoreSchema(st *Store) error {
+func inspectDbrainCoreSchema(st *Store) (int, int, error) {
+	missingTables, missingColumns := 0, 0
+	var firstMissing error
 	for _, required := range dbrainCoreSchema {
 		exists, err := st.tableExists(required.name)
 		if err != nil {
-			return fmt.Errorf("inspect dbrain core schema table %s: %w", required.name, err)
+			return missingTables, missingColumns, fmt.Errorf("inspect dbrain core schema table %s: %w", required.name, err)
 		}
 		if !exists {
-			return fmt.Errorf("dbrain core schema table %s is missing", required.name)
+			missingTables++
+			if firstMissing == nil {
+				firstMissing = fmt.Errorf("dbrain core schema table %s is missing", required.name)
+			}
+			continue
 		}
 		columns, err := st.tableColumns(required.name)
 		if err != nil {
-			return fmt.Errorf("inspect dbrain core schema table %s columns: %w", required.name, err)
+			return missingTables, missingColumns, fmt.Errorf("inspect dbrain core schema table %s columns: %w", required.name, err)
 		}
 		for _, column := range required.columns {
 			if !columns[column] {
-				return fmt.Errorf("dbrain core schema column %s.%s is missing", required.name, column)
+				missingColumns++
+				if firstMissing == nil {
+					firstMissing = fmt.Errorf("dbrain core schema column %s.%s is missing", required.name, column)
+				}
 			}
 		}
 	}
-	return nil
+	return missingTables, missingColumns, firstMissing
 }
 
 func validateAppliedSchemaMigrations(ctx context.Context, db *sql.DB, userVersion int) error {

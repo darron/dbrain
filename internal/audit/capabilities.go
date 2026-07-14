@@ -100,6 +100,8 @@ type OKFInspector interface {
 	Inspect(context.Context, bool) (OKFInspection, error)
 }
 type ArchiveObject struct {
+	Key          string
+	ValidKey     bool
 	SizeBytes    int64
 	LastModified time.Time
 }

@@ -3,6 +3,7 @@ package sqlitearchive
 import (
 	"fmt"
 	"io"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -46,11 +47,24 @@ func effectivePrefix(prefix string) string {
 
 func isSQLiteArchiveKey(key string, prefix string) bool {
 	key = filepath.ToSlash(strings.TrimSpace(key))
-	if prefix != "" && !strings.HasPrefix(key, prefix+"/") {
+	prefix = normalizePrefix(prefix)
+	if prefix != "" && path.Dir(key) != prefix {
 		return false
 	}
-	base := filepath.Base(key)
-	return strings.HasPrefix(base, "brain-") && strings.HasSuffix(base, ".db.gz")
+	base := path.Base(key)
+	const start, end = "brain-", ".db.gz"
+	if !strings.HasPrefix(base, start) || !strings.HasSuffix(base, end) {
+		return false
+	}
+	timestamp := strings.TrimSuffix(strings.TrimPrefix(base, start), end)
+	_, err := time.Parse(timestampLayout, timestamp)
+	return err == nil
+}
+
+// IsSQLiteArchiveKey reports whether key has the canonical SQLite archive name
+// under prefix. Audit adapters use the same predicate as restore selection.
+func IsSQLiteArchiveKey(key string, prefix string) bool {
+	return isSQLiteArchiveKey(key, normalizePrefix(prefix))
 }
 
 func objectNewer(a Object, b Object) bool {

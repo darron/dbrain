@@ -28,18 +28,22 @@ type Reader struct {
 }
 
 type Window struct {
-	CoverageStart        time.Time
-	CoverageEnd          time.Time
-	Runs                 []RunRecord
-	Imports              map[string]ImportRecord
-	Markers              []Marker
-	DurationSamples      []time.Duration
-	ParseErrorCount      int
-	ParseErrorPositions  []int64
-	BytesRead            int64
-	EventsRead           int
-	ByteBudgetExhausted  bool
-	EventBudgetExhausted bool
+	CoverageStart          time.Time
+	CoverageEnd            time.Time
+	Runs                   []RunRecord
+	Imports                map[string]ImportRecord
+	Markers                []Marker
+	DurationSamples        []time.Duration
+	ParseErrorCount        int
+	ParseErrorPositions    []int64
+	BytesRead              int64
+	EventsRead             int
+	ByteBudgetExhausted    bool
+	EventBudgetExhausted   bool
+	AttemptCount           int
+	CompletedCount         int
+	LatestAttemptPresent   bool
+	LatestCompletedPresent bool
 }
 
 func (w Window) String() string {
@@ -66,12 +70,13 @@ type StageRecord struct {
 }
 
 type ImportRecord struct {
-	AttemptedAt  time.Time
-	SucceededAt  time.Time
-	AttemptCount int
-	SuccessCount int
-	FailureCount int
-	Daily        []DailyArrival
+	AttemptedAt   time.Time
+	SucceededAt   time.Time
+	LastArrivalAt time.Time
+	AttemptCount  int
+	SuccessCount  int
+	FailureCount  int
+	Daily         []DailyArrival
 }
 
 type DailyArrival struct {
@@ -120,66 +125,50 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		blockBytes = defaultReaderBlockBytes
 	}
 
+	info, err := os.Stat(r.Path)
+	if err != nil {
+		return window, fmt.Errorf("stat resolved metrics file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return window, fmt.Errorf("resolved metrics path is not a regular file")
+	}
 	f, err := os.Open(r.Path)
 	if err != nil {
 		return window, fmt.Errorf("open resolved metrics file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
+	openedInfo, err := f.Stat()
 	if err != nil {
 		return window, fmt.Errorf("stat resolved metrics file: %w", err)
 	}
+	if !openedInfo.Mode().IsRegular() {
+		return window, fmt.Errorf("resolved metrics path is not a regular file")
+	}
 	startOffset := int64(0)
-	if info.Size() > maxBytes {
-		startOffset = info.Size() - maxBytes
-		window.ByteBudgetExhausted = true
-	}
-	data, err := readTailBlocks(ctx, f, startOffset, info.Size(), blockBytes)
-	if err != nil {
-		return window, err
-	}
-	window.BytesRead = int64(len(data))
-	baseOffset := startOffset
-	if startOffset > 0 {
-		if index := bytes.IndexByte(data, '\n'); index >= 0 {
-			baseOffset += int64(index + 1)
-			data = data[index+1:]
-		} else {
-			return window, nil
-		}
+	if openedInfo.Size() > maxBytes {
+		startOffset = openedInfo.Size() - maxBytes
 	}
 
 	runs := map[string]*RunRecord{}
 	daily := map[string]map[string]*DailyArrival{}
-	position := baseOffset
-	for len(data) > 0 {
+	foundBoundary := false
+	window.BytesRead, err = readLinesReverse(ctx, f, startOffset, openedInfo.Size(), blockBytes, func(line []byte, linePosition int64) bool {
 		if err := ctx.Err(); err != nil {
-			return window, err
+			return false
 		}
-		lineEnd := bytes.IndexByte(data, '\n')
-		var line []byte
-		if lineEnd < 0 {
-			line = data
-			data = nil
-		} else {
-			line = data[:lineEnd]
-			data = data[lineEnd+1:]
-		}
-		linePosition := position
-		position += int64(len(line) + 1)
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
-			continue
+			return true
 		}
 		if window.EventsRead >= maxEvents {
 			window.EventBudgetExhausted = true
-			break
+			return false
 		}
 		window.EventsRead++
 		if len(line) > maxLine {
 			window.ParseErrorCount++
 			window.ParseErrorPositions = append(window.ParseErrorPositions, linePosition)
-			continue
+			return true
 		}
 		decoder := json.NewDecoder(bytes.NewReader(line))
 		decoder.UseNumber()
@@ -187,16 +176,35 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		if err := decoder.Decode(&event); err != nil {
 			window.ParseErrorCount++
 			window.ParseErrorPositions = append(window.ParseErrorPositions, linePosition)
-			continue
+			return true
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			window.ParseErrorCount++
+			window.ParseErrorPositions = append(window.ParseErrorPositions, linePosition)
+			return true
+		}
+		if schema, _ := event["schema"].(string); schema != SchemaVersion {
+			window.ParseErrorCount++
+			window.ParseErrorPositions = append(window.ParseErrorPositions, linePosition)
+			return true
+		}
+		name, _ := event["event"].(string)
+		if strings.TrimSpace(name) == "" {
+			window.ParseErrorCount++
+			window.ParseErrorPositions = append(window.ParseErrorPositions, linePosition)
+			return true
 		}
 		at, ok := eventTime(event, "emitted_at")
 		if !ok {
 			window.ParseErrorCount++
 			window.ParseErrorPositions = append(window.ParseErrorPositions, linePosition)
-			continue
+			return true
 		}
 		if at.Before(start) {
-			continue
+			window.CoverageStart = at
+			foundBoundary = true
+			return false
 		}
 		if window.CoverageStart.IsZero() || at.Before(window.CoverageStart) {
 			window.CoverageStart = at
@@ -204,7 +212,6 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		if window.CoverageEnd.IsZero() || at.After(window.CoverageEnd) {
 			window.CoverageEnd = at
 		}
-		name, _ := event["event"].(string)
 		runID, _ := event["run_id"].(string)
 		var run *RunRecord
 		if runID != "" {
@@ -217,24 +224,30 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		switch name {
 		case "sync.run.started":
 			if run == nil {
-				continue
+				return true
 			}
-			run.StartedAt, _ = eventTime(event, "started_at")
-			run.Invocation, _ = event["invocation"].(string)
-			run.SelectedStages = stringSlice(event["selected_stages"])
+			if startedAt, ok := eventTime(event, "started_at"); ok {
+				run.StartedAt = startedAt
+			}
+			if invocation, _ := event["invocation"].(string); invocation != "" {
+				run.Invocation = invocation
+			}
+			if selected := stringSlice(event["selected_stages"]); len(selected) > 0 {
+				run.SelectedStages = selected
+			}
 		case "sync.stage.completed":
 			if run == nil {
-				continue
+				return true
 			}
 			stage, _ := event["stage"].(string)
 			if stage == "" {
-				continue
+				return true
 			}
 			status, _ := event["status"].(string)
 			run.CompletedStages[stage] = StageRecord{Status: status, CompletedAt: firstTime(event, "completed_at", at), Duration: millisDuration(event["duration_ms"])}
 		case "sync.run.completed":
 			if run == nil {
-				continue
+				return true
 			}
 			if run.StartedAt.IsZero() {
 				run.StartedAt, _ = eventTime(event, "started_at")
@@ -254,10 +267,27 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 			explains := name != "scheduler.sync.overlap_skipped"
 			window.Markers = append(window.Markers, Marker{Event: name, At: at, ExplainsContinuity: explains})
 		}
+		return true
+	})
+	if err != nil {
+		return window, err
 	}
+	if err := ctx.Err(); err != nil {
+		return window, err
+	}
+	window.ByteBudgetExhausted = startOffset > 0 && !foundBoundary
 
 	for _, run := range runs {
+		if run.Duration == 0 && !run.StartedAt.IsZero() && !run.CompletedAt.IsZero() {
+			run.Duration = run.CompletedAt.Sub(run.StartedAt)
+		}
 		run.RecordComplete = !run.StartedAt.IsZero() && !run.CompletedAt.IsZero()
+		if !run.StartedAt.IsZero() {
+			window.AttemptCount++
+		}
+		if !run.CompletedAt.IsZero() {
+			window.CompletedCount++
+		}
 		if run.Status == "ok" {
 			for _, stage := range run.CompletedStages {
 				if stage.Status == "error" {
@@ -270,7 +300,10 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 			window.DurationSamples = append(window.DurationSamples, run.Duration)
 		}
 	}
+	window.LatestAttemptPresent = window.AttemptCount > 0
+	window.LatestCompletedPresent = window.CompletedCount > 0
 	sort.Slice(window.Runs, func(i, j int) bool { return window.Runs[i].StartedAt.Before(window.Runs[j].StartedAt) })
+	sort.Slice(window.Markers, func(i, j int) bool { return window.Markers[i].At.Before(window.Markers[j].At) })
 	for source, days := range daily {
 		record := window.Imports[source]
 		keys := make([]string, 0, len(days))
@@ -286,11 +319,13 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 	return window, nil
 }
 
-func readTailBlocks(ctx context.Context, f *os.File, start, end int64, block int) ([]byte, error) {
-	var chunks [][]byte
+func readLinesReverse(ctx context.Context, f *os.File, start, end int64, block int, visit func([]byte, int64) bool) (int64, error) {
+	var carry []byte
+	fileEnd := end
+	var bytesRead int64
 	for end > start {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return bytesRead, err
 		}
 		size := int64(block)
 		if end-start < size {
@@ -299,16 +334,35 @@ func readTailBlocks(ctx context.Context, f *os.File, start, end int64, block int
 		offset := end - size
 		buf := make([]byte, size)
 		if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
-			return nil, fmt.Errorf("read resolved metrics file: %w", err)
+			return bytesRead, fmt.Errorf("read resolved metrics file: %w", err)
 		}
-		chunks = append(chunks, buf)
+		bytesRead += int64(len(buf))
+		data := make([]byte, 0, len(buf)+len(carry))
+		data = append(data, buf...)
+		data = append(data, carry...)
+		limit := len(data)
+		if end == fileEnd && limit > 0 && data[limit-1] == '\n' {
+			limit--
+		}
+		for limit > 0 {
+			index := bytes.LastIndexByte(data[:limit], '\n')
+			if index < 0 {
+				break
+			}
+			if !visit(data[index+1:limit], offset+int64(index+1)) {
+				return bytesRead, nil
+			}
+			limit = index
+		}
+		carry = append(carry[:0], data[:limit]...)
 		end = offset
 	}
-	var out []byte
-	for i := len(chunks) - 1; i >= 0; i-- {
-		out = append(out, chunks[i]...)
+	if start == 0 && len(carry) > 0 {
+		if !visit(carry, 0) {
+			return bytesRead, nil
+		}
 	}
-	return out, nil
+	return bytesRead, nil
 }
 
 func eventTime(event map[string]any, key string) (time.Time, bool) {
@@ -388,7 +442,6 @@ func collectImport(event map[string]any, at time.Time, imports map[string]Import
 	} else {
 		record.FailureCount++
 	}
-	imports[source] = record
 	if daily[source] == nil {
 		daily[source] = map[string]*DailyArrival{}
 	}
@@ -406,6 +459,10 @@ func collectImport(event map[string]any, at time.Time, imports map[string]Import
 	row.Linked += count(counts["linked"])
 	row.Blocked += count(counts["blocked"])
 	row.Failed += count(counts["failed"])
+	if row.Created+row.Updated > 0 && (record.LastArrivalAt.IsZero() || completed.After(record.LastArrivalAt)) {
+		record.LastArrivalAt = completed
+	}
+	imports[source] = record
 }
 func count(value any) int {
 	n, ok := integer(value)

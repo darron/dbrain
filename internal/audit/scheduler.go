@@ -21,7 +21,10 @@ func executeScheduler(_ context.Context, s *runState, e RegistryEntry) Check {
 	switch e.ID {
 	case CheckMetricsWindow:
 		covered := s.metrics.CoverageEnd.Sub(s.metrics.CoverageStart)
-		status := MetricsWindowStatus(s.req.Since, covered, len(s.metrics.Runs), len(s.metrics.Runs) > 0, len(s.metrics.Runs) > 0, interval)
+		status := MetricsWindowStatus(s.req.Since, covered, s.metrics.CompletedCount, s.metrics.LatestAttemptPresent, s.metrics.LatestCompletedPresent, interval)
+		if s.metrics.ByteBudgetExhausted || s.metrics.EventBudgetExhausted {
+			status = StatusUnknown
+		}
 		c := ConfidenceHigh
 		if status == StatusWarn {
 			c = ConfidenceModerate
@@ -29,16 +32,17 @@ func executeScheduler(_ context.Context, s *runState, e RegistryEntry) Check {
 		if status == StatusUnknown {
 			c = ConfidenceUnknown
 		}
-		return baseCheck(e, s.now, status, c, Evidence{"requested_seconds": seconds(s.req.Since), "covered_seconds": seconds(covered), "completed_attempt_count": len(s.metrics.Runs), "latest_attempt_present": len(s.metrics.Runs) > 0, "latest_completed_present": len(s.metrics.Runs) > 0, "parse_error_count": s.metrics.ParseErrorCount})
+		return baseCheck(e, s.observedAt(), status, c, Evidence{"requested_seconds": seconds(s.req.Since), "covered_seconds": seconds(covered), "completed_attempt_count": s.metrics.CompletedCount, "latest_attempt_present": s.metrics.LatestAttemptPresent, "latest_completed_present": s.metrics.LatestCompletedPresent, "parse_error_count": s.metrics.ParseErrorCount})
 	case CheckSchedulerLatestSync:
 		run, ok := latestRun(s.metrics.Runs)
 		if !ok {
 			return unknownCheck(e, ErrorUnavailable, s.now)
 		}
-		observed := run.CompletedAt
-		if observed.IsZero() {
-			observed = run.StartedAt
+		if !run.RecordComplete || run.CompletedAt.IsZero() {
+			ev := Evidence{"latest_attempt_at": run.StartedAt.UTC().Format(time.RFC3339), "age_seconds": seconds(s.now.Sub(run.StartedAt)), "warn_after_seconds": seconds(warn), "fail_after_seconds": seconds(fail), "duration_allowance_seconds": seconds(allowance), "duration_allowance_source": string(source)}
+			return baseCheck(e, s.observedAt(), StatusUnknown, ConfidenceUnknown, ev)
 		}
+		observed := run.CompletedAt
 		age := s.now.Sub(observed)
 		status := ClassifyAge(age, warn, fail)
 		if run.Status == "error" {
@@ -48,7 +52,10 @@ func executeScheduler(_ context.Context, s *runState, e RegistryEntry) Check {
 		if run.Status == "ok" {
 			ev["latest_success_at"] = observed.UTC().Format(time.RFC3339)
 		}
-		return baseCheck(e, s.now, status, confidence, ev)
+		if s.metrics.ByteBudgetExhausted || s.metrics.EventBudgetExhausted {
+			return baseCheck(e, s.observedAt(), StatusUnknown, ConfidenceUnknown, ev)
+		}
+		return baseCheck(e, s.observedAt(), status, confidence, ev)
 	case CheckSchedulerStageCoverage:
 		run, ok := latestRun(s.metrics.Runs)
 		if !ok {
@@ -77,8 +84,11 @@ func executeScheduler(_ context.Context, s *runState, e RegistryEntry) Check {
 		return baseCheck(e, s.now, status, c, Evidence{"expected_stage_count": len(expected), "completed_stage_count": len(run.CompletedStages), "missing_stage_count": missing, "record_complete": run.RecordComplete})
 	case CheckSchedulerContinuity:
 		covered := s.metrics.CoverageEnd.Sub(s.metrics.CoverageStart)
-		windowStatus := MetricsWindowStatus(s.req.Since, covered, len(s.metrics.Runs), len(s.metrics.Runs) > 0, len(s.metrics.Runs) > 0, interval)
-		base := Evidence{"observed_attempt_count": len(s.metrics.Runs), "gap_count": 0, "explained_gap_count": 0, "unexplained_gap_count": 0, "largest_gap_seconds": 0, "warn_after_seconds": seconds(warn), "fail_after_seconds": seconds(fail)}
+		windowStatus := MetricsWindowStatus(s.req.Since, covered, s.metrics.CompletedCount, s.metrics.LatestAttemptPresent, s.metrics.LatestCompletedPresent, interval)
+		if s.metrics.ByteBudgetExhausted || s.metrics.EventBudgetExhausted {
+			windowStatus = StatusUnknown
+		}
+		base := Evidence{"observed_attempt_count": s.metrics.AttemptCount, "gap_count": 0, "explained_gap_count": 0, "unexplained_gap_count": 0, "largest_gap_seconds": 0, "warn_after_seconds": seconds(warn), "fail_after_seconds": seconds(fail)}
 		if windowStatus == StatusUnknown {
 			return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, base)
 		}

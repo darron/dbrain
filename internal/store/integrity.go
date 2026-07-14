@@ -22,6 +22,8 @@ type DatabaseIntegrity struct {
 	UserVersion               int    `json:"user_version"`
 	SupportedVersion          int    `json:"supported_version"`
 	AppliedMigrationCount     int    `json:"applied_migration_count"`
+	MissingTableCount         int    `json:"missing_table_count"`
+	MissingColumnCount        int    `json:"missing_column_count"`
 	schemaCompatibilityErr    error
 	migrationCompatibilityErr error
 }
@@ -46,7 +48,7 @@ func InspectDatabaseReadOnly(ctx context.Context, path string, includeIntegrity 
 	}
 
 	st := &Store{db: db}
-	result.schemaCompatibilityErr = validateDbrainCoreSchema(st)
+	result.MissingTableCount, result.MissingColumnCount, result.schemaCompatibilityErr = inspectDbrainCoreSchema(st)
 	result.SchemaCompatibility = databaseCompatibilityIncompatible
 	if result.schemaCompatibilityErr == nil {
 		result.SchemaCompatibility = databaseCompatibilityCurrent

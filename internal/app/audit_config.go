@@ -75,7 +75,7 @@ func resolveAuditFeatures(cfg config.Config, meta auditConfigMeta) (audit.Featur
 		Layout: meta.Layout, ConfigSource: meta.Source, ConfigVerified: configVerified,
 		SchedulerEnabled: scheduler.Enabled, SchedulerInterval: scheduler.Interval, SchedulerJitter: scheduler.Jitter,
 		SelectedStages: selected, Sources: sources, Stages: stages,
-		MediaLocalEnabled: flags.archiveMedia, MediaRemoteEnabled: flags.archiveMedia, MediaProvider: mediaProvider,
+		MediaLocalEnabled: flags.archiveMedia || !flags.skipXMedia || !flags.skipXPhotoOCR, MediaRemoteEnabled: flags.archiveMedia, MediaProvider: mediaProvider,
 		SQLiteArchiveCapabilityConfigured: provider || credential,
 		SQLiteBackupSchedulerEnabled:      runtimeenv.FirstBool(cfg.RootDir, "DBRAIN_SCHEDULER_SQLITE_ARCHIVE_ENABLED"),
 		SQLiteBackupAuditRequired:         runtimeenv.FirstBool(cfg.RootDir, "DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP"),

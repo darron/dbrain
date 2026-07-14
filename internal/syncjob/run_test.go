@@ -71,6 +71,43 @@ func TestEmitSyncImportMetricsEmitsAllSevenContentFreeFamilies(t *testing.T) {
 	}
 }
 
+func TestEmitSyncImportMetricRecordsFailureWithoutStageStats(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "failed_import", Command: "sync all", Sink: sink}
+	opts := newStageOptions(Options{GitHubEnabled: true})
+	emitSyncImportStageMetric(run, opts, syncStageGitHub, Stats{}, errors.New("failed before stats"))
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := readSyncMetricEvents(t, path)
+	if len(events) != 1 || events[0]["source"] != "github_stars" || events[0]["status"] != "error" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestEmitYouTubeImportMetricsOnlyForSelectedFeedsWithPerFeedStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "youtube_import", Command: "sync all", Sink: sink}
+	opts := newStageOptions(Options{YouTubeEnabled: true, WatchLater: true, Liked: false})
+	stats := Stats{YouTube: &YouTubeStage{Duration: time.Second, Stats: youtubeimport.Stats{WatchLater: youtubeimport.FeedStats{Errors: 1}, Liked: youtubeimport.FeedStats{ItemsCreated: 5}}}}
+	emitSyncImportStageMetric(run, opts, syncStageYouTube, stats, nil)
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := readSyncMetricEvents(t, path)
+	if len(events) != 1 || events[0]["source"] != "youtube_watch_later" || events[0]["status"] != "error" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
 func TestRunEmitsMetricsRunAndStageEvents(t *testing.T) {
 	cfg, st := testSyncStore(t)
 	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")

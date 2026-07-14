@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,15 +143,41 @@ func TestAuditCLIEmitsCompleteStandardReportBeforeHealthExit(t *testing.T) {
 func TestLocalAuditWrapperBoundsAndUsesEmptyArrays(t *testing.T) {
 	values := make([]string, 0, 105)
 	for i := 0; i < 105; i++ {
-		values = append(values, "value")
+		values = append(values, fmt.Sprintf("value-%03d", 104-i))
 	}
-	wrapper := newLocalAuditWrapper(audit.NewReport(audit.ProfileStandard, fixedAuditTime), LocalAuditTarget{}, map[audit.CheckID]LocalAuditIdentifiers{audit.CheckBoundaryConfig: {RowIDs: append([]int64(nil), make([]int64, 105)...), SourceKeys: values, CleanupPaths: values}})
+	rowIDs := make([]int64, 105)
+	for index := range rowIDs {
+		rowIDs[index] = int64(104 - index)
+	}
+	target := LocalAuditTarget{ConfigPath: "/config", Database: "/database", Vault: "/vault", Metrics: "/metrics", Temporary: "/temporary", Media: "/media", OKFRoot: "/okf"}
+	wrapper := newLocalAuditWrapper(audit.NewReport(audit.ProfileStandard, fixedAuditTime), target, map[audit.CheckID]LocalAuditIdentifiers{audit.CheckBoundaryConfig: {RowIDs: rowIDs, SourceKeys: values, CleanupPaths: values}})
 	if wrapper.Schema != "dbrain.audit.local.v1" || len(wrapper.LocalDetails.Checks) != 1 {
 		t.Fatalf("wrapper = %#v", wrapper)
 	}
 	item := wrapper.LocalDetails.Checks[0]
 	if len(item.RowIDs) != 100 || len(item.SourceKeys) != 100 || len(item.CleanupPaths) != 20 || !item.Truncated {
 		t.Fatalf("bounds = %#v", item)
+	}
+	if item.RowIDs[0] != 0 || item.SourceKeys[0] != "value-000" || item.CleanupPaths[0] != "value-000" || wrapper.LocalTarget != target {
+		t.Fatalf("deterministic wrapper = %#v", wrapper)
+	}
+	data, err := json.Marshal(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatal(err)
+	}
+	if len(top) != 4 || top["schema"] == nil || top["local_target"] == nil || top["local_details"] == nil || top["report"] == nil {
+		t.Fatalf("top-level wire shape = %s", data)
+	}
+	var details map[string]json.RawMessage
+	if err := json.Unmarshal(top["local_details"], &details); err != nil {
+		t.Fatal(err)
+	}
+	if len(details) != 1 || details["checks"] == nil {
+		t.Fatalf("local_details wire shape = %s", top["local_details"])
 	}
 	empty := newLocalAuditWrapper(audit.NewReport(audit.ProfileStandard, fixedAuditTime), LocalAuditTarget{}, nil)
 	if empty.LocalDetails.Checks == nil {
@@ -197,5 +224,25 @@ sync_all:
 	}
 	if !features.MediaLocalEnabled || !features.MediaRemoteEnabled || !features.OKFEnabled {
 		t.Fatalf("durability features = %#v", features)
+	}
+}
+
+func TestAuditPipelineEvidencePreservesByKindRows(t *testing.T) {
+	got := auditPipelineEvidence([]store.PipelineStageRow{
+		{Kind: "all", Total: 3, Current: 2, Pending: 1, PartitionValid: true},
+		{Kind: "item", Total: 2, Current: 1, Pending: 1, PartitionValid: true},
+		{Kind: "source", Total: 1, Current: 1, PartitionValid: true},
+	})
+	if len(got.ByKind) != 2 || got.ByKind[0].Kind != "item" || got.ByKind[1].Kind != "source" {
+		t.Fatalf("by kind = %#v", got.ByKind)
+	}
+}
+
+func TestAuditNeedsSnapshotHonorsExactCheckScope(t *testing.T) {
+	if auditNeedsSnapshot(audit.Request{CheckIDs: []audit.CheckID{audit.CheckDurabilityOKFFreshness}}) {
+		t.Fatal("OKF-only scope must not open an unrelated database snapshot")
+	}
+	if !auditNeedsSnapshot(audit.Request{CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaLocalCoverage}}) {
+		t.Fatal("media-local scope requires the database snapshot")
 	}
 }

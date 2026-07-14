@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -75,27 +76,75 @@ func executeMediaRemote(ctx context.Context, s *runState, e RegistryEntry) Check
 		provider = "configured"
 	}
 	sample := SelectMediaSample(s.media, s.req.Since, s.now, provider)
-	missing, mismatch, invalid, checked := 0, 0, sample.InvalidCount, 0
-	for _, record := range sample.Records {
-		metadata, err := s.deps.Media.HeadObject(ctx, record.Key)
-		if err != nil {
-			return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, mediaRemoteEvidence(sample, checked, missing, mismatch, invalid, false))
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	type result struct {
+		record   ArchivedMediaRecord
+		metadata ObjectMetadata
+		err      error
+	}
+	jobs := make(chan ArchivedMediaRecord)
+	results := make(chan result, len(sample.Records))
+	workers := 8
+	if len(sample.Records) < workers {
+		workers = len(sample.Records)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for record := range jobs {
+				requestCtx, requestCancel := context.WithTimeout(checkCtx, 30*time.Second)
+				metadata, err := s.deps.Media.HeadObject(requestCtx, record.Key)
+				requestCancel()
+				results <- result{record: record, metadata: metadata, err: err}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, record := range sample.Records {
+			select {
+			case jobs <- record:
+			case <-checkCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() { wg.Wait(); close(results) }()
+	missing, mismatch, invalid, checked, recentChecked, olderChecked := 0, 0, sample.InvalidCount, 0, 0, 0
+	hadError := false
+	cutoff := s.now.Add(-s.req.Since)
+	for value := range results {
+		if value.err != nil {
+			hadError = true
+			cancel()
+			continue
 		}
 		checked++
-		if !metadata.Exists {
+		if value.record.ArchivedAt.Before(cutoff) {
+			olderChecked++
+		} else {
+			recentChecked++
+		}
+		if !value.metadata.Exists {
 			missing++
-		} else if metadata.SizeBytes != record.SizeBytes {
+		} else if value.metadata.SizeBytes != value.record.SizeBytes {
 			mismatch++
 		}
+	}
+	if hadError || checkCtx.Err() != nil {
+		return baseCheck(e, s.observedAt(), StatusUnknown, ConfidenceUnknown, mediaRemoteEvidence(sample, checked, recentChecked, olderChecked, missing, mismatch, invalid, false))
 	}
 	status := StatusPass
 	if missing > 0 || mismatch > 0 || invalid > 0 {
 		status = StatusFail
 	}
-	return baseCheck(e, s.now, status, sample.Confidence, mediaRemoteEvidence(sample, checked, missing, mismatch, invalid, true))
+	return baseCheck(e, s.observedAt(), status, sample.Confidence, mediaRemoteEvidence(sample, checked, recentChecked, olderChecked, missing, mismatch, invalid, true))
 }
-func mediaRemoteEvidence(sample MediaSample, checked, missing, mismatch, invalid int, complete bool) Evidence {
-	return Evidence{"population_count": sample.RecentPopulation + sample.OlderPopulation + sample.InvalidCount, "checked_count": checked, "recent_population_count": sample.RecentPopulation, "recent_checked_count": sample.RecentChecked, "older_population_count": sample.OlderPopulation, "older_checked_count": sample.OlderChecked, "missing_count": missing, "size_mismatch_count": mismatch, "invalid_timestamp_count": invalid, "sample_mode": sample.Mode, "inventory_complete": complete}
+func mediaRemoteEvidence(sample MediaSample, checked, recentChecked, olderChecked, missing, mismatch, invalid int, complete bool) Evidence {
+	return Evidence{"population_count": sample.RecentPopulation + sample.OlderPopulation + sample.InvalidCount, "checked_count": checked, "recent_population_count": sample.RecentPopulation, "recent_checked_count": recentChecked, "older_population_count": sample.OlderPopulation, "older_checked_count": olderChecked, "missing_count": missing, "size_mismatch_count": mismatch, "invalid_timestamp_count": invalid, "sample_mode": sample.Mode, "inventory_complete": complete}
 }
 func sqliteConfigurationState(f Features) string {
 	switch {
@@ -123,15 +172,21 @@ func executeBackupAge(s *runState, e RegistryEntry) Check {
 		return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
 	}
 	ev["listing_complete"] = s.archives.Complete
-	ev["archive_count"] = len(s.archives.Objects)
 	if !s.archives.Complete {
 		return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
 	}
-	if len(s.archives.Objects) == 0 {
+	valid := make([]ArchiveObject, 0, len(s.archives.Objects))
+	for _, object := range s.archives.Objects {
+		if object.ValidKey && object.SizeBytes > 0 && !object.LastModified.IsZero() && !object.LastModified.After(s.now) {
+			valid = append(valid, object)
+		}
+	}
+	ev["archive_count"] = len(valid)
+	if len(valid) == 0 {
 		return baseCheck(e, s.now, StatusFail, ConfidenceHigh, ev)
 	}
-	latest := s.archives.Objects[0]
-	for _, object := range s.archives.Objects[1:] {
+	latest := valid[0]
+	for _, object := range valid[1:] {
 		if object.LastModified.After(latest.LastModified) {
 			latest = object
 		}

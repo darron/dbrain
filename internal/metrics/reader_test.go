@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -44,6 +46,93 @@ func TestReaderReconstructsRunsPollsArrivalsAndExplicitMarkers(t *testing.T) {
 	}
 	if len(window.Markers) != 4 || !window.Markers[1].ExplainsContinuity || window.Markers[2].ExplainsContinuity || !window.Markers[3].ExplainsContinuity {
 		t.Fatalf("markers = %#v", window.Markers)
+	}
+}
+
+func TestReaderRejectsNonRegularPathBeforeOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes use Unix filesystem semantics")
+	}
+	path := filepath.Join(t.TempDir(), "metrics.fifo")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	_, err := NewReader(path).Read(ctx, time.Time{})
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("error = %v, want non-regular rejection", err)
+	}
+}
+
+func TestReaderRejectsWrongSchemaAndTrailingJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	valid, _ := json.Marshal(map[string]any{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "valid", "emitted_at": base.Format(time.RFC3339), "started_at": base.Format(time.RFC3339)})
+	wrongSchema, _ := json.Marshal(map[string]any{"schema": "dbrain.metrics.v0", "event": "sync.run.started", "run_id": "wrong", "emitted_at": base.Format(time.RFC3339)})
+	missingSchema, _ := json.Marshal(map[string]any{"event": "sync.run.started", "run_id": "missing", "emitted_at": base.Format(time.RFC3339)})
+	content := string(wrongSchema) + "\n" + string(missingSchema) + "\n" + string(valid) + ` {"trailing":true}` + "\n" + string(valid) + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	window, err := NewReader(path).Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.ParseErrorCount != 3 || len(window.Runs) != 1 || window.Runs[0].ID != "valid" {
+		t.Fatalf("window = %#v", window)
+	}
+}
+
+func TestReaderReadsNewestFirstUntilPreWindowBoundaryBeforeEventBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	events := make([]map[string]any, 0, 7)
+	for i := 0; i < 5; i++ {
+		events = append(events, map[string]any{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "old-" + string(rune('a'+i)), "emitted_at": base.Add(time.Duration(i-10) * time.Hour).Format(time.RFC3339), "started_at": base.Add(time.Duration(i-10) * time.Hour).Format(time.RFC3339)})
+	}
+	for i := 0; i < 2; i++ {
+		events = append(events, map[string]any{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "recent-" + string(rune('a'+i)), "emitted_at": base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339), "started_at": base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)})
+	}
+	writeMetricEvents(t, path, events)
+	reader := NewReader(path)
+	reader.MaxEvents = 3
+	reader.BlockBytes = 64
+	window, err := reader.Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Runs) != 2 || window.EventBudgetExhausted || !window.CoverageStart.Before(base.Add(-time.Hour)) {
+		t.Fatalf("window = %#v", window)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.BytesRead <= 0 || window.BytesRead >= info.Size() {
+		t.Fatalf("bytes read = %d, file size = %d", window.BytesRead, info.Size())
+	}
+}
+
+func TestReaderSeparatesAttemptsCompletionsAndActualArrivals(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	writeMetricEvents(t, path, []map[string]any{
+		{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "complete", "emitted_at": base.Format(time.RFC3339), "started_at": base.Format(time.RFC3339)},
+		{"schema": SchemaVersion, "event": "sync.run.completed", "run_id": "complete", "emitted_at": base.Add(time.Minute).Format(time.RFC3339), "completed_at": base.Add(time.Minute).Format(time.RFC3339), "status": "ok"},
+		{"schema": SchemaVersion, "event": "sync.import.completed", "source": "feeds", "emitted_at": base.Add(2 * time.Minute).Format(time.RFC3339), "status": "ok", "counts": map[string]int{"created": 2}},
+		{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "incomplete", "emitted_at": base.Add(3 * time.Minute).Format(time.RFC3339), "started_at": base.Add(3 * time.Minute).Format(time.RFC3339)},
+		{"schema": SchemaVersion, "event": "sync.import.completed", "source": "feeds", "emitted_at": base.Add(4 * time.Minute).Format(time.RFC3339), "status": "ok", "counts": map[string]int{"unchanged": 4}},
+	})
+	window, err := NewReader(path).Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.AttemptCount != 2 || window.CompletedCount != 1 || !window.LatestAttemptPresent || !window.LatestCompletedPresent {
+		t.Fatalf("attempt/completion truth = %#v", window)
+	}
+	if got := window.Imports["feeds"].LastArrivalAt; !got.Equal(base.Add(2 * time.Minute)) {
+		t.Fatalf("last arrival = %s", got)
 	}
 }
 

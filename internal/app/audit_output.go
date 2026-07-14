@@ -11,7 +11,10 @@ const localAuditSchemaV1 = "dbrain.audit.local.v1"
 type LocalAuditTarget struct {
 	ConfigPath string `json:"config_path,omitempty"`
 	Database   string `json:"database,omitempty"`
+	Vault      string `json:"vault,omitempty"`
 	Metrics    string `json:"metrics,omitempty"`
+	Temporary  string `json:"temporary,omitempty"`
+	Media      string `json:"media,omitempty"`
 	OKFRoot    string `json:"okf_root,omitempty"`
 }
 
@@ -30,14 +33,14 @@ type LocalAuditCheckDetail struct {
 }
 
 type LocalAuditDetails struct {
-	Target LocalAuditTarget        `json:"target"`
 	Checks []LocalAuditCheckDetail `json:"checks"`
 }
 
 type LocalAuditWrapper struct {
 	Schema       string            `json:"schema"`
-	Report       audit.Report      `json:"report"`
+	LocalTarget  LocalAuditTarget  `json:"local_target"`
 	LocalDetails LocalAuditDetails `json:"local_details"`
+	Report       audit.Report      `json:"report"`
 }
 
 func newLocalAuditWrapper(report audit.Report, target LocalAuditTarget, values map[audit.CheckID]LocalAuditIdentifiers) LocalAuditWrapper {
@@ -49,6 +52,9 @@ func newLocalAuditWrapper(report audit.Report, target LocalAuditTarget, values m
 	checks := make([]LocalAuditCheckDetail, 0, len(ids))
 	for _, id := range ids {
 		value := values[id]
+		sort.Slice(value.RowIDs, func(i, j int) bool { return value.RowIDs[i] < value.RowIDs[j] })
+		sort.Strings(value.SourceKeys)
+		sort.Strings(value.CleanupPaths)
 		rowIDs, rowCut := boundedSlice(value.RowIDs, 100)
 		sourceKeys, sourceCut := boundedSlice(value.SourceKeys, 100)
 		cleanupPaths, cleanupCut := boundedSlice(value.CleanupPaths, 20)
@@ -59,8 +65,9 @@ func newLocalAuditWrapper(report audit.Report, target LocalAuditTarget, values m
 	}
 	return LocalAuditWrapper{
 		Schema:       localAuditSchemaV1,
+		LocalTarget:  target,
 		Report:       report,
-		LocalDetails: LocalAuditDetails{Target: target, Checks: checks},
+		LocalDetails: LocalAuditDetails{Checks: checks},
 	}
 }
 

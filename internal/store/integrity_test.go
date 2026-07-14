@@ -53,6 +53,9 @@ func TestInspectDatabaseReadOnlyDoesNotCreateMigrationMetadata(t *testing.T) {
 	if got.QuickCheck != "ok" || got.SchemaCompatibility != "incompatible" || got.MigrationCompatibility != "legacy_compatible" {
 		t.Fatalf("unexpected foreign inspection: %+v", got)
 	}
+	if got.MissingTableCount != 2 || got.MissingColumnCount != 0 {
+		t.Fatalf("missing schema counts = tables:%d columns:%d", got.MissingTableCount, got.MissingColumnCount)
+	}
 
 	db, err = sql.Open(driverName, path)
 	if err != nil {

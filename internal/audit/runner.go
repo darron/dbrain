@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/darron/dbrain/internal/metrics"
@@ -37,9 +38,17 @@ type runState struct {
 	archivesErr            error
 }
 
+func (s *runState) observedAt() time.Time {
+	if s.deps.Clock != nil {
+		return s.deps.Clock().UTC()
+	}
+	return time.Now().UTC()
+}
+
 type checkExecutor func(context.Context, *runState, RegistryEntry) Check
 
 var executors map[CheckID]checkExecutor
+var auditSequence atomic.Uint64
 
 func init() {
 	executors = map[CheckID]checkExecutor{}
@@ -94,7 +103,7 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Report, error) {
 		now = deps.Clock().UTC()
 	}
 	report := NewReport(req.Profile, now)
-	report.AuditID = "audit_" + now.Format("20060102T150405Z")
+	report.AuditID = fmt.Sprintf("audit_%s_%08x", now.Format("20060102T150405.000000000Z07:00"), auditSequence.Add(1))
 	report.Scope = effectiveScope(req)
 	state := &runState{now: now, req: req, deps: deps, provenance: map[CheckID]ProvenanceEvidence{}}
 	state.load(ctx)
@@ -120,9 +129,10 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Report, error) {
 			}
 		}
 		check.Required = required && check.Status != StatusSkipped
+		check.ObservedAt = state.observedAt()
 		report.Checks = append(report.Checks, check)
 	}
-	report.CompletedAt = now
+	report.CompletedAt = state.observedAt()
 	report.Boundary = Boundary{Layout: deps.Features.Layout, ConfigVerified: deps.Features.ConfigVerified, DatabaseVerified: deps.Features.DatabaseOpenedQueryOnly, Version: deps.Runtime.ReleaseVersion, Commit: deps.Runtime.Commit, GitStatus: normalizeGitStatus(deps.Runtime.GitStatus), Platform: deps.Runtime.Platform, SecurityBaseline: deps.Runtime.SecurityBaselineID, SecurityBaselineEpoch: deps.Runtime.SecurityBaselineEpoch, SchemaVersion: state.database.UserVersion, SchemaCompatibility: state.database.SchemaCompatibility}
 	FinalizeReport(&report)
 	if err := ValidateReport(report); err != nil {
@@ -132,64 +142,137 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Report, error) {
 }
 
 func (s *runState) load(ctx context.Context) {
-	if s.deps.Database != nil {
-		s.database, s.databaseErr = s.deps.Database.Inspect(ctx, s.req.Profile == ProfileStandard)
-	} else {
-		s.databaseErr = errCapabilityUnavailable
+	selected := func(id CheckID) bool {
+		entry, ok := Lookup(id)
+		return ok && scopeIncludes(s.req, entry) && entry.InProfile(s.req.Profile) && featureEnabled(entry, s.deps.Features)
 	}
-	if s.deps.Metrics != nil {
-		s.metrics, s.metricsErr = s.deps.Metrics.Read(ctx, s.now.Add(-s.req.Since))
-	} else {
-		s.metricsErr = errCapabilityUnavailable
+	selectedCategory := func(category Category) bool {
+		for _, entry := range Registry() {
+			if entry.Category == category && selected(entry.ID) {
+				return true
+			}
+		}
+		return false
 	}
-	if s.deps.Store != nil {
-		s.pipeline, s.pipelineErr = s.deps.Store.Pipeline(ctx)
-		list, err := s.deps.Store.Provenance(ctx)
-		s.provenanceErr = err
-		for _, item := range list {
-			s.provenance[item.CheckID] = item
+	inspectDatabase := selected(CheckIntegritySchemaIdentity) || selected(CheckIntegrityMigrationCompatibility) || selected(CheckIntegritySQLiteQuickCheck) || selected(CheckIntegrityForeignKeys)
+	if inspectDatabase {
+		if s.deps.Database != nil {
+			full := selected(CheckIntegritySQLiteQuickCheck) || selected(CheckIntegrityForeignKeys)
+			s.database, s.databaseErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutSQLiteOrOKFIntegrity), func(child context.Context) (DatabaseInspection, error) { return s.deps.Database.Inspect(child, full) })
+		} else {
+			s.databaseErr = errCapabilityUnavailable
 		}
-		if s.deps.Features.MediaLocalEnabled {
-			s.local, s.localErr = s.deps.Store.MediaLocal(ctx)
-		}
-		if s.deps.Features.MediaRemoteEnabled {
-			s.media, s.mediaErr = s.deps.Store.ArchivedMedia(ctx)
-		}
-	} else {
-		s.pipelineErr = errCapabilityUnavailable
-		s.provenanceErr = errCapabilityUnavailable
-		s.localErr = errCapabilityUnavailable
-		s.mediaErr = errCapabilityUnavailable
 	}
-	if s.deps.Features.OKFEnabled && s.deps.OKF != nil {
-		s.okfFast, s.okfFastErr = s.deps.OKF.Inspect(ctx, false)
-		if s.req.Profile == ProfileStandard {
-			s.okfFull, s.okfFullErr = s.deps.OKF.Inspect(ctx, true)
+	if selectedCategory(CategoryScheduler) || selectedCategory(CategoryImports) {
+		if s.deps.Metrics != nil {
+			s.metrics, s.metricsErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutMetricsOrManifest), func(child context.Context) (metrics.Window, error) {
+				return s.deps.Metrics.Read(child, s.now.Add(-s.req.Since))
+			})
+		} else {
+			s.metricsErr = errCapabilityUnavailable
 		}
-	} else if s.deps.Features.OKFEnabled {
-		s.okfFastErr = errCapabilityUnavailable
-		s.okfFullErr = errCapabilityUnavailable
 	}
-	backupRequired := s.deps.Features.SQLiteBackupSchedulerEnabled || s.deps.Features.SQLiteBackupAuditRequired
-	if backupRequired && s.deps.Archives != nil {
-		s.archives, s.archivesErr = s.deps.Archives.List(ctx)
-	} else if backupRequired {
-		s.archivesErr = errCapabilityUnavailable
+	needPipeline := false
+	needProvenance := false
+	for _, entry := range Registry() {
+		if !selected(entry.ID) {
+			continue
+		}
+		if strings.Contains(string(entry.ID), ".partition") || strings.Contains(string(entry.ID), ".pending_age") {
+			needPipeline = true
+		}
+		if strings.Contains(string(entry.ID), ".provenance") {
+			needProvenance = true
+		}
+	}
+	needLocal := selected(CheckDurabilityMediaLocalCoverage)
+	needMedia := selected(CheckDurabilityMediaRemote)
+	if needPipeline || needProvenance || needLocal || needMedia {
+		if s.deps.Store == nil {
+			s.pipelineErr, s.provenanceErr, s.localErr, s.mediaErr = errCapabilityUnavailable, errCapabilityUnavailable, errCapabilityUnavailable, errCapabilityUnavailable
+		} else {
+			if needPipeline {
+				s.pipeline, s.pipelineErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), s.deps.Store.Pipeline)
+			}
+			if needProvenance {
+				list, err := inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), s.deps.Store.Provenance)
+				s.provenanceErr = err
+				for _, item := range list {
+					s.provenance[item.CheckID] = item
+				}
+			}
+			if needLocal {
+				s.local, s.localErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), s.deps.Store.MediaLocal)
+			}
+			if needMedia {
+				s.media, s.mediaErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), s.deps.Store.ArchivedMedia)
+			}
+		}
+	}
+	needOKFFull := selected(CheckDurabilityOKFValidation)
+	needOKFFast := selected(CheckDurabilityOKFFreshness)
+	if needOKFFull || needOKFFast {
+		if s.deps.OKF == nil {
+			s.okfFastErr, s.okfFullErr = errCapabilityUnavailable, errCapabilityUnavailable
+		} else if needOKFFull {
+			s.okfFull, s.okfFullErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutSQLiteOrOKFIntegrity), func(child context.Context) (OKFInspection, error) { return s.deps.OKF.Inspect(child, true) })
+			s.okfFast, s.okfFastErr = s.okfFull, s.okfFullErr
+		} else {
+			s.okfFast, s.okfFastErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutMetricsOrManifest), func(child context.Context) (OKFInspection, error) { return s.deps.OKF.Inspect(child, false) })
+		}
+	}
+	if selected(CheckDurabilitySQLiteBackupAge) {
+		if s.deps.Archives != nil {
+			s.archives, s.archivesErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutRemoteMetadata), s.deps.Archives.List)
+		} else {
+			s.archivesErr = errCapabilityUnavailable
+		}
+	}
+}
+
+func inspectWithTimeout[T any](ctx context.Context, timeout time.Duration, inspect func(context.Context) (T, error)) (T, error) {
+	child, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return inspect(child)
+}
+
+func timeoutFor(profile Profile, class TimeoutClass) time.Duration {
+	switch class {
+	case TimeoutLocalQuery:
+		if profile == ProfileFast {
+			return 5 * time.Second
+		}
+		return 30 * time.Second
+	case TimeoutMetricsOrManifest:
+		return 10 * time.Second
+	case TimeoutSQLiteOrOKFIntegrity, TimeoutRemoteMetadata:
+		return 2 * time.Minute
+	default:
+		return 30 * time.Second
 	}
 }
 
 func effectiveScope(req Request) Scope {
 	filtered := len(req.Categories) > 0 || len(req.Sources) > 0 || len(req.CheckIDs) > 0
-	s := Scope{Categories: []Category{}, Sources: []Source{}, CheckIDs: append([]CheckID{}, req.CheckIDs...), Filtered: filtered, WholeSystem: !filtered}
-	if len(req.Categories) > 0 {
-		s.Categories = append(s.Categories, req.Categories...)
-	} else if !filtered {
+	s := Scope{Categories: []Category{}, Sources: []Source{}, CheckIDs: []CheckID{}, Filtered: filtered, WholeSystem: !filtered}
+	if !filtered {
 		s.Categories = []Category{CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability}
-	}
-	if len(req.Sources) > 0 {
-		s.Sources = append(s.Sources, req.Sources...)
-	} else if !filtered {
 		s.Sources = append(s.Sources, allSources...)
+		return s
+	}
+	for _, entry := range Registry() {
+		if !scopeIncludes(req, entry) {
+			continue
+		}
+		if !containsCategory(s.Categories, entry.Category) {
+			s.Categories = append(s.Categories, entry.Category)
+		}
+		if entry.Source != "" && !containsSource(s.Sources, entry.Source) {
+			s.Sources = append(s.Sources, entry.Source)
+		}
+		if len(req.CheckIDs) > 0 {
+			s.CheckIDs = append(s.CheckIDs, entry.ID)
+		}
 	}
 	return s
 }
@@ -298,9 +381,26 @@ func unknownCheck(e RegistryEntry, code ErrorCode, now time.Time) Check {
 	return Check{ID: e.ID, Category: e.Category, Status: StatusUnknown, Confidence: ConfidenceUnknown, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: Evidence{}, ErrorCode: code}
 }
 func baseCheck(e RegistryEntry, now time.Time, status Status, confidence Confidence, evidence Evidence) Check {
-	return Check{ID: e.ID, Category: e.Category, Status: status, Confidence: confidence, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: evidence}
+	check := Check{ID: e.ID, Category: e.Category, Status: status, Confidence: confidence, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: evidence}
+	warn, warnOK := evidence["warn_after_seconds"]
+	fail, failOK := evidence["fail_after_seconds"]
+	if warnOK && failOK {
+		check.Threshold = &Threshold{WarnAfterSeconds: integerEvidence(warn), FailAfterSeconds: integerEvidence(fail)}
+	}
+	return check
 }
-func fixedSummary(id CheckID) string { return "Audit result for " + string(id) }
+func fixedSummary(id CheckID) string  { return "Audit result for " + string(id) }
+func fixedRemediation(CheckID) string { return "" }
+func integerEvidence(value any) int64 {
+	switch number := value.(type) {
+	case int:
+		return int64(number)
+	case int64:
+		return number
+	default:
+		return 0
+	}
+}
 func normalizeGitStatus(value string) string {
 	switch value {
 	case "clean":
@@ -344,6 +444,9 @@ func executeBoundary(ctx context.Context, s *runState, e RegistryEntry) Check {
 			return baseCheck(e, s.now, StatusFail, ConfidenceHigh, ev)
 		}
 		if !release || !commit || !platform {
+			return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
+		}
+		if normalizeGitStatus(r.GitStatus) == "unknown" {
 			return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
 		}
 		if normalizeGitStatus(r.GitStatus) == "dirty" {

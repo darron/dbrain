@@ -17,8 +17,8 @@ func executeImport(_ context.Context, s *runState, e RegistryEntry) Check {
 			daily = append(daily, map[string]any{"day": row.Day, "created": row.Created, "updated": row.Updated, "unchanged": row.Unchanged, "skipped": row.Skipped, "linked": row.Linked, "blocked": row.Blocked, "failed": row.Failed})
 		}
 		quiet := s.req.Since
-		if ok && !record.AttemptedAt.IsZero() {
-			quiet = s.now.Sub(record.AttemptedAt)
+		if ok && !record.LastArrivalAt.IsZero() {
+			quiet = s.now.Sub(record.LastArrivalAt)
 		}
 		return baseCheck(e, s.now, StatusPass, ConfidenceHigh, Evidence{"quiet_seconds": seconds(quiet), "daily": daily})
 	}

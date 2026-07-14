@@ -179,6 +179,9 @@ func validateByKind(value any) error {
 	}
 	allowed := map[string]bool{"kind": true, "total": true, "current": true, "pending": true, "blocked": true, "terminal": true, "failed": true, "unknown": true, "partition_valid": true}
 	for _, row := range rows {
+		if len(row) != len(allowed) {
+			return fmt.Errorf("by-kind aggregate must use exact declared fields")
+		}
 		for key, item := range row {
 			if !allowed[key] {
 				return fmt.Errorf("undeclared by-kind field %q", key)

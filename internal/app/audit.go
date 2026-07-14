@@ -75,12 +75,17 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	}
 	timeout := defaultAuditTimeout(profile)
 	if strings.TrimSpace(flags.timeout) != "" {
-		timeout, err = audit.ParseDuration(flags.timeout)
+		requested, parseErr := audit.ParseDuration(flags.timeout)
+		err = parseErr
+		timeout = requested
 		if err != nil || timeout <= 0 {
 			if err == nil {
 				err = fmt.Errorf("duration must be positive")
 			}
 			return &ExitError{Code: 3, Err: fmt.Errorf("invalid --timeout: %w", err)}
+		}
+		if ceiling := defaultAuditTimeout(profile); timeout > ceiling {
+			timeout = ceiling
 		}
 	}
 
@@ -90,28 +95,33 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit target: %w", err)}
 	}
-	st, err := store.OpenReadOnly(cfg.DBPath)
-	if err != nil {
-		return &ExitError{Code: 3, Err: fmt.Errorf("open audit database read-only: %w", err)}
+	req := audit.Request{Profile: profile, Since: since, Categories: categories, ExpectCommit: strings.TrimSpace(flags.expectCommit)}
+	var st *store.Store
+	var snapshot *store.AuditReadSnapshot
+	if auditNeedsSnapshot(req) {
+		st, err = store.OpenReadOnly(cfg.DBPath)
+		if err != nil {
+			return &ExitError{Code: 3, Err: fmt.Errorf("open audit database read-only: %w", err)}
+		}
+		defer func() { _ = st.Close() }()
+		snapshot, err = st.BeginAuditReadSnapshot(ctx)
+		if err != nil {
+			return &ExitError{Code: 3, Err: fmt.Errorf("begin audit database snapshot: %w", err)}
+		}
+		defer func() { _ = snapshot.Close() }()
 	}
-	defer func() { _ = st.Close() }()
-	snapshot, err := st.BeginAuditReadSnapshot(ctx)
-	if err != nil {
-		return &ExitError{Code: 3, Err: fmt.Errorf("begin audit database snapshot: %w", err)}
-	}
-	defer func() { _ = snapshot.Close() }()
 
-	deps, err := buildAuditDependencies(ctx, cfg, meta, snapshot)
+	deps, err := buildAuditDependencies(ctx, cfg, meta, snapshot, req)
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit capabilities: %w", err)}
 	}
-	report, err := audit.Run(ctx, audit.Request{Profile: profile, Since: since, Categories: categories, ExpectCommit: strings.TrimSpace(flags.expectCommit)}, deps)
+	report, err := audit.Run(ctx, req, deps)
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("run audit: %w", err)}
 	}
 	if flags.json {
 		if flags.includeIdentifiers {
-			target := LocalAuditTarget{ConfigPath: cfg.ConfigPath, Database: cfg.DBPath, OKFRoot: cfg.OKFDir}
+			target := LocalAuditTarget{ConfigPath: cfg.ConfigPath, Database: cfg.DBPath, Vault: cfg.VaultDir, Temporary: cfg.TempDir, Media: cfg.MediaDir, OKFRoot: cfg.OKFDir}
 			if metricsCfg, resolveErr := metrics.ResolveConfig(cfg.RootDir, cfg.LogDir); resolveErr == nil {
 				target.Metrics = metricsCfg.Path
 			}
@@ -148,18 +158,19 @@ func (i auditDatabaseInspector) Inspect(ctx context.Context, full bool) (audit.D
 	}
 	return audit.DatabaseInspection{
 		SchemaCompatibility: value.SchemaCompatibility, MigrationCompatibility: value.MigrationCompatibility,
+		MissingTableCount: value.MissingTableCount, MissingColumnCount: value.MissingColumnCount,
 		QuickCheck: value.QuickCheck, QuickViolationCount: value.QuickViolationCount,
 		ForeignKeyViolationCount: value.ForeignKeyViolationCount, UserVersion: value.UserVersion,
 		SupportedVersion: value.SupportedVersion, AppliedCount: value.AppliedMigrationCount,
 	}, nil
 }
 
-func buildAuditDependencies(ctx context.Context, cfg config.Config, meta auditConfigMeta, snapshot *store.AuditReadSnapshot) (audit.Dependencies, error) {
+func buildAuditDependencies(ctx context.Context, cfg config.Config, meta auditConfigMeta, snapshot *store.AuditReadSnapshot, req audit.Request) (audit.Dependencies, error) {
 	features, err := resolveAuditFeatures(cfg, meta)
 	if err != nil {
 		return audit.Dependencies{}, err
 	}
-	features.DatabaseOpenedQueryOnly = true
+	features.DatabaseOpenedQueryOnly = snapshot != nil
 	current := version.Current()
 	platform := current.BuildPlatform
 	if strings.TrimSpace(platform) == "" || strings.EqualFold(platform, "unknown") {
@@ -167,12 +178,14 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, meta auditCo
 	}
 	deps := audit.Dependencies{
 		Features: features,
-		Store:    auditSnapshotAdapter{snapshot: snapshot},
 		Database: auditDatabaseInspector{path: cfg.DBPath},
 		Runtime: audit.RuntimeVersion{
 			ReleaseVersion: current.ReleaseVersion, Commit: current.Commit, GitStatus: current.GitStatus,
 			Platform: platform, SecurityBaselineID: current.SecurityBaselineID, SecurityBaselineEpoch: current.SecurityBaselineEpoch,
 		},
+	}
+	if snapshot != nil {
+		deps.Store = auditSnapshotAdapter{snapshot: snapshot}
 	}
 	if metricsCfg, err := metrics.ResolveConfig(cfg.RootDir, cfg.LogDir); err == nil && metricsCfg.Enabled && strings.TrimSpace(metricsCfg.Path) != "" {
 		deps.Metrics = metrics.NewReader(metricsCfg.Path)
@@ -182,9 +195,10 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, meta auditCo
 	if features.OKFEnabled {
 		deps.OKF = auditOKFInspector{path: cfg.OKFDir}
 	}
+	remoteAllowed := req.Profile != audit.ProfileFast && auditRequestMayIncludeCategory(req, audit.CategoryDurability)
 	backupRequired := features.SQLiteBackupSchedulerEnabled || features.SQLiteBackupAuditRequired
-	needMediaClient := features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
-	needSQLiteClient := backupRequired && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
+	needMediaClient := remoteAllowed && features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
+	needSQLiteClient := remoteAllowed && backupRequired && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
 	if needMediaClient || needSQLiteClient {
 		archiveOpts, resolveErr := archiveRuntimeValues(ctx, cfg.RootDir)
 		if resolveErr != nil {
@@ -210,6 +224,45 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, meta auditCo
 		}
 	}
 	return deps, nil
+}
+
+func auditNeedsSnapshot(req audit.Request) bool {
+	if len(req.CheckIDs) > 0 {
+		for _, id := range req.CheckIDs {
+			entry, ok := audit.Lookup(id)
+			if !ok {
+				continue
+			}
+			if entry.Category == audit.CategoryPipeline || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote {
+				return true
+			}
+		}
+		return false
+	}
+	return auditRequestMayIncludeCategory(req, audit.CategoryPipeline) || auditRequestMayIncludeCategory(req, audit.CategoryDurability)
+}
+
+func auditRequestMayIncludeCategory(req audit.Request, category audit.Category) bool {
+	if len(req.CheckIDs) > 0 {
+		for _, id := range req.CheckIDs {
+			if entry, ok := audit.Lookup(id); ok && entry.Category == category {
+				return true
+			}
+		}
+		return false
+	}
+	if len(req.Categories) > 0 {
+		for _, value := range req.Categories {
+			if value == category {
+				return true
+			}
+		}
+		return false
+	}
+	if len(req.Sources) > 0 {
+		return category == audit.CategoryImports
+	}
+	return true
 }
 
 func writeAuditHuman(cmd *cobra.Command, report audit.Report, configPath, databasePath string, since time.Duration) error {
