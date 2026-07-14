@@ -88,6 +88,17 @@ func (s *AuditReadSnapshot) Provenance(ctx context.Context) ([]AuditProvenanceEv
 }
 
 func auditProvenanceCutover(ctx context.Context, tx *sql.Tx) (time.Time, bool, error) {
+	var migrationTableExists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM sqlite_master
+			WHERE type = 'table' AND name = 'schema_migrations'
+		)`).Scan(&migrationTableExists); err != nil {
+		return time.Time{}, false, fmt.Errorf("check provenance cutover metadata: %w", err)
+	}
+	if !migrationTableExists {
+		return time.Time{}, false, nil
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT version, name, applied_at
 		FROM schema_migrations

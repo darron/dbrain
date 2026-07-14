@@ -134,7 +134,7 @@ func TestRunTranscribesDownloadedXVideoAndWritesItemNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetItemEnrichment transcript: %v", err)
 	}
-	if enrichment.RawJSON == "" || enrichment.Model == "" || enrichment.Tool == "" ||
+	if enrichment.RawJSON == "" || enrichment.Model != "automatic" || enrichment.Tool == "" ||
 		enrichment.ToolVersion != "xmediatranscribe-v1" || !strings.HasPrefix(enrichment.InputHash, "sha256:") ||
 		enrichment.CompletedAt.IsZero() {
 		t.Fatalf("incomplete persisted transcript provenance: %+v", enrichment)

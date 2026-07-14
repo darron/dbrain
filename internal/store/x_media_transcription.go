@@ -68,7 +68,7 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 
 type XMediaTranscriptionState struct {
 	Status, Error, RawJSON, Model, Tool, ToolVersion, InputHash string
-	InputSettings                                               XMediaTranscriptionInputSettings
+	InputSettings                                               []XMediaTranscriptionInputSettings
 	CompletedAt                                                 time.Time
 }
 
@@ -127,8 +127,8 @@ func (s *Store) SaveXMediaTranscription(ctx context.Context, itemID int64, state
 		}
 		if strings.TrimSpace(state.InputHash) == "" &&
 			strings.TrimSpace(state.Status) == model.XMediaTranscriptStatusOK &&
-			strings.TrimSpace(state.InputSettings.Backend) != "" {
-			contentHashes, err := xMediaTranscriptionContentHashesTx(ctx, tx, itemID)
+			len(state.InputSettings) > 0 {
+			contentHashes, err := xMediaTranscriptionContentHashes(ctx, tx, itemID)
 			if err != nil {
 				return struct{}{}, err
 			}
@@ -160,8 +160,24 @@ func (s *Store) SaveXMediaTranscription(ctx context.Context, itemID int64, state
 	return err
 }
 
-func xMediaTranscriptionContentHashesTx(ctx context.Context, tx *sql.Tx, itemID int64) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `
+type xMediaTranscriptionQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func (s *Store) XMediaTranscriptionInputHash(ctx context.Context, itemID int64, settings []XMediaTranscriptionInputSettings) (string, error) {
+	contentHashes, err := xMediaTranscriptionContentHashes(ctx, s.db, itemID)
+	if err != nil {
+		return "", err
+	}
+	inputHash, err := xMediaTranscriptionInputHash(contentHashes, settings)
+	if err != nil {
+		return "", fmt.Errorf("compute x media transcript input hash %d: %w", itemID, err)
+	}
+	return inputHash, nil
+}
+
+func xMediaTranscriptionContentHashes(ctx context.Context, queryer xMediaTranscriptionQueryer, itemID int64) ([]string, error) {
+	rows, err := queryer.QueryContext(ctx, `
 		SELECT a.content_hash
 		FROM item_media_links l
 		JOIN media_assets a ON a.id = l.media_asset_id
@@ -194,7 +210,7 @@ func xMediaTranscriptionContentHashesTx(ctx context.Context, tx *sql.Tx, itemID 
 	return hashes, nil
 }
 
-func xMediaTranscriptionInputHash(contentHashes []string, settings XMediaTranscriptionInputSettings) (string, error) {
+func xMediaTranscriptionInputHash(contentHashes []string, settings []XMediaTranscriptionInputSettings) (string, error) {
 	hashes := append([]string(nil), contentHashes...)
 	for i := range hashes {
 		hashes[i] = strings.TrimSpace(hashes[i])
@@ -205,19 +221,30 @@ func xMediaTranscriptionInputHash(contentHashes []string, settings XMediaTranscr
 	if len(hashes) == 0 {
 		return "", fmt.Errorf("at least one media content hash is required")
 	}
-	settings.Backend = strings.TrimSpace(settings.Backend)
-	settings.Model = strings.TrimSpace(settings.Model)
-	settings.Language = strings.TrimSpace(settings.Language)
-	if settings.Backend == "" || settings.Model == "" || settings.Language == "" {
-		return "", fmt.Errorf("resolved backend, model, and language are required")
+	resolvedSettings := append([]XMediaTranscriptionInputSettings(nil), settings...)
+	if len(resolvedSettings) == 0 {
+		return "", fmt.Errorf("at least one resolved transcription setting is required")
+	}
+	for i := range resolvedSettings {
+		resolvedSettings[i].Backend = strings.TrimSpace(resolvedSettings[i].Backend)
+		resolvedSettings[i].Model = strings.TrimSpace(resolvedSettings[i].Model)
+		resolvedSettings[i].Language = strings.TrimSpace(resolvedSettings[i].Language)
+		if resolvedSettings[i].Backend == "" || resolvedSettings[i].Model == "" || resolvedSettings[i].Language == "" {
+			return "", fmt.Errorf("resolved backend, model, and language are required")
+		}
 	}
 	sort.Strings(hashes)
+	sort.Slice(resolvedSettings, func(i, j int) bool {
+		left, _ := json.Marshal(resolvedSettings[i])
+		right, _ := json.Marshal(resolvedSettings[j])
+		return string(left) < string(right)
+	})
 	payload, err := json.Marshal(struct {
-		Version            string                           `json:"version"`
-		MediaContentHashes []string                         `json:"media_content_hashes"`
-		Settings           XMediaTranscriptionInputSettings `json:"settings"`
+		Version            string                             `json:"version"`
+		MediaContentHashes []string                           `json:"media_content_hashes"`
+		Settings           []XMediaTranscriptionInputSettings `json:"settings"`
 	}{
-		Version: "dbrain.x_media_transcript.input.v1", MediaContentHashes: hashes, Settings: settings,
+		Version: "dbrain.x_media_transcript.input.v1", MediaContentHashes: hashes, Settings: resolvedSettings,
 	})
 	if err != nil {
 		return "", err

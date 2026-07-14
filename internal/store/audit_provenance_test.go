@@ -84,6 +84,15 @@ func TestAuditReadSnapshotProvenanceTreatsMissingOrContradictoryCutoverAsUnknown
 			},
 		},
 		{
+			name: "metadata_table_missing",
+			mutate: func(t *testing.T, st *Store) {
+				t.Helper()
+				if _, err := st.db.Exec(`DROP TABLE schema_migrations`); err != nil {
+					t.Fatalf("drop cutover migration table: %v", err)
+				}
+			},
+		},
+		{
 			name: "contradictory",
 			mutate: func(t *testing.T, st *Store) {
 				t.Helper()
@@ -120,6 +129,25 @@ func TestAuditReadSnapshotProvenanceTreatsMissingOrContradictoryCutoverAsUnknown
 				}
 			}
 		})
+	}
+}
+
+func TestAuditReadSnapshotProvenanceReturnsMalformedMetadataReadError(t *testing.T) {
+	t.Parallel()
+
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	if _, err := st.db.Exec(`DROP TABLE schema_migrations; CREATE TABLE schema_migrations(unrelated TEXT)`); err != nil {
+		t.Fatalf("replace migration metadata with malformed table: %v", err)
+	}
+
+	snapshot, err := st.BeginAuditReadSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("BeginAuditReadSnapshot: %v", err)
+	}
+	defer func() { _ = snapshot.Close() }()
+	if _, err := snapshot.Provenance(context.Background()); err == nil {
+		t.Fatal("Provenance succeeded with unreadable migration metadata")
 	}
 }
 

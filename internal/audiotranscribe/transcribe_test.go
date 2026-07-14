@@ -87,6 +87,44 @@ func TestMacWhisperPlaceholderIsNoSpeech(t *testing.T) {
 	}
 }
 
+func TestMacWhisperReportsConfiguredAndAutomaticModelSelectionHonestly(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		backend      string
+		wantModel    string
+		wantModelArg bool
+	}{
+		{name: "configured", backend: "macwhisper:whisperkit:openai_whisper-base", wantModel: "whisperkit:openai_whisper-base", wantModelArg: true},
+		{name: "automatic", backend: BackendMacWhisper, wantModel: ModelSelectionAutomatic, wantModelArg: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			audio := writeTestFile(t, dir, "audio.wav", "audio")
+			argsPath := filepath.Join(dir, "args")
+			binary := writeExecutable(t, dir, "mw", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+argsPath+"\"\nprintf '%s\\n' 'a transcript long enough to be accepted by the caller'\n")
+
+			result, err := Transcribe(context.Background(), audio, Config{Backend: tc.backend, MacWhisperBinary: binary})
+			if err != nil {
+				t.Fatalf("Transcribe: %v", err)
+			}
+			if result.Backend != BackendMacWhisper || result.Model != tc.wantModel {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+			args, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			hasModelArg := strings.Contains(string(args), "--model\n")
+			if hasModelArg != tc.wantModelArg {
+				t.Fatalf("model argument presence = %v, want %v: %s", hasModelArg, tc.wantModelArg, args)
+			}
+		})
+	}
+}
+
 func TestRejectsUnknownBackend(t *testing.T) {
 	t.Parallel()
 	_, err := Transcribe(context.Background(), "audio.wav", Config{Backend: "cloud"})
