@@ -68,7 +68,9 @@ func TestHTTPFetcherRejectsURLCredentialsBeforeClient(t *testing.T) {
 	}
 	target.User = url.UserPassword("user", "secret")
 	_, err = NewHTTPFetcher(server.Client()).Fetch(context.Background(), store.Feed{
-		URL: target.String(),
+		URL:           server.URL + "/feed.xml",
+		NormalizedURL: server.URL + "/feed.xml",
+		ResolvedURL:   target.String(),
 	}, Options{MaxBodyBytes: DefaultMaxBodyBytes})
 	if !safehttp.IsPolicyError(err) {
 		t.Fatalf("credential URL error = %v, want policy rejection", err)
