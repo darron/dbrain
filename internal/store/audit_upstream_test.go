@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -167,5 +168,74 @@ func TestAuditReadSnapshotIdentityMatchesHonorCancellationAndClosedState(t *test
 	}
 	if _, err := snapshot.CountLocalIdentityMatches(t.Context(), AuditSourceXBookmarks, nil); err == nil {
 		t.Fatal("expected closed snapshot identity match to fail even for empty input")
+	}
+}
+
+func TestAuditReadSnapshotListsBoundedEnabledFeedsForUpstreamParity(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, row := range []struct {
+		key, raw, normalized, resolved string
+		enabled                        int
+	}{
+		{key: "feed:one", raw: "https://one.example/feed", normalized: "https://one.example/feed", resolved: "https://cdn.one.example/feed", enabled: 1},
+		{key: "feed:disabled", raw: "https://disabled.example/feed", normalized: "https://disabled.example/feed", enabled: 0},
+		{key: "feed:two", raw: "https://two.example/feed", normalized: "https://two.example/feed", enabled: 1},
+	} {
+		if _, err := st.db.ExecContext(t.Context(), `INSERT INTO feeds
+			(feed_key, url, normalized_url, resolved_url, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, row.key, row.raw, row.normalized, row.resolved, row.enabled, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := snapshot.ListEnabledFeedsForAudit(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 2 || feeds[0].FeedKey != "feed:one" || feeds[1].FeedKey != "feed:two" {
+		t.Fatalf("enabled audit feeds = %#v", feeds)
+	}
+	if !feeds[0].Enabled || feeds[0].ResolvedURL != "https://cdn.one.example/feed" || feeds[0].Title != "" || feeds[0].FetchETag != "" {
+		t.Fatalf("audit feed projection is not minimal: %#v", feeds[0])
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := snapshot.ListEnabledFeedsForAudit(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled feed listing error = %v", err)
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snapshot.ListEnabledFeedsForAudit(t.Context()); err == nil {
+		t.Fatal("closed audit snapshot listed feeds")
+	}
+}
+
+func TestAuditReadSnapshotFeedListingHasFixedSentinelCap(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.db.ExecContext(t.Context(), `WITH RECURSIVE seq(n) AS (
+		SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?
+	) INSERT INTO feeds (feed_key, url, normalized_url, enabled, created_at, updated_at)
+	SELECT 'feed:' || n, 'https://example.test/' || n, 'https://example.test/' || n, 1, ?, ? FROM seq`,
+		AuditFeedMaxCount+1, now, now); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+	feeds, err := snapshot.ListEnabledFeedsForAudit(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != AuditFeedMaxCount {
+		t.Fatalf("bounded feed count = %d, want %d", len(feeds), AuditFeedMaxCount)
 	}
 }

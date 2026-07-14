@@ -11,6 +11,7 @@ import (
 
 const (
 	AuditIdentityMaxCount = 100_000
+	AuditFeedMaxCount     = 10_001
 	auditIdentityDomainV1 = "dbrain.audit.identity.v1"
 )
 
@@ -99,6 +100,39 @@ func (s *AuditReadSnapshot) CountLocalIdentityMatches(ctx context.Context, sourc
 		return 0, err
 	}
 	return len(matched), nil
+}
+
+// ListEnabledFeedsForAudit returns the minimal configured-feed projection
+// needed by the upstream parity adapter. The fixed cap includes one sentinel
+// row so the adapter can distinguish a complete 10,000-feed inventory from an
+// over-budget one without opening another database connection.
+func (s *AuditReadSnapshot) ListEnabledFeedsForAudit(ctx context.Context) ([]Feed, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	reader, err := s.query(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := reader.QueryContext(ctx, `SELECT feed_key, url, normalized_url, resolved_url
+		FROM feeds WHERE enabled = 1 ORDER BY id ASC LIMIT ?`, AuditFeedMaxCount)
+	if err != nil {
+		return nil, fmt.Errorf("query enabled audit feeds: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	feeds := make([]Feed, 0)
+	for rows.Next() {
+		var feed Feed
+		if err := rows.Scan(&feed.FeedKey, &feed.URL, &feed.NormalizedURL, &feed.ResolvedURL); err != nil {
+			return nil, fmt.Errorf("scan enabled audit feed: %w", err)
+		}
+		feed.Enabled = true
+		feeds = append(feeds, feed)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate enabled audit feeds: %w", err)
+	}
+	return feeds, nil
 }
 
 func countStaticAuditIdentityMatches(ctx context.Context, reader sqlQueryer, source AuditSource, requested, matched map[string]struct{}) error {
