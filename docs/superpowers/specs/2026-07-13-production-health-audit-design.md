@@ -870,6 +870,14 @@ uses `remote_metadata`; `durability.sqlite_restore` uses `deep_stream`.
 Configuration may lower classes, never silently remove them. Timeout produces
 `unknown` for a required check.
 
+The implemented v1 keys are `audit.timeouts.bootstrap`, `local_query`,
+`metrics_or_manifest`, `sqlite_or_okf_integrity`, `remote_metadata`, and
+`remote_request`; matching environment variables use the
+`DBRAIN_AUDIT_TIMEOUT_` prefix. `remote_metadata` bounds the whole check while
+`remote_request` lowers each S3 HEAD request or LIST page. Non-positive or
+invalid durations are bootstrap errors, and values above a built-in ceiling
+are deterministically clamped to that ceiling.
+
 Terminal/blocked counts are still displayed even when their check passes. A
 future check ID requires a registry entry, tests for every status branch, and a
 schema-version decision when it changes public meaning.
@@ -956,6 +964,13 @@ audit:
   post_sync_fast: true
   standard_interval: 6h
   since: 7d
+  timeouts:
+    bootstrap: 10s
+    local_query: 30s
+    metrics_or_manifest: 10s
+    sqlite_or_okf_integrity: 2m
+    remote_metadata: 2m
+    remote_request: 30s
   alert:
     webhook_url: ""
     bearer_token_ref: ""

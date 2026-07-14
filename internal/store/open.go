@@ -12,9 +12,10 @@ import (
 const driverName = "sqlite"
 
 type Store struct {
-	db     *sql.DB
-	read   sqlQueryer
-	hasFTS bool
+	db         *sql.DB
+	read       sqlQueryer
+	hasFTS     bool
+	auditBegin func(context.Context, *sql.Conn) error
 }
 
 type sqlQueryer interface {

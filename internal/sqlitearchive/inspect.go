@@ -57,8 +57,15 @@ func newS3Inspector(bucket string, client listObjectsClient) *S3Inspector {
 }
 
 func (i *S3Inspector) ListObjects(ctx context.Context, prefix string, maxObjects int) (Listing, error) {
+	return i.ListObjectsWithPageTimeout(ctx, prefix, maxObjects, 30*time.Second)
+}
+
+func (i *S3Inspector) ListObjectsWithPageTimeout(ctx context.Context, prefix string, maxObjects int, pageTimeout time.Duration) (Listing, error) {
 	if maxObjects <= 0 {
 		maxObjects = defaultInspectObjectLimit
+	}
+	if pageTimeout <= 0 || pageTimeout > 30*time.Second {
+		pageTimeout = 30 * time.Second
 	}
 	listing := Listing{Objects: []Object{}, Complete: false}
 	var token *string
@@ -73,7 +80,7 @@ func (i *S3Inspector) ListObjects(ctx context.Context, prefix string, maxObjects
 		if remaining > 1000 {
 			remaining = 1000
 		}
-		pageCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		pageCtx, cancel := context.WithTimeout(ctx, pageTimeout)
 		page, err := i.client.ListObjectsV2(pageCtx, &s3.ListObjectsV2Input{
 			Bucket: aws.String(i.bucket), Prefix: aws.String(strings.TrimSpace(prefix)),
 			ContinuationToken: token, MaxKeys: aws.Int32(int32(remaining)),

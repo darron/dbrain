@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -40,6 +41,28 @@ func TestAuditReadSnapshotRetainsOneConsistentView(t *testing.T) {
 
 	if auditPipelineTotal(first.Hydration) != 1 || auditPipelineTotal(second.Hydration) != 1 {
 		t.Fatalf("snapshot view changed: first=%+v second=%+v", first.Hydration, second.Hydration)
+	}
+}
+
+func TestAuditReadSnapshotBeginReceivesAndHonorsBootstrapDeadline(t *testing.T) {
+	st := openTestStore(t)
+	receivedDeadline := false
+	st.auditBegin = func(ctx context.Context, _ *sql.Conn) error {
+		_, receivedDeadline = ctx.Deadline()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, err := st.BeginAuditReadSnapshot(ctx); err == nil {
+		t.Fatal("expected begin deadline failure")
+	}
+	if !receivedDeadline {
+		t.Fatal("BEGIN did not receive bootstrap deadline")
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("BEGIN ignored bootstrap deadline for %s", elapsed)
 	}
 }
 
@@ -159,6 +182,61 @@ func TestAuditReadSnapshotMediaEvidenceIsReadOnlyAndPreservesInvalidTimestamps(t
 	}
 	if len(records) != 2 || !records[0].ArchivedAtValid || records[1].ArchivedAtValid {
 		t.Fatalf("records = %#v", records)
+	}
+}
+
+func TestAuditReadSnapshotLocalIdentifierRowsExposeOnlyFixedAuditEvidence(t *testing.T) {
+	st := openTestStore(t)
+	seedAuditSnapshotItem(t, st, "x:identifier-pending")
+	var itemID int64
+	if err := st.db.QueryRowContext(t.Context(), `SELECT id FROM items WHERE source_key = ?`, "x:identifier-pending").Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.db.ExecContext(t.Context(), `INSERT INTO item_enrichments
+		(item_id, role, status, text, raw_json, model, prompt_version, tool, tool_version, input_hash, completed_at, created_at, updated_at)
+		VALUES (?, ?, ?, 'summary', '', '', '', '', '', '', '', ?, ?)`,
+		itemID, model.ItemEnrichmentRoleSummary, model.ItemSummaryStatusOK, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(t.Context(), `INSERT INTO media_assets
+		(remote_url, byte_size, download_status, archive_key, archive_status, archived_at, updated_at)
+		VALUES ('https://example.invalid/identifier-orphan', 7, 'downloaded', '', '', '', '')`); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+
+	for _, test := range []struct {
+		checkID string
+		rowID   int64
+		key     string
+	}{
+		{"pipeline.hydration.partition", itemID, "x:identifier-pending"},
+		{"pipeline.hydration.pending_age", itemID, "x:identifier-pending"},
+		{"pipeline.item_summary.provenance", itemID, "x:identifier-pending"},
+	} {
+		rows, err := snapshot.LocalIdentifierRows(t.Context(), test.checkID, 101)
+		if err != nil {
+			t.Fatalf("LocalIdentifierRows(%s): %v", test.checkID, err)
+		}
+		if len(rows) != 1 || rows[0].RowID != test.rowID || rows[0].SourceKey != test.key {
+			t.Fatalf("LocalIdentifierRows(%s) = %#v", test.checkID, rows)
+		}
+	}
+	mediaRows, err := snapshot.LocalIdentifierRows(t.Context(), "durability.media_local_coverage", 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mediaRows) != 1 || mediaRows[0].RowID <= 0 || mediaRows[0].SourceKey != "" {
+		t.Fatalf("media rows = %#v", mediaRows)
+	}
+	if _, err := snapshot.LocalIdentifierRows(t.Context(), "boundary.config", 101); err == nil {
+		t.Fatal("expected unsupported check ID to fail closed")
 	}
 }
 

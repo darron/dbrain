@@ -25,9 +25,14 @@ development date for the change set.
   listing progress, apply bootstrap/local/integrity/per-page timeout classes to
   their actual operations, and keep mixed source/category scopes truthful.
 - **Local audit diagnostics**: Identifier-enabled CLI output now includes
-  deterministic per-check details plus exact credential-free media and SQLite
-  archive targets; OKF freshness reads only the manifest, while metrics files
-  are opened nonblocking and validated by descriptor before use.
+  bounded real row/source identifiers for non-pass pipeline, provenance, and
+  local-media checks plus exact credential-free media and SQLite archive
+  targets; cleanup paths remain empty. OKF freshness reads only the manifest,
+  while metrics files are opened nonblocking and validated by descriptor.
+- **Audit bootstrap and timeout truth**: The actual bounded YAML parse, feature
+  resolution, and SQLite `BEGIN` now run inside the bootstrap deadline without
+  shortening the later snapshot lifetime. Per-class YAML/env overrides can
+  lower local, integrity, manifest, remote-check, and per-request ceilings.
 
 ### Security hardening (2026-07-13)
 

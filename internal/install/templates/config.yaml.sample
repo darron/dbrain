@@ -115,6 +115,17 @@ safari_tabs:
   limit: 0 # DBRAIN_SAFARI_TABS_LIMIT; 0 imports all matching tabs
   older_than: "" # DBRAIN_SAFARI_TABS_OLDER_THAN; optional duration, for example 168h
 
+audit:
+  require:
+    sqlite_backup: false # DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP
+  timeouts: # optional downward-only ceilings; larger values are clamped
+    bootstrap: "" # DBRAIN_AUDIT_TIMEOUT_BOOTSTRAP; default ceiling 10s
+    local_query: "" # DBRAIN_AUDIT_TIMEOUT_LOCAL_QUERY; default ceiling 5s fast, 30s standard
+    metrics_or_manifest: "" # DBRAIN_AUDIT_TIMEOUT_METRICS_OR_MANIFEST; default ceiling 10s
+    sqlite_or_okf_integrity: "" # DBRAIN_AUDIT_TIMEOUT_SQLITE_OR_OKF_INTEGRITY; default ceiling 2m
+    remote_metadata: "" # DBRAIN_AUDIT_TIMEOUT_REMOTE_METADATA; per-check default ceiling 2m
+    remote_request: "" # DBRAIN_AUDIT_TIMEOUT_REMOTE_REQUEST; per-request/page default ceiling 30s
+
 scheduler:
   sync_all:
     enabled: false # DBRAIN_SCHEDULER_SYNC_ALL_ENABLED; run sync all from serve remote

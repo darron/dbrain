@@ -1,17 +1,26 @@
 package runtimeenv
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
 
 var registeredConfigFiles sync.Map
+
+type registeredConfig struct {
+	path     string
+	snapshot map[string]any
+	frozen   bool
+}
 
 func RegisterConfigFile(rootDir string, path string) {
 	rootDir = strings.TrimSpace(rootDir)
@@ -19,7 +28,110 @@ func RegisterConfigFile(rootDir string, path string) {
 	if rootDir == "" || path == "" {
 		return
 	}
-	registeredConfigFiles.Store(rootDir, path)
+	registeredConfigFiles.Store(rootDir, &registeredConfig{path: path})
+}
+
+// RegisterConfigSnapshot temporarily installs one already parsed config map.
+// While installed, runtime lookups use process environment plus this immutable
+// snapshot and do not reread dotenv or YAML files.
+func RegisterConfigSnapshot(rootDir string, snapshot map[string]any) func() {
+	rootDir = strings.TrimSpace(rootDir)
+	if rootDir == "" {
+		return func() {}
+	}
+	entry := &registeredConfig{snapshot: snapshot, frozen: true}
+	previous, hadPrevious := registeredConfigFiles.Load(rootDir)
+	registeredConfigFiles.Store(rootDir, entry)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			current, ok := registeredConfigFiles.Load(rootDir)
+			if !ok || current != entry {
+				return
+			}
+			if hadPrevious {
+				registeredConfigFiles.Store(rootDir, previous)
+			} else {
+				registeredConfigFiles.Delete(rootDir)
+			}
+		})
+	}
+}
+
+// LoadConfigSnapshot opens one regular YAML file without following symlinks,
+// enforces a streaming byte limit, and honors cancellation during read/parse.
+func LoadConfigSnapshot(ctx context.Context, path string, maxBytes int64) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("config snapshot path is required")
+	}
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("config snapshot byte limit must be positive")
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open config snapshot: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect config snapshot descriptor: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("config snapshot is not a regular file")
+	}
+	if info.Size() > maxBytes {
+		return nil, fmt.Errorf("config snapshot exceeds byte limit %d", maxBytes)
+	}
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	read := make(chan readResult, 1)
+	go func() {
+		data, readErr := io.ReadAll(io.LimitReader(file, maxBytes+1))
+		read <- readResult{data: data, err: readErr}
+	}()
+	var result readResult
+	select {
+	case <-ctx.Done():
+		_ = file.Close()
+		return nil, ctx.Err()
+	case result = <-read:
+	}
+	if result.err != nil {
+		return nil, fmt.Errorf("read config snapshot: %w", result.err)
+	}
+	if int64(len(result.data)) > maxBytes {
+		return nil, fmt.Errorf("config snapshot exceeds byte limit %d", maxBytes)
+	}
+	parsed := make(chan struct {
+		cfg map[string]any
+		err error
+	}, 1)
+	go func() {
+		var cfg map[string]any
+		parseErr := yaml.Unmarshal(result.data, &cfg)
+		parsed <- struct {
+			cfg map[string]any
+			err error
+		}{cfg: cfg, err: parseErr}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case value := <-parsed:
+		if value.err != nil {
+			return nil, fmt.Errorf("parse config snapshot: %w", value.err)
+		}
+		if value.cfg == nil {
+			value.cfg = map[string]any{}
+		}
+		return value.cfg, nil
+	}
 }
 
 func loadConfigValueOK(rootDir string, key string) (string, bool) {
@@ -96,8 +208,11 @@ func loadConfigList(rootDir string, key string) ([]string, bool) {
 
 func loadConfigForRoot(rootDir string) (map[string]any, bool) {
 	if value, ok := registeredConfigFiles.Load(rootDir); ok {
-		if path, ok := value.(string); ok {
-			if cfg, ok := loadConfigFile(path); ok {
+		if entry, ok := value.(*registeredConfig); ok {
+			if entry.frozen {
+				return entry.snapshot, true
+			}
+			if cfg, ok := loadConfigFile(entry.path); ok {
 				return cfg, true
 			}
 		}
@@ -107,6 +222,15 @@ func loadConfigForRoot(rootDir string) (map[string]any, bool) {
 		cfg, ok = loadConfigFile(filepath.Join(rootDir, "config.yml"))
 	}
 	return cfg, ok
+}
+
+func hasRegisteredConfigSnapshot(rootDir string) bool {
+	value, ok := registeredConfigFiles.Load(strings.TrimSpace(rootDir))
+	if !ok {
+		return false
+	}
+	entry, ok := value.(*registeredConfig)
+	return ok && entry.frozen
 }
 
 func loadConfigFile(path string) (map[string]any, bool) {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/mediaarchive"
@@ -126,12 +127,13 @@ func (i auditMediaInspector) HeadObject(ctx context.Context, key string) (audit.
 }
 
 type auditArchiveLister struct {
-	inspector *sqlitearchive.S3Inspector
-	prefix    string
+	inspector   *sqlitearchive.S3Inspector
+	prefix      string
+	pageTimeout time.Duration
 }
 
 func (l auditArchiveLister) List(ctx context.Context) (audit.SQLiteArchiveListing, error) {
-	value, err := l.inspector.ListObjects(ctx, l.prefix, 10_000)
+	value, err := l.inspector.ListObjectsWithPageTimeout(ctx, l.prefix, 10_000, l.pageTimeout)
 	objects := make([]audit.ArchiveObject, 0, len(value.Objects))
 	for _, object := range value.Objects {
 		objects = append(objects, audit.ArchiveObject{Key: object.Key, ValidKey: sqlitearchive.IsSQLiteArchiveKey(object.Key, l.prefix), SizeBytes: object.Size, LastModified: object.LastModified})

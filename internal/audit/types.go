@@ -354,9 +354,14 @@ func ValidateReport(report Report) error {
 		if !entry.InProfile(report.Profile) && (check.Status != StatusSkipped || check.SkipReason != SkipProfileExcluded) {
 			return fmt.Errorf("checks[%d]: profile-excluded entry must be skipped", i)
 		}
-		if entry.InProfile(report.Profile) && entry.RequiredWhen == RequiredAlways {
-			if check.Status == StatusSkipped || !check.Required {
-				return fmt.Errorf("checks[%d]: always-required in-profile check must be required and evaluated", i)
+		if entry.InProfile(report.Profile) {
+			switch {
+			case entry.RequiredWhen == RequiredNever && check.Required:
+				return fmt.Errorf("checks[%d]: always-optional check must not be required", i)
+			case entry.RequiredWhen == RequiredAlways && check.Status == StatusSkipped:
+				return fmt.Errorf("checks[%d]: always-required in-profile check must be evaluated", i)
+			case entry.RequiredWhen != RequiredNever && check.Status != StatusSkipped && !check.Required:
+				return fmt.Errorf("checks[%d]: applicable evaluated check must be required", i)
 			}
 		}
 	}

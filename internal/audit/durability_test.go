@@ -14,11 +14,15 @@ type progressMediaInspector struct {
 	active     int
 	maxActive  int
 	failureKey string
+	deadlines  []time.Duration
 }
 
 func (i *progressMediaInspector) HeadObject(ctx context.Context, key string) (ObjectMetadata, error) {
 	i.mu.Lock()
 	i.active++
+	if deadline, ok := ctx.Deadline(); ok {
+		i.deadlines = append(i.deadlines, time.Until(deadline))
+	}
 	if i.active > i.maxActive {
 		i.maxActive = i.active
 	}
@@ -36,6 +40,24 @@ func (i *progressMediaInspector) HeadObject(ctx context.Context, key string) (Ob
 		return ObjectMetadata{Exists: true, SizeBytes: 10}, nil
 	case <-ctx.Done():
 		return ObjectMetadata{}, ctx.Err()
+	}
+}
+
+func TestMediaRemoteAppliesDownwardPerRequestTimeout(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	inspector := &progressMediaInspector{}
+	state := &runState{
+		now: now, req: Request{Since: 8 * time.Hour},
+		deps:  Dependencies{Features: Features{MediaProvider: "test", RemoteRequestTimeout: 5 * time.Second}, Media: inspector},
+		media: []ArchivedMediaRecord{{Key: "key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true}},
+	}
+	entry, _ := Lookup(CheckDurabilityMediaRemote)
+	check := executeMediaRemote(t.Context(), state, entry)
+	if check.Status != StatusPass {
+		t.Fatalf("check = %#v", check)
+	}
+	if len(inspector.deadlines) != 1 || inspector.deadlines[0] > 6*time.Second || inspector.deadlines[0] < 4*time.Second {
+		t.Fatalf("request deadlines = %v", inspector.deadlines)
 	}
 }
 

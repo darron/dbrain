@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
@@ -16,6 +18,10 @@ type auditConfigMeta struct {
 }
 
 func resolveAuditFeatures(cfg config.Config, meta auditConfigMeta) (audit.Features, error) {
+	timeouts, remoteRequestTimeout, err := resolveAuditTimeoutOverrides(cfg.RootDir)
+	if err != nil {
+		return audit.Features{}, err
+	}
 	scheduler, err := schedulerSyncConfigFromRuntime(cfg.RootDir)
 	if err != nil {
 		return audit.Features{}, err
@@ -83,7 +89,49 @@ func resolveAuditFeatures(cfg config.Config, meta auditConfigMeta) (audit.Featur
 		SQLiteProviderConfigured:          provider,
 		SQLiteCredentialConfigured:        credential,
 		OKFEnabled:                        flags.okfExport && !flags.skipOKFExport,
+		Timeouts:                          timeouts,
+		RemoteRequestTimeout:              remoteRequestTimeout,
 	}, nil
+}
+
+func resolveAuditTimeoutOverrides(root string) (map[audit.TimeoutClass]time.Duration, time.Duration, error) {
+	overrides := map[audit.TimeoutClass]time.Duration{}
+	classes := []struct {
+		class audit.TimeoutClass
+		key   string
+	}{
+		{audit.TimeoutBootstrap, "DBRAIN_AUDIT_TIMEOUT_BOOTSTRAP"},
+		{audit.TimeoutLocalQuery, "DBRAIN_AUDIT_TIMEOUT_LOCAL_QUERY"},
+		{audit.TimeoutMetricsOrManifest, "DBRAIN_AUDIT_TIMEOUT_METRICS_OR_MANIFEST"},
+		{audit.TimeoutSQLiteOrOKFIntegrity, "DBRAIN_AUDIT_TIMEOUT_SQLITE_OR_OKF_INTEGRITY"},
+		{audit.TimeoutRemoteMetadata, "DBRAIN_AUDIT_TIMEOUT_REMOTE_METADATA"},
+	}
+	for _, item := range classes {
+		value := strings.TrimSpace(runtimeenv.FirstNonEmpty(root, item.key))
+		if value == "" {
+			continue
+		}
+		duration, err := audit.ParseDuration(value)
+		if err != nil || duration <= 0 {
+			if err == nil {
+				err = fmt.Errorf("duration must be positive")
+			}
+			return nil, 0, fmt.Errorf("invalid audit timeout %s: %w", item.class, err)
+		}
+		overrides[item.class] = duration
+	}
+	remoteRequest := time.Duration(0)
+	if value := strings.TrimSpace(runtimeenv.FirstNonEmpty(root, "DBRAIN_AUDIT_TIMEOUT_REMOTE_REQUEST")); value != "" {
+		duration, err := audit.ParseDuration(value)
+		if err != nil || duration <= 0 {
+			if err == nil {
+				err = fmt.Errorf("duration must be positive")
+			}
+			return nil, 0, fmt.Errorf("invalid audit remote request timeout: %w", err)
+		}
+		remoteRequest = duration
+	}
+	return overrides, remoteRequest, nil
 }
 
 // loadAuditConfig resolves the same target precedence as ordinary commands,
@@ -130,6 +178,5 @@ func loadAuditConfigContext(ctx context.Context, root, configFile string) (confi
 	if err := ctx.Err(); err != nil {
 		return config.Config{}, auditConfigMeta{}, err
 	}
-	runtimeenv.RegisterConfigFile(cfg.RootDir, cfg.ConfigPath)
 	return cfg, meta, nil
 }

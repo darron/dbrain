@@ -62,6 +62,17 @@ func TestS3InspectorListsMetadataOnlyWithExplicitBudget(t *testing.T) {
 	}
 }
 
+func TestS3InspectorAppliesDownwardPerPageTimeout(t *testing.T) {
+	client := &stubListClient{pages: []*s3.ListObjectsV2Output{{IsTruncated: aws.Bool(false)}}}
+	listing, err := newS3Inspector("bucket", client).ListObjectsWithPageTimeout(t.Context(), "archive/db", 10, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listing.Complete || len(client.deadlines) != 1 || client.deadlines[0] > 6*time.Second || client.deadlines[0] < 4*time.Second {
+		t.Fatalf("listing=%#v deadlines=%v", listing, client.deadlines)
+	}
+}
+
 func TestS3InspectorRejectsRepeatedTokenAndZeroProgress(t *testing.T) {
 	client := &stubListClient{pages: []*s3.ListObjectsV2Output{
 		{Contents: []types.Object{{Key: aws.String("archive/db/a")}}, IsTruncated: aws.Bool(true), NextContinuationToken: aws.String("same")},

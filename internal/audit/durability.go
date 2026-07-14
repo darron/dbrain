@@ -95,7 +95,11 @@ func executeMediaRemote(ctx context.Context, s *runState, e RegistryEntry) Check
 		go func() {
 			defer wg.Done()
 			for record := range jobs {
-				requestCtx, requestCancel := context.WithTimeout(checkCtx, 30*time.Second)
+				requestTimeout := s.deps.Features.RemoteRequestTimeout
+				if requestTimeout <= 0 || requestTimeout > 30*time.Second {
+					requestTimeout = 30 * time.Second
+				}
+				requestCtx, requestCancel := context.WithTimeout(checkCtx, requestTimeout)
 				metadata, err := s.deps.Media.HeadObject(requestCtx, record.Key)
 				requestCancel()
 				results <- result{record: record, metadata: metadata, err: err}

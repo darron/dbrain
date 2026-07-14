@@ -16,6 +16,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
+	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -228,7 +229,7 @@ func TestLocalAuditArchiveTargetsExactJSONContainsNoCredentials(t *testing.T) {
 func TestLocalAuditIdentifiersEmitDeterministicEntriesForEveryReportedCheck(t *testing.T) {
 	report := audit.NewReport(audit.ProfileStandard, fixedAuditTime)
 	report.Checks = []audit.Check{{ID: audit.CheckPipelineOCRPartition}, {ID: audit.CheckBoundaryConfig}}
-	wrapper := newLocalAuditWrapper(report, LocalAuditTarget{}, localAuditIdentifiers(report))
+	wrapper := newLocalAuditWrapper(report, LocalAuditTarget{}, localAuditIdentifiers(t.Context(), report, nil, 30*time.Second))
 	if len(wrapper.LocalDetails.Checks) != 2 {
 		t.Fatalf("identifier details = %#v", wrapper.LocalDetails)
 	}
@@ -239,6 +240,62 @@ func TestLocalAuditIdentifiersEmitDeterministicEntriesForEveryReportedCheck(t *t
 		if detail.RowIDs == nil || detail.SourceKeys == nil || detail.CleanupPaths == nil {
 			t.Fatalf("identifier arrays must be non-null: %#v", detail)
 		}
+	}
+}
+
+func TestLocalAuditIdentifiersReadConcreteNonPassRowsFromSnapshot(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	item, err := writer.UpsertItem(t.Context(), model.Item{
+		SourceKey: "x:local-identifier", SourceType: "x_bookmark", ExternalID: "local-identifier",
+		CanonicalURL: "https://x.com/example/status/local-identifier", Title: "pending",
+		ContentHash: "local-identifier", LinksJSON: "[]", RawJSON: `{}`, NotePath: "items/x/local.md",
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := store.OpenReadOnly(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	snapshot, err := reader.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+
+	report := audit.NewReport(audit.ProfileStandard, fixedAuditTime)
+	report.Checks = []audit.Check{
+		{ID: audit.CheckPipelineHydrationPartition, Status: audit.StatusWarn},
+		{ID: audit.CheckPipelineHydrationPendingAge, Status: audit.StatusPass},
+		{ID: audit.CheckBoundaryConfig, Status: audit.StatusFail},
+	}
+	values := localAuditIdentifiers(t.Context(), report, snapshot, 30*time.Second)
+	got := values[audit.CheckPipelineHydrationPartition]
+	if len(got.RowIDs) != 1 || got.RowIDs[0] != item.ItemID || len(got.SourceKeys) != 1 || got.SourceKeys[0] != "x:local-identifier" {
+		t.Fatalf("hydration identifiers = %#v", got)
+	}
+	if pass := values[audit.CheckPipelineHydrationPendingAge]; len(pass.RowIDs) != 0 || len(pass.SourceKeys) != 0 {
+		t.Fatalf("pass check identifiers = %#v", pass)
+	}
+	if boundary := values[audit.CheckBoundaryConfig]; len(boundary.RowIDs) != 0 || len(boundary.SourceKeys) != 0 || len(boundary.CleanupPaths) != 0 {
+		t.Fatalf("unsupported boundary identifiers = %#v", boundary)
 	}
 }
 
@@ -281,6 +338,55 @@ sync_all:
 	}
 	if !features.MediaLocalEnabled || !features.MediaRemoteEnabled || !features.OKFEnabled {
 		t.Fatalf("durability features = %#v", features)
+	}
+}
+
+func TestResolveAuditFeaturesParsesDownwardTimeoutOverrides(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+audit:
+  timeouts:
+    bootstrap: 2s
+    local_query: 3s
+    metrics_or_manifest: 4s
+    sqlite_or_okf_integrity: 1m
+    remote_request: 5s
+    remote_metadata: 1m
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, meta, err := loadAuditConfig(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := runtimeenv.LoadConfigSnapshot(context.Background(), path, auditConfigMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup := runtimeenv.RegisterConfigSnapshot(root, snapshot)
+	defer cleanup()
+	features, err := resolveAuditFeatures(cfg, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for class, want := range map[audit.TimeoutClass]time.Duration{
+		audit.TimeoutBootstrap: 2 * time.Second, audit.TimeoutLocalQuery: 3 * time.Second,
+		audit.TimeoutMetricsOrManifest: 4 * time.Second, audit.TimeoutSQLiteOrOKFIntegrity: time.Minute,
+		audit.TimeoutRemoteMetadata: time.Minute,
+	} {
+		if got := features.Timeouts[class]; got != want {
+			t.Fatalf("timeout %s = %s, want %s", class, got, want)
+		}
+	}
+	if features.RemoteRequestTimeout != 5*time.Second {
+		t.Fatalf("remote request timeout = %s", features.RemoteRequestTimeout)
+	}
+
+	delete(snapshot["audit"].(map[string]any)["timeouts"].(map[string]any), "local_query")
+	snapshot["audit"].(map[string]any)["timeouts"].(map[string]any)["bootstrap"] = "0s"
+	if _, err := resolveAuditFeatures(cfg, meta); err == nil {
+		t.Fatal("expected non-positive timeout override rejection")
 	}
 }
 

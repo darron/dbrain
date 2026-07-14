@@ -203,6 +203,13 @@ The audit resolver follows the normal target precedence but creates no
 directories, applies no migrations, runs no startup repair/preflight, and
 opens SQLite in query-only mode with one consistent snapshot.
 
+Per-class timeouts can be lowered with `audit.timeouts.bootstrap`,
+`local_query`, `metrics_or_manifest`, `sqlite_or_okf_integrity`,
+`remote_metadata`, and `remote_request`, or their
+`DBRAIN_AUDIT_TIMEOUT_*` equivalents. Built-in ceilings are respectively 10s,
+5s fast/30s standard, 10s, 2m, 2m per check, and 30s per request/page. Invalid
+or non-positive durations fail bootstrap; larger values are clamped.
+
 ### `dbrain install`
 
 Runs first-time local setup. By default, it uses the existing XDG split layout:

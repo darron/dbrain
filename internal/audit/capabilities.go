@@ -41,6 +41,8 @@ type Features struct {
 	SQLiteCredentialConfigured        bool
 	SQLiteResolutionError             bool
 	OKFEnabled                        bool
+	Timeouts                          map[TimeoutClass]time.Duration
+	RemoteRequestTimeout              time.Duration
 }
 
 type KindPartition struct {

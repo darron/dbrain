@@ -69,16 +69,16 @@ func (s *AuditReadSnapshot) Provenance(ctx context.Context) ([]AuditProvenanceEv
 		s.mu.Unlock()
 		return nil, fmt.Errorf("audit read snapshot is closed")
 	}
-	tx := s.tx
+	reader := s.conn
 	s.mu.Unlock()
 
-	cutover, cutoverKnown, err := auditProvenanceCutover(ctx, tx)
+	cutover, cutoverKnown, err := auditProvenanceCutover(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
 	evidence := make([]AuditProvenanceEvidence, 0, len(auditProvenanceSpecs))
 	for _, spec := range auditProvenanceSpecs {
-		item, err := collectAuditProvenance(ctx, tx, spec, cutover, cutoverKnown)
+		item, err := collectAuditProvenance(ctx, reader, spec, cutover, cutoverKnown)
 		if err != nil {
 			return nil, fmt.Errorf("collect %s: %w", spec.checkID, err)
 		}
@@ -87,7 +87,7 @@ func (s *AuditReadSnapshot) Provenance(ctx context.Context) ([]AuditProvenanceEv
 	return evidence, nil
 }
 
-func auditProvenanceCutover(ctx context.Context, tx *sql.Tx) (time.Time, bool, error) {
+func auditProvenanceCutover(ctx context.Context, tx sqlQueryer) (time.Time, bool, error) {
 	var migrationTableExists bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS(
@@ -133,7 +133,7 @@ func auditProvenanceCutover(ctx context.Context, tx *sql.Tx) (time.Time, bool, e
 	return cutover.UTC(), true, nil
 }
 
-func collectAuditProvenance(ctx context.Context, tx *sql.Tx, spec auditProvenanceSpec, cutover time.Time, cutoverKnown bool) (AuditProvenanceEvidence, error) {
+func collectAuditProvenance(ctx context.Context, tx sqlQueryer, spec auditProvenanceSpec, cutover time.Time, cutoverKnown bool) (AuditProvenanceEvidence, error) {
 	evidence := AuditProvenanceEvidence{
 		CheckID: spec.checkID, CutoverAt: cutover, CutoverKnown: cutoverKnown,
 		MissingByField: make(map[string]int, len(spec.fields)),

@@ -160,10 +160,10 @@ func (s *runState) load(ctx context.Context) {
 	if inspectDatabaseIdentity || inspectDatabaseIntegrity {
 		if s.deps.Database != nil {
 			if inspectDatabaseIdentity {
-				s.database, s.databaseIdentityErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), func(child context.Context) (DatabaseInspection, error) { return s.deps.Database.Inspect(child, false) })
+				s.database, s.databaseIdentityErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery, s.deps.Features.Timeouts), func(child context.Context) (DatabaseInspection, error) { return s.deps.Database.Inspect(child, false) })
 			}
 			if inspectDatabaseIntegrity {
-				integrity, err := inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutSQLiteOrOKFIntegrity), func(child context.Context) (DatabaseInspection, error) { return s.deps.Database.Inspect(child, true) })
+				integrity, err := inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutSQLiteOrOKFIntegrity, s.deps.Features.Timeouts), func(child context.Context) (DatabaseInspection, error) { return s.deps.Database.Inspect(child, true) })
 				s.databaseIntegrityErr = err
 				if !inspectDatabaseIdentity {
 					s.database = integrity
@@ -180,7 +180,7 @@ func (s *runState) load(ctx context.Context) {
 	}
 	if selectedCategory(CategoryScheduler) || selectedCategory(CategoryImports) {
 		if s.deps.Metrics != nil {
-			s.metrics, s.metricsErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutMetricsOrManifest), func(child context.Context) (metrics.Window, error) {
+			s.metrics, s.metricsErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutMetricsOrManifest, s.deps.Features.Timeouts), func(child context.Context) (metrics.Window, error) {
 				return s.deps.Metrics.Read(child, s.now.Add(-s.req.Since))
 			})
 		} else {
@@ -210,20 +210,20 @@ func (s *runState) load(ctx context.Context) {
 			s.pipelineErr, s.provenanceErr, s.localErr, s.mediaErr = errCapabilityUnavailable, errCapabilityUnavailable, errCapabilityUnavailable, errCapabilityUnavailable
 		} else {
 			if needPipeline {
-				s.pipeline, s.pipelineErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), s.deps.Store.Pipeline)
+				s.pipeline, s.pipelineErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery, s.deps.Features.Timeouts), s.deps.Store.Pipeline)
 			}
 			if needProvenance {
-				list, err := inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), s.deps.Store.Provenance)
+				list, err := inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery, s.deps.Features.Timeouts), s.deps.Store.Provenance)
 				s.provenanceErr = err
 				for _, item := range list {
 					s.provenance[item.CheckID] = item
 				}
 			}
 			if needLocal {
-				s.local, s.localErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), s.deps.Store.MediaLocal)
+				s.local, s.localErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery, s.deps.Features.Timeouts), s.deps.Store.MediaLocal)
 			}
 			if needMedia {
-				s.media, s.mediaErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), s.deps.Store.ArchivedMedia)
+				s.media, s.mediaErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery, s.deps.Features.Timeouts), s.deps.Store.ArchivedMedia)
 			}
 		}
 	}
@@ -233,15 +233,15 @@ func (s *runState) load(ctx context.Context) {
 		if s.deps.OKF == nil {
 			s.okfFastErr, s.okfFullErr = errCapabilityUnavailable, errCapabilityUnavailable
 		} else if needOKFFull {
-			s.okfFull, s.okfFullErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutSQLiteOrOKFIntegrity), func(child context.Context) (OKFInspection, error) { return s.deps.OKF.Inspect(child, true) })
+			s.okfFull, s.okfFullErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutSQLiteOrOKFIntegrity, s.deps.Features.Timeouts), func(child context.Context) (OKFInspection, error) { return s.deps.OKF.Inspect(child, true) })
 			s.okfFast, s.okfFastErr = s.okfFull, s.okfFullErr
 		} else {
-			s.okfFast, s.okfFastErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutMetricsOrManifest), func(child context.Context) (OKFInspection, error) { return s.deps.OKF.Inspect(child, false) })
+			s.okfFast, s.okfFastErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutMetricsOrManifest, s.deps.Features.Timeouts), func(child context.Context) (OKFInspection, error) { return s.deps.OKF.Inspect(child, false) })
 		}
 	}
 	if selected(CheckDurabilitySQLiteBackupAge) {
 		if s.deps.Archives != nil {
-			s.archives, s.archivesErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutRemoteMetadata), s.deps.Archives.List)
+			s.archives, s.archivesErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutRemoteMetadata, s.deps.Features.Timeouts), s.deps.Archives.List)
 		} else {
 			s.archivesErr = errCapabilityUnavailable
 		}
@@ -254,7 +254,17 @@ func inspectWithTimeout[T any](ctx context.Context, timeout time.Duration, inspe
 	return inspect(child)
 }
 
-func timeoutFor(profile Profile, class TimeoutClass) time.Duration {
+func timeoutFor(profile Profile, class TimeoutClass, configured ...map[TimeoutClass]time.Duration) time.Duration {
+	ceiling := defaultTimeoutFor(profile, class)
+	if len(configured) > 0 {
+		if value := configured[0][class]; value > 0 && value < ceiling {
+			return value
+		}
+	}
+	return ceiling
+}
+
+func defaultTimeoutFor(profile Profile, class TimeoutClass) time.Duration {
 	switch class {
 	case TimeoutLocalQuery:
 		if profile == ProfileFast {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -36,7 +35,6 @@ type AuditArchivedMediaRecord struct {
 
 type AuditReadSnapshot struct {
 	mu             sync.Mutex
-	tx             *sql.Tx
 	conn           *sql.Conn
 	priorQueryOnly bool
 	closed         bool
@@ -63,11 +61,11 @@ func (s *Store) BeginAuditReadSnapshot(ctx context.Context) (*AuditReadSnapshot,
 		}
 		return nil, fmt.Errorf("set audit snapshot query-only: %w", err)
 	}
-	// Keep the transaction lifetime explicit: callers bound every snapshot
-	// query and close the snapshot themselves. The bootstrap context may have a
-	// deliberately short deadline and must not roll back a successfully opened
-	// snapshot in the middle of later bounded reads.
-	tx, err := conn.BeginTx(context.WithoutCancel(ctx), &sql.TxOptions{ReadOnly: true})
+	begin := s.auditBegin
+	if begin == nil {
+		begin = beginAuditReadTransaction
+	}
+	err = begin(ctx, conn)
 	if err != nil {
 		restoreErr := restoreAuditQueryOnly(conn, priorQueryOnly)
 		_ = conn.Close()
@@ -76,7 +74,12 @@ func (s *Store) BeginAuditReadSnapshot(ctx context.Context) (*AuditReadSnapshot,
 		}
 		return nil, fmt.Errorf("begin audit read snapshot: %w", err)
 	}
-	return &AuditReadSnapshot{tx: tx, conn: conn, priorQueryOnly: priorQueryOnly}, nil
+	return &AuditReadSnapshot{conn: conn, priorQueryOnly: priorQueryOnly}, nil
+}
+
+func beginAuditReadTransaction(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, `BEGIN`)
+	return err
 }
 
 func (s *AuditReadSnapshot) Close() error {
@@ -89,10 +92,10 @@ func (s *AuditReadSnapshot) Close() error {
 		return nil
 	}
 	s.closed = true
-	rollbackErr := s.tx.Rollback()
+	_, rollbackErr := s.conn.ExecContext(context.Background(), `ROLLBACK`)
 	restoreErr := restoreAuditQueryOnly(s.conn, s.priorQueryOnly)
 	connErr := s.conn.Close()
-	if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+	if rollbackErr != nil {
 		return rollbackErr
 	}
 	if restoreErr != nil {
@@ -133,10 +136,10 @@ func (s *AuditReadSnapshot) PipelinePartitions(ctx context.Context) (AuditPipeli
 		s.mu.Unlock()
 		return AuditPipelinePartitions{}, fmt.Errorf("audit read snapshot is closed")
 	}
-	tx := s.tx
+	reader := s.conn
 	s.mu.Unlock()
 
-	view := &Store{read: tx}
+	view := &Store{read: reader}
 	stats, err := view.Pipeline(ctx, "", "", "")
 	if err != nil {
 		return AuditPipelinePartitions{}, err
@@ -206,7 +209,7 @@ func (s *AuditReadSnapshot) ArchivedMediaRecords(ctx context.Context) ([]AuditAr
 	return out, nil
 }
 
-func (s *AuditReadSnapshot) query(ctx context.Context) (*sql.Tx, error) {
+func (s *AuditReadSnapshot) query(ctx context.Context) (sqlQueryer, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -215,5 +218,5 @@ func (s *AuditReadSnapshot) query(ctx context.Context) (*sql.Tx, error) {
 	if s.closed {
 		return nil, fmt.Errorf("audit read snapshot is closed")
 	}
-	return s.tx, nil
+	return s.conn, nil
 }

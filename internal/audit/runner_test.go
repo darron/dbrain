@@ -51,6 +51,15 @@ func TestValidateReportRejectsClosedContractViolations(t *testing.T) {
 		}
 		return report
 	}
+	checkByID := func(report *Report, id CheckID) *Check {
+		for index := range report.Checks {
+			if report.Checks[index].ID == id {
+				return &report.Checks[index]
+			}
+		}
+		t.Fatalf("check %q not found", id)
+		return nil
+	}
 	tests := []struct {
 		name string
 		edit func(*Report)
@@ -76,6 +85,30 @@ func TestValidateReportRejectsClosedContractViolations(t *testing.T) {
 		}},
 		{"always required false", func(report *Report) {
 			report.Checks[0].Required = false
+			FinalizeReport(report)
+		}},
+		{"conditional required false", func(report *Report) {
+			for _, id := range []CheckID{
+				CheckSchedulerLatestSync,
+				CheckImportsXBookmarksPoll,
+				CheckPipelineExtractionPartition,
+				CheckDurabilityMediaLocalCoverage,
+				CheckDurabilityMediaRemote,
+				CheckDurabilitySQLiteBackupAge,
+				CheckDurabilityOKFFreshness,
+			} {
+				checkByID(report, id).Required = false
+			}
+			FinalizeReport(report)
+		}},
+		{"optional arrivals required true", func(report *Report) {
+			checkByID(report, CheckImportsXBookmarksArrivals).Required = true
+			FinalizeReport(report)
+		}},
+		{"conditional failure forged optional green", func(report *Report) {
+			check := checkByID(report, CheckSchedulerLatestSync)
+			check.Status = StatusFail
+			check.Required = false
 			FinalizeReport(report)
 		}},
 		{"always required feature disabled", func(report *Report) {
@@ -272,11 +305,19 @@ func TestTimeoutClassCeilings(t *testing.T) {
 			t.Fatalf("timeoutFor(%s, %s) = %s, want %s", test.profile, test.class, got, test.want)
 		}
 	}
+	overrides := map[TimeoutClass]time.Duration{TimeoutLocalQuery: 3 * time.Second, TimeoutSQLiteOrOKFIntegrity: 3 * time.Minute}
+	if got := timeoutFor(ProfileStandard, TimeoutLocalQuery, overrides); got != 3*time.Second {
+		t.Fatalf("downward local override = %s", got)
+	}
+	if got := timeoutFor(ProfileStandard, TimeoutSQLiteOrOKFIntegrity, overrides); got != 2*time.Minute {
+		t.Fatalf("upward integrity override must clamp, got %s", got)
+	}
 }
 
 func TestRunAppliesLocalAndIntegrityDeadlinesToSeparateDatabaseCalls(t *testing.T) {
 	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
 	deps := passingDependencies(now)
+	deps.Features.Timeouts = map[TimeoutClass]time.Duration{TimeoutLocalQuery: 2 * time.Second, TimeoutSQLiteOrOKFIntegrity: time.Minute}
 	recorder := &deadlineDatabase{value: DatabaseInspection{
 		SchemaCompatibility: "current_compatible", MigrationCompatibility: "current_compatible",
 		QuickCheck: "ok", UserVersion: 12, SupportedVersion: 12, AppliedCount: 12,
@@ -289,10 +330,10 @@ func TestRunAppliesLocalAndIntegrityDeadlinesToSeparateDatabaseCalls(t *testing.
 	if len(recorder.calls) != 2 || recorder.calls[0].full || !recorder.calls[1].full {
 		t.Fatalf("database calls = %#v", recorder.calls)
 	}
-	if recorder.calls[0].remaining > 31*time.Second || recorder.calls[0].remaining < 29*time.Second {
+	if recorder.calls[0].remaining > 3*time.Second || recorder.calls[0].remaining < time.Second {
 		t.Fatalf("identity deadline remaining = %s", recorder.calls[0].remaining)
 	}
-	if recorder.calls[1].remaining > 121*time.Second || recorder.calls[1].remaining < 119*time.Second {
+	if recorder.calls[1].remaining > 61*time.Second || recorder.calls[1].remaining < 59*time.Second {
 		t.Fatalf("integrity deadline remaining = %s", recorder.calls[1].remaining)
 	}
 }

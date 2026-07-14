@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"runtime"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/metrics"
+	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/sqlitearchive"
 	"github.com/darron/dbrain/internal/store"
@@ -26,6 +29,8 @@ type auditCLIFlags struct {
 	includeIdentifiers bool
 	expectCommit       string
 }
+
+const auditConfigMaxBytes int64 = 1 << 20
 
 func newAuditCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{Use: "audit", Short: "Inspect production health without modifying the target", RunE: helpCommand}
@@ -92,29 +97,56 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 	defer cancel()
+	bootstrapStarted := time.Now()
 	bootstrapCtx, bootstrapCancel := auditBootstrapContext(ctx)
 	defer bootstrapCancel()
 	cfg, meta, err := loadAuditConfigContext(bootstrapCtx, root.root, root.configFile)
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit target: %w", err)}
 	}
+	configSnapshot, err := runtimeenv.LoadConfigSnapshot(bootstrapCtx, cfg.ConfigPath, auditConfigMaxBytes)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return &ExitError{Code: 3, Err: fmt.Errorf("read bounded audit config: %w", err)}
+		}
+		configSnapshot = map[string]any{}
+	}
+	cleanupConfigSnapshot := runtimeenv.RegisterConfigSnapshot(cfg.RootDir, configSnapshot)
+	defer cleanupConfigSnapshot()
+	timeoutOverrides, _, err := resolveAuditTimeoutOverrides(cfg.RootDir)
+	if err != nil {
+		return &ExitError{Code: 3, Err: err}
+	}
+	bootstrapDeadline := bootstrapStarted.Add(timeoutForAuditBootstrap(timeoutOverrides))
+	effectiveBootstrapCtx, effectiveBootstrapCancel := context.WithDeadline(bootstrapCtx, bootstrapDeadline)
+	defer effectiveBootstrapCancel()
+	if err := effectiveBootstrapCtx.Err(); err != nil {
+		return &ExitError{Code: 3, Err: fmt.Errorf("audit bootstrap timeout: %w", err)}
+	}
+	features, err := resolveAuditFeatures(cfg, meta)
+	if err != nil {
+		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit features: %w", err)}
+	}
+	if err := effectiveBootstrapCtx.Err(); err != nil {
+		return &ExitError{Code: 3, Err: fmt.Errorf("audit bootstrap timeout: %w", err)}
+	}
 	req := audit.Request{Profile: profile, Since: since, Categories: categories, ExpectCommit: strings.TrimSpace(flags.expectCommit)}
 	var st *store.Store
 	var snapshot *store.AuditReadSnapshot
 	if auditNeedsSnapshot(req) {
-		st, err = store.OpenReadOnlyContext(bootstrapCtx, cfg.DBPath)
+		st, err = store.OpenReadOnlyContext(effectiveBootstrapCtx, cfg.DBPath)
 		if err != nil {
 			return &ExitError{Code: 3, Err: fmt.Errorf("open audit database read-only: %w", err)}
 		}
 		defer func() { _ = st.Close() }()
-		snapshot, err = st.BeginAuditReadSnapshot(bootstrapCtx)
+		snapshot, err = st.BeginAuditReadSnapshot(effectiveBootstrapCtx)
 		if err != nil {
 			return &ExitError{Code: 3, Err: fmt.Errorf("begin audit database snapshot: %w", err)}
 		}
 		defer func() { _ = snapshot.Close() }()
 	}
 
-	deps, err := buildAuditDependencies(ctx, cfg, meta, snapshot, req)
+	deps, err := buildAuditDependencies(ctx, cfg, snapshot, req, features)
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit capabilities: %w", err)}
 	}
@@ -129,7 +161,8 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 			if metricsCfg, resolveErr := metrics.ResolveConfig(cfg.RootDir, cfg.LogDir); resolveErr == nil {
 				target.Metrics = metricsCfg.Path
 			}
-			err = writeJSON(cmd.OutOrStdout(), newLocalAuditWrapper(report, target, localAuditIdentifiers(report)))
+			err = writeJSON(cmd.OutOrStdout(), newLocalAuditWrapper(report, target,
+				localAuditIdentifiers(ctx, report, snapshot, localAuditIdentifierTimeout(profile, features.Timeouts))))
 		} else {
 			err = writeJSON(cmd.OutOrStdout(), report)
 		}
@@ -146,12 +179,55 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	return nil
 }
 
-func localAuditIdentifiers(report audit.Report) map[audit.CheckID]LocalAuditIdentifiers {
+func localAuditIdentifiers(ctx context.Context, report audit.Report, snapshot *store.AuditReadSnapshot, timeout time.Duration) map[audit.CheckID]LocalAuditIdentifiers {
 	values := make(map[audit.CheckID]LocalAuditIdentifiers, len(report.Checks))
 	for _, check := range report.Checks {
 		values[check.ID] = LocalAuditIdentifiers{RowIDs: []int64{}, SourceKeys: []string{}, CleanupPaths: []string{}}
+		if snapshot == nil || check.Status == audit.StatusPass || check.Status == audit.StatusSkipped {
+			continue
+		}
+		queryCtx := ctx
+		cancel := func() {}
+		if timeout > 0 {
+			queryCtx, cancel = context.WithTimeout(ctx, timeout)
+		}
+		rows, err := snapshot.LocalIdentifierRows(queryCtx, string(check.ID), 101)
+		cancel()
+		if err != nil {
+			continue
+		}
+		rowIDs := make([]int64, 0, len(rows))
+		sourceKeys := make([]string, 0, len(rows))
+		seenRows := make(map[int64]struct{}, len(rows))
+		seenKeys := make(map[string]struct{}, len(rows))
+		for _, row := range rows {
+			if _, ok := seenRows[row.RowID]; !ok {
+				seenRows[row.RowID] = struct{}{}
+				rowIDs = append(rowIDs, row.RowID)
+			}
+			key := strings.TrimSpace(row.SourceKey)
+			if key == "" {
+				continue
+			}
+			if _, ok := seenKeys[key]; !ok {
+				seenKeys[key] = struct{}{}
+				sourceKeys = append(sourceKeys, key)
+			}
+		}
+		values[check.ID] = LocalAuditIdentifiers{RowIDs: rowIDs, SourceKeys: sourceKeys, CleanupPaths: []string{}}
 	}
 	return values
+}
+
+func localAuditIdentifierTimeout(profile audit.Profile, overrides map[audit.TimeoutClass]time.Duration) time.Duration {
+	ceiling := 30 * time.Second
+	if profile == audit.ProfileFast {
+		ceiling = 5 * time.Second
+	}
+	if value := overrides[audit.TimeoutLocalQuery]; value > 0 && value < ceiling {
+		return value
+	}
+	return ceiling
 }
 
 func localAuditArchiveTargets(root string) (LocalArchiveTarget, LocalArchiveTarget) {
@@ -174,6 +250,14 @@ func localAuditArchiveTargets(root string) (LocalArchiveTarget, LocalArchiveTarg
 
 func auditBootstrapContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, 10*time.Second)
+}
+
+func timeoutForAuditBootstrap(overrides map[audit.TimeoutClass]time.Duration) time.Duration {
+	ceiling := 10 * time.Second
+	if value := overrides[audit.TimeoutBootstrap]; value > 0 && value < ceiling {
+		return value
+	}
+	return ceiling
 }
 
 func defaultAuditTimeout(profile audit.Profile) time.Duration {
@@ -199,11 +283,7 @@ func (i auditDatabaseInspector) Inspect(ctx context.Context, full bool) (audit.D
 	}, nil
 }
 
-func buildAuditDependencies(ctx context.Context, cfg config.Config, meta auditConfigMeta, snapshot *store.AuditReadSnapshot, req audit.Request) (audit.Dependencies, error) {
-	features, err := resolveAuditFeatures(cfg, meta)
-	if err != nil {
-		return audit.Dependencies{}, err
-	}
+func buildAuditDependencies(ctx context.Context, cfg config.Config, snapshot *store.AuditReadSnapshot, req audit.Request, features audit.Features) (audit.Dependencies, error) {
 	features.DatabaseOpenedQueryOnly = snapshot != nil
 	current := version.Current()
 	platform := current.BuildPlatform
@@ -253,7 +333,11 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, meta auditCo
 			if inspectErr != nil {
 				deps.Features.SQLiteResolutionError = true
 			} else {
-				deps.Archives = auditArchiveLister{inspector: inspector, prefix: sqlitearchive.DefaultPrefix}
+				pageTimeout := features.RemoteRequestTimeout
+				if pageTimeout <= 0 || pageTimeout > 30*time.Second {
+					pageTimeout = 30 * time.Second
+				}
+				deps.Archives = auditArchiveLister{inspector: inspector, prefix: sqlitearchive.DefaultPrefix, pageTimeout: pageTimeout}
 			}
 		}
 	}
