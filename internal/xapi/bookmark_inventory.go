@@ -55,6 +55,7 @@ func newBookmarkAuditInventory(opts BookmarkOptions, resolver bookmarkAuditCooki
 	if timeout <= 0 || timeout > bookmarkAuditMaxRequestTime {
 		timeout = bookmarkAuditMaxRequestTime
 	}
+	opts.Timeout = timeout
 	tlsConfig := injected.TLSClientConfig
 	if tlsConfig == nil {
 		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -88,7 +89,7 @@ func (i *bookmarkAuditInventory) Inventory(ctx context.Context, budget audit.Inv
 			return result, fmt.Errorf("x bookmark audit session resolver unavailable")
 		}
 		resolvedCSRF, resolvedAuth, err := i.resolveCookies(ctx, Options{
-			Browser: i.opts.Browser, Profile: i.opts.Profile, Timeout: bookmarkAuditMaxRequestTime,
+			Browser: i.opts.Browser, Profile: i.opts.Profile, Timeout: i.opts.Timeout,
 		})
 		if err != nil {
 			return result, fmt.Errorf("x bookmark audit session resolution failed")
@@ -144,6 +145,9 @@ func (i *bookmarkAuditInventory) Inventory(ctx context.Context, budget audit.Inv
 		}
 		if page.NextCursor == "" {
 			result.IdentityHashes = sortedBookmarkAuditHashes(seenHashes)
+			if len(page.Records) != 0 {
+				return result, fmt.Errorf("%w: x bookmark traversal ended without terminal evidence", audit.ErrInventoryIncomplete)
+			}
 			result.Complete = true
 			return result, nil
 		}
@@ -228,6 +232,12 @@ func bookmarkAuditURL(cursor string) (string, error) {
 }
 
 func parseBookmarkAuditPage(payload map[string]any) (bookmarkPage, error) {
+	if rawErrors, exists := payload["errors"]; exists && rawErrors != nil {
+		errorsList, ok := rawErrors.([]any)
+		if !ok || len(errorsList) != 0 {
+			return bookmarkPage{}, fmt.Errorf("%w: x bookmark response contains errors", audit.ErrInventoryInvalid)
+		}
+	}
 	data, ok := payload["data"].(map[string]any)
 	if !ok {
 		return bookmarkPage{}, fmt.Errorf("%w: x bookmark response shape invalid", audit.ErrInventoryInvalid)

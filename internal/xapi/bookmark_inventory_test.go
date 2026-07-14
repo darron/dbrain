@@ -71,18 +71,26 @@ func TestBookmarkAuditInventoryDeduplicatesAndProvesCaps(t *testing.T) {
 	t.Parallel()
 
 	t.Run("duplicates do not consume identity cap", func(t *testing.T) {
+		cursor := "terminal"
+		requests := 0
 		_, injected := newBookmarkAuditTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_ = json.NewEncoder(w).Encode(bookmarkAuditPayload([]string{"111", "111"}, nil))
+			requests++
+			if requests == 1 {
+				_ = json.NewEncoder(w).Encode(bookmarkAuditPayload([]string{"111", "111"}, &cursor))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(bookmarkAuditPayload(nil, nil))
 		}))
 		inventory := newBookmarkAuditInventory(BookmarkOptions{CT0: "ct0"}, nil, injected)
-		got, err := inventory.Inventory(t.Context(), audit.InventoryBudget{MaxIdentities: 1, MaxPages: 1})
-		if err != nil || !got.Complete || len(got.IdentityHashes) != 1 {
+		got, err := inventory.Inventory(t.Context(), audit.InventoryBudget{MaxIdentities: 1, MaxPages: 2})
+		if err != nil || !got.Complete || got.PageCount != 2 || len(got.IdentityHashes) != 1 {
 			t.Fatalf("dedupe result = %#v, err=%v", got, err)
 		}
 	})
 
 	t.Run("cap plus one duplicate page can prove completion", func(t *testing.T) {
 		cursor := "next"
+		terminal := "terminal"
 		requests := 0
 		_, injected := newBookmarkAuditTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			requests++
@@ -90,11 +98,15 @@ func TestBookmarkAuditInventoryDeduplicatesAndProvesCaps(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(bookmarkAuditPayload([]string{"111"}, &cursor))
 				return
 			}
-			_ = json.NewEncoder(w).Encode(bookmarkAuditPayload([]string{"111"}, nil))
+			if requests == 2 {
+				_ = json.NewEncoder(w).Encode(bookmarkAuditPayload([]string{"111"}, &terminal))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(bookmarkAuditPayload(nil, nil))
 		}))
 		inventory := newBookmarkAuditInventory(BookmarkOptions{CT0: "ct0"}, nil, injected)
-		got, err := inventory.Inventory(t.Context(), audit.InventoryBudget{MaxIdentities: 1, MaxPages: 2})
-		if err != nil || !got.Complete || got.PageCount != 2 || len(got.IdentityHashes) != 1 {
+		got, err := inventory.Inventory(t.Context(), audit.InventoryBudget{MaxIdentities: 1, MaxPages: 3})
+		if err != nil || !got.Complete || got.PageCount != 3 || len(got.IdentityHashes) != 1 {
 			t.Fatalf("cap+1 completion = %#v, err=%v", got, err)
 		}
 	})
@@ -184,6 +196,88 @@ func TestBookmarkAuditInventoryFailsClosedWithoutLeaks(t *testing.T) {
 				if strings.Contains(err.Error(), private) {
 					t.Fatalf("error leaked %q: %v", private, err)
 				}
+			}
+		})
+	}
+}
+
+func TestBookmarkAuditInventoryRejectsTopLevelErrorsBeforeUsingPartialData(t *testing.T) {
+	t.Parallel()
+
+	cursor := "next"
+	requests := 0
+	_, injected := newBookmarkAuditTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		payload := bookmarkAuditPayload([]string{"111"}, &cursor)
+		payload["errors"] = []any{map[string]any{"message": "private-body"}}
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
+	inventory := newBookmarkAuditInventory(BookmarkOptions{CT0: "secret-ct0"}, nil, injected)
+	got, err := inventory.Inventory(t.Context(), audit.DefaultInventoryBudget())
+	if !errors.Is(err, audit.ErrInventoryInvalid) || got.Complete || got.PageCount != 0 || len(got.IdentityHashes) != 0 || requests != 1 {
+		t.Fatalf("partial GraphQL error result=%#v requests=%d err=%v", got, requests, err)
+	}
+	if strings.Contains(err.Error(), "private-body") || strings.Contains(err.Error(), "secret-ct0") {
+		t.Fatalf("partial GraphQL error leaked private data: %v", err)
+	}
+}
+
+func TestBookmarkAuditInventoryRejectsNonEmptyCursorlessPages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ids  []string
+	}{
+		{name: "partial page", ids: []string{"111"}},
+		{name: "full page", ids: func() []string {
+			ids := make([]string, bookmarkAuditPageSize)
+			for index := range ids {
+				ids[index] = fmt.Sprint(index + 1)
+			}
+			return ids
+		}()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, injected := newBookmarkAuditTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(bookmarkAuditPayload(test.ids, nil))
+			}))
+			inventory := newBookmarkAuditInventory(BookmarkOptions{CT0: "ct0"}, nil, injected)
+			got, err := inventory.Inventory(t.Context(), audit.DefaultInventoryBudget())
+			if !errors.Is(err, audit.ErrInventoryIncomplete) || got.Complete || got.PageCount != 1 {
+				t.Fatalf("cursorless %s result=%#v err=%v", test.name, got, err)
+			}
+		})
+	}
+}
+
+func TestBookmarkAuditInventoryPassesNormalizedTimeoutToLazyResolver(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input time.Duration
+		want  time.Duration
+	}{
+		{name: "default", want: bookmarkAuditMaxRequestTime},
+		{name: "custom", input: 3 * time.Second, want: 3 * time.Second},
+		{name: "clamped", input: time.Minute, want: bookmarkAuditMaxRequestTime},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var resolved Options
+			inventory := newBookmarkAuditInventory(BookmarkOptions{Timeout: test.input}, func(_ context.Context, opts Options) (string, string, error) {
+				resolved = opts
+				return "", "", errors.New("stop before network")
+			}, bookmarkAuditHTTPInjections{})
+			implementation := inventory.(*bookmarkAuditInventory)
+			if implementation.opts.Timeout != test.want {
+				t.Fatalf("stored timeout=%v, want %v", implementation.opts.Timeout, test.want)
+			}
+			_, _ = inventory.Inventory(t.Context(), audit.DefaultInventoryBudget())
+			if resolved.Timeout != test.want {
+				t.Fatalf("resolver timeout=%v, want %v", resolved.Timeout, test.want)
 			}
 		})
 	}
@@ -304,6 +398,7 @@ func TestBookmarkAuditInventoryTraversesAllCursorsAtFixedAuthority(t *testing.T)
 	t.Parallel()
 
 	firstCursor := "cursor-private-1"
+	secondCursor := "cursor-private-2"
 	requests := 0
 	_, injected := newBookmarkAuditTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests++
@@ -327,10 +422,17 @@ func TestBookmarkAuditInventoryTraversesAllCursorsAtFixedAuthority(t *testing.T)
 			_ = json.NewEncoder(w).Encode(bookmarkAuditPayload([]string{"111"}, &firstCursor))
 			return
 		}
-		if variables["cursor"] != firstCursor {
-			t.Fatalf("second cursor = %#v", variables["cursor"])
+		if requests == 2 {
+			if variables["cursor"] != firstCursor {
+				t.Fatalf("second cursor = %#v", variables["cursor"])
+			}
+			_ = json.NewEncoder(w).Encode(bookmarkAuditPayload([]string{"222"}, &secondCursor))
+			return
 		}
-		_ = json.NewEncoder(w).Encode(bookmarkAuditPayload([]string{"222"}, nil))
+		if variables["cursor"] != secondCursor {
+			t.Fatalf("terminal cursor = %#v", variables["cursor"])
+		}
+		_ = json.NewEncoder(w).Encode(bookmarkAuditPayload(nil, nil))
 	}))
 	resolveCalls := 0
 	inventory := newBookmarkAuditInventory(BookmarkOptions{}, func(context.Context, Options) (string, string, error) {
@@ -344,7 +446,7 @@ func TestBookmarkAuditInventoryTraversesAllCursorsAtFixedAuthority(t *testing.T)
 	if err != nil {
 		t.Fatalf("Inventory: %v", err)
 	}
-	if resolveCalls != 1 || requests != 2 || !got.Complete || got.PageCount != 2 {
+	if resolveCalls != 1 || requests != 3 || !got.Complete || got.PageCount != 3 {
 		t.Fatalf("result = %#v, resolver=%d requests=%d", got, resolveCalls, requests)
 	}
 	want := make([]string, 0, 2)
