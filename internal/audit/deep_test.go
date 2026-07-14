@@ -56,6 +56,32 @@ type fakeDeepInventory struct {
 	remaining []time.Duration
 }
 
+type remoteOnlyCountingStore struct {
+	fakeStore
+	archivedCalls int
+}
+
+func (s *remoteOnlyCountingStore) ArchivedMedia(context.Context) ([]ArchivedMediaRecord, error) {
+	s.archivedCalls++
+	return s.fakeStore.ArchivedMedia(context.Background())
+}
+
+func TestRunDeepRemoteOnlyLoadsArchivedMediaPopulation(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	store := &remoteOnlyCountingStore{fakeStore: deps.Store.(fakeStore)}
+	deps.Store = store
+	_, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, CheckIDs: []CheckID{CheckDurabilityMediaRemoteOnly}}, deps, DeepDependencies{
+		Media: &fakeDeepInventory{pages: []MediaInventoryPage{{Complete: true}}}, Limits: DefaultDeepLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.archivedCalls != 1 {
+		t.Fatalf("remote-only archived media calls = %d, want 1", store.archivedCalls)
+	}
+}
+
 type delayedDeepInventory struct {
 	delay      time.Duration
 	page       MediaInventoryPage

@@ -444,7 +444,7 @@ func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, req audi
 		NewTemp:  func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(cfg.TempDir) },
 		Upstream: audit.UpstreamInventories{},
 	}
-	needMedia := auditRequestSelectsCheck(req, audit.CheckDurabilityMediaRemote) && features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
+	needMedia := (auditRequestSelectsCheck(req, audit.CheckDurabilityMediaRemote) || auditRequestSelectsCheck(req, audit.CheckDurabilityMediaRemoteOnly)) && features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
 	needArchive := auditRequestSelectsCheck(req, audit.CheckDurabilitySQLiteRestore) && (features.SQLiteBackupSchedulerEnabled || features.SQLiteBackupAuditRequired) && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
 	if !needMedia && !needArchive {
 		return deep, nil
@@ -486,7 +486,7 @@ func auditNeedsSnapshot(req audit.Request) bool {
 			if !ok {
 				continue
 			}
-			if entry.Category == audit.CategoryPipeline || id == audit.CheckBoundaryDatabase || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote || (req.Profile == audit.ProfileDeep && strings.HasPrefix(string(id), "upstream.")) {
+			if entry.Category == audit.CategoryPipeline || id == audit.CheckBoundaryDatabase || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote || (req.Profile == audit.ProfileDeep && id == audit.CheckDurabilityMediaRemoteOnly) || (req.Profile == audit.ProfileDeep && strings.HasPrefix(string(id), "upstream.")) {
 				return true
 			}
 		}

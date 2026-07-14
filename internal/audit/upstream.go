@@ -90,14 +90,15 @@ func normalizeInventoryResult(value InventoryResult, budget InventoryBudget) (In
 	if budget.MaxIdentities <= 0 || budget.MaxIdentities > InventoryMaxIdentities || budget.MaxPages <= 0 || budget.MaxPages > InventoryMaxPages {
 		return InventoryResult{}, fmt.Errorf("%w: invalid budget", ErrInventoryInvalid)
 	}
-	if value.PageCount < 0 || value.PageCount > budget.MaxPages {
-		return InventoryResult{PageCount: max(0, min(value.PageCount, budget.MaxPages))}, fmt.Errorf("%w: page count", ErrInventoryBudget)
+	if value.PageCount < 0 {
+		return InventoryResult{}, fmt.Errorf("%w: negative page count", ErrInventoryInvalid)
 	}
-	if len(value.IdentityHashes) > budget.MaxIdentities {
-		return InventoryResult{PageCount: value.PageCount}, fmt.Errorf("%w: identity count", ErrInventoryBudget)
+	if value.PageCount > budget.MaxPages {
+		return InventoryResult{PageCount: budget.MaxPages}, fmt.Errorf("%w: page count", ErrInventoryBudget)
 	}
-	seen := make(map[string]struct{}, len(value.IdentityHashes))
-	hashes := make([]string, 0, len(value.IdentityHashes))
+	capacity := min(len(value.IdentityHashes), budget.MaxIdentities)
+	seen := make(map[string]struct{}, capacity)
+	hashes := make([]string, 0, capacity)
 	for _, hash := range value.IdentityHashes {
 		if !identityHashPattern.MatchString(hash) {
 			return InventoryResult{PageCount: value.PageCount}, fmt.Errorf("%w: identity hash", ErrInventoryInvalid)
@@ -105,11 +106,38 @@ func normalizeInventoryResult(value InventoryResult, budget InventoryBudget) (In
 		if _, ok := seen[hash]; ok {
 			continue
 		}
+		if len(seen) == budget.MaxIdentities {
+			return InventoryResult{PageCount: value.PageCount}, fmt.Errorf("%w: unique identity count", ErrInventoryBudget)
+		}
 		seen[hash] = struct{}{}
 		hashes = append(hashes, hash)
 	}
 	sort.Strings(hashes)
 	return InventoryResult{IdentityHashes: hashes, PageCount: value.PageCount, Complete: value.Complete}, nil
+}
+
+// boundedInventoryEvidence retains only validated, countable observations when
+// a source context has already expired. It never trusts completion and never
+// scans more than the fixed identity ceiling after cancellation.
+func boundedInventoryEvidence(value InventoryResult, budget InventoryBudget) InventoryResult {
+	out := InventoryResult{}
+	if value.PageCount >= 0 && value.PageCount <= budget.MaxPages {
+		out.PageCount = value.PageCount
+	}
+	limit := min(len(value.IdentityHashes), budget.MaxIdentities)
+	seen := make(map[string]struct{}, limit)
+	for _, hash := range value.IdentityHashes[:limit] {
+		if !identityHashPattern.MatchString(hash) {
+			return InventoryResult{PageCount: out.PageCount}
+		}
+		seen[hash] = struct{}{}
+	}
+	out.IdentityHashes = make([]string, 0, len(seen))
+	for hash := range seen {
+		out.IdentityHashes = append(out.IdentityHashes, hash)
+	}
+	sort.Strings(out.IdentityHashes)
+	return out
 }
 
 var upstreamCheckSources = map[CheckID]Source{

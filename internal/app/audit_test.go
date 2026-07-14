@@ -33,6 +33,24 @@ func (i *deadlineAuditInventory) ListPage(ctx context.Context, _ string, _ int) 
 	return audit.MediaInventoryPage{Complete: true}, nil
 }
 
+type deadlineAuditStore struct{}
+
+func (deadlineAuditStore) Pipeline(context.Context) (map[audit.PipelineStage]audit.PipelineEvidence, error) {
+	return map[audit.PipelineStage]audit.PipelineEvidence{}, nil
+}
+func (deadlineAuditStore) Provenance(context.Context) ([]audit.ProvenanceEvidence, error) {
+	return []audit.ProvenanceEvidence{}, nil
+}
+func (deadlineAuditStore) MediaLocal(context.Context) (audit.MediaLocalEvidence, error) {
+	return audit.MediaLocalEvidence{}, nil
+}
+func (deadlineAuditStore) ArchivedMedia(context.Context) ([]audit.ArchivedMediaRecord, error) {
+	return []audit.ArchivedMediaRecord{}, nil
+}
+func (deadlineAuditStore) CountLocalIdentityMatches(context.Context, audit.Source, []string) (int, error) {
+	return 0, nil
+}
+
 func TestLoadAuditConfigIsNoWriteAndPreservesRootPrecedence(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "brain")
 	cfg, meta, err := loadAuditConfig(root, "")
@@ -188,6 +206,7 @@ func TestDeepAuditTimeoutAndLimitResolution(t *testing.T) {
 	deps := audit.Dependencies{
 		Clock:    func() time.Time { return fixedAuditTime },
 		Features: audit.Features{Layout: "explicit_root", ConfigVerified: true, MediaRemoteEnabled: true},
+		Store:    deadlineAuditStore{},
 		Runtime:  audit.RuntimeVersion{ReleaseVersion: "v0.6.0", Commit: "abcdef1", GitStatus: "clean", Platform: "darwin/arm64", SecurityBaselineID: "v0.6.0-security-pass", SecurityBaselineEpoch: 1},
 	}
 	if _, err := audit.RunDeep(t.Context(), audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}, deps, audit.DeepDependencies{Media: inventory, Limits: limits}); err != nil {
@@ -726,5 +745,38 @@ func TestAuditNeedsSnapshotHonorsExactCheckScope(t *testing.T) {
 	}
 	if !auditNeedsSnapshot(audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckUpstreamGitHubStarsParity}}) {
 		t.Fatal("explicit deep parity check needs the database snapshot")
+	}
+	if !auditNeedsSnapshot(audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}) {
+		t.Fatal("deep remote-only durability needs archived media from the database snapshot")
+	}
+	if auditNeedsSnapshot(audit.Request{Profile: audit.ProfileStandard, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}) {
+		t.Fatal("standard profile-excluded remote-only check must not open a database snapshot")
+	}
+}
+
+func TestBuildDeepAuditDependenciesSelectsExactRemoteOnlyMediaCapability(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DBRAIN_R2_BUCKET", "audit-bucket")
+	t.Setenv("DBRAIN_R2_ENDPOINT", "https://objects.example.test")
+	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "test-access")
+	t.Setenv("DBRAIN_R2_SECRET_ACCESS_KEY", "test-secret")
+	features := audit.Features{MediaRemoteEnabled: true, SQLiteProviderConfigured: true, SQLiteCredentialConfigured: true}
+	deep, err := buildDeepAuditDependencies(t.Context(), cfg, audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}, features, audit.DefaultDeepLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.Media == nil {
+		t.Fatal("exact remote-only request did not receive media inventory capability")
+	}
+	unrelated, err := buildDeepAuditDependencies(t.Context(), cfg, audit.Request{Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports}}, features, audit.DefaultDeepLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unrelated.Media != nil {
+		t.Fatal("imports-only request received unrelated media inventory capability")
 	}
 }

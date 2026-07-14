@@ -246,7 +246,7 @@ func (s *runState) load(ctx context.Context) {
 		}
 	}
 	needLocal := selected(CheckDurabilityMediaLocalCoverage)
-	needMedia := selected(CheckDurabilityMediaRemote)
+	needMedia := selected(CheckDurabilityMediaRemote) || selected(CheckDurabilityMediaRemoteOnly)
 	// Store snapshot inspections are intentionally sequential. AuditReadSnapshot
 	// owns one read transaction/connection; sharing it across concurrent queries
 	// would add unsafe contention without improving the <=4 local-work ceiling.

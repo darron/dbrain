@@ -28,6 +28,20 @@ func (contextIgnoringErrorInventory) Inventory(ctx context.Context, _ InventoryB
 	return InventoryResult{}, errors.New("adapter returned an unwrapped error after cancellation")
 }
 
+type contextIgnoringInvalidInventory struct{}
+
+func (contextIgnoringInvalidInventory) Inventory(ctx context.Context, _ InventoryBudget) (InventoryResult, error) {
+	<-ctx.Done()
+	return InventoryResult{IdentityHashes: []string{"not-a-hash"}, PageCount: -1, Complete: true}, errors.New("adapter returned invalid data after cancellation")
+}
+
+type cancelingUpstreamInventory struct{ cancel context.CancelFunc }
+
+func (i cancelingUpstreamInventory) Inventory(context.Context, InventoryBudget) (InventoryResult, error) {
+	i.cancel()
+	return InventoryResult{}, context.Canceled
+}
+
 func (f *fakeUpstreamInventory) Inventory(ctx context.Context, budget InventoryBudget) (InventoryResult, error) {
 	f.calls++
 	if budget != DefaultInventoryBudget() {
@@ -117,6 +131,9 @@ func TestHashUpstreamIdentityIsClosedDomainSeparatedAndStable(t *testing.T) {
 	if feedHash != directFeedHash {
 		t.Fatalf("feed hash = %q, want %q", feedHash, directFeedHash)
 	}
+	if want := "72a09cc7a332aa2af975f7f82ccc387c23e765a9ec5f69139352ff5062d9cab6"; feedHash != want {
+		t.Fatalf("feed identity hash = %q, want locked v1 vector %q", feedHash, want)
+	}
 }
 
 func TestNormalizeInventoryResultDeduplicatesAndRejectsInvalidOrOverBudgetResults(t *testing.T) {
@@ -138,11 +155,28 @@ func TestNormalizeInventoryResultDeduplicatesAndRejectsInvalidOrOverBudgetResult
 	for _, value := range []InventoryResult{
 		{IdentityHashes: []string{strings.ToUpper(one)}, PageCount: 1, Complete: true},
 		{IdentityHashes: []string{one}, PageCount: InventoryMaxPages + 1, Complete: true},
-		{IdentityHashes: make([]string, InventoryMaxIdentities+1), PageCount: 1, Complete: true},
 	} {
 		if _, err := normalizeInventoryResult(value, DefaultInventoryBudget()); err == nil {
 			t.Fatalf("expected invalid result to fail: %#v", value)
 		}
+	}
+	rawDuplicates := make([]string, InventoryMaxIdentities+1)
+	for i := range rawDuplicates {
+		rawDuplicates[i] = one
+	}
+	deduplicated, err := normalizeInventoryResult(InventoryResult{IdentityHashes: rawDuplicates, PageCount: 1, Complete: true}, DefaultInventoryBudget())
+	if err != nil || len(deduplicated.IdentityHashes) != 1 {
+		t.Fatalf("raw duplicates exceeded unique cap: count=%d err=%v", len(deduplicated.IdentityHashes), err)
+	}
+	if _, err := normalizeInventoryResult(InventoryResult{PageCount: -1}, DefaultInventoryBudget()); !errors.Is(err, ErrInventoryInvalid) {
+		t.Fatalf("negative page count error = %v, want ErrInventoryInvalid", err)
+	}
+	overPages, err := normalizeInventoryResult(InventoryResult{PageCount: InventoryMaxPages + 1}, DefaultInventoryBudget())
+	if !errors.Is(err, ErrInventoryBudget) {
+		t.Fatalf("over-cap page count error = %v, want ErrInventoryBudget", err)
+	}
+	if overPages.PageCount != InventoryMaxPages {
+		t.Fatalf("over-cap page count evidence = %d, want bounded %d", overPages.PageCount, InventoryMaxPages)
 	}
 }
 
@@ -158,6 +192,11 @@ func TestNormalizeInventoryResultAcceptsExactCapsOnlyWhenAdapterObservedCompleti
 	incomplete, err := normalizeInventoryResult(InventoryResult{IdentityHashes: hashes, PageCount: InventoryMaxPages}, DefaultInventoryBudget())
 	if err != nil || incomplete.Complete {
 		t.Fatalf("core invented completion at exact cap: complete=%t err=%v", incomplete.Complete, err)
+	}
+	overUnique := append(append([]string(nil), hashes...), "")
+	overUnique[len(overUnique)-1], _ = HashUpstreamIdentity(SourceXBookmarks, "x:over-cap")
+	if _, err := normalizeInventoryResult(InventoryResult{IdentityHashes: overUnique, PageCount: InventoryMaxPages, Complete: true}, DefaultInventoryBudget()); !errors.Is(err, ErrInventoryBudget) {
+		t.Fatalf("over unique identity cap error = %v, want ErrInventoryBudget", err)
 	}
 }
 
@@ -208,6 +247,55 @@ func TestRunDeepUpstreamTimeoutWinsOverUnwrappedAdapterError(t *testing.T) {
 	check := checkByIDForUpstreamTest(t, report, CheckUpstreamGitHubStarsParity)
 	if check.Status != StatusUnknown || check.ErrorCode != ErrorTimeout {
 		t.Fatalf("timed out adapter = %#v", check)
+	}
+}
+
+func TestRunDeepUpstreamTimeoutWinsOverInvalidReturnedResult(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.Timeouts = map[TimeoutClass]time.Duration{TimeoutUpstreamInventory: 5 * time.Millisecond}
+	deps.Store = &upstreamMatchStore{fakeStore: deps.Store.(fakeStore)}
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, Categories: []Category{CategoryImports}, Sources: []Source{SourceGitHubStars}}, deps, DeepDependencies{
+		Upstream: UpstreamInventories{SourceGitHubStars: contextIgnoringInvalidInventory{}}, Limits: DefaultDeepLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForUpstreamTest(t, report, CheckUpstreamGitHubStarsParity)
+	if check.Status != StatusUnknown || check.ErrorCode != ErrorTimeout || check.Evidence["upstream_count"] != 0 || check.Evidence["page_count"] != 0 {
+		t.Fatalf("timed out invalid adapter = %#v", check)
+	}
+}
+
+func TestRunDeepParentCancellationStopsLaterInventoriesButSourceTimeoutDoesNot(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	features := allFeatures()
+	for source := range features.Sources {
+		features.Sources[source] = source == SourceGitHubStars || source == SourceFeeds
+	}
+	deps := passingDependencies(now)
+	deps.Features = features
+	deps.Store = &upstreamMatchStore{fakeStore: deps.Store.(fakeStore)}
+
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	feedsAfterCancel := &fakeUpstreamInventory{result: InventoryResult{Complete: true}}
+	_, _ = RunDeep(parentCtx, Request{Profile: ProfileDeep, Categories: []Category{CategoryImports}}, deps, DeepDependencies{
+		Upstream: UpstreamInventories{SourceGitHubStars: cancelingUpstreamInventory{cancel: parentCancel}, SourceFeeds: feedsAfterCancel}, Limits: DefaultDeepLimits(),
+	})
+	if feedsAfterCancel.calls != 0 {
+		t.Fatalf("later inventory called %d times after parent cancellation", feedsAfterCancel.calls)
+	}
+
+	deps.Features.Timeouts = map[TimeoutClass]time.Duration{TimeoutUpstreamInventory: 5 * time.Millisecond}
+	feedsAfterTimeout := &fakeUpstreamInventory{result: InventoryResult{Complete: true}}
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, Categories: []Category{CategoryImports}}, deps, DeepDependencies{
+		Upstream: UpstreamInventories{SourceGitHubStars: contextIgnoringErrorInventory{}, SourceFeeds: feedsAfterTimeout}, Limits: DefaultDeepLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feedsAfterTimeout.calls != 1 || checkByIDForUpstreamTest(t, report, CheckUpstreamGitHubStarsParity).ErrorCode != ErrorTimeout {
+		t.Fatalf("per-source timeout stopped later inventory: feeds=%d checks=%#v", feedsAfterTimeout.calls, report.Checks)
 	}
 }
 
@@ -321,7 +409,7 @@ func TestDeepParityConfiguredSetAndExplicitDisabledOverride(t *testing.T) {
 	}
 
 	overrideFeatures := configured
-	overrideFeatures.SchedulerEnabled = false
+	overrideFeatures.SchedulerEnabled = true
 	overrideFeatures.Sources[SourceGitHubStars] = false
 	deps.Features = overrideFeatures
 	github.calls = 0

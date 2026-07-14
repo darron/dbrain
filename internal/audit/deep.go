@@ -177,6 +177,9 @@ func (s *runState) loadDeepUpstream(ctx context.Context) {
 	}
 	budget := DefaultInventoryBudget()
 	for _, entry := range Registry() {
+		if ctx.Err() != nil {
+			break
+		}
 		source, parity := upstreamCheckSources[entry.ID]
 		if !parity || !deepSelected(s.req, entry.ID) || !featureEnabled(entry, s.deps.Features, s.req) {
 			continue
@@ -190,16 +193,28 @@ func (s *runState) loadDeepUpstream(ctx context.Context) {
 		timeout := timeoutFor(ProfileDeep, TimeoutUpstreamInventory, s.deps.Features.Timeouts)
 		sourceCtx, cancel := context.WithTimeout(ctx, timeout)
 		value, inventoryErr := inventory.Inventory(sourceCtx, budget)
+		if sourceCtx.Err() != nil {
+			observation := upstreamObservation{
+				result: boundedInventoryEvidence(value, budget), err: sourceCtx.Err(), errorCode: upstreamErrorCode(sourceCtx.Err()),
+			}
+			cancel()
+			s.upstream[source] = observation
+			continue
+		}
 		normalized, normalizeErr := normalizeInventoryResult(value, budget)
+		if sourceCtx.Err() != nil {
+			observation := upstreamObservation{
+				result: boundedInventoryEvidence(value, budget), err: sourceCtx.Err(), errorCode: upstreamErrorCode(sourceCtx.Err()),
+			}
+			cancel()
+			s.upstream[source] = observation
+			continue
+		}
 		observation := upstreamObservation{result: normalized}
 		switch {
 		case normalizeErr != nil:
 			observation.err = normalizeErr
 			observation.errorCode = upstreamErrorCode(normalizeErr)
-		case sourceCtx.Err() != nil:
-			observation.result.Complete = false
-			observation.err = sourceCtx.Err()
-			observation.errorCode = upstreamErrorCode(sourceCtx.Err())
 		case inventoryErr != nil:
 			observation.result.Complete = false
 			observation.err = inventoryErr

@@ -50,6 +50,13 @@ func TestAuditIdentityHashMatchesLockedV1Vector(t *testing.T) {
 	}
 }
 
+func TestAuditFeedIdentityHashMatchesLockedV1Vector(t *testing.T) {
+	const want = "72a09cc7a332aa2af975f7f82ccc387c23e765a9ec5f69139352ff5062d9cab6"
+	if got := hashAuditFeedIdentity("feed:key", "guid:item"); got != want {
+		t.Fatalf("store feed identity hash = %q, want locked v1 vector %q", got, want)
+	}
+}
+
 func TestAuditSourceEnumIsExactClosedSevenValueMapping(t *testing.T) {
 	want := map[AuditSource]string{
 		AuditSourceAppleNotes: "apple-notes", AuditSourceSafariTabs: "safari-tabs",
