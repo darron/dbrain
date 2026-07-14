@@ -36,9 +36,9 @@ Add `exactStableConflictRepair()` returning this reviewed Ruby block:
 func exactStableConflictRepair() string {
 	return `stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'
 unless text.match?(/^\s*conflicts_with\s+"dbrain-test"(?:,.*)?$/)
-  license = text.match(/^  license "[^"]+"\n/)
-  abort("stable formula is missing its license anchor") unless license
-  text = text.sub(license[0], "#{license[0]}\n#{stableConflict}\n")
+  platform = text.match(/^  if OS\.mac\?\n/)
+  abort("stable formula is missing its platform anchor") unless platform
+  text = text.sub(platform[0], "#{stableConflict}\n\n#{platform[0]}")
 end`
 }
 ```
@@ -61,7 +61,7 @@ Expected: FAIL with `stable formula updater must maintain the reciprocal dbrain-
 
 - [ ] **Step 3: Add the minimal idempotent updater block**
 
-Insert the exact `exactStableConflictRepair()` Ruby block in `.github/workflows/release.yaml` after `text = File.read(formula_path)` and before version/URL/checksum replacement. The broad declaration check prevents duplication; the exact inserted line supplies Homebrew's required reciprocal metadata.
+Insert the exact `exactStableConflictRepair()` Ruby block in `.github/workflows/release.yaml` after `text = File.read(formula_path)` and before version/URL/checksum replacement. The broad declaration check prevents duplication; the platform anchor places the declaration after `livecheck`, preserving Homebrew's component order.
 
 - [ ] **Step 4: Add the changelog entry**
 
@@ -115,7 +115,7 @@ Expected: clean checkout; `dbrain-test.rb` conflicts with `dbrain`; `dbrain.rb` 
 
 - [ ] **Step 2: Add only the reciprocal stable declaration**
 
-Insert after the stable formula's license:
+Insert after the stable formula's `livecheck` block and before its platform block:
 
 ```ruby
   conflicts_with "dbrain-test", because: "both install the dbrain binary"

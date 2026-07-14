@@ -333,9 +333,9 @@ fi`
 func exactStableConflictRepair() string {
 	return `stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'
 unless text.match?(/^\s*conflicts_with\s+"dbrain-test"(?:,.*)?$/)
-  license = text.match(/^  license "[^"]+"\n/)
-  abort("stable formula is missing its license anchor") unless license
-  text = text.sub(license[0], "#{license[0]}\n#{stableConflict}\n")
+  platform = text.match(/^  if OS\.mac\?\n/)
+  abort("stable formula is missing its platform anchor") unless platform
+  text = text.sub(platform[0], "#{stableConflict}\n\n#{platform[0]}")
 end`
 }
 

@@ -15,10 +15,11 @@ Repair the live tap once by adding
 
 Make the repair durable in dbrain's stable release workflow. Its formula update
 step will require the reciprocal conflict declaration and insert it immediately
-after the stable formula's license when it is absent. Existing declarations
-must not be duplicated. The candidate workflow will continue treating the
-stable formula as immutable; it is not permitted to modify the stable formula
-while publishing a test candidate.
+before the stable formula's platform block when it is absent. This preserves
+Homebrew's required component order by keeping `livecheck` before
+`conflicts_with`. Existing declarations must not be duplicated. The candidate
+workflow will continue treating the stable formula as immutable; it is not
+permitted to modify the stable formula while publishing a test candidate.
 
 ## Verification
 
