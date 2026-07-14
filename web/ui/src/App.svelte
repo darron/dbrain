@@ -51,6 +51,8 @@
   let standardEnvelope = null;
   let fastEnvelope = null;
   let standardHistoryResponse = { profile: "standard", history: [] };
+  let auditEnvelopeRevision = { fast: 0, standard: 0 };
+  let auditHistoryRevision = 0;
   let runByProfile = { fast: null, standard: null };
   let auditStartBusy = false;
   let auditDisposed = false;
@@ -62,6 +64,21 @@
   let auditPollGeneration = 0;
   const auditController = new AbortController();
   const auditPollTimers = new Set();
+
+  function assignAuditEnvelope(profile, envelope) {
+    const normalizedProfile = profile === "fast" ? "fast" : "standard";
+    if (normalizedProfile === "fast") fastEnvelope = envelope;
+    else standardEnvelope = envelope;
+    auditEnvelopeRevision = {
+      ...auditEnvelopeRevision,
+      [normalizedProfile]: auditEnvelopeRevision[normalizedProfile] + 1
+    };
+  }
+
+  function assignStandardAuditHistory(response) {
+    standardHistoryResponse = response;
+    auditHistoryRevision += 1;
+  }
 
   // Search/research state
   let inputMode = "chat"; // "search" | "research" | "chat" | "harness" | "shares"
@@ -276,24 +293,24 @@
     ]);
     if (auditDisposed) return;
     if (standardResult.status === "fulfilled") {
-      standardEnvelope = standardResult.value;
+      assignAuditEnvelope("standard", standardResult.value);
       standardFreshnessObservedAt = Date.now();
       auditLoadState = "ready";
       scheduleStandardFreshnessRefresh();
     } else {
-      standardEnvelope = null;
+      assignAuditEnvelope("standard", null);
       auditLoadState = "error";
       auditLoadError = standardResult.reason?.message || "audit_report_unavailable";
     }
     if (historyResult.status === "fulfilled") {
-      standardHistoryResponse = historyResult.value;
+      assignStandardAuditHistory(historyResult.value);
       auditHistoryState = "ready";
     } else {
-      standardHistoryResponse = { profile: "standard", history: [] };
+      assignStandardAuditHistory({ profile: "standard", history: [] });
       auditHistoryState = "error";
       auditHistoryError = historyResult.reason?.message || "audit_report_unavailable";
     }
-    if (fastResult.status === "fulfilled") fastEnvelope = fastResult.value;
+    if (fastResult.status === "fulfilled") assignAuditEnvelope("fast", fastResult.value);
   }
 
   async function startAdminAudit(profile) {
@@ -305,8 +322,10 @@
       auditPollGeneration += 1;
       clearAuditPollTimers();
       const next = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, status);
-      standardEnvelope = next.standardEnvelope;
-      fastEnvelope = next.fastEnvelope;
+      if (status.state === "completed" && status.report && status.freshness) {
+        const completedProfile = status.profile === "fast" ? "fast" : "standard";
+        assignAuditEnvelope(completedProfile, completedProfile === "fast" ? next.fastEnvelope : next.standardEnvelope);
+      }
       runByProfile = next.runByProfile;
       if (profile === "standard" && status.state === "completed") standardFreshnessObservedAt = Date.now();
       if (status.state === "running") scheduleAuditPoll(profile, status.audit_id, 0);
@@ -333,8 +352,10 @@
         const status = await getAuditRun(auditID, { signal: auditController.signal });
         if (auditDisposed || generation !== auditPollGeneration) return;
         const next = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, status);
-        standardEnvelope = next.standardEnvelope;
-        fastEnvelope = next.fastEnvelope;
+        if (status.state === "completed" && status.report && status.freshness) {
+          const completedProfile = status.profile === "fast" ? "fast" : "standard";
+          assignAuditEnvelope(completedProfile, completedProfile === "fast" ? next.fastEnvelope : next.standardEnvelope);
+        }
         runByProfile = next.runByProfile;
         if (profile === "standard" && status.state === "completed") standardFreshnessObservedAt = Date.now();
         if (status.state === "running" && attempt < 240) {
@@ -390,11 +411,11 @@
       if (auditDisposed) return;
       latestApplied = true;
       if (profile === "fast") {
-        fastEnvelope = envelope;
+        assignAuditEnvelope("fast", envelope);
         return;
       }
       const previousAuditID = standardEnvelope?.report?.audit_id || "";
-      standardEnvelope = envelope;
+      assignAuditEnvelope("standard", envelope);
       standardFreshnessObservedAt = Date.now();
       scheduleStandardFreshnessRefresh();
       standardReportChanged = Boolean(envelope?.report?.audit_id && envelope.report.audit_id !== previousAuditID);
@@ -404,11 +425,14 @@
       if (auditDisposed) return false;
       applyEnvelope(envelope);
     } else {
+      const initialRevision = auditEnvelopeRevision[profile];
       const applied = await runGenerationStableRead({
         read: () => getAuditLatest(profile, { signal: auditController.signal }),
         apply: applyEnvelope,
         currentGeneration: () => auditPollGeneration,
         initialGeneration: expectedGeneration,
+        currentRevision: () => auditEnvelopeRevision[profile],
+        initialRevision,
         isDisposed: () => auditDisposed,
         maxAttempts
       });
@@ -438,7 +462,7 @@
     const generation = auditPollGeneration;
     standardRefreshBusy = true;
     const elapsed = standardFreshnessObservedAt > 0 ? Date.now() - standardFreshnessObservedAt : 0;
-    if (freshnessDeadlineElapsed(standardEnvelope, elapsed)) standardEnvelope = markEnvelopeStale(standardEnvelope);
+    if (freshnessDeadlineElapsed(standardEnvelope, elapsed)) assignAuditEnvelope("standard", markEnvelopeStale(standardEnvelope));
     try {
       await refreshLatestAudit("standard", generation, 2);
       if (standardHistoryNeedsRefresh) await refreshStandardAuditHistory(auditPollGeneration, 2, 1);
@@ -457,20 +481,23 @@
       auditHistoryError = "";
     }
     try {
-      let response = null;
       if (expectedGeneration == null) {
-        response = await getAuditHistory("standard", 20, { signal: auditController.signal });
+        const response = await getAuditHistory("standard", 20, { signal: auditController.signal });
         if (auditDisposed) return false;
+        assignStandardAuditHistory(response);
       } else {
+        const initialRevision = auditHistoryRevision;
         const applied = await runGenerationStableRead({
           read: () => getAuditHistory("standard", 20, { signal: auditController.signal }),
-          apply: (value) => { if (!auditDisposed) response = value; },
+          apply: (value) => { if (!auditDisposed) assignStandardAuditHistory(value); },
           currentGeneration: () => auditPollGeneration,
           initialGeneration: expectedGeneration,
+          currentRevision: () => auditHistoryRevision,
+          initialRevision,
           isDisposed: () => auditDisposed,
           maxAttempts
         });
-        if (!applied || auditDisposed || response == null) {
+        if (!applied || auditDisposed) {
           if (!auditDisposed) {
             standardHistoryNeedsRefresh = true;
             scheduleStandardHistoryRetry(retryBudget);
@@ -478,7 +505,6 @@
           return false;
         }
       }
-      standardHistoryResponse = response;
       auditHistoryState = "ready";
       standardHistoryNeedsRefresh = false;
       clearTimeout(standardHistoryRetryTimer);

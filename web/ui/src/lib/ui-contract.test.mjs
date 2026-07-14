@@ -50,6 +50,9 @@ test("admin audit surface loads saved reports only and cancels polling on destro
   assert.match(appSource, /standardHistoryNeedsRefresh/);
   assert.match(appSource, /scheduleStandardHistoryRetry/);
   assert.match(appSource, /if \(standardHistoryNeedsRefresh\) await refreshStandardAuditHistory/);
+  assert.match(appSource, /auditEnvelopeRevision/);
+  assert.match(appSource, /auditHistoryRevision/);
+  assert.match(appSource, /currentRevision:/);
   assert.doesNotMatch(appSource, /state: "failed", error_code: "audit_poll_/);
   assert.match(overviewSource, /status unavailable · audit may still be running/);
   assert.match(pipelineSource, /pending age \{stage\.pendingStatus\}/);

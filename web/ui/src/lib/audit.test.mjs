@@ -240,6 +240,72 @@ test("generation-stable reads stop after the bounded retry budget without applyi
   assert.deepEqual(applied, []);
 });
 
+test("a generation retry cannot overwrite a terminal envelope applied while its second read is pending", async () => {
+  let resolveFirst;
+  let resolveRetry;
+  let markRetryStarted;
+  const retryStarted = new Promise((resolve) => { markRetryStarted = resolve; });
+  let generation = 40;
+  let revision = 1;
+  let envelopeState = { audit_id: "report-a" };
+  let reads = 0;
+  const refresh = runGenerationStableRead({
+    initialGeneration: generation,
+    initialRevision: revision,
+    currentGeneration: () => generation,
+    currentRevision: () => revision,
+    maxAttempts: 2,
+    read: async () => {
+      reads += 1;
+      if (reads === 1) return new Promise((resolve) => { resolveFirst = resolve; });
+      return new Promise((resolve) => {
+        resolveRetry = resolve;
+        markRetryStarted();
+      });
+    },
+    apply: (value) => { envelopeState = value; revision += 1; }
+  });
+
+  generation = 41;
+  resolveFirst({ audit_id: "report-a" });
+  await retryStarted;
+  assert.equal(reads, 2);
+
+  envelopeState = { audit_id: "report-b" };
+  revision += 1;
+  resolveRetry({ audit_id: "report-a" });
+  assert.equal(await refresh, false);
+  assert.equal(reads, 2);
+  assert.deepEqual(envelopeState, { audit_id: "report-b" });
+});
+
+test("a same-generation history response cannot overwrite a newer history revision", async () => {
+  let resolveOld;
+  const generation = 50;
+  let revision = 3;
+  let historyState = ["old"];
+  let reads = 0;
+  const refresh = runGenerationStableRead({
+    initialGeneration: generation,
+    initialRevision: revision,
+    currentGeneration: () => generation,
+    currentRevision: () => revision,
+    maxAttempts: 2,
+    read: async () => {
+      reads += 1;
+      if (reads === 1) return new Promise((resolve) => { resolveOld = resolve; });
+      return ["new-terminal-row"];
+    },
+    apply: (value) => { historyState = value; revision += 1; }
+  });
+  historyState = ["new-terminal-row"];
+  revision += 1;
+  resolveOld(["old"]);
+  assert.equal(await refresh, true);
+  assert.equal(reads, 2);
+  assert.deepEqual(historyState, ["new-terminal-row"]);
+});
+
 test("poll and quiet arrivals are separate importer signals", () => {
   const [apple] = selectImporters(report());
   assert.equal(apple.source, "apple_notes");
