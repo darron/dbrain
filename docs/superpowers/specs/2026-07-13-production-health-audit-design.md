@@ -1268,8 +1268,9 @@ tool/model values that cannot be recovered from durable evidence.
   sink errors; they do not mutate the database or change sync results.
 - Deep temporary restore files are created under the configured temp directory
   using generated names, private modes, and no-symlink/root confinement, then
-  removed on success, failure, timeout, or cancellation. Cleanup failure is a
-  warning with the path shown only in local CLI identifier-enabled output.
+  removed on success, failure, timeout, or cancellation. Cleanup-only failure
+  is `unknown` with the path shown only in local CLI identifier-enabled output;
+  it does not mask an already verified invalid archive, which remains `fail`.
 - Filesystem findings report logical classifications such as `outside_root`,
   `missing`, `symlink_rejected`, or `unreadable`; shared reports never expose
   the path or file contents.
