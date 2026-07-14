@@ -12,6 +12,7 @@ import (
 
 	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/runtimeenv"
@@ -20,6 +21,7 @@ import (
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vaultfs"
 	"github.com/darron/dbrain/internal/version"
+	"github.com/darron/dbrain/internal/youtubeimport"
 	"github.com/spf13/cobra"
 )
 
@@ -45,6 +47,9 @@ func newAuditCommand(root *rootOptions) *cobra.Command {
 		newAuditRunCommand(root, "imports", []audit.Category{audit.CategoryImports}),
 		newAuditRunCommand(root, "pipeline", []audit.Category{audit.CategoryPipeline}),
 		newAuditRunCommand(root, "durability", []audit.Category{audit.CategoryDurability}),
+		newAuditSourceCommand(root, "github-stars", audit.SourceGitHubStars),
+		newAuditSourceCommand(root, "youtube-liked", audit.SourceYouTubeLiked),
+		newAuditSourceCommand(root, "youtube-watch-later", audit.SourceYouTubeWatchLater),
 	)
 	return cmd
 }
@@ -56,7 +61,7 @@ func newAuditRunCommand(root *rootOptions, name string, categories []audit.Categ
 		Short: "Run the " + name + " health audit",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runAuditCLI(cmd, root, flags, categories)
+			return runAuditCLI(cmd, root, flags, categories, nil, nil)
 		},
 	}
 	cmd.Annotations = map[string]string{skipKeepAwakeAnnotation: "true"}
@@ -72,15 +77,43 @@ func newAuditRunCommand(root *rootOptions, name string, categories []audit.Categ
 	return cmd
 }
 
-func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, categories []audit.Category) error {
+func newAuditSourceCommand(root *rootOptions, name string, source audit.Source) *cobra.Command {
+	flags := &auditCLIFlags{profile: string(audit.ProfileDeep)}
+	cmd := &cobra.Command{
+		Use:   name,
+		Short: "Run bounded upstream parity for " + name,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			profile := audit.Profile(strings.TrimSpace(flags.profile))
+			if cmd.Flags().Changed("profile") && profile != audit.ProfileDeep {
+				return &ExitError{Code: 3, Err: fmt.Errorf("audit source command %s requires --profile deep", name)}
+			}
+			return runAuditCLI(cmd, root, flags, []audit.Category{audit.CategoryImports}, []audit.Source{source}, []audit.Source{source})
+		},
+	}
+	cmd.Annotations = map[string]string{skipKeepAwakeAnnotation: "true"}
+	cmd.Flags().StringVar(&flags.profile, "profile", string(audit.ProfileDeep), "Audit profile: deep")
+	cmd.Flags().StringVar(&flags.since, "since", "7d", "Metrics and arrival-history window")
+	cmd.Flags().BoolVar(&flags.json, "json", false, "Emit the stable JSON audit report")
+	cmd.Flags().StringVar(&flags.timeout, "timeout", "", "Bound the complete audit run")
+	cmd.Flags().BoolVar(&flags.includeIdentifiers, "include-identifiers", false, "Include bounded internal identifiers in the local CLI wrapper")
+	cmd.Flags().StringVar(&flags.expectCommit, "expect-commit", "", "Require the running binary to report this commit")
+	return cmd
+}
+
+func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, categories []audit.Category, sources []audit.Source, sourceOverrides []audit.Source) error {
 	profile := audit.Profile(strings.TrimSpace(flags.profile))
 	if !profile.Valid() {
 		return &ExitError{Code: 3, Err: fmt.Errorf("invalid audit profile %q", profile)}
 	}
+	flagChanged := func(name string) bool {
+		flag := cmd.Flags().Lookup(name)
+		return flag != nil && flag.Changed
+	}
 	deepFlags := map[string]bool{
-		"max-archive-bytes":  cmd.Flags().Changed("max-archive-bytes"),
-		"max-database-bytes": cmd.Flags().Changed("max-database-bytes"),
-		"max-temp-bytes":     cmd.Flags().Changed("max-temp-bytes"),
+		"max-archive-bytes":  flagChanged("max-archive-bytes"),
+		"max-database-bytes": flagChanged("max-database-bytes"),
+		"max-temp-bytes":     flagChanged("max-temp-bytes"),
 	}
 	if profile != audit.ProfileDeep && (deepFlags["max-archive-bytes"] || deepFlags["max-database-bytes"] || deepFlags["max-temp-bytes"]) {
 		return &ExitError{Code: 3, Err: fmt.Errorf("deep byte ceilings are deep only")}
@@ -140,14 +173,18 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	if err := effectiveBootstrapCtx.Err(); err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("audit bootstrap timeout: %w", err)}
 	}
-	features, err := resolveAuditFeatures(cfg, meta)
+	resolvedRuntime, err := resolveAuditRuntime(cfg, meta)
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit features: %w", err)}
 	}
+	features := resolvedRuntime.Features
 	if err := effectiveBootstrapCtx.Err(); err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("audit bootstrap timeout: %w", err)}
 	}
-	req := audit.Request{Profile: profile, Since: since, Categories: categories, ExpectCommit: strings.TrimSpace(flags.expectCommit)}
+	req := audit.Request{
+		Profile: profile, Since: since, Categories: categories, Sources: sources, SourceOverrides: sourceOverrides,
+		ExpectCommit: strings.TrimSpace(flags.expectCommit),
+	}
 	deepLimits := audit.DeepLimits{}
 	if profile == audit.ProfileDeep {
 		deepLimits, err = resolveDeepAuditLimits(cfg.RootDir, *flags, deepFlags, features)
@@ -177,7 +214,7 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	var report audit.Report
 	localCleanupPaths := map[audit.CheckID][]string{}
 	if profile == audit.ProfileDeep {
-		deepDeps, buildErr := buildDeepAuditDependencies(ctx, cfg, req, features, deepLimits)
+		deepDeps, buildErr := buildDeepAuditDependencies(ctx, cfg, req, resolvedRuntime, deepLimits)
 		if buildErr != nil {
 			return &ExitError{Code: 3, Err: fmt.Errorf("resolve deep audit capabilities: %w", buildErr)}
 		}
@@ -438,11 +475,24 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, snapshot *st
 	return deps, nil
 }
 
-func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, req audit.Request, features audit.Features, limits audit.DeepLimits) (audit.DeepDependencies, error) {
+func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, req audit.Request, resolved auditRuntimeConfig, limits audit.DeepLimits) (audit.DeepDependencies, error) {
+	features := resolved.Features
 	deep := audit.DeepDependencies{
 		Limits: limits, VerifyArchive: auditArchiveVerifier{},
 		NewTemp:  func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(cfg.TempDir) },
 		Upstream: audit.UpstreamInventories{},
+	}
+	if auditSourceSelected(req, features, audit.SourceGitHubStars, audit.CheckUpstreamGitHubStarsParity) {
+		deep.Upstream[audit.SourceGitHubStars] = githubimport.NewAuditInventory(
+			cfg.RootDir,
+			runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_USER_AGENT"),
+		)
+	}
+	if auditSourceSelected(req, features, audit.SourceYouTubeLiked, audit.CheckUpstreamYouTubeLikedParity) {
+		deep.Upstream[audit.SourceYouTubeLiked] = youtubeimport.NewLikedAuditInventory(resolved.Flags.browser, resolved.Flags.profile)
+	}
+	if auditSourceSelected(req, features, audit.SourceYouTubeWatchLater, audit.CheckUpstreamYouTubeWatchLaterParity) {
+		deep.Upstream[audit.SourceYouTubeWatchLater] = youtubeimport.NewWatchLaterAuditInventory(resolved.Flags.browser, resolved.Flags.profile)
 	}
 	needMedia := (auditRequestSelectsCheck(req, audit.CheckDurabilityMediaRemote) || auditRequestSelectsCheck(req, audit.CheckDurabilityMediaRemoteOnly)) && features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
 	needArchive := auditRequestSelectsCheck(req, audit.CheckDurabilitySQLiteRestore) && (features.SQLiteBackupSchedulerEnabled || features.SQLiteBackupAuditRequired) && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
@@ -477,6 +527,18 @@ func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, req audi
 		}
 	}
 	return deep, nil
+}
+
+func auditSourceSelected(req audit.Request, features audit.Features, source audit.Source, checkID audit.CheckID) bool {
+	if !auditRequestSelectsCheck(req, checkID) {
+		return false
+	}
+	for _, override := range req.SourceOverrides {
+		if override == source {
+			return true
+		}
+	}
+	return features.Sources[source]
 }
 
 func auditNeedsSnapshot(req audit.Request) bool {

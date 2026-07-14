@@ -17,18 +17,28 @@ type auditConfigMeta struct {
 	Source string
 }
 
+type auditRuntimeConfig struct {
+	Features audit.Features
+	Flags    syncAllFlags
+}
+
 func resolveAuditFeatures(cfg config.Config, meta auditConfigMeta) (audit.Features, error) {
+	resolved, err := resolveAuditRuntime(cfg, meta)
+	return resolved.Features, err
+}
+
+func resolveAuditRuntime(cfg config.Config, meta auditConfigMeta) (auditRuntimeConfig, error) {
 	timeouts, remoteRequestTimeout, err := resolveAuditTimeoutOverrides(cfg.RootDir)
 	if err != nil {
-		return audit.Features{}, err
+		return auditRuntimeConfig{}, err
 	}
 	scheduler, err := schedulerSyncConfigFromRuntime(cfg.RootDir)
 	if err != nil {
-		return audit.Features{}, err
+		return auditRuntimeConfig{}, err
 	}
 	flags, err := resolveSyncAllFlags(cfg.RootDir, scheduler.Flags)
 	if err != nil {
-		return audit.Features{}, err
+		return auditRuntimeConfig{}, err
 	}
 	configVerified := false
 	if info, statErr := os.Stat(cfg.ConfigPath); statErr == nil && !info.IsDir() {
@@ -78,7 +88,7 @@ func resolveAuditFeatures(cfg config.Config, meta auditConfigMeta) (audit.Featur
 	if mediaProvider == "" {
 		mediaProvider = "cloudflare_r2"
 	}
-	return audit.Features{
+	features := audit.Features{
 		Layout: meta.Layout, ConfigSource: meta.Source, ConfigVerified: configVerified,
 		SchedulerEnabled: scheduler.Enabled, SchedulerInterval: scheduler.Interval, SchedulerJitter: scheduler.Jitter,
 		SelectedStages: selected, Sources: sources, Stages: stages,
@@ -91,7 +101,8 @@ func resolveAuditFeatures(cfg config.Config, meta auditConfigMeta) (audit.Featur
 		OKFEnabled:                        flags.okfExport && !flags.skipOKFExport,
 		Timeouts:                          timeouts,
 		RemoteRequestTimeout:              remoteRequestTimeout,
-	}, nil
+	}
+	return auditRuntimeConfig{Features: features, Flags: flags}, nil
 }
 
 func resolveAuditTimeoutOverrides(root string) (map[audit.TimeoutClass]time.Duration, time.Duration, error) {

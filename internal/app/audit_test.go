@@ -765,18 +765,225 @@ func TestBuildDeepAuditDependenciesSelectsExactRemoteOnlyMediaCapability(t *test
 	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "test-access")
 	t.Setenv("DBRAIN_R2_SECRET_ACCESS_KEY", "test-secret")
 	features := audit.Features{MediaRemoteEnabled: true, SQLiteProviderConfigured: true, SQLiteCredentialConfigured: true}
-	deep, err := buildDeepAuditDependencies(t.Context(), cfg, audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}, features, audit.DefaultDeepLimits())
+	resolved := auditRuntimeConfig{Features: features}
+	deep, err := buildDeepAuditDependencies(t.Context(), cfg, audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}, resolved, audit.DefaultDeepLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deep.Media == nil {
 		t.Fatal("exact remote-only request did not receive media inventory capability")
 	}
-	unrelated, err := buildDeepAuditDependencies(t.Context(), cfg, audit.Request{Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports}}, features, audit.DefaultDeepLimits())
+	unrelated, err := buildDeepAuditDependencies(t.Context(), cfg, audit.Request{Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports}}, resolved, audit.DefaultDeepLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if unrelated.Media != nil {
 		t.Fatal("imports-only request received unrelated media inventory capability")
+	}
+}
+
+func TestAuditSourceCommandsAreDeepOnlyAndDoNotExposeArchiveFlags(t *testing.T) {
+	root := &rootOptions{}
+	auditCommand := newAuditCommand(root)
+	for _, name := range []string{"github-stars", "youtube-liked", "youtube-watch-later"} {
+		command, _, err := auditCommand.Find([]string{name})
+		if err != nil {
+			t.Fatalf("find %s: %v", name, err)
+		}
+		if command.Name() != name {
+			t.Fatalf("found %q for %q", command.Name(), name)
+		}
+		profile := command.Flags().Lookup("profile")
+		if profile == nil || profile.DefValue != string(audit.ProfileDeep) {
+			t.Fatalf("%s profile flag = %#v", name, profile)
+		}
+		for _, flag := range []string{"max-archive-bytes", "max-database-bytes", "max-temp-bytes"} {
+			if command.Flags().Lookup(flag) != nil {
+				t.Fatalf("%s exposes unrelated --%s", name, flag)
+			}
+		}
+	}
+
+	command := NewRootCommand()
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"--root", filepath.Join(t.TempDir(), "must-not-resolve"), "--no-debug", "audit", "youtube-liked", "--profile", "standard", "--json"})
+	err := command.ExecuteContext(t.Context())
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 3 || !strings.Contains(exit.Error(), "requires --profile deep") {
+		t.Fatalf("standard source-profile error = %#v", err)
+	}
+}
+
+func TestResolveAuditRuntimeCarriesFeaturesAndSourceOptionsFromOneSyncPolicy(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+scheduler:
+  sync_all:
+    enabled: true
+sync_all:
+  browser: chromium
+  profile: Profile 7
+  imports:
+    github_stars: false
+    youtube_watch_later: false
+    youtube_liked: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, meta, err := loadAuditConfig(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveAuditRuntime(cfg, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Features.Sources[audit.SourceGitHubStars] || resolved.Features.Sources[audit.SourceYouTubeWatchLater] || !resolved.Features.Sources[audit.SourceYouTubeLiked] {
+		t.Fatalf("source features = %#v", resolved.Features.Sources)
+	}
+	if resolved.Flags.browser != "chromium" || resolved.Flags.profile != "Profile 7" {
+		t.Fatalf("source options = browser=%q profile=%q", resolved.Flags.browser, resolved.Flags.profile)
+	}
+}
+
+func TestBuildDeepAuditDependenciesSelectsOnlyRequestedYouTubeInventoryBeforeArchiveReturn(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := auditRuntimeConfig{
+		Features: audit.Features{Sources: map[audit.Source]bool{
+			audit.SourceGitHubStars: false, audit.SourceYouTubeLiked: false, audit.SourceYouTubeWatchLater: false,
+		}},
+		Flags: syncAllFlags{browser: "chromium", profile: "Profile 9"},
+	}
+	req := audit.Request{
+		Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports},
+		Sources: []audit.Source{audit.SourceYouTubeLiked}, SourceOverrides: []audit.Source{audit.SourceYouTubeLiked},
+	}
+	deep, err := buildDeepAuditDependencies(t.Context(), cfg, req, resolved, audit.DefaultDeepLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deep.Upstream) != 1 || deep.Upstream[audit.SourceYouTubeLiked] == nil {
+		t.Fatalf("selected upstream inventories = %#v", deep.Upstream)
+	}
+	if deep.Upstream[audit.SourceGitHubStars] != nil || deep.Upstream[audit.SourceYouTubeWatchLater] != nil || deep.Media != nil || deep.Archives != nil {
+		t.Fatalf("received unrelated deep capability: %#v", deep)
+	}
+}
+
+func TestAuditYouTubeLikedCommandOverridesDisabledSourceAndEmitsExactPortableScope(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "yt-dlp"), []byte("#!/bin/sh\nprintf '%s\\n' '{\"entries\":[]}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GITHUB_TOKEN", "op://must-not-resolve/token")
+	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "op://must-not-resolve/archive")
+
+	command := NewRootCommand()
+	var out bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"--root", root, "--no-debug", "audit", "youtube-liked", "--profile", "deep", "--json"})
+	if err := command.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("youtube-liked audit: %v output=%s", err, out.String())
+	}
+	var report audit.Report
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v output=%s", err, out.String())
+	}
+	if report.Profile != audit.ProfileDeep || !report.Scope.Filtered {
+		t.Fatalf("report scope = %#v profile=%s", report.Scope, report.Profile)
+	}
+	seenParity := false
+	for _, check := range report.Checks {
+		entry, ok := audit.Lookup(check.ID)
+		if !ok || (entry.Source != "" && entry.Source != audit.SourceYouTubeLiked) {
+			t.Fatalf("report contained unrelated check: %#v", check)
+		}
+		if check.ID == audit.CheckUpstreamYouTubeLikedParity {
+			seenParity = check.Required && check.Status == audit.StatusPass
+		}
+		if check.ID == audit.CheckImportsYouTubeLikedPoll && (check.Status != audit.StatusSkipped || check.SkipReason != audit.SkipFeatureDisabled) {
+			t.Fatalf("disabled source poll = %#v", check)
+		}
+	}
+	if !seenParity {
+		t.Fatalf("required liked parity not observed: %#v", report.Checks)
+	}
+}
+
+func TestAuditGitHubStarsMissingTokenEmitsPortableUnknownReport(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_TOKEN", "")
+
+	command := NewRootCommand()
+	var out bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"--root", root, "--no-debug", "audit", "github-stars", "--json"})
+	err = command.ExecuteContext(t.Context())
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 3 || !exit.Silent {
+		t.Fatalf("missing-token health exit = %#v output=%s", err, out.String())
+	}
+	var report audit.Report
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v output=%s", err, out.String())
+	}
+	if report.Schema != audit.SchemaV1 || report.Profile != audit.ProfileDeep {
+		t.Fatalf("report schema/profile = %q/%q", report.Schema, report.Profile)
+	}
+	parityFound := false
+	for _, check := range report.Checks {
+		if check.ID != audit.CheckUpstreamGitHubStarsParity {
+			continue
+		}
+		parityFound = true
+		if !check.Required || check.Status != audit.StatusUnknown || check.ErrorCode != audit.ErrorRead {
+			t.Fatalf("github parity = %#v", check)
+		}
+	}
+	if !parityFound {
+		t.Fatalf("github parity absent: %#v", report.Checks)
+	}
+	encoded := out.String()
+	for _, secret := range []string{"GITHUB_TOKEN", "credential missing", "op://", "github audit credential"} {
+		if strings.Contains(encoded, secret) {
+			t.Fatalf("portable report leaked %q: %s", secret, encoded)
+		}
 	}
 }
