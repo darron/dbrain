@@ -29,7 +29,11 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	stats.Hydration = buildPipelineStageRows(hydrationTotal, hydrationCurrent, hydrationPending, nil)
+	hydrationTerminal, err := s.countGroupedWhere(ctx, "items", "source_type", xItemSourceTypeWhere+` AND external_id != '' AND `+xHydrationTerminalWhere)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	stats.Hydration = buildPipelineStageRows(hydrationTotal, hydrationCurrent, hydrationPending, nil, hydrationTerminal)
 
 	extractWhere, extractArgs := policy.extractBacklogWhere()
 	extractionTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
@@ -44,7 +48,17 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	stats.Extraction = buildPipelineStageRows(extractionTotal, extractionCurrent, extractionPending, nil)
+	extractionBlockedWhere, extractionBlockedArgs := policy.extractionBlockedWhere()
+	extractionBlocked, err := s.countGroupedWhere(ctx, "sources", "source_type", extractionBlockedWhere, extractionBlockedArgs...)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	extractionTerminalWhere, extractionTerminalArgs := policy.extractionTerminalWhere()
+	extractionTerminal, err := s.countGroupedWhere(ctx, "sources", "source_type", extractionTerminalWhere, extractionTerminalArgs...)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	stats.Extraction = buildPipelineStageRows(extractionTotal, extractionCurrent, extractionPending, extractionBlocked, extractionTerminal)
 	appleNoteExtractionRow, ok, err := s.pipelineAppleNoteExtractionRow(ctx)
 	if err != nil {
 		return PipelineStats{}, err
@@ -94,7 +108,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	stats.Summary = buildPipelineStageRows(summaryTotal, summaryCurrent, summaryPending, summaryBlocked)
+	stats.Summary = buildPipelineStageRows(summaryTotal, summaryCurrent, summaryPending, summaryBlocked, nil)
 
 	transcriptionRow, ok, err := s.pipelineXMediaTranscriptionRow(ctx)
 	if err != nil {

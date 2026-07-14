@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"sync"
@@ -33,12 +34,17 @@ func (s *Store) BeginAuditReadSnapshot(ctx context.Context) (*AuditReadSnapshot,
 		return nil, fmt.Errorf("open audit snapshot connection: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
+		_ = resetAuditQueryOnly(conn)
 		_ = conn.Close()
 		return nil, fmt.Errorf("set audit snapshot query-only: %w", err)
 	}
 	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
+		resetErr := resetAuditQueryOnly(conn)
 		_ = conn.Close()
+		if resetErr != nil {
+			return nil, fmt.Errorf("begin audit read snapshot: %w; reset query-only: %v", err, resetErr)
+		}
 		return nil, fmt.Errorf("begin audit read snapshot: %w", err)
 	}
 	return &AuditReadSnapshot{tx: tx, conn: conn}, nil
@@ -55,7 +61,7 @@ func (s *AuditReadSnapshot) Close() error {
 	}
 	s.closed = true
 	rollbackErr := s.tx.Rollback()
-	_, resetErr := s.conn.ExecContext(context.Background(), `PRAGMA query_only = OFF`)
+	resetErr := resetAuditQueryOnly(s.conn)
 	connErr := s.conn.Close()
 	if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
 		return rollbackErr
@@ -64,6 +70,14 @@ func (s *AuditReadSnapshot) Close() error {
 		return resetErr
 	}
 	return connErr
+}
+
+func resetAuditQueryOnly(conn *sql.Conn) error {
+	_, err := conn.ExecContext(context.Background(), `PRAGMA query_only = OFF`)
+	if err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	return err
 }
 
 func (s *AuditReadSnapshot) PipelinePartitions(ctx context.Context) (AuditPipelinePartitions, error) {

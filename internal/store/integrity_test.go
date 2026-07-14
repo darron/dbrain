@@ -22,7 +22,7 @@ func TestInspectDatabaseReadOnlySeparatesIntegrityAndCompatibility(t *testing.T)
 	if got.QuickCheck != "ok" || got.QuickViolationCount != 0 || got.ForeignKeyViolationCount != 0 {
 		t.Fatalf("unexpected SQLite integrity: %+v", got)
 	}
-	if got.SchemaCompatibility != "compatible" || got.MigrationCompatibility != "compatible" {
+	if got.SchemaCompatibility != "current_compatible" || got.MigrationCompatibility != "current_compatible" {
 		t.Fatalf("unexpected compatibility: %+v", got)
 	}
 	if got.UserVersion != currentSchemaVersion || got.SupportedVersion != currentSchemaVersion || got.AppliedMigrationCount != len(schemaMigrations) {
@@ -87,9 +87,11 @@ func TestInspectDatabaseReadOnlyClassifiesMigrationCompatibility(t *testing.T) {
 		want string
 	}{
 		{name: "legacy", edit: `DROP TABLE schema_migrations; PRAGMA user_version=0`, want: "legacy_compatible"},
-		{name: "future", edit: `PRAGMA user_version=999`, want: "future"},
-		{name: "missing", edit: `DELETE FROM schema_migrations WHERE version=11`, want: "mismatched"},
-		{name: "mismatched_name", edit: `UPDATE schema_migrations SET name='wrong' WHERE version=11`, want: "mismatched"},
+		{name: "migration_backed_legacy", edit: `DELETE FROM schema_migrations WHERE version=11; PRAGMA user_version=10`, want: "legacy_compatible"},
+		{name: "future", edit: `PRAGMA user_version=999`, want: "incompatible"},
+		{name: "missing", edit: `DELETE FROM schema_migrations WHERE version=11`, want: "incompatible"},
+		{name: "invalid", edit: `PRAGMA user_version=0`, want: "incompatible"},
+		{name: "mismatched_name", edit: `UPDATE schema_migrations SET name='wrong' WHERE version=11`, want: "incompatible"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,7 +105,11 @@ func TestInspectDatabaseReadOnlyClassifiesMigrationCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatalf("InspectDatabaseReadOnly: %v", err)
 			}
-			if got.SchemaCompatibility != "compatible" || got.MigrationCompatibility != tc.want {
+			wantSchema := "current_compatible"
+			if tc.name == "legacy" {
+				wantSchema = "legacy_compatible"
+			}
+			if got.SchemaCompatibility != wantSchema || got.MigrationCompatibility != tc.want {
 				t.Fatalf("inspection = %+v, want migration %q", got, tc.want)
 			}
 		})

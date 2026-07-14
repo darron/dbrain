@@ -91,6 +91,44 @@ func TestInspectBundleClassifiesManifestAndTraversalFailures(t *testing.T) {
 	}
 }
 
+func TestInspectBundleRejectsManifestPathThroughEscapingDirectorySymlink(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	dir := filepath.Join(base, "bundle")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir bundle: %v", err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "concept.md"), []byte("---\ntype: note\n---\noutside\n"), 0o600); err != nil {
+		t.Fatalf("write outside concept: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
+		t.Fatalf("create escaping directory symlink: %v", err)
+	}
+	writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", []ManifestConcept{{Path: "escape/concept.md", Type: "note"}})
+
+	root := openInspectionRoot(t, dir)
+	got, err := InspectBundle(t.Context(), root)
+	if err != nil {
+		t.Fatalf("InspectBundle: %v", err)
+	}
+	if got.ManifestValid || got.TraversalComplete || got.ValidationErrorCount == 0 {
+		t.Fatalf("escaping manifest concept path accepted: %+v", got)
+	}
+
+	validation, err := ValidateBundle(dir)
+	if err != nil {
+		t.Fatalf("ValidateBundle: %v", err)
+	}
+	if validation.Conformant {
+		t.Fatalf("escaping manifest concept path was conformant: %+v", validation)
+	}
+}
+
 func openInspectionRoot(t *testing.T, dir string) *vaultfs.Root {
 	t.Helper()
 	root, err := vaultfs.Open(dir)

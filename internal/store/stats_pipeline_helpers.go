@@ -2,7 +2,7 @@ package store
 
 import "sort"
 
-func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending []CountBucket, blocked []CountBucket) []PipelineStageRow {
+func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending []CountBucket, blocked []CountBucket, terminal []CountBucket) []PipelineStageRow {
 	if len(total) == 0 {
 		return nil
 	}
@@ -10,15 +10,17 @@ func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending 
 	currentByKind := countBucketMap(current)
 	pendingByKind := countBucketMap(pending)
 	blockedByKind := countBucketMap(blocked)
+	terminalByKind := countBucketMap(terminal)
 
 	rows := make([]PipelineStageRow, 0, len(total)+1)
 	for _, bucket := range total {
 		row := PipelineStageRow{
-			Kind:    bucket.Key,
-			Total:   bucket.Count,
-			Current: currentByKind[bucket.Key],
-			Pending: pendingByKind[bucket.Key],
-			Blocked: blockedByKind[bucket.Key],
+			Kind:     bucket.Key,
+			Total:    bucket.Count,
+			Current:  currentByKind[bucket.Key],
+			Pending:  pendingByKind[bucket.Key],
+			Blocked:  blockedByKind[bucket.Key],
+			Terminal: terminalByKind[bucket.Key],
 		}
 		finalizePipelineStageRow(&row)
 		rows = append(rows, row)

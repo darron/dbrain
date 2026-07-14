@@ -8,6 +8,8 @@ import (
 
 const xMediaTranscriptionErrorRetryCooldown = 24 * time.Hour
 
+const xHydrationTerminalWhere = `x_post_status IN ('not_found', 'empty')`
+
 const xPhotoOCRAnyMediaExistsWhere = `EXISTS (
 	SELECT 1 FROM item_media_links l
 	JOIN media_assets a ON a.id = l.media_asset_id
@@ -67,4 +69,14 @@ func mediaArchiveCandidateWhere(alias string, force bool) string {
 		where += ` AND (` + alias + `.archive_status = '' OR ` + alias + `.archive_status = '` + model.MediaArchiveStatusError + `')`
 	}
 	return where
+}
+
+func (p sourceEnrichmentPolicy) extractionTerminalWhere() (string, []any) {
+	pendingWhere, args := p.extractBacklogWhere()
+	return `extract_status IN ('` + model.SourceExtractStatusDead + `', '` + model.SourceExtractStatusGone + `') AND NOT (` + pendingWhere + `)`, args
+}
+
+func (p sourceEnrichmentPolicy) extractionBlockedWhere() (string, []any) {
+	pendingWhere, args := p.extractBacklogWhere()
+	return `extract_status = '` + model.SourceExtractStatusError + `' AND NOT (` + pendingWhere + `)`, args
 }

@@ -3,6 +3,7 @@ package okf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -64,6 +65,16 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 			manifestPathsValid = false
 			summary.ValidationErrorCount++
 			result.Errors = append(result.Errors, "manifest contains an unsafe concept path")
+			continue
+		}
+		if _, inspectErr := root.Inspect(concept.Path); inspectErr != nil {
+			manifestPathsValid = false
+			summary.ValidationErrorCount++
+			result.Errors = append(result.Errors, "manifest concept path is missing, unreadable, or outside the bundle")
+			var logicalErr *vaultfs.LogicalFileError
+			if !errors.As(inspectErr, &logicalErr) || logicalErr.Code != "missing" {
+				summary.TraversalComplete = false
+			}
 		}
 	}
 	summary.ManifestValid = err == nil && !exportedAt.IsZero() && manifestPathsValid
@@ -181,6 +192,10 @@ func walkBundleMarkdown(ctx context.Context, root *vaultfs.Root) ([]string, int,
 			rel := entry.Name()
 			if dir != "." {
 				rel = path.Join(dir, rel)
+			}
+			if entry.Type()&fs.ModeSymlink != 0 && path.Ext(entry.Name()) != ".md" {
+				errorsCount++
+				continue
 			}
 			if entry.IsDir() {
 				if err := walk(rel); err != nil {

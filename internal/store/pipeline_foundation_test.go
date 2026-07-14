@@ -93,3 +93,60 @@ func TestWorkerPendingMatchesPipelineSourceRepair(t *testing.T) {
 		t.Fatalf("source repair partitions disagree: extraction=%+v summary=%+v", extraction, summary)
 	}
 }
+
+func TestPipelinePartitionsClassifiesKnownHydrationTerminalStates(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	for _, status := range []string{"not_found", "empty"} {
+		seedAuditSnapshotItem(t, st, "x:hydration-terminal-"+status)
+		if _, err := st.db.ExecContext(t.Context(), `UPDATE items SET x_post_status=? WHERE source_key=?`, status, "x:hydration-terminal-"+status); err != nil {
+			t.Fatalf("seed hydration status %q: %v", status, err)
+		}
+	}
+	stats, err := st.Pipeline(t.Context(), "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	row := pipelineRowByKind(t, stats.Hydration, "ALL")
+	if row.Total != 2 || row.Terminal != 2 || row.Unknown != 0 || !row.PartitionValid {
+		t.Fatalf("known hydration terminal states misclassified: %+v", row)
+	}
+}
+
+func TestPipelinePartitionsClassifiesSourceExtractionTerminalAndCooldown(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	now := time.Now().UTC()
+	deadID := insertTestSource(t, st, "src:terminal-dead", "https://example.com/dead")
+	goneID := insertTestSource(t, st, "src:terminal-gone", "https://example.com/gone")
+	recentErrorID := insertTestSource(t, st, "src:cooldown-error", "https://example.com/error")
+	if _, err := st.db.ExecContext(t.Context(), `UPDATE sources SET extract_status='dead' WHERE id=?`, deadID); err != nil {
+		t.Fatalf("seed dead source: %v", err)
+	}
+	if _, err := st.db.ExecContext(t.Context(), `UPDATE sources SET extract_status='gone' WHERE id=?`, goneID); err != nil {
+		t.Fatalf("seed gone source: %v", err)
+	}
+	if _, err := st.db.ExecContext(t.Context(), `
+		UPDATE sources SET extract_status='error', extract_failure_kind='fetch_failed',
+			extract_failure_count=1, extract_last_failed_at=? WHERE id=?`, now.Format(time.RFC3339), recentErrorID); err != nil {
+		t.Fatalf("seed recent source error: %v", err)
+	}
+
+	worker, err := st.ListSourcesForEnrichment(t.Context(), 100, false, false, "", "", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(worker) != 0 {
+		t.Fatalf("terminal/cooldown sources unexpectedly runnable: %+v", worker)
+	}
+	stats, err := st.Pipeline(t.Context(), "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	row := pipelineRowByKind(t, stats.Extraction, "web")
+	if row.Total != 3 || row.Terminal != 2 || row.Blocked != 1 || row.Unknown != 0 || !row.PartitionValid {
+		t.Fatalf("known extraction states misclassified: %+v", row)
+	}
+}
