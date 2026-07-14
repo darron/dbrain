@@ -150,3 +150,58 @@ func TestPipelinePartitionsClassifiesSourceExtractionTerminalAndCooldown(t *test
 		t.Fatalf("known extraction states misclassified: %+v", row)
 	}
 }
+
+func TestPipelineSummaryClassifiesRecentExtractionCooldownAsBlocked(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	sourceID := insertTestSource(t, st, "src:summary-cooldown-error", "https://example.com/summary-cooldown-error")
+	if _, err := st.db.ExecContext(t.Context(), `
+		UPDATE sources SET extract_status='error', extract_failure_kind='fetch_failed',
+			extract_failure_count=1, extract_last_failed_at=? WHERE id=?`,
+		time.Now().UTC().Format(time.RFC3339), sourceID); err != nil {
+		t.Fatalf("seed recent extraction error: %v", err)
+	}
+
+	stats, err := st.Pipeline(t.Context(), "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	row := pipelineRowByKind(t, stats.Summary, "web")
+	classified := row.Current + row.Pending + row.Blocked + row.Terminal + row.Unknown
+	if row.Total != 1 || row.Blocked != 1 || row.Unknown != 0 || classified != row.Total || !row.PartitionValid {
+		t.Fatalf("recent extraction cooldown summary misclassified: %+v classified=%d", row, classified)
+	}
+}
+
+func TestPipelineSummaryClassifiesStaleBlockedAndSkippedAsPendingOnly(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	for _, status := range []string{model.SourceSummaryStatusBlocked, model.SourceSummaryStatusSkipped} {
+		sourceID := insertTestSource(t, st, "src:stale-summary-"+status, "https://example.com/stale-summary-"+status)
+		if _, err := st.db.ExecContext(t.Context(), `
+			UPDATE sources SET extract_status='ok', content_hash=?, summary_status=?,
+				summary_content_hash='outdated-content-hash' WHERE id=?`,
+			"current-content-hash-"+status, status, sourceID); err != nil {
+			t.Fatalf("seed stale %s summary: %v", status, err)
+		}
+	}
+
+	candidates, err := st.ListSourcesForEnrichment(t.Context(), 100, false, true, "", "", "")
+	if err != nil {
+		t.Fatalf("ListSourcesForEnrichment: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("stale blocked/skipped worker candidates = %d, want 2", len(candidates))
+	}
+	stats, err := st.Pipeline(t.Context(), "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	row := pipelineRowByKind(t, stats.Summary, "web")
+	classified := row.Current + row.Pending + row.Blocked + row.Terminal + row.Unknown
+	if row.Total != 2 || row.Pending != 2 || row.Blocked != 0 || row.Unknown != 0 || classified != row.Total || !row.PartitionValid {
+		t.Fatalf("stale blocked/skipped summaries overlap partitions: %+v classified=%d", row, classified)
+	}
+}

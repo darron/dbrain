@@ -129,6 +129,86 @@ func TestInspectBundleRejectsManifestPathThroughEscapingDirectorySymlink(t *test
 	}
 }
 
+func TestInspectBundleRejectsNonCanonicalManifestConceptPaths(t *testing.T) {
+	t.Parallel()
+
+	for _, conceptPath := range []string{
+		"index.md",
+		"log.md",
+		".",
+		"concepts/not-markdown.txt",
+		"concepts/../concept.md",
+	} {
+		conceptPath := conceptPath
+		t.Run(conceptPath, func(t *testing.T) {
+			dir := t.TempDir()
+			targetPath := conceptPath
+			if conceptPath == "concepts/../concept.md" {
+				targetPath = "concept.md"
+			}
+			if conceptPath != "." {
+				fullTarget := filepath.Join(dir, filepath.FromSlash(targetPath))
+				if err := os.MkdirAll(filepath.Dir(fullTarget), 0o755); err != nil {
+					t.Fatalf("mkdir target parent: %v", err)
+				}
+				if err := os.WriteFile(fullTarget, []byte("---\ntype: note\n---\ninvalid manifest target\n"), 0o600); err != nil {
+					t.Fatalf("write invalid target: %v", err)
+				}
+			}
+			writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", []ManifestConcept{{Path: conceptPath, Type: "note"}})
+			got, err := InspectBundle(t.Context(), openInspectionRoot(t, dir))
+			if err != nil {
+				t.Fatalf("InspectBundle: %v", err)
+			}
+			if got.ManifestValid || got.ValidationErrorCount == 0 {
+				t.Fatalf("non-canonical manifest path %q accepted: %+v", conceptPath, got)
+			}
+		})
+	}
+}
+
+func TestInspectBundleRejectsDuplicateManifestConceptPaths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "concepts"), 0o755); err != nil {
+		t.Fatalf("mkdir concepts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "concepts", "one.md"), []byte("---\ntype: note\n---\none\n"), 0o600); err != nil {
+		t.Fatalf("write concept: %v", err)
+	}
+	writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", []ManifestConcept{
+		{Path: "concepts/one.md", Type: "note"},
+		{Path: "concepts/ONE.md", Type: "note"},
+	})
+
+	got, err := InspectBundle(t.Context(), openInspectionRoot(t, dir))
+	if err != nil {
+		t.Fatalf("InspectBundle: %v", err)
+	}
+	if got.ManifestValid || got.ValidationErrorCount == 0 {
+		t.Fatalf("duplicate manifest concept path accepted: %+v", got)
+	}
+}
+
+func TestInspectBundleRejectsNonRegularManifestConceptTarget(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "concepts", "directory.md"), 0o755); err != nil {
+		t.Fatalf("mkdir concept target: %v", err)
+	}
+	writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", []ManifestConcept{{Path: "concepts/directory.md", Type: "note"}})
+
+	got, err := InspectBundle(t.Context(), openInspectionRoot(t, dir))
+	if err != nil {
+		t.Fatalf("InspectBundle: %v", err)
+	}
+	if got.ManifestValid || got.ValidationErrorCount == 0 {
+		t.Fatalf("non-regular manifest concept target accepted: %+v", got)
+	}
+}
+
 func openInspectionRoot(t *testing.T, dir string) *vaultfs.Root {
 	t.Helper()
 	root, err := vaultfs.Open(dir)

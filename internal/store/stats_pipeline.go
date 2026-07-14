@@ -98,12 +98,18 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
+	summaryExtractionBlockedWhere, summaryExtractionBlockedArgs := policy.extractionBlockedWhere()
+	summaryBlockedArgs := append([]any{}, summaryExtractionBlockedArgs...)
+	summaryBlockedArgs = append(summaryBlockedArgs, extractPendingArgs...)
+	summaryBlockedArgs = append(summaryBlockedArgs, summaryArgs...)
 	summaryBlocked, err := s.countGroupedWhere(
 		ctx,
 		"sources",
 		"source_type",
-		`(extract_status IN ('`+model.SourceExtractStatusDead+`', '`+model.SourceExtractStatusGone+`') AND NOT (`+extractPendingWhere+`)) OR (`+readyForSummaryWhere+` AND summary_status IN ('`+model.SourceSummaryStatusBlocked+`', '`+model.SourceSummaryStatusSkipped+`'))`,
-		extractPendingArgs...,
+		`(`+summaryExtractionBlockedWhere+`) OR `+
+			`(extract_status IN ('`+model.SourceExtractStatusDead+`', '`+model.SourceExtractStatusGone+`') AND NOT (`+extractPendingWhere+`)) OR `+
+			`(`+readyForSummaryWhere+` AND summary_status IN ('`+model.SourceSummaryStatusBlocked+`', '`+model.SourceSummaryStatusSkipped+`') AND NOT (`+summaryStaleWhere+`))`,
+		summaryBlockedArgs...,
 	)
 	if err != nil {
 		return PipelineStats{}, err

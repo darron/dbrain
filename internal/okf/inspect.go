@@ -60,14 +60,24 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 		summary.ExportedAt = exportedAt.UTC()
 	}
 	manifestPathsValid := true
+	seenManifestPaths := make(map[string]struct{}, len(manifest.Concepts))
 	for _, concept := range manifest.Concepts {
-		if !safeBundleLogicalPath(concept.Path) {
+		if err := ValidateConceptPath(concept.Path); err != nil {
 			manifestPathsValid = false
 			summary.ValidationErrorCount++
-			result.Errors = append(result.Errors, "manifest contains an unsafe concept path")
+			result.Errors = append(result.Errors, "manifest contains an invalid concept path")
 			continue
 		}
-		if _, inspectErr := root.Inspect(concept.Path); inspectErr != nil {
+		collisionKey := manifestCollisionKey(concept.Path)
+		if _, duplicate := seenManifestPaths[collisionKey]; duplicate {
+			manifestPathsValid = false
+			summary.ValidationErrorCount++
+			result.Errors = append(result.Errors, "manifest contains a duplicate concept path")
+			continue
+		}
+		seenManifestPaths[collisionKey] = struct{}{}
+		metadata, inspectErr := root.Inspect(concept.Path)
+		if inspectErr != nil {
 			manifestPathsValid = false
 			summary.ValidationErrorCount++
 			result.Errors = append(result.Errors, "manifest concept path is missing, unreadable, or outside the bundle")
@@ -75,6 +85,12 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 			if !errors.As(inspectErr, &logicalErr) || logicalErr.Code != "missing" {
 				summary.TraversalComplete = false
 			}
+			continue
+		}
+		if !metadata.Regular {
+			manifestPathsValid = false
+			summary.ValidationErrorCount++
+			result.Errors = append(result.Errors, "manifest concept target is not a regular file")
 		}
 	}
 	summary.ManifestValid = err == nil && !exportedAt.IsZero() && manifestPathsValid
@@ -214,13 +230,4 @@ func walkBundleMarkdown(ctx context.Context, root *vaultfs.Root) ([]string, int,
 	}
 	sort.Strings(files)
 	return files, errorsCount, nil
-}
-
-func safeBundleLogicalPath(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" || path.IsAbs(name) {
-		return false
-	}
-	clean := path.Clean(name)
-	return clean != ".." && !strings.HasPrefix(clean, "../")
 }
