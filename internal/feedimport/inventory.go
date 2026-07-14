@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -97,6 +98,12 @@ func (i *feedAuditInventory) Inventory(ctx context.Context, budget audit.Invento
 			result.IdentityHashes = sortedFeedAuditHashes(seen)
 			if contextErr := bounded.Err(); contextErr != nil {
 				return result, contextErr
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				return result, fmt.Errorf("feed audit request timed out: %w", context.DeadlineExceeded)
+			}
+			if errors.Is(err, context.Canceled) {
+				return result, fmt.Errorf("feed audit request canceled: %w", context.Canceled)
 			}
 			return result, fmt.Errorf("feed audit fetch failed")
 		}

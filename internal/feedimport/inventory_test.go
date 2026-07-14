@@ -153,6 +153,32 @@ func TestFeedAuditInventoryFailureAndCancellationAreWholeInventoryAndPrivacySafe
 			}
 		}
 	})
+	for _, test := range []struct {
+		name     string
+		sentinel error
+	}{
+		{name: "request deadline", sentinel: context.DeadlineExceeded},
+		{name: "request cancellation", sentinel: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fetcher := &auditFeedFetcher{results: map[string]FetchResult{}, errs: map[string]error{
+				"feed:private-name": fmt.Errorf("fetch %s: SECRET_BODY: %w", secretURL, test.sentinel),
+			}}
+			ctx := t.Context()
+			_, err := newAuditInventory(feeds, "agent", fetcher).Inventory(ctx, audit.DefaultInventoryBudget())
+			if ctx.Err() != nil {
+				t.Fatalf("outer caller context unexpectedly ended: %v", ctx.Err())
+			}
+			if !errors.Is(err, test.sentinel) {
+				t.Fatalf("error = %v, want sentinel %v", err, test.sentinel)
+			}
+			for _, secret := range []string{secretURL, "secret", "SECRET_BODY", "private-name"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("error leaked %q: %v", secret, err)
+				}
+			}
+		})
+	}
 	t.Run("parse error", func(t *testing.T) {
 		fetcher := &auditFeedFetcher{results: map[string]FetchResult{"feed:private-name": {HTTPStatus: 200, DecodedBody: []byte(`not a feed SECRET_BODY`)}}}
 		_, err := newAuditInventory(feeds[:1], "agent", fetcher).Inventory(t.Context(), audit.DefaultInventoryBudget())
