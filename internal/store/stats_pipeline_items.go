@@ -91,7 +91,7 @@ func (s *Store) pipelineAppleNoteSummaryRow(ctx context.Context) (PipelineStageR
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	failed, err := s.countWhere(ctx, "items", candidateWhere+` AND `+summaryStatus+` != '' AND `+summaryStatus+` NOT IN ('`+model.ItemSummaryStatusOK+`', '`+model.ItemSummaryStatusError+`', '`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
+	unknown, err := s.countWhere(ctx, "items", candidateWhere+` AND `+summaryStatus+` != '' AND `+summaryStatus+` NOT IN ('`+model.ItemSummaryStatusOK+`', '`+model.ItemSummaryStatusError+`', '`+model.ItemSummaryStatusBlocked+`', '`+model.ItemSummaryStatusSkipped+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
@@ -102,7 +102,7 @@ func (s *Store) pipelineAppleNoteSummaryRow(ctx context.Context) (PipelineStageR
 		Current: current,
 		Pending: pending,
 		Blocked: blocked,
-		Failed:  failed,
+		Unknown: unknown,
 	}
 	finalizePipelineStageRow(&row)
 	return row, true, nil

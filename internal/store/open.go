@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -12,7 +13,20 @@ const driverName = "sqlite"
 
 type Store struct {
 	db     *sql.DB
+	read   sqlQueryer
 	hasFTS bool
+}
+
+type sqlQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *Store) queryer() sqlQueryer {
+	if s.read != nil {
+		return s.read
+	}
+	return s.db
 }
 
 // OpenOptions configures writable store startup behavior.

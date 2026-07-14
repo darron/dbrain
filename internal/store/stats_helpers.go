@@ -14,7 +14,7 @@ func (s *Store) maxTimestamp(ctx context.Context, table string, column string, w
 	}
 
 	var value string
-	if err := s.db.QueryRowContext(ctx, query).Scan(&value); err != nil {
+	if err := s.queryer().QueryRowContext(ctx, query).Scan(&value); err != nil {
 		return time.Time{}, fmt.Errorf("max timestamp %s.%s: %w", table, column, err)
 	}
 	return parseStoredTime(value), nil
@@ -27,7 +27,7 @@ func (s *Store) countWhere(ctx context.Context, table string, where string, args
 	}
 
 	var count int
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	if err := s.queryer().QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count %s: %w", table, err)
 	}
 	return count, nil
@@ -40,7 +40,7 @@ func (s *Store) countGroupedWhere(ctx context.Context, table string, groupBy str
 	}
 	query += ` GROUP BY ` + groupBy + ` ORDER BY COUNT(*) DESC, ` + groupBy + ` ASC`
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryer().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("count grouped %s: %w", table, err)
 	}

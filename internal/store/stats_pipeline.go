@@ -88,7 +88,8 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		ctx,
 		"sources",
 		"source_type",
-		`extract_status IN ('`+model.SourceExtractStatusDead+`', '`+model.SourceExtractStatusGone+`') OR (`+readyForSummaryWhere+` AND summary_status IN ('`+model.SourceSummaryStatusBlocked+`', '`+model.SourceSummaryStatusSkipped+`'))`,
+		`(extract_status IN ('`+model.SourceExtractStatusDead+`', '`+model.SourceExtractStatusGone+`') AND NOT (`+extractPendingWhere+`)) OR (`+readyForSummaryWhere+` AND summary_status IN ('`+model.SourceSummaryStatusBlocked+`', '`+model.SourceSummaryStatusSkipped+`'))`,
+		extractPendingArgs...,
 	)
 	if err != nil {
 		return PipelineStats{}, err
@@ -123,6 +124,40 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if ok {
 		stats.OCR = []PipelineStageRow{xPhotoOCRRow}
 	}
+	mediaArchiveRow, ok, err := s.pipelineMediaArchiveRow(ctx)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	if ok {
+		stats.MediaArchive = []PipelineStageRow{mediaArchiveRow}
+	}
 
 	return stats, nil
+}
+
+func (s *Store) pipelineMediaArchiveRow(ctx context.Context) (PipelineStageRow, bool, error) {
+	base := mediaArchiveBaseWhere("a")
+	total, err := s.countWhere(ctx, "media_assets a", base)
+	if err != nil || total == 0 {
+		return PipelineStageRow{}, false, err
+	}
+	current, err := s.countWhere(ctx, "media_assets a", base+` AND a.archive_status = '`+model.MediaArchiveStatusArchived+`'`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	pending, err := s.countWhere(ctx, "media_assets a", mediaArchiveCandidateWhere("a", false))
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	blocked, err := s.countWhere(ctx, "media_assets a", base+` AND (a.archive_status = '' OR a.archive_status = '`+model.MediaArchiveStatusError+`') AND NOT `+mediaArchiveEnrichmentCompleteWhere("a"))
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	unknown, err := s.countWhere(ctx, "media_assets a", base+` AND a.archive_status NOT IN ('', '`+model.MediaArchiveStatusError+`', '`+model.MediaArchiveStatusArchived+`')`)
+	if err != nil {
+		return PipelineStageRow{}, false, err
+	}
+	row := PipelineStageRow{Kind: "media_archive", Total: total, Current: current, Pending: pending, Blocked: blocked, Unknown: unknown}
+	finalizePipelineStageRow(&row)
+	return row, true, nil
 }

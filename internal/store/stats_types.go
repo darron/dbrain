@@ -41,7 +41,10 @@ type PipelineStageRow struct {
 	Current        int     `json:"current"`
 	Pending        int     `json:"pending"`
 	Blocked        int     `json:"blocked"`
+	Terminal       int     `json:"terminal"`
 	Failed         int     `json:"failed"`
+	Unknown        int     `json:"unknown"`
+	PartitionValid bool    `json:"partition_valid"`
 	PercentCurrent float64 `json:"percent_current"`
 }
 
@@ -54,6 +57,7 @@ type PipelineStats struct {
 	Summary              []PipelineStageRow `json:"summary"`
 	Transcription        []PipelineStageRow `json:"transcription"`
 	OCR                  []PipelineStageRow `json:"ocr"`
+	MediaArchive         []PipelineStageRow `json:"media_archive"`
 }
 
 type SourceActivityEvent struct {

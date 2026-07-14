@@ -1,0 +1,113 @@
+package okf
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/darron/dbrain/internal/vaultfs"
+)
+
+func TestInspectBundleReturnsOnlyAggregateValidation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", []ManifestConcept{{Path: "concepts/one.md", Title: "private title", SourceKey: "src:private"}})
+	if err := os.MkdirAll(filepath.Join(dir, "concepts"), 0o755); err != nil {
+		t.Fatalf("mkdir concepts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "concepts", "one.md"), []byte("---\ntype: note\ntitle: Private\n---\n[missing](two.md)\n"), 0o600); err != nil {
+		t.Fatalf("write concept: %v", err)
+	}
+	root := openInspectionRoot(t, dir)
+	got, err := InspectBundle(context.Background(), root)
+	if err != nil {
+		t.Fatalf("InspectBundle: %v", err)
+	}
+	if !got.ManifestValid || got.ExportedAt != time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC) || got.DocumentCount != 1 || got.BrokenLinkCount != 1 || got.ValidationErrorCount != 1 || !got.TraversalComplete {
+		t.Fatalf("unexpected inspection summary: %+v", got)
+	}
+	payload, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	for _, private := range []string{"one.md", "private title", "src:private", "missing"} {
+		if strings.Contains(string(payload), private) {
+			t.Fatalf("aggregate summary leaked %q: %s", private, payload)
+		}
+	}
+}
+
+func TestInspectBundleClassifiesManifestAndTraversalFailures(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		prepare func(*testing.T, string)
+	}{
+		{name: "missing_manifest", prepare: func(t *testing.T, dir string) {}},
+		{name: "invalid_manifest", prepare: func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, manifestFileName), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "missing_exported_at", prepare: func(t *testing.T, dir string) { writeInspectionManifest(t, dir, "", nil) }},
+		{name: "absolute_manifest_path", prepare: func(t *testing.T, dir string) {
+			writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", []ManifestConcept{{Path: "/etc/passwd"}})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.prepare(t, dir)
+			got, err := InspectBundle(context.Background(), openInspectionRoot(t, dir))
+			if err != nil {
+				t.Fatalf("InspectBundle: %v", err)
+			}
+			if got.ManifestValid || got.ValidationErrorCount == 0 {
+				t.Fatalf("expected sanitized invalid summary, got %+v", got)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", nil)
+	outside := filepath.Join(filepath.Dir(dir), "outside.md")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "escape.md")); err != nil {
+		t.Fatalf("escaping symlink: %v", err)
+	}
+	got, err := InspectBundle(context.Background(), openInspectionRoot(t, dir))
+	if err != nil {
+		t.Fatalf("InspectBundle traversal: %v", err)
+	}
+	if got.TraversalComplete || got.ValidationErrorCount == 0 {
+		t.Fatalf("expected traversal failure summary, got %+v", got)
+	}
+}
+
+func openInspectionRoot(t *testing.T, dir string) *vaultfs.Root {
+	t.Helper()
+	root, err := vaultfs.Open(dir)
+	if err != nil {
+		t.Fatalf("vaultfs.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return root
+}
+
+func writeInspectionManifest(t *testing.T, dir string, exportedAt string, concepts []ManifestConcept) {
+	t.Helper()
+	payload, err := json.Marshal(Manifest{OKFVersion: "0.1", Profile: ProfilePrivate, ExportedAt: exportedAt, Concepts: concepts})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, manifestFileName), payload, 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+}

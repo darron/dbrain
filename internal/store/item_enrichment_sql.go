@@ -29,3 +29,7 @@ func itemXMediaTranscriptStatusExpr() string {
 func itemXMediaTranscriptTextExpr() string {
 	return itemEnrichmentFieldExpr(model.ItemEnrichmentRoleXMediaTranscript, "text", `CASE WHEN article_title = '`+model.XMediaTranscriptArticleTitle+`' THEN article_text ELSE '' END`)
 }
+
+func itemXMediaTranscriptCompletedAtExpr() string {
+	return itemEnrichmentFieldExpr(model.ItemEnrichmentRoleXMediaTranscript, "completed_at", "x_media_transcript_at")
+}

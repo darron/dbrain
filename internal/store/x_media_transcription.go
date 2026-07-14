@@ -16,8 +16,7 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 		limit = 100
 	}
 
-	transcriptStatus := itemXMediaTranscriptStatusExpr()
-	transcriptText := itemXMediaTranscriptTextExpr()
+	pendingWhere, pendingArgs := xMediaTranscriptionPendingWhere(time.Now().UTC())
 
 	query := `
 		SELECT ` + itemSelectColumns + `
@@ -26,16 +25,18 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 			AND external_id != ''
 			AND ` + xMediaTranscriptionRunnableMediaExistsWhere
 	if !force {
-		query += `
-			AND ` + transcriptText + ` = ''`
-		query += `
-			AND ` + transcriptStatus + ` = ''`
+		query += ` AND ` + pendingWhere
 	}
 	query += `
 		ORDER BY last_seen_at DESC, id DESC
 		LIMIT ?`
 
-	rows, err := s.db.QueryContext(ctx, query, limit)
+	args := append([]any{}, pendingArgs...)
+	if force {
+		args = nil
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list x media transcription items: %w", err)
 	}

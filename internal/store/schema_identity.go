@@ -53,44 +53,14 @@ var compatibleSchemaMigrationNames = map[int]map[string]struct{}{
 // ValidateRestorableDatabase verifies that path is a compatible dbrain store
 // without creating, migrating, or otherwise modifying it.
 func ValidateRestorableDatabase(ctx context.Context, path string) error {
-	db, err := sql.Open(driverName, readOnlyDSN(path))
+	result, err := InspectDatabaseReadOnly(ctx, path, false)
 	if err != nil {
-		return fmt.Errorf("open candidate database read-only: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	defer func() {
-		_ = db.Close()
-	}()
-
-	st := &Store{db: db}
-	if err := validateDbrainCoreSchema(st); err != nil {
 		return err
 	}
-
-	var userVersion int
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
-		return fmt.Errorf("read schema user_version: %w", err)
+	if result.schemaCompatibilityErr != nil {
+		return result.schemaCompatibilityErr
 	}
-	if userVersion > currentSchemaVersion {
-		return fmt.Errorf("dbrain schema version %d is newer than supported version %d", userVersion, currentSchemaVersion)
-	}
-
-	hasMigrations, err := st.tableExists("schema_migrations")
-	if err != nil {
-		return fmt.Errorf("check dbrain migration metadata: %w", err)
-	}
-	if !hasMigrations {
-		if userVersion != 0 {
-			return fmt.Errorf("dbrain schema version %d has no migration metadata", userVersion)
-		}
-		return nil
-	}
-	if userVersion <= 0 {
-		return fmt.Errorf("dbrain migration metadata has invalid schema version %d", userVersion)
-	}
-
-	return validateAppliedSchemaMigrations(ctx, db, userVersion)
+	return result.migrationCompatibilityErr
 }
 
 func validateDbrainCoreSchema(st *Store) error {

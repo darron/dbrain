@@ -671,7 +671,7 @@ func TestBacklogSkipsRecentExtractErrorsDuringCooldown(t *testing.T) {
 	}
 }
 
-func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
+func TestPipelineXMediaTranscriptionClassifiesTerminalRetryAndUnknown(t *testing.T) {
 	t.Parallel()
 
 	st := openTestStore(t)
@@ -775,16 +775,29 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 		t.Fatalf("seed blocked transcript: %v", err)
 	}
 
-	failedID := insertVideoCandidate("x-media-failed")
-	if _, err := st.db.ExecContext(ctx, `
-		UPDATE items
-		SET x_media_transcript_status = 'no_audio',
-			x_media_transcript_at = ?
-		WHERE id = ?`,
-		now.Format(time.RFC3339),
-		failedID,
-	); err != nil {
-		t.Fatalf("seed failed transcript: %v", err)
+	for _, status := range []string{
+		model.XMediaTranscriptStatusNoAudio,
+		model.XMediaTranscriptStatusNoise,
+		model.XMediaTranscriptStatusTooShort,
+		model.XMediaTranscriptStatusEmpty,
+	} {
+		itemID := insertVideoCandidate("x-media-terminal-" + status)
+		if err := st.SaveXMediaTranscriptionState(ctx, itemID, status, "terminal", now); err != nil {
+			t.Fatalf("seed terminal transcript %s: %v", status, err)
+		}
+	}
+
+	dueErrorID := insertVideoCandidate("x-media-error-due")
+	if err := st.SaveXMediaTranscriptionState(ctx, dueErrorID, model.XMediaTranscriptStatusError, "retry", now.Add(-25*time.Hour)); err != nil {
+		t.Fatalf("seed due transcript error: %v", err)
+	}
+	youngErrorID := insertVideoCandidate("x-media-error-young")
+	if err := st.SaveXMediaTranscriptionState(ctx, youngErrorID, model.XMediaTranscriptStatusError, "cooldown", now); err != nil {
+		t.Fatalf("seed young transcript error: %v", err)
+	}
+	invalidID := insertVideoCandidate("x-media-invalid")
+	if err := st.SaveXMediaTranscriptionState(ctx, invalidID, "legacy_bogus", "unknown", now); err != nil {
+		t.Fatalf("seed invalid transcript status: %v", err)
 	}
 
 	prunedPendingID := insertVideoCandidate("x-media-pruned-pending")
@@ -807,8 +820,8 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItemsForXMediaTranscription: %v", err)
 	}
-	if len(items) != 0 {
-		t.Fatalf("expected no runnable transcription candidates, got %d", len(items))
+	if len(items) != 1 || items[0].SourceKey != "x-media-error-due" {
+		t.Fatalf("expected only due transcription error candidate, got %+v", items)
 	}
 
 	stats, err := st.Pipeline(ctx, "", "", "")
@@ -816,7 +829,10 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 		t.Fatalf("Pipeline: %v", err)
 	}
 
-	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 4, 1, 0, 2, 1)
+	row := pipelineRowByKind(t, stats.Transcription, "x_media_transcript")
+	if row.Total != 10 || row.Current != 1 || row.Pending != 1 || row.Blocked != 3 || row.Terminal != 4 || row.Failed != 0 || row.Unknown != 1 || !row.PartitionValid {
+		t.Fatalf("unexpected transcription partitions: %+v", row)
+	}
 }
 
 func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
@@ -931,7 +947,10 @@ func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
 		t.Fatalf("Pipeline: %v", err)
 	}
 
-	assertPipelineRowCounts(t, stats.Summary, "x_media_summary", 4, 1, 1, 1, 1)
+	xSummaryRow := pipelineRowByKind(t, stats.Summary, "x_media_summary")
+	if xSummaryRow.Failed != 0 || xSummaryRow.Unknown != 1 || !xSummaryRow.PartitionValid {
+		t.Fatalf("invalid x media summary status must be unknown: %+v", xSummaryRow)
+	}
 }
 
 func TestPipelineAppleNoteExtractionAndSummaryClassifyItemCoverage(t *testing.T) {
@@ -1006,7 +1025,10 @@ func TestPipelineAppleNoteExtractionAndSummaryClassifyItemCoverage(t *testing.T)
 	}
 
 	assertPipelineRowCounts(t, stats.Extraction, "apple_note", 5, 4, 0, 1, 0)
-	assertPipelineRowCounts(t, stats.Summary, "apple_note", 4, 1, 1, 1, 1)
+	appleSummaryRow := pipelineRowByKind(t, stats.Summary, "apple_note")
+	if appleSummaryRow.Failed != 0 || appleSummaryRow.Unknown != 1 || !appleSummaryRow.PartitionValid {
+		t.Fatalf("invalid Apple Notes summary status must be unknown: %+v", appleSummaryRow)
+	}
 }
 
 func TestPipelineSafariTabExtractionClassifiesItemMaterialization(t *testing.T) {
@@ -1258,7 +1280,10 @@ func TestPipelineXPhotoOCRClassifiesPendingBlockedAndFailed(t *testing.T) {
 		t.Fatalf("Pipeline: %v", err)
 	}
 
-	assertPipelineRowCounts(t, stats.OCR, "x_photo_ocr", 4, 1, 1, 1, 1)
+	ocrRow := pipelineRowByKind(t, stats.OCR, "x_photo_ocr")
+	if ocrRow.Total != 4 || ocrRow.Current != 1 || ocrRow.Pending != 1 || ocrRow.Blocked != 1 || ocrRow.Failed != 0 || ocrRow.Unknown != 1 || !ocrRow.PartitionValid {
+		t.Fatalf("unexpected OCR partitions: %+v", ocrRow)
+	}
 }
 
 func TestPipelineXPhotoOCRCountsPrunedCurrentItems(t *testing.T) {
@@ -1750,4 +1775,31 @@ func assertPipelineRowCounts(t *testing.T, rows []PipelineStageRow, kind string,
 		return
 	}
 	t.Fatalf("missing pipeline row for %s in %+v", kind, rows)
+}
+
+func TestPipelinePartitionsClassifiesUnexplainedRemainderAsUnknown(t *testing.T) {
+	t.Parallel()
+
+	row := PipelineStageRow{Kind: "legacy", Total: 3, Current: 1, Pending: 1}
+	finalizePipelineStageRow(&row)
+	if row.Failed != 0 || row.Unknown != 1 || !row.PartitionValid {
+		t.Fatalf("unexplained remainder must be unknown, got %+v", row)
+	}
+
+	overlap := PipelineStageRow{Kind: "overlap", Total: 1, Current: 1, Pending: 1}
+	finalizePipelineStageRow(&overlap)
+	if overlap.PartitionValid {
+		t.Fatalf("overlapping partitions must be invalid: %+v", overlap)
+	}
+}
+
+func pipelineRowByKind(t *testing.T, rows []PipelineStageRow, kind string) PipelineStageRow {
+	t.Helper()
+	for _, row := range rows {
+		if row.Kind == kind {
+			return row
+		}
+	}
+	t.Fatalf("missing pipeline row %q in %+v", kind, rows)
+	return PipelineStageRow{}
 }

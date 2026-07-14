@@ -72,7 +72,9 @@ func aggregatePipelineStageRows(rows []PipelineStageRow) PipelineStageRow {
 		total.Current += row.Current
 		total.Pending += row.Pending
 		total.Blocked += row.Blocked
+		total.Terminal += row.Terminal
 		total.Failed += row.Failed
+		total.Unknown += row.Unknown
 	}
 	finalizePipelineStageRow(&total)
 	return total
@@ -82,10 +84,11 @@ func finalizePipelineStageRow(row *PipelineStageRow) {
 	if row == nil {
 		return
 	}
-	known := row.Current + row.Pending + row.Blocked + row.Failed
+	known := row.Current + row.Pending + row.Blocked + row.Terminal + row.Failed + row.Unknown
 	if row.Total > known {
-		row.Failed += row.Total - known
+		row.Unknown += row.Total - known
 	}
+	row.PartitionValid = row.Total == row.Current+row.Pending+row.Blocked+row.Terminal+row.Failed+row.Unknown
 	if row.Total > 0 {
 		row.PercentCurrent = (float64(row.Current) / float64(row.Total)) * 100
 	}
