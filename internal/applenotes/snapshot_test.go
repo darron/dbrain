@@ -62,6 +62,85 @@ func TestCreateSnapshotContextChecksCancellationBeforeSourceAccess(t *testing.T)
 	}
 }
 
+func TestCreateSnapshotContextRemovesDefaultTempDirOnCopyCancellation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	sourceDB := filepath.Join(root, "NoteStore.sqlite")
+	writeSQLiteFixture(t, sourceDB)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var copiedPath string
+	info, _, err := createSnapshotContextWithCopy(ctx, cfg, Options{DBPath: sourceDB}, func(_ context.Context, _, dest string) error {
+		copiedPath = dest
+		if err := os.WriteFile(dest, []byte("partial"), 0o600); err != nil {
+			return err
+		}
+		cancel()
+		return context.Canceled
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("createSnapshotContextWithCopy error = %v, want canceled", err)
+	}
+	if info.Dir == "" || filepath.Dir(copiedPath) != info.Dir {
+		t.Fatalf("snapshot paths info=%+v copied=%q", info, copiedPath)
+	}
+	if _, statErr := os.Stat(info.Dir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("default temp snapshot leaked at %s: %v", info.Dir, statErr)
+	}
+}
+
+func TestCreateSnapshotContextPreservesKeptDirOnCopyError(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	sourceDB := filepath.Join(root, "NoteStore.sqlite")
+	writeSQLiteFixture(t, sourceDB)
+	injectedErr := errors.New("injected copy failure")
+
+	for _, test := range []struct {
+		name        string
+		opts        Options
+		explicitDir string
+	}{
+		{name: "explicit directory", opts: Options{SnapshotDir: filepath.Join(root, "explicit-snapshot")}, explicitDir: filepath.Join(root, "explicit-snapshot")},
+		{name: "keep generated directory", opts: Options{KeepSnapshot: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.opts.DBPath = sourceDB
+			info, _, err := createSnapshotContextWithCopy(context.Background(), cfg, test.opts, func(_ context.Context, _, dest string) error {
+				if err := os.WriteFile(dest, []byte("partial"), 0o600); err != nil {
+					return err
+				}
+				return injectedErr
+			})
+			if !errors.Is(err, injectedErr) {
+				t.Fatalf("createSnapshotContextWithCopy error = %v, want injected error", err)
+			}
+			if test.explicitDir != "" && info.Dir != test.explicitDir {
+				t.Fatalf("snapshot dir = %q, want %q", info.Dir, test.explicitDir)
+			}
+			if _, statErr := os.Stat(filepath.Join(info.Dir, filepath.Base(sourceDB))); statErr != nil {
+				t.Fatalf("kept snapshot should remain for diagnosis: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestCreateSnapshotCopiesTripletWithoutHardlinks(t *testing.T) {
 	t.Parallel()
 

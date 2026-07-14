@@ -72,6 +72,10 @@ func CreateSnapshot(cfg config.Config, opts Options) (SnapshotInfo, snapshotClea
 // CreateSnapshotContext copies the live Notes SQLite triplet into a private
 // snapshot and permits cancellation between copy chunks.
 func CreateSnapshotContext(ctx context.Context, cfg config.Config, opts Options) (SnapshotInfo, snapshotCleanup, error) {
+	return createSnapshotContextWithCopy(ctx, cfg, opts, copyRegularFileContext)
+}
+
+func createSnapshotContextWithCopy(ctx context.Context, cfg config.Config, opts Options, copyFile func(context.Context, string, string) error) (_ SnapshotInfo, _ snapshotCleanup, returnErr error) {
 	if err := ctx.Err(); err != nil {
 		return SnapshotInfo{}, nil, err
 	}
@@ -96,6 +100,15 @@ func CreateSnapshotContext(ctx context.Context, cfg config.Config, opts Options)
 	} else if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
 		return SnapshotInfo{}, nil, fmt.Errorf("create snapshot dir %s: %w", snapshotDir, err)
 	}
+	cleanup := cleanupForSnapshot(snapshotDir, keep)
+	defer func() {
+		if returnErr == nil || keep {
+			return
+		}
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("remove incomplete Apple Notes snapshot %s: %w", snapshotDir, cleanupErr))
+		}
+	}()
 
 	info := SnapshotInfo{
 		SourceDBPath: sourcePath,
@@ -106,28 +119,28 @@ func CreateSnapshotContext(ctx context.Context, cfg config.Config, opts Options)
 
 	for _, source := range notesTripletPaths(sourcePath) {
 		if err := ctx.Err(); err != nil {
-			return info, cleanupForSnapshot(snapshotDir, keep), err
+			return info, cleanup, err
 		}
 		if _, err := os.Stat(source); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return info, cleanupForSnapshot(snapshotDir, keep), appleNotesSourcePermissionError(source, fmt.Errorf("stat notes snapshot source %s: %w", source, err))
+			return info, cleanup, appleNotesSourcePermissionError(source, fmt.Errorf("stat notes snapshot source %s: %w", source, err))
 		}
 		dest := filepath.Join(snapshotDir, filepath.Base(source))
-		if err := copyRegularFileContext(ctx, source, dest); err != nil {
-			return info, cleanupForSnapshot(snapshotDir, keep), err
+		if err := copyFile(ctx, source, dest); err != nil {
+			return info, cleanup, err
 		}
 		if sameFile(source, dest) {
-			return info, cleanupForSnapshot(snapshotDir, keep), fmt.Errorf("snapshot file %s aliases live Notes file %s", dest, source)
+			return info, cleanup, fmt.Errorf("snapshot file %s aliases live Notes file %s", dest, source)
 		}
 		info.CopiedFiles = append(info.CopiedFiles, dest)
 	}
 	if len(info.CopiedFiles) == 0 {
-		return info, cleanupForSnapshot(snapshotDir, keep), fmt.Errorf("no Apple Notes files copied from %s", sourcePath)
+		return info, cleanup, fmt.Errorf("no Apple Notes files copied from %s", sourcePath)
 	}
 
-	return info, cleanupForSnapshot(snapshotDir, keep), nil
+	return info, cleanup, nil
 }
 
 func PlatformSupported() bool {
