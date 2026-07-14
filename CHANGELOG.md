@@ -11,7 +11,7 @@ development date for the change set.
   scheduler that uses the existing online SQLite snapshot/archive path,
   runs once on startup by default, durably rate-limits attempts across service
   restarts, serializes scheduled/manual archives and restores through one
-  crash-released cross-process lease, applies bounded contention backoff,
+  crash-released cross-process lease, applies bounded preflight-failure backoff,
   confines and durably syncs its private attempt marker, honors a full initial
   delay when startup runs are disabled, supports cancellation during snapshot
   compression, and emits content-free aggregate metrics without granting write

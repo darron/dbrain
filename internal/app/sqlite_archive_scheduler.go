@@ -18,7 +18,7 @@ import (
 
 const (
 	defaultSchedulerSQLiteArchiveInterval = 24 * time.Hour
-	defaultSQLiteArchiveLockRetryDelay    = 5 * time.Minute
+	defaultSQLiteArchiveRetryDelay        = 5 * time.Minute
 )
 
 var buildScheduledSQLiteArchiveWriter = newScheduledSQLiteArchiveWriter
@@ -172,17 +172,25 @@ func (s *sqliteArchiveScheduler) loop(ctx context.Context) {
 
 func (s *sqliteArchiveScheduler) nextDelay() time.Duration {
 	now := s.now()
-	delay := s.opts.Interval
-	lastAttempt, err := s.readAttempt(s.cfg)
-	if err == nil && !lastAttempt.IsZero() {
-		delay = lastAttempt.Add(s.opts.Interval).Sub(now)
-		if delay < 0 {
-			delay = 0
-		}
-	}
 	s.mu.Lock()
-	retryRemaining := s.retryNotBefore.Sub(now)
+	retryNotBefore := s.retryNotBefore
 	s.mu.Unlock()
+	retryRemaining := retryNotBefore.Sub(now)
+	if retryRemaining < 0 {
+		retryRemaining = 0
+	}
+
+	lastAttempt, err := s.readAttempt(s.cfg)
+	if err != nil || lastAttempt.IsZero() {
+		if !retryNotBefore.IsZero() {
+			return retryRemaining
+		}
+		return s.opts.Interval
+	}
+	delay := lastAttempt.Add(s.opts.Interval).Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
 	if retryRemaining > delay {
 		return retryRemaining
 	}
@@ -216,9 +224,7 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 	lock, err := s.acquireLease(s.cfg, "scheduler:"+reason)
 	if err != nil {
 		lockHeld := errors.Is(err, sqlitearchive.ErrOperationLocked)
-		if lockHeld {
-			s.deferRetry(s.now().Add(s.lockRetryDelay()))
-		}
+		s.deferPreflightRetry()
 		s.mu.Lock()
 		s.status.LastReason = reason
 		s.status.LastFinishedAt = s.now()
@@ -243,6 +249,7 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 	started := s.now()
 	lastAttempt, err := s.readAttempt(s.cfg)
 	if err != nil {
+		s.deferPreflightRetry()
 		if !s.releasePreflightLease(lock, reason, started, metricsRun) {
 			return
 		}
@@ -269,6 +276,7 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 		}
 	}
 	if err := s.writeAttempt(s.cfg, started); err != nil {
+		s.deferPreflightRetry()
 		if !s.releasePreflightLease(lock, reason, started, metricsRun) {
 			return
 		}
@@ -330,6 +338,7 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 
 func (s *sqliteArchiveScheduler) releasePreflightLease(lock *sqlitearchive.OperationLease, reason string, at time.Time, metricsRun metrics.RunContext) bool {
 	if err := s.releaseLease(lock); err != nil {
+		s.deferPreflightRetry()
 		s.recordPreflightFailure(reason, at, metrics.SQLiteArchiveFailureLock)
 		_, _ = fmt.Fprintln(s.logOut, "scheduler sqlite archive failed: operation lock release failed")
 		_ = metricsRun.Emit(metrics.SQLiteArchiveFailedEvent(0, metrics.SQLiteArchiveFailureLock))
@@ -338,11 +347,15 @@ func (s *sqliteArchiveScheduler) releasePreflightLease(lock *sqlitearchive.Opera
 	return true
 }
 
-func (s *sqliteArchiveScheduler) lockRetryDelay() time.Duration {
-	if s.opts.Interval < defaultSQLiteArchiveLockRetryDelay {
+func (s *sqliteArchiveScheduler) preflightRetryDelay() time.Duration {
+	if s.opts.Interval < defaultSQLiteArchiveRetryDelay {
 		return s.opts.Interval
 	}
-	return defaultSQLiteArchiveLockRetryDelay
+	return defaultSQLiteArchiveRetryDelay
+}
+
+func (s *sqliteArchiveScheduler) deferPreflightRetry() {
+	s.deferRetry(s.now().Add(s.preflightRetryDelay()))
 }
 
 func (s *sqliteArchiveScheduler) deferRetry(at time.Time) {

@@ -64,42 +64,86 @@ func acquireFileLock(path string, metadata string) (fileLock, error) {
 }
 
 func openWindowsLockParent(path string) (windows.Handle, error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(path, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
-			return 0, fmt.Errorf("create lock dir: %w", err)
-		}
-		info, err = os.Lstat(path)
+	path = filepath.Clean(path)
+	volume := filepath.VolumeName(path)
+	anchor := volume + string(filepath.Separator)
+	relative, err := filepath.Rel(anchor, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return 0, fmt.Errorf("lock directory is outside its path anchor")
 	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	rootAccess := uint32(windows.FILE_TRAVERSE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
+	if len(parts) == 1 {
+		rootAccess = windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.SYNCHRONIZE
+	}
+	handle, err := openWindowsLockDirectoryAbsolute(anchor, rootAccess)
 	if err != nil {
-		return 0, fmt.Errorf("inspect lock dir: %w", err)
+		return 0, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return 0, fmt.Errorf("lock directory is not a regular no-follow directory")
+	for index, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		final := index == len(parts)-1
+		disposition := uint32(windows.FILE_OPEN)
+		if final {
+			disposition = windows.FILE_OPEN_IF
+		}
+		access := uint32(windows.FILE_TRAVERSE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
+		if index == len(parts)-2 || final {
+			access = windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.SYNCHRONIZE
+		}
+		next, openErr := openWindowsLockDirectoryAt(handle, part, disposition, access)
+		_ = windows.CloseHandle(handle)
+		if openErr != nil {
+			return 0, openErr
+		}
+		handle = next
 	}
+	return handle, nil
+}
+
+func openWindowsLockDirectoryAbsolute(path string, access uint32) (windows.Handle, error) {
 	objectName, err := windows.NewNTUnicodeString(windowsNTPath(path))
 	if err != nil {
 		return 0, fmt.Errorf("encode lock directory path: %w", err)
 	}
+	return openWindowsLockDirectory(0, objectName, windows.FILE_OPEN, access)
+}
+
+func openWindowsLockDirectoryAt(parent windows.Handle, name string, disposition uint32, access uint32) (windows.Handle, error) {
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return 0, fmt.Errorf("encode lock directory name: %w", err)
+	}
+	return openWindowsLockDirectory(parent, objectName, disposition, access)
+}
+
+func openWindowsLockDirectory(parent windows.Handle, objectName *windows.NTUnicodeString, disposition uint32, access uint32) (windows.Handle, error) {
 	attributes := &windows.OBJECT_ATTRIBUTES{
-		Length:     uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
-		ObjectName: objectName,
-		Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
+		Length:        uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+		RootDirectory: parent,
+		ObjectName:    objectName,
+		Attributes:    windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
 	}
 	var (
 		handle windows.Handle
 		iosb   windows.IO_STATUS_BLOCK
 	)
-	err = windows.NtCreateFile(
+	options := uint32(windows.FILE_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	if disposition == windows.FILE_OPEN_IF {
+		options |= windows.FILE_WRITE_THROUGH
+	}
+	err := windows.NtCreateFile(
 		&handle,
-		windows.FILE_GENERIC_READ|windows.SYNCHRONIZE,
+		access,
 		attributes,
 		&iosb,
 		nil,
 		0,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		windows.FILE_OPEN,
-		windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+		disposition,
+		options,
 		0,
 		0,
 	)

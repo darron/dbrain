@@ -271,6 +271,89 @@ func TestSQLiteArchiveSchedulerBacksOffWhenOverdueLeaseIsHeld(t *testing.T) {
 	}
 }
 
+func TestSQLiteArchiveSchedulerPreflightFailuresApplyRetryFloor(t *testing.T) {
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	overdue := now.Add(-2 * time.Hour)
+	tests := []struct {
+		name       string
+		wantStatus string
+		setup      func(*sqliteArchiveScheduler)
+	}{
+		{
+			name:       "lock I/O failure with no marker",
+			wantStatus: "lock_failed",
+			setup: func(s *sqliteArchiveScheduler) {
+				s.readAttempt = func(config.Config) (time.Time, error) { return time.Time{}, nil }
+				s.acquireLease = func(config.Config, string) (*sqlitearchive.OperationLease, error) {
+					return nil, fmt.Errorf("synthetic lock I/O failure")
+				}
+			},
+		},
+		{
+			name:       "lock I/O failure with overdue marker",
+			wantStatus: "lock_failed",
+			setup: func(s *sqliteArchiveScheduler) {
+				s.readAttempt = func(config.Config) (time.Time, error) { return overdue, nil }
+				s.acquireLease = func(config.Config, string) (*sqlitearchive.OperationLease, error) {
+					return nil, fmt.Errorf("synthetic lock I/O failure")
+				}
+			},
+		},
+		{
+			name:       "state read failure",
+			wantStatus: "state_failed",
+			setup: func(s *sqliteArchiveScheduler) {
+				s.readAttempt = func(config.Config) (time.Time, error) {
+					return time.Time{}, fmt.Errorf("synthetic state read failure")
+				}
+			},
+		},
+		{
+			name:       "marker write failure",
+			wantStatus: "state_failed",
+			setup: func(s *sqliteArchiveScheduler) {
+				s.readAttempt = func(config.Config) (time.Time, error) { return overdue, nil }
+				s.writeAttempt = func(config.Config, time.Time) error {
+					return fmt.Errorf("synthetic marker write failure")
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := openSchedulerTestConfig(t)
+			s := newSQLiteArchiveScheduler(cfg, schedulerSQLiteArchiveConfig{
+				Enabled: true, Interval: time.Hour,
+			}, schedulerTestWriter{}, io.Discard)
+			s.now = func() time.Time { return now }
+			test.setup(s)
+
+			s.run(t.Context(), "interval")
+			if got := s.Status().LastError; got != test.wantStatus {
+				t.Fatalf("status code = %q, want %q", got, test.wantStatus)
+			}
+			if got := s.nextDelay(); got != 5*time.Minute {
+				t.Fatalf("retry delay = %s, want 5m", got)
+			}
+		})
+	}
+}
+
+func TestSQLiteArchiveSchedulerRetryFloorDoesNotShortenRecentMarkerDelay(t *testing.T) {
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	cfg := openSchedulerTestConfig(t)
+	s := newSQLiteArchiveScheduler(cfg, schedulerSQLiteArchiveConfig{
+		Enabled: true, Interval: time.Hour,
+	}, schedulerTestWriter{}, io.Discard)
+	s.now = func() time.Time { return now }
+	s.readAttempt = func(config.Config) (time.Time, error) { return now.Add(-10 * time.Minute), nil }
+	s.deferPreflightRetry()
+
+	if got := s.nextDelay(); got != 50*time.Minute {
+		t.Fatalf("retry delay = %s, want recent marker's remaining 50m interval", got)
+	}
+}
+
 func TestSQLiteArchiveSchedulerRunOnStartFalseWaitsFullIntervalWhenStateIsOverdue(t *testing.T) {
 	cfg := openSchedulerTestConfig(t)
 	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
