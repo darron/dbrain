@@ -7,6 +7,13 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Release audit skill**: Added a repo-local, content-free production release
+  workflow that freezes the installed XDG or self-contained target, requires a
+  fresh complete SQLite backup before installation, compares exact-profile
+  standard reports after a separately approved cutover, verifies the expected
+  commit, and evaluates CLI-only deep archive/media/upstream checks without
+  granting deploy, restart, retry, repair, restore, import, or config authority.
+
 - **Bounded upstream importer parity**: Added CLI-only deep reconciliation for
   Apple Notes, Safari Tabs, X Bookmarks, GitHub Stars, YouTube Liked, YouTube
   Watch Later, and enabled feeds, plus exact source commands for release and

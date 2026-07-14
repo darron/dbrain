@@ -83,6 +83,12 @@ is the stable privacy-validated `dbrain.audit.v1` report plus freshness and is
 capped at 256 KiB. Continue using `dbrain_stats_*` for exploratory counts, not
 as a substitute for whole-system health.
 
+Release acceptance is intentionally broader than the MCP authority. Use the
+repo-local [`dbrain-production-audit`](skills/dbrain-production-audit) skill
+with the installed CLI for content-free pre/post comparison, expected-commit
+verification, archive restore validation, media inventory, and bounded upstream
+parity. MCP cannot run those deep checks and must not infer them from stats.
+
 ### `dbrain_research_pack`
 
 Use `dbrain_research_pack` first for broad questions. It returns retrieve-only

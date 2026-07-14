@@ -23,8 +23,8 @@ Format export, and local query over the imported corpus.
 - [docs/architecture.md](docs/architecture.md): package and data-flow architecture.
 - [docs/research-harness.md](docs/research-harness.md): current research/chat
   harness behavior, limitations, and improvement roadmap.
-- [Agent Skills](#agent-skills): installable `dbrain-mcp` and `dbrain-review`
-  workflows plus repo-local model bakeoff guidance.
+- [Agent Skills](#agent-skills): installable corpus skills, repo-local release
+  audit/review workflows, and model bakeoff guidance.
 - [docs/open-knowledge-format-plan.md](docs/open-knowledge-format-plan.md):
   OKF export design, profile scope, validation rules, and implementation notes.
 - [docs/schema-migrations.md](docs/schema-migrations.md): SQLite schema and
@@ -1161,6 +1161,15 @@ not currently included in the release-tag registry publish.
 The [`dbrain-model-bakeoff`](skills/dbrain-model-bakeoff) skill is a repo-local
 development workflow for comparing summary and categorization models with the
 read-only bakeoff devtool; it is not part of the release-tag registry publish.
+
+The repo-local
+[`dbrain-production-audit`](skills/dbrain-production-audit) skill defines the
+content-free pre/post release workflow for the real installed target. It uses
+the CLI standard gate before a separately approved installation, re-resolves
+the target afterward, then compares exact-profile standard reports and runs
+CLI-only deep archive and upstream-parity acceptance checks. It never grants
+deployment, restart, retry, repair, restore, import, or configuration authority
+and is not part of the release-tag registry publish.
 
 ## License
 
