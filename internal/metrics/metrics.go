@@ -36,6 +36,87 @@ type Config struct {
 
 type Event map[string]any
 
+type SQLiteArchiveFailureCode string
+
+const (
+	SQLiteArchiveFailureArchive  SQLiteArchiveFailureCode = "archive_failed"
+	SQLiteArchiveFailureCanceled SQLiteArchiveFailureCode = "canceled"
+	SQLiteArchiveFailureLock     SQLiteArchiveFailureCode = "lock_failed"
+	SQLiteArchiveFailureState    SQLiteArchiveFailureCode = "state_failed"
+	SQLiteArchiveFailureTimeout  SQLiteArchiveFailureCode = "timeout"
+)
+
+func SQLiteArchiveAttemptEvent() Event {
+	return Event{
+		"event":         "scheduler.sqlite_archive.attempt",
+		"status":        "attempted",
+		"attempt_count": int64(1),
+	}
+}
+
+func SQLiteArchiveStartedEvent() Event {
+	return Event{
+		"event":         "scheduler.sqlite_archive.started",
+		"status":        "running",
+		"started_count": int64(1),
+	}
+}
+
+func SQLiteArchiveCompletedEvent(duration time.Duration, snapshotBytes int64, archiveBytes int64) Event {
+	return Event{
+		"event":           "scheduler.sqlite_archive.completed",
+		"status":          "ok",
+		"completed_count": int64(1),
+		"duration_ms":     DurationMillis(duration),
+		"snapshot_bytes":  snapshotBytes,
+		"archive_bytes":   archiveBytes,
+	}
+}
+
+func SQLiteArchiveFailedEvent(duration time.Duration, code SQLiteArchiveFailureCode) Event {
+	switch code {
+	case SQLiteArchiveFailureArchive, SQLiteArchiveFailureCanceled, SQLiteArchiveFailureLock, SQLiteArchiveFailureState, SQLiteArchiveFailureTimeout:
+	default:
+		code = SQLiteArchiveFailureArchive
+	}
+	return Event{
+		"event":        "scheduler.sqlite_archive.failed",
+		"status":       "failed",
+		"failed_count": int64(1),
+		"duration_ms":  DurationMillis(duration),
+		"failure_code": string(code),
+	}
+}
+
+func SQLiteArchiveLockSkippedEvent() Event {
+	return Event{
+		"event":         "scheduler.sqlite_archive.lock_skipped",
+		"status":        "skipped",
+		"skipped_count": int64(1),
+	}
+}
+
+func SQLiteArchiveOverlapSkippedEvent() Event {
+	return Event{
+		"event":         "scheduler.sqlite_archive.overlap_skipped",
+		"status":        "skipped",
+		"skipped_count": int64(1),
+	}
+}
+
+func SQLiteArchiveIntervalSkippedEvent(remaining time.Duration) Event {
+	remainingSeconds := int64(remaining / time.Second)
+	if remainingSeconds < 0 {
+		remainingSeconds = 0
+	}
+	return Event{
+		"event":             "scheduler.sqlite_archive.interval_skipped",
+		"status":            "skipped",
+		"skipped_count":     int64(1),
+		"remaining_seconds": remainingSeconds,
+	}
+}
+
 type Sink interface {
 	Enabled() bool
 	Detail() Detail

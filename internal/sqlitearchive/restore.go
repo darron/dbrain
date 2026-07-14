@@ -36,6 +36,13 @@ func Latest(ctx context.Context, opts Options) (RestorePlan, error) {
 }
 
 func Restore(ctx context.Context, cfg config.Config, plan RestorePlan, opts Options) (RestoreResult, error) {
+	lease, ownedLease, err := operationLease(cfg, opts, "restore")
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if ownedLease {
+		defer func() { _ = lease.Close() }()
+	}
 	store, err := requireStore(opts)
 	if err != nil {
 		return RestoreResult{}, err

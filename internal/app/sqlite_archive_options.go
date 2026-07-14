@@ -86,6 +86,14 @@ func buildSQLiteArchiveStore(ctx context.Context, rootDir string, opts sqliteArc
 	return store, strings.TrimSpace(opts.prefix), nil
 }
 
+func newScheduledSQLiteArchiveWriter(ctx context.Context, rootDir string) (sqlitearchive.ObjectWriter, error) {
+	store, _, err := buildSQLiteArchiveStore(ctx, rootDir, sqliteArchiveFlags{})
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
 func confirmRestore(in io.Reader, out io.Writer, dbPath string, obj sqlitearchive.Object) (bool, error) {
 	modified := "unknown"
 	if !obj.LastModified.IsZero() {

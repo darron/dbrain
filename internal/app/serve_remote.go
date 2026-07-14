@@ -1,12 +1,20 @@
 package app
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
 	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/remote"
+	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/sqlitearchive"
 )
 
 func newServeRemoteCommand(root *rootOptions) *cobra.Command {
@@ -61,16 +69,16 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 				controlURL:         controlURL,
 				verbose:            verbose,
 			})
-			schedulerOpts, err := schedulerSyncConfigFromRuntime(cfg.RootDir)
+			schedulers, err := buildRemoteSchedulers(cmd.Context(), cfg, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
-			scheduler := newSyncScheduler(cfg, schedulerOpts, cmd.ErrOrStderr())
-			opts.SchedulerStatus = scheduler.Status
+			opts.SchedulerStatus = schedulers.syncAll.Status
 			opts.OnReady = func() {
-				scheduler.Start(cmd.Context())
+				schedulers.syncAll.Start(cmd.Context())
+				schedulers.sqliteArchive.Start(cmd.Context())
 			}
-			defer scheduler.Stop()
+			defer schedulers.Stop()
 			return remote.Serve(cmd.Context(), cfg, opts, cmd.ErrOrStderr())
 		},
 	}
@@ -92,6 +100,56 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 	cmd.Flags().BoolVar(&verbose, "tsnet-verbose", false, "Enable verbose tsnet backend logs")
 
 	return cmd
+}
+
+type remoteSchedulers struct {
+	syncAll       *syncScheduler
+	sqliteArchive *sqliteArchiveScheduler
+}
+
+func buildRemoteSchedulers(ctx context.Context, cfg config.Config, logOut io.Writer) (remoteSchedulers, error) {
+	configSnapshot, err := runtimeenv.LoadConfigSnapshot(ctx, cfg.ConfigPath, auditConfigMaxBytes)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return remoteSchedulers{}, fmt.Errorf("read bounded scheduler config: %w", err)
+		}
+		configSnapshot = map[string]any{}
+	}
+	dotenvSnapshot, err := runtimeenv.LoadDotEnvSnapshot(ctx, cfg.RootDir, auditConfigMaxBytes)
+	if err != nil {
+		return remoteSchedulers{}, fmt.Errorf("read bounded scheduler dotenv: %w", err)
+	}
+	cleanupSnapshot := runtimeenv.RegisterConfigSnapshot(cfg.RootDir, configSnapshot, dotenvSnapshot)
+	defer cleanupSnapshot()
+
+	syncOpts, err := schedulerSyncConfigFromRuntime(cfg.RootDir)
+	if err != nil {
+		return remoteSchedulers{}, err
+	}
+	archiveOpts, err := schedulerSQLiteArchiveConfigFromRuntime(cfg.RootDir)
+	if err != nil {
+		return remoteSchedulers{}, err
+	}
+	var writer sqlitearchive.ObjectWriter
+	if archiveOpts.Enabled {
+		writer, err = buildScheduledSQLiteArchiveWriter(ctx, cfg.RootDir)
+		if err != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled SQLite archive: %w", err)
+		}
+	}
+	return remoteSchedulers{
+		syncAll:       newSyncScheduler(cfg, syncOpts, logOut),
+		sqliteArchive: newSQLiteArchiveScheduler(cfg, archiveOpts, writer, logOut),
+	}, nil
+}
+
+func (s remoteSchedulers) Stop() {
+	if s.sqliteArchive != nil {
+		s.sqliteArchive.Stop()
+	}
+	if s.syncAll != nil {
+		s.syncAll.Stop()
+	}
 }
 
 type serveRemoteFlags struct {

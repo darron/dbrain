@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/darron/dbrain/internal/config"
 )
 
@@ -56,6 +58,38 @@ tsnet:
   hostname: "dbrain"
   auth_key_ref: ""
 `
+
+func TestShippedConfigTemplatesExposeSQLiteArchiveSchedulerDefaults(t *testing.T) {
+	rootSample, err := os.ReadFile(filepath.Join("..", "..", "config.yaml.sample"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"root sample":      rootSample,
+		"installer sample": DefaultConfigTemplate,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var doc yaml.Node
+			if err := yaml.Unmarshal(data, &doc); err != nil {
+				t.Fatal(err)
+			}
+			root := documentRoot(&doc)
+			for _, want := range []struct {
+				path  []string
+				value string
+			}{
+				{[]string{"scheduler", "sqlite_archive", "enabled"}, "false"},
+				{[]string{"scheduler", "sqlite_archive", "interval"}, "24h"},
+				{[]string{"scheduler", "sqlite_archive", "run_on_start"}, "true"},
+			} {
+				got, ok := configScalar(root, want.path...)
+				if !ok || got != want.value {
+					t.Fatalf("%s = %q, %t; want %q", strings.Join(want.path, "."), got, ok, want.value)
+				}
+			}
+		})
+	}
+}
 
 func TestRunCreatesExplicitBaseLayoutAndConfigFromSelections(t *testing.T) {
 	t.Parallel()

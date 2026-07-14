@@ -714,6 +714,31 @@ publicly callable without auth. Use
 `--open-full-disk-access=false` to report the failure without opening System
 Settings.
 
+### Scheduled SQLite archives
+
+`dbrain serve remote` can run the existing online SQLite snapshot/archive path
+as a separate daily scheduler. It is disabled by default and uses the same
+S3-compatible configuration as `dbrain sqlite archive`:
+
+```yaml
+scheduler:
+  sqlite_archive:
+    enabled: true
+    interval: 24h
+    run_on_start: true
+```
+
+The scheduler is independent from scheduled sync and health audits. It alone
+receives upload capability; audit remains read-only. Scheduled and manual
+archives plus active restores share a cross-process lease, so only one of those
+operations can run at a time. Cancellation of `serve remote` cancels and waits
+for an in-flight scheduled archive. A private local last-attempt marker is
+written before snapshotting so a restart loop cannot create or retry multiple
+archives within one interval. Metrics distinguish startup from interval runs
+and report only attempt/start/completed, failed, lock-skip, overlap-skip, or
+interval-skip timing and byte/count aggregates; object keys, local paths,
+credentials, and provider error bodies are excluded.
+
 ### Scheduled `sync all`
 
 When `dbrain serve remote` is kept alive through launchd, it can also run

@@ -16,6 +16,16 @@ func requireStore(opts Options) (ObjectStore, error) {
 	return opts.Store, nil
 }
 
+func requireWriter(opts Options) (ObjectWriter, error) {
+	if opts.Writer != nil {
+		return opts.Writer, nil
+	}
+	if opts.Store != nil {
+		return opts.Store, nil
+	}
+	return nil, fmt.Errorf("object writer is required")
+}
+
 func optionNow(opts Options) time.Time {
 	if opts.Now != nil {
 		return opts.Now()

@@ -125,6 +125,8 @@ safari_tabs:
 scheduler:
   sqlite_archive:
     enabled: false # DBRAIN_SCHEDULER_SQLITE_ARCHIVE_ENABLED; require and audit scheduled SQLite backups
+    interval: "24h" # DBRAIN_SCHEDULER_SQLITE_ARCHIVE_INTERVAL
+    run_on_start: true # DBRAIN_SCHEDULER_SQLITE_ARCHIVE_RUN_ON_START
   sync_all:
     enabled: false # DBRAIN_SCHEDULER_SYNC_ALL_ENABLED; run sync all from serve remote
     interval: "1h" # DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL

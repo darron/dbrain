@@ -7,6 +7,12 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Scheduled SQLite durability**: Added an opt-in daily `serve remote`
+  scheduler that uses the existing online SQLite snapshot/archive path,
+  runs once on startup by default, durably rate-limits attempts across service
+  restarts, serializes scheduled/manual archives and restores through one
+  cross-process lease, and emits content-free aggregate metrics without
+  granting write capability to audits.
 - **Bounded deep verification**: Added an explicit CLI-only deep audit that
   validates the newest compressed SQLite archive in a private temporary
   directory, performs complete bounded `media/` inventory reconciliation, and

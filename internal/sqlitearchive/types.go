@@ -14,16 +14,30 @@ const (
 )
 
 type Options struct {
-	Prefix   string
-	Now      func() time.Time
-	Store    ObjectStore
-	Progress func(Event)
+	Prefix         string
+	Now            func() time.Time
+	Store          ObjectStore
+	Writer         ObjectWriter
+	OperationLease *OperationLease
+	Progress       func(Event)
+}
+
+type ObjectWriter interface {
+	PutObject(ctx context.Context, key string, body io.Reader, contentType string, contentLength int64) (string, error)
+}
+
+type ObjectLister interface {
+	ListObjects(ctx context.Context, prefix string) ([]Object, error)
+}
+
+type ObjectReader interface {
+	GetObject(ctx context.Context, key string) (io.ReadCloser, error)
 }
 
 type ObjectStore interface {
-	PutObject(ctx context.Context, key string, body io.Reader, contentType string, contentLength int64) (string, error)
-	ListObjects(ctx context.Context, prefix string) ([]Object, error)
-	GetObject(ctx context.Context, key string) (io.ReadCloser, error)
+	ObjectWriter
+	ObjectLister
+	ObjectReader
 }
 
 type Object struct {

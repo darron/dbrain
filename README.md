@@ -537,7 +537,7 @@ direct values or typed references: `env:NAME`,
 | `OPENAI_API_KEY` | `openai.api_key` or `env.OPENAI_API_KEY` | `` | OpenAI-compatible API key used by the summarize adapter when already exported. |
 | `OPENAI_USE_CHAT_COMPLETIONS` | `openai.use_chat_completions` or `env.OPENAI_USE_CHAT_COMPLETIONS` | `` | Forces summarize/OpenAI-compatible calls onto chat completions when set. |
 | `DBRAIN_USER_AGENT` | `http.user_agent` | `dbrain/<short-sha>` | User-Agent header for outbound API calls; source/web fetching keeps its own fetch headers. |
-| `DBRAIN_METRICS_ENABLED` | `metrics.enabled` | `false` | Enable append-only local JSONL metrics for `sync all` and scheduled `sync all` runs. |
+| `DBRAIN_METRICS_ENABLED` | `metrics.enabled` | `false` | Enable append-only local JSONL metrics for `sync all`, scheduled sync, and scheduled SQLite archives. |
 | `DBRAIN_METRICS_PATH` | `metrics.path` | `<log_dir>/metrics.jsonl` | Metrics JSONL output file; relative paths resolve under `log_dir`. |
 | `DBRAIN_METRICS_DETAIL` | `metrics.detail` | `stage` | Metrics detail level: `stage`, `item`, or `model_call`. |
 | `DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS` | `metrics.include_subject_keys` | `false` | Include raw dbrain item/source keys in metrics instead of only deterministic subject hashes. |
@@ -592,6 +592,9 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_AUDIT_TIMEOUT_REMOTE_METADATA` | `audit.timeouts.remote_metadata` | `2m ceiling` | Optional lower whole-check deadline for remote archive metadata inspection. |
 | `DBRAIN_AUDIT_TIMEOUT_REMOTE_REQUEST` | `audit.timeouts.remote_request` | `30s ceiling` | Optional lower per-request or per-page deadline for remote archive metadata inspection. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_ENABLED` | `scheduler.sync_all.enabled` | `false` | Run `sync all` periodically from the long-running `serve remote` process. |
+| `DBRAIN_SCHEDULER_SQLITE_ARCHIVE_ENABLED` | `scheduler.sqlite_archive.enabled` | `false` | Create periodic online SQLite snapshots from `serve remote`; this also makes SQLite backup freshness required by production health audits. |
+| `DBRAIN_SCHEDULER_SQLITE_ARCHIVE_INTERVAL` | `scheduler.sqlite_archive.interval` | `24h` | Positive interval between scheduled SQLite archive attempts. |
+| `DBRAIN_SCHEDULER_SQLITE_ARCHIVE_RUN_ON_START` | `scheduler.sqlite_archive.run_on_start` | `true` | Create one archive when `serve remote` becomes ready before continuing on the interval. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL` | `scheduler.sync_all.interval` | `1h` | Interval between scheduled `sync all` runs when the scheduler is enabled. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START` | `scheduler.sync_all.run_on_start` | `false` | Run `sync all` once when `serve remote` starts, then continue on the interval. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_JITTER` | `scheduler.sync_all.jitter` | `0` | Optional bounded delay added to each interval so multiple nodes do not sync at exactly the same time. |
@@ -794,6 +797,14 @@ sharing that same `local_path` is safely archived.
 The same S3-compatible credentials are used by `dbrain sqlite archive` and
 `dbrain sqlite restore` for compressed database snapshots. SQLite archives are
 stored under `archive/db/` by default; override with `--prefix` if needed.
+The long-running `dbrain serve remote` process can create the same online
+snapshot automatically with `scheduler.sqlite_archive.enabled: true`. Its
+default cadence is 24 hours with one run on startup. Scheduled archives are a
+separate write-capable sibling of sync and audit: audit remains read-only, and
+a cross-process lease prevents any scheduled/manual archive from overlapping
+another archive or an active restore.
+The scheduler records each attempt before snapshotting, so repeated service
+restarts cannot create or retry more than once inside the configured interval.
 
 ## Optional Source Reader Env
 

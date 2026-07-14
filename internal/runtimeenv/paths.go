@@ -23,6 +23,9 @@ func configValuePaths(key string) [][]string {
 	if short, ok := strings.CutPrefix(key, "DBRAIN_SCHEDULER_SYNC_ALL_"); ok {
 		paths = append(paths, []string{"scheduler", "sync_all", strings.ToLower(strings.Trim(short, "_"))})
 	}
+	if short, ok := strings.CutPrefix(key, "DBRAIN_SCHEDULER_SQLITE_ARCHIVE_"); ok {
+		paths = append(paths, []string{"scheduler", "sqlite_archive", strings.ToLower(strings.Trim(short, "_"))})
+	}
 	if short, ok := strings.CutPrefix(key, "DBRAIN_AUDIT_TIMEOUT_"); ok {
 		paths = append(paths, []string{"audit", "timeouts", strings.ToLower(strings.Trim(short, "_"))})
 	}

@@ -12,7 +12,14 @@ import (
 )
 
 func Archive(ctx context.Context, cfg config.Config, opts Options) (ArchiveResult, error) {
-	store, err := requireStore(opts)
+	lease, ownedLease, err := operationLease(cfg, opts, "archive")
+	if err != nil {
+		return ArchiveResult{}, err
+	}
+	if ownedLease {
+		defer func() { _ = lease.Close() }()
+	}
+	store, err := requireWriter(opts)
 	if err != nil {
 		return ArchiveResult{}, err
 	}
