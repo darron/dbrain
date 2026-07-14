@@ -26,6 +26,11 @@ func (e *LogicalFileError) Error() string {
 
 func (r *Root) Inspect(name string) (LogicalFileMetadata, error) {
 	trimmed := strings.TrimSpace(name)
+	for _, segment := range strings.Split(filepath.ToSlash(trimmed), "/") {
+		if segment == "." || segment == ".." {
+			return LogicalFileMetadata{}, &LogicalFileError{Code: "outside_root"}
+		}
+	}
 	cleaned := filepath.Clean(filepath.FromSlash(trimmed))
 	if trimmed == "" || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return LogicalFileMetadata{}, &LogicalFileError{Code: "outside_root"}

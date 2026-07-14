@@ -285,6 +285,37 @@ func TestInspectBundleRejectsUnlistedNamedPipeMarkdownWithoutBlocking(t *testing
 	}
 }
 
+func TestInspectBundleRejectsNamedPipeManifestWithoutBlocking(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, manifestFileName), 0o600); err != nil {
+		t.Fatalf("mkfifo manifest: %v", err)
+	}
+	root := openInspectionRoot(t, dir)
+	type result struct {
+		summary    InspectionSummary
+		validation ValidationResult
+		err        error
+	}
+	done := make(chan result, 1)
+	go func() {
+		summary, validation, err := inspectBundleDetailed(t.Context(), root)
+		done <- result{summary: summary, validation: validation, err: err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("inspectBundleDetailed: %v", got.err)
+		}
+		if got.summary.ManifestValid || got.summary.ValidationErrorCount == 0 || got.validation.Conformant {
+			t.Fatalf("named-pipe manifest accepted: summary=%+v validation=%+v", got.summary, got.validation)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("InspectBundle blocked reading a named-pipe manifest")
+	}
+}
+
 func inspectBundleWithin(t *testing.T, root *vaultfs.Root) InspectionSummary {
 	t.Helper()
 	type result struct {

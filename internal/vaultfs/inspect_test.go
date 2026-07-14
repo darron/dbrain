@@ -21,6 +21,9 @@ func TestRootInspectReturnsSanitizedMetadata(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(vault, "notes", "note.md"), []byte("secret evidence"), 0o600); err != nil {
 		t.Fatalf("write note: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(vault, "secret.md"), []byte("normalized alternate target"), 0o600); err != nil {
+		t.Fatalf("write alternate target: %v", err)
+	}
 	unreadable := filepath.Join(vault, "notes", "unreadable.md")
 	if err := os.WriteFile(unreadable, []byte("secret"), 0o000); err != nil {
 		t.Fatalf("write unreadable note: %v", err)
@@ -64,6 +67,9 @@ func TestRootInspectReturnsSanitizedMetadata(t *testing.T) {
 	assertLogicalFileErrorCode(t, root, "", "outside_root")
 	assertLogicalFileErrorCode(t, root, outside, "outside_root")
 	assertLogicalFileErrorCode(t, root, "../outside.txt", "outside_root")
+	assertLogicalFileErrorCode(t, root, "notes/../secret.md", "outside_root")
+	assertLogicalFileErrorCode(t, root, "notes/./note.md", "outside_root")
+	assertLogicalFileErrorCode(t, root, "./secret.md", "outside_root")
 	assertLogicalFileErrorCode(t, root, "missing.md", "missing")
 	assertLogicalFileErrorCode(t, root, "notes/unreadable.md", "unreadable")
 	assertLogicalFileErrorCode(t, root, "escape", "symlink_rejected")

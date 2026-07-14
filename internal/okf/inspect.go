@@ -38,6 +38,13 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 	summary := InspectionSummary{TraversalComplete: true}
 	result := ValidationResult{Conformant: true}
 
+	manifestMetadata, err := root.Inspect(manifestFileName)
+	if err != nil || !manifestMetadata.Regular {
+		summary.ValidationErrorCount = 1
+		result.Conformant = false
+		result.Errors = append(result.Errors, "manifest is missing or unreadable")
+		return summary, result, nil
+	}
 	manifestData, err := root.ReadFile(manifestFileName)
 	if err != nil {
 		summary.ValidationErrorCount = 1
