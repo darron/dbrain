@@ -59,6 +59,17 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 	} else {
 		summary.ExportedAt = exportedAt.UTC()
 	}
+	manifestIdentityValid := true
+	if manifest.OKFVersion != OKFVersion {
+		manifestIdentityValid = false
+		summary.ValidationErrorCount++
+		result.Errors = append(result.Errors, "manifest okf_version is missing or unsupported")
+	}
+	if manifest.Profile != ProfilePrivate {
+		manifestIdentityValid = false
+		summary.ValidationErrorCount++
+		result.Errors = append(result.Errors, "manifest profile is missing or unsupported")
+	}
 	manifestPathsValid := true
 	seenManifestPaths := make(map[string]struct{}, len(manifest.Concepts))
 	for _, concept := range manifest.Concepts {
@@ -93,7 +104,7 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 			result.Errors = append(result.Errors, "manifest concept target is not a regular file")
 		}
 	}
-	summary.ManifestValid = err == nil && !exportedAt.IsZero() && manifestPathsValid
+	summary.ManifestValid = err == nil && !exportedAt.IsZero() && manifestIdentityValid && manifestPathsValid
 	result.OmittedByFilterLinks = len(manifest.OmittedLinks)
 
 	files, traversalErrors, err := walkBundleMarkdown(ctx, root)

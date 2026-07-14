@@ -10,6 +10,11 @@ const xMediaTranscriptionErrorRetryCooldown = 24 * time.Hour
 
 const xHydrationTerminalWhere = `x_post_status IN ('not_found', 'empty')`
 
+// A forbidden response records provider/access denial, not confirmed content
+// absence. It is non-runnable without force, so report it as blocked rather
+// than terminal or unknown.
+const xHydrationBlockedWhere = `x_post_status = 'forbidden'`
+
 const xPhotoOCRAnyMediaExistsWhere = `EXISTS (
 	SELECT 1 FROM item_media_links l
 	JOIN media_assets a ON a.id = l.media_asset_id

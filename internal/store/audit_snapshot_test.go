@@ -72,6 +72,63 @@ func TestAuditReadSnapshotCancellationAndClose(t *testing.T) {
 	seedAuditSnapshotItem(t, st, "x:after-snapshot-close")
 }
 
+func TestAuditReadSnapshotRestoresWritableQueryOnlyState(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	if got := auditQueryOnlyState(t, st); got != 0 {
+		t.Fatalf("writable store query_only before snapshot = %d, want 0", got)
+	}
+	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatalf("BeginAuditReadSnapshot: %v", err)
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := auditQueryOnlyState(t, st); got != 0 {
+		t.Fatalf("writable store query_only after snapshot = %d, want 0", got)
+	}
+}
+
+func TestAuditReadSnapshotRestoresReadOnlyQueryOnlyState(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	writer := openStoreAtPath(t, path)
+	seedAuditSnapshotItem(t, writer, "x:readonly-query-only")
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	reader, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	if got := auditQueryOnlyState(t, reader); got != 1 {
+		t.Fatalf("read-only store query_only before snapshot = %d, want 1", got)
+	}
+	snapshot, err := reader.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatalf("BeginAuditReadSnapshot: %v", err)
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := auditQueryOnlyState(t, reader); got != 1 {
+		t.Fatalf("read-only store query_only after snapshot = %d, want 1", got)
+	}
+}
+
+func auditQueryOnlyState(t *testing.T, st *Store) int {
+	t.Helper()
+	var state int
+	if err := st.db.QueryRowContext(t.Context(), `PRAGMA query_only`).Scan(&state); err != nil {
+		t.Fatalf("read PRAGMA query_only: %v", err)
+	}
+	return state
+}
+
 func seedAuditSnapshotItem(t *testing.T, st *Store, sourceKey string) {
 	t.Helper()
 	now := time.Now().UTC()

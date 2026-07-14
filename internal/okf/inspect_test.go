@@ -209,6 +209,53 @@ func TestInspectBundleRejectsNonRegularManifestConceptTarget(t *testing.T) {
 	}
 }
 
+func TestInspectBundleValidatesManifestIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		version   string
+		profile   string
+		wantValid bool
+	}{
+		{name: "current_private", version: "0.1", profile: ProfilePrivate, wantValid: true},
+		{name: "missing_version", version: "", profile: ProfilePrivate},
+		{name: "unsupported_version", version: "9.9", profile: ProfilePrivate},
+		{name: "missing_profile", version: "0.1", profile: ""},
+		{name: "unsupported_profile", version: "0.1", profile: "public"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			payload, err := json.Marshal(Manifest{
+				OKFVersion: tc.version,
+				Profile:    tc.profile,
+				ExportedAt: "2026-07-13T18:00:00Z",
+			})
+			if err != nil {
+				t.Fatalf("marshal manifest: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, manifestFileName), payload, 0o600); err != nil {
+				t.Fatalf("write manifest: %v", err)
+			}
+
+			got, err := InspectBundle(t.Context(), openInspectionRoot(t, dir))
+			if err != nil {
+				t.Fatalf("InspectBundle: %v", err)
+			}
+			if got.ManifestValid != tc.wantValid {
+				t.Fatalf("ManifestValid = %t, want %t: %+v", got.ManifestValid, tc.wantValid, got)
+			}
+			validation, err := ValidateBundle(dir)
+			if err != nil {
+				t.Fatalf("ValidateBundle: %v", err)
+			}
+			if validation.Conformant != tc.wantValid {
+				t.Fatalf("Conformant = %t, want %t: %+v", validation.Conformant, tc.wantValid, validation)
+			}
+		})
+	}
+}
+
 func openInspectionRoot(t *testing.T, dir string) *vaultfs.Root {
 	t.Helper()
 	root, err := vaultfs.Open(dir)

@@ -114,6 +114,32 @@ func TestPipelinePartitionsClassifiesKnownHydrationTerminalStates(t *testing.T) 
 	}
 }
 
+func TestPipelinePartitionsClassifiesForbiddenHydrationAsBlocked(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	seedAuditSnapshotItem(t, st, "x:hydration-forbidden")
+	if _, err := st.db.ExecContext(t.Context(), `UPDATE items SET x_post_status='forbidden' WHERE source_key='x:hydration-forbidden'`); err != nil {
+		t.Fatalf("seed forbidden hydration: %v", err)
+	}
+
+	candidates, err := st.ListItemsForXHydration(t.Context(), 100, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXHydration: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("forbidden hydration unexpectedly runnable: %+v", candidates)
+	}
+	stats, err := st.Pipeline(t.Context(), "", "", "")
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	row := pipelineRowByKind(t, stats.Hydration, pipelineKindAll)
+	if row.Total != 1 || row.Blocked != 1 || row.Terminal != 0 || row.Unknown != 0 || !row.PartitionValid {
+		t.Fatalf("forbidden access denial must be blocked, not terminal or unknown: %+v", row)
+	}
+}
+
 func TestPipelinePartitionsClassifiesSourceExtractionTerminalAndCooldown(t *testing.T) {
 	t.Parallel()
 

@@ -33,7 +33,11 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if err != nil {
 		return PipelineStats{}, err
 	}
-	stats.Hydration = buildPipelineStageRows(hydrationTotal, hydrationCurrent, hydrationPending, nil, hydrationTerminal)
+	hydrationBlocked, err := s.countGroupedWhere(ctx, "items", "source_type", xItemSourceTypeWhere+` AND external_id != '' AND `+xHydrationBlockedWhere)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	stats.Hydration = buildPipelineStageRows(hydrationTotal, hydrationCurrent, hydrationPending, hydrationBlocked, hydrationTerminal)
 
 	extractWhere, extractArgs := policy.extractBacklogWhere()
 	extractionTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")

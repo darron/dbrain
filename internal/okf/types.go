@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	OKFVersion     = "0.1"
 	ProfilePrivate = "private"
 
 	manifestFileName = ".dbrain-okf-manifest.json"
