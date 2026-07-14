@@ -175,12 +175,16 @@ type Report struct {
 }
 
 type Request struct {
-	Profile      Profile
-	Since        time.Duration
-	Categories   []Category
-	Sources      []Source
-	CheckIDs     []CheckID
-	ExpectCommit string
+	Profile    Profile
+	Since      time.Duration
+	Categories []Category
+	Sources    []Source
+	// SourceOverrides marks sources explicitly selected by a source-specific
+	// command. It grants parity inventory authority without pretending that the
+	// scheduler or configured source is enabled.
+	SourceOverrides []Source
+	CheckIDs        []CheckID
+	ExpectCommit    string
 }
 
 var auditIDPattern = regexp.MustCompile(`^audit_\d{8}T\d{6}\.\d{9}Z_[0-9a-f]{8}$`)

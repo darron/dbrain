@@ -101,6 +101,29 @@ func (a auditSnapshotAdapter) ArchivedMedia(ctx context.Context) ([]audit.Archiv
 	return out, nil
 }
 
+func (a auditSnapshotAdapter) CountLocalIdentityMatches(ctx context.Context, source audit.Source, hashes []string) (int, error) {
+	var local store.AuditSource
+	switch source {
+	case audit.SourceAppleNotes:
+		local = store.AuditSourceAppleNotes
+	case audit.SourceSafariTabs:
+		local = store.AuditSourceSafariTabs
+	case audit.SourceXBookmarks:
+		local = store.AuditSourceXBookmarks
+	case audit.SourceGitHubStars:
+		local = store.AuditSourceGitHubStars
+	case audit.SourceYouTubeLiked:
+		local = store.AuditSourceYouTubeLiked
+	case audit.SourceYouTubeWatchLater:
+		local = store.AuditSourceYouTubeWatchLater
+	case audit.SourceFeeds:
+		local = store.AuditSourceFeeds
+	default:
+		return 0, fmt.Errorf("unsupported audit identity source %q", source)
+	}
+	return a.snapshot.CountLocalIdentityMatches(ctx, local, hashes)
+}
+
 type auditOKFInspector struct{ path string }
 
 func (i auditOKFInspector) Inspect(ctx context.Context, full bool) (audit.OKFInspection, error) {

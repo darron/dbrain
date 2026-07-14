@@ -718,4 +718,13 @@ func TestAuditNeedsSnapshotHonorsExactCheckScope(t *testing.T) {
 	if !auditNeedsSnapshot(audit.Request{Sources: []audit.Source{audit.SourceXBookmarks}}) {
 		t.Fatal("source-only mixed scope retains source-less database checks")
 	}
+	if auditNeedsSnapshot(audit.Request{Profile: audit.ProfileStandard, Categories: []audit.Category{audit.CategoryImports}}) {
+		t.Fatal("standard imports-only audit must not open a snapshot for profile-excluded parity")
+	}
+	if !auditNeedsSnapshot(audit.Request{Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports}}) {
+		t.Fatal("deep imports-only audit needs the database snapshot for parity")
+	}
+	if !auditNeedsSnapshot(audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckUpstreamGitHubStarsParity}}) {
+		t.Fatal("explicit deep parity check needs the database snapshot")
+	}
 }

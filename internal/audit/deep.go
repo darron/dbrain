@@ -129,6 +129,7 @@ type DeepDependencies struct {
 	RecordCleanupFailure func(string)
 	FreeSpace            func(*vaultfs.PrivateTemp) (uint64, error)
 	Limits               DeepLimits
+	Upstream             UpstreamInventories
 }
 
 type deepMediaResult struct {
@@ -149,6 +150,9 @@ func RunDeep(ctx context.Context, req Request, deps Dependencies, deep DeepDepen
 		return Report{}, err
 	}
 	deep.Limits = limits
+	if err := deep.Upstream.validate(); err != nil {
+		return Report{}, err
+	}
 	bounded, cancel := context.WithTimeout(ctx, limits.RunTimeout)
 	defer cancel()
 	return runAudit(bounded, req, deps, &deep)
@@ -161,8 +165,72 @@ func (s *runState) loadDeep(ctx context.Context) {
 	if deepSelected(s.req, CheckDurabilityMediaRemote) || deepSelected(s.req, CheckDurabilityMediaRemoteOnly) {
 		s.loadDeepMedia(ctx)
 	}
-	if deepSelected(s.req, CheckDurabilitySQLiteRestore) && featureEnabled(mustLookup(CheckDurabilitySQLiteRestore), s.deps.Features) {
+	if deepSelected(s.req, CheckDurabilitySQLiteRestore) && featureEnabled(mustLookup(CheckDurabilitySQLiteRestore), s.deps.Features, s.req) {
 		s.loadDeepArchive(ctx)
+	}
+	s.loadDeepUpstream(ctx)
+}
+
+func (s *runState) loadDeepUpstream(ctx context.Context) {
+	if s.deep == nil {
+		return
+	}
+	budget := DefaultInventoryBudget()
+	for _, entry := range Registry() {
+		source, parity := upstreamCheckSources[entry.ID]
+		if !parity || !deepSelected(s.req, entry.ID) || !featureEnabled(entry, s.deps.Features, s.req) {
+			continue
+		}
+		inventory := s.deep.Upstream[source]
+		if inventory == nil {
+			s.upstream[source] = upstreamObservation{err: errCapabilityUnavailable, errorCode: ErrorUnavailable}
+			continue
+		}
+
+		timeout := timeoutFor(ProfileDeep, TimeoutUpstreamInventory, s.deps.Features.Timeouts)
+		sourceCtx, cancel := context.WithTimeout(ctx, timeout)
+		value, inventoryErr := inventory.Inventory(sourceCtx, budget)
+		normalized, normalizeErr := normalizeInventoryResult(value, budget)
+		observation := upstreamObservation{result: normalized}
+		switch {
+		case normalizeErr != nil:
+			observation.err = normalizeErr
+			observation.errorCode = upstreamErrorCode(normalizeErr)
+		case sourceCtx.Err() != nil:
+			observation.result.Complete = false
+			observation.err = sourceCtx.Err()
+			observation.errorCode = upstreamErrorCode(sourceCtx.Err())
+		case inventoryErr != nil:
+			observation.result.Complete = false
+			observation.err = inventoryErr
+			observation.errorCode = upstreamErrorCode(inventoryErr)
+		case !normalized.Complete:
+			observation.err = ErrInventoryIncomplete
+			observation.errorCode = ErrorListingIncomplete
+		case s.deps.Store == nil:
+			observation.result.Complete = false
+			observation.err = errCapabilityUnavailable
+			observation.errorCode = ErrorUnavailable
+		default:
+			matched, matchErr := s.deps.Store.CountLocalIdentityMatches(sourceCtx, source, normalized.IdentityHashes)
+			if sourceCtx.Err() != nil {
+				observation.result.Complete = false
+				observation.err = sourceCtx.Err()
+				observation.errorCode = upstreamErrorCode(sourceCtx.Err())
+			} else if matchErr != nil {
+				observation.result.Complete = false
+				observation.err = matchErr
+				observation.errorCode = ErrorDatabase
+			} else if matched < 0 || matched > len(normalized.IdentityHashes) {
+				observation.result.Complete = false
+				observation.err = ErrInventoryInvalid
+				observation.errorCode = ErrorDatabase
+			} else {
+				observation.matched = matched
+			}
+		}
+		cancel()
+		s.upstream[source] = observation
 	}
 }
 

@@ -177,7 +177,7 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	var report audit.Report
 	localCleanupPaths := map[audit.CheckID][]string{}
 	if profile == audit.ProfileDeep {
-		deepDeps, buildErr := buildDeepAuditDependencies(ctx, cfg, features, deepLimits)
+		deepDeps, buildErr := buildDeepAuditDependencies(ctx, cfg, req, features, deepLimits)
 		if buildErr != nil {
 			return &ExitError{Code: 3, Err: fmt.Errorf("resolve deep audit capabilities: %w", buildErr)}
 		}
@@ -438,13 +438,14 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, snapshot *st
 	return deps, nil
 }
 
-func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, features audit.Features, limits audit.DeepLimits) (audit.DeepDependencies, error) {
+func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, req audit.Request, features audit.Features, limits audit.DeepLimits) (audit.DeepDependencies, error) {
 	deep := audit.DeepDependencies{
 		Limits: limits, VerifyArchive: auditArchiveVerifier{},
-		NewTemp: func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(cfg.TempDir) },
+		NewTemp:  func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(cfg.TempDir) },
+		Upstream: audit.UpstreamInventories{},
 	}
-	needMedia := features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
-	needArchive := (features.SQLiteBackupSchedulerEnabled || features.SQLiteBackupAuditRequired) && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
+	needMedia := auditRequestSelectsCheck(req, audit.CheckDurabilityMediaRemote) && features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
+	needArchive := auditRequestSelectsCheck(req, audit.CheckDurabilitySQLiteRestore) && (features.SQLiteBackupSchedulerEnabled || features.SQLiteBackupAuditRequired) && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
 	if !needMedia && !needArchive {
 		return deep, nil
 	}
@@ -485,13 +486,49 @@ func auditNeedsSnapshot(req audit.Request) bool {
 			if !ok {
 				continue
 			}
-			if entry.Category == audit.CategoryPipeline || id == audit.CheckBoundaryDatabase || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote {
+			if entry.Category == audit.CategoryPipeline || id == audit.CheckBoundaryDatabase || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote || (req.Profile == audit.ProfileDeep && strings.HasPrefix(string(id), "upstream.")) {
 				return true
 			}
 		}
 		return false
 	}
-	return auditRequestMayIncludeCategory(req, audit.CategoryBoundary) || auditRequestMayIncludeCategory(req, audit.CategoryPipeline) || auditRequestMayIncludeCategory(req, audit.CategoryDurability)
+	return auditRequestMayIncludeCategory(req, audit.CategoryBoundary) || auditRequestMayIncludeCategory(req, audit.CategoryPipeline) || auditRequestMayIncludeCategory(req, audit.CategoryDurability) || (req.Profile == audit.ProfileDeep && auditRequestMayIncludeCategory(req, audit.CategoryImports))
+}
+
+func auditRequestSelectsCheck(req audit.Request, id audit.CheckID) bool {
+	entry, ok := audit.Lookup(id)
+	if !ok || !entry.InProfile(req.Profile) {
+		return false
+	}
+	if len(req.CheckIDs) > 0 {
+		for _, candidate := range req.CheckIDs {
+			if candidate == id {
+				return true
+			}
+		}
+		return false
+	}
+	if len(req.Categories) > 0 {
+		selected := false
+		for _, category := range req.Categories {
+			if category == entry.Category {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			return false
+		}
+	}
+	if entry.Source != "" && len(req.Sources) > 0 {
+		for _, source := range req.Sources {
+			if source == entry.Source {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 func auditRequestMayIncludeCategory(req audit.Request, category audit.Category) bool {

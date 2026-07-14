@@ -44,6 +44,7 @@ type runState struct {
 	deepArchiveErr         error
 	deepCleanupComplete    bool
 	deepCleanupAttempted   bool
+	upstream               map[Source]upstreamObservation
 }
 
 func (s *runState) observedAt() time.Time {
@@ -75,6 +76,9 @@ func init() {
 	bind([]CheckID{CheckPipelineHydrationPartition, CheckPipelineHydrationPendingAge, CheckPipelineExtractionPartition, CheckPipelineExtractionPendingAge, CheckPipelineSummaryPartition, CheckPipelineSummaryPendingAge, CheckPipelineTranscriptionPartition, CheckPipelineTranscriptionPendingAge, CheckPipelineOCRPartition, CheckPipelineOCRPendingAge, CheckPipelineItemSummaryProvenance, CheckPipelineItemOCRProvenance, CheckPipelineXMediaTranscriptProvenance, CheckPipelineSourceSummaryProvenance}, executePipeline)
 	bind([]CheckID{CheckDurabilityMediaLocalCoverage, CheckDurabilityMediaRemote, CheckDurabilitySQLiteBackupConfiguration, CheckDurabilitySQLiteBackupAge, CheckDurabilityOKFFreshness, CheckDurabilityOKFValidation}, executeDurability)
 	bind([]CheckID{CheckDurabilityMediaRemoteOnly, CheckDurabilitySQLiteRestore}, executeDeep)
+	for id := range upstreamCheckSources {
+		executors[id] = executeUpstream
+	}
 }
 
 func HasExecutor(id CheckID) bool { _, ok := executors[id]; return ok }
@@ -106,6 +110,19 @@ func runAudit(ctx context.Context, req Request, deps Dependencies, deep *DeepDep
 			return Report{}, fmt.Errorf("invalid source %q", s)
 		}
 	}
+	seenOverrides := make(map[Source]struct{}, len(req.SourceOverrides))
+	for _, source := range req.SourceOverrides {
+		if !source.Valid() {
+			return Report{}, fmt.Errorf("invalid source override %q", source)
+		}
+		if _, exists := seenOverrides[source]; exists {
+			return Report{}, fmt.Errorf("duplicate source override %q", source)
+		}
+		seenOverrides[source] = struct{}{}
+		if !containsSource(req.Sources, source) || !sourceOverrideInScope(req, source) {
+			return Report{}, fmt.Errorf("source override %q is outside declared parity scope", source)
+		}
+	}
 	for _, id := range req.CheckIDs {
 		if _, ok := Lookup(id); !ok {
 			return Report{}, fmt.Errorf("invalid check id %q", id)
@@ -118,19 +135,19 @@ func runAudit(ctx context.Context, req Request, deps Dependencies, deep *DeepDep
 	report := NewReport(req.Profile, now)
 	report.AuditID = fmt.Sprintf("audit_%s_%08x", now.Format("20060102T150405.000000000Z07:00"), auditSequence.Add(1))
 	report.Scope = effectiveScope(req)
-	state := &runState{now: now, req: req, deps: deps, deep: deep, provenance: map[CheckID]ProvenanceEvidence{}}
+	state := &runState{now: now, req: req, deps: deps, deep: deep, provenance: map[CheckID]ProvenanceEvidence{}, upstream: map[Source]upstreamObservation{}}
 	state.load(ctx)
 	state.loadDeep(ctx)
 	for _, entry := range Registry() {
 		if !scopeIncludes(req, entry) {
 			continue
 		}
-		required := isRequired(entry, deps.Features)
+		required := isRequired(entry, deps.Features, req)
 		var check Check
 		switch {
 		case !entry.InProfile(req.Profile):
 			check = skippedCheck(entry, SkipProfileExcluded, now)
-		case !featureEnabled(entry, deps.Features):
+		case !featureEnabled(entry, deps.Features, req):
 			check = skippedCheck(entry, SkipFeatureDisabled, now)
 		case ctx.Err() != nil:
 			check = unknownCheck(entry, ErrorInterrupted, now)
@@ -155,10 +172,25 @@ func runAudit(ctx context.Context, req Request, deps Dependencies, deep *DeepDep
 	return report, nil
 }
 
+func sourceOverrideInScope(req Request, source Source) bool {
+	if len(req.Categories) > 0 && !containsCategory(req.Categories, CategoryImports) {
+		return false
+	}
+	if len(req.CheckIDs) == 0 {
+		return true
+	}
+	for id, mappedSource := range upstreamCheckSources {
+		if mappedSource == source && containsCheck(req.CheckIDs, id) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *runState) load(ctx context.Context) {
 	selected := func(id CheckID) bool {
 		entry, ok := Lookup(id)
-		return ok && scopeIncludes(s.req, entry) && entry.InProfile(s.req.Profile) && featureEnabled(entry, s.deps.Features)
+		return ok && scopeIncludes(s.req, entry) && entry.InProfile(s.req.Profile) && featureEnabled(entry, s.deps.Features, s.req)
 	}
 	selectedCategory := func(category Category) bool {
 		for _, entry := range Registry() {
@@ -292,6 +324,8 @@ func defaultTimeoutFor(profile Profile, class TimeoutClass) time.Duration {
 		return 10 * time.Second
 	case TimeoutSQLiteOrOKFIntegrity, TimeoutRemoteMetadata:
 		return 2 * time.Minute
+	case TimeoutUpstreamInventory:
+		return 5 * time.Minute
 	default:
 		return 30 * time.Second
 	}
@@ -357,7 +391,7 @@ func containsSource(v []Source, x Source) bool {
 	}
 	return false
 }
-func isRequired(e RegistryEntry, f Features) bool {
+func isRequired(e RegistryEntry, f Features, req Request) bool {
 	switch e.RequiredWhen {
 	case RequiredAlways:
 		return true
@@ -365,6 +399,8 @@ func isRequired(e RegistryEntry, f Features) bool {
 		return f.SchedulerEnabled
 	case RequiredSourceScheduler:
 		return f.SchedulerEnabled && f.Sources[e.Source]
+	case RequiredSource:
+		return f.Sources[e.Source] || containsSource(req.SourceOverrides, e.Source)
 	case RequiredStage:
 		return f.Stages[stageForCheck(e.ID)]
 	case RequiredMediaLocal:
@@ -379,7 +415,7 @@ func isRequired(e RegistryEntry, f Features) bool {
 		return false
 	}
 }
-func featureEnabled(e RegistryEntry, f Features) bool {
+func featureEnabled(e RegistryEntry, f Features, req Request) bool {
 	if e.ID == CheckDurabilityMediaRemoteOnly {
 		return f.MediaRemoteEnabled
 	}
@@ -391,6 +427,8 @@ func featureEnabled(e RegistryEntry, f Features) bool {
 		return f.SchedulerEnabled
 	case RequiredSourceScheduler:
 		return f.SchedulerEnabled && f.Sources[e.Source]
+	case RequiredSource:
+		return f.Sources[e.Source] || containsSource(req.SourceOverrides, e.Source)
 	case RequiredStage:
 		return f.Stages[stageForCheck(e.ID)]
 	case RequiredMediaLocal:

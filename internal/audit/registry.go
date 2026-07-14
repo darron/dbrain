@@ -28,6 +28,7 @@ const (
 	RequiredNever           RequiredCondition = "never"
 	RequiredScheduler       RequiredCondition = "scheduler_enabled"
 	RequiredSourceScheduler RequiredCondition = "source_and_scheduler_enabled"
+	RequiredSource          RequiredCondition = "source_enabled_or_explicit"
 	RequiredStage           RequiredCondition = "stage_enabled"
 	RequiredMediaLocal      RequiredCondition = "media_local_enabled"
 	RequiredMediaRemote     RequiredCondition = "media_remote_enabled"
@@ -37,7 +38,7 @@ const (
 
 func (r RequiredCondition) Valid() bool {
 	switch r {
-	case RequiredAlways, RequiredNever, RequiredScheduler, RequiredSourceScheduler, RequiredStage, RequiredMediaLocal, RequiredMediaRemote, RequiredSQLiteBackup, RequiredOKF:
+	case RequiredAlways, RequiredNever, RequiredScheduler, RequiredSourceScheduler, RequiredSource, RequiredStage, RequiredMediaLocal, RequiredMediaRemote, RequiredSQLiteBackup, RequiredOKF:
 		return true
 	default:
 		return false
@@ -189,7 +190,7 @@ func init() {
 		id     CheckID
 	}{{SourceAppleNotes, CheckUpstreamAppleNotesParity}, {SourceSafariTabs, CheckUpstreamSafariTabsParity}, {SourceXBookmarks, CheckUpstreamXBookmarksParity}, {SourceGitHubStars, CheckUpstreamGitHubStarsParity}, {SourceYouTubeLiked, CheckUpstreamYouTubeLikedParity}, {SourceYouTubeWatchLater, CheckUpstreamYouTubeWatchLaterParity}, {SourceFeeds, CheckUpstreamFeedsParity}}
 	for _, item := range parities {
-		registry = append(registry, RegistryEntry{ID: item.id, Category: CategoryImports, Source: item.source, Profiles: profilesDeep, RequiredWhen: RequiredSourceScheduler, Timeout: TimeoutUpstreamInventory, EvidenceFields: fields("upstream_count", EvidenceInteger, "matched_local_count", EvidenceInteger, "missing_local_count", EvidenceInteger, "page_count", EvidenceInteger, "inventory_complete", EvidenceBoolean)})
+		registry = append(registry, RegistryEntry{ID: item.id, Category: CategoryImports, Source: item.source, Profiles: profilesDeep, RequiredWhen: RequiredSource, Timeout: TimeoutUpstreamInventory, EvidenceFields: fields("upstream_count", EvidenceInteger, "matched_local_count", EvidenceInteger, "missing_local_count", EvidenceInteger, "page_count", EvidenceInteger, "inventory_complete", EvidenceBoolean)})
 	}
 	registry = append(registry,
 		RegistryEntry{ID: CheckDurabilityMediaRemoteOnly, Category: CategoryDurability, Profiles: profilesDeep, RequiredWhen: RequiredNever, Timeout: TimeoutRemoteMetadata, EvidenceFields: fields("remote_only_count", EvidenceInteger, "inventory_complete", EvidenceBoolean)},

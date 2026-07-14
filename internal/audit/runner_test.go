@@ -401,6 +401,9 @@ func (f fakeStore) Provenance(context.Context) ([]ProvenanceEvidence, error) {
 }
 func (f fakeStore) MediaLocal(context.Context) (MediaLocalEvidence, error)       { return f.local, nil }
 func (f fakeStore) ArchivedMedia(context.Context) ([]ArchivedMediaRecord, error) { return f.media, nil }
+func (f fakeStore) CountLocalIdentityMatches(context.Context, Source, []string) (int, error) {
+	return 0, nil
+}
 
 type fakeDatabase struct{ value DatabaseInspection }
 
@@ -474,6 +477,9 @@ func (s *localConcurrencyStore) ArchivedMedia(context.Context) (out []ArchivedMe
 	s.inspect(func() { out = []ArchivedMediaRecord{} })
 	return out, nil
 }
+func (s *localConcurrencyStore) CountLocalIdentityMatches(context.Context, Source, []string) (int, error) {
+	return 0, nil
+}
 func (f countingStore) Provenance(context.Context) ([]ProvenanceEvidence, error) {
 	*f.calls++
 	return nil, nil
@@ -485,6 +491,10 @@ func (f countingStore) MediaLocal(context.Context) (MediaLocalEvidence, error) {
 func (f countingStore) ArchivedMedia(context.Context) ([]ArchivedMediaRecord, error) {
 	*f.calls++
 	return nil, nil
+}
+func (f countingStore) CountLocalIdentityMatches(context.Context, Source, []string) (int, error) {
+	*f.calls++
+	return 0, nil
 }
 
 type countingDatabase struct{ calls *int }

@@ -77,6 +77,7 @@ type StoreSnapshot interface {
 	Provenance(context.Context) ([]ProvenanceEvidence, error)
 	MediaLocal(context.Context) (MediaLocalEvidence, error)
 	ArchivedMedia(context.Context) ([]ArchivedMediaRecord, error)
+	CountLocalIdentityMatches(context.Context, Source, []string) (int, error)
 }
 type DatabaseInspection struct {
 	SchemaCompatibility                           string
