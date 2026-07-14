@@ -38,6 +38,7 @@ development date for the change set.
 
 - **Release testing**: Added an owner-dispatched Homebrew test channel that builds an exact commit into durable prerelease assets and one moving `dbrain-test` formula without changing stable `dbrain` distribution.
 - **Release safety**: Stable publication now accepts only exact `vX.Y.Z` tags, serializes tap updates, and tests that candidate formula generation cannot modify `Formula/dbrain.rb` or add runtime-data cleanup hooks.
+- **Tap validation**: Stable formula updates now restore the reciprocal `dbrain-test` conflict required by Homebrew audit, preventing candidate formula publication from breaking subsequent `brew test-bot` runs.
 
 ### dbrain Review Skill Distribution (2026-07-11)
 

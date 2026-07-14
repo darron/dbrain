@@ -249,6 +249,11 @@ func TestStableReleaseWorkflowPolicyRejectsSecurityMutations(t *testing.T) {
 			old:  "cancel-in-progress: false",
 			new:  "cancel-in-progress: true",
 		},
+		{
+			name: "disable reciprocal formula conflict repair",
+			old:  `stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'`,
+			new:  `disabledConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'`,
+		},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -305,6 +310,12 @@ func validateStableReleaseWorkflow(text string) error {
 	p.require(exactScalarMap(mappingNode(job("update-homebrew-tap"), "concurrency"), map[string]string{
 		"group": "dbrain-homebrew-tap-update", "cancel-in-progress": "false", "queue": "max",
 	}), "stable tap concurrency must use the exact shared non-cancelling queue")
+	updateFormula := namedStep(job("update-homebrew-tap"), "Update formula")
+	p.require(updateFormula != nil, "stable release workflow must contain the formula update step")
+	if updateFormula != nil {
+		updateRun := normalizeRun(scalarValue(mappingNode(updateFormula, "run")))
+		p.require(strings.Contains(updateRun, exactStableConflictRepair()), "stable formula updater must maintain the reciprocal dbrain-test conflict")
+	}
 	if len(p.errors) == 0 {
 		return nil
 	}
@@ -317,6 +328,15 @@ if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "stable releases require an exact vX.Y.Z tag; got ${RELEASE_TAG}" >&2
   exit 1
 fi`
+}
+
+func exactStableConflictRepair() string {
+	return `stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'
+unless text.match?(/^\s*conflicts_with\s+"dbrain-test"(?:,.*)?$/)
+  license = text.match(/^  license "[^"]+"\n/)
+  abort("stable formula is missing its license anchor") unless license
+  text = text.sub(license[0], "#{license[0]}\n#{stableConflict}\n")
+end`
 }
 
 func jobTransitivelyNeeds(jobs *yaml.Node, from, target string, seen map[string]bool) bool {
