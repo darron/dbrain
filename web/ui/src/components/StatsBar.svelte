@@ -6,6 +6,11 @@
 </script>
 
 <section class="stats-grid">
+  <article class="stat-card stat-card-scope">
+    <span class="label">Source backlog drained</span>
+    <strong>{backlog.drained ? "Yes" : "No"}</strong>
+    <small>{backlog.scope_description || "X hydration, link discovery, source extraction, and source summary only; this is not whole-system health."}</small>
+  </article>
   <article class="stat-card">
     <span class="label">Pending Extracts</span>
     <strong>{backlog.source_extraction_pending}</strong>

@@ -7,6 +7,15 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Production health admin view**: Replaced ambiguous activity-derived health
+  with the authenticated exact-profile standard audit presentation. The System
+  page now separates fast local refresh from authoritative standard health,
+  importer polls from arrivals, terminal pipeline outcomes from failures, and
+  media/SQLite/OKF durability checks from legacy counters; it includes bounded
+  typed finding evidence, recovery history, abortable on-demand polling, and a
+  responsive 390px-safe observability layout. Legacy `backlog.drained` remains
+  compatible but is labeled and scoped as source-processing backlog only.
+
 - **Authenticated admin audit API**: Added fail-closed latest, compact history,
   bounded on-demand fast/standard run, and process-run status endpoints for the
   authenticated web administration surface. The routes are absent when web

@@ -49,6 +49,14 @@ report-store instance when composed in the same process. The audit remains
 read-only and receives archive-list authority only; the separate SQLite archive
 scheduler is the only sibling with object-write authority.
 
+The authenticated System page performs only the three saved-report GETs on
+initial load: standard latest, standard history, and fast latest. Fast and
+standard run POSTs require an explicit operator action. Polling uses only the
+opaque locally accepted process-run ID, is sequential with bounded backoff, and
+is aborted when the page is destroyed. The standard exact-profile report alone
+controls the health headline; fast results, source-backlog drain state, and
+source-arrival quiet periods cannot replace or recover it.
+
 ## Open-Source Notes
 
 - Treat local `serve web` and remote `serve remote --web` as trusted write

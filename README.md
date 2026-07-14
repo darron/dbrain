@@ -389,6 +389,16 @@ whose nested `report.audit_id` is distinct from the outer process-run
 `audit_id`. These routes are deliberately unavailable when `auth.enabled` is
 false and cannot be authorized by the doctor endpoint's service-auth header.
 
+The authenticated **System** page presents the current exact-profile standard
+report as the sole whole-system health authority. It keeps a fast local refresh
+separate, renders poll cadence separately from arrivals, preserves current,
+pending, blocked, terminal, failed, and unknown pipeline outcomes, and uses the
+exact media, SQLite archive, and OKF audit checks for durability. Stale or
+absent standard reports remain visibly unknown; a newer fast pass cannot make
+them current. The legacy `backlog.drained` signal remains available as
+**Source backlog drained** and is explicitly scoped to X hydration, link
+discovery, source extraction, and source summary—not whole-system health.
+
 The explicit CLI-only `deep` profile additionally downloads the newest SQLite
 archive into a private temporary directory, decompresses and validates that
 candidate without replacing the active database, and reconciles the complete

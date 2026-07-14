@@ -6,6 +6,8 @@ import test from "node:test";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(here, "../App.svelte"), "utf8");
+const statsSource = readFileSync(resolve(here, "../components/StatsBar.svelte"), "utf8");
+const auditComponentNames = ["AuditOverview", "AuditImporters", "AuditPipeline", "AuditDurability", "AuditFindings", "AuditHistory"];
 
 test("chat is default and research is absent from primary mode tabs", () => {
   assert.match(appSource, /let inputMode = "chat"/);
@@ -18,4 +20,42 @@ test("chat is default and research is absent from primary mode tabs", () => {
   assert.match(appSource, /void loadHarnessTraces\(\{ quiet: true \}\)/);
   assert.match(appSource, /Generated answer rejected:/);
   assert.match(appSource, /turn\?\.status === "verification_failed"\) return \[\]/);
+});
+
+test("admin audit surface loads saved reports only and cancels polling on destroy", () => {
+  for (const name of auditComponentNames) {
+    assert.match(appSource, new RegExp(`import ${name} from`));
+    assert.match(appSource, new RegExp(`<${name}(?:\\s|>)`));
+  }
+  assert.match(appSource, /Promise\.allSettled\(\[\s*getAuditLatest\("standard"/);
+  assert.doesNotMatch(appSource, /onMount[\s\S]{0,1800}startAuditRun\(/);
+  assert.match(appSource, /onDestroy\(\(\) => \{[\s\S]*auditController\.abort\(\)/);
+  assert.match(appSource, /getAuditRun\(auditID, \{ signal: auditController\.signal \}\)/);
+});
+
+test("legacy drained signal is explicitly scoped away from whole-system health", () => {
+  assert.match(statsSource, />Source backlog drained</);
+  assert.match(statsSource, /backlog\.scope_description/);
+  assert.match(statsSource, /not whole-system health/);
+});
+
+test("audit components render text without raw HTML", () => {
+  for (const name of auditComponentNames) {
+    const source = readFileSync(resolve(here, `../components/${name}.svelte`), "utf8");
+    assert.doesNotMatch(source, /\{@html/);
+    assert.doesNotMatch(source, /https?:\/\//);
+  }
+});
+
+test("fast lifecycle wording and history grid contract match the accepted UI language", () => {
+  const overview = readFileSync(resolve(here, "../components/AuditOverview.svelte"), "utf8");
+  const importers = readFileSync(resolve(here, "../components/AuditImporters.svelte"), "utf8");
+  const history = readFileSync(resolve(here, "../components/AuditHistory.svelte"), "utf8");
+  assert.equal((overview.match(/Fast local refresh/g) || []).length >= 4, true);
+  assert.match(overview, /\$: fastRunCopy = runCopy\("fast", runByProfile\?\.fast\)/);
+  assert.match(overview, /\$: standardRunCopy = runCopy\("standard", runByProfile\?\.standard\)/);
+  assert.match(overview, /\{#if loadState === "ready"\}[\s\S]*Last standard audit/);
+  assert.match(overview, /No absence or health claim is made/);
+  assert.match(importers, /status === "warn" \? "▲"/);
+  assert.doesNotMatch(history, /audit-history-rail/);
 });

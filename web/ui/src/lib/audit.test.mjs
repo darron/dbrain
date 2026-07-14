@@ -1,0 +1,245 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  applyRunStatus,
+  auditHeadline,
+  initialAuditRequests,
+  overallHealth,
+  pollRunDecision,
+  safeEvidence,
+  selectDurability,
+  selectFindings,
+  selectHistory,
+  selectImporters,
+  selectOverview,
+  selectPipeline
+} from "./audit.js";
+
+function report(profile = "standard") {
+  return {
+    schema: "dbrain.audit.v1",
+    audit_id: `report-${profile}`,
+    profile,
+    scope: { whole_system: true, filtered: false, categories: [], sources: [], check_ids: [] },
+    started_at: "2026-07-14T01:00:00Z",
+    completed_at: "2026-07-14T01:01:00Z",
+    status: "pass",
+    confidence: "high",
+    boundary: { layout: "xdg", config_verified: true, version: "v0.7.0", commit: "abcdef123456" },
+    summary: { all: { pass: 8, warn: 0, fail: 0, unknown: 0, skipped: 0 }, required: { pass: 8, warn: 0, fail: 0, unknown: 0 } },
+    checks: [
+      check("scheduler.latest_sync", "scheduler", "pass", { latest_success_at: "2026-07-14T00:55:00Z", age_seconds: 360 }),
+      check("imports.apple_notes.poll", "imports", "pass", { succeeded_at: "2026-07-14T00:58:00Z", age_seconds: 180, success_count: 4, failure_count: 0 }),
+      check("imports.apple_notes.arrivals", "imports", "pass", { quiet_seconds: 86400, daily: [{ day: "2026-07-14", created: 0, updated: 0, unchanged: 4, skipped: 0, linked: 0, blocked: 0, failed: 0 }] }, false),
+      check("pipeline.ocr.partition", "pipeline", "warn", { total: 15, current: 8, pending: 2, blocked: 1, terminal: 3, failed: 1, unknown: 0, partition_valid: true, by_kind: [] }),
+      check("pipeline.ocr.pending_age", "pipeline", "warn", { pending_count: 2, oldest_pending_age_seconds: 5400, warn_after_seconds: 3600, fail_after_seconds: 7200 }),
+      check("durability.media_local_coverage", "durability", "pass", { eligible_local_count: 9, uncovered_pruned_count: 0, orphan_count: 0 }),
+      check("durability.media_remote", "durability", "pass", { population_count: 9, checked_count: 9, missing_count: 0, inventory_complete: true }),
+      check("durability.sqlite_backup_configuration", "durability", "pass", { capability_configured: true, scheduler_enabled: true, audit_required: true, configuration_state: "required_ready" }),
+      check("durability.sqlite_backup_age", "durability", "fail", { archive_count: 2, latest_age_seconds: 99000, latest_size_bytes: 1234, listing_complete: true }, true, "Back up SQLite now", { host_path: "/secret/db", url: "https://example.invalid/private", source_key: "secret:1", object_key: "private/archive", title: "secret title", raw_error: "provider token leaked" }),
+      check("durability.okf_freshness", "durability", "pass", { manifest_valid: true, exported_at: "2026-07-14T00:30:00Z", age_seconds: 1800 }),
+      check("durability.okf_validation", "durability", "unknown", { manifest_valid: true, document_count: 44, broken_link_count: 0, validation_error_count: 1, traversal_complete: false }, true)
+    ]
+  };
+}
+
+function check(id, category, status, evidence, required = true, remediation = "", extraEvidence = {}) {
+  return {
+    id, category, status, confidence: status === "unknown" ? "unknown" : "high", required,
+    summary: `${id} ${status}`,
+    observed_at: "2026-07-14T01:01:00Z",
+    evidence: { ...evidence, ...extraEvidence }, remediation
+  };
+}
+
+function envelope(profile = "standard", freshness = { status: "current", age_seconds: 60, deadline_seconds: 43200 }) {
+  return { report: report(profile), freshness };
+}
+
+test("only a current unfiltered whole-system standard report establishes overall health", () => {
+  assert.deepEqual(overallHealth(envelope()), { state: "current", status: "pass", reason: "", report: envelope().report });
+
+  const fast = envelope("fast");
+  assert.equal(overallHealth(fast).status, "unknown");
+  assert.equal(overallHealth(fast).reason, "not_standard");
+
+  const filtered = envelope();
+  filtered.report.scope.filtered = true;
+  filtered.report.scope.whole_system = false;
+  assert.equal(overallHealth(filtered).reason, "invalid_scope");
+
+  const wrongSchema = envelope();
+  wrongSchema.report.schema = "future.audit.v2";
+  assert.equal(overallHealth(wrongSchema).reason, "invalid_schema");
+});
+
+test("absent and stale standard reports remain visibly unknown at freshness boundaries", () => {
+  assert.deepEqual(overallHealth({ report: null, freshness: { status: "unknown", reason: "not_found", deadline_seconds: 43200 } }), {
+    state: "absent", status: "unknown", reason: "not_found", report: null
+  });
+  const stale = overallHealth(envelope("standard", { status: "unknown", reason: "stale", age_seconds: 43201, deadline_seconds: 43200 }));
+  assert.equal(stale.state, "stale");
+  assert.equal(stale.status, "unknown");
+  assert.equal(stale.report.status, "pass", "historical report detail remains immutable");
+  assert.equal(overallHealth(envelope("standard", { status: "current", age_seconds: 43200, deadline_seconds: 43200 })).status, "pass");
+});
+
+test("headline distinguishes loading API error auth unavailable and absent report", () => {
+  const absent = overallHealth({ report: null, freshness: { status: "unknown", reason: "not_found" } });
+  assert.equal(auditHeadline(absent, { authEnabled: true, loadState: "loading" }).state, "loading");
+  assert.equal(auditHeadline(absent, { authEnabled: true, loadState: "error" }).label, "UNKNOWN · LOAD ERROR");
+  assert.equal(auditHeadline(absent, { authEnabled: false, loadState: "unavailable" }).label, "UNKNOWN · UNAVAILABLE");
+  assert.equal(auditHeadline(absent, { authEnabled: true, loadState: "ready" }).label, "UNKNOWN · NO REPORT");
+});
+
+test("a newer fast completion updates only fast state and never recovers standard health", () => {
+  const state = {
+    standardEnvelope: envelope("standard", { status: "unknown", reason: "stale", age_seconds: 50000, deadline_seconds: 43200 }),
+    fastEnvelope: null,
+    runByProfile: { fast: { state: "running" }, standard: null }
+  };
+  const fastReport = report("fast");
+  fastReport.status = "pass";
+  const next = applyRunStatus(state, { audit_id: "run_fast_1", profile: "fast", state: "completed", report: fastReport, freshness: { status: "current", age_seconds: 0, deadline_seconds: 7200 } });
+  assert.equal(next.standardEnvelope, state.standardEnvelope);
+  assert.equal(next.fastEnvelope.report.audit_id, "report-fast");
+  assert.equal(overallHealth(next.standardEnvelope).state, "stale");
+  assert.equal(next.runByProfile.fast.executionState, "completed");
+  assert.equal(next.runByProfile.fast.reportStatus, "pass");
+});
+
+test("execution failure is distinct from a completed failing report", () => {
+  const base = { standardEnvelope: null, fastEnvelope: null, runByProfile: { fast: null, standard: null } };
+  const failedExecution = applyRunStatus(base, { audit_id: "run_1", profile: "standard", state: "failed", error_code: "audit_run_failed" });
+  assert.equal(failedExecution.runByProfile.standard.executionState, "failed");
+  assert.equal(failedExecution.runByProfile.standard.reportStatus, "unknown");
+
+  const failingReport = report("standard");
+  failingReport.status = "fail";
+  const completed = applyRunStatus(base, { audit_id: "run_2", profile: "standard", state: "completed", report: failingReport, freshness: { status: "current", age_seconds: 0, deadline_seconds: 43200 } });
+  assert.equal(completed.runByProfile.standard.executionState, "completed");
+  assert.equal(completed.runByProfile.standard.reportStatus, "fail");
+  assert.equal(completed.standardEnvelope.report.audit_id, "report-standard");
+});
+
+test("poll and quiet arrivals are separate importer signals", () => {
+  const [apple] = selectImporters(report());
+  assert.equal(apple.source, "apple_notes");
+  assert.equal(apple.poll.status, "pass");
+  assert.equal(apple.poll.succeededAt, "2026-07-14T00:58:00Z");
+  assert.equal(apple.arrivals.quietSeconds, 86400);
+  assert.equal(apple.arrivals.informational, true);
+  assert.equal(apple.arrivals.status, "pass");
+});
+
+test("feature-disabled importers and pipeline stages are not presented as unknown health", () => {
+  const fixture = report();
+  fixture.checks.push(
+    { ...check("imports.feeds.poll", "imports", "skipped", {}), skip_reason: "feature_disabled" },
+    { ...check("imports.feeds.arrivals", "imports", "skipped", {}, false), skip_reason: "feature_disabled" },
+    { ...check("pipeline.transcription.partition", "pipeline", "skipped", {}), skip_reason: "feature_disabled" }
+  );
+  assert.deepEqual(selectImporters(fixture).map((row) => row.source), ["apple_notes"]);
+  assert.deepEqual(selectPipeline(fixture).map((row) => row.stage), ["ocr"]);
+});
+
+test("enabled warning and unknown statuses remain explicit", () => {
+  const fixture = report();
+  fixture.checks.find((row) => row.id === "imports.apple_notes.poll").status = "warn";
+  fixture.checks.find((row) => row.id === "pipeline.ocr.partition").status = "unknown";
+  assert.equal(selectImporters(fixture)[0].poll.status, "warn");
+  assert.equal(selectImporters(fixture)[0].poll.skipReason, "");
+  assert.equal(selectPipeline(fixture)[0].status, "unknown");
+  assert.equal(selectPipeline(fixture)[0].skipReason, "");
+});
+
+test("pipeline partitions preserve current pending blocked terminal failed and unknown", () => {
+  const [ocr] = selectPipeline(report());
+  assert.equal(ocr.stage, "ocr");
+  assert.deepEqual(ocr.counts, { total: 15, current: 8, pending: 2, blocked: 1, terminal: 3, failed: 1, unknown: 0 });
+  assert.equal(ocr.oldestPendingAgeSeconds, 5400);
+});
+
+test("overview derives build layout last audit and last sync only from the standard report", () => {
+  assert.deepEqual(selectOverview(envelope()), {
+    auditID: "report-standard",
+    profile: "standard",
+    completedAt: "2026-07-14T01:01:00Z",
+    build: { version: "v0.7.0", commit: "abcdef123456" },
+    layout: "xdg",
+    configVerified: true,
+    lastSyncAt: "2026-07-14T00:55:00Z"
+  });
+  assert.equal(selectOverview(envelope("fast")), null);
+});
+
+test("durability cards select only exact audit check IDs", () => {
+  const cards = selectDurability(report());
+  assert.deepEqual(cards.map((card) => card.id), [
+    "durability.media_local_coverage",
+    "durability.media_remote",
+    "durability.sqlite_backup_configuration",
+    "durability.sqlite_backup_age",
+    "durability.okf_freshness",
+    "durability.okf_validation"
+  ]);
+  assert.equal(cards.find((card) => card.id === "durability.sqlite_backup_age").status, "fail");
+  assert.equal(cards.find((card) => card.id === "durability.okf_validation").status, "unknown");
+});
+
+test("findings order fail unknown warn and expose only typed evidence allowlist", () => {
+  const findings = selectFindings(report());
+  assert.deepEqual(findings.slice(0, 3).map((finding) => finding.status), ["fail", "unknown", "warn"]);
+  const sqlite = findings[0];
+  assert.equal(sqlite.id, "durability.sqlite_backup_age");
+  assert.equal(sqlite.remediation, "Back up SQLite now");
+  assert.equal(sqlite.evidence.latest_age_seconds, 99000);
+  assert.equal(Object.hasOwn(sqlite.evidence, "host_path"), false);
+  assert.equal(Object.hasOwn(sqlite.evidence, "url"), false);
+  assert.equal(Object.hasOwn(sqlite.evidence, "source_key"), false);
+  assert.equal(Object.hasOwn(sqlite.evidence, "object_key"), false);
+  assert.equal(Object.hasOwn(sqlite.evidence, "title"), false);
+  assert.equal(Object.hasOwn(sqlite.evidence, "raw_error"), false);
+});
+
+test("typed evidence rejects hostile nested fields and malformed pipeline numbers", () => {
+  assert.deepEqual(safeEvidence({
+    daily: [{ day: "2026-07-14", created: 1, updated: 0, unchanged: 0, skipped: 0, linked: 0, blocked: 0, failed: 0, raw_error: "https://secret.invalid" }],
+    by_kind: [{ kind: "x_photo", total: 1, current: 1, pending: 0, blocked: 0, terminal: 0, failed: 0, unknown: 0, partition_valid: true, source_key: "secret" }],
+    missing_by_field: { model: 1, object_key: 2 },
+    configuration_state: "https://secret.invalid/private"
+  }), {});
+  assert.deepEqual(safeEvidence({ configuration_state: "required_ready", listing_complete: true, latest_age_seconds: 42 }), {
+    configuration_state: "required_ready", listing_complete: true, latest_age_seconds: 42
+  });
+
+  const malformed = report();
+  const partition = malformed.checks.find((row) => row.id === "pipeline.ocr.partition");
+  delete partition.evidence.unknown;
+  partition.evidence.pending = "2";
+  assert.deepEqual(selectPipeline(malformed)[0].counts, { total: 15, current: 8, pending: null, blocked: 1, terminal: 3, failed: 1, unknown: null });
+});
+
+test("history is standard-only and marks recovery transitions without accepting fast health", () => {
+  const history = selectHistory({ profile: "standard", history: [
+    { audit_id: "new-pass", profile: "standard", status: "pass", confidence: "high", completed_at: "2026-07-14T01:00:00Z", summary: {}, freshness: { status: "current" } },
+    { audit_id: "fast-pass", profile: "fast", status: "pass", confidence: "high", completed_at: "2026-07-14T00:30:00Z", summary: {}, freshness: { status: "current" } },
+    { audit_id: "old-fail", profile: "standard", status: "fail", confidence: "high", completed_at: "2026-07-14T00:00:00Z", summary: {}, freshness: { status: "current" } }
+  ] });
+  assert.deepEqual(history.map((entry) => entry.auditID), ["new-pass", "old-fail"]);
+  assert.equal(history[0].transition, "recovered");
+  assert.equal(history[1].transition, "initial");
+});
+
+test("initial audit load is GET-only and terminal states stop polling", () => {
+  assert.deepEqual(initialAuditRequests(true), [
+    { method: "GET", profile: "standard", resource: "latest" },
+    { method: "GET", profile: "standard", resource: "history" },
+    { method: "GET", profile: "fast", resource: "latest" }
+  ]);
+  assert.deepEqual(initialAuditRequests(false), []);
+  assert.deepEqual(pollRunDecision({ state: "running" }), { poll: true, terminal: false });
+  assert.deepEqual(pollRunDecision({ state: "completed" }), { poll: false, terminal: true });
+  assert.deepEqual(pollRunDecision({ state: "failed" }), { poll: false, terminal: true });
+});

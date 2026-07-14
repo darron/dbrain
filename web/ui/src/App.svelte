@@ -1,7 +1,13 @@
 <script>
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
 
   import AddLinkPanel from "./components/AddLinkPanel.svelte";
+  import AuditDurability from "./components/AuditDurability.svelte";
+  import AuditFindings from "./components/AuditFindings.svelte";
+  import AuditHistory from "./components/AuditHistory.svelte";
+  import AuditImporters from "./components/AuditImporters.svelte";
+  import AuditOverview from "./components/AuditOverview.svelte";
+  import AuditPipeline from "./components/AuditPipeline.svelte";
   import DetailPanel from "./components/DetailPanel.svelte";
   import GraphView from "./components/GraphView.svelte";
   import MarkdownView from "./components/MarkdownView.svelte";
@@ -9,13 +15,14 @@
   import OperationsPanel from "./components/OperationsPanel.svelte";
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
-  import { addLink, compareResearchTrace, createChatShare, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, synthesizeResearch } from "./lib/api.js";
+  import { addLink, compareResearchTrace, createChatShare, getAuditHistory, getAuditLatest, getAuditRun, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, startAuditRun, synthesizeResearch } from "./lib/api.js";
+  import { applyRunStatus, overallHealth, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline } from "./lib/audit.js";
   import { buildChatRetrievalQuestion, buildChatTraceContinuity, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
   import { formatTime } from "./lib/time.js";
   import { pageHref, readRouteState, writeRouteState } from "./lib/urlState.js";
 
-  const defaultBacklog = { x_hydration_pending: 0, link_discovery_pending: 0, source_extraction_pending: 0, source_summary_pending: 0 };
+  const defaultBacklog = { x_hydration_pending: 0, link_discovery_pending: 0, source_extraction_pending: 0, source_summary_pending: 0, drained: false, scope_description: "X hydration, link discovery, source extraction, and source summary only; this is not whole-system health." };
   const defaultActivity = { window: "24h", items_updated_in_window: 0, sources_updated_in_window: 0, sources_summarized_in_window: 0, latest_item_updated_at: "", latest_source_updated_at: "", latest_source_summary_at: "" };
   const defaultSourceActivity = { window: "24h", recent_successes: [], recent_failures: [], failure_hotspots: [], failure_kinds: [], failure_statuses: [], failure_domains: [], failure_table: [], failure_table_total: 0, failure_table_offset: 0, failure_table_limit: 8, failure_table_sort: "newest", trend_bucket: "", trend: [] };
   const defaultSourceActivityFilters = { sourceType: "", domain: "", status: "", failureKind: "", message: "", window: "24h", limit: 8, failureOffset: 0, failureSort: "newest" };
@@ -27,12 +34,28 @@
   let sourceActivityState = "idle";
 
   let app = { name: "dbrain", has_fts: false };
+  let auth = { enabled: false };
   let backlog = { ...defaultBacklog };
   let activity = { ...defaultActivity };
   let sourceActivity = { ...defaultSourceActivity };
   let sourceActivityFilters = { ...defaultSourceActivityFilters };
   let bootstrapError = "";
   let sourceActivityError = "";
+
+  // Production-health audit state stays profile-separated by design.
+  let auditLoadState = "idle";
+  let auditLoadError = "";
+  let auditHistoryState = "idle";
+  let auditHistoryError = "";
+  let auditActionError = "";
+  let standardEnvelope = null;
+  let fastEnvelope = null;
+  let standardHistoryResponse = { profile: "standard", history: [] };
+  let runByProfile = { fast: null, standard: null };
+  let auditStartBusy = false;
+  let auditDisposed = false;
+  const auditController = new AbortController();
+  const auditPollTimers = new Set();
 
   // Search/research state
   let inputMode = "chat"; // "search" | "research" | "chat" | "harness" | "shares"
@@ -121,6 +144,13 @@
   $: releaseURL = releaseVersion ? `https://github.com/darron/dbrain/releases/tag/${encodeURIComponent(releaseVersion)}` : "https://github.com/darron/dbrain/releases";
   $: commitURL = commitSHA ? `https://github.com/darron/dbrain/commit/${encodeURIComponent(commitSHA)}` : "";
   $: versionReady = bootstrapState === "ready" && Boolean(releaseLabel || shortSHA || gitDirty);
+  $: standardHealth = overallHealth(standardEnvelope);
+  $: auditOverview = selectOverview(standardEnvelope);
+  $: auditImporters = selectImporters(standardEnvelope?.report);
+  $: auditPipeline = selectPipeline(standardEnvelope?.report);
+  $: auditDurability = selectDurability(standardEnvelope?.report);
+  $: auditFindings = selectFindings(standardEnvelope?.report);
+  $: auditHistory = selectHistory(standardHistoryResponse);
 
   function isResearchRunnerFailure(stopReason) {
     return ["synthesis_unavailable", "synthesis_failed", "timeout_exceeded", "max_steps_reached", "trace_failed", "verification_failed"].includes(stopReason);
@@ -151,6 +181,11 @@
     mounted = true;
 
     await loadBootstrap();
+    if (currentPage === "admin" && auth.enabled) {
+      await loadAuditDashboard();
+    } else if (currentPage === "admin") {
+      auditLoadState = "unavailable";
+    }
     if (currentPage === "admin" && !isDefaultSourceActivityFilters(sourceActivityFilters)) {
       await loadSourceActivity();
     }
@@ -165,6 +200,13 @@
     if (selectedLookup) {
       await loadDetail(selectedLookup);
     }
+  });
+
+  onDestroy(() => {
+    auditDisposed = true;
+    auditController.abort();
+    for (const timer of auditPollTimers) clearTimeout(timer);
+    auditPollTimers.clear();
   });
 
   $: if (mounted) {
@@ -195,6 +237,7 @@
     try {
       const response = await getBootstrap();
       app = response.app;
+      auth = response.auth || { enabled: false };
       backlog = response.backlog;
       activity = response.activity;
       if (isDefaultSourceActivityFilters(sourceActivityFilters)) {
@@ -206,6 +249,106 @@
     } catch (error) {
       bootstrapError = error.message;
       bootstrapState = "error";
+    }
+  }
+
+  async function loadAuditDashboard() {
+    if (!auth.enabled) {
+      auditLoadState = "unavailable";
+      return;
+    }
+    auditLoadState = "loading";
+    auditHistoryState = "loading";
+    auditLoadError = "";
+    auditHistoryError = "";
+    const [standardResult, historyResult, fastResult] = await Promise.allSettled([
+      getAuditLatest("standard", { signal: auditController.signal }),
+      getAuditHistory("standard", 20, { signal: auditController.signal }),
+      getAuditLatest("fast", { signal: auditController.signal })
+    ]);
+    if (auditDisposed) return;
+    if (standardResult.status === "fulfilled") {
+      standardEnvelope = standardResult.value;
+      auditLoadState = "ready";
+    } else {
+      standardEnvelope = null;
+      auditLoadState = "error";
+      auditLoadError = standardResult.reason?.message || "audit_report_unavailable";
+    }
+    if (historyResult.status === "fulfilled") {
+      standardHistoryResponse = historyResult.value;
+      auditHistoryState = "ready";
+    } else {
+      standardHistoryResponse = { profile: "standard", history: [] };
+      auditHistoryState = "error";
+      auditHistoryError = historyResult.reason?.message || "audit_report_unavailable";
+    }
+    if (fastResult.status === "fulfilled") fastEnvelope = fastResult.value;
+  }
+
+  async function startAdminAudit(profile) {
+    if (!auth.enabled || auditStartBusy || runByProfile.fast?.executionState === "running" || runByProfile.standard?.executionState === "running") return;
+    auditStartBusy = true;
+    auditActionError = "";
+    try {
+      const status = await startAuditRun(profile, { signal: auditController.signal });
+      const next = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, status);
+      standardEnvelope = next.standardEnvelope;
+      fastEnvelope = next.fastEnvelope;
+      runByProfile = next.runByProfile;
+      if (status.state === "running") scheduleAuditPoll(profile, status.audit_id, 0);
+    } catch (error) {
+      if (error.status === 409) {
+        auditActionError = `Another ${error.payload?.active_profile || "audit"} run is already active.`;
+      } else if (error.status === 429) {
+        auditActionError = `Standard audit can run again in ${error.payload?.retry_after_seconds || 60} seconds.`;
+      } else {
+        auditActionError = error.message || "audit_run_unavailable";
+      }
+    } finally {
+      auditStartBusy = false;
+    }
+  }
+
+  function scheduleAuditPoll(profile, auditID, attempt) {
+    if (auditDisposed) return;
+    const delay = Math.min(1000 * (2 ** Math.min(attempt, 3)), 5000);
+    const timer = setTimeout(async () => {
+      auditPollTimers.delete(timer);
+      if (auditDisposed) return;
+      try {
+        const status = await getAuditRun(auditID, { signal: auditController.signal });
+        if (auditDisposed) return;
+        const next = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, status);
+        standardEnvelope = next.standardEnvelope;
+        fastEnvelope = next.fastEnvelope;
+        runByProfile = next.runByProfile;
+        if (status.state === "running" && attempt < 240) {
+          scheduleAuditPoll(profile, auditID, attempt + 1);
+        } else if (status.state === "running") {
+          runByProfile = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, { audit_id: auditID, profile, state: "failed", error_code: "audit_poll_timeout" }).runByProfile;
+        } else if (profile === "standard" && status.state === "completed") {
+          await refreshStandardAuditHistory();
+        }
+      } catch (error) {
+        if (!auditDisposed) {
+          runByProfile = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, { audit_id: auditID, profile, state: "failed", error_code: "audit_poll_failed" }).runByProfile;
+          auditActionError = error.message || "audit_poll_failed";
+        }
+      }
+    }, delay);
+    auditPollTimers.add(timer);
+  }
+
+  async function refreshStandardAuditHistory() {
+    auditHistoryState = "loading";
+    auditHistoryError = "";
+    try {
+      standardHistoryResponse = await getAuditHistory("standard", 20, { signal: auditController.signal });
+      auditHistoryState = "ready";
+    } catch (error) {
+      auditHistoryState = "error";
+      auditHistoryError = error.message || "audit_report_unavailable";
     }
   }
 
@@ -1680,7 +1823,7 @@
         <div>
           <p class="eyebrow">System</p>
           <h1>dbrain</h1>
-          <p class="lede">Backlog, pipeline activity, and source operations.</p>
+          <p class="lede">Audited production health, durability, and source operations.</p>
         </div>
         <div class="hero-side stack-sm">
           <nav aria-label="Primary" class="primary-nav">
@@ -1696,6 +1839,32 @@
       {#if bootstrapError}
         <div class="banner error">{bootstrapError}</div>
       {/if}
+
+      {#if auditActionError}
+        <div class="banner error" role="status" aria-live="polite">{auditActionError}</div>
+      {/if}
+
+      <AuditOverview
+        health={standardHealth}
+        overview={auditOverview}
+        {standardEnvelope}
+        {fastEnvelope}
+        loading={auditLoadState === "loading" || auditStartBusy}
+        loadState={auditLoadState}
+        error={auditLoadError}
+        authEnabled={auth.enabled === true}
+        {runByProfile}
+        onRun={startAdminAudit}
+      />
+
+      <div class="audit-two-column">
+        <AuditImporters importers={auditImporters} />
+        <AuditPipeline stages={auditPipeline} />
+      </div>
+
+      <AuditDurability cards={auditDurability} />
+      <AuditFindings findings={auditFindings} />
+      <AuditHistory history={auditHistory} loading={auditHistoryState === "loading"} error={auditHistoryError} />
 
       <StatsBar {backlog} {activity} />
 

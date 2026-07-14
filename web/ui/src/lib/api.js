@@ -7,13 +7,45 @@ async function fetchJSON(url, options = {}) {
   }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.error || `Request failed with status ${response.status}`);
+    const error = new Error(payload.error || `Request failed with status ${response.status}`);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }
 
 export function getBootstrap() {
   return fetchJSON("/api/bootstrap");
+}
+
+export function getAuditLatest(profile = "standard", options = {}) {
+  return fetchJSON(`/api/audit/latest?profile=${auditProfile(profile)}`, { cache: "no-store", signal: options.signal });
+}
+
+export function getAuditHistory(profile = "standard", limit = 20, options = {}) {
+  const boundedLimit = Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : 20;
+  return fetchJSON(`/api/audit/history?profile=${auditProfile(profile)}&limit=${boundedLimit}`, { cache: "no-store", signal: options.signal });
+}
+
+export function startAuditRun(profile, options = {}) {
+  return fetchJSON("/api/audit/run", {
+    method: "POST",
+    signal: options.signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ profile: auditProfile(profile) })
+  });
+}
+
+export function getAuditRun(auditID, options = {}) {
+  const id = String(auditID || "");
+  if (!/^run_[0-9a-f]{32}$/.test(id)) return Promise.reject(new Error("Invalid audit run ID"));
+  return fetchJSON(`/api/audit/runs/${encodeURIComponent(id)}`, { cache: "no-store", signal: options.signal });
+}
+
+function auditProfile(profile) {
+  if (profile !== "fast" && profile !== "standard") throw new Error("Invalid audit profile");
+  return profile;
 }
 
 export function getSourceActivity(filters = {}) {

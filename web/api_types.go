@@ -80,9 +80,20 @@ type WebVersionInfo struct {
 type BootstrapResponse struct {
 	App            AppInfo                  `json:"app"`
 	Auth           AuthInfo                 `json:"auth"`
-	Backlog        store.BacklogStats       `json:"backlog"`
+	Backlog        BacklogResponse          `json:"backlog"`
 	Activity       store.ActivityStats      `json:"activity"`
 	SourceActivity store.SourceActivityFeed `json:"source_activity"`
+}
+
+const SourceBacklogScopeDescription = "X hydration, link discovery, source extraction, and source summary only; this is not whole-system health."
+
+type BacklogResponse struct {
+	store.BacklogStats
+	ScopeDescription string `json:"scope_description"`
+}
+
+func newBacklogResponse(backlog store.BacklogStats) BacklogResponse {
+	return BacklogResponse{BacklogStats: backlog, ScopeDescription: SourceBacklogScopeDescription}
 }
 
 type AuthInfo struct {
