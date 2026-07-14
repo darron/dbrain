@@ -42,11 +42,17 @@ enter backoff without contacting their feed server.
 ## Chosen Architecture
 
 `internal/feedimport.HTTPFetcher.Fetch` remains the only compatibility boundary
-for credential-bearing feed URLs. It parses the selected target URL, captures
-the username and optional password, copies the URL with `User` cleared, and
-constructs the request from that sanitized URL. When credentials were present,
-it calls `Request.SetBasicAuth` so neither `safehttp` nor the transport sees URL
-userinfo.
+for credential-bearing feed URLs. `ResolvedURL` remains the navigation target.
+The fetcher parses that target, captures any username and optional password,
+copies the URL with `User` cleared, and constructs the request from the
+sanitized URL. A successful fetch persists that sanitized final URL as the next
+`ResolvedURL`; when a later fetch therefore finds no target userinfo, it checks
+`NormalizedURL` and then `URL` for stored credentials and recovers them only
+from a successfully parsed candidate with the same normalized HTTP origin as
+the navigation target. Cross-origin resolved targets never inherit stored
+credentials. When credentials are available, the fetcher calls
+`Request.SetBasicAuth` so neither `safehttp` nor the transport sees URL
+userinfo, and it does not rewrite the stored subscription URL fields.
 
 For each fetch, clone the configured HTTP client and wrap its existing
 `CheckRedirect` callback. The wrapper compares each redirect target with the
@@ -79,7 +85,11 @@ Malformed targets continue to fail during request creation. A URL without
 userinfo behaves exactly as before. Safe-HTTP policy failures remain terminal
 fetch errors and retain their existing classification/backoff behavior. HTTP
 `401` responses remain normal feed HTTP errors, making invalid credentials
-distinguishable from local policy rejection.
+distinguishable from local policy rejection. Structured and nested URL errors
+are sanitized by a bounded single-pass scanner with a pre-grown output builder.
+It scans each detected HTTP(S) or network-path authority once, removes through
+the last userinfo `@`, preserves malformed-port diagnostics, and retains the
+original error chain for `errors.Is` and `errors.As`.
 
 ## Verification
 
@@ -93,7 +103,13 @@ Add focused tests in `internal/feedimport/http_test.go` proving:
 4. result request/final URLs contain no userinfo;
 5. redirects containing userinfo and unsafe/private destinations remain subject
    to the shared policy; and
-6. unauthenticated feed fetching remains unchanged.
+6. a sanitized stored `ResolvedURL` recovers credentials only from a
+   same-origin normalized/original URL on later polls, including percent-escaped
+   credentials;
+7. a cross-origin stored `ResolvedURL` never receives recovered credentials;
+8. malformed URL sanitation has bounded allocation growth across many
+   credential-bearing authority fragments; and
+9. unauthenticated feed fetching remains unchanged.
 
 After focused tests, run `task fmt`, `task lint`, `task test-ci`, and `task
 build`, then request an independent security-focused review of the actual diff.

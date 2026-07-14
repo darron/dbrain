@@ -55,6 +55,9 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 		return FetchResult{}, fmt.Errorf("create feed request: %w", sanitizeFeedURLError(err))
 	}
 	credentials := parsedTarget.User
+	if credentials == nil {
+		credentials = sameOriginStoredFeedCredentials(parsedTarget, feed.NormalizedURL, feed.URL)
+	}
 	parsedTarget.User = nil
 	sanitizedTarget := parsedTarget.String()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedTarget, nil)
@@ -171,6 +174,17 @@ func sameFeedHTTPOrigin(left *url.URL, right *url.URL) bool {
 	return leftOK && rightOK && leftOrigin == rightOrigin
 }
 
+func sameOriginStoredFeedCredentials(target *url.URL, candidates ...string) *url.Userinfo {
+	for _, raw := range candidates {
+		candidate, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || candidate.User == nil || !sameFeedHTTPOrigin(target, candidate) {
+			continue
+		}
+		return candidate.User
+	}
+	return nil
+}
+
 func normalizedFeedHTTPOrigin(target *url.URL) (string, bool) {
 	if target == nil {
 		return "", false
@@ -227,47 +241,57 @@ func sanitizeFeedNestedError(err error) error {
 }
 
 func sanitizeFeedCredentialURLsInText(value string) string {
-	searchFrom := 0
-	for searchFrom < len(value) {
-		urlStart, authorityStart, ok := nextFeedURLAuthority(value, searchFrom)
-		if !ok {
-			break
-		}
-		authorityEnd := len(value)
-		if offset := strings.IndexAny(value[authorityStart:], "/?# \t\r\n\"'<>"); offset >= 0 {
-			authorityEnd = authorityStart + offset
-		}
-		userinfoEnd := strings.LastIndex(value[authorityStart:authorityEnd], "@")
-		if userinfoEnd < 0 {
-			searchFrom = authorityEnd
-			if searchFrom <= urlStart {
-				searchFrom = urlStart + 1
-			}
+	var sanitized strings.Builder
+	sanitized.Grow(len(value))
+	for offset := 0; offset < len(value); {
+		prefixLength := feedURLAuthorityPrefixLength(value, offset)
+		if prefixLength == 0 {
+			sanitized.WriteByte(value[offset])
+			offset++
 			continue
 		}
-		userinfoEnd += authorityStart
-		value = value[:authorityStart] + value[userinfoEnd+1:]
-		searchFrom = authorityStart
+
+		authorityStart := offset + prefixLength
+		authorityEnd := authorityStart
+		lastUserinfoEnd := -1
+		for authorityEnd < len(value) && !isFeedURLAuthorityDelimiter(value[authorityEnd]) {
+			if value[authorityEnd] == '@' {
+				lastUserinfoEnd = authorityEnd
+			}
+			authorityEnd++
+		}
+		sanitized.WriteString(value[offset:authorityStart])
+		if lastUserinfoEnd >= 0 {
+			sanitized.WriteString(value[lastUserinfoEnd+1 : authorityEnd])
+		} else {
+			sanitized.WriteString(value[authorityStart:authorityEnd])
+		}
+		offset = authorityEnd
 	}
-	return value
+	return sanitized.String()
 }
 
-func nextFeedURLAuthority(value string, searchFrom int) (int, int, bool) {
-	lower := strings.ToLower(value[searchFrom:])
-	bestOffset := -1
-	prefixLength := 0
-	for _, prefix := range []string{"http://", "https://", "//"} {
-		offset := strings.Index(lower, prefix)
-		if offset >= 0 && (bestOffset < 0 || offset < bestOffset) {
-			bestOffset = offset
-			prefixLength = len(prefix)
-		}
+func feedURLAuthorityPrefixLength(value string, offset int) int {
+	remaining := value[offset:]
+	if len(remaining) >= len("http://") && strings.EqualFold(remaining[:len("http://")], "http://") {
+		return len("http://")
 	}
-	if bestOffset < 0 {
-		return 0, 0, false
+	if len(remaining) >= len("https://") && strings.EqualFold(remaining[:len("https://")], "https://") {
+		return len("https://")
 	}
-	urlStart := searchFrom + bestOffset
-	return urlStart, urlStart + prefixLength, true
+	if strings.HasPrefix(remaining, "//") {
+		return len("//")
+	}
+	return 0
+}
+
+func isFeedURLAuthorityDelimiter(value byte) bool {
+	switch value {
+	case '/', '?', '#', ' ', '\t', '\r', '\n', '"', '\'', '<', '>':
+		return true
+	default:
+		return false
+	}
 }
 
 func sanitizeFeedURLUserInfo(raw string) string {

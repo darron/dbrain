@@ -13,6 +13,8 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
+var sanitizedFeedTextSink string
+
 func TestHTTPFetcherBlocksLocalhostByDefault(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`<rss><channel><title>Local</title></channel></rss>`))
@@ -321,6 +323,99 @@ func TestHTTPFetcherSanitizesFinalURLWithInjectedClient(t *testing.T) {
 	}
 	if strings.Contains(result.RequestURL, "@") || strings.Contains(result.FinalURL, "@") {
 		t.Fatalf("credential-bearing result URLs: request=%q final=%q", result.RequestURL, result.FinalURL)
+	}
+}
+
+func TestHTTPFetcherDoesNotRecoverStoredBasicAuthAcrossOrigins(t *testing.T) {
+	var destinationAuthorization string
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		destinationAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("content-type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<feed><title>Destination</title></feed>`))
+	}))
+	defer destination.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer origin.Close()
+	credentialURL := strings.Replace(origin.URL, "://", "://feed:secret@", 1) + "/feed.atom"
+	resolvedURL := destination.URL + "/feed.atom"
+	result, err := NewHTTPFetcherWithOptions(nil, HTTPFetcherOptions{AllowPrivateNetwork: true}).Fetch(
+		context.Background(),
+		store.Feed{URL: credentialURL, NormalizedURL: credentialURL, ResolvedURL: resolvedURL},
+		Options{MaxBodyBytes: DefaultMaxBodyBytes},
+	)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if destinationAuthorization != "" {
+		t.Fatalf("cross-origin Authorization = %q, want empty", destinationAuthorization)
+	}
+	if result.RequestURL != resolvedURL || result.FinalURL != resolvedURL {
+		t.Fatalf("result URLs = (%q, %q), want %q", result.RequestURL, result.FinalURL, resolvedURL)
+	}
+}
+
+func TestSanitizeFeedCredentialURLsInText(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "absolute malformed port",
+			input: `parse "http://user:password@example.com:bad/feed" failed`,
+			want:  `parse "http://example.com:bad/feed" failed`,
+		},
+		{
+			name:  "network path",
+			input: `parse "//user:password@example.com:bad/feed" failed`,
+			want:  `parse "//example.com:bad/feed" failed`,
+		},
+		{
+			name:  "uppercase scheme",
+			input: `parse "HTTPS://user:password@Example.com/feed" failed`,
+			want:  `parse "HTTPS://Example.com/feed" failed`,
+		},
+		{
+			name:  "multiple URLs",
+			input: `first HTTP://a:b@one.example/a second //c:d@two.example/b`,
+			want:  `first HTTP://one.example/a second //two.example/b`,
+		},
+		{
+			name:  "last userinfo delimiter",
+			input: `parse "http://first@second@example.com/feed" failed`,
+			want:  `parse "http://example.com/feed" failed`,
+		},
+		{
+			name:  "unchanged",
+			input: `plain diagnostic http://example.com/feed and user@example.com`,
+			want:  `plain diagnostic http://example.com/feed and user@example.com`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeFeedCredentialURLsInText(tt.input); got != tt.want {
+				t.Fatalf("sanitizeFeedCredentialURLsInText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeFeedCredentialURLsInTextHasBoundedAllocations(t *testing.T) {
+	var input strings.Builder
+	input.Grow(256 * 100)
+	for range 256 {
+		input.WriteString(`failed HTTP://user:password@example.com:bad/feed then //other:secret@other.example:bad/path; `)
+	}
+	value := input.String()
+	allocations := testing.AllocsPerRun(5, func() {
+		sanitizedFeedTextSink = sanitizeFeedCredentialURLsInText(value)
+	})
+	if allocations > 8 {
+		t.Fatalf("sanitize allocations = %.0f, want <= 8", allocations)
+	}
+	if strings.Contains(sanitizedFeedTextSink, "user:password@") || strings.Contains(sanitizedFeedTextSink, "other:secret@") {
+		t.Fatalf("sanitized output retained credentials")
 	}
 }
 
