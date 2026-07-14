@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -339,6 +340,122 @@ func TestAuditFastUsesTenSecondDeadlineAndProcessWideSingleflight(t *testing.T) 
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("process-wide fast audit runner calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestAuditFastReturnsBoundedTimeoutWhenRunnerIgnoresContext(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	var releaseOnce, startedOnce, finishedOnce sync.Once
+	var runnerCalls, timerCalls, timerStops atomic.Int32
+	var invalidTimerDuration atomic.Bool
+	releaseRunner := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseRunner)
+
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		RunFast: func(context.Context) (audit.Report, error) {
+			runnerCalls.Add(1)
+			startedOnce.Do(func() { close(started) })
+			<-release
+			finishedOnce.Do(func() { close(finished) })
+			return report, nil
+		},
+		Now: func() time.Time { return now },
+	}})
+	deadline := make(chan time.Time)
+	server.newAuditTimer = func(timeout time.Duration) auditTimer {
+		timerCalls.Add(1)
+		if timeout != auditToolDeadline {
+			invalidTimerDuration.Store(true)
+		}
+		return auditTimer{
+			done: deadline,
+			stop: func() bool {
+				timerStops.Add(1)
+				return true
+			},
+		}
+	}
+	input := lineJSON(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_audit","arguments":{"profile":"fast"}}}`)
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(t.Context(), strings.NewReader(input), &out) }()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("fast audit runner did not start")
+	}
+	close(deadline)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(time.Second):
+		releaseRunner()
+		<-done
+		t.Fatal("dbrain_audit did not enforce its fixed ten-second wall-clock deadline")
+	}
+
+	result := parseResponses(t, out.Bytes())[0]["result"].(map[string]interface{})
+	if result["isError"] != true {
+		t.Fatalf("timeout result = %#v, want tool error", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal timeout result: %v", err)
+	}
+	if len(encoded) > auditToolMaxBytes {
+		t.Fatalf("timeout result bytes = %d, want <= %d", len(encoded), auditToolMaxBytes)
+	}
+	if !bytes.Contains(encoded, []byte("fast audit timed out")) {
+		t.Fatalf("timeout result = %s, want sanitized timeout error", encoded)
+	}
+	if _, err := server.callAudit(t.Context(), json.RawMessage(`{"profile":"fast"}`)); !errors.Is(err, errFastAuditTimedOut) {
+		t.Fatalf("second call while runner is stuck error = %v, want sanitized timeout", err)
+	}
+	if runnerCalls.Load() != 1 {
+		t.Fatalf("timed-out singleflight runner calls = %d, want 1 without fan-out", runnerCalls.Load())
+	}
+	if invalidTimerDuration.Load() {
+		t.Fatalf("audit timer duration was not fixed at %s", auditToolDeadline)
+	}
+
+	never := make(chan time.Time)
+	server.newAuditTimer = func(timeout time.Duration) auditTimer {
+		timerCalls.Add(1)
+		if timeout != auditToolDeadline {
+			invalidTimerDuration.Store(true)
+		}
+		return auditTimer{done: never, stop: func() bool { timerStops.Add(1); return true }}
+	}
+	releaseRunner()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("released audit runner did not finish")
+	}
+	cleanupDeadline := time.Now().Add(time.Second)
+	for runnerCalls.Load() < 2 && time.Now().Before(cleanupDeadline) {
+		if _, err := server.callAudit(t.Context(), json.RawMessage(`{"profile":"fast"}`)); err != nil {
+			t.Fatalf("post-cleanup fast audit: %v", err)
+		}
+		if runnerCalls.Load() < 2 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if runnerCalls.Load() != 2 {
+		t.Fatalf("post-cleanup runner calls = %d, want a new singleflight execution", runnerCalls.Load())
+	}
+	if invalidTimerDuration.Load() {
+		t.Fatalf("audit timer duration was not fixed at %s", auditToolDeadline)
+	}
+	if timerStops.Load() != timerCalls.Load() {
+		t.Fatalf("audit timer stops = %d, calls = %d", timerStops.Load(), timerCalls.Load())
 	}
 }
 

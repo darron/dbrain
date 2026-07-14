@@ -14,10 +14,11 @@ import (
 const protocolVersion = "2025-03-26"
 
 type Server struct {
-	cfg          config.Config
-	st           *store.Store
-	deps         ServerDependencies
-	capabilities transportCapabilities
+	cfg           config.Config
+	st            *store.Store
+	deps          ServerDependencies
+	capabilities  transportCapabilities
+	newAuditTimer func(time.Duration) auditTimer
 }
 
 func New(cfg config.Config, st *store.Store) *Server {
@@ -44,8 +45,18 @@ type transportCapabilities struct {
 	audit bool
 }
 
+type auditTimer struct {
+	done <-chan time.Time
+	stop func() bool
+}
+
+func newWallClockAuditTimer(timeout time.Duration) auditTimer {
+	timer := time.NewTimer(timeout)
+	return auditTimer{done: timer.C, stop: timer.Stop}
+}
+
 func NewWithDependencies(cfg config.Config, st *store.Store, deps ServerDependencies) *Server {
-	return &Server{cfg: cfg, st: st, deps: deps}
+	return &Server{cfg: cfg, st: st, deps: deps, newAuditTimer: newWallClockAuditTimer}
 }
 
 func firstServerDependencies(values []ServerDependencies) ServerDependencies {

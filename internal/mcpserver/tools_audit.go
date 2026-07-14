@@ -24,6 +24,7 @@ var auditFastSingleflight singleflight.Group
 var (
 	errInvalidAuditArguments   = errors.New("invalid dbrain_audit arguments")
 	errUnsupportedAuditProfile = errors.New("unsupported audit profile; use fast or standard")
+	errFastAuditTimedOut       = errors.New("fast audit timed out")
 )
 
 type auditToolArguments struct {
@@ -112,6 +113,14 @@ func (s *Server) runFastAudit(ctx context.Context) (audit.PresentedReport, error
 	if s.deps.Audit.RunFast == nil {
 		return audit.PresentedReport{}, fmt.Errorf("fast audit is unavailable")
 	}
+	newTimer := s.newAuditTimer
+	if newTimer == nil {
+		newTimer = newWallClockAuditTimer
+	}
+	deadline := newTimer(auditToolDeadline)
+	if deadline.stop != nil {
+		defer deadline.stop()
+	}
 	result := auditFastSingleflight.DoChan("local-fast", func() (interface{}, error) {
 		runCtx, cancel := context.WithTimeout(context.Background(), auditToolDeadline)
 		defer cancel()
@@ -124,6 +133,8 @@ func (s *Server) runFastAudit(ctx context.Context) (audit.PresentedReport, error
 	select {
 	case <-ctx.Done():
 		return audit.PresentedReport{}, fmt.Errorf("fast audit canceled")
+	case <-deadline.done:
+		return audit.PresentedReport{}, errFastAuditTimedOut
 	case shared := <-result:
 		if shared.Err != nil {
 			return audit.PresentedReport{}, fmt.Errorf("fast audit failed")

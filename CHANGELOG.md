@@ -12,6 +12,8 @@ development date for the change set.
   read path. The privacy-validated response is capped at 256 KiB, exposes no
   deep/category/path/URL/archive controls, uses a no-create/no-chmod report
   reader, and is available over HTTP/tsnet only when bearer auth is required.
+  The ten-second wall-clock limit is enforced independently of runner context
+  cancellation, without starting duplicate work when a stuck runner times out.
 
 - **Scheduled health and regression alerts**: Added opt-in post-sync fast and
   six-hour standard audits to `serve remote`, private daily report retention,
