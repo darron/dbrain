@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -104,7 +103,7 @@ func readBoundedRegularFile(ctx context.Context, path string, maxBytes int64, la
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	file, err := openSnapshotFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", label, err)
 	}

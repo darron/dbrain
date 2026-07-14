@@ -31,6 +31,11 @@ auth-disabled selected surface.
 | `/api/media/signed-url` | `GET` | Read DB; archive access | Returns a short-lived archive URL, proxy URL, media type, and expiry without exposing bucket/key or local source path. |
 | `/media/asset/<id>` | `GET`, `HEAD` | Read DB; archive access | Proxies archived media from configured S3-compatible storage. Supports range requests. |
 
+The bounded `dbrain audit all --profile deep` archive-download and full media
+inventory checks are CLI-only. This capability is not exposed by a web route,
+MCP tool, or browser control, and adding it would require a separate capability
+and authentication review.
+
 ## Open-Source Notes
 
 - Treat local `serve web` and remote `serve remote --web` as trusted write

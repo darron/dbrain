@@ -13,6 +13,7 @@ cleanup tracker.
 
 | Operation | Local state changed | Guardrails | `sync all` behavior |
 |-----------|---------------------|------------|---------------------|
+| `dbrain audit all --profile deep` | None. Downloads and validates an archive candidate only inside a private temporary directory; it never calls the restore path or replaces `brain.db`, its WAL, or SHM. | Explicit deep profile; compressed, decompressed, temporary-space, object, page, request, idle-read, and whole-run limits; temporary files are cleaned on every exit. | Not part of `sync all`. |
 | `dbrain archive media --prune-local` | Deletes archived local media files under `media/...` and marks all same-path `media_assets.local_pruned_at` rows. Item/source rows remain. | Requires explicit `--prune-local`; only prunes after every asset sharing the same `local_path` is archived. | Runs only when `--archive-media`, `DBRAIN_AUTO_ARCHIVE_MEDIA=1`, or `archive.auto` enables the archive stage. |
 | `dbrain sqlite restore` | Replaces the active `brain.db` after moving existing `brain.db`, `brain.db-wal`, and `brain.db-shm` aside with timestamped `.pre-restore-...` suffixes. | Validates the restored DB with `PRAGMA quick_check`; asks for confirmation unless `--yes` is used. | Not part of `sync all`. |
 | `dbrain tsnet reset` | Removes the resolved tsnet/Tailscale state directory. | Refuses to run while the state lock is held; asks for the literal `reset` confirmation unless `--yes` is used. | Not part of `sync all`. |

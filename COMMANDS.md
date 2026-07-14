@@ -189,11 +189,15 @@ dbrain audit all --profile standard --json
 dbrain audit imports --since 7d
 dbrain audit pipeline --json
 dbrain audit durability --expect-commit <sha> --json
+dbrain audit all --profile deep --json
 ```
 
 Standard is the default profile; fast omits expensive integrity and remote
-checks. Deep is reserved for the later parity/restore implementation and is
-currently rejected with exit 3. Exit codes are 0 pass, 1 warn, 2 fail, and 3
+checks. Deep is an explicit CLI-only profile that validates the newest remote
+SQLite archive in a private temporary directory and performs complete,
+paginated reconciliation of the configured `media/` archive inventory. It
+never replaces the active database and is not exposed through the web UI or
+MCP. Exit codes are 0 pass, 1 warn, 2 fail, and 3
 unknown/bootstrap failure. A produced JSON report is written before a non-zero
 health exit. `--include-identifiers` selects a local-only wrapper with bounded
 row IDs, source keys, and cleanup paths; the shared `dbrain.audit.v1` report
@@ -202,6 +206,15 @@ never contains paths, object keys, corpus content, titles, URLs, or secrets.
 The audit resolver follows the normal target precedence but creates no
 directories, applies no migrations, runs no startup repair/preflight, and
 opens SQLite in query-only mode with one consistent snapshot.
+
+Deep defaults to 20 GiB compressed archive, 100 GiB decompressed database, and
+120 GiB aggregate temporary-space ceilings. `audit.max_archive_bytes`,
+`audit.max_database_bytes`, and `audit.max_temp_bytes` (or the matching
+`DBRAIN_AUDIT_MAX_*` variables) may only lower those defaults. The deep-only
+`--max-archive-bytes`, `--max-database-bytes`, and `--max-temp-bytes` flags may
+explicitly raise them for one run; passing those flags with fast or standard
+is a usage error. Remote inventory is also bounded to 1,000,000 objects and
+10,000 pages, with a two-hour whole-run deadline and cleanup on every exit.
 
 Per-class timeouts can be lowered with `audit.timeouts.bootstrap`,
 `local_query`, `metrics_or_manifest`, `sqlite_or_okf_integrity`,

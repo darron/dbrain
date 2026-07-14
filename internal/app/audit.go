@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/sqlitearchive"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vaultfs"
 	"github.com/darron/dbrain/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -28,6 +30,9 @@ type auditCLIFlags struct {
 	timeout            string
 	includeIdentifiers bool
 	expectCommit       string
+	maxArchiveBytes    int64
+	maxDatabaseBytes   int64
+	maxTempBytes       int64
 }
 
 const auditConfigMaxBytes int64 = 1 << 20
@@ -61,16 +66,24 @@ func newAuditRunCommand(root *rootOptions, name string, categories []audit.Categ
 	cmd.Flags().StringVar(&flags.timeout, "timeout", "", "Bound the complete audit run")
 	cmd.Flags().BoolVar(&flags.includeIdentifiers, "include-identifiers", false, "Include bounded internal identifiers in the local CLI wrapper")
 	cmd.Flags().StringVar(&flags.expectCommit, "expect-commit", "", "Require the running binary to report this commit")
+	cmd.Flags().Int64Var(&flags.maxArchiveBytes, "max-archive-bytes", 0, "Deep-only compressed archive byte ceiling")
+	cmd.Flags().Int64Var(&flags.maxDatabaseBytes, "max-database-bytes", 0, "Deep-only decompressed database byte ceiling")
+	cmd.Flags().Int64Var(&flags.maxTempBytes, "max-temp-bytes", 0, "Deep-only total temporary-space byte ceiling")
 	return cmd
 }
 
 func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, categories []audit.Category) error {
 	profile := audit.Profile(strings.TrimSpace(flags.profile))
-	if profile == audit.ProfileDeep {
-		return &ExitError{Code: 3, Err: audit.ErrDeepUnsupported}
-	}
 	if !profile.Valid() {
 		return &ExitError{Code: 3, Err: fmt.Errorf("invalid audit profile %q", profile)}
+	}
+	deepFlags := map[string]bool{
+		"max-archive-bytes":  cmd.Flags().Changed("max-archive-bytes"),
+		"max-database-bytes": cmd.Flags().Changed("max-database-bytes"),
+		"max-temp-bytes":     cmd.Flags().Changed("max-temp-bytes"),
+	}
+	if profile != audit.ProfileDeep && (deepFlags["max-archive-bytes"] || deepFlags["max-database-bytes"] || deepFlags["max-temp-bytes"]) {
+		return &ExitError{Code: 3, Err: fmt.Errorf("deep byte ceilings are deep only")}
 	}
 	since, err := audit.ParseDuration(flags.since)
 	if err != nil || since <= 0 {
@@ -135,6 +148,13 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 		return &ExitError{Code: 3, Err: fmt.Errorf("audit bootstrap timeout: %w", err)}
 	}
 	req := audit.Request{Profile: profile, Since: since, Categories: categories, ExpectCommit: strings.TrimSpace(flags.expectCommit)}
+	deepLimits := audit.DeepLimits{}
+	if profile == audit.ProfileDeep {
+		deepLimits, err = resolveDeepAuditLimits(cfg.RootDir, *flags, deepFlags)
+		if err != nil {
+			return &ExitError{Code: 3, Err: err}
+		}
+	}
 	var st *store.Store
 	var snapshot *store.AuditReadSnapshot
 	if auditNeedsSnapshot(req) {
@@ -154,7 +174,16 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit capabilities: %w", err)}
 	}
-	report, err := audit.Run(ctx, req, deps)
+	var report audit.Report
+	if profile == audit.ProfileDeep {
+		deepDeps, buildErr := buildDeepAuditDependencies(ctx, cfg, features, deepLimits)
+		if buildErr != nil {
+			return &ExitError{Code: 3, Err: fmt.Errorf("resolve deep audit capabilities: %w", buildErr)}
+		}
+		report, err = audit.RunDeep(ctx, req, deps, deepDeps)
+	} else {
+		report, err = audit.Run(ctx, req, deps)
+	}
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("run audit: %w", err)}
 	}
@@ -249,7 +278,7 @@ func localAuditArchiveTargets(root string) (LocalArchiveTarget, LocalArchiveTarg
 			origin = canonical
 		}
 	}
-	return LocalArchiveTarget{Provider: provider, Bucket: bucket, Prefix: "media", Origin: origin}, LocalArchiveTarget{Provider: provider, Bucket: bucket, Prefix: sqlitearchive.DefaultPrefix, Origin: origin}
+	return LocalArchiveTarget{Provider: provider, Bucket: bucket, Prefix: mediaarchive.DefaultPrefix, Origin: origin}, LocalArchiveTarget{Provider: provider, Bucket: bucket, Prefix: sqlitearchive.DefaultPrefix, Origin: origin}
 }
 
 func auditBootstrapContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -268,7 +297,56 @@ func defaultAuditTimeout(profile audit.Profile) time.Duration {
 	if profile == audit.ProfileFast {
 		return 30 * time.Second
 	}
+	if profile == audit.ProfileDeep {
+		return 2 * time.Hour
+	}
 	return 10 * time.Minute
+}
+
+func resolveDeepAuditLimits(root string, flags auditCLIFlags, explicit map[string]bool) (audit.DeepLimits, error) {
+	limits := audit.DefaultDeepLimits()
+	configured := []struct {
+		key     string
+		target  *int64
+		ceiling int64
+	}{
+		{"DBRAIN_AUDIT_MAX_ARCHIVE_BYTES", &limits.MaxArchiveBytes, audit.DefaultDeepMaxArchiveBytes},
+		{"DBRAIN_AUDIT_MAX_DATABASE_BYTES", &limits.MaxDatabaseBytes, audit.DefaultDeepMaxDatabaseBytes},
+		{"DBRAIN_AUDIT_MAX_TEMP_BYTES", &limits.MaxTempBytes, audit.DefaultDeepMaxTempBytes},
+	}
+	for _, item := range configured {
+		value := strings.TrimSpace(runtimeenv.FirstNonEmpty(root, item.key))
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed <= 0 {
+			return audit.DeepLimits{}, fmt.Errorf("invalid %s: must be a positive byte count", item.key)
+		}
+		if parsed > item.ceiling {
+			parsed = item.ceiling
+		}
+		*item.target = parsed
+	}
+	requested := []struct {
+		name   string
+		value  int64
+		target *int64
+	}{
+		{"max-archive-bytes", flags.maxArchiveBytes, &limits.MaxArchiveBytes},
+		{"max-database-bytes", flags.maxDatabaseBytes, &limits.MaxDatabaseBytes},
+		{"max-temp-bytes", flags.maxTempBytes, &limits.MaxTempBytes},
+	}
+	for _, item := range requested {
+		if !explicit[item.name] {
+			continue
+		}
+		if item.value <= 0 {
+			return audit.DeepLimits{}, fmt.Errorf("--%s must be positive", item.name)
+		}
+		*item.target = item.value
+	}
+	return limits, nil
 }
 
 type auditDatabaseInspector struct{ path string }
@@ -341,11 +419,55 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, snapshot *st
 				if pageTimeout <= 0 || pageTimeout > 30*time.Second {
 					pageTimeout = 30 * time.Second
 				}
-				deps.Archives = auditArchiveLister{inspector: inspector, prefix: sqlitearchive.DefaultPrefix, pageTimeout: pageTimeout}
+				pageLimit := 100
+				if req.Profile == audit.ProfileDeep {
+					pageLimit = audit.DeepMaxPages
+				}
+				deps.Archives = auditArchiveLister{inspector: inspector, prefix: sqlitearchive.DefaultPrefix, pageLimit: pageLimit, pageTimeout: pageTimeout}
 			}
 		}
 	}
 	return deps, nil
+}
+
+func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, features audit.Features, limits audit.DeepLimits) (audit.DeepDependencies, error) {
+	deep := audit.DeepDependencies{
+		Limits: limits, VerifyArchive: auditArchiveVerifier{},
+		NewTemp: func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(cfg.TempDir) },
+	}
+	needMedia := features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
+	needArchive := (features.SQLiteBackupSchedulerEnabled || features.SQLiteBackupAuditRequired) && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
+	if !needMedia && !needArchive {
+		return deep, nil
+	}
+	archiveOpts, err := archiveRuntimeValues(ctx, cfg.RootDir)
+	if err != nil {
+		return deep, nil
+	}
+	archiveOpts.ConnectTimeout = 10 * time.Second
+	archiveOpts.TLSHandshakeTimeout = 10 * time.Second
+	archiveOpts.ResponseHeaderTimeout = 30 * time.Second
+	if needMedia {
+		inventory, inventoryErr := mediaarchive.NewS3Inventory(archiveOpts)
+		if inventoryErr == nil {
+			// The deep runner cannot choose or widen the prefix; this adapter is
+			// permanently confined to the media archival namespace.
+			deep.Media = auditMediaInventory{inventory: inventory, prefix: mediaarchive.DefaultPrefix}
+		}
+	}
+	if needArchive {
+		reader, readerErr := sqlitearchive.NewS3Reader(sqlitearchive.S3Options{
+			Bucket: archiveOpts.Bucket, Endpoint: archiveOpts.Endpoint, Region: archiveOpts.Region,
+			AccessKeyID: archiveOpts.AccessKeyID, SecretKey: archiveOpts.SecretKey,
+			SessionToken: archiveOpts.SessionToken, PathStyle: true,
+			ConnectTimeout: 10 * time.Second, TLSHandshakeTimeout: 10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+		})
+		if readerErr == nil {
+			deep.Archives = reader
+		}
+	}
+	return deep, nil
 }
 
 func auditNeedsSnapshot(req audit.Request) bool {

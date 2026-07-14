@@ -39,6 +39,8 @@ func NewS3Client(opts Options) (*s3.Client, error) {
 	httpClient := safehttp.NewClient(safehttp.Policy{
 		AllowedOrigins:        []string{origin},
 		AllowedPrivateOrigins: []string{origin},
+		ConnectTimeout:        opts.ConnectTimeout, TLSHandshakeTimeout: opts.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: opts.ResponseHeaderTimeout,
 	})
 	cfg := aws.Config{
 		Region:     strings.TrimSpace(opts.Region),

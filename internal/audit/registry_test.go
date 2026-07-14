@@ -73,3 +73,12 @@ func TestRegistryCategoryMappingAndEvidenceSchemasAreClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestDeepDurabilityExecutorsAreExplicitAndProfileExclusive(t *testing.T) {
+	for _, id := range []CheckID{CheckDurabilityMediaRemoteOnly, CheckDurabilitySQLiteRestore} {
+		entry, ok := Lookup(id)
+		if !ok || !entry.InProfile(ProfileDeep) || entry.InProfile(ProfileFast) || entry.InProfile(ProfileStandard) || !HasExecutor(id) {
+			t.Fatalf("deep registry entry %s = %#v executor=%t", id, entry, HasExecutor(id))
+		}
+	}
+}

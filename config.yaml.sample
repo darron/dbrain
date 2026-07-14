@@ -69,6 +69,9 @@ metrics:
   strict: false # DBRAIN_METRICS_STRICT; fail the command on write errors after startup succeeds
 
 audit:
+  max_archive_bytes: 21474836480 # DBRAIN_AUDIT_MAX_ARCHIVE_BYTES; deep compressed archive ceiling, may only lower the default
+  max_database_bytes: 107374182400 # DBRAIN_AUDIT_MAX_DATABASE_BYTES; deep decompressed database ceiling, may only lower the default
+  max_temp_bytes: 128849018880 # DBRAIN_AUDIT_MAX_TEMP_BYTES; deep aggregate temporary-space ceiling, may only lower the default
   require:
     sqlite_backup: false # DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP; make remote SQLite backup health required
 

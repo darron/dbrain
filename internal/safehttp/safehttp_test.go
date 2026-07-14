@@ -12,7 +12,19 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestClientAppliesDeepTransportPhaseTimeouts(t *testing.T) {
+	client := NewClient(Policy{ConnectTimeout: 10 * time.Second, TLSHandshakeTimeout: 11 * time.Second, ResponseHeaderTimeout: 12 * time.Second})
+	transport, ok := client.Transport.(*policyTransport)
+	if !ok {
+		t.Fatalf("transport = %T", client.Transport)
+	}
+	if transport.base.TLSHandshakeTimeout != 11*time.Second || transport.base.ResponseHeaderTimeout != 12*time.Second {
+		t.Fatalf("transport timeouts = tls:%s header:%s", transport.base.TLSHandshakeTimeout, transport.base.ResponseHeaderTimeout)
+	}
+}
 
 func TestClientRejectsNonPublicDestinationsBeforeDial(t *testing.T) {
 	tests := []struct {

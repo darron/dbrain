@@ -68,6 +68,9 @@ func executeDurability(ctx context.Context, s *runState, e RegistryEntry) Check 
 	return unknownCheck(e, ErrorUnavailable, s.now)
 }
 func executeMediaRemote(ctx context.Context, s *runState, e RegistryEntry) Check {
+	if s.req.Profile == ProfileDeep && s.deep != nil {
+		return executeDeepMediaRemote(s, e)
+	}
 	if s.mediaErr != nil || s.deps.Media == nil {
 		return unknownCheck(e, ErrorUnavailable, s.now)
 	}
@@ -146,6 +149,25 @@ func executeMediaRemote(ctx context.Context, s *runState, e RegistryEntry) Check
 		status = StatusFail
 	}
 	return baseCheck(e, s.observedAt(), status, sample.Confidence, mediaRemoteEvidence(sample, checked, recentChecked, olderChecked, missing, mismatch, invalid, true))
+}
+
+func executeDeepMediaRemote(s *runState, e RegistryEntry) Check {
+	result := s.deepMedia
+	evidence := Evidence{
+		"population_count": result.population, "checked_count": result.checked,
+		"recent_population_count": result.recentPopulation, "recent_checked_count": result.recentChecked,
+		"older_population_count": result.olderPopulation, "older_checked_count": result.olderChecked,
+		"missing_count": result.missing, "size_mismatch_count": result.mismatch,
+		"invalid_timestamp_count": result.invalid, "sample_mode": "full_inventory", "inventory_complete": result.complete,
+	}
+	if s.deepMediaErr != nil || !result.complete {
+		return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, evidence)
+	}
+	status := StatusPass
+	if result.missing > 0 || result.mismatch > 0 || result.invalid > 0 {
+		status = StatusFail
+	}
+	return baseCheck(e, s.now, status, ConfidenceHigh, evidence)
 }
 func mediaRemoteEvidence(sample MediaSample, checked, recentChecked, olderChecked, missing, mismatch, invalid int, complete bool) Evidence {
 	return Evidence{"population_count": sample.RecentPopulation + sample.OlderPopulation + sample.InvalidCount, "checked_count": checked, "recent_population_count": sample.RecentPopulation, "recent_checked_count": recentChecked, "older_population_count": sample.OlderPopulation, "older_checked_count": olderChecked, "missing_count": missing, "size_mismatch_count": mismatch, "invalid_timestamp_count": invalid, "sample_mode": sample.Mode, "inventory_complete": complete}

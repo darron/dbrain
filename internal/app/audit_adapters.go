@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -126,14 +129,61 @@ func (i auditMediaInspector) HeadObject(ctx context.Context, key string) (audit.
 	return audit.ObjectMetadata{Exists: value.Exists, SizeBytes: value.SizeBytes}, err
 }
 
+type auditMediaInventory struct {
+	inventory *mediaarchive.S3Inventory
+	prefix    string
+}
+
+func (i auditMediaInventory) ListPage(ctx context.Context, token string, limit int) (audit.MediaInventoryPage, error) {
+	value, err := i.inventory.ListPage(ctx, i.prefix, token, limit)
+	objects := make([]audit.MediaInventoryObject, 0, len(value.Objects))
+	for _, object := range value.Objects {
+		objects = append(objects, audit.MediaInventoryObject{Key: object.Key, SizeBytes: object.SizeBytes})
+	}
+	return audit.MediaInventoryPage{Objects: objects, NextToken: value.NextToken, Complete: value.Complete}, err
+}
+
+type auditArchiveVerifier struct{}
+
+func (auditArchiveVerifier) Verify(ctx context.Context, body io.ReadCloser, temp *vaultfs.PrivateTemp, limits audit.DeepLimits) (audit.DeepArchiveResult, error) {
+	value, err := sqlitearchive.StreamCandidate(ctx, body, temp, sqlitearchive.StreamLimits{
+		MaxCompressedBytes: limits.MaxArchiveBytes, MaxDatabaseBytes: limits.MaxDatabaseBytes,
+		MaxTempBytes: limits.MaxTempBytes, ReadIdleTimeout: limits.ReadIdleTimeout,
+	})
+	result := audit.DeepArchiveResult{
+		CompressedBytes: value.CompressedBytes, DecompressedBytes: value.DecompressedBytes,
+		QuickCheck: value.QuickCheck, ForeignKeyViolationCount: value.ForeignKeyViolationCount,
+		SchemaCompatibility: value.SchemaCompatibility, MigrationCompatibility: value.MigrationCompatibility,
+	}
+	switch {
+	case errors.Is(err, sqlitearchive.ErrCandidateInvalid):
+		return result, fmt.Errorf("%w: candidate validation", audit.ErrDeepCandidateInvalid)
+	case errors.Is(err, sqlitearchive.ErrStreamBudget):
+		return result, fmt.Errorf("%w: stream ceiling", audit.ErrDeepBudget)
+	case errors.Is(err, sqlitearchive.ErrStreamInterrupted):
+		return result, fmt.Errorf("%w: stream interrupted", audit.ErrDeepInterrupted)
+	default:
+		return result, err
+	}
+}
+
 type auditArchiveLister struct {
 	inspector   *sqlitearchive.S3Inspector
 	prefix      string
+	pageLimit   int
 	pageTimeout time.Duration
 }
 
 func (l auditArchiveLister) List(ctx context.Context) (audit.SQLiteArchiveListing, error) {
-	value, err := l.inspector.ListObjectsWithPageTimeout(ctx, l.prefix, 10_000, l.pageTimeout)
+	objectLimit := 10_000
+	pageLimit := l.pageLimit
+	if pageLimit <= 0 {
+		pageLimit = 100
+	}
+	if pageLimit > 100 {
+		objectLimit = audit.DeepMaxObjects
+	}
+	value, err := l.inspector.ListObjectsBounded(ctx, l.prefix, objectLimit, pageLimit, l.pageTimeout)
 	objects := make([]audit.ArchiveObject, 0, len(value.Objects))
 	for _, object := range value.Objects {
 		objects = append(objects, audit.ArchiveObject{Key: object.Key, ValidKey: sqlitearchive.IsSQLiteArchiveKey(object.Key, l.prefix), SizeBytes: object.Size, LastModified: object.LastModified})

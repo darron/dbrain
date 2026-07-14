@@ -5,8 +5,21 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestReadOnlyDSNUsesImmutableOnlyForDescriptorBackedCandidates(t *testing.T) {
+	if value := readOnlyDSN(filepath.Join(t.TempDir(), "brain.db")); strings.Contains(value, "immutable") {
+		t.Fatalf("active database DSN unexpectedly immutable: %s", value)
+	}
+	for _, path := range []string{"/dev/fd/9", "/proc/self/fd/9"} {
+		value := readOnlyDSN(path)
+		if !strings.Contains(value, "mode=ro") || !strings.Contains(value, "immutable=1") {
+			t.Fatalf("descriptor DSN = %s", value)
+		}
+	}
+}
 
 func TestInspectDatabaseReadOnlySeparatesIntegrityAndCompatibility(t *testing.T) {
 	t.Parallel()

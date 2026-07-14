@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 )
 
@@ -14,6 +15,48 @@ type stubHeadClient struct {
 	output *s3.HeadObjectOutput
 	err    error
 	key    string
+}
+
+type stubInventoryClient struct {
+	output *s3.ListObjectsV2Output
+	input  *s3.ListObjectsV2Input
+}
+
+func (s *stubInventoryClient) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	s.input = input
+	return s.output, nil
+}
+
+func TestS3InventoryListsOneBoundedMetadataPage(t *testing.T) {
+	client := &stubInventoryClient{output: &s3.ListObjectsV2Output{
+		Contents:    []types.Object{{Key: aws.String("media/a"), Size: aws.Int64(42)}},
+		IsTruncated: aws.Bool(true), NextContinuationToken: aws.String("next"),
+	}}
+	inventory := newS3Inventory("bucket", client)
+	page, err := inventory.ListPage(t.Context(), DefaultPrefix, "token", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Objects) != 1 || page.Objects[0].Key != "media/a" || page.Objects[0].SizeBytes != 42 || page.Complete || page.NextToken != "next" {
+		t.Fatalf("page = %#v", page)
+	}
+	if aws.ToString(client.input.Bucket) != "bucket" || aws.ToString(client.input.Prefix) != "media/" || aws.ToString(client.input.ContinuationToken) != "token" || aws.ToInt32(client.input.MaxKeys) != 500 {
+		t.Fatalf("input = %#v", client.input)
+	}
+}
+
+func TestS3InventoryRejectsObjectsOutsidePrefixAndInvalidSizes(t *testing.T) {
+	for _, object := range []types.Object{
+		{Key: aws.String("media2/outside"), Size: aws.Int64(42)},
+		{Key: aws.String("media/negative"), Size: aws.Int64(-1)},
+		{Key: aws.String("media/missing-size")},
+	} {
+		client := &stubInventoryClient{output: &s3.ListObjectsV2Output{Contents: []types.Object{object}}}
+		inventory := newS3Inventory("bucket", client)
+		if _, err := inventory.ListPage(t.Context(), DefaultPrefix, "", 500); err == nil {
+			t.Fatalf("expected inconsistent object rejection: %#v", object)
+		}
+	}
 }
 
 func (s *stubHeadClient) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {

@@ -98,6 +98,16 @@ func TestS3InspectorEnforcesPageBudget(t *testing.T) {
 	}
 }
 
+func TestS3InspectorUsesExplicitDeepPageBudget(t *testing.T) {
+	client := &stubListClient{pages: []*s3.ListObjectsV2Output{{
+		Contents: []types.Object{{Key: aws.String("archive/db/object")}}, IsTruncated: aws.Bool(true), NextContinuationToken: aws.String("next"),
+	}}}
+	listing, err := newS3Inspector("bucket", client).ListObjectsBounded(t.Context(), "archive/db", 10, 1, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "page budget exhausted") || listing.Complete || len(listing.Objects) != 1 {
+		t.Fatalf("listing=%#v error=%v", listing, err)
+	}
+}
+
 func TestSQLiteArchiveKeyRequiresCanonicalTimestampAndDirectPrefix(t *testing.T) {
 	if !IsSQLiteArchiveKey("archive/db/brain-20260714T120000Z.db.gz", DefaultPrefix) {
 		t.Fatal("canonical key rejected")

@@ -13,7 +13,7 @@ import (
 	"github.com/darron/dbrain/internal/version"
 )
 
-var ErrDeepUnsupported = errors.New("deep audit requires Task 4 executors")
+var ErrDeepUnsupported = errors.New("deep audit requires the explicit RunDeep CLI --profile deep entry point")
 var errCapabilityUnavailable = errors.New("audit capability unavailable")
 
 type runState struct {
@@ -37,6 +37,12 @@ type runState struct {
 	okfFastErr, okfFullErr error
 	archives               SQLiteArchiveListing
 	archivesErr            error
+	deep                   *DeepDependencies
+	deepMedia              deepMediaResult
+	deepMediaErr           error
+	deepArchive            DeepArchiveResult
+	deepArchiveErr         error
+	deepCleanupComplete    bool
 }
 
 func (s *runState) observedAt() time.Time {
@@ -67,6 +73,7 @@ func init() {
 	}
 	bind([]CheckID{CheckPipelineHydrationPartition, CheckPipelineHydrationPendingAge, CheckPipelineExtractionPartition, CheckPipelineExtractionPendingAge, CheckPipelineSummaryPartition, CheckPipelineSummaryPendingAge, CheckPipelineTranscriptionPartition, CheckPipelineTranscriptionPendingAge, CheckPipelineOCRPartition, CheckPipelineOCRPendingAge, CheckPipelineItemSummaryProvenance, CheckPipelineItemOCRProvenance, CheckPipelineXMediaTranscriptProvenance, CheckPipelineSourceSummaryProvenance}, executePipeline)
 	bind([]CheckID{CheckDurabilityMediaLocalCoverage, CheckDurabilityMediaRemote, CheckDurabilitySQLiteBackupConfiguration, CheckDurabilitySQLiteBackupAge, CheckDurabilityOKFFreshness, CheckDurabilityOKFValidation}, executeDurability)
+	bind([]CheckID{CheckDurabilityMediaRemoteOnly, CheckDurabilitySQLiteRestore}, executeDeep)
 }
 
 func HasExecutor(id CheckID) bool { _, ok := executors[id]; return ok }
@@ -81,6 +88,10 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Report, error) {
 	if req.Profile == ProfileDeep {
 		return Report{}, ErrDeepUnsupported
 	}
+	return runAudit(ctx, req, deps, nil)
+}
+
+func runAudit(ctx context.Context, req Request, deps Dependencies, deep *DeepDependencies) (Report, error) {
 	if req.Since <= 0 {
 		req.Since = 7 * 24 * time.Hour
 	}
@@ -106,8 +117,9 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Report, error) {
 	report := NewReport(req.Profile, now)
 	report.AuditID = fmt.Sprintf("audit_%s_%08x", now.Format("20060102T150405.000000000Z07:00"), auditSequence.Add(1))
 	report.Scope = effectiveScope(req)
-	state := &runState{now: now, req: req, deps: deps, provenance: map[CheckID]ProvenanceEvidence{}}
+	state := &runState{now: now, req: req, deps: deps, deep: deep, provenance: map[CheckID]ProvenanceEvidence{}}
 	state.load(ctx)
+	state.loadDeep(ctx)
 	for _, entry := range Registry() {
 		if !scopeIncludes(req, entry) {
 			continue
@@ -239,9 +251,13 @@ func (s *runState) load(ctx context.Context) {
 			s.okfFast, s.okfFastErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutMetricsOrManifest, s.deps.Features.Timeouts), func(child context.Context) (OKFInspection, error) { return s.deps.OKF.Inspect(child, false) })
 		}
 	}
-	if selected(CheckDurabilitySQLiteBackupAge) {
+	if selected(CheckDurabilitySQLiteBackupAge) || selected(CheckDurabilitySQLiteRestore) {
 		if s.deps.Archives != nil {
-			s.archives, s.archivesErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutRemoteMetadata, s.deps.Features.Timeouts), s.deps.Archives.List)
+			if s.req.Profile == ProfileDeep && s.deep != nil {
+				s.archives, s.archivesErr = s.deps.Archives.List(ctx)
+			} else {
+				s.archives, s.archivesErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutRemoteMetadata, s.deps.Features.Timeouts), s.deps.Archives.List)
+			}
 		} else {
 			s.archivesErr = errCapabilityUnavailable
 		}
@@ -363,12 +379,17 @@ func isRequired(e RegistryEntry, f Features) bool {
 	}
 }
 func featureEnabled(e RegistryEntry, f Features) bool {
+	if e.ID == CheckDurabilityMediaRemoteOnly {
+		return f.MediaRemoteEnabled
+	}
 	if e.Source != "" && strings.HasPrefix(string(e.ID), "imports.") {
 		return f.SchedulerEnabled && f.Sources[e.Source]
 	}
 	switch e.RequiredWhen {
 	case RequiredScheduler:
 		return f.SchedulerEnabled
+	case RequiredSourceScheduler:
+		return f.SchedulerEnabled && f.Sources[e.Source]
 	case RequiredStage:
 		return f.Stages[stageForCheck(e.ID)]
 	case RequiredMediaLocal:

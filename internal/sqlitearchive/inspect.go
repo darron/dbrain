@@ -14,6 +14,7 @@ import (
 
 const defaultInspectObjectLimit = 10_000
 const defaultInspectPageLimit = 100
+const maxInspectPageLimit = 10_000
 
 type Listing struct {
 	Objects  []Object
@@ -61,8 +62,15 @@ func (i *S3Inspector) ListObjects(ctx context.Context, prefix string, maxObjects
 }
 
 func (i *S3Inspector) ListObjectsWithPageTimeout(ctx context.Context, prefix string, maxObjects int, pageTimeout time.Duration) (Listing, error) {
+	return i.ListObjectsBounded(ctx, prefix, maxObjects, defaultInspectPageLimit, pageTimeout)
+}
+
+func (i *S3Inspector) ListObjectsBounded(ctx context.Context, prefix string, maxObjects, maxPages int, pageTimeout time.Duration) (Listing, error) {
 	if maxObjects <= 0 {
 		maxObjects = defaultInspectObjectLimit
+	}
+	if maxPages <= 0 || maxPages > maxInspectPageLimit {
+		maxPages = maxInspectPageLimit
 	}
 	if pageTimeout <= 0 || pageTimeout > 30*time.Second {
 		pageTimeout = 30 * time.Second
@@ -72,7 +80,7 @@ func (i *S3Inspector) ListObjectsWithPageTimeout(ctx context.Context, prefix str
 	seenTokens := map[string]struct{}{}
 	pages := 0
 	for len(listing.Objects) < maxObjects {
-		if pages >= defaultInspectPageLimit {
+		if pages >= maxPages {
 			return listing, fmt.Errorf("list archive metadata: page budget exhausted")
 		}
 		pages++

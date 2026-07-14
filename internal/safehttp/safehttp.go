@@ -22,11 +22,14 @@ type Policy struct {
 	AllowedPrivateOrigins []string
 	// AllowedOrigins restricts every request and redirect to one of these exact
 	// canonical origins. It is independent from private-network permission.
-	AllowedOrigins     []string
-	DisableCompression bool
-	LookupNetIP        func(context.Context, string, string) ([]netip.Addr, error)
-	DialContext        func(context.Context, string, string) (net.Conn, error)
-	TLSClientConfig    *tls.Config
+	AllowedOrigins        []string
+	DisableCompression    bool
+	LookupNetIP           func(context.Context, string, string) ([]netip.Addr, error)
+	DialContext           func(context.Context, string, string) (net.Conn, error)
+	TLSClientConfig       *tls.Config
+	ConnectTimeout        time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
 }
 
 type PolicyError struct {
@@ -61,9 +64,11 @@ type policyTransport struct {
 func NewClient(policy Policy) *http.Client {
 	compiled := compilePolicy(policy)
 	transport := &http.Transport{
-		Proxy:              nil,
-		DisableCompression: policy.DisableCompression,
-		DialContext:        compiled.dial,
+		Proxy:                 nil,
+		DisableCompression:    policy.DisableCompression,
+		DialContext:           compiled.dial,
+		TLSHandshakeTimeout:   policy.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: policy.ResponseHeaderTimeout,
 	}
 	if policy.TLSClientConfig != nil {
 		transport.TLSClientConfig = policy.TLSClientConfig.Clone()
@@ -93,7 +98,7 @@ func compilePolicy(policy Policy) compiledPolicy {
 	}
 	dialContext := policy.DialContext
 	if dialContext == nil {
-		var dialer net.Dialer
+		dialer := net.Dialer{Timeout: policy.ConnectTimeout}
 		dialContext = dialer.DialContext
 	}
 

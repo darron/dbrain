@@ -350,6 +350,7 @@ To inspect the resolved installation without repairing or mutating it, run:
 
 ```sh
 dbrain audit all --profile standard --json
+dbrain audit all --profile deep --json
 ```
 
 The stable `dbrain.audit.v1` report covers target/build identity, SQLite
@@ -359,6 +360,16 @@ The command uses a query-only SQLite snapshot and bounded metrics/remote
 metadata reads. Exit codes are 0 pass, 1 warn, 2 fail, and 3 unknown or
 bootstrap/configuration failure. See [COMMANDS.md](COMMANDS.md#dbrain-audit)
 for profiles, category scopes, privacy rules, and flags.
+
+The explicit CLI-only `deep` profile additionally downloads the newest SQLite
+archive into a private temporary directory, decompresses and validates that
+candidate without replacing the active database, and reconciles the complete
+configured `media/` archive inventory against local records. The archive,
+database, and aggregate temporary-byte defaults are 20 GiB, 100 GiB, and
+120 GiB. Configuration and environment values may only lower those defaults;
+an operator must pass `--max-archive-bytes`, `--max-database-bytes`, or
+`--max-temp-bytes` explicitly to raise them for one deep run. Deep audit
+temporary files are removed on success, failure, timeout, or cancellation.
 
 Audit timeout overrides live under `audit.timeouts` (or the matching
 `DBRAIN_AUDIT_TIMEOUT_*` variables). They can only lower the built-in ceilings:
@@ -571,6 +582,9 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SAFARI_TABS_LIMIT` | `safari_tabs.limit` | `0` | Maximum Safari tabs to import after filtering; 0 means all matching tabs. |
 | `DBRAIN_SAFARI_TABS_OLDER_THAN` | `safari_tabs.older_than` | `0` | Only import Safari tabs last viewed before this duration ago, for example `168h`. |
 | `DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP` | `audit.require.sqlite_backup` | `false` | Require remote SQLite backup configuration and freshness in production health audits. |
+| `DBRAIN_AUDIT_MAX_ARCHIVE_BYTES` | `audit.max_archive_bytes` | `21474836480` | Deep-audit compressed SQLite archive limit; config and environment may only lower the default. |
+| `DBRAIN_AUDIT_MAX_DATABASE_BYTES` | `audit.max_database_bytes` | `107374182400` | Deep-audit decompressed SQLite database limit; config and environment may only lower the default. |
+| `DBRAIN_AUDIT_MAX_TEMP_BYTES` | `audit.max_temp_bytes` | `128849018880` | Deep-audit aggregate private temporary-space limit; config and environment may only lower the default. |
 | `DBRAIN_AUDIT_TIMEOUT_BOOTSTRAP` | `audit.timeouts.bootstrap` | `10s ceiling` | Optional lower production-audit bootstrap deadline; larger values are clamped. |
 | `DBRAIN_AUDIT_TIMEOUT_LOCAL_QUERY` | `audit.timeouts.local_query` | `5s fast / 30s standard` | Optional lower deadline for audit SQLite and local metadata queries. |
 | `DBRAIN_AUDIT_TIMEOUT_METRICS_OR_MANIFEST` | `audit.timeouts.metrics_or_manifest` | `10s ceiling` | Optional lower deadline for audit metrics and manifest reads. |
@@ -1074,8 +1088,8 @@ backlog and explicit non-goals.
   shared API client layer.
 - Improve the web note reader with richer Markdown rendering, better code-block
   presentation, and cleaner outbound link handling.
-- Extend the production health audit's standard local checks with explicit deep
-  upstream parity and temporary SQLite restore verification.
+- Extend the production health audit with explicit deep upstream importer
+  parity checks.
 - Add optional importers when they become high-value enough to justify first-
   class support: X profile/likes, Apple News bookmarks, native Substack data
   beyond RSS/manual links, Bluesky, Mastodon, Instagram, MakerWorld bookmarks,

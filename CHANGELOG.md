@@ -7,6 +7,10 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Bounded deep verification**: Added an explicit CLI-only deep audit that
+  validates the newest compressed SQLite archive in a private temporary
+  directory, performs complete bounded `media/` inventory reconciliation, and
+  cleans up without invoking the active-database restore path.
 - **Audit CLI**: Added `dbrain audit all|imports|pipeline|durability` with a
   stable, privacy-validated 55-check JSON registry, typed health exit codes,
   deterministic thresholds/sampling, and a no-write query-only target resolver.

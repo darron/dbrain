@@ -14,18 +14,68 @@ import (
 )
 
 type S3Options struct {
-	Bucket       string
-	Endpoint     string
-	Region       string
-	AccessKeyID  string
-	SecretKey    string
-	SessionToken string
-	PathStyle    bool
+	Bucket                string
+	Endpoint              string
+	Region                string
+	AccessKeyID           string
+	SecretKey             string
+	SessionToken          string
+	PathStyle             bool
+	ConnectTimeout        time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
 }
 
 type S3Store struct {
 	bucket string
 	client *s3.Client
+}
+
+type getObjectClient interface {
+	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+}
+
+// S3Reader is deliberately get-only. It cannot list, write, delete, or
+// restore archive objects.
+type S3Reader struct {
+	bucket string
+	client getObjectClient
+}
+
+func NewS3Reader(opts S3Options) (*S3Reader, error) {
+	bucket := strings.TrimSpace(opts.Bucket)
+	if bucket == "" {
+		return nil, fmt.Errorf("archive bucket is required")
+	}
+	if strings.TrimSpace(opts.AccessKeyID) == "" || strings.TrimSpace(opts.SecretKey) == "" {
+		return nil, fmt.Errorf("archive credentials are required")
+	}
+	region := strings.TrimSpace(opts.Region)
+	if region == "" {
+		region = "auto"
+	}
+	client, err := mediaarchive.NewS3Client(mediaarchive.Options{
+		Endpoint: opts.Endpoint, Region: region, AccessKeyID: opts.AccessKeyID,
+		SecretKey: opts.SecretKey, SessionToken: opts.SessionToken, PathStyle: opts.PathStyle,
+		ConnectTimeout: opts.ConnectTimeout, TLSHandshakeTimeout: opts.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: opts.ResponseHeaderTimeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return newS3Reader(bucket, client), nil
+}
+
+func newS3Reader(bucket string, client getObjectClient) *S3Reader {
+	return &S3Reader{bucket: strings.TrimSpace(bucket), client: client}
+}
+
+func (r *S3Reader) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	output, err := r.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(r.bucket), Key: aws.String(strings.TrimSpace(key))})
+	if err != nil {
+		return nil, fmt.Errorf("get sqlite archive candidate: %w", err)
+	}
+	return output.Body, nil
 }
 
 func NewS3Store(opts S3Options) (*S3Store, error) {

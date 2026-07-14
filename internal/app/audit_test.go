@@ -72,7 +72,7 @@ func TestAuditBootstrapContextHasTenSecondCeilingAndHonorsLowerParent(t *testing
 	}
 }
 
-func TestAuditCLIRejectsDeepAsBootstrapExitThreeWithoutReport(t *testing.T) {
+func TestAuditCLIReachesDeepBootstrapAndRejectsDeepLimitsForStandard(t *testing.T) {
 	cmd := NewRootCommand()
 	var out, stderr bytes.Buffer
 	cmd.SetOut(&out)
@@ -83,8 +83,52 @@ func TestAuditCLIRejectsDeepAsBootstrapExitThreeWithoutReport(t *testing.T) {
 	if !errors.As(err, &exit) || exit.Code != 3 || exit.Silent {
 		t.Fatalf("error = %#v", err)
 	}
+	if errors.Is(err, audit.ErrDeepUnsupported) {
+		t.Fatalf("CLI still rejected deep before capability bootstrap: %v", err)
+	}
 	if out.Len() != 0 {
 		t.Fatalf("unexpected report: %s", out.String())
+	}
+
+	cmd = NewRootCommand()
+	out.Reset()
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--root", t.TempDir(), "--no-debug", "audit", "all", "--profile", "standard", "--max-archive-bytes", "1024", "--json"})
+	err = cmd.ExecuteContext(context.Background())
+	if !errors.As(err, &exit) || exit.Code != 3 || !strings.Contains(exit.Error(), "deep only") {
+		t.Fatalf("standard deep-limit error = %#v", err)
+	}
+}
+
+func TestDeepAuditTimeoutAndLimitResolution(t *testing.T) {
+	if got := defaultAuditTimeout(audit.ProfileDeep); got != 2*time.Hour {
+		t.Fatalf("deep timeout = %s", got)
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte("audit:\n  max_archive_bytes: 1024\n  max_database_bytes: 2048\n  max_temp_bytes: 4096\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := runtimeenv.LoadConfigSnapshot(t.Context(), path, auditConfigMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup := runtimeenv.RegisterConfigSnapshot(root, snapshot, nil)
+	defer cleanup()
+	limits, err := resolveDeepAuditLimits(root, auditCLIFlags{}, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limits.MaxArchiveBytes != 1024 || limits.MaxDatabaseBytes != 2048 || limits.MaxTempBytes != 4096 {
+		t.Fatalf("configured limits = %#v", limits)
+	}
+	limits, err = resolveDeepAuditLimits(root, auditCLIFlags{maxArchiveBytes: 8192}, map[string]bool{"max-archive-bytes": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limits.MaxArchiveBytes != 8192 {
+		t.Fatalf("explicit raised archive limit = %d", limits.MaxArchiveBytes)
 	}
 }
 
@@ -183,6 +227,58 @@ func TestAuditCLIEmitsCompleteStandardReportBeforeHealthExit(t *testing.T) {
 	}
 }
 
+func TestAuditCLIDeepSyntheticNoRemoteSmoke(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ConfigPath, []byte("scheduler:\n  sync_all:\n    enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRootCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "audit", "all", "--profile", "deep", "--max-archive-bytes", "1024", "--json"})
+	err = cmd.ExecuteContext(t.Context())
+	var exit *ExitError
+	if err != nil && (!errors.As(err, &exit) || !exit.Silent) {
+		t.Fatalf("deep smoke error = %v", err)
+	}
+	var report audit.Report
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode deep report: %v\n%s", err, out.String())
+	}
+	if report.Profile != audit.ProfileDeep || len(report.Checks) != 55 || !report.Boundary.DatabaseVerified {
+		t.Fatalf("deep report boundary/checks = %#v checks=%d", report.Boundary, len(report.Checks))
+	}
+	for _, check := range report.Checks {
+		if check.ID == audit.CheckDurabilitySQLiteRestore && (check.Status != audit.StatusSkipped || check.SkipReason != audit.SkipFeatureDisabled) {
+			t.Fatalf("disabled restore check = %#v", check)
+		}
+	}
+	entries, err := os.ReadDir(cfg.TempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "dbrain-audit-") {
+			t.Fatalf("deep smoke left temporary directory %s", entry.Name())
+		}
+	}
+}
+
 func TestLocalAuditWrapperBoundsAndUsesEmptyArrays(t *testing.T) {
 	values := make([]string, 0, 105)
 	for i := 0; i < 105; i++ {
@@ -240,7 +336,7 @@ func TestLocalAuditArchiveTargetsExactJSONContainsNoCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"media_archive":{"provider":"test-s3","bucket":"audit-bucket","prefix":"media","origin":"https://objects.example.test:443"},"sqlite_archive":{"provider":"test-s3","bucket":"audit-bucket","prefix":"archive/db","origin":"https://objects.example.test:443"}}`
+	want := `{"media_archive":{"provider":"test-s3","bucket":"audit-bucket","prefix":"media/","origin":"https://objects.example.test:443"},"sqlite_archive":{"provider":"test-s3","bucket":"audit-bucket","prefix":"archive/db","origin":"https://objects.example.test:443"}}`
 	if string(data) != want {
 		t.Fatalf("local target JSON = %s\nwant = %s", data, want)
 	}

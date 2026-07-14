@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -113,6 +114,13 @@ func readOnlyDSN(path string) string {
 	uri := url.URL{Scheme: "file", Path: path}
 	query := uri.Query()
 	query.Set("mode", "ro")
+	// Descriptor-backed immutable candidates are complete private snapshots.
+	// immutable avoids SQLite trying to discover journal siblings beside the
+	// descriptor pseudo-path. Ordinary active database paths must not use it,
+	// because their WAL may contain authoritative state.
+	if strings.HasPrefix(path, "/dev/fd/") || strings.HasPrefix(path, "/proc/self/fd/") {
+		query.Set("immutable", "1")
+	}
 	uri.RawQuery = query.Encode()
 	return uri.String()
 }
