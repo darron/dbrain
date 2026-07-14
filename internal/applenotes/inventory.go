@@ -38,7 +38,7 @@ func (i *auditInventory) Inventory(ctx context.Context, budget audit.InventoryBu
 		return result, fmt.Errorf("%w: apple notes audit inventory unavailable", audit.ErrInventoryInvalid)
 	}
 
-	info, cleanup, err := CreateSnapshot(i.cfg, i.opts)
+	info, cleanup, err := CreateSnapshotContext(ctx, i.cfg, i.opts)
 	if err != nil {
 		return result, privacySafeAppleNotesAuditError(ctx, "snapshot", err)
 	}
@@ -153,20 +153,20 @@ func buildAppleNotesAuditQuery(ctx context.Context, db *sql.DB, opts Options) (s
 	if column := firstColumn(columns, "Z_PK"); column != "" {
 		selects = append(selects, "o."+quoteIdent(column)+" AS audit_pk")
 	}
-	if column := firstColumn(columns, "ZIDENTIFIER", "ZSERVERRECORDID", "ZCLOUDKITRECORDID"); column != "" {
-		selects = append(selects, "o."+quoteIdent(column)+" AS audit_identifier")
+	if expression := firstNonEmptyAppleNotesColumnSQL(columns, "ZIDENTIFIER", "ZSERVERRECORDID", "ZCLOUDKITRECORDID"); expression != "" {
+		selects = append(selects, expression+" AS audit_identifier")
 	}
 	if len(selects) == 0 {
 		return "", nil, fmt.Errorf("%w: apple notes identity columns unavailable", audit.ErrInventoryInvalid)
 	}
 	if len(opts.ExcludeAccounts) > 0 {
-		if column := firstColumn(columns, "ZACCOUNTNAME", "ZACCOUNT", "ZNAME"); column != "" {
-			selects = append(selects, "o."+quoteIdent(column)+" AS audit_account")
+		if expression := firstNonEmptyAppleNotesColumnSQL(columns, "ZACCOUNTNAME", "ZACCOUNT", "ZNAME"); expression != "" {
+			selects = append(selects, expression+" AS audit_account")
 		}
 	}
 	if len(opts.ExcludeFolders) > 0 {
-		if column := firstColumn(columns, "ZFOLDERPATH", "ZFOLDER", "ZTITLE2"); column != "" {
-			selects = append(selects, "o."+quoteIdent(column)+" AS audit_folder")
+		if expression := firstNonEmptyAppleNotesColumnSQL(columns, "ZFOLDERPATH", "ZFOLDER", "ZTITLE2"); expression != "" {
+			selects = append(selects, expression+" AS audit_folder")
 		}
 	}
 	for index, name := range availableColumns(columns, "ZSNIPPET", "ZPLAINTEXT", "ZTEXT") {
@@ -215,6 +215,21 @@ func buildAppleNotesAuditQuery(ctx context.Context, db *sql.DB, opts Options) (s
 		query += " ORDER BY o." + quoteIdent(pk)
 	}
 	return query, nil, nil
+}
+
+func firstNonEmptyAppleNotesColumnSQL(columns []string, names ...string) string {
+	available := availableColumns(columns, names...)
+	if len(available) == 0 {
+		return ""
+	}
+	expressions := make([]string, 0, len(available))
+	for _, column := range available {
+		expressions = append(expressions, "NULLIF(TRIM(CAST(o."+quoteIdent(column)+" AS TEXT)), '')")
+	}
+	if len(expressions) == 1 {
+		return expressions[0]
+	}
+	return "COALESCE(" + strings.Join(expressions, ", ") + ")"
 }
 
 func appleNotesAuditDataExpression(objectColumns, dataColumns []string) string {

@@ -1,6 +1,7 @@
 package applenotes
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,36 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+func copyReaderContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	buffer := make([]byte, 32<<10)
+	var written int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		read, readErr := src.Read(buffer)
+		if read > 0 {
+			count, writeErr := dst.Write(buffer[:read])
+			written += int64(count)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if count != read {
+				return written, io.ErrShortWrite
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
+}
 
 const defaultNotesRelPath = "Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"
 
@@ -29,7 +60,10 @@ func notesTripletPaths(dbPath string) []string {
 	return []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
 }
 
-func copyRegularFile(source string, dest string) error {
+func copyRegularFileContext(ctx context.Context, source string, dest string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	in, err := os.Open(source)
 	if err != nil {
 		return appleNotesSourcePermissionError(source, fmt.Errorf("open snapshot source %s: %w", source, err))
@@ -54,11 +88,17 @@ func copyRegularFile(source string, dest string) error {
 		_ = out.Close()
 	}()
 
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := copyReaderContext(ctx, out, in); err != nil {
 		return fmt.Errorf("copy snapshot file %s to %s: %w", source, dest, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := out.Sync(); err != nil {
 		return fmt.Errorf("sync snapshot file %s: %w", dest, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return nil
 }

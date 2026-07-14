@@ -1,6 +1,7 @@
 package safaritabs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,36 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func copyReaderContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	buffer := make([]byte, 32<<10)
+	var written int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		read, readErr := src.Read(buffer)
+		if read > 0 {
+			count, writeErr := dst.Write(buffer[:read])
+			written += int64(count)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if count != read {
+				return written, io.ErrShortWrite
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
+}
 
 const defaultCloudTabsRelPath = "Library/Containers/com.apple.Safari/Data/Library/Safari/CloudTabs.db"
 
@@ -40,6 +71,13 @@ type SnapshotInfo struct {
 type snapshotCleanup func() error
 
 func createSnapshot(cfg config.Config, opts Options) (SnapshotInfo, snapshotCleanup, error) {
+	return createSnapshotContext(context.Background(), cfg, opts)
+}
+
+func createSnapshotContext(ctx context.Context, cfg config.Config, opts Options) (SnapshotInfo, snapshotCleanup, error) {
+	if err := ctx.Err(); err != nil {
+		return SnapshotInfo{}, nil, err
+	}
 	sourcePath, err := resolveCloudTabsDBPath(opts.DBPath)
 	if err != nil {
 		return SnapshotInfo{}, nil, err
@@ -70,6 +108,9 @@ func createSnapshot(cfg config.Config, opts Options) (SnapshotInfo, snapshotClea
 	}
 
 	for _, source := range sqliteTripletPaths(sourcePath) {
+		if err := ctx.Err(); err != nil {
+			return info, cleanupForSnapshot(snapshotDir, keep), err
+		}
 		if _, err := os.Stat(source); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -77,7 +118,7 @@ func createSnapshot(cfg config.Config, opts Options) (SnapshotInfo, snapshotClea
 			return info, cleanupForSnapshot(snapshotDir, keep), safariTabsSourcePermissionError(source, fmt.Errorf("stat Safari snapshot source %s: %w", source, err))
 		}
 		dest := filepath.Join(snapshotDir, filepath.Base(source))
-		if err := copyRegularFile(source, dest); err != nil {
+		if err := copyRegularFileContext(ctx, source, dest); err != nil {
 			return info, cleanupForSnapshot(snapshotDir, keep), err
 		}
 		if sameFile(source, dest) {
@@ -109,7 +150,10 @@ func sqliteTripletPaths(dbPath string) []string {
 	return []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
 }
 
-func copyRegularFile(source string, dest string) error {
+func copyRegularFileContext(ctx context.Context, source string, dest string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	in, err := os.Open(source)
 	if err != nil {
 		return safariTabsSourcePermissionError(source, fmt.Errorf("open snapshot source %s: %w", source, err))
@@ -134,11 +178,17 @@ func copyRegularFile(source string, dest string) error {
 		_ = out.Close()
 	}()
 
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := copyReaderContext(ctx, out, in); err != nil {
 		return fmt.Errorf("copy snapshot file %s to %s: %w", source, dest, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := out.Sync(); err != nil {
 		return fmt.Errorf("sync snapshot file %s: %w", dest, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return nil
 }

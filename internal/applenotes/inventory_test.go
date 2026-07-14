@@ -188,6 +188,50 @@ func TestAuditInventoryHonorsLegacyAccountAndFolderColumns(t *testing.T) {
 	}
 }
 
+func TestAuditInventoryUsesPerRowSparseIdentityAndExclusionFallbacks(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := auditTestConfig(root)
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	dbPath := filepath.Join(root, "NoteStore.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE ZICCLOUDSYNCINGOBJECT (
+			Z_PK INTEGER, ZIDENTIFIER TEXT, ZSERVERRECORDID TEXT,
+			ZTITLE1 TEXT, ZSNIPPET TEXT,
+			ZACCOUNTNAME TEXT, ZACCOUNT TEXT, ZFOLDERPATH TEXT, ZFOLDER TEXT,
+			ZISPASSWORDPROTECTED INTEGER DEFAULT 0, ZMARKEDFORDELETION INTEGER DEFAULT 0
+		)`,
+		`INSERT INTO ZICCLOUDSYNCINGOBJECT (Z_PK, ZIDENTIFIER, ZSERVERRECORDID, ZTITLE1, ZSNIPPET) VALUES (1, '', 'server-visible', 'Visible', 'visible')`,
+		`INSERT INTO ZICCLOUDSYNCINGOBJECT (Z_PK, ZIDENTIFIER, ZSERVERRECORDID, ZTITLE1, ZSNIPPET, ZACCOUNTNAME, ZACCOUNT) VALUES (2, '', 'server-work', 'Work', 'work', '', 'Work')`,
+		`INSERT INTO ZICCLOUDSYNCINGOBJECT (Z_PK, ZIDENTIFIER, ZSERVERRECORDID, ZTITLE1, ZSNIPPET, ZFOLDERPATH, ZFOLDER) VALUES (3, '', 'server-archive', 'Archive', 'archive', '', 'iCloud/Archive')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("exec fixture: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	result, err := NewAuditInventory(cfg, Options{
+		DBPath: dbPath, ExcludeAccounts: []string{"Work"}, ExcludeFolders: []string{"Archive"},
+	}).Inventory(context.Background(), audit.InventoryBudget{MaxIdentities: 1, MaxPages: 1})
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	want, _ := audit.HashUpstreamIdentity(audit.SourceAppleNotes, "apple-note:default:server-visible")
+	if !result.Complete || len(result.IdentityHashes) != 1 || result.IdentityHashes[0] != want {
+		t.Fatalf("unexpected inventory: %+v", result)
+	}
+}
+
 func TestAuditInventoryCapPlusOneIsIncomplete(t *testing.T) {
 	t.Parallel()
 

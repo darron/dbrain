@@ -1,9 +1,11 @@
 package applenotes
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,52 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+type cancelAfterFirstRead struct {
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (r *cancelAfterFirstRead) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads > 1 {
+		return 0, fmt.Errorf("reader was called after cancellation")
+	}
+	copy(p, "first chunk")
+	r.cancel()
+	return len("first chunk"), nil
+}
+
+func TestSnapshotCopyReaderStopsBetweenChunksOnCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &cancelAfterFirstRead{cancel: cancel}
+	var dst bytes.Buffer
+	_, err := copyReaderContext(ctx, &dst, reader)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("copyReaderContext error = %v, want canceled", err)
+	}
+	if reader.reads != 1 || dst.String() != "first chunk" {
+		t.Fatalf("copy state reads=%d body=%q", reader.reads, dst.String())
+	}
+}
+
+func TestCreateSnapshotContextChecksCancellationBeforeSourceAccess(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err = CreateSnapshotContext(ctx, cfg, Options{DBPath: filepath.Join(root, "missing.sqlite")})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateSnapshotContext error = %v, want canceled", err)
+	}
+}
 
 func TestCreateSnapshotCopiesTripletWithoutHardlinks(t *testing.T) {
 	t.Parallel()

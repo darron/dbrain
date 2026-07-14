@@ -41,7 +41,7 @@ func (i *safariAuditInventory) Inventory(ctx context.Context, budget audit.Inven
 		return result, fmt.Errorf("%w: safari audit inventory configuration invalid", audit.ErrInventoryInvalid)
 	}
 
-	info, cleanup, err := createSnapshot(i.cfg, i.opts)
+	info, cleanup, err := createSnapshotContext(ctx, i.cfg, i.opts)
 	if err != nil {
 		return result, privacySafeSafariAuditError(ctx, "snapshot", err)
 	}

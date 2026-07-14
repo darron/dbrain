@@ -66,6 +66,15 @@ func Probe(ctx context.Context, cfg config.Config, opts Options) (ProbeStats, er
 }
 
 func CreateSnapshot(cfg config.Config, opts Options) (SnapshotInfo, snapshotCleanup, error) {
+	return CreateSnapshotContext(context.Background(), cfg, opts)
+}
+
+// CreateSnapshotContext copies the live Notes SQLite triplet into a private
+// snapshot and permits cancellation between copy chunks.
+func CreateSnapshotContext(ctx context.Context, cfg config.Config, opts Options) (SnapshotInfo, snapshotCleanup, error) {
+	if err := ctx.Err(); err != nil {
+		return SnapshotInfo{}, nil, err
+	}
 	sourcePath, err := resolveNotesDBPath(opts.DBPath)
 	if err != nil {
 		return SnapshotInfo{}, nil, err
@@ -96,6 +105,9 @@ func CreateSnapshot(cfg config.Config, opts Options) (SnapshotInfo, snapshotClea
 	}
 
 	for _, source := range notesTripletPaths(sourcePath) {
+		if err := ctx.Err(); err != nil {
+			return info, cleanupForSnapshot(snapshotDir, keep), err
+		}
 		if _, err := os.Stat(source); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -103,7 +115,7 @@ func CreateSnapshot(cfg config.Config, opts Options) (SnapshotInfo, snapshotClea
 			return info, cleanupForSnapshot(snapshotDir, keep), appleNotesSourcePermissionError(source, fmt.Errorf("stat notes snapshot source %s: %w", source, err))
 		}
 		dest := filepath.Join(snapshotDir, filepath.Base(source))
-		if err := copyRegularFile(source, dest); err != nil {
+		if err := copyRegularFileContext(ctx, source, dest); err != nil {
 			return info, cleanupForSnapshot(snapshotDir, keep), err
 		}
 		if sameFile(source, dest) {

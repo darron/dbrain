@@ -1,8 +1,11 @@
 package safaritabs
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +13,49 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/store"
 )
+
+type cancelSafariAfterFirstRead struct {
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (r *cancelSafariAfterFirstRead) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads > 1 {
+		return 0, fmt.Errorf("reader was called after cancellation")
+	}
+	copy(p, "first chunk")
+	r.cancel()
+	return len("first chunk"), nil
+}
+
+func TestSnapshotCopyReaderStopsBetweenChunksOnCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &cancelSafariAfterFirstRead{cancel: cancel}
+	var dst bytes.Buffer
+	_, err := copyReaderContext(ctx, &dst, reader)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("copyReaderContext error = %v, want canceled", err)
+	}
+	if reader.reads != 1 || dst.String() != "first chunk" {
+		t.Fatalf("copy state reads=%d body=%q", reader.reads, dst.String())
+	}
+}
+
+func TestCreateSnapshotContextChecksCancellationBeforeSourceAccess(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := testConfig(root)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := createSnapshotContext(ctx, cfg, Options{DBPath: filepath.Join(root, "missing.sqlite")})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("createSnapshotContext error = %v, want canceled", err)
+	}
+}
 
 func TestRunImportsDeviceTabsAsItems(t *testing.T) {
 	ctx := context.Background()
