@@ -7,6 +7,10 @@ development date for the change set.
 
 ### Security hardening (2026-07-13)
 
+- **Authenticated feeds**: Basic-auth feed URLs are stripped of userinfo before
+  safe-HTTP validation and translated into an Authorization header that is
+  retained only across exact-origin redirects and recovered only for same-origin
+  subsequent polls after a sanitized resolved URL is stored.
 - **Local filesystem containment**: Vault note/media reads, writes, uploads,
   OCR/transcription inputs, and cleanup now use root-confined filesystem
   operations so persisted traversal paths and symlink parents cannot escape the

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,6 +192,67 @@ func TestAddFetchesMetadataWithoutImportUnlessRequested(t *testing.T) {
 	}
 	if item.ArticleText == "" {
 		t.Fatal("expected feed entry import to populate local article text")
+	}
+}
+
+func TestCheckFeedRecoversStoredBasicAuthAfterResolvedURLPersistence(t *testing.T) {
+	ctx := context.Background()
+	cfg, st := openFeedTestStore(t)
+	type receivedAuth struct {
+		username string
+		password string
+		ok       bool
+	}
+	var received []receivedAuth
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		received = append(received, receivedAuth{username: username, password: password, ok: ok})
+		if !ok || username != "feed" || password != "s:cret@x" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("content-type", "application/rss+xml")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Private Feed</title><link>https://example.com/</link></channel></rss>`))
+	}))
+	defer server.Close()
+
+	rawURL := strings.Replace(server.URL, "://", "://fe%65d:s%3Acret%40x@", 1) + "/feed.xml"
+	feed, _, _, err := Add(ctx, cfg, st, rawURL, AddOptions{
+		Fetch:               true,
+		Import:              false,
+		AllowPrivateNetwork: true,
+		Now:                 fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	stored, err := st.GetFeed(ctx, feed.FeedKey)
+	if err != nil {
+		t.Fatalf("GetFeed: %v", err)
+	}
+	wantResolvedURL := server.URL + "/feed.xml"
+	if stored.ResolvedURL != wantResolvedURL || strings.Contains(stored.ResolvedURL, "@") {
+		t.Fatalf("stored ResolvedURL = %q, want %q without credentials", stored.ResolvedURL, wantResolvedURL)
+	}
+
+	stats, err := CheckFeed(ctx, cfg, st, stored, Options{
+		AllowPrivateNetwork: true,
+		Now:                 func() time.Time { return fixedNow().Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatalf("second CheckFeed: %v", err)
+	}
+	if len(received) != 2 {
+		t.Fatalf("authenticated requests = %d, want 2", len(received))
+	}
+	for i, auth := range received {
+		if !auth.ok || auth.username != "feed" || auth.password != "s:cret@x" {
+			t.Fatalf("request %d BasicAuth = (%q, %q, %t)", i+1, auth.username, auth.password, auth.ok)
+		}
+	}
+	if len(stats.Results) != 1 || stats.Results[0].URL != wantResolvedURL || strings.Contains(stats.Results[0].URL, "@") {
+		t.Fatalf("second check results = %+v, want credential-free URL %q", stats.Results, wantResolvedURL)
 	}
 }
 
