@@ -932,6 +932,48 @@ func TestAuditYouTubeLikedCommandOverridesDisabledSourceAndEmitsExactPortableSco
 	}
 }
 
+func TestAuditSourceCommandIgnoresUnrelatedDeepArchiveLimits(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "yt-dlp"), []byte("#!/bin/sh\nprintf '%s\\n' '{\"entries\":[]}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DBRAIN_AUDIT_MAX_ARCHIVE_BYTES", "not-a-number")
+	t.Setenv("DBRAIN_AUDIT_MAX_DATABASE_BYTES", "also-invalid")
+	t.Setenv("DBRAIN_AUDIT_MAX_TEMP_BYTES", "still-invalid")
+
+	command := NewRootCommand()
+	var out bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"--root", root, "--no-debug", "audit", "youtube-liked", "--json"})
+	if err := command.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("source-only audit resolved unrelated archive limits: %v output=%s", err, out.String())
+	}
+	var report audit.Report
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v output=%s", err, out.String())
+	}
+	if report.Schema != audit.SchemaV1 || report.Profile != audit.ProfileDeep {
+		t.Fatalf("report schema/profile = %q/%q", report.Schema, report.Profile)
+	}
+}
+
 func TestAuditGitHubStarsMissingTokenEmitsPortableUnknownReport(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

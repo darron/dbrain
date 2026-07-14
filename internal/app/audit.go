@@ -185,11 +185,13 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 		Profile: profile, Since: since, Categories: categories, Sources: sources, SourceOverrides: sourceOverrides,
 		ExpectCommit: strings.TrimSpace(flags.expectCommit),
 	}
-	deepLimits := audit.DeepLimits{}
+	deepLimits := audit.DefaultDeepLimits()
 	if profile == audit.ProfileDeep {
-		deepLimits, err = resolveDeepAuditLimits(cfg.RootDir, *flags, deepFlags, features)
-		if err != nil {
-			return &ExitError{Code: 3, Err: err}
+		if auditRequestMayIncludeCategory(req, audit.CategoryDurability) {
+			deepLimits, err = resolveDeepAuditLimits(cfg.RootDir, *flags, deepFlags, features)
+			if err != nil {
+				return &ExitError{Code: 3, Err: err}
+			}
 		}
 	}
 	var st *store.Store
