@@ -100,6 +100,27 @@ func TestHTTPFetcherSanitizesMalformedCredentialURLInError(t *testing.T) {
 	}
 }
 
+func TestHTTPFetcherSanitizesMalformedInitialNetworkPathURLInError(t *testing.T) {
+	target := "//credential-user:credential-password@example.com:bad/feed.atom"
+	_, err := NewHTTPFetcher(nil).Fetch(
+		context.Background(),
+		store.Feed{URL: target, NormalizedURL: target, ResolvedURL: target},
+		Options{MaxBodyBytes: DefaultMaxBodyBytes},
+	)
+	if err == nil {
+		t.Fatal("Fetch error = nil, want malformed URL error")
+	}
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		t.Fatalf("Fetch error = %T %v, want *url.Error in chain", err, err)
+	}
+	for _, credential := range []string{"credential-user", "credential-password"} {
+		if strings.Contains(err.Error(), credential) || strings.Contains(urlErr.URL, credential) {
+			t.Fatalf("Fetch error contains %q: err=%v url=%q", credential, err, urlErr.URL)
+		}
+	}
+}
+
 func TestHTTPFetcherRetainsBasicAuthForSameOriginRedirect(t *testing.T) {
 	var finalAuthorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +145,32 @@ func TestHTTPFetcherRetainsBasicAuthForSameOriginRedirect(t *testing.T) {
 	}
 	if finalAuthorization == "" {
 		t.Fatal("same-origin redirect lost Authorization header")
+	}
+}
+
+func TestHTTPFetcherPreservesDefaultRedirectLimitForAuthenticatedInjectedClient(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits > 12 {
+			http.Error(w, "redirect safety cutoff", http.StatusLoopDetected)
+			return
+		}
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	}))
+	defer server.Close()
+
+	target := strings.Replace(server.URL, "://", "://feed:secret@", 1) + "/loop"
+	_, err := NewHTTPFetcher(&http.Client{}).Fetch(
+		context.Background(),
+		store.Feed{URL: target, NormalizedURL: target, ResolvedURL: target},
+		Options{MaxBodyBytes: DefaultMaxBodyBytes},
+	)
+	if err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("Fetch error = %v, want stopped after 10 redirects", err)
+	}
+	if hits != 10 {
+		t.Fatalf("redirect hits = %d, want 10", hits)
 	}
 }
 

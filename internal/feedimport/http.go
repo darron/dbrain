@@ -157,6 +157,9 @@ func feedRequestClient(client *http.Client, timeout time.Duration, credentialOri
 		if originalCheckRedirect != nil {
 			return originalCheckRedirect(req, via)
 		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
 		return nil
 	}
 	return &clone
@@ -273,22 +276,7 @@ func sanitizeFeedURLUserInfo(raw string) string {
 		parsed.User = nil
 		return parsed.String()
 	}
-
-	schemeEnd := strings.Index(raw, "://")
-	if schemeEnd < 0 {
-		return raw
-	}
-	authorityStart := schemeEnd + len("://")
-	authorityEnd := len(raw)
-	if offset := strings.IndexAny(raw[authorityStart:], "/?#"); offset >= 0 {
-		authorityEnd = authorityStart + offset
-	}
-	userinfoEnd := strings.LastIndex(raw[authorityStart:authorityEnd], "@")
-	if userinfoEnd < 0 {
-		return raw
-	}
-	userinfoEnd += authorityStart
-	return raw[:authorityStart] + raw[userinfoEnd+1:]
+	return sanitizeFeedCredentialURLsInText(raw)
 }
 
 func sha256Hex(body []byte) string {
