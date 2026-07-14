@@ -40,7 +40,7 @@ type Options struct {
 	WaybackFallbackEnabled    bool
 	WaybackAvailabilityURL    string
 	httpPolicy                *safehttp.Policy
-	prepareSourceInput        func(context.Context, string) (string, string, func(), error)
+	prepareSourceInput        func(context.Context, string) (preparedSourceInput, error)
 	configuredSourceOrigin    string
 	Binary                    string
 	YouTubeBrowser            string
@@ -56,6 +56,13 @@ type Options struct {
 	// OnSourceResult is called when a source enrichment candidate completes.
 	// Callers must treat it as concurrent when Concurrency > 1.
 	OnSourceResult func(SourceResult)
+}
+
+type preparedSourceInput struct {
+	Path        string
+	FinalURL    string
+	ContentType string
+	Cleanup     func()
 }
 
 // WithConfiguredSourceOrigin authorizes one exact operator-configured HTTP

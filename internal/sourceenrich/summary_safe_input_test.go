@@ -248,10 +248,10 @@ func TestRunSummarizeRejectsPrivateRedirectBeforeSubprocess(t *testing.T) {
 	}
 }
 
-func TestRunSummarizePassesPublicSourceToSubprocessAsLocalFile(t *testing.T) {
+func TestRunSummarizeExtractsPrefetchedHTMLWithoutUnsupportedLocalFileCLI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "text/html")
-		_, _ = w.Write([]byte("<html><body>public source body</body></html>"))
+		_, _ = w.Write([]byte("<html><head><title>Public article</title></head><body><article>public source body</article></body></html>"))
 	}))
 	defer server.Close()
 
@@ -265,16 +265,214 @@ func TestRunSummarizePassesPublicSourceToSubprocessAsLocalFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run summarize: %v", err)
 	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("summarizer marker stat = %v, want prefetched HTML parsed without unsupported local-file --extract", statErr)
+	}
+	if result.Extract.Title != "Public article" || result.Extract.Content != "public source body" {
+		t.Fatalf("in-process extract = %+v", result.Extract)
+	}
+	if !strings.HasPrefix(result.Extract.CanonicalURL, "http://public.test/") || result.Extract.FinalURL != "http://public.test/article.html" {
+		t.Fatalf("URL provenance not restored: %+v", result.Extract)
+	}
+	if result.Extract.Tool != protectedFetchToolName {
+		t.Fatalf("extract tool = %q, want %q", result.Extract.Tool, protectedFetchToolName)
+	}
+}
+
+func TestRunSummarizeExtractsPrefetchedPlainTextWithoutUnsupportedLocalFileCLI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "text/plain")
+		_, _ = w.Write([]byte("# Public text\n\nplain source body"))
+	}))
+	defer server.Close()
+
+	policy := syntheticPublicPolicy(server.Listener.Addr().String(), map[string]string{"public.test": "8.8.8.8"})
+	binary, marker := installSafeInputFakeSummarize(t)
+	result, err := runSummarizeWithRedirectRetry(context.Background(), model.SourceDocument{SourceType: "web"}, Options{httpPolicy: &policy}, summarizecli.Options{
+		Binary:  binary,
+		Input:   "http://public.test/article.txt",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("run summarize: %v", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("summarizer marker stat = %v, want prefetched text parsed without unsupported local-file --extract", statErr)
+	}
+	if result.Extract.Title != "Public text" || result.Extract.Content != "# Public text\n\nplain source body" {
+		t.Fatalf("in-process extract = %+v", result.Extract)
+	}
+	if result.Extract.CanonicalURL != "http://public.test/article.txt" || result.Extract.FinalURL != "http://public.test/article.txt" {
+		t.Fatalf("URL provenance not restored: %+v", result.Extract)
+	}
+}
+
+func TestRunSummarizeHonorsDeclaredHTMLBeyondSniffWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(strings.Repeat("preamble ", 80) + "<main>declared HTML body</main>"))
+	}))
+	defer server.Close()
+
+	policy := syntheticPublicPolicy(server.Listener.Addr().String(), map[string]string{"public.test": "8.8.8.8"})
+	binary, marker := installSafeInputFakeSummarize(t)
+	result, err := runSummarizeWithRedirectRetry(context.Background(), model.SourceDocument{SourceType: "web"}, Options{httpPolicy: &policy}, summarizecli.Options{
+		Binary:  binary,
+		Input:   "http://public.test/article",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("run summarize: %v", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("summarizer marker stat = %v, want declared HTML parsed without subprocess", statErr)
+	}
+	if result.Extract.Content != "declared HTML body" {
+		t.Fatalf("declared HTML extract = %q, want main content without markup or preamble", result.Extract.Content)
+	}
+}
+
+func TestRunSourceIDsBlocksEmptySafeFetchedSummaryAndStopsRequeue(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	item, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey: "x:empty-safe-summary", SourceType: "x_bookmark", ExternalID: "empty-safe-summary",
+		CanonicalURL: "https://x.com/example/status/empty-safe-summary", Title: "empty safe summary",
+		ContentHash: "empty-safe-summary", NotePath: vault.NoteRelativePath("x", "2026", "empty-safe-summary"),
+		RawJSON: `{}`, ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	link, err := st.UpsertSourceLink(context.Background(), item.ItemID, model.SourceCandidate{
+		SourceKey: "src:empty-safe-summary", OriginalURL: "https://example.com/empty",
+		CanonicalURL: "https://example.com/empty", NormalizedURL: "https://example.com/empty",
+		SourceType: "web", Domain: "example.com", NotePath: vault.SourceNoteRelativePath("web", "empty-safe-summary"),
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+
+	binary, marker := installSafeInputFakeSummarize(t)
+	opts := Options{
+		Summarize: true, Model: "cli/test/model", Binary: binary, Timeout: time.Second,
+		prepareSourceInput: fixedSourceInputPreparer(t, "https://example.com/empty", "<html><body></body></html>"),
+	}
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{link.SourceID}, opts)
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.SourcesSummarized != 0 {
+		t.Fatalf("expected no successful summary, got %+v", stats)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("summarizer marker stat = %v, want empty extract blocked before subprocess", statErr)
+	}
+	stored, err := st.GetSourceByID(context.Background(), link.SourceID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if stored.ExtractStatus != model.SourceExtractStatusEmpty || stored.SummaryStatus != model.SourceSummaryStatusBlocked {
+		t.Fatalf("stored statuses extract=%q summary=%q, want empty/blocked", stored.ExtractStatus, stored.SummaryStatus)
+	}
+	if stored.SummaryError != "no extracted content available for summary" {
+		t.Fatalf("summary error = %q", stored.SummaryError)
+	}
+	pending, err := st.ListSourcesForEnrichment(context.Background(), 10, false, true, SummaryPromptVersion,
+		summarizecli.SummaryToolNameForRoot(cfg.RootDir, opts.Model),
+		summarizecli.SummaryToolVersionForRoot(context.Background(), cfg.RootDir, opts.Binary, opts.Model))
+	if err != nil {
+		t.Fatalf("list pending sources: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected blocked empty source not to requeue, got %d candidates", len(pending))
+	}
+}
+
+func TestRunSummarizeSendsSafeExtractToSummaryStdin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "text/html")
+		_, _ = w.Write([]byte("<html><head><title>Public article</title></head><body><main>public source body</main></body></html>"))
+	}))
+	defer server.Close()
+
+	policy := syntheticPublicPolicy(server.Listener.Addr().String(), map[string]string{"public.test": "8.8.8.8"})
+	binary, argsMarker, stdinMarker := installSafeInputStdinSummaryFake(t)
+	result, err := runSummarizeWithRedirectRetry(context.Background(), model.SourceDocument{SourceType: "web"}, Options{httpPolicy: &policy}, summarizecli.Options{
+		Binary:    binary,
+		Input:     "http://public.test/article.html",
+		Summarize: true,
+		Timeout:   time.Second,
+	})
+	if err != nil {
+		t.Fatalf("run summarize: %v", err)
+	}
+	argsBody, err := os.ReadFile(argsMarker)
+	if err != nil {
+		t.Fatalf("read argument marker: %v", err)
+	}
+	argsText := string(argsBody)
+	if !strings.HasSuffix(argsText, "-\n") || strings.Contains(argsText, "http://public.test") || strings.Contains(argsText, "dbrain-source-input-") {
+		t.Fatalf("summary subprocess args = %q, want stdin sentinel without URL or local path", argsText)
+	}
+	stdinBody, err := os.ReadFile(stdinMarker)
+	if err != nil {
+		t.Fatalf("read stdin marker: %v", err)
+	}
+	if string(stdinBody) != "public source body" {
+		t.Fatalf("summary stdin = %q, want safe extracted text", string(stdinBody))
+	}
+	if result.Extract.Title != "Public article" || result.Extract.Content != "public source body" || result.Extract.CanonicalURL != "http://public.test/article.html" {
+		t.Fatalf("safe extract replaced by summarize asset envelope: %+v", result.Extract)
+	}
+	if result.Summary.Status != model.SourceSummaryStatusOK || result.Summary.Text != "safe summary" || result.Summary.Model != "fake-model" {
+		t.Fatalf("summary = %+v", result.Summary)
+	}
+}
+
+func TestRunSummarizeDelegatesSafePrefetchedPDFAsLocalFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.4\nfake PDF body"))
+	}))
+	defer server.Close()
+
+	policy := syntheticPublicPolicy(server.Listener.Addr().String(), map[string]string{"public.test": "8.8.8.8"})
+	binary, marker := installSafeInputPDFFake(t)
+	result, err := runSummarizeWithRedirectRetry(context.Background(), model.SourceDocument{SourceType: "web"}, Options{httpPolicy: &policy}, summarizecli.Options{
+		Binary:  binary,
+		Input:   "http://public.test/document.pdf",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("run summarize: %v", err)
+	}
 	markerBody, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("read subprocess marker: %v", err)
 	}
 	inputPath := strings.TrimSpace(string(markerBody))
-	if inputPath == "" || inputPath == "http://public.test/article.html" {
-		t.Fatalf("subprocess input = %q, want local file", inputPath)
+	if inputPath == "" || inputPath == "http://public.test/document.pdf" {
+		t.Fatalf("PDF subprocess input = %q, want safe local file", inputPath)
 	}
-	if !strings.HasPrefix(result.Extract.CanonicalURL, "http://public.test/") || result.Extract.FinalURL != "http://public.test/article.html" {
-		t.Fatalf("URL provenance not restored: %+v", result.Extract)
+	if _, statErr := os.Stat(inputPath); !os.IsNotExist(statErr) {
+		t.Fatalf("temporary PDF stat after summarize = %v, want cleanup", statErr)
+	}
+	if result.Extract.Content != "pdf extracted text" || result.Extract.CanonicalURL != "http://public.test/document.pdf" || result.Extract.FinalURL != "http://public.test/document.pdf" {
+		t.Fatalf("PDF result = %+v", result.Extract)
 	}
 }
 
@@ -294,16 +492,16 @@ func TestPreparePublicSourceInputConfinesConfiguredPrivateOrigin(t *testing.T) {
 	defer unrelated.Close()
 
 	opts := WithConfiguredSourceOrigin(Options{}, configured.URL)
-	path, _, cleanup, err := preparePublicSourceInput(context.Background(), configured.URL+"/homepage", opts)
+	prepared, err := preparePublicSourceInput(context.Background(), configured.URL+"/homepage", opts)
 	if err != nil {
 		t.Fatalf("configured source input: %v", err)
 	}
-	cleanup()
-	if path == "" || configuredHits != 1 {
-		t.Fatalf("configured path=%q hits=%d, want local input and one request", path, configuredHits)
+	prepared.Cleanup()
+	if prepared.Path == "" || configuredHits != 1 {
+		t.Fatalf("configured path=%q hits=%d, want local input and one request", prepared.Path, configuredHits)
 	}
 
-	_, _, _, err = preparePublicSourceInput(context.Background(), unrelated.URL+"/homepage", opts)
+	_, err = preparePublicSourceInput(context.Background(), unrelated.URL+"/homepage", opts)
 	if !safehttp.IsPolicyError(err) {
 		t.Fatalf("unrelated error = %v, want policy rejection", err)
 	}
@@ -328,6 +526,54 @@ printf '%%s' "$last" > %q
 test -f "$last" || { echo "expected local input" >&2; exit 1; }
 grep -q "public source body" "$last" || { echo "missing source body" >&2; exit 1; }
 printf '%%s\n' '{"input":{"model":"auto"},"extracted":{"url":"","title":"Public","description":"","siteName":"Test","content":"public source body"},"summary":null}'
+`, marker)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+	return binary, marker
+}
+
+func installSafeInputStdinSummaryFake(t *testing.T) (string, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsMarker := filepath.Join(dir, "args")
+	stdinMarker := filepath.Join(dir, "stdin")
+	binary := filepath.Join(dir, "summarize")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo test-1.0.0
+  exit 0
+fi
+printf '%%s\n' "$@" > %q
+cat > %q
+last=""
+for arg in "$@"; do last="$arg"; done
+test "$last" = "-" || { echo "expected stdin input" >&2; exit 1; }
+grep -q "public source body" %q || { echo "missing safe extracted stdin" >&2; exit 1; }
+printf '%%s\n' '{"input":{"model":"fake-model"},"extracted":{"kind":"asset","source":"stdin","mediaType":"text/plain","filename":"stdin"},"summary":"safe summary"}'
+`, argsMarker, stdinMarker, stdinMarker)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake summarize: %v", err)
+	}
+	return binary, argsMarker, stdinMarker
+}
+
+func installSafeInputPDFFake(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "input")
+	binary := filepath.Join(dir, "summarize")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo test-1.0.0
+  exit 0
+fi
+last=""
+for arg in "$@"; do last="$arg"; done
+test -f "$last" || { echo "expected local PDF input" >&2; exit 1; }
+grep -q "%%PDF-1.4" "$last" || { echo "missing PDF body" >&2; exit 1; }
+printf '%%s' "$last" > %q
+printf '%%s\n' '{"input":{"model":"auto"},"extracted":{"url":"","title":"Document","description":"","siteName":"","content":"pdf extracted text"},"summary":null}'
 `, marker)
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake summarize: %v", err)

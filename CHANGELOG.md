@@ -20,6 +20,10 @@ development date for the change set.
   unless each selected web/MCP surface has application authentication; web
   mutations share an Origin guard; service-auth nonces are single-use per
   process; and JSON-RPC batches are limited to 16 requests.
+- **Safe source extraction**: Safe-fetched HTML and text are now extracted
+  in-process instead of being passed to `summarize --extract` as unsupported
+  local files; summary-mode subprocesses receive only the extracted text over
+  stdin while dbrain retains validated URL provenance.
 - **Public shares**: Anonymous share rendering rejects URL userinfo and removes
   recognized credential-like query data from newly generated and legacy stored
   shares, including renderer-created attributes, nested/encoded query values,

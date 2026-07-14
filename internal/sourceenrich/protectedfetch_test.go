@@ -329,8 +329,8 @@ func TestRunSourceIDsUsesWaybackOnFinalFailure(t *testing.T) {
 		WaybackFallbackEnabled: true,
 		WaybackAvailabilityURL: server.URL + "/wayback/available?url={escaped_url}",
 		httpPolicy:             &safehttp.Policy{AllowPrivateNetwork: true},
-		prepareSourceInput: func(context.Context, string) (string, string, func(), error) {
-			return "", "", func() {}, fmt.Errorf("run summarize: fetch failed")
+		prepareSourceInput: func(context.Context, string) (preparedSourceInput, error) {
+			return preparedSourceInput{}, fmt.Errorf("run summarize: fetch failed")
 		},
 	})
 	if err != nil {

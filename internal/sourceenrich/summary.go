@@ -33,6 +33,7 @@ func runSummarizeWithRedirectRetry(ctx context.Context, source model.SourceDocum
 	}
 	preparedInput := ""
 	preparedFinalURL := ""
+	preparedContentType := ""
 	if _, ok := sourceHost(originalInput); ok {
 		if source.SourceType == "youtube" {
 			if err := validateYouTubeSubprocessURL(originalInput); err != nil {
@@ -40,19 +41,56 @@ func runSummarizeWithRedirectRetry(ctx context.Context, source model.SourceDocum
 			}
 		} else {
 			var err error
-			var cleanup func()
+			var prepared preparedSourceInput
 			if opts.prepareSourceInput != nil {
-				preparedInput, preparedFinalURL, cleanup, err = opts.prepareSourceInput(ctx, originalInput)
+				prepared, err = opts.prepareSourceInput(ctx, originalInput)
 			} else {
-				preparedInput, preparedFinalURL, cleanup, err = preparePublicSourceInput(ctx, originalInput, opts)
+				prepared, err = preparePublicSourceInput(ctx, originalInput, opts)
 			}
 			if err != nil {
 				return summarizecli.Result{}, err
 			}
-			if cleanup != nil {
-				defer cleanup()
+			preparedInput = prepared.Path
+			preparedFinalURL = prepared.FinalURL
+			preparedContentType = prepared.ContentType
+			if prepared.Cleanup != nil {
+				defer prepared.Cleanup()
+			}
+			if err := ctx.Err(); err != nil {
+				return summarizecli.Result{}, err
 			}
 			runOpts.Input = preparedInput
+			preparedExtract, handled, err := extractPreparedTextSource(originalInput, preparedFinalURL, preparedContentType, preparedInput)
+			if err != nil {
+				return summarizecli.Result{}, err
+			}
+			if handled {
+				if !runOpts.Summarize {
+					return summarizecli.Result{Extract: preparedExtract}, nil
+				}
+				if strings.TrimSpace(preparedExtract.Content) == "" {
+					return summarizecli.Result{
+						Extract: preparedExtract,
+						Summary: model.SummaryResult{
+							Status:      model.SourceSummaryStatusBlocked,
+							Error:       "no extracted content available for summary",
+							Model:       runOpts.Model,
+							FetchedAt:   time.Now().UTC(),
+							Tool:        summarizecli.SummaryToolNameForRoot(runOpts.RootDir, runOpts.Model),
+							ToolVersion: summarizecli.SummaryToolVersionForRoot(ctx, runOpts.RootDir, runOpts.Binary, runOpts.Model),
+						},
+					}, nil
+				}
+				summaryOpts := runOpts
+				summaryOpts.Input = "-"
+				summaryOpts.Stdin = preparedExtract.Content
+				result, err := summarizecli.Run(ctx, summaryOpts)
+				if err != nil {
+					return summarizecli.Result{}, err
+				}
+				result.Extract = preparedExtract
+				return result, nil
+			}
 		}
 	}
 
@@ -129,17 +167,17 @@ func validateImportedSourceURL(rawURL string) error {
 	return nil
 }
 
-func preparePublicSourceInput(ctx context.Context, rawURL string, opts Options) (string, string, func(), error) {
+func preparePublicSourceInput(ctx context.Context, rawURL string, opts Options) (preparedSourceInput, error) {
 	client := newPublicHTTPClient(opts)
 	if sameHTTPOrigin(rawURL, opts.configuredSourceOrigin) {
 		client = newConfiguredOriginHTTPClient(opts.configuredSourceOrigin, opts)
 	}
 	resp, body, err := fetchHTTPText(ctx, client, rawURL)
 	if err != nil {
-		return "", "", func() {}, fmt.Errorf("fetch source for local parsing: %w", err)
+		return preparedSourceInput{}, fmt.Errorf("fetch source for local parsing: %w", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", "", func() {}, fmt.Errorf("fetch source for local parsing: unexpected status %d", resp.StatusCode)
+		return preparedSourceInput{}, fmt.Errorf("fetch source for local parsing: unexpected status %d", resp.StatusCode)
 	}
 
 	finalURL := rawURL
@@ -149,20 +187,69 @@ func preparePublicSourceInput(ctx context.Context, rawURL string, opts Options) 
 	suffix := sourceInputSuffix(finalURL)
 	file, err := os.CreateTemp("", "dbrain-source-input-*"+suffix)
 	if err != nil {
-		return "", "", func() {}, fmt.Errorf("create local source input: %w", err)
+		return preparedSourceInput{}, fmt.Errorf("create local source input: %w", err)
 	}
 	path := file.Name()
 	cleanup := func() { _ = os.Remove(path) }
 	if _, err := file.WriteString(body); err != nil {
 		_ = file.Close()
 		cleanup()
-		return "", "", func() {}, fmt.Errorf("write local source input: %w", err)
+		return preparedSourceInput{}, fmt.Errorf("write local source input: %w", err)
 	}
 	if err := file.Close(); err != nil {
 		cleanup()
-		return "", "", func() {}, fmt.Errorf("close local source input: %w", err)
+		return preparedSourceInput{}, fmt.Errorf("close local source input: %w", err)
 	}
-	return path, finalURL, cleanup, nil
+	return preparedSourceInput{
+		Path:        path,
+		FinalURL:    finalURL,
+		ContentType: resp.Header.Get("content-type"),
+		Cleanup:     cleanup,
+	}, nil
+}
+
+func extractPreparedTextSource(originalURL string, finalURL string, declaredContentType string, path string) (model.ExtractResult, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return model.ExtractResult{}, false, fmt.Errorf("read local source input: %w", err)
+	}
+	sniff := data
+	if len(sniff) > 512 {
+		sniff = sniff[:512]
+	}
+	detectedContentType := strings.ToLower(http.DetectContentType(sniff))
+	declaredContentType = strings.ToLower(strings.TrimSpace(declaredContentType))
+	snippet := strings.ToLower(string(sniff))
+	isHTML := strings.Contains(declaredContentType, "html") ||
+		strings.Contains(detectedContentType, "html") ||
+		strings.Contains(snippet, "<html") ||
+		strings.Contains(snippet, "<!doctype html")
+	isText := isTextContentType(declaredContentType) || isTextContentType(detectedContentType)
+	if !isHTML && !isText {
+		return model.ExtractResult{}, false, nil
+	}
+
+	parsedFinalURL, err := url.Parse(finalURL)
+	if err != nil {
+		return model.ExtractResult{}, false, fmt.Errorf("parse final source URL: %w", err)
+	}
+	resp := &http.Response{
+		Header:  make(http.Header),
+		Request: &http.Request{URL: parsedFinalURL},
+	}
+	contentType := firstNonEmpty(declaredContentType, detectedContentType)
+	resp.Header.Set("content-type", contentType)
+	body := string(data)
+	if isHTML {
+		return extractHTMLSource(originalURL, resp, body, "http-html", httpReaderToolVersion, ""), true, nil
+	}
+	return extractPlainTextSource(originalURL, resp, body, "http-text", httpReaderToolVersion), true, nil
+}
+
+func isTextContentType(contentType string) bool {
+	return strings.HasPrefix(contentType, "text/") ||
+		strings.Contains(contentType, "json") ||
+		strings.Contains(contentType, "xml")
 }
 
 func sameHTTPOrigin(left string, right string) bool {
