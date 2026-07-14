@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -50,6 +51,30 @@ func TestHTTPFetcherCanAllowLocalhostForTesting(t *testing.T) {
 	}
 	if !strings.Contains(string(fetch.DecodedBody), "Local") {
 		t.Fatalf("expected decoded body, got %q", string(fetch.DecodedBody))
+	}
+}
+
+func TestHTTPFetcherRejectsURLCredentialsBeforeClient(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`<rss><channel><title>Unsafe</title></channel></rss>`))
+	}))
+	defer server.Close()
+
+	target, err := url.Parse(server.URL + "/feed.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.User = url.UserPassword("user", "secret")
+	_, err = NewHTTPFetcher(server.Client()).Fetch(context.Background(), store.Feed{
+		URL: target.String(),
+	}, Options{MaxBodyBytes: DefaultMaxBodyBytes})
+	if !safehttp.IsPolicyError(err) {
+		t.Fatalf("credential URL error = %v, want policy rejection", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
 	}
 }
 

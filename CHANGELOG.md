@@ -32,6 +32,10 @@ development date for the change set.
   subprocesses. Source-only audits no longer resolve unrelated archive limits,
   and deep parity remains unavailable to scheduled, MCP, and admin runners.
 
+- **Feed audit credential hardening**: Reject feed URLs containing userinfo at
+  the fetcher boundary before any configured HTTP client or transport can
+  normalize or send the request.
+
 - **Production health admin view**: Replaced ambiguous activity-derived health
   with the authenticated exact-profile standard audit presentation. The System
   page now separates fast local refresh from authoritative standard health,

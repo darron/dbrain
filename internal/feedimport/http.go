@@ -51,6 +51,9 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("create feed request: %w", err)
 	}
+	if req.URL.User != nil {
+		return FetchResult{}, &safehttp.PolicyError{Reason: "URL userinfo is not allowed"}
+	}
 	req.Header.Set("user-agent", opts.UserAgent)
 	req.Header.Set("accept", "application/feed+json, application/atom+xml, application/rss+xml, application/xml, text/xml, */*;q=0.1")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
