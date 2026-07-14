@@ -483,6 +483,101 @@ func TestRunDeepCleanupFailureMakesRestoreUnknownAndExposesOnlyLocalCleanupPath(
 	}
 }
 
+func TestRunDeepCleanupFailurePreservesVerifiedInvalidClassification(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		result DeepArchiveResult
+	}{
+		{name: "corrupt gzip", result: DeepArchiveResult{CompressedBytes: 8}},
+		{name: "quick check", result: DeepArchiveResult{CompressedBytes: 8, DecompressedBytes: 16, QuickCheck: "violation", QuickCheckObserved: true, ForeignKeysObserved: true, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}},
+		{name: "foreign key", result: DeepArchiveResult{CompressedBytes: 8, DecompressedBytes: 16, QuickCheck: "ok", QuickCheckObserved: true, ForeignKeyViolationCount: 1, ForeignKeysObserved: true, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}},
+		{name: "schema", result: DeepArchiveResult{CompressedBytes: 8, DecompressedBytes: 16, QuickCheck: "ok", QuickCheckObserved: true, ForeignKeysObserved: true, SchemaCompatibility: "incompatible", SchemaObserved: true, MigrationCompatibility: "current_compatible", MigrationObserved: true}},
+		{name: "migration", result: DeepArchiveResult{CompressedBytes: 8, DecompressedBytes: 16, QuickCheck: "ok", QuickCheckObserved: true, ForeignKeysObserved: true, SchemaCompatibility: "current_compatible", SchemaObserved: true, MigrationCompatibility: "incompatible", MigrationObserved: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deps := passingDependencies(now)
+			deps.Features.SQLiteBackupSchedulerEnabled = true
+			deps.Features.SQLiteProviderConfigured = true
+			deps.Features.SQLiteCredentialConfigured = true
+			deps.Archives = fakeArchive{value: SQLiteArchiveListing{Complete: true, Objects: []ArchiveObject{{Key: "archive/db/brain-20260714T110000Z.db.gz", ValidKey: true, SizeBytes: 1, LastModified: now.Add(-time.Hour)}}}}
+			base := t.TempDir()
+			var generated string
+			var cleanupFailures []string
+			report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, CheckIDs: []CheckID{CheckDurabilitySQLiteRestore}}, deps, DeepDependencies{
+				Archives:      &fakeDeepArchiveReader{body: []byte("candidate")},
+				VerifyArchive: &fakeDeepVerifier{result: test.result, err: ErrDeepCandidateInvalid},
+				NewTemp: func() (*vaultfs.PrivateTemp, error) {
+					tmp, createErr := vaultfs.NewPrivateTemp(base)
+					if tmp != nil {
+						generated = tmp.Dir()
+					}
+					return tmp, createErr
+				},
+				CleanupTemp:          failingDeepCleanup,
+				RecordCleanupFailure: func(path string) { cleanupFailures = append(cleanupFailures, path) },
+				FreeSpace:            func(*vaultfs.PrivateTemp) (uint64, error) { return uint64(DefaultDeepLimits().MaxTempBytes), nil },
+				Limits:               DefaultDeepLimits(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := report.Checks[0]
+			if check.Status != StatusFail || check.Confidence != ConfidenceHigh || check.Evidence["cleanup_complete"] != false {
+				t.Fatalf("verified invalid cleanup-failed restore = %#v", check)
+			}
+			if !reflect.DeepEqual(cleanupFailures, []string{generated}) {
+				t.Fatalf("local cleanup failures = %#v, want %q", cleanupFailures, generated)
+			}
+			encoded, marshalErr := json.Marshal(report)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if bytes.Contains(encoded, []byte(generated)) {
+				t.Fatalf("shared report leaked cleanup path: %s", encoded)
+			}
+			if err := os.RemoveAll(generated); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRunDeepCleanupFailureKeepsOperationalValidationUnknown(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.SQLiteBackupSchedulerEnabled = true
+	deps.Features.SQLiteProviderConfigured = true
+	deps.Features.SQLiteCredentialConfigured = true
+	deps.Archives = fakeArchive{value: SQLiteArchiveListing{Complete: true, Objects: []ArchiveObject{{Key: "archive/db/brain-20260714T110000Z.db.gz", ValidKey: true, SizeBytes: 1, LastModified: now.Add(-time.Hour)}}}}
+	base := t.TempDir()
+	var generated string
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, CheckIDs: []CheckID{CheckDurabilitySQLiteRestore}}, deps, DeepDependencies{
+		Archives:      &fakeDeepArchiveReader{body: []byte("candidate")},
+		VerifyArchive: &fakeDeepVerifier{result: DeepArchiveResult{CompressedBytes: 8, DecompressedBytes: 16}, err: errors.New("validator I/O unavailable")},
+		NewTemp: func() (*vaultfs.PrivateTemp, error) {
+			tmp, createErr := vaultfs.NewPrivateTemp(base)
+			if tmp != nil {
+				generated = tmp.Dir()
+			}
+			return tmp, createErr
+		},
+		CleanupTemp: failingDeepCleanup,
+		FreeSpace:   func(*vaultfs.PrivateTemp) (uint64, error) { return uint64(DefaultDeepLimits().MaxTempBytes), nil }, Limits: DefaultDeepLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := report.Checks[0]
+	if check.Status != StatusUnknown || check.Confidence != ConfidenceUnknown || check.Evidence["cleanup_complete"] != false {
+		t.Fatalf("operational cleanup-failed restore = %#v", check)
+	}
+	if err := os.RemoveAll(generated); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunDeepUnknownRestoreOmitsUnobservedValidationEvidence(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	deps := passingDependencies(now)

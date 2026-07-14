@@ -389,13 +389,13 @@ func executeDeep(_ context.Context, s *runState, entry RegistryEntry) Check {
 		if s.deepCleanupAttempted {
 			evidence["cleanup_complete"] = s.deepCleanupComplete
 		}
-		if s.deepCleanupAttempted && !s.deepCleanupComplete {
-			return baseCheck(entry, s.now, StatusUnknown, ConfidenceUnknown, evidence)
-		}
 		if s.deepArchiveErr != nil {
 			if errors.Is(s.deepArchiveErr, ErrDeepCandidateInvalid) {
 				return baseCheck(entry, s.now, StatusFail, ConfidenceHigh, evidence)
 			}
+			return baseCheck(entry, s.now, StatusUnknown, ConfidenceUnknown, evidence)
+		}
+		if s.deepCleanupAttempted && !s.deepCleanupComplete {
 			return baseCheck(entry, s.now, StatusUnknown, ConfidenceUnknown, evidence)
 		}
 		return baseCheck(entry, s.now, StatusPass, ConfidenceHigh, evidence)
