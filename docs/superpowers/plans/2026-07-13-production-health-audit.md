@@ -55,6 +55,7 @@
 - Modify internal/store/stats_pipeline_items.go
 - Modify internal/store/stats_pipeline_x_items.go
 - Modify internal/store/stats_pipeline_helpers.go
+- Modify internal/store/stats_types.go
 - Modify internal/store/source_enrichment_candidates.go
 - Modify internal/store/media_archive_candidates.go
 - Modify internal/store/predicates.go
@@ -68,8 +69,10 @@
 - Modify internal/okf/validate.go
 - Modify internal/app/okf.go
 - Modify internal/app/okf_test.go
+- Modify internal/app/stats_pipeline_output.go
 - Create internal/vaultfs/inspect.go
 - Create internal/vaultfs/inspect_test.go
+- Modify CHANGELOG.md
 
 **Produced interfaces:**
 
@@ -79,9 +82,6 @@ type AuditReadSnapshot struct { /* unexported *sql.Tx */ }
 func (s *Store) BeginAuditReadSnapshot(ctx context.Context) (*AuditReadSnapshot, error)
 func (s *AuditReadSnapshot) Close() error
 func (s *AuditReadSnapshot) PipelinePartitions(ctx context.Context) (AuditPipelinePartitions, error)
-func (s *AuditReadSnapshot) ImportAggregates(ctx context.Context, since time.Time) (AuditImportAggregates, error)
-func (s *AuditReadSnapshot) Provenance(ctx context.Context, cutover time.Time) (AuditProvenance, error)
-func (s *AuditReadSnapshot) MediaDurability(ctx context.Context) (AuditMediaDurability, error)
 
 type DatabaseIntegrity struct {
     QuickCheck string
@@ -104,7 +104,7 @@ type InspectionSummary struct {
     ValidationErrorCount int
     TraversalComplete bool
 }
-func InspectBundle(root *vaultfs.Root) (InspectionSummary, error)
+func InspectBundle(ctx context.Context, root *vaultfs.Root) (InspectionSummary, error)
 
 // internal/vaultfs/inspect.go
 type LogicalFileMetadata struct {
@@ -112,8 +112,11 @@ type LogicalFileMetadata struct {
     Regular bool
     SizeBytes int64
 }
-type LogicalFileError string // missing, outside_root, symlink_rejected, unreadable
-func (r *Root) Inspect(name string) (LogicalFileMetadata, LogicalFileError)
+type LogicalFileError struct {
+    Code string // missing, outside_root, symlink_rejected, unreadable
+}
+func (e *LogicalFileError) Error() string
+func (r *Root) Inspect(name string) (LogicalFileMetadata, error)
 ~~~
 
 - [ ] **RED — read-only commands:** add command tests that create a legacy store missing the newest migration, invoke every stats subcommand, and assert schema_migrations and PRAGMA user_version are byte-for-byte unchanged.
@@ -179,7 +182,7 @@ func (r *Root) Inspect(name string) (LogicalFileMetadata, LogicalFileError)
 - [ ] **Slice verification:**
 
   ~~~sh
-  go test ./internal/app ./internal/store ./internal/okf -count=1
+  go test ./internal/app ./internal/store ./internal/okf ./internal/vaultfs -count=1
   task fmt
   task lint
   task test-ci
