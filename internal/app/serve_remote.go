@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/sqlitearchive"
@@ -69,12 +73,13 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 				controlURL:         controlURL,
 				verbose:            verbose,
 			})
-			schedulers, err := buildRemoteSchedulers(cmd.Context(), cfg, cmd.ErrOrStderr())
+			schedulers, err := buildRemoteSchedulersWithMeta(cmd.Context(), cfg, auditMetaForInvocation(root), cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
 			opts.SchedulerStatus = schedulers.syncAll.Status
 			opts.OnReady = func() {
+				schedulers.audit.Start(cmd.Context())
 				schedulers.syncAll.Start(cmd.Context())
 				schedulers.sqliteArchive.Start(cmd.Context())
 			}
@@ -105,9 +110,14 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 type remoteSchedulers struct {
 	syncAll       *syncScheduler
 	sqliteArchive *sqliteArchiveScheduler
+	audit         *auditScheduler
 }
 
 func buildRemoteSchedulers(ctx context.Context, cfg config.Config, logOut io.Writer) (remoteSchedulers, error) {
+	return buildRemoteSchedulersWithMeta(ctx, cfg, auditConfigMeta{Layout: "xdg", Source: "default"}, logOut)
+}
+
+func buildRemoteSchedulersWithMeta(ctx context.Context, cfg config.Config, meta auditConfigMeta, logOut io.Writer) (remoteSchedulers, error) {
 	configSnapshot, err := runtimeenv.LoadConfigSnapshot(ctx, cfg.ConfigPath, auditConfigMaxBytes)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -130,6 +140,10 @@ func buildRemoteSchedulers(ctx context.Context, cfg config.Config, logOut io.Wri
 	if err != nil {
 		return remoteSchedulers{}, err
 	}
+	auditOpts, err := schedulerAuditConfigFromRuntime(cfg.RootDir)
+	if err != nil {
+		return remoteSchedulers{}, err
+	}
 	var writer sqlitearchive.ObjectWriter
 	if archiveOpts.Enabled {
 		writer, err = buildScheduledSQLiteArchiveWriter(ctx, cfg.RootDir)
@@ -137,19 +151,65 @@ func buildRemoteSchedulers(ctx context.Context, cfg config.Config, logOut io.Wri
 			return remoteSchedulers{}, fmt.Errorf("configure scheduled SQLite archive: %w", err)
 		}
 	}
-	return remoteSchedulers{
+	schedulers := remoteSchedulers{
 		syncAll:       newSyncScheduler(cfg, syncOpts, logOut),
 		sqliteArchive: newSQLiteArchiveScheduler(cfg, archiveOpts, writer, logOut),
-	}, nil
+		audit:         newAuditScheduler(auditOpts, nil, nil, nil, logOut),
+	}
+	if auditOpts.Enabled {
+		features, resolveErr := resolveAuditFeatures(cfg, meta)
+		if resolveErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit features: %w", resolveErr)
+		}
+		runner, resolveErr := newScheduledAuditRunner(ctx, cfg, features)
+		if resolveErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit runner: %w", resolveErr)
+		}
+		reportStore, storeErr := audit.NewReportStore(cfg.LogDir)
+		if storeErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit report store: %w", storeErr)
+		}
+		webhook, webhookErr := audit.NewWebhook(audit.WebhookConfig{URL: auditOpts.Alert.WebhookURL, BearerTokenRef: auditOpts.Alert.BearerTokenRef, AllowPrivateOrigin: auditOpts.Alert.AllowPrivateOrigin, AdminOrigin: auditOpts.Alert.AdminOrigin})
+		if webhookErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit webhook: %w", webhookErr)
+		}
+		schedulers.audit = newAuditScheduler(auditOpts, runner, reportStore, webhook, logOut)
+		metricsConfig, metricsErr := metrics.ResolveConfig(cfg.RootDir, cfg.LogDir)
+		if metricsErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit metrics: %w", metricsErr)
+		}
+		schedulers.audit.emitCompleted = scheduledAuditMetricEmitter(metricsConfig)
+		schedulers.syncAll.postRun = schedulers.audit.AfterSync
+	}
+	return schedulers, nil
 }
 
 func (s remoteSchedulers) Stop() {
-	if s.sqliteArchive != nil {
-		s.sqliteArchive.Stop()
-	}
 	if s.syncAll != nil {
 		s.syncAll.Stop()
 	}
+	if s.audit != nil {
+		s.audit.Stop()
+	}
+	if s.sqliteArchive != nil {
+		s.sqliteArchive.Stop()
+	}
+}
+
+func auditMetaForInvocation(root *rootOptions) auditConfigMeta {
+	if root != nil && strings.TrimSpace(root.configFile) != "" {
+		return auditConfigMeta{Layout: "explicit_config", Source: "flag"}
+	}
+	if root != nil && strings.TrimSpace(root.root) != "" {
+		return auditConfigMeta{Layout: "explicit_root", Source: "flag"}
+	}
+	if strings.TrimSpace(os.Getenv(configFileEnvVar)) != "" {
+		return auditConfigMeta{Layout: "explicit_config", Source: "environment"}
+	}
+	if strings.TrimSpace(os.Getenv(rootEnvVar)) != "" {
+		return auditConfigMeta{Layout: "explicit_root", Source: "environment"}
+	}
+	return auditConfigMeta{Layout: "xdg", Source: "default"}
 }
 
 type serveRemoteFlags struct {

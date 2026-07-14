@@ -171,6 +171,28 @@ func TestSinkConcurrentEmitsWriteValidJSONLines(t *testing.T) {
 	}
 }
 
+func TestAuditRunCompletedEventUsesPrivacySafeAllowlist(t *testing.T) {
+	event := AuditRunCompletedEvent("standard", "fail", 1500*time.Millisecond, AuditStatusCounts{Pass: 10, Warn: 2, Fail: 1, Unknown: 3, Skipped: 4})
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantKeys := map[string]bool{"event": true, "profile": true, "status": true, "duration_ms": true, "pass_count": true, "warn_count": true, "fail_count": true, "unknown_count": true, "skipped_count": true}
+	if len(event) != len(wantKeys) {
+		t.Fatalf("event keys = %#v", event)
+	}
+	for key := range event {
+		if !wantKeys[key] {
+			t.Fatalf("unexpected audit metric key %q", key)
+		}
+	}
+	for _, forbidden := range []string{"audit_id", "check", "evidence", "identifier", "path", "url", "credential", "provider", "error", "transcript", "ocr"} {
+		if strings.Contains(strings.ToLower(string(data)), forbidden) {
+			t.Fatalf("audit metric contains %q: %s", forbidden, data)
+		}
+	}
+}
+
 func TestStrictSinkReturnsWriteFailureOnClose(t *testing.T) {
 	writeErr := errors.New("disk full")
 	sink := &jsonlSink{

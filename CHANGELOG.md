@@ -7,6 +7,14 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Scheduled health and regression alerts**: Added opt-in post-sync fast and
+  six-hour standard audits to `serve remote`, private daily report retention,
+  exact-profile freshness metadata, content-free transition state, compact
+  completion metrics, and an exact-origin no-proxy/no-redirect JSON webhook
+  with debounced escalation, repeat, configuration-resolution, and immediate
+  recovery behavior. Scheduled audit failures remain separate from sync
+  results and never receive archive-write or restore capability.
+
 - **Scheduled SQLite durability**: Added an opt-in daily `serve remote`
   scheduler that uses the existing online SQLite snapshot/archive path,
   runs once on startup by default, durably rate-limits attempts across service

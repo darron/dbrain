@@ -176,6 +176,24 @@ func TestClientEnforcesRedirectLimit(t *testing.T) {
 	}
 }
 
+func TestClientCanDisableRedirectsCompletely(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("must not be reached"))
+	}))
+	defer server.Close()
+	client := NewClient(Policy{AllowPrivateNetwork: true, DisableRedirects: true})
+	_, err := client.Get(server.URL + "/start")
+	if !IsPolicyError(err) || requests != 1 {
+		t.Fatalf("disabled redirect error=%v requests=%d", err, requests)
+	}
+}
+
 func TestClientDisablesEnvironmentProxy(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
 	t.Setenv("NO_PROXY", "")

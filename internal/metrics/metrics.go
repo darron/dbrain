@@ -36,6 +36,19 @@ type Config struct {
 
 type Event map[string]any
 
+type AuditStatusCounts struct {
+	Pass, Warn, Fail, Unknown, Skipped int
+}
+
+func AuditRunCompletedEvent(profile, status string, duration time.Duration, counts AuditStatusCounts) Event {
+	return Event{
+		"event": "audit.run.completed", "profile": profile, "status": status,
+		"duration_ms": DurationMillis(duration),
+		"pass_count":  counts.Pass, "warn_count": counts.Warn, "fail_count": counts.Fail,
+		"unknown_count": counts.Unknown, "skipped_count": counts.Skipped,
+	}
+}
+
 type SQLiteArchiveFailureCode string
 
 const (

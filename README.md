@@ -582,6 +582,15 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SAFARI_TABS_LIMIT` | `safari_tabs.limit` | `0` | Maximum Safari tabs to import after filtering; 0 means all matching tabs. |
 | `DBRAIN_SAFARI_TABS_OLDER_THAN` | `safari_tabs.older_than` | `0` | Only import Safari tabs last viewed before this duration ago, for example `168h`. |
 | `DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP` | `audit.require.sqlite_backup` | `false` | Require remote SQLite backup configuration and freshness in production health audits. |
+| `DBRAIN_AUDIT_ENABLED` | `audit.enabled` | `false` | Schedule read-only fast and standard production audits from `serve remote`. |
+| `DBRAIN_AUDIT_POST_SYNC_FAST` | `audit.post_sync_fast` | `true` | Run a fast audit after each actual scheduled sync result and lock settlement. |
+| `DBRAIN_AUDIT_STANDARD_INTERVAL` | `audit.standard_interval` | `6h` | Positive interval between non-overlapping standard audits. |
+| `DBRAIN_AUDIT_SINCE` | `audit.since` | `7d` | Metrics and arrival-history window for scheduled audits. |
+| `DBRAIN_AUDIT_ALERT_WEBHOOK_URL` | `audit.alert.webhook_url` | `` | Optional transition webhook; public destinations require HTTPS. |
+| `DBRAIN_AUDIT_ALERT_BEARER_TOKEN_REF` | `audit.alert.bearer_token_ref` | `` | Typed `env:`, `op://`, or `keychain://` bearer-token ref. |
+| `DBRAIN_AUDIT_ALERT_ALLOW_PRIVATE_ORIGIN` | `audit.alert.allow_private_origin` | `false` | Permit only the exact configured private webhook origin. |
+| `DBRAIN_AUDIT_ALERT_CONSECUTIVE_OBSERVATIONS` | `audit.alert.consecutive_observations` | `2` | Confirmation count for ordinary alert transitions. |
+| `DBRAIN_AUDIT_ALERT_REPEAT_AFTER` | `audit.alert.repeat_after` | `24h` | Interval before repeating an unchanged confirmed alert. |
 | `DBRAIN_AUDIT_MAX_ARCHIVE_BYTES` | `audit.max_archive_bytes` | `21474836480` | Deep-audit compressed SQLite archive limit; config and environment may only lower the default. |
 | `DBRAIN_AUDIT_MAX_DATABASE_BYTES` | `audit.max_database_bytes` | `107374182400` | Deep-audit decompressed SQLite database limit; config and environment may only lower the default. |
 | `DBRAIN_AUDIT_MAX_TEMP_BYTES` | `audit.max_temp_bytes` | `128849018880` | Deep-audit aggregate private temporary-space limit; config and environment may only lower the default. |

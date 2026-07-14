@@ -32,3 +32,15 @@ type SQLiteArchiveStatus struct {
 	LastError        string    `json:"last_error,omitempty"`
 	NextRunAt        time.Time `json:"next_run_at,omitempty"`
 }
+
+type AuditStatus struct {
+	Enabled           bool      `json:"enabled"`
+	PostSyncFast      bool      `json:"post_sync_fast"`
+	StandardInterval  string    `json:"standard_interval"`
+	Running           bool      `json:"running"`
+	CurrentProfile    string    `json:"current_profile,omitempty"`
+	LastStatus        string    `json:"last_status,omitempty"`
+	LastError         string    `json:"last_error,omitempty"`
+	LastFinishedAt    time.Time `json:"last_finished_at,omitempty"`
+	NextStandardRunAt time.Time `json:"next_standard_run_at,omitempty"`
+}

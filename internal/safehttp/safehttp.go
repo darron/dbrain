@@ -18,6 +18,7 @@ const defaultMaxRedirects = 10
 type Policy struct {
 	Timeout               time.Duration
 	MaxRedirects          int
+	DisableRedirects      bool
 	AllowPrivateNetwork   bool
 	AllowedPrivateOrigins []string
 	// AllowedOrigins restricts every request and redirect to one of these exact
@@ -82,6 +83,9 @@ func NewClient(policy Policy) *http.Client {
 		Timeout:   policy.Timeout,
 		Transport: &policyTransport{base: transport, policy: compiled},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if policy.DisableRedirects {
+				return &PolicyError{Reason: "redirects are disabled"}
+			}
 			if len(via) > maxRedirects {
 				return &PolicyError{Reason: fmt.Sprintf("stopped after %d redirects", maxRedirects)}
 			}

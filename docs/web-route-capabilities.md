@@ -36,6 +36,12 @@ inventory checks are CLI-only. This capability is not exposed by a web route,
 MCP tool, or browser control, and adding it would require a separate capability
 and authentication review.
 
+Scheduled fast and standard audits persist private report/history and
+transition state for later authenticated consumers, but this change adds no web
+route and page loads still cannot start an audit. The scheduled audit remains
+read-only and receives archive-list authority only; the separate SQLite archive
+scheduler is the only sibling with object-write authority.
+
 ## Open-Source Notes
 
 - Treat local `serve web` and remote `serve remote --web` as trusted write

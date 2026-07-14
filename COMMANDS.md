@@ -223,6 +223,21 @@ Per-class timeouts can be lowered with `audit.timeouts.bootstrap`,
 5s fast/30s standard, 10s, 2m, 2m per check, and 30s per request/page. Invalid
 or non-positive durations fail bootstrap; larger values are clamped.
 
+`serve remote` can own continuous read-only audit scheduling when
+`audit.enabled: true`. A fast profile runs after each actual scheduled sync
+result, after its process lock and status settle; a standard profile runs every
+`audit.standard_interval` (6h by default). The profiles share one non-overlap
+guard, deep is never scheduled, and audit failure does not change the sync
+result. Reports rotate daily under `<log_dir>/audit/reports` with private
+permissions, 90-day/256-MiB retention, and exact-profile history.
+
+Transition alerts are optional. Configure `audit.alert.webhook_url` and, when
+needed, a typed `bearer_token_ref`. Public webhooks require HTTPS; private,
+loopback, and link-local delivery requires `allow_private_origin: true` and is
+confined to that exact origin. Redirects and environment proxies are disabled.
+No webhook is required for reports, freshness, metrics, or later admin and MCP
+visibility.
+
 ### `dbrain install`
 
 Runs first-time local setup. By default, it uses the existing XDG split layout:
