@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-13
 
-**Status:** Draft for review, refreshed against the v0.6.0 security baseline
+**Status:** Approved for implementation, refreshed against the v0.6.0 security baseline
 
 **Repository boundary:** This design covers read-only health assessment of the
 configured dbrain runtime, CLI/MCP/web presentation of the same report,
