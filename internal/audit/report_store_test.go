@@ -31,6 +31,26 @@ func (f *retentionTestFS) RemoveReport(name string) error {
 func (*retentionTestFS) ReadState(int64) ([]byte, error) { return nil, os.ErrNotExist }
 func (*retentionTestFS) ReplaceState([]byte) error       { return nil }
 
+type historyReadTestFS struct {
+	files   []reportFileInfo
+	data    map[string][]byte
+	readErr map[string]error
+}
+
+func (*historyReadTestFS) AppendReport(string, []byte) error { return nil }
+func (f *historyReadTestFS) ReadReport(name string, _ int64) ([]byte, error) {
+	if err := f.readErr[name]; err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), f.data[name]...), nil
+}
+func (f *historyReadTestFS) ListReports() ([]reportFileInfo, error) {
+	return append([]reportFileInfo(nil), f.files...), nil
+}
+func (*historyReadTestFS) RemoveReport(string) error       { return nil }
+func (*historyReadTestFS) ReadState(int64) ([]byte, error) { return nil, os.ErrNotExist }
+func (*historyReadTestFS) ReplaceState([]byte) error       { return nil }
+
 func testStoredReport(t *testing.T, profile Profile, completed time.Time, status Status) Report {
 	t.Helper()
 	started := completed.Add(-time.Second)
@@ -134,6 +154,77 @@ func TestReportStoreRotatesUTCAndIsolatesMalformedLines(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(logDir, "audit", "reports", "2026-07-14.jsonl")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReportStoreSeparatesUnterminatedTailBeforeSavingValidReport(t *testing.T) {
+	logDir := t.TempDir()
+	store, err := NewReportStore(logDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 14, 5, 0, 0, 0, time.UTC)
+	path := filepath.Join(logDir, "audit", "reports", "2026-07-14.jsonl")
+	if err := os.WriteFile(path, []byte(`{"crash_truncated":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := testStoredReport(t, ProfileFast, now, StatusPass)
+	if err := store.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.History(ProfileFast, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].AuditID != want.AuditID {
+		t.Fatalf("history after truncated tail = %#v", history)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "crash_truncated\":\n{") {
+		t.Fatalf("truncated tail was not isolated before valid JSON: %q", data)
+	}
+}
+
+func TestReportStoreHistoryPropagatesFileReadFailure(t *testing.T) {
+	now := time.Date(2026, 7, 14, 6, 0, 0, 0, time.UTC)
+	older := testStoredReport(t, ProfileFast, now.Add(-24*time.Hour), StatusPass)
+	olderData, err := json.Marshal(older)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("injected report confinement failure")
+	fs := &historyReadTestFS{
+		files:   []reportFileInfo{{Name: "2026-07-14.jsonl", Size: 10}, {Name: "2026-07-13.jsonl", Size: int64(len(olderData) + 1)}},
+		data:    map[string][]byte{"2026-07-13.jsonl": append(olderData, '\n')},
+		readErr: map[string]error{"2026-07-14.jsonl": wantErr},
+	}
+	store := &ReportStore{fs: fs, now: func() time.Time { return now }}
+	history, err := store.History(ProfileFast, 10)
+	if !errors.Is(err, wantErr) || history != nil {
+		t.Fatalf("History silently fell back to older data: history=%#v err=%v", history, err)
+	}
+}
+
+func TestReportStoreHistoryPropagatesMatchingGeneratedNameConfinementFailure(t *testing.T) {
+	logDir := t.TempDir()
+	store, err := NewReportStore(logDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(logDir, "audit", "reports", "2026-07-14.jsonl")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	history, err := store.History(ProfileFast, 1)
+	if err == nil || history != nil {
+		t.Fatalf("matching generated-name symlink disappeared: history=%#v err=%v", history, err)
 	}
 }
 

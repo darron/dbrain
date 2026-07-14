@@ -115,7 +115,7 @@ func (f *unixReportStoreFS) AppendReport(name string, data []byte) error {
 	} else if stat.Mode&unix.S_IFMT != unix.S_IFREG {
 		return fmt.Errorf("audit report leaf is not a regular file")
 	}
-	fd, err := unix.Openat(f.reportsFD, name, unix.O_APPEND|unix.O_CREAT|unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o600)
+	fd, err := unix.Openat(f.reportsFD, name, unix.O_APPEND|unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o600)
 	if err != nil {
 		return err
 	}
@@ -131,10 +131,7 @@ func (f *unixReportStoreFS) AppendReport(name string, data []byte) error {
 	if err := file.Chmod(0o600); err != nil {
 		return err
 	}
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	if err := file.Sync(); err != nil {
+	if err := appendIsolatedReportRecord(file, data); err != nil {
 		return err
 	}
 	if created {
@@ -180,12 +177,18 @@ func (f *unixReportStoreFS) ListReports() ([]reportFileInfo, error) {
 	}
 	out := make([]reportFileInfo, 0, len(entries))
 	for _, entry := range entries {
-		if !reportFilePattern.MatchString(entry.Name()) || entry.Type()&os.ModeSymlink != 0 {
+		if !reportFilePattern.MatchString(entry.Name()) {
 			continue
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("generated audit report is a symlink")
+		}
 		var stat unix.Stat_t
-		if err := unix.Fstatat(f.reportsFD, entry.Name(), &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
-			continue
+		if err := unix.Fstatat(f.reportsFD, entry.Name(), &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return nil, fmt.Errorf("inspect generated audit report: %w", err)
+		}
+		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+			return nil, fmt.Errorf("generated audit report is not regular")
 		}
 		out = append(out, reportFileInfo{Name: entry.Name(), Size: stat.Size})
 	}

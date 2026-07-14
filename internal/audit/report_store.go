@@ -112,7 +112,7 @@ func (s *ReportStore) History(profile Profile, limit int) ([]Report, error) {
 		}
 		data, readErr := s.fs.ReadReport(file.Name, file.Size)
 		if readErr != nil {
-			continue
+			return nil, fmt.Errorf("read private audit report: %w", readErr)
 		}
 		lines := bytes.Split(data, []byte{'\n'})
 		for index := len(lines) - 1; index >= 0 && len(out) < limit; index-- {
@@ -250,4 +250,27 @@ func readBoundedRegular(file *os.File, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("private audit file exceeds byte limit")
 	}
 	return data, nil
+}
+
+func appendIsolatedReportRecord(file *os.File, data []byte) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	payload := data
+	if info.Size() > 0 {
+		var tail [1]byte
+		if _, err := file.ReadAt(tail[:], info.Size()-1); err != nil {
+			return fmt.Errorf("inspect private audit report tail: %w", err)
+		}
+		if tail[0] != '\n' {
+			payload = make([]byte, 0, len(data)+1)
+			payload = append(payload, '\n')
+			payload = append(payload, data...)
+		}
+	}
+	if _, err := file.Write(payload); err != nil {
+		return err
+	}
+	return file.Sync()
 }
