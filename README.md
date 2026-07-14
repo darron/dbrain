@@ -369,6 +369,26 @@ only reads the newest persisted exact-profile standard report. MCP cannot run
 deep checks or supply categories, time windows, paths, URLs, identifiers,
 archive keys, endpoints, or download limits.
 
+When web authentication is enabled, `dbrain serve web` and
+`dbrain serve remote --web` also expose the shared audit report through the
+session-authenticated administration API:
+
+```text
+GET  /api/audit/latest?profile=standard
+GET  /api/audit/history?profile=standard&limit=20
+POST /api/audit/run                     {"profile":"fast|standard"}
+GET  /api/audit/runs/{audit_id}
+```
+
+Page loads and GET requests never start an audit. The POST body is strict JSON
+and limited to 4 KiB; deep and category/path/URL/archive controls are not
+available. One process-wide on-demand run may be active, duplicate requests for
+its profile reuse the same opaque process-run handle, and standard starts are
+limited to one per minute. A completed status contains the immutable report,
+whose nested `report.audit_id` is distinct from the outer process-run
+`audit_id`. These routes are deliberately unavailable when `auth.enabled` is
+false and cannot be authorized by the doctor endpoint's service-auth header.
+
 The explicit CLI-only `deep` profile additionally downloads the newest SQLite
 archive into a private temporary directory, decompresses and validates that
 candidate without replacing the active database, and reconciles the complete
@@ -726,6 +746,12 @@ identity headers.
 `GITHUB_TOKEN` is still only the GitHub import token; it is not used for web UI
 OAuth.
 
+The audit administration endpoints are mounted only after this web
+authentication configuration is fully resolved. They use the same private
+report store as the scheduled audit when both are active, remain available when
+scheduled audits are disabled, and never emit scheduler alert, webhook, or
+completion-metric side effects.
+
 ### MCP Bearer Auth
 
 MCP bearer auth is optional and only applies to Streamable HTTP MCP endpoints:
@@ -769,6 +795,10 @@ must not be exposed through Tailscale Funnel or a public reverse proxy.
 The health-oriented `dbrain_audit` tool is also omitted and rejected on those
 auth-disabled transports; local stdio continues to expose it, and authenticated
 HTTP/tsnet exposes it after bearer-token validation.
+When remote web and MCP are enabled together, the configured MCP path must not
+overlap the reserved `/api/audit` or `/share` web namespaces (including parent
+or descendant paths); startup rejects such collisions instead of shadowing a
+session-authenticated or public-share route.
 When bearer auth is enabled, MCP HTTP access logs include the token record name
 and fingerprint, never the raw token.
 

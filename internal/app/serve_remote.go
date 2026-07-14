@@ -20,6 +20,7 @@ import (
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/sqlitearchive"
+	"github.com/darron/dbrain/web"
 )
 
 func newServeRemoteCommand(root *rootOptions) *cobra.Command {
@@ -74,16 +75,27 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 				controlURL:         controlURL,
 				verbose:            verbose,
 			})
-			if opts.MCP && mcpserver.AuthEnabled(cfg) {
-				auditDependencies, auditErr := resolveMCPAuditServerDependencies(cmd.Context(), cfg, auditMetaForInvocation(root))
+			webAuditEnabled := false
+			if opts.Web {
+				webAuditEnabled, err = web.AuditAPIEnabled(cmd.Context(), cfg)
+				if err != nil {
+					return fmt.Errorf("resolve web audit authentication: %w", err)
+				}
+			}
+			mcpAuditEnabled := opts.MCP && mcpserver.AuthEnabled(cfg)
+			schedulers, err := buildRemoteSchedulersWithMetaAndAuditRuntime(cmd.Context(), cfg, auditMetaForInvocation(root), cmd.ErrOrStderr(), webAuditEnabled)
+			if err != nil {
+				return err
+			}
+			if webAuditEnabled {
+				remote.SetWebAuditDependencies(&opts, schedulers.webAuditDependencies(cmd.Context()))
+			}
+			if mcpAuditEnabled {
+				auditDependencies, auditErr := resolveMCPAuditServerDependenciesWithReports(cmd.Context(), cfg, auditMetaForInvocation(root), schedulers.auditReports)
 				if auditErr != nil {
 					return fmt.Errorf("configure MCP audit: %w", auditErr)
 				}
 				remote.SetMCPDependencies(&opts, auditDependencies)
-			}
-			schedulers, err := buildRemoteSchedulersWithMeta(cmd.Context(), cfg, auditMetaForInvocation(root), cmd.ErrOrStderr())
-			if err != nil {
-				return err
 			}
 			opts.SchedulerStatus = schedulers.syncAll.Status
 			opts.OnReady = func() {
@@ -116,9 +128,14 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 }
 
 type remoteSchedulers struct {
-	syncAll       *syncScheduler
-	sqliteArchive *sqliteArchiveScheduler
-	audit         *auditScheduler
+	syncAll          *syncScheduler
+	sqliteArchive    *sqliteArchiveScheduler
+	audit            *auditScheduler
+	auditReports     *audit.ReportStore
+	auditRunner      func(context.Context, audit.Profile, time.Duration) (audit.Report, error)
+	auditSince       time.Duration
+	syncInterval     time.Duration
+	standardInterval time.Duration
 }
 
 func buildRemoteSchedulers(ctx context.Context, cfg config.Config, logOut io.Writer) (remoteSchedulers, error) {
@@ -126,6 +143,10 @@ func buildRemoteSchedulers(ctx context.Context, cfg config.Config, logOut io.Wri
 }
 
 func buildRemoteSchedulersWithMeta(ctx context.Context, cfg config.Config, meta auditConfigMeta, logOut io.Writer) (remoteSchedulers, error) {
+	return buildRemoteSchedulersWithMetaAndAuditRuntime(ctx, cfg, meta, logOut, false)
+}
+
+func buildRemoteSchedulersWithMetaAndAuditRuntime(ctx context.Context, cfg config.Config, meta auditConfigMeta, logOut io.Writer, includeAuditRuntime bool) (remoteSchedulers, error) {
 	configSnapshot, err := runtimeenv.LoadConfigSnapshot(ctx, cfg.ConfigPath, auditConfigMaxBytes)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -160,11 +181,14 @@ func buildRemoteSchedulersWithMeta(ctx context.Context, cfg config.Config, meta 
 		}
 	}
 	schedulers := remoteSchedulers{
-		syncAll:       newSyncScheduler(cfg, syncOpts, logOut),
-		sqliteArchive: newSQLiteArchiveScheduler(cfg, archiveOpts, writer, logOut),
-		audit:         newAuditScheduler(auditOpts, nil, nil, nil, logOut),
+		syncAll:          newSyncScheduler(cfg, syncOpts, logOut),
+		sqliteArchive:    newSQLiteArchiveScheduler(cfg, archiveOpts, writer, logOut),
+		audit:            newAuditScheduler(auditOpts, nil, nil, nil, logOut),
+		auditSince:       auditOpts.Since,
+		syncInterval:     syncOpts.Interval,
+		standardInterval: auditOpts.StandardInterval,
 	}
-	if auditOpts.Enabled {
+	if auditOpts.Enabled || includeAuditRuntime {
 		features, resolveErr := resolveAuditFeatures(cfg, meta)
 		if resolveErr != nil {
 			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit features: %w", resolveErr)
@@ -177,11 +201,15 @@ func buildRemoteSchedulersWithMeta(ctx context.Context, cfg config.Config, meta 
 		if storeErr != nil {
 			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit report store: %w", storeErr)
 		}
+		schedulers.auditRunner = runner
+		schedulers.auditReports = reportStore
+	}
+	if auditOpts.Enabled {
 		webhook, webhookErr := audit.NewWebhook(audit.WebhookConfig{URL: auditOpts.Alert.WebhookURL, BearerTokenRef: auditOpts.Alert.BearerTokenRef, AllowPrivateOrigin: auditOpts.Alert.AllowPrivateOrigin, AdminOrigin: auditOpts.Alert.AdminOrigin})
 		if webhookErr != nil {
 			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit webhook: %w", webhookErr)
 		}
-		schedulers.audit = newAuditScheduler(auditOpts, runner, reportStore, webhook, logOut)
+		schedulers.audit = newAuditScheduler(auditOpts, schedulers.auditRunner, schedulers.auditReports, webhook, logOut)
 		metricsConfig, metricsErr := metrics.ResolveConfig(cfg.RootDir, cfg.LogDir)
 		if metricsErr != nil {
 			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit metrics: %w", metricsErr)
@@ -190,6 +218,21 @@ func buildRemoteSchedulersWithMeta(ctx context.Context, cfg config.Config, meta 
 		schedulers.syncAll.postRun = schedulers.audit.AfterSync
 	}
 	return schedulers, nil
+}
+
+func (s remoteSchedulers) webAuditDependencies(ctx context.Context) web.AuditHandlerDependencies {
+	if s.auditReports == nil || s.auditRunner == nil {
+		return web.AuditHandlerDependencies{}
+	}
+	runs := web.NewAuditRunCoordinator(ctx, web.AuditRunCoordinatorOptions{
+		Runner: func(runCtx context.Context, profile audit.Profile) (audit.Report, error) {
+			return s.auditRunner(runCtx, profile, s.auditSince)
+		},
+		Reports:          s.auditReports,
+		SyncInterval:     s.syncInterval,
+		StandardInterval: s.standardInterval,
+	})
+	return web.AuditHandlerDependencies{Reports: s.auditReports, Runs: runs, SyncInterval: s.syncInterval, StandardInterval: s.standardInterval}
 }
 
 func (s remoteSchedulers) Stop() {

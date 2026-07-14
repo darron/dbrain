@@ -31,9 +31,13 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 		}
 		closers = append(closers, st)
 		webHandler, err = web.NewHandlerWithOptions(cfg, st, web.HandlerOptions{
-			SchedulerStatus: opts.SchedulerStatus,
-			Context:         ctx,
-			LogOutput:       logOut,
+			SchedulerStatus:       opts.SchedulerStatus,
+			Context:               ctx,
+			LogOutput:             logOut,
+			AuditReports:          opts.webAudit.Reports,
+			AuditRuns:             opts.webAudit.Runs,
+			AuditSyncInterval:     opts.webAudit.SyncInterval,
+			AuditStandardInterval: opts.webAudit.StandardInterval,
 		})
 		if err != nil {
 			cleanup()

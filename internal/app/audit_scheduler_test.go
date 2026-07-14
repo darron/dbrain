@@ -113,6 +113,44 @@ func TestBuildRemoteSchedulersCreatesAuditArtifactsOnlyWhenEnabled(t *testing.T)
 	}
 }
 
+func TestBuildRemoteSchedulersAuditRuntimeFollowsWebCapabilityNotMCPOnly(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ConfigPath, []byte("audit:\n  enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpOnly, err := buildRemoteSchedulersWithMetaAndAuditRuntime(t.Context(), cfg, auditConfigMeta{Layout: "explicit_root", Source: "flag"}, io.Discard, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mcpOnly.Stop()
+	if mcpOnly.auditReports != nil || mcpOnly.auditRunner != nil {
+		t.Fatal("MCP-only/authenticated read surface received write-capable audit runtime")
+	}
+	if _, statErr := os.Stat(filepath.Join(cfg.LogDir, "audit")); !os.IsNotExist(statErr) {
+		t.Fatalf("MCP-only composition created report store: %v", statErr)
+	}
+
+	webEnabled, err := buildRemoteSchedulersWithMetaAndAuditRuntime(t.Context(), cfg, auditConfigMeta{Layout: "explicit_root", Source: "flag"}, io.Discard, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer webEnabled.Stop()
+	dependencies := webEnabled.webAuditDependencies(t.Context())
+	if dependencies.Reports == nil || dependencies.Runs == nil || dependencies.SyncInterval <= 0 || dependencies.StandardInterval <= 0 {
+		t.Fatalf("authenticated web audit dependencies incomplete: %#v", dependencies)
+	}
+	if webEnabled.auditReports != dependencies.Reports {
+		t.Fatal("web coordinator did not share scheduler report store instance")
+	}
+}
+
 type fakeScheduledAuditStore struct {
 	mu       sync.Mutex
 	reports  []audit.Report

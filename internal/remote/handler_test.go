@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRemoteHandlerDispatchesMCPBeforeWebSPA(t *testing.T) {
@@ -180,5 +181,24 @@ func TestRemoteHandlerRequiresEnabledHandlers(t *testing.T) {
 	}
 	if _, err := NewHandler(HandlerOptions{MCP: true, MCPPath: "/mcp"}); err == nil {
 		t.Fatalf("expected missing MCP handler error")
+	}
+}
+
+func TestRemoteHandlerRejectsMCPPathsOverlappingWebAuditAndShare(t *testing.T) {
+	t.Parallel()
+	webHandler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	mcpHandler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	for _, mcpPath := range []string{"/api", "/api/audit", "/api/audit/latest", "/share", "/share/mcp"} {
+		t.Run(mcpPath, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewHandler(HandlerOptions{Web: true, MCP: true, MCPPath: mcpPath, WebHandler: webHandler, MCPHandler: mcpHandler})
+			if err == nil || !strings.Contains(err.Error(), "reserved web namespace") {
+				t.Fatalf("NewHandler MCPPath=%q error=%v, want reserved namespace rejection", mcpPath, err)
+			}
+			opts := Options{Web: true, MCP: true, MCPPath: mcpPath, Hostname: "test", StateDir: t.TempDir(), Listen: ":443", TLS: true, StartupTimeout: time.Second}
+			if err := opts.Validate(); err == nil || !strings.Contains(err.Error(), "reserved web namespace") {
+				t.Fatalf("Options.Validate MCPPath=%q error=%v, want reserved namespace rejection", mcpPath, err)
+			}
+		})
 	}
 }

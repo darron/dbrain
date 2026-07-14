@@ -23,6 +23,9 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := ValidateSurfacePaths(opts.Web, opts.MCP, mcpPath); err != nil {
+		return nil, err
+	}
 	if opts.MCP && opts.MCPHandler == nil {
 		return nil, fmt.Errorf("mcp handler is required when MCP is enabled")
 	}

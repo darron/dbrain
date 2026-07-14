@@ -7,6 +7,13 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Authenticated admin audit API**: Added fail-closed latest, compact history,
+  bounded on-demand fast/standard run, and process-run status endpoints for the
+  authenticated web administration surface. The routes are absent when web
+  authentication is disabled, reject service-auth and cross-origin mutation,
+  persist immutable reports before completion, and retain only bounded,
+  sanitized in-process run state.
+
 - **Bounded MCP health**: Added `dbrain_audit` with a fixed-deadline,
   process-singleflight local fast profile and a persisted exact-profile standard
   read path. The privacy-validated response is capped at 256 KiB, exposes no

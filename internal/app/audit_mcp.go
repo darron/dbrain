@@ -16,6 +16,10 @@ const mcpAuditSince = 7 * 24 * time.Hour
 var errMCPAuditRemoteAuthority = errors.New("refuse MCP audit runner with remote archive authority")
 
 func resolveMCPAuditServerDependencies(ctx context.Context, cfg config.Config, meta auditConfigMeta) (mcpserver.ServerDependencies, error) {
+	return resolveMCPAuditServerDependenciesWithReports(ctx, cfg, meta, nil)
+}
+
+func resolveMCPAuditServerDependenciesWithReports(ctx context.Context, cfg config.Config, meta auditConfigMeta, reports mcpserver.AuditReportReader) (mcpserver.ServerDependencies, error) {
 	features, err := resolveAuditFeatures(cfg, meta)
 	if err != nil {
 		return mcpserver.ServerDependencies{}, err
@@ -28,10 +32,14 @@ func resolveMCPAuditServerDependencies(ctx context.Context, cfg config.Config, m
 	if err != nil {
 		return mcpserver.ServerDependencies{}, err
 	}
-	return newMCPAuditServerDependencies(ctx, cfg, features, syncOptions.Interval, auditOptions.StandardInterval)
+	return newMCPAuditServerDependenciesWithReports(ctx, cfg, features, syncOptions.Interval, auditOptions.StandardInterval, reports)
 }
 
 func newMCPAuditServerDependencies(ctx context.Context, cfg config.Config, features audit.Features, syncInterval, standardInterval time.Duration) (mcpserver.ServerDependencies, error) {
+	return newMCPAuditServerDependenciesWithReports(ctx, cfg, features, syncInterval, standardInterval, nil)
+}
+
+func newMCPAuditServerDependenciesWithReports(ctx context.Context, cfg config.Config, features audit.Features, syncInterval, standardInterval time.Duration, reports mcpserver.AuditReportReader) (mcpserver.ServerDependencies, error) {
 	base, err := buildAuditDependencies(ctx, cfg, nil, audit.Request{Profile: audit.ProfileFast, Since: mcpAuditSince}, features)
 	if err != nil {
 		return mcpserver.ServerDependencies{}, err
@@ -42,9 +50,11 @@ func newMCPAuditServerDependencies(ctx context.Context, cfg config.Config, featu
 	if base.Archives != nil || base.Media != nil {
 		return mcpserver.ServerDependencies{}, errMCPAuditRemoteAuthority
 	}
-	reports, err := audit.NewReportReader(cfg.LogDir)
-	if err != nil {
-		return mcpserver.ServerDependencies{}, err
+	if reports == nil {
+		reports, err = audit.NewReportReader(cfg.LogDir)
+		if err != nil {
+			return mcpserver.ServerDependencies{}, err
+		}
 	}
 	runFast := func(runCtx context.Context) (audit.Report, error) {
 		st, err := store.OpenReadOnlyContext(runCtx, cfg.DBPath)
