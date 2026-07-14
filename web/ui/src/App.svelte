@@ -16,7 +16,7 @@
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
   import { addLink, compareResearchTrace, createChatShare, getAuditHistory, getAuditLatest, getAuditRun, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, startAuditRun, synthesizeResearch } from "./lib/api.js";
-  import { applyPollResultIfCurrent, applyRunMonitoringUnknown, applyRunStatus, auditRunBlocksStart, freshnessDeadlineElapsed, freshnessRefreshDelayMs, markEnvelopeStale, overallHealth, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline } from "./lib/audit.js";
+  import { applyRunMonitoringUnknown, applyRunStatus, auditRunBlocksStart, freshnessDeadlineElapsed, freshnessRefreshDelayMs, markEnvelopeStale, overallHealth, runGenerationStableRead, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline } from "./lib/audit.js";
   import { buildChatRetrievalQuestion, buildChatTraceContinuity, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
   import { formatTime } from "./lib/time.js";
@@ -57,6 +57,8 @@
   let standardFreshnessTimer = null;
   let standardFreshnessObservedAt = 0;
   let standardRefreshBusy = false;
+  let standardHistoryNeedsRefresh = false;
+  let standardHistoryRetryTimer = null;
   let auditPollGeneration = 0;
   const auditController = new AbortController();
   const auditPollTimers = new Set();
@@ -211,6 +213,7 @@
     auditPollGeneration += 1;
     auditController.abort();
     clearTimeout(standardFreshnessTimer);
+    clearTimeout(standardHistoryRetryTimer);
     clearAuditPollTimers();
   });
 
@@ -346,9 +349,10 @@
           if (auditDisposed || generation !== auditPollGeneration) return;
           scheduleAuditPoll(profile, auditID, attempt + 1, 30000, generation);
         } else if (profile === "standard" && status.state === "completed") {
-          await refreshStandardAuditHistory(generation);
-          if (auditDisposed || generation !== auditPollGeneration) return;
+          standardHistoryNeedsRefresh = true;
           scheduleStandardFreshnessRefresh();
+          await refreshStandardAuditHistory(generation, 2, 3);
+          if (auditDisposed || generation !== auditPollGeneration) return;
         }
       } catch (error) {
         if (!auditDisposed && generation === auditPollGeneration) {
@@ -379,10 +383,12 @@
     auditActionError = "";
   }
 
-  async function refreshLatestAudit(profile, expectedGeneration = null) {
+  async function refreshLatestAudit(profile, expectedGeneration = null, maxAttempts = 1) {
     let standardReportChanged = false;
+    let latestApplied = false;
     const applyEnvelope = (envelope) => {
       if (auditDisposed) return;
+      latestApplied = true;
       if (profile === "fast") {
         fastEnvelope = envelope;
         return;
@@ -398,16 +404,21 @@
       if (auditDisposed) return false;
       applyEnvelope(envelope);
     } else {
-      const applied = await applyPollResultIfCurrent(
-        () => getAuditLatest(profile, { signal: auditController.signal }),
-        expectedGeneration,
-        () => auditPollGeneration,
-        applyEnvelope
-      );
+      const applied = await runGenerationStableRead({
+        read: () => getAuditLatest(profile, { signal: auditController.signal }),
+        apply: applyEnvelope,
+        currentGeneration: () => auditPollGeneration,
+        initialGeneration: expectedGeneration,
+        isDisposed: () => auditDisposed,
+        maxAttempts
+      });
       if (!applied || auditDisposed) return false;
     }
-    if (standardReportChanged) await refreshStandardAuditHistory(expectedGeneration);
-    return !auditDisposed && (expectedGeneration == null || expectedGeneration === auditPollGeneration);
+    if (standardReportChanged) {
+      standardHistoryNeedsRefresh = true;
+      await refreshStandardAuditHistory(expectedGeneration == null ? null : auditPollGeneration, maxAttempts, 2);
+    }
+    return !auditDisposed && latestApplied;
   }
 
   function scheduleStandardFreshnessRefresh() {
@@ -424,11 +435,13 @@
 
   async function refreshStandardAtFreshnessBoundary() {
     if (auditDisposed || standardRefreshBusy) return;
+    const generation = auditPollGeneration;
     standardRefreshBusy = true;
     const elapsed = standardFreshnessObservedAt > 0 ? Date.now() - standardFreshnessObservedAt : 0;
     if (freshnessDeadlineElapsed(standardEnvelope, elapsed)) standardEnvelope = markEnvelopeStale(standardEnvelope);
     try {
-      await refreshLatestAudit("standard");
+      await refreshLatestAudit("standard", generation, 2);
+      if (standardHistoryNeedsRefresh) await refreshStandardAuditHistory(auditPollGeneration, 2, 1);
     } catch {
       // Keep the prior report visible as stale and retry the read later. A GET
       // failure is not evidence that the audit itself failed.
@@ -438,7 +451,7 @@
     }
   }
 
-  async function refreshStandardAuditHistory(expectedGeneration = null) {
+  async function refreshStandardAuditHistory(expectedGeneration = null, maxAttempts = 1, retryBudget = 0) {
     if (expectedGeneration == null) {
       auditHistoryState = "loading";
       auditHistoryError = "";
@@ -449,23 +462,52 @@
         response = await getAuditHistory("standard", 20, { signal: auditController.signal });
         if (auditDisposed) return false;
       } else {
-        const applied = await applyPollResultIfCurrent(
-          () => getAuditHistory("standard", 20, { signal: auditController.signal }),
-          expectedGeneration,
-          () => auditPollGeneration,
-          (value) => { if (!auditDisposed) response = value; }
-        );
-        if (!applied || auditDisposed || response == null) return false;
+        const applied = await runGenerationStableRead({
+          read: () => getAuditHistory("standard", 20, { signal: auditController.signal }),
+          apply: (value) => { if (!auditDisposed) response = value; },
+          currentGeneration: () => auditPollGeneration,
+          initialGeneration: expectedGeneration,
+          isDisposed: () => auditDisposed,
+          maxAttempts
+        });
+        if (!applied || auditDisposed || response == null) {
+          if (!auditDisposed) {
+            standardHistoryNeedsRefresh = true;
+            scheduleStandardHistoryRetry(retryBudget);
+          }
+          return false;
+        }
       }
       standardHistoryResponse = response;
       auditHistoryState = "ready";
+      standardHistoryNeedsRefresh = false;
+      clearTimeout(standardHistoryRetryTimer);
+      standardHistoryRetryTimer = null;
       return true;
     } catch (error) {
-      if (auditDisposed || (expectedGeneration != null && expectedGeneration !== auditPollGeneration)) return false;
+      if (auditDisposed) return false;
+      if (expectedGeneration != null && expectedGeneration !== auditPollGeneration) {
+        standardHistoryNeedsRefresh = true;
+        scheduleStandardHistoryRetry(retryBudget);
+        return false;
+      }
       auditHistoryState = "error";
       auditHistoryError = error.message || "audit_report_unavailable";
+      if (expectedGeneration != null) {
+        standardHistoryNeedsRefresh = true;
+        scheduleStandardHistoryRetry(retryBudget);
+      }
       return false;
     }
+  }
+
+  function scheduleStandardHistoryRetry(retryBudget) {
+    if (auditDisposed || retryBudget <= 0 || standardHistoryRetryTimer != null) return;
+    standardHistoryRetryTimer = setTimeout(() => {
+      standardHistoryRetryTimer = null;
+      if (auditDisposed) return;
+      void refreshStandardAuditHistory(auditPollGeneration, 2, retryBudget - 1);
+    }, 1000);
   }
 
   async function loadSourceActivity() {

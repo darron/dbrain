@@ -91,6 +91,22 @@ export async function applyPollResultIfCurrent(load, expectedGeneration, current
   return true;
 }
 
+export async function runGenerationStableRead({ read, apply, currentGeneration, initialGeneration, isDisposed = () => false, maxAttempts = 2 }) {
+  let generation = initialGeneration;
+  const attempts = Math.max(1, Math.min(Number(maxAttempts) || 1, 3));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const value = await read(generation, attempt);
+    if (isDisposed()) return false;
+    const current = currentGeneration();
+    if (generation === current) {
+      apply(value);
+      return true;
+    }
+    generation = current;
+  }
+  return false;
+}
+
 export function applyRunStatus(state, status) {
   const profile = status?.profile === "fast" ? "fast" : "standard";
   const executionState = ["running", "completed", "failed"].includes(status?.state) ? status.state : "failed";

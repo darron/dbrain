@@ -43,8 +43,13 @@ test("admin audit surface loads saved reports only and cancels polling on destro
   assert.match(appSource, /auditRunBlocksStart\(runByProfile\.fast\)/);
   assert.match(appSource, /refreshLatestAudit\(profile, generation\)/);
   assert.match(appSource, /30000, generation\)/);
-  assert.match(appSource, /refreshStandardAuditHistory\(generation\)/);
-  assert.match(appSource, /refreshStandardAuditHistory\(expectedGeneration\)/);
+  assert.match(appSource, /refreshStandardAuditHistory\(generation, 2, 3\)/);
+  assert.match(appSource, /runGenerationStableRead\(\{/);
+  assert.match(appSource, /const generation = auditPollGeneration/);
+  assert.match(appSource, /refreshLatestAudit\("standard", generation, 2\)/);
+  assert.match(appSource, /standardHistoryNeedsRefresh/);
+  assert.match(appSource, /scheduleStandardHistoryRetry/);
+  assert.match(appSource, /if \(standardHistoryNeedsRefresh\) await refreshStandardAuditHistory/);
   assert.doesNotMatch(appSource, /state: "failed", error_code: "audit_poll_/);
   assert.match(overviewSource, /status unavailable · audit may still be running/);
   assert.match(pipelineSource, /pending age \{stage\.pendingStatus\}/);

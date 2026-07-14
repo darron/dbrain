@@ -13,6 +13,7 @@ import {
   overallHealth,
   markEnvelopeStale,
   pollRunDecision,
+  runGenerationStableRead,
   safeEvidence,
   selectDurability,
   selectFindings,
@@ -171,6 +172,72 @@ test("a deferred old poll result cannot apply after poll generation changes", as
   );
   assert.equal(await currentRead, true);
   assert.deepEqual(applied, [{ audit_id: "new-report" }]);
+});
+
+test("a freshness read invalidated by a newer run retries once and cannot overwrite the newer report", async () => {
+  let resolveOld;
+  let generation = 10;
+  let reportState = { audit_id: "report-b" };
+  let reads = 0;
+  const refresh = runGenerationStableRead({
+    initialGeneration: 10,
+    currentGeneration: () => generation,
+    maxAttempts: 2,
+    read: async () => {
+      reads += 1;
+      if (reads === 1) return new Promise((resolve) => { resolveOld = resolve; });
+      return { audit_id: "report-b" };
+    },
+    apply: (value) => { reportState = value; }
+  });
+  generation = 11;
+  resolveOld({ audit_id: "report-a" });
+  assert.equal(await refresh, true);
+  assert.equal(reads, 2);
+  assert.deepEqual(reportState, { audit_id: "report-b" });
+});
+
+test("a standard history read invalidated by a concurrent run retries under the current generation", async () => {
+  let resolveOld;
+  let generation = 20;
+  let historyState = ["existing"];
+  let reads = 0;
+  const refresh = runGenerationStableRead({
+    initialGeneration: 20,
+    currentGeneration: () => generation,
+    maxAttempts: 2,
+    read: async () => {
+      reads += 1;
+      if (reads === 1) return new Promise((resolve) => { resolveOld = resolve; });
+      return ["completed-standard"];
+    },
+    apply: (value) => { historyState = value; }
+  });
+  generation = 21;
+  resolveOld(["stale-history"]);
+  assert.equal(await refresh, true);
+  assert.equal(reads, 2);
+  assert.deepEqual(historyState, ["completed-standard"]);
+});
+
+test("generation-stable reads stop after the bounded retry budget without applying stale data", async () => {
+  let generation = 30;
+  let reads = 0;
+  const applied = [];
+  const refreshed = await runGenerationStableRead({
+    initialGeneration: 30,
+    currentGeneration: () => generation,
+    maxAttempts: 2,
+    read: async () => {
+      reads += 1;
+      generation += 1;
+      return { attempt: reads };
+    },
+    apply: (value) => applied.push(value)
+  });
+  assert.equal(refreshed, false);
+  assert.equal(reads, 2);
+  assert.deepEqual(applied, []);
 });
 
 test("poll and quiet arrivals are separate importer signals", () => {
