@@ -766,14 +766,14 @@ func TestBuildDeepAuditDependenciesSelectsExactRemoteOnlyMediaCapability(t *test
 	t.Setenv("DBRAIN_R2_SECRET_ACCESS_KEY", "test-secret")
 	features := audit.Features{MediaRemoteEnabled: true, SQLiteProviderConfigured: true, SQLiteCredentialConfigured: true}
 	resolved := auditRuntimeConfig{Features: features}
-	deep, err := buildDeepAuditDependencies(t.Context(), cfg, audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}, resolved, audit.DefaultDeepLimits())
+	deep, err := buildDeepAuditDependencies(t.Context(), cfg, nil, audit.Request{Profile: audit.ProfileDeep, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemoteOnly}}, resolved, audit.DefaultDeepLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deep.Media == nil {
 		t.Fatal("exact remote-only request did not receive media inventory capability")
 	}
-	unrelated, err := buildDeepAuditDependencies(t.Context(), cfg, audit.Request{Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports}}, resolved, audit.DefaultDeepLimits())
+	unrelated, err := buildDeepAuditDependencies(t.Context(), cfg, nil, audit.Request{Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports}}, resolved, audit.DefaultDeepLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +785,7 @@ func TestBuildDeepAuditDependenciesSelectsExactRemoteOnlyMediaCapability(t *test
 func TestAuditSourceCommandsAreDeepOnlyAndDoNotExposeArchiveFlags(t *testing.T) {
 	root := &rootOptions{}
 	auditCommand := newAuditCommand(root)
-	for _, name := range []string{"github-stars", "youtube-liked", "youtube-watch-later"} {
+	for _, name := range []string{"apple-notes", "safari-tabs", "x-bookmarks", "github-stars", "youtube-liked", "youtube-watch-later", "feeds"} {
 		command, _, err := auditCommand.Find([]string{name})
 		if err != nil {
 			t.Fatalf("find %s: %v", name, err)
@@ -863,7 +863,7 @@ func TestBuildDeepAuditDependenciesSelectsOnlyRequestedYouTubeInventoryBeforeArc
 		Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports},
 		Sources: []audit.Source{audit.SourceYouTubeLiked}, SourceOverrides: []audit.Source{audit.SourceYouTubeLiked},
 	}
-	deep, err := buildDeepAuditDependencies(t.Context(), cfg, req, resolved, audit.DefaultDeepLimits())
+	deep, err := buildDeepAuditDependencies(t.Context(), cfg, nil, req, resolved, audit.DefaultDeepLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -872,6 +872,55 @@ func TestBuildDeepAuditDependenciesSelectsOnlyRequestedYouTubeInventoryBeforeArc
 	}
 	if deep.Upstream[audit.SourceGitHubStars] != nil || deep.Upstream[audit.SourceYouTubeWatchLater] != nil || deep.Media != nil || deep.Archives != nil {
 		t.Fatalf("received unrelated deep capability: %#v", deep)
+	}
+}
+
+func TestBuildDeepAuditDependenciesBindsAllConfiguredUpstreamInventories(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+
+	sources := map[audit.Source]bool{}
+	for _, source := range []audit.Source{
+		audit.SourceAppleNotes, audit.SourceSafariTabs, audit.SourceXBookmarks,
+		audit.SourceGitHubStars, audit.SourceYouTubeLiked, audit.SourceYouTubeWatchLater, audit.SourceFeeds,
+	} {
+		sources[source] = true
+	}
+	resolved := auditRuntimeConfig{Features: audit.Features{Sources: sources}, Flags: syncAllFlags{
+		appleNotes: true, safariTabs: true, safariTabsDevice: "device-id", liked: true, watchLater: true,
+	}}
+	deep, err := buildDeepAuditDependencies(t.Context(), cfg, snapshot, audit.Request{
+		Profile: audit.ProfileDeep, Categories: []audit.Category{audit.CategoryImports},
+	}, resolved, audit.DefaultDeepLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deep.Upstream) != 7 {
+		t.Fatalf("configured upstream inventory count = %d, want 7: %#v", len(deep.Upstream), deep.Upstream)
+	}
+	for source := range sources {
+		if deep.Upstream[source] == nil {
+			t.Fatalf("configured source %q has no inventory: %#v", source, deep.Upstream)
+		}
+	}
+	if deep.Media != nil || deep.Archives != nil {
+		t.Fatalf("imports-only deep dependencies received durability capability: %#v", deep)
 	}
 }
 
@@ -971,6 +1020,52 @@ func TestAuditSourceCommandIgnoresUnrelatedDeepArchiveLimits(t *testing.T) {
 	}
 	if report.Schema != audit.SchemaV1 || report.Profile != audit.ProfileDeep {
 		t.Fatalf("report schema/profile = %q/%q", report.Schema, report.Profile)
+	}
+}
+
+func TestAuditFeedsCommandUsesQueryOnlySnapshotAndEmptyInventoryPasses(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_TOKEN", "op://must-not-resolve/feed-audit")
+	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "op://must-not-resolve/feed-audit")
+
+	command := NewRootCommand()
+	var out bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"--root", root, "--no-debug", "audit", "feeds", "--json"})
+	if err := command.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("empty feed audit: %v output=%s", err, out.String())
+	}
+	var report audit.Report
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v output=%s", err, out.String())
+	}
+	parityFound := false
+	for _, check := range report.Checks {
+		entry, ok := audit.Lookup(check.ID)
+		if !ok || (entry.Source != "" && entry.Source != audit.SourceFeeds) {
+			t.Fatalf("feed report contained unrelated check: %#v", check)
+		}
+		if check.ID == audit.CheckUpstreamFeedsParity {
+			parityFound = check.Required && check.Status == audit.StatusPass && fmt.Sprint(check.Evidence["upstream_count"]) == "0"
+		}
+	}
+	if !parityFound {
+		t.Fatalf("empty feed parity did not pass: %#v", report.Checks)
 	}
 }
 

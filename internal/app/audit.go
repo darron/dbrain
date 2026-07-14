@@ -10,17 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/sqlitearchive"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vaultfs"
 	"github.com/darron/dbrain/internal/version"
+	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/youtubeimport"
 	"github.com/spf13/cobra"
 )
@@ -47,9 +51,13 @@ func newAuditCommand(root *rootOptions) *cobra.Command {
 		newAuditRunCommand(root, "imports", []audit.Category{audit.CategoryImports}),
 		newAuditRunCommand(root, "pipeline", []audit.Category{audit.CategoryPipeline}),
 		newAuditRunCommand(root, "durability", []audit.Category{audit.CategoryDurability}),
+		newAuditSourceCommand(root, "apple-notes", audit.SourceAppleNotes),
+		newAuditSourceCommand(root, "safari-tabs", audit.SourceSafariTabs),
+		newAuditSourceCommand(root, "x-bookmarks", audit.SourceXBookmarks),
 		newAuditSourceCommand(root, "github-stars", audit.SourceGitHubStars),
 		newAuditSourceCommand(root, "youtube-liked", audit.SourceYouTubeLiked),
 		newAuditSourceCommand(root, "youtube-watch-later", audit.SourceYouTubeWatchLater),
+		newAuditSourceCommand(root, "feeds", audit.SourceFeeds),
 	)
 	return cmd
 }
@@ -216,7 +224,7 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	var report audit.Report
 	localCleanupPaths := map[audit.CheckID][]string{}
 	if profile == audit.ProfileDeep {
-		deepDeps, buildErr := buildDeepAuditDependencies(ctx, cfg, req, resolvedRuntime, deepLimits)
+		deepDeps, buildErr := buildDeepAuditDependencies(ctx, cfg, snapshot, req, resolvedRuntime, deepLimits)
 		if buildErr != nil {
 			return &ExitError{Code: 3, Err: fmt.Errorf("resolve deep audit capabilities: %w", buildErr)}
 		}
@@ -398,6 +406,23 @@ func resolveDeepAuditLimits(root string, flags auditCLIFlags, explicit map[strin
 
 type auditDatabaseInspector struct{ path string }
 
+type auditFeedInventory struct {
+	snapshot            *store.AuditReadSnapshot
+	userAgent           string
+	allowPrivateNetwork bool
+}
+
+func (i auditFeedInventory) Inventory(ctx context.Context, budget audit.InventoryBudget) (audit.InventoryResult, error) {
+	if i.snapshot == nil {
+		return audit.InventoryResult{}, fmt.Errorf("%w: feed audit snapshot unavailable", audit.ErrInventoryInvalid)
+	}
+	feeds, err := i.snapshot.ListEnabledFeedsForAudit(ctx)
+	if err != nil {
+		return audit.InventoryResult{}, err
+	}
+	return feedimport.NewAuditInventory(feeds, i.userAgent, i.allowPrivateNetwork).Inventory(ctx, budget)
+}
+
 func (i auditDatabaseInspector) Inspect(ctx context.Context, full bool) (audit.DatabaseInspection, error) {
 	value, err := store.InspectDatabaseReadOnly(ctx, i.path, full)
 	if err != nil {
@@ -477,12 +502,31 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, snapshot *st
 	return deps, nil
 }
 
-func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, req audit.Request, resolved auditRuntimeConfig, limits audit.DeepLimits) (audit.DeepDependencies, error) {
+func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, snapshot *store.AuditReadSnapshot, req audit.Request, resolved auditRuntimeConfig, limits audit.DeepLimits) (audit.DeepDependencies, error) {
 	features := resolved.Features
 	deep := audit.DeepDependencies{
 		Limits: limits, VerifyArchive: auditArchiveVerifier{},
 		NewTemp:  func() (*vaultfs.PrivateTemp, error) { return vaultfs.NewPrivateTemp(cfg.TempDir) },
 		Upstream: audit.UpstreamInventories{},
+	}
+	if auditSourceSelected(req, features, audit.SourceAppleNotes, audit.CheckUpstreamAppleNotesParity) {
+		deep.Upstream[audit.SourceAppleNotes] = applenotes.NewAuditInventory(cfg, applenotes.Options{
+			DBPath:          resolved.Flags.appleNotesDBPath,
+			ExcludeFolders:  append([]string(nil), resolved.Flags.appleNotesExcludeFolders...),
+			ExcludeAccounts: append([]string(nil), resolved.Flags.appleNotesExcludeAccounts...),
+			ExcludeShared:   resolved.Flags.appleNotesExcludeShared,
+		})
+	}
+	if auditSourceSelected(req, features, audit.SourceSafariTabs, audit.CheckUpstreamSafariTabsParity) {
+		deep.Upstream[audit.SourceSafariTabs] = safaritabs.NewAuditInventory(cfg, safaritabs.Options{
+			DBPath: resolved.Flags.safariTabsDBPath, Device: resolved.Flags.safariTabsDevice,
+			OlderThan: resolved.Flags.safariTabsOlderThan,
+		})
+	}
+	if auditSourceSelected(req, features, audit.SourceXBookmarks, audit.CheckUpstreamXBookmarksParity) {
+		deep.Upstream[audit.SourceXBookmarks] = xapi.NewBookmarkAuditInventory(xapi.BookmarkOptions{
+			Browser: resolved.Flags.browser, Profile: resolved.Flags.profile, Timeout: resolved.Flags.xTimeout,
+		})
 	}
 	if auditSourceSelected(req, features, audit.SourceGitHubStars, audit.CheckUpstreamGitHubStarsParity) {
 		deep.Upstream[audit.SourceGitHubStars] = githubimport.NewAuditInventory(
@@ -495,6 +539,13 @@ func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, req audi
 	}
 	if auditSourceSelected(req, features, audit.SourceYouTubeWatchLater, audit.CheckUpstreamYouTubeWatchLaterParity) {
 		deep.Upstream[audit.SourceYouTubeWatchLater] = youtubeimport.NewWatchLaterAuditInventory(resolved.Flags.browser, resolved.Flags.profile)
+	}
+	if auditSourceSelected(req, features, audit.SourceFeeds, audit.CheckUpstreamFeedsParity) {
+		deep.Upstream[audit.SourceFeeds] = auditFeedInventory{
+			snapshot:            snapshot,
+			userAgent:           runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_USER_AGENT"),
+			allowPrivateNetwork: feedAllowPrivateNetworkFromRuntime(cfg.RootDir),
+		}
 	}
 	needMedia := (auditRequestSelectsCheck(req, audit.CheckDurabilityMediaRemote) || auditRequestSelectsCheck(req, audit.CheckDurabilityMediaRemoteOnly)) && features.MediaRemoteEnabled && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
 	needArchive := auditRequestSelectsCheck(req, audit.CheckDurabilitySQLiteRestore) && (features.SQLiteBackupSchedulerEnabled || features.SQLiteBackupAuditRequired) && features.SQLiteProviderConfigured && features.SQLiteCredentialConfigured
