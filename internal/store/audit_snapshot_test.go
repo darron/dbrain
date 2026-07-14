@@ -120,6 +120,36 @@ func TestAuditReadSnapshotRestoresReadOnlyQueryOnlyState(t *testing.T) {
 	}
 }
 
+func TestAuditReadSnapshotMediaEvidenceIsReadOnlyAndPreservesInvalidTimestamps(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.db.ExecContext(t.Context(), `INSERT INTO media_assets
+		(remote_url, byte_size, download_status, archive_key, archive_status, archived_at, updated_at)
+		VALUES ('https://example.invalid/orphan', 7, 'downloaded', '', '', '', ''),
+		('https://example.invalid/archive-valid', 11, 'downloaded', 'media/a', 'archived', '2026-07-14T12:00:00Z', ''),
+		('https://example.invalid/archive-invalid', 13, 'downloaded', 'media/b', 'archived', 'not-a-time', '')`); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+	local, err := snapshot.MediaLocalEvidence(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.OrphanCount != 3 {
+		t.Fatalf("orphan count = %d, want 3", local.OrphanCount)
+	}
+	records, err := snapshot.ArchivedMediaRecords(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || !records[0].ArchivedAtValid || records[1].ArchivedAtValid {
+		t.Fatalf("records = %#v", records)
+	}
+}
+
 func auditQueryOnlyState(t *testing.T, st *Store) int {
 	t.Helper()
 	var state int

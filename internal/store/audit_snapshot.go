@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
+
+	"github.com/darron/dbrain/internal/model"
 )
 
 type AuditPipelinePartitions struct {
@@ -16,6 +19,19 @@ type AuditPipelinePartitions struct {
 	Transcription []PipelineStageRow
 	OCR           []PipelineStageRow
 	MediaArchive  []PipelineStageRow
+}
+
+type AuditMediaLocalEvidence struct {
+	EligibleLocalCount   int
+	UncoveredPrunedCount int
+	OrphanCount          int
+}
+
+type AuditArchivedMediaRecord struct {
+	Key             string
+	SizeBytes       int64
+	ArchivedAt      time.Time
+	ArchivedAtValid bool
 }
 
 type AuditReadSnapshot struct {
@@ -125,4 +141,75 @@ func (s *AuditReadSnapshot) PipelinePartitions(ctx context.Context) (AuditPipeli
 		Hydration: stats.Hydration, Extraction: stats.Extraction, Summary: stats.Summary,
 		Transcription: stats.Transcription, OCR: stats.OCR, MediaArchive: stats.MediaArchive,
 	}, nil
+}
+
+func (s *AuditReadSnapshot) MediaLocalEvidence(ctx context.Context) (AuditMediaLocalEvidence, error) {
+	tx, err := s.query(ctx)
+	if err != nil {
+		return AuditMediaLocalEvidence{}, err
+	}
+	var out AuditMediaLocalEvidence
+	queries := []struct {
+		dst *int
+		sql string
+	}{
+		{&out.EligibleLocalCount, `SELECT COUNT(*) FROM media_assets a WHERE ` + mediaArchiveCandidateWhere("a", false)},
+		{&out.UncoveredPrunedCount, `SELECT COUNT(*) FROM media_assets a
+			WHERE a.local_pruned_at != ''
+			AND EXISTS (SELECT 1 FROM item_media_links l WHERE l.media_asset_id = a.id)
+			AND NOT ` + mediaArchiveEnrichmentCompleteWhere("a")},
+		{&out.OrphanCount, `SELECT COUNT(*) FROM media_assets a
+			WHERE a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
+			AND NOT EXISTS (SELECT 1 FROM item_media_links l WHERE l.media_asset_id = a.id)`},
+	}
+	for _, query := range queries {
+		if err := tx.QueryRowContext(ctx, query.sql).Scan(query.dst); err != nil {
+			return AuditMediaLocalEvidence{}, fmt.Errorf("inspect audit media coverage: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func (s *AuditReadSnapshot) ArchivedMediaRecords(ctx context.Context) ([]AuditArchivedMediaRecord, error) {
+	tx, err := s.query(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT archive_key, byte_size, archived_at
+		FROM media_assets
+		WHERE archive_status = ? AND archive_key != ''
+		ORDER BY id ASC`, model.MediaArchiveStatusArchived)
+	if err != nil {
+		return nil, fmt.Errorf("list audit archived media: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]AuditArchivedMediaRecord, 0)
+	for rows.Next() {
+		var record AuditArchivedMediaRecord
+		var archivedAt string
+		if err := rows.Scan(&record.Key, &record.SizeBytes, &archivedAt); err != nil {
+			return nil, fmt.Errorf("scan audit archived media: %w", err)
+		}
+		if parsed, err := time.Parse(time.RFC3339, archivedAt); err == nil {
+			record.ArchivedAt = parsed.UTC()
+			record.ArchivedAtValid = true
+		}
+		out = append(out, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit archived media: %w", err)
+	}
+	return out, nil
+}
+
+func (s *AuditReadSnapshot) query(ctx context.Context) (*sql.Tx, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, fmt.Errorf("audit read snapshot is closed")
+	}
+	return s.tx, nil
 }

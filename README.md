@@ -346,6 +346,20 @@ export DBRAIN_ROOT=.
 Resolution order for config layout is `--config-file`, `--root`,
 `DBRAIN_CONFIG_FILE`, `DBRAIN_ROOT`, then XDG defaults.
 
+To inspect the resolved installation without repairing or mutating it, run:
+
+```sh
+dbrain audit all --profile standard --json
+```
+
+The stable `dbrain.audit.v1` report covers target/build identity, SQLite
+integrity, scheduler continuity, importer polling/arrivals, pipeline
+partitions/provenance, media durability, SQLite backup age, and OKF health.
+The command uses a query-only SQLite snapshot and bounded metrics/remote
+metadata reads. Exit codes are 0 pass, 1 warn, 2 fail, and 3 unknown or
+bootstrap/configuration failure. See [COMMANDS.md](COMMANDS.md#dbrain-audit)
+for profiles, category scopes, privacy rules, and flags.
+
 Configuration currently resolves in this order: shell environment, `.envrc` or
 `.env` in the config/root directory, then `config.yaml`. The YAML file can use
 exact environment-style keys under `env`, or cleaner grouped keys:
@@ -1041,10 +1055,8 @@ backlog and explicit non-goals.
   shared API client layer.
 - Improve the web note reader with richer Markdown rendering, better code-block
   presentation, and cleaner outbound link handling.
-- Add explicit source-of-truth audit commands such as
-  `dbrain audit github-stars`, `dbrain audit youtube-watch-later`,
-  `dbrain audit x-bookmarks`, and `dbrain audit all --json`, while preserving
-  append-only local memory semantics.
+- Extend the production health audit's standard local checks with explicit deep
+  upstream parity and temporary SQLite restore verification.
 - Add optional importers when they become high-value enough to justify first-
   class support: X profile/likes, Apple News bookmarks, native Substack data
   beyond RSS/manual links, Bluesky, Mastodon, Instagram, MakerWorld bookmarks,

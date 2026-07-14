@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 )
@@ -70,6 +71,36 @@ scheduler:
 	}
 	if !got.Flags.watchLater || !got.Flags.liked || !got.Flags.summarize || got.Flags.categorizeImages {
 		t.Fatalf("expected scheduled sync defaults plus image skip override, got %+v", got.Flags)
+	}
+}
+
+func TestSchedulerSyncMarkersAreContentFreeAndExplicit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "scheduler", Command: "sync all", Invocation: "scheduler:lifecycle", Sink: sink}
+	for _, name := range []string{"scheduler.sync.enabled", "scheduler.sync.stopped", "scheduler.sync.lock_skipped", "scheduler.sync.overlap_skipped"} {
+		emitSchedulerSyncMarkerEvent(run, name)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, name := range []string{"scheduler.sync.enabled", "scheduler.sync.stopped", "scheduler.sync.lock_skipped", "scheduler.sync.overlap_skipped"} {
+		if !strings.Contains(text, name) {
+			t.Fatalf("missing marker %q in %s", name, text)
+		}
+	}
+	for _, forbidden := range []string{"previous run still active", "sync all already running", "path", "token", "url"} {
+		if strings.Contains(strings.ToLower(text), forbidden) {
+			t.Fatalf("marker leaked %q: %s", forbidden, text)
+		}
 	}
 }
 

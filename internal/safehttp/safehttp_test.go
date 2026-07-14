@@ -246,6 +246,45 @@ func TestClientAllowsPrivateNetworkOnlyWhenExplicit(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestCanonicalOriginEndpointRejectsNonOriginComponents(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:secret@s3.example.com",
+		"https://s3.example.com/bucket",
+		"https://s3.example.com?region=auto",
+		"https://s3.example.com#fragment",
+		"ftp://s3.example.com",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := CanonicalOriginEndpoint(raw); !IsPolicyError(err) {
+				t.Fatalf("error = %v, want policy error", err)
+			}
+		})
+	}
+	got, err := CanonicalOriginEndpoint("HTTPS://S3.Example.COM.:443/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://s3.example.com:443" {
+		t.Fatalf("canonical origin = %q", got)
+	}
+}
+
+func TestClientRestrictsRequestsAndRedirectsToExactConfiguredOrigin(t *testing.T) {
+	dials := 0
+	client := NewClient(Policy{
+		AllowedOrigins: []string{"https://s3.example.com"},
+		LookupNetIP:    staticResolver(testAddrs("8.8.8.8")),
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dials++
+			return nil, errors.New("unexpected dial")
+		},
+	})
+	_, err := client.Get("https://fallback.example.com/object")
+	if !IsPolicyError(err) || dials != 0 {
+		t.Fatalf("error=%v dials=%d, want exact-origin rejection before dial", err, dials)
+	}
+}
+
 func staticResolver(addrs []netip.Addr) func(context.Context, string, string) ([]netip.Addr, error) {
 	return func(context.Context, string, string) ([]netip.Addr, error) {
 		return append([]netip.Addr(nil), addrs...), nil

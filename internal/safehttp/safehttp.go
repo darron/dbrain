@@ -20,10 +20,13 @@ type Policy struct {
 	MaxRedirects          int
 	AllowPrivateNetwork   bool
 	AllowedPrivateOrigins []string
-	DisableCompression    bool
-	LookupNetIP           func(context.Context, string, string) ([]netip.Addr, error)
-	DialContext           func(context.Context, string, string) (net.Conn, error)
-	TLSClientConfig       *tls.Config
+	// AllowedOrigins restricts every request and redirect to one of these exact
+	// canonical origins. It is independent from private-network permission.
+	AllowedOrigins     []string
+	DisableCompression bool
+	LookupNetIP        func(context.Context, string, string) ([]netip.Addr, error)
+	DialContext        func(context.Context, string, string) (net.Conn, error)
+	TLSClientConfig    *tls.Config
 }
 
 type PolicyError struct {
@@ -41,7 +44,9 @@ func IsPolicyError(err error) bool {
 
 type compiledPolicy struct {
 	allowPrivateNetwork bool
+	allowedPrivate      map[string]struct{}
 	allowedOrigins      map[string]struct{}
+	restrictOrigins     bool
 	lookupNetIP         func(context.Context, string, string) ([]netip.Addr, error)
 	dialContext         func(context.Context, string, string) (net.Conn, error)
 }
@@ -92,7 +97,7 @@ func compilePolicy(policy Policy) compiledPolicy {
 		dialContext = dialer.DialContext
 	}
 
-	allowedOrigins := make(map[string]struct{}, len(policy.AllowedPrivateOrigins))
+	allowedPrivate := make(map[string]struct{}, len(policy.AllowedPrivateOrigins))
 	for _, rawOrigin := range policy.AllowedPrivateOrigins {
 		parsed, err := url.Parse(strings.TrimSpace(rawOrigin))
 		if err != nil || parsed.User != nil {
@@ -100,12 +105,21 @@ func compilePolicy(policy Policy) compiledPolicy {
 		}
 		origin, err := canonicalOrigin(parsed)
 		if err == nil {
+			allowedPrivate[origin] = struct{}{}
+		}
+	}
+	allowedOrigins := make(map[string]struct{}, len(policy.AllowedOrigins))
+	for _, rawOrigin := range policy.AllowedOrigins {
+		origin, err := CanonicalOriginEndpoint(rawOrigin)
+		if err == nil {
 			allowedOrigins[origin] = struct{}{}
 		}
 	}
 	return compiledPolicy{
 		allowPrivateNetwork: policy.AllowPrivateNetwork,
+		allowedPrivate:      allowedPrivate,
 		allowedOrigins:      allowedOrigins,
+		restrictOrigins:     len(policy.AllowedOrigins) > 0,
 		lookupNetIP:         lookupNetIP,
 		dialContext:         dialContext,
 	}
@@ -134,11 +148,40 @@ func (p compiledPolicy) privateNetworkAllowed(target *url.URL) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if p.restrictOrigins {
+		if _, allowed := p.allowedOrigins[origin]; !allowed {
+			return false, &PolicyError{Reason: fmt.Sprintf("origin %s is not the configured origin", origin)}
+		}
+	}
 	if p.allowPrivateNetwork {
 		return true, nil
 	}
-	_, allowed := p.allowedOrigins[origin]
+	_, allowed := p.allowedPrivate[origin]
 	return allowed, nil
+}
+
+// CanonicalOriginEndpoint validates a configured service endpoint as exactly
+// one HTTP(S) origin. Paths, credentials, queries, and fragments are rejected
+// so later SDK URL construction cannot silently broaden authority.
+func CanonicalOriginEndpoint(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", &PolicyError{Reason: "endpoint is required"}
+	}
+	target, err := url.Parse(raw)
+	if err != nil {
+		return "", &PolicyError{Reason: "endpoint is not a valid URL"}
+	}
+	if target.Opaque != "" || target.User != nil {
+		return "", &PolicyError{Reason: "endpoint userinfo or opaque URLs are not allowed"}
+	}
+	if target.RawQuery != "" || target.ForceQuery || target.Fragment != "" {
+		return "", &PolicyError{Reason: "endpoint query and fragment are not allowed"}
+	}
+	if target.Path != "" && target.Path != "/" || target.RawPath != "" {
+		return "", &PolicyError{Reason: "endpoint must not contain a path"}
+	}
+	return canonicalOrigin(target)
 }
 
 func canonicalOrigin(target *url.URL) (string, error) {

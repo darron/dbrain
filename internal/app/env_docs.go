@@ -44,6 +44,8 @@ func configEnvSpecs() []envSpec {
 		{Key: "DBRAIN_METRICS_DETAIL", ConfigPath: "metrics.detail", Default: "stage", Description: "Metrics detail level: stage, item, or model_call."},
 		{Key: "DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS", ConfigPath: "metrics.include_subject_keys", Default: "false", Description: "Include raw dbrain item/source keys in metrics instead of only deterministic subject hashes."},
 		{Key: "DBRAIN_METRICS_STRICT", ConfigPath: "metrics.strict", Default: "false", Description: "Return write failures as command errors after startup succeeds instead of disabling the sink."},
+		{Key: "DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP", ConfigPath: "audit.require.sqlite_backup", Default: "false", Description: "Require remote SQLite backup configuration and freshness in production health audits."},
+		{Key: "DBRAIN_SCHEDULER_SQLITE_ARCHIVE_ENABLED", ConfigPath: "scheduler.sqlite_archive.enabled", Default: "false", Description: "Declare scheduled SQLite archive durability as enabled and therefore required by production health audits."},
 		{Key: "DBRAIN_OPENROUTER_BASE_URL / OPENROUTER_BASE_URL", ConfigPath: "openrouter.base_url", Default: "https://openrouter.ai/api/v1", Description: "OpenRouter API endpoint."},
 		{Key: "DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY", ConfigPath: "openrouter.api_key", Default: "", Description: "OpenRouter API key for hosted LLM/OCR/categorization calls; supports secret refs."},
 		{Key: "DBRAIN_OPENROUTER_REFERER / OPENROUTER_HTTP_REFERER", ConfigPath: "openrouter.referer", Default: "https://local.dbrain", Description: "HTTP referer sent to OpenRouter for direct calls."},

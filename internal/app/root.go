@@ -111,6 +111,7 @@ func NewRootCommand() *cobra.Command {
 	serveCmd.AddCommand(newServeMCPCommand(opts), newServeRemoteCommand(opts), newServeWebCommand(opts))
 
 	rootCmd.AddCommand(
+		newAuditCommand(opts),
 		newArchiveCommand(opts),
 		newAuthCommand(opts),
 		newConfigCommand(opts),

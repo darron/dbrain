@@ -7,6 +7,15 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Audit CLI**: Added `dbrain audit all|imports|pipeline|durability` with a
+  stable, privacy-validated 55-check JSON registry, typed health exit codes,
+  deterministic thresholds/sampling, and a no-write query-only target resolver.
+- **Operational evidence**: Bounded JSONL reading now reconstructs scheduler
+  runs, explicit lifecycle markers, seven source-family poll/arrival streams,
+  and separate YouTube liked/watch-later results without retaining raw lines.
+- **Least-authority durability**: Standard media and SQLite backup checks use
+  exact-origin, DNS/IP-validated, no-proxy S3 HEAD/LIST clients that expose no
+  upload, download, restore, or endpoint-override capability.
 - **Read-only diagnostics**: All `stats` commands now open SQLite without applying migrations, and active-database inspection reports quick-check, foreign-key, core-schema, and migration compatibility as separate claims.
 - **Truthful pipeline partitions**: Pipeline stats and workers share X transcription, photo OCR, source-repair, and media-archive predicates; terminal outcomes and invalid legacy states are reported separately from genuine failures, with explicit partition validation.
 - **Confined artifact inspection**: Added consistent read-transaction snapshots, metadata-only vault inspection with sanitized errors, and root-confined aggregate OKF validation that requires a readable manifest and export timestamp.

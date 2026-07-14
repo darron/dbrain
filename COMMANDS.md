@@ -107,6 +107,7 @@ Usage:
 
 Available Commands:
   archive     Manage archived media and other durable storage tiers
+  audit       Inspect production health without modifying the target
   auth        Manage authentication approvals and tokens
   categorize  Categorize items or linked sources with an LLM
   completion  Generate the autocompletion script for the specified shell
@@ -176,6 +177,31 @@ in `README.md`.
 dbrain config env
 dbrain config env --markdown
 ```
+
+### `dbrain audit`
+
+Runs a bounded, read-only health audit against the resolved target. `audit all`
+emits the closed 55-check registry; category commands limit the scope without
+changing check semantics.
+
+```sh
+dbrain audit all --profile standard --json
+dbrain audit imports --since 7d
+dbrain audit pipeline --json
+dbrain audit durability --expect-commit <sha> --json
+```
+
+Standard is the default profile; fast omits expensive integrity and remote
+checks. Deep is reserved for the later parity/restore implementation and is
+currently rejected with exit 3. Exit codes are 0 pass, 1 warn, 2 fail, and 3
+unknown/bootstrap failure. A produced JSON report is written before a non-zero
+health exit. `--include-identifiers` selects a local-only wrapper with bounded
+row IDs, source keys, and cleanup paths; the shared `dbrain.audit.v1` report
+never contains paths, object keys, corpus content, titles, URLs, or secrets.
+
+The audit resolver follows the normal target precedence but creates no
+directories, applies no migrations, runs no startup repair/preflight, and
+opens SQLite in query-only mode with one consistent snapshot.
 
 ### `dbrain install`
 

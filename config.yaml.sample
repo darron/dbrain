@@ -68,6 +68,10 @@ metrics:
   include_subject_keys: false # DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS; raw item/source keys are omitted by default
   strict: false # DBRAIN_METRICS_STRICT; fail the command on write errors after startup succeeds
 
+audit:
+  require:
+    sqlite_backup: false # DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP; make remote SQLite backup health required
+
 openrouter:
   base_url: "https://openrouter.ai/api/v1" # DBRAIN_OPENROUTER_BASE_URL, OPENROUTER_BASE_URL
   api_key: "" # DBRAIN_OPENROUTER_API_KEY, OPENROUTER_API_KEY; secret ref supported
@@ -116,6 +120,8 @@ safari_tabs:
   older_than: "" # DBRAIN_SAFARI_TABS_OLDER_THAN; optional duration, for example 168h
 
 scheduler:
+  sqlite_archive:
+    enabled: false # DBRAIN_SCHEDULER_SQLITE_ARCHIVE_ENABLED; require and audit scheduled SQLite backups
   sync_all:
     enabled: false # DBRAIN_SCHEDULER_SYNC_ALL_ENABLED; run sync all from serve remote
     interval: "1h" # DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL

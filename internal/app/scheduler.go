@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
@@ -271,6 +272,8 @@ func (s *syncScheduler) Status() schedulerstate.SyncAllStatus {
 }
 
 func (s *syncScheduler) loop(ctx context.Context) {
+	emitSchedulerSyncMarker(s.cfg, "scheduler.sync.enabled")
+	defer emitSchedulerSyncMarker(s.cfg, "scheduler.sync.stopped")
 	_, _ = fmt.Fprintf(s.logOut, "scheduler sync all enabled: interval=%s run_on_start=%t\n", s.opts.Interval, s.opts.RunOnStart)
 	if s.opts.RunOnStart {
 		go s.run(ctx, "startup")
@@ -308,6 +311,7 @@ func (s *syncScheduler) nextDelay() time.Duration {
 func (s *syncScheduler) run(ctx context.Context, reason string) {
 	s.mu.Lock()
 	if s.status.Running {
+		emitSchedulerSyncMarker(s.cfg, "scheduler.sync.overlap_skipped")
 		s.status.LastReason = reason
 		s.status.LastStatus = "skipped"
 		s.status.LastError = "previous run still active"
@@ -318,6 +322,7 @@ func (s *syncScheduler) run(ctx context.Context, reason string) {
 	}
 	lock, err := acquireSyncAllLock(s.cfg, "scheduler:"+reason)
 	if err != nil {
+		emitSchedulerSyncMarker(s.cfg, "scheduler.sync.lock_skipped")
 		now := time.Now().UTC()
 		s.status.LastReason = reason
 		s.status.LastStatus = "skipped"
@@ -353,6 +358,25 @@ func (s *syncScheduler) run(ctx context.Context, reason string) {
 	}
 	s.finishRun("ok", "")
 	_, _ = fmt.Fprintf(s.logOut, "scheduler sync all finished: duration=%s\n", time.Since(start).Round(time.Second))
+}
+
+func emitSchedulerSyncMarker(cfg config.Config, name string) {
+	run, closeMetrics, err := openSyncMetrics(cfg, "scheduler:lifecycle")
+	if err != nil {
+		return
+	}
+	emitSchedulerSyncMarkerEvent(run, name)
+	_ = closeMetrics()
+}
+
+func emitSchedulerSyncMarkerEvent(run metrics.RunContext, name string) {
+	if !run.Enabled() {
+		return
+	}
+	switch name {
+	case "scheduler.sync.enabled", "scheduler.sync.stopped", "scheduler.sync.lock_skipped", "scheduler.sync.overlap_skipped":
+		_ = run.Emit(metrics.Event{"event": name, "status": "ok"})
+	}
 }
 
 func (s *syncScheduler) setNextRunAt(at time.Time) {

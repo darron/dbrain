@@ -65,16 +65,22 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	resolvedCookiesArg := cookiesFromBrowserArg(opts.Browser, opts.Profile)
 
 	for _, currentFeed := range selectedFeeds(opts) {
+		feedStats := &stats.WatchLater
+		if currentFeed.name == "liked" {
+			feedStats = &stats.Liked
+		}
 		debugLog(opts.Logger, "loading youtube feed", "feed", currentFeed.name, "url", currentFeed.url)
 		envelope, cookiesArg, err := fetchFeed(ctx, currentFeed, opts)
 		if err != nil {
 			stats.Errors++
+			feedStats.Errors++
 			if opts.Logger != nil {
 				opts.Logger.Warn("youtube feed load failed", "feed", currentFeed.name, "url", currentFeed.url, "error", err.Error())
 			}
 			continue
 		}
 		stats.FeedsProcessed++
+		feedStats.FeedsProcessed++
 		resolvedCookiesArg = cookiesArg
 
 		for _, entry := range envelope.Entries {
@@ -84,6 +90,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			}
 			if skip {
 				stats.ItemsSkipped++
+				feedStats.ItemsSkipped++
 				continue
 			}
 
@@ -92,13 +99,17 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 				return stats, err
 			}
 			stats.ItemsProcessed++
+			feedStats.ItemsProcessed++
 			switch result.Status {
 			case model.UpsertCreated:
 				stats.ItemsCreated++
+				feedStats.ItemsCreated++
 			case model.UpsertUpdated:
 				stats.ItemsUpdated++
+				feedStats.ItemsUpdated++
 			case model.UpsertUnchanged:
 				stats.ItemsUnchanged++
+				feedStats.ItemsUnchanged++
 			}
 
 			shouldRender := result.Status != model.UpsertUnchanged
@@ -124,6 +135,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			}
 			if linkResult.LinkCreated {
 				stats.LinksCreated++
+				feedStats.LinksCreated++
 			}
 			touchedSourceIDs[linkResult.SourceID] = struct{}{}
 		}
