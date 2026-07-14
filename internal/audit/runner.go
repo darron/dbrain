@@ -100,6 +100,10 @@ func runAudit(ctx context.Context, req Request, deps Dependencies, deep *DeepDep
 	if req.Since <= 0 {
 		req.Since = 7 * 24 * time.Hour
 	}
+	req.ExpectCommit = strings.TrimSpace(req.ExpectCommit)
+	if req.ExpectCommit != "" && !commitPattern.MatchString(req.ExpectCommit) {
+		return Report{}, fmt.Errorf("invalid expected commit")
+	}
 	for _, c := range req.Categories {
 		if !c.Valid() {
 			return Report{}, fmt.Errorf("invalid category %q", c)
@@ -333,6 +337,7 @@ func defaultTimeoutFor(profile Profile, class TimeoutClass) time.Duration {
 
 func effectiveScope(req Request) Scope {
 	filtered := len(req.Categories) > 0 || len(req.Sources) > 0 || len(req.CheckIDs) > 0
+	declareExactChecks := len(req.CheckIDs) > 0 || (filtered && strings.TrimSpace(req.ExpectCommit) != "")
 	s := Scope{Categories: []Category{}, Sources: []Source{}, CheckIDs: []CheckID{}, Filtered: filtered, WholeSystem: !filtered}
 	if !filtered {
 		s.Categories = []Category{CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability}
@@ -349,13 +354,16 @@ func effectiveScope(req Request) Scope {
 		if entry.Source != "" && !containsSource(s.Sources, entry.Source) {
 			s.Sources = append(s.Sources, entry.Source)
 		}
-		if len(req.CheckIDs) > 0 {
+		if declareExactChecks {
 			s.CheckIDs = append(s.CheckIDs, entry.ID)
 		}
 	}
 	return s
 }
 func scopeIncludes(req Request, e RegistryEntry) bool {
+	if strings.TrimSpace(req.ExpectCommit) != "" && e.ID == CheckBoundaryRuntime {
+		return true
+	}
 	if len(req.CheckIDs) > 0 && !containsCheck(req.CheckIDs, e.ID) {
 		return false
 	}
@@ -526,7 +534,7 @@ func executeBoundary(ctx context.Context, s *runState, e RegistryEntry) Check {
 		release := known(r.ReleaseVersion)
 		commit := known(r.Commit)
 		platform := known(r.Platform)
-		matched := s.req.ExpectCommit == "" || s.req.ExpectCommit == r.Commit
+		matched := expectedCommitMatches(s.req.ExpectCommit, r.Commit)
 		ev := Evidence{"release_known": release, "commit_known": commit, "platform_known": platform, "git_status": normalizeGitStatus(r.GitStatus), "expected_commit_matched": matched}
 		if !matched {
 			return baseCheck(e, s.now, StatusFail, ConfidenceHigh, ev)
@@ -596,6 +604,12 @@ func executeBoundary(ctx context.Context, s *runState, e RegistryEntry) Check {
 		return baseCheck(e, s.now, status, ConfidenceHigh, Evidence{"violation_count": s.database.ForeignKeyViolationCount})
 	}
 	return unknownCheck(e, ErrorUnavailable, s.now)
+}
+
+func expectedCommitMatches(expected, observed string) bool {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	observed = strings.ToLower(strings.TrimSpace(observed))
+	return expected == "" || (len(expected) <= len(observed) && strings.HasPrefix(observed, expected))
 }
 func known(value string) bool {
 	return strings.TrimSpace(value) != "" && !strings.EqualFold(value, "unknown")

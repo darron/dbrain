@@ -1814,6 +1814,33 @@ func TestConfigPathsCommandJSON(t *testing.T) {
 	}
 }
 
+func TestConfigPathsCommandDoesNotMutateTarget(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	legacy := filepath.Join(root, "dbrain-summary-preserve.md")
+	if err := os.WriteFile(legacy, []byte("preserve"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "config", "paths", "--json"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("config paths mutated legacy file: %v", err)
+	}
+	if _, err := os.Stat(cfg.DataDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config paths created data directory: %v", err)
+	}
+}
+
 func TestConfigPathsCommandUsesRootEnv(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

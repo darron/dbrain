@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -265,6 +266,63 @@ func TestRunUnknownGitStatusMakesRuntimeIdentityUnknown(t *testing.T) {
 	}
 	if len(report.Checks) != 1 || report.Checks[0].Status != StatusUnknown {
 		t.Fatalf("checks = %#v", report.Checks)
+	}
+}
+
+func TestRunExpectedCommitAcceptsShortPrefix(t *testing.T) {
+	deps := passingDependencies(time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC))
+	deps.Runtime.Commit = "0123456789abcdef0123456789abcdef01234567"
+	report, err := Run(t.Context(), Request{
+		Profile:      ProfileFast,
+		CheckIDs:     []CheckID{CheckBoundaryRuntime},
+		ExpectCommit: "0123456",
+	}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Checks) != 1 || report.Checks[0].Status != StatusPass {
+		t.Fatalf("checks = %#v", report.Checks)
+	}
+	if matched, _ := report.Checks[0].Evidence["expected_commit_matched"].(bool); !matched {
+		t.Fatalf("expected short commit prefix to match: %#v", report.Checks[0].Evidence)
+	}
+}
+
+func TestRunExpectedCommitAddsRuntimeCheckToFilteredScope(t *testing.T) {
+	deps := passingDependencies(time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC))
+	deps.Runtime.Commit = "0123456789abcdef0123456789abcdef01234567"
+	report, err := Run(t.Context(), Request{
+		Profile:      ProfileFast,
+		Categories:   []Category{CategoryDurability},
+		ExpectCommit: "fedcba9876543210fedcba9876543210fedcba98",
+	}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, check := range report.Checks {
+		if check.ID != CheckBoundaryRuntime {
+			continue
+		}
+		found = true
+		if check.Status != StatusFail {
+			t.Fatalf("boundary.runtime status = %s, want fail", check.Status)
+		}
+	}
+	if !found {
+		t.Fatalf("expected boundary.runtime in filtered scope: %#v", report.Scope)
+	}
+}
+
+func TestRunRejectsInvalidExpectedCommit(t *testing.T) {
+	deps := passingDependencies(time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC))
+	_, err := Run(t.Context(), Request{
+		Profile:      ProfileFast,
+		CheckIDs:     []CheckID{CheckBoundaryRuntime},
+		ExpectCommit: "not-a-sha",
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "invalid expected commit") {
+		t.Fatalf("error = %v, want invalid expected commit", err)
 	}
 }
 

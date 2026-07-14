@@ -14,6 +14,13 @@ development date for the change set.
   commit, and evaluates CLI-only deep archive/media/upstream checks without
   granting deploy, restart, retry, repair, restore, import, or config authority.
 
+- **Release audit boundary fixes**: Made `config paths` use the no-write target
+  resolver, preserved root-only selection for self-contained installations,
+  made abbreviated commit expectations match the embedded full revision, and
+  ensured filtered/source audits actually include `boundary.runtime` whenever
+  `--expect-commit` is supplied. The release skill includes a provenance-gated
+  candidate bootstrap for the first audit-capable release.
+
 - **Bounded upstream importer parity**: Added CLI-only deep reconciliation for
   Apple Notes, Safari Tabs, X Bookmarks, GitHub Stars, YouTube Liked, YouTube
   Watch Later, and enabled feeds, plus exact source commands for release and

@@ -1165,11 +1165,13 @@ read-only bakeoff devtool; it is not part of the release-tag registry publish.
 The repo-local
 [`dbrain-production-audit`](skills/dbrain-production-audit) skill defines the
 content-free pre/post release workflow for the real installed target. It uses
-the CLI standard gate before a separately approved installation, re-resolves
-the target afterward, then compares exact-profile standard reports and runs
-CLI-only deep archive and upstream-parity acceptance checks. It never grants
-deployment, restart, retry, repair, restore, import, or configuration authority
-and is not part of the release-tag registry publish.
+the installed audit-capable CLI when available, includes a provenance-gated
+candidate bootstrap for the first such release, runs the standard gate before a
+separately approved installation, re-resolves the target afterward, then
+compares exact-profile standard reports and runs CLI-only deep archive and
+upstream-parity acceptance checks. It never grants deployment, restart, retry,
+repair, restore, import, or configuration authority and is not part of the
+release-tag registry publish.
 
 ## License
 

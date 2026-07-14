@@ -33,7 +33,7 @@ func newConfigPathsCommand(root *rootOptions) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{skipKeepAwakeAnnotation: "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(root.root, root.configFile)
+			cfg, _, err := loadAuditConfigContext(cmd.Context(), root.root, root.configFile)
 			if err != nil {
 				return err
 			}

@@ -161,7 +161,8 @@ Environment:
 ### `dbrain config paths`
 
 Prints the active config, categories, data, database, vault, media, temp, cache,
-and log paths. Use `--json` for automation.
+and log paths without creating directories, running startup preflight, or
+cleaning legacy files. Use `--json` for automation.
 
 ```sh
 dbrain config paths
@@ -182,7 +183,10 @@ dbrain config env --markdown
 
 Runs a bounded, read-only health audit against the resolved target. `audit all`
 emits the closed 55-check registry; category commands limit the scope without
-changing check semantics.
+changing check semantics. When `--expect-commit` is set on a category or source
+command, `boundary.runtime` is added explicitly so the commit assertion cannot
+be silently filtered out. A 7-or-more-character hexadecimal commit prefix is
+accepted, though release workflows should use the full artifact commit.
 
 ```sh
 dbrain audit all --profile standard --json

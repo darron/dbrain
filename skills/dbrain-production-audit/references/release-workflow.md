@@ -5,43 +5,65 @@ definitions, thresholds, requiredness, privacy validation, and exit status.
 
 ## 1. Establish authority and evidence storage
 
-Obtain the expected Git commit as 7-64 hexadecimal characters. Record what the
+Obtain the full expected Git commit from the release artifact. Current Git
+builds normally report 40 hexadecimal characters; retain the complete value
+reported by `version --json`, rather than abbreviating it. Record what the
 operator authorized: preflight only, post-install verification, or both. A
 request to audit is not authority to install, restart, repair, restore, retry,
 prune, import, or change configuration.
 
-Resolve and freeze the installed binary path:
+Record the target selector mode before discovery:
+
+- normal split XDG layout: no discovery selector, or the operator-supplied
+  `--config-file <path>` when production intentionally overrides the config;
+- self-contained layout: the operator-supplied `--root <root_dir>` only.
+
+Never combine `--config-file` and `--root`: config-file precedence changes a
+self-contained data layout back to XDG state paths.
+
+Prefer and freeze the installed binary when it supports `dbrain audit`:
 
 ```sh
 command -v dbrain
-<installed-dbrain> --no-debug config paths --json
+<installed-dbrain> --no-debug version --json
+<installed-dbrain> --no-debug <discovery-selector> config paths --json
 ```
 
-Do not use `./bin/dbrain`, a checkout database, or a guessed XDG path when the
-target is production. From the JSON, record at least the root, config,
-database, data, logs, media, vault, temp, and OKF paths. Preserve the selector
-mode that produced those paths:
+If the installed release has no `audit` command, do not run its ordinary
+`config paths` command as a substitute: older implementations may create
+directories or perform startup cleanup. For this one-time bootstrap, obtain an
+explicit absolute path to the provenance-stamped candidate binary, require its
+`version --json` commit to equal the full expected release commit, and use that
+candidate for pre-install path resolution and the standard audit. Record that
+the pre-report establishes target data health under the candidate logic, not
+old-runtime health. An unstamped checkout binary whose commit is `unknown` is
+not acceptable.
 
-- for a normal split XDG installation, pass the returned config explicitly;
-- when `root_dir` identifies a self-contained installation, pass both the
-  returned config and `--root <root_dir>`.
+Do not use a checkout database or guessed XDG path when the target is
+production. From the JSON, record at least the root, config, database, data,
+logs, media, vault, temp, and OKF paths. Freeze `<target-selectors>` as:
 
-Represent those frozen arguments as `<target-selectors>`:
+- split XDG/config-file installation: `--config-file <resolved-config>`;
+- self-contained installation: `--root <resolved-root>` only.
+
+Verify that those frozen selectors reproduce the recorded paths:
 
 ```sh
-<installed-dbrain> --no-debug <target-selectors> audit ...
+<audit-dbrain> --no-debug <target-selectors> config paths --json
 ```
 
-Do not assume `--config-file` recreates a self-contained root layout: it moves
-the config file, not the data layout. Reject any selector set whose subsequent
-`config paths --json` differs from the recorded boundary.
+Reject any selector set whose subsequent paths differ from the recorded
+boundary. `config paths` is read-only only in the audit-capable release; the
+bootstrap rule above avoids invoking an older mutating implementation.
 
 Create a uniquely named evidence directory with `umask 077`, mode 0700, and
 0600 report files. A private `mktemp -d` directory is acceptable. Retain:
 
 - `pre-paths.json`
+- `pre-version.json` and whether the executable was installed or candidate
 - `pre-standard.json` and its exit code
 - `post-paths.json`
+- `post-version.json`
 - `post-standard.json` and its exit code
 - `post-deep.json` and its exit code
 - a content-free comparison summary
@@ -51,12 +73,18 @@ Do not commit, upload, paste, or expose these files automatically. Never pass
 
 ## 2. Pre-install standard gate
 
-Run the installed production binary against the explicit config:
+Run the selected audit binary against the frozen target:
 
 ```sh
-<installed-dbrain> --no-debug <target-selectors> \
+<audit-dbrain> --no-debug <target-selectors> \
   audit all --profile standard --json
 ```
+
+For the candidate-bootstrap path, also pass
+`--expect-commit <full-expected-commit>` and require
+`boundary.runtime.expected_commit_matched=true`. For an established installed
+auditor, record its full pre-release commit from `version --json`; do not
+compare it to the not-yet-installed candidate commit.
 
 Capture stdout even when the exit is nonzero. Validate `schema` is
 `dbrain.audit.v1`, preserve the report, and record the process exit separately.
@@ -86,7 +114,9 @@ Resume only after the operator confirms they are complete.
 
 ## 3. Re-resolve after installation
 
-Run the newly installed `command -v dbrain` and `config paths --json` again.
+Run the newly installed `command -v dbrain`, `version --json`, and read-only
+`config paths --json` again. Rebuild `<target-selectors>` using the same mode:
+resolved config only for split XDG, or resolved root only for self-contained.
 Compare binary path, config path, database, data, media, vault, temp, logs, and
 OKF paths with the pre-release values. Stop on any unexpected target change.
 Do not assume a successful command means the same installation was audited.

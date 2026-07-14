@@ -1,42 +1,49 @@
 ---
 name: dbrain-production-audit
-description: Verify a dbrain release against the real installed production target with content-free pre/post health reports. Use after building or releasing dbrain, before and after a separately approved installation or restart, when checking for importer, OCR, transcription, archive, backup, scheduler, provenance, or upstream-parity regressions, or when comparing release health without querying SQLite or mutating production.
+description: Use when verifying a dbrain release against the real production target with content-free pre/post health reports, especially after building or releasing dbrain, before and after a separately approved installation or restart, or when checking importer, OCR, transcription, archive, backup, scheduler, provenance, and upstream-parity regressions without querying SQLite or mutating production.
 ---
 
 # dbrain Production Audit
 
-Use the installed `dbrain audit` CLI as the only health-policy authority. Keep
-the workflow read-only and content-free. Never substitute admin counters, MCP
-stats, ad hoc SQL, logs, or model judgment for the stable audit report.
+Use a provenance-verified, audit-capable `dbrain` CLI as the only health-policy
+authority. Prefer the installed binary; use the candidate bootstrap path only
+when the installed release predates `dbrain audit`. Keep the workflow read-only
+and content-free. Never substitute admin counters, MCP stats, ad hoc SQL, logs,
+or model judgment for the stable audit report.
 
 ## Required workflow
 
 Read [release-workflow.md](references/release-workflow.md) before running an
 audit. Follow its gates and comparison rules exactly.
 
-1. Record the authorized target and expected released commit. If production or
-   the commit is ambiguous, stop and ask for the missing value.
-2. Resolve the installed binary and its real config with `config paths --json`.
-   Label the boundary as installed production only after the returned paths are
-   verified. Reuse the explicit config path on every audit command and preserve
-   `--root <root_dir>` when the resolved installation is self-contained.
-3. Create a private evidence directory and retain raw, content-free JSON plus
+1. Record the authorized target selector mode and full expected released
+   commit. If production, XDG versus self-contained layout, or the commit is
+   ambiguous, stop and ask for the missing value.
+2. Select and verify the audit executable. Prefer the installed binary when it
+   supports the audit command. If it predates auditing, use only the explicit
+   candidate-bootstrap path in the workflow reference and verify that binary's
+   full commit before it reads the target.
+3. Resolve the real paths with the chosen binary's read-only
+   `config paths --json`. Use `--config-file` for a split XDG/config-file
+   target, or `--root <root_dir>` alone for a self-contained target. Never pass
+   both. Label the boundary as production only after the paths are verified.
+4. Create a private evidence directory and retain raw, content-free JSON plus
    command exit codes. Never use `--include-identifiers`.
-4. Before installation, run an exact-profile standard report. Require a fresh,
+5. Before installation, run an exact-profile standard report. Require a fresh,
    complete SQLite backup check; do not create or repair a backup.
-5. Report the pre-release gate. Stop for separate human approval and execution
+6. Report the pre-release gate. Stop for separate human approval and execution
    of installation, deployment, restart, or service changes. This skill does
    not own that authority.
-6. After the operator confirms installation and restart are complete, resolve
+7. After the operator confirms installation and restart are complete, resolve
    the installed binary and paths again. Stop if the target changed.
-7. Run post-release standard and deep reports with `--expect-commit` set to the
+8. Run post-release standard and deep reports with `--expect-commit` set to the
    expected released commit. Do not widen archive limits without explicit
    approval.
-8. Compare pre-standard with post-standard by exact check ID. Evaluate
+9. Compare pre-standard with post-standard by exact check ID. Evaluate
    deep-only archive restore, media inventory, and seven upstream parity checks
    separately. Treat the audit's required/status/skip/error fields as
    authoritative.
-9. Deliver a content-free release verdict with evidence paths, exact commands,
+10. Deliver a content-free release verdict with evidence paths, exact commands,
    exit interpretation, regressions, recoveries, and remaining unknowns.
 
 ## Authority limits
