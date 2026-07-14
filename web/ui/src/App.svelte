@@ -16,7 +16,7 @@
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
   import { addLink, compareResearchTrace, createChatShare, getAuditHistory, getAuditLatest, getAuditRun, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, startAuditRun, synthesizeResearch } from "./lib/api.js";
-  import { applyRunStatus, overallHealth, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline } from "./lib/audit.js";
+  import { applyRunMonitoringUnknown, applyRunStatus, auditRunBlocksStart, freshnessDeadlineElapsed, freshnessRefreshDelayMs, markEnvelopeStale, overallHealth, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline } from "./lib/audit.js";
   import { buildChatRetrievalQuestion, buildChatTraceContinuity, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
   import { formatTime } from "./lib/time.js";
@@ -54,6 +54,10 @@
   let runByProfile = { fast: null, standard: null };
   let auditStartBusy = false;
   let auditDisposed = false;
+  let standardFreshnessTimer = null;
+  let standardFreshnessObservedAt = 0;
+  let standardRefreshBusy = false;
+  let auditPollGeneration = 0;
   const auditController = new AbortController();
   const auditPollTimers = new Set();
 
@@ -204,9 +208,10 @@
 
   onDestroy(() => {
     auditDisposed = true;
+    auditPollGeneration += 1;
     auditController.abort();
-    for (const timer of auditPollTimers) clearTimeout(timer);
-    auditPollTimers.clear();
+    clearTimeout(standardFreshnessTimer);
+    clearAuditPollTimers();
   });
 
   $: if (mounted) {
@@ -269,7 +274,9 @@
     if (auditDisposed) return;
     if (standardResult.status === "fulfilled") {
       standardEnvelope = standardResult.value;
+      standardFreshnessObservedAt = Date.now();
       auditLoadState = "ready";
+      scheduleStandardFreshnessRefresh();
     } else {
       standardEnvelope = null;
       auditLoadState = "error";
@@ -287,15 +294,18 @@
   }
 
   async function startAdminAudit(profile) {
-    if (!auth.enabled || auditStartBusy || runByProfile.fast?.executionState === "running" || runByProfile.standard?.executionState === "running") return;
+    if (!auth.enabled || auditStartBusy || auditRunBlocksStart(runByProfile.fast) || auditRunBlocksStart(runByProfile.standard)) return;
     auditStartBusy = true;
     auditActionError = "";
     try {
       const status = await startAuditRun(profile, { signal: auditController.signal });
+      auditPollGeneration += 1;
+      clearAuditPollTimers();
       const next = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, status);
       standardEnvelope = next.standardEnvelope;
       fastEnvelope = next.fastEnvelope;
       runByProfile = next.runByProfile;
+      if (profile === "standard" && status.state === "completed") standardFreshnessObservedAt = Date.now();
       if (status.state === "running") scheduleAuditPoll(profile, status.audit_id, 0);
     } catch (error) {
       if (error.status === 409) {
@@ -310,34 +320,102 @@
     }
   }
 
-  function scheduleAuditPoll(profile, auditID, attempt) {
+  function scheduleAuditPoll(profile, auditID, attempt, delayOverride = null, generation = auditPollGeneration) {
     if (auditDisposed) return;
     const delay = Math.min(1000 * (2 ** Math.min(attempt, 3)), 5000);
     const timer = setTimeout(async () => {
       auditPollTimers.delete(timer);
-      if (auditDisposed) return;
+      if (auditDisposed || generation !== auditPollGeneration) return;
       try {
         const status = await getAuditRun(auditID, { signal: auditController.signal });
-        if (auditDisposed) return;
+        if (auditDisposed || generation !== auditPollGeneration) return;
         const next = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, status);
         standardEnvelope = next.standardEnvelope;
         fastEnvelope = next.fastEnvelope;
         runByProfile = next.runByProfile;
+        if (profile === "standard" && status.state === "completed") standardFreshnessObservedAt = Date.now();
         if (status.state === "running" && attempt < 240) {
           scheduleAuditPoll(profile, auditID, attempt + 1);
         } else if (status.state === "running") {
-          runByProfile = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, { audit_id: auditID, profile, state: "failed", error_code: "audit_poll_timeout" }).runByProfile;
+          markAuditMonitoringUnknown(profile, auditID, "poll_timeout");
+          try {
+            await refreshLatestAudit(profile);
+          } catch {
+            // Reattachment remains authoritative even when latest is unreadable.
+          }
+          scheduleAuditPoll(profile, auditID, attempt + 1, 30000);
         } else if (profile === "standard" && status.state === "completed") {
           await refreshStandardAuditHistory();
+          scheduleStandardFreshnessRefresh();
         }
       } catch (error) {
-        if (!auditDisposed) {
-          runByProfile = applyRunStatus({ standardEnvelope, fastEnvelope, runByProfile }, { audit_id: auditID, profile, state: "failed", error_code: "audit_poll_failed" }).runByProfile;
-          auditActionError = error.message || "audit_poll_failed";
+        if (!auditDisposed && generation === auditPollGeneration) {
+          const statusForgotten = error.status === 404;
+          markAuditMonitoringUnknown(profile, auditID, statusForgotten ? "run_status_forgotten" : "poll_unavailable", !statusForgotten);
+          try {
+            await refreshLatestAudit(profile);
+          } catch {
+            // The exact-profile latest report is also unavailable. Keep the
+            // server execution state unknown and reattach to the run later.
+          }
+          if (!statusForgotten) scheduleAuditPoll(profile, auditID, Math.min(attempt + 1, 241), 30000);
         }
       }
-    }, delay);
+    }, delayOverride ?? delay);
     auditPollTimers.add(timer);
+  }
+
+  function clearAuditPollTimers() {
+    for (const timer of auditPollTimers) clearTimeout(timer);
+    auditPollTimers.clear();
+  }
+
+  function markAuditMonitoringUnknown(profile, auditID, reason, active = true) {
+    const next = applyRunMonitoringUnknown({ standardEnvelope, fastEnvelope, runByProfile }, { auditID, profile, reason, active });
+    runByProfile = next.runByProfile;
+    auditActionError = "";
+  }
+
+  async function refreshLatestAudit(profile) {
+    const envelope = await getAuditLatest(profile, { signal: auditController.signal });
+    if (auditDisposed) return;
+    if (profile === "fast") {
+      fastEnvelope = envelope;
+    } else {
+      const previousAuditID = standardEnvelope?.report?.audit_id || "";
+      standardEnvelope = envelope;
+      standardFreshnessObservedAt = Date.now();
+      scheduleStandardFreshnessRefresh();
+      if (envelope?.report?.audit_id && envelope.report.audit_id !== previousAuditID) await refreshStandardAuditHistory();
+    }
+  }
+
+  function scheduleStandardFreshnessRefresh() {
+    clearTimeout(standardFreshnessTimer);
+    standardFreshnessTimer = null;
+    if (auditDisposed || currentPage !== "admin" || auth.enabled !== true || auditLoadState !== "ready") return;
+    const elapsed = standardFreshnessObservedAt > 0 ? Date.now() - standardFreshnessObservedAt : 0;
+    const delay = Math.min(freshnessRefreshDelayMs(standardEnvelope, elapsed), 2147483647);
+    standardFreshnessTimer = setTimeout(() => {
+      standardFreshnessTimer = null;
+      void refreshStandardAtFreshnessBoundary();
+    }, delay);
+  }
+
+  async function refreshStandardAtFreshnessBoundary() {
+    if (auditDisposed || standardRefreshBusy) return;
+    standardRefreshBusy = true;
+    const elapsed = standardFreshnessObservedAt > 0 ? Date.now() - standardFreshnessObservedAt : 0;
+    if (freshnessDeadlineElapsed(standardEnvelope, elapsed)) standardEnvelope = markEnvelopeStale(standardEnvelope);
+    try {
+      await refreshLatestAudit("standard");
+    } catch {
+      // Keep the prior report visible as stale and retry the read later. A GET
+      // failure is not evidence that the audit itself failed.
+    } finally {
+      standardRefreshBusy = false;
+      scheduleStandardFreshnessRefresh();
+    }
   }
 
   async function refreshStandardAuditHistory() {

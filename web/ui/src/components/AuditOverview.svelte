@@ -1,6 +1,6 @@
 <script>
   import { formatTime } from "../lib/time.js";
-  import { auditHeadline } from "../lib/audit.js";
+  import { auditHeadline, auditRunBlocksStart } from "../lib/audit.js";
 
   export let health;
   export let overview;
@@ -16,12 +16,13 @@
   $: headline = auditHeadline(health, { authEnabled, loadState });
   $: currentStatus = headline.status;
   $: stateLabel = headline.label;
-  $: anyRunning = runByProfile?.fast?.executionState === "running" || runByProfile?.standard?.executionState === "running";
+  $: anyRunning = auditRunBlocksStart(runByProfile?.fast) || auditRunBlocksStart(runByProfile?.standard);
   $: fastRunCopy = runCopy("fast", runByProfile?.fast);
   $: standardRunCopy = runCopy("standard", runByProfile?.standard);
 
   function runCopy(profile, run) {
     if (!run) return "";
+    if (run.monitoringState === "unknown") return `${profile === "fast" ? "Fast local refresh" : "Standard audit"} status unavailable · audit may still be running`;
     if (run.executionState === "running") return `${profile === "fast" ? "Fast local refresh" : "Standard audit"} running`;
     if (run.executionState === "failed") return `${profile === "fast" ? "Fast local refresh" : "Standard audit"} execution failed`;
     return `${profile === "fast" ? "Fast local refresh" : "Standard audit"} completed · report ${run.reportStatus}`;

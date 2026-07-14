@@ -6,6 +6,7 @@
     { kind: "okf", label: "OKF export" }
   ];
   function evidenceHeadline(card) {
+    if (card.status === "skipped" && card.skipReason === "feature_disabled") return "Disabled by configuration";
     if (card.id === "durability.media_local_coverage") return `${card.evidence.eligible_local_count ?? "?"} local eligible · ${card.evidence.orphan_count ?? "?"} orphaned`;
     if (card.id === "durability.media_remote") return `${card.evidence.checked_count ?? "?"} / ${card.evidence.population_count ?? "?"} checked`;
     if (card.id === "durability.sqlite_backup_configuration") return String(card.evidence.configuration_state || "unknown").replaceAll("_", " ");
@@ -27,8 +28,8 @@
         <h3>{group.label}</h3>
         {#each cards.filter((card) => card.kind === group.kind) as card}
           <div class="audit-durability-check" data-status={card.status}>
-            <span class="status-mark">{card.status === "pass" ? "●" : card.status === "fail" ? "×" : card.status === "warn" ? "▲" : "?"}</span>
-            <div><strong>{card.label}</strong><p>{evidenceHeadline(card)}</p><small>{card.id}</small></div>
+            <span class="status-mark">{card.status === "pass" ? "●" : card.status === "fail" ? "×" : card.status === "warn" ? "▲" : card.status === "skipped" ? "—" : "?"}</span>
+            <div><strong>{card.label}</strong><p>{evidenceHeadline(card)}</p><small>{card.status === "skipped" ? card.skipReason.replaceAll("_", " ") : card.id}</small></div>
           </div>
         {:else}
           <p class="audit-empty compact">No checks reported.</p>

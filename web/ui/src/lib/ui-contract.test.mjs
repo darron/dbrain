@@ -7,6 +7,9 @@ import test from "node:test";
 const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(here, "../App.svelte"), "utf8");
 const statsSource = readFileSync(resolve(here, "../components/StatsBar.svelte"), "utf8");
+const overviewSource = readFileSync(resolve(here, "../components/AuditOverview.svelte"), "utf8");
+const pipelineSource = readFileSync(resolve(here, "../components/AuditPipeline.svelte"), "utf8");
+const durabilitySource = readFileSync(resolve(here, "../components/AuditDurability.svelte"), "utf8");
 const auditComponentNames = ["AuditOverview", "AuditImporters", "AuditPipeline", "AuditDurability", "AuditFindings", "AuditHistory"];
 
 test("chat is default and research is absent from primary mode tabs", () => {
@@ -31,6 +34,18 @@ test("admin audit surface loads saved reports only and cancels polling on destro
   assert.doesNotMatch(appSource, /onMount[\s\S]{0,1800}startAuditRun\(/);
   assert.match(appSource, /onDestroy\(\(\) => \{[\s\S]*auditController\.abort\(\)/);
   assert.match(appSource, /getAuditRun\(auditID, \{ signal: auditController\.signal \}\)/);
+  assert.match(appSource, /getAuditLatest\("standard", \{ signal: auditController\.signal \}\)/);
+  assert.match(appSource, /markEnvelopeStale\(standardEnvelope\)/);
+  assert.match(appSource, /clearTimeout\(standardFreshnessTimer\)/);
+  assert.match(appSource, /refreshLatestAudit\(profile\)/);
+  assert.doesNotMatch(appSource, /report\?\.audit_id === activeAuditID/);
+  assert.match(appSource, /error\.status === 404/);
+  assert.match(appSource, /if \(!statusForgotten\) scheduleAuditPoll/);
+  assert.match(appSource, /auditRunBlocksStart\(runByProfile\.fast\)/);
+  assert.doesNotMatch(appSource, /state: "failed", error_code: "audit_poll_/);
+  assert.match(overviewSource, /status unavailable · audit may still be running/);
+  assert.match(pipelineSource, /pending age \{stage\.pendingStatus\}/);
+  assert.match(durabilitySource, /Disabled by configuration/);
 });
 
 test("legacy drained signal is explicitly scoped away from whole-system health", () => {

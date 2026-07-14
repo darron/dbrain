@@ -22,7 +22,7 @@
               <div class={`count-${outcome}`}><span>{outcome}</span><strong>{count(stage.counts[outcome])}</strong></div>
             {/each}
           </div>
-          <small>Oldest pending: {age(stage.oldestPendingAgeSeconds)} · total {count(stage.counts.total)}</small>
+          <small>Partition {stage.partitionStatus} · pending age {stage.pendingStatus} ({age(stage.oldestPendingAgeSeconds)}) · total {count(stage.counts.total)}</small>
         </article>
       {/each}
     </div>

@@ -3,9 +3,14 @@ import test from "node:test";
 
 import {
   applyRunStatus,
+  applyRunMonitoringUnknown,
   auditHeadline,
+  auditRunBlocksStart,
+  freshnessDeadlineElapsed,
+  freshnessRefreshDelayMs,
   initialAuditRequests,
   overallHealth,
+  markEnvelopeStale,
   pollRunDecision,
   safeEvidence,
   selectDurability,
@@ -123,6 +128,25 @@ test("execution failure is distinct from a completed failing report", () => {
   assert.equal(completed.standardEnvelope.report.audit_id, "report-standard");
 });
 
+test("client monitoring failure never becomes a server execution failure", () => {
+  const running = applyRunStatus({ standardEnvelope: null, fastEnvelope: null, runByProfile: { fast: null, standard: null } }, {
+    audit_id: "run_1", profile: "standard", state: "running"
+  });
+  const unknown = applyRunMonitoringUnknown(running, { auditID: "run_1", profile: "standard", reason: "poll_unavailable" });
+  assert.equal(unknown.runByProfile.standard.executionState, "running");
+  assert.equal(unknown.runByProfile.standard.monitoringState, "unknown");
+  assert.equal(unknown.runByProfile.standard.errorCode, "");
+  assert.equal(unknown.runByProfile.standard.reportStatus, "unknown");
+  assert.equal(auditRunBlocksStart(running.runByProfile.standard), true);
+  assert.equal(auditRunBlocksStart(unknown.runByProfile.standard), false, "retrying POST is authoritative when monitoring is unavailable");
+  const retired = applyRunMonitoringUnknown(unknown, { auditID: "run_1", profile: "standard", reason: "run_status_forgotten", active: false });
+  assert.equal(retired.runByProfile.standard.executionState, "unknown");
+  assert.equal(retired.runByProfile.standard.monitoringState, "unknown");
+  const recovered = applyRunStatus(unknown, { audit_id: "run_1", profile: "standard", state: "completed", report: report("standard"), freshness: { status: "current", age_seconds: 0, deadline_seconds: 43200 } });
+  assert.equal(recovered.runByProfile.standard.monitoringState, "settled");
+  assert.equal(recovered.runByProfile.standard.executionState, "completed");
+});
+
 test("poll and quiet arrivals are separate importer signals", () => {
   const [apple] = selectImporters(report());
   assert.equal(apple.source, "apple_notes");
@@ -161,6 +185,16 @@ test("pipeline partitions preserve current pending blocked terminal failed and u
   assert.equal(ocr.oldestPendingAgeSeconds, 5400);
 });
 
+test("pipeline card severity includes pending-age check status", () => {
+  const fixture = report();
+  fixture.checks.find((row) => row.id === "pipeline.ocr.partition").status = "pass";
+  fixture.checks.find((row) => row.id === "pipeline.ocr.pending_age").status = "fail";
+  const [ocr] = selectPipeline(fixture);
+  assert.equal(ocr.partitionStatus, "pass");
+  assert.equal(ocr.pendingStatus, "fail");
+  assert.equal(ocr.status, "fail");
+});
+
 test("overview derives build layout last audit and last sync only from the standard report", () => {
   assert.deepEqual(selectOverview(envelope()), {
     auditID: "report-standard",
@@ -186,6 +220,37 @@ test("durability cards select only exact audit check IDs", () => {
   ]);
   assert.equal(cards.find((card) => card.id === "durability.sqlite_backup_age").status, "fail");
   assert.equal(cards.find((card) => card.id === "durability.okf_validation").status, "unknown");
+});
+
+test("feature-disabled durability is explicit rather than unknown", () => {
+  const fixture = report();
+  const okf = fixture.checks.find((row) => row.id === "durability.okf_validation");
+  okf.status = "skipped";
+  okf.skip_reason = "feature_disabled";
+  const card = selectDurability(fixture).find((row) => row.id === "durability.okf_validation");
+  assert.equal(card.status, "skipped");
+  assert.equal(card.skipReason, "feature_disabled");
+});
+
+test("freshness schedules a GET refresh and becomes stale without mutating the report", () => {
+  const current = envelope("standard", { status: "current", age_seconds: 59, deadline_seconds: 60 });
+  const longLived = envelope("standard", { status: "current", age_seconds: 0, deadline_seconds: 43200 });
+  assert.equal(freshnessRefreshDelayMs(longLived), 300000);
+  assert.equal(freshnessDeadlineElapsed(longLived, 300000), false, "a failed five-minute refresh does not make a current report stale");
+  assert.equal(freshnessRefreshDelayMs(longLived, 43199000), 1000, "elapsed time continues toward the original deadline after failed refreshes");
+  assert.equal(freshnessDeadlineElapsed(longLived, 43199000), false);
+  assert.equal(freshnessDeadlineElapsed(longLived, 43200000), true);
+  assert.equal(freshnessRefreshDelayMs(current), 1000);
+  assert.equal(freshnessDeadlineElapsed(current, 999), false);
+  assert.equal(freshnessDeadlineElapsed(current, 1000), true);
+  assert.equal(freshnessRefreshDelayMs(envelope("standard", { status: "current", age_seconds: 60, deadline_seconds: 60 })), 1000);
+  assert.equal(freshnessRefreshDelayMs(envelope("standard", { status: "unknown", reason: "stale", age_seconds: 61, deadline_seconds: 60 })), 300000);
+  const stale = markEnvelopeStale(current);
+  assert.equal(stale.report, current.report);
+  assert.notEqual(stale.freshness, current.freshness);
+  assert.equal(stale.freshness.status, "unknown");
+  assert.equal(stale.freshness.reason, "stale");
+  assert.equal(current.freshness.status, "current");
 });
 
 test("findings order fail unknown warn and expose only typed evidence allowlist", () => {

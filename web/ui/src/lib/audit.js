@@ -80,12 +80,17 @@ export function auditHeadline(health, options = {}) {
   return { state, status, label: status.toUpperCase() };
 }
 
+export function auditRunBlocksStart(run) {
+  return run?.executionState === "running" && run?.monitoringState !== "unknown";
+}
+
 export function applyRunStatus(state, status) {
   const profile = status?.profile === "fast" ? "fast" : "standard";
   const executionState = ["running", "completed", "failed"].includes(status?.state) ? status.state : "failed";
   const run = {
     auditID: String(status?.audit_id || ""),
     executionState,
+    monitoringState: executionState === "running" ? "active" : "settled",
     errorCode: executionState === "failed" ? String(status?.error_code || "audit_run_failed") : "",
     reportStatus: executionState === "completed" ? String(status?.report?.status || "unknown") : "unknown"
   };
@@ -96,6 +101,55 @@ export function applyRunStatus(state, status) {
     else next.standardEnvelope = envelope;
   }
   return next;
+}
+
+export function applyRunMonitoringUnknown(state, { auditID, profile, reason, active = true } = {}) {
+  const normalizedProfile = profile === "fast" ? "fast" : "standard";
+  const previous = state?.runByProfile?.[normalizedProfile] || {};
+  const run = {
+    ...previous,
+    auditID: String(auditID || previous.auditID || ""),
+    executionState: active ? "running" : "unknown",
+    monitoringState: "unknown",
+    monitoringReason: String(reason || "poll_unavailable"),
+    errorCode: "",
+    reportStatus: "unknown"
+  };
+  return { ...state, runByProfile: { ...(state?.runByProfile || {}), [normalizedProfile]: run } };
+}
+
+export function freshnessRefreshDelayMs(envelope, elapsedMs = 0) {
+  const freshness = envelope?.freshness;
+  if (freshness?.status !== "current") return 300000;
+  const age = numberOrNull(freshness.age_seconds);
+  const deadline = numberOrNull(freshness.deadline_seconds);
+  if (age == null || deadline == null) return 300000;
+  const untilStale = Math.max(deadline - age, 0) * 1000 - Math.max(0, elapsedMs);
+  return Math.min(300000, Math.max(1000, untilStale));
+}
+
+export function freshnessDeadlineElapsed(envelope, elapsedMs = 0) {
+  const freshness = envelope?.freshness;
+  if (freshness?.status !== "current") return false;
+  const age = numberOrNull(freshness.age_seconds);
+  const deadline = numberOrNull(freshness.deadline_seconds);
+  if (age == null || deadline == null) return false;
+  return Math.max(0, elapsedMs) >= Math.max(deadline - age, 0) * 1000;
+}
+
+export function markEnvelopeStale(envelope) {
+  if (!envelope?.report || envelope?.freshness?.status !== "current") return envelope;
+  const deadline = numberOrNull(envelope.freshness.deadline_seconds);
+  const age = numberOrNull(envelope.freshness.age_seconds);
+  return {
+    ...envelope,
+    freshness: {
+      ...envelope.freshness,
+      status: "unknown",
+      reason: "stale",
+      age_seconds: deadline == null ? age : Math.max(age || 0, deadline + 1)
+    }
+  };
 }
 
 export function selectImporters(report) {
@@ -124,12 +178,14 @@ export function selectPipeline(report) {
     const partition = checks.get(`pipeline.${stage}.partition`);
     if (!partition || (partition.status === "skipped" && partition.skip_reason === "feature_disabled")) return [];
     const pending = checks.get(`pipeline.${stage}.pending_age`);
+    const pendingStatus = pending?.status || "unknown";
     return [{
-      stage, status: partition.status, skipReason: partition.skip_reason || "", summary: partition.summary,
+      stage, status: worstAuditStatus(partition.status, pendingStatus), partitionStatus: partition.status,
+      skipReason: partition.skip_reason || "", summary: partition.summary,
       counts: pickNumbers(partition.evidence, ["total", "current", "pending", "blocked", "terminal", "failed", "unknown"]),
       partitionValid: partition.evidence?.partition_valid === true,
       oldestPendingAgeSeconds: numberOrNull(pending?.evidence?.oldest_pending_age_seconds),
-      pendingStatus: pending?.status || "unknown"
+      pendingStatus
     }];
   });
 }
@@ -153,7 +209,7 @@ export function selectDurability(report) {
   const checks = checkMap(report);
   return DURABILITY.flatMap(([id, kind, label]) => {
     const check = checks.get(id);
-    return check ? [{ id, kind, label, status: check.status, summary: check.summary, evidence: safeEvidence(check.evidence) }] : [];
+    return check ? [{ id, kind, label, status: check.status, skipReason: check.skip_reason || "", summary: check.summary, evidence: safeEvidence(check.evidence) }] : [];
   });
 }
 
@@ -261,6 +317,11 @@ function checkMap(report) {
 
 function numberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function worstAuditStatus(...statuses) {
+  const severity = { fail: 5, unknown: 4, warn: 3, pass: 2, skipped: 1 };
+  return statuses.reduce((worst, status) => (severity[status] || severity.unknown) > (severity[worst] || 0) ? status : worst, "skipped");
 }
 
 function pickNumbers(source, keys) {
