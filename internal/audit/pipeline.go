@@ -40,8 +40,12 @@ func executePipeline(_ context.Context, s *runState, e RegistryEntry) Check {
 		if !item.OldestPendingKnown {
 			return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
 		}
-		ev["oldest_pending_age_seconds"] = seconds(item.OldestPendingAge)
-		return baseCheck(e, s.now, ClassifyAge(item.OldestPendingAge, DefaultPendingWarn, DefaultPendingFail), ConfidenceHigh, ev)
+		if item.OldestPendingAt.After(s.now) {
+			return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
+		}
+		age := s.now.Sub(item.OldestPendingAt)
+		ev["oldest_pending_age_seconds"] = seconds(age)
+		return baseCheck(e, s.now, ClassifyAge(age, DefaultPendingWarn, DefaultPendingFail), ConfidenceHigh, ev)
 	}
 	byKind := make([]map[string]any, 0, len(item.ByKind))
 	for _, row := range item.ByKind {

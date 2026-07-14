@@ -1,6 +1,9 @@
 package store
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending []CountBucket, blocked []CountBucket, terminal []CountBucket) []PipelineStageRow {
 	if len(total) == 0 {
@@ -77,9 +80,28 @@ func aggregatePipelineStageRows(rows []PipelineStageRow) PipelineStageRow {
 		total.Terminal += row.Terminal
 		total.Failed += row.Failed
 		total.Unknown += row.Unknown
+		if row.OldestPendingKnown && (!total.OldestPendingKnown || row.OldestPendingAt.Before(total.OldestPendingAt)) {
+			total.OldestPendingAt = row.OldestPendingAt
+			total.OldestPendingKnown = true
+		}
 	}
 	finalizePipelineStageRow(&total)
 	return total
+}
+
+func setPipelineOldestPending(rows []PipelineStageRow, at time.Time, known bool) {
+	if !known || at.IsZero() {
+		return
+	}
+	for i := range rows {
+		if rows[i].Kind == pipelineKindAll || len(rows) == 1 {
+			if !rows[i].OldestPendingKnown || at.Before(rows[i].OldestPendingAt) {
+				rows[i].OldestPendingAt = at.UTC()
+				rows[i].OldestPendingKnown = true
+			}
+			return
+		}
+	}
 }
 
 func finalizePipelineStageRow(row *PipelineStageRow) {

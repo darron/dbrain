@@ -49,6 +49,7 @@ func auditPipelineEvidence(rows []store.PipelineStageRow) audit.PipelineEvidence
 				Total: row.Total, Current: row.Current, Pending: row.Pending, Blocked: row.Blocked,
 				Terminal: row.Terminal, Failed: row.Failed, Unknown: row.Unknown,
 				PartitionValid: row.PartitionValid, ByKind: byKind,
+				OldestPendingAt: row.OldestPendingAt, OldestPendingKnown: row.OldestPendingKnown,
 			}
 		}
 	}
@@ -58,6 +59,7 @@ func auditPipelineEvidence(rows []store.PipelineStageRow) audit.PipelineEvidence
 			Total: row.Total, Current: row.Current, Pending: row.Pending, Blocked: row.Blocked,
 			Terminal: row.Terminal, Failed: row.Failed, Unknown: row.Unknown,
 			PartitionValid: row.PartitionValid, ByKind: byKind,
+			OldestPendingAt: row.OldestPendingAt, OldestPendingKnown: row.OldestPendingKnown,
 		}
 	}
 	return audit.PipelineEvidence{PartitionValid: true, ByKind: byKind}

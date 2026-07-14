@@ -189,6 +189,27 @@ func TestRunMissingRuntimeCapabilitiesEmitsUnknownRatherThanOmitting(t *testing.
 	}
 }
 
+func TestPipelinePendingAgeRejectsFutureAnchor(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	store := deps.Store.(fakeStore)
+	store.pipeline[PipelineExtraction] = PipelineEvidence{
+		Total: 1, Pending: 1, PartitionValid: true,
+		OldestPendingAt: now.Add(time.Hour), OldestPendingKnown: true,
+	}
+	deps.Store = store
+	report, err := Run(t.Context(), Request{Profile: ProfileFast, CheckIDs: []CheckID{CheckPipelineExtractionPendingAge}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Checks) != 1 || report.Checks[0].Status != StatusUnknown || report.Checks[0].Confidence != ConfidenceUnknown {
+		t.Fatalf("future pending anchor check = %#v", report.Checks)
+	}
+	if _, ok := report.Checks[0].Evidence["oldest_pending_age_seconds"]; ok {
+		t.Fatalf("future pending anchor exposed a false age: %#v", report.Checks[0].Evidence)
+	}
+}
+
 func TestRunFiltersScopeWithoutClaimingWholeSystem(t *testing.T) {
 	deps := passingDependencies(time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC))
 	report, err := Run(context.Background(), Request{Profile: ProfileStandard, Since: time.Hour, Categories: []Category{CategoryPipeline}}, deps)

@@ -668,7 +668,11 @@ func TestAuditSnapshotAdapterUsesRealStorePipelineAggregates(t *testing.T) {
 	if len(extraction.ByKind) != 1 || extraction.ByKind[0].Kind != "web" || extraction.ByKind[0].Total != 1 {
 		t.Fatalf("real extraction by-kind = %#v", extraction.ByKind)
 	}
-	report, err := audit.Run(context.Background(), audit.Request{Profile: audit.ProfileFast, CheckIDs: []audit.CheckID{audit.CheckPipelineExtractionPartition}}, audit.Dependencies{
+	auditNow := time.Now().UTC().Add(100 * time.Hour)
+	report, err := audit.Run(context.Background(), audit.Request{Profile: audit.ProfileFast, CheckIDs: []audit.CheckID{
+		audit.CheckPipelineExtractionPartition,
+		audit.CheckPipelineExtractionPendingAge,
+	}}, audit.Dependencies{
 		Features: audit.Features{
 			Layout: "explicit_root", ConfigSource: "flag", ConfigVerified: true, DatabaseOpenedQueryOnly: true,
 			Stages: map[audit.PipelineStage]bool{audit.PipelineExtraction: true}, Sources: map[audit.Source]bool{},
@@ -678,13 +682,20 @@ func TestAuditSnapshotAdapterUsesRealStorePipelineAggregates(t *testing.T) {
 			ReleaseVersion: "v0.6.0", Commit: "abcdef1", GitStatus: "clean", Platform: "darwin/arm64",
 			SecurityBaselineID: "v0.6.0-security-pass", SecurityBaselineEpoch: 1,
 		},
-		Clock: func() time.Time { return fixedAuditTime },
+		Clock: func() time.Time { return auditNow },
 	})
 	if err != nil {
 		t.Fatalf("real store audit report: %v", err)
 	}
-	if len(report.Checks) != 1 || report.Checks[0].Evidence["total"] != 1 {
+	if len(report.Checks) != 2 || report.Checks[0].Evidence["total"] != 1 {
 		t.Fatalf("real store audit report = %#v", report)
+	}
+	pendingAge := report.Checks[1]
+	if pendingAge.ID != audit.CheckPipelineExtractionPendingAge || pendingAge.Status != audit.StatusFail {
+		t.Fatalf("real store pending-age check = %#v", pendingAge)
+	}
+	if age, ok := pendingAge.Evidence["oldest_pending_age_seconds"].(int64); !ok || age < int64((99*time.Hour)/time.Second) {
+		t.Fatalf("real store pending age evidence = %#v", pendingAge.Evidence)
 	}
 }
 

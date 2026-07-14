@@ -53,7 +53,7 @@ type KindPartition struct {
 type PipelineEvidence struct {
 	Total, Current, Pending, Blocked, Terminal, Failed, Unknown int
 	PartitionValid                                              bool
-	OldestPendingAge                                            time.Duration
+	OldestPendingAt                                             time.Time
 	OldestPendingKnown                                          bool
 	ByKind                                                      []KindPartition
 }

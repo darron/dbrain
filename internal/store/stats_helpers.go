@@ -33,6 +33,38 @@ func (s *Store) countWhere(ctx context.Context, table string, where string, args
 	return count, nil
 }
 
+func (s *Store) oldestTimestampWhere(ctx context.Context, table string, timestampExpr string, where string, args ...any) (time.Time, bool, error) {
+	query := `SELECT (` + timestampExpr + `) FROM ` + table
+	if strings.TrimSpace(where) != "" {
+		query += ` WHERE ` + where
+	}
+
+	rows, err := s.queryer().QueryContext(ctx, query, args...)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("oldest timestamp %s: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var oldest time.Time
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return time.Time{}, false, fmt.Errorf("scan oldest timestamp %s: %w", table, err)
+		}
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+		if err != nil {
+			return time.Time{}, false, nil
+		}
+		if oldest.IsZero() || parsed.Before(oldest) {
+			oldest = parsed
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return time.Time{}, false, fmt.Errorf("iterate oldest timestamp %s: %w", table, err)
+	}
+	return oldest, !oldest.IsZero(), nil
+}
+
 func (s *Store) countGroupedWhere(ctx context.Context, table string, groupBy string, where string, args ...any) ([]CountBucket, error) {
 	query := `SELECT ` + groupBy + `, COUNT(*) FROM ` + table
 	if strings.TrimSpace(where) != "" {

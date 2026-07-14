@@ -8,7 +8,8 @@ import (
 )
 
 func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName string, toolVersion string) (PipelineStats, error) {
-	policy := newSourceEnrichmentPolicy(time.Now().UTC(), promptVersion, toolName, toolVersion)
+	now := time.Now().UTC()
+	policy := newSourceEnrichmentPolicy(now, promptVersion, toolName, toolVersion)
 
 	stats := PipelineStats{}
 	if policy.promptVersion != "" || policy.toolName != "" || policy.toolVersion != "" {
@@ -38,6 +39,15 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		return PipelineStats{}, err
 	}
 	stats.Hydration = buildPipelineStageRows(hydrationTotal, hydrationCurrent, hydrationPending, hydrationBlocked, hydrationTerminal)
+	hydrationPendingAt, hydrationPendingKnown, err := s.oldestTimestampWhere(ctx, "items", `CASE
+		WHEN x_post_status = '' THEN COALESCE(NULLIF(imported_at, ''), NULLIF(updated_at, ''), last_seen_at)
+		WHEN x_post_status IN ('api_error', 'error', 'rate_limited') THEN COALESCE(NULLIF(x_post_fetched_at, ''), NULLIF(updated_at, ''), imported_at)
+		ELSE COALESCE(NULLIF(x_post_fetched_at, ''), NULLIF(updated_at, ''), imported_at)
+	END`, xItemSourceTypeWhere+` AND external_id != '' AND `+xHydrationCandidateWhere)
+	if err != nil {
+		return PipelineStats{}, err
+	}
+	setPipelineOldestPending(stats.Hydration, hydrationPendingAt, hydrationPendingKnown)
 
 	extractWhere, extractArgs := policy.extractBacklogWhere()
 	extractionTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
@@ -63,6 +73,14 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		return PipelineStats{}, err
 	}
 	stats.Extraction = buildPipelineStageRows(extractionTotal, extractionCurrent, extractionPending, extractionBlocked, extractionTerminal)
+	extractionPendingAt, extractionPendingKnown, err := s.oldestTimestampWhere(ctx, "sources", `CASE
+		WHEN extract_status = '' THEN COALESCE(NULLIF(created_at, ''), updated_at)
+		WHEN extract_status = '`+model.SourceExtractStatusError+`' THEN COALESCE(NULLIF(extract_last_failed_at, ''), NULLIF(updated_at, ''), created_at)
+		ELSE COALESCE(NULLIF(extracted_at, ''), NULLIF(updated_at, ''), created_at)
+	END`, extractWhere, extractArgs...)
+	if err != nil {
+		return PipelineStats{}, err
+	}
 	appleNoteExtractionRow, ok, err := s.pipelineAppleNoteExtractionRow(ctx)
 	if err != nil {
 		return PipelineStats{}, err
@@ -77,6 +95,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if ok {
 		stats.Extraction = appendPipelineStageRow(stats.Extraction, safariTabExtractionRow)
 	}
+	setPipelineOldestPending(stats.Extraction, extractionPendingAt, extractionPendingKnown)
 
 	summaryTotal, err := s.countGroupedWhere(ctx, "sources", "source_type", "")
 	if err != nil {
@@ -119,6 +138,15 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 		return PipelineStats{}, err
 	}
 	stats.Summary = buildPipelineStageRows(summaryTotal, summaryCurrent, summaryPending, summaryBlocked, nil)
+	summaryPendingAt, summaryPendingKnown, err := s.oldestTimestampWhere(ctx, "sources", `CASE
+		WHEN extract_status = '' THEN COALESCE(NULLIF(created_at, ''), updated_at)
+		WHEN extract_status = '`+model.SourceExtractStatusError+`' THEN COALESCE(NULLIF(extract_last_failed_at, ''), NULLIF(updated_at, ''), created_at)
+		WHEN `+sourceExtractCoverageRepairWhere()+` OR `+sourceMakerWorldAPIRepairWhere()+` THEN COALESCE(NULLIF(extracted_at, ''), NULLIF(updated_at, ''), created_at)
+		ELSE COALESCE(NULLIF(updated_at, ''), NULLIF(extracted_at, ''), created_at)
+	END`, summaryPendingCondition, summaryPendingArgs...)
+	if err != nil {
+		return PipelineStats{}, err
+	}
 
 	transcriptionRow, ok, err := s.pipelineXMediaTranscriptionRow(ctx)
 	if err != nil {
@@ -148,6 +176,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	if ok {
 		stats.OCR = []PipelineStageRow{xPhotoOCRRow}
 	}
+	setPipelineOldestPending(stats.Summary, summaryPendingAt, summaryPendingKnown)
 	mediaArchiveRow, ok, err := s.pipelineMediaArchiveRow(ctx)
 	if err != nil {
 		return PipelineStats{}, err
