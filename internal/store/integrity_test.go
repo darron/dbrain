@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -139,5 +140,45 @@ func TestInspectDatabaseReadOnlyCountsForeignKeyViolations(t *testing.T) {
 	}
 	if got.ForeignKeyViolationCount != 1 || got.QuickCheck != "ok" {
 		t.Fatalf("unexpected integrity result: %+v", got)
+	}
+}
+
+func TestInspectDatabaseReadOnlyQuickCheckJSONContract(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	for _, includeIntegrity := range []bool{false, true} {
+		got, err := InspectDatabaseReadOnly(t.Context(), path, includeIntegrity)
+		if err != nil {
+			t.Fatalf("InspectDatabaseReadOnly(%t): %v", includeIntegrity, err)
+		}
+		if got.QuickCheckChecked != includeIntegrity {
+			t.Fatalf("QuickCheckChecked = %t, want %t: %+v", got.QuickCheckChecked, includeIntegrity, got)
+		}
+		if includeIntegrity && got.QuickCheck != "ok" {
+			t.Fatalf("checked QuickCheck = %q, want ok", got.QuickCheck)
+		}
+		if !includeIntegrity && got.QuickCheck != "" {
+			t.Fatalf("unchecked QuickCheck = %q, want empty", got.QuickCheck)
+		}
+		payload, err := json.Marshal(got)
+		if err != nil {
+			t.Fatalf("marshal integrity result: %v", err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			t.Fatalf("unmarshal integrity result: %v", err)
+		}
+		_, hasQuickCheck := fields["quick_check"]
+		if hasQuickCheck != includeIntegrity {
+			t.Fatalf("quick_check presence = %t, want %t: %s", hasQuickCheck, includeIntegrity, payload)
+		}
+		if checked, ok := fields["quick_check_checked"].(bool); !ok || checked != includeIntegrity {
+			t.Fatalf("quick_check_checked = %#v, want %t: %s", fields["quick_check_checked"], includeIntegrity, payload)
+		}
 	}
 }

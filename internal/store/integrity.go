@@ -13,7 +13,8 @@ const (
 )
 
 type DatabaseIntegrity struct {
-	QuickCheck                string `json:"quick_check"`
+	QuickCheckChecked         bool   `json:"quick_check_checked"`
+	QuickCheck                string `json:"quick_check,omitempty"`
 	QuickViolationCount       int    `json:"quick_violation_count"`
 	ForeignKeyViolationCount  int    `json:"foreign_key_violation_count"`
 	SchemaCompatibility       string `json:"schema_compatibility"`
@@ -34,7 +35,7 @@ func InspectDatabaseReadOnly(ctx context.Context, path string, includeIntegrity 
 	db.SetMaxIdleConns(1)
 	defer func() { _ = db.Close() }()
 
-	result := DatabaseIntegrity{QuickCheck: "skipped", SupportedVersion: currentSchemaVersion}
+	result := DatabaseIntegrity{SupportedVersion: currentSchemaVersion}
 	if includeIntegrity {
 		if err := inspectSQLiteIntegrity(ctx, db, &result); err != nil {
 			return DatabaseIntegrity{}, err
@@ -94,6 +95,7 @@ func inspectSQLiteIntegrity(ctx context.Context, db *sql.DB, result *DatabaseInt
 		return fmt.Errorf("run sqlite quick_check: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	result.QuickCheckChecked = true
 	result.QuickCheck = "ok"
 	for rows.Next() {
 		var message string

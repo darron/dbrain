@@ -17,7 +17,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	if err != nil || total == 0 {
 		return PipelineStageRow{}, false, err
 	}
-	current, err := s.countWhere(ctx, "items", candidateWhere+` AND `+text+` != ''`)
+	current, err := s.countWhere(ctx, "items", candidateWhere+` AND `+status+` = '`+model.XMediaTranscriptStatusOK+`' AND `+text+` != ''`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
@@ -39,7 +39,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	unknown, err := s.countWhere(ctx, "items", candidateWhere+` AND `+text+` = '' AND `+status+` NOT IN ('', '`+model.XMediaTranscriptStatusOK+`', '`+model.XMediaTranscriptStatusError+`', '`+model.XMediaTranscriptStatusNoAudio+`', '`+model.XMediaTranscriptStatusNoise+`', '`+model.XMediaTranscriptStatusTooShort+`', '`+model.XMediaTranscriptStatusEmpty+`')`)
+	unknown, err := s.countWhere(ctx, "items", candidateWhere+` AND `+status+` NOT IN ('', '`+model.XMediaTranscriptStatusOK+`', '`+model.XMediaTranscriptStatusError+`', '`+model.XMediaTranscriptStatusNoAudio+`', '`+model.XMediaTranscriptStatusNoise+`', '`+model.XMediaTranscriptStatusTooShort+`', '`+model.XMediaTranscriptStatusEmpty+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}

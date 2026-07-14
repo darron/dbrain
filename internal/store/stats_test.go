@@ -796,6 +796,12 @@ func TestPipelineXMediaTranscriptionClassifiesTerminalRetryAndUnknown(t *testing
 		t.Fatalf("seed young transcript error: %v", err)
 	}
 	invalidID := insertVideoCandidate("x-media-invalid")
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE items
+		SET article_title = 'X Media Transcript', article_text = 'legacy transcript text'
+		WHERE id = ?`, invalidID); err != nil {
+		t.Fatalf("seed invalid transcript text: %v", err)
+	}
 	if err := st.SaveXMediaTranscriptionState(ctx, invalidID, "legacy_bogus", "unknown", now); err != nil {
 		t.Fatalf("seed invalid transcript status: %v", err)
 	}

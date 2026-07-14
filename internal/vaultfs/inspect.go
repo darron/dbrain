@@ -30,14 +30,12 @@ func (r *Root) Inspect(name string) (LogicalFileMetadata, error) {
 	if trimmed == "" || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return LogicalFileMetadata{}, &LogicalFileError{Code: "outside_root"}
 	}
-	file, err := r.root.Open(cleaned)
+	info, err := r.root.Stat(cleaned)
 	if err != nil {
 		return LogicalFileMetadata{}, inspectLogicalError(err)
 	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return LogicalFileMetadata{}, inspectLogicalError(err)
+	if info.Mode().IsRegular() && info.Mode().Perm()&0o444 == 0 {
+		return LogicalFileMetadata{}, &LogicalFileError{Code: "unreadable"}
 	}
 	return LogicalFileMetadata{Exists: true, Regular: info.Mode().IsRegular(), SizeBytes: info.Size()}, nil
 }

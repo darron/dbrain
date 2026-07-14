@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -253,6 +254,57 @@ func TestInspectBundleValidatesManifestIdentity(t *testing.T) {
 				t.Fatalf("Conformant = %t, want %t: %+v", validation.Conformant, tc.wantValid, validation)
 			}
 		})
+	}
+}
+
+func TestInspectBundleRejectsNamedPipeManifestTargetWithoutBlocking(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe.md"), 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", []ManifestConcept{{Path: "pipe.md", Type: "note"}})
+	got := inspectBundleWithin(t, openInspectionRoot(t, dir))
+	if got.ManifestValid || got.ValidationErrorCount == 0 {
+		t.Fatalf("named-pipe manifest target accepted: %+v", got)
+	}
+}
+
+func TestInspectBundleRejectsUnlistedNamedPipeMarkdownWithoutBlocking(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, "unlisted.md"), 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	writeInspectionManifest(t, dir, "2026-07-13T18:00:00Z", nil)
+	got := inspectBundleWithin(t, openInspectionRoot(t, dir))
+	if got.TraversalComplete || got.ValidationErrorCount == 0 {
+		t.Fatalf("unlisted named-pipe Markdown entry accepted: %+v", got)
+	}
+}
+
+func inspectBundleWithin(t *testing.T, root *vaultfs.Root) InspectionSummary {
+	t.Helper()
+	type result struct {
+		summary InspectionSummary
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		summary, err := InspectBundle(t.Context(), root)
+		done <- result{summary: summary, err: err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("InspectBundle: %v", got.err)
+		}
+		return got.summary
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("InspectBundle blocked opening a named pipe")
+		return InspectionSummary{}
 	}
 }
 

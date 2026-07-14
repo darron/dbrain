@@ -58,7 +58,9 @@ func TestStatsCommandsReadOnly(t *testing.T) {
 				t.Fatalf("close fixture: %v", err)
 			}
 
-			_ = runRootCommand(t, root, args...)
+			if _, stderr, err := runRootCommandErr(t, root, args...); err != nil {
+				t.Fatalf("stats %s failed: %v (stderr=%q)", args[1], err, stderr)
+			}
 
 			db, err = sql.Open("sqlite", filepath.Clean(cfg.DBPath))
 			if err != nil {

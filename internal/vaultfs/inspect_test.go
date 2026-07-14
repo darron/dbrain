@@ -4,7 +4,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestRootInspectReturnsSanitizedMetadata(t *testing.T) {
@@ -66,6 +68,40 @@ func TestRootInspectReturnsSanitizedMetadata(t *testing.T) {
 	assertLogicalFileErrorCode(t, root, "notes/unreadable.md", "unreadable")
 	assertLogicalFileErrorCode(t, root, "escape", "symlink_rejected")
 	assertLogicalFileErrorCode(t, root, "escape-parent/nested.md", "symlink_rejected")
+}
+
+func TestRootInspectNamedPipeDoesNotBlock(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe.md"), 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	root, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	type result struct {
+		metadata LogicalFileMetadata
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		metadata, inspectErr := root.Inspect("pipe.md")
+		done <- result{metadata: metadata, err: inspectErr}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("Inspect FIFO: %v", got.err)
+		}
+		if !got.metadata.Exists || got.metadata.Regular {
+			t.Fatalf("Inspect FIFO metadata = %+v", got.metadata)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Inspect blocked opening a named pipe")
+	}
 }
 
 func assertLogicalFileErrorCode(t *testing.T, root *Root, name string, code string) {

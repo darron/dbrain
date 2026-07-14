@@ -230,7 +230,12 @@ func walkBundleMarkdown(ctx context.Context, root *vaultfs.Root) ([]string, int,
 				}
 				continue
 			}
-			if path.Ext(entry.Name()) == ".md" || entry.Type()&fs.ModeSymlink != 0 && path.Ext(entry.Name()) == ".md" {
+			if path.Ext(entry.Name()) == ".md" {
+				metadata, inspectErr := root.Inspect(rel)
+				if inspectErr != nil || !metadata.Regular {
+					errorsCount++
+					continue
+				}
 				files = append(files, rel)
 			}
 		}
