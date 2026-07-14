@@ -84,6 +84,13 @@ export function auditRunBlocksStart(run) {
   return run?.executionState === "running" && run?.monitoringState !== "unknown";
 }
 
+export async function applyPollResultIfCurrent(load, expectedGeneration, currentGeneration, apply) {
+  const value = await load();
+  if (expectedGeneration !== currentGeneration()) return false;
+  apply(value);
+  return true;
+}
+
 export function applyRunStatus(state, status) {
   const profile = status?.profile === "fast" ? "fast" : "standard";
   const executionState = ["running", "completed", "failed"].includes(status?.state) ? status.state : "failed";

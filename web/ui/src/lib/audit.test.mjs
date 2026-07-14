@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   applyRunStatus,
   applyRunMonitoringUnknown,
+  applyPollResultIfCurrent,
   auditHeadline,
   auditRunBlocksStart,
   freshnessDeadlineElapsed,
@@ -145,6 +146,31 @@ test("client monitoring failure never becomes a server execution failure", () =>
   const recovered = applyRunStatus(unknown, { audit_id: "run_1", profile: "standard", state: "completed", report: report("standard"), freshness: { status: "current", age_seconds: 0, deadline_seconds: 43200 } });
   assert.equal(recovered.runByProfile.standard.monitoringState, "settled");
   assert.equal(recovered.runByProfile.standard.executionState, "completed");
+});
+
+test("a deferred old poll result cannot apply after poll generation changes", async () => {
+  let resolveOld;
+  let generation = 7;
+  const applied = [];
+  const oldRead = applyPollResultIfCurrent(
+    () => new Promise((resolve) => { resolveOld = resolve; }),
+    7,
+    () => generation,
+    (value) => applied.push(value)
+  );
+  generation = 8;
+  resolveOld({ audit_id: "old-report" });
+  assert.equal(await oldRead, false);
+  assert.deepEqual(applied, []);
+
+  const currentRead = applyPollResultIfCurrent(
+    async () => ({ audit_id: "new-report" }),
+    8,
+    () => generation,
+    (value) => applied.push(value)
+  );
+  assert.equal(await currentRead, true);
+  assert.deepEqual(applied, [{ audit_id: "new-report" }]);
 });
 
 test("poll and quiet arrivals are separate importer signals", () => {
