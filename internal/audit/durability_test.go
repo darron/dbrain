@@ -61,6 +61,27 @@ func TestMediaRemoteAppliesDownwardPerRequestTimeout(t *testing.T) {
 	}
 }
 
+func TestMediaRemoteAppliesDownwardWholeCheckTimeout(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	inspector := &progressMediaInspector{}
+	state := &runState{
+		now: now, req: Request{Profile: ProfileStandard, Since: 8 * time.Hour},
+		deps: Dependencies{Features: Features{
+			MediaProvider: "test", RemoteRequestTimeout: 30 * time.Second,
+			Timeouts: map[TimeoutClass]time.Duration{TimeoutRemoteMetadata: 5 * time.Second},
+		}, Media: inspector},
+		media: []ArchivedMediaRecord{{Key: "key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true}},
+	}
+	entry, _ := Lookup(CheckDurabilityMediaRemote)
+	check := executeMediaRemote(t.Context(), state, entry)
+	if check.Status != StatusPass {
+		t.Fatalf("check = %#v", check)
+	}
+	if len(inspector.deadlines) != 1 || inspector.deadlines[0] > 6*time.Second || inspector.deadlines[0] < 4*time.Second {
+		t.Fatalf("whole-check deadline not received by request: %v", inspector.deadlines)
+	}
+}
+
 func TestMediaRemoteReportsActualPartialProgressAndCapsConcurrency(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	records := make([]ArchivedMediaRecord, 0, 20)

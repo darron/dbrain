@@ -76,7 +76,7 @@ func executeMediaRemote(ctx context.Context, s *runState, e RegistryEntry) Check
 		provider = "configured"
 	}
 	sample := SelectMediaSample(s.media, s.req.Since, s.now, provider)
-	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	checkCtx, cancel := context.WithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutRemoteMetadata, s.deps.Features.Timeouts))
 	defer cancel()
 	type result struct {
 		record   ArchivedMediaRecord

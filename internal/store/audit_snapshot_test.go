@@ -240,6 +240,57 @@ func TestAuditReadSnapshotLocalIdentifierRowsExposeOnlyFixedAuditEvidence(t *tes
 	}
 }
 
+func TestAuditReadSnapshotSourceSummaryIdentifiersDeduplicateBeforeLimit(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertSource := func(key string) int64 {
+		t.Helper()
+		result, err := st.db.ExecContext(t.Context(), `INSERT INTO sources
+			(source_key, canonical_url, normalized_url, source_type, domain, created_at, updated_at)
+			VALUES (?, ?, ?, 'web', 'example.invalid', ?, ?)`, key,
+			"https://example.invalid/"+key, "https://example.invalid/"+key, now, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	insertDeficientVersion := func(sourceID int64) {
+		t.Helper()
+		if _, err := st.db.ExecContext(t.Context(), `INSERT INTO source_summary_versions
+			(source_id, content_hash, summary_text, summary_json, summary_status, summary_error,
+			 summary_model, summary_prompt_version, summary_tool, summary_tool_version, summarized_at)
+			VALUES (?, '', 'summary', '', 'ok', '', '', '', '', '', ?)`, sourceID, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	firstID := insertSource("src:duplicate-history")
+	for range 101 {
+		insertDeficientVersion(firstID)
+	}
+	secondID := insertSource("src:later-a")
+	insertDeficientVersion(secondID)
+	thirdID := insertSource("src:later-b")
+	insertDeficientVersion(thirdID)
+
+	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+	rows, err := snapshot.LocalIdentifierRows(t.Context(), "pipeline.source_summary.provenance", 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 || rows[0].RowID != firstID || rows[1].RowID != secondID || rows[2].RowID != thirdID {
+		t.Fatalf("source summary identifiers = %#v", rows)
+	}
+}
+
 func auditQueryOnlyState(t *testing.T, st *Store) int {
 	t.Helper()
 	var state int

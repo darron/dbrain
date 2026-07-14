@@ -104,6 +104,29 @@ func TestAuditCLIDatabaseOpenFailureIsExitThreeWithoutReport(t *testing.T) {
 	}
 }
 
+func TestAuditCLIFrozenDotEnvOverridesYAMLAtBootstrap(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte("audit:\n  timeouts:\n    bootstrap: 2s\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("DBRAIN_AUDIT_TIMEOUT_BOOTSTRAP=0s\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRootCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "audit", "all", "--profile", "fast", "--json"})
+	err := cmd.ExecuteContext(context.Background())
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 3 || !strings.Contains(exit.Error(), "invalid audit timeout bootstrap") {
+		t.Fatalf("error = %#v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("bootstrap failure emitted report: %s", out.String())
+	}
+}
+
 func TestAuditCLIEmitsCompleteStandardReportBeforeHealthExit(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -364,7 +387,7 @@ audit:
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleanup := runtimeenv.RegisterConfigSnapshot(root, snapshot)
+	cleanup := runtimeenv.RegisterConfigSnapshot(root, snapshot, nil)
 	defer cleanup()
 	features, err := resolveAuditFeatures(cfg, meta)
 	if err != nil {

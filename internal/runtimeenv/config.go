@@ -19,6 +19,7 @@ var registeredConfigFiles sync.Map
 type registeredConfig struct {
 	path     string
 	snapshot map[string]any
+	dotenv   map[string]string
 	frozen   bool
 }
 
@@ -31,15 +32,15 @@ func RegisterConfigFile(rootDir string, path string) {
 	registeredConfigFiles.Store(rootDir, &registeredConfig{path: path})
 }
 
-// RegisterConfigSnapshot temporarily installs one already parsed config map.
-// While installed, runtime lookups use process environment plus this immutable
-// snapshot and do not reread dotenv or YAML files.
-func RegisterConfigSnapshot(rootDir string, snapshot map[string]any) func() {
+// RegisterConfigSnapshot temporarily installs already parsed dotenv and config
+// maps. While installed, runtime lookups use process environment, then the
+// frozen dotenv snapshot, then the frozen YAML snapshot without rereading files.
+func RegisterConfigSnapshot(rootDir string, snapshot map[string]any, dotenv map[string]string) func() {
 	rootDir = strings.TrimSpace(rootDir)
 	if rootDir == "" {
 		return func() {}
 	}
-	entry := &registeredConfig{snapshot: snapshot, frozen: true}
+	entry := &registeredConfig{snapshot: snapshot, dotenv: dotenv, frozen: true}
 	previous, hadPrevious := registeredConfigFiles.Load(rootDir)
 	registeredConfigFiles.Store(rootDir, entry)
 	var once sync.Once
@@ -71,20 +72,31 @@ func LoadConfigSnapshot(ctx context.Context, path string, maxBytes int64) (map[s
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("config snapshot byte limit must be positive")
 	}
+	data, err := readBoundedRegularFile(ctx, path, maxBytes, "config snapshot")
+	if err != nil {
+		return nil, err
+	}
+	return parseConfigSnapshot(ctx, data)
+}
+
+func readBoundedRegularFile(ctx context.Context, path string, maxBytes int64, label string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open config snapshot: %w", err)
+		return nil, fmt.Errorf("open %s: %w", label, err)
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("inspect config snapshot descriptor: %w", err)
+		return nil, fmt.Errorf("inspect %s descriptor: %w", label, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("config snapshot is not a regular file")
+		return nil, fmt.Errorf("%s is not a regular file", label)
 	}
 	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("config snapshot exceeds byte limit %d", maxBytes)
+		return nil, fmt.Errorf("%s exceeds byte limit %d", label, maxBytes)
 	}
 	type readResult struct {
 		data []byte
@@ -103,18 +115,22 @@ func LoadConfigSnapshot(ctx context.Context, path string, maxBytes int64) (map[s
 	case result = <-read:
 	}
 	if result.err != nil {
-		return nil, fmt.Errorf("read config snapshot: %w", result.err)
+		return nil, fmt.Errorf("read %s: %w", label, result.err)
 	}
 	if int64(len(result.data)) > maxBytes {
-		return nil, fmt.Errorf("config snapshot exceeds byte limit %d", maxBytes)
+		return nil, fmt.Errorf("%s exceeds byte limit %d", label, maxBytes)
 	}
+	return result.data, nil
+}
+
+func parseConfigSnapshot(ctx context.Context, data []byte) (map[string]any, error) {
 	parsed := make(chan struct {
 		cfg map[string]any
 		err error
 	}, 1)
 	go func() {
 		var cfg map[string]any
-		parseErr := yaml.Unmarshal(result.data, &cfg)
+		parseErr := yaml.Unmarshal(data, &cfg)
 		parsed <- struct {
 			cfg map[string]any
 			err error
@@ -132,6 +148,19 @@ func LoadConfigSnapshot(ctx context.Context, path string, maxBytes int64) (map[s
 		}
 		return value.cfg, nil
 	}
+}
+
+func frozenEnvValue(rootDir, key string) (string, bool) {
+	value, ok := registeredConfigFiles.Load(strings.TrimSpace(rootDir))
+	if !ok {
+		return "", false
+	}
+	entry, ok := value.(*registeredConfig)
+	if !ok || !entry.frozen {
+		return "", false
+	}
+	valueText := strings.TrimSpace(entry.dotenv[strings.TrimSpace(key)])
+	return valueText, valueText != ""
 }
 
 func loadConfigValueOK(rootDir string, key string) (string, bool) {

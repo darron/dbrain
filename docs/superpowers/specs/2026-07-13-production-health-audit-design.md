@@ -878,6 +878,11 @@ The implemented v1 keys are `audit.timeouts.bootstrap`, `local_query`,
 invalid durations are bootstrap errors, and values above a built-in ceiling
 are deterministically clamped to that ceiling.
 
+Bootstrap reads `.envrc`, `.env`, and YAML once through bounded no-follow
+regular-file snapshots. Frozen runtime lookup retains process environment,
+then `.envrc`, then `.env`, then YAML precedence; it neither executes dotenv
+shell syntax nor resolves secret references while snapshotting.
+
 Terminal/blocked counts are still displayed even when their check passes. A
 future check ID requires a registry entry, tests for every status branch, and a
 schema-version decision when it changes public meaning.

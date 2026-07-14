@@ -371,6 +371,11 @@ Configuration currently resolves in this order: shell environment, `.envrc` or
 `.env` in the config/root directory, then `config.yaml`. The YAML file can use
 exact environment-style keys under `env`, or cleaner grouped keys:
 
+Production audit bootstrap snapshots the supported dotenv files and YAML once
+with no-follow regular-file and byte-limit checks, then reuses those frozen
+values for feature resolution without executing shell syntax or resolving
+secret references.
+
 ```yaml
 summary:
   model: ollama/qwen3.6:35b-a3b

@@ -91,7 +91,7 @@ func auditLocalIdentifierQuery(checkID string, now time.Time) (string, []any, bo
 		return auditItemProvenanceIdentifierQuery(model.ItemEnrichmentRoleXMediaTranscript, model.XMediaTranscriptStatusOK,
 			[]string{"raw_json", "model", "tool", "tool_version", "input_hash", "completed_at"}), nil, true
 	case "pipeline.source_summary.provenance":
-		return `SELECT sources.id, sources.source_key
+		return `SELECT DISTINCT sources.id, sources.source_key
 			FROM source_summary_versions versions
 			JOIN sources ON sources.id = versions.source_id
 			WHERE versions.summary_status = '` + model.SourceSummaryStatusOK + `'

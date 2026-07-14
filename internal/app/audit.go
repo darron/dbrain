@@ -111,7 +111,11 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 		}
 		configSnapshot = map[string]any{}
 	}
-	cleanupConfigSnapshot := runtimeenv.RegisterConfigSnapshot(cfg.RootDir, configSnapshot)
+	dotenvSnapshot, err := runtimeenv.LoadDotEnvSnapshot(bootstrapCtx, cfg.RootDir, auditConfigMaxBytes)
+	if err != nil {
+		return &ExitError{Code: 3, Err: fmt.Errorf("read bounded audit dotenv: %w", err)}
+	}
+	cleanupConfigSnapshot := runtimeenv.RegisterConfigSnapshot(cfg.RootDir, configSnapshot, dotenvSnapshot)
 	defer cleanupConfigSnapshot()
 	timeoutOverrides, _, err := resolveAuditTimeoutOverrides(cfg.RootDir)
 	if err != nil {

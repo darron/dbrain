@@ -29,10 +29,12 @@ development date for the change set.
   local-media checks plus exact credential-free media and SQLite archive
   targets; cleanup paths remain empty. OKF freshness reads only the manifest,
   while metrics files are opened nonblocking and validated by descriptor.
-- **Audit bootstrap and timeout truth**: The actual bounded YAML parse, feature
-  resolution, and SQLite `BEGIN` now run inside the bootstrap deadline without
-  shortening the later snapshot lifetime. Per-class YAML/env overrides can
-  lower local, integrity, manifest, remote-check, and per-request ceilings.
+- **Audit bootstrap and timeout truth**: The actual bounded YAML and dotenv
+  snapshots, feature resolution, and SQLite `BEGIN` now run inside the
+  bootstrap deadline without shortening the later snapshot lifetime. Frozen
+  lookup preserves shell, `.envrc`, `.env`, then YAML precedence without
+  repeated reads. Per-class overrides lower local, integrity, manifest,
+  remote-check, and per-request ceilings, including media whole-check limits.
 
 ### Security hardening (2026-07-13)
 
