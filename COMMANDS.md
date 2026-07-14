@@ -190,6 +190,13 @@ dbrain audit imports --since 7d
 dbrain audit pipeline --json
 dbrain audit durability --expect-commit <sha> --json
 dbrain audit all --profile deep --json
+dbrain audit apple-notes --json
+dbrain audit safari-tabs --json
+dbrain audit x-bookmarks --json
+dbrain audit github-stars --json
+dbrain audit youtube-liked --json
+dbrain audit youtube-watch-later --json
+dbrain audit feeds --json
 ```
 
 Standard is the default profile; fast omits expensive integrity and remote
@@ -202,6 +209,28 @@ unknown/bootstrap failure. A produced JSON report is written before a non-zero
 health exit. `--include-identifiers` selects a local-only wrapper with bounded
 row IDs, source keys, and cleanup paths; the shared `dbrain.audit.v1` report
 never contains paths, object keys, corpus content, titles, URLs, or secrets.
+
+Deep imports reconcile the configured Apple Notes, Safari Tabs, X Bookmarks,
+GitHub Stars, YouTube Liked, YouTube Watch Later, and subscribed-feed
+inventories against the query-only local snapshot. Inventories run
+sequentially with a five-minute ceiling per source and fixed maxima of 100,000
+unique identities and 10,000 pages. The report exposes counts only. It fails
+when a complete upstream inventory contains identities missing locally and is
+unknown when credentials, snapshot access, schema parsing, pagination, or
+completion cannot be proven.
+
+The seven source-specific commands default to deep and reject an explicitly
+selected fast or standard profile. Each command forces only its named parity
+check, including when normal scheduled import for that source is disabled; in
+that case the poll check remains skipped with `feature_disabled`. Source
+commands do not expose or resolve archive byte controls. They never import,
+delete, repair, retry, restore, prune, close tabs, modify Notes, or write feed
+state. Apple Notes and Safari Tabs copy their SQLite DB/WAL/SHM inputs into
+interruptible dbrain-owned snapshots. X and GitHub use fixed upstream origins,
+YouTube uses fixed playlist URLs with a bounded proxy-free `yt-dlp` process,
+and feeds are restricted by the existing safe-network policy, including exact
+configured private origins. Deep parity cannot be invoked through scheduled
+audits, MCP, or the admin API.
 
 The audit resolver follows the normal target precedence but creates no
 directories, applies no migrations, runs no startup repair/preflight, and

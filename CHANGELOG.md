@@ -7,6 +7,17 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Bounded upstream importer parity**: Added CLI-only deep reconciliation for
+  Apple Notes, Safari Tabs, X Bookmarks, GitHub Stars, YouTube Liked, YouTube
+  Watch Later, and enabled feeds, plus exact source commands for release and
+  operational checks. Inventories are read-only, content-free, sequential,
+  cancellation-aware, capped at 100,000 unique identities and 10,000 pages,
+  and fail closed on credentials, schema, cursor, device, network, or
+  completion ambiguity. Local app sources use dbrain-owned SQLite snapshots;
+  remote adapters use fixed/configured safe origins or bounded proxy-free
+  subprocesses. Source-only audits no longer resolve unrelated archive limits,
+  and deep parity remains unavailable to scheduled, MCP, and admin runners.
+
 - **Production health admin view**: Replaced ambiguous activity-derived health
   with the authenticated exact-profile standard audit presentation. The System
   page now separates fast local refresh from authoritative standard health,

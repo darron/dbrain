@@ -351,6 +351,8 @@ To inspect the resolved installation without repairing or mutating it, run:
 ```sh
 dbrain audit all --profile standard --json
 dbrain audit all --profile deep --json
+dbrain audit github-stars --json
+dbrain audit apple-notes --json
 ```
 
 The stable `dbrain.audit.v1` report covers target/build identity, SQLite
@@ -408,6 +410,27 @@ database, and aggregate temporary-byte defaults are 20 GiB, 100 GiB, and
 an operator must pass `--max-archive-bytes`, `--max-database-bytes`, or
 `--max-temp-bytes` explicitly to raise them for one deep run. Deep audit
 temporary files are removed on success, failure, timeout, or cancellation.
+
+Deep imports also perform bounded, complete upstream parity for the configured
+Apple Notes, Safari Tabs, X Bookmarks, GitHub Stars, YouTube Liked, YouTube
+Watch Later, and feed sources. Each inventory is read-only, runs sequentially
+under its own five-minute ceiling, and is capped at 100,000 unique identities
+and 10,000 pages. The portable report contains counts and status only—not
+identities, note text, titles, URLs, response bodies, paths, cookies, or tokens.
+A missing credential, inaccessible snapshot, ambiguous cursor/device, parser
+failure, or unproven traversal end is `unknown`; a complete inventory with
+missing local identities is `fail`.
+
+The source-specific commands are `audit apple-notes`, `safari-tabs`,
+`x-bookmarks`, `github-stars`, `youtube-liked`, `youtube-watch-later`, and
+`feeds`. They default to deep, reject fast/standard, and force only the named
+parity check even when scheduled import for that source is disabled. The
+source's poll check remains truthfully skipped as `feature_disabled`. These
+commands never delete, import, repair, retry, restore, prune, or archive data;
+Apple Notes and Safari use interruptible dbrain-owned SQLite snapshots, and
+remote clients are confined to their fixed or configured safe origins. Deep
+parity is CLI-only: scheduled audits, MCP, and the admin API remain fast or
+standard and receive no upstream inventory authority.
 
 Audit timeout overrides live under `audit.timeouts` (or the matching
 `DBRAIN_AUDIT_TIMEOUT_*` variables). They can only lower the built-in ceilings:
@@ -1166,8 +1189,6 @@ backlog and explicit non-goals.
   shared API client layer.
 - Improve the web note reader with richer Markdown rendering, better code-block
   presentation, and cleaner outbound link handling.
-- Extend the production health audit with explicit deep upstream importer
-  parity checks.
 - Add optional importers when they become high-value enough to justify first-
   class support: X profile/likes, Apple News bookmarks, native Substack data
   beyond RSS/manual links, Bluesky, Mastodon, Instagram, MakerWorld bookmarks,
