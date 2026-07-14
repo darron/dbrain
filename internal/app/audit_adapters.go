@@ -29,15 +29,18 @@ func (a auditSnapshotAdapter) Pipeline(ctx context.Context) (map[audit.PipelineS
 }
 
 func auditPipelineEvidence(rows []store.PipelineStageRow) audit.PipelineEvidence {
-	byKind := make([]audit.KindPartition, 0, len(rows))
+	byKind := make([]audit.KindPartition, 0, min(len(rows), audit.MaxByKindEvidence))
 	for _, row := range rows {
-		if row.Kind == "all" {
+		if row.Kind == store.PipelineKindAll {
 			continue
+		}
+		if len(byKind) == audit.MaxByKindEvidence {
+			break
 		}
 		byKind = append(byKind, audit.KindPartition{Kind: row.Kind, Total: row.Total, Current: row.Current, Pending: row.Pending, Blocked: row.Blocked, Terminal: row.Terminal, Failed: row.Failed, Unknown: row.Unknown, PartitionValid: row.PartitionValid})
 	}
 	for _, row := range rows {
-		if row.Kind == "all" {
+		if row.Kind == store.PipelineKindAll {
 			return audit.PipelineEvidence{
 				Total: row.Total, Current: row.Current, Pending: row.Pending, Blocked: row.Blocked,
 				Terminal: row.Terminal, Failed: row.Failed, Unknown: row.Unknown,
@@ -96,13 +99,18 @@ func (a auditSnapshotAdapter) ArchivedMedia(ctx context.Context) ([]audit.Archiv
 
 type auditOKFInspector struct{ path string }
 
-func (i auditOKFInspector) Inspect(ctx context.Context, _ bool) (audit.OKFInspection, error) {
+func (i auditOKFInspector) Inspect(ctx context.Context, full bool) (audit.OKFInspection, error) {
 	root, err := vaultfs.Open(i.path)
 	if err != nil {
 		return audit.OKFInspection{}, err
 	}
 	defer func() { _ = root.Close() }()
-	value, err := okf.InspectBundle(ctx, root)
+	var value okf.InspectionSummary
+	if full {
+		value, err = okf.InspectBundle(ctx, root)
+	} else {
+		value, err = okf.InspectManifest(ctx, root)
+	}
 	return audit.OKFInspection{
 		ManifestValid: value.ManifestValid, ExportedAt: value.ExportedAt, DocumentCount: value.DocumentCount,
 		BrokenLinkCount: value.BrokenLinkCount, ValidationErrorCount: value.ValidationErrorCount,
@@ -124,14 +132,11 @@ type auditArchiveLister struct {
 
 func (l auditArchiveLister) List(ctx context.Context) (audit.SQLiteArchiveListing, error) {
 	value, err := l.inspector.ListObjects(ctx, l.prefix, 10_000)
-	if err != nil {
-		return audit.SQLiteArchiveListing{}, err
-	}
 	objects := make([]audit.ArchiveObject, 0, len(value.Objects))
 	for _, object := range value.Objects {
 		objects = append(objects, audit.ArchiveObject{Key: object.Key, ValidKey: sqlitearchive.IsSQLiteArchiveKey(object.Key, l.prefix), SizeBytes: object.Size, LastModified: object.LastModified})
 	}
-	return audit.SQLiteArchiveListing{ConfigurationState: "required_ready", Complete: value.Complete, Objects: objects}, nil
+	return audit.SQLiteArchiveListing{ConfigurationState: "required_ready", Complete: value.Complete, Objects: objects}, err
 }
 
 func archiveRuntimeValues(ctx context.Context, root string) (mediaarchive.Options, error) {

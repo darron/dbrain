@@ -13,11 +13,17 @@ import (
 )
 
 type stubListClient struct {
-	pages []*s3.ListObjectsV2Output
-	calls int
+	pages     []*s3.ListObjectsV2Output
+	calls     int
+	deadlines []time.Duration
 }
 
-func (s *stubListClient) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+func (s *stubListClient) ListObjectsV2(ctx context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, fmt.Errorf("page context has no deadline")
+	}
+	s.deadlines = append(s.deadlines, time.Until(deadline))
 	page := s.pages[s.calls]
 	s.calls++
 	return page, nil
@@ -36,6 +42,11 @@ func TestS3InspectorListsMetadataOnlyWithExplicitBudget(t *testing.T) {
 	}
 	if !listing.Complete || len(listing.Objects) != 2 || client.calls != 2 {
 		t.Fatalf("listing=%#v calls=%d", listing, client.calls)
+	}
+	for _, remaining := range client.deadlines {
+		if remaining > 30*time.Second || remaining < 29*time.Second {
+			t.Fatalf("page deadline remaining = %s", remaining)
+		}
 	}
 
 	client = &stubListClient{pages: []*s3.ListObjectsV2Output{{

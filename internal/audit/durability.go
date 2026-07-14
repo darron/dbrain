@@ -168,13 +168,10 @@ func executeBackupAge(s *runState, e RegistryEntry) Check {
 	if state == "required_missing_provider" || state == "required_missing_credential" {
 		return baseCheck(e, s.now, StatusFail, ConfidenceHigh, ev)
 	}
-	if state == "resolution_error" || s.archivesErr != nil {
+	if state == "resolution_error" {
 		return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
 	}
 	ev["listing_complete"] = s.archives.Complete
-	if !s.archives.Complete {
-		return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
-	}
 	valid := make([]ArchiveObject, 0, len(s.archives.Objects))
 	for _, object := range s.archives.Objects {
 		if object.ValidKey && object.SizeBytes > 0 && !object.LastModified.IsZero() && !object.LastModified.After(s.now) {
@@ -182,6 +179,20 @@ func executeBackupAge(s *runState, e RegistryEntry) Check {
 		}
 	}
 	ev["archive_count"] = len(valid)
+	if len(valid) > 0 {
+		latest := valid[0]
+		for _, object := range valid[1:] {
+			if object.LastModified.After(latest.LastModified) {
+				latest = object
+			}
+		}
+		age := s.now.Sub(latest.LastModified)
+		ev["latest_age_seconds"] = seconds(age)
+		ev["latest_size_bytes"] = latest.SizeBytes
+	}
+	if s.archivesErr != nil || !s.archives.Complete {
+		return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, ev)
+	}
 	if len(valid) == 0 {
 		return baseCheck(e, s.now, StatusFail, ConfidenceHigh, ev)
 	}
@@ -192,7 +203,5 @@ func executeBackupAge(s *runState, e RegistryEntry) Check {
 		}
 	}
 	age := s.now.Sub(latest.LastModified)
-	ev["latest_age_seconds"] = seconds(age)
-	ev["latest_size_bytes"] = latest.SizeBytes
 	return baseCheck(e, s.now, ClassifyAge(age, DefaultBackupWarn, DefaultBackupFail), ConfidenceHigh, ev)
 }

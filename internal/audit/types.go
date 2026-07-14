@@ -331,6 +331,9 @@ func ValidateReport(report Report) error {
 			if !entry.InProfile(report.Profile) && check.SkipReason != SkipProfileExcluded {
 				return fmt.Errorf("checks[%d]: profile-excluded check has wrong reason", i)
 			}
+			if entry.InProfile(report.Profile) && check.SkipReason == SkipProfileExcluded {
+				return fmt.Errorf("checks[%d]: in-profile check cannot be profile-excluded", i)
+			}
 		} else if check.SkipReason != "" {
 			return fmt.Errorf("checks[%d]: non-skipped check has skip reason", i)
 		}
@@ -350,6 +353,11 @@ func ValidateReport(report Report) error {
 		}
 		if !entry.InProfile(report.Profile) && (check.Status != StatusSkipped || check.SkipReason != SkipProfileExcluded) {
 			return fmt.Errorf("checks[%d]: profile-excluded entry must be skipped", i)
+		}
+		if entry.InProfile(report.Profile) && entry.RequiredWhen == RequiredAlways {
+			if check.Status == StatusSkipped || !check.Required {
+				return fmt.Errorf("checks[%d]: always-required in-profile check must be required and evaluated", i)
+			}
 		}
 	}
 	wantStatus, wantConfidence := Overall(report.Checks)
@@ -412,7 +420,7 @@ func expectedRegistryEntries(scope Scope) []RegistryEntry {
 		if !containsCategory(scope.Categories, entry.Category) {
 			continue
 		}
-		if len(scope.Sources) > 0 && (entry.Source == "" || !containsSource(scope.Sources, entry.Source)) {
+		if len(scope.Sources) > 0 && entry.Source != "" && !containsSource(scope.Sources, entry.Source) {
 			continue
 		}
 		out = append(out, entry)

@@ -21,7 +21,8 @@ type runState struct {
 	req                    Request
 	deps                   Dependencies
 	database               DatabaseInspection
-	databaseErr            error
+	databaseIdentityErr    error
+	databaseIntegrityErr   error
 	metrics                metrics.Window
 	metricsErr             error
 	pipeline               map[PipelineStage]PipelineEvidence
@@ -154,13 +155,27 @@ func (s *runState) load(ctx context.Context) {
 		}
 		return false
 	}
-	inspectDatabase := selected(CheckIntegritySchemaIdentity) || selected(CheckIntegrityMigrationCompatibility) || selected(CheckIntegritySQLiteQuickCheck) || selected(CheckIntegrityForeignKeys)
-	if inspectDatabase {
+	inspectDatabaseIdentity := selected(CheckIntegritySchemaIdentity) || selected(CheckIntegrityMigrationCompatibility)
+	inspectDatabaseIntegrity := selected(CheckIntegritySQLiteQuickCheck) || selected(CheckIntegrityForeignKeys)
+	if inspectDatabaseIdentity || inspectDatabaseIntegrity {
 		if s.deps.Database != nil {
-			full := selected(CheckIntegritySQLiteQuickCheck) || selected(CheckIntegrityForeignKeys)
-			s.database, s.databaseErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutSQLiteOrOKFIntegrity), func(child context.Context) (DatabaseInspection, error) { return s.deps.Database.Inspect(child, full) })
+			if inspectDatabaseIdentity {
+				s.database, s.databaseIdentityErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery), func(child context.Context) (DatabaseInspection, error) { return s.deps.Database.Inspect(child, false) })
+			}
+			if inspectDatabaseIntegrity {
+				integrity, err := inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutSQLiteOrOKFIntegrity), func(child context.Context) (DatabaseInspection, error) { return s.deps.Database.Inspect(child, true) })
+				s.databaseIntegrityErr = err
+				if !inspectDatabaseIdentity {
+					s.database = integrity
+				} else {
+					s.database.QuickCheck = integrity.QuickCheck
+					s.database.QuickViolationCount = integrity.QuickViolationCount
+					s.database.ForeignKeyViolationCount = integrity.ForeignKeyViolationCount
+				}
+			}
 		} else {
-			s.databaseErr = errCapabilityUnavailable
+			s.databaseIdentityErr = errCapabilityUnavailable
+			s.databaseIntegrityErr = errCapabilityUnavailable
 		}
 	}
 	if selectedCategory(CategoryScheduler) || selectedCategory(CategoryImports) {
@@ -187,6 +202,9 @@ func (s *runState) load(ctx context.Context) {
 	}
 	needLocal := selected(CheckDurabilityMediaLocalCoverage)
 	needMedia := selected(CheckDurabilityMediaRemote)
+	// Store snapshot inspections are intentionally sequential. AuditReadSnapshot
+	// owns one read transaction/connection; sharing it across concurrent queries
+	// would add unsafe contention without improving the <=4 local-work ceiling.
 	if needPipeline || needProvenance || needLocal || needMedia {
 		if s.deps.Store == nil {
 			s.pipelineErr, s.provenanceErr, s.localErr, s.mediaErr = errCapabilityUnavailable, errCapabilityUnavailable, errCapabilityUnavailable, errCapabilityUnavailable
@@ -283,7 +301,7 @@ func scopeIncludes(req Request, e RegistryEntry) bool {
 	if len(req.Categories) > 0 && !containsCategory(req.Categories, e.Category) {
 		return false
 	}
-	if len(req.Sources) > 0 && (e.Source == "" || !containsSource(req.Sources, e.Source)) {
+	if len(req.Sources) > 0 && e.Source != "" && !containsSource(req.Sources, e.Source) {
 		return false
 	}
 	return true
@@ -472,7 +490,11 @@ func executeBoundary(ctx context.Context, s *runState, e RegistryEntry) Check {
 		}
 		return baseCheck(e, s.now, StatusPass, ConfidenceHigh, Evidence{"opened_query_only": true})
 	}
-	if s.databaseErr != nil {
+	databaseErr := s.databaseIdentityErr
+	if e.ID == CheckIntegritySQLiteQuickCheck || e.ID == CheckIntegrityForeignKeys {
+		databaseErr = s.databaseIntegrityErr
+	}
+	if databaseErr != nil {
 		return unknownCheck(e, ErrorDatabase, s.now)
 	}
 	switch e.ID {

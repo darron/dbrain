@@ -49,7 +49,7 @@ func TestReaderReconstructsRunsPollsArrivalsAndExplicitMarkers(t *testing.T) {
 	}
 }
 
-func TestReaderRejectsNonRegularPathBeforeOpen(t *testing.T) {
+func TestReaderRejectsNonRegularDescriptorAfterNonblockingOpen(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("named pipes use Unix filesystem semantics")
 	}
@@ -62,6 +62,45 @@ func TestReaderRejectsNonRegularPathBeforeOpen(t *testing.T) {
 	_, err := NewReader(path).Read(ctx, time.Time{})
 	if err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Fatalf("error = %v, want non-regular rejection", err)
+	}
+}
+
+func TestReaderNeverBlocksWhenRegularMetricsPathIsReplacedByFIFO(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes use Unix filesystem semantics")
+	}
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	if err := os.WriteFile(path, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Remove(path)
+			_ = syscall.Mkfifo(path, 0o600)
+			_ = os.Remove(path)
+			_ = os.WriteFile(path, []byte("\n"), 0o600)
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-done
+	}()
+	for index := 0; index < 100; index++ {
+		started := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		_, _ = NewReader(path).Read(ctx, time.Time{})
+		cancel()
+		if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+			t.Fatalf("replacement read blocked for %s on iteration %d", elapsed, index)
+		}
 	}
 }
 

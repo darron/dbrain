@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"strings"
 
@@ -89,6 +90,13 @@ func resolveAuditFeatures(cfg config.Config, meta auditConfigMeta) (audit.Featur
 // but deliberately omits directory creation, cleanup, preflight, and secret
 // resolution. An audit must not repair or otherwise alter the target it reads.
 func loadAuditConfig(root, configFile string) (config.Config, auditConfigMeta, error) {
+	return loadAuditConfigContext(context.Background(), root, configFile)
+}
+
+func loadAuditConfigContext(ctx context.Context, root, configFile string) (config.Config, auditConfigMeta, error) {
+	if err := ctx.Err(); err != nil {
+		return config.Config{}, auditConfigMeta{}, err
+	}
 	root = strings.TrimSpace(root)
 	configFile = strings.TrimSpace(configFile)
 	envConfig := strings.TrimSpace(os.Getenv(configFileEnvVar))
@@ -117,6 +125,9 @@ func loadAuditConfig(root, configFile string) (config.Config, auditConfigMeta, e
 		meta = auditConfigMeta{Layout: "xdg", Source: "default"}
 	}
 	if err != nil {
+		return config.Config{}, auditConfigMeta{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return config.Config{}, auditConfigMeta{}, err
 	}
 	runtimeenv.RegisterConfigFile(cfg.RootDir, cfg.ConfigPath)

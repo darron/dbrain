@@ -28,6 +28,62 @@ func InspectBundle(ctx context.Context, root *vaultfs.Root) (InspectionSummary, 
 	return summary, err
 }
 
+// InspectManifest reads and validates only the bundle manifest. It deliberately
+// does not inspect, open, or traverse any Markdown concept target.
+func InspectManifest(ctx context.Context, root *vaultfs.Root) (InspectionSummary, error) {
+	if root == nil {
+		return InspectionSummary{}, fmt.Errorf("bundle root is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return InspectionSummary{}, err
+	}
+	summary := InspectionSummary{}
+	metadata, err := root.Inspect(manifestFileName)
+	if err != nil || !metadata.Regular {
+		summary.ValidationErrorCount = 1
+		return summary, nil
+	}
+	data, err := root.ReadFile(manifestFileName)
+	if err != nil {
+		summary.ValidationErrorCount = 1
+		return summary, nil
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		summary.ValidationErrorCount = 1
+		return summary, nil
+	}
+	exportedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(manifest.ExportedAt))
+	if err != nil || exportedAt.IsZero() {
+		summary.ValidationErrorCount++
+	} else {
+		summary.ExportedAt = exportedAt.UTC()
+	}
+	identityValid := manifest.OKFVersion == OKFVersion && manifest.Profile == ProfilePrivate
+	if !identityValid {
+		summary.ValidationErrorCount++
+	}
+	pathsValid := true
+	seen := make(map[string]struct{}, len(manifest.Concepts))
+	for _, concept := range manifest.Concepts {
+		if err := ValidateConceptPath(concept.Path); err != nil {
+			pathsValid = false
+			summary.ValidationErrorCount++
+			continue
+		}
+		key := manifestCollisionKey(concept.Path)
+		if _, duplicate := seen[key]; duplicate {
+			pathsValid = false
+			summary.ValidationErrorCount++
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	summary.DocumentCount = len(manifest.Concepts)
+	summary.ManifestValid = !summary.ExportedAt.IsZero() && identityValid && pathsValid
+	return summary, nil
+}
+
 func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionSummary, ValidationResult, error) {
 	if root == nil {
 		return InspectionSummary{}, ValidationResult{}, fmt.Errorf("bundle root is required")

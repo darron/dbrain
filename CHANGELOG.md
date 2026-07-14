@@ -20,6 +20,14 @@ development date for the change set.
 - **Truthful pipeline partitions**: Pipeline stats and workers share X transcription, photo OCR, source-repair, and media-archive predicates; terminal outcomes and invalid legacy states are reported separately from genuine failures, with explicit partition validation.
 - **Confined artifact inspection**: Added consistent read-transaction snapshots, metadata-only vault inspection with sanitized errors, and root-confined aggregate OKF validation that requires a readable manifest and export timestamp.
 - **Provenance and scheduler diagnostics**: Successful X media transcripts now retain deterministic input provenance, compatibility mirrors preserve authoritative enrichment metadata, migration-backed audit aggregates separate legacy gaps from regressions, and TSNet status reports sanitized scheduler authentication failures.
+- **Audit truth and bounded execution**: Production audits now consume real store
+  pipeline aggregates and closed grouped kinds, preserve partial SQLite archive
+  listing progress, apply bootstrap/local/integrity/per-page timeout classes to
+  their actual operations, and keep mixed source/category scopes truthful.
+- **Local audit diagnostics**: Identifier-enabled CLI output now includes
+  deterministic per-check details plus exact credential-free media and SQLite
+  archive targets; OKF freshness reads only the manifest, while metrics files
+  are opened nonblocking and validated by descriptor before use.
 
 ### Security hardening (2026-07-13)
 

@@ -11,6 +11,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/metrics"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/sqlitearchive"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/version"
@@ -91,7 +92,9 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 	defer cancel()
-	cfg, meta, err := loadAuditConfig(root.root, root.configFile)
+	bootstrapCtx, bootstrapCancel := auditBootstrapContext(ctx)
+	defer bootstrapCancel()
+	cfg, meta, err := loadAuditConfigContext(bootstrapCtx, root.root, root.configFile)
 	if err != nil {
 		return &ExitError{Code: 3, Err: fmt.Errorf("resolve audit target: %w", err)}
 	}
@@ -99,12 +102,12 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	var st *store.Store
 	var snapshot *store.AuditReadSnapshot
 	if auditNeedsSnapshot(req) {
-		st, err = store.OpenReadOnly(cfg.DBPath)
+		st, err = store.OpenReadOnlyContext(bootstrapCtx, cfg.DBPath)
 		if err != nil {
 			return &ExitError{Code: 3, Err: fmt.Errorf("open audit database read-only: %w", err)}
 		}
 		defer func() { _ = st.Close() }()
-		snapshot, err = st.BeginAuditReadSnapshot(ctx)
+		snapshot, err = st.BeginAuditReadSnapshot(bootstrapCtx)
 		if err != nil {
 			return &ExitError{Code: 3, Err: fmt.Errorf("begin audit database snapshot: %w", err)}
 		}
@@ -122,10 +125,11 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 	if flags.json {
 		if flags.includeIdentifiers {
 			target := LocalAuditTarget{ConfigPath: cfg.ConfigPath, Database: cfg.DBPath, Vault: cfg.VaultDir, Temporary: cfg.TempDir, Media: cfg.MediaDir, OKFRoot: cfg.OKFDir}
+			target.MediaArchive, target.SQLiteArchive = localAuditArchiveTargets(cfg.RootDir)
 			if metricsCfg, resolveErr := metrics.ResolveConfig(cfg.RootDir, cfg.LogDir); resolveErr == nil {
 				target.Metrics = metricsCfg.Path
 			}
-			err = writeJSON(cmd.OutOrStdout(), newLocalAuditWrapper(report, target, nil))
+			err = writeJSON(cmd.OutOrStdout(), newLocalAuditWrapper(report, target, localAuditIdentifiers(report)))
 		} else {
 			err = writeJSON(cmd.OutOrStdout(), report)
 		}
@@ -140,6 +144,36 @@ func runAuditCLI(cmd *cobra.Command, root *rootOptions, flags *auditCLIFlags, ca
 		return &ExitError{Code: code, Err: fmt.Errorf("audit status: %s", report.Status), Silent: true}
 	}
 	return nil
+}
+
+func localAuditIdentifiers(report audit.Report) map[audit.CheckID]LocalAuditIdentifiers {
+	values := make(map[audit.CheckID]LocalAuditIdentifiers, len(report.Checks))
+	for _, check := range report.Checks {
+		values[check.ID] = LocalAuditIdentifiers{RowIDs: []int64{}, SourceKeys: []string{}, CleanupPaths: []string{}}
+	}
+	return values
+}
+
+func localAuditArchiveTargets(root string) (LocalArchiveTarget, LocalArchiveTarget) {
+	provider := strings.TrimSpace(firstNonEmptyEnv(root, "DBRAIN_ARCHIVE_PROVIDER", "DBRAIN_R2_PROVIDER"))
+	if provider == "" {
+		provider = "cloudflare_r2"
+	}
+	bucket := strings.TrimSpace(firstNonEmptyEnv(root, "DBRAIN_R2_BUCKET", "DBRAIN_ARCHIVE_BUCKET", "DBRAIN_S3_BUCKET"))
+	origin := strings.TrimSpace(firstNonEmptyEnv(root, "DBRAIN_R2_ENDPOINT", "DBRAIN_S3_ENDPOINT"))
+	if origin != "" {
+		canonical, err := safehttp.CanonicalOriginEndpoint(origin)
+		if err != nil {
+			origin = ""
+		} else {
+			origin = canonical
+		}
+	}
+	return LocalArchiveTarget{Provider: provider, Bucket: bucket, Prefix: "media", Origin: origin}, LocalArchiveTarget{Provider: provider, Bucket: bucket, Prefix: sqlitearchive.DefaultPrefix, Origin: origin}
+}
+
+func auditBootstrapContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, 10*time.Second)
 }
 
 func defaultAuditTimeout(profile audit.Profile) time.Duration {
@@ -233,13 +267,13 @@ func auditNeedsSnapshot(req audit.Request) bool {
 			if !ok {
 				continue
 			}
-			if entry.Category == audit.CategoryPipeline || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote {
+			if entry.Category == audit.CategoryPipeline || id == audit.CheckBoundaryDatabase || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote {
 				return true
 			}
 		}
 		return false
 	}
-	return auditRequestMayIncludeCategory(req, audit.CategoryPipeline) || auditRequestMayIncludeCategory(req, audit.CategoryDurability)
+	return auditRequestMayIncludeCategory(req, audit.CategoryBoundary) || auditRequestMayIncludeCategory(req, audit.CategoryPipeline) || auditRequestMayIncludeCategory(req, audit.CategoryDurability)
 }
 
 func auditRequestMayIncludeCategory(req audit.Request, category audit.Category) bool {
@@ -258,9 +292,6 @@ func auditRequestMayIncludeCategory(req audit.Request, category audit.Category) 
 			}
 		}
 		return false
-	}
-	if len(req.Sources) > 0 {
-		return category == audit.CategoryImports
 	}
 	return true
 }

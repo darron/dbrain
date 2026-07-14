@@ -83,6 +83,15 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 // It intentionally skips schema creation/migrations so startup cannot block
 // behind a long-running writer before the MCP initialize response is sent.
 func OpenReadOnly(path string) (*Store, error) {
+	return OpenReadOnlyContext(context.Background(), path)
+}
+
+// OpenReadOnlyContext opens an existing query-only store and bounds all
+// bootstrap probes with the caller's context.
+func OpenReadOnlyContext(ctx context.Context, path string) (*Store, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open(driverName, readOnlyDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
@@ -91,7 +100,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	db.SetMaxIdleConns(1)
 
 	st := &Store{db: db}
-	if err := st.initReadOnly(path); err != nil {
+	if err := st.initReadOnly(ctx, path); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

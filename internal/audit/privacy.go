@@ -31,7 +31,14 @@ var enumValues = map[string]map[string]bool{
 	"archive_authenticity":      {"unverified": true},
 	"configuration_state":       {"not_configured": true, "configured_disabled": true, "required_ready": true, "required_missing_provider": true, "required_missing_credential": true, "resolution_error": true},
 	"baseline_id":               {"pre-v0.6.0": true, "v0.6.0-security-pass": true},
-	"kind":                      {"item": true, "source": true, "x_bookmark": true, "x_quote": true, "x_photo": true, "x_video": true, "x_animated_gif": true, "apple_note": true, "safari_tab": true, "feed": true, "github_star": true, "youtube_liked": true, "youtube_watch_later": true},
+	"kind": {
+		"item": true, "source": true,
+		"x_bookmark": true, "x_quote": true, "x_photo": true, "x_video": true, "x_animated_gif": true,
+		"apple_note": true, "safari_tab": true, "feed": true, "feed_entry": true,
+		"github_star": true, "youtube_liked": true, "youtube_watch_later": true,
+		"web": true, "pdf": true, "github": true, "youtube": true, "x_article": true,
+		"x_media_transcript": true, "x_media_summary": true, "x_photo_ocr": true, "media_archive": true,
+	},
 }
 
 var missingFieldNames = map[string]bool{

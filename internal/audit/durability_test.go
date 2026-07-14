@@ -76,3 +76,20 @@ func TestBackupAgeIgnoresInvalidZeroAndFutureObjects(t *testing.T) {
 		t.Fatalf("check = %#v", check)
 	}
 }
+
+func TestBackupAgeRetainsPartialListingProgressOnError(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	state := &runState{
+		now:  now,
+		deps: Dependencies{Features: Features{SQLiteBackupSchedulerEnabled: true, SQLiteProviderConfigured: true, SQLiteCredentialConfigured: true}},
+		archives: SQLiteArchiveListing{Complete: false, Objects: []ArchiveObject{{
+			Key: "archive/db/brain-20260714T110000Z.db.gz", ValidKey: true, SizeBytes: 123, LastModified: now.Add(-time.Hour),
+		}}},
+		archivesErr: errors.New("second page timed out"),
+	}
+	entry, _ := Lookup(CheckDurabilitySQLiteBackupAge)
+	check := executeBackupAge(state, entry)
+	if check.Status != StatusUnknown || check.Evidence["listing_complete"] != false || check.Evidence["archive_count"] != 1 || check.Evidence["latest_size_bytes"] != int64(123) {
+		t.Fatalf("partial check = %#v", check)
+	}
+}

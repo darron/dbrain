@@ -52,6 +52,18 @@ func TestAuditReadSnapshotCancellationAndClose(t *testing.T) {
 	if _, err := st.BeginAuditReadSnapshot(canceled); err == nil {
 		t.Fatal("expected canceled snapshot begin to fail")
 	}
+	bootstrap, bootstrapCancel := context.WithCancel(context.Background())
+	bootstrapSnapshot, err := st.BeginAuditReadSnapshot(bootstrap)
+	if err != nil {
+		t.Fatalf("BeginAuditReadSnapshot bootstrap: %v", err)
+	}
+	bootstrapCancel()
+	if _, err := bootstrapSnapshot.PipelinePartitions(context.Background()); err != nil {
+		t.Fatalf("bootstrap cancellation killed opened snapshot: %v", err)
+	}
+	if err := bootstrapSnapshot.Close(); err != nil {
+		t.Fatalf("close bootstrap snapshot: %v", err)
+	}
 
 	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
 	if err != nil {

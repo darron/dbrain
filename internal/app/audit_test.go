@@ -14,6 +14,8 @@ import (
 
 	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -49,6 +51,23 @@ func TestLoadAuditConfigHonorsExplicitConfigBeforeEnvironment(t *testing.T) {
 	}
 	if cfg.ConfigPath != path || meta.Layout != "explicit_config" || meta.Source != "flag" {
 		t.Fatalf("resolved = %#v %#v", cfg, meta)
+	}
+}
+
+func TestAuditBootstrapContextHasTenSecondCeilingAndHonorsLowerParent(t *testing.T) {
+	ctx, cancel := auditBootstrapContext(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) > 10*time.Second || time.Until(deadline) < 9*time.Second {
+		t.Fatalf("bootstrap deadline = %v ok=%t", deadline, ok)
+	}
+	parent, parentCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer parentCancel()
+	lowered, loweredCancel := auditBootstrapContext(parent)
+	defer loweredCancel()
+	loweredDeadline, ok := lowered.Deadline()
+	if !ok || time.Until(loweredDeadline) > 2*time.Second || time.Until(loweredDeadline) < time.Second {
+		t.Fatalf("lowered bootstrap deadline = %v ok=%t", loweredDeadline, ok)
 	}
 }
 
@@ -185,6 +204,44 @@ func TestLocalAuditWrapperBoundsAndUsesEmptyArrays(t *testing.T) {
 	}
 }
 
+func TestLocalAuditArchiveTargetsExactJSONContainsNoCredentials(t *testing.T) {
+	t.Setenv("DBRAIN_ARCHIVE_PROVIDER", "test-s3")
+	t.Setenv("DBRAIN_R2_BUCKET", "audit-bucket")
+	t.Setenv("DBRAIN_R2_ENDPOINT", "https://objects.example.test")
+	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "must-not-appear")
+	t.Setenv("DBRAIN_R2_SECRET_ACCESS_KEY", "also-must-not-appear")
+	media, sqlite := localAuditArchiveTargets(t.TempDir())
+	target := LocalAuditTarget{MediaArchive: media, SQLiteArchive: sqlite}
+	data, err := json.Marshal(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"media_archive":{"provider":"test-s3","bucket":"audit-bucket","prefix":"media","origin":"https://objects.example.test:443"},"sqlite_archive":{"provider":"test-s3","bucket":"audit-bucket","prefix":"archive/db","origin":"https://objects.example.test:443"}}`
+	if string(data) != want {
+		t.Fatalf("local target JSON = %s\nwant = %s", data, want)
+	}
+	if strings.Contains(string(data), "must-not-appear") {
+		t.Fatalf("local target leaked credentials: %s", data)
+	}
+}
+
+func TestLocalAuditIdentifiersEmitDeterministicEntriesForEveryReportedCheck(t *testing.T) {
+	report := audit.NewReport(audit.ProfileStandard, fixedAuditTime)
+	report.Checks = []audit.Check{{ID: audit.CheckPipelineOCRPartition}, {ID: audit.CheckBoundaryConfig}}
+	wrapper := newLocalAuditWrapper(report, LocalAuditTarget{}, localAuditIdentifiers(report))
+	if len(wrapper.LocalDetails.Checks) != 2 {
+		t.Fatalf("identifier details = %#v", wrapper.LocalDetails)
+	}
+	if wrapper.LocalDetails.Checks[0].CheckID != audit.CheckBoundaryConfig || wrapper.LocalDetails.Checks[1].CheckID != audit.CheckPipelineOCRPartition {
+		t.Fatalf("identifier order = %#v", wrapper.LocalDetails.Checks)
+	}
+	for _, detail := range wrapper.LocalDetails.Checks {
+		if detail.RowIDs == nil || detail.SourceKeys == nil || detail.CleanupPaths == nil {
+			t.Fatalf("identifier arrays must be non-null: %#v", detail)
+		}
+	}
+}
+
 func TestResolveAuditFeaturesUsesSchedulerAndSharedSyncPolicy(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.yaml")
@@ -229,12 +286,104 @@ sync_all:
 
 func TestAuditPipelineEvidencePreservesByKindRows(t *testing.T) {
 	got := auditPipelineEvidence([]store.PipelineStageRow{
-		{Kind: "all", Total: 3, Current: 2, Pending: 1, PartitionValid: true},
+		{Kind: "ALL", Total: 3, Current: 2, Pending: 1, PartitionValid: true},
 		{Kind: "item", Total: 2, Current: 1, Pending: 1, PartitionValid: true},
 		{Kind: "source", Total: 1, Current: 1, PartitionValid: true},
 	})
 	if len(got.ByKind) != 2 || got.ByKind[0].Kind != "item" || got.ByKind[1].Kind != "source" {
 		t.Fatalf("by kind = %#v", got.ByKind)
+	}
+}
+
+func TestAuditSnapshotAdapterUsesRealStorePipelineAggregates(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if _, err := st.UpsertSource(context.Background(), model.SourceCandidate{
+		SourceKey:     "src:audit-real-pipeline",
+		CanonicalURL:  "https://example.com/audit-real-pipeline",
+		NormalizedURL: "https://example.com/audit-real-pipeline",
+		SourceType:    "web",
+		Domain:        "example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := st.BeginAuditReadSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+
+	stages, err := (auditSnapshotAdapter{snapshot: snapshot}).Pipeline(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	extraction := stages[audit.PipelineExtraction]
+	if extraction.Total != 1 || extraction.Pending != 1 || !extraction.PartitionValid {
+		t.Fatalf("real extraction aggregate = %#v", extraction)
+	}
+	if len(extraction.ByKind) != 1 || extraction.ByKind[0].Kind != "web" || extraction.ByKind[0].Total != 1 {
+		t.Fatalf("real extraction by-kind = %#v", extraction.ByKind)
+	}
+	report, err := audit.Run(context.Background(), audit.Request{Profile: audit.ProfileFast, CheckIDs: []audit.CheckID{audit.CheckPipelineExtractionPartition}}, audit.Dependencies{
+		Features: audit.Features{
+			Layout: "explicit_root", ConfigSource: "flag", ConfigVerified: true, DatabaseOpenedQueryOnly: true,
+			Stages: map[audit.PipelineStage]bool{audit.PipelineExtraction: true}, Sources: map[audit.Source]bool{},
+		},
+		Store: auditSnapshotAdapter{snapshot: snapshot},
+		Runtime: audit.RuntimeVersion{
+			ReleaseVersion: "v0.6.0", Commit: "abcdef1", GitStatus: "clean", Platform: "darwin/arm64",
+			SecurityBaselineID: "v0.6.0-security-pass", SecurityBaselineEpoch: 1,
+		},
+		Clock: func() time.Time { return fixedAuditTime },
+	})
+	if err != nil {
+		t.Fatalf("real store audit report: %v", err)
+	}
+	if len(report.Checks) != 1 || report.Checks[0].Evidence["total"] != 1 {
+		t.Fatalf("real store audit report = %#v", report)
+	}
+}
+
+func TestAuditOKFFastInspectionDoesNotTouchSpecialMarkdownTarget(t *testing.T) {
+	dir := t.TempDir()
+	manifest, err := json.Marshal(okf.Manifest{
+		OKFVersion: okf.OKFVersion,
+		Profile:    okf.ProfilePrivate,
+		ExportedAt: fixedAuditTime.Format(time.RFC3339),
+		Concepts:   []okf.ManifestConcept{{Path: "special.md", Type: "note"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".dbrain-okf-manifest.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "special.md"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fast, err := (auditOKFInspector{path: dir}).Inspect(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fast.ManifestValid || fast.DocumentCount != 1 || fast.TraversalComplete {
+		t.Fatalf("manifest-only inspection = %#v", fast)
+	}
+	full, err := (auditOKFInspector{path: dir}).Inspect(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.ManifestValid || full.ValidationErrorCount == 0 {
+		t.Fatalf("full inspection did not inspect special target = %#v", full)
 	}
 }
 
@@ -244,5 +393,14 @@ func TestAuditNeedsSnapshotHonorsExactCheckScope(t *testing.T) {
 	}
 	if !auditNeedsSnapshot(audit.Request{CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaLocalCoverage}}) {
 		t.Fatal("media-local scope requires the database snapshot")
+	}
+	if !auditNeedsSnapshot(audit.Request{CheckIDs: []audit.CheckID{audit.CheckBoundaryDatabase}}) {
+		t.Fatal("database-boundary scope requires the database snapshot")
+	}
+	if !auditNeedsSnapshot(audit.Request{Categories: []audit.Category{audit.CategoryBoundary}}) {
+		t.Fatal("boundary-only scope requires the database snapshot")
+	}
+	if !auditNeedsSnapshot(audit.Request{Sources: []audit.Source{audit.SourceXBookmarks}}) {
+		t.Fatal("source-only mixed scope retains source-less database checks")
 	}
 }

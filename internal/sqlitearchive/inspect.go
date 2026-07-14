@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -72,12 +73,14 @@ func (i *S3Inspector) ListObjects(ctx context.Context, prefix string, maxObjects
 		if remaining > 1000 {
 			remaining = 1000
 		}
-		page, err := i.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		pageCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		page, err := i.client.ListObjectsV2(pageCtx, &s3.ListObjectsV2Input{
 			Bucket: aws.String(i.bucket), Prefix: aws.String(strings.TrimSpace(prefix)),
 			ContinuationToken: token, MaxKeys: aws.Int32(int32(remaining)),
 		})
+		cancel()
 		if err != nil {
-			return Listing{}, fmt.Errorf("list archive metadata: %w", err)
+			return listing, fmt.Errorf("list archive metadata: %w", err)
 		}
 		for _, object := range page.Contents {
 			if len(listing.Objects) >= maxObjects {
@@ -93,14 +96,14 @@ func (i *S3Inspector) ListObjects(ctx context.Context, prefix string, maxObjects
 			return listing, nil
 		}
 		if len(page.Contents) == 0 {
-			return Listing{}, fmt.Errorf("list archive metadata: truncated page made zero progress")
+			return listing, fmt.Errorf("list archive metadata: truncated page made zero progress")
 		}
 		if page.NextContinuationToken == nil || strings.TrimSpace(aws.ToString(page.NextContinuationToken)) == "" {
-			return Listing{}, fmt.Errorf("list archive metadata: truncated page missing continuation token")
+			return listing, fmt.Errorf("list archive metadata: truncated page missing continuation token")
 		}
 		next := strings.TrimSpace(aws.ToString(page.NextContinuationToken))
 		if _, exists := seenTokens[next]; exists {
-			return Listing{}, fmt.Errorf("list archive metadata: repeated continuation token")
+			return listing, fmt.Errorf("list archive metadata: repeated continuation token")
 		}
 		seenTokens[next] = struct{}{}
 		token = page.NextContinuationToken

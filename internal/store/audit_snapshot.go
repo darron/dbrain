@@ -63,7 +63,11 @@ func (s *Store) BeginAuditReadSnapshot(ctx context.Context) (*AuditReadSnapshot,
 		}
 		return nil, fmt.Errorf("set audit snapshot query-only: %w", err)
 	}
-	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	// Keep the transaction lifetime explicit: callers bound every snapshot
+	// query and close the snapshot themselves. The bootstrap context may have a
+	// deliberately short deadline and must not roll back a successfully opened
+	// snapshot in the middle of later bounded reads.
+	tx, err := conn.BeginTx(context.WithoutCancel(ctx), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		restoreErr := restoreAuditQueryOnly(conn, priorQueryOnly)
 		_ = conn.Close()

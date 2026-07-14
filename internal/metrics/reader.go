@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -125,14 +126,9 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		blockBytes = defaultReaderBlockBytes
 	}
 
-	info, err := os.Stat(r.Path)
-	if err != nil {
-		return window, fmt.Errorf("stat resolved metrics file: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return window, fmt.Errorf("resolved metrics path is not a regular file")
-	}
-	f, err := os.Open(r.Path)
+	// Open first with O_NONBLOCK, then validate the descriptor. This avoids a
+	// path-check/open race turning a swapped FIFO into a blocking audit read.
+	f, err := os.OpenFile(r.Path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return window, fmt.Errorf("open resolved metrics file: %w", err)
 	}

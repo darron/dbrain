@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +64,30 @@ func TestValidateReportRejectsClosedContractViolations(t *testing.T) {
 		{"bad audit id", func(report *Report) { report.AuditID = "audit_guessable" }},
 		{"scope mismatch", func(report *Report) { report.Scope.Categories = []Category{CategoryBoundary} }},
 		{"profile exclusion", func(report *Report) { report.Checks[46].Status = StatusUnknown; report.Checks[46].SkipReason = "" }},
+		{"in-profile profile exclusion", func(report *Report) {
+			report.Checks[0].Status = StatusSkipped
+			report.Checks[0].Confidence = ConfidenceUnknown
+			report.Checks[0].Required = false
+			report.Checks[0].Evidence = Evidence{}
+			report.Checks[0].Threshold = nil
+			report.Checks[0].Remediation = ""
+			report.Checks[0].SkipReason = SkipProfileExcluded
+			FinalizeReport(report)
+		}},
+		{"always required false", func(report *Report) {
+			report.Checks[0].Required = false
+			FinalizeReport(report)
+		}},
+		{"always required feature disabled", func(report *Report) {
+			report.Checks[0].Status = StatusSkipped
+			report.Checks[0].Confidence = ConfidenceUnknown
+			report.Checks[0].Required = false
+			report.Checks[0].Evidence = Evidence{}
+			report.Checks[0].Threshold = nil
+			report.Checks[0].Remediation = ""
+			report.Checks[0].SkipReason = SkipFeatureDisabled
+			FinalizeReport(report)
+		}},
 		{"threshold mismatch", func(report *Report) {
 			for index := range report.Checks {
 				if report.Checks[index].Threshold != nil {
@@ -146,6 +171,37 @@ func TestRunFiltersScopeWithoutClaimingWholeSystem(t *testing.T) {
 	}
 }
 
+func TestRunMixedCategoryAndSourceScopeKeepsSourceLessCategories(t *testing.T) {
+	deps := passingDependencies(time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC))
+	report, err := Run(context.Background(), Request{
+		Profile: ProfileStandard,
+		Since:   time.Hour,
+		Categories: []Category{
+			CategoryImports,
+			CategoryPipeline,
+		},
+		Sources: []Source{SourceXBookmarks},
+	}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenPipeline := false
+	for _, check := range report.Checks {
+		if check.Category == CategoryPipeline {
+			seenPipeline = true
+		}
+		if check.Category == CategoryImports {
+			entry, _ := Lookup(check.ID)
+			if entry.Source != SourceXBookmarks {
+				t.Fatalf("source filter leaked import check %q for %q", check.ID, entry.Source)
+			}
+		}
+	}
+	if !seenPipeline {
+		t.Fatalf("mixed scope dropped source-less pipeline category: %#v", report.Scope)
+	}
+}
+
 func TestRunIncompleteLatestAttemptAndExhaustedWindowAreUnknown(t *testing.T) {
 	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
 	deps := passingDependencies(now)
@@ -215,6 +271,48 @@ func TestTimeoutClassCeilings(t *testing.T) {
 		if got := timeoutFor(test.profile, test.class); got != test.want {
 			t.Fatalf("timeoutFor(%s, %s) = %s, want %s", test.profile, test.class, got, test.want)
 		}
+	}
+}
+
+func TestRunAppliesLocalAndIntegrityDeadlinesToSeparateDatabaseCalls(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	recorder := &deadlineDatabase{value: DatabaseInspection{
+		SchemaCompatibility: "current_compatible", MigrationCompatibility: "current_compatible",
+		QuickCheck: "ok", UserVersion: 12, SupportedVersion: 12, AppliedCount: 12,
+	}}
+	deps.Database = recorder
+	_, err := Run(t.Context(), Request{Profile: ProfileStandard, CheckIDs: []CheckID{CheckIntegritySchemaIdentity, CheckIntegritySQLiteQuickCheck}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.calls) != 2 || recorder.calls[0].full || !recorder.calls[1].full {
+		t.Fatalf("database calls = %#v", recorder.calls)
+	}
+	if recorder.calls[0].remaining > 31*time.Second || recorder.calls[0].remaining < 29*time.Second {
+		t.Fatalf("identity deadline remaining = %s", recorder.calls[0].remaining)
+	}
+	if recorder.calls[1].remaining > 121*time.Second || recorder.calls[1].remaining < 119*time.Second {
+		t.Fatalf("integrity deadline remaining = %s", recorder.calls[1].remaining)
+	}
+}
+
+func TestRunKeepsSnapshotLocalInspectionsWithinConcurrencyCeiling(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	tracker := &localConcurrencyStore{now: now}
+	deps.Store = tracker
+	_, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: time.Hour, CheckIDs: []CheckID{
+		CheckPipelineExtractionPartition,
+		CheckPipelineItemSummaryProvenance,
+		CheckDurabilityMediaLocalCoverage,
+		CheckDurabilityMediaRemote,
+	}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracker.calls != 4 || tracker.maxActive > 4 {
+		t.Fatalf("local inspection calls=%d max_concurrency=%d", tracker.calls, tracker.maxActive)
 	}
 }
 
@@ -291,6 +389,50 @@ func (f countingStore) Pipeline(context.Context) (map[PipelineStage]PipelineEvid
 	*f.calls++
 	return nil, nil
 }
+
+type localConcurrencyStore struct {
+	mu        sync.Mutex
+	now       time.Time
+	active    int
+	maxActive int
+	calls     int
+}
+
+func (s *localConcurrencyStore) inspect(fn func()) {
+	s.mu.Lock()
+	s.active++
+	s.calls++
+	if s.active > s.maxActive {
+		s.maxActive = s.active
+	}
+	s.mu.Unlock()
+	time.Sleep(time.Millisecond)
+	fn()
+	s.mu.Lock()
+	s.active--
+	s.mu.Unlock()
+}
+
+func (s *localConcurrencyStore) Pipeline(context.Context) (out map[PipelineStage]PipelineEvidence, err error) {
+	s.inspect(func() {
+		out = map[PipelineStage]PipelineEvidence{PipelineExtraction: {Total: 1, Current: 1, PartitionValid: true, ByKind: []KindPartition{}}}
+	})
+	return out, nil
+}
+func (s *localConcurrencyStore) Provenance(context.Context) (out []ProvenanceEvidence, err error) {
+	s.inspect(func() {
+		out = []ProvenanceEvidence{{CheckID: CheckPipelineItemSummaryProvenance, SuccessfulCount: 1, CompleteCount: 1, CutoverKnown: true, CutoverAt: s.now.Add(-time.Hour), MissingByField: map[string]int{}}}
+	})
+	return out, nil
+}
+func (s *localConcurrencyStore) MediaLocal(context.Context) (out MediaLocalEvidence, err error) {
+	s.inspect(func() { out = MediaLocalEvidence{EligibleLocalCount: 1} })
+	return out, nil
+}
+func (s *localConcurrencyStore) ArchivedMedia(context.Context) (out []ArchivedMediaRecord, err error) {
+	s.inspect(func() { out = []ArchivedMediaRecord{} })
+	return out, nil
+}
 func (f countingStore) Provenance(context.Context) ([]ProvenanceEvidence, error) {
 	*f.calls++
 	return nil, nil
@@ -309,6 +451,25 @@ type countingDatabase struct{ calls *int }
 func (f countingDatabase) Inspect(context.Context, bool) (DatabaseInspection, error) {
 	*f.calls++
 	return DatabaseInspection{}, nil
+}
+
+type databaseDeadlineCall struct {
+	full      bool
+	remaining time.Duration
+}
+
+type deadlineDatabase struct {
+	value DatabaseInspection
+	calls []databaseDeadlineCall
+}
+
+func (d *deadlineDatabase) Inspect(ctx context.Context, full bool) (DatabaseInspection, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return DatabaseInspection{}, errors.New("database inspection context has no deadline")
+	}
+	d.calls = append(d.calls, databaseDeadlineCall{full: full, remaining: time.Until(deadline)})
+	return d.value, nil
 }
 
 type countingOKF struct{ calls *int }

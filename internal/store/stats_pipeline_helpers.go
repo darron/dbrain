@@ -45,7 +45,7 @@ func appendPipelineStageRow(rows []PipelineStageRow, extra PipelineStageRow) []P
 	}
 
 	out := append([]PipelineStageRow(nil), rows...)
-	if out[0].Kind == "ALL" {
+	if out[0].Kind == PipelineKindAll {
 		detailRows := append([]PipelineStageRow(nil), out[1:]...)
 		detailRows = append(detailRows, extra)
 		sort.SliceStable(detailRows, func(i, j int) bool {

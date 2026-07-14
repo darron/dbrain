@@ -8,14 +8,23 @@ import (
 
 const localAuditSchemaV1 = "dbrain.audit.local.v1"
 
+type LocalArchiveTarget struct {
+	Provider string `json:"provider,omitempty"`
+	Bucket   string `json:"bucket,omitempty"`
+	Prefix   string `json:"prefix,omitempty"`
+	Origin   string `json:"origin,omitempty"`
+}
+
 type LocalAuditTarget struct {
-	ConfigPath string `json:"config_path,omitempty"`
-	Database   string `json:"database,omitempty"`
-	Vault      string `json:"vault,omitempty"`
-	Metrics    string `json:"metrics,omitempty"`
-	Temporary  string `json:"temporary,omitempty"`
-	Media      string `json:"media,omitempty"`
-	OKFRoot    string `json:"okf_root,omitempty"`
+	ConfigPath    string             `json:"config_path,omitempty"`
+	Database      string             `json:"database,omitempty"`
+	Vault         string             `json:"vault,omitempty"`
+	Metrics       string             `json:"metrics,omitempty"`
+	Temporary     string             `json:"temporary,omitempty"`
+	Media         string             `json:"media,omitempty"`
+	OKFRoot       string             `json:"okf_root,omitempty"`
+	MediaArchive  LocalArchiveTarget `json:"media_archive"`
+	SQLiteArchive LocalArchiveTarget `json:"sqlite_archive"`
 }
 
 type LocalAuditIdentifiers struct {
