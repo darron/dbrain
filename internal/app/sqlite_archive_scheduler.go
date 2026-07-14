@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +16,10 @@ import (
 	"github.com/darron/dbrain/internal/sqlitearchive"
 )
 
-const defaultSchedulerSQLiteArchiveInterval = 24 * time.Hour
+const (
+	defaultSchedulerSQLiteArchiveInterval = 24 * time.Hour
+	defaultSQLiteArchiveLockRetryDelay    = 5 * time.Minute
+)
 
 var buildScheduledSQLiteArchiveWriter = newScheduledSQLiteArchiveWriter
 
@@ -38,11 +39,15 @@ type sqliteArchiveScheduler struct {
 	wait         func(context.Context, time.Duration) bool
 	archive      func(context.Context, config.Config, sqlitearchive.Options) (sqlitearchive.ArchiveResult, error)
 	acquireLease func(config.Config, string) (*sqlitearchive.OperationLease, error)
+	releaseLease func(*sqlitearchive.OperationLease) error
+	readAttempt  func(config.Config) (time.Time, error)
+	writeAttempt func(config.Config, time.Time) error
 
-	mu     sync.Mutex
-	status schedulerstate.SQLiteArchiveStatus
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu             sync.Mutex
+	status         schedulerstate.SQLiteArchiveStatus
+	retryNotBefore time.Time
+	cancel         context.CancelFunc
+	done           chan struct{}
 }
 
 func schedulerSQLiteArchiveConfigFromRuntime(rootDir string) (schedulerSQLiteArchiveConfig, error) {
@@ -81,6 +86,9 @@ func newSQLiteArchiveScheduler(cfg config.Config, opts schedulerSQLiteArchiveCon
 		},
 		archive:      sqlitearchive.Archive,
 		acquireLease: sqlitearchive.AcquireOperationLease,
+		releaseLease: func(lease *sqlitearchive.OperationLease) error { return lease.Close() },
+		readAttempt:  readScheduledSQLiteArchiveAttempt,
+		writeAttempt: writeScheduledSQLiteArchiveAttempt,
 	}
 	s.status = schedulerstate.SQLiteArchiveStatus{
 		Enabled: opts.Enabled, Interval: opts.Interval.String(), RunOnStart: opts.RunOnStart,
@@ -145,6 +153,12 @@ func (s *sqliteArchiveScheduler) loop(ctx context.Context) {
 	_, _ = fmt.Fprintf(s.logOut, "scheduler sqlite archive enabled: interval=%s run_on_start=%t\n", s.opts.Interval, s.opts.RunOnStart)
 	if s.opts.RunOnStart {
 		s.run(ctx, "startup")
+	} else {
+		s.setNextRunAt(s.now().Add(s.opts.Interval))
+		if !s.wait(ctx, s.opts.Interval) {
+			return
+		}
+		s.run(ctx, "interval")
 	}
 	for ctx.Err() == nil {
 		delay := s.nextDelay()
@@ -157,15 +171,22 @@ func (s *sqliteArchiveScheduler) loop(ctx context.Context) {
 }
 
 func (s *sqliteArchiveScheduler) nextDelay() time.Duration {
-	lastAttempt, err := readScheduledSQLiteArchiveAttempt(s.cfg)
-	if err != nil || lastAttempt.IsZero() {
-		return s.opts.Interval
+	now := s.now()
+	delay := s.opts.Interval
+	lastAttempt, err := s.readAttempt(s.cfg)
+	if err == nil && !lastAttempt.IsZero() {
+		delay = lastAttempt.Add(s.opts.Interval).Sub(now)
+		if delay < 0 {
+			delay = 0
+		}
 	}
-	remaining := lastAttempt.Add(s.opts.Interval).Sub(s.now())
-	if remaining <= 0 {
-		return 0
+	s.mu.Lock()
+	retryRemaining := s.retryNotBefore.Sub(now)
+	s.mu.Unlock()
+	if retryRemaining > delay {
+		return retryRemaining
 	}
-	return remaining
+	return delay
 }
 
 func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
@@ -194,10 +215,14 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 	s.mu.Unlock()
 	lock, err := s.acquireLease(s.cfg, "scheduler:"+reason)
 	if err != nil {
+		lockHeld := errors.Is(err, sqlitearchive.ErrOperationLocked)
+		if lockHeld {
+			s.deferRetry(s.now().Add(s.lockRetryDelay()))
+		}
 		s.mu.Lock()
 		s.status.LastReason = reason
 		s.status.LastFinishedAt = s.now()
-		if errors.Is(err, sqlitearchive.ErrOperationLocked) {
+		if lockHeld {
 			s.status.LastStatus = "skipped"
 			s.status.LastError = "lock_held"
 			s.mu.Unlock()
@@ -212,10 +237,15 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 		_ = metricsRun.Emit(metrics.SQLiteArchiveFailedEvent(0, metrics.SQLiteArchiveFailureLock))
 		return
 	}
+	s.mu.Lock()
+	s.retryNotBefore = time.Time{}
+	s.mu.Unlock()
 	started := s.now()
-	lastAttempt, err := readScheduledSQLiteArchiveAttempt(s.cfg)
+	lastAttempt, err := s.readAttempt(s.cfg)
 	if err != nil {
-		_ = lock.Close()
+		if !s.releasePreflightLease(lock, reason, started, metricsRun) {
+			return
+		}
 		s.recordPreflightFailure(reason, started, metrics.SQLiteArchiveFailureState)
 		_, _ = fmt.Fprintln(s.logOut, "scheduler sqlite archive failed: interval state unavailable")
 		_ = metricsRun.Emit(metrics.SQLiteArchiveFailedEvent(0, metrics.SQLiteArchiveFailureState))
@@ -224,7 +254,9 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 	if !lastAttempt.IsZero() {
 		remaining := lastAttempt.Add(s.opts.Interval).Sub(started)
 		if remaining > 0 {
-			_ = lock.Close()
+			if !s.releasePreflightLease(lock, reason, started, metricsRun) {
+				return
+			}
 			s.mu.Lock()
 			s.status.LastReason = reason
 			s.status.LastStatus = "skipped"
@@ -236,8 +268,10 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 			return
 		}
 	}
-	if err := writeScheduledSQLiteArchiveAttempt(s.cfg, started); err != nil {
-		_ = lock.Close()
+	if err := s.writeAttempt(s.cfg, started); err != nil {
+		if !s.releasePreflightLease(lock, reason, started, metricsRun) {
+			return
+		}
 		s.recordPreflightFailure(reason, started, metrics.SQLiteArchiveFailureState)
 		_, _ = fmt.Fprintln(s.logOut, "scheduler sqlite archive failed: interval state unavailable")
 		_ = metricsRun.Emit(metrics.SQLiteArchiveFailedEvent(0, metrics.SQLiteArchiveFailureState))
@@ -253,7 +287,6 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 	s.status.LastError = ""
 	s.mu.Unlock()
 	defer func() {
-		_ = lock.Close()
 		s.mu.Lock()
 		s.status.Running = false
 		s.status.CurrentReason = ""
@@ -268,7 +301,11 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 		Writer:         s.writer,
 		OperationLease: lock,
 	})
+	closeErr := s.releaseLease(lock)
 	if err != nil {
+		if closeErr != nil {
+			_, _ = fmt.Fprintln(s.logOut, "scheduler sqlite archive operation lock release also failed")
+		}
 		failureCode := metrics.SQLiteArchiveFailureArchive
 		if errors.Is(err, context.Canceled) {
 			failureCode = metrics.SQLiteArchiveFailureCanceled
@@ -280,9 +317,38 @@ func (s *sqliteArchiveScheduler) run(ctx context.Context, reason string) {
 		_, _ = fmt.Fprintf(s.logOut, "scheduler sqlite archive failed: duration=%s\n", s.now().Sub(started).Round(time.Second))
 		return
 	}
+	if closeErr != nil {
+		s.finishRun("error", string(metrics.SQLiteArchiveFailureLock))
+		_ = metricsRun.Emit(metrics.SQLiteArchiveFailedEvent(s.now().Sub(started), metrics.SQLiteArchiveFailureLock))
+		_, _ = fmt.Fprintf(s.logOut, "scheduler sqlite archive failed: operation lock release failed duration=%s\n", s.now().Sub(started).Round(time.Second))
+		return
+	}
 	s.finishRun("ok", "")
 	_ = metricsRun.Emit(metrics.SQLiteArchiveCompletedEvent(s.now().Sub(started), result.SnapshotSize, result.ArchiveSize))
 	_, _ = fmt.Fprintf(s.logOut, "scheduler sqlite archive finished: duration=%s\n", s.now().Sub(started).Round(time.Second))
+}
+
+func (s *sqliteArchiveScheduler) releasePreflightLease(lock *sqlitearchive.OperationLease, reason string, at time.Time, metricsRun metrics.RunContext) bool {
+	if err := s.releaseLease(lock); err != nil {
+		s.recordPreflightFailure(reason, at, metrics.SQLiteArchiveFailureLock)
+		_, _ = fmt.Fprintln(s.logOut, "scheduler sqlite archive failed: operation lock release failed")
+		_ = metricsRun.Emit(metrics.SQLiteArchiveFailedEvent(0, metrics.SQLiteArchiveFailureLock))
+		return false
+	}
+	return true
+}
+
+func (s *sqliteArchiveScheduler) lockRetryDelay() time.Duration {
+	if s.opts.Interval < defaultSQLiteArchiveLockRetryDelay {
+		return s.opts.Interval
+	}
+	return defaultSQLiteArchiveLockRetryDelay
+}
+
+func (s *sqliteArchiveScheduler) deferRetry(at time.Time) {
+	s.mu.Lock()
+	s.retryNotBefore = at.UTC()
+	s.mu.Unlock()
 }
 
 func (s *sqliteArchiveScheduler) recordPreflightFailure(reason string, at time.Time, code metrics.SQLiteArchiveFailureCode) {
@@ -310,65 +376,4 @@ func (s *sqliteArchiveScheduler) setNextRunAt(at time.Time) {
 
 func scheduledSQLiteArchiveAttemptPath(cfg config.Config) string {
 	return filepath.Join(cfg.DataDir, "scheduler", "sqlite-archive-last-attempt")
-}
-
-func readScheduledSQLiteArchiveAttempt(cfg config.Config) (time.Time, error) {
-	path := scheduledSQLiteArchiveAttemptPath(cfg)
-	file, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return time.Time{}, nil
-		}
-		return time.Time{}, err
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return time.Time{}, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > 128 {
-		return time.Time{}, fmt.Errorf("invalid SQLite archive scheduler state")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, 129))
-	if err != nil {
-		return time.Time{}, err
-	}
-	if len(data) > 128 {
-		return time.Time{}, fmt.Errorf("invalid SQLite archive scheduler state")
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
-	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid SQLite archive scheduler state")
-	}
-	return parsed.UTC(), nil
-}
-
-func writeScheduledSQLiteArchiveAttempt(cfg config.Config, attemptedAt time.Time) (err error) {
-	path := scheduledSQLiteArchiveAttemptPath(cfg)
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	temp, err := os.CreateTemp(dir, ".sqlite-archive-attempt-*")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	defer func() {
-		_ = temp.Close()
-		_ = os.Remove(tempPath)
-	}()
-	if err := temp.Chmod(0o600); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(temp, attemptedAt.UTC().Format(time.RFC3339Nano)+"\n"); err != nil {
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tempPath, path)
 }

@@ -11,13 +11,18 @@ import (
 	"github.com/darron/dbrain/internal/config"
 )
 
-func Archive(ctx context.Context, cfg config.Config, opts Options) (ArchiveResult, error) {
+func Archive(ctx context.Context, cfg config.Config, opts Options) (result ArchiveResult, retErr error) {
 	lease, ownedLease, err := operationLease(cfg, opts, "archive")
 	if err != nil {
 		return ArchiveResult{}, err
 	}
 	if ownedLease {
-		defer func() { _ = lease.Close() }()
+		defer func() {
+			if err := lease.Close(); err != nil {
+				result = ArchiveResult{}
+				retErr = errors.Join(retErr, fmt.Errorf("release sqlite archive operation lease: %w", err))
+			}
+		}()
 	}
 	store, err := requireWriter(opts)
 	if err != nil {
@@ -54,7 +59,7 @@ func Archive(ctx context.Context, cfg config.Config, opts Options) (ArchiveResul
 	key := objectKey(effectivePrefix(opts.Prefix), archiveName)
 	gzipPath := filepath.Join(workDir, archiveName)
 	emitProgress(opts, Event{Kind: EventStageStart, Stage: "compress", Message: "Compressing SQLite snapshot"})
-	if err := gzipFile(snapshotPath, gzipPath); err != nil {
+	if err := gzipFile(ctx, snapshotPath, gzipPath); err != nil {
 		return ArchiveResult{}, err
 	}
 	gzipInfo, err := os.Stat(gzipPath)

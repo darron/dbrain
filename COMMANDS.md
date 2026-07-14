@@ -734,7 +734,10 @@ archives plus active restores share a cross-process lease, so only one of those
 operations can run at a time. Cancellation of `serve remote` cancels and waits
 for an in-flight scheduled archive. A private local last-attempt marker is
 written before snapshotting so a restart loop cannot create or retry multiple
-archives within one interval. Metrics distinguish startup from interval runs
+archives within one interval. When `run_on_start` is false, the first attempt
+waits one full configured interval after `serve remote` becomes ready even if
+an older persisted marker is already overdue. Metrics distinguish startup from
+interval runs
 and report only attempt/start/completed, failed, lock-skip, overlap-skip, or
 interval-skip timing and byte/count aggregates; object keys, local paths,
 credentials, and provider error bodies are excluded.

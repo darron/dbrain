@@ -11,8 +11,11 @@ development date for the change set.
   scheduler that uses the existing online SQLite snapshot/archive path,
   runs once on startup by default, durably rate-limits attempts across service
   restarts, serializes scheduled/manual archives and restores through one
-  cross-process lease, and emits content-free aggregate metrics without
-  granting write capability to audits.
+  crash-released cross-process lease, applies bounded contention backoff,
+  confines and durably syncs its private attempt marker, honors a full initial
+  delay when startup runs are disabled, supports cancellation during snapshot
+  compression, and emits content-free aggregate metrics without granting write
+  capability to audits.
 - **Bounded deep verification**: Added an explicit CLI-only deep audit that
   validates the newest compressed SQLite archive in a private temporary
   directory, performs complete bounded `media/` inventory reconciliation, and

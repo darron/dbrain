@@ -805,6 +805,8 @@ a cross-process lease prevents any scheduled/manual archive from overlapping
 another archive or an active restore.
 The scheduler records each attempt before snapshotting, so repeated service
 restarts cannot create or retry more than once inside the configured interval.
+When `run_on_start` is false, it waits one full interval after service readiness
+before the first attempt, regardless of an overdue marker from an earlier run.
 
 ## Optional Source Reader Env
 

@@ -157,6 +157,59 @@ func TestSQLiteArchiveSchedulerPersistsIntervalAcrossRestarts(t *testing.T) {
 	}
 }
 
+func TestSQLiteArchiveSchedulerStateRejectsParentSymlink(t *testing.T) {
+	cfg := openSchedulerTestConfig(t)
+	outside := t.TempDir()
+	outsideState := filepath.Join(outside, "sqlite-archive-last-attempt")
+	if err := os.WriteFile(outsideState, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(cfg.DataDir, "scheduler")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := readScheduledSQLiteArchiveAttempt(cfg); err == nil {
+		t.Fatal("read followed scheduler parent symlink")
+	}
+	if err := writeScheduledSQLiteArchiveAttempt(cfg, time.Now()); err == nil {
+		t.Fatal("write followed scheduler parent symlink")
+	}
+	data, err := os.ReadFile(outsideState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "outside\n" {
+		t.Fatalf("outside state changed to %q", data)
+	}
+}
+
+func TestSQLiteArchiveSchedulerStateRejectsLeafSymlink(t *testing.T) {
+	cfg := openSchedulerTestConfig(t)
+	dir := filepath.Join(cfg.DataDir, "scheduler")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside-state")
+	if err := os.WriteFile(outside, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, scheduledSQLiteArchiveAttemptPath(cfg)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := readScheduledSQLiteArchiveAttempt(cfg); err == nil {
+		t.Fatal("read followed scheduler state symlink")
+	}
+	if err := writeScheduledSQLiteArchiveAttempt(cfg, time.Now()); err == nil {
+		t.Fatal("write replaced scheduler state symlink instead of failing closed")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "outside\n" {
+		t.Fatalf("outside state changed to %q", data)
+	}
+}
+
 func TestSQLiteArchiveSchedulerFailedAttemptStillRateLimitsRestart(t *testing.T) {
 	cfg := openSchedulerTestConfig(t)
 	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
@@ -179,6 +232,73 @@ func TestSQLiteArchiveSchedulerFailedAttemptStillRateLimitsRestart(t *testing.T)
 	}
 	if got := second.Status(); got.LastStatus != "skipped" || got.LastError != "interval_not_elapsed" {
 		t.Fatalf("failed-attempt restart status = %+v", got)
+	}
+}
+
+func TestSQLiteArchiveSchedulerBacksOffWhenOverdueLeaseIsHeld(t *testing.T) {
+	cfg := openSchedulerTestConfig(t)
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	if err := writeScheduledSQLiteArchiveAttempt(cfg, now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := sqlitearchive.AcquireOperationLease(cfg, "test:held")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Close() }()
+
+	var calls atomic.Int32
+	var waited time.Duration
+	s := newSQLiteArchiveScheduler(cfg, schedulerSQLiteArchiveConfig{
+		Enabled: true, Interval: time.Hour, RunOnStart: true,
+	}, schedulerTestWriter{}, io.Discard)
+	s.now = func() time.Time { return now }
+	s.wait = func(_ context.Context, duration time.Duration) bool {
+		waited = duration
+		return false
+	}
+	s.archive = func(context.Context, config.Config, sqlitearchive.Options) (sqlitearchive.ArchiveResult, error) {
+		calls.Add(1)
+		return sqlitearchive.ArchiveResult{}, nil
+	}
+
+	s.loop(t.Context())
+	if calls.Load() != 0 {
+		t.Fatal("archive ran while operation lease was held")
+	}
+	if waited != 5*time.Minute {
+		t.Fatalf("lock-contention retry delay = %s, want 5m", waited)
+	}
+}
+
+func TestSQLiteArchiveSchedulerRunOnStartFalseWaitsFullIntervalWhenStateIsOverdue(t *testing.T) {
+	cfg := openSchedulerTestConfig(t)
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	if err := writeScheduledSQLiteArchiveAttempt(cfg, now.Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int32
+	var waited time.Duration
+	s := newSQLiteArchiveScheduler(cfg, schedulerSQLiteArchiveConfig{
+		Enabled: true, Interval: 24 * time.Hour, RunOnStart: false,
+	}, schedulerTestWriter{}, io.Discard)
+	s.now = func() time.Time { return now }
+	s.wait = func(_ context.Context, duration time.Duration) bool {
+		waited = duration
+		return false
+	}
+	s.archive = func(context.Context, config.Config, sqlitearchive.Options) (sqlitearchive.ArchiveResult, error) {
+		calls.Add(1)
+		return sqlitearchive.ArchiveResult{}, nil
+	}
+
+	s.loop(t.Context())
+	if calls.Load() != 0 {
+		t.Fatalf("archive calls before first configured interval = %d, want 0", calls.Load())
+	}
+	if waited != 24*time.Hour {
+		t.Fatalf("first wait = %s, want 24h", waited)
 	}
 }
 
@@ -443,6 +563,129 @@ func TestSQLiteArchiveSchedulerLockIOFailureIsFailedNotSkipped(t *testing.T) {
 				t.Fatalf("lock failure leaked %q: %s", forbidden, output)
 			}
 		}
+	}
+}
+
+func TestSQLiteArchiveSchedulerLeaseCloseFailureIsFailedBeforeCompletion(t *testing.T) {
+	cfg := openSchedulerTestConfig(t)
+	metricsPath := filepath.Join(cfg.LogDir, "sqlite-archive-close-failure.jsonl")
+	if err := os.WriteFile(cfg.ConfigPath, []byte("metrics:\n  enabled: true\n  path: sqlite-archive-close-failure.jsonl\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newSQLiteArchiveScheduler(cfg, schedulerSQLiteArchiveConfig{Enabled: true, Interval: time.Hour}, schedulerTestWriter{}, io.Discard)
+	s.archive = func(context.Context, config.Config, sqlitearchive.Options) (sqlitearchive.ArchiveResult, error) {
+		return sqlitearchive.ArchiveResult{SnapshotSize: 4096, ArchiveSize: 1024}, nil
+	}
+	s.releaseLease = func(lease *sqlitearchive.OperationLease) error {
+		if err := lease.Close(); err != nil {
+			t.Fatalf("close real lease: %v", err)
+		}
+		return fmt.Errorf("synthetic close failure path=/private/lock token=secret")
+	}
+
+	s.run(t.Context(), "interval")
+	if got := s.Status(); got.LastStatus != "error" || got.LastError != "lock_failed" {
+		t.Fatalf("close-failure status = %+v, want sanitized lock_failed", got)
+	}
+	data, err := os.ReadFile(metricsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "scheduler.sqlite_archive.failed") || strings.Contains(text, "scheduler.sqlite_archive.completed") {
+		t.Fatalf("close failure emitted success metrics: %s", text)
+	}
+	for _, forbidden := range []string{"/private/lock", "token=secret", "synthetic close failure"} {
+		if strings.Contains(text, forbidden) || strings.Contains(s.Status().LastError, forbidden) {
+			t.Fatalf("close failure leaked %q", forbidden)
+		}
+	}
+}
+
+func TestSQLiteArchiveSchedulerPreservesArchiveFailureWhenLeaseCloseAlsoFails(t *testing.T) {
+	cfg := openSchedulerTestConfig(t)
+	var logOut bytes.Buffer
+	s := newSQLiteArchiveScheduler(cfg, schedulerSQLiteArchiveConfig{Enabled: true, Interval: time.Hour}, schedulerTestWriter{}, &logOut)
+	s.archive = func(context.Context, config.Config, sqlitearchive.Options) (sqlitearchive.ArchiveResult, error) {
+		return sqlitearchive.ArchiveResult{}, context.DeadlineExceeded
+	}
+	s.releaseLease = func(lease *sqlitearchive.OperationLease) error {
+		if err := lease.Close(); err != nil {
+			t.Fatalf("close real lease: %v", err)
+		}
+		return fmt.Errorf("synthetic close failure")
+	}
+
+	s.run(t.Context(), "interval")
+	if got := s.Status(); got.LastStatus != "error" || got.LastError != "timeout" {
+		t.Fatalf("dual-failure status = %+v, want original timeout", got)
+	}
+	if !strings.Contains(logOut.String(), "operation lock release also failed") {
+		t.Fatalf("dual failure did not surface sanitized release failure: %s", logOut.String())
+	}
+	if strings.Contains(logOut.String(), "synthetic close failure") {
+		t.Fatalf("dual failure leaked release error: %s", logOut.String())
+	}
+}
+
+func TestSQLiteArchiveSchedulerPreflightLeaseCloseFailuresAreNotDiscarded(t *testing.T) {
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		setup func(*sqliteArchiveScheduler)
+	}{
+		{
+			name: "state read failure",
+			setup: func(s *sqliteArchiveScheduler) {
+				s.readAttempt = func(config.Config) (time.Time, error) {
+					return time.Time{}, fmt.Errorf("state read failed path=/private/state")
+				}
+			},
+		},
+		{
+			name: "interval skip",
+			setup: func(s *sqliteArchiveScheduler) {
+				s.readAttempt = func(config.Config) (time.Time, error) {
+					return now, nil
+				}
+			},
+		},
+		{
+			name: "state write failure",
+			setup: func(s *sqliteArchiveScheduler) {
+				s.readAttempt = func(config.Config) (time.Time, error) {
+					return time.Time{}, nil
+				}
+				s.writeAttempt = func(config.Config, time.Time) error {
+					return fmt.Errorf("state write failed path=/private/state")
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := openSchedulerTestConfig(t)
+			var logOut bytes.Buffer
+			s := newSQLiteArchiveScheduler(cfg, schedulerSQLiteArchiveConfig{Enabled: true, Interval: time.Hour}, schedulerTestWriter{}, &logOut)
+			s.now = func() time.Time { return now }
+			test.setup(s)
+			s.releaseLease = func(lease *sqlitearchive.OperationLease) error {
+				if err := lease.Close(); err != nil {
+					t.Fatalf("close real lease: %v", err)
+				}
+				return fmt.Errorf("release failed path=/private/lock token=secret")
+			}
+
+			s.run(t.Context(), "interval")
+			if got := s.Status(); got.LastStatus != "error" || got.LastError != "lock_failed" {
+				t.Fatalf("preflight close-failure status = %+v, want lock_failed", got)
+			}
+			for _, forbidden := range []string{"/private/state", "/private/lock", "token=secret"} {
+				if strings.Contains(logOut.String(), forbidden) || strings.Contains(s.Status().LastError, forbidden) {
+					t.Fatalf("preflight close failure leaked %q", forbidden)
+				}
+			}
+		})
 	}
 }
 

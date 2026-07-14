@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -80,6 +81,52 @@ func TestSQLiteArchiveAndRestoreUseSameCrossProcessLease(t *testing.T) {
 			t.Fatal("expected synthetic restore stop")
 		}
 	})
+}
+
+func TestArchiveSurfacesOwnedLeaseCloseFailure(t *testing.T) {
+	cfg := serializationTestConfig(t)
+	closeErr := errors.New("synthetic archive lease close failure")
+	result, err := Archive(t.Context(), cfg, Options{
+		Writer: newMemoryStore(),
+		acquireLease: func(config.Config, string) (*OperationLease, error) {
+			return &OperationLease{
+				path:    operationLockPath(cfg),
+				release: func() error { return closeErr },
+			}, nil
+		},
+	})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("Archive error = %v, want owned lease close error", err)
+	}
+	if result != (ArchiveResult{}) {
+		t.Fatalf("Archive result = %+v, want zero result after lease close failure", result)
+	}
+}
+
+func TestRestoreSurfacesOwnedLeaseCloseFailure(t *testing.T) {
+	cfg := serializationTestConfig(t)
+	sourceDB := filepath.Join(t.TempDir(), "source.db")
+	writeDbrainTestDB(t, sourceDB, "restored value")
+	compressed := gzipDB(t, sourceDB)
+	remote := newMemoryStore()
+	key := "archive/db/brain-20260714T000000Z.db.gz"
+	remote.addObject(key, time.Now(), compressed.Bytes())
+	closeErr := errors.New("synthetic restore lease close failure")
+	result, err := Restore(t.Context(), cfg, RestorePlan{Object: Object{Key: key, Size: int64(compressed.Len())}}, Options{
+		Store: remote,
+		acquireLease: func(config.Config, string) (*OperationLease, error) {
+			return &OperationLease{
+				path:    operationLockPath(cfg),
+				release: func() error { return closeErr },
+			}, nil
+		},
+	})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("Restore error = %v, want owned lease close error", err)
+	}
+	if result.Key != "" || result.RestoredPath != "" || len(result.BackupPaths) != 0 || !result.RestoredAt.IsZero() {
+		t.Fatalf("Restore result = %+v, want zero result after lease close failure", result)
+	}
 }
 
 func serializationTestConfig(t *testing.T) config.Config {

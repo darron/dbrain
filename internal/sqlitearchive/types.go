@@ -20,6 +20,7 @@ type Options struct {
 	Writer         ObjectWriter
 	OperationLease *OperationLease
 	Progress       func(Event)
+	acquireLease   operationLeaseAcquirer
 }
 
 type ObjectWriter interface {

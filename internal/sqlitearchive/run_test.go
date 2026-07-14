@@ -5,9 +5,11 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +61,29 @@ func TestArchiveSnapshotsCompressesAndUploadsSQLiteDB(t *testing.T) {
 		if !hasEventKind(events, want) {
 			t.Fatalf("expected archive progress event %q in %+v", want, events)
 		}
+	}
+}
+
+func TestArchiveCancelsDuringRealCompressionPath(t *testing.T) {
+	cfg := testConfig(t)
+	writeTestDB(t, cfg.DBPath, strings.Repeat("archive cancellation payload ", 4096))
+	remote := newMemoryStore()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	_, err := Archive(ctx, cfg, Options{
+		Store: remote,
+		Progress: func(event Event) {
+			if event.Kind == EventStageStart && event.Stage == "compress" {
+				cancel()
+			}
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Archive error = %v, want context.Canceled from compression", err)
+	}
+	if len(remote.objects) != 0 {
+		t.Fatalf("Archive uploaded %d objects after compression cancellation", len(remote.objects))
 	}
 }
 
