@@ -299,6 +299,65 @@ func TestAuditLatestAndHistoryAreExactProfileBoundedReads(t *testing.T) {
 	}
 }
 
+func TestAuditReadQueriesRequireBoundedCanonicalEncoding(t *testing.T) {
+	s := &server{auditReports: &auditWebTestStore{}}
+	tests := []struct {
+		name    string
+		history bool
+		raw     string
+		force   bool
+		want    int
+	}{
+		{name: "default latest", want: http.StatusOK},
+		{name: "default history", history: true, want: http.StatusOK},
+		{name: "latest fast", raw: "profile=fast", want: http.StatusOK},
+		{name: "history profile then limit", history: true, raw: "profile=standard&limit=20", want: http.StatusOK},
+		{name: "history limit then profile", history: true, raw: "limit=1&profile=fast", want: http.StatusOK},
+		{name: "bare question", force: true, want: http.StatusBadRequest},
+		{name: "over byte cap", raw: "profile=standard&" + strings.Repeat("x", maxAuditReadQueryBytes), want: http.StatusBadRequest},
+		{name: "leading separator", raw: "&profile=fast", want: http.StatusBadRequest},
+		{name: "trailing separator", raw: "profile=fast&", want: http.StatusBadRequest},
+		{name: "double separator", raw: "profile=fast&&limit=1", history: true, want: http.StatusBadRequest},
+		{name: "literal leading whitespace", raw: "profile= fast", want: http.StatusBadRequest},
+		{name: "literal trailing whitespace", raw: "profile=fast ", want: http.StatusBadRequest},
+		{name: "plus whitespace", raw: "profile=+fast", want: http.StatusBadRequest},
+		{name: "encoded whitespace", raw: "profile=%20fast", want: http.StatusBadRequest},
+		{name: "encoded key alternate", raw: "pro%66ile=fast", want: http.StatusBadRequest},
+		{name: "encoded value alternate", raw: "profile=f%61st", want: http.StatusBadRequest},
+		{name: "encoded integer alternate", raw: "limit=%31", history: true, want: http.StatusBadRequest},
+		{name: "zero-padded integer", raw: "limit=01", history: true, want: http.StatusBadRequest},
+		{name: "signed integer", raw: "limit=+1", history: true, want: http.StatusBadRequest},
+		{name: "malformed percent", raw: "profile=%zz", want: http.StatusBadRequest},
+		{name: "semicolon", raw: "profile=fast;limit=1", history: true, want: http.StatusBadRequest},
+		{name: "empty profile", raw: "profile=", want: http.StatusBadRequest},
+		{name: "empty limit", raw: "limit=", history: true, want: http.StatusBadRequest},
+		{name: "duplicate profile", raw: "profile=fast&profile=standard", want: http.StatusBadRequest},
+		{name: "duplicate limit", raw: "limit=1&limit=2", history: true, want: http.StatusBadRequest},
+		{name: "unknown key", raw: "other=fast", want: http.StatusBadRequest},
+		{name: "encoded equals", raw: "profile%3Dfast", want: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			path := "/api/audit/latest"
+			if test.history {
+				path = "/api/audit/history"
+			}
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.URL.RawQuery = test.raw
+			req.URL.ForceQuery = test.force
+			if test.history {
+				s.handleAuditHistory(rec, req)
+			} else {
+				s.handleAuditLatest(rec, req)
+			}
+			if rec.Code != test.want {
+				t.Fatalf("raw=%q force=%t status=%d want=%d body=%s", test.raw, test.force, rec.Code, test.want, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestAuditReadWireFormsDefaultsAndSanitizedFailures(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	store := &auditWebTestStore{}

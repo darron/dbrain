@@ -6,7 +6,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +13,10 @@ import (
 	"github.com/darron/dbrain/internal/audit"
 )
 
-const maxAuditRunBodyBytes = 4 << 10
+const (
+	maxAuditRunBodyBytes   = 4 << 10
+	maxAuditReadQueryBytes = 128
+)
 
 type auditRunRequest struct {
 	Profile audit.Profile `json:"profile"`
@@ -25,7 +27,7 @@ func (s *server) handleAuditLatest(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	profile, _, ok := parseAuditReadQuery(w, r.URL.RawQuery, false)
+	query, ok := parseAuditReadQuery(w, r.URL.RawQuery, r.URL.ForceQuery, false)
 	if !ok {
 		return
 	}
@@ -33,16 +35,16 @@ func (s *server) handleAuditLatest(w http.ResponseWriter, r *http.Request) {
 		writeMessage(w, http.StatusServiceUnavailable, "audit_report_unavailable")
 		return
 	}
-	report, err := s.auditReports.Latest(profile)
+	report, err := s.auditReports.Latest(query.profile)
 	if err != nil {
 		writeMessage(w, http.StatusServiceUnavailable, "audit_report_unavailable")
 		return
 	}
-	if report != nil && !validWebAuditReport(*report, profile) {
+	if report != nil && !validWebAuditReport(*report, query.profile) {
 		writeMessage(w, http.StatusServiceUnavailable, "audit_report_unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, audit.PresentReport(report, profile, s.auditSyncInterval, s.auditStandardInterval, s.auditTime()))
+	writeJSON(w, http.StatusOK, audit.PresentReport(report, query.profile, s.auditSyncInterval, s.auditStandardInterval, s.auditTime()))
 }
 
 func (s *server) handleAuditHistory(w http.ResponseWriter, r *http.Request) {
@@ -50,46 +52,36 @@ func (s *server) handleAuditHistory(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	profile, query, ok := parseAuditReadQuery(w, r.URL.RawQuery, true)
+	query, ok := parseAuditReadQuery(w, r.URL.RawQuery, r.URL.ForceQuery, true)
 	if !ok {
 		return
-	}
-	limit := 20
-	if values, exists := query["limit"]; exists {
-		raw := strings.TrimSpace(values[0])
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > 100 {
-			writeMessage(w, http.StatusBadRequest, "invalid audit history limit")
-			return
-		}
-		limit = parsed
 	}
 	if s.auditReports == nil {
 		writeMessage(w, http.StatusServiceUnavailable, "audit_report_unavailable")
 		return
 	}
-	reports, err := s.auditReports.History(profile, limit)
+	reports, err := s.auditReports.History(query.profile, query.limit)
 	if err != nil {
 		writeMessage(w, http.StatusServiceUnavailable, "audit_report_unavailable")
 		return
 	}
-	if len(reports) > limit {
-		reports = reports[:limit]
+	if len(reports) > query.limit {
+		reports = reports[:query.limit]
 	}
 	history := make([]AuditHistoryEntry, 0, len(reports))
 	now := s.auditTime()
 	for _, report := range reports {
-		if !validWebAuditReport(report, profile) {
+		if !validWebAuditReport(report, query.profile) {
 			writeMessage(w, http.StatusServiceUnavailable, "audit_report_unavailable")
 			return
 		}
-		presented := audit.PresentReport(&report, profile, s.auditSyncInterval, s.auditStandardInterval, now)
+		presented := audit.PresentReport(&report, query.profile, s.auditSyncInterval, s.auditStandardInterval, now)
 		history = append(history, AuditHistoryEntry{
 			AuditID: report.AuditID, Profile: report.Profile, Status: report.Status, Confidence: report.Confidence,
 			StartedAt: report.StartedAt, CompletedAt: report.CompletedAt, Summary: report.Summary, Freshness: presented.Freshness,
 		})
 	}
-	writeJSON(w, http.StatusOK, AuditHistoryResponse{Profile: profile, History: history})
+	writeJSON(w, http.StatusOK, AuditHistoryResponse{Profile: query.profile, History: history})
 }
 
 func (s *server) handleAuditRun(w http.ResponseWriter, r *http.Request) {
@@ -172,37 +164,55 @@ func (s *server) handleAuditRunStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-func parseAuditReadQuery(w http.ResponseWriter, rawQuery string, history bool) (audit.Profile, url.Values, bool) {
-	query, err := url.ParseQuery(rawQuery)
-	if err != nil {
+type auditReadQuery struct {
+	profile audit.Profile
+	limit   int
+}
+
+func parseAuditReadQuery(w http.ResponseWriter, rawQuery string, forceQuery, history bool) (auditReadQuery, bool) {
+	query := auditReadQuery{profile: audit.ProfileStandard, limit: 20}
+	if forceQuery || len(rawQuery) > maxAuditReadQueryBytes {
 		writeMessage(w, http.StatusBadRequest, "invalid audit query")
-		return "", nil, false
+		return auditReadQuery{}, false
 	}
-	allowed := map[string]bool{"profile": true}
-	if history {
-		allowed["limit"] = true
+	if rawQuery == "" {
+		return query, true
 	}
-	for key, values := range query {
-		if !allowed[key] || len(values) != 1 {
+
+	seenProfile := false
+	seenLimit := false
+	for _, component := range strings.Split(rawQuery, "&") {
+		if component == "" || strings.Count(component, "=") != 1 {
 			writeMessage(w, http.StatusBadRequest, "invalid audit query")
-			return "", nil, false
+			return auditReadQuery{}, false
+		}
+		key, value, _ := strings.Cut(component, "=")
+		switch key {
+		case "profile":
+			if seenProfile || (value != string(audit.ProfileFast) && value != string(audit.ProfileStandard)) {
+				writeMessage(w, http.StatusBadRequest, "invalid audit query")
+				return auditReadQuery{}, false
+			}
+			seenProfile = true
+			query.profile = audit.Profile(value)
+		case "limit":
+			if !history || seenLimit {
+				writeMessage(w, http.StatusBadRequest, "invalid audit query")
+				return auditReadQuery{}, false
+			}
+			limit, err := strconv.Atoi(value)
+			if err != nil || limit < 1 || limit > 100 || strconv.Itoa(limit) != value {
+				writeMessage(w, http.StatusBadRequest, "invalid audit query")
+				return auditReadQuery{}, false
+			}
+			seenLimit = true
+			query.limit = limit
+		default:
+			writeMessage(w, http.StatusBadRequest, "invalid audit query")
+			return auditReadQuery{}, false
 		}
 	}
-	var profile audit.Profile
-	if values, exists := query["profile"]; exists {
-		profile = audit.Profile(strings.TrimSpace(values[0]))
-		if profile == "" {
-			writeMessage(w, http.StatusBadRequest, "audit profile must be fast or standard")
-			return "", nil, false
-		}
-	} else {
-		profile = audit.ProfileStandard
-	}
-	if profile != audit.ProfileFast && profile != audit.ProfileStandard {
-		writeMessage(w, http.StatusBadRequest, "audit profile must be fast or standard")
-		return "", nil, false
-	}
-	return profile, query, true
+	return query, true
 }
 
 func ensureAuditRequestEOF(decoder *json.Decoder) error {
