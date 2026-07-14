@@ -5,6 +5,13 @@ import "github.com/darron/dbrain/internal/store"
 func toolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
+			"name":         "dbrain_audit",
+			"description":  "Read authoritative production-health evidence. fast runs the bounded full local profile; standard reads the newest persisted exact-profile report without network work.",
+			"inputSchema":  auditInputSchema(),
+			"outputSchema": auditOutputSchema(),
+			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": false},
+		},
+		{
 			"name":        "dbrain_search",
 			"description": "Search the local brain across items and linked sources.",
 			"inputSchema": map[string]interface{}{

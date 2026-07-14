@@ -21,6 +21,54 @@ type windowsReportStoreFS struct {
 	private *windowsAuditPrivateSecurity
 }
 
+type windowsReportReaderFS struct{ logDir string }
+
+func openReportReaderFS(logDir string) (reportReaderFS, error) {
+	if strings.TrimSpace(logDir) == "" {
+		return nil, fmt.Errorf("audit log directory is required")
+	}
+	return &windowsReportReaderFS{logDir: logDir}, nil
+}
+
+func (f *windowsReportReaderFS) openReports() (windows.Handle, error) {
+	logHandle, err := openWindowsAuditAbsolutePathWithAccess(f.logDir, windows.FILE_GENERIC_READ|windows.SYNCHRONIZE)
+	if err != nil {
+		return 0, err
+	}
+	auditHandle, err := openWindowsAuditDirectoryAt(logHandle, "audit", windows.FILE_OPEN, windows.FILE_GENERIC_READ|windows.SYNCHRONIZE, nil)
+	_ = windows.CloseHandle(logHandle)
+	if err != nil {
+		return 0, err
+	}
+	reportsHandle, err := openWindowsAuditDirectoryAt(auditHandle, "reports", windows.FILE_OPEN, windows.FILE_GENERIC_READ|windows.SYNCHRONIZE, nil)
+	_ = windows.CloseHandle(auditHandle)
+	if err != nil {
+		return 0, err
+	}
+	return reportsHandle, nil
+}
+
+func (f *windowsReportReaderFS) ListReports() ([]reportFileInfo, error) {
+	reports, err := f.openReports()
+	if isWindowsAuditNotExist(err) {
+		return []reportFileInfo{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = windows.CloseHandle(reports) }()
+	return (&windowsReportStoreFS{reports: reports}).ListReports()
+}
+
+func (f *windowsReportReaderFS) ReadReport(name string, size int64) ([]byte, error) {
+	reports, err := f.openReports()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = windows.CloseHandle(reports) }()
+	return (&windowsReportStoreFS{reports: reports}).ReadReport(name, size)
+}
+
 type windowsAuditPrivateSecurity struct {
 	owner               *windows.SID
 	directoryDescriptor *windows.SECURITY_DESCRIPTOR
@@ -351,6 +399,10 @@ func (f *windowsReportStoreFS) ReplaceState(data []byte) error {
 }
 
 func openWindowsAuditAbsolutePath(path string) (windows.Handle, error) {
+	return openWindowsAuditAbsolutePathWithAccess(path, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.SYNCHRONIZE)
+}
+
+func openWindowsAuditAbsolutePathWithAccess(path string, finalAccess uint32) (windows.Handle, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return 0, err
@@ -364,7 +416,7 @@ func openWindowsAuditAbsolutePath(path string) (windows.Handle, error) {
 	}
 	rootAccess := uint32(windows.FILE_TRAVERSE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
 	if relative == "." || relative == "" {
-		rootAccess = windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.SYNCHRONIZE
+		rootAccess = finalAccess
 	}
 	handle, err := openWindowsAuditDirectoryAbsolute(anchor, rootAccess)
 	if err != nil {
@@ -377,7 +429,7 @@ func openWindowsAuditAbsolutePath(path string) (windows.Handle, error) {
 		}
 		access := uint32(windows.FILE_TRAVERSE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
 		if index == len(parts)-1 {
-			access = windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.SYNCHRONIZE
+			access = finalAccess
 		}
 		next, openErr := openWindowsAuditDirectoryAt(handle, part, windows.FILE_OPEN, access, nil)
 		_ = windows.CloseHandle(handle)

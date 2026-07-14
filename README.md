@@ -361,6 +361,14 @@ metadata reads. Exit codes are 0 pass, 1 warn, 2 fail, and 3 unknown or
 bootstrap/configuration failure. See [COMMANDS.md](COMMANDS.md#dbrain-audit)
 for profiles, category scopes, privacy rules, and flags.
 
+Local stdio agents, and remote agents using bearer-authenticated HTTP/tsnet,
+can read the same bounded report through MCP `dbrain_audit`. Its default `fast`
+profile runs the complete local fast registry
+under a fixed ten-second deadline and process-wide singleflight; `standard`
+only reads the newest persisted exact-profile standard report. MCP cannot run
+deep checks or supply categories, time windows, paths, URLs, identifiers,
+archive keys, endpoints, or download limits.
+
 The explicit CLI-only `deep` profile additionally downloads the newest SQLite
 archive into a private temporary directory, decompresses and validates that
 candidate without replacing the active database, and reconciles the complete
@@ -758,6 +766,9 @@ export DBRAIN_MCP_AUTH_ENABLED=true
 When bearer auth is disabled, HTTP and tsnet MCP startup prints a warning that
 the endpoint is acceptable only on private localhost/trusted tailnet paths and
 must not be exposed through Tailscale Funnel or a public reverse proxy.
+The health-oriented `dbrain_audit` tool is also omitted and rejected on those
+auth-disabled transports; local stdio continues to expose it, and authenticated
+HTTP/tsnet exposes it after bearer-token validation.
 When bearer auth is enabled, MCP HTTP access logs include the token record name
 and fingerprint, never the raw token.
 
@@ -1025,6 +1036,11 @@ switching the default workflow over.
 research, browsing, topic maps, retrieval packs, and operational stats. The
 server is DB-first by default, tag-aware, and includes OCR/transcript evidence
 when those enrichments exist.
+
+Use MCP `dbrain_audit` for authoritative health claims. The default `fast`
+profile performs only bounded local checks; `profile=standard` reads persisted
+exact-profile health and never starts network work. `dbrain_stats_*` remains
+useful for exploratory counts but is not whole-system health.
 
 For recent-local-change review, use CLI `dbrain whats-new --since 24h`, web
 `GET /api/whats-new?since=24h`, or MCP `dbrain_whats_new`. Use

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mcpserver"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/schedulerstate"
 )
@@ -39,6 +40,13 @@ type Options struct {
 	Verbose            bool
 	OnReady            func()
 	SchedulerStatus    func() schedulerstate.SyncAllStatus
+	mcpDependencies    mcpserver.ServerDependencies
+}
+
+func SetMCPDependencies(opts *Options, dependencies mcpserver.ServerDependencies) {
+	if opts != nil {
+		opts.mcpDependencies = dependencies
+	}
 }
 
 func OptionsFromRuntime(cfg config.Config) (Options, error) {

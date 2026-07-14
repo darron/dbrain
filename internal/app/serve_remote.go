@@ -15,6 +15,7 @@ import (
 
 	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mcpserver"
 	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/runtimeenv"
@@ -73,6 +74,13 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 				controlURL:         controlURL,
 				verbose:            verbose,
 			})
+			if opts.MCP && mcpserver.AuthEnabled(cfg) {
+				auditDependencies, auditErr := resolveMCPAuditServerDependencies(cmd.Context(), cfg, auditMetaForInvocation(root))
+				if auditErr != nil {
+					return fmt.Errorf("configure MCP audit: %w", auditErr)
+				}
+				remote.SetMCPDependencies(&opts, auditDependencies)
+			}
 			schedulers, err := buildRemoteSchedulersWithMeta(cmd.Context(), cfg, auditMetaForInvocation(root), cmd.ErrOrStderr())
 			if err != nil {
 				return err

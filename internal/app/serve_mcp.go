@@ -50,8 +50,19 @@ when you intentionally want public Tailscale Funnel exposure.`,
 			}
 			switch strings.ToLower(strings.TrimSpace(transport)) {
 			case "", "stdio":
-				return mcpserver.Serve(cmd.Context(), cfg, os.Stdin, os.Stdout)
+				auditDependencies, err := resolveMCPAuditServerDependencies(cmd.Context(), cfg, auditMetaForInvocation(root))
+				if err != nil {
+					return fmt.Errorf("configure MCP audit: %w", err)
+				}
+				return mcpserver.Serve(cmd.Context(), cfg, os.Stdin, os.Stdout, auditDependencies)
 			case "http", "streamable-http", "streamable_http":
+				var auditDependencies mcpserver.ServerDependencies
+				if mcpserver.AuthEnabled(cfg) {
+					auditDependencies, err = resolveMCPAuditServerDependencies(cmd.Context(), cfg, auditMetaForInvocation(root))
+					if err != nil {
+						return fmt.Errorf("configure MCP audit: %w", err)
+					}
+				}
 				resolvedAddr := addr
 				if strings.TrimSpace(resolvedAddr) == "" {
 					resolvedAddr = mcpserver.DefaultHTTPAddr
@@ -66,14 +77,22 @@ when you intentionally want public Tailscale Funnel exposure.`,
 					Addr:           resolvedAddr,
 					Path:           resolvedPath,
 					AllowedOrigins: allowOrigins,
-				})
+				}, auditDependencies)
 			case "tsnet":
+				var auditDependencies mcpserver.ServerDependencies
+				if mcpserver.AuthEnabled(cfg) {
+					auditDependencies, err = resolveMCPAuditServerDependencies(cmd.Context(), cfg, auditMetaForInvocation(root))
+					if err != nil {
+						return fmt.Errorf("configure MCP audit: %w", err)
+					}
+				}
 				opts, err := remote.OptionsFromRuntime(cfg)
 				if err != nil {
 					return err
 				}
 				opts.Web = false
 				opts.MCP = true
+				remote.SetMCPDependencies(&opts, auditDependencies)
 				applyServeMCPRemoteFlagOverrides(cmd, cfg.DataDir, &opts, serveMCPRemoteFlags{
 					path:               path,
 					hostname:           tsnetHostname,

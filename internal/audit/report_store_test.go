@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -208,6 +209,28 @@ func TestReportStoreHistoryPropagatesFileReadFailure(t *testing.T) {
 	}
 }
 
+func TestReportReaderSkipsReportRemovedByConcurrentRetention(t *testing.T) {
+	now := time.Date(2026, 7, 14, 6, 0, 0, 0, time.UTC)
+	older := testStoredReport(t, ProfileStandard, now.Add(-24*time.Hour), StatusPass)
+	olderData, err := json.Marshal(older)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := &historyReadTestFS{
+		files:   []reportFileInfo{{Name: "2026-07-14.jsonl", Size: 10}, {Name: "2026-07-13.jsonl", Size: int64(len(olderData) + 1)}},
+		data:    map[string][]byte{"2026-07-13.jsonl": append(olderData, '\n')},
+		readErr: map[string]error{"2026-07-14.jsonl": os.ErrNotExist},
+	}
+	reader := &ReportReader{fs: fs}
+	latest, err := reader.Latest(ProfileStandard)
+	if err != nil {
+		t.Fatalf("Latest after concurrent retention: %v", err)
+	}
+	if latest == nil || latest.AuditID != older.AuditID {
+		t.Fatalf("Latest after concurrent retention = %#v", latest)
+	}
+}
+
 func TestReportStoreHistoryPropagatesMatchingGeneratedNameConfinementFailure(t *testing.T) {
 	logDir := t.TempDir()
 	store, err := NewReportStore(logDir)
@@ -369,5 +392,61 @@ func TestReportRetentionKeepsTheWholeCutoffUTCDay(t *testing.T) {
 	}
 	if len(fs.removed) != 0 {
 		t.Fatalf("cutoff UTC day removed: %#v", fs.removed)
+	}
+}
+
+func TestReportReaderMissingTreeIsNotFoundWithoutFilesystemMutation(t *testing.T) {
+	logDir := t.TempDir()
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(logDir, 0o750); err != nil {
+			t.Fatalf("chmod log dir: %v", err)
+		}
+	}
+	reader, err := NewReportReader(logDir)
+	if err != nil {
+		t.Fatalf("NewReportReader: %v", err)
+	}
+	report, err := reader.Latest(ProfileStandard)
+	if err != nil {
+		t.Fatalf("Latest missing: %v", err)
+	}
+	if report != nil {
+		t.Fatalf("Latest missing = %#v, want nil", report)
+	}
+	if _, err := os.Stat(filepath.Join(logDir, "audit")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only report reader created audit tree: %v", err)
+	}
+	info, err := os.Stat(logDir)
+	if err != nil {
+		t.Fatalf("stat log dir: %v", err)
+	}
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o750 {
+		t.Fatalf("read-only report reader changed log dir mode to %o", got)
+	}
+}
+
+func TestReportReaderOpenedBeforeWriterSeesLaterReports(t *testing.T) {
+	logDir := t.TempDir()
+	reader, err := NewReportReader(logDir)
+	if err != nil {
+		t.Fatalf("NewReportReader: %v", err)
+	}
+	if report, err := reader.Latest(ProfileStandard); err != nil || report != nil {
+		t.Fatalf("initial Latest = %#v, %v", report, err)
+	}
+	writer, err := NewReportStore(logDir)
+	if err != nil {
+		t.Fatalf("NewReportStore: %v", err)
+	}
+	report := testStoredReport(t, ProfileStandard, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC), StatusPass)
+	if err := writer.Save(report); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	latest, err := reader.Latest(ProfileStandard)
+	if err != nil {
+		t.Fatalf("Latest after save: %v", err)
+	}
+	if latest == nil || latest.AuditID != report.AuditID {
+		t.Fatalf("Latest after save = %#v", latest)
 	}
 }

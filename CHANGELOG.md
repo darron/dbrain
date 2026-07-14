@@ -7,6 +7,12 @@ development date for the change set.
 
 ### Production health audit foundation (2026-07-13)
 
+- **Bounded MCP health**: Added `dbrain_audit` with a fixed-deadline,
+  process-singleflight local fast profile and a persisted exact-profile standard
+  read path. The privacy-validated response is capped at 256 KiB, exposes no
+  deep/category/path/URL/archive controls, uses a no-create/no-chmod report
+  reader, and is available over HTTP/tsnet only when bearer auth is required.
+
 - **Scheduled health and regression alerts**: Added opt-in post-sync fast and
   six-hour standard audits to `serve remote`, private daily report retention,
   exact-profile freshness metadata, content-free transition state, compact

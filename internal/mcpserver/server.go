@@ -1,8 +1,11 @@
 package mcpserver
 
 import (
+	"context"
 	"strings"
+	"time"
 
+	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/version"
@@ -11,12 +14,51 @@ import (
 const protocolVersion = "2025-03-26"
 
 type Server struct {
-	cfg config.Config
-	st  *store.Store
+	cfg          config.Config
+	st           *store.Store
+	deps         ServerDependencies
+	capabilities transportCapabilities
 }
 
 func New(cfg config.Config, st *store.Store) *Server {
-	return &Server{cfg: cfg, st: st}
+	return NewWithDependencies(cfg, st, ServerDependencies{})
+}
+
+type AuditReportReader interface {
+	Latest(audit.Profile) (*audit.Report, error)
+}
+
+type AuditDependencies struct {
+	RunFast          func(context.Context) (audit.Report, error)
+	Reports          AuditReportReader
+	SyncInterval     time.Duration
+	StandardInterval time.Duration
+	Now              func() time.Time
+}
+
+type ServerDependencies struct {
+	Audit AuditDependencies
+}
+
+type transportCapabilities struct {
+	audit bool
+}
+
+func NewWithDependencies(cfg config.Config, st *store.Store, deps ServerDependencies) *Server {
+	return &Server{cfg: cfg, st: st, deps: deps}
+}
+
+func firstServerDependencies(values []ServerDependencies) ServerDependencies {
+	if len(values) == 0 {
+		return ServerDependencies{}
+	}
+	return values[0]
+}
+
+func (s *Server) withTransportCapabilities(capabilities transportCapabilities) *Server {
+	clone := *s
+	clone.capabilities = capabilities
+	return &clone
 }
 
 func serverVersion() string {

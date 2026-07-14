@@ -49,6 +49,42 @@ func TestLoadAuditConfigIsNoWriteAndPreservesRootPrecedence(t *testing.T) {
 	}
 }
 
+func TestMCPAuditDependenciesRunOnlyTheFullLocalFastProfile(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close initialized store: %v", err)
+	}
+	features := audit.Features{
+		Layout: "explicit_root", ConfigSource: "flag", ConfigVerified: true,
+		Sources: map[audit.Source]bool{}, Stages: map[audit.PipelineStage]bool{},
+	}
+	deps, err := newMCPAuditServerDependencies(t.Context(), cfg, features, time.Hour, 6*time.Hour)
+	if err != nil {
+		t.Fatalf("new MCP audit dependencies: %v", err)
+	}
+	if deps.Audit.RunFast == nil || deps.Audit.Reports == nil {
+		t.Fatalf("incomplete MCP audit dependencies: %#v", deps.Audit)
+	}
+	report, err := deps.Audit.RunFast(t.Context())
+	if err != nil {
+		t.Fatalf("run MCP fast audit: %v", err)
+	}
+	if report.Profile != audit.ProfileFast || !report.Scope.WholeSystem || report.Scope.Filtered || len(report.Checks) != 55 {
+		t.Fatalf("MCP fast report is not the full exact profile: %#v", report.Scope)
+	}
+}
+
 func TestLoadAuditConfigHonorsExplicitConfigBeforeEnvironment(t *testing.T) {
 	t.Setenv("DBRAIN_ROOT", filepath.Join(t.TempDir(), "env-root"))
 	t.Setenv("DBRAIN_CONFIG_FILE", filepath.Join(t.TempDir(), "env-config.yaml"))

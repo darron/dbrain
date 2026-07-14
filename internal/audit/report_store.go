@@ -33,6 +33,11 @@ type reportStoreFS interface {
 	ReplaceState([]byte) error
 }
 
+type reportReaderFS interface {
+	ReadReport(string, int64) ([]byte, error)
+	ListReports() ([]reportFileInfo, error)
+}
+
 type reportFileInfo struct {
 	Name string
 	Size int64
@@ -44,12 +49,28 @@ type ReportStore struct {
 	now func() time.Time
 }
 
+// ReportReader exposes only exact-profile persisted report reads. Unlike
+// ReportStore construction, it never creates directories, changes modes, or
+// receives report/state write operations.
+type ReportReader struct {
+	mu sync.Mutex
+	fs reportReaderFS
+}
+
 func NewReportStore(logDir string) (*ReportStore, error) {
 	fs, err := openReportStoreFS(strings.TrimSpace(logDir))
 	if err != nil {
 		return nil, err
 	}
 	return &ReportStore{fs: fs, now: time.Now}, nil
+}
+
+func NewReportReader(logDir string) (*ReportReader, error) {
+	fs, err := openReportReaderFS(strings.TrimSpace(logDir))
+	if err != nil {
+		return nil, err
+	}
+	return &ReportReader{fs: fs}, nil
 }
 
 func (s *ReportStore) Save(report Report) error {
@@ -100,7 +121,35 @@ func (s *ReportStore) History(profile Profile, limit int) ([]Report, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	files, err := s.fs.ListReports()
+	return readReportHistory(s.fs, profile, limit)
+}
+
+func (r *ReportReader) Latest(profile Profile) (*Report, error) {
+	history, err := r.History(profile, 1)
+	if err != nil || len(history) == 0 {
+		return nil, err
+	}
+	report := history[0]
+	return &report, nil
+}
+
+func (r *ReportReader) History(profile Profile, limit int) ([]Report, error) {
+	if r == nil || r.fs == nil {
+		return nil, fmt.Errorf("audit report reader is unavailable")
+	}
+	if !profile.Valid() {
+		return nil, fmt.Errorf("invalid audit profile %q", profile)
+	}
+	if limit <= 0 {
+		return []Report{}, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return readReportHistory(r.fs, profile, limit)
+}
+
+func readReportHistory(fs reportReaderFS, profile Profile, limit int) ([]Report, error) {
+	files, err := fs.ListReports()
 	if err != nil {
 		return nil, err
 	}
@@ -110,8 +159,11 @@ func (s *ReportStore) History(profile Profile, limit int) ([]Report, error) {
 		if !reportFilePattern.MatchString(file.Name) {
 			continue
 		}
-		data, readErr := s.fs.ReadReport(file.Name, file.Size)
+		data, readErr := fs.ReadReport(file.Name, file.Size)
 		if readErr != nil {
+			if errors.Is(readErr, os.ErrNotExist) || os.IsNotExist(readErr) {
+				continue
+			}
 			return nil, fmt.Errorf("read private audit report: %w", readErr)
 		}
 		lines := bytes.Split(data, []byte{'\n'})

@@ -57,7 +57,7 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 			cleanup()
 			return nil, nil, err
 		}
-		mcpHandler = mcpserver.New(cfg, st).HTTPHandler(httpOptions)
+		mcpHandler = mcpserver.NewWithDependencies(cfg, st, opts.mcpDependencies).HTTPHandler(httpOptions)
 	}
 
 	handler, err := NewHandler(HandlerOptions{

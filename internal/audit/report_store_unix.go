@@ -19,6 +19,67 @@ type unixReportStoreFS struct {
 	reportsFD int
 }
 
+type unixReportReaderFS struct{ logDir string }
+
+func openReportReaderFS(logDir string) (reportReaderFS, error) {
+	if strings.TrimSpace(logDir) == "" {
+		return nil, fmt.Errorf("audit log directory is required")
+	}
+	return &unixReportReaderFS{logDir: logDir}, nil
+}
+
+func (f *unixReportReaderFS) openReports() (int, error) {
+	logFD, err := openAbsoluteDirNoFollow(f.logDir)
+	if err != nil {
+		return -1, err
+	}
+	auditFD, err := unix.Openat(logFD, "audit", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	_ = unix.Close(logFD)
+	if err != nil {
+		return -1, err
+	}
+	reportsFD, err := unix.Openat(auditFD, "reports", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	_ = unix.Close(auditFD)
+	if err != nil {
+		return -1, err
+	}
+	return reportsFD, nil
+}
+
+func (f *unixReportReaderFS) ListReports() ([]reportFileInfo, error) {
+	reportsFD, err := f.openReports()
+	if errors.Is(err, unix.ENOENT) {
+		return []reportFileInfo{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unix.Close(reportsFD) }()
+	return (&unixReportStoreFS{reportsFD: reportsFD}).ListReports()
+}
+
+func (f *unixReportReaderFS) ReadReport(name string, size int64) ([]byte, error) {
+	if !reportFilePattern.MatchString(name) || size < 0 || size > reportRetentionBytes+maxReportLineBytes {
+		return nil, fmt.Errorf("invalid generated audit report")
+	}
+	reportsFD, err := f.openReports()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unix.Close(reportsFD) }()
+	fd, err := unix.Openat(reportsFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open audit report descriptor")
+	}
+	defer func() { _ = file.Close() }()
+	return readBoundedRegular(file, reportRetentionBytes+maxReportLineBytes)
+}
+
 func openReportStoreFS(logDir string) (reportStoreFS, error) {
 	if logDir == "" {
 		return nil, fmt.Errorf("audit log directory is required")
