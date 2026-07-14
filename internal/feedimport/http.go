@@ -7,9 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -47,9 +50,20 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 	if target == "" {
 		return FetchResult{}, fmt.Errorf("feed has no URL")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	parsedTarget, err := url.Parse(target)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("create feed request: %w", err)
+		return FetchResult{}, fmt.Errorf("create feed request: %w", sanitizeFeedURLError(err))
+	}
+	credentials := parsedTarget.User
+	parsedTarget.User = nil
+	sanitizedTarget := parsedTarget.String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedTarget, nil)
+	if err != nil {
+		return FetchResult{}, fmt.Errorf("create feed request: %w", sanitizeFeedURLError(err))
+	}
+	if credentials != nil {
+		password, _ := credentials.Password()
+		req.SetBasicAuth(credentials.Username(), password)
 	}
 	req.Header.Set("user-agent", opts.UserAgent)
 	req.Header.Set("accept", "application/feed+json, application/atom+xml, application/rss+xml, application/xml, text/xml, */*;q=0.1")
@@ -61,22 +75,19 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 		req.Header.Set("if-modified-since", feed.FetchLastModified)
 	}
 
-	client := f.client
-	if client.Timeout <= 0 {
-		clone := *client
-		clone.Timeout = opts.Timeout
-		client = &clone
-	}
+	client := feedRequestClient(f.client, opts.Timeout, req.URL, credentials != nil)
 	resp, err := client.Do(req)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("fetch feed: %w", err)
+		return FetchResult{}, fmt.Errorf("fetch feed: %w", sanitizeFeedURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	finalURL := *resp.Request.URL
+	finalURL.User = nil
 	headersJSON, _ := json.Marshal(resp.Header)
 	result := FetchResult{
-		RequestURL:      target,
-		FinalURL:        resp.Request.URL.String(),
+		RequestURL:      sanitizedTarget,
+		FinalURL:        finalURL.String(),
 		HTTPStatus:      resp.StatusCode,
 		HeadersJSON:     string(headersJSON),
 		ContentEncoding: strings.TrimSpace(resp.Header.Get("content-encoding")),
@@ -126,6 +137,158 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 		result.DecodedBody = nil
 	}
 	return result, nil
+}
+
+func feedRequestClient(client *http.Client, timeout time.Duration, credentialOrigin *url.URL, hasCredentials bool) *http.Client {
+	clone := *client
+	if clone.Timeout <= 0 {
+		clone.Timeout = timeout
+	}
+	if !hasCredentials {
+		return &clone
+	}
+
+	originalCheckRedirect := clone.CheckRedirect
+	origin := *credentialOrigin
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !sameFeedHTTPOrigin(&origin, req.URL) {
+			req.Header.Del("Authorization")
+		}
+		if originalCheckRedirect != nil {
+			return originalCheckRedirect(req, via)
+		}
+		return nil
+	}
+	return &clone
+}
+
+func sameFeedHTTPOrigin(left *url.URL, right *url.URL) bool {
+	leftOrigin, leftOK := normalizedFeedHTTPOrigin(left)
+	rightOrigin, rightOK := normalizedFeedHTTPOrigin(right)
+	return leftOK && rightOK && leftOrigin == rightOrigin
+}
+
+func normalizedFeedHTTPOrigin(target *url.URL) (string, bool) {
+	if target == nil {
+		return "", false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(target.Scheme))
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(target.Hostname()), "."))
+	if (scheme != "http" && scheme != "https") || host == "" {
+		return "", false
+	}
+	port := target.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), true
+}
+
+func sanitizeFeedURLError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	clone := *urlErr
+	clone.URL = sanitizeFeedURLUserInfo(urlErr.URL)
+	clone.Err = sanitizeFeedNestedError(urlErr.Err)
+	return &clone
+}
+
+type sanitizedFeedError struct {
+	message string
+	cause   error
+}
+
+func (e *sanitizedFeedError) Error() string {
+	return e.message
+}
+
+func (e *sanitizedFeedError) Unwrap() error {
+	return e.cause
+}
+
+func sanitizeFeedNestedError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := sanitizeFeedCredentialURLsInText(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return &sanitizedFeedError{message: message, cause: err}
+}
+
+func sanitizeFeedCredentialURLsInText(value string) string {
+	searchFrom := 0
+	for searchFrom < len(value) {
+		urlStart, authorityStart, ok := nextFeedURLAuthority(value, searchFrom)
+		if !ok {
+			break
+		}
+		authorityEnd := len(value)
+		if offset := strings.IndexAny(value[authorityStart:], "/?# \t\r\n\"'<>"); offset >= 0 {
+			authorityEnd = authorityStart + offset
+		}
+		userinfoEnd := strings.LastIndex(value[authorityStart:authorityEnd], "@")
+		if userinfoEnd < 0 {
+			searchFrom = authorityEnd
+			if searchFrom <= urlStart {
+				searchFrom = urlStart + 1
+			}
+			continue
+		}
+		userinfoEnd += authorityStart
+		value = value[:authorityStart] + value[userinfoEnd+1:]
+		searchFrom = authorityStart
+	}
+	return value
+}
+
+func nextFeedURLAuthority(value string, searchFrom int) (int, int, bool) {
+	lower := strings.ToLower(value[searchFrom:])
+	bestOffset := -1
+	prefixLength := 0
+	for _, prefix := range []string{"http://", "https://", "//"} {
+		offset := strings.Index(lower, prefix)
+		if offset >= 0 && (bestOffset < 0 || offset < bestOffset) {
+			bestOffset = offset
+			prefixLength = len(prefix)
+		}
+	}
+	if bestOffset < 0 {
+		return 0, 0, false
+	}
+	urlStart := searchFrom + bestOffset
+	return urlStart, urlStart + prefixLength, true
+}
+
+func sanitizeFeedURLUserInfo(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err == nil {
+		parsed.User = nil
+		return parsed.String()
+	}
+
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd < 0 {
+		return raw
+	}
+	authorityStart := schemeEnd + len("://")
+	authorityEnd := len(raw)
+	if offset := strings.IndexAny(raw[authorityStart:], "/?#"); offset >= 0 {
+		authorityEnd = authorityStart + offset
+	}
+	userinfoEnd := strings.LastIndex(raw[authorityStart:authorityEnd], "@")
+	if userinfoEnd < 0 {
+		return raw
+	}
+	userinfoEnd += authorityStart
+	return raw[:authorityStart] + raw[userinfoEnd+1:]
 }
 
 func sha256Hex(body []byte) string {
