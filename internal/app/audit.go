@@ -690,6 +690,11 @@ func writeAuditHuman(cmd *cobra.Command, report audit.Report, configPath, databa
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s  %s  %s\n", check.Status, check.ID, check.Summary); err != nil {
 				return err
 			}
+			if check.Remediation != "" {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "  Remediation: %s\n", check.Remediation); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil

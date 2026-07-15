@@ -138,6 +138,39 @@ func TestAuditBootstrapContextHasTenSecondCeilingAndHonorsLowerParent(t *testing
 	}
 }
 
+func TestAuditHumanRemediationAppearsOnlyForNonPassChecks(t *testing.T) {
+	const remediation = "Enable scheduler.sqlite_archive.enabled or set audit.require.sqlite_backup when remote SQLite backups are required."
+	render := func(t *testing.T, status audit.Status) string {
+		t.Helper()
+		cmd := NewRootCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		report := audit.Report{
+			Status:     status,
+			Confidence: audit.ConfidenceHigh,
+			Checks: []audit.Check{{
+				ID:          audit.CheckDurabilitySQLiteBackupConfiguration,
+				Status:      status,
+				Summary:     "Audit result for durability.sqlite_backup_configuration",
+				Remediation: remediation,
+			}},
+		}
+		if err := writeAuditHuman(cmd, report, "/config", "/database", 7*24*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	warnOutput := render(t, audit.StatusWarn)
+	want := "warn  durability.sqlite_backup_configuration  Audit result for durability.sqlite_backup_configuration\n  Remediation: " + remediation + "\n"
+	if !strings.Contains(warnOutput, want) {
+		t.Fatalf("warning output missing adjacent remediation:\n%s", warnOutput)
+	}
+	if passOutput := render(t, audit.StatusPass); strings.Contains(passOutput, "Remediation:") || strings.Contains(passOutput, remediation) {
+		t.Fatalf("passing output included remediation:\n%s", passOutput)
+	}
+}
+
 func TestAuditCLIReachesDeepBootstrapAndRejectsDeepLimitsForStandard(t *testing.T) {
 	cmd := NewRootCommand()
 	var out, stderr bytes.Buffer

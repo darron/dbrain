@@ -59,6 +59,7 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain okf validate <dir>`
 - `dbrain repair fts`
 - `dbrain repair notes`
+- `dbrain repair pruned-media`
 - `dbrain repair sources`
 - `dbrain research <question>`
 - `dbrain search <query>`
@@ -1437,6 +1438,30 @@ which is useful if antivirus or sync tooling removed files from `vault/`.
 ```sh
 dbrain repair notes
 dbrain repair notes --missing-only=false --sources
+```
+
+### `dbrain repair pruned-media`
+
+Finds archived media that was pruned locally but is now needed by pending OCR
+or X media transcription work. The command is a read-only dry-run by default:
+it opens the existing database without migrations, lists candidate counts, and
+performs no network, database, or media writes. Pass `--apply` explicitly to
+re-download matching media through the normal media-download persistence path.
+
+With neither category flag, both OCR and transcription candidates are
+selected. Use `--ocr` or `--transcripts` to limit the category. `--limit`
+defaults to 5,000 and is capped at 5,000 independently for each selected
+category; `--timeout` defaults to 45 seconds per media download. `--json`
+emits the same bounded aggregate counters as JSON.
+
+The repair command restores media only. Existing OCR and transcription workers
+perform enrichment afterward; `sync all` does not run this repair
+automatically.
+
+```sh
+dbrain repair pruned-media
+dbrain repair pruned-media --ocr --limit 500 --json
+dbrain repair pruned-media --apply --timeout 45s
 ```
 
 ### `dbrain repair sources`

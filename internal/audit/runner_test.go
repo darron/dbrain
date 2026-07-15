@@ -113,6 +113,45 @@ func TestRunStandardEmitsCompleteRegistryInOrder(t *testing.T) {
 	}
 }
 
+func TestSQLiteBackupConfigurationRemediationIsFixedAndPrivacySafe(t *testing.T) {
+	const remediation = "Enable scheduler.sqlite_archive.enabled or set audit.require.sqlite_backup when remote SQLite backups are required."
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.SQLiteBackupSchedulerEnabled = false
+	deps.Features.SQLiteBackupAuditRequired = false
+
+	report, err := Run(t.Context(), Request{
+		Profile:  ProfileStandard,
+		Since:    7 * 24 * time.Hour,
+		CheckIDs: []CheckID{CheckDurabilitySQLiteBackupConfiguration},
+	}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForTest(t, report, CheckDurabilitySQLiteBackupConfiguration)
+	if check.Status != StatusWarn || check.Remediation != remediation {
+		t.Fatalf("check = %#v", check)
+	}
+	if err := ValidateReport(report); err != nil {
+		t.Fatalf("ValidateReport: %v", err)
+	}
+
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"/Users/private/brain.db", "secret-bucket", "credential-token"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("report leaked target-specific value %q: %s", forbidden, encoded)
+		}
+	}
+
+	report.Checks[0].Remediation = "Enable backup at /Users/private/brain.db with credential-token."
+	if err := ValidateReport(report); err == nil {
+		t.Fatal("ValidateReport accepted arbitrary remediation")
+	}
+}
+
 func TestValidateReportRejectsClosedContractViolations(t *testing.T) {
 	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
 	makeReport := func() Report {
