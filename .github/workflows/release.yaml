@@ -278,6 +278,12 @@ jobs:
           ruby <<'RUBY'
           formula_path = File.join("homebrew-tap", ENV.fetch("TAP_FORMULA_PATH"))
           text = File.read(formula_path)
+          stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'
+          unless text.match?(/^\s*conflicts_with\s+"dbrain-test"(?:,.*)?$/)
+            platform = text.match(/^  if OS\.mac\?\n/)
+            abort("stable formula is missing its platform anchor") unless platform
+            text = text.sub(platform[0], "#{stableConflict}\n\n#{platform[0]}")
+          end
           version = ENV.fetch("VERSION")
           version_tag = ENV.fetch("VERSION_TAG")
           release_base = ENV.fetch("RELEASE_BASE")

@@ -33,8 +33,8 @@ development date for the change set.
   and deep parity remains unavailable to scheduled, MCP, and admin runners.
 
 - **Feed audit credential hardening**: Reject feed URLs containing userinfo at
-  the fetcher boundary before any configured HTTP client or transport can
-  normalize or send the request.
+  the audit-only policy boundary before the authenticated general feed fetcher
+  can normalize or send the request.
 
 - **Production health admin view**: Replaced ambiguous activity-derived health
   with the authenticated exact-profile standard audit presentation. The System
@@ -118,6 +118,10 @@ development date for the change set.
 
 ### Security hardening (2026-07-13)
 
+- **Authenticated feeds**: Basic-auth feed URLs are stripped of userinfo before
+  safe-HTTP validation and translated into an Authorization header that is
+  retained only across exact-origin redirects and recovered only for same-origin
+  subsequent polls after a sanitized resolved URL is stored.
 - **Local filesystem containment**: Vault note/media reads, writes, uploads,
   OCR/transcription inputs, and cleanup now use root-confined filesystem
   operations so persisted traversal paths and symlink parents cannot escape the
@@ -149,6 +153,7 @@ development date for the change set.
 
 - **Release testing**: Added an owner-dispatched Homebrew test channel that builds an exact commit into durable prerelease assets and one moving `dbrain-test` formula without changing stable `dbrain` distribution.
 - **Release safety**: Stable publication now accepts only exact `vX.Y.Z` tags, serializes tap updates, and tests that candidate formula generation cannot modify `Formula/dbrain.rb` or add runtime-data cleanup hooks.
+- **Tap validation**: Stable formula updates now restore the reciprocal `dbrain-test` conflict required by Homebrew audit, preventing candidate formula publication from breaking subsequent `brew test-bot` runs.
 
 ### dbrain Review Skill Distribution (2026-07-11)
 

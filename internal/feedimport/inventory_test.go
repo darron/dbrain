@@ -38,6 +38,25 @@ func (f *auditFeedFetcher) Fetch(ctx context.Context, feed store.Feed, opts Opti
 	return f.results[feed.FeedKey], f.errs[feed.FeedKey]
 }
 
+func TestFeedAuditPolicyFetcherRejectsCredentialsFromSelectedURLBeforeDelegate(t *testing.T) {
+	delegate := &auditFeedFetcher{results: map[string]FetchResult{}}
+	fetcher := feedAuditPolicyFetcher{next: delegate}
+	feed := store.Feed{
+		FeedKey:       "feed:credentialed",
+		URL:           "https://public.example.test/feed",
+		NormalizedURL: "https://public.example.test/feed",
+		ResolvedURL:   "https://user:secret@public.example.test/feed",
+	}
+
+	_, err := fetcher.Fetch(t.Context(), feed, Options{MaxBodyBytes: DefaultMaxBodyBytes})
+	if !safehttp.IsPolicyError(err) {
+		t.Fatalf("credential URL error = %v, want policy rejection", err)
+	}
+	if len(delegate.feeds) != 0 {
+		t.Fatalf("delegate fetches = %d, want 0", len(delegate.feeds))
+	}
+}
+
 func TestFeedAuditInventoryUsesEnabledConfiguredFeedsForceFetchAndSharedAliases(t *testing.T) {
 	feeds := []store.Feed{
 		{FeedKey: "feed:rss", URL: "https://rss.example.test/feed", Enabled: true, FetchETag: `"cached"`, FetchBodyHash: "cached-hash"},

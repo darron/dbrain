@@ -36,6 +36,19 @@ type feedAuditHTTPInjections struct {
 	TLSClientConfig *tls.Config
 }
 
+type feedAuditPolicyFetcher struct {
+	next Fetcher
+}
+
+func (f feedAuditPolicyFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (FetchResult, error) {
+	target := firstNonEmpty(feed.ResolvedURL, feed.NormalizedURL, feed.URL)
+	parsed, err := url.Parse(strings.TrimSpace(target))
+	if err == nil && parsed.User != nil {
+		return FetchResult{}, &safehttp.PolicyError{Reason: "URL userinfo is not allowed during feed audit"}
+	}
+	return f.next.Fetch(ctx, feed, opts)
+}
+
 // NewAuditInventory constructs a bounded read-only inventory over configured
 // feed rows supplied by the caller's existing query-only snapshot. The public
 // API deliberately exposes no HTTP client, transport, DNS, redirect, or URL
@@ -190,7 +203,7 @@ func newFeedAuditHTTPFetcher(feeds []store.Feed, allowPrivateNetwork bool, injec
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,
 	})
-	return HTTPFetcher{client: client}
+	return feedAuditPolicyFetcher{next: HTTPFetcher{client: client}}
 }
 
 func configuredFeedOrigins(feeds []store.Feed) []string {

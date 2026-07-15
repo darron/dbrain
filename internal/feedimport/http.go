@@ -7,9 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -47,12 +50,23 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 	if target == "" {
 		return FetchResult{}, fmt.Errorf("feed has no URL")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	parsedTarget, err := url.Parse(target)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("create feed request: %w", err)
+		return FetchResult{}, fmt.Errorf("create feed request: %w", sanitizeFeedURLError(err))
 	}
-	if req.URL.User != nil {
-		return FetchResult{}, &safehttp.PolicyError{Reason: "URL userinfo is not allowed"}
+	credentials := parsedTarget.User
+	if credentials == nil {
+		credentials = sameOriginStoredFeedCredentials(parsedTarget, feed.NormalizedURL, feed.URL)
+	}
+	parsedTarget.User = nil
+	sanitizedTarget := parsedTarget.String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedTarget, nil)
+	if err != nil {
+		return FetchResult{}, fmt.Errorf("create feed request: %w", sanitizeFeedURLError(err))
+	}
+	if credentials != nil {
+		password, _ := credentials.Password()
+		req.SetBasicAuth(credentials.Username(), password)
 	}
 	req.Header.Set("user-agent", opts.UserAgent)
 	req.Header.Set("accept", "application/feed+json, application/atom+xml, application/rss+xml, application/xml, text/xml, */*;q=0.1")
@@ -64,22 +78,19 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 		req.Header.Set("if-modified-since", feed.FetchLastModified)
 	}
 
-	client := f.client
-	if client.Timeout <= 0 {
-		clone := *client
-		clone.Timeout = opts.Timeout
-		client = &clone
-	}
+	client := feedRequestClient(f.client, opts.Timeout, req.URL, credentials != nil)
 	resp, err := client.Do(req)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("fetch feed: %w", err)
+		return FetchResult{}, fmt.Errorf("fetch feed: %w", sanitizeFeedURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	finalURL := *resp.Request.URL
+	finalURL.User = nil
 	headersJSON, _ := json.Marshal(resp.Header)
 	result := FetchResult{
-		RequestURL:      target,
-		FinalURL:        resp.Request.URL.String(),
+		RequestURL:      sanitizedTarget,
+		FinalURL:        finalURL.String(),
 		HTTPStatus:      resp.StatusCode,
 		HeadersJSON:     string(headersJSON),
 		ContentEncoding: strings.TrimSpace(resp.Header.Get("content-encoding")),
@@ -129,6 +140,167 @@ func (f HTTPFetcher) Fetch(ctx context.Context, feed store.Feed, opts Options) (
 		result.DecodedBody = nil
 	}
 	return result, nil
+}
+
+func feedRequestClient(client *http.Client, timeout time.Duration, credentialOrigin *url.URL, hasCredentials bool) *http.Client {
+	clone := *client
+	if clone.Timeout <= 0 {
+		clone.Timeout = timeout
+	}
+	if !hasCredentials {
+		return &clone
+	}
+
+	originalCheckRedirect := clone.CheckRedirect
+	origin := *credentialOrigin
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !sameFeedHTTPOrigin(&origin, req.URL) {
+			req.Header.Del("Authorization")
+		}
+		if originalCheckRedirect != nil {
+			return originalCheckRedirect(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &clone
+}
+
+func sameFeedHTTPOrigin(left *url.URL, right *url.URL) bool {
+	leftOrigin, leftOK := normalizedFeedHTTPOrigin(left)
+	rightOrigin, rightOK := normalizedFeedHTTPOrigin(right)
+	return leftOK && rightOK && leftOrigin == rightOrigin
+}
+
+func sameOriginStoredFeedCredentials(target *url.URL, candidates ...string) *url.Userinfo {
+	for _, raw := range candidates {
+		candidate, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || candidate.User == nil || !sameFeedHTTPOrigin(target, candidate) {
+			continue
+		}
+		return candidate.User
+	}
+	return nil
+}
+
+func normalizedFeedHTTPOrigin(target *url.URL) (string, bool) {
+	if target == nil {
+		return "", false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(target.Scheme))
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(target.Hostname()), "."))
+	if (scheme != "http" && scheme != "https") || host == "" {
+		return "", false
+	}
+	port := target.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), true
+}
+
+func sanitizeFeedURLError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	clone := *urlErr
+	clone.URL = sanitizeFeedURLUserInfo(urlErr.URL)
+	clone.Err = sanitizeFeedNestedError(urlErr.Err)
+	return &clone
+}
+
+type sanitizedFeedError struct {
+	message string
+	cause   error
+}
+
+func (e *sanitizedFeedError) Error() string {
+	return e.message
+}
+
+func (e *sanitizedFeedError) Unwrap() error {
+	return e.cause
+}
+
+func sanitizeFeedNestedError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := sanitizeFeedCredentialURLsInText(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return &sanitizedFeedError{message: message, cause: err}
+}
+
+func sanitizeFeedCredentialURLsInText(value string) string {
+	var sanitized strings.Builder
+	sanitized.Grow(len(value))
+	for offset := 0; offset < len(value); {
+		prefixLength := feedURLAuthorityPrefixLength(value, offset)
+		if prefixLength == 0 {
+			sanitized.WriteByte(value[offset])
+			offset++
+			continue
+		}
+
+		authorityStart := offset + prefixLength
+		authorityEnd := authorityStart
+		lastUserinfoEnd := -1
+		for authorityEnd < len(value) && !isFeedURLAuthorityDelimiter(value[authorityEnd]) {
+			if value[authorityEnd] == '@' {
+				lastUserinfoEnd = authorityEnd
+			}
+			authorityEnd++
+		}
+		sanitized.WriteString(value[offset:authorityStart])
+		if lastUserinfoEnd >= 0 {
+			sanitized.WriteString(value[lastUserinfoEnd+1 : authorityEnd])
+		} else {
+			sanitized.WriteString(value[authorityStart:authorityEnd])
+		}
+		offset = authorityEnd
+	}
+	return sanitized.String()
+}
+
+func feedURLAuthorityPrefixLength(value string, offset int) int {
+	remaining := value[offset:]
+	if len(remaining) >= len("http://") && strings.EqualFold(remaining[:len("http://")], "http://") {
+		return len("http://")
+	}
+	if len(remaining) >= len("https://") && strings.EqualFold(remaining[:len("https://")], "https://") {
+		return len("https://")
+	}
+	if strings.HasPrefix(remaining, "//") {
+		return len("//")
+	}
+	return 0
+}
+
+func isFeedURLAuthorityDelimiter(value byte) bool {
+	switch value {
+	case '/', '?', '#', ' ', '\t', '\r', '\n', '"', '\'', '<', '>':
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeFeedURLUserInfo(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err == nil {
+		parsed.User = nil
+		return parsed.String()
+	}
+	return sanitizeFeedCredentialURLsInText(raw)
 }
 
 func sha256Hex(body []byte) string {
