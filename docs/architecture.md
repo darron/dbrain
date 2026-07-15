@@ -71,6 +71,10 @@ raw evidence    derived summaries/OCR/transcripts/tags
 - `internal/runtimeenv`: compatibility layer for environment, `.envrc`, `.env`,
   and `config.yaml` runtime lookups.
 - `internal/version`: build/version metadata.
+- `internal/audit`: closed, content-free production-health schema, registry,
+  classifiers, deterministic sampling, and capability-scoped check runner.
+- `internal/metrics`: append-only metrics emission plus bounded reverse-reading
+  for scheduler/import continuity evidence.
 
 ### Storage And Projection
 
@@ -108,6 +112,8 @@ raw evidence    derived summaries/OCR/transcripts/tags
   content-addressed file placement.
 - `internal/mediaarchive`: media archive/upload/prune coordination.
 - `internal/sqlitearchive`: SQLite archive/restore coordination.
+- Standard audit archive adapters expose only S3 HEAD/LIST metadata authority;
+  they cannot upload, download, restore, prune, or accept endpoint overrides.
 - `internal/noterepair`: note/projection repair helpers.
 
 ### Retrieval And Research

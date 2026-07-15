@@ -115,7 +115,35 @@ safari_tabs:
   limit: 0 # DBRAIN_SAFARI_TABS_LIMIT; 0 imports all matching tabs
   older_than: "" # DBRAIN_SAFARI_TABS_OLDER_THAN; optional duration, for example 168h
 
+audit:
+  enabled: false # DBRAIN_AUDIT_ENABLED; schedule private read-only audits from serve remote
+  post_sync_fast: true # DBRAIN_AUDIT_POST_SYNC_FAST; run fast after each completed scheduled sync attempt
+  standard_interval: "6h" # DBRAIN_AUDIT_STANDARD_INTERVAL; periodic standard audit interval
+  since: "7d" # DBRAIN_AUDIT_SINCE; scheduled metrics and arrival-history window
+  max_archive_bytes: 21474836480 # DBRAIN_AUDIT_MAX_ARCHIVE_BYTES; deep compressed archive ceiling, may only lower the default
+  max_database_bytes: 107374182400 # DBRAIN_AUDIT_MAX_DATABASE_BYTES; deep decompressed database ceiling, may only lower the default
+  max_temp_bytes: 128849018880 # DBRAIN_AUDIT_MAX_TEMP_BYTES; deep aggregate temporary-space ceiling, may only lower the default
+  require:
+    sqlite_backup: false # DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP
+  timeouts: # optional downward-only ceilings; larger values are clamped
+    bootstrap: "" # DBRAIN_AUDIT_TIMEOUT_BOOTSTRAP; default ceiling 10s
+    local_query: "" # DBRAIN_AUDIT_TIMEOUT_LOCAL_QUERY; default ceiling 5s fast, 30s standard
+    metrics_or_manifest: "" # DBRAIN_AUDIT_TIMEOUT_METRICS_OR_MANIFEST; default ceiling 10s
+    sqlite_or_okf_integrity: "" # DBRAIN_AUDIT_TIMEOUT_SQLITE_OR_OKF_INTEGRITY; default ceiling 2m
+    remote_metadata: "" # DBRAIN_AUDIT_TIMEOUT_REMOTE_METADATA; per-check default ceiling 2m
+    remote_request: "" # DBRAIN_AUDIT_TIMEOUT_REMOTE_REQUEST; per-request/page default ceiling 30s
+  alert:
+    webhook_url: "" # DBRAIN_AUDIT_ALERT_WEBHOOK_URL; constrained JSON webhook, HTTPS unless exact private origin is allowed
+    bearer_token_ref: "" # DBRAIN_AUDIT_ALERT_BEARER_TOKEN_REF; typed env:, op://, or keychain:// secret ref only
+    allow_private_origin: false # DBRAIN_AUDIT_ALERT_ALLOW_PRIVATE_ORIGIN; allow only the webhook's exact private origin
+    consecutive_observations: 2 # DBRAIN_AUDIT_ALERT_CONSECUTIVE_OBSERVATIONS
+    repeat_after: "24h" # DBRAIN_AUDIT_ALERT_REPEAT_AFTER
+
 scheduler:
+  sqlite_archive:
+    enabled: false # DBRAIN_SCHEDULER_SQLITE_ARCHIVE_ENABLED; require and audit scheduled SQLite backups
+    interval: "24h" # DBRAIN_SCHEDULER_SQLITE_ARCHIVE_INTERVAL
+    run_on_start: true # DBRAIN_SCHEDULER_SQLITE_ARCHIVE_RUN_ON_START
   sync_all:
     enabled: false # DBRAIN_SCHEDULER_SYNC_ALL_ENABLED; run sync all from serve remote
     interval: "1h" # DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL

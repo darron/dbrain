@@ -166,7 +166,7 @@ func (s *Server) handle(ctx context.Context, payload []byte) (response, bool) {
 		}
 		return response{JSONRPC: "2.0", ID: req.ID, Result: result}, true
 	case "tools/list":
-		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]interface{}{"tools": toolDefinitions()}}, true
+		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]interface{}{"tools": filterToolDefinitions(toolDefinitions(), s.capabilities)}}, true
 	case "tools/call":
 		result, err := s.handleToolCall(ctx, req.Params)
 		if err != nil {

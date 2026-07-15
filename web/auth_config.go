@@ -31,6 +31,16 @@ type authConfig struct {
 	OAuthStateTTL      time.Duration
 }
 
+// AuditAPIEnabled resolves the finalized web authentication configuration.
+// Audit route dependencies must only be constructed when this returns true.
+func AuditAPIEnabled(ctx context.Context, cfg config.Config) (bool, error) {
+	authCfg, err := loadAuthConfig(ctx, cfg)
+	if err != nil {
+		return false, err
+	}
+	return authCfg.Enabled, nil
+}
+
 func loadAuthConfig(ctx context.Context, cfg config.Config) (authConfig, error) {
 	enabled := runtimeenv.FirstBoolDefault(cfg.RootDir, false, "DBRAIN_AUTH_ENABLED")
 	providers, err := normalizeOAuthProviders(runtimeenv.FirstList(cfg.RootDir, "DBRAIN_AUTH_PROVIDERS"))

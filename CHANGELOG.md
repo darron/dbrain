@@ -5,6 +5,117 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Production health audit foundation (2026-07-13)
+
+- **Release audit skill**: Added a repo-local, content-free production release
+  workflow that freezes the installed XDG or self-contained target, requires a
+  fresh complete SQLite backup before installation, compares exact-profile
+  standard reports after a separately approved cutover, verifies the expected
+  commit, and evaluates CLI-only deep archive/media/upstream checks without
+  granting deploy, restart, retry, repair, restore, import, or config authority.
+
+- **Release audit boundary fixes**: Made `config paths` use the no-write target
+  resolver, preserved root-only selection for self-contained installations,
+  made abbreviated commit expectations match the embedded full revision, and
+  ensured filtered/source audits actually include `boundary.runtime` whenever
+  `--expect-commit` is supplied. The release skill includes a provenance-gated
+  candidate bootstrap for the first audit-capable release.
+
+- **Bounded upstream importer parity**: Added CLI-only deep reconciliation for
+  Apple Notes, Safari Tabs, X Bookmarks, GitHub Stars, YouTube Liked, YouTube
+  Watch Later, and enabled feeds, plus exact source commands for release and
+  operational checks. Inventories are read-only, content-free, sequential,
+  cancellation-aware, capped at 100,000 unique identities and 10,000 pages,
+  and fail closed on credentials, schema, cursor, device, network, or
+  completion ambiguity. Local app sources use dbrain-owned SQLite snapshots;
+  remote adapters use fixed/configured safe origins or bounded proxy-free
+  subprocesses. Source-only audits no longer resolve unrelated archive limits,
+  and deep parity remains unavailable to scheduled, MCP, and admin runners.
+
+- **Feed audit credential hardening**: Reject feed URLs containing userinfo at
+  the audit-only policy boundary before the authenticated general feed fetcher
+  can normalize or send the request.
+
+- **Production health admin view**: Replaced ambiguous activity-derived health
+  with the authenticated exact-profile standard audit presentation. The System
+  page now separates fast local refresh from authoritative standard health,
+  importer polls from arrivals, terminal pipeline outcomes from failures, and
+  media/SQLite/OKF durability checks from legacy counters; it includes bounded
+  typed finding evidence, recovery history, abortable on-demand polling, and a
+  responsive 390px-safe observability layout. Legacy `backlog.drained` remains
+  compatible but is labeled and scoped as source-processing backlog only.
+
+- **Authenticated admin audit API**: Added fail-closed latest, compact history,
+  bounded on-demand fast/standard run, and process-run status endpoints for the
+  authenticated web administration surface. The routes are absent when web
+  authentication is disabled, reject service-auth and cross-origin mutation,
+  persist immutable reports before completion, and retain only bounded,
+  sanitized in-process run state.
+
+- **Bounded MCP health**: Added `dbrain_audit` with a fixed-deadline,
+  process-singleflight local fast profile and a persisted exact-profile standard
+  read path. The privacy-validated response is capped at 256 KiB, exposes no
+  deep/category/path/URL/archive controls, uses a no-create/no-chmod report
+  reader, and is available over HTTP/tsnet only when bearer auth is required.
+  The ten-second wall-clock limit is enforced independently of runner context
+  cancellation, without starting duplicate work when a stuck runner times out.
+
+- **Scheduled health and regression alerts**: Added opt-in post-sync fast and
+  six-hour standard audits to `serve remote`, private daily report retention,
+  exact-profile freshness metadata, content-free transition state, compact
+  completion metrics, and an exact-origin no-proxy/no-redirect JSON webhook
+  with debounced escalation, repeat, configuration-resolution, and immediate
+  recovery behavior. Scheduled audit failures remain separate from sync
+  results and never receive archive-write or restore capability.
+
+- **Scheduled SQLite durability**: Added an opt-in daily `serve remote`
+  scheduler that uses the existing online SQLite snapshot/archive path,
+  runs once on startup by default, durably rate-limits attempts across service
+  restarts, serializes scheduled/manual archives and restores through one
+  crash-released cross-process lease, applies bounded preflight-failure backoff,
+  confines and durably syncs its private attempt marker, honors a full initial
+  delay when startup runs are disabled, supports cancellation during snapshot
+  compression, and emits content-free aggregate metrics without granting write
+  capability to audits.
+- **Bounded deep verification**: Added an explicit CLI-only deep audit that
+  validates the newest compressed SQLite archive in a private temporary
+  directory, performs complete bounded `media/` inventory reconciliation, and
+  cleans up without invoking the active-database restore path.
+- **Audit CLI**: Added `dbrain audit all|imports|pipeline|durability` with a
+  stable, privacy-validated 55-check JSON registry, typed health exit codes,
+  deterministic thresholds/sampling, and a no-write query-only target resolver.
+- **Operational evidence**: Bounded JSONL reading now reconstructs scheduler
+  runs, explicit lifecycle markers, seven source-family poll/arrival streams,
+  and separate YouTube liked/watch-later results without retaining raw lines.
+- **Least-authority durability**: Standard media and SQLite backup checks use
+  exact-origin, DNS/IP-validated, no-proxy S3 HEAD/LIST clients that expose no
+  upload, download, restore, or endpoint-override capability.
+- **Read-only diagnostics**: All `stats` commands now open SQLite without applying migrations, and active-database inspection reports quick-check, foreign-key, core-schema, and migration compatibility as separate claims.
+- **Truthful pipeline partitions**: Pipeline stats and workers share X transcription, photo OCR, source-repair, and media-archive predicates; terminal outcomes and invalid legacy states are reported separately from genuine failures, with explicit partition validation.
+- **Actionable pending-age audits**: Pipeline audit snapshots now carry the
+  oldest eligible timestamp for hydration, extraction, summary, transcription,
+  and OCR work, so non-empty backlogs classify against the documented 24/72-hour
+  thresholds instead of always degrading to unknown.
+- **Confined artifact inspection**: Added consistent read-transaction snapshots, metadata-only vault inspection with sanitized errors, and root-confined aggregate OKF validation that requires a readable manifest and export timestamp.
+- **Provenance and scheduler diagnostics**: Successful X media transcripts now retain deterministic input provenance, compatibility mirrors preserve authoritative enrichment metadata, migration-backed audit aggregates separate legacy gaps from regressions, and TSNet status reports sanitized scheduler authentication failures.
+- **Audit truth and bounded execution**: Production audits now consume real store
+  pipeline aggregates and closed grouped kinds, preserve partial SQLite archive
+  listing progress, apply bootstrap/local/integrity/per-page timeout classes to
+  their actual operations, and keep mixed source/category scopes truthful.
+- **Local audit diagnostics**: Identifier-enabled CLI output now includes
+  bounded real row/source identifiers for non-pass pipeline, provenance, and
+  local-media checks plus exact credential-free media and SQLite archive
+  targets; cleanup paths remain empty. OKF freshness reads only the manifest,
+  while metrics files are opened nonblocking and validated by descriptor.
+- **Audit bootstrap and timeout truth**: The actual bounded YAML and dotenv
+  snapshots, feature resolution, and SQLite `BEGIN` now run inside the
+  bootstrap deadline without shortening the later snapshot lifetime. Frozen
+  lookup preserves shell, `.envrc`, `.env`, then YAML precedence without
+  repeated reads, and overlapping same-root snapshots now clean up safely in
+  any order without restoring stale YAML or dotenv values. Per-class overrides
+  lower local, integrity, manifest, remote-check, and per-request ceilings,
+  including media whole-check limits.
+
 ### Security hardening (2026-07-13)
 
 - **Authenticated feeds**: Basic-auth feed URLs are stripped of userinfo before

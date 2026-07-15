@@ -49,7 +49,7 @@ func (s *server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			Version: webVersionInfo(),
 		},
 		Auth:           s.authInfo(r.Context()),
-		Backlog:        backlog,
+		Backlog:        newBacklogResponse(backlog),
 		Activity:       activity,
 		SourceActivity: sourceActivity,
 	})

@@ -19,9 +19,10 @@ func emitSyncRunStarted(run metrics.RunContext, startedAt time.Time, opts Option
 		return
 	}
 	_ = run.Emit(metrics.Event{
-		"event":      "sync.run.started",
-		"status":     "started",
-		"started_at": startedAt.UTC().Format(time.RFC3339Nano),
+		"event":           "sync.run.started",
+		"status":          "started",
+		"started_at":      startedAt.UTC().Format(time.RFC3339Nano),
+		"selected_stages": selectedMetricStages(opts),
 		"config": map[string]any{
 			"summary_model":               opts.Model,
 			"categorize_model":            opts.CategorizeModel,
@@ -108,6 +109,146 @@ func emitSyncStageMetrics(run metrics.RunContext, opts stageOptions, stats *Stat
 	case syncStageOKFExport:
 		emitStage(run, "okf_export", stats.OKFExport, stageErr, nil)
 	}
+	emitSyncImportStageMetric(run, opts, stageID, *stats, stageErr)
+}
+
+func selectedMetricStages(opts Options) []string {
+	out := make([]string, 0, 14)
+	if opts.AppleNotesEnabled {
+		out = append(out, "apple_notes")
+	}
+	if opts.SafariTabsEnabled {
+		out = append(out, "safari_tabs")
+	}
+	if opts.XBookmarksEnabled {
+		out = append(out, "x_bookmarks")
+	}
+	if opts.XEnabled {
+		out = append(out, "x")
+	}
+	if opts.LinksEnabled {
+		out = append(out, "links")
+	}
+	if opts.XMediaEnabled {
+		out = append(out, "x_media")
+	}
+	if opts.XPhotoOCREnabled {
+		out = append(out, "x_photo_ocr")
+	}
+	if opts.GitHubEnabled {
+		out = append(out, "github")
+	}
+	if opts.YouTubeEnabled {
+		out = append(out, "youtube")
+	}
+	if opts.FeedsEnabled {
+		out = append(out, "feeds")
+	}
+	if opts.SourcesEnabled {
+		out = append(out, "sources")
+	}
+	if opts.CategorizeEnabled {
+		out = append(out, "categorize")
+	}
+	if opts.ArchiveMediaEnabled {
+		out = append(out, "media_archive")
+	}
+	if opts.OKFExportEnabled {
+		out = append(out, "okf_export")
+	}
+	return out
+}
+
+func emitSyncImportMetrics(run metrics.RunContext, stats Stats, stageErrors map[syncStageID]error) {
+	opts := newStageOptions(Options{
+		AppleNotesEnabled: stats.AppleNotes != nil, SafariTabsEnabled: stats.SafariTabs != nil,
+		XBookmarksEnabled: stats.XBookmarks != nil, GitHubEnabled: stats.GitHub != nil,
+		YouTubeEnabled: stats.YouTube != nil, WatchLater: stats.YouTube != nil, Liked: stats.YouTube != nil,
+		FeedsEnabled: stats.Feeds != nil,
+	})
+	for _, stage := range []syncStageID{syncStageAppleNotes, syncStageSafariTabs, syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds} {
+		emitSyncImportStageMetric(run, opts, stage, stats, stageErrors[stage])
+	}
+}
+
+func emitSyncImportStageMetric(run metrics.RunContext, opts stageOptions, stage syncStageID, stats Stats, stageErr error) {
+	if !run.Enabled() {
+		return
+	}
+	emit := func(source string, duration time.Duration, counts map[string]int, sourceFailed bool) {
+		completedAt := time.Now().UTC()
+		status := "ok"
+		if stageErr != nil || sourceFailed {
+			status = "error"
+			if counts["failed"] == 0 {
+				counts["failed"] = 1
+			}
+		}
+		_ = run.Emit(metrics.Event{
+			"event": "sync.import.completed", "source": source, "status": status,
+			"attempted_at": completedAt.Add(-duration).Format(time.RFC3339Nano),
+			"completed_at": completedAt.Format(time.RFC3339Nano), "counts": counts,
+		})
+	}
+	switch stage {
+	case syncStageAppleNotes:
+		if value := stats.AppleNotes; value != nil {
+			s := value.Stats
+			emit("apple_notes", value.Duration, importCounts(s.NotesCreated, s.NotesUpdated, s.NotesUnchanged, s.NotesSkipped, s.LinksDiscovered, s.NotesBlocked, s.Errors), s.Errors > 0)
+		} else if opts.AppleNotes.Enabled {
+			emit("apple_notes", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+		}
+	case syncStageSafariTabs:
+		if value := stats.SafariTabs; value != nil {
+			s := value.Stats
+			emit("safari_tabs", value.Duration, importCounts(s.TabsCreated, s.TabsUpdated, s.TabsUnchanged, s.TabsSkipped, s.LinksFound, 0, s.Errors), s.Errors > 0)
+		} else if opts.SafariTabs.Enabled {
+			emit("safari_tabs", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+		}
+	case syncStageXFrontier:
+		if value := stats.XBookmarks; value != nil {
+			s := value.Stats
+			emit("x_bookmarks", value.Duration, importCounts(s.Created, s.Updated, s.Unchanged, 0, 0, 0, 0), false)
+		} else if opts.XBookmarks.Enabled {
+			emit("x_bookmarks", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+		}
+	case syncStageGitHub:
+		if value := stats.GitHub; value != nil {
+			s := value.Stats
+			emit("github_stars", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, 0, s.LinksCreated, 0, s.Errors), s.Errors > 0)
+		} else if opts.GitHub.Enabled {
+			emit("github_stars", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+		}
+	case syncStageYouTube:
+		if value := stats.YouTube; value != nil {
+			if opts.YouTube.WatchLater {
+				s := value.Stats.WatchLater
+				emit("youtube_watch_later", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, s.ItemsSkipped, s.LinksCreated, 0, s.Errors), s.Errors > 0)
+			}
+			if opts.YouTube.Liked {
+				s := value.Stats.Liked
+				emit("youtube_liked", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, s.ItemsSkipped, s.LinksCreated, 0, s.Errors), s.Errors > 0)
+			}
+		} else {
+			if opts.YouTube.WatchLater {
+				emit("youtube_watch_later", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+			}
+			if opts.YouTube.Liked {
+				emit("youtube_liked", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+			}
+		}
+	case syncStageFeeds:
+		if value := stats.Feeds; value != nil {
+			s := value.Stats
+			emit("feeds", value.Duration, importCounts(s.ItemsCreated, s.ItemsUpdated, s.ItemsUnchanged, 0, s.SourcesLinked, 0, s.Errors), s.Errors > 0)
+		} else if opts.Feeds.Enabled {
+			emit("feeds", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+		}
+	}
+}
+
+func importCounts(created, updated, unchanged, skipped, linked, blocked, failed int) map[string]int {
+	return map[string]int{"created": created, "updated": updated, "unchanged": unchanged, "skipped": skipped, "linked": linked, "blocked": blocked, "failed": failed}
 }
 
 func emitStage(run metrics.RunContext, stage string, value any, stageErr error, config map[string]any) {

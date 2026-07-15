@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,9 +14,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
@@ -107,6 +111,610 @@ func TestServerInitializeAndToolsList(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("expected core research workflow tools in tools list, missing %v: %#v", missing, tools)
+	}
+}
+
+type auditTestStore struct {
+	report  *audit.Report
+	profile audit.Profile
+	calls   atomic.Int32
+}
+
+func (s *auditTestStore) Latest(profile audit.Profile) (*audit.Report, error) {
+	s.profile = profile
+	s.calls.Add(1)
+	return s.report, nil
+}
+
+func TestAuditStdioAdvertisesAndCalls(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{
+		Audit: AuditDependencies{
+			RunFast: func(context.Context) (audit.Report, error) { return report, nil },
+			Now:     func() time.Time { return now },
+		},
+	})
+	input := lineJSON(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`) +
+		lineJSON(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dbrain_audit","arguments":{}}}`)
+	var out bytes.Buffer
+	if err := server.Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	responses := parseResponses(t, out.Bytes())
+	if len(responses) != 2 {
+		t.Fatalf("responses = %d, want 2", len(responses))
+	}
+	assertAuditToolAdvertised(t, responses[0], true)
+	result := responses[1]["result"].(map[string]interface{})
+	if result["isError"] != false {
+		t.Fatalf("audit result = %#v", result)
+	}
+	structured := result["structuredContent"].(map[string]interface{})
+	if structured["report"].(map[string]interface{})["profile"] != "fast" {
+		t.Fatalf("audit structured result = %#v", structured)
+	}
+	if structured["freshness"].(map[string]interface{})["status"] != "current" {
+		t.Fatalf("audit freshness = %#v", structured["freshness"])
+	}
+}
+
+func TestAuditHTTPRequiresBearerCapability(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	var runnerCalls atomic.Int32
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		RunFast: func(context.Context) (audit.Report, error) {
+			runnerCalls.Add(1)
+			return report, nil
+		},
+		Now: func() time.Time { return now },
+	}})
+
+	t.Run("auth disabled omits and rejects", func(t *testing.T) {
+		handler := server.HTTPHandler(HTTPOptions{Path: "/mcp"})
+		listed := postMCPJSON(t, handler, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+		assertAuditToolAdvertised(t, listed, false)
+		called := postMCPJSON(t, handler, "", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dbrain_audit","arguments":{}}}`)
+		result := called["result"].(map[string]interface{})
+		if result["isError"] != true || !strings.Contains(fmt.Sprint(result), "unknown tool") {
+			t.Fatalf("auth-disabled direct call = %#v", called)
+		}
+		if runnerCalls.Load() != 0 {
+			t.Fatalf("auth-disabled audit invoked runner %d times", runnerCalls.Load())
+		}
+	})
+
+	t.Run("bearer authenticated advertises and calls", func(t *testing.T) {
+		handler := server.HTTPHandler(HTTPOptions{
+			Path:              "/mcp",
+			RequireBearerAuth: true,
+			BearerTokenValidator: func(context.Context, string) (bool, error) {
+				return true, nil
+			},
+		})
+		listed := postMCPJSON(t, handler, "secret", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+		assertAuditToolAdvertised(t, listed, true)
+		called := postMCPJSON(t, handler, "secret", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dbrain_audit","arguments":{"profile":"fast"}}}`)
+		if called["result"].(map[string]interface{})["isError"] != false {
+			t.Fatalf("authenticated audit call = %#v", called)
+		}
+	})
+}
+
+func TestAuditInputSchemaIsClosed(t *testing.T) {
+	definition := findToolDefinition(t, "dbrain_audit")
+	input := definition["inputSchema"].(map[string]interface{})
+	if input["additionalProperties"] != false {
+		t.Fatalf("audit input schema is not closed: %#v", input)
+	}
+	properties := input["properties"].(map[string]interface{})
+	if len(properties) != 1 {
+		t.Fatalf("audit input properties = %#v, want only profile", properties)
+	}
+	profile := properties["profile"].(map[string]interface{})
+	if fmt.Sprint(profile["enum"]) != "[fast standard]" || profile["default"] != "fast" {
+		t.Fatalf("audit profile schema = %#v", profile)
+	}
+}
+
+func TestAuditRejectsUnsupportedInputs(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		RunFast: func(context.Context) (audit.Report, error) { return report, nil },
+		Now:     func() time.Time { return now },
+	}})
+	for _, args := range []string{
+		`null`,
+		`[]`,
+		`{"profile":"deep"}`,
+		`{"categories":["pipeline"]}`,
+		`{"since":"24h"}`,
+		`{"path":"/tmp/private"}`,
+		`{"url":"https://example.com"}`,
+		`{"endpoint":"https://example.com"}`,
+		`{"source_key":"x:private"}`,
+		`{"archive_key":"private/key"}`,
+		`{"max_archive_bytes":1}`,
+	} {
+		t.Run(args, func(t *testing.T) {
+			input := lineJSON(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_audit","arguments":%s}}`, args))
+			var out bytes.Buffer
+			if err := server.Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+				t.Fatalf("Serve: %v", err)
+			}
+			result := parseResponses(t, out.Bytes())[0]["result"].(map[string]interface{})
+			if result["isError"] != true {
+				t.Fatalf("unsupported args %s succeeded: %#v", args, result)
+			}
+		})
+	}
+}
+
+func TestAuditArgumentErrorsAreSanitizedAndBounded(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		RunFast: func(context.Context) (audit.Report, error) { return report, nil },
+		Now:     func() time.Time { return now },
+	}})
+
+	const marker = "attacker-controlled-audit-input"
+	oversized := strings.Repeat(marker, (auditToolMaxBytes/len(marker))+2)
+	cases := map[string]string{
+		"unknown key": fmt.Sprintf(`{%q:true}`, oversized),
+		"profile":     fmt.Sprintf(`{"profile":%q}`, oversized),
+	}
+	for name, arguments := range cases {
+		t.Run(name, func(t *testing.T) {
+			input := lineJSON(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_audit","arguments":%s}}`, arguments))
+			var out bytes.Buffer
+			if err := server.Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+				t.Fatalf("Serve: %v", err)
+			}
+			responses := parseResponses(t, out.Bytes())
+			result := responses[0]["result"].(map[string]interface{})
+			if result["isError"] != true {
+				t.Fatalf("oversized %s succeeded: %#v", name, result)
+			}
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			if len(encoded) > auditToolMaxBytes {
+				t.Fatalf("oversized %s result bytes = %d, want <= %d", name, len(encoded), auditToolMaxBytes)
+			}
+			if bytes.Contains(encoded, []byte(marker)) {
+				t.Fatalf("oversized %s result reflected attacker-controlled input", name)
+			}
+		})
+	}
+}
+
+func TestAuditFastUsesTenSecondDeadlineAndProcessWideSingleflight(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var calls atomic.Int32
+	runner := func(ctx context.Context) (audit.Report, error) {
+		calls.Add(1)
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return audit.Report{}, fmt.Errorf("fast audit context has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining < 9*time.Second || remaining > 10*time.Second {
+			return audit.Report{}, fmt.Errorf("fast audit deadline remaining %s, want fixed ten-second ceiling", remaining)
+		}
+		once.Do(func() { close(started) })
+		select {
+		case <-release:
+			return report, nil
+		case <-ctx.Done():
+			return audit.Report{}, ctx.Err()
+		}
+	}
+	deps := ServerDependencies{Audit: AuditDependencies{RunFast: runner, Now: func() time.Time { return now }}}
+	servers := []*Server{NewWithDependencies(config.Config{}, nil, deps), NewWithDependencies(config.Config{}, nil, deps)}
+	errs := make(chan error, len(servers))
+	for _, server := range servers {
+		go func(server *Server) {
+			_, err := server.callAudit(t.Context(), json.RawMessage(`{"profile":"fast"}`))
+			errs <- err
+		}(server)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("fast audit did not start")
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	for range servers {
+		if err := <-errs; err != nil {
+			t.Fatalf("fast audit call: %v", err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("process-wide fast audit runner calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestAuditFastReturnsBoundedTimeoutWhenRunnerIgnoresContext(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	var releaseOnce, startedOnce, finishedOnce sync.Once
+	var runnerCalls, timerCalls, timerStops atomic.Int32
+	var invalidTimerDuration atomic.Bool
+	releaseRunner := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseRunner)
+
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		RunFast: func(context.Context) (audit.Report, error) {
+			runnerCalls.Add(1)
+			startedOnce.Do(func() { close(started) })
+			<-release
+			finishedOnce.Do(func() { close(finished) })
+			return report, nil
+		},
+		Now: func() time.Time { return now },
+	}})
+	deadline := make(chan time.Time)
+	server.newAuditTimer = func(timeout time.Duration) auditTimer {
+		timerCalls.Add(1)
+		if timeout != auditToolDeadline {
+			invalidTimerDuration.Store(true)
+		}
+		return auditTimer{
+			done: deadline,
+			stop: func() bool {
+				timerStops.Add(1)
+				return true
+			},
+		}
+	}
+	input := lineJSON(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_audit","arguments":{"profile":"fast"}}}`)
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(t.Context(), strings.NewReader(input), &out) }()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("fast audit runner did not start")
+	}
+	close(deadline)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(time.Second):
+		releaseRunner()
+		<-done
+		t.Fatal("dbrain_audit did not enforce its fixed ten-second wall-clock deadline")
+	}
+
+	result := parseResponses(t, out.Bytes())[0]["result"].(map[string]interface{})
+	if result["isError"] != true {
+		t.Fatalf("timeout result = %#v, want tool error", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal timeout result: %v", err)
+	}
+	if len(encoded) > auditToolMaxBytes {
+		t.Fatalf("timeout result bytes = %d, want <= %d", len(encoded), auditToolMaxBytes)
+	}
+	if !bytes.Contains(encoded, []byte("fast audit timed out")) {
+		t.Fatalf("timeout result = %s, want sanitized timeout error", encoded)
+	}
+	if _, err := server.callAudit(t.Context(), json.RawMessage(`{"profile":"fast"}`)); !errors.Is(err, errFastAuditTimedOut) {
+		t.Fatalf("second call while runner is stuck error = %v, want sanitized timeout", err)
+	}
+	if runnerCalls.Load() != 1 {
+		t.Fatalf("timed-out singleflight runner calls = %d, want 1 without fan-out", runnerCalls.Load())
+	}
+	if invalidTimerDuration.Load() {
+		t.Fatalf("audit timer duration was not fixed at %s", auditToolDeadline)
+	}
+
+	never := make(chan time.Time)
+	server.newAuditTimer = func(timeout time.Duration) auditTimer {
+		timerCalls.Add(1)
+		if timeout != auditToolDeadline {
+			invalidTimerDuration.Store(true)
+		}
+		return auditTimer{done: never, stop: func() bool { timerStops.Add(1); return true }}
+	}
+	releaseRunner()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("released audit runner did not finish")
+	}
+	cleanupDeadline := time.Now().Add(time.Second)
+	for runnerCalls.Load() < 2 && time.Now().Before(cleanupDeadline) {
+		if _, err := server.callAudit(t.Context(), json.RawMessage(`{"profile":"fast"}`)); err != nil {
+			t.Fatalf("post-cleanup fast audit: %v", err)
+		}
+		if runnerCalls.Load() < 2 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if runnerCalls.Load() != 2 {
+		t.Fatalf("post-cleanup runner calls = %d, want a new singleflight execution", runnerCalls.Load())
+	}
+	if invalidTimerDuration.Load() {
+		t.Fatalf("audit timer duration was not fixed at %s", auditToolDeadline)
+	}
+	if timerStops.Load() != timerCalls.Load() {
+		t.Fatalf("audit timer stops = %d, calls = %d", timerStops.Load(), timerCalls.Load())
+	}
+}
+
+func TestAuditStandardReadsNewestExactProfileWithoutRunningAudit(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileStandard, now.Add(-time.Hour))
+	store := &auditTestStore{report: &report}
+	var runnerCalls atomic.Int32
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		RunFast: func(context.Context) (audit.Report, error) {
+			runnerCalls.Add(1)
+			return audit.Report{}, fmt.Errorf("must not run")
+		},
+		Reports:          store,
+		SyncInterval:     time.Hour,
+		StandardInterval: 6 * time.Hour,
+		Now:              func() time.Time { return now },
+	}})
+	result, err := server.callAudit(t.Context(), json.RawMessage(`{"profile":"standard"}`))
+	if err != nil {
+		t.Fatalf("standard audit: %v", err)
+	}
+	if store.profile != audit.ProfileStandard || store.calls.Load() != 1 {
+		t.Fatalf("standard store lookup profile=%q calls=%d", store.profile, store.calls.Load())
+	}
+	if runnerCalls.Load() != 0 {
+		t.Fatalf("standard audit invoked runner %d times", runnerCalls.Load())
+	}
+	structured := result["structuredContent"].(audit.PresentedReport)
+	if structured.Report == nil || structured.Report.AuditID != report.AuditID || structured.Freshness.Status != audit.FreshnessCurrent {
+		t.Fatalf("standard presentation = %#v", structured)
+	}
+}
+
+func TestAuditStandardPresentationCannotMutateCachedReport(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileStandard, now.Add(-time.Hour))
+	store := &auditTestStore{report: &report}
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		Reports:          store,
+		StandardInterval: 6 * time.Hour,
+		Now:              func() time.Time { return now },
+	}})
+	result, err := server.callAudit(t.Context(), json.RawMessage(`{"profile":"standard"}`))
+	if err != nil {
+		t.Fatalf("standard audit: %v", err)
+	}
+	presented := result["structuredContent"].(audit.PresentedReport)
+	wantCategory := store.report.Scope.Categories[0]
+	wantSource := store.report.Scope.Sources[0]
+	presented.Report.Scope.Categories[0] = audit.CategoryDurability
+	presented.Report.Scope.Sources[0] = audit.SourceFeeds
+	presented.Report.Scope.CheckIDs = append(presented.Report.Scope.CheckIDs, audit.CheckPipelineSummaryPartition)
+	presented.Report.Checks[0].Evidence["mutated"] = true
+	if store.report.Scope.Categories[0] != wantCategory || store.report.Scope.Sources[0] != wantSource || len(store.report.Scope.CheckIDs) != 0 {
+		t.Fatalf("cached report scope mutated: %#v", store.report.Scope)
+	}
+	if _, ok := store.report.Checks[0].Evidence["mutated"]; ok {
+		t.Fatalf("cached report evidence mutated: %#v", store.report.Checks[0].Evidence)
+	}
+}
+
+func TestAuditStandardNotFoundReturnsUnknownFreshnessAndNullReport(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	store := &auditTestStore{}
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		Reports:          store,
+		StandardInterval: 6 * time.Hour,
+		Now:              func() time.Time { return now },
+	}})
+	result, err := server.callAudit(t.Context(), json.RawMessage(`{"profile":"standard"}`))
+	if err != nil {
+		t.Fatalf("standard audit: %v", err)
+	}
+	data, err := json.Marshal(result["structuredContent"])
+	if err != nil {
+		t.Fatalf("marshal structured output: %v", err)
+	}
+	var structured interface{}
+	if err := json.Unmarshal(data, &structured); err != nil {
+		t.Fatalf("decode structured output: %v", err)
+	}
+	value := structured.(map[string]interface{})
+	if value["report"] != nil {
+		t.Fatalf("missing standard report = %#v, want null", value["report"])
+	}
+	freshness := value["freshness"].(map[string]interface{})
+	if freshness["status"] != "unknown" || freshness["reason"] != "not_found" {
+		t.Fatalf("missing standard freshness = %#v", freshness)
+	}
+	if _, ok := freshness["age_seconds"]; ok {
+		t.Fatalf("missing standard freshness has age: %#v", freshness)
+	}
+	if err := validateJSONSchemaValue(auditOutputSchema(), structured); err != nil {
+		t.Fatalf("missing standard output does not match schema: %v", err)
+	}
+}
+
+func TestAuditStructuredOutputMatchesSchemaAndPrivacyBounds(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		RunFast: func(context.Context) (audit.Report, error) { return report, nil },
+		Now:     func() time.Time { return now },
+	}})
+	result, err := server.callAudit(t.Context(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	structuredJSON, err := json.Marshal(result["structuredContent"])
+	if err != nil {
+		t.Fatalf("marshal structured output: %v", err)
+	}
+	if len(structuredJSON) > 256<<10 {
+		t.Fatalf("structured output bytes = %d, want <= 256 KiB", len(structuredJSON))
+	}
+	var structured interface{}
+	if err := json.Unmarshal(structuredJSON, &structured); err != nil {
+		t.Fatalf("decode structured output: %v", err)
+	}
+	if err := validateJSONSchemaValue(auditOutputSchema(), structured); err != nil {
+		t.Fatalf("structured output does not match advertised schema: %v", err)
+	}
+	assertNoAuditPrivateKeys(t, structured, "")
+	reportValue := structured.(map[string]interface{})["report"].(map[string]interface{})
+	scope := reportValue["scope"].(map[string]interface{})
+	for _, key := range []string{"categories", "sources", "check_ids"} {
+		if value, ok := scope[key].([]interface{}); !ok || value == nil {
+			t.Fatalf("scope.%s is not a non-null array: %#v", key, scope[key])
+		}
+	}
+	if checks, ok := reportValue["checks"].([]interface{}); !ok || checks == nil {
+		t.Fatalf("report.checks is not a non-null array: %#v", reportValue["checks"])
+	}
+}
+
+func TestAuditRejectsValidReportAboveOutputCeiling(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	report := auditTestReport(t, audit.ProfileFast, now)
+	daily := make([]map[string]any, audit.MaxDailyEvidence)
+	for index := range daily {
+		daily[index] = map[string]any{
+			"day": "2026-07-14", "created": index, "updated": index, "unchanged": index,
+			"skipped": index, "linked": index, "blocked": index, "failed": index,
+		}
+	}
+	for index := range report.Checks {
+		if strings.HasSuffix(string(report.Checks[index].ID), ".arrivals") {
+			report.Checks[index].Status = audit.StatusUnknown
+			report.Checks[index].SkipReason = ""
+			report.Checks[index].Evidence = audit.Evidence{"quiet_seconds": 0, "daily": daily}
+		}
+	}
+	audit.FinalizeReport(&report)
+	if err := audit.ValidateReport(report); err != nil {
+		t.Fatalf("oversized fixture is not a valid audit report: %v", err)
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal oversized report: %v", err)
+	}
+	if len(data) <= 256<<10 {
+		t.Fatalf("oversized fixture bytes = %d, want >256 KiB", len(data))
+	}
+	server := NewWithDependencies(config.Config{}, nil, ServerDependencies{Audit: AuditDependencies{
+		RunFast: func(context.Context) (audit.Report, error) { return report, nil },
+		Now:     func() time.Time { return now },
+	}})
+	if _, err := server.callAudit(t.Context(), json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "256 KiB") {
+		t.Fatalf("oversized audit error = %v", err)
+	}
+}
+
+func auditTestReport(t *testing.T, profile audit.Profile, completed time.Time) audit.Report {
+	t.Helper()
+	report, err := audit.Run(t.Context(), audit.Request{Profile: profile}, audit.Dependencies{
+		Features: audit.Features{
+			Layout:                  "xdg",
+			ConfigSource:            "default",
+			ConfigVerified:          true,
+			DatabaseOpenedQueryOnly: true,
+			Sources:                 map[audit.Source]bool{},
+			Stages:                  map[audit.PipelineStage]bool{},
+		},
+		Runtime: audit.RuntimeVersion{
+			ReleaseVersion: "v0.6.0", Commit: "abcdef1", GitStatus: "clean", Platform: "linux/amd64",
+			SecurityBaselineID: "v0.6.0-security-pass", SecurityBaselineEpoch: 1,
+		},
+		Clock: func() time.Time { return completed },
+	})
+	if err != nil {
+		t.Fatalf("build audit test report: %v", err)
+	}
+	return report
+}
+
+func postMCPJSON(t *testing.T, handler http.Handler, token, body string) map[string]interface{} {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("HTTP status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode HTTP response: %v", err)
+	}
+	return response
+}
+
+func assertAuditToolAdvertised(t *testing.T, response map[string]interface{}, want bool) {
+	t.Helper()
+	tools := response["result"].(map[string]interface{})["tools"].([]interface{})
+	found := false
+	for _, raw := range tools {
+		if raw.(map[string]interface{})["name"] == "dbrain_audit" {
+			found = true
+		}
+	}
+	if found != want {
+		t.Fatalf("dbrain_audit advertised=%v, want %v", found, want)
+	}
+}
+
+func findToolDefinition(t *testing.T, name string) map[string]interface{} {
+	t.Helper()
+	for _, definition := range toolDefinitions() {
+		if definition["name"] == name {
+			return definition
+		}
+	}
+	t.Fatalf("tool definition %q not found", name)
+	return nil
+}
+
+func assertNoAuditPrivateKeys(t *testing.T, value interface{}, path string) {
+	t.Helper()
+	forbidden := map[string]bool{
+		"path": true, "url": true, "endpoint": true, "source_key": true, "external_id": true,
+		"row_id": true, "archive_key": true, "object_key": true, "content": true, "title": true,
+		"text": true, "raw_json": true,
+	}
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		for key, child := range typed {
+			if forbidden[key] {
+				t.Fatalf("private audit key %s.%s", path, key)
+			}
+			assertNoAuditPrivateKeys(t, child, path+"."+key)
+		}
+	case []interface{}:
+		for index, child := range typed {
+			assertNoAuditPrivateKeys(t, child, fmt.Sprintf("%s[%d]", path, index))
+		}
 	}
 }
 

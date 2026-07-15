@@ -34,7 +34,7 @@ func documentFromRow(row map[string]any, bodyByNotePK map[int64][]byte, bodyByDa
 	}
 	attachmentText := strings.Join(attachmentTexts, "\n")
 	doc := NoteDocument{
-		SourceKey:         "apple-note:default:" + sanitizeIdentity(externalID),
+		SourceKey:         appleNoteSourceKey(externalID),
 		ExternalID:        externalID,
 		CanonicalURL:      "apple-notes://default/" + sanitizeIdentity(externalID),
 		Title:             title,
@@ -57,6 +57,10 @@ func documentFromRow(row map[string]any, bodyByNotePK map[int64][]byte, bodyByDa
 		doc.BlockedReason = "empty_decoded"
 	}
 	return doc
+}
+
+func appleNoteSourceKey(externalID string) string {
+	return "apple-note:default:" + sanitizeIdentity(externalID)
 }
 
 func rowLooksLikeNote(row map[string]any) bool {

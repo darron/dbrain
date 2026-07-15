@@ -59,6 +59,24 @@ The steady-state design is direct SQLite import. It should not export Apple
 Notes to files, invoke Notes exporters, or use Apple Events as the primary or
 fallback path.
 
+## Production Health Audit
+
+`dbrain audit apple-notes --json` performs read-only upstream parity without
+running the importer. It copies the Notes DB/WAL/SHM triplet into a
+dbrain-owned, context-cancelable snapshot, filters protected and deleted rows
+in SQL before projecting identity metadata, applies the normal per-row
+identity/account/folder fallbacks and exclusion/ignore-marker policy, and
+compares hashed source keys with the query-only dbrain snapshot. It does not
+read attachment files, summarize, render, import, purge, or mutate Notes.
+
+The command defaults to the deep profile and is bounded to five minutes,
+100,000 unique identities, and one local snapshot page. Its portable report
+contains only counts. Full Disk Access failure, schema ambiguity, cancellation,
+or an unproven inventory end is `unknown`; a complete inventory with missing
+local notes is `fail`. Password-protected note identities, titles, snippets,
+and attachment metadata are not retained as audit evidence. Scheduled audits,
+MCP, and the admin API cannot invoke this deep snapshot inventory.
+
 ## Validation
 
 The local Notes app exposes a scriptable interface at:

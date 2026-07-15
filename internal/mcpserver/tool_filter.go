@@ -8,6 +8,17 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
+func filterToolDefinitions(definitions []map[string]interface{}, capabilities transportCapabilities) []map[string]interface{} {
+	filtered := make([]map[string]interface{}, 0, len(definitions))
+	for _, definition := range definitions {
+		if definition["name"] == "dbrain_audit" && !capabilities.audit {
+			continue
+		}
+		filtered = append(filtered, definition)
+	}
+	return filtered
+}
+
 func filterSearchResults(ctx context.Context, st *store.Store, results []model.SearchResult, sourceTypes []string) []model.SearchResult {
 	if len(sourceTypes) == 0 {
 		return results

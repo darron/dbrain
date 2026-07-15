@@ -2,6 +2,7 @@ package sqlitearchive
 
 import (
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,7 +10,10 @@ import (
 	"time"
 )
 
-func gzipFile(srcPath string, dstPath string) error {
+func gzipFile(ctx context.Context, srcPath string, dstPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	src, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", srcPath, err)
@@ -25,9 +29,13 @@ func gzipFile(srcPath string, dstPath string) error {
 		_ = dst.Close()
 	}()
 	gw := gzip.NewWriter(dst)
-	if _, err := io.Copy(gw, src); err != nil {
+	if _, err := io.Copy(gw, contextReader{ctx: ctx, source: src}); err != nil {
 		_ = gw.Close()
 		return fmt.Errorf("compress %s: %w", srcPath, err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = gw.Close()
+		return err
 	}
 	if err := gw.Close(); err != nil {
 		return fmt.Errorf("finish gzip %s: %w", dstPath, err)

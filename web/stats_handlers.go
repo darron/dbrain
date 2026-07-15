@@ -20,7 +20,7 @@ func (s *server) handleBacklog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, backlog)
+	writeJSON(w, http.StatusOK, newBacklogResponse(backlog))
 }
 
 func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {

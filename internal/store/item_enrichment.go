@@ -143,8 +143,19 @@ func (s *Store) upsertItemEnrichmentTx(ctx context.Context, tx *sql.Tx, enrichme
 	if enrichment.ItemID == 0 || role == "" {
 		return fmt.Errorf("item enrichment requires item_id and role")
 	}
-	nowText := time.Now().UTC().Format(time.RFC3339)
+	enrichment.Role = role
+	enrichment.Status = strings.TrimSpace(enrichment.Status)
+	enrichment.InputHash = strings.TrimSpace(enrichment.InputHash)
 	completedAt := formatTimeForDB(enrichment.CompletedAt)
+	existing, err := getItemEnrichmentTx(ctx, tx, enrichment.ItemID, role)
+	if err == nil && itemEnrichmentSemanticallyEqual(existing, enrichment) {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load item enrichment %d/%s before upsert: %w", enrichment.ItemID, role, err)
+	}
+
+	nowText := time.Now().UTC().Format(time.RFC3339)
 	result, err := tx.ExecContext(ctx, `
 		UPDATE item_enrichments
 		SET status = ?,
@@ -159,7 +170,7 @@ func (s *Store) upsertItemEnrichmentTx(ctx context.Context, tx *sql.Tx, enrichme
 			completed_at = ?,
 			updated_at = ?
 		WHERE item_id = ? AND role = ?`,
-		strings.TrimSpace(enrichment.Status),
+		enrichment.Status,
 		enrichment.Text,
 		enrichment.RawJSON,
 		enrichment.Error,
@@ -167,7 +178,7 @@ func (s *Store) upsertItemEnrichmentTx(ctx context.Context, tx *sql.Tx, enrichme
 		enrichment.PromptVersion,
 		enrichment.Tool,
 		enrichment.ToolVersion,
-		strings.TrimSpace(enrichment.InputHash),
+		enrichment.InputHash,
 		completedAt,
 		nowText,
 		enrichment.ItemID,
@@ -190,7 +201,7 @@ func (s *Store) upsertItemEnrichmentTx(ctx context.Context, tx *sql.Tx, enrichme
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		enrichment.ItemID,
 		role,
-		strings.TrimSpace(enrichment.Status),
+		enrichment.Status,
 		enrichment.Text,
 		enrichment.RawJSON,
 		enrichment.Error,
@@ -198,7 +209,7 @@ func (s *Store) upsertItemEnrichmentTx(ctx context.Context, tx *sql.Tx, enrichme
 		enrichment.PromptVersion,
 		enrichment.Tool,
 		enrichment.ToolVersion,
-		strings.TrimSpace(enrichment.InputHash),
+		enrichment.InputHash,
 		completedAt,
 		nowText,
 		nowText,
@@ -206,6 +217,56 @@ func (s *Store) upsertItemEnrichmentTx(ctx context.Context, tx *sql.Tx, enrichme
 		return fmt.Errorf("insert item enrichment %d/%s: %w", enrichment.ItemID, role, err)
 	}
 	return nil
+}
+
+func getItemEnrichmentTx(ctx context.Context, tx *sql.Tx, itemID int64, role string) (model.ItemEnrichment, error) {
+	return scanItemEnrichment(tx.QueryRowContext(ctx, `
+		SELECT `+itemEnrichmentSelectColumns+`
+		FROM item_enrichments
+		WHERE item_id = ? AND role = ?`, itemID, strings.TrimSpace(role)))
+}
+
+func itemEnrichmentSemanticallyEqual(existing model.ItemEnrichment, next model.ItemEnrichment) bool {
+	return existing.ItemID == next.ItemID &&
+		strings.TrimSpace(existing.Role) == strings.TrimSpace(next.Role) &&
+		existing.Status == next.Status &&
+		existing.Text == next.Text &&
+		existing.RawJSON == next.RawJSON &&
+		existing.Error == next.Error &&
+		existing.Model == next.Model &&
+		existing.PromptVersion == next.PromptVersion &&
+		existing.Tool == next.Tool &&
+		existing.ToolVersion == next.ToolVersion &&
+		existing.InputHash == next.InputHash &&
+		formatTimeForDB(existing.CompletedAt) == formatTimeForDB(next.CompletedAt)
+}
+
+func (s *Store) mergeCompatibilityItemEnrichmentTx(ctx context.Context, tx *sql.Tx, incoming model.ItemEnrichment) error {
+	existing, err := getItemEnrichmentTx(ctx, tx, incoming.ItemID, incoming.Role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return s.upsertItemEnrichmentTx(ctx, tx, incoming)
+	}
+	if err != nil {
+		return fmt.Errorf("load compatibility item enrichment %d/%s: %w", incoming.ItemID, strings.TrimSpace(incoming.Role), err)
+	}
+	preserve := func(next *string, current string) {
+		if strings.TrimSpace(*next) == "" && strings.TrimSpace(current) != "" {
+			*next = current
+		}
+	}
+	preserve(&incoming.Status, existing.Status)
+	preserve(&incoming.Text, existing.Text)
+	preserve(&incoming.RawJSON, existing.RawJSON)
+	preserve(&incoming.Error, existing.Error)
+	preserve(&incoming.Model, existing.Model)
+	preserve(&incoming.PromptVersion, existing.PromptVersion)
+	preserve(&incoming.Tool, existing.Tool)
+	preserve(&incoming.ToolVersion, existing.ToolVersion)
+	preserve(&incoming.InputHash, existing.InputHash)
+	if incoming.CompletedAt.IsZero() && !existing.CompletedAt.IsZero() {
+		incoming.CompletedAt = existing.CompletedAt
+	}
+	return s.upsertItemEnrichmentTx(ctx, tx, incoming)
 }
 
 func (s *Store) deleteItemEnrichmentTx(ctx context.Context, tx *sql.Tx, itemID int64, role string) error {
@@ -217,7 +278,7 @@ func (s *Store) deleteItemEnrichmentTx(ctx context.Context, tx *sql.Tx, itemID i
 
 func (s *Store) syncItemEnrichmentMirrorTx(ctx context.Context, tx *sql.Tx, itemID int64, item model.Item) error {
 	if itemHasSummaryEnrichment(item) {
-		if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
+		if err := s.mergeCompatibilityItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
 			ItemID:        itemID,
 			Role:          model.ItemEnrichmentRoleSummary,
 			Status:        item.SummaryStatus,
@@ -238,7 +299,7 @@ func (s *Store) syncItemEnrichmentMirrorTx(ctx context.Context, tx *sql.Tx, item
 	}
 
 	if itemHasOCREnrichment(item) {
-		if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
+		if err := s.mergeCompatibilityItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
 			ItemID:      itemID,
 			Role:        model.ItemEnrichmentRoleOCR,
 			Status:      item.OCRStatus,
@@ -266,7 +327,7 @@ func (s *Store) syncItemEnrichmentMirrorTx(ctx context.Context, tx *sql.Tx, item
 		if strings.TrimSpace(item.ArticleTitle) == model.XMediaTranscriptArticleTitle {
 			text = item.ArticleText
 		}
-		if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
+		if err := s.mergeCompatibilityItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
 			ItemID:      itemID,
 			Role:        model.ItemEnrichmentRoleXMediaTranscript,
 			Status:      status,

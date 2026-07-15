@@ -12,7 +12,19 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestClientAppliesDeepTransportPhaseTimeouts(t *testing.T) {
+	client := NewClient(Policy{ConnectTimeout: 10 * time.Second, TLSHandshakeTimeout: 11 * time.Second, ResponseHeaderTimeout: 12 * time.Second})
+	transport, ok := client.Transport.(*policyTransport)
+	if !ok {
+		t.Fatalf("transport = %T", client.Transport)
+	}
+	if transport.base.TLSHandshakeTimeout != 11*time.Second || transport.base.ResponseHeaderTimeout != 12*time.Second {
+		t.Fatalf("transport timeouts = tls:%s header:%s", transport.base.TLSHandshakeTimeout, transport.base.ResponseHeaderTimeout)
+	}
+}
 
 func TestClientRejectsNonPublicDestinationsBeforeDial(t *testing.T) {
 	tests := []struct {
@@ -164,6 +176,24 @@ func TestClientEnforcesRedirectLimit(t *testing.T) {
 	}
 }
 
+func TestClientCanDisableRedirectsCompletely(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("must not be reached"))
+	}))
+	defer server.Close()
+	client := NewClient(Policy{AllowPrivateNetwork: true, DisableRedirects: true})
+	_, err := client.Get(server.URL + "/start")
+	if !IsPolicyError(err) || requests != 1 {
+		t.Fatalf("disabled redirect error=%v requests=%d", err, requests)
+	}
+}
+
 func TestClientDisablesEnvironmentProxy(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
 	t.Setenv("NO_PROXY", "")
@@ -244,6 +274,45 @@ func TestClientAllowsPrivateNetworkOnlyWhenExplicit(t *testing.T) {
 		t.Fatalf("explicit private-network request: %v", err)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestCanonicalOriginEndpointRejectsNonOriginComponents(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:secret@s3.example.com",
+		"https://s3.example.com/bucket",
+		"https://s3.example.com?region=auto",
+		"https://s3.example.com#fragment",
+		"ftp://s3.example.com",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := CanonicalOriginEndpoint(raw); !IsPolicyError(err) {
+				t.Fatalf("error = %v, want policy error", err)
+			}
+		})
+	}
+	got, err := CanonicalOriginEndpoint("HTTPS://S3.Example.COM.:443/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://s3.example.com:443" {
+		t.Fatalf("canonical origin = %q", got)
+	}
+}
+
+func TestClientRestrictsRequestsAndRedirectsToExactConfiguredOrigin(t *testing.T) {
+	dials := 0
+	client := NewClient(Policy{
+		AllowedOrigins: []string{"https://s3.example.com"},
+		LookupNetIP:    staticResolver(testAddrs("8.8.8.8")),
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dials++
+			return nil, errors.New("unexpected dial")
+		},
+	})
+	_, err := client.Get("https://fallback.example.com/object")
+	if !IsPolicyError(err) || dials != 0 {
+		t.Fatalf("error=%v dials=%d, want exact-origin rejection before dial", err, dials)
+	}
 }
 
 func staticResolver(addrs []netip.Addr) func(context.Context, string, string) ([]netip.Addr, error) {

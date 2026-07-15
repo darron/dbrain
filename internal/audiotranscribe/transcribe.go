@@ -15,6 +15,9 @@ const (
 	BackendAuto       = "auto"
 	BackendWhisperCPP = "whisper.cpp"
 	BackendMacWhisper = "macwhisper"
+
+	// ModelSelectionAutomatic means MacWhisper selected its configured model; it is not a concrete model identity.
+	ModelSelectionAutomatic = "automatic"
 )
 
 type Config struct {
@@ -173,10 +176,14 @@ func transcribeMacWhisper(ctx context.Context, audioPath string, cfg Config) (Re
 		return Result{}, commandError("macwhisper transcription", err, stderr.String())
 	}
 	text, noSpeech := normalizeTranscript(stdout.String())
+	modelName := strings.TrimSpace(cfg.MacWhisperModel)
+	if modelName == "" {
+		modelName = ModelSelectionAutomatic
+	}
 	return Result{
 		Text:     text,
 		Backend:  BackendMacWhisper,
-		Model:    cfg.MacWhisperModel,
+		Model:    modelName,
 		Language: "auto",
 		NoSpeech: noSpeech,
 	}, nil

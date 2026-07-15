@@ -32,7 +32,7 @@ type HTTPOptions struct {
 	LogOutput                io.Writer
 }
 
-func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions) error {
+func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions, dependencies ...ServerDependencies) error {
 	start := time.Now()
 	logMCPServer("starting_http", "db_path", cfg.DBPath, "addr", defaultString(opts.Addr, DefaultHTTPAddr), "path", defaultString(opts.Path, DefaultHTTPPath), "pid", fmt.Sprintf("%d", os.Getpid()))
 	st, err := store.OpenReadOnly(cfg.DBPath)
@@ -57,7 +57,7 @@ func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions) error {
 	if opts.LogOutput == nil {
 		opts.LogOutput = os.Stderr
 	}
-	server := New(cfg, st)
+	server := NewWithDependencies(cfg, st, firstServerDependencies(dependencies))
 	httpServer := &http.Server{
 		Addr:              defaultString(opts.Addr, DefaultHTTPAddr),
 		Handler:           server.HTTPHandler(opts),
@@ -96,6 +96,7 @@ func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions) error {
 }
 
 func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
+	transportServer := s.withTransportCapabilities(transportCapabilities{audit: opts.RequireBearerAuth})
 	path := normalizeHTTPPath(opts.Path)
 	maxBodyBytes := opts.MaxBodyBytes
 	if maxBodyBytes <= 0 {
@@ -152,7 +153,7 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 
 		switch r.Method {
 		case http.MethodPost:
-			s.handleHTTPPost(logged, r, maxBodyBytes)
+			transportServer.handleHTTPPost(logged, r, maxBodyBytes)
 		case http.MethodGet:
 			logged.Header().Set("Allow", "POST, GET")
 			logged.Header().Set("Content-Type", "text/plain; charset=utf-8")

@@ -45,7 +45,7 @@ func itemFromTab(tab Tab, now time.Time) (model.Item, error) {
 		"last_viewed_at":    formatTime(lastViewed),
 	})
 
-	sourceKey := "safari-tab:" + tab.DeviceUUID + ":" + tab.UUID
+	sourceKey := safariTabSourceKey(tab.DeviceUUID, tab.UUID)
 	item := model.Item{
 		SourceKey:     sourceKey,
 		SourceType:    sourceType,
@@ -64,6 +64,10 @@ func itemFromTab(tab Tab, now time.Time) (model.Item, error) {
 	}
 	item.ContentHash = itemhash.Compute(item)
 	return item, nil
+}
+
+func safariTabSourceKey(deviceUUID, tabUUID string) string {
+	return "safari-tab:" + deviceUUID + ":" + tabUUID
 }
 
 func isHTTPURL(raw string) bool {

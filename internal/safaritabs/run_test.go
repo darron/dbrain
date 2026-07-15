@@ -1,8 +1,12 @@
 package safaritabs
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +14,126 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/store"
 )
+
+type cancelSafariAfterFirstRead struct {
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (r *cancelSafariAfterFirstRead) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads > 1 {
+		return 0, fmt.Errorf("reader was called after cancellation")
+	}
+	copy(p, "first chunk")
+	r.cancel()
+	return len("first chunk"), nil
+}
+
+func TestSnapshotCopyReaderStopsBetweenChunksOnCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &cancelSafariAfterFirstRead{cancel: cancel}
+	var dst bytes.Buffer
+	_, err := copyReaderContext(ctx, &dst, reader)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("copyReaderContext error = %v, want canceled", err)
+	}
+	if reader.reads != 1 || dst.String() != "first chunk" {
+		t.Fatalf("copy state reads=%d body=%q", reader.reads, dst.String())
+	}
+}
+
+func TestCreateSnapshotContextChecksCancellationBeforeSourceAccess(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := testConfig(root)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := createSnapshotContext(ctx, cfg, Options{DBPath: filepath.Join(root, "missing.sqlite")})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("createSnapshotContext error = %v, want canceled", err)
+	}
+}
+
+func TestCreateSnapshotContextRemovesDefaultTempDirOnCopyCancellation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := testConfig(root)
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	sourceDB := filepath.Join(root, "CloudTabs.db")
+	if err := os.WriteFile(sourceDB, []byte("source"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var copiedPath string
+	info, _, err := createSnapshotContextWithCopy(ctx, cfg, Options{DBPath: sourceDB}, func(_ context.Context, _, dest string) error {
+		copiedPath = dest
+		if err := os.WriteFile(dest, []byte("partial"), 0o600); err != nil {
+			return err
+		}
+		cancel()
+		return context.Canceled
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("createSnapshotContextWithCopy error = %v, want canceled", err)
+	}
+	if info.Dir == "" || filepath.Dir(copiedPath) != info.Dir {
+		t.Fatalf("snapshot paths info=%+v copied=%q", info, copiedPath)
+	}
+	if _, statErr := os.Stat(info.Dir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("default temp snapshot leaked at %s: %v", info.Dir, statErr)
+	}
+}
+
+func TestCreateSnapshotContextPreservesKeptDirOnCopyError(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := testConfig(root)
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	sourceDB := filepath.Join(root, "CloudTabs.db")
+	if err := os.WriteFile(sourceDB, []byte("source"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	injectedErr := errors.New("injected copy failure")
+
+	for _, test := range []struct {
+		name        string
+		opts        Options
+		explicitDir string
+	}{
+		{name: "explicit directory", opts: Options{SnapshotDir: filepath.Join(root, "explicit-snapshot")}, explicitDir: filepath.Join(root, "explicit-snapshot")},
+		{name: "keep generated directory", opts: Options{KeepSnapshot: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.opts.DBPath = sourceDB
+			info, _, err := createSnapshotContextWithCopy(context.Background(), cfg, test.opts, func(_ context.Context, _, dest string) error {
+				if err := os.WriteFile(dest, []byte("partial"), 0o600); err != nil {
+					return err
+				}
+				return injectedErr
+			})
+			if !errors.Is(err, injectedErr) {
+				t.Fatalf("createSnapshotContextWithCopy error = %v, want injected error", err)
+			}
+			if test.explicitDir != "" && info.Dir != test.explicitDir {
+				t.Fatalf("snapshot dir = %q, want %q", info.Dir, test.explicitDir)
+			}
+			if _, statErr := os.Stat(filepath.Join(info.Dir, filepath.Base(sourceDB))); statErr != nil {
+				t.Fatalf("kept snapshot should remain for diagnosis: %v", statErr)
+			}
+		})
+	}
+}
 
 func TestRunImportsDeviceTabsAsItems(t *testing.T) {
 	ctx := context.Background()

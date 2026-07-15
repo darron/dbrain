@@ -220,6 +220,24 @@ The scheduler should not need feed-specific scheduling logic at first. If
 periodically through the normal stage plan unless `--skip-feeds` or its
 scheduled config equivalent is set.
 
+### Production health audit
+
+`dbrain audit feeds --json` fetches every enabled configured feed through a
+read-only parity path. It deliberately forces unconditional bodies so stored
+ETags, Last-Modified values, and body hashes cannot hide upstream identities,
+but it never writes feed health, fetch history, entries, items, or sources.
+Identity matching uses the importer's primary feed-local identity plus current
+GUID and normalized-link aliases so existing rows remain matchable across feed
+identity evolution. Disappearing upstream entries do not imply local deletion.
+
+The command defaults to deep and is bounded to five minutes, 10,000 feeds, and
+100,000 unique identity hashes. Fetch, parse, response-size, cancellation, or
+completion failures produce a content-free `unknown` result. Public feeds use
+the normal no-proxy safe-network policy; when private feeds are enabled, only
+the exact origins of enabled configured feeds receive private-network
+authority, and redirects are revalidated. Scheduled audits, MCP, and the admin
+API cannot run this deep network inventory.
+
 `feed add --poll-interval` and `feeds.default_poll_interval` should accept Go
 duration strings such as `30m`, `1h`, and `24h`. Store the resolved per-feed
 value as integer seconds in SQLite and render it back as a human-readable

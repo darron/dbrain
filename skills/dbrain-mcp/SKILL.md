@@ -74,6 +74,11 @@ For any HTTP, tsnet, remote, Funnel, or reverse-proxied MCP endpoint that is not
 strictly private, enable MCP bearer auth before exposing it. Stdio MCP does not
 use bearer auth.
 
+`dbrain_audit` is always available over local stdio. HTTP and tsnet expose that
+health capability only when dbrain bearer auth is required and configured;
+tailnet reachability by itself is insufficient. Auth-disabled HTTP/tsnet omits
+the tool from discovery and rejects direct calls.
+
 ```bash
 dbrain --root "$(pwd)" auth mcp token add agent-name
 dbrain --root "$(pwd)" auth mcp token list
@@ -150,7 +155,15 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 4. For entity or topic browsing, use `dbrain_entity_map`, `dbrain_topic_map`, or `dbrain_topic_brief`.
 5. For generated Open Knowledge Format bundle inspection, use `dbrain_okf_search` and `dbrain_okf_get`. These read the last exported OKF bundle from the configured OKF directory; they do not export, validate, or read live SQLite directly.
 6. For recent activity or handoff review, use `dbrain_whats_new` with exactly one of `since` or `cursor`. For questions like "what's new?", "what changed recently?", "what should I pay attention to?", or "what are the most important things from the last couple of days?", pass `view: "entities"` so the server returns compact item/source groups with preferred summaries/excerpts, collapsed event kinds, tags, actionability, importance, and compact event refs. Treat grouped `summary` as a compact review excerpt, not full raw evidence; fetch details with `dbrain_get_many` or `dbrain_get` before quoting or relying on exact source text. Use the default `view: "events"` only when debugging raw pipeline chronology. Use `since` values such as `24h`, `2d`, or an RFC3339 timestamp for the first page, then preserve and pass `next_cursor` for follow-up pages only while `truncated` is true; `next_cursor` is still returned on the final page for high-watermark bookkeeping. Pagination and `limit` are event-based, so if you merge multiple `view: "entities"` pages, de-duplicate by `entity_key` and prefer the row with a stronger summary, higher importance, or later `latest_event_at`. Use `types` to focus the feed: `imports`, `enrichments`, `failures`, or `all`. Blocked rows are review events surfaced through the failure/status fields rather than a separate `types` filter.
-7. For operational status, use `dbrain_stats_activity`, `dbrain_stats_backlog`, `dbrain_stats_items`, or `dbrain_stats_sources`.
+7. For authoritative production-health claims, call `dbrain_audit`. Omit
+   `profile` (or use `fast`) for a complete bounded local check under the fixed
+   ten-second deadline. Use `profile: "standard"` only to read the newest
+   persisted exact-profile standard report; it never starts network work. A
+   missing/stale report is unknown according to the returned `freshness`
+   envelope. Never try to pass deep, categories, time windows, paths, URLs,
+   identifiers, endpoints, archive keys, or limits; the MCP schema intentionally
+   exposes none of them. Use `dbrain_stats_activity`, `dbrain_stats_backlog`,
+   `dbrain_stats_items`, or `dbrain_stats_sources` only for exploratory counts.
 
 ## Research Practice
 

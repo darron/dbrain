@@ -18,6 +18,10 @@ func toItem(entry videoEntry, currentFeed feed, now time.Time) (model.Item, bool
 	if videoID == "" {
 		return model.Item{}, true, nil
 	}
+	sourceKey, err := youtubeSourceKey(currentFeed, videoID)
+	if err != nil {
+		return model.Item{}, false, err
+	}
 
 	title := strings.TrimSpace(entry.Title)
 	if title == "" {
@@ -41,7 +45,7 @@ func toItem(entry videoEntry, currentFeed feed, now time.Time) (model.Item, bool
 	}
 
 	item := model.Item{
-		SourceKey:       "yt:" + signal + ":" + videoID,
+		SourceKey:       sourceKey,
 		SourceType:      currentFeed.sourceType,
 		ExternalID:      videoID,
 		CanonicalURL:    watchURL,
@@ -65,6 +69,19 @@ func toItem(entry videoEntry, currentFeed feed, now time.Time) (model.Item, bool
 	item.ContentHash = itemhash.Compute(item)
 
 	return item, false, nil
+}
+
+func youtubeSourceKey(currentFeed feed, videoID string) (string, error) {
+	videoID = strings.TrimSpace(videoID)
+	if videoID == "" {
+		return "", fmt.Errorf("youtube video id is required")
+	}
+	switch currentFeed.name {
+	case "liked", "watch_later":
+		return "yt:" + currentFeed.name + ":" + videoID, nil
+	default:
+		return "", fmt.Errorf("unsupported youtube feed %q", currentFeed.name)
+	}
 }
 
 func sourceCandidateForVideo(rawURL string) model.SourceCandidate {

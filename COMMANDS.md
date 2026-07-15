@@ -107,6 +107,7 @@ Usage:
 
 Available Commands:
   archive     Manage archived media and other durable storage tiers
+  audit       Inspect production health without modifying the target
   auth        Manage authentication approvals and tokens
   categorize  Categorize items or linked sources with an LLM
   completion  Generate the autocompletion script for the specified shell
@@ -160,7 +161,8 @@ Environment:
 ### `dbrain config paths`
 
 Prints the active config, categories, data, database, vault, media, temp, cache,
-and log paths. Use `--json` for automation.
+and log paths without creating directories, running startup preflight, or
+cleaning legacy files. Use `--json` for automation.
 
 ```sh
 dbrain config paths
@@ -176,6 +178,98 @@ in `README.md`.
 dbrain config env
 dbrain config env --markdown
 ```
+
+### `dbrain audit`
+
+Runs a bounded, read-only health audit against the resolved target. `audit all`
+emits the closed 55-check registry; category commands limit the scope without
+changing check semantics. When `--expect-commit` is set on a category or source
+command, `boundary.runtime` is added explicitly so the commit assertion cannot
+be silently filtered out. A 7-or-more-character hexadecimal commit prefix is
+accepted, though release workflows should use the full artifact commit.
+
+```sh
+dbrain audit all --profile standard --json
+dbrain audit imports --since 7d
+dbrain audit pipeline --json
+dbrain audit durability --expect-commit <sha> --json
+dbrain audit all --profile deep --json
+dbrain audit apple-notes --json
+dbrain audit safari-tabs --json
+dbrain audit x-bookmarks --json
+dbrain audit github-stars --json
+dbrain audit youtube-liked --json
+dbrain audit youtube-watch-later --json
+dbrain audit feeds --json
+```
+
+Standard is the default profile; fast omits expensive integrity and remote
+checks. Deep is an explicit CLI-only profile that validates the newest remote
+SQLite archive in a private temporary directory and performs complete,
+paginated reconciliation of the configured `media/` archive inventory. It
+never replaces the active database and is not exposed through the web UI or
+MCP. Exit codes are 0 pass, 1 warn, 2 fail, and 3
+unknown/bootstrap failure. A produced JSON report is written before a non-zero
+health exit. `--include-identifiers` selects a local-only wrapper with bounded
+row IDs, source keys, and cleanup paths; the shared `dbrain.audit.v1` report
+never contains paths, object keys, corpus content, titles, URLs, or secrets.
+
+Deep imports reconcile the configured Apple Notes, Safari Tabs, X Bookmarks,
+GitHub Stars, YouTube Liked, YouTube Watch Later, and subscribed-feed
+inventories against the query-only local snapshot. Inventories run
+sequentially with a five-minute ceiling per source and fixed maxima of 100,000
+unique identities and 10,000 pages. The report exposes counts only. It fails
+when a complete upstream inventory contains identities missing locally and is
+unknown when credentials, snapshot access, schema parsing, pagination, or
+completion cannot be proven.
+
+The seven source-specific commands default to deep and reject an explicitly
+selected fast or standard profile. Each command forces only its named parity
+check, including when normal scheduled import for that source is disabled; in
+that case the poll check remains skipped with `feature_disabled`. Source
+commands do not expose or resolve archive byte controls. They never import,
+delete, repair, retry, restore, prune, close tabs, modify Notes, or write feed
+state. Apple Notes and Safari Tabs copy their SQLite DB/WAL/SHM inputs into
+interruptible dbrain-owned snapshots. X and GitHub use fixed upstream origins,
+YouTube uses fixed playlist URLs with a bounded proxy-free `yt-dlp` process,
+and feeds are restricted by the existing safe-network policy, including exact
+configured private origins. Deep parity cannot be invoked through scheduled
+audits, MCP, or the admin API.
+
+The audit resolver follows the normal target precedence but creates no
+directories, applies no migrations, runs no startup repair/preflight, and
+opens SQLite in query-only mode with one consistent snapshot.
+
+Deep defaults to 20 GiB compressed archive, 100 GiB decompressed database, and
+120 GiB aggregate temporary-space ceilings. `audit.max_archive_bytes`,
+`audit.max_database_bytes`, and `audit.max_temp_bytes` (or the matching
+`DBRAIN_AUDIT_MAX_*` variables) may only lower those defaults. The deep-only
+`--max-archive-bytes`, `--max-database-bytes`, and `--max-temp-bytes` flags may
+explicitly raise them for one run; passing those flags with fast or standard
+is a usage error. Remote inventory is also bounded to 1,000,000 objects and
+10,000 pages, with a two-hour whole-run deadline and cleanup on every exit.
+
+Per-class timeouts can be lowered with `audit.timeouts.bootstrap`,
+`local_query`, `metrics_or_manifest`, `sqlite_or_okf_integrity`,
+`remote_metadata`, and `remote_request`, or their
+`DBRAIN_AUDIT_TIMEOUT_*` equivalents. Built-in ceilings are respectively 10s,
+5s fast/30s standard, 10s, 2m, 2m per check, and 30s per request/page. Invalid
+or non-positive durations fail bootstrap; larger values are clamped.
+
+`serve remote` can own continuous read-only audit scheduling when
+`audit.enabled: true`. A fast profile runs after each actual scheduled sync
+result, after its process lock and status settle; a standard profile runs every
+`audit.standard_interval` (6h by default). The profiles share one non-overlap
+guard, deep is never scheduled, and audit failure does not change the sync
+result. Reports rotate daily under `<log_dir>/audit/reports` with private
+permissions, 90-day/256-MiB retention, and exact-profile history.
+
+Transition alerts are optional. Configure `audit.alert.webhook_url` and, when
+needed, a typed `bearer_token_ref`. Public webhooks require HTTPS; private,
+loopback, and link-local delivery requires `allow_private_origin: true` and is
+confined to that exact origin. Redirects and environment proxies are disabled.
+No webhook is required for reports, freshness, metrics, or later admin and MCP
+visibility.
 
 ### `dbrain install`
 
@@ -667,6 +761,34 @@ publicly callable without auth. Use
 `--check-full-disk-access=false` to skip the check or
 `--open-full-disk-access=false` to report the failure without opening System
 Settings.
+
+### Scheduled SQLite archives
+
+`dbrain serve remote` can run the existing online SQLite snapshot/archive path
+as a separate daily scheduler. It is disabled by default and uses the same
+S3-compatible configuration as `dbrain sqlite archive`:
+
+```yaml
+scheduler:
+  sqlite_archive:
+    enabled: true
+    interval: 24h
+    run_on_start: true
+```
+
+The scheduler is independent from scheduled sync and health audits. It alone
+receives upload capability; audit remains read-only. Scheduled and manual
+archives plus active restores share a cross-process lease, so only one of those
+operations can run at a time. Cancellation of `serve remote` cancels and waits
+for an in-flight scheduled archive. A private local last-attempt marker is
+written before snapshotting so a restart loop cannot create or retry multiple
+archives within one interval. When `run_on_start` is false, the first attempt
+waits one full configured interval after `serve remote` becomes ready even if
+an older persisted marker is already overdue. Metrics distinguish startup from
+interval runs
+and report only attempt/start/completed, failed, lock-skip, overlap-skip, or
+interval-skip timing and byte/count aggregates; object keys, local paths,
+credentials, and provider error bodies are excluded.
 
 ### Scheduled `sync all`
 

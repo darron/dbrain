@@ -15,42 +15,7 @@ func (s *Store) ListMediaAssetsForArchive(ctx context.Context, limit int, force 
 	query := `
 		SELECT ` + mediaSelectColumns + `
 		FROM media_assets a
-		WHERE a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
-			AND a.local_path != ''
-			AND a.local_pruned_at = ''`
-	if !force {
-		query += `
-			AND (a.archive_status = '' OR a.archive_status = '` + model.MediaArchiveStatusError + `')`
-	}
-	query += `
-			AND EXISTS (
-				SELECT 1
-				FROM item_media_links l
-				WHERE l.media_asset_id = a.id
-			)
-			AND (
-				(
-					a.media_type = 'photo'
-					AND NOT EXISTS (
-						SELECT 1
-						FROM item_media_links l
-						JOIN items i ON i.id = l.item_id
-						WHERE l.media_asset_id = a.id
-							AND i.ocr_status != '` + model.ItemOCRStatusOK + `'
-					)
-				)
-				OR
-				(
-					a.media_type IN ('video', 'animated_gif')
-					AND NOT EXISTS (
-						SELECT 1
-						FROM item_media_links l
-						JOIN items i ON i.id = l.item_id
-						WHERE l.media_asset_id = a.id
-							AND i.x_media_transcript_status NOT IN ('` + model.XMediaTranscriptStatusOK + `', '` + model.XMediaTranscriptStatusNoAudio + `', '` + model.XMediaTranscriptStatusNoise + `', '` + model.XMediaTranscriptStatusTooShort + `', '` + model.XMediaTranscriptStatusEmpty + `')
-					)
-				)
-			)
+		WHERE ` + mediaArchiveCandidateWhere("a", force) + `
 		ORDER BY a.media_type ASC, a.downloaded_at ASC, a.id ASC
 		LIMIT ?`
 

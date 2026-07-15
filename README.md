@@ -23,8 +23,8 @@ Format export, and local query over the imported corpus.
 - [docs/architecture.md](docs/architecture.md): package and data-flow architecture.
 - [docs/research-harness.md](docs/research-harness.md): current research/chat
   harness behavior, limitations, and improvement roadmap.
-- [Agent Skills](#agent-skills): installable `dbrain-mcp` and `dbrain-review`
-  workflows plus repo-local model bakeoff guidance.
+- [Agent Skills](#agent-skills): installable corpus skills, repo-local release
+  audit/review workflows, and model bakeoff guidance.
 - [docs/open-knowledge-format-plan.md](docs/open-knowledge-format-plan.md):
   OKF export design, profile scope, validation rules, and implementation notes.
 - [docs/schema-migrations.md](docs/schema-migrations.md): SQLite schema and
@@ -346,9 +346,107 @@ export DBRAIN_ROOT=.
 Resolution order for config layout is `--config-file`, `--root`,
 `DBRAIN_CONFIG_FILE`, `DBRAIN_ROOT`, then XDG defaults.
 
+To inspect the resolved installation without repairing or mutating it, run:
+
+```sh
+dbrain audit all --profile standard --json
+dbrain audit all --profile deep --json
+dbrain audit github-stars --json
+dbrain audit apple-notes --json
+```
+
+The stable `dbrain.audit.v1` report covers target/build identity, SQLite
+integrity, scheduler continuity, importer polling/arrivals, pipeline
+partitions/provenance, media durability, SQLite backup age, and OKF health.
+The command uses a query-only SQLite snapshot and bounded metrics/remote
+metadata reads. Exit codes are 0 pass, 1 warn, 2 fail, and 3 unknown or
+bootstrap/configuration failure. See [COMMANDS.md](COMMANDS.md#dbrain-audit)
+for profiles, category scopes, privacy rules, and flags.
+
+Local stdio agents, and remote agents using bearer-authenticated HTTP/tsnet,
+can read the same bounded report through MCP `dbrain_audit`. Its default `fast`
+profile runs the complete local fast registry
+under a fixed ten-second deadline and process-wide singleflight; `standard`
+only reads the newest persisted exact-profile standard report. MCP cannot run
+deep checks or supply categories, time windows, paths, URLs, identifiers,
+archive keys, endpoints, or download limits.
+
+When web authentication is enabled, `dbrain serve web` and
+`dbrain serve remote --web` also expose the shared audit report through the
+session-authenticated administration API:
+
+```text
+GET  /api/audit/latest?profile=standard
+GET  /api/audit/history?profile=standard&limit=20
+POST /api/audit/run                     {"profile":"fast|standard"}
+GET  /api/audit/runs/{audit_id}
+```
+
+Page loads and GET requests never start an audit. The POST body is strict JSON
+and limited to 4 KiB; deep and category/path/URL/archive controls are not
+available. One process-wide on-demand run may be active, duplicate requests for
+its profile reuse the same opaque process-run handle, and standard starts are
+limited to one per minute. A completed status contains the immutable report,
+whose nested `report.audit_id` is distinct from the outer process-run
+`audit_id`. These routes are deliberately unavailable when `auth.enabled` is
+false and cannot be authorized by the doctor endpoint's service-auth header.
+
+The authenticated **System** page presents the current exact-profile standard
+report as the sole whole-system health authority. It keeps a fast local refresh
+separate, renders poll cadence separately from arrivals, preserves current,
+pending, blocked, terminal, failed, and unknown pipeline outcomes, and uses the
+exact media, SQLite archive, and OKF audit checks for durability. Stale or
+absent standard reports remain visibly unknown; a newer fast pass cannot make
+them current. The legacy `backlog.drained` signal remains available as
+**Source backlog drained** and is explicitly scoped to X hydration, link
+discovery, source extraction, and source summary—not whole-system health.
+
+The explicit CLI-only `deep` profile additionally downloads the newest SQLite
+archive into a private temporary directory, decompresses and validates that
+candidate without replacing the active database, and reconciles the complete
+configured `media/` archive inventory against local records. The archive,
+database, and aggregate temporary-byte defaults are 20 GiB, 100 GiB, and
+120 GiB. Configuration and environment values may only lower those defaults;
+an operator must pass `--max-archive-bytes`, `--max-database-bytes`, or
+`--max-temp-bytes` explicitly to raise them for one deep run. Deep audit
+temporary files are removed on success, failure, timeout, or cancellation.
+
+Deep imports also perform bounded, complete upstream parity for the configured
+Apple Notes, Safari Tabs, X Bookmarks, GitHub Stars, YouTube Liked, YouTube
+Watch Later, and feed sources. Each inventory is read-only, runs sequentially
+under its own five-minute ceiling, and is capped at 100,000 unique identities
+and 10,000 pages. The portable report contains counts and status only—not
+identities, note text, titles, URLs, response bodies, paths, cookies, or tokens.
+A missing credential, inaccessible snapshot, ambiguous cursor/device, parser
+failure, or unproven traversal end is `unknown`; a complete inventory with
+missing local identities is `fail`.
+
+The source-specific commands are `audit apple-notes`, `safari-tabs`,
+`x-bookmarks`, `github-stars`, `youtube-liked`, `youtube-watch-later`, and
+`feeds`. They default to deep, reject fast/standard, and force only the named
+parity check even when scheduled import for that source is disabled. The
+source's poll check remains truthfully skipped as `feature_disabled`. These
+commands never delete, import, repair, retry, restore, prune, or archive data;
+Apple Notes and Safari use interruptible dbrain-owned SQLite snapshots, and
+remote clients are confined to their fixed or configured safe origins. Deep
+parity is CLI-only: scheduled audits, MCP, and the admin API remain fast or
+standard and receive no upstream inventory authority.
+
+Audit timeout overrides live under `audit.timeouts` (or the matching
+`DBRAIN_AUDIT_TIMEOUT_*` variables). They can only lower the built-in ceilings:
+`bootstrap` 10s, `local_query` 5s fast/30s standard,
+`metrics_or_manifest` 10s, `sqlite_or_okf_integrity` 2m,
+`remote_metadata` 2m per check, and `remote_request` 30s per request/page.
+Invalid or non-positive durations fail bootstrap; larger values are clamped.
+
 Configuration currently resolves in this order: shell environment, `.envrc` or
 `.env` in the config/root directory, then `config.yaml`. The YAML file can use
 exact environment-style keys under `env`, or cleaner grouped keys:
+
+Production audit bootstrap snapshots the supported dotenv files and YAML once
+with no-follow regular-file and byte-limit checks, then reuses those frozen
+values for feature resolution without executing shell syntax or resolving
+secret references.
 
 ```yaml
 summary:
@@ -500,7 +598,7 @@ direct values or typed references: `env:NAME`,
 | `OPENAI_API_KEY` | `openai.api_key` or `env.OPENAI_API_KEY` | `` | OpenAI-compatible API key used by the summarize adapter when already exported. |
 | `OPENAI_USE_CHAT_COMPLETIONS` | `openai.use_chat_completions` or `env.OPENAI_USE_CHAT_COMPLETIONS` | `` | Forces summarize/OpenAI-compatible calls onto chat completions when set. |
 | `DBRAIN_USER_AGENT` | `http.user_agent` | `dbrain/<short-sha>` | User-Agent header for outbound API calls; source/web fetching keeps its own fetch headers. |
-| `DBRAIN_METRICS_ENABLED` | `metrics.enabled` | `false` | Enable append-only local JSONL metrics for `sync all` and scheduled `sync all` runs. |
+| `DBRAIN_METRICS_ENABLED` | `metrics.enabled` | `false` | Enable append-only local JSONL metrics for `sync all`, scheduled sync, and scheduled SQLite archives. |
 | `DBRAIN_METRICS_PATH` | `metrics.path` | `<log_dir>/metrics.jsonl` | Metrics JSONL output file; relative paths resolve under `log_dir`. |
 | `DBRAIN_METRICS_DETAIL` | `metrics.detail` | `stage` | Metrics detail level: `stage`, `item`, or `model_call`. |
 | `DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS` | `metrics.include_subject_keys` | `false` | Include raw dbrain item/source keys in metrics instead of only deterministic subject hashes. |
@@ -544,7 +642,29 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SAFARI_TABS_DEVICE` | `safari_tabs.device` | `` | Safari iCloud device name or UUID to import during `sync all`. |
 | `DBRAIN_SAFARI_TABS_LIMIT` | `safari_tabs.limit` | `0` | Maximum Safari tabs to import after filtering; 0 means all matching tabs. |
 | `DBRAIN_SAFARI_TABS_OLDER_THAN` | `safari_tabs.older_than` | `0` | Only import Safari tabs last viewed before this duration ago, for example `168h`. |
+| `DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP` | `audit.require.sqlite_backup` | `false` | Require remote SQLite backup configuration and freshness in production health audits. |
+| `DBRAIN_AUDIT_ENABLED` | `audit.enabled` | `false` | Schedule read-only fast and standard production audits from `serve remote`. |
+| `DBRAIN_AUDIT_POST_SYNC_FAST` | `audit.post_sync_fast` | `true` | Run a fast audit after each actual scheduled sync result and lock settlement. |
+| `DBRAIN_AUDIT_STANDARD_INTERVAL` | `audit.standard_interval` | `6h` | Positive interval between non-overlapping standard audits. |
+| `DBRAIN_AUDIT_SINCE` | `audit.since` | `7d` | Metrics and arrival-history window for scheduled audits. |
+| `DBRAIN_AUDIT_ALERT_WEBHOOK_URL` | `audit.alert.webhook_url` | `` | Optional transition webhook; public destinations require HTTPS. |
+| `DBRAIN_AUDIT_ALERT_BEARER_TOKEN_REF` | `audit.alert.bearer_token_ref` | `` | Typed `env:`, `op://`, or `keychain://` bearer-token ref. |
+| `DBRAIN_AUDIT_ALERT_ALLOW_PRIVATE_ORIGIN` | `audit.alert.allow_private_origin` | `false` | Permit only the exact configured private webhook origin. |
+| `DBRAIN_AUDIT_ALERT_CONSECUTIVE_OBSERVATIONS` | `audit.alert.consecutive_observations` | `2` | Confirmation count for ordinary alert transitions. |
+| `DBRAIN_AUDIT_ALERT_REPEAT_AFTER` | `audit.alert.repeat_after` | `24h` | Interval before repeating an unchanged confirmed alert. |
+| `DBRAIN_AUDIT_MAX_ARCHIVE_BYTES` | `audit.max_archive_bytes` | `21474836480` | Deep-audit compressed SQLite archive limit; config and environment may only lower the default. |
+| `DBRAIN_AUDIT_MAX_DATABASE_BYTES` | `audit.max_database_bytes` | `107374182400` | Deep-audit decompressed SQLite database limit; config and environment may only lower the default. |
+| `DBRAIN_AUDIT_MAX_TEMP_BYTES` | `audit.max_temp_bytes` | `128849018880` | Deep-audit aggregate private temporary-space limit; config and environment may only lower the default. |
+| `DBRAIN_AUDIT_TIMEOUT_BOOTSTRAP` | `audit.timeouts.bootstrap` | `10s ceiling` | Optional lower production-audit bootstrap deadline; larger values are clamped. |
+| `DBRAIN_AUDIT_TIMEOUT_LOCAL_QUERY` | `audit.timeouts.local_query` | `5s fast / 30s standard` | Optional lower deadline for audit SQLite and local metadata queries. |
+| `DBRAIN_AUDIT_TIMEOUT_METRICS_OR_MANIFEST` | `audit.timeouts.metrics_or_manifest` | `10s ceiling` | Optional lower deadline for audit metrics and manifest reads. |
+| `DBRAIN_AUDIT_TIMEOUT_SQLITE_OR_OKF_INTEGRITY` | `audit.timeouts.sqlite_or_okf_integrity` | `2m ceiling` | Optional lower deadline for SQLite and OKF integrity checks. |
+| `DBRAIN_AUDIT_TIMEOUT_REMOTE_METADATA` | `audit.timeouts.remote_metadata` | `2m ceiling` | Optional lower whole-check deadline for remote archive metadata inspection. |
+| `DBRAIN_AUDIT_TIMEOUT_REMOTE_REQUEST` | `audit.timeouts.remote_request` | `30s ceiling` | Optional lower per-request or per-page deadline for remote archive metadata inspection. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_ENABLED` | `scheduler.sync_all.enabled` | `false` | Run `sync all` periodically from the long-running `serve remote` process. |
+| `DBRAIN_SCHEDULER_SQLITE_ARCHIVE_ENABLED` | `scheduler.sqlite_archive.enabled` | `false` | Create periodic online SQLite snapshots from `serve remote`; this also makes SQLite backup freshness required by production health audits. |
+| `DBRAIN_SCHEDULER_SQLITE_ARCHIVE_INTERVAL` | `scheduler.sqlite_archive.interval` | `24h` | Positive interval between scheduled SQLite archive attempts. |
+| `DBRAIN_SCHEDULER_SQLITE_ARCHIVE_RUN_ON_START` | `scheduler.sqlite_archive.run_on_start` | `true` | Create one archive when `serve remote` becomes ready before continuing on the interval. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL` | `scheduler.sync_all.interval` | `1h` | Interval between scheduled `sync all` runs when the scheduler is enabled. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START` | `scheduler.sync_all.run_on_start` | `false` | Run `sync all` once when `serve remote` starts, then continue on the interval. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_JITTER` | `scheduler.sync_all.jitter` | `0` | Optional bounded delay added to each interval so multiple nodes do not sync at exactly the same time. |
@@ -659,6 +779,12 @@ identity headers.
 `GITHUB_TOKEN` is still only the GitHub import token; it is not used for web UI
 OAuth.
 
+The audit administration endpoints are mounted only after this web
+authentication configuration is fully resolved. They use the same private
+report store as the scheduled audit when both are active, remain available when
+scheduled audits are disabled, and never emit scheduler alert, webhook, or
+completion-metric side effects.
+
 ### MCP Bearer Auth
 
 MCP bearer auth is optional and only applies to Streamable HTTP MCP endpoints:
@@ -699,6 +825,13 @@ export DBRAIN_MCP_AUTH_ENABLED=true
 When bearer auth is disabled, HTTP and tsnet MCP startup prints a warning that
 the endpoint is acceptable only on private localhost/trusted tailnet paths and
 must not be exposed through Tailscale Funnel or a public reverse proxy.
+The health-oriented `dbrain_audit` tool is also omitted and rejected on those
+auth-disabled transports; local stdio continues to expose it, and authenticated
+HTTP/tsnet exposes it after bearer-token validation.
+When remote web and MCP are enabled together, the configured MCP path must not
+overlap the reserved `/api/audit` or `/share` web namespaces (including parent
+or descendant paths); startup rejects such collisions instead of shadowing a
+session-authenticated or public-share route.
 When bearer auth is enabled, MCP HTTP access logs include the token record name
 and fingerprint, never the raw token.
 
@@ -747,6 +880,16 @@ sharing that same `local_path` is safely archived.
 The same S3-compatible credentials are used by `dbrain sqlite archive` and
 `dbrain sqlite restore` for compressed database snapshots. SQLite archives are
 stored under `archive/db/` by default; override with `--prefix` if needed.
+The long-running `dbrain serve remote` process can create the same online
+snapshot automatically with `scheduler.sqlite_archive.enabled: true`. Its
+default cadence is 24 hours with one run on startup. Scheduled archives are a
+separate write-capable sibling of sync and audit: audit remains read-only, and
+a cross-process lease prevents any scheduled/manual archive from overlapping
+another archive or an active restore.
+The scheduler records each attempt before snapshotting, so repeated service
+restarts cannot create or retry more than once inside the configured interval.
+When `run_on_start` is false, it waits one full interval after service readiness
+before the first attempt, regardless of an overdue marker from an earlier run.
 
 ## Optional Source Reader Env
 
@@ -957,6 +1100,11 @@ research, browsing, topic maps, retrieval packs, and operational stats. The
 server is DB-first by default, tag-aware, and includes OCR/transcript evidence
 when those enrichments exist.
 
+Use MCP `dbrain_audit` for authoritative health claims. The default `fast`
+profile performs only bounded local checks; `profile=standard` reads persisted
+exact-profile health and never starts network work. `dbrain_stats_*` remains
+useful for exploratory counts but is not whole-system health.
+
 For recent-local-change review, use CLI `dbrain whats-new --since 24h`, web
 `GET /api/whats-new?since=24h`, or MCP `dbrain_whats_new`. Use
 `view=entities` for compact grouped review when asking "what should I pay
@@ -1014,6 +1162,17 @@ The [`dbrain-model-bakeoff`](skills/dbrain-model-bakeoff) skill is a repo-local
 development workflow for comparing summary and categorization models with the
 read-only bakeoff devtool; it is not part of the release-tag registry publish.
 
+The repo-local
+[`dbrain-production-audit`](skills/dbrain-production-audit) skill defines the
+content-free pre/post release workflow for the real installed target. It uses
+the installed audit-capable CLI when available, includes a provenance-gated
+candidate bootstrap for the first such release, runs the standard gate before a
+separately approved installation, re-resolves the target afterward, then
+compares exact-profile standard reports and runs CLI-only deep archive and
+upstream-parity acceptance checks. It never grants deployment, restart, retry,
+repair, restore, import, or configuration authority and is not part of the
+release-tag registry publish.
+
 ## License
 
 `dbrain` is licensed under the MIT License. See [LICENSE](LICENSE).
@@ -1041,10 +1200,6 @@ backlog and explicit non-goals.
   shared API client layer.
 - Improve the web note reader with richer Markdown rendering, better code-block
   presentation, and cleaner outbound link handling.
-- Add explicit source-of-truth audit commands such as
-  `dbrain audit github-stars`, `dbrain audit youtube-watch-later`,
-  `dbrain audit x-bookmarks`, and `dbrain audit all --json`, while preserving
-  append-only local memory semantics.
 - Add optional importers when they become high-value enough to justify first-
   class support: X profile/likes, Apple News bookmarks, native Substack data
   beyond RSS/manual links, Bluesky, Mastodon, Instagram, MakerWorld bookmarks,

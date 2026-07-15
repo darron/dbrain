@@ -16,6 +16,11 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (map[s
 	}
 
 	switch params.Name {
+	case "dbrain_audit":
+		if !s.capabilities.audit {
+			return nil, fmt.Errorf("unknown tool %q", params.Name)
+		}
+		return s.callAudit(ctx, params.Arguments)
 	case "dbrain_search":
 		return s.toolSearch(ctx, params.Arguments)
 	case "dbrain_get":

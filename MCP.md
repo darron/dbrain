@@ -16,7 +16,7 @@ remote agents.
 
 The server provides:
 
-- **Tools**: `dbrain_search`, `dbrain_get`, `dbrain_get_many`,
+- **Tools**: `dbrain_audit`, `dbrain_search`, `dbrain_get`, `dbrain_get_many`,
   `dbrain_research_pack`, `dbrain_related`, `dbrain_entity_map`,
   `dbrain_topic_map`, `dbrain_topic_brief`, `dbrain_whats_new`,
   `dbrain_stats_items`, `dbrain_stats_sources`, `dbrain_stats_activity`,
@@ -63,6 +63,31 @@ retrieval evidence, while raw OCR, transcript, and text remain available through
 `dbrain_get`.
 
 ## Core Tools
+
+### `dbrain_audit`
+
+Use `dbrain_audit` for production-health claims. It accepts only
+`profile: "fast"|"standard"`; omitted profile defaults to `fast`.
+
+- `fast` runs the complete local fast registry under a fixed ten-second
+  deadline. Concurrent fast calls share one process-wide run.
+- `standard` reads the newest persisted exact-profile standard report and
+  never starts an audit or network request.
+- Both profiles return `{"report":...,"freshness":...}`. A missing standard
+  report returns `report: null` with `freshness.status: "unknown"` and
+  `reason: "not_found"`.
+
+The tool does not accept deep scans, category filters, time windows, paths,
+URLs, endpoints, source identifiers, archive keys, or download limits. Output
+is the stable privacy-validated `dbrain.audit.v1` report plus freshness and is
+capped at 256 KiB. Continue using `dbrain_stats_*` for exploratory counts, not
+as a substitute for whole-system health.
+
+Release acceptance is intentionally broader than the MCP authority. Use the
+repo-local [`dbrain-production-audit`](skills/dbrain-production-audit) skill
+with the installed CLI for content-free pre/post comparison, expected-commit
+verification, archive restore validation, media inventory, and bounded upstream
+parity. MCP cannot run those deep checks and must not infer them from stats.
 
 ### `dbrain_research_pack`
 
@@ -204,6 +229,9 @@ before deduping.
 - **Pipeline monitoring and review**: `dbrain_whats_new` for a reviewable
   cursor feed of recent local evidence changes, plus `dbrain_stats_activity`,
   `dbrain_stats_backlog`, and optionally `dbrain_stats_sources`.
+- **Production health**: `dbrain_audit` with the default fast profile for a
+  bounded current local check, or `profile: "standard"` for the newest
+  persisted exact-profile standard report.
 
 ## Eval
 
@@ -356,6 +384,9 @@ Security defaults:
   `--allow-origin`.
 - Optional bearer auth can be enabled with `mcp.auth.enabled=true` or
   `DBRAIN_MCP_AUTH_ENABLED=true`.
+- `dbrain_audit` is always available on local stdio. HTTP and tsnet advertise
+  and dispatch it only when dbrain bearer auth is required and configured;
+  private/tailnet reachability alone does not grant the capability.
 - Funnel refuses to start an MCP surface unless bearer auth is enabled.
 - JSON-RPC batches are limited to 16 requests; larger batches are rejected
   before any member is dispatched on HTTP or stdio.
@@ -370,7 +401,8 @@ The raw token is shown once; SQLite stores only the token hash and fingerprint.
 Authenticated HTTP clients must send `Authorization: Bearer <token>`. When
 bearer auth is disabled, HTTP and tsnet MCP startup logs a warning because
 Tailscale Funnel or another public proxy would make the read-only brain content
-publicly reachable.
+publicly reachable. Those auth-disabled transports also omit `dbrain_audit`
+from `tools/list` and reject direct calls to it.
 
 Do not configure both stdio and HTTP transports for the same agent unless you
 want duplicate dbrain tools. It is fine to run one long-lived HTTP daemon for

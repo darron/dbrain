@@ -31,9 +31,13 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 		}
 		closers = append(closers, st)
 		webHandler, err = web.NewHandlerWithOptions(cfg, st, web.HandlerOptions{
-			SchedulerStatus: opts.SchedulerStatus,
-			Context:         ctx,
-			LogOutput:       logOut,
+			SchedulerStatus:       opts.SchedulerStatus,
+			Context:               ctx,
+			LogOutput:             logOut,
+			AuditReports:          opts.webAudit.Reports,
+			AuditRuns:             opts.webAudit.Runs,
+			AuditSyncInterval:     opts.webAudit.SyncInterval,
+			AuditStandardInterval: opts.webAudit.StandardInterval,
 		})
 		if err != nil {
 			cleanup()
@@ -57,7 +61,7 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 			cleanup()
 			return nil, nil, err
 		}
-		mcpHandler = mcpserver.New(cfg, st).HTTPHandler(httpOptions)
+		mcpHandler = mcpserver.NewWithDependencies(cfg, st, opts.mcpDependencies).HTTPHandler(httpOptions)
 	}
 
 	handler, err := NewHandler(HandlerOptions{

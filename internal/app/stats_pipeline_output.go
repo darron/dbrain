@@ -66,6 +66,15 @@ func writePipelineStats(dst interface{ Write([]byte) (int, error) }, stats store
 		}
 	}
 
+	if len(stats.MediaArchive) > 0 {
+		if _, err := fmt.Fprintf(dst, "\nMedia archive\n"); err != nil {
+			return err
+		}
+		if err := writePipelineTable(dst, stats.MediaArchive); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -75,7 +84,7 @@ func writePipelineTable(dst interface{ Write([]byte) (int, error) }, rows []stor
 		return err
 	}
 
-	headers := []string{"Type", "Total", "Current", "Pending", "Blocked", "Failed", "Current %"}
+	headers := []string{"Type", "Total", "Current", "Pending", "Blocked", "Terminal", "Failed", "Unknown", "Valid", "Current %"}
 	widths := make([]int, len(headers))
 	for i, header := range headers {
 		widths[i] = len(header)
@@ -89,7 +98,10 @@ func writePipelineTable(dst interface{ Write([]byte) (int, error) }, rows []stor
 			fmt.Sprintf("%d", row.Current),
 			fmt.Sprintf("%d", row.Pending),
 			fmt.Sprintf("%d", row.Blocked),
+			fmt.Sprintf("%d", row.Terminal),
 			fmt.Sprintf("%d", row.Failed),
+			fmt.Sprintf("%d", row.Unknown),
+			fmt.Sprintf("%t", row.PartitionValid),
 			fmt.Sprintf("%.1f%%", row.PercentCurrent),
 		}
 		for i, value := range record {

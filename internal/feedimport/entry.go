@@ -105,25 +105,50 @@ func buildFeedEntry(feed store.Feed, parsed *gofeed.Feed, item *gofeed.Item, obs
 }
 
 func feedItemIdentity(item *gofeed.Item, contentMarkdown string, contentText string, summaryText string) string {
-	if guid := strings.TrimSpace(item.GUID); guid != "" {
-		return "guid:" + guid
+	aliases := feedItemIdentityAliases(item, contentMarkdown, contentText, summaryText)
+	if len(aliases) == 0 {
+		return ""
 	}
+	return aliases[0]
+}
+
+// feedItemIdentityAliases returns the normal importer's primary identity first,
+// followed by the same stable aliases retained by the feed-entry store matcher.
+func feedItemIdentityAliases(item *gofeed.Item, contentMarkdown string, contentText string, summaryText string) []string {
+	if item == nil {
+		return nil
+	}
+	aliases := make([]string, 0, 2)
+	if guid := strings.TrimSpace(item.GUID); guid != "" {
+		aliases = append(aliases, "guid:"+guid)
+	}
+	normalizedLink := ""
 	if link := strings.TrimSpace(item.Link); link != "" {
 		if candidate, ok := linkextract.NormalizeCandidate(link); ok {
-			return "link:" + candidate.NormalizedURL
+			normalizedLink = candidate.NormalizedURL
+		} else if len(aliases) == 0 {
+			normalizedLink = link
 		}
-		return "link:" + link
+		if normalizedLink != "" {
+			linkIdentity := "link:" + normalizedLink
+			if len(aliases) == 0 || aliases[0] != linkIdentity {
+				aliases = append(aliases, linkIdentity)
+			}
+		}
+	}
+	if len(aliases) > 0 {
+		return aliases
 	}
 	fallbackText := normalizedFallbackText(item, contentMarkdown, contentText, summaryText)
 	if fallbackText == "" {
-		return ""
+		return nil
 	}
 	fallback := strings.Join([]string{
 		strings.TrimSpace(item.Title),
 		strings.TrimSpace(item.Published),
 		truncateUTF8Bytes(fallbackText, 2048),
 	}, "\x00")
-	return "fallback:" + shortHash(fallback)
+	return []string{"fallback:" + shortHash(fallback)}
 }
 
 func normalizedFallbackText(item *gofeed.Item, contentMarkdown string, contentText string, summaryText string) string {

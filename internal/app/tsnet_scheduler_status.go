@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,19 @@ import (
 
 type tsnetSchedulerStatusResponse struct {
 	SyncAll schedulerstate.SyncAllStatus `json:"sync_all"`
+}
+
+type tsnetSchedulerStatusDiagnostic struct {
+	Code       string `json:"code"`
+	StatusCode int    `json:"status_code"`
+}
+
+type tsnetSchedulerHTTPStatusError struct {
+	StatusCode int
+}
+
+func (e tsnetSchedulerHTTPStatusError) Error() string {
+	return fmt.Sprintf("scheduler status request failed with HTTP status %d", e.StatusCode)
 }
 
 func schedulerStatusURL(webURL string) string {
@@ -50,7 +64,7 @@ func fetchTSNetSchedulerStatus(ctx context.Context, rawURL string, tlsServerName
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return schedulerstate.SyncAllStatus{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		return schedulerstate.SyncAllStatus{}, tsnetSchedulerHTTPStatusError{StatusCode: resp.StatusCode}
 	}
 	var payload tsnetSchedulerStatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -69,6 +83,10 @@ func applyTSNetSchedulerStatus(ctx context.Context, opts remote.Options, info *t
 	}
 	status, err := fetchTSNetSchedulerStatusWithFallbacks(ctx, opts, rawURL, certHost, ipFallbacks, deps)
 	if err != nil {
+		var statusErr tsnetSchedulerHTTPStatusError
+		if errors.As(err, &statusErr) && (statusErr.StatusCode == http.StatusUnauthorized || statusErr.StatusCode == http.StatusForbidden) {
+			info.SyncAllError = &tsnetSchedulerStatusDiagnostic{Code: "scheduler_auth_failed", StatusCode: statusErr.StatusCode}
+		}
 		return
 	}
 	info.SyncAll = &status
