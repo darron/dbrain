@@ -41,7 +41,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
-	terminal, err := s.countWhere(ctx, "items", candidateWhere+` AND `+text+` = '' AND `+status+` IN ('`+model.XMediaTranscriptStatusNoAudio+`', '`+model.XMediaTranscriptStatusNoise+`', '`+model.XMediaTranscriptStatusTooShort+`', '`+model.XMediaTranscriptStatusEmpty+`')`)
+	terminal, err := s.countWhere(ctx, "items", candidateWhere+` AND `+status+` IN ('`+model.XMediaTranscriptStatusNoAudio+`', '`+model.XMediaTranscriptStatusNoise+`', '`+model.XMediaTranscriptStatusTooShort+`', '`+model.XMediaTranscriptStatusEmpty+`')`)
 	if err != nil {
 		return PipelineStageRow{}, false, err
 	}
