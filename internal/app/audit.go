@@ -43,6 +43,14 @@ type auditCLIFlags struct {
 
 const auditConfigMaxBytes int64 = 1 << 20
 
+var newAuditMediaInspector = func(opts mediaarchive.Options) (audit.MediaArchiveInspector, error) {
+	inspector, err := mediaarchive.NewS3Inspector(opts)
+	if err != nil {
+		return nil, err
+	}
+	return auditMediaInspector{inspector: inspector}, nil
+}
+
 func newAuditCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{Use: "audit", Short: "Inspect production health without modifying the target", RunE: helpCommand}
 	cmd.Annotations = map[string]string{skipKeepAwakeAnnotation: "true"}
@@ -471,11 +479,18 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, snapshot *st
 		archiveOpts, resolveErr := archiveRuntimeValues(ctx, cfg.RootDir)
 		if resolveErr != nil {
 			deps.Features.SQLiteResolutionError = backupRequired
+			if needMediaClient {
+				deps.MediaErrorCode = audit.ErrorCredentialResolution
+			}
 			return deps, nil
 		}
 		if needMediaClient {
-			if inspector, inspectErr := mediaarchive.NewS3Inspector(archiveOpts); inspectErr == nil {
-				deps.Media = auditMediaInspector{inspector: inspector}
+			inspector, inspectErr := newAuditMediaInspector(archiveOpts)
+			if inspectErr != nil {
+				deps.MediaErrorCode = audit.ErrorConfiguration
+			} else {
+				deps.Media = inspector
+				deps.MediaErrorCode = ""
 			}
 		}
 		if needSQLiteClient {

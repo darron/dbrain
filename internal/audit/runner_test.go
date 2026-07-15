@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -11,6 +12,74 @@ import (
 
 	"github.com/darron/dbrain/internal/metrics"
 )
+
+type failingMediaInspector struct{ err error }
+
+func (f failingMediaInspector) HeadObject(context.Context, string) (ObjectMetadata, error) {
+	return ObjectMetadata{}, f.err
+}
+
+func TestMediaRemoteSanitizesInspectorErrors(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		err  error
+		want ErrorCode
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, want: ErrorTimeout},
+		{name: "canceled", err: context.Canceled, want: ErrorCanceled},
+		{name: "provider", err: errors.New("provider secret response"), want: ErrorRead},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deps := passingDependencies(now)
+			deps.Store = fakeStore{media: []ArchivedMediaRecord{{Key: "private-object-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true}}}
+			deps.Media = failingMediaInspector{err: test.err}
+			report, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote}}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := checkByIDForTest(t, report, CheckDurabilityMediaRemote)
+			if check.Status != StatusUnknown || check.Confidence != ConfidenceUnknown || check.ErrorCode != test.want {
+				t.Fatalf("check = %#v, want unknown/unknown/%s", check, test.want)
+			}
+			encoded, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"provider secret response", "private-object-key"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("report leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestMediaRemotePreservesCapabilityErrorCode(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Media = nil
+	deps.MediaErrorCode = ErrorCredentialResolution
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForTest(t, report, CheckDurabilityMediaRemote)
+	if check.Status != StatusUnknown || check.ErrorCode != ErrorCredentialResolution {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func checkByIDForTest(t *testing.T, report Report, id CheckID) Check {
+	t.Helper()
+	for _, check := range report.Checks {
+		if check.ID == id {
+			return check
+		}
+	}
+	t.Fatalf("check %q not found", id)
+	return Check{}
+}
 
 func TestRunStandardEmitsCompleteRegistryInOrder(t *testing.T) {
 	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
