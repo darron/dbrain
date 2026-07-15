@@ -25,6 +25,7 @@ import (
 	installer "github.com/darron/dbrain/internal/install"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
+	"github.com/darron/dbrain/internal/prunedmediarepair"
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
@@ -36,6 +37,139 @@ import (
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
+
+func TestRepairPrunedMediaCommandDryRunUsesReadOnlyStore(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+	before := listRepairPrunedMediaDirectories(t, root)
+
+	called := 0
+	cmd := newRepairPrunedMediaCommandWithRun(&rootOptions{root: root, noCaffeinate: true, noDebug: true}, func(ctx context.Context, _ config.Config, st *store.Store, opts prunedmediarepair.Options) (prunedmediarepair.Stats, error) {
+		called++
+		if opts.Apply {
+			t.Fatalf("expected dry-run options, got %+v", opts)
+		}
+		if err := st.SaveXMediaTranscriptionState(ctx, 1, model.XMediaTranscriptStatusError, "must fail", time.Now()); err == nil {
+			t.Fatal("dry-run store unexpectedly allowed a write")
+		}
+		return prunedmediarepair.Stats{Apply: false}, nil
+	})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected coordinator call, got %d", called)
+	}
+	var stats prunedmediarepair.Stats
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("unmarshal output %q: %v", stdout.String(), err)
+	}
+	if stats.Apply {
+		t.Fatalf("expected apply=false, got %+v", stats)
+	}
+	after := listRepairPrunedMediaDirectories(t, root)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("dry-run mutated filesystem paths: before=%v after=%v", before, after)
+	}
+}
+
+func TestRepairPrunedMediaCommandApplyDefaultsAndCategorySelection(t *testing.T) {
+	root := t.TempDir()
+	var got []prunedmediarepair.Options
+	run := func(_ context.Context, _ config.Config, _ *store.Store, opts prunedmediarepair.Options) (prunedmediarepair.Stats, error) {
+		got = append(got, opts)
+		return prunedmediarepair.Stats{Apply: opts.Apply}, nil
+	}
+
+	for _, args := range [][]string{{"--apply", "--json"}, {"--apply", "--ocr", "--json"}, {"--apply", "--transcripts", "--json"}} {
+		cmd := newRepairPrunedMediaCommandWithRun(&rootOptions{root: root, noCaffeinate: true, noDebug: true}, run)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(args)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("ExecuteContext %v: %v", args, err)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected three coordinator calls, got %d", len(got))
+	}
+	if !got[0].Apply || !got[0].OCR || !got[0].Transcripts || got[0].Limit != 5000 || got[0].Timeout != 45*time.Second {
+		t.Fatalf("unexpected defaults: %+v", got[0])
+	}
+	if !got[1].OCR || got[1].Transcripts {
+		t.Fatalf("--ocr selected wrong categories: %+v", got[1])
+	}
+	if got[2].OCR || !got[2].Transcripts {
+		t.Fatalf("--transcripts selected wrong categories: %+v", got[2])
+	}
+}
+
+func TestRepairPrunedMediaCommandValidatesBounds(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"zero limit", []string{"--limit", "0"}, "limit must be positive"},
+		{"over limit", []string{"--limit", "5001"}, "limit must not exceed 5000"},
+		{"zero timeout", []string{"--timeout", "0s"}, "timeout must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRepairPrunedMediaCommandWithRun(&rootOptions{root: t.TempDir()}, func(context.Context, config.Config, *store.Store, prunedmediarepair.Options) (prunedmediarepair.Stats, error) {
+				t.Fatal("coordinator called after invalid flags")
+				return prunedmediarepair.Stats{}, nil
+			})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(tc.args)
+			err := cmd.ExecuteContext(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func listRepairPrunedMediaDirectories(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir: %v", err)
+	}
+	return paths
+}
 
 func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	t.Parallel()

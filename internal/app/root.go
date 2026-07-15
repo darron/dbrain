@@ -101,7 +101,7 @@ func NewRootCommand() *cobra.Command {
 		Short: "Repair derived local artifacts",
 		RunE:  helpCommand,
 	}
-	repairCmd.AddCommand(newRepairNotesCommand(opts), newRepairFTSCommand(opts), newRepairSourcesCommand(opts))
+	repairCmd.AddCommand(newRepairNotesCommand(opts), newRepairFTSCommand(opts), newRepairSourcesCommand(opts), newRepairPrunedMediaCommand(opts))
 
 	serveCmd := &cobra.Command{
 		Use:   "serve",
