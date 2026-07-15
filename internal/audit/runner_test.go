@@ -2,7 +2,9 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,120 @@ import (
 
 	"github.com/darron/dbrain/internal/metrics"
 )
+
+type failingMediaInspector struct{ err error }
+
+func (f failingMediaInspector) HeadObject(context.Context, string) (ObjectMetadata, error) {
+	return ObjectMetadata{}, f.err
+}
+
+type orderedFailingMediaInspector struct{}
+
+func (orderedFailingMediaInspector) HeadObject(_ context.Context, key string) (ObjectMetadata, error) {
+	switch key {
+	case "private-read-key":
+		time.Sleep(time.Millisecond)
+		return ObjectMetadata{}, errors.New("provider read secret")
+	case "private-canceled-key":
+		time.Sleep(5 * time.Millisecond)
+		return ObjectMetadata{}, context.Canceled
+	case "private-timeout-key":
+		time.Sleep(10 * time.Millisecond)
+		return ObjectMetadata{}, context.DeadlineExceeded
+	default:
+		return ObjectMetadata{}, errors.New("unexpected private key")
+	}
+}
+
+func TestMediaRemoteErrorPriorityIsDeterministic(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Store = fakeStore{media: []ArchivedMediaRecord{
+		{Key: "private-read-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true},
+		{Key: "private-canceled-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true},
+		{Key: "private-timeout-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true},
+	}}
+	deps.Media = orderedFailingMediaInspector{}
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForTest(t, report, CheckDurabilityMediaRemote)
+	if check.Status != StatusUnknown || check.ErrorCode != ErrorTimeout {
+		t.Fatalf("check = %#v, want timeout priority", check)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private-read-key", "private-canceled-key", "private-timeout-key", "provider read secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("report leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestMediaRemoteSanitizesInspectorErrors(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		err  error
+		want ErrorCode
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, want: ErrorTimeout},
+		{name: "canceled", err: context.Canceled, want: ErrorCanceled},
+		{name: "provider", err: errors.New("provider secret response"), want: ErrorRead},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deps := passingDependencies(now)
+			deps.Store = fakeStore{media: []ArchivedMediaRecord{{Key: "private-object-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true}}}
+			deps.Media = failingMediaInspector{err: test.err}
+			report, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote}}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := checkByIDForTest(t, report, CheckDurabilityMediaRemote)
+			if check.Status != StatusUnknown || check.Confidence != ConfidenceUnknown || check.ErrorCode != test.want {
+				t.Fatalf("check = %#v, want unknown/unknown/%s", check, test.want)
+			}
+			encoded, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"provider secret response", "private-object-key"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("report leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestMediaRemotePreservesCapabilityErrorCode(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Media = nil
+	deps.MediaErrorCode = ErrorCredentialResolution
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForTest(t, report, CheckDurabilityMediaRemote)
+	if check.Status != StatusUnknown || check.ErrorCode != ErrorCredentialResolution {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func checkByIDForTest(t *testing.T, report Report, id CheckID) Check {
+	t.Helper()
+	for _, check := range report.Checks {
+		if check.ID == id {
+			return check
+		}
+	}
+	t.Fatalf("check %q not found", id)
+	return Check{}
+}
 
 func TestRunStandardEmitsCompleteRegistryInOrder(t *testing.T) {
 	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
@@ -40,6 +156,45 @@ func TestRunStandardEmitsCompleteRegistryInOrder(t *testing.T) {
 	}
 	if report.Scope.Filtered || !report.Scope.WholeSystem || len(report.Scope.Categories) != 5 || len(report.Scope.Sources) != 7 || report.Scope.CheckIDs == nil {
 		t.Fatalf("scope = %#v", report.Scope)
+	}
+}
+
+func TestSQLiteBackupConfigurationRemediationIsFixedAndPrivacySafe(t *testing.T) {
+	const remediation = "Enable scheduler.sqlite_archive.enabled or set audit.require.sqlite_backup when remote SQLite backups are required."
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.SQLiteBackupSchedulerEnabled = false
+	deps.Features.SQLiteBackupAuditRequired = false
+
+	report, err := Run(t.Context(), Request{
+		Profile:  ProfileStandard,
+		Since:    7 * 24 * time.Hour,
+		CheckIDs: []CheckID{CheckDurabilitySQLiteBackupConfiguration},
+	}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForTest(t, report, CheckDurabilitySQLiteBackupConfiguration)
+	if check.Status != StatusWarn || check.Remediation != remediation {
+		t.Fatalf("check = %#v", check)
+	}
+	if err := ValidateReport(report); err != nil {
+		t.Fatalf("ValidateReport: %v", err)
+	}
+
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"/Users/private/brain.db", "secret-bucket", "credential-token"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("report leaked target-specific value %q: %s", forbidden, encoded)
+		}
+	}
+
+	report.Checks[0].Remediation = "Enable backup at /Users/private/brain.db with credential-token."
+	if err := ValidateReport(report); err == nil {
+		t.Fatal("ValidateReport accepted arbitrary remediation")
 	}
 }
 
@@ -275,6 +430,45 @@ func TestRunIncompleteLatestAttemptAndExhaustedWindowAreUnknown(t *testing.T) {
 	}
 	if got := report.Checks[1].Evidence["completed_attempt_count"]; got != 1 {
 		t.Fatalf("completed attempts = %#v", got)
+	}
+}
+
+func TestSchedulerContinuityIgnoresBoundaryIncompleteRun(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	window := deps.Metrics.(fakeMetrics).value
+	window.Runs = []metrics.RunRecord{
+		{ID: "boundary-only", CompletedAt: now.Add(-7 * 24 * time.Hour), RecordComplete: false},
+		{ID: "first", StartedAt: now.Add(-4 * time.Hour), CompletedAt: now.Add(-3*time.Hour - 55*time.Minute), RecordComplete: true},
+		{ID: "second", StartedAt: now.Add(-2*time.Hour - time.Minute), CompletedAt: now.Add(-115 * time.Minute), RecordComplete: true},
+	}
+	window.DurationSamples = []time.Duration{5 * time.Minute, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute}
+	window.AttemptCount = 3
+	window.CompletedCount = 2
+	deps.Metrics = fakeMetrics{window}
+
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckSchedulerContinuity}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Checks) != 1 || report.Checks[0].ID != CheckSchedulerContinuity {
+		t.Fatalf("checks = %#v", report.Checks)
+	}
+	check := report.Checks[0]
+	if check.Status != StatusWarn {
+		t.Fatalf("scheduler.continuity status = %s, want warn", check.Status)
+	}
+	if got := check.Evidence["gap_count"]; got != 1 {
+		t.Fatalf("gap_count = %#v, want 1", got)
+	}
+	if got := check.Evidence["unexplained_gap_count"]; got != 1 {
+		t.Fatalf("unexplained_gap_count = %#v, want 1", got)
+	}
+	if got := check.Evidence["largest_gap_seconds"]; got != int64(7140) {
+		t.Fatalf("largest_gap_seconds = %#v, want 7140", got)
+	}
+	if got := check.Evidence["largest_gap_seconds"]; got == int64(math.MaxInt64)/int64(time.Second) {
+		t.Fatalf("largest_gap_seconds saturated: %#v", got)
 	}
 }
 

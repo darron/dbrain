@@ -14,6 +14,7 @@ import (
 
 	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/runtimeenv"
@@ -134,6 +135,39 @@ func TestAuditBootstrapContextHasTenSecondCeilingAndHonorsLowerParent(t *testing
 	loweredDeadline, ok := lowered.Deadline()
 	if !ok || time.Until(loweredDeadline) > 2*time.Second || time.Until(loweredDeadline) < time.Second {
 		t.Fatalf("lowered bootstrap deadline = %v ok=%t", loweredDeadline, ok)
+	}
+}
+
+func TestAuditHumanRemediationAppearsOnlyForNonPassChecks(t *testing.T) {
+	const remediation = "Enable scheduler.sqlite_archive.enabled or set audit.require.sqlite_backup when remote SQLite backups are required."
+	render := func(t *testing.T, status audit.Status) string {
+		t.Helper()
+		cmd := NewRootCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		report := audit.Report{
+			Status:     status,
+			Confidence: audit.ConfidenceHigh,
+			Checks: []audit.Check{{
+				ID:          audit.CheckDurabilitySQLiteBackupConfiguration,
+				Status:      status,
+				Summary:     "Audit result for durability.sqlite_backup_configuration",
+				Remediation: remediation,
+			}},
+		}
+		if err := writeAuditHuman(cmd, report, "/config", "/database", 7*24*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	warnOutput := render(t, audit.StatusWarn)
+	want := "warn  durability.sqlite_backup_configuration  Audit result for durability.sqlite_backup_configuration\n  Remediation: " + remediation + "\n"
+	if !strings.Contains(warnOutput, want) {
+		t.Fatalf("warning output missing adjacent remediation:\n%s", warnOutput)
+	}
+	if passOutput := render(t, audit.StatusPass); strings.Contains(passOutput, "Remediation:") || strings.Contains(passOutput, remediation) {
+		t.Fatalf("passing output included remediation:\n%s", passOutput)
 	}
 }
 
@@ -790,6 +824,148 @@ func TestBuildDeepAuditDependenciesSelectsExactRemoteOnlyMediaCapability(t *test
 	}
 	if unrelated.Media != nil {
 		t.Fatal("imports-only request received unrelated media inventory capability")
+	}
+}
+
+func TestBuildAuditDependenciesMediaSecretResolutionError(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DBRAIN_R2_BUCKET", "audit-bucket")
+	t.Setenv("DBRAIN_R2_ENDPOINT", "https://objects.example.test")
+	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "env:AUDIT_MISSING_MEDIA_SECRET")
+	t.Setenv("AUDIT_MISSING_MEDIA_SECRET", "")
+	t.Setenv("DBRAIN_R2_SECRET_ACCESS_KEY", "must-not-appear")
+	features := audit.Features{Layout: "explicit_root", ConfigSource: "flag", ConfigVerified: true, MediaRemoteEnabled: true, SQLiteProviderConfigured: true, SQLiteCredentialConfigured: true}
+	deps, err := buildAuditDependencies(t.Context(), cfg, nil, audit.Request{Profile: audit.ProfileStandard, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemote}}, features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deps.Media != nil || deps.MediaErrorCode != audit.ErrorCredentialResolution {
+		t.Fatalf("media dependency = %#v code=%q", deps.Media, deps.MediaErrorCode)
+	}
+	assertAuditMediaDependencyErrorIsSanitized(t, deps, "AUDIT_MISSING_MEDIA_SECRET", "must-not-appear")
+}
+
+func TestBuildAuditDependenciesMediaConfigurationError(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DBRAIN_R2_BUCKET", "audit-bucket")
+	t.Setenv("DBRAIN_R2_ENDPOINT", "https://objects.example.test")
+	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "test-access")
+	t.Setenv("DBRAIN_R2_SECRET_ACCESS_KEY", "test-secret")
+	previous := newAuditMediaInspector
+	newAuditMediaInspector = func(mediaarchive.Options) (audit.MediaArchiveInspector, error) {
+		return nil, errors.New("constructor secret response")
+	}
+	t.Cleanup(func() { newAuditMediaInspector = previous })
+	features := audit.Features{Layout: "explicit_root", ConfigSource: "flag", ConfigVerified: true, MediaRemoteEnabled: true, SQLiteProviderConfigured: true, SQLiteCredentialConfigured: true}
+	deps, err := buildAuditDependencies(t.Context(), cfg, nil, audit.Request{Profile: audit.ProfileStandard, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemote}}, features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deps.Media != nil || deps.MediaErrorCode != audit.ErrorConfiguration {
+		t.Fatalf("media dependency = %#v code=%q", deps.Media, deps.MediaErrorCode)
+	}
+	assertAuditMediaDependencyErrorIsSanitized(t, deps, "constructor secret response", "test-secret", "test-access")
+}
+
+func TestBuildDeepAuditDependenciesMediaSecretResolutionError(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DBRAIN_R2_BUCKET", "audit-bucket")
+	t.Setenv("DBRAIN_R2_ENDPOINT", "https://objects.example.test")
+	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "env:AUDIT_MISSING_DEEP_MEDIA_SECRET")
+	t.Setenv("AUDIT_MISSING_DEEP_MEDIA_SECRET", "")
+	t.Setenv("DBRAIN_R2_SECRET_ACCESS_KEY", "must-not-appear")
+	features := audit.Features{Layout: "explicit_root", ConfigSource: "flag", ConfigVerified: true, MediaRemoteEnabled: true, SQLiteProviderConfigured: true, SQLiteCredentialConfigured: true}
+	request := audit.Request{Profile: audit.ProfileDeep, Since: 7 * 24 * time.Hour, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemote, audit.CheckDurabilityMediaRemoteOnly}}
+	deep, err := buildDeepAuditDependencies(t.Context(), cfg, nil, request, auditRuntimeConfig{Features: features}, audit.DefaultDeepLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.Media != nil || deep.MediaErrorCode != audit.ErrorCredentialResolution {
+		t.Fatalf("deep media dependency = %#v code=%q", deep.Media, deep.MediaErrorCode)
+	}
+	deps, err := buildAuditDependencies(t.Context(), cfg, nil, request, features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDeepAuditMediaDependencyErrorIsSanitized(t, deps, deep, "AUDIT_MISSING_DEEP_MEDIA_SECRET", "must-not-appear")
+}
+
+func TestBuildDeepAuditDependenciesMediaConfigurationError(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DBRAIN_R2_BUCKET", "audit-bucket")
+	t.Setenv("DBRAIN_R2_ENDPOINT", "https://objects.example.test")
+	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "test-access")
+	t.Setenv("DBRAIN_R2_SECRET_ACCESS_KEY", "test-secret")
+	previous := newAuditMediaInventory
+	newAuditMediaInventory = func(mediaarchive.Options) (audit.DeepMediaInventory, error) {
+		return nil, errors.New("deep constructor secret response")
+	}
+	t.Cleanup(func() { newAuditMediaInventory = previous })
+	features := audit.Features{Layout: "explicit_root", ConfigSource: "flag", ConfigVerified: true, MediaRemoteEnabled: true, SQLiteProviderConfigured: true, SQLiteCredentialConfigured: true}
+	request := audit.Request{Profile: audit.ProfileDeep, Since: 7 * 24 * time.Hour, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemote, audit.CheckDurabilityMediaRemoteOnly}}
+	deep, err := buildDeepAuditDependencies(t.Context(), cfg, nil, request, auditRuntimeConfig{Features: features}, audit.DefaultDeepLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.Media != nil || deep.MediaErrorCode != audit.ErrorConfiguration {
+		t.Fatalf("deep media dependency = %#v code=%q", deep.Media, deep.MediaErrorCode)
+	}
+	deps, err := buildAuditDependencies(t.Context(), cfg, nil, request, features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDeepAuditMediaDependencyErrorIsSanitized(t, deps, deep, "deep constructor secret response", "test-secret", "test-access")
+}
+
+func assertAuditMediaDependencyErrorIsSanitized(t *testing.T, deps audit.Dependencies, forbidden ...string) {
+	t.Helper()
+	deps.Store = deadlineAuditStore{}
+	report, err := audit.Run(t.Context(), audit.Request{Profile: audit.ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemote}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range forbidden {
+		if strings.Contains(string(encoded), value) {
+			t.Fatalf("audit report leaked %q: %s", value, encoded)
+		}
+	}
+}
+
+func assertDeepAuditMediaDependencyErrorIsSanitized(t *testing.T, deps audit.Dependencies, deep audit.DeepDependencies, forbidden ...string) {
+	t.Helper()
+	deps.Store = deadlineAuditStore{}
+	report, err := audit.RunDeep(t.Context(), audit.Request{Profile: audit.ProfileDeep, Since: 7 * 24 * time.Hour, CheckIDs: []audit.CheckID{audit.CheckDurabilityMediaRemote, audit.CheckDurabilityMediaRemoteOnly}}, deps, deep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range forbidden {
+		if strings.Contains(string(encoded), value) {
+			t.Fatalf("deep audit report leaked %q: %s", value, encoded)
+		}
 	}
 }
 

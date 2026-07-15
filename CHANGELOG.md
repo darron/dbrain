@@ -5,6 +5,24 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Production health audit corrections (2026-07-15)
+
+- **False-failure corrections**: Scheduler continuity now ignores
+  boundary-incomplete metrics records with no start timestamp, and preserved
+  raw X media transcript text no longer prevents terminal outcomes such as
+  `too_short` from being classified as terminal.
+- **Sanitized remote diagnostics**: Standard media durability audits now retain
+  fixed credential-resolution, configuration, timeout, cancellation, and read
+  error codes without exposing provider errors, object keys, paths, or secrets.
+- **Explicit pruned-media repair**: Added `dbrain repair pruned-media` as a
+  read-only dry-run by default, with an explicit `--apply` path that restores
+  archived/pruned media through normal download persistence. The command is not
+  part of `sync all`; existing workers perform OCR and transcription afterward.
+- **Actionable backup configuration**: The SQLite backup-configuration warning
+  now carries a fixed privacy-safe instruction for enabling scheduled backups
+  or explicitly requiring backup audits, and human audit output prints it
+  directly below the non-passing finding.
+
 ### Production health audit foundation (2026-07-13)
 
 - **Release audit skill**: Added a repo-local, content-free production release

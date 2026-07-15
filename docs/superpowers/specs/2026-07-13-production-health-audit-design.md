@@ -1226,8 +1226,9 @@ the audit as authoritative:
    `store.OpenReadOnly`.
 2. Make X photo OCR pipeline pending use the same local-path and
    `local_pruned_at` eligibility as the worker.
-3. Classify `no_audio`, `noise`, textless `too_short`, and `empty` as terminal,
-   not failed.
+3. Classify `no_audio`, `noise`, `too_short`, and `empty` as terminal, not
+   failed. The terminal status is authoritative even when raw transcript text
+   was preserved for the outcome.
 4. Stop assigning every unexplained pipeline remainder to `failed`; expose
    invalid/unclassified state explicitly so predicate gaps cannot masquerade as
    processing failures.

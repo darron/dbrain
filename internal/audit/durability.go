@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -71,8 +72,15 @@ func executeMediaRemote(ctx context.Context, s *runState, e RegistryEntry) Check
 	if s.req.Profile == ProfileDeep && s.deep != nil {
 		return executeDeepMediaRemote(s, e)
 	}
-	if s.mediaErr != nil || s.deps.Media == nil {
+	if s.mediaErr != nil {
 		return unknownCheck(e, ErrorUnavailable, s.now)
+	}
+	if s.deps.Media == nil {
+		code := s.deps.MediaErrorCode
+		if !code.Valid() {
+			code = ErrorUnavailable
+		}
+		return unknownCheck(e, code, s.now)
 	}
 	provider := s.deps.Features.MediaProvider
 	if provider == "" {
@@ -121,12 +129,14 @@ func executeMediaRemote(ctx context.Context, s *runState, e RegistryEntry) Check
 	}()
 	go func() { wg.Wait(); close(results) }()
 	missing, mismatch, invalid, checked, recentChecked, olderChecked := 0, 0, sample.InvalidCount, 0, 0, 0
-	hadError := false
+	var requestErrorCode ErrorCode
 	cutoff := s.now.Add(-s.req.Since)
 	for value := range results {
 		if value.err != nil {
-			hadError = true
-			cancel()
+			code := remoteMetadataErrorCode(value.err)
+			if remoteMetadataErrorPriority(code) > remoteMetadataErrorPriority(requestErrorCode) {
+				requestErrorCode = code
+			}
 			continue
 		}
 		checked++
@@ -141,14 +151,44 @@ func executeMediaRemote(ctx context.Context, s *runState, e RegistryEntry) Check
 			mismatch++
 		}
 	}
-	if hadError || checkCtx.Err() != nil {
-		return baseCheck(e, s.observedAt(), StatusUnknown, ConfidenceUnknown, mediaRemoteEvidence(sample, checked, recentChecked, olderChecked, missing, mismatch, invalid, false))
+	if requestErrorCode != "" || checkCtx.Err() != nil {
+		code := requestErrorCode
+		if code == "" {
+			code = remoteMetadataErrorCode(checkCtx.Err())
+		}
+		check := baseCheck(e, s.observedAt(), StatusUnknown, ConfidenceUnknown, mediaRemoteEvidence(sample, checked, recentChecked, olderChecked, missing, mismatch, invalid, false))
+		check.ErrorCode = code
+		return check
 	}
 	status := StatusPass
 	if missing > 0 || mismatch > 0 || invalid > 0 {
 		status = StatusFail
 	}
 	return baseCheck(e, s.observedAt(), status, sample.Confidence, mediaRemoteEvidence(sample, checked, recentChecked, olderChecked, missing, mismatch, invalid, true))
+}
+
+func remoteMetadataErrorPriority(code ErrorCode) int {
+	switch code {
+	case ErrorTimeout:
+		return 3
+	case ErrorCanceled:
+		return 2
+	case ErrorRead:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func remoteMetadataErrorCode(err error) ErrorCode {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return ErrorTimeout
+	case errors.Is(err, context.Canceled):
+		return ErrorCanceled
+	default:
+		return ErrorRead
+	}
 }
 
 func executeDeepMediaRemote(s *runState, e RegistryEntry) Check {
@@ -161,7 +201,9 @@ func executeDeepMediaRemote(s *runState, e RegistryEntry) Check {
 		"invalid_timestamp_count": result.invalid, "sample_mode": "full_inventory", "inventory_complete": result.complete,
 	}
 	if s.deepMediaErr != nil || !result.complete {
-		return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, evidence)
+		check := baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, evidence)
+		check.ErrorCode = s.deepMediaAuditErrorCode()
+		return check
 	}
 	status := StatusPass
 	if result.missing > 0 || result.mismatch > 0 || result.invalid > 0 {

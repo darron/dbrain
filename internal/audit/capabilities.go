@@ -134,13 +134,14 @@ type RuntimeVersion struct {
 }
 
 type Dependencies struct {
-	Features Features
-	Store    StoreSnapshot
-	Database DatabaseInspector
-	Metrics  MetricsReader
-	Archives ArchiveLister
-	Media    MediaArchiveInspector
-	OKF      OKFInspector
-	Runtime  RuntimeVersion
-	Clock    func() time.Time
+	Features       Features
+	Store          StoreSnapshot
+	Database       DatabaseInspector
+	Metrics        MetricsReader
+	Archives       ArchiveLister
+	Media          MediaArchiveInspector
+	MediaErrorCode ErrorCode
+	OKF            OKFInspector
+	Runtime        RuntimeVersion
+	Clock          func() time.Time
 }

@@ -40,6 +40,7 @@ type runState struct {
 	deep                   *DeepDependencies
 	deepMedia              deepMediaResult
 	deepMediaErr           error
+	deepMediaErrorCode     ErrorCode
 	deepArchive            DeepArchiveResult
 	deepArchiveErr         error
 	deepCleanupComplete    bool
@@ -471,13 +472,13 @@ func stageForCheck(id CheckID) PipelineStage {
 	return ""
 }
 func skippedCheck(e RegistryEntry, reason SkipReason, now time.Time) Check {
-	return Check{ID: e.ID, Category: e.Category, Status: StatusSkipped, Confidence: ConfidenceUnknown, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: Evidence{}, SkipReason: reason}
+	return Check{ID: e.ID, Category: e.Category, Status: StatusSkipped, Confidence: ConfidenceUnknown, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: Evidence{}, Remediation: fixedRemediation(e.ID), SkipReason: reason}
 }
 func unknownCheck(e RegistryEntry, code ErrorCode, now time.Time) Check {
-	return Check{ID: e.ID, Category: e.Category, Status: StatusUnknown, Confidence: ConfidenceUnknown, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: Evidence{}, ErrorCode: code}
+	return Check{ID: e.ID, Category: e.Category, Status: StatusUnknown, Confidence: ConfidenceUnknown, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: Evidence{}, Remediation: fixedRemediation(e.ID), ErrorCode: code}
 }
 func baseCheck(e RegistryEntry, now time.Time, status Status, confidence Confidence, evidence Evidence) Check {
-	check := Check{ID: e.ID, Category: e.Category, Status: status, Confidence: confidence, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: evidence}
+	check := Check{ID: e.ID, Category: e.Category, Status: status, Confidence: confidence, Summary: fixedSummary(e.ID), ObservedAt: now, Evidence: evidence, Remediation: fixedRemediation(e.ID)}
 	warn, warnOK := evidence["warn_after_seconds"]
 	fail, failOK := evidence["fail_after_seconds"]
 	if warnOK && failOK {
@@ -485,8 +486,15 @@ func baseCheck(e RegistryEntry, now time.Time, status Status, confidence Confide
 	}
 	return check
 }
-func fixedSummary(id CheckID) string  { return "Audit result for " + string(id) }
-func fixedRemediation(CheckID) string { return "" }
+func fixedSummary(id CheckID) string { return "Audit result for " + string(id) }
+func fixedRemediation(id CheckID) string {
+	switch id {
+	case CheckDurabilitySQLiteBackupConfiguration:
+		return "Enable scheduler.sqlite_archive.enabled or set audit.require.sqlite_backup when remote SQLite backups are required."
+	default:
+		return ""
+	}
+}
 func integerEvidence(value any) int64 {
 	switch number := value.(type) {
 	case int:

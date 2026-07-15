@@ -796,6 +796,14 @@ func TestPipelineXMediaTranscriptionClassifiesTerminalRetryAndUnknown(t *testing
 		model.XMediaTranscriptStatusEmpty,
 	} {
 		itemID := insertVideoCandidate("x-media-terminal-" + status)
+		if status == model.XMediaTranscriptStatusTooShort {
+			if _, err := st.db.ExecContext(ctx, `
+				UPDATE items
+				SET article_title = ?, article_text = 'preserved raw transcript text'
+				WHERE id = ?`, model.XMediaTranscriptArticleTitle, itemID); err != nil {
+				t.Fatalf("seed preserved terminal transcript text: %v", err)
+			}
+		}
 		if err := st.SaveXMediaTranscriptionState(ctx, itemID, status, "terminal", now); err != nil {
 			t.Fatalf("seed terminal transcript %s: %v", status, err)
 		}
