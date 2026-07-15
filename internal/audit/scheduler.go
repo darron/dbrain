@@ -92,7 +92,13 @@ func executeScheduler(_ context.Context, s *runState, e RegistryEntry) Check {
 		if windowStatus == StatusUnknown {
 			return baseCheck(e, s.now, StatusUnknown, ConfidenceUnknown, base)
 		}
-		runs := append([]metrics.RunRecord{}, s.metrics.Runs...)
+		runs := make([]metrics.RunRecord, 0, len(s.metrics.Runs))
+		for _, run := range s.metrics.Runs {
+			if run.StartedAt.IsZero() {
+				continue
+			}
+			runs = append(runs, run)
+		}
 		sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.Before(runs[j].StartedAt) })
 		gaps, explained, unexplained := 0, 0, 0
 		largest := time.Duration(0)

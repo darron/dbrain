@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -275,6 +276,45 @@ func TestRunIncompleteLatestAttemptAndExhaustedWindowAreUnknown(t *testing.T) {
 	}
 	if got := report.Checks[1].Evidence["completed_attempt_count"]; got != 1 {
 		t.Fatalf("completed attempts = %#v", got)
+	}
+}
+
+func TestSchedulerContinuityIgnoresBoundaryIncompleteRun(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	window := deps.Metrics.(fakeMetrics).value
+	window.Runs = []metrics.RunRecord{
+		{ID: "boundary-only", CompletedAt: now.Add(-7 * 24 * time.Hour), RecordComplete: false},
+		{ID: "first", StartedAt: now.Add(-4 * time.Hour), CompletedAt: now.Add(-3*time.Hour - 55*time.Minute), RecordComplete: true},
+		{ID: "second", StartedAt: now.Add(-2*time.Hour - time.Minute), CompletedAt: now.Add(-115 * time.Minute), RecordComplete: true},
+	}
+	window.DurationSamples = []time.Duration{5 * time.Minute, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute}
+	window.AttemptCount = 3
+	window.CompletedCount = 2
+	deps.Metrics = fakeMetrics{window}
+
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckSchedulerContinuity}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Checks) != 1 || report.Checks[0].ID != CheckSchedulerContinuity {
+		t.Fatalf("checks = %#v", report.Checks)
+	}
+	check := report.Checks[0]
+	if check.Status != StatusWarn {
+		t.Fatalf("scheduler.continuity status = %s, want warn", check.Status)
+	}
+	if got := check.Evidence["gap_count"]; got != 1 {
+		t.Fatalf("gap_count = %#v, want 1", got)
+	}
+	if got := check.Evidence["unexplained_gap_count"]; got != 1 {
+		t.Fatalf("unexplained_gap_count = %#v, want 1", got)
+	}
+	if got := check.Evidence["largest_gap_seconds"]; got != int64(7140) {
+		t.Fatalf("largest_gap_seconds = %#v, want 7140", got)
+	}
+	if got := check.Evidence["largest_gap_seconds"]; got == int64(math.MaxInt64)/int64(time.Second) {
+		t.Fatalf("largest_gap_seconds saturated: %#v", got)
 	}
 }
 
