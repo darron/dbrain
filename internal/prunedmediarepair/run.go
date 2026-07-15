@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mediadownload"
+	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -61,11 +63,15 @@ func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, 
 		return stats, nil
 	}
 
+	ocrItems := make(map[int64]struct{}, stats.OCRCandidates)
+	transcriptItems := make(map[int64]struct{}, stats.TranscriptCandidates)
 	unique := make(map[int64]struct{}, stats.OCRCandidates+stats.TranscriptCandidates)
 	for _, id := range candidates.OCRItemIDs {
+		ocrItems[id] = struct{}{}
 		unique[id] = struct{}{}
 	}
 	for _, id := range candidates.TranscriptItemIDs {
+		transcriptItems[id] = struct{}{}
 		unique[id] = struct{}{}
 	}
 	itemIDs := make([]int64, 0, len(unique))
@@ -74,10 +80,32 @@ func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, 
 	}
 	sort.Slice(itemIDs, func(i, j int) bool { return itemIDs[i] < itemIDs[j] })
 
+	seenAssets := make(map[int64]struct{})
 	for _, itemID := range itemIDs {
-		mediaStats, err := download(ctx, cfg, st, itemID, mediadownload.Options{Force: true, Timeout: opts.Timeout, Logger: opts.Logger})
+		refs, err := st.ListItemMediaRefs(ctx, itemID)
+		if err != nil {
+			return stats, fmt.Errorf("list pruned media refs for item %d: %w", itemID, err)
+		}
+		_, selectedForOCR := ocrItems[itemID]
+		_, selectedForTranscript := transcriptItems[itemID]
+		assetIDs := make([]int64, 0, len(refs))
+		for _, ref := range refs {
+			if !eligiblePrunedArchivedRef(ref, selectedForOCR, selectedForTranscript) {
+				continue
+			}
+			if _, seen := seenAssets[ref.MediaAssetID]; seen {
+				continue
+			}
+			seenAssets[ref.MediaAssetID] = struct{}{}
+			assetIDs = append(assetIDs, ref.MediaAssetID)
+		}
+		if len(assetIDs) == 0 {
+			continue
+		}
+
+		mediaStats, err := download(ctx, cfg, st, itemID, mediadownload.Options{Force: true, AllowedAssetIDs: assetIDs, Timeout: opts.Timeout, Logger: opts.Logger})
 		stats.ItemsVisited++
-		if mediaStats.Requested > 0 || mediaStats.Changed > 0 {
+		if mediaStats.Downloaded > 0 {
 			stats.ItemsRestored++
 		}
 		stats.MediaCandidates += mediaStats.Candidates
@@ -92,4 +120,15 @@ func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, 
 		}
 	}
 	return stats, nil
+}
+
+func eligiblePrunedArchivedRef(ref model.ItemMediaRef, selectedForOCR, selectedForTranscript bool) bool {
+	if ref.DownloadStatus != model.MediaDownloadStatusDownloaded ||
+		strings.TrimSpace(ref.LocalPath) == "" ||
+		ref.LocalPrunedAt.IsZero() ||
+		ref.ArchiveStatus != model.MediaArchiveStatusArchived {
+		return false
+	}
+	return (selectedForOCR && ref.MediaType == "photo") ||
+		(selectedForTranscript && (ref.MediaType == "video" || ref.MediaType == "animated_gif"))
 }

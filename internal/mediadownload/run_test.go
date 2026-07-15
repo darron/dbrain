@@ -213,6 +213,63 @@ func TestRunForItemDownloadsMediaIntoVault(t *testing.T) {
 	}
 }
 
+func TestRunForItemAssetAllowlistFiltersRefsAndCandidateCount(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "image/jpeg")
+		_, _ = w.Write([]byte("jpeg-" + r.URL.Path))
+	}))
+	defer server.Close()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st := openTestStore(t, cfg.DBPath)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 15, 19, 0, 0, 0, time.UTC)
+	itemID := insertTestItem(t, st, "x:allowlisted-media", now)
+	if _, err := st.SaveXHydration(ctx, itemID, model.XHydration{
+		FullText: "two photos", Status: "ok_graphql", FetchedAt: now,
+		APIJSON: `{"snapshot":{"media_objects":[` +
+			`{"type":"photo","url":"` + server.URL + `/excluded.jpg"},` +
+			`{"type":"photo","url":"` + server.URL + `/allowed.jpg"}` +
+			`]}}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, itemID)
+	if err != nil || len(refs) != 2 {
+		t.Fatalf("ListItemMediaRefs: refs=%+v err=%v", refs, err)
+	}
+	allowedID := refs[1].MediaAssetID
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{
+		Force: true, AllowedAssetIDs: []int64{allowedID}, httpPolicy: privateNetworkTestPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("RunForItem: %v", err)
+	}
+	if stats.Candidates != 1 || stats.Requested != 1 || stats.Downloaded != 1 {
+		t.Fatalf("allowlist did not bound stats/work: %+v", stats)
+	}
+	refs, err = st.ListItemMediaRefs(ctx, itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs after: %v", err)
+	}
+	for _, ref := range refs {
+		if ref.MediaAssetID == allowedID && ref.DownloadStatus != model.MediaDownloadStatusDownloaded {
+			t.Fatalf("allowed ref was not downloaded: %+v", ref)
+		}
+		if ref.MediaAssetID != allowedID && ref.DownloadStatus != model.MediaDownloadStatusPending {
+			t.Fatalf("excluded ref was modified: %+v", ref)
+		}
+	}
+}
+
 func TestRunForItemLogsLargeDownloadProgress(t *testing.T) {
 	t.Parallel()
 

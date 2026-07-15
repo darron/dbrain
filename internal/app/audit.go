@@ -51,6 +51,16 @@ var newAuditMediaInspector = func(opts mediaarchive.Options) (audit.MediaArchive
 	return auditMediaInspector{inspector: inspector}, nil
 }
 
+var newAuditMediaInventory = func(opts mediaarchive.Options) (audit.DeepMediaInventory, error) {
+	inventory, err := mediaarchive.NewS3Inventory(opts)
+	if err != nil {
+		return nil, err
+	}
+	// The deep runner cannot choose or widen the prefix; this adapter is
+	// permanently confined to the media archival namespace.
+	return auditMediaInventory{inventory: inventory, prefix: mediaarchive.DefaultPrefix}, nil
+}
+
 func newAuditCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{Use: "audit", Short: "Inspect production health without modifying the target", RunE: helpCommand}
 	cmd.Annotations = map[string]string{skipKeepAwakeAnnotation: "true"}
@@ -569,17 +579,21 @@ func buildDeepAuditDependencies(ctx context.Context, cfg config.Config, snapshot
 	}
 	archiveOpts, err := archiveRuntimeValues(ctx, cfg.RootDir)
 	if err != nil {
+		if needMedia {
+			deep.MediaErrorCode = audit.ErrorCredentialResolution
+		}
 		return deep, nil
 	}
 	archiveOpts.ConnectTimeout = 10 * time.Second
 	archiveOpts.TLSHandshakeTimeout = 10 * time.Second
 	archiveOpts.ResponseHeaderTimeout = 30 * time.Second
 	if needMedia {
-		inventory, inventoryErr := mediaarchive.NewS3Inventory(archiveOpts)
-		if inventoryErr == nil {
-			// The deep runner cannot choose or widen the prefix; this adapter is
-			// permanently confined to the media archival namespace.
-			deep.Media = auditMediaInventory{inventory: inventory, prefix: mediaarchive.DefaultPrefix}
+		inventory, inventoryErr := newAuditMediaInventory(archiveOpts)
+		if inventoryErr != nil {
+			deep.MediaErrorCode = audit.ErrorConfiguration
+		} else {
+			deep.Media = inventory
+			deep.MediaErrorCode = ""
 		}
 	}
 	if needArchive {

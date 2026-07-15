@@ -56,6 +56,114 @@ type fakeDeepInventory struct {
 	remaining []time.Duration
 }
 
+type errorDeepInventory struct{ err error }
+
+func (f errorDeepInventory) ListPage(context.Context, string, int) (MediaInventoryPage, error) {
+	return MediaInventoryPage{}, f.err
+}
+
+type maskingDeadlineDeepInventory struct{}
+
+func (maskingDeadlineDeepInventory) ListPage(ctx context.Context, _ string, _ int) (MediaInventoryPage, error) {
+	<-ctx.Done()
+	return MediaInventoryPage{}, errors.New("provider masked deadline secret")
+}
+
+func TestRunDeepMediaRequestContextErrorTakesPriority(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Store = fakeStore{media: []ArchivedMediaRecord{{Key: "private-deep-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true}}}
+	limits := DefaultDeepLimits()
+	limits.RequestTimeout = time.Millisecond
+	report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote, CheckDurabilityMediaRemoteOnly}}, deps, DeepDependencies{
+		Media: maskingDeadlineDeepInventory{}, Limits: limits,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range report.Checks {
+		if check.Status != StatusUnknown || check.ErrorCode != ErrorTimeout {
+			t.Fatalf("check = %#v", check)
+		}
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "provider masked deadline secret") || strings.Contains(string(encoded), "private-deep-key") {
+		t.Fatalf("report leaked private failure details: %s", encoded)
+	}
+}
+
+func TestRunDeepMediaErrorsHaveSanitizedCodes(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		err  error
+		want ErrorCode
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, want: ErrorTimeout},
+		{name: "canceled", err: context.Canceled, want: ErrorCanceled},
+		{name: "provider read", err: errors.New("provider listing secret"), want: ErrorRead},
+		{name: "budget", err: ErrDeepBudget, want: ErrorBudgetExhausted},
+		{name: "incomplete listing", err: ErrDeepListingIncomplete, want: ErrorListingIncomplete},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deps := passingDependencies(now)
+			deps.Store = fakeStore{media: []ArchivedMediaRecord{{Key: "private-deep-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true}}}
+			report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote, CheckDurabilityMediaRemoteOnly}}, deps, DeepDependencies{
+				Media: errorDeepInventory{err: test.err}, Limits: DefaultDeepLimits(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, check := range report.Checks {
+				if check.Status != StatusUnknown || check.Confidence != ConfidenceUnknown || check.ErrorCode != test.want {
+					t.Fatalf("check = %#v, want unknown/unknown/%s", check, test.want)
+				}
+			}
+			encoded, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"private-deep-key", "provider listing secret"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("report leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestRunDeepMediaMissingCapabilityPreservesSanitizedCode(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		code ErrorCode
+		want ErrorCode
+	}{
+		{name: "default", want: ErrorUnavailable},
+		{name: "credential", code: ErrorCredentialResolution, want: ErrorCredentialResolution},
+		{name: "configuration", code: ErrorConfiguration, want: ErrorConfiguration},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deps := passingDependencies(now)
+			deps.Store = fakeStore{media: []ArchivedMediaRecord{{Key: "private-deep-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true}}}
+			report, err := RunDeep(t.Context(), Request{Profile: ProfileDeep, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote, CheckDurabilityMediaRemoteOnly}}, deps, DeepDependencies{
+				MediaErrorCode: test.code, Limits: DefaultDeepLimits(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, check := range report.Checks {
+				if check.Status != StatusUnknown || check.ErrorCode != test.want {
+					t.Fatalf("check = %#v", check)
+				}
+			}
+		})
+	}
+}
+
 type remoteOnlyCountingStore struct {
 	fakeStore
 	archivedCalls int

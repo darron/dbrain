@@ -40,6 +40,7 @@ type runState struct {
 	deep                   *DeepDependencies
 	deepMedia              deepMediaResult
 	deepMediaErr           error
+	deepMediaErrorCode     ErrorCode
 	deepArchive            DeepArchiveResult
 	deepArchiveErr         error
 	deepCleanupComplete    bool

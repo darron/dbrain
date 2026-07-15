@@ -12,7 +12,10 @@ import (
 )
 
 type Options struct {
-	Force            bool
+	Force bool
+	// AllowedAssetIDs limits this run to the listed media asset IDs. Empty keeps
+	// the existing item-wide behavior used by normal download workflows.
+	AllowedAssetIDs  []int64
 	Timeout          time.Duration
 	ProgressInterval time.Duration
 	ProgressBytes    int64
@@ -50,6 +53,19 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 	refs, err := st.ListItemMediaRefs(ctx, itemID)
 	if err != nil {
 		return Stats{}, err
+	}
+	if len(opts.AllowedAssetIDs) > 0 {
+		allowed := make(map[int64]struct{}, len(opts.AllowedAssetIDs))
+		for _, assetID := range opts.AllowedAssetIDs {
+			allowed[assetID] = struct{}{}
+		}
+		filtered := make([]model.ItemMediaRef, 0, len(refs))
+		for _, ref := range refs {
+			if _, ok := allowed[ref.MediaAssetID]; ok {
+				filtered = append(filtered, ref)
+			}
+		}
+		refs = filtered
 	}
 
 	stats := Stats{Candidates: len(refs)}

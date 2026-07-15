@@ -19,6 +19,52 @@ func (f failingMediaInspector) HeadObject(context.Context, string) (ObjectMetada
 	return ObjectMetadata{}, f.err
 }
 
+type orderedFailingMediaInspector struct{}
+
+func (orderedFailingMediaInspector) HeadObject(_ context.Context, key string) (ObjectMetadata, error) {
+	switch key {
+	case "private-read-key":
+		time.Sleep(time.Millisecond)
+		return ObjectMetadata{}, errors.New("provider read secret")
+	case "private-canceled-key":
+		time.Sleep(5 * time.Millisecond)
+		return ObjectMetadata{}, context.Canceled
+	case "private-timeout-key":
+		time.Sleep(10 * time.Millisecond)
+		return ObjectMetadata{}, context.DeadlineExceeded
+	default:
+		return ObjectMetadata{}, errors.New("unexpected private key")
+	}
+}
+
+func TestMediaRemoteErrorPriorityIsDeterministic(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Store = fakeStore{media: []ArchivedMediaRecord{
+		{Key: "private-read-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true},
+		{Key: "private-canceled-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true},
+		{Key: "private-timeout-key", SizeBytes: 10, ArchivedAt: now.Add(-time.Hour), ArchivedAtValid: true},
+	}}
+	deps.Media = orderedFailingMediaInspector{}
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour, CheckIDs: []CheckID{CheckDurabilityMediaRemote}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForTest(t, report, CheckDurabilityMediaRemote)
+	if check.Status != StatusUnknown || check.ErrorCode != ErrorTimeout {
+		t.Fatalf("check = %#v, want timeout priority", check)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private-read-key", "private-canceled-key", "private-timeout-key", "provider read secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("report leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestMediaRemoteSanitizesInspectorErrors(t *testing.T) {
 	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
 	for _, test := range []struct {

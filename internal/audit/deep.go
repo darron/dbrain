@@ -124,6 +124,7 @@ type DeepDependencies struct {
 	Archives             DeepArchiveReader
 	VerifyArchive        DeepArchiveVerifier
 	Media                DeepMediaInventory
+	MediaErrorCode       ErrorCode
 	NewTemp              func() (*vaultfs.PrivateTemp, error)
 	CleanupTemp          func(*vaultfs.PrivateTemp) error
 	RecordCleanupFailure func(string)
@@ -263,8 +264,20 @@ func (s *runState) loadDeepMedia(ctx context.Context) {
 	if !s.deps.Features.MediaRemoteEnabled {
 		return
 	}
-	if s.deep.Media == nil || s.mediaErr != nil {
+	if s.mediaErr != nil {
+		s.setDeepMediaError(deepMediaResult{}, errCapabilityUnavailable)
+		return
+	}
+	if s.deep.Media == nil {
+		code := s.deep.MediaErrorCode
+		if !code.Valid() {
+			code = s.deps.MediaErrorCode
+		}
+		if !code.Valid() {
+			code = ErrorUnavailable
+		}
 		s.deepMediaErr = errCapabilityUnavailable
+		s.deepMediaErrorCode = code
 		return
 	}
 	result := deepMediaResult{population: len(s.media)}
@@ -293,8 +306,7 @@ func (s *runState) loadDeepMedia(ctx context.Context) {
 	token := ""
 	for {
 		if result.pages >= s.deep.Limits.MaxPages || result.objects >= s.deep.Limits.MaxObjects {
-			s.deepMedia = result
-			s.deepMediaErr = ErrDeepBudget
+			s.setDeepMediaError(result, ErrDeepBudget)
 			return
 		}
 		remaining := s.deep.Limits.MaxObjects - result.objects
@@ -303,28 +315,33 @@ func (s *runState) loadDeepMedia(ctx context.Context) {
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, s.deep.Limits.RequestTimeout)
 		page, err := s.deep.Media.ListPage(requestCtx, token, remaining)
+		requestErr := requestCtx.Err()
 		cancel()
 		result.pages++
+		if requestErr != nil {
+			s.setDeepMediaError(result, requestErr)
+			return
+		}
 		if err != nil {
-			s.deepMedia, s.deepMediaErr = result, err
+			s.setDeepMediaError(result, err)
 			return
 		}
 		if len(page.Objects) > remaining {
-			s.deepMedia, s.deepMediaErr = result, ErrDeepBudget
+			s.setDeepMediaError(result, ErrDeepBudget)
 			return
 		}
 		for _, object := range page.Objects {
 			key := strings.TrimSpace(object.Key)
 			if key == "" || object.SizeBytes < 0 {
-				s.deepMedia, s.deepMediaErr = result, ErrDeepListingIncomplete
+				s.setDeepMediaError(result, ErrDeepListingIncomplete)
 				return
 			}
 			if previous, exists := remote[key]; exists {
 				if previous != object.SizeBytes {
-					s.deepMedia, s.deepMediaErr = result, ErrDeepListingIncomplete
+					s.setDeepMediaError(result, ErrDeepListingIncomplete)
 					return
 				}
-				s.deepMedia, s.deepMediaErr = result, ErrDeepListingIncomplete
+				s.setDeepMediaError(result, ErrDeepListingIncomplete)
 				return
 			}
 			remote[key] = object.SizeBytes
@@ -335,12 +352,12 @@ func (s *runState) loadDeepMedia(ctx context.Context) {
 			break
 		}
 		if len(page.Objects) == 0 || strings.TrimSpace(page.NextToken) == "" {
-			s.deepMedia, s.deepMediaErr = result, ErrDeepListingIncomplete
+			s.setDeepMediaError(result, ErrDeepListingIncomplete)
 			return
 		}
 		next := strings.TrimSpace(page.NextToken)
 		if _, exists := seenTokens[next]; exists {
-			s.deepMedia, s.deepMediaErr = result, ErrDeepListingIncomplete
+			s.setDeepMediaError(result, ErrDeepListingIncomplete)
 			return
 		}
 		seenTokens[next] = struct{}{}
@@ -369,6 +386,39 @@ func (s *runState) loadDeepMedia(ctx context.Context) {
 		}
 	}
 	s.deepMedia = result
+}
+
+func (s *runState) setDeepMediaError(result deepMediaResult, err error) {
+	s.deepMedia = result
+	s.deepMediaErr = err
+	s.deepMediaErrorCode = deepMediaFailureCode(err)
+}
+
+func deepMediaFailureCode(err error) ErrorCode {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return ErrorTimeout
+	case errors.Is(err, context.Canceled):
+		return ErrorCanceled
+	case errors.Is(err, ErrDeepBudget):
+		return ErrorBudgetExhausted
+	case errors.Is(err, ErrDeepListingIncomplete):
+		return ErrorListingIncomplete
+	case errors.Is(err, errCapabilityUnavailable):
+		return ErrorUnavailable
+	default:
+		return ErrorRead
+	}
+}
+
+func (s *runState) deepMediaAuditErrorCode() ErrorCode {
+	if s.deepMediaErrorCode.Valid() {
+		return s.deepMediaErrorCode
+	}
+	if !s.deepMedia.complete {
+		return ErrorListingIncomplete
+	}
+	return ErrorUnavailable
 }
 
 func (s *runState) loadDeepArchive(ctx context.Context) {
@@ -437,7 +487,9 @@ func executeDeep(_ context.Context, s *runState, entry RegistryEntry) Check {
 	switch entry.ID {
 	case CheckDurabilityMediaRemoteOnly:
 		if s.deepMediaErr != nil || !s.deepMedia.complete {
-			return baseCheck(entry, s.now, StatusUnknown, ConfidenceUnknown, Evidence{"remote_only_count": s.deepMedia.remoteOnly, "inventory_complete": false})
+			check := baseCheck(entry, s.now, StatusUnknown, ConfidenceUnknown, Evidence{"remote_only_count": s.deepMedia.remoteOnly, "inventory_complete": false})
+			check.ErrorCode = s.deepMediaAuditErrorCode()
+			return check
 		}
 		status := StatusPass
 		if s.deepMedia.remoteOnly > 0 {
