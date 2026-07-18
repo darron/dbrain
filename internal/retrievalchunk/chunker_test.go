@@ -1,0 +1,198 @@
+package retrievalchunk
+
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
+
+func TestBuildKeepsShortSectionAsOneChunk(t *testing.T) {
+	parent := Parent{
+		Kind:        "source",
+		SourceKey:   "src:test",
+		ContentHash: "input-v1",
+		Sections: []Section{{
+			Role:    "raw",
+			Heading: "Architecture",
+			Text:    "First paragraph.\n\nSecond paragraph.",
+		}},
+	}
+
+	chunks, err := Build(parent, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("got %d chunks, want 1", len(chunks))
+	}
+	got := chunks[0]
+	if got.Text != parent.Sections[0].Text || got.Heading != "Architecture" {
+		t.Fatalf("chunk did not preserve text and heading: %+v", got)
+	}
+	if got.StartChar != 0 || got.EndChar != utf8.RuneCountInString(parent.Sections[0].Text) {
+		t.Fatalf("got rune offsets [%d,%d)", got.StartChar, got.EndChar)
+	}
+}
+
+func TestBuildUsesTargetHardMaximumAndBoundedOverlap(t *testing.T) {
+	paragraph := func(label string) string { return label + " " + strings.Repeat("word ", 195) }
+	text := strings.Join([]string{
+		paragraph("one"), paragraph("two"), paragraph("three"), paragraph("four"),
+		paragraph("five"), paragraph("six"), paragraph("seven"),
+	}, "\n\n")
+
+	chunks, err := Build(Parent{
+		Kind: "source", SourceKey: "src:long", ContentHash: "long-v1",
+		Sections: []Section{{Role: "raw", Heading: "Details", Text: text}},
+	}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) < 3 {
+		t.Fatalf("got %d chunks, want several target-sized chunks", len(chunks))
+	}
+	runes := []rune(text)
+	for i, chunk := range chunks {
+		length := chunk.EndChar - chunk.StartChar
+		if length > DefaultOptions().MaxRunes {
+			t.Fatalf("chunk %d has %d runes, hard maximum is %d", i, length, DefaultOptions().MaxRunes)
+		}
+		if chunk.Text != string(runes[chunk.StartChar:chunk.EndChar]) {
+			t.Fatalf("chunk %d text does not match its offsets", i)
+		}
+		if i > 0 {
+			overlap := chunks[i-1].EndChar - chunk.StartChar
+			if overlap < 0 || overlap > DefaultOptions().OverlapRunes {
+				t.Fatalf("chunk %d overlap is %d, want 0..%d", i, overlap, DefaultOptions().OverlapRunes)
+			}
+		}
+	}
+	if got := chunks[0].EndChar - chunks[0].StartChar; got > DefaultOptions().TargetRunes {
+		t.Fatalf("first chunk has %d runes, expected paragraph boundary at or before target %d", got, DefaultOptions().TargetRunes)
+	}
+}
+
+func TestBuildUsesRuneOffsetsForUTF8(t *testing.T) {
+	text := strings.Repeat("é🧠漢字 ", 900)
+	opts := Options{TargetRunes: 120, MaxRunes: 160, OverlapRunes: 20}
+	chunks, err := Build(Parent{
+		Kind: "item", SourceKey: "x:utf8", ContentHash: "utf8-v1",
+		Sections: []Section{{Role: "raw", Text: text}},
+	}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runes := []rune(text)
+	for i, chunk := range chunks {
+		if chunk.Text != string(runes[chunk.StartChar:chunk.EndChar]) {
+			t.Fatalf("chunk %d corrupts UTF-8 or uses byte offsets: %+v", i, chunk)
+		}
+		if !utf8.ValidString(chunk.Text) {
+			t.Fatalf("chunk %d contains invalid UTF-8", i)
+		}
+	}
+}
+
+func TestBuildSplitsOversizedParagraphDeterministically(t *testing.T) {
+	text := strings.Repeat("This sentence has a deterministic boundary. ", 180)
+	parent := Parent{
+		Kind: "source", SourceKey: "src:oversized", ContentHash: "oversized-v1",
+		Sections: []Section{{Role: "raw", Text: text}},
+	}
+
+	first, err := Build(parent, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Build(parent, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) < 2 {
+		t.Fatalf("oversized paragraph produced %d chunks", len(first))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("chunk %d is not deterministic", i)
+		}
+		if first[i].EndChar-first[i].StartChar > DefaultOptions().MaxRunes {
+			t.Fatalf("chunk %d exceeds hard maximum", i)
+		}
+	}
+}
+
+func TestBuildNeverMergesEvidenceRoles(t *testing.T) {
+	sections := []Section{
+		{Role: "raw", Text: "raw evidence"},
+		{Role: "ocr", Text: "ocr evidence"},
+		{Role: "transcript", Text: "transcript evidence"},
+		{Role: "summary", Text: "derived evidence", Derived: true},
+	}
+	chunks, err := Build(Parent{
+		Kind: "item", SourceKey: "item:roles", ContentHash: "roles-v1", Sections: sections,
+	}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != len(sections) {
+		t.Fatalf("got %d chunks, want one per role", len(chunks))
+	}
+	for i, chunk := range chunks {
+		if chunk.EvidenceRole != sections[i].Role || chunk.Text != sections[i].Text {
+			t.Fatalf("chunk %d merged or relabeled evidence: %+v", i, chunk)
+		}
+	}
+}
+
+func TestBuildStableIDsUseAllIdentityFields(t *testing.T) {
+	base := Parent{
+		Kind: "source", SourceKey: "src:id", ContentHash: "input-v1",
+		Sections: []Section{{Role: "raw", Text: "stable evidence"}},
+	}
+	one, err := Build(base, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := Build(base, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one[0].ID != two[0].ID || one[0].TextHash != two[0].TextHash {
+		t.Fatalf("stable input produced unstable hashes: %+v %+v", one[0], two[0])
+	}
+	if len(one[0].ID) != 64 || len(one[0].TextHash) != 64 {
+		t.Fatalf("expected hex SHA-256 identities, got id=%q text=%q", one[0].ID, one[0].TextHash)
+	}
+
+	changed := base
+	changed.ContentHash = "input-v2"
+	three, err := Build(changed, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one[0].ID == three[0].ID {
+		t.Fatal("input content hash did not affect chunk ID")
+	}
+
+	changed = base
+	changed.Sections = []Section{{Role: "summary", Text: "stable evidence", Derived: true}}
+	four, err := Build(changed, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one[0].ID == four[0].ID {
+		t.Fatal("evidence role did not affect chunk ID")
+	}
+}
+
+func TestBuildRejectsOverlapAboveVersionMaximum(t *testing.T) {
+	opts := DefaultOptions()
+	opts.OverlapRunes = 301
+	_, err := Build(Parent{
+		Kind: "source", SourceKey: "src:overlap", ContentHash: "overlap-v1",
+		Sections: []Section{{Role: "raw", Text: "evidence"}},
+	}, opts)
+	if err == nil {
+		t.Fatal("expected overlap above 300 runes to be rejected")
+	}
+}
