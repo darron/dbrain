@@ -3,10 +3,12 @@ package applenotes
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
@@ -277,6 +279,26 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 		t.Fatalf("initial Run: %v", err)
 	}
 	ctx := context.Background()
+	materialized, err := st.GetItem(ctx, "apple-note:default:note-1")
+	if err != nil {
+		t.Fatalf("load materialized note: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := st.SaveItemSummary(ctx, materialized.ID, model.SummaryResult{
+		Text: "private mirror summary", RawJSON: `{}`, Model: "test", PromptVersion: "v1",
+		Status: model.ItemSummaryStatusOK, FetchedAt: now, Tool: "test", ToolVersion: "v1",
+	}, "summary-hash"); err != nil {
+		t.Fatalf("seed item summary mirror: %v", err)
+	}
+	if _, err := st.SaveItemOCR(ctx, materialized.ID, model.OCRResult{
+		Text: "private mirror OCR", RawJSON: `{}`, Model: "test",
+		Status: model.ItemOCRStatusOK, FetchedAt: now, Tool: "test", ToolVersion: "v1",
+	}, "ocr-hash"); err != nil {
+		t.Fatalf("seed item OCR mirror: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(ctx, materialized.ID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+		t.Fatalf("seed transcript mirror: %v", err)
+	}
 	chunk := retrievalchunk.Chunk{
 		ID: "apple-note-private-chunk", ParentKind: "item", ParentSourceKey: "apple-note:default:note-1",
 		EvidenceRole: "raw", SectionOrdinal: 0, Ordinal: 0, StartChar: 0, EndChar: 12,
@@ -321,6 +343,25 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 	}
 	if item.Text != "" || item.ArticleText != "" || item.LinksJSON != "[]" {
 		t.Fatalf("item content not purged: text=%q article=%q links=%q", item.Text, item.ArticleText, item.LinksJSON)
+	}
+	if item.SummaryText != "" || item.OCRText != "" {
+		t.Fatalf("authoritative enrichments rehydrated purged note: summary=%q ocr=%q", item.SummaryText, item.OCRText)
+	}
+	for _, role := range []string{
+		model.ItemEnrichmentRoleSummary,
+		model.ItemEnrichmentRoleOCR,
+		model.ItemEnrichmentRoleXMediaTranscript,
+	} {
+		if _, err := st.GetItemEnrichment(ctx, item.ID, role); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("purged note enrichment %s still exists: %v", role, err)
+		}
+	}
+	parents, err := st.ListRetrievalParents(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("ListRetrievalParents after purge: %v", err)
+	}
+	if len(parents) != 1 || len(parents[0].Sections) != 0 {
+		t.Fatalf("purged Apple Note remains projectable: %+v", parents)
 	}
 	results, err := st.Search(context.Background(), "Decoded body", 10)
 	if err != nil {

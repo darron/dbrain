@@ -145,6 +145,18 @@ func TestMigrationRepairsPartialRetrievalSchema(t *testing.T) {
 			t.Fatalf("repaired index %s count = %d, want 1", index, count)
 		}
 	}
+	for _, trigger := range []string{
+		"trg_retrieval_embeddings_profile_invariants_insert",
+		"trg_retrieval_embeddings_profile_invariants_update",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&count); err != nil {
+			t.Fatalf("check repaired trigger %s: %v", trigger, err)
+		}
+		if count != 1 {
+			t.Fatalf("repaired trigger %s count = %d, want 1", trigger, count)
+		}
+	}
 	if _, err := db.Exec(`
 		INSERT INTO retrieval_chunks (
 			chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
@@ -161,6 +173,23 @@ func TestMigrationRepairsPartialRetrievalSchema(t *testing.T) {
 		) VALUES ('legacy-chunk', 'profile-a', 'fake', 'fake-v1', 2, 'dense_f32',
 			'l2', X'0000000000000000', 'text-hash', 'ready', '2026-07-18T00:00:00Z')`); err != nil {
 		t.Fatalf("insert embedding into repaired schema: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO retrieval_chunks (
+			chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
+			ordinal, start_char, end_char, heading, chunker_version,
+			input_content_hash, chunk_text_hash, text, created_at, updated_at
+		) VALUES ('profile-conflict', 'item', 'other-item', 'raw', 0, 0, 0, 5, '',
+			'retrieval-chunker-v1', 'input-3', 'hash-3', 'three', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("insert profile conflict chunk: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO retrieval_embeddings (
+			chunk_id, profile_id, provider, model, dimensions, representation,
+			normalization, vector_bytes, chunk_text_hash, status, updated_at
+		) VALUES ('profile-conflict', 'profile-a', 'fake', 'different-model', 2, 'dense_f32',
+			'l2', X'0000000000000000', 'hash-3', 'ready', '2026-07-18T00:00:00Z')`); err == nil {
+		t.Fatal("repaired profile trigger allowed mixed model provenance")
 	}
 	if _, err := db.Exec(`DELETE FROM retrieval_chunks WHERE chunk_id = 'legacy-chunk'`); err != nil {
 		t.Fatalf("delete repaired legacy chunk: %v", err)

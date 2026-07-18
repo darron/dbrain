@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,7 +216,7 @@ func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T
 		t.Fatalf("unchanged embedding invalidated generation: status %q active %d", unchangedStatus, unchangedActive)
 	}
 	changedEmbedding := testEmbedding("chunk-a", "profile-a", "hash-a")
-	changedEmbedding.Model = "fake-v2"
+	changedEmbedding.VectorBytes = []byte{0, 0, 0, 0, 0, 0, 0, 1}
 	if err := st.PutRetrievalEmbedding(ctx, changedEmbedding); err != nil {
 		t.Fatalf("change embedding: %v", err)
 	}
@@ -289,6 +290,15 @@ func TestPurgeItemIndexedContentDeletesRetrievalState(t *testing.T) {
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedPurgeItem(t, st, "apple-note:one")
+	var itemID int64
+	if err := st.db.QueryRow(`SELECT id FROM items WHERE source_key = 'apple-note:one'`).Scan(&itemID); err != nil {
+		t.Fatalf("load purge item ID: %v", err)
+	}
+	seedItemEnrichmentRows(t, st, itemID, map[string]string{
+		model.ItemEnrichmentRoleSummary:          "private mirror summary",
+		model.ItemEnrichmentRoleOCR:              "private mirror OCR",
+		model.ItemEnrichmentRoleXMediaTranscript: "private mirror transcript",
+	})
 	chunk := testRetrievalChunk("chunk-a", "item", "apple-note:one", 0, "hash-a", "private")
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "apple-note:one", []retrievalchunk.Chunk{chunk}); err != nil {
 		t.Fatalf("replace chunks: %v", err)
@@ -330,6 +340,20 @@ func TestPurgeItemIndexedContentDeletesRetrievalState(t *testing.T) {
 	if status != string(RetrievalGenerationStale) || active != 0 {
 		t.Fatalf("affected generation = status %q active %d, want stale inactive", status, active)
 	}
+	var enrichmentCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM item_enrichments WHERE item_id = ?`, itemID).Scan(&enrichmentCount); err != nil {
+		t.Fatalf("count purged item enrichments: %v", err)
+	}
+	if enrichmentCount != 0 {
+		t.Fatalf("purge left %d authoritative item enrichment rows", enrichmentCount)
+	}
+	parents, err := st.ListRetrievalParents(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("project parents after purge: %v", err)
+	}
+	if len(parents) != 1 || len(parents[0].Sections) != 0 {
+		t.Fatalf("purged item remains projectable: %+v", parents)
+	}
 }
 
 func TestRetrievalProjectionPagesParentsInOneQuery(t *testing.T) {
@@ -352,6 +376,30 @@ func TestRetrievalProjectionPagesParentsInOneQuery(t *testing.T) {
 	}
 	if len(parents) != 1 || parents[0].SourceKey != "item:c" {
 		t.Fatalf("second page = %+v", parents)
+	}
+}
+
+func TestRetrievalProjectionKeyPageReturnsBothParentKindsForSharedSourceKey(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	seedPurgeItem(t, st, "shared:key")
+	seedPurgeItem(t, st, "later:key")
+	seedRetrievalSource(t, st, "shared:key")
+
+	parents, err := st.ListRetrievalParents(context.Background(), "", 1)
+	if err != nil {
+		t.Fatalf("list shared-key page: %v", err)
+	}
+	if len(parents) != 1 || parents[0].SourceKey != "later:key" {
+		t.Fatalf("first key page = %+v, want later:key", parents)
+	}
+	parents, err = st.ListRetrievalParents(context.Background(), "later:key", 1)
+	if err != nil {
+		t.Fatalf("list collision key page: %v", err)
+	}
+	if len(parents) != 2 || parents[0].SourceKey != "shared:key" || parents[1].SourceKey != "shared:key" || parents[0].Kind == parents[1].Kind {
+		t.Fatalf("shared-key page = %+v, want both item and source", parents)
 	}
 }
 
@@ -406,6 +454,34 @@ func TestRetrievalProjectionUsesAuthoritativeItemEnrichmentMirror(t *testing.T) 
 	}
 }
 
+func TestRetrievalProjectionAuthoritativeEmptyTranscriptSuppressesLegacyTranscript(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	seedPurgeItem(t, st, "item:empty-transcript")
+	var itemID int64
+	if err := st.db.QueryRow(`SELECT id FROM items WHERE source_key = 'item:empty-transcript'`).Scan(&itemID); err != nil {
+		t.Fatalf("load transcript item ID: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE items SET article_title = ?, article_text = 'stale legacy transcript' WHERE id = ?`, model.XMediaTranscriptArticleTitle, itemID); err != nil {
+		t.Fatalf("seed stale legacy transcript: %v", err)
+	}
+	seedItemEnrichmentRows(t, st, itemID, map[string]string{model.ItemEnrichmentRoleXMediaTranscript: ""})
+
+	parents, err := st.ListRetrievalParents(context.Background(), "", 10)
+	if err != nil {
+		t.Fatalf("list parents: %v", err)
+	}
+	if len(parents) != 1 {
+		t.Fatalf("parents = %+v, want one", parents)
+	}
+	for _, section := range parents[0].Sections {
+		if section.Role == "transcript" || strings.Contains(section.Text, "stale legacy transcript") {
+			t.Fatalf("authoritative empty transcript exposed stale legacy content: %+v", parents[0].Sections)
+		}
+	}
+}
+
 func testRetrievalChunk(id, parentKind, parentKey string, ordinal int, textHash, text string) retrievalchunk.Chunk {
 	return retrievalchunk.Chunk{
 		ID: id, ParentKind: parentKind, ParentSourceKey: parentKey, EvidenceRole: "raw",
@@ -435,6 +511,36 @@ func seedPurgeItem(t *testing.T, st *Store, sourceKey string) {
 		sourceKey, sourceKey, "item-content-hash", now, now, now, sourceKey+".md")
 	if err != nil {
 		t.Fatalf("seed purge item %s: %v", sourceKey, err)
+	}
+}
+
+func seedRetrievalSource(t *testing.T, st *Store, sourceKey string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := st.db.Exec(`
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, title,
+			extracted_text, content_hash, note_path, created_at, updated_at
+		) VALUES (?, ?, ?, 'article', 'Source', 'source text', 'source-hash', ?, ?, ?)`,
+		sourceKey, "https://example.com/"+sourceKey, "https://example.com/"+sourceKey,
+		sourceKey+".md", now, now)
+	if err != nil {
+		t.Fatalf("seed retrieval source %s: %v", sourceKey, err)
+	}
+}
+
+func seedItemEnrichmentRows(t *testing.T, st *Store, itemID int64, rows map[string]string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	for role, text := range rows {
+		if _, err := st.db.Exec(`
+			INSERT INTO item_enrichments (
+				item_id, role, status, text, raw_json, error, model, prompt_version,
+				tool, tool_version, input_hash, completed_at, created_at, updated_at
+			) VALUES (?, ?, 'ok', ?, '{}', '', 'test', 'v1', 'test', 'v1', 'hash', ?, ?, ?)`,
+			itemID, role, text, now, now, now); err != nil {
+			t.Fatalf("seed item enrichment %s: %v", role, err)
+		}
 	}
 }
 
@@ -478,6 +584,73 @@ func TestListChunksNeedingEmbeddingExcludesCurrentAndIncludesChanged(t *testing.
 	}
 	if status.ReadyEmbeddings != 1 || status.PendingEmbeddings != len(rows) {
 		t.Fatalf("retrieval status = %+v, want ready=1 pending=%d", status, len(rows))
+	}
+}
+
+func TestRetrievalStatusEmbeddingCandidatesMatchesCurrentHashErrorSelector(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunk := testRetrievalChunk("chunk-error", "item", "item:error", 0, "hash-error", "error text")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:error", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatalf("replace chunks: %v", err)
+	}
+	embedding := testEmbedding(chunk.ID, "profile-error", chunk.TextHash)
+	embedding.Status = RetrievalEmbeddingError
+	embedding.LastError = "provider unavailable"
+	if err := st.PutRetrievalEmbedding(ctx, embedding); err != nil {
+		t.Fatalf("put error embedding: %v", err)
+	}
+	candidates, err := st.ListChunksNeedingEmbedding(ctx, embedding.ProfileID, "", 10)
+	if err != nil {
+		t.Fatalf("list error candidates: %v", err)
+	}
+	status, err := st.RetrievalStatus(ctx, embedding.ProfileID)
+	if err != nil {
+		t.Fatalf("retrieval status: %v", err)
+	}
+	if len(candidates) != 1 || status.EmbeddingCandidates != len(candidates) {
+		t.Fatalf("candidates=%+v status=%+v, want selector parity", candidates, status)
+	}
+	if status.PendingEmbeddings != 0 || status.BlockedEmbeddings != 0 || status.FailedEmbeddings != 1 {
+		t.Fatalf("error partition status = %+v, want failed=1 only", status)
+	}
+}
+
+func TestRetrievalEmbeddingProfileInvariantsRejectMixedProvenance(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("profile-chunk-a", "item", "item:profile", 0, "hash-a", "alpha"),
+		testRetrievalChunk("profile-chunk-b", "item", "item:profile", 1, "hash-b", "bravo"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:profile", chunks); err != nil {
+		t.Fatalf("replace chunks: %v", err)
+	}
+	first := testEmbedding(chunks[0].ID, "fixed-profile", chunks[0].TextHash)
+	if err := st.PutRetrievalEmbedding(ctx, first); err != nil {
+		t.Fatalf("put first profile embedding: %v", err)
+	}
+	mixed := testEmbedding(chunks[1].ID, first.ProfileID, chunks[1].TextHash)
+	mixed.Model = "different-model"
+	if err := st.PutRetrievalEmbedding(ctx, mixed); err == nil {
+		t.Fatal("API accepted mixed model provenance under one profile")
+	}
+	if _, err := st.db.Exec(`
+		INSERT INTO retrieval_embeddings (
+			chunk_id, profile_id, provider, model, dimensions, representation,
+			normalization, vector_bytes, chunk_text_hash, status, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?)`,
+		mixed.ChunkID, mixed.ProfileID, mixed.Provider, mixed.Model, mixed.Dimensions,
+		mixed.Representation, mixed.Normalization, mixed.VectorBytes, mixed.ChunkTextHash,
+		time.Now().UTC().Format(time.RFC3339)); err == nil {
+		t.Fatal("SQLite accepted mixed model provenance under one profile")
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET model = 'different-model' WHERE chunk_id = ? AND profile_id = ?`, first.ChunkID, first.ProfileID); err == nil {
+		t.Fatal("SQLite allowed an existing profile invariant to mutate")
 	}
 }
 

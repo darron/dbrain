@@ -99,6 +99,24 @@ func (s *Store) PutRetrievalEmbedding(ctx context.Context, row RetrievalEmbeddin
 		return fmt.Errorf("begin retrieval embedding write: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var profileProvider, profileModel, profileRepresentation, profileNormalization string
+	var profileDimensions int
+	profileErr := tx.QueryRowContext(ctx, `
+		SELECT provider, model, dimensions, representation, normalization
+		FROM retrieval_embeddings
+		WHERE profile_id = ?
+		ORDER BY chunk_id
+		LIMIT 1`, row.ProfileID).Scan(
+		&profileProvider, &profileModel, &profileDimensions, &profileRepresentation, &profileNormalization,
+	)
+	if profileErr != nil && !errors.Is(profileErr, sql.ErrNoRows) {
+		return fmt.Errorf("load retrieval embedding profile %s invariants: %w", row.ProfileID, profileErr)
+	}
+	if profileErr == nil && (profileProvider != row.Provider || profileModel != row.Model ||
+		profileDimensions != row.Dimensions || profileRepresentation != row.Representation ||
+		profileNormalization != row.Normalization) {
+		return fmt.Errorf("retrieval embedding profile %s invariants do not match", row.ProfileID)
+	}
 	var oldDimensions int
 	var oldProvider, oldModel, oldRepresentation, oldNormalization, oldTextHash string
 	var oldStatus RetrievalEmbeddingStatus

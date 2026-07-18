@@ -71,6 +71,43 @@ func (s *Store) ensureRetrievalTables() error {
 			BEGIN
 				DELETE FROM retrieval_embeddings WHERE chunk_id = OLD.chunk_id;
 			END`,
+		`CREATE TRIGGER IF NOT EXISTS trg_retrieval_embeddings_profile_invariants_insert
+			BEFORE INSERT ON retrieval_embeddings
+			WHEN EXISTS (
+				SELECT 1 FROM retrieval_embeddings e
+				WHERE e.profile_id = NEW.profile_id
+					AND (e.provider != NEW.provider
+						OR e.model != NEW.model
+						OR e.dimensions != NEW.dimensions
+						OR e.representation != NEW.representation
+						OR e.normalization != NEW.normalization)
+			)
+			BEGIN
+				SELECT RAISE(ABORT, 'retrieval embedding profile invariants do not match');
+			END`,
+		`CREATE TRIGGER IF NOT EXISTS trg_retrieval_embeddings_profile_invariants_update
+			BEFORE UPDATE ON retrieval_embeddings
+			WHEN (
+				(OLD.profile_id = NEW.profile_id
+					AND (OLD.provider != NEW.provider
+						OR OLD.model != NEW.model
+						OR OLD.dimensions != NEW.dimensions
+						OR OLD.representation != NEW.representation
+						OR OLD.normalization != NEW.normalization))
+				OR EXISTS (
+					SELECT 1 FROM retrieval_embeddings e
+					WHERE e.profile_id = NEW.profile_id
+						AND NOT (e.chunk_id = OLD.chunk_id AND e.profile_id = OLD.profile_id)
+						AND (e.provider != NEW.provider
+							OR e.model != NEW.model
+							OR e.dimensions != NEW.dimensions
+							OR e.representation != NEW.representation
+							OR e.normalization != NEW.normalization)
+				)
+			)
+			BEGIN
+				SELECT RAISE(ABORT, 'retrieval embedding profile invariants do not match');
+			END`,
 		`CREATE TABLE IF NOT EXISTS retrieval_index_generations (
 			generation_id TEXT PRIMARY KEY,
 			profile_id TEXT NOT NULL,

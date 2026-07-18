@@ -66,6 +66,9 @@ func (s *Store) PurgeItemIndexedContent(ctx context.Context, sourceKey string, r
 			WHERE parent_kind = 'item' AND parent_source_key = ?`, sourceKey); err != nil {
 			return false, fmt.Errorf("delete retrieval chunks for item purge %s: %w", sourceKey, err)
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM item_enrichments WHERE item_id = ?`, itemID); err != nil {
+			return false, fmt.Errorf("delete authoritative item enrichments for purge %s: %w", sourceKey, err)
+		}
 
 		nowText := time.Now().UTC().Format(time.RFC3339)
 		if _, err := tx.ExecContext(ctx, `
