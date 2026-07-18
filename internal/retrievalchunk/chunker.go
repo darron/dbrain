@@ -22,21 +22,21 @@ func Build(parent Parent, opts Options) ([]Chunk, error) {
 
 	chunks := make([]Chunk, 0)
 	ordinal := 0
-	for _, section := range parent.Sections {
+	for sectionOrdinal, section := range parent.Sections {
 		if strings.TrimSpace(section.Role) == "" {
 			return nil, fmt.Errorf("section evidence role is required")
 		}
 		if strings.TrimSpace(section.Text) == "" {
 			continue
 		}
-		sectionChunks := chunkSection(parent, section, opts, ordinal)
+		sectionChunks := chunkSection(parent, section, opts, ordinal, sectionOrdinal)
 		chunks = append(chunks, sectionChunks...)
 		ordinal += len(sectionChunks)
 	}
 	return chunks, nil
 }
 
-func chunkSection(parent Parent, section Section, opts Options, firstOrdinal int) []Chunk {
+func chunkSection(parent Parent, section Section, opts Options, firstOrdinal, sectionOrdinal int) []Chunk {
 	runes := []rune(section.Text)
 	paragraphs := paragraphBoundaries(runes)
 	chunks := make([]Chunk, 0, len(runes)/opts.TargetRunes+1)
@@ -52,6 +52,7 @@ func chunkSection(parent Parent, section Section, opts Options, firstOrdinal int
 			ParentSourceKey:  parent.SourceKey,
 			EvidenceRole:     section.Role,
 			Ordinal:          ordinal,
+			SectionOrdinal:   sectionOrdinal,
 			StartChar:        start,
 			EndChar:          end,
 			Heading:          section.Heading,
@@ -76,20 +77,36 @@ type boundaries struct {
 func paragraphBoundaries(text []rune) boundaries {
 	result := boundaries{starts: []int{0}}
 	for i := 0; i < len(text); {
-		if text[i] != '\n' {
+		lineBreakRunes := lineBreakLength(text, i)
+		if lineBreakRunes == 0 {
 			i++
 			continue
 		}
-		begin := i
-		for i < len(text) && text[i] == '\n' {
-			i++
+		lineBreaks := 0
+		for lineBreakRunes > 0 {
+			lineBreaks++
+			i += lineBreakRunes
+			lineBreakRunes = lineBreakLength(text, i)
 		}
-		if i-begin >= 2 {
+		if lineBreaks >= 2 {
 			result.ends = append(result.ends, i)
 			result.starts = append(result.starts, i)
 		}
 	}
 	return result
+}
+
+func lineBreakLength(text []rune, at int) int {
+	if at >= len(text) {
+		return 0
+	}
+	if text[at] == '\n' {
+		return 1
+	}
+	if text[at] == '\r' && at+1 < len(text) && text[at+1] == '\n' {
+		return 2
+	}
+	return 0
 }
 
 func chooseEnd(text []rune, paragraphs boundaries, start int, opts Options) int {

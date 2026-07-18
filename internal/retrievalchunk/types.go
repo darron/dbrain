@@ -31,6 +31,7 @@ type Chunk struct {
 	ParentSourceKey  string
 	EvidenceRole     string
 	Ordinal          int
+	SectionOrdinal   int
 	StartChar        int
 	EndChar          int
 	Heading          string
