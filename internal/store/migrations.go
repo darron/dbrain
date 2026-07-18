@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	currentSchemaVersion            = 12
+	currentSchemaVersion            = 13
 	auditProvenanceMigrationVersion = 12
 	auditProvenanceMigrationName    = "audit_provenance_v1"
+	retrievalMigrationVersion       = 13
 )
 
 type schemaMigration struct {
@@ -128,6 +129,13 @@ var schemaMigrations = []schemaMigration{
 				return err
 			}
 			return s.backfillItemEnrichments()
+		},
+	},
+	{
+		Version: retrievalMigrationVersion,
+		Name:    "retrieval_hybrid_storage_v1",
+		Run: func(s *Store) error {
+			return s.ensureRetrievalTables()
 		},
 	},
 }

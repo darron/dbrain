@@ -32,6 +32,41 @@ func (s *Store) PurgeItemIndexedContent(ctx context.Context, sourceKey string, r
 			return false, fmt.Errorf("load item for purge %s: %w", sourceKey, err)
 		}
 
+		affectedProfiles := make([]string, 0)
+		profileRows, err := tx.QueryContext(ctx, `
+			SELECT DISTINCT e.profile_id
+			FROM retrieval_chunks c
+			JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id
+			WHERE c.parent_kind = 'item' AND c.parent_source_key = ?`, sourceKey)
+		if err != nil {
+			return false, fmt.Errorf("load retrieval profiles for item purge %s: %w", sourceKey, err)
+		}
+		for profileRows.Next() {
+			var profileID string
+			if err := profileRows.Scan(&profileID); err != nil {
+				_ = profileRows.Close()
+				return false, fmt.Errorf("scan retrieval profile for item purge %s: %w", sourceKey, err)
+			}
+			affectedProfiles = append(affectedProfiles, profileID)
+		}
+		if err := profileRows.Err(); err != nil {
+			_ = profileRows.Close()
+			return false, fmt.Errorf("iterate retrieval profiles for item purge %s: %w", sourceKey, err)
+		}
+		if err := profileRows.Close(); err != nil {
+			return false, fmt.Errorf("close retrieval profiles for item purge %s: %w", sourceKey, err)
+		}
+		for _, profileID := range affectedProfiles {
+			if err := markRetrievalProfileGenerationsStaleTx(ctx, tx, profileID); err != nil {
+				return false, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM retrieval_chunks
+			WHERE parent_kind = 'item' AND parent_source_key = ?`, sourceKey); err != nil {
+			return false, fmt.Errorf("delete retrieval chunks for item purge %s: %w", sourceKey, err)
+		}
+
 		nowText := time.Now().UTC().Format(time.RFC3339)
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE items

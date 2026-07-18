@@ -10,6 +10,7 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrievalchunk"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -275,6 +276,34 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 	if _, err := Run(context.Background(), cfg, st, Options{DBPath: dbPath}); err != nil {
 		t.Fatalf("initial Run: %v", err)
 	}
+	ctx := context.Background()
+	chunk := retrievalchunk.Chunk{
+		ID: "apple-note-private-chunk", ParentKind: "item", ParentSourceKey: "apple-note:default:note-1",
+		EvidenceRole: "raw", SectionOrdinal: 0, Ordinal: 0, StartChar: 0, EndChar: 12,
+		Heading: "Reader Note", ChunkerVersion: retrievalchunk.Version,
+		InputContentHash: "apple-note-input", TextHash: "apple-note-text", Text: "Decoded body",
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", chunk.ParentSourceKey, []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatalf("seed retrieval chunk: %v", err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, store.RetrievalEmbeddingRow{
+		ChunkID: chunk.ID, ProfileID: "apple-note-profile", Provider: "fake", Model: "fake-v1",
+		Dimensions: 2, Representation: "dense_f32", Normalization: "l2",
+		VectorBytes: []byte{0, 0, 0, 0, 0, 0, 0, 0}, ChunkTextHash: chunk.TextHash,
+		Status: store.RetrievalEmbeddingReady,
+	}); err != nil {
+		t.Fatalf("seed retrieval embedding: %v", err)
+	}
+	if err := st.PutRetrievalIndexGeneration(ctx, store.RetrievalIndexGenerationRow{
+		GenerationID: "apple-note-generation", ProfileID: "apple-note-profile",
+		Backend: "hnsw", BackendVersion: "1", Dimensions: 2, DistanceMetric: "cosine",
+		BuildStatus: store.RetrievalGenerationCompleted,
+	}); err != nil {
+		t.Fatalf("seed retrieval generation: %v", err)
+	}
+	if err := st.ActivateRetrievalIndexGeneration(ctx, "apple-note-generation"); err != nil {
+		t.Fatalf("activate retrieval generation: %v", err)
+	}
 	stats, err := Run(context.Background(), cfg, st, Options{
 		DBPath:         dbPath,
 		ExcludeFolders: []string{"Private"},
@@ -301,6 +330,20 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 		if result.SourceKey == item.SourceKey {
 			t.Fatalf("purged item still appears in search: %+v", result)
 		}
+	}
+	ready, err := st.ListReadyEmbeddings(ctx, "apple-note-profile", 10)
+	if err != nil {
+		t.Fatalf("ListReadyEmbeddings after purge: %v", err)
+	}
+	if len(ready) != 0 {
+		t.Fatalf("purged Apple Note still has ready embeddings: %+v", ready)
+	}
+	status, err := st.RetrievalStatus(ctx, "apple-note-profile")
+	if err != nil {
+		t.Fatalf("RetrievalStatus after purge: %v", err)
+	}
+	if status.ActiveGenerationID != "" || status.StaleGenerations != 1 {
+		t.Fatalf("retrieval status after purge = %+v, want one stale inactive generation", status)
 	}
 }
 
