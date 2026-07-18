@@ -482,6 +482,40 @@ func TestRetrievalProjectionAuthoritativeEmptyTranscriptSuppressesLegacyTranscri
 	}
 }
 
+func TestRetrievalProjectionEmptyTranscriptMirrorPreservesOrdinaryArticle(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	seedPurgeItem(t, st, "item:ordinary-article")
+	var itemID int64
+	if err := st.db.QueryRow(`SELECT id FROM items WHERE source_key = 'item:ordinary-article'`).Scan(&itemID); err != nil {
+		t.Fatalf("load ordinary article item ID: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE items SET article_title = 'Original article', article_text = 'Original body' WHERE id = ?`, itemID); err != nil {
+		t.Fatalf("seed ordinary article: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(
+		context.Background(), itemID, model.XMediaTranscriptStatusError,
+		"transcription failed", time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("save empty transcript mirror: %v", err)
+	}
+
+	parents, err := st.ListRetrievalParents(context.Background(), "", 10)
+	if err != nil {
+		t.Fatalf("list parents: %v", err)
+	}
+	if len(parents) != 1 {
+		t.Fatalf("parents = %+v, want one", parents)
+	}
+	for _, section := range parents[0].Sections {
+		if section.Role == "raw" && section.Heading == "Original article" && section.Text == "Original body" {
+			return
+		}
+	}
+	t.Fatalf("ordinary article missing after empty transcript mirror: %+v", parents[0].Sections)
+}
+
 func testRetrievalChunk(id, parentKind, parentKey string, ordinal int, textHash, text string) retrievalchunk.Chunk {
 	return retrievalchunk.Chunk{
 		ID: id, ParentKind: parentKind, ParentSourceKey: parentKey, EvidenceRole: "raw",

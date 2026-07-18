@@ -73,7 +73,7 @@ func (s *Store) ListRetrievalParents(ctx context.Context, afterSourceKey string,
 			return nil, fmt.Errorf("scan retrieval parent: %w", err)
 		}
 		if kind == "item" {
-			if hasAuthoritativeTranscript {
+			if hasAuthoritativeTranscript && strings.TrimSpace(articleTitle) == model.XMediaTranscriptArticleTitle {
 				articleTitle = ""
 				articleText = ""
 			}
