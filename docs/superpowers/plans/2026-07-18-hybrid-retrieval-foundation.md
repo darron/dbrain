@@ -326,6 +326,8 @@ git commit --no-gpg-sign -m "feat: persist retrieval chunks and embeddings"
 - Create: `internal/embedding/validate_test.go`
 - Create: `internal/embeddingtest/fake.go`
 - Create: `internal/embeddingtest/fake_test.go`
+- Modify: `internal/store/retrieval_embeddings.go`
+- Modify: `internal/store/retrieval_store_test.go`
 
 **Interfaces:** Provider-neutral request/response/profile API with no store or research dependency.
 
@@ -333,7 +335,8 @@ git commit --no-gpg-sign -m "feat: persist retrieval chunks and embeddings"
 
 Cover order/cardinality, positive fixed dimensions, NaN/Inf, zero L2 vectors,
 little-endian float32 round-trip, corrupt byte length, stable profile ID, strict
-fake mapping, deep copies, and concurrent call recording.
+fake mapping, deep copies, concurrent call recording, and store write/read
+rejection of corrupt `ready` vectors.
 
 - [ ] **Step 2: Verify RED**
 
@@ -354,17 +357,21 @@ type Provider interface { Info() Info; Embed(context.Context, Request) (Response
 Profiles include provider, exact model, projection versions, chunker version,
 representation, normalization, and dimensions. Typed failures are retryable,
 blocked, or fatal configuration. The fake rejects unmapped text by default.
+Wire the portable decoder/validator into `PutRetrievalEmbedding` and
+`ListReadyEmbeddings`: pending/blocked/error rows may omit vector bytes, but a
+`ready` row must have the declared little-endian float32 length, finite values,
+and valid normalization before it can be stored or returned to an index.
 
 - [ ] **Step 4: Verify GREEN**
 
-Run: `go test -race ./internal/embedding ./internal/embeddingtest`
+Run: `go test -race ./internal/embedding ./internal/embeddingtest ./internal/store`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/embedding internal/embeddingtest
+git add internal/embedding internal/embeddingtest internal/store/retrieval_embeddings.go internal/store/retrieval_store_test.go
 git commit --no-gpg-sign -m "feat: add portable embedding contracts"
 ```
 
