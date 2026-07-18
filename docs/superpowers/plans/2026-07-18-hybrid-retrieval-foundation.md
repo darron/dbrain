@@ -195,7 +195,7 @@ type Parent struct {
 }
 type Chunk struct {
     ID, ParentKind, ParentSourceKey, EvidenceRole string
-    Ordinal, StartChar, EndChar int
+    SectionOrdinal, Ordinal, StartChar, EndChar int
     Heading, ChunkerVersion, InputContentHash, TextHash, Text string
 }
 ```
@@ -266,7 +266,8 @@ Expected: FAIL for missing schema and APIs.
 
 - [ ] **Step 4: Implement schema and migration**
 
-Create `retrieval_chunks`, `retrieval_embeddings`, and
+Create `retrieval_chunks` (including the projected `section_ordinal` for
+unambiguous section-local offsets), `retrieval_embeddings`, and
 `retrieval_index_generations`. Embeddings cascade from chunks. Generations
 record dimensions and distance metric and enforce one active row per profile.
 Call an idempotent `ensureRetrievalTables` from fresh schema and the next

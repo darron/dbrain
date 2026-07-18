@@ -330,10 +330,13 @@ ordinal
 chunk text hash
 ```
 
-The row also records start and end character offsets, heading, ordinal, input
-content hash, and chunk text hash. A source-content change invalidates only the
-old generation of chunks and its embeddings. Unchanged chunk IDs can be reused
-when a re-chunk produces the same identities.
+The row also records the projected section ordinal, section-local start and end
+character offsets, heading, chunk ordinal, input content hash, and chunk text
+hash. The section ordinal is required because one parent can contain multiple
+sections with the same evidence role and heading; offsets alone would otherwise
+be ambiguous. A source-content change invalidates only the old generation of
+chunks and its embeddings. Unchanged chunk IDs can be reused when a re-chunk
+produces the same identities.
 
 The implementation must process updates transactionally: readers either see a
 complete current chunk set for a parent or the previous complete set, never a
@@ -352,7 +355,7 @@ Required fields:
 - `chunk_id` primary key
 - `parent_kind` and `parent_source_key`
 - `evidence_role`
-- `ordinal`, `start_char`, and `end_char`
+- `section_ordinal`, `ordinal`, `start_char`, and `end_char`
 - `heading`
 - `chunker_version`
 - `input_content_hash` and `chunk_text_hash`
