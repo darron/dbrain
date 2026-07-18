@@ -591,6 +591,66 @@ func TestCerebrasQuestionKeepsOnlyDiscriminativeRequiredConcepts(t *testing.T) {
 	}
 }
 
+func TestCerebrasPlannerMergePreservesRolesAndRequiredConceptsAtCap(t *testing.T) {
+	terms := queryterms.Terms("What can we learn from the Cerebras articles about their new knowledge base system and ontology, and apply to dbrain?")
+	base := buildQueryConceptsWithAnchors(terms, []ProtectedAnchor{
+		anchorFromHandle("@CerebrasAI", "current_user_text"),
+	})
+
+	rolePlannerConcepts := sanitizeModelConcepts([]QueryConcept{
+		{Key: "cerebras", Preferred: "cerebras", Terms: []string{"cerebras"}, Required: true, Role: conceptRoleContent},
+		{Key: "ontology", Preferred: "ontology", Terms: []string{"ontology"}, Required: true, Role: conceptRoleContent},
+		{Key: "learn", Preferred: "learn", Terms: []string{"learn"}, Required: true, Role: conceptRoleContent},
+		{Key: "apply", Preferred: "apply", Terms: []string{"apply"}, Required: true, Role: conceptRoleContent},
+		{Key: "articles", Preferred: "articles", Terms: []string{"articles"}, Required: true, Role: conceptRoleContent},
+		{Key: "new", Preferred: "new", Terms: []string{"new"}, Required: true, Role: conceptRoleContent},
+		{Key: "system", Preferred: "system", Terms: []string{"system"}, Required: true, Role: conceptRoleContent},
+	})
+	roleByKey := map[string]QueryConcept{}
+	for _, concept := range rolePlannerConcepts {
+		roleByKey[concept.Key] = concept
+	}
+	for key, role := range map[string]string{
+		"learn": conceptRoleIntent, "apply": conceptRoleIntent,
+		"articles": conceptRoleFrame, "new": conceptRoleFrame, "system": conceptRoleFrame,
+	} {
+		concept := roleByKey[key]
+		if concept.Role != role || concept.Required {
+			t.Fatalf("sanitized planner concept %q = %#v", key, concept)
+		}
+	}
+
+	componentPlannerConcepts := sanitizeModelConcepts([]QueryConcept{
+		{Key: "cerebras", Preferred: "cerebras", Terms: []string{"cerebras"}, Required: true, Role: conceptRoleContent},
+		{Key: "ontology", Preferred: "ontology", Terms: []string{"ontology"}, Required: true, Role: conceptRoleContent},
+		{Key: "knowledge", Preferred: "knowledge", Terms: []string{"knowledge"}, Required: true, Role: conceptRoleContent},
+		{Key: "base", Preferred: "base", Terms: []string{"base"}, Required: true, Role: conceptRoleContent},
+	})
+	merged := mergeQueryConcepts(base, append(rolePlannerConcepts, componentPlannerConcepts...))
+	if len(merged) != maxPlannerConcepts {
+		t.Fatalf("merged concept count = %d, want cap %d: %#v", len(merged), maxPlannerConcepts, merged)
+	}
+	var required []string
+	mergedByKey := map[string]QueryConcept{}
+	for _, concept := range merged {
+		mergedByKey[concept.Key] = concept
+		if concept.Required {
+			required = append(required, concept.Key)
+		}
+	}
+	if !reflect.DeepEqual(required, []string{"cerebrasai", "cerebras", "ontology"}) {
+		t.Fatalf("required concepts after planner merge = %#v; merged=%#v", required, merged)
+	}
+	for _, key := range []string{"learn", "apply", "articles", "new", "knowledge", "base", "system"} {
+		if concept, ok := mergedByKey[key]; ok && concept.Required {
+			t.Fatalf("generic planner concept %q was re-required: %#v", key, concept)
+		}
+	}
+	if merged[0].Role != conceptRoleAnchor || merged[1].Key != "cerebras" || merged[2].Key != "ontology" {
+		t.Fatalf("semantic merge priority lost anchor or required content: %#v", merged)
+	}
+}
+
 func TestBuildResearchStrategyDropsCorpusFrameTermsWhenPlannerFallsBack(t *testing.T) {
 	t.Parallel()
 
