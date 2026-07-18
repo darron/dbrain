@@ -99,6 +99,31 @@ func TestRunFailsCitationAssertionWhenCoverageRegresses(t *testing.T) {
 	}
 }
 
+func TestRequiredConceptAssertionsReportMissingAndForbiddenConcepts(t *testing.T) {
+	t.Parallel()
+
+	pack := brainresearch.Pack{QueryPlan: brainresearch.QueryPlan{Concepts: []brainresearch.QueryConcept{
+		{Key: "cerebras", Required: true},
+		{Key: "articles", Required: false},
+	}}}
+	result := CaseResult{}
+	checkCaseAssertions(Case{
+		ExpectRequiredConcepts: []string{"ontology"},
+		ForbidRequiredConcepts: []string{"cerebras", "articles"},
+	}, pack, nil, map[string]struct{}{}, &result)
+
+	failures := strings.Join(result.Failures, "\n")
+	if !strings.Contains(failures, "missing expected required concept ontology") {
+		t.Fatalf("expected missing required concept failure, got %#v", result.Failures)
+	}
+	if !strings.Contains(failures, "forbidden required concept present cerebras") {
+		t.Fatalf("expected forbidden required concept failure, got %#v", result.Failures)
+	}
+	if strings.Contains(failures, "articles") {
+		t.Fatalf("optional concept should not trigger required-concept assertions, got %#v", result.Failures)
+	}
+}
+
 func TestTraceProposalGeneratesCasesFromSavedTrace(t *testing.T) {
 	t.Parallel()
 

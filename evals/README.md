@@ -44,6 +44,8 @@ Useful research assertions:
 - `expect_planner`, `expect_query_family`, `expect_query_terms`,
   `expect_query_variants`, `forbid_query_variants`, `expect_concepts`, and
   `forbid_concepts` guard query planning behavior.
+- `expect_required_concepts` and `forbid_required_concepts` distinguish hard
+  retrieval constraints from optional searchable intent and frame concepts.
 - `min_retrieval_signals` verifies that returned evidence carries scoring
   provenance.
 - `expect_relevance_excluded_source_keys`, `expect_prompt_admitted_source_keys`,

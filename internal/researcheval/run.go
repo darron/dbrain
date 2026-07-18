@@ -318,6 +318,17 @@ func checkCaseAssertions(tc Case, pack brainresearch.Pack, sortedSourceKeys []st
 			result.Failures = append(result.Failures, "forbidden concept present "+strings.TrimSpace(concept))
 		}
 	}
+	requiredConcepts := requiredConceptStrings(pack.QueryPlan.Concepts)
+	for _, concept := range tc.ExpectRequiredConcepts {
+		if !containsFold(requiredConcepts, concept) {
+			result.Failures = append(result.Failures, "missing expected required concept "+strings.TrimSpace(concept))
+		}
+	}
+	for _, concept := range tc.ForbidRequiredConcepts {
+		if containsFold(requiredConcepts, concept) {
+			result.Failures = append(result.Failures, "forbidden required concept present "+strings.TrimSpace(concept))
+		}
+	}
 	if expected := strings.TrimSpace(tc.ExpectPlannerErrorContains); expected != "" && !strings.Contains(strings.ToLower(pack.QueryPlan.PlannerError), strings.ToLower(expected)) {
 		result.Failures = append(result.Failures, fmt.Sprintf("planner_error=%q does not contain %q", pack.QueryPlan.PlannerError, expected))
 	}
@@ -416,6 +427,16 @@ func conceptStrings(concepts []brainresearch.QueryConcept) []string {
 		out = append(out, concept.Terms...)
 	}
 	return uniqueNonEmpty(out)
+}
+
+func requiredConceptStrings(concepts []brainresearch.QueryConcept) []string {
+	required := make([]brainresearch.QueryConcept, 0, len(concepts))
+	for _, concept := range concepts {
+		if concept.Required {
+			required = append(required, concept)
+		}
+	}
+	return conceptStrings(required)
 }
 
 func retrievalLaneStatuses(pack brainresearch.Pack) map[string]string {

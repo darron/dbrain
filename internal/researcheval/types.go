@@ -38,6 +38,8 @@ type Case struct {
 	ForbidQueryVariants               []string                        `json:"forbid_query_variants,omitempty"`
 	ExpectConcepts                    []string                        `json:"expect_concepts,omitempty"`
 	ForbidConcepts                    []string                        `json:"forbid_concepts,omitempty"`
+	ExpectRequiredConcepts            []string                        `json:"expect_required_concepts,omitempty"`
+	ForbidRequiredConcepts            []string                        `json:"forbid_required_concepts,omitempty"`
 	ExpectPlannerErrorContains        string                          `json:"expect_planner_error_contains,omitempty"`
 	MinRetrievalSignals               int                             `json:"min_retrieval_signals,omitempty"`
 	ExpectJudgeVerdict                string                          `json:"expect_judge_verdict,omitempty"`

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/queryterms"
 	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -555,6 +557,37 @@ func TestBuildResearchStrategyExpandsGenericTechnicalQuery(t *testing.T) {
 		!hasConceptKey(strategy.Concepts, "helm") ||
 		!hasConceptTerm(strategy.Concepts, "alternative", "replacement") {
 		t.Fatalf("expected generic technical concepts, got %#v", strategy.Concepts)
+	}
+}
+
+func TestCerebrasQuestionKeepsOnlyDiscriminativeRequiredConcepts(t *testing.T) {
+	terms := queryterms.Terms("What can we learn from the Cerebras articles about their new knowledge base system and ontology, and apply to dbrain?")
+	got := buildQueryConcepts(terms)
+
+	byKey := map[string]QueryConcept{}
+	var required []string
+	for _, concept := range got {
+		byKey[concept.Key] = concept
+		if concept.Required {
+			required = append(required, concept.Key)
+		}
+	}
+	if !reflect.DeepEqual(required, []string{"cerebras", "ontology"}) {
+		t.Fatalf("required concepts = %#v", required)
+	}
+	for key, role := range map[string]string{
+		"learn": conceptRoleIntent, "apply": conceptRoleIntent,
+		"articles": conceptRoleFrame, "new": conceptRoleFrame, "system": conceptRoleFrame,
+	} {
+		concept, ok := byKey[key]
+		if !ok || concept.Role != role || concept.Required {
+			t.Fatalf("concept %q = %#v", key, concept)
+		}
+	}
+	for _, key := range []string{"knowledge", "base"} {
+		if byKey[key].Required {
+			t.Fatalf("concept %q remained required", key)
+		}
 	}
 }
 
