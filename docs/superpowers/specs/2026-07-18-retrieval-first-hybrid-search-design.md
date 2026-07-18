@@ -13,11 +13,12 @@ portable embedding records, and replaceable retrieval interfaces.
 
 ## Summary
 
-`dbrain` should add semantic retrieval as a second, optional lane beside its
-existing SQLite FTS5 and exact metadata retrieval. The lanes should retrieve
-independently, retain their own ranks and provenance, and be combined with
-reciprocal-rank fusion (RRF). Exact anchors and directly matching evidence must
-remain protected from displacement by vague semantic neighbours.
+`dbrain` should add semantic retrieval as a second, optional ranked lane beside
+its existing SQLite FTS5 retrieval. Lexical and semantic lanes retrieve
+independently, retain their own ranks and provenance, and are combined with
+reciprocal-rank fusion (RRF). Existing exact metadata and exact-tag evidence
+remain a protected floor outside RRF so exact anchors and directly matching
+evidence cannot be displaced by vague semantic neighbours.
 
 SQLite remains authoritative for raw evidence, deterministic chunks, embedding
 metadata, portable vector bytes, and index-generation metadata. A local
@@ -124,6 +125,19 @@ inspectable fusion, and a lexical-only fallback.
 - No migration number reserved in this document. Implementation must inspect
   current, `main`, and work-in-progress migration history before assigning one.
 
+## Hard Implementation Constraints
+
+- Release builds must remain `CGO_ENABLED=0` across the existing Darwin
+  amd64/arm64, Linux amd64/arm64, and Windows amd64 matrix.
+- The semantic feature must not require a helper binary, sidecar, native
+  library, or runtime dynamic library.
+- A purged parent must become unreachable through every retrieval lane before
+  the purge operation returns.
+- Read-only MCP and status surfaces must continue to open older databases that
+  do not yet contain retrieval tables.
+- Restoring or replacing SQLite must never make a mismatched cache generation
+  eligible merely because its path still exists.
+
 ## Approaches Considered
 
 ### 1. SQLite Authority Plus Rebuildable Local ANN Index
@@ -194,10 +208,9 @@ retrieval_chunks in SQLite
         |                    |
         +--------+-----------+
                  |
-      exact identity/tag lane
-                 |
-                 v
           reciprocal-rank fusion
+                 |
+      exact identity/tag protection
                  |
       protected-anchor enforcement
                  |
@@ -241,6 +254,34 @@ index rebuilding. They can be regenerated without changing source evidence.
 The ANN index is cache state only. It is not part of the brain backup contract.
 Deleting it must cause a diagnosable fallback and a clean rebuild, never data
 loss or silent empty retrieval.
+
+The index stores vector-to-chunk-ID mappings, not standalone evidence payloads.
+Every candidate must be hydrated through current SQLite rows before it can be
+returned. A missing or purged chunk is therefore rejected even if an older
+immutable index file still contains its vector.
+
+### Purge And Forget Semantics
+
+Invalidation is insufficient when a user explicitly asks dbrain to forget
+content. `PurgeItemIndexedContent`, Apple Notes `--forget-excluded`, and future
+equivalent purge paths must participate in the retrieval transaction.
+
+Before a purge returns successfully, dbrain must:
+
+1. delete all `retrieval_chunks` and `retrieval_embeddings` rows for the
+   parent, rather than marking them stale
+2. mark every affected active ANN generation unusable
+3. make all semantic readers re-check the SQLite generation state and hydrate
+   candidate IDs through current chunk rows
+4. ensure exact scan cannot see the removed vectors
+5. remove or rebuild immutable generation files containing the purged vector
+   under a cross-process-safe reader/writer protocol
+
+If the on-disk purge cannot complete, the purge fails rather than reporting
+success while derived private state remains. Semantic retrieval fails open to
+lexical-only while the profile has no valid generation. This synchronous
+privacy path is distinct from ordinary stale-content rebuilding and from
+optional cache garbage collection.
 
 ## Deterministic Chunking
 
@@ -354,6 +395,7 @@ Required fields:
 - generation identifier
 - embedding profile identifier
 - backend and backend format version
+- dimensions and distance metric
 - indexed chunk count
 - source embedding high-water mark or deterministic manifest hash
 - build status and error
@@ -405,7 +447,9 @@ that persists under:
 
 The precise library must be chosen during implementation planning after checks
 for license, maintenance, macOS ARM64 support, race safety, persistence format,
-memory use, and Homebrew build compatibility.
+memory use, and Homebrew build compatibility. It must be pure Go and build with
+`CGO_ENABLED=0` on every existing release target; this is a hard acceptance
+constraint, not a preference.
 
 Build lifecycle:
 
@@ -415,11 +459,18 @@ Build lifecycle:
 4. Atomically rename the completed directory into place.
 5. Transactionally mark that generation active in SQLite.
 6. Keep the previous valid generation until activation succeeds.
-7. Garbage-collect older generations conservatively after they are no longer
-   referenced.
+7. Retain older generations in the first release; do not add automatic garbage
+   collection until cross-process reader leases or an equally strong lifetime
+   protocol exist.
 
 An interrupted build leaves the previous generation active. Startup cleans or
 reports abandoned temporary generations without following unsafe symlinks.
+
+Every index open compares the active SQLite generation record with the on-disk
+manifest, profile, format version, dimensions, distance metric, chunk count,
+and deterministic manifest/high-water hash. A database restore, binary
+rollback, or cache copied from another database therefore produces a visible
+`stale` or `corrupt` lane state and lexical fallback, never implicit reuse.
 
 ### Exact Scan
 
@@ -441,19 +492,37 @@ fallback requires a warning or fails the semantic lane open to lexical-only.
 
 ### Concept Roles
 
-The existing concept-role system should classify query terms into:
+The existing four-role system remains the wire and implementation contract:
 
 - **protected anchors:** source keys, handles, exact URLs, quoted phrases,
   repository names, and resolved stable identities
 - **content concepts:** discriminative entities, topics, technologies, events,
   or attributes that describe desired evidence
-- **intent/frame concepts:** instructions such as `learn`, `apply`,
-  `synthesize`, `articles`, `new`, `system`, and follow-up scaffolding
+- **intent concepts:** requested operations such as `learn`, `apply`,
+  `synthesize`, `summarize`, or `explain`
+- **frame concepts:** query scaffolding and low-information modifiers such as
+  `articles`, `new`, or `system` when stronger anchor/content concepts exist
 
-Protected anchors can be required. Content concepts can be required only when
-the deterministic strategy or a bounded, validated planner rule establishes
-that the query is conjunctive. Intent/frame concepts must not become missing
-evidence requirements.
+Protected anchors are always required. Existing explicitly discriminative
+content families remain required; arbitrary three-character terms must not
+become required merely by falling through the classifier. Other content
+concepts become required only when the deterministic strategy or a bounded,
+validated planner rule establishes that the query is conjunctive. Frame
+concepts are never required. Intent concepts retain the current useful
+single-intent behavior but become non-required whenever an anchor or content
+concept is present.
+
+Classification is context-aware rather than a global stopword deletion.
+`knowledge base` remains a searchable content phrase, but `knowledge` and
+`base` must not become two independent hard requirements in the Cerebras
+question. `Cerebras` and `ontology` remain discriminative content concepts for
+that conjunctive query. The preferred-content query variant excludes optional
+intent/frame concepts even though the full normalized query remains available
+as a broad lexical variant.
+
+Concept trimming order is stable and semantic: anchors, required content,
+optional content, intent, then frame. Model-planned concepts pass through the
+same role policy and cannot re-require a demoted deterministic term.
 
 The Cerebras regression must prove that generic frame language no longer
 pushes the directly named article behind generic knowledge-base results.
@@ -497,10 +566,17 @@ distinguish at least:
 
 ### Exact Identity And Metadata
 
-The current exact-tag lane remains. Protected-source-key, canonical-URL,
-handle, and other stable-identity matches should be represented as exact
-signals or a compatible exact-identity lane. Wire compatibility with existing
-`exact_tag` clients must be preserved.
+The current `exact_tag_evidence` pack field remains a separate protected array
+with its existing independent cap, retry merge, and reserved synthesis budget.
+It is not absorbed into the fused evidence list in v1. Duplicate parent keys
+between the fused evidence and exact-tag array are deduplicated when building
+citations and synthesis context.
+
+Rows in the main evidence list may still carry an `exact_tag` lane annotation
+or exact-identity signal. Protected source-key, canonical-URL, handle, and
+other stable-identity matches are protected during truncation. Existing MCP
+and trace clients continue to receive the top-level `exact_tag_evidence`
+array unchanged.
 
 ## Rank Fusion
 
@@ -518,13 +594,24 @@ Initial constants:
 - `k = 60`
 - lexical candidate depth: 50
 - semantic candidate depth: 50
-- exact metadata depth: 20
 - final fused candidate window before inspection: 20
 
 Initial lexical and semantic weights should both be 1.0 to serve the approved
 balanced precision/recall objective. Exact matches are not handled merely by a
 large weight: protected-anchor candidates that directly satisfy the query are
 retained through fusion and truncation.
+
+`entity` and `graph_related` remain provenance/signals within the existing
+lexical candidate pipeline in v1; they are not independent ranked retrievers
+and therefore do not receive artificial RRF ranks. Their current boosts are
+resolved before the lexical lane's final rank enters RRF. The trace records
+those lane annotations and legacy signal contributions so they are not lost or
+double-counted. If either becomes an independent retriever later, it must
+receive a separately reviewed candidate depth and RRF weight.
+
+The separate `exact_tag_evidence` array is a protected evidence floor alongside
+the fused list, not a fourth RRF input. Exact identity signals within the main
+candidate list are protected after lexical/semantic RRF.
 
 These constants must be named, traced, and adjustable through code/config or
 eval profiles rather than scattered magic numbers. Production defaults change
@@ -586,7 +673,7 @@ user-facing opt-in and debugging override. MCP retains `use_semantic` and
 Configuration should live under a coherent `research.semantic` namespace and
 support environment-variable parity. Required settings include mode, provider,
 model/profile, index backend, candidate depth, and safe exact-fallback policy.
-The implementation plan must update `config list`, sample config, CLI help,
+The implementation plan must update `config env`, sample config, CLI help,
 MCP schemas, and the installed `dbrain-mcp` skill where behavior is exposed.
 
 ### Shadow Contract
@@ -597,6 +684,11 @@ in the existing research trace. Shadow failures do not fail the research run.
 
 No shadow result can enter synthesis context or alter retry/judge decisions.
 This must be enforced by types or separate variables, not by convention.
+
+The shadow comparison also lives in bounded pack/query-plan diagnostic
+metadata. Transports that already save research traces persist it there. MCP
+returns the diagnostic metadata but remains trace-free and must not create a
+`research-runs` directory.
 
 ### Default-On Gate
 
@@ -627,10 +719,18 @@ sidecar:
 - build or rebuild an ANN generation
 - verify an index against SQLite metadata and sampled exact results
 - report stale, missing, blocked, and failed counts
+- explicitly purge a profile generation when required by a parent-content
+  forget operation
 
 Normal research may diagnose missing derived state, but it must not start an
 unbounded corpus backfill implicitly. Configured `sync all` integration can be
 considered after explicit commands and progress reporting are reliable.
+
+Automatic generation garbage collection is out of scope for the first
+release. Status reports orphaned/old generation count and disk use; later GC
+must be an explicit, dry-run-first maintenance design with a disk budget and a
+cross-process reader-lifetime protocol. Mandatory privacy purge remains part of
+v1 and is not treated as ordinary GC.
 
 Long operations must show advancing counts and distinguish scanning unchanged
 rows from embeddings actually generated. Worker selectors and backlog/status
@@ -654,6 +754,10 @@ state visible.
 - Corrupt ANN generation: retain or restore the last validated generation,
   otherwise disable the semantic lane.
 - Partial rebuild: never activate it.
+- Explicit parent purge: delete chunk/embedding rows and disable/remove every
+  affected generation before returning success; never serve a stale ANN hit.
+- Restored/replaced database: reject any cache manifest that does not match the
+  active SQLite generation and deterministic high-water hash.
 
 Semantic failures must not be reported as no corpus evidence. The research
 pack distinguishes “semantic unavailable” from “semantic searched and found no
@@ -738,6 +842,8 @@ The first cases must include:
 - source-type and tag-filtered queries
 - no-evidence and semantic-unavailable states
 - stale and corrupt index simulations
+- explicit Apple Notes forget/purge through exact and ANN semantic lanes
+- restored older SQLite database beside a newer cache generation
 
 Saved trace-to-eval cases remain private under the existing local eval policy.
 The eval runner must be able to compare lexical-only, exact-vector hybrid, and
@@ -775,6 +881,8 @@ or rejection of the backend; it cannot be hidden by end-to-end answer quality.
 - unchanged chunks and embeddings are reused
 - profile changes coexist without provenance mutation
 - read-only store open performs no migration or indexing writes
+- `PurgeItemIndexedContent` atomically removes chunk and embedding rows and
+  marks affected generations unusable
 
 ### Integration Tests
 
@@ -782,8 +890,12 @@ or rejection of the backend; it cannot be hidden by end-to-end answer quality.
 - ANN build, atomic activation, reopen, and query
 - interrupted build leaves the prior generation active
 - missing/stale/corrupt index follows fallback policy
+- purged/excluded evidence is unreachable through exact and ANN search and its
+  immutable generation files are removed before purge success
+- older restored SQLite state rejects a newer cache manifest
 - CLI and MCP semantic enable/disable behavior
 - shadow mode cannot alter returned evidence or synthesis input
+- MCP shadow diagnostics remain bounded and create no server-side trace files
 - research traces carry comparison and provenance data
 - filtered semantic retrieval does not empty a valid candidate window through
   post-filtering
@@ -812,7 +924,7 @@ Implementation must update:
 
 - `docs/research-harness.md`
 - `README.md`, `COMMANDS.md`, and `MCP.md` where commands or flags change
-- sample/installer configuration and `dbrain config list`
+- sample/installer configuration and `dbrain config env`
 - eval documentation and example cases
 - the repository and installed `dbrain-mcp` skill if its retrieval guidance or
   tool arguments change
@@ -872,8 +984,11 @@ The approved design is implemented when:
    exactly.
 4. A rebuildable embedded ANN index can be built, atomically activated,
    verified against exact results, deleted, and recovered without data loss.
-5. Lexical, semantic, and exact metadata results fuse through traced RRF while
-   protecting exact anchors.
+5. Lexical and semantic results fuse through traced RRF while exact identity
+   signals are protected after fusion; the compatible `exact_tag_evidence`
+   array remains a separately budgeted protected floor, while entity/graph
+   signals contribute to the lexical rank rather than receiving fabricated RRF
+   ranks.
 6. Shadow mode provably cannot alter user-visible evidence or synthesis.
 7. The Cerebras regression improves without breaking protected-anchor,
    lexical-only, or no-evidence evals.
@@ -883,6 +998,11 @@ The approved design is implemented when:
    configuration.
 10. No ontology engine, Turso dependency, or external vector service is
     introduced.
+11. Explicitly purged content is absent from chunk/embedding tables, exact
+    search, active ANN generations, and retained generation files before the
+    purge reports success.
+12. The selected ANN implementation passes the existing release matrix with
+    `CGO_ENABLED=0`.
 
 ## Open Implementation Decisions
 
@@ -896,7 +1016,8 @@ implementation plan and must be decided by measured comparison:
 - production candidate depths and RRF weights after reviewed evals
 
 None of these choices may change the authority boundary, privacy policy,
-rollout stages, exact fallback requirement, or protected-anchor contract.
+rollout stages, exact fallback requirement, protected-anchor contract, purge
+guarantee, or `CGO_ENABLED=0` release constraint.
 
 ## External References
 
