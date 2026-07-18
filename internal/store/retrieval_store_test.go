@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/retrievalchunk"
 )
@@ -216,7 +218,7 @@ func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T
 		t.Fatalf("unchanged embedding invalidated generation: status %q active %d", unchangedStatus, unchangedActive)
 	}
 	changedEmbedding := testEmbedding("chunk-a", "profile-a", "hash-a")
-	changedEmbedding.VectorBytes = []byte{0, 0, 0, 0, 0, 0, 0, 1}
+	changedEmbedding.VectorBytes = embedding.EncodeDenseF32([]float32{0, 1})
 	if err := st.PutRetrievalEmbedding(ctx, changedEmbedding); err != nil {
 		t.Fatalf("change embedding: %v", err)
 	}
@@ -516,6 +518,140 @@ func TestRetrievalProjectionEmptyTranscriptMirrorPreservesOrdinaryArticle(t *tes
 	t.Fatalf("ordinary article missing after empty transcript mirror: %+v", parents[0].Sections)
 }
 
+func TestPutRetrievalEmbeddingRejectsCorruptReadyVector(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		mutate func(*RetrievalEmbeddingRow)
+	}{
+		{name: "wrong byte length", mutate: func(row *RetrievalEmbeddingRow) { row.VectorBytes = row.VectorBytes[:4] }},
+		{name: "non finite", mutate: func(row *RetrievalEmbeddingRow) {
+			row.VectorBytes = embedding.EncodeDenseF32([]float32{float32(math.NaN()), 0})
+		}},
+		{name: "zero L2 norm", mutate: func(row *RetrievalEmbeddingRow) {
+			row.VectorBytes = embedding.EncodeDenseF32([]float32{0, 0})
+		}},
+		{name: "stale chunk hash", mutate: func(row *RetrievalEmbeddingRow) { row.ChunkTextHash = "stale-hash" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			defer func() { _ = st.Close() }()
+			chunk := testRetrievalChunk("corrupt-chunk", "item", "item:corrupt", 0, "current-hash", "alpha")
+			if _, err := st.ReplaceRetrievalChunks(context.Background(), "item", "item:corrupt", []retrievalchunk.Chunk{chunk}); err != nil {
+				t.Fatalf("replace chunks: %v", err)
+			}
+			row := testEmbedding(chunk.ID, "corrupt-profile", chunk.TextHash)
+			tc.mutate(&row)
+			if err := st.PutRetrievalEmbedding(context.Background(), row); err == nil {
+				t.Fatal("corrupt ready vector unexpectedly stored")
+			}
+			var count int
+			if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_embeddings`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 {
+				t.Fatalf("stored %d corrupt embeddings, want zero", count)
+			}
+		})
+	}
+}
+
+func TestPutRetrievalEmbeddingAllowsNonReadyRowsWithoutVectorBytes(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("pending-chunk", "item", "item:states", 0, "pending-hash", "pending"),
+		testRetrievalChunk("blocked-chunk", "item", "item:states", 1, "blocked-hash", "blocked"),
+		testRetrievalChunk("error-chunk", "item", "item:states", 2, "error-hash", "error"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:states", chunks); err != nil {
+		t.Fatalf("replace chunks: %v", err)
+	}
+	statuses := []RetrievalEmbeddingStatus{RetrievalEmbeddingPending, RetrievalEmbeddingBlocked, RetrievalEmbeddingError}
+	for i, status := range statuses {
+		row := testEmbedding(chunks[i].ID, "state-profile", chunks[i].TextHash)
+		row.Status = status
+		row.VectorBytes = nil
+		if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
+			t.Fatalf("put %s embedding without bytes: %v", status, err)
+		}
+	}
+}
+
+func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunk := testRetrievalChunk("read-corrupt-chunk", "item", "item:read-corrupt", 0, "read-hash", "alpha")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:read-corrupt", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatalf("replace chunks: %v", err)
+	}
+	row := testEmbedding(chunk.ID, "read-corrupt-profile", chunk.TextHash)
+	if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
+		t.Fatalf("put valid embedding: %v", err)
+	}
+	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
+		GenerationID: "read-corrupt-generation", ProfileID: row.ProfileID,
+		Backend: "exact", BackendVersion: "v1", Dimensions: row.Dimensions,
+		DistanceMetric: "cosine", BuildStatus: RetrievalGenerationCompleted,
+	}); err != nil {
+		t.Fatalf("put active generation: %v", err)
+	}
+	if err := st.ActivateRetrievalIndexGeneration(ctx, "read-corrupt-generation"); err != nil {
+		t.Fatalf("activate generation: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET vector_bytes = X'00000000' WHERE chunk_id = ? AND profile_id = ?`, row.ChunkID, row.ProfileID); err != nil {
+		t.Fatalf("inject corrupt stored vector: %v", err)
+	}
+	_, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 10)
+	var corruption *RetrievalEmbeddingCorruptionError
+	if !errors.As(err, &corruption) || corruption.ChunkID != row.ChunkID || corruption.ProfileID != row.ProfileID {
+		t.Fatalf("read corrupt ready vector error = %v, want typed chunk/profile corruption", err)
+	}
+	if err := st.BlockCorruptRetrievalEmbedding(ctx, corruption.ChunkID, corruption.ProfileID, corruption.Reason); err != nil {
+		t.Fatalf("block corrupt ready vector: %v", err)
+	}
+	var status, lastError string
+	if err := st.db.QueryRow(`SELECT status, last_error FROM retrieval_embeddings WHERE chunk_id = ? AND profile_id = ?`, row.ChunkID, row.ProfileID).Scan(&status, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(RetrievalEmbeddingBlocked) || !strings.Contains(lastError, "byte length") {
+		t.Fatalf("quarantined row = status %q error %q, want blocked corruption", status, lastError)
+	}
+	assertRetrievalGenerationStale(t, st, "read-corrupt-generation")
+	ready, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 10)
+	if err != nil || len(ready) != 0 {
+		t.Fatalf("ready rows after explicit corruption transition = %+v, %v", ready, err)
+	}
+}
+
+func TestListReadyEmbeddingsRejectsStoredStaleHash(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunk := testRetrievalChunk("read-stale-chunk", "item", "item:read-stale", 0, "current-hash", "alpha")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:read-stale", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatalf("replace chunks: %v", err)
+	}
+	row := testEmbedding(chunk.ID, "read-stale-profile", chunk.TextHash)
+	if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
+		t.Fatalf("put valid embedding: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET chunk_text_hash = 'stale-hash' WHERE chunk_id = ? AND profile_id = ?`, row.ChunkID, row.ProfileID); err != nil {
+		t.Fatalf("inject stale stored hash: %v", err)
+	}
+	_, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 10)
+	var corruption *RetrievalEmbeddingCorruptionError
+	if !errors.As(err, &corruption) || !strings.Contains(corruption.Reason, "stale-hash") || !strings.Contains(corruption.Reason, "current-hash") {
+		t.Fatalf("read stale ready hash error = %v, want typed stale/current diagnostic", err)
+	}
+}
+
 func testRetrievalChunk(id, parentKind, parentKey string, ordinal int, textHash, text string) retrievalchunk.Chunk {
 	return retrievalchunk.Chunk{
 		ID: id, ParentKind: parentKind, ParentSourceKey: parentKey, EvidenceRole: "raw",
@@ -529,7 +665,7 @@ func testEmbedding(chunkID, profileID, textHash string) RetrievalEmbeddingRow {
 	return RetrievalEmbeddingRow{
 		ChunkID: chunkID, ProfileID: profileID, Provider: "fake", Model: "fake-v1",
 		Dimensions: 2, Representation: "dense_f32", Normalization: "l2",
-		VectorBytes: []byte{0, 0, 0, 0, 0, 0, 0, 0}, ChunkTextHash: textHash,
+		VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), ChunkTextHash: textHash,
 		Status: RetrievalEmbeddingReady, AttemptCount: 1, EmbeddedAt: time.Now().UTC(),
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/darron/dbrain/internal/embedding"
 )
 
 var ErrRetrievalUnavailable = errors.New("retrieval storage is unavailable")
@@ -40,6 +42,19 @@ type RetrievalEmbeddingRow struct {
 	ParentSourceKey string
 	EvidenceRole    string
 	Text            string
+}
+
+type RetrievalEmbeddingCorruptionError struct {
+	ChunkID   string
+	ProfileID string
+	Reason    string
+}
+
+func (e *RetrievalEmbeddingCorruptionError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("corrupt ready retrieval embedding for chunk %s profile %s: %s", e.ChunkID, e.ProfileID, e.Reason)
 }
 
 func (s *Store) ListChunksNeedingEmbedding(ctx context.Context, profileID, afterChunkID string, limit int) ([]RetrievalChunkRow, error) {
@@ -94,11 +109,34 @@ func (s *Store) PutRetrievalEmbedding(ctx context.Context, row RetrievalEmbeddin
 	if !validRetrievalEmbeddingStatus(row.Status) {
 		return fmt.Errorf("invalid retrieval embedding status %q", row.Status)
 	}
+	if row.Status == RetrievalEmbeddingReady {
+		if err := (embedding.Info{
+			Provider: row.Provider, Model: row.Model, Dimensions: row.Dimensions,
+		}).Validate(); err != nil {
+			return retrievalEmbeddingCorruption(row.ChunkID, row.ProfileID, err.Error())
+		}
+		if err := embedding.ValidateEncodedVector(
+			row.VectorBytes, row.Dimensions, row.Representation, row.Normalization,
+		); err != nil {
+			return retrievalEmbeddingCorruption(row.ChunkID, row.ProfileID, err.Error())
+		}
+	} else if row.VectorBytes == nil {
+		row.VectorBytes = []byte{}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin retrieval embedding write: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if row.Status == RetrievalEmbeddingReady {
+		var currentChunkTextHash string
+		if err := tx.QueryRowContext(ctx, `SELECT chunk_text_hash FROM retrieval_chunks WHERE chunk_id = ?`, row.ChunkID).Scan(&currentChunkTextHash); err != nil {
+			return fmt.Errorf("load current chunk hash for ready retrieval embedding %s profile %s: %w", row.ChunkID, row.ProfileID, err)
+		}
+		if row.ChunkTextHash != currentChunkTextHash {
+			return retrievalEmbeddingCorruption(row.ChunkID, row.ProfileID, fmt.Sprintf("chunk text hash %q does not match current hash %q", row.ChunkTextHash, currentChunkTextHash))
+		}
+	}
 	var profileProvider, profileModel, profileRepresentation, profileNormalization string
 	var profileDimensions int
 	profileErr := tx.QueryRowContext(ctx, `
@@ -176,10 +214,10 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 		SELECT e.chunk_id, e.profile_id, e.provider, e.model, e.dimensions,
 			e.representation, e.normalization, e.vector_bytes, e.chunk_text_hash,
 			e.status, e.attempt_count, e.last_error, e.next_attempt_at, e.embedded_at,
-			c.parent_kind, c.parent_source_key, c.evidence_role, c.text
+			c.parent_kind, c.parent_source_key, c.evidence_role, c.text, c.chunk_text_hash
 		FROM retrieval_embeddings e
 		JOIN retrieval_chunks c ON c.chunk_id = e.chunk_id
-		WHERE e.profile_id = ? AND e.status = 'ready' AND e.chunk_text_hash = c.chunk_text_hash
+		WHERE e.profile_id = ? AND e.status = 'ready'
 		ORDER BY e.chunk_id`
 	args := []any{profileID}
 	if limit > 0 {
@@ -194,12 +232,20 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 	result := make([]RetrievalEmbeddingRow, 0)
 	for rows.Next() {
 		var row RetrievalEmbeddingRow
-		var nextAttemptAt, embeddedAt string
+		var nextAttemptAt, embeddedAt, currentChunkTextHash string
 		if err := rows.Scan(&row.ChunkID, &row.ProfileID, &row.Provider, &row.Model, &row.Dimensions,
 			&row.Representation, &row.Normalization, &row.VectorBytes, &row.ChunkTextHash,
 			&row.Status, &row.AttemptCount, &row.LastError, &nextAttemptAt, &embeddedAt,
-			&row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.Text); err != nil {
+			&row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.Text, &currentChunkTextHash); err != nil {
 			return nil, fmt.Errorf("scan ready retrieval embedding: %w", err)
+		}
+		if row.ChunkTextHash != currentChunkTextHash {
+			return nil, retrievalEmbeddingCorruption(row.ChunkID, row.ProfileID, fmt.Sprintf("chunk text hash %q does not match current hash %q", row.ChunkTextHash, currentChunkTextHash))
+		}
+		if err := embedding.ValidateEncodedVector(
+			row.VectorBytes, row.Dimensions, row.Representation, row.Normalization,
+		); err != nil {
+			return nil, retrievalEmbeddingCorruption(row.ChunkID, row.ProfileID, err.Error())
 		}
 		row.NextAttemptAt = parseStoredTime(nextAttemptAt)
 		row.EmbeddedAt = parseStoredTime(embeddedAt)
@@ -209,6 +255,51 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 		return nil, fmt.Errorf("iterate ready retrieval embeddings: %w", err)
 	}
 	return result, nil
+}
+
+// BlockCorruptRetrievalEmbedding is an explicit writable transition for a
+// corruption error returned by ListReadyEmbeddings. Keeping it separate makes
+// read-only consumers non-mutating while allowing builders to quarantine a bad
+// row and invalidate any generation that might contain it.
+func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, chunkID, profileID, reason string) error {
+	chunkID = strings.TrimSpace(chunkID)
+	profileID = strings.TrimSpace(profileID)
+	reason = strings.TrimSpace(reason)
+	if chunkID == "" || profileID == "" || reason == "" {
+		return fmt.Errorf("corrupt retrieval embedding chunk, profile, and reason are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin corrupt retrieval embedding transition: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := tx.ExecContext(ctx, `
+		UPDATE retrieval_embeddings
+		SET status = 'blocked', last_error = ?, next_attempt_at = '', updated_at = ?
+		WHERE chunk_id = ? AND profile_id = ? AND status = 'ready'`,
+		"corrupt: "+reason, now, chunkID, profileID)
+	if err != nil {
+		return fmt.Errorf("block corrupt retrieval embedding for chunk %s profile %s: %w", chunkID, profileID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count blocked corrupt retrieval embedding for chunk %s profile %s: %w", chunkID, profileID, err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("ready retrieval embedding for chunk %s profile %s was not found", chunkID, profileID)
+	}
+	if err := markRetrievalProfileGenerationsStaleTx(ctx, tx, profileID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit corrupt retrieval embedding transition for chunk %s profile %s: %w", chunkID, profileID, err)
+	}
+	return nil
+}
+
+func retrievalEmbeddingCorruption(chunkID, profileID, reason string) error {
+	return &RetrievalEmbeddingCorruptionError{ChunkID: chunkID, ProfileID: profileID, Reason: reason}
 }
 
 func validRetrievalEmbeddingStatus(status RetrievalEmbeddingStatus) bool {

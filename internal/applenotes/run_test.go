@@ -311,7 +311,7 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 	if err := st.PutRetrievalEmbedding(ctx, store.RetrievalEmbeddingRow{
 		ChunkID: chunk.ID, ProfileID: "apple-note-profile", Provider: "fake", Model: "fake-v1",
 		Dimensions: 2, Representation: "dense_f32", Normalization: "l2",
-		VectorBytes: []byte{0, 0, 0, 0, 0, 0, 0, 0}, ChunkTextHash: chunk.TextHash,
+		VectorBytes: []byte{0, 0, 128, 63, 0, 0, 0, 0}, ChunkTextHash: chunk.TextHash,
 		Status: store.RetrievalEmbeddingReady,
 	}); err != nil {
 		t.Fatalf("seed retrieval embedding: %v", err)
