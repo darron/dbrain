@@ -12,6 +12,8 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/researchhybrid"
 	"github.com/darron/dbrain/internal/retrieval"
 )
 
@@ -123,6 +125,44 @@ func TestPrepareSynthesisLabelsEvidenceContentSections(t *testing.T) {
 		if !strings.Contains(prepared.Input, want) {
 			t.Fatalf("expected synthesis input to contain %q:\n%s", want, prepared.Input)
 		}
+	}
+}
+
+func TestSemanticPassageSurvivesFuseInspectionAndSynthesisAsPrimaryEvidence(t *testing.T) {
+	cfg, st := inspectionTestStore(t)
+	now := time.Now().UTC()
+	if _, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey: "x:semantic-chain", SourceType: "x_bookmark", ExternalID: "semantic-chain",
+		CanonicalURL: "https://example.com/semantic-chain", Title: "Hydrated parent",
+		Text: "Broad parent raw content.", SummaryText: "Derived parent summary.",
+		ContentHash: "semantic-chain-v1", NotePath: "items/semantic-chain.md", RawJSON: "{}",
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatalf("upsert semantic parent: %v", err)
+	}
+	semanticPassage := "Selected semantic passage says the rare needle fact."
+	semantic := ask.Evidence{
+		SourceKey: "x:semantic-chain", Kind: "item", Excerpt: semanticPassage, EvidenceRole: "raw",
+		Chunk: &retrieval.EvidenceChunk{ID: "semantic-chain-chunk", ParentSourceKey: "x:semantic-chain", Role: "raw", Hash: "semantic-chain-hash", ContributingIDs: []string{"semantic-chain-chunk"}},
+	}
+	fused := researchhybrid.Fuse(nil, []ask.Evidence{semantic}, 5, 4000, nil)
+	pack := Pack{
+		SchemaVersion: SchemaVersion, Question: "What is the rare needle fact?",
+		QueryPlan: QueryPlan{Concepts: []QueryConcept{{Key: "needle", Terms: []string{"needle"}, Required: true, Role: conceptRoleContent}}},
+		Evidence:  fused,
+	}
+	inspected, inspection := InspectPack(context.Background(), cfg, st, pack, InspectionOptions{Limit: 1, MaxChars: 2000})
+	if len(inspection.Errors) != 0 || inspected.Evidence[0].Excerpt != semanticPassage || inspected.Evidence[0].Chunk == nil || inspected.Evidence[0].Chunk.ID != "semantic-chain-chunk" {
+		t.Fatalf("semantic selection did not survive inspection: evidence=%+v inspection=%+v", inspected.Evidence, inspection)
+	}
+	prepared, err := PrepareSynthesis(cfg, SynthesisOptions{Pack: inspected, Model: "cli/test/research", MaxEvidenceChars: 4000})
+	if err != nil {
+		t.Fatalf("PrepareSynthesis: %v", err)
+	}
+	passageAt := strings.Index(prepared.Input, semanticPassage)
+	sectionsAt := strings.Index(prepared.Input, "content_sections:")
+	if passageAt < 0 || sectionsAt < 0 || passageAt > sectionsAt || !strings.Contains(prepared.Input, "primary_evidence: |") {
+		t.Fatalf("selected passage must be primary evidence before hydrated parent sections:\n%s", prepared.Input)
 	}
 }
 

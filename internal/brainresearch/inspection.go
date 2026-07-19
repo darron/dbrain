@@ -10,6 +10,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/researchhybrid"
 	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/retrievalchunk"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -200,13 +201,13 @@ func inspectionCoverageDetail(row InspectionRow) string {
 func hasRawEvidenceSupport(row ask.Evidence) bool {
 	role := strings.ToLower(strings.TrimSpace(row.EvidenceRole))
 	if isSemanticChunkEvidence(row) {
-		return strings.HasPrefix(role, "raw") && strings.TrimSpace(row.Excerpt) != ""
+		return retrievalchunk.IsRawSupportRole(role) && strings.TrimSpace(row.Excerpt) != ""
 	}
-	if strings.HasPrefix(role, "raw") && strings.TrimSpace(row.Excerpt) != "" {
+	if retrievalchunk.IsRawSupportRole(role) && strings.TrimSpace(row.Excerpt) != "" {
 		return true
 	}
 	for _, section := range row.ContentSections {
-		if strings.HasPrefix(section.Role, "raw") && strings.TrimSpace(section.Text) != "" {
+		if retrievalchunk.IsRawSupportRole(section.Role) && strings.TrimSpace(section.Text) != "" {
 			return true
 		}
 	}
@@ -215,17 +216,17 @@ func hasRawEvidenceSupport(row ask.Evidence) bool {
 
 func rawInspectionText(row ask.Evidence) string {
 	if isSemanticChunkEvidence(row) {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(row.EvidenceRole)), "raw") {
+		if retrievalchunk.IsRawSupportRole(row.EvidenceRole) {
 			return strings.ToLower(strings.TrimSpace(row.Excerpt))
 		}
 		return ""
 	}
 	parts := make([]string, 0, len(row.ContentSections)+1)
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(row.EvidenceRole)), "raw") && strings.TrimSpace(row.Excerpt) != "" {
+	if retrievalchunk.IsRawSupportRole(row.EvidenceRole) && strings.TrimSpace(row.Excerpt) != "" {
 		parts = append(parts, row.Excerpt)
 	}
 	for _, section := range row.ContentSections {
-		if strings.HasPrefix(section.Role, "raw") && strings.TrimSpace(section.Text) != "" {
+		if retrievalchunk.IsRawSupportRole(section.Role) && strings.TrimSpace(section.Text) != "" {
 			parts = append(parts, section.Text)
 		}
 	}

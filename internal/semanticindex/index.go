@@ -1,6 +1,10 @@
 package semanticindex
 
-import "context"
+import (
+	"context"
+
+	"github.com/darron/dbrain/internal/embedding"
+)
 
 const BackendExact = "exact"
 
@@ -50,11 +54,10 @@ type Filters struct {
 }
 
 type SearchOptions struct {
-	ProfileID  string
-	Dimensions int
-	Limit      int
-	MaxChunks  int
-	Filters    Filters
+	Profile   embedding.Profile
+	Limit     int
+	MaxChunks int
+	Filters   Filters
 }
 
 type Searcher interface {

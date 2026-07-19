@@ -58,7 +58,7 @@ func Merge(lexical []retrieval.EvidenceDocument, semantic []retrieval.EvidenceDo
 	byKey := map[string]int{}
 	for _, row := range lexical {
 		row = WithLane(row, retrieval.RetrievalLane{Name: LaneLexical, Status: StatusUsed})
-		key := strings.TrimSpace(row.SourceKey)
+		key := parentIdentity(row)
 		if key == "" {
 			continue
 		}
@@ -73,7 +73,7 @@ func Merge(lexical []retrieval.EvidenceDocument, semantic []retrieval.EvidenceDo
 	}
 	for _, row := range semantic {
 		row = WithLane(row, retrieval.RetrievalLane{Name: LaneSemantic, Status: StatusUsed})
-		key := strings.TrimSpace(row.SourceKey)
+		key := parentIdentity(row)
 		if key == "" {
 			continue
 		}
@@ -118,7 +118,7 @@ func Fuse(lexical, semantic []retrieval.EvidenceDocument, limit, charBudget int,
 		}
 		entry, ok := byID[key]
 		if !ok && laneName == LaneSemantic && doc.Chunk != nil {
-			parentKey := "parent:" + strings.TrimSpace(doc.SourceKey)
+			parentKey := "parent:" + parentIdentity(doc)
 			if parentEntry, exists := byID[parentKey]; exists {
 				entry, ok = parentEntry, true
 				entry.doc = mergeDocuments(cloneDocument(doc), entry.doc)
@@ -165,10 +165,12 @@ func Fuse(lexical, semantic []retrieval.EvidenceDocument, limit, charBudget int,
 			entry.bestRank = rank
 		}
 	}
-	for i, doc := range lexical[:min(len(lexical), DefaultLexicalDepth)] {
+	lexical = deduplicateLane(lexical, DefaultLexicalDepth)
+	semantic = deduplicateLane(semantic, DefaultSemanticDepth)
+	for i, doc := range lexical {
 		add(doc, LaneLexical, i+1, DefaultLexicalWeight)
 	}
-	for i, doc := range semantic[:min(len(semantic), DefaultSemanticDepth)] {
+	for i, doc := range semantic {
 		add(doc, LaneSemantic, i+1, DefaultSemanticWeight)
 	}
 	for _, entry := range byID {
@@ -264,13 +266,34 @@ func primaryChunkID(doc retrieval.EvidenceDocument) string {
 	return ""
 }
 func chunkIdentity(doc retrieval.EvidenceDocument) string {
+	parent := parentIdentity(doc)
 	if id := primaryChunkID(doc); id != "" {
-		return "chunk:" + id
+		return "chunk:" + parent + "\x00" + id
 	}
-	if key := strings.TrimSpace(doc.SourceKey); key != "" {
-		return "parent:" + key
+	if parent != "" {
+		return "parent:" + parent
 	}
 	return ""
+}
+
+func deduplicateLane(rows []retrieval.EvidenceDocument, depth int) []retrieval.EvidenceDocument {
+	unique := make([]retrieval.EvidenceDocument, 0, min(len(rows), depth))
+	seen := make(map[string]struct{}, min(len(rows), depth))
+	for _, row := range rows {
+		key := chunkIdentity(row)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, row)
+		if len(unique) >= depth {
+			break
+		}
+	}
+	return unique
 }
 func docScore(doc retrieval.EvidenceDocument) int {
 	if doc.Retrieval != nil {

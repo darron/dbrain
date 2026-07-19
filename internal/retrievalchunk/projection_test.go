@@ -34,6 +34,30 @@ func TestProjectItemSeparatesRawOCRTranscriptAndDerivedEvidence(t *testing.T) {
 	assertSections(t, got.Sections, want)
 }
 
+func TestRawSupportRolesKeepProjectionIdentityStable(t *testing.T) {
+	t.Parallel()
+
+	for _, role := range []string{"raw", "raw_extract_window", "ocr", "transcript"} {
+		if !IsRawSupportRole(role) {
+			t.Fatalf("role %q must count as raw support", role)
+		}
+	}
+	for _, role := range []string{"summary", "derived", "metadata", ""} {
+		if IsRawSupportRole(role) {
+			t.Fatalf("role %q must not count as raw support", role)
+		}
+	}
+
+	item := model.Item{
+		SourceKey: "x:identity", ContentHash: "v1", OCRText: "ocr evidence",
+		ArticleTitle: model.XMediaTranscriptArticleTitle, ArticleText: "transcript evidence",
+	}
+	sections := ProjectItem(item).Sections
+	if len(sections) != 2 || sections[0].Role != "ocr" || sections[1].Role != "transcript" {
+		t.Fatalf("raw-support classification must not silently relabel projection identities: %+v", sections)
+	}
+}
+
 func TestProjectItemTreatsOrdinaryArticleTextAsRaw(t *testing.T) {
 	got := ProjectItem(model.Item{
 		SourceKey: "item:article", ContentHash: "item-v1", Text: "feed text",

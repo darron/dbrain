@@ -116,27 +116,28 @@ type Pack struct {
 }
 
 type QueryPlan struct {
-	TextQuery         string                    `json:"text_query"`
-	QueryFamily       string                    `json:"query_family,omitempty"`
-	QueryTerms        []string                  `json:"query_terms"`
-	TagQueries        []string                  `json:"tag_queries"`
-	QueryVariants     []QueryVariant            `json:"query_variants,omitempty"`
-	Concepts          []QueryConcept            `json:"concepts,omitempty"`
-	ProtectedAnchors  []ProtectedAnchor         `json:"protected_anchors,omitempty"`
-	Planner           string                    `json:"planner,omitempty"`
-	PlannerModel      string                    `json:"planner_model,omitempty"`
-	PlannerError      string                    `json:"planner_error,omitempty"`
-	SourceTypes       []string                  `json:"source_types,omitempty"`
-	RetrievalLanes    []retrieval.RetrievalLane `json:"retrieval_lanes,omitempty"`
-	Limit             int                       `json:"limit"`
-	MaxCharsPerDoc    int                       `json:"max_chars_per_doc"`
-	IncludeRelated    bool                      `json:"include_related"`
-	RelatedLimit      int                       `json:"related_limit,omitempty"`
-	Topic             string                    `json:"topic,omitempty"`
-	TopicSource       string                    `json:"topic_source,omitempty"`
-	IncludeTopicBrief bool                      `json:"include_topic_brief"`
-	SemanticMode      semanticconfig.Mode       `json:"semantic_mode"`
-	ShadowComparison  *ShadowComparison         `json:"shadow_comparison,omitempty"`
+	TextQuery             string                    `json:"text_query"`
+	QueryFamily           string                    `json:"query_family,omitempty"`
+	QueryTerms            []string                  `json:"query_terms"`
+	TagQueries            []string                  `json:"tag_queries"`
+	QueryVariants         []QueryVariant            `json:"query_variants,omitempty"`
+	Concepts              []QueryConcept            `json:"concepts,omitempty"`
+	ProtectedAnchors      []ProtectedAnchor         `json:"protected_anchors,omitempty"`
+	Planner               string                    `json:"planner,omitempty"`
+	PlannerModel          string                    `json:"planner_model,omitempty"`
+	PlannerError          string                    `json:"planner_error,omitempty"`
+	SourceTypes           []string                  `json:"source_types,omitempty"`
+	RetrievalLanes        []retrieval.RetrievalLane `json:"retrieval_lanes,omitempty"`
+	Limit                 int                       `json:"limit"`
+	MaxCharsPerDoc        int                       `json:"max_chars_per_doc"`
+	IncludeRelated        bool                      `json:"include_related"`
+	RelatedLimit          int                       `json:"related_limit,omitempty"`
+	Topic                 string                    `json:"topic,omitempty"`
+	TopicSource           string                    `json:"topic_source,omitempty"`
+	IncludeTopicBrief     bool                      `json:"include_topic_brief"`
+	SemanticMode          semanticconfig.Mode       `json:"semantic_mode"`
+	ShadowComparison      *ShadowComparison         `json:"shadow_comparison,omitempty"`
+	RetryShadowComparison *ShadowComparison         `json:"retry_shadow_comparison,omitempty"`
 }
 
 type ShadowRankedReference struct {

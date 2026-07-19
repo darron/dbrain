@@ -668,10 +668,11 @@ the runner state as a compact live timeline.
 ### Lexical Retrieval Remains The Default
 
 The current default remains local FTS, exact tags, summaries, OCR text, media
-transcripts, and source text windows. An opt-in local Ollama semantic lane now
-adds different-language passage retrieval through SQLite-authoritative exact
-vector scan. `shadow` measures the proposed hybrid order without changing
-visible evidence or synthesis; `on` RRF-fuses the lanes. This is a bounded
+transcripts, and source text windows. An opt-in local Ollama semantic lane can
+retrieve different-language passages through SQLite-authoritative exact vector
+scan when the configured embedding model supports that language pair and local
+evals demonstrate the recall. `shadow` measures the proposed hybrid order
+without changing visible evidence or synthesis; `on` RRF-fuses the lanes. This is a bounded
 foundation, not a claim that semantic retrieval should be default.
 
 ### Long Source Handling Uses Deterministic Evidence Chunks
@@ -680,8 +681,9 @@ The synthesis path still has a character budget and truncation metadata, so a
 research pack can omit detail from long sources. The semantic foundation now
 projects deterministic chunks while preserving raw extracts and exposes chunk,
 evidence-role, and content-section provenance. Exact vector search is capped at
-25,000 active chunks by default; above that cap the lane reports `too_large`
-and research remains lexical. ANN lifecycle and background indexing remain
+25,000 current ready embeddings for the configured profile by default, counted
+before request filters; above that cap the lane reports `too_large` and research
+remains lexical. ANN lifecycle and background indexing remain
 deferred.
 
 ### Eval Coverage Is Retrieval-Only And Mostly Manual
@@ -1301,16 +1303,19 @@ returning lexical-identical evidence/order/synthesis; `on` returns fused
 evidence. CLI and MCP/web boolean overrides force effective on/off and reject
 enable-plus-disable conflicts.
 
-Semantic candidate depth defaults to 50 and exact scans stop at 25,000 active
-chunks by default. Oversized corpora and valid provider/search failures fail the
-semantic lane open to lexical evidence with explicit status/reason. Exact-tag
+Semantic candidate depth defaults to 50 and exact scans stop at 25,000 current
+ready embeddings for the configured profile by default, counted before request
+filters. Oversized ready profile sets and valid provider/search failures fail
+the semantic lane open to lexical evidence with explicit status/reason. Exact-tag
 evidence remains separate and representative. Direct MCP pack calls remain
 read-only and trace-free, including in shadow mode.
 
 Operational state is limited to `dbrain semantic status`, `semantic chunk`, and
-`semantic embed`. Existing explicit parent-forget paths synchronously remove
-that parent's derived chunks/embeddings and stale affected retrieval
-generations. There is no ANN index or ANN file lifecycle in this foundation;
+`semantic embed`. The current deletion integration is item-only: Apple Notes
+`--forget-excluded` synchronously removes that item's derived chunks/embeddings
+and stale affected retrieval generations through the explicit indexed-content
+purge. Other delete paths and future parent kinds are not covered by this claim.
+There is no ANN index or ANN file lifecycle in this foundation;
 ANN, provider expansion, background sync, and default-on remain deferred until
 reviewed lexical-versus-hybrid evals justify them.
 
@@ -1511,8 +1516,9 @@ Current semantic foundation:
   cannot change visible evidence, order, or synthesis. `on` returns RRF-fused
   evidence while retaining protected anchors and evidence provenance.
 - Semantic failures fail open to lexical evidence with explicit lane status and
-  reason. The exact scan defaults to 50 candidates and a 25,000-active-chunk
-  cap; above the cap the lane is `too_large` and research stays lexical.
+  reason. The exact scan defaults to 50 candidates and a cap of 25,000 current
+  ready embeddings for the configured profile, counted before request filters;
+  above the cap the lane is `too_large` and research stays lexical.
 - CLI `--semantic` / `--no-semantic` and MCP/web `use_semantic` /
   `disable_semantic` force effective on/off; enabling and disabling together is
   rejected. Direct MCP pack builds remain trace-free.

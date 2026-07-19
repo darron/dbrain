@@ -132,12 +132,16 @@ a non-empty local Ollama embedding model and positive dimensions.
   synthesis lexical-identical. `query_plan.shadow_comparison` contains only
   bounded source/chunk identifiers, ranks, counts, status/reason, and
   added/removed/reordered references—never excerpts or other content.
+  If the runner performs its one bounded retry, the retry attempt's diagnostic
+  is preserved separately as `query_plan.retry_shadow_comparison` rather than
+  replacing the initial comparison.
 - `on` returns RRF-fused evidence while retaining protected evidence and its
   chunk/content provenance.
 
 The only vector backend in this foundation is SQLite-authoritative exact scan.
-Semantic candidate depth defaults to 50; exact scans are capped at 25,000
-active chunks by default. A larger corpus reports `too_large`, and validly
+Semantic candidate depth defaults to 50. Exact scans are capped at 25,000
+current ready embeddings for the configured profile by default, counted before
+request filters. A larger ready profile set reports `too_large`, and validly
 configured provider/search failures report their status/reason; both fail open
 to lexical evidence. ANN, other providers, background sync, and default-on are
 deferred.

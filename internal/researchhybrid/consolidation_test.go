@@ -125,6 +125,46 @@ func TestConsolidateOnlyExpandsOrdinalPredecessorAndSuccessor(t *testing.T) {
 	}
 }
 
+func TestConsolidateIncompatibleOrdinalNeighborDoesNotConsumeQuota(t *testing.T) {
+	primary := chunkDoc("p", "primary", 20, 30)
+	primary.Chunk.Index = 3
+	primary.Excerpt = "primary"
+	score := 1.0
+	primary.Retrieval = &retrieval.RetrievalInfo{FusedScore: &score}
+
+	incompatibleLeft := chunkDoc("p", "z-incompatible-left", 10, 20)
+	incompatibleLeft.Chunk.Index = 2
+	incompatibleLeft.Chunk.SectionOrdinal = 2
+	incompatibleLeft.Excerpt = "incompatible"
+	compatibleRight := chunkDoc("p", "right", 30, 40)
+	compatibleRight.Chunk.Index = 4
+	compatibleRight.Excerpt = "right"
+	compatibleFallback := chunkDoc("p", "a-compatible-fallback", 0, 10)
+	compatibleFallback.Chunk.Index = 1
+	compatibleFallback.Excerpt = "fallback"
+
+	got := Consolidate([]retrieval.EvidenceDocument{incompatibleLeft, compatibleFallback, compatibleRight, primary}, 100, nil)
+	var selected []string
+	for _, row := range got {
+		selected = append(selected, row.Chunk.ContributingIDs...)
+	}
+	if !reflect.DeepEqual(selected, []string{"primary", "right", "a-compatible-fallback"}) {
+		t.Fatalf("incompatible ordinal neighbor consumed parent quota: selected=%v got=%+v", selected, got)
+	}
+}
+
+func TestConsolidateKeepsSameSourceKeyKindsDistinct(t *testing.T) {
+	item := chunkDoc("shared", "item-chunk", 0, 10)
+	item.Kind = " ITEM "
+	source := chunkDoc("shared", "source-chunk", 10, 20)
+	source.Kind = "source"
+
+	got := Consolidate([]retrieval.EvidenceDocument{item, source}, 100, nil)
+	if len(got) != 2 {
+		t.Fatalf("same-key item and source parents were consolidated: %+v", got)
+	}
+}
+
 func TestSingletonWindowHashMatchesSemanticProducerEncoding(t *testing.T) {
 	doc := chunkDoc("p", "a", 0, 1)
 	doc.Excerpt = "x"

@@ -7,10 +7,12 @@ import (
 )
 
 const (
-	currentSchemaVersion            = 13
+	currentSchemaVersion            = 14
 	auditProvenanceMigrationVersion = 12
 	auditProvenanceMigrationName    = "audit_provenance_v1"
 	retrievalMigrationVersion       = 13
+	retrievalTriggerRepairVersion   = 14
+	retrievalTriggerRepairName      = "retrieval_profile_invariant_triggers_repair"
 )
 
 type schemaMigration struct {
@@ -134,6 +136,13 @@ var schemaMigrations = []schemaMigration{
 	{
 		Version: retrievalMigrationVersion,
 		Name:    "retrieval_hybrid_storage_v1",
+		Run: func(s *Store) error {
+			return s.ensureRetrievalTables()
+		},
+	},
+	{
+		Version: retrievalTriggerRepairVersion,
+		Name:    retrievalTriggerRepairName,
 		Run: func(s *Store) error {
 			return s.ensureRetrievalTables()
 		},

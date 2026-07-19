@@ -116,11 +116,19 @@ func chooseEnd(text []rune, paragraphs boundaries, start int, opts Options) int 
 	}
 	target := start + opts.TargetRunes
 	hard := min(start+opts.MaxRunes, len(text))
-	if end := lastBoundary(paragraphs.ends, start, target); end > start {
-		return end
+	previous := lastBoundary(paragraphs.ends, start, target)
+	forward := firstBoundary(paragraphs.ends, target, hard)
+	if previous > start && forward > start {
+		if forward-target < target-previous {
+			return forward
+		}
+		return previous
 	}
-	if end := firstBoundary(paragraphs.ends, target, hard); end > start {
-		return end
+	if previous > start {
+		return previous
+	}
+	if forward > start {
+		return forward
 	}
 	if end := sentenceBoundary(text, start, target); end > start {
 		return end

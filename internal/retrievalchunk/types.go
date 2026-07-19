@@ -1,7 +1,7 @@
 package retrievalchunk
 
 const (
-	Version           = "retrieval-chunker-v1"
+	Version           = "retrieval-chunker-v2"
 	ProjectionVersion = "retrieval-projection-v1"
 )
 

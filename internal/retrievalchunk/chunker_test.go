@@ -189,6 +189,29 @@ func TestBuildPreservesCRLFParagraphBoundaryPastTarget(t *testing.T) {
 	}
 }
 
+func TestBuildSkipsTinyIntroForCloserForwardParagraphBoundary(t *testing.T) {
+	t.Parallel()
+
+	intro := strings.Repeat("i", 20) + "\n\n"
+	middle := strings.Repeat("m", 105) + "\n\n"
+	text := intro + middle + strings.Repeat("tail ", 80)
+	opts := Options{TargetRunes: 100, MaxRunes: 150, OverlapRunes: 0}
+	chunks, err := Build(Parent{
+		Kind: "source", SourceKey: "src:intro", ContentHash: "intro-v1",
+		Sections: []Section{{Role: "raw", Text: text}},
+	}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEnd := len([]rune(intro + middle))
+	if chunks[0].EndChar != wantEnd {
+		t.Fatalf("first chunk ends at %d, want closer forward paragraph boundary %d", chunks[0].EndChar, wantEnd)
+	}
+	if chunks[0].ChunkerVersion != "retrieval-chunker-v2" {
+		t.Fatalf("boundary behavior changed without a new chunk identity version: %q", chunks[0].ChunkerVersion)
+	}
+}
+
 func TestBuildFallsBackToWhitespaceBeforeRuneBoundary(t *testing.T) {
 	opts := Options{TargetRunes: 20, MaxRunes: 30, OverlapRunes: 0}
 	text := strings.Repeat("word ", 20)

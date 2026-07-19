@@ -23,6 +23,10 @@ func splitPrimaryAndRelated(docs []ask.Evidence) ([]ask.Evidence, []ask.Evidence
 func evidenceChunk(doc ask.Evidence) string {
 	text := strings.TrimSpace(doc.Summary)
 	textKind := "summary"
+	primaryEvidence := ""
+	if isSemanticChunkEvidence(doc) {
+		primaryEvidence = strings.TrimSpace(doc.Excerpt)
+	}
 	if text == "" {
 		text = strings.TrimSpace(doc.Excerpt)
 		textKind = "excerpt"
@@ -75,6 +79,17 @@ func evidenceChunk(doc ask.Evidence) string {
 			b.WriteString(" (")
 			b.WriteString(doc.RelatedTo)
 			b.WriteString(")")
+		}
+	}
+	if primaryEvidence != "" {
+		b.WriteString("\n  primary_evidence: |\n")
+		for _, line := range strings.Split(primaryEvidence, "\n") {
+			b.WriteString("    ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		if len(doc.ContentSections) == 0 {
+			return b.String()
 		}
 	}
 	if len(doc.ContentSections) > 0 {

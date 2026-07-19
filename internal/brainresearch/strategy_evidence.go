@@ -9,6 +9,7 @@ import (
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/entities"
 	"github.com/darron/dbrain/internal/researchhybrid"
+	"github.com/darron/dbrain/internal/researchsemantic"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
 )
@@ -185,9 +186,28 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 	query := canonicalSemanticQuery(strategy, hints, opts.Question)
 	semanticOpts := b.semanticOptions
 	semanticOpts.Filters.AllowedSourceTypes = semanticSourceTypes
-	semanticRows, status, semanticErr := b.semanticRetriever.Retrieve(ctx, query, semanticOpts)
+	semanticTimeout := semanticOpts.Timeout
+	if semanticTimeout <= 0 {
+		semanticTimeout = researchsemantic.DefaultQueryTimeout
+	}
+	semanticCtx, cancelSemantic := context.WithTimeout(ctx, semanticTimeout)
+	semanticRows, status, semanticErr := b.semanticRetriever.Retrieve(semanticCtx, query, semanticOpts)
+	semanticCtxErr := semanticCtx.Err()
+	cancelSemantic()
 	if semanticErr != nil {
-		if errors.Is(semanticErr, context.Canceled) || errors.Is(semanticErr, context.DeadlineExceeded) || ctx.Err() != nil {
+		if parentErr := ctx.Err(); parentErr != nil {
+			return nil, parentErr
+		}
+		if errors.Is(semanticErr, context.DeadlineExceeded) && errors.Is(semanticCtxErr, context.DeadlineExceeded) {
+			status.State = semanticindex.StateUnavailable
+			status.Reason = semanticindex.ReasonProviderUnavailable
+			if status.Backend == "" {
+				status.Backend = semanticindex.BackendExact
+			}
+			b.setShadowComparison(comparisonLexical, comparisonLexical, status)
+			return out, nil
+		}
+		if errors.Is(semanticErr, context.Canceled) || errors.Is(semanticErr, context.DeadlineExceeded) {
 			return nil, semanticErr
 		}
 		if status.State == "" {

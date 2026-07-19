@@ -7,7 +7,24 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/semanticindex"
 )
+
+func TestMergeRetryPackPreservesAndLabelsRetryShadowComparison(t *testing.T) {
+	t.Parallel()
+
+	initial := retryMergeInitialPack()
+	initial.QueryPlan.ShadowComparison = &ShadowComparison{Status: semanticindex.StateSearched, LexicalCount: 2, HybridCount: 3}
+	retry := Pack{QueryPlan: QueryPlan{ShadowComparison: &ShadowComparison{Status: semanticindex.StateUnavailable, Reason: semanticindex.ReasonProviderUnavailable}}}
+
+	merged, _ := MergeRetryPack(initial, retry, MergeRetryOptions{})
+	if merged.QueryPlan.ShadowComparison != initial.QueryPlan.ShadowComparison {
+		t.Fatalf("initial shadow comparison was not preserved: %#v", merged.QueryPlan)
+	}
+	if merged.QueryPlan.RetryShadowComparison != retry.QueryPlan.ShadowComparison {
+		t.Fatalf("retry shadow comparison was not preserved under its retry label: %#v", merged.QueryPlan)
+	}
+}
 
 func TestMergeRetryPackPreservesInitialAnchoredRowsAndRejectsGenericRetry(t *testing.T) {
 	t.Parallel()

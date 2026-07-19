@@ -96,7 +96,7 @@ func TestRetrieverEmbedsCleanQueryAndBatchHydratesInHitOrder(t *testing.T) {
 	if len(provider.requests) != 1 || !reflect.DeepEqual(provider.requests[0], embedding.Request{Texts: []string{"semantic query"}, Purpose: embedding.PurposeQuery}) {
 		t.Fatalf("provider requests=%+v", provider.requests)
 	}
-	if len(searcher.options) != 1 || searcher.options[0].ProfileID != profileID || searcher.options[0].Dimensions != 2 || searcher.options[0].MaxChunks != 25 {
+	if len(searcher.options) != 1 || !reflect.DeepEqual(searcher.options[0].Profile, profile) || searcher.options[0].MaxChunks != 25 {
 		t.Fatalf("search options=%+v", searcher.options)
 	}
 	if len(hydrator.calls) != 1 || !reflect.DeepEqual(hydrator.calls[0], []string{"deleted", "source-chunk", "item-chunk"}) {

@@ -166,6 +166,22 @@ func TestInspectEvidenceRowSemanticRawRoleUsesSelectedExcerptAsRawSupport(t *tes
 	}
 }
 
+func TestInspectEvidenceRowSemanticOCRAndTranscriptCountAsRawSupport(t *testing.T) {
+	t.Parallel()
+
+	for _, role := range []string{"ocr", "transcript"} {
+		row := ask.Evidence{
+			SourceKey: "x:" + role, Excerpt: "selected needle passage", EvidenceRole: role,
+			Chunk:     &retrieval.EvidenceChunk{ID: role + "-chunk"},
+			Retrieval: &ask.RetrievalInfo{Lanes: []retrieval.RetrievalLane{{Name: "semantic"}}},
+		}
+		got := inspectEvidenceRow(row, []QueryConcept{{Key: "needle", Terms: []string{"needle"}, Required: true, Role: conceptRoleContent}})
+		if !got.RawSupport || len(got.RawMatchedConcepts) != 1 || len(got.MatchedConcepts) != 1 || len(got.MissingConcepts) != 0 {
+			t.Fatalf("role %q did not provide raw concept support: %+v", role, got)
+		}
+	}
+}
+
 func TestInspectPackMixedHydrationFailureKeepsOriginalOrder(t *testing.T) {
 	t.Parallel()
 

@@ -43,6 +43,10 @@ func MergeRetryPack(initial Pack, retry Pack, opts MergeRetryOptions) (Pack, Mer
 	}
 
 	merged := initial
+	// The merged plan remains the initial attempt's plan, but the retry attempt's
+	// bounded shadow diagnostic must remain independently identifiable in traces
+	// and human-facing output.
+	merged.QueryPlan.RetryShadowComparison = retry.QueryPlan.ShadowComparison
 	if len(initial.QueryPlan.ProtectedAnchors) == 0 {
 		merged.Evidence = mergeEvidenceRows(acceptedRetry, initial.Evidence)
 	} else {

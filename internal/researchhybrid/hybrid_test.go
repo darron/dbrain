@@ -52,6 +52,61 @@ func TestFuseExactRRFMathAndChunkIdentity(t *testing.T) {
 	}
 }
 
+func TestFuseDeduplicatesEachLaneBeforeRRF(t *testing.T) {
+	lexical := []retrieval.EvidenceDocument{
+		chunkDoc("parent", "duplicate", 0, 10),
+		chunkDoc("parent", "duplicate", 0, 10),
+	}
+	semantic := []retrieval.EvidenceDocument{
+		chunkDoc("parent", "duplicate", 0, 10),
+		chunkDoc("parent", "duplicate", 0, 10),
+	}
+
+	got := Fuse(lexical, semantic, 10, 100, nil)
+	if len(got) != 1 {
+		t.Fatalf("got=%+v", got)
+	}
+	wantContribution := 1.0 / 61.0
+	if got[0].Retrieval.FusedScore == nil || math.Abs(*got[0].Retrieval.FusedScore-2*wantContribution) > 1e-12 {
+		t.Fatalf("duplicate lane rows changed fused score: retrieval=%+v", got[0].Retrieval)
+	}
+	for _, laneName := range []string{LaneLexical, LaneSemantic} {
+		lane := laneFor(got[0], laneName)
+		if lane.Rank != 1 || lane.Contribution == nil || math.Abs(*lane.Contribution-wantContribution) > 1e-12 {
+			t.Fatalf("%s lane did not preserve first/best rank and contribution: %+v", laneName, lane)
+		}
+	}
+}
+
+func TestFuseParentFallbackKeepsSameSourceKeyKindsDistinct(t *testing.T) {
+	lexicalParent := retrieval.EvidenceDocument{Kind: "item", SourceKey: "shared", Excerpt: "item parent"}
+	semanticChunk := chunkDoc("shared", "source-chunk", 0, 10)
+	semanticChunk.Kind = "source"
+
+	got := Fuse([]retrieval.EvidenceDocument{lexicalParent}, []retrieval.EvidenceDocument{semanticChunk}, 10, 100, nil)
+	if len(got) != 2 {
+		t.Fatalf("same-key item and source parents were conflated: %+v", got)
+	}
+	kinds := map[string]bool{}
+	for _, row := range got {
+		kinds[row.Kind] = true
+	}
+	if !kinds["item"] || !kinds["source"] {
+		t.Fatalf("same-key parent kinds not preserved: %+v", got)
+	}
+}
+
+func TestFuseParentFallbackKeepsCaseSensitiveSourceKeysDistinct(t *testing.T) {
+	lexicalParent := retrieval.EvidenceDocument{Kind: "item", SourceKey: "Shared", Excerpt: "uppercase parent"}
+	semanticChunk := chunkDoc("shared", "lowercase-chunk", 0, 10)
+	semanticChunk.Kind = "item"
+
+	got := Fuse([]retrieval.EvidenceDocument{lexicalParent}, []retrieval.EvidenceDocument{semanticChunk}, 10, 100, nil)
+	if len(got) != 2 {
+		t.Fatalf("case-sensitive source keys were conflated: %+v", got)
+	}
+}
+
 func TestFuseLexicalIdentityWhenSemanticEmptyAndCapsDepthAndLimit(t *testing.T) {
 	lex := []retrieval.EvidenceDocument{{SourceKey: "one"}, {SourceKey: "two"}}
 	got := Fuse(lex, nil, 1, 100, nil)
@@ -178,5 +233,18 @@ func TestMergeDeduplicatesAndPreservesBothLaneProvenance(t *testing.T) {
 	}
 	if len(names) != 2 || names[0] != LaneLexical || names[1] != LaneSemantic {
 		t.Fatalf("expected lexical and semantic provenance, got %#v", names)
+	}
+}
+
+func TestMergeKeepsSameSourceKeyKindsDistinct(t *testing.T) {
+	t.Parallel()
+
+	merged := Merge(
+		[]retrieval.EvidenceDocument{{Kind: "item", SourceKey: "shared"}},
+		[]retrieval.EvidenceDocument{{Kind: "source", SourceKey: "shared"}},
+		5,
+	)
+	if len(merged) != 2 {
+		t.Fatalf("same-key item and source parents were merged: %+v", merged)
 	}
 }

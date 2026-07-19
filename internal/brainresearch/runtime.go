@@ -16,6 +16,9 @@ func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride se
 	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, forceOn, forceOff); err != nil {
 		return nil, err
 	}
+	if forceOff {
+		return New(cfg, st).WithSemanticMode(semanticconfig.ModeOff), nil
+	}
 	configured, err := semanticconfig.ResolveDiagnostic(cfg.RootDir)
 	if err != nil {
 		return nil, err
@@ -47,5 +50,6 @@ func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride se
 	retriever := researchsemantic.New(provider, semanticindex.NewExact(st), st)
 	return b.WithSemanticRetriever(retriever, researchsemantic.Options{
 		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: ready.ExactFallbackMaxChunks,
+		Timeout: researchsemantic.DefaultQueryTimeout,
 	}), nil
 }

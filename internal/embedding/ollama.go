@@ -10,18 +10,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const (
-	ProviderOllama         = "ollama"
-	maxOllamaResponseBytes = 8 << 20
-	maxOllamaErrorBytes    = 64 << 10
+	ProviderOllama              = "ollama"
+	DefaultOllamaRequestTimeout = 2 * time.Minute
+	maxOllamaResponseBytes      = 8 << 20
+	maxOllamaErrorBytes         = 64 << 10
 )
 
 type OllamaOptions struct {
 	BaseURL    string
 	Model      string
 	Dimensions int
+	Timeout    time.Duration
 }
 
 type Ollama struct {
@@ -43,6 +46,9 @@ type ollamaEmbedResponse struct {
 }
 
 func NewOllama(opts OllamaOptions) (*Ollama, error) {
+	if opts.Timeout < 0 {
+		return nil, FatalConfigError(fmt.Errorf("Ollama embedding request timeout must not be negative"))
+	}
 	baseURL, err := normalizeOllamaEndpoint(opts.BaseURL)
 	if err != nil {
 		return nil, FatalConfigError(err)
@@ -55,11 +61,19 @@ func NewOllama(opts OllamaOptions) (*Ollama, error) {
 	transport.Proxy = nil
 	client := &http.Client{
 		Transport: transport,
+		Timeout:   defaultDuration(opts.Timeout, DefaultOllamaRequestTimeout),
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 	return &Ollama{baseURL: baseURL, info: info, client: client}, nil
+}
+
+func defaultDuration(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func (o *Ollama) Info() Info {

@@ -52,7 +52,7 @@ func Consolidate(rows []retrieval.EvidenceDocument, charBudget int, protected ma
 		adjacent := map[string]struct{}{}
 		for _, wantIndex := range []int{primary.Chunk.Index - 1, primary.Chunk.Index + 1} {
 			for _, candidate := range group[1:] {
-				if candidate.Chunk != nil && candidate.Chunk.Index == wantIndex {
+				if candidate.Chunk != nil && candidate.Chunk.Index == wantIndex && chunksCompatible(primary, candidate) {
 					selected = append(selected, candidate)
 					adjacent[chunkIdentity(candidate)] = struct{}{}
 					break
@@ -97,10 +97,15 @@ func Consolidate(rows []retrieval.EvidenceDocument, charBudget int, protected ma
 }
 
 func parentIdentity(row retrieval.EvidenceDocument) string {
+	kind := strings.ToLower(strings.TrimSpace(row.Kind))
+	key := strings.TrimSpace(row.SourceKey)
 	if row.Chunk != nil && strings.TrimSpace(row.Chunk.ParentSourceKey) != "" {
-		return strings.TrimSpace(row.Chunk.ParentSourceKey)
+		key = strings.TrimSpace(row.Chunk.ParentSourceKey)
 	}
-	return strings.TrimSpace(row.SourceKey)
+	if key == "" {
+		return ""
+	}
+	return kind + "\x00" + key
 }
 func chunksCompatible(a, b retrieval.EvidenceDocument) bool {
 	return a.Chunk != nil && b.Chunk != nil && parentIdentity(a) == parentIdentity(b) && strings.EqualFold(strings.TrimSpace(a.EvidenceRole), strings.TrimSpace(b.EvidenceRole)) && a.Chunk.SectionOrdinal == b.Chunk.SectionOrdinal

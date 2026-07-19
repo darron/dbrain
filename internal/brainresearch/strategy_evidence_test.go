@@ -7,6 +7,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
@@ -23,6 +24,13 @@ type fakeSemanticRetriever struct {
 	err     error
 	queries []string
 	options []researchsemantic.Options
+}
+
+type blockingSemanticRetriever struct{}
+
+func (blockingSemanticRetriever) Retrieve(ctx context.Context, _ string, _ researchsemantic.Options) ([]retrieval.EvidenceDocument, semanticindex.Status, error) {
+	<-ctx.Done()
+	return nil, semanticindex.Status{State: semanticindex.StateUnavailable, Reason: semanticindex.ReasonCanceled}, ctx.Err()
 }
 
 func (f *fakeSemanticRetriever) Retrieve(_ context.Context, q string, opts researchsemantic.Options) ([]retrieval.EvidenceDocument, semanticindex.Status, error) {
@@ -275,6 +283,42 @@ func TestCollectStrategyEvidenceSemanticFailureModesFailOpenAndCancellationPropa
 	_, err := New(config.Config{}, st).WithSemanticRetriever(fake, researchsemantic.Options{}).collectStrategyEvidence(context.Background(), strategy, hints, opts, 5, 100, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestCollectStrategyEvidenceSemanticChildTimeoutFailsOpenButParentDeadlinePropagates(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	strategy := researchStrategy{Variants: []QueryVariant{{Query: "one"}}}
+	build := func(timeout time.Duration) *Builder {
+		b := New(config.Config{}, st).WithSemanticRetriever(blockingSemanticRetriever{}, researchsemantic.Options{Timeout: timeout})
+		b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+			lexical := ask.Response{Evidence: []ask.Evidence{{SourceKey: "lexical"}}}
+			return lexical, lexical, nil
+		}
+		return b
+	}
+
+	liveParent, liveCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer liveCancel()
+	got, err := build(25*time.Millisecond).collectStrategyEvidence(liveParent, strategy, ask.QueryHints{}, Options{Question: "one", UseSemantic: true}, 5, 100, nil)
+	if err != nil || len(got) != 1 || got[0].SourceKey != "lexical" {
+		t.Fatalf("child timeout got=%+v err=%v", got, err)
+	}
+	if liveParent.Err() != nil {
+		t.Fatalf("child timeout consumed parent budget: %v", liveParent.Err())
+	}
+	b := build(time.Second)
+	parent, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	_, err = b.collectStrategyEvidence(parent, strategy, ask.QueryHints{}, Options{Question: "one", UseSemantic: true}, 5, 100, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("parent deadline error = %v", err)
+	}
+
+	failOpen := build(25 * time.Millisecond)
+	_, err = failOpen.collectStrategyEvidence(context.Background(), strategy, ask.QueryHints{}, Options{Question: "one", UseSemantic: true}, 5, 100, nil)
+	if err != nil || failOpen.semanticStatus == nil || failOpen.semanticStatus.Reason != semanticindex.ReasonProviderUnavailable {
+		t.Fatalf("fail-open status=%+v err=%v", failOpen.semanticStatus, err)
 	}
 }
 

@@ -39,7 +39,7 @@ func TestExactSearchComputesCosineDistanceAndDeterministicTies(t *testing.T) {
 		readyRow("worst", "profile", []float32{-1, 0}, "item", "worst", "raw"),
 	}}
 	hits, status, err := NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{
-		ProfileID: "profile", Dimensions: 2, Limit: 3, MaxChunks: 10,
+		Profile: exactTestProfile(), Limit: 3, MaxChunks: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestExactSearchFiltersBeforeTopK(t *testing.T) {
 		readyRow("allowed", "profile", []float32{0.6, 0.8}, "source", "allowed-parent", "summary"),
 	}}
 	hits, status, err := NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{
-		ProfileID: "profile", Dimensions: 2, Limit: 1, MaxChunks: 10,
+		Profile: exactTestProfile(), Limit: 1, MaxChunks: 10,
 		Filters: Filters{
 			AllowedParentKeys:    []string{" allowed-parent "},
 			AllowedParentKinds:   []string{"source"},
@@ -83,7 +83,7 @@ func TestExactSearchFiltersSourceTypeBeforeTopKAndCarriesMetadata(t *testing.T) 
 	allowed.SourceType, allowed.SectionOrdinal = "article", 4
 	st := &fakeReadyStore{rows: []store.RetrievalEmbeddingRow{disallowed, allowed}}
 	hits, status, err := NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{
-		ProfileID: "profile", Dimensions: 2, Limit: 1, MaxChunks: 10,
+		Profile: exactTestProfile(), Limit: 1, MaxChunks: 10,
 		Filters: Filters{AllowedSourceTypes: []string{" ARTICLE "}},
 	})
 	if err != nil || status.State != StateSearched {
@@ -99,7 +99,7 @@ func TestExactSearchSourceTypeFamilyFilter(t *testing.T) {
 	x.SourceType = "x_bookmark"
 	article := readyRow("article", "profile", []float32{0, 1}, "source", "article", "raw")
 	article.SourceType = "article"
-	hits, status, err := NewExact(&fakeReadyStore{rows: []store.RetrievalEmbeddingRow{x, article}}).Search(context.Background(), []float32{1, 0}, SearchOptions{ProfileID: "profile", Dimensions: 2, Limit: 2, MaxChunks: 10, Filters: Filters{AllowedSourceTypes: []string{"x"}}})
+	hits, status, err := NewExact(&fakeReadyStore{rows: []store.RetrievalEmbeddingRow{x, article}}).Search(context.Background(), []float32{1, 0}, SearchOptions{Profile: exactTestProfile(), Limit: 2, MaxChunks: 10, Filters: Filters{AllowedSourceTypes: []string{"x"}}})
 	if err != nil || status.State != StateSearched || len(hits) != 1 || hits[0].ChunkID != "x" {
 		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
 	}
@@ -109,7 +109,7 @@ func TestExactSearchCorruptRowFailsClosedWithoutPartialHits(t *testing.T) {
 	healthy := readyRow("healthy", "profile", []float32{1, 0}, "item", "healthy", "raw")
 	corrupt := readyRow("corrupt", "profile", []float32{0, 1}, "item", "corrupt", "raw")
 	corrupt.VectorBytes = []byte{1}
-	hits, status, err := NewExact(&fakeReadyStore{rows: []store.RetrievalEmbeddingRow{healthy, corrupt}}).Search(context.Background(), []float32{1, 0}, SearchOptions{ProfileID: "profile", Dimensions: 2, Limit: 5, MaxChunks: 10})
+	hits, status, err := NewExact(&fakeReadyStore{rows: []store.RetrievalEmbeddingRow{healthy, corrupt}}).Search(context.Background(), []float32{1, 0}, SearchOptions{Profile: exactTestProfile(), Limit: 5, MaxChunks: 10})
 	if err != nil || status.Reason != ReasonIndexCorrupt || hits == nil || len(hits) != 0 {
 		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
 	}
@@ -122,14 +122,14 @@ func TestExactSearchEnforcesCapAtExactBoundary(t *testing.T) {
 	}
 	st := &fakeReadyStore{rows: rows}
 	hits, status, err := NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{
-		ProfileID: "profile", Dimensions: 2, Limit: 1, MaxChunks: 2,
+		Profile: exactTestProfile(), Limit: 1, MaxChunks: 2,
 	})
 	if err != nil || status.State != StateSearched || len(hits) != 1 || st.gotLimit != 3 {
 		t.Fatalf("hits=%+v status=%+v err=%v requested_limit=%d", hits, status, err, st.gotLimit)
 	}
 	st.rows = append(rows, readyRow("c", "profile", []float32{-1, 0}, "item", "c", "raw"))
 	hits, status, err = NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{
-		ProfileID: "profile", Dimensions: 2, Limit: 1, MaxChunks: 2,
+		Profile: exactTestProfile(), Limit: 1, MaxChunks: 2,
 	})
 	if err != nil || status.State != StateUnavailable || status.Reason != ReasonTooLarge || hits == nil || len(hits) != 0 || st.gotLimit != 3 {
 		t.Fatalf("hits=%+v status=%+v err=%v requested_limit=%d", hits, status, err, st.gotLimit)
@@ -138,7 +138,7 @@ func TestExactSearchEnforcesCapAtExactBoundary(t *testing.T) {
 
 func TestExactSearchDistinguishesSearchedEmptyFromUnavailable(t *testing.T) {
 	hits, status, err := NewExact(&fakeReadyStore{}).Search(context.Background(), []float32{1, 0}, SearchOptions{
-		ProfileID: "profile", Dimensions: 2, Limit: 5, MaxChunks: 10,
+		Profile: exactTestProfile(), Limit: 5, MaxChunks: 10,
 	})
 	if err != nil || status.State != StateSearched || status.Reason != ReasonNone || hits == nil || len(hits) != 0 {
 		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
@@ -168,9 +168,30 @@ func TestExactSearchReportsProfileDimensionAndCorruptionUnavailable(t *testing.T
 				st.rows = []store.RetrievalEmbeddingRow{tc.row}
 			}
 			hits, status, err := NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{
-				ProfileID: "profile", Dimensions: 2, Limit: 1, MaxChunks: 10,
+				Profile: exactTestProfile(), Limit: 1, MaxChunks: 10,
 			})
 			if err != nil || status.State != StateUnavailable || status.Reason != tc.want || hits == nil || len(hits) != 0 {
+				t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
+			}
+		})
+	}
+}
+
+func TestExactSearchRejectsMislabeledProviderAndModel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*store.RetrievalEmbeddingRow)
+	}{
+		{name: "provider", mutate: func(row *store.RetrievalEmbeddingRow) { row.Provider = "other-provider" }},
+		{name: "model", mutate: func(row *store.RetrievalEmbeddingRow) { row.Model = "other-model" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := readyRow("a", "profile", []float32{1, 0}, "item", "a", "raw")
+			tc.mutate(&row)
+			hits, status, err := NewExact(&fakeReadyStore{rows: []store.RetrievalEmbeddingRow{row}}).Search(context.Background(), []float32{1, 0}, SearchOptions{
+				Profile: exactTestProfile(), Limit: 1, MaxChunks: 10,
+			})
+			if err != nil || status.State != StateUnavailable || status.Reason != ReasonProfileMismatch || hits == nil || len(hits) != 0 {
 				t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
 			}
 		})
@@ -181,7 +202,7 @@ func TestExactSearchReportsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	hits, status, err := NewExact(&fakeReadyStore{}).Search(ctx, []float32{1, 0}, SearchOptions{
-		ProfileID: "profile", Dimensions: 2, Limit: 1, MaxChunks: 10,
+		Profile: exactTestProfile(), Limit: 1, MaxChunks: 10,
 	})
 	if !errors.Is(err, context.Canceled) || status.State != StateUnavailable || status.Reason != ReasonCanceled || hits == nil {
 		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
@@ -191,7 +212,7 @@ func TestExactSearchReportsCancellation(t *testing.T) {
 func TestExactSearchReportsCancellationReturnedByStore(t *testing.T) {
 	st := &fakeReadyStore{err: fmt.Errorf("read ready embeddings: %w", context.Canceled)}
 	hits, status, err := NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{
-		ProfileID: "profile", Dimensions: 2, Limit: 1, MaxChunks: 10,
+		Profile: exactTestProfile(), Limit: 1, MaxChunks: 10,
 	})
 	if !errors.Is(err, context.Canceled) || status.State != StateUnavailable || status.Reason != ReasonCanceled || hits == nil {
 		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
@@ -199,11 +220,21 @@ func TestExactSearchReportsCancellationReturnedByStore(t *testing.T) {
 }
 
 func readyRow(id, profile string, vector []float32, parentKind, parentKey, role string) store.RetrievalEmbeddingRow {
+	if profile == "profile" {
+		profile, _ = exactTestProfile().ID()
+	}
 	return store.RetrievalEmbeddingRow{
 		ChunkID: id, ProfileID: profile, Provider: "fake", Model: "m", Dimensions: len(vector),
 		Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2,
 		VectorBytes: embedding.EncodeDenseF32(vector), ChunkTextHash: "hash-" + id,
 		Status: store.RetrievalEmbeddingReady, ParentKind: parentKind, ParentSourceKey: parentKey,
 		EvidenceRole: role, Text: "text " + id,
+	}
+}
+
+func exactTestProfile() embedding.Profile {
+	return embedding.Profile{
+		Provider: "fake", Model: "m", ProjectionVersion: "projection-v1", ChunkerVersion: "chunker-v1",
+		Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, Dimensions: 2,
 	}
 }

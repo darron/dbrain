@@ -71,8 +71,13 @@ lexical-identical while exposing a bounded, content-free
 protected evidence plus `evidence_role`, `chunk`, `content_sections`,
 `retrieval.fused_score`, and retrieval-lane provenance. Treat a semantic lane
 that reports provider/search failure or `too_large` (default exact-scan cap:
-25,000 active chunks) as an expected lexical fail-open, not as successful
-semantic use. Keep corpus-specific cases under ignored `evals/local/*.json`.
+25,000 current ready embeddings for the configured profile, counted before
+request filters) as an expected lexical fail-open, not as successful semantic
+use. Keep corpus-specific cases under ignored `evals/local/*.json`.
+
+Different-language recall is model- and corpus-dependent. Record the exact
+embedding model/profile in each comparison and require local lexical-versus-
+semantic eval cases before claiming multilingual improvement for that model.
 
 Research eval cases inherit `research.semantic.mode` and can set
 `use_semantic`, `disable_semantic`, or a typed `effective_semantic_mode` for

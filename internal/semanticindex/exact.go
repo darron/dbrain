@@ -31,16 +31,18 @@ func NewExact(st ReadyStore) *Exact {
 
 func (e *Exact) Search(ctx context.Context, query []float32, opts SearchOptions) ([]Hit, Status, error) {
 	hits := make([]Hit, 0)
-	status := Status{State: StateUnavailable, Backend: BackendExact, ProfileID: strings.TrimSpace(opts.ProfileID)}
+	status := Status{State: StateUnavailable, Backend: BackendExact}
 	if err := ctx.Err(); err != nil {
 		status.Reason = ReasonCanceled
 		return hits, status, err
 	}
-	if status.ProfileID == "" {
+	profileID, err := opts.Profile.ID()
+	if err != nil || strings.TrimSpace(opts.Profile.Normalization) != embedding.NormalizationL2 {
 		status.Reason = ReasonProfileMismatch
 		return hits, status, nil
 	}
-	if opts.Dimensions <= 0 || len(query) != opts.Dimensions {
+	status.ProfileID = profileID
+	if len(query) != opts.Profile.Dimensions {
 		status.Reason = ReasonDimensionMismatch
 		return hits, status, nil
 	}
@@ -48,7 +50,7 @@ func (e *Exact) Search(ctx context.Context, query []float32, opts SearchOptions)
 		status.Reason = ReasonSearchError
 		return hits, status, nil
 	}
-	if err := embedding.ValidateDenseF32(query, opts.Dimensions, embedding.NormalizationL2); err != nil {
+	if err := embedding.ValidateDenseF32(query, opts.Profile.Dimensions, opts.Profile.Normalization); err != nil {
 		status.Reason = ReasonSearchError
 		return hits, status, nil
 	}
@@ -91,11 +93,15 @@ func (e *Exact) Search(ctx context.Context, query []float32, opts SearchOptions)
 			status.Reason = ReasonProfileMismatch
 			return hits, status, nil
 		}
-		if row.Dimensions != opts.Dimensions {
+		if strings.TrimSpace(row.Provider) != strings.TrimSpace(opts.Profile.Provider) || strings.TrimSpace(row.Model) != strings.TrimSpace(opts.Profile.Model) {
+			status.Reason = ReasonProfileMismatch
+			return hits, status, nil
+		}
+		if row.Dimensions != opts.Profile.Dimensions {
 			status.Reason = ReasonDimensionMismatch
 			return hits, status, nil
 		}
-		if row.Representation != embedding.RepresentationDenseF32 || row.Normalization != embedding.NormalizationL2 {
+		if strings.TrimSpace(row.Representation) != strings.TrimSpace(opts.Profile.Representation) || strings.TrimSpace(row.Normalization) != strings.TrimSpace(opts.Profile.Normalization) {
 			status.Reason = ReasonIndexCorrupt
 			return hits, status, nil
 		}

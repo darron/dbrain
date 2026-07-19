@@ -87,6 +87,9 @@ func TestOllamaUsesDedicatedClientWithoutProxyOrRedirects(t *testing.T) {
 	if !ok || transport.Proxy != nil {
 		t.Fatalf("transport = %#v; environment proxy routing must be disabled", provider.client.Transport)
 	}
+	if provider.client.Timeout != DefaultOllamaRequestTimeout {
+		t.Fatalf("client timeout = %s, want %s", provider.client.Timeout, DefaultOllamaRequestTimeout)
+	}
 	_, err = provider.Embed(t.Context(), Request{Texts: []string{"text"}, Purpose: PurposeQuery})
 	if !IsFatalConfig(err) {
 		t.Fatalf("redirect error = %v, want fatal config", err)
@@ -235,6 +238,39 @@ func TestOllamaClassifiesDeadlineAsRetryableAndPreservesContextIdentity(t *testi
 	}
 }
 
+func TestOllamaOwnedTimeoutStopsAcceptedStalledResponse(t *testing.T) {
+	t.Parallel()
+
+	accepted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(accepted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	provider, err := NewOllama(OllamaOptions{BaseURL: server.URL, Model: "model", Dimensions: 2, Timeout: 25 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = provider.Embed(context.Background(), Request{Texts: []string{"text"}, Purpose: PurposeQuery})
+	if !IsRetryable(err) {
+		t.Fatalf("stalled response error = %v, want retryable", err)
+	}
+	select {
+	case <-accepted:
+	default:
+		t.Fatal("server never accepted the request")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("owned timeout took %s", elapsed)
+	}
+}
+
 func TestNewOllamaRejectsInvalidConfigurationAndEmbedRejectsInput(t *testing.T) {
 	t.Parallel()
 
@@ -242,6 +278,7 @@ func TestNewOllamaRejectsInvalidConfigurationAndEmbedRejectsInput(t *testing.T) 
 		{Model: "model", Dimensions: 2},
 		{BaseURL: "http://127.0.0.1:11434", Dimensions: 2},
 		{BaseURL: "http://127.0.0.1:11434", Model: "model"},
+		{BaseURL: "http://127.0.0.1:11434", Model: "model", Dimensions: 2, Timeout: -time.Second},
 		{BaseURL: "://bad", Model: "model", Dimensions: 2},
 		{BaseURL: "http://user:secret@127.0.0.1:11434", Model: "model", Dimensions: 2},
 	} {

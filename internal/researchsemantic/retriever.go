@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/retrieval"
@@ -21,7 +22,10 @@ type Options struct {
 	Limit     int
 	MaxChunks int
 	Filters   semanticindex.Filters
+	Timeout   time.Duration
 }
+
+const DefaultQueryTimeout = 15 * time.Second
 
 type Retriever struct {
 	provider embedding.Provider
@@ -84,8 +88,7 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, opts Options) ([
 		return empty, unavailable, nil
 	}
 	hits, status, searchErr := r.searcher.Search(ctx, queryVector, semanticindex.SearchOptions{
-		ProfileID: profileID, Dimensions: opts.Profile.Dimensions, Limit: opts.Limit,
-		MaxChunks: opts.MaxChunks, Filters: opts.Filters,
+		Profile: opts.Profile, Limit: opts.Limit, MaxChunks: opts.MaxChunks, Filters: opts.Filters,
 	})
 	if searchErr != nil {
 		if err := ctx.Err(); err != nil {

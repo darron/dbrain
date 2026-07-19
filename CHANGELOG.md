@@ -12,7 +12,8 @@ development date for the change set.
   and content-free shadow comparisons. Lexical retrieval remains the default;
   `shadow` measures hybrid ordering without changing visible evidence, while
   `on` returns fused evidence and fails open to lexical results when the local
-  semantic lane is unavailable or over its bounded 25,000-chunk exact-scan cap.
+  semantic lane is unavailable or when the configured profile has more than
+  25,000 current ready embeddings (counted before request filters).
 - **Operational and transport controls**: Added `dbrain semantic status`,
   `semantic chunk`, and `semantic embed`, plus CLI and MCP/web per-request
   semantic overrides with conflict rejection. Direct MCP research remains
@@ -21,6 +22,11 @@ development date for the change set.
   `semantic_mode`, bounded `shadow_comparison`, chunk/content-section metadata,
   RRF scores, and full lexical/semantic retrieval-lane provenance. Exact-tag
   evidence remains a separate representative lane.
+- **Paragraph-aware chunk profile**: Paragraph boundary selection now avoids
+  splitting immediately before the configured target. This increments the
+  deterministic retrieval chunker profile to v2; existing semantic chunks and
+  embeddings must be rebuilt with `dbrain semantic chunk` followed by
+  `dbrain semantic embed` before evaluating the new profile.
 
 ### Production health audit corrections (2026-07-15)
 

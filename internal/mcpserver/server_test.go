@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -33,9 +34,9 @@ func TestResearchPackSchemaValidatesChunkFusionAndShadowArrays(t *testing.T) {
 	fused, distance, raw, contribution := 0.03, 0.1, 7.0, 0.02
 	pack := brainresearch.Pack{
 		SchemaVersion: brainresearch.SchemaVersion, Question: "q", Mode: "evidence_only",
-		QueryPlan: brainresearch.QueryPlan{TextQuery: "q", QueryTerms: []string{}, TagQueries: []string{}, Limit: 1, MaxCharsPerDoc: 100, SemanticMode: semanticconfig.ModeShadow, ShadowComparison: &brainresearch.ShadowComparison{
+		QueryPlan: brainresearch.QueryPlan{TextQuery: "q", QueryTerms: []string{}, TagQueries: []string{}, Concepts: []brainresearch.QueryConcept{{Key: "q", Terms: []string{"q"}, Required: true, Role: "content"}}, Limit: 1, MaxCharsPerDoc: 100, SemanticMode: semanticconfig.ModeShadow, ShadowComparison: &brainresearch.ShadowComparison{
 			Status: semanticindex.StateSearched, Lexical: []brainresearch.ShadowRankedReference{}, Hybrid: []brainresearch.ShadowRankedReference{}, Added: []brainresearch.ShadowRankedReference{}, Removed: []brainresearch.ShadowRankedReference{}, Reordered: []brainresearch.ShadowRankedReference{},
-		}},
+		}, RetryShadowComparison: &brainresearch.ShadowComparison{Status: semanticindex.StateUnavailable, Reason: semanticindex.ReasonProviderUnavailable, Lexical: []brainresearch.ShadowRankedReference{}, Hybrid: []brainresearch.ShadowRankedReference{}, Added: []brainresearch.ShadowRankedReference{}, Removed: []brainresearch.ShadowRankedReference{}, Reordered: []brainresearch.ShadowRankedReference{}}},
 		Coverage: brainresearch.Coverage{ByKind: []brainresearch.Bucket{}, BySourceType: []brainresearch.Bucket{}},
 		Evidence: []retrieval.EvidenceDocument{{SourceKey: "src", Kind: "source", Title: "t", URL: "u", NotePath: "n", Summary: "s", Excerpt: "e", EvidenceRole: "raw", ContentSections: []retrieval.ContentSection{}, Chunk: &retrieval.EvidenceChunk{ID: "c", ParentSourceKey: "src", ContributingIDs: []string{}}, Retrieval: &retrieval.RetrievalInfo{FusedScore: &fused, Lanes: []retrieval.RetrievalLane{{Name: "semantic", Rank: 1, RawDistance: &distance, RawScore: &raw, Contribution: &contribution}}, Signals: []retrieval.RetrievalSignal{}, MatchedTerms: []string{}, MissingTerms: []string{}}}},
 	}
@@ -49,6 +50,23 @@ func TestResearchPackSchemaValidatesChunkFusionAndShadowArrays(t *testing.T) {
 	}
 	if err := validateJSONSchemaValue(researchPackOutputSchema(), decoded); err != nil {
 		t.Fatalf("schema validation: %v\n%s", err, encoded)
+	}
+}
+
+func TestResearchQueryConceptSchemaAdvertisesRole(t *testing.T) {
+	t.Parallel()
+
+	properties, ok := researchQueryConceptSchema()["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("concept schema properties missing: %#v", researchQueryConceptSchema())
+	}
+	role, ok := properties["role"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("concept role schema missing: %#v", properties)
+	}
+	want := []interface{}{"anchor", "content", "intent", "frame"}
+	if got := role["enum"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("concept role enum = %#v, want %#v", got, want)
 	}
 }
 

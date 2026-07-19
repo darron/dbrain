@@ -211,6 +211,84 @@ func TestMigrationRepairsPartialRetrievalSchema(t *testing.T) {
 	}
 }
 
+func TestMigrationRepairsProfileInvariantTriggersAfterRetrievalMigration(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close fresh store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	for _, trigger := range []string{
+		"trg_retrieval_embeddings_profile_invariants_insert",
+		"trg_retrieval_embeddings_profile_invariants_update",
+	} {
+		if _, err := db.Exec(`DROP TRIGGER ` + trigger); err != nil {
+			t.Fatalf("drop profile invariant trigger %s: %v", trigger, err)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version > ?`, retrievalMigrationVersion); err != nil {
+		t.Fatalf("remove post-retrieval migration metadata: %v", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, retrievalMigrationVersion)); err != nil {
+		t.Fatalf("stamp retrieval schema version: %v", err)
+	}
+	var migrationName string
+	if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version = ?`, retrievalMigrationVersion).Scan(&migrationName); err != nil {
+		t.Fatalf("confirm retrieval migration metadata: %v", err)
+	}
+	if migrationName != "retrieval_hybrid_storage_v1" {
+		t.Fatalf("retrieval migration name = %q, want retrieval_hybrid_storage_v1", migrationName)
+	}
+	var userVersion int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
+		t.Fatalf("read schema user_version: %v", err)
+	}
+	if userVersion != retrievalMigrationVersion {
+		t.Fatalf("schema user_version = %d, want stamped retrieval version %d", userVersion, retrievalMigrationVersion)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		st = openStoreAtPath(t, path)
+		if err := st.Close(); err != nil {
+			t.Fatalf("close repaired store attempt %d: %v", attempt+1, err)
+		}
+	}
+
+	db, err = sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("reopen repaired sqlite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, trigger := range []string{
+		"trg_retrieval_embeddings_profile_invariants_insert",
+		"trg_retrieval_embeddings_profile_invariants_update",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&count); err != nil {
+			t.Fatalf("check repaired trigger %s: %v", trigger, err)
+		}
+		if count != 1 {
+			t.Fatalf("repaired trigger %s count = %d, want 1", trigger, count)
+		}
+	}
+	var repairMigrationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ? AND name = ?`, retrievalTriggerRepairVersion, retrievalTriggerRepairName).Scan(&repairMigrationCount); err != nil {
+		t.Fatalf("check retrieval trigger repair migration metadata: %v", err)
+	}
+	if repairMigrationCount != 1 {
+		t.Fatalf("retrieval trigger repair migration count = %d, want 1", repairMigrationCount)
+	}
+}
+
 func TestMigrationRepairsAuditProvenanceStateIdempotently(t *testing.T) {
 	t.Parallel()
 
