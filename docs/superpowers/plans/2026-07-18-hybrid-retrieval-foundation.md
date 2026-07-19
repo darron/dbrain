@@ -530,6 +530,8 @@ git commit --no-gpg-sign -m "feat: add semantic indexing commands"
 - Create: `internal/semanticindex/exact_test.go`
 - Create: `internal/researchsemantic/retriever.go`
 - Create: `internal/researchsemantic/retriever_test.go`
+- Create: `internal/retrieval/types_test.go`
+- Modify: `internal/retrieval/types.go`
 - Modify: `internal/semanticbuild/embed.go`
 - Modify: `internal/semanticbuild/run_test.go`
 - Modify: `internal/store/retrieval_embeddings.go`
@@ -567,7 +569,9 @@ never mutates storage: typed corrupt rows produce an `index_corrupt` status and
 no hits. The explicit writable `semantic embed` path revalidates ready rows,
 uses `BlockCorruptRetrievalEmbedding` on the current typed diagnostic, and then
 continues maintenance; this is the repair/quarantine boundary before the first
-vector consumer.
+vector consumer. Extend retrieval-lane metadata with structured rank, raw
+distance, profile, backend, and generation fields; do not encode semantic
+provenance into a human reason string.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -578,7 +582,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/semanticindex internal/researchsemantic internal/semanticbuild internal/store/retrieval_embeddings.go internal/store/retrieval_chunks.go
+git add internal/semanticindex internal/researchsemantic internal/retrieval internal/semanticbuild internal/store/retrieval_embeddings.go internal/store/retrieval_chunks.go
 git commit --no-gpg-sign -m "feat: add exact semantic retrieval"
 ```
 
