@@ -97,11 +97,16 @@ type RetrievalInfo struct {
 }
 
 type RetrievalLane struct {
-	Name     string `json:"name"`
-	Status   string `json:"status,omitempty"`
-	Reason   string `json:"reason,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	Store    string `json:"store,omitempty"`
+	Name        string   `json:"name"`
+	Status      string   `json:"status,omitempty"`
+	Reason      string   `json:"reason,omitempty"`
+	Provider    string   `json:"provider,omitempty"`
+	Store       string   `json:"store,omitempty"`
+	Rank        int      `json:"rank,omitempty"`
+	RawDistance *float64 `json:"raw_distance,omitempty"`
+	Profile     string   `json:"profile,omitempty"`
+	Backend     string   `json:"backend,omitempty"`
+	Generation  string   `json:"generation,omitempty"`
 }
 
 type RetrievalSignal struct {

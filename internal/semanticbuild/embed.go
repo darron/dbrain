@@ -2,6 +2,7 @@ package semanticbuild
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,6 +22,8 @@ type EmbedOptions struct {
 }
 
 type EmbedStore interface {
+	ListReadyEmbeddings(context.Context, string, int) ([]store.RetrievalEmbeddingRow, error)
+	BlockCorruptRetrievalEmbedding(context.Context, *store.RetrievalEmbeddingCorruptionError) error
 	ListChunksNeedingEmbeddingAt(context.Context, string, string, int, time.Time) ([]store.RetrievalChunkRow, error)
 	CountChunksNeedingEmbeddingAt(context.Context, string, time.Time) (int, error)
 	PutRetrievalEmbedding(context.Context, store.RetrievalEmbeddingRow) error
@@ -64,6 +67,9 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 	if err != nil {
 		return progress, embedding.FatalConfigError(err)
 	}
+	if err := quarantineCorruptReady(ctx, st, profileID, &progress); err != nil {
+		return progress, err
+	}
 	total, err := st.CountChunksNeedingEmbeddingAt(ctx, profileID, now)
 	if err != nil {
 		return progress, err
@@ -95,6 +101,29 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 		}
 	}
 	return progress, nil
+}
+
+func quarantineCorruptReady(ctx context.Context, st EmbedStore, profileID string, progress *Progress) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err := st.ListReadyEmbeddings(ctx, profileID, 0)
+		if err == nil {
+			return nil
+		}
+		var corruption *store.RetrievalEmbeddingCorruptionError
+		if !errors.As(err, &corruption) {
+			return err
+		}
+		if err := st.BlockCorruptRetrievalEmbedding(ctx, corruption); err != nil {
+			if errors.Is(err, store.ErrRetrievalEmbeddingNoLongerCorrupt) {
+				continue
+			}
+			return err
+		}
+		progress.Quarantined++
+	}
 }
 
 func processEmbedBatch(ctx context.Context, st EmbedStore, provider embedding.Provider, info embedding.Info, profileID string, batch []store.RetrievalChunkRow, attempts map[string]int, now time.Time, cooldown time.Duration, progress *Progress) error {

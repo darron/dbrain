@@ -37,6 +37,31 @@ type RetrievalChunkRow struct {
 	AttemptCount int
 }
 
+// RetrievalChunkEvidenceRow hydrates a chunk with its current parent evidence.
+// Parents whose rendered note has been purged are deliberately absent.
+type RetrievalChunkEvidenceRow struct {
+	ChunkID         string
+	ParentKind      string
+	ParentSourceKey string
+	EvidenceRole    string
+	Ordinal         int
+	StartChar       int
+	EndChar         int
+	Heading         string
+	ChunkTextHash   string
+	Text            string
+	Title           string
+	URL             string
+	NotePath        string
+	Summary         string
+	Author          string
+	SourceType      string
+	PublishedAt     string
+	ExtractedAt     string
+	SummarizedAt    string
+	UserTags        string
+}
+
 func (s *Store) RetrievalAvailable(ctx context.Context) (bool, error) {
 	for _, table := range []string{"retrieval_chunks", "retrieval_embeddings", "retrieval_index_generations"} {
 		exists, err := s.tableExistsContext(ctx, table)
@@ -237,4 +262,85 @@ func scanRetrievalChunk(scanner interface{ Scan(...any) error }) (RetrievalChunk
 		&row.Ordinal, &row.StartChar, &row.EndChar, &row.Heading, &row.ChunkerVersion,
 		&row.InputContentHash, &row.ChunkTextHash, &row.Text)
 	return row, err
+}
+
+func (s *Store) HydrateRetrievalChunks(ctx context.Context, chunkIDs []string) ([]RetrievalChunkEvidenceRow, error) {
+	const maxHydrationChunks = 1000
+	clean := make([]string, 0, len(chunkIDs))
+	seen := make(map[string]struct{}, len(chunkIDs))
+	for _, chunkID := range chunkIDs {
+		chunkID = strings.TrimSpace(chunkID)
+		if chunkID == "" {
+			continue
+		}
+		if _, ok := seen[chunkID]; ok {
+			continue
+		}
+		seen[chunkID] = struct{}{}
+		clean = append(clean, chunkID)
+	}
+	if len(clean) == 0 {
+		return make([]RetrievalChunkEvidenceRow, 0), nil
+	}
+	if len(clean) > maxHydrationChunks {
+		return nil, fmt.Errorf("hydrate retrieval chunks: %d IDs exceeds maximum %d", len(clean), maxHydrationChunks)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(clean)), ",")
+	args := make([]any, len(clean))
+	for i := range clean {
+		args[i] = clean[i]
+	}
+	query := `
+		SELECT c.chunk_id, c.parent_kind, c.parent_source_key, c.evidence_role,
+			c.ordinal, c.start_char, c.end_char, c.heading, c.chunk_text_hash, c.text,
+			p.title, p.canonical_url, p.note_path, p.summary_text,
+			p.author_name, p.author_handle, p.source_type, p.published_at,
+			p.extracted_at, p.summarized_at, p.user_tags
+		FROM retrieval_chunks c
+		JOIN (
+			SELECT 'item' AS parent_kind, source_key, title, canonical_url, note_path,
+				` + itemSummaryTextExpr() + ` AS summary_text, author_name, author_handle, source_type, published_at,
+				imported_at AS extracted_at, summarized_at, user_tags
+			FROM items WHERE trim(note_path) != ''
+			UNION ALL
+			SELECT 'source' AS parent_kind, source_key, title, canonical_url, note_path,
+				summary_text, '' AS author_name, '' AS author_handle, source_type,
+				'' AS published_at, extracted_at, summarized_at, user_tags
+			FROM sources WHERE trim(note_path) != ''
+		) p ON p.parent_kind = c.parent_kind AND p.source_key = c.parent_source_key
+		WHERE c.chunk_id IN (` + placeholders + `)
+		ORDER BY c.chunk_id`
+	rows, err := s.queryer().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("hydrate retrieval chunks: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	result := make([]RetrievalChunkEvidenceRow, 0, len(clean))
+	for rows.Next() {
+		var row RetrievalChunkEvidenceRow
+		var authorName, authorHandle string
+		if err := rows.Scan(
+			&row.ChunkID, &row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole,
+			&row.Ordinal, &row.StartChar, &row.EndChar, &row.Heading, &row.ChunkTextHash, &row.Text,
+			&row.Title, &row.URL, &row.NotePath, &row.Summary,
+			&authorName, &authorHandle, &row.SourceType, &row.PublishedAt,
+			&row.ExtractedAt, &row.SummarizedAt, &row.UserTags,
+		); err != nil {
+			return nil, fmt.Errorf("scan hydrated retrieval chunk: %w", err)
+		}
+		row.Author = strings.TrimSpace(strings.TrimSpace(authorName) + " " + prefixedHandle(authorHandle))
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate hydrated retrieval chunks: %w", err)
+	}
+	return result, nil
+}
+
+func prefixedHandle(handle string) string {
+	handle = strings.TrimSpace(handle)
+	if handle == "" || strings.HasPrefix(handle, "@") {
+		return handle
+	}
+	return "@" + handle
 }

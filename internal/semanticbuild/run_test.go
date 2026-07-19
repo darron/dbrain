@@ -19,6 +19,11 @@ type fakeStore struct {
 	chunks         []store.RetrievalChunkRow
 	replacements   []string
 	writes         []store.RetrievalEmbeddingRow
+	readyErrs      []error
+	readyCalls     int
+	blockErrs      []error
+	blockCalls     []*store.RetrievalEmbeddingCorruptionError
+	operations     []string
 	candidateCount int
 	replaceResult  store.ChunkReplaceResult
 	replaceErrKey  string
@@ -55,17 +60,38 @@ func (f *fakeStore) ReplaceRetrievalChunks(_ context.Context, kind, key string, 
 	return store.ChunkReplaceResult{Created: len(chunks)}, nil
 }
 func (f *fakeStore) ListChunksNeedingEmbeddingAt(context.Context, string, string, int, time.Time) ([]store.RetrievalChunkRow, error) {
+	f.operations = append(f.operations, "candidates")
 	return append([]store.RetrievalChunkRow(nil), f.chunks...), nil
 }
 func (f *fakeStore) PutRetrievalEmbedding(_ context.Context, row store.RetrievalEmbeddingRow) error {
+	f.operations = append(f.operations, "put")
 	f.writes = append(f.writes, row)
 	return nil
 }
 func (f *fakeStore) CountChunksNeedingEmbeddingAt(context.Context, string, time.Time) (int, error) {
+	f.operations = append(f.operations, "count")
 	if f.candidateCount != 0 {
 		return f.candidateCount, nil
 	}
 	return len(f.chunks), nil
+}
+func (f *fakeStore) ListReadyEmbeddings(context.Context, string, int) ([]store.RetrievalEmbeddingRow, error) {
+	f.operations = append(f.operations, "validate")
+	call := f.readyCalls
+	f.readyCalls++
+	if call < len(f.readyErrs) {
+		return nil, f.readyErrs[call]
+	}
+	return make([]store.RetrievalEmbeddingRow, 0), nil
+}
+func (f *fakeStore) BlockCorruptRetrievalEmbedding(_ context.Context, corruption *store.RetrievalEmbeddingCorruptionError) error {
+	f.operations = append(f.operations, "block")
+	f.blockCalls = append(f.blockCalls, corruption)
+	call := len(f.blockCalls) - 1
+	if call < len(f.blockErrs) {
+		return f.blockErrs[call]
+	}
+	return nil
 }
 
 type fakeProvider struct {
@@ -314,6 +340,44 @@ func TestEmbedIsolatesBlockedInputBeforeTerminalWrites(t *testing.T) {
 	}
 }
 
+func TestEmbedQuarantinesCorruptReadyRowsBeforeCandidateWork(t *testing.T) {
+	corruption := &store.RetrievalEmbeddingCorruptionError{ChunkID: "corrupt", ProfileID: "profile", Reason: "bad bytes"}
+	st := &fakeStore{
+		readyErrs: []error{corruption, nil},
+		chunks:    []store.RetrievalChunkRow{{ChunkID: "candidate", ChunkTextHash: "hash", Text: "candidate"}},
+	}
+	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}}
+	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{Limit: 1, BatchSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress.Quarantined != 1 || len(st.blockCalls) != 1 || st.blockCalls[0] != corruption {
+		t.Fatalf("progress=%+v block_calls=%+v", progress, st.blockCalls)
+	}
+	wantPrefix := []string{"validate", "block", "validate", "count", "candidates", "put"}
+	if !reflect.DeepEqual(st.operations, wantPrefix) {
+		t.Fatalf("operations=%v want=%v", st.operations, wantPrefix)
+	}
+}
+
+func TestEmbedRetriesValidationAfterRepairedCorruptionRace(t *testing.T) {
+	corruption := &store.RetrievalEmbeddingCorruptionError{ChunkID: "repaired", ProfileID: "profile", Reason: "stale diagnostic"}
+	st := &fakeStore{
+		readyErrs: []error{corruption, nil},
+		blockErrs: []error{store.ErrRetrievalEmbeddingNoLongerCorrupt},
+	}
+	progress, err := RunEmbed(context.Background(), st, &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}}, EmbedOptions{Limit: 1, BatchSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress.Quarantined != 0 || st.readyCalls != 2 || len(st.blockCalls) != 1 {
+		t.Fatalf("progress=%+v ready_calls=%d block_calls=%d", progress, st.readyCalls, len(st.blockCalls))
+	}
+	if want := []string{"validate", "block", "validate", "count", "candidates"}; !reflect.DeepEqual(st.operations, want) {
+		t.Fatalf("operations=%v want=%v", st.operations, want)
+	}
+}
+
 func TestProfileUsesExportedProjectionAndChunkVersions(t *testing.T) {
 	p := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
 	if p.ProjectionVersion != retrievalchunk.ProjectionVersion || p.ChunkerVersion != retrievalchunk.Version {
@@ -341,11 +405,11 @@ func TestStatusPriorityKeepsConfiguredOffModeDisabled(t *testing.T) {
 }
 
 func TestProgressJSONUsesNonNullSnapshots(t *testing.T) {
-	payload, err := json.Marshal(Progress{Stage: "embed", Snapshots: make([]Progress, 0)})
+	payload, err := json.Marshal(Progress{Stage: "embed", Quarantined: 2, Snapshots: make([]Progress, 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(payload) == "" || strings.Contains(string(payload), `"snapshots":null`) {
+	if string(payload) == "" || strings.Contains(string(payload), `"snapshots":null`) || !strings.Contains(string(payload), `"quarantined":2`) {
 		t.Fatalf("progress JSON=%s", payload)
 	}
 }

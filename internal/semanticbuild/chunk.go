@@ -9,14 +9,15 @@ import (
 )
 
 type Progress struct {
-	Stage     string     `json:"stage"`
-	Scanned   int        `json:"scanned"`
-	Current   int        `json:"current"`
-	Generated int        `json:"generated"`
-	Blocked   int        `json:"blocked"`
-	Failed    int        `json:"failed"`
-	Remaining int        `json:"remaining"`
-	Snapshots []Progress `json:"snapshots"`
+	Stage       string     `json:"stage"`
+	Scanned     int        `json:"scanned"`
+	Current     int        `json:"current"`
+	Generated   int        `json:"generated"`
+	Quarantined int        `json:"quarantined"`
+	Blocked     int        `json:"blocked"`
+	Failed      int        `json:"failed"`
+	Remaining   int        `json:"remaining"`
+	Snapshots   []Progress `json:"snapshots"`
 }
 
 type ChunkProgress struct {

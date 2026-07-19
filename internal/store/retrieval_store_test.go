@@ -807,6 +807,62 @@ func TestListReadyEmbeddingsRejectsStoredStaleHash(t *testing.T) {
 	}
 }
 
+func TestHydrateRetrievalChunksBatchesCurrentParentEvidenceAndDropsPurgedParents(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedPurgeItem(t, st, "item:hydrate")
+	seedRetrievalSource(t, st, "src:hydrate")
+	if _, err := st.db.Exec(`
+		UPDATE items SET title = 'Hydrated item', canonical_url = 'https://example.com/item',
+			author_name = 'Item Author', author_handle = 'item_author', published_at = '2026-07-18',
+			summary_text = 'Item summary', user_tags = 'item-tag'
+		WHERE source_key = 'item:hydrate'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`
+		UPDATE sources SET title = 'Hydrated source', summary_text = 'Source summary',
+			extracted_at = '2026-07-17T00:00:00Z', summarized_at = '2026-07-18T00:00:00Z', user_tags = 'source-tag'
+		WHERE source_key = 'src:hydrate'`); err != nil {
+		t.Fatal(err)
+	}
+	itemChunk := testRetrievalChunk("item-hydrate-chunk", "item", "item:hydrate", 2, "item-hash", "item chunk")
+	itemChunk.EvidenceRole, itemChunk.Heading = "raw", "Item heading"
+	sourceChunk := testRetrievalChunk("source-hydrate-chunk", "source", "src:hydrate", 3, "source-hash", "source chunk")
+	sourceChunk.EvidenceRole, sourceChunk.Heading = "summary", "Source heading"
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:hydrate", []retrievalchunk.Chunk{itemChunk}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "src:hydrate", []retrievalchunk.Chunk{sourceChunk}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.HydrateRetrievalChunks(ctx, []string{sourceChunk.ID, "missing", itemChunk.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows=%+v", rows)
+	}
+	byID := map[string]RetrievalChunkEvidenceRow{}
+	for _, row := range rows {
+		byID[row.ChunkID] = row
+	}
+	if got := byID[itemChunk.ID]; got.Title != "Hydrated item" || got.Author != "Item Author @item_author" || got.Text != "item chunk" || got.Ordinal != 2 || got.ChunkTextHash != "item-hash" {
+		t.Fatalf("item row=%+v", got)
+	}
+	if got := byID[sourceChunk.ID]; got.Title != "Hydrated source" || got.URL == "" || got.Summary != "Source summary" || got.EvidenceRole != "summary" {
+		t.Fatalf("source row=%+v", got)
+	}
+	if _, err := st.db.Exec(`UPDATE sources SET note_path = '' WHERE source_key = 'src:hydrate'`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = st.HydrateRetrievalChunks(ctx, []string{sourceChunk.ID, itemChunk.ID})
+	if err != nil || len(rows) != 1 || rows[0].ChunkID != itemChunk.ID {
+		t.Fatalf("rows after purge marker=%+v err=%v", rows, err)
+	}
+}
+
 func testRetrievalChunk(id, parentKind, parentKey string, ordinal int, textHash, text string) retrievalchunk.Chunk {
 	return retrievalchunk.Chunk{
 		ID: id, ParentKind: parentKind, ParentSourceKey: parentKey, EvidenceRole: "raw",

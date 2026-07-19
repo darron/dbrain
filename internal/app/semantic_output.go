@@ -29,16 +29,16 @@ func writeSemanticStatus(dst io.Writer, status semanticbuild.Status) error {
 }
 
 func writeSemanticProgressSnapshot(dst io.Writer, progress semanticbuild.Progress) error {
-	_, err := fmt.Fprintf(dst, "Progress: stage=%s scanned=%d current=%d generated=%d blocked=%d failed=%d remaining=%d\n",
+	_, err := fmt.Fprintf(dst, "Progress: stage=%s scanned=%d current=%d generated=%d quarantined=%d blocked=%d failed=%d remaining=%d\n",
 		progress.Stage, progress.Scanned, progress.Current, progress.Generated,
-		progress.Blocked, progress.Failed, progress.Remaining)
+		progress.Quarantined, progress.Blocked, progress.Failed, progress.Remaining)
 	return err
 }
 
 func writeSemanticProgress(dst io.Writer, progress semanticbuild.Progress) error {
-	_, err := fmt.Fprintf(dst, "Stage: %s\nScanned: %d\nCurrent: %d\nGenerated: %d\nBlocked: %d\nFailed: %d\nRemaining: %d\n",
+	_, err := fmt.Fprintf(dst, "Stage: %s\nScanned: %d\nCurrent: %d\nGenerated: %d\nQuarantined: %d\nBlocked: %d\nFailed: %d\nRemaining: %d\n",
 		progress.Stage, progress.Scanned, progress.Current, progress.Generated,
-		progress.Blocked, progress.Failed, progress.Remaining)
+		progress.Quarantined, progress.Blocked, progress.Failed, progress.Remaining)
 	return err
 }
 
