@@ -2123,7 +2123,19 @@ func TestConfigEnvCommandMarkdownOutput(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"| Environment variable(s) | config.yaml key | Default | Purpose |", "`DBRAIN_ROOT`", "`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`", "`DBRAIN_TSNET_MCP_PATH`", "`DBRAIN_TSNET_FUNNEL`"} {
+	for _, value := range []string{
+		"| Environment variable(s) | config.yaml key | Default | Purpose |",
+		"`DBRAIN_ROOT`",
+		"`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`",
+		"`DBRAIN_RESEARCH_SEMANTIC_MODE`", "`research.semantic.mode`",
+		"`DBRAIN_RESEARCH_SEMANTIC_PROVIDER`", "`research.semantic.provider`",
+		"`DBRAIN_RESEARCH_SEMANTIC_MODEL`", "`research.semantic.model`",
+		"`DBRAIN_RESEARCH_SEMANTIC_DIMENSIONS`", "`research.semantic.dimensions`",
+		"`DBRAIN_RESEARCH_SEMANTIC_INDEX_BACKEND`", "`research.semantic.index_backend`",
+		"`DBRAIN_RESEARCH_SEMANTIC_CANDIDATE_DEPTH`", "`research.semantic.candidate_depth`",
+		"`DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS`", "`research.semantic.exact_fallback_max_chunks`",
+		"`DBRAIN_TSNET_MCP_PATH`", "`DBRAIN_TSNET_FUNNEL`",
+	} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected markdown config env output to contain %q, got %q", value, output)
 		}

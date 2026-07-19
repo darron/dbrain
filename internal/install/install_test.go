@@ -91,6 +91,42 @@ func TestShippedConfigTemplatesExposeSQLiteArchiveSchedulerDefaults(t *testing.T
 	}
 }
 
+func TestShippedConfigTemplatesExposeSemanticRetrievalDefaults(t *testing.T) {
+	rootSample, err := os.ReadFile(filepath.Join("..", "..", "config.yaml.sample"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"root sample":      rootSample,
+		"installer sample": DefaultConfigTemplate,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var doc yaml.Node
+			if err := yaml.Unmarshal(data, &doc); err != nil {
+				t.Fatal(err)
+			}
+			root := documentRoot(&doc)
+			for _, want := range []struct {
+				path  []string
+				value string
+			}{
+				{[]string{"research", "semantic", "mode"}, "off"},
+				{[]string{"research", "semantic", "provider"}, "ollama"},
+				{[]string{"research", "semantic", "model"}, ""},
+				{[]string{"research", "semantic", "dimensions"}, "0"},
+				{[]string{"research", "semantic", "index_backend"}, "exact"},
+				{[]string{"research", "semantic", "candidate_depth"}, "50"},
+				{[]string{"research", "semantic", "exact_fallback_max_chunks"}, "25000"},
+			} {
+				got, ok := configScalar(root, want.path...)
+				if !ok || got != want.value {
+					t.Fatalf("%s = %q, %t; want %q", strings.Join(want.path, "."), got, ok, want.value)
+				}
+			}
+		})
+	}
+}
+
 func TestRunCreatesExplicitBaseLayoutAndConfigFromSelections(t *testing.T) {
 	t.Parallel()
 
