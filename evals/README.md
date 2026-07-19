@@ -44,6 +44,8 @@ Useful research assertions:
 - `expect_planner`, `expect_query_family`, `expect_query_terms`,
   `expect_query_variants`, `forbid_query_variants`, `expect_concepts`, and
   `forbid_concepts` guard query planning behavior.
+- `expect_required_concepts` and `forbid_required_concepts` distinguish hard
+  retrieval constraints from optional searchable intent and frame concepts.
 - `min_retrieval_signals` verifies that returned evidence carries scoring
   provenance.
 - `expect_relevance_excluded_source_keys`, `expect_prompt_admitted_source_keys`,
@@ -61,6 +63,27 @@ Useful research assertions:
 Important local research cases should usually exist in two forms: one planner
 enabled case for normal behavior and one `disable_planner` baseline case so
 planner outages do not collapse retrieval quality.
+
+For semantic evaluation, retain the lexical baseline and compare it with both
+`shadow` and `on`. `shadow` must keep returned evidence/order and synthesis
+lexical-identical while exposing a bounded, content-free
+`query_plan.shadow_comparison`; `on` may change rank through RRF but must retain
+protected evidence plus `evidence_role`, `chunk`, `content_sections`,
+`retrieval.fused_score`, and retrieval-lane provenance. Treat a semantic lane
+that reports provider/search failure or `too_large` (default exact-scan cap:
+25,000 current ready embeddings for the configured profile, counted before
+request filters) as an expected lexical fail-open, not as successful semantic
+use. Keep corpus-specific cases under ignored `evals/local/*.json`.
+
+Different-language recall is model- and corpus-dependent. Record the exact
+embedding model/profile in each comparison and require local lexical-versus-
+semantic eval cases before claiming multilingual improvement for that model.
+
+Research eval cases inherit `research.semantic.mode` and can set
+`use_semantic`, `disable_semantic`, or a typed `effective_semantic_mode` for
+trace replay. MCP calls use `use_semantic`/`disable_semantic`; the boolean pair
+is force-on/off, and enabling plus disabling together is an error. Direct MCP
+research-pack checks must remain trace-free, including in shadow mode.
 
 Useful `expect_query_family` values:
 

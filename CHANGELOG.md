@@ -5,6 +5,32 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Local hybrid retrieval foundation (2026-07-18)
+
+- **Opt-in semantic retrieval**: Added deterministic evidence chunks, portable
+  local Ollama embeddings, SQLite-authoritative exact vector search, RRF fusion,
+  and content-free shadow comparisons. Lexical retrieval remains the default;
+  `shadow` measures hybrid ordering without changing visible evidence, while
+  `on` returns fused evidence and fails open to lexical results when the local
+  semantic lane is unavailable or when the configured profile has more than
+  25,000 current ready embeddings (counted before request filters).
+- **Operational and transport controls**: Added `dbrain semantic status`,
+  `semantic chunk`, and `semantic embed`, plus CLI and MCP/web per-request
+  semantic overrides with conflict rejection. Direct MCP research remains
+  read-only and trace-free, including in shadow mode.
+- **Evidence provenance**: Research packs now expose effective
+  `semantic_mode`, bounded `shadow_comparison`, chunk/content-section metadata,
+  RRF scores, and full lexical/semantic retrieval-lane provenance. Exact-tag
+  evidence remains a separate representative lane.
+- **Paragraph-aware chunk profile**: Paragraph boundary selection now avoids
+  splitting immediately before the configured target. This increments the
+  deterministic retrieval chunker profile to v2; existing semantic chunks and
+  embeddings must be rebuilt with `dbrain semantic chunk` followed by
+  `dbrain semantic embed` before evaluating the new profile. Migration 15 now
+  persists projection provenance on chunks; `semantic embed` refuses stale
+  projection/chunker rows before calling the provider, and exact search rejects
+  historically mislabeled vectors.
+
 ### Production health audit corrections (2026-07-15)
 
 - **False-failure corrections**: Scheduler continuity now ignores

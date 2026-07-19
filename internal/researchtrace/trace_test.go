@@ -12,7 +12,30 @@ import (
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 )
+
+func TestMarkdownRendersBoundedContentFreeShadowSummary(t *testing.T) {
+	trace := ResearchTrace{Pack: &brainresearch.Pack{QueryPlan: brainresearch.QueryPlan{
+		SemanticMode: semanticconfig.ModeShadow,
+		ShadowComparison: &brainresearch.ShadowComparison{
+			Status: semanticindex.StateUnavailable, Reason: semanticindex.ReasonProviderUnavailable,
+			LexicalCount: 3, HybridCount: 3,
+			Lexical: []brainresearch.ShadowRankedReference{}, Hybrid: []brainresearch.ShadowRankedReference{},
+			Added: []brainresearch.ShadowRankedReference{}, Removed: []brainresearch.ShadowRankedReference{}, Reordered: []brainresearch.ShadowRankedReference{},
+		},
+	}}}
+	markdown := renderMarkdown(trace)
+	for _, want := range []string{"**Semantic mode:** shadow", "**Shadow status:** unavailable", "lexical=3 hybrid=3", "added=0 removed=0 reordered=0"} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("missing %q in %s", want, markdown)
+		}
+	}
+	if strings.Contains(markdown, "raw provider secret") {
+		t.Fatalf("shadow markdown leaked content: %s", markdown)
+	}
+}
 
 func TestWritePersistsMarkdownJSONArtifactsAndRedactsPrivateOperationalData(t *testing.T) {
 	cfg := testConfig(t)

@@ -63,6 +63,9 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain repair sources`
 - `dbrain research <question>`
 - `dbrain search <query>`
+- `dbrain semantic status`
+- `dbrain semantic chunk`
+- `dbrain semantic embed`
 - `dbrain serve mcp`
 - `dbrain serve remote`
 - `dbrain serve web`
@@ -130,6 +133,7 @@ Available Commands:
   repair      Repair derived local artifacts
   research    Research the local brain with evidence and local synthesis
   search      Search items and sources
+  semantic    Build and inspect semantic retrieval state
   serve       Serve local interfaces
   sqlite      Manage the local SQLite database
   stats       Show database counts and import progress
@@ -1300,6 +1304,17 @@ Synthesis requires `--model` or a configured `DBRAIN_SUMMARY_MODEL` /
 `SUMMARIZE_MODEL`; it will not silently let the external summarizer choose a
 hosted fallback.
 
+Semantic retrieval defaults to configured mode `off`. `--semantic` force-enables
+effective `on`; `--no-semantic` force-enables effective `off`; passing both is
+an error. Effective `shadow` or `on` requires a configured local Ollama model
+and positive dimensions. `shadow` computes bounded, content-free comparisons
+but preserves lexical evidence/order/synthesis exactly. `on` RRF-fuses lexical
+and semantic candidates while preserving protected evidence and provenance.
+Provider/search failures, or more than the configured exact-scan cap (default
+25,000 current ready embeddings for the configured profile), fail the semantic
+lane open to lexical evidence with an explicit status and reason. The cap is
+counted before request filters are applied.
+
 ```sh
 dbrain research "What validates Kubernetes manifests?"
 dbrain research "Show me GitHub repos about vector databases" --source-type github
@@ -1309,7 +1324,36 @@ dbrain research "What do I know about local models?" --model ollama/qwen3.6:35b
 dbrain research "Calgary father killed two kids" --retrieval-only
 dbrain research "K8s Helm alternatives" --planner-model ollama/qwen3.6:35b --retrieval-only
 dbrain research "K8s Helm alternatives" --no-planner --retrieval-only
+dbrain research "K8s Helm alternatives" --semantic --retrieval-only --json
 ```
+
+### `dbrain semantic`
+
+The foundation exposes exactly three semantic operational commands. It uses
+deterministic SQLite retrieval chunks, local Ollama embeddings, and an
+SQLite-authoritative exact scan; no ANN index or ANN lifecycle command exists.
+
+```sh
+dbrain semantic status
+dbrain semantic status --json
+dbrain semantic chunk --limit 100 --after-source-key src:example
+dbrain semantic embed --limit 100 --batch-size 16
+```
+
+`status` is read-only and diagnoses configuration/readiness. `chunk` creates,
+updates, and deletes deterministic derived chunks in source-key pages. `embed`
+generates missing embeddings for the configured model/dimension profile. There
+is no implicit migration between chunker profiles: after a chunker version
+change, run `semantic chunk` to replace derived chunks, then `semantic embed`
+to build embeddings for the new profile before comparing retrieval quality.
+There is no standalone semantic purge command. The current deletion integration
+is item-only: Apple Notes `--forget-excluded` calls the explicit item
+indexed-content purge, which synchronously deletes that item's retrieval chunks,
+embeddings, and stale affected generation metadata. This does not claim that
+every delete path or future parent kind has the same integration.
+
+ANN generation files do not exist in this foundation; ANN lifecycle, provider
+expansion, background sync, and default-on behavior are deferred.
 
 ### `dbrain search`
 

@@ -21,6 +21,16 @@ func formatResearchPack(pack brainresearch.Pack) string {
 		b.WriteString(pack.QueryPlan.TextQuery)
 		b.WriteString("\n")
 	}
+	if pack.QueryPlan.SemanticMode != "" {
+		b.WriteString("Semantic mode: ")
+		b.WriteString(string(pack.QueryPlan.SemanticMode))
+		b.WriteString("\n")
+	}
+	if comparison := pack.QueryPlan.ShadowComparison; comparison != nil {
+		fmt.Fprintf(&b, "Shadow: status=%s reason=%s lexical=%d hybrid=%d added=%d removed=%d reordered=%d\n",
+			comparison.Status, comparison.Reason, comparison.LexicalCount, comparison.HybridCount,
+			len(comparison.Added), len(comparison.Removed), len(comparison.Reordered))
+	}
 	if len(pack.QueryPlan.TagQueries) > 0 {
 		b.WriteString("Tag aliases: ")
 		b.WriteString(strings.Join(pack.QueryPlan.TagQueries, ", "))

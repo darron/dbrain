@@ -14,11 +14,13 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/feedimport"
@@ -29,6 +31,8 @@ import (
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
+	"github.com/darron/dbrain/internal/semanticbuild"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
@@ -37,6 +41,52 @@ import (
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
+
+func TestResearchCommandConfiguredSemanticModesAndOverrides(t *testing.T) {
+	var calls atomic.Int64
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	run := func(mode string, flags ...string) (brainresearch.Pack, int) {
+		root := t.TempDir()
+		cfg, err := config.Load(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+		yaml := "research:\n  semantic:\n    mode: " + mode + "\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
+		if err := os.WriteFile(cfg.ConfigPath, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := calls.Load()
+		args := []string{"research", "agent memory", "--retrieval-only", "--no-trace", "--no-planner", "--json"}
+		args = append(args, flags...)
+		output := runRootCommand(t, root, args...)
+		var pack brainresearch.Pack
+		if err := json.Unmarshal([]byte(output), &pack); err != nil {
+			t.Fatalf("decode pack: %v\n%s", err, output)
+		}
+		return pack, int(calls.Load() - before)
+	}
+	off, offCalls := run("off")
+	shadow, shadowCalls := run("shadow")
+	on, onCalls := run("on")
+	forcedOn, forcedOnCalls := run("off", "--semantic")
+	forcedOff, forcedOffCalls := run("shadow", "--no-semantic")
+	if off.QueryPlan.SemanticMode != semanticconfig.ModeOff || offCalls != 0 || shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadowCalls != 1 || shadow.QueryPlan.ShadowComparison == nil || on.QueryPlan.SemanticMode != semanticconfig.ModeOn || onCalls != 1 || forcedOn.QueryPlan.SemanticMode != semanticconfig.ModeOn || forcedOnCalls != 1 || forcedOff.QueryPlan.SemanticMode != semanticconfig.ModeOff || forcedOffCalls != 0 {
+		t.Fatalf("modes/calls off=%s/%d shadow=%s/%d on=%s/%d forcedOn=%s/%d forcedOff=%s/%d", off.QueryPlan.SemanticMode, offCalls, shadow.QueryPlan.SemanticMode, shadowCalls, on.QueryPlan.SemanticMode, onCalls, forcedOn.QueryPlan.SemanticMode, forcedOnCalls, forcedOff.QueryPlan.SemanticMode, forcedOffCalls)
+	}
+	root := t.TempDir()
+	_, _, err := runRootCommandErr(t, root, "research", "q", "--semantic", "--no-semantic")
+	if err == nil || !strings.Contains(err.Error(), "--semantic and --no-semantic") {
+		t.Fatalf("conflict err=%v", err)
+	}
+}
 
 func TestRepairPrunedMediaCommandDryRunUsesReadOnlyStore(t *testing.T) {
 	root := t.TempDir()
@@ -186,7 +236,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "install", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
+	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "install", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "semantic", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -195,6 +245,115 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
+	}
+}
+
+func TestSemanticStatusJSONHasExplicitStateAndNonNullSlices(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := runRootCommand(t, root, "semantic", "status", "--json")
+	if strings.Contains(stdout, `"problems": null`) || strings.Contains(stdout, `"next_steps": null`) {
+		t.Fatalf("semantic status emitted null slices: %s", stdout)
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if payload.Status != "not_configured" {
+		t.Fatalf("status=%q output=%s", payload.Status, stdout)
+	}
+}
+
+func TestSemanticStatusNotConfiguredDoesNotRequireDatabase(t *testing.T) {
+	root := t.TempDir()
+	stdout := runRootCommand(t, root, "semantic", "status", "--json")
+	var payload struct {
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != "not_configured" || payload.Mode != "off" {
+		t.Fatalf("payload=%+v output=%s", payload, stdout)
+	}
+}
+
+func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
+	for _, args := range [][]string{
+		{"semantic", "chunk", "--limit", "0", "--json"},
+		{"semantic", "embed", "--limit", "0", "--json"},
+		{"semantic", "embed", "--batch-size", "0", "--json"},
+	} {
+		stdout, _, err := runRootCommandErr(t, t.TempDir(), args...)
+		if err == nil {
+			t.Fatalf("%v unexpectedly succeeded", args)
+		}
+		if stdout != "" {
+			t.Fatalf("%v mixed output with error: %q", args, stdout)
+		}
+	}
+}
+
+func TestSemanticChunkHelpIncludesResumeCursor(t *testing.T) {
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"semantic", "chunk", "--help"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "--after-source-key") {
+		t.Fatalf("help=%s", stdout.String())
+	}
+}
+
+func TestSemanticChunkOutputIncludesResumeState(t *testing.T) {
+	progress := semanticbuild.ChunkProgress{
+		Progress:           semanticbuild.Progress{Stage: "chunk", Snapshots: make([]semanticbuild.Progress, 0)},
+		NextAfterSourceKey: "item:one",
+		HasMore:            true,
+	}
+	var human bytes.Buffer
+	if err := writeSemanticChunkProgress(&human, progress); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Next after source key: item:one", "Has more: true"} {
+		if !strings.Contains(human.String(), want) {
+			t.Fatalf("human output missing %q: %s", want, human.String())
+		}
+	}
+	var machine bytes.Buffer
+	if err := writeJSON(&machine, progress); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		NextAfterSourceKey string                   `json:"next_after_source_key"`
+		HasMore            bool                     `json:"has_more"`
+		Snapshots          []semanticbuild.Progress `json:"snapshots"`
+	}
+	if err := json.Unmarshal(machine.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.NextAfterSourceKey != "item:one" || !payload.HasMore || payload.Snapshots == nil {
+		t.Fatalf("JSON resume state=%+v output=%s", payload, machine.String())
 	}
 }
 
@@ -2123,7 +2282,19 @@ func TestConfigEnvCommandMarkdownOutput(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"| Environment variable(s) | config.yaml key | Default | Purpose |", "`DBRAIN_ROOT`", "`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`", "`DBRAIN_TSNET_MCP_PATH`", "`DBRAIN_TSNET_FUNNEL`"} {
+	for _, value := range []string{
+		"| Environment variable(s) | config.yaml key | Default | Purpose |",
+		"`DBRAIN_ROOT`",
+		"`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`",
+		"`DBRAIN_RESEARCH_SEMANTIC_MODE`", "`research.semantic.mode`",
+		"`DBRAIN_RESEARCH_SEMANTIC_PROVIDER`", "`research.semantic.provider`",
+		"`DBRAIN_RESEARCH_SEMANTIC_MODEL`", "`research.semantic.model`",
+		"`DBRAIN_RESEARCH_SEMANTIC_DIMENSIONS`", "`research.semantic.dimensions`",
+		"`DBRAIN_RESEARCH_SEMANTIC_INDEX_BACKEND`", "`research.semantic.index_backend`",
+		"`DBRAIN_RESEARCH_SEMANTIC_CANDIDATE_DEPTH`", "`research.semantic.candidate_depth`",
+		"`DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS`", "`research.semantic.exact_fallback_max_chunks`",
+		"`DBRAIN_TSNET_MCP_PATH`", "`DBRAIN_TSNET_FUNNEL`",
+	} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected markdown config env output to contain %q, got %q", value, output)
 		}

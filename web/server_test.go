@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/researchtrace"
 	"github.com/darron/dbrain/internal/schedulerstate"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -43,6 +45,139 @@ func TestWebResearchTimeoutDefaultsLeaveRoomForExactTagRetrieval(t *testing.T) {
 	}
 	if defaultResearchTimeout < defaultWebResearchStageTimeout {
 		t.Fatalf("expected legacy web research timeout to be at least the runner stage timeout, got legacy=%s stage=%s", defaultResearchTimeout, defaultWebResearchStageTimeout)
+	}
+}
+
+func TestResearchEndpointsRejectConflictingSemanticOverridesBeforeWork(t *testing.T) {
+	cfg, st := openTestStore(t)
+	if err := os.WriteFile(cfg.ConfigPath, []byte("research:\n  semantic:\n    mode: malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"question":"agent memory","use_semantic":true,"disable_semantic":true}`
+	for _, path := range []string{"/api/research", "/api/research/run"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Header().Get("Content-Type"), "text/event-stream") {
+			t.Fatalf("%s started SSE before rejecting conflict", path)
+		}
+	}
+}
+
+func TestResearchEndpointsPropagateConfiguredShadowAndBooleanOverrides(t *testing.T) {
+	ctx := t.Context()
+	cfg, st := openTestStore(t)
+	_, sourceKey := seedTestData(t, ctx, cfg, st)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/embed":
+			_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+		case "/api/chat":
+			_, _ = w.Write([]byte(`{"model":"qwen-test","message":{"role":"assistant","content":"Agent memory evidence [` + sourceKey + `]."}}`))
+		default:
+			t.Fatalf("unexpected provider path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(provider.Close)
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", provider.URL)
+	configYAML := "research:\n  semantic:\n    mode: shadow\n    model: test-model\n    dimensions: 2\n"
+	if err := os.WriteFile(cfg.ConfigPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	includeTopic := false
+	direct := func(useSemantic, disableSemantic bool) brainresearch.Pack {
+		body, err := json.Marshal(ResearchRequest{Question: "agent memory", Limit: 4, IncludeTopicBrief: &includeTopic, DisablePlanner: true, UseSemantic: useSemantic, DisableSemantic: disableSemantic})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/research", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("direct status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var pack brainresearch.Pack
+		if err := json.Unmarshal(rec.Body.Bytes(), &pack); err != nil {
+			t.Fatal(err)
+		}
+		return pack
+	}
+	directShadow, directOff, directOn := direct(false, false), direct(false, true), direct(true, false)
+	if directShadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || directShadow.QueryPlan.ShadowComparison == nil || directOff.QueryPlan.SemanticMode != semanticconfig.ModeOff || directOn.QueryPlan.SemanticMode != semanticconfig.ModeOn || !reflect.DeepEqual(directShadow.Evidence, directOff.Evidence) {
+		t.Fatalf("direct mode propagation failed: shadow=%#v off=%#v on=%#v", directShadow.QueryPlan, directOff.QueryPlan, directOn.QueryPlan)
+	}
+
+	type runnerDone struct {
+		ResearchPack brainresearch.Pack             `json:"research_pack"`
+		Synthesis    *brainresearch.SynthesisResult `json:"synthesis"`
+	}
+	run := func(useSemantic, disableSemantic bool) runnerDone {
+		traceEnabled := false
+		body, err := json.Marshal(ResearchRunRequest{Question: "agent memory", Limit: 4, IncludeTopicBrief: &includeTopic, DisablePlanner: true, UseSemantic: useSemantic, DisableSemantic: disableSemantic, Model: "ollama/qwen-test", TraceEnabled: &traceEnabled})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/research/run", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("runner status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		events := parseSSEEvents(t, rec.Body.String())
+		if len(events["done"]) != 1 {
+			t.Fatalf("missing runner done event: %s", rec.Body.String())
+		}
+		var done runnerDone
+		if err := json.Unmarshal([]byte(events["done"][0]), &done); err != nil {
+			t.Fatal(err)
+		}
+		return done
+	}
+	runnerShadow, runnerOff, runnerOn := run(false, false), run(false, true), run(true, false)
+	if runnerShadow.ResearchPack.QueryPlan.SemanticMode != semanticconfig.ModeShadow || runnerShadow.ResearchPack.QueryPlan.ShadowComparison == nil || runnerOff.ResearchPack.QueryPlan.SemanticMode != semanticconfig.ModeOff || runnerOn.ResearchPack.QueryPlan.SemanticMode != semanticconfig.ModeOn || !reflect.DeepEqual(runnerShadow.ResearchPack.Evidence, runnerOff.ResearchPack.Evidence) || !reflect.DeepEqual(runnerShadow.Synthesis, runnerOff.Synthesis) {
+		t.Fatalf("runner mode/identity failed: shadow=%#v off=%#v on=%#v", runnerShadow, runnerOff, runnerOn)
+	}
+
+	traceResult, err := researchtrace.Write(cfg, researchtrace.ResearchTrace{SchemaVersion: researchtrace.SchemaVersion, RunID: "web-shadow-current", Surface: "web_chat", Question: "agent memory", StartedAt: time.Now().UTC(), CompletedAt: time.Now().UTC(), Pack: &runnerShadow.ResearchPack, StopReason: "enough_evidence"}, researchtrace.ArtifactContents{}, researchtrace.WriteOptions{Retention: researchtrace.RetentionOptions{KeepAll: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compareBody, err := json.Marshal(ResearchTraceCompareRequest{TracePath: traceResult.RelativePath, RunCurrent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/trace-compare", bytes.NewReader(compareBody))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("trace-current status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var currentResponse struct {
+		Current struct {
+			ResearchPack brainresearch.Pack `json:"research_pack"`
+		} `json:"current"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &currentResponse); err != nil {
+		t.Fatal(err)
+	}
+	if currentResponse.Current.ResearchPack.QueryPlan.SemanticMode != semanticconfig.ModeShadow || currentResponse.Current.ResearchPack.QueryPlan.ShadowComparison == nil {
+		t.Fatalf("trace-current lost shadow comparison: %s", rec.Body.String())
 	}
 }
 

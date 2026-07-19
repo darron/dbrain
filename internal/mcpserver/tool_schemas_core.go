@@ -84,25 +84,44 @@ func searchResultSchema() map[string]interface{} {
 
 func evidenceSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
-		"source_key":     scalarSchema("string", "Stable key for the evidence row."),
-		"kind":           scalarSchema("string", "Evidence kind, such as item or source."),
-		"title":          scalarSchema("string", "Best available title."),
-		"url":            scalarSchema("string", "Canonical URL."),
-		"note_path":      scalarSchema("string", "Rendered note path."),
-		"summary":        scalarSchema("string", "Summary text if available."),
-		"excerpt":        scalarSchema("string", "Excerpt used for retrieval."),
-		"author":         scalarSchema("string", "Author when present."),
-		"source_type":    scalarSchema("string", "Underlying source type."),
-		"published_at":   scalarSchema("string", "Published timestamp when present."),
-		"extracted_at":   scalarSchema("string", "Extraction timestamp when present."),
-		"summarized_at":  scalarSchema("string", "Summary timestamp when present."),
-		"user_tags":      scalarSchema("string", "Comma-separated user tags for item or source evidence."),
-		"entity_matches": arraySchema(scalarSchema("string", "Derived entities that matched the query and reference this note.")),
-		"related_to":     scalarSchema("string", "Parent source key when added as related evidence."),
-		"relationship":   scalarSchema("string", "How this evidence relates to another node."),
-		"media":          arraySchema(mediaRefSchema()),
-		"retrieval":      retrievalInfoSchema(),
+		"source_key":       scalarSchema("string", "Stable key for the evidence row."),
+		"kind":             scalarSchema("string", "Evidence kind, such as item or source."),
+		"title":            scalarSchema("string", "Best available title."),
+		"url":              scalarSchema("string", "Canonical URL."),
+		"note_path":        scalarSchema("string", "Rendered note path."),
+		"summary":          scalarSchema("string", "Summary text if available."),
+		"excerpt":          scalarSchema("string", "Excerpt used for retrieval."),
+		"author":           scalarSchema("string", "Author when present."),
+		"source_type":      scalarSchema("string", "Underlying source type."),
+		"published_at":     scalarSchema("string", "Published timestamp when present."),
+		"extracted_at":     scalarSchema("string", "Extraction timestamp when present."),
+		"summarized_at":    scalarSchema("string", "Summary timestamp when present."),
+		"user_tags":        scalarSchema("string", "Comma-separated user tags for item or source evidence."),
+		"evidence_role":    scalarSchema("string", "Evidence role such as raw or derived."),
+		"chunk":            evidenceChunkSchema(),
+		"content_sections": arraySchema(getSectionSchema()),
+		"entity_matches":   arraySchema(scalarSchema("string", "Derived entities that matched the query and reference this note.")),
+		"related_to":       scalarSchema("string", "Parent source key when added as related evidence."),
+		"relationship":     scalarSchema("string", "How this evidence relates to another node."),
+		"media":            arraySchema(mediaRefSchema()),
+		"retrieval":        retrievalInfoSchema(),
 	}, "source_key", "kind", "title", "url", "note_path", "summary", "excerpt")
+}
+
+func evidenceChunkSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"id":                scalarSchema("string", "Stable chunk identifier."),
+		"parent_source_key": scalarSchema("string", "Stable parent evidence key."),
+		"index":             scalarSchema("integer", "Chunk index within the parent."),
+		"section_ordinal":   scalarSchema("integer", "Source section ordinal."),
+		"start_char":        scalarSchema("integer", "Start character offset."),
+		"end_char":          scalarSchema("integer", "End character offset."),
+		"role":              scalarSchema("string", "Chunk evidence role."),
+		"hash":              scalarSchema("string", "Chunk text hash."),
+		"heading":           scalarSchema("string", "Chunk heading when present."),
+		"contributing_ids":  arraySchema(scalarSchema("string", "Stable contributing chunk identifier.")),
+		"window_hash":       scalarSchema("string", "Hash of the consolidated chunk window."),
+	})
 }
 
 func mediaRefSchema() map[string]interface{} {
@@ -123,6 +142,7 @@ func mediaRefSchema() map[string]interface{} {
 func retrievalInfoSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
 		"score":         scalarSchema("integer", "Final retrieval score used to rank this evidence row."),
+		"fused_score":   scalarSchema("number", "Reciprocal-rank fusion score."),
 		"lanes":         arraySchema(retrievalLaneSchema()),
 		"signals":       arraySchema(retrievalSignalSchema()),
 		"matched_terms": arraySchema(scalarSchema("string", "Query terms found in title, tags, summary, excerpt, URL, or author fields.")),

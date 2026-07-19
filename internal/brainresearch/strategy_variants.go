@@ -172,6 +172,9 @@ func preferredConceptQueryExcluding(concepts []QueryConcept, excluded ...string)
 		if _, skip := excludedSet[strings.ToLower(concept.Key)]; skip {
 			continue
 		}
+		if hasConcept(concepts, "knowledge_base") && (concept.Key == "knowledge" || concept.Key == "base") {
+			continue
+		}
 		if hasStrong && (concept.Role == conceptRoleIntent || concept.Role == conceptRoleFrame) {
 			continue
 		}

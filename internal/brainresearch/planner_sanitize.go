@@ -24,18 +24,20 @@ func sanitizeModelConcepts(concepts []QueryConcept) []QueryConcept {
 		if !required && !optionalPlannerConcept(key, terms) {
 			required = true
 		}
+		role := sanitizeMergedConceptRole(key, concept.Role)
 		seen[key] = struct{}{}
 		out = append(out, QueryConcept{
 			Key:       key,
 			Preferred: terms[0],
 			Terms:     terms,
 			Required:  required,
+			Role:      role,
 		})
 		if len(out) >= maxPlannerConcepts {
 			break
 		}
 	}
-	return out
+	return applyConceptRolePolicy(out)
 }
 
 func optionalPlannerConcept(key string, terms []string) bool {

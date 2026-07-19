@@ -9,19 +9,41 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/researchhybrid"
 	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
 )
 
 func New(cfg config.Config, st *store.Store) *Builder {
-	return &Builder{cfg: cfg, st: st}
+	return &Builder{cfg: cfg, st: st, semanticMode: semanticconfig.ModeOff}
 }
 
 func Build(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Pack, error) {
-	return New(cfg, st).Build(ctx, opts)
+	b, err := NewRuntimeBuilder(cfg, st, opts.EffectiveSemanticMode, opts.UseSemantic, opts.DisableSemantic)
+	if err != nil {
+		return Pack{}, err
+	}
+	return b.Build(ctx, opts)
 }
 
 func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
+	configuredMode := b.semanticMode
+	if opts.EffectiveSemanticMode != "" {
+		configuredMode = opts.EffectiveSemanticMode
+	}
+	mode, err := semanticconfig.EffectiveMode(configuredMode, opts.UseSemantic, opts.DisableSemantic)
+	if err != nil {
+		return Pack{}, err
+	}
+	resolved := *b
+	resolved.semanticMode = mode
+	resolved.semanticStatus = nil
+	resolved.shadowComparison = nil
+	return resolved.buildResolved(ctx, opts)
+}
+
+func (b *Builder) buildResolved(ctx context.Context, opts Options) (Pack, error) {
 	question := strings.TrimSpace(opts.Question)
 	if question == "" {
 		return Pack{}, fmt.Errorf("question is required")
@@ -69,7 +91,7 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 	strategyOpts.ContinuityAnchors = anchors
 	strategy := b.buildResearchStrategy(ctx, searchQuestion, hints, strategyOpts)
 	retrievalLanes := researchhybrid.LaneStatuses(researchhybrid.Options{
-		UseSemantic:     opts.UseSemantic,
+		UseSemantic:     b.semanticMode == semanticconfig.ModeOn,
 		DisableSemantic: opts.DisableSemantic,
 	})
 	emitEvent(opts.Observer, "query_plan_built", map[string]interface{}{
@@ -91,6 +113,22 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 	}
 	if evidenceUsesLane(evidence, researchhybrid.LaneExactTag) {
 		retrievalLanes = append(retrievalLanes, retrieval.RetrievalLane{Name: researchhybrid.LaneExactTag, Status: researchhybrid.StatusUsed})
+	}
+	if b.semanticMode != semanticconfig.ModeOff && b.semanticStatus != nil {
+		for i := range retrievalLanes {
+			if retrievalLanes[i].Name != researchhybrid.LaneSemantic {
+				continue
+			}
+			retrievalLanes[i].Backend = b.semanticStatus.Backend
+			retrievalLanes[i].Profile = b.semanticStatus.ProfileID
+			retrievalLanes[i].Generation = b.semanticStatus.GenerationID
+			retrievalLanes[i].Reason = string(b.semanticStatus.Reason)
+			if b.semanticStatus.State == semanticindex.StateSearched {
+				retrievalLanes[i].Status = researchhybrid.StatusUsed
+			} else {
+				retrievalLanes[i].Status = researchhybrid.StatusDisabled
+			}
+		}
 	}
 	emitEvent(opts.Observer, "evidence_selected", map[string]interface{}{
 		"count":       len(evidence),
@@ -130,6 +168,8 @@ func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {
 			Topic:             topic,
 			TopicSource:       topicSource,
 			IncludeTopicBrief: includeTopic,
+			SemanticMode:      b.semanticMode,
+			ShadowComparison:  b.shadowComparison,
 		},
 		Evidence:         evidence,
 		ExactTagEvidence: exactTagEvidence,

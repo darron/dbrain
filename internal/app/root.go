@@ -135,6 +135,7 @@ func NewRootCommand() *cobra.Command {
 		serveCmd,
 		newOCRCommand(opts),
 		newStatsCommand(opts),
+		newSemanticCommand(opts),
 		newResearchCommand(opts),
 		newSearchCommand(opts),
 		newGetCommand(opts),

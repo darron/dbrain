@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -72,6 +73,62 @@ func TestStatsCommandsReadOnly(t *testing.T) {
 				t.Fatalf("stats %s mutated schema metadata\nbefore=%s\nafter=%s", args[1], before, after)
 			}
 		})
+	}
+}
+
+func TestSemanticStatusReadOnlyOnPreRetrievalSchema(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ConfigPath, []byte("research:\n  semantic:\n    mode: on\n    model: test-embed\n    dimensions: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Clean(cfg.DBPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE items (id INTEGER PRIMARY KEY, source_key TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 12`); err != nil {
+		t.Fatal(err)
+	}
+	before := readSchemaMetadata(t, db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := runRootCommandErr(t, root, "semantic", "status", "--json")
+	if err != nil {
+		t.Fatalf("semantic status: %v stderr=%q", err, stderr)
+	}
+	var status struct {
+		Status    string `json:"status"`
+		ProfileID string `json:"profile_id"`
+		Mode      string `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != "unavailable" || status.Mode != "on" || status.ProfileID == "" {
+		t.Fatalf("status=%+v output=%s", status, stdout)
+	}
+	db, err = sql.Open("sqlite", filepath.Clean(cfg.DBPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	after := readSchemaMetadata(t, db)
+	if string(after) != string(before) {
+		t.Fatalf("semantic status mutated schema\nbefore=%s\nafter=%s", before, after)
 	}
 }
 

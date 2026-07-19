@@ -48,6 +48,258 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRetrievalChunkProvenanceMigrationRepairsV14SchemaIdempotently(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close fresh store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, retrievalChunkProvenanceVersion); err != nil {
+		t.Fatalf("remove retrieval chunk provenance migration metadata: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 14`); err != nil {
+		t.Fatalf("set v14 user_version: %v", err)
+	}
+	for _, table := range []string{"retrieval_embeddings", "retrieval_index_generations", "retrieval_chunks"} {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
+			t.Fatalf("drop %s: %v", table, err)
+		}
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE retrieval_chunks (
+			chunk_id TEXT PRIMARY KEY,
+			parent_kind TEXT NOT NULL,
+			parent_source_key TEXT NOT NULL,
+			evidence_role TEXT NOT NULL,
+			ordinal INTEGER NOT NULL,
+			start_char INTEGER NOT NULL,
+			end_char INTEGER NOT NULL,
+			heading TEXT NOT NULL,
+			chunker_version TEXT NOT NULL,
+			input_content_hash TEXT NOT NULL,
+			chunk_text_hash TEXT NOT NULL,
+			text TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`); err != nil {
+		t.Fatalf("create partial retrieval_chunks: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO retrieval_chunks (
+			chunk_id, parent_kind, parent_source_key, evidence_role, ordinal,
+			start_char, end_char, heading, chunker_version, input_content_hash,
+			chunk_text_hash, text, created_at, updated_at
+		) VALUES ('legacy-chunk', 'item', 'legacy-item', 'raw', 0, 0, 6, '',
+			'retrieval-chunker-v1', 'input', 'text-hash', 'legacy', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("insert partial retrieval chunk: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		st = openStoreAtPath(t, path)
+		if err := st.Close(); err != nil {
+			t.Fatalf("close repaired store attempt %d: %v", attempt+1, err)
+		}
+	}
+
+	db, err = sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("reopen repaired sqlite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var sectionOrdinal int
+	var projectionVersion string
+	if err := db.QueryRow(`SELECT section_ordinal, projection_version FROM retrieval_chunks WHERE chunk_id = 'legacy-chunk'`).Scan(&sectionOrdinal, &projectionVersion); err != nil {
+		t.Fatalf("read repaired legacy chunk: %v", err)
+	}
+	if sectionOrdinal != 0 {
+		t.Fatalf("repaired section_ordinal = %d, want 0", sectionOrdinal)
+	}
+	if projectionVersion != "" {
+		t.Fatalf("repaired projection_version = %q, want explicitly stale empty value", projectionVersion)
+	}
+	var migrationName string
+	if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version = 15`).Scan(&migrationName); err != nil {
+		t.Fatalf("read retrieval chunk provenance migration: %v", err)
+	}
+	if migrationName != "retrieval_chunk_projection_provenance" {
+		t.Fatalf("migration 15 name = %q", migrationName)
+	}
+	for _, table := range []string{"retrieval_embeddings", "retrieval_index_generations"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+			t.Fatalf("check repaired table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("repaired table %s count = %d, want 1", table, count)
+		}
+	}
+	for _, index := range []string{
+		"idx_retrieval_chunks_parent_ordinal_unique",
+		"idx_retrieval_embeddings_chunk_profile_unique",
+		"idx_retrieval_generations_one_active_profile",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&count); err != nil {
+			t.Fatalf("check repaired index %s: %v", index, err)
+		}
+		if count != 1 {
+			t.Fatalf("repaired index %s count = %d, want 1", index, count)
+		}
+	}
+	for _, trigger := range []string{
+		"trg_retrieval_embeddings_profile_invariants_insert",
+		"trg_retrieval_embeddings_profile_invariants_update",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&count); err != nil {
+			t.Fatalf("check repaired trigger %s: %v", trigger, err)
+		}
+		if count != 1 {
+			t.Fatalf("repaired trigger %s count = %d, want 1", trigger, count)
+		}
+	}
+	if _, err := db.Exec(`
+		INSERT INTO retrieval_chunks (
+			chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
+			ordinal, start_char, end_char, heading, chunker_version,
+			input_content_hash, chunk_text_hash, text, created_at, updated_at
+		) VALUES ('duplicate-ordinal', 'item', 'legacy-item', 'raw', 0, 0, 0, 3, '',
+			'retrieval-chunker-v1', 'input-2', 'hash-2', 'two', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err == nil {
+		t.Fatal("repaired parent ordinal uniqueness accepted a duplicate")
+	}
+	if _, err := db.Exec(`
+		INSERT INTO retrieval_embeddings (
+			chunk_id, profile_id, provider, model, dimensions, representation,
+			normalization, vector_bytes, chunk_text_hash, status, updated_at
+		) VALUES ('legacy-chunk', 'profile-a', 'fake', 'fake-v1', 2, 'dense_f32',
+			'l2', X'0000000000000000', 'text-hash', 'ready', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("insert embedding into repaired schema: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO retrieval_chunks (
+			chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
+			ordinal, start_char, end_char, heading, chunker_version,
+			input_content_hash, chunk_text_hash, text, created_at, updated_at
+		) VALUES ('profile-conflict', 'item', 'other-item', 'raw', 0, 0, 0, 5, '',
+			'retrieval-chunker-v1', 'input-3', 'hash-3', 'three', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("insert profile conflict chunk: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO retrieval_embeddings (
+			chunk_id, profile_id, provider, model, dimensions, representation,
+			normalization, vector_bytes, chunk_text_hash, status, updated_at
+		) VALUES ('profile-conflict', 'profile-a', 'fake', 'different-model', 2, 'dense_f32',
+			'l2', X'0000000000000000', 'hash-3', 'ready', '2026-07-18T00:00:00Z')`); err == nil {
+		t.Fatal("repaired profile trigger allowed mixed model provenance")
+	}
+	if _, err := db.Exec(`DELETE FROM retrieval_chunks WHERE chunk_id = 'legacy-chunk'`); err != nil {
+		t.Fatalf("delete repaired legacy chunk: %v", err)
+	}
+	var embeddings int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM retrieval_embeddings WHERE chunk_id = 'legacy-chunk'`).Scan(&embeddings); err != nil {
+		t.Fatalf("count cascaded repaired embeddings: %v", err)
+	}
+	if embeddings != 0 {
+		t.Fatalf("repaired cascade left %d embeddings", embeddings)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO retrieval_index_generations (
+			generation_id, profile_id, backend, backend_version, dimensions,
+			distance_metric, build_status, active, created_at, updated_at
+		) VALUES ('invalid-active', 'profile-a', 'hnsw', '1', 2, 'cosine',
+			'building', 1, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err == nil {
+		t.Fatal("repaired generation constraints allowed an active incomplete generation")
+	}
+}
+
+func TestMigrationRepairsProfileInvariantTriggersAfterRetrievalMigration(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close fresh store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	for _, trigger := range []string{
+		"trg_retrieval_embeddings_profile_invariants_insert",
+		"trg_retrieval_embeddings_profile_invariants_update",
+	} {
+		if _, err := db.Exec(`DROP TRIGGER ` + trigger); err != nil {
+			t.Fatalf("drop profile invariant trigger %s: %v", trigger, err)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version > ?`, retrievalMigrationVersion); err != nil {
+		t.Fatalf("remove post-retrieval migration metadata: %v", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, retrievalMigrationVersion)); err != nil {
+		t.Fatalf("stamp retrieval schema version: %v", err)
+	}
+	var migrationName string
+	if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version = ?`, retrievalMigrationVersion).Scan(&migrationName); err != nil {
+		t.Fatalf("confirm retrieval migration metadata: %v", err)
+	}
+	if migrationName != "retrieval_hybrid_storage_v1" {
+		t.Fatalf("retrieval migration name = %q, want retrieval_hybrid_storage_v1", migrationName)
+	}
+	var userVersion int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
+		t.Fatalf("read schema user_version: %v", err)
+	}
+	if userVersion != retrievalMigrationVersion {
+		t.Fatalf("schema user_version = %d, want stamped retrieval version %d", userVersion, retrievalMigrationVersion)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		st = openStoreAtPath(t, path)
+		if err := st.Close(); err != nil {
+			t.Fatalf("close repaired store attempt %d: %v", attempt+1, err)
+		}
+	}
+
+	db, err = sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("reopen repaired sqlite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, trigger := range []string{
+		"trg_retrieval_embeddings_profile_invariants_insert",
+		"trg_retrieval_embeddings_profile_invariants_update",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&count); err != nil {
+			t.Fatalf("check repaired trigger %s: %v", trigger, err)
+		}
+		if count != 1 {
+			t.Fatalf("repaired trigger %s count = %d, want 1", trigger, count)
+		}
+	}
+	var repairMigrationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ? AND name = ?`, retrievalTriggerRepairVersion, retrievalTriggerRepairName).Scan(&repairMigrationCount); err != nil {
+		t.Fatalf("check retrieval trigger repair migration metadata: %v", err)
+	}
+	if repairMigrationCount != 1 {
+		t.Fatalf("retrieval trigger repair migration count = %d, want 1", repairMigrationCount)
+	}
+}
+
 func TestMigrationRepairsAuditProvenanceStateIdempotently(t *testing.T) {
 	t.Parallel()
 

@@ -47,6 +47,7 @@ func writeResearchPack(out interface {
 	_, _ = fmt.Fprintf(out, "Research pack: %s\n", pack.Question)
 	_, _ = fmt.Fprintf(out, "Mode: %s\n", pack.Mode)
 	_, _ = fmt.Fprintf(out, "Evidence: %d\n", len(pack.Evidence))
+	writeResearchSemanticDiagnostics(out, pack.QueryPlan)
 	if pack.Coverage.RecallNote != "" {
 		_, _ = fmt.Fprintf(out, "Recall: %s\n", pack.Coverage.RecallNote)
 	}
@@ -94,6 +95,42 @@ func writeResearchPack(out interface {
 			_, _ = fmt.Fprintf(out, "  excerpt: %s\n", singleLine(doc.Excerpt))
 		}
 	}
+}
+
+func writeResearchSemanticDiagnostics(out interface {
+	Write([]byte) (int, error)
+}, plan brainresearch.QueryPlan) {
+	parts := []string{"Semantic: " + string(plan.SemanticMode)}
+	if len(plan.RetrievalLanes) > 0 {
+		lanes := make([]string, 0, len(plan.RetrievalLanes))
+		for _, lane := range plan.RetrievalLanes {
+			value := strings.TrimSpace(lane.Name) + "=" + strings.TrimSpace(lane.Status)
+			if reason := strings.TrimSpace(lane.Reason); reason != "" {
+				value += "(" + reason + ")"
+			}
+			lanes = append(lanes, value)
+		}
+		parts = append(parts, "lanes "+strings.Join(lanes, ", "))
+	}
+	comparisons := make([]string, 0, 2)
+	if plan.ShadowComparison != nil {
+		comparisons = append(comparisons, "initial="+compactShadowComparison(plan.ShadowComparison))
+	}
+	if plan.RetryShadowComparison != nil {
+		comparisons = append(comparisons, "retry="+compactShadowComparison(plan.RetryShadowComparison))
+	}
+	if len(comparisons) > 0 {
+		parts = append(parts, "shadow "+strings.Join(comparisons, "; "))
+	}
+	_, _ = fmt.Fprintln(out, strings.Join(parts, "; "))
+}
+
+func compactShadowComparison(comparison *brainresearch.ShadowComparison) string {
+	status := string(comparison.Status)
+	if comparison.Reason != "" {
+		status += "(" + string(comparison.Reason) + ")"
+	}
+	return fmt.Sprintf("%s L%d/H%d +%d/-%d/~%d", status, comparison.LexicalCount, comparison.HybridCount, len(comparison.Added), len(comparison.Removed), len(comparison.Reordered))
 }
 
 func singleLine(value string) string {

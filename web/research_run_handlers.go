@@ -10,6 +10,7 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/researchrun"
 	"github.com/darron/dbrain/internal/researchtrace"
+	"github.com/darron/dbrain/internal/semanticconfig"
 )
 
 var runnerContinuityPronounRE = regexp.MustCompile(`\b(it|its|that|them|there|these|this|those|they|their)\b`)
@@ -29,6 +30,10 @@ func (s *server) handleResearchRun(w http.ResponseWriter, r *http.Request) {
 	req.Question = strings.TrimSpace(req.Question)
 	if req.Question == "" {
 		writeMessage(w, http.StatusBadRequest, "question is required")
+		return
+	}
+	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, req.UseSemantic, req.DisableSemantic); err != nil {
+		writeMessage(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

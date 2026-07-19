@@ -19,6 +19,7 @@
   import { applyRunMonitoringUnknown, applyRunStatus, auditRunBlocksStart, freshnessDeadlineElapsed, freshnessRefreshDelayMs, markEnvelopeStale, overallHealth, runGenerationStableRead, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline } from "./lib/audit.js";
   import { buildChatRetrievalQuestion, buildChatTraceContinuity, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
+  import { formatSemanticDiagnostics } from "./lib/researchDiagnostics.js";
   import { formatTime } from "./lib/time.js";
   import { pageHref, readRouteState, writeRouteState } from "./lib/urlState.js";
 
@@ -1759,6 +1760,10 @@
                         />
                       {/if}
 
+                      {#if formatSemanticDiagnostics(turn.research_pack)}
+                        <p class="message muted retrieval-diagnostics">{formatSemanticDiagnostics(turn.research_pack)}</p>
+                      {/if}
+
                       {#if chatShareByTurn[turn.id] || chatShareErrorByTurn[turn.id]}
                         <p class="chat-share-note" class:error={chatShareErrorByTurn[turn.id]}>
                           {#if chatShareErrorByTurn[turn.id]}
@@ -1856,6 +1861,9 @@
                     <p class="message muted">Retrieving evidence from the local brain…</p>
                   {:else if researchState === "ready"}
                     <p>{researchPack.coverage?.recall_note || "Retrieved evidence from the local brain."}</p>
+                    {#if formatSemanticDiagnostics(researchPack)}
+                      <p class="message muted retrieval-diagnostics">{formatSemanticDiagnostics(researchPack)}</p>
+                    {/if}
                     {#if researchPack.topic_brief?.summary}
                       <p>{researchPack.topic_brief.summary}</p>
                     {/if}

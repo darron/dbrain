@@ -119,6 +119,46 @@ Source documents are searched as their own candidate stream, so
 `source_types=["web"]` or `["youtube"]` can return direct `src:...` evidence
 even when item hits would otherwise fill the candidate window.
 
+#### Semantic retrieval contract
+
+The configured semantic mode defaults to `off`. MCP `use_semantic=true`
+force-enables effective `on`; `disable_semantic=true` force-enables effective
+`off`; passing both is a tool/client error. These booleans are transport
+overrides and do not mutate configuration. Effective `shadow` or `on` requires
+a non-empty local Ollama embedding model and positive dimensions.
+
+- `off` is lexical-only.
+- `shadow` runs semantic exact search but keeps visible evidence, ordering, and
+  synthesis lexical-identical. `query_plan.shadow_comparison` contains only
+  bounded source/chunk identifiers, ranks, counts, status/reason, and
+  added/removed/reordered references—never excerpts or other content.
+  If the runner performs its one bounded retry, the retry attempt's diagnostic
+  is preserved separately as `query_plan.retry_shadow_comparison` rather than
+  replacing the initial comparison.
+- `on` returns RRF-fused evidence while retaining protected evidence and its
+  chunk/content provenance.
+
+The only vector backend in this foundation is SQLite-authoritative exact scan.
+Semantic candidate depth defaults to 50. Exact scans are capped at 25,000
+current ready embeddings for the configured profile by default, counted before
+request filters. A larger ready profile set reports `too_large`, and validly
+configured provider/search failures report their status/reason; both fail open
+to lexical evidence. ANN, other providers, background sync, and default-on are
+deferred.
+
+Inspect `query_plan.semantic_mode`, `query_plan.retrieval_lanes`, and (only in
+shadow mode) `query_plan.shadow_comparison`. Each evidence row may expose
+`evidence_role`, `chunk`, `content_sections`, `retrieval.fused_score`, and
+lexical/semantic lane provenance including status, reason, rank, raw distance
+or score, RRF contribution, profile, backend, and generation. Exact-tag
+retrieval is a separate lane; `exact_tag_evidence` is representative, not
+exhaustive.
+
+Direct `dbrain_research_pack` calls are read-only and trace-free even in shadow
+mode: they do not create `data/research-runs`. The
+`dbrain://research/{query}` resource retains its documented parameters and has
+no additional semantic URI parameters.
+
 ### `dbrain_get`
 
 `dbrain_get` is DB-first. By default it returns slim item/source metadata and
@@ -333,6 +373,11 @@ Then configure remote MCP clients with the Tailscale HTTPS URL plus `/mcp`.
 Use Tailscale Serve, not Funnel, unless you intentionally want a public
 internet endpoint.
 
+Production or remote clients must use an explicit HTTPS Streamable HTTP MCP
+endpoint. Require bearer authentication whenever the endpoint is not confined
+to an otherwise trusted private boundary; never treat a repo/dev stdio command,
+localhost URL, or path as production configuration truth.
+
 The built-in tailnet option is usually simpler when you want `dbrain` itself to
 own the tailnet node:
 
@@ -529,8 +574,12 @@ fronted by Tailscale Serve.
 ## Skill
 
 This repo includes a Codex skill for agents at `skills/dbrain-mcp/SKILL.md`.
-To install it locally for Codex, copy the `skills/dbrain-mcp` directory into
-your Codex skills directory, for example `~/.codex/skills/dbrain-mcp`.
+To refresh the installed Codex copy from the repo, run:
+
+```sh
+mkdir -p ~/.codex/skills/dbrain-mcp
+cp -R skills/dbrain-mcp/. ~/.codex/skills/dbrain-mcp/
+```
 
 The skill includes the recommended Codex MCP `~/.codex/config.toml` stanza. Use
 absolute paths for both the binary and `--root`, then restart Codex so the

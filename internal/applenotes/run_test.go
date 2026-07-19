@@ -3,13 +3,16 @@ package applenotes
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrievalchunk"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -275,6 +278,54 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 	if _, err := Run(context.Background(), cfg, st, Options{DBPath: dbPath}); err != nil {
 		t.Fatalf("initial Run: %v", err)
 	}
+	ctx := context.Background()
+	materialized, err := st.GetItem(ctx, "apple-note:default:note-1")
+	if err != nil {
+		t.Fatalf("load materialized note: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := st.SaveItemSummary(ctx, materialized.ID, model.SummaryResult{
+		Text: "private mirror summary", RawJSON: `{}`, Model: "test", PromptVersion: "v1",
+		Status: model.ItemSummaryStatusOK, FetchedAt: now, Tool: "test", ToolVersion: "v1",
+	}, "summary-hash"); err != nil {
+		t.Fatalf("seed item summary mirror: %v", err)
+	}
+	if _, err := st.SaveItemOCR(ctx, materialized.ID, model.OCRResult{
+		Text: "private mirror OCR", RawJSON: `{}`, Model: "test",
+		Status: model.ItemOCRStatusOK, FetchedAt: now, Tool: "test", ToolVersion: "v1",
+	}, "ocr-hash"); err != nil {
+		t.Fatalf("seed item OCR mirror: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(ctx, materialized.ID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+		t.Fatalf("seed transcript mirror: %v", err)
+	}
+	chunk := retrievalchunk.Chunk{
+		ID: "apple-note-private-chunk", ParentKind: "item", ParentSourceKey: "apple-note:default:note-1",
+		EvidenceRole: "raw", SectionOrdinal: 0, Ordinal: 0, StartChar: 0, EndChar: 12,
+		Heading: "Reader Note", ChunkerVersion: retrievalchunk.Version,
+		InputContentHash: "apple-note-input", TextHash: "apple-note-text", Text: "Decoded body",
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", chunk.ParentSourceKey, []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatalf("seed retrieval chunk: %v", err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, store.RetrievalEmbeddingRow{
+		ChunkID: chunk.ID, ProfileID: "apple-note-profile", Provider: "fake", Model: "fake-v1",
+		Dimensions: 2, Representation: "dense_f32", Normalization: "l2",
+		VectorBytes: []byte{0, 0, 128, 63, 0, 0, 0, 0}, ChunkTextHash: chunk.TextHash,
+		Status: store.RetrievalEmbeddingReady,
+	}); err != nil {
+		t.Fatalf("seed retrieval embedding: %v", err)
+	}
+	if err := st.PutRetrievalIndexGeneration(ctx, store.RetrievalIndexGenerationRow{
+		GenerationID: "apple-note-generation", ProfileID: "apple-note-profile",
+		Backend: "hnsw", BackendVersion: "1", Dimensions: 2, DistanceMetric: "cosine",
+		BuildStatus: store.RetrievalGenerationCompleted,
+	}); err != nil {
+		t.Fatalf("seed retrieval generation: %v", err)
+	}
+	if err := st.ActivateRetrievalIndexGeneration(ctx, "apple-note-generation"); err != nil {
+		t.Fatalf("activate retrieval generation: %v", err)
+	}
 	stats, err := Run(context.Background(), cfg, st, Options{
 		DBPath:         dbPath,
 		ExcludeFolders: []string{"Private"},
@@ -293,6 +344,25 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 	if item.Text != "" || item.ArticleText != "" || item.LinksJSON != "[]" {
 		t.Fatalf("item content not purged: text=%q article=%q links=%q", item.Text, item.ArticleText, item.LinksJSON)
 	}
+	if item.SummaryText != "" || item.OCRText != "" {
+		t.Fatalf("authoritative enrichments rehydrated purged note: summary=%q ocr=%q", item.SummaryText, item.OCRText)
+	}
+	for _, role := range []string{
+		model.ItemEnrichmentRoleSummary,
+		model.ItemEnrichmentRoleOCR,
+		model.ItemEnrichmentRoleXMediaTranscript,
+	} {
+		if _, err := st.GetItemEnrichment(ctx, item.ID, role); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("purged note enrichment %s still exists: %v", role, err)
+		}
+	}
+	parents, err := st.ListRetrievalParents(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("ListRetrievalParents after purge: %v", err)
+	}
+	if len(parents) != 1 || len(parents[0].Sections) != 0 {
+		t.Fatalf("purged Apple Note remains projectable: %+v", parents)
+	}
 	results, err := st.Search(context.Background(), "Decoded body", 10)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -301,6 +371,20 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 		if result.SourceKey == item.SourceKey {
 			t.Fatalf("purged item still appears in search: %+v", result)
 		}
+	}
+	ready, err := st.ListReadyEmbeddings(ctx, "apple-note-profile", 10)
+	if err != nil {
+		t.Fatalf("ListReadyEmbeddings after purge: %v", err)
+	}
+	if len(ready) != 0 {
+		t.Fatalf("purged Apple Note still has ready embeddings: %+v", ready)
+	}
+	status, err := st.RetrievalStatus(ctx, "apple-note-profile")
+	if err != nil {
+		t.Fatalf("RetrievalStatus after purge: %v", err)
+	}
+	if status.ActiveGenerationID != "" || status.StaleGenerations != 1 {
+		t.Fatalf("retrieval status after purge = %+v, want one stale inactive generation", status)
 	}
 }
 

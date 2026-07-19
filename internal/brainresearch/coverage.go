@@ -10,12 +10,33 @@ import (
 )
 
 func buildCoverage(evidence []ask.Evidence) Coverage {
+	evidence = uniqueParentEvidence(evidence)
 	return Coverage{
 		EvidenceCount: len(evidence),
 		ByKind:        countValues(evidence, func(doc ask.Evidence) string { return doc.Kind }, 10),
 		BySourceType:  countValues(evidence, func(doc ask.Evidence) string { return doc.SourceType }, 10),
 		TopUserTags:   topTags(evidence, 12),
 	}
+}
+
+func uniqueParentEvidence(evidence []ask.Evidence) []ask.Evidence {
+	out := make([]ask.Evidence, 0, len(evidence))
+	seen := map[string]struct{}{}
+	for _, row := range evidence {
+		key := strings.TrimSpace(row.SourceKey)
+		if row.Chunk != nil && strings.TrimSpace(row.Chunk.ParentSourceKey) != "" {
+			key = strings.TrimSpace(row.Chunk.ParentSourceKey)
+		}
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, row)
+	}
+	return out
 }
 
 func (b *Builder) buildCorpusCoverage(ctx context.Context, topic string, hints ask.QueryHints, sourceTypes []string, limit int, relatedLimit int) (Coverage, error) {

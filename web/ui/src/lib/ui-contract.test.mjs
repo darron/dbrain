@@ -23,6 +23,8 @@ test("chat is default and research is absent from primary mode tabs", () => {
   assert.match(appSource, /void loadHarnessTraces\(\{ quiet: true \}\)/);
   assert.match(appSource, /Generated answer rejected:/);
   assert.match(appSource, /turn\?\.status === "verification_failed"\) return \[\]/);
+  assert.match(appSource, /formatSemanticDiagnostics\(turn\.research_pack\)/);
+  assert.match(appSource, /formatSemanticDiagnostics\(researchPack\)/);
 });
 
 test("admin audit surface loads saved reports only and cancels polling on destroy", () => {
