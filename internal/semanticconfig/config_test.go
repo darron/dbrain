@@ -101,6 +101,22 @@ func TestResolveRejectsInvalidSemanticConfiguration(t *testing.T) {
 	}
 }
 
+func TestResolveDiagnosticReportsIncompleteProfileButRejectsMalformedConfiguration(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "config.yaml"), "research:\n  semantic:\n    mode: on\n    model: ''\n    dimensions: 0\n")
+	got, err := ResolveDiagnostic(root)
+	if err != nil {
+		t.Fatalf("ResolveDiagnostic incomplete profile: %v", err)
+	}
+	if got.Mode != ModeOn || got.Model != "" || got.Dimensions != 0 {
+		t.Fatalf("diagnostic config = %#v", got)
+	}
+	writeFile(t, filepath.Join(root, "config.yaml"), "research:\n  semantic:\n    mode: broken\n")
+	if _, err := ResolveDiagnostic(root); err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("ResolveDiagnostic malformed mode error = %v", err)
+	}
+}
+
 func TestResolveUsesSharedOllamaBaseURLWithoutResolvingSecrets(t *testing.T) {
 	t.Setenv("DBRAIN_OLLAMA_BASE_URL", "")
 	t.Setenv("OLLAMA_BASE_URL", "")

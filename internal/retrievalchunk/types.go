@@ -1,6 +1,9 @@
 package retrievalchunk
 
-const Version = "retrieval-chunker-v1"
+const (
+	Version           = "retrieval-chunker-v1"
+	ProjectionVersion = "retrieval-projection-v1"
+)
 
 const (
 	defaultTargetRunes  = 2400

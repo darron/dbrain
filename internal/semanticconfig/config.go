@@ -35,6 +35,16 @@ type Config struct {
 }
 
 func Resolve(rootDir string) (Config, error) {
+	return resolve(rootDir, true)
+}
+
+// ResolveDiagnostic validates configuration shape while allowing an incomplete
+// model/dimensions pair so read-only status can report not_configured.
+func ResolveDiagnostic(rootDir string) (Config, error) {
+	return resolve(rootDir, false)
+}
+
+func resolve(rootDir string, requireReady bool) (Config, error) {
 	config := Config{
 		Mode:                   ModeOff,
 		Provider:               ProviderOllama,
@@ -75,13 +85,17 @@ func Resolve(rootDir string) (Config, error) {
 	}
 	config.OllamaBaseURL = validatedBaseURL
 
-	if err := config.Validate(); err != nil {
+	if err := config.validate(requireReady); err != nil {
 		return Config{}, err
 	}
 	return config, nil
 }
 
 func (c Config) Validate() error {
+	return c.validate(true)
+}
+
+func (c Config) validate(requireReady bool) error {
 	switch c.Mode {
 	case ModeOff, ModeShadow, ModeOn:
 	default:
@@ -102,7 +116,7 @@ func (c Config) Validate() error {
 	if c.ExactFallbackMaxChunks <= 0 {
 		return fmt.Errorf("research.semantic.exact_fallback_max_chunks must be positive")
 	}
-	if c.Mode != ModeOff {
+	if requireReady && c.Mode != ModeOff {
 		if strings.TrimSpace(c.Model) == "" {
 			return fmt.Errorf("research.semantic.model is required when mode is %s", c.Mode)
 		}

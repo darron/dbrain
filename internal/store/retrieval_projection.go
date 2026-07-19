@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/retrievalchunk"
@@ -113,6 +114,10 @@ type RetrievalStatus struct {
 }
 
 func (s *Store) RetrievalStatus(ctx context.Context, profileID string) (RetrievalStatus, error) {
+	return s.RetrievalStatusAt(ctx, profileID, time.Now().UTC())
+}
+
+func (s *Store) RetrievalStatusAt(ctx context.Context, profileID string, now time.Time) (RetrievalStatus, error) {
 	available, err := s.RetrievalAvailable(ctx)
 	if err != nil {
 		return RetrievalStatus{}, err
@@ -130,9 +135,9 @@ func (s *Store) RetrievalStatus(ctx context.Context, profileID string) (Retrieva
 			COALESCE(SUM(CASE WHEN e.chunk_id IS NULL OR e.chunk_text_hash != c.chunk_text_hash OR e.status = 'pending' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN e.status = 'blocked' AND e.chunk_text_hash = c.chunk_text_hash THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN e.status = 'error' AND e.chunk_text_hash = c.chunk_text_hash THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN e.chunk_id IS NULL OR e.chunk_text_hash != c.chunk_text_hash OR e.status IN ('pending', 'error') THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN `+retrievalEmbeddingDueSQL+` THEN 1 ELSE 0 END), 0)
 		FROM retrieval_chunks c
-		LEFT JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id AND e.profile_id = ?`, profileID).Scan(
+		LEFT JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id AND e.profile_id = ?`, now.UTC().Format(time.RFC3339), profileID).Scan(
 		&status.ReadyEmbeddings, &status.PendingEmbeddings, &status.BlockedEmbeddings, &status.FailedEmbeddings,
 		&status.EmbeddingCandidates,
 	); err != nil {

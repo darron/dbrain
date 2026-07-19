@@ -56,6 +56,36 @@ func TestReplaceRetrievalChunksReusesUnchangedEmbeddings(t *testing.T) {
 	}
 }
 
+func TestReplaceRetrievalChunksReportsMetadataUpdateAndKeepsEmbedding(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunk := testRetrievalChunk("chunk-a", "item", "item:one", 0, "hash-a", "alpha")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:one", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding("chunk-a", "profile-a", "hash-a")); err != nil {
+		t.Fatal(err)
+	}
+	chunk.Heading = "Updated heading"
+	result, err := st.ReplaceRetrievalChunks(ctx, "item", "item:one", []retrievalchunk.Chunk{chunk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Updated != 1 || result.Reused != 0 || result.Created != 0 || result.Deleted != 0 {
+		t.Fatalf("replace result=%+v", result)
+	}
+	stored, err := st.GetRetrievalChunk(ctx, chunk.ID)
+	if err != nil || stored.Heading != chunk.Heading {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+	ready, err := st.ListReadyEmbeddings(ctx, "profile-a", 10)
+	if err != nil || len(ready) != 1 || ready[0].ChunkID != chunk.ID {
+		t.Fatalf("ready=%+v err=%v", ready, err)
+	}
+}
+
 func TestReplaceRetrievalChunksRollsBackWholeParent(t *testing.T) {
 	t.Parallel()
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
@@ -402,6 +432,76 @@ func TestRetrievalProjectionKeyPageReturnsBothParentKindsForSharedSourceKey(t *t
 	}
 	if len(parents) != 2 || parents[0].SourceKey != "shared:key" || parents[1].SourceKey != "shared:key" || parents[0].Kind == parents[1].Kind {
 		t.Fatalf("shared-key page = %+v, want both item and source", parents)
+	}
+}
+
+func TestRetrievalProjectionClosesPageRowsBeforeChunkWrites(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	st.db.SetMaxOpenConns(1)
+	seedPurgeItem(t, st, "shared:key")
+	seedRetrievalSource(t, st, "shared:key")
+
+	parents, err := st.ListRetrievalParents(context.Background(), "", 1)
+	if err != nil {
+		t.Fatalf("list parent page: %v", err)
+	}
+	if len(parents) != 2 {
+		t.Fatalf("parent page length = %d, want atomic item/source pair", len(parents))
+	}
+	chunks, err := retrievalchunk.Build(parents[0], retrievalchunk.DefaultOptions())
+	if err != nil {
+		t.Fatalf("build first parent: %v", err)
+	}
+	writeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := st.ReplaceRetrievalChunks(writeCtx, parents[0].Kind, parents[0].SourceKey, chunks); err != nil {
+		t.Fatalf("write after parent page rows closed: %v", err)
+	}
+}
+
+func TestEmbeddingDuePredicateMatchesStatusAndCarriesAttemptCount(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	for _, id := range []string{"due", "future"} {
+		chunk := testRetrievalChunk(id, "item", "item:"+id, 0, "hash-"+id, id)
+		if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:"+id, []retrievalchunk.Chunk{chunk}); err != nil {
+			t.Fatalf("seed %s chunk: %v", id, err)
+		}
+		row := testEmbedding(id, "profile-a", "hash-"+id)
+		row.Status = RetrievalEmbeddingError
+		row.AttemptCount = 3
+		if id == "due" {
+			row.NextAttemptAt = now.Add(-time.Second)
+		} else {
+			row.NextAttemptAt = now.Add(time.Hour)
+		}
+		if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
+			t.Fatalf("seed %s embedding: %v", id, err)
+		}
+	}
+
+	candidates, err := st.ListChunksNeedingEmbeddingAt(ctx, "profile-a", "", 10, now)
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].ChunkID != "due" || candidates[0].AttemptCount != 3 {
+		t.Fatalf("candidates = %+v, want due with attempt_count=3", candidates)
+	}
+	count, err := st.CountChunksNeedingEmbeddingAt(ctx, "profile-a", now)
+	if err != nil || count != 1 {
+		t.Fatalf("candidate count=%d err=%v", count, err)
+	}
+	status, err := st.RetrievalStatusAt(ctx, "profile-a", now)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.FailedEmbeddings != 2 || status.EmbeddingCandidates != 1 {
+		t.Fatalf("status = %+v, want failed=2 candidates=1", status)
 	}
 }
 

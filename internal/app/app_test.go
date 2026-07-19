@@ -29,6 +29,7 @@ import (
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
+	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
@@ -186,7 +187,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "install", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
+	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "install", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "semantic", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -195,6 +196,115 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
+	}
+}
+
+func TestSemanticStatusJSONHasExplicitStateAndNonNullSlices(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := runRootCommand(t, root, "semantic", "status", "--json")
+	if strings.Contains(stdout, `"problems": null`) || strings.Contains(stdout, `"next_steps": null`) {
+		t.Fatalf("semantic status emitted null slices: %s", stdout)
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if payload.Status != "not_configured" {
+		t.Fatalf("status=%q output=%s", payload.Status, stdout)
+	}
+}
+
+func TestSemanticStatusNotConfiguredDoesNotRequireDatabase(t *testing.T) {
+	root := t.TempDir()
+	stdout := runRootCommand(t, root, "semantic", "status", "--json")
+	var payload struct {
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != "not_configured" || payload.Mode != "off" {
+		t.Fatalf("payload=%+v output=%s", payload, stdout)
+	}
+}
+
+func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
+	for _, args := range [][]string{
+		{"semantic", "chunk", "--limit", "0", "--json"},
+		{"semantic", "embed", "--limit", "0", "--json"},
+		{"semantic", "embed", "--batch-size", "0", "--json"},
+	} {
+		stdout, _, err := runRootCommandErr(t, t.TempDir(), args...)
+		if err == nil {
+			t.Fatalf("%v unexpectedly succeeded", args)
+		}
+		if stdout != "" {
+			t.Fatalf("%v mixed output with error: %q", args, stdout)
+		}
+	}
+}
+
+func TestSemanticChunkHelpIncludesResumeCursor(t *testing.T) {
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"semantic", "chunk", "--help"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "--after-source-key") {
+		t.Fatalf("help=%s", stdout.String())
+	}
+}
+
+func TestSemanticChunkOutputIncludesResumeState(t *testing.T) {
+	progress := semanticbuild.ChunkProgress{
+		Progress:           semanticbuild.Progress{Stage: "chunk", Snapshots: make([]semanticbuild.Progress, 0)},
+		NextAfterSourceKey: "item:one",
+		HasMore:            true,
+	}
+	var human bytes.Buffer
+	if err := writeSemanticChunkProgress(&human, progress); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Next after source key: item:one", "Has more: true"} {
+		if !strings.Contains(human.String(), want) {
+			t.Fatalf("human output missing %q: %s", want, human.String())
+		}
+	}
+	var machine bytes.Buffer
+	if err := writeJSON(&machine, progress); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		NextAfterSourceKey string                   `json:"next_after_source_key"`
+		HasMore            bool                     `json:"has_more"`
+		Snapshots          []semanticbuild.Progress `json:"snapshots"`
+	}
+	if err := json.Unmarshal(machine.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.NextAfterSourceKey != "item:one" || !payload.HasMore || payload.Snapshots == nil {
+		t.Fatalf("JSON resume state=%+v output=%s", payload, machine.String())
 	}
 }
 

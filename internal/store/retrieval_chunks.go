@@ -14,6 +14,7 @@ import (
 type ChunkReplaceResult struct {
 	Created int `json:"created"`
 	Reused  int `json:"reused"`
+	Updated int `json:"updated"`
 	Deleted int `json:"deleted"`
 }
 
@@ -31,6 +32,9 @@ type RetrievalChunkRow struct {
 	InputContentHash string
 	ChunkTextHash    string
 	Text             string
+	// AttemptCount is populated by embedding candidate selectors. Ordinary
+	// chunk reads leave it zero.
+	AttemptCount int
 }
 
 func (s *Store) RetrievalAvailable(ctx context.Context) (bool, error) {
@@ -71,21 +75,23 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	existing := make(map[string]string)
+	existing := make(map[string]RetrievalChunkRow)
 	rows, err := tx.QueryContext(ctx, `
-		SELECT chunk_id, chunk_text_hash
+		SELECT chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
+			ordinal, start_char, end_char, heading, chunker_version,
+			input_content_hash, chunk_text_hash, text
 		FROM retrieval_chunks
 		WHERE parent_kind = ? AND parent_source_key = ?`, parentKind, parentSourceKey)
 	if err != nil {
 		return ChunkReplaceResult{}, fmt.Errorf("list existing retrieval chunks: %w", err)
 	}
 	for rows.Next() {
-		var id, textHash string
-		if err := rows.Scan(&id, &textHash); err != nil {
+		row, err := scanRetrievalChunk(rows)
+		if err != nil {
 			_ = rows.Close()
 			return ChunkReplaceResult{}, fmt.Errorf("scan existing retrieval chunk: %w", err)
 		}
-		existing[id] = textHash
+		existing[row.ChunkID] = row
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -139,9 +145,12 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, chunk := range chunks {
-		oldHash, existed := existing[chunk.ID]
-		if existed && oldHash == chunk.TextHash {
+		old, existed := existing[chunk.ID]
+		if existed && retrievalChunkMatches(old, chunk) {
 			result.Reused++
+			continue
+		} else if existed && old.ChunkTextHash == chunk.TextHash {
+			result.Updated++
 		} else {
 			result.Created++
 		}
@@ -178,7 +187,7 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 		if affected != 1 {
 			return ChunkReplaceResult{}, fmt.Errorf("retrieval chunk ID %q already belongs to another parent", chunk.ID)
 		}
-		if existed && oldHash != chunk.TextHash {
+		if existed && old.ChunkTextHash != chunk.TextHash {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_embeddings WHERE chunk_id = ?`, chunk.ID); err != nil {
 				return ChunkReplaceResult{}, fmt.Errorf("invalidate changed retrieval chunk %s embeddings: %w", chunk.ID, err)
 			}
@@ -188,6 +197,22 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 		return ChunkReplaceResult{}, fmt.Errorf("commit retrieval chunk replacement: %w", err)
 	}
 	return result, nil
+}
+
+func retrievalChunkMatches(old RetrievalChunkRow, chunk retrievalchunk.Chunk) bool {
+	return old.ChunkID == chunk.ID &&
+		old.ParentKind == chunk.ParentKind &&
+		old.ParentSourceKey == chunk.ParentSourceKey &&
+		old.EvidenceRole == chunk.EvidenceRole &&
+		old.SectionOrdinal == chunk.SectionOrdinal &&
+		old.Ordinal == chunk.Ordinal &&
+		old.StartChar == chunk.StartChar &&
+		old.EndChar == chunk.EndChar &&
+		old.Heading == chunk.Heading &&
+		old.ChunkerVersion == chunk.ChunkerVersion &&
+		old.InputContentHash == chunk.InputContentHash &&
+		old.ChunkTextHash == chunk.TextHash &&
+		old.Text == chunk.Text
 }
 
 func (s *Store) GetRetrievalChunk(ctx context.Context, chunkID string) (RetrievalChunkRow, error) {
