@@ -8,10 +8,216 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/entities"
+	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
 	"github.com/darron/dbrain/internal/summaryconfig"
 )
+
+type pooledSearchResult struct {
+	result model.SearchResult
+	legacy bool
+}
+
+// RunCandidatePool returns the exact legacy bounded retrieval and a deeper
+// fusion pool from one set of lexical item/source/tag searches. It is
+// retrieve-only; each output applies its own limit and related-selection policy.
+func RunCandidatePool(ctx context.Context, cfg config.Config, st *store.Store, question string, opts Options, deepLimit int) (Response, Response, error) {
+	question = strings.TrimSpace(question)
+	if question == "" {
+		return Response{}, Response{}, fmt.Errorf("question cannot be empty")
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 8
+	}
+	if opts.MaxCharsPerDoc <= 0 {
+		opts.MaxCharsPerDoc = defaultMaxCharsPerDoc
+	}
+	if opts.RelatedLimit < 0 {
+		opts.RelatedLimit = 0
+	}
+	if deepLimit < opts.Limit {
+		deepLimit = opts.Limit
+	}
+	hints := Hints(question)
+	searchQuestion := SearchText(question)
+	if searchQuestion == "" {
+		searchQuestion = question
+	}
+	legacySearchLimit := opts.SearchLimit
+	if legacySearchLimit <= 0 {
+		legacySearchLimit = opts.Limit * 4
+	}
+	if legacySearchLimit < opts.Limit {
+		legacySearchLimit = opts.Limit
+	}
+	if legacySearchLimit < 12 {
+		legacySearchLimit = 12
+	}
+	deepSearchLimit := legacySearchLimit
+	if deepLimit > opts.Limit {
+		deepSearchLimit = maxInt(legacySearchLimit, maxInt(deepLimit*2, 12))
+	}
+	pooled := make([]pooledSearchResult, 0)
+	appendResults := func(results []model.SearchResult) {
+		for i, result := range results {
+			pooled = append(pooled, pooledSearchResult{result: result, legacy: i < legacySearchLimit})
+		}
+	}
+	results, err := st.Search(ctx, hints.TextQuery, deepSearchLimit)
+	if err != nil {
+		return Response{}, Response{}, err
+	}
+	appendResults(results)
+	results, err = st.SearchSources(ctx, hints.TextQuery, deepSearchLimit)
+	if err != nil {
+		return Response{}, Response{}, err
+	}
+	appendResults(results)
+	if !opts.DisableTagExpansion {
+		for _, tagQuery := range hints.TagQueries {
+			results, err = st.SearchUserTags(ctx, tagQuery, deepSearchLimit)
+			if err != nil {
+				return Response{}, Response{}, err
+			}
+			appendResults(results)
+			results, err = st.SearchExactUserTag(ctx, tagQuery, deepSearchLimit)
+			if err != nil {
+				return Response{}, Response{}, err
+			}
+			appendResults(results)
+		}
+	}
+	legacyEntities, deepEntities := map[string]entityMatch(nil), map[string]entityMatch(nil)
+	if !opts.DisableEntityExpansion {
+		index := opts.EntityIndex
+		if index == nil {
+			index, err = entities.BuildIndex(ctx, st)
+			if err != nil {
+				return Response{}, Response{}, err
+			}
+		}
+		legacyEntities = buildEntityMatchIndex(index, searchQuestion, hints.Terms, maxInt(opts.Limit*3, 12))
+		deepEntities = buildEntityMatchIndex(index, searchQuestion, hints.Terms, maxInt(deepLimit*3, 12))
+	}
+	legacyCandidates := make([]evidenceCandidate, 0)
+	deepCandidates := make([]evidenceCandidate, 0)
+	legacySeen, deepSeen := map[string]struct{}{}, map[string]struct{}{}
+	var deepBuildErr error
+	for _, entry := range pooled {
+		base, ok, buildErr := buildEvidence(ctx, cfg, st, entry.result, opts.MaxCharsPerDoc, hints.Terms)
+		if buildErr != nil {
+			if entry.legacy {
+				return Response{}, Response{}, buildErr
+			}
+			if deepBuildErr == nil {
+				deepBuildErr = buildErr
+			}
+			continue
+		}
+		if !ok || !matchesSourceTypes(opts.SourceTypes, base.SourceType) {
+			continue
+		}
+		if _, exists := deepSeen[base.SourceKey]; !exists {
+			deepSeen[base.SourceKey] = struct{}{}
+			candidate := base
+			scoreCandidate(&candidate, searchQuestion, hints.Terms)
+			addRetrievalLane(&candidate, RetrievalLane{Name: "lexical", Status: "used"})
+			applyEntityMatches(&candidate, deepEntities)
+			deepCandidates = append(deepCandidates, candidate)
+		}
+		if entry.legacy {
+			if _, exists := legacySeen[base.SourceKey]; !exists {
+				legacySeen[base.SourceKey] = struct{}{}
+				candidate := base
+				scoreCandidate(&candidate, searchQuestion, hints.Terms)
+				addRetrievalLane(&candidate, RetrievalLane{Name: "lexical", Status: "used"})
+				applyEntityMatches(&candidate, legacyEntities)
+				legacyCandidates = append(legacyCandidates, candidate)
+			}
+		}
+	}
+	legacyOpts := opts
+	deepOpts := opts
+	deepOpts.Limit = deepLimit
+	legacyExtra, err := collectEntityCandidates(ctx, cfg, st, legacyOpts, searchQuestion, hints.Terms, legacyEntities, legacySeen)
+	if err != nil {
+		return Response{}, Response{}, err
+	}
+	legacyCandidates = append(legacyCandidates, legacyExtra...)
+	rankCandidates(legacyCandidates)
+	legacy, err := selectCandidateResponse(ctx, cfg, st, question, hints.Terms, legacyOpts, legacyCandidates, legacyEntities)
+	if err != nil {
+		return Response{}, Response{}, err
+	}
+	if deepLimit == opts.Limit {
+		return legacy, legacy, nil
+	}
+	if deepBuildErr != nil {
+		return legacy, Response{}, deepBuildErr
+	}
+	deepExtra, err := collectEntityCandidates(ctx, cfg, st, deepOpts, searchQuestion, hints.Terms, deepEntities, deepSeen)
+	if err != nil {
+		return legacy, Response{}, err
+	}
+	deepCandidates = append(deepCandidates, deepExtra...)
+	rankCandidates(deepCandidates)
+	deep, err := selectCandidateResponse(ctx, cfg, st, question, hints.Terms, deepOpts, deepCandidates, deepEntities)
+	if err != nil {
+		return legacy, Response{}, err
+	}
+	return legacy, deep, nil
+}
+
+func selectCandidateResponse(ctx context.Context, cfg config.Config, st *store.Store, question string, terms []string, opts Options, candidates []evidenceCandidate, entityMatches map[string]entityMatch) (Response, error) {
+	response := Response{Question: question, Evidence: make([]Evidence, 0, opts.Limit)}
+	selected := make([]evidenceCandidate, 0, opts.Limit)
+	relatedTarget := 0
+	if opts.IncludeRelated {
+		relatedTarget = opts.RelatedLimit
+		if relatedTarget == 0 {
+			relatedTarget = 2
+		}
+		if relatedTarget >= opts.Limit {
+			relatedTarget = opts.Limit - 1
+		}
+	}
+	primaryTarget := opts.Limit - relatedTarget
+	if primaryTarget <= 0 {
+		primaryTarget = opts.Limit
+	}
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		if len(selected) >= primaryTarget {
+			break
+		}
+		if _, ok := seen[candidate.SourceKey]; ok {
+			continue
+		}
+		seen[candidate.SourceKey] = struct{}{}
+		selected = append(selected, candidate)
+	}
+	if opts.IncludeRelated && len(selected) > 0 && len(selected) < opts.Limit {
+		related, err := collectRelatedEvidence(ctx, cfg, st, selected, question, terms, opts, seen, entityMatches)
+		if err != nil {
+			return Response{}, err
+		}
+		for _, candidate := range related {
+			if len(selected) >= opts.Limit {
+				break
+			}
+			if _, ok := seen[candidate.SourceKey]; ok {
+				continue
+			}
+			seen[candidate.SourceKey] = struct{}{}
+			selected = append(selected, candidate)
+		}
+	}
+	for _, candidate := range selected {
+		response.Evidence = append(response.Evidence, candidate.Evidence)
+	}
+	return response, nil
+}
 
 func Run(ctx context.Context, cfg config.Config, st *store.Store, question string, opts Options) (Response, error) {
 	opts.Model = summaryconfig.Model(cfg.RootDir, opts.Model)
@@ -38,7 +244,6 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, question strin
 	if opts.RelatedLimit < 0 {
 		opts.RelatedLimit = 0
 	}
-
 	hints := Hints(question)
 	searchTerms := hints.Terms
 	searchLimit := opts.SearchLimit

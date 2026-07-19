@@ -36,7 +36,8 @@ func InspectEvidence(ctx context.Context, cfg config.Config, st *store.Store, ro
 	}
 	if row.Kind != "source" && !isSourceDocumentKey(key) {
 		if item, err := st.GetItem(ctx, key); err == nil {
-			return evidenceFromItem(cfg, item, result, maxChars, terms).Evidence, nil
+			hydrated := evidenceFromItem(cfg, item, result, maxChars, terms).Evidence
+			return preserveSemanticSelection(hydrated, row), nil
 		}
 	}
 	source, err := st.GetSourceEvidence(ctx, key)
@@ -46,5 +47,41 @@ func InspectEvidence(ctx context.Context, cfg config.Config, st *store.Store, ro
 	if extracted, extractErr := st.GetSourceExtractedText(ctx, key); extractErr == nil {
 		source.ExtractedText = extracted
 	}
-	return evidenceFromSource(cfg, source, result, maxChars, terms).Evidence, nil
+	hydrated := evidenceFromSource(cfg, source, result, maxChars, terms).Evidence
+	return preserveSemanticSelection(hydrated, row), nil
+}
+
+func preserveSemanticSelection(hydrated, original Evidence) Evidence {
+	if original.Chunk == nil || strings.TrimSpace(original.Chunk.ID) == "" || !hasRetrievalLane(original, "semantic") {
+		return hydrated
+	}
+	hydrated.Excerpt, hydrated.EvidenceRole = original.Excerpt, original.EvidenceRole
+	chunk := *original.Chunk
+	chunk.ContributingIDs = append([]string(nil), original.Chunk.ContributingIDs...)
+	hydrated.Chunk = &chunk
+	if original.Retrieval != nil {
+		info := *original.Retrieval
+		info.Lanes = append([]RetrievalLane(nil), original.Retrieval.Lanes...)
+		info.Signals = append([]RetrievalSignal(nil), original.Retrieval.Signals...)
+		info.MatchedTerms = append([]string(nil), original.Retrieval.MatchedTerms...)
+		info.MissingTerms = append([]string(nil), original.Retrieval.MissingTerms...)
+		if info.FusedScore != nil {
+			v := *info.FusedScore
+			info.FusedScore = &v
+		}
+		hydrated.Retrieval = &info
+	}
+	return hydrated
+}
+
+func hasRetrievalLane(row Evidence, name string) bool {
+	if row.Retrieval == nil {
+		return false
+	}
+	for _, lane := range row.Retrieval.Lanes {
+		if strings.EqualFold(strings.TrimSpace(lane.Name), name) {
+			return true
+		}
+	}
+	return false
 }

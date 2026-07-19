@@ -22,16 +22,16 @@ type MergeRetryDecision struct {
 
 func MergeRetryPack(initial Pack, retry Pack, opts MergeRetryOptions) (Pack, MergeRetryDecision) {
 	decision := MergeRetryDecision{
-		PreservedInitialSourceKeys: evidenceSourceKeys(initial.Evidence),
+		PreservedInitialSourceKeys: uniqueEvidenceSourceKeys(initial.Evidence),
 		Reason:                     "merged retry evidence into initial pack",
 	}
 	acceptedRetry := make([]ask.Evidence, 0, len(retry.Evidence))
-	seenInitial := evidenceSourceKeySet(initial.Evidence)
+	seenInitial := evidenceIdentitySet(initial.Evidence)
 	for _, row := range retry.Evidence {
 		if strings.TrimSpace(row.SourceKey) == "" {
 			continue
 		}
-		if _, exists := seenInitial[row.SourceKey]; exists {
+		if _, exists := seenInitial[evidenceIdentity(row)]; exists {
 			continue
 		}
 		if retryRowAccepted(initial, row, opts) {
@@ -48,10 +48,12 @@ func MergeRetryPack(initial Pack, retry Pack, opts MergeRetryOptions) (Pack, Mer
 	} else {
 		merged.Evidence = mergeEvidenceRows(initial.Evidence, acceptedRetry)
 	}
-	merged.ExactTagEvidence = mergeEvidenceRows(initial.ExactTagEvidence, retry.ExactTagEvidence)
+	merged.ExactTagEvidence = mergeEvidenceRowsBySource(initial.ExactTagEvidence, retry.ExactTagEvidence)
 	merged.Coverage = mergeCoverage(buildCoverage(merged.Evidence), initial.Coverage)
 	merged.Coverage.RecallNote = recallNote(merged.Coverage)
-	decision.FinalSourceKeys = evidenceSourceKeys(merged.Evidence)
+	decision.AcceptedRetrySourceKeys = uniqueStrings(decision.AcceptedRetrySourceKeys)
+	decision.RejectedRetrySourceKeys = uniqueStrings(decision.RejectedRetrySourceKeys)
+	decision.FinalSourceKeys = uniqueEvidenceSourceKeys(merged.Evidence)
 	return merged, decision
 }
 
@@ -140,7 +142,7 @@ func mergeEvidenceRows(first []ask.Evidence, second []ask.Evidence) []ask.Eviden
 	seen := map[string]struct{}{}
 	appendRows := func(rows []ask.Evidence) {
 		for _, row := range rows {
-			key := strings.TrimSpace(row.SourceKey)
+			key := evidenceIdentity(row)
 			if key == "" {
 				// Research evidence must be citeable by source_key; unciteable rows are not carried into synthesized packs.
 				continue
@@ -157,13 +159,59 @@ func mergeEvidenceRows(first []ask.Evidence, second []ask.Evidence) []ask.Eviden
 	return out
 }
 
-func evidenceSourceKeySet(rows []ask.Evidence) map[string]struct{} {
+func evidenceIdentity(row ask.Evidence) string {
+	if row.Chunk != nil && strings.TrimSpace(row.Chunk.ID) != "" {
+		return "chunk:" + strings.TrimSpace(row.Chunk.ID)
+	}
+	key := strings.TrimSpace(row.SourceKey)
+	if key == "" {
+		return ""
+	}
+	return "source:" + key
+}
+func evidenceIdentitySet(rows []ask.Evidence) map[string]struct{} {
 	out := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
-		if strings.TrimSpace(row.SourceKey) == "" {
+		if key := evidenceIdentity(row); key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	return out
+}
+func mergeEvidenceRowsBySource(first, second []ask.Evidence) []ask.Evidence {
+	out := make([]ask.Evidence, 0, len(first)+len(second))
+	seen := map[string]struct{}{}
+	for _, rows := range [][]ask.Evidence{first, second} {
+		for _, row := range rows {
+			key := strings.TrimSpace(row.SourceKey)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, row)
+		}
+	}
+	return out
+}
+func uniqueEvidenceSourceKeys(rows []ask.Evidence) []string {
+	out := make([]string, 0, len(rows))
+	seen := map[string]struct{}{}
+	for _, row := range rows {
+		key := strings.TrimSpace(row.SourceKey)
+		if row.Chunk != nil && strings.TrimSpace(row.Chunk.ParentSourceKey) != "" {
+			key = strings.TrimSpace(row.Chunk.ParentSourceKey)
+		}
+		if key == "" {
 			continue
 		}
-		out[row.SourceKey] = struct{}{}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
 	}
 	return out
 }

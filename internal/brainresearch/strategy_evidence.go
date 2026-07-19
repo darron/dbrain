@@ -2,12 +2,14 @@ package brainresearch
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/entities"
 	"github.com/darron/dbrain/internal/researchhybrid"
+	"github.com/darron/dbrain/internal/semanticindex"
 )
 
 const exactTagPrimaryBoost = 64
@@ -25,14 +27,21 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 	}
 
 	seen := map[string]scoredResearchEvidence{}
+	baselineSeen := map[string]scoredResearchEvidence{}
 	order := 0
-	perVariantLimit := max(limit, 8)
+	baselineOrder := 0
+	legacyPerVariantLimit := max(limit, 8)
+	perVariantLimit := legacyPerVariantLimit
+	semanticSourceTypes, semanticFiltersCompatible := intersectSemanticSourceTypes(b.semanticOptions.Filters.AllowedSourceTypes, opts.SourceTypes)
+	semanticActive := opts.UseSemantic && !opts.DisableSemantic && b.semanticRetriever != nil && semanticFiltersCompatible
+	deepResponses := make([]ask.Response, len(variants))
+	poolFailed := false
 	entityIndex, err := entities.BuildIndex(ctx, b.st)
 	if err != nil {
 		return nil, err
 	}
-	for _, variant := range variants {
-		resp, err := ask.Run(ctx, b.cfg, b.st, variant.Query, ask.Options{
+	for variantIndex, variant := range variants {
+		runOpts := ask.Options{
 			Limit:               perVariantLimit,
 			RetrieveOnly:        true,
 			SourceTypes:         opts.SourceTypes,
@@ -42,7 +51,22 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 			SearchLimit:         max(perVariantLimit*2, 12),
 			EntityIndex:         entityIndex,
 			DisableTagExpansion: true,
-		})
+		}
+		var resp ask.Response
+		if semanticActive {
+			var deep ask.Response
+			resp, deep, err = b.runStrategyPool(ctx, variant.Query, runOpts, max(legacyPerVariantLimit, researchhybrid.DefaultLexicalDepth))
+			if err == nil {
+				deepResponses[variantIndex] = deep
+			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+				return nil, err
+			} else {
+				poolFailed = true
+				resp, err = b.runStrategyEvidence(ctx, variant.Query, runOpts)
+			}
+		} else {
+			resp, err = b.runStrategyEvidence(ctx, variant.Query, runOpts)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -57,6 +81,9 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 				continue
 			}
 			scored := scoreEvidenceWithResearchStrategy(doc, strategy, variant, rank)
+			if rank < legacyPerVariantLimit {
+				updateScoredEvidence(baselineSeen, scored, &baselineOrder)
+			}
 			current, exists := seen[doc.SourceKey]
 			if exists {
 				emitEvent(opts.Observer, "evidence_deduped", map[string]interface{}{
@@ -79,7 +106,7 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		}
 	}
 
-	exactTagDocs, err := b.buildExactTagCandidates(ctx, hints.TagQueries, opts.SourceTypes, maxChars, hints.Terms, max(perVariantLimit*4, 64))
+	exactTagDocs, err := b.buildExactTagCandidates(ctx, hints.TagQueries, opts.SourceTypes, maxChars, hints.Terms, max(legacyPerVariantLimit*4, 64))
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +116,7 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		}
 		boostExactTagPrimaryCandidate(&doc)
 		scored := scoreEvidenceWithResearchStrategy(doc, strategy, QueryVariant{Query: "tag:" + exactTagQueryForDoc(doc), Reason: "exact_tag"}, rank)
+		updateExactScoredEvidence(baselineSeen, scored, &baselineOrder)
 		current, exists := seen[doc.SourceKey]
 		if exists {
 			emitEvent(opts.Observer, "evidence_deduped", map[string]interface{}{
@@ -119,6 +147,98 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		})
 	}
 
+	baseline := orderedScoredEvidence(baselineSeen, anchors)
+	if len(baseline) > limit {
+		baseline = baseline[:limit]
+	}
+	out := make([]ask.Evidence, 0, len(baseline))
+	for _, scored := range baseline {
+		out = append(out, scored.doc)
+	}
+	if !opts.UseSemantic || opts.DisableSemantic || b.semanticRetriever == nil || !semanticFiltersCompatible {
+		return out, nil
+	}
+	if poolFailed {
+		return out, nil
+	}
+	query := canonicalSemanticQuery(strategy, hints, opts.Question)
+	semanticOpts := b.semanticOptions
+	semanticOpts.Filters.AllowedSourceTypes = semanticSourceTypes
+	semanticRows, status, semanticErr := b.semanticRetriever.Retrieve(ctx, query, semanticOpts)
+	if semanticErr != nil {
+		if errors.Is(semanticErr, context.Canceled) || errors.Is(semanticErr, context.DeadlineExceeded) || ctx.Err() != nil {
+			return nil, semanticErr
+		}
+		return out, nil
+	}
+	if status.State != semanticindex.StateSearched || len(semanticRows) == 0 {
+		return out, nil
+	}
+	deepSeen := map[string]scoredResearchEvidence{}
+	deepOrder := 0
+	for variantIndex, variant := range variants {
+		resp := deepResponses[variantIndex]
+		for rank, doc := range resp.Evidence {
+			if strings.TrimSpace(doc.SourceKey) == "" {
+				continue
+			}
+			updateScoredEvidence(deepSeen, scoreEvidenceWithResearchStrategy(doc, strategy, variant, rank), &deepOrder)
+		}
+	}
+	for rank, doc := range exactTagDocs {
+		if strings.TrimSpace(doc.SourceKey) == "" {
+			continue
+		}
+		boostExactTagPrimaryCandidate(&doc)
+		updateExactScoredEvidence(deepSeen, scoreEvidenceWithResearchStrategy(doc, strategy, QueryVariant{Query: "tag:" + exactTagQueryForDoc(doc), Reason: "exact_tag"}, rank), &deepOrder)
+	}
+	ordered := orderedScoredEvidence(deepSeen, anchors)
+	lexical := make([]ask.Evidence, 0, len(ordered))
+	for _, scored := range ordered {
+		lexical = append(lexical, scored.doc)
+	}
+	protected := protectedSourceKeys(lexical, semanticRows, anchors)
+	return researchhybrid.Fuse(lexical, semanticRows, limit, maxChars, protected), nil
+}
+
+func updateScoredEvidence(seen map[string]scoredResearchEvidence, scored scoredResearchEvidence, order *int) {
+	key := strings.TrimSpace(scored.doc.SourceKey)
+	if key == "" {
+		return
+	}
+	current, exists := seen[key]
+	if !exists || scored.score > current.score {
+		if exists {
+			scored.order = current.order
+		} else {
+			scored.order = *order
+			*order++
+		}
+		seen[key] = scored
+	}
+}
+func updateExactScoredEvidence(seen map[string]scoredResearchEvidence, scored scoredResearchEvidence, order *int) {
+	key := strings.TrimSpace(scored.doc.SourceKey)
+	if key == "" {
+		return
+	}
+	current, exists := seen[key]
+	if !exists {
+		scored.order = *order
+		*order++
+		seen[key] = scored
+		return
+	}
+	current.doc = mergeEvidenceRetrieval(current.doc, scored.doc)
+	if scored.score > current.score {
+		current.score = scored.score
+		if current.doc.Retrieval != nil {
+			current.doc.Retrieval.Score = scored.score
+		}
+	}
+	seen[key] = current
+}
+func orderedScoredEvidence(seen map[string]scoredResearchEvidence, anchors []ProtectedAnchor) []scoredResearchEvidence {
 	ordered := make([]scoredResearchEvidence, 0, len(seen))
 	for _, doc := range seen {
 		ordered = append(ordered, doc)
@@ -129,15 +249,150 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		}
 		return ordered[i].order < ordered[j].order
 	})
-	ordered = filterToProtectedAnchorEvidenceWhenAvailable(ordered, anchors)
-	if len(ordered) > limit {
-		ordered = ordered[:limit]
+	return filterToProtectedAnchorEvidenceWhenAvailable(ordered, anchors)
+}
+
+func canonicalSemanticQuery(strategy researchStrategy, hints ask.QueryHints, question string) string {
+	if value := preferredSemanticConceptQuery(strategy.Concepts); value != "" {
+		return value
 	}
-	out := make([]ask.Evidence, 0, len(ordered))
-	for _, scored := range ordered {
-		out = append(out, scored.doc)
+	if value := strings.Join(strings.Fields(hints.TextQuery), " "); value != "" {
+		return value
 	}
-	return out, nil
+	return strings.Join(strings.Fields(question), " ")
+}
+
+func preferredSemanticConceptQuery(concepts []QueryConcept) string {
+	values := make([]string, 0, len(concepts))
+	seen := map[string]struct{}{}
+	for _, concept := range concepts {
+		role := strings.ToLower(strings.TrimSpace(concept.Role))
+		if role != conceptRoleAnchor && role != conceptRoleContent {
+			continue
+		}
+		value := strings.TrimSpace(concept.Preferred)
+		if value == "" {
+			for _, term := range concept.Terms {
+				value = strings.TrimSpace(term)
+				if value != "" {
+					break
+				}
+			}
+		}
+		if value == "" {
+			value = strings.TrimSpace(concept.Key)
+		}
+		key := strings.ToLower(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		values = append(values, value)
+	}
+	return strings.Join(values, " ")
+}
+
+func (b *Builder) runStrategyEvidence(ctx context.Context, query string, opts ask.Options) (ask.Response, error) {
+	if b.strategyRunner != nil {
+		return b.strategyRunner(ctx, query, opts)
+	}
+	return ask.Run(ctx, b.cfg, b.st, query, opts)
+}
+func (b *Builder) runStrategyPool(ctx context.Context, query string, opts ask.Options, deepLimit int) (ask.Response, ask.Response, error) {
+	if b.strategyPoolRunner != nil {
+		return b.strategyPoolRunner(ctx, query, opts, deepLimit)
+	}
+	return ask.RunCandidatePool(ctx, b.cfg, b.st, query, opts, deepLimit)
+}
+
+func intersectSemanticSourceTypes(configured, requested []string) ([]string, bool) {
+	configured = cleanSemanticSourceTypes(configured)
+	requested = cleanSemanticSourceTypes(requested)
+	if len(configured) == 0 {
+		return requested, true
+	}
+	if len(requested) == 0 {
+		return configured, true
+	}
+	out := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, cfg := range configured {
+		for _, req := range requested {
+			value, ok := semanticSourceTypeIntersection(cfg, req)
+			if !ok {
+				continue
+			}
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+func cleanSemanticSourceTypes(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+func semanticSourceTypeIntersection(a, b string) (string, bool) {
+	if a == b {
+		return a, true
+	}
+	af, bf := sourceTypeFamily(a), sourceTypeFamily(b)
+	if a == bf {
+		return b, true
+	}
+	if b == af {
+		return a, true
+	}
+	return "", false
+}
+func protectedSourceKeys(lexical, semantic []ask.Evidence, anchors []ProtectedAnchor) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, row := range append(append([]ask.Evidence(nil), lexical...), semantic...) {
+		protect := EvidenceMatchesAnyProtectedAnchor(row, anchors)
+		if row.Retrieval != nil {
+			for _, lane := range row.Retrieval.Lanes {
+				if strings.EqualFold(lane.Name, researchhybrid.LaneExactTag) {
+					protect = true
+				}
+			}
+			for _, signal := range row.Retrieval.Signals {
+				if strings.Contains(strings.ToLower(signal.Name), "exact") || strings.Contains(strings.ToLower(signal.Name), "protected") {
+					protect = true
+				}
+			}
+		}
+		if protect {
+			key := strings.TrimSpace(row.SourceKey)
+			if row.Chunk != nil && strings.TrimSpace(row.Chunk.ParentSourceKey) != "" {
+				key = strings.TrimSpace(row.Chunk.ParentSourceKey)
+			}
+			if key != "" {
+				out[key] = struct{}{}
+			}
+		}
+	}
+	return out
 }
 
 func filterToProtectedAnchorEvidenceWhenAvailable(ordered []scoredResearchEvidence, anchors []ProtectedAnchor) []scoredResearchEvidence {

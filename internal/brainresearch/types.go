@@ -6,7 +6,9 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/researchsemantic"
 	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
 )
@@ -18,8 +20,30 @@ const (
 )
 
 type Builder struct {
-	cfg config.Config
-	st  *store.Store
+	cfg                config.Config
+	st                 *store.Store
+	semanticRetriever  SemanticRetriever
+	semanticOptions    researchsemantic.Options
+	strategyRunner     func(context.Context, string, ask.Options) (ask.Response, error)
+	strategyPoolRunner func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error)
+}
+
+type SemanticRetriever interface {
+	Retrieve(context.Context, string, researchsemantic.Options) ([]retrieval.EvidenceDocument, semanticindex.Status, error)
+}
+
+// WithSemanticRetriever returns the builder with an explicitly injected local
+// semantic lane. New and top-level Build remain lexical unless callers opt in.
+func (b *Builder) WithSemanticRetriever(retriever SemanticRetriever, opts researchsemantic.Options) *Builder {
+	if b == nil {
+		return b
+	}
+	opts.Filters.AllowedParentKeys = append([]string(nil), opts.Filters.AllowedParentKeys...)
+	opts.Filters.AllowedParentKinds = append([]string(nil), opts.Filters.AllowedParentKinds...)
+	opts.Filters.AllowedEvidenceRoles = append([]string(nil), opts.Filters.AllowedEvidenceRoles...)
+	opts.Filters.AllowedSourceTypes = append([]string(nil), opts.Filters.AllowedSourceTypes...)
+	b.semanticRetriever, b.semanticOptions = retriever, opts
+	return b
 }
 
 type Options struct {

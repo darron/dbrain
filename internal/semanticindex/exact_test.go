@@ -76,6 +76,45 @@ func TestExactSearchFiltersBeforeTopK(t *testing.T) {
 	}
 }
 
+func TestExactSearchFiltersSourceTypeBeforeTopKAndCarriesMetadata(t *testing.T) {
+	disallowed := readyRow("disallowed", "profile", []float32{1, 0}, "item", "blocked-parent", "raw")
+	disallowed.SourceType = "x_bookmark"
+	allowed := readyRow("allowed", "profile", []float32{0.6, 0.8}, "source", "allowed-parent", "summary")
+	allowed.SourceType, allowed.SectionOrdinal = "article", 4
+	st := &fakeReadyStore{rows: []store.RetrievalEmbeddingRow{disallowed, allowed}}
+	hits, status, err := NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{
+		ProfileID: "profile", Dimensions: 2, Limit: 1, MaxChunks: 10,
+		Filters: Filters{AllowedSourceTypes: []string{" ARTICLE "}},
+	})
+	if err != nil || status.State != StateSearched {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	if len(hits) != 1 || hits[0].ChunkID != "allowed" || hits[0].SourceType != "article" || hits[0].SectionOrdinal != 4 {
+		t.Fatalf("hits=%+v", hits)
+	}
+}
+
+func TestExactSearchSourceTypeFamilyFilter(t *testing.T) {
+	x := readyRow("x", "profile", []float32{1, 0}, "item", "x", "raw")
+	x.SourceType = "x_bookmark"
+	article := readyRow("article", "profile", []float32{0, 1}, "source", "article", "raw")
+	article.SourceType = "article"
+	hits, status, err := NewExact(&fakeReadyStore{rows: []store.RetrievalEmbeddingRow{x, article}}).Search(context.Background(), []float32{1, 0}, SearchOptions{ProfileID: "profile", Dimensions: 2, Limit: 2, MaxChunks: 10, Filters: Filters{AllowedSourceTypes: []string{"x"}}})
+	if err != nil || status.State != StateSearched || len(hits) != 1 || hits[0].ChunkID != "x" {
+		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
+	}
+}
+
+func TestExactSearchCorruptRowFailsClosedWithoutPartialHits(t *testing.T) {
+	healthy := readyRow("healthy", "profile", []float32{1, 0}, "item", "healthy", "raw")
+	corrupt := readyRow("corrupt", "profile", []float32{0, 1}, "item", "corrupt", "raw")
+	corrupt.VectorBytes = []byte{1}
+	hits, status, err := NewExact(&fakeReadyStore{rows: []store.RetrievalEmbeddingRow{healthy, corrupt}}).Search(context.Background(), []float32{1, 0}, SearchOptions{ProfileID: "profile", Dimensions: 2, Limit: 5, MaxChunks: 10})
+	if err != nil || status.Reason != ReasonIndexCorrupt || hits == nil || len(hits) != 0 {
+		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
+	}
+}
+
 func TestExactSearchEnforcesCapAtExactBoundary(t *testing.T) {
 	rows := []store.RetrievalEmbeddingRow{
 		readyRow("a", "profile", []float32{1, 0}, "item", "a", "raw"),

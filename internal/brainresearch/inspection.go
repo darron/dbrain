@@ -8,6 +8,7 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/researchhybrid"
 	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -65,6 +66,9 @@ type inspectedEvidence struct {
 // the window retain their original order.
 func InspectPack(ctx context.Context, cfg config.Config, st *store.Store, pack Pack, opts InspectionOptions) (Pack, InspectionResult) {
 	pack.Evidence = append([]ask.Evidence(nil), pack.Evidence...)
+	for i := range pack.Evidence {
+		pack.Evidence[i] = cloneInspectionEvidence(pack.Evidence[i])
+	}
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = DefaultInspectionLimit
@@ -93,7 +97,10 @@ func InspectPack(ctx context.Context, cfg config.Config, st *store.Store, pack P
 		if err != nil {
 			hydrated.Retrieval = cloneInspectionRetrieval(original.Retrieval)
 		}
-		metadata := inspectEvidenceRow(hydrated, pack.QueryPlan.Concepts)
+		metadata := InspectionRow{SourceKey: original.SourceKey, EvidenceRole: original.EvidenceRole}
+		if err == nil {
+			metadata = inspectEvidenceRow(hydrated, pack.QueryPlan.Concepts)
+		}
 		metadata.HydrationStatus = "hydrated"
 		if err != nil {
 			metadata.HydrationStatus = "hydration_failed"
@@ -125,8 +132,9 @@ func InspectPack(ctx context.Context, cfg config.Config, st *store.Store, pack P
 			if leftRaw > 0 && leftQuality != rightQuality {
 				return leftQuality > rightQuality
 			}
-			if inspected[i].metadata.ScoreBefore != inspected[j].metadata.ScoreBefore {
-				return inspected[i].metadata.ScoreBefore > inspected[j].metadata.ScoreBefore
+			leftScore, rightScore := evidenceInspectionScore(inspected[i].row), evidenceInspectionScore(inspected[j].row)
+			if leftScore != rightScore {
+				return leftScore > rightScore
 			}
 			return inspected[i].order < inspected[j].order
 		})
@@ -190,7 +198,11 @@ func inspectionCoverageDetail(row InspectionRow) string {
 }
 
 func hasRawEvidenceSupport(row ask.Evidence) bool {
-	if strings.HasPrefix(row.EvidenceRole, "raw_") {
+	role := strings.ToLower(strings.TrimSpace(row.EvidenceRole))
+	if isSemanticChunkEvidence(row) {
+		return strings.HasPrefix(role, "raw") && strings.TrimSpace(row.Excerpt) != ""
+	}
+	if strings.HasPrefix(role, "raw") && strings.TrimSpace(row.Excerpt) != "" {
 		return true
 	}
 	for _, section := range row.ContentSections {
@@ -202,13 +214,44 @@ func hasRawEvidenceSupport(row ask.Evidence) bool {
 }
 
 func rawInspectionText(row ask.Evidence) string {
-	parts := make([]string, 0, len(row.ContentSections))
+	if isSemanticChunkEvidence(row) {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(row.EvidenceRole)), "raw") {
+			return strings.ToLower(strings.TrimSpace(row.Excerpt))
+		}
+		return ""
+	}
+	parts := make([]string, 0, len(row.ContentSections)+1)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(row.EvidenceRole)), "raw") && strings.TrimSpace(row.Excerpt) != "" {
+		parts = append(parts, row.Excerpt)
+	}
 	for _, section := range row.ContentSections {
 		if strings.HasPrefix(section.Role, "raw") && strings.TrimSpace(section.Text) != "" {
 			parts = append(parts, section.Text)
 		}
 	}
 	return strings.ToLower(strings.Join(parts, "\n"))
+}
+
+func isSemanticChunkEvidence(row ask.Evidence) bool {
+	if row.Chunk == nil || strings.TrimSpace(row.Chunk.ID) == "" || row.Retrieval == nil {
+		return false
+	}
+	for _, lane := range row.Retrieval.Lanes {
+		if strings.EqualFold(strings.TrimSpace(lane.Name), researchhybrid.LaneSemantic) {
+			return true
+		}
+	}
+	return false
+}
+
+func evidenceInspectionScore(row ask.Evidence) float64 {
+	if row.Retrieval == nil {
+		return 0
+	}
+	if row.Retrieval.FusedScore != nil {
+		return *row.Retrieval.FusedScore
+	}
+	return float64(row.Retrieval.Score)
 }
 
 func evidenceScore(row ask.Evidence) int {
@@ -228,6 +271,19 @@ func cloneInspectionRetrieval(info *ask.RetrievalInfo) *ask.RetrievalInfo {
 	clone.MatchedTerms = append([]string(nil), info.MatchedTerms...)
 	clone.MissingTerms = append([]string(nil), info.MissingTerms...)
 	return &clone
+}
+
+func cloneInspectionEvidence(row ask.Evidence) ask.Evidence {
+	row.Retrieval = cloneInspectionRetrieval(row.Retrieval)
+	if row.Chunk != nil {
+		chunk := *row.Chunk
+		chunk.ContributingIDs = append([]string(nil), row.Chunk.ContributingIDs...)
+		row.Chunk = &chunk
+	}
+	row.ContentSections = append([]retrieval.ContentSection(nil), row.ContentSections...)
+	row.EntityMatches = append([]string(nil), row.EntityMatches...)
+	row.Media = append([]retrieval.MediaRef(nil), row.Media...)
+	return row
 }
 
 func equalStrings(a, b []string) bool {

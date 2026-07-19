@@ -129,11 +129,12 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, opts Options) ([
 		docs = append(docs, retrieval.EvidenceDocument{
 			SourceKey: row.ParentSourceKey, Kind: row.ParentKind, Title: row.Title, URL: row.URL,
 			NotePath: row.NotePath, Summary: row.Summary, Excerpt: row.Text, Author: row.Author,
-			SourceType: row.SourceType, PublishedAt: row.PublishedAt, ExtractedAt: row.ExtractedAt,
+			SourceType: hit.SourceType, PublishedAt: row.PublishedAt, ExtractedAt: row.ExtractedAt,
 			SummarizedAt: row.SummarizedAt, UserTags: row.UserTags, EvidenceRole: row.EvidenceRole,
 			Chunk: &retrieval.EvidenceChunk{
-				ParentSourceKey: row.ParentSourceKey, Index: row.Ordinal, StartChar: row.StartChar,
+				ID: hit.ChunkID, ParentSourceKey: row.ParentSourceKey, Index: row.Ordinal, SectionOrdinal: hit.SectionOrdinal, StartChar: row.StartChar,
 				EndChar: row.EndChar, Role: row.EvidenceRole, Hash: row.ChunkTextHash, Heading: row.Heading,
+				ContributingIDs: []string{hit.ChunkID}, WindowHash: retrieval.WindowHash([]string{hit.ChunkID}, []string{row.ChunkTextHash}, row.Text),
 			},
 			Retrieval: &retrieval.RetrievalInfo{Lanes: []retrieval.RetrievalLane{{
 				Name: "semantic", Status: "used", Provider: info.Provider, Rank: hit.Rank,

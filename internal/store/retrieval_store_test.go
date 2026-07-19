@@ -86,6 +86,41 @@ func TestReplaceRetrievalChunksReportsMetadataUpdateAndKeepsEmbedding(t *testing
 	}
 }
 
+func TestListReadyEmbeddingsProjectsCurrentSourceTypeAndSectionOrdinal(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedPurgeItem(t, st, "item:projection")
+	seedRetrievalSource(t, st, "src:projection")
+	item := testRetrievalChunk("item-projection", "item", "item:projection", 0, "item-hash", "item")
+	item.SectionOrdinal = 3
+	source := testRetrievalChunk("source-projection", "source", "src:projection", 0, "source-hash", "source")
+	source.SectionOrdinal = 7
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:projection", []retrievalchunk.Chunk{item}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "src:projection", []retrievalchunk.Chunk{source}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(item.ID, "projection-profile", item.TextHash)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(source.ID, "projection-profile", source.TextHash)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.ListReadyEmbeddings(ctx, "projection-profile", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]RetrievalEmbeddingRow{}
+	for _, row := range rows {
+		got[row.ChunkID] = row
+	}
+	if got[item.ID].SourceType != "apple_note" || got[item.ID].SectionOrdinal != 3 || got[source.ID].SourceType != "article" || got[source.ID].SectionOrdinal != 7 {
+		t.Fatalf("rows=%+v", rows)
+	}
+}
+
 func TestReplaceRetrievalChunksRollsBackWholeParent(t *testing.T) {
 	t.Parallel()
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))

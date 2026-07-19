@@ -1,5 +1,12 @@
 package retrieval
 
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"hash"
+)
+
 type ContentSection struct {
 	Name      string `json:"name"`
 	Role      string `json:"role"`
@@ -37,13 +44,17 @@ type EvidenceDocument struct {
 }
 
 type EvidenceChunk struct {
-	ParentSourceKey string `json:"parent_source_key,omitempty"`
-	Index           int    `json:"index,omitempty"`
-	StartChar       int    `json:"start_char,omitempty"`
-	EndChar         int    `json:"end_char,omitempty"`
-	Role            string `json:"role,omitempty"`
-	Hash            string `json:"hash,omitempty"`
-	Heading         string `json:"heading,omitempty"`
+	ID              string   `json:"id,omitempty"`
+	ParentSourceKey string   `json:"parent_source_key,omitempty"`
+	Index           int      `json:"index,omitempty"`
+	SectionOrdinal  int      `json:"section_ordinal,omitempty"`
+	StartChar       int      `json:"start_char,omitempty"`
+	EndChar         int      `json:"end_char,omitempty"`
+	Role            string   `json:"role,omitempty"`
+	Hash            string   `json:"hash,omitempty"`
+	Heading         string   `json:"heading,omitempty"`
+	ContributingIDs []string `json:"contributing_ids,omitempty"`
+	WindowHash      string   `json:"window_hash,omitempty"`
 }
 
 type MediaRef struct {
@@ -94,23 +105,49 @@ type RetrievalInfo struct {
 	Signals      []RetrievalSignal `json:"signals,omitempty"`
 	MatchedTerms []string          `json:"matched_terms,omitempty"`
 	MissingTerms []string          `json:"missing_terms,omitempty"`
+	FusedScore   *float64          `json:"fused_score,omitempty"`
 }
 
 type RetrievalLane struct {
-	Name        string   `json:"name"`
-	Status      string   `json:"status,omitempty"`
-	Reason      string   `json:"reason,omitempty"`
-	Provider    string   `json:"provider,omitempty"`
-	Store       string   `json:"store,omitempty"`
-	Rank        int      `json:"rank,omitempty"`
-	RawDistance *float64 `json:"raw_distance,omitempty"`
-	Profile     string   `json:"profile,omitempty"`
-	Backend     string   `json:"backend,omitempty"`
-	Generation  string   `json:"generation,omitempty"`
+	Name         string   `json:"name"`
+	Status       string   `json:"status,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	Provider     string   `json:"provider,omitempty"`
+	Store        string   `json:"store,omitempty"`
+	Rank         int      `json:"rank,omitempty"`
+	RawDistance  *float64 `json:"raw_distance,omitempty"`
+	RawScore     *float64 `json:"raw_score,omitempty"`
+	Contribution *float64 `json:"contribution,omitempty"`
+	Profile      string   `json:"profile,omitempty"`
+	Backend      string   `json:"backend,omitempty"`
+	Generation   string   `json:"generation,omitempty"`
 }
 
 type RetrievalSignal struct {
 	Name   string `json:"name"`
 	Detail string `json:"detail,omitempty"`
 	Weight int    `json:"weight"`
+}
+
+func WindowHash(ids, hashes []string, excerpt string) string {
+	h := sha256.New()
+	writeHashStrings(h, ids)
+	writeHashStrings(h, hashes)
+	writeHashString(h, excerpt)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func writeHashStrings(h hash.Hash, values []string) {
+	var count [8]byte
+	binary.BigEndian.PutUint64(count[:], uint64(len(values)))
+	_, _ = h.Write(count[:])
+	for _, value := range values {
+		writeHashString(h, value)
+	}
+}
+func writeHashString(h hash.Hash, value string) {
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+	_, _ = h.Write(size[:])
+	_, _ = h.Write([]byte(value))
 }

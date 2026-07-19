@@ -35,15 +35,18 @@ type Status struct {
 }
 
 type Hit struct {
-	ChunkID  string  `json:"chunk_id"`
-	Rank     int     `json:"rank"`
-	Distance float64 `json:"distance"`
+	ChunkID        string  `json:"chunk_id"`
+	Rank           int     `json:"rank"`
+	Distance       float64 `json:"distance"`
+	SourceType     string  `json:"source_type,omitempty"`
+	SectionOrdinal int     `json:"section_ordinal,omitempty"`
 }
 
 type Filters struct {
 	AllowedParentKeys    []string `json:"allowed_parent_keys,omitempty"`
 	AllowedParentKinds   []string `json:"allowed_parent_kinds,omitempty"`
 	AllowedEvidenceRoles []string `json:"allowed_evidence_roles,omitempty"`
+	AllowedSourceTypes   []string `json:"allowed_source_types,omitempty"`
 }
 
 type SearchOptions struct {

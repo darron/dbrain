@@ -108,7 +108,7 @@ func (e *Exact) Search(ctx context.Context, query []float32, opts SearchOptions)
 			continue
 		}
 		distance := cosineDistance(query, vector)
-		candidate := Hit{ChunkID: row.ChunkID, Distance: distance}
+		candidate := Hit{ChunkID: row.ChunkID, Distance: distance, SourceType: row.SourceType, SectionOrdinal: row.SectionOrdinal}
 		if candidates.Len() < opts.Limit {
 			heap.Push(&candidates, candidate)
 			continue
@@ -161,6 +161,7 @@ type cleanFilterSet struct {
 	parentKeys    map[string]struct{}
 	parentKinds   map[string]struct{}
 	evidenceRoles map[string]struct{}
+	sourceTypes   map[string]struct{}
 }
 
 func cleanFilters(filters Filters) (cleanFilterSet, error) {
@@ -176,7 +177,11 @@ func cleanFilters(filters Filters) (cleanFilterSet, error) {
 	if err != nil {
 		return cleanFilterSet{}, fmt.Errorf("allowed evidence roles: %w", err)
 	}
-	return cleanFilterSet{parentKeys: parentKeys, parentKinds: parentKinds, evidenceRoles: evidenceRoles}, nil
+	sourceTypes, err := cleanFilterValues(filters.AllowedSourceTypes, true)
+	if err != nil {
+		return cleanFilterSet{}, fmt.Errorf("allowed source types: %w", err)
+	}
+	return cleanFilterSet{parentKeys: parentKeys, parentKinds: parentKinds, evidenceRoles: evidenceRoles, sourceTypes: sourceTypes}, nil
 }
 
 func cleanFilterValues(values []string, fold bool) (map[string]struct{}, error) {
@@ -203,7 +208,23 @@ func cleanFilterValues(values []string, fold bool) (map[string]struct{}, error) 
 func (f cleanFilterSet) allows(row store.RetrievalEmbeddingRow) bool {
 	return allowsValue(f.parentKeys, strings.TrimSpace(row.ParentSourceKey)) &&
 		allowsValue(f.parentKinds, strings.ToLower(strings.TrimSpace(row.ParentKind))) &&
-		allowsValue(f.evidenceRoles, strings.ToLower(strings.TrimSpace(row.EvidenceRole)))
+		allowsValue(f.evidenceRoles, strings.ToLower(strings.TrimSpace(row.EvidenceRole))) &&
+		allowsSourceType(f.sourceTypes, row.SourceType)
+}
+
+func allowsSourceType(allowed map[string]struct{}, value string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if _, ok := allowed[value]; ok {
+		return true
+	}
+	if family, _, ok := strings.Cut(value, "_"); ok {
+		_, ok = allowed[family]
+		return ok
+	}
+	return false
 }
 
 func allowsValue(allowed map[string]struct{}, value string) bool {

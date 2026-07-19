@@ -113,6 +113,59 @@ func TestInspectPackHydrationFailureIsRankingNeutral(t *testing.T) {
 	}
 }
 
+func TestInspectPackSemanticRawExcerptAndFusedScore(t *testing.T) {
+	cfg, st := inspectionTestStore(t)
+	now := time.Now().UTC()
+	for _, key := range []string{"x:low", "x:high"} {
+		_, err := st.UpsertItem(context.Background(), model.Item{SourceKey: key, SourceType: "x_bookmark", ExternalID: key, CanonicalURL: "https://example.com/" + key, Title: key, Text: "parent without selected phrase", ContentHash: key, NotePath: "items/" + key + ".md", RawJSON: "{}", ImportedAt: now, UpdatedAt: now, LastSeenAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	low, high := .1, .2
+	pack := Pack{Question: "needle", QueryPlan: QueryPlan{Concepts: []QueryConcept{{Key: "needle", Terms: []string{"needle"}, Required: true, Role: conceptRoleContent}}}, Evidence: []ask.Evidence{
+		{SourceKey: "x:low", Kind: "item", Excerpt: "raw needle", EvidenceRole: "raw", Chunk: &retrieval.EvidenceChunk{ID: "low"}, Retrieval: &ask.RetrievalInfo{Score: 100, FusedScore: &low, Lanes: []retrieval.RetrievalLane{{Name: "semantic"}}}},
+		{SourceKey: "x:high", Kind: "item", Excerpt: "raw needle", EvidenceRole: "raw", Chunk: &retrieval.EvidenceChunk{ID: "high"}, Retrieval: &ask.RetrievalInfo{Score: 1, FusedScore: &high, Lanes: []retrieval.RetrievalLane{{Name: "semantic"}}}},
+	}}
+	got, result := InspectPack(context.Background(), cfg, st, pack, InspectionOptions{Limit: 2})
+	if len(result.Errors) != 0 || got.Evidence[0].SourceKey != "x:high" || len(result.Rows[0].RawMatchedConcepts) != 1 || got.Evidence[0].Chunk.ID != "high" {
+		t.Fatalf("got=%+v result=%+v", got.Evidence, result)
+	}
+}
+
+func TestInspectPackMissingSemanticParentDoesNotValidateStaleExcerpt(t *testing.T) {
+	cfg, st := inspectionTestStore(t)
+	fused := .2
+	pack := Pack{Question: "needle", QueryPlan: QueryPlan{Concepts: []QueryConcept{{Key: "needle", Terms: []string{"needle"}, Required: true, Role: conceptRoleContent}}}, Evidence: []ask.Evidence{{SourceKey: "x:missing", Kind: "item", Excerpt: "raw needle", EvidenceRole: "raw", Chunk: &retrieval.EvidenceChunk{ID: "stale"}, Retrieval: &ask.RetrievalInfo{FusedScore: &fused, Lanes: []retrieval.RetrievalLane{{Name: "semantic"}}}}}}
+	_, result := InspectPack(context.Background(), cfg, st, pack, InspectionOptions{Limit: 1})
+	if len(result.Errors) != 1 || len(result.Rows[0].MatchedConcepts) != 0 || len(result.Rows[0].RawMatchedConcepts) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestInspectPackSemanticChunkIgnoresBroadHydratedParentForConceptProof(t *testing.T) {
+	cfg, st := inspectionTestStore(t)
+	now := time.Now().UTC()
+	_, err := st.UpsertItem(context.Background(), model.Item{SourceKey: "x:broad", SourceType: "x_bookmark", ExternalID: "broad", CanonicalURL: "https://example.com/broad", Title: "Unrelated title", Text: "parent content contains needle", ContentHash: "broad", NotePath: "items/broad.md", RawJSON: "{}", ImportedAt: now, UpdatedAt: now, LastSeenAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fused := .2
+	pack := Pack{Question: "needle", QueryPlan: QueryPlan{Concepts: []QueryConcept{{Key: "needle", Terms: []string{"needle"}, Required: true, Role: conceptRoleContent}}}, Evidence: []ask.Evidence{{SourceKey: "x:broad", Kind: "item", Excerpt: "selected passage lacks it", EvidenceRole: "raw", Chunk: &retrieval.EvidenceChunk{ID: "selected"}, Retrieval: &ask.RetrievalInfo{FusedScore: &fused, Lanes: []retrieval.RetrievalLane{{Name: "semantic"}}}}}}
+	_, result := InspectPack(context.Background(), cfg, st, pack, InspectionOptions{Limit: 1})
+	if len(result.Errors) != 0 || len(result.Rows[0].MatchedConcepts) != 0 || len(result.Rows[0].RawMatchedConcepts) != 0 || len(result.Rows[0].MissingConcepts) != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestInspectEvidenceRowSemanticRawRoleUsesSelectedExcerptAsRawSupport(t *testing.T) {
+	row := ask.Evidence{SourceKey: "x:selected", Excerpt: "selected raw passage", EvidenceRole: "raw", Chunk: &retrieval.EvidenceChunk{ID: "chunk"}, Retrieval: &ask.RetrievalInfo{Lanes: []retrieval.RetrievalLane{{Name: "semantic"}}}}
+	got := inspectEvidenceRow(row, []QueryConcept{{Key: "selected", Terms: []string{"selected"}, Required: true, Role: conceptRoleContent}})
+	if !got.RawSupport || len(got.RawMatchedConcepts) != 1 {
+		t.Fatalf("got=%+v", got)
+	}
+}
+
 func TestInspectPackMixedHydrationFailureKeepsOriginalOrder(t *testing.T) {
 	t.Parallel()
 

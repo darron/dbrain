@@ -44,6 +44,8 @@ type RetrievalEmbeddingRow struct {
 	ParentKind      string
 	ParentSourceKey string
 	EvidenceRole    string
+	SourceType      string
+	SectionOrdinal  int
 	Text            string
 }
 
@@ -242,9 +244,13 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 		SELECT e.chunk_id, e.profile_id, e.provider, e.model, e.dimensions,
 			e.representation, e.normalization, e.vector_bytes, e.chunk_text_hash,
 			e.status, e.attempt_count, e.last_error, e.next_attempt_at, e.embedded_at,
-			c.parent_kind, c.parent_source_key, c.evidence_role, c.text, c.chunk_text_hash
+			c.parent_kind, c.parent_source_key, c.evidence_role,
+			CASE WHEN c.parent_kind = 'source' THEN COALESCE(s.source_type, '') ELSE COALESCE(i.source_type, '') END,
+			c.section_ordinal, c.text, c.chunk_text_hash
 		FROM retrieval_embeddings e
 		JOIN retrieval_chunks c ON c.chunk_id = e.chunk_id
+		LEFT JOIN items i ON c.parent_kind = 'item' AND i.source_key = c.parent_source_key
+		LEFT JOIN sources s ON c.parent_kind = 'source' AND s.source_key = c.parent_source_key
 		WHERE e.profile_id = ? AND e.status = 'ready'
 		ORDER BY e.chunk_id`
 	args := []any{profileID}
@@ -264,7 +270,8 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 		if err := rows.Scan(&row.ChunkID, &row.ProfileID, &row.Provider, &row.Model, &row.Dimensions,
 			&row.Representation, &row.Normalization, &row.VectorBytes, &row.ChunkTextHash,
 			&row.Status, &row.AttemptCount, &row.LastError, &nextAttemptAt, &embeddedAt,
-			&row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.Text, &currentChunkTextHash); err != nil {
+			&row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.SourceType,
+			&row.SectionOrdinal, &row.Text, &currentChunkTextHash); err != nil {
 			return nil, fmt.Errorf("scan ready retrieval embedding: %w", err)
 		}
 		if reason := retrievalEmbeddingCorruptionReason(row, currentChunkTextHash); reason != "" {

@@ -1,16 +1,109 @@
 package ask
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/entities"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/queryterms"
 	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/store"
 )
+
+func TestRunCandidatePoolPreservesLegacySelectionWithRelatedPolicy(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UTC()
+	var relatedItemID int64
+	for i := 0; i < 15; i++ {
+		key := fmt.Sprintf("item:pool-%02d", i)
+		result, err := st.UpsertItem(context.Background(), model.Item{SourceKey: key, SourceType: "article", ExternalID: key, CanonicalURL: "https://example.com/" + key, Title: fmt.Sprintf("Alpha evidence %02d", i), Text: "alpha evidence", UserTags: "alpha", ContentHash: key, RawJSON: "{}", ImportedAt: now, UpdatedAt: now, LastSeenAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 14 {
+			relatedItemID = result.ItemID
+		}
+	}
+	_, err = st.UpsertItem(context.Background(), model.Item{SourceKey: "item:tag-only", SourceType: "article", ExternalID: "tag-only", CanonicalURL: "https://example.com/tag-only", Title: "Unrelated saved item", Text: "no query phrase", UserTags: "alpha", ContentHash: "tag-only", RawJSON: "{}", ImportedAt: now, UpdatedAt: now, LastSeenAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceResult, err := st.UpsertSource(context.Background(), model.SourceCandidate{OriginalURL: "https://source.example/alpha", CanonicalURL: "https://source.example/alpha", NormalizedURL: "https://source.example/alpha", SourceType: "article", Domain: "source.example", SourceKey: "src:text-match", NotePath: "sources/text-match.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.SaveSourceExtraction(context.Background(), sourceResult.SourceID, model.ExtractResult{Title: "Alpha source document", Content: "alpha source-only evidence", RawJSON: "{}", Status: model.SourceExtractStatusOK, FetchedAt: now, Tool: "test", ToolVersion: "1"}, "source-text-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertSourceLink(context.Background(), relatedItemID, model.SourceCandidate{OriginalURL: "https://related.example/story", CanonicalURL: "https://related.example/story", NormalizedURL: "https://related.example/story", SourceType: "article", Domain: "related.example", SourceKey: "src:related", NotePath: "sources/related.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Limit: 3, SearchLimit: 12, RetrieveOnly: true, IncludeRelated: true, RelatedLimit: 1, EntityIndex: []entities.Entity{{Key: "alpha", Name: "Alpha", Kind: entities.KindProject, References: []entities.Reference{{RefKind: "item", SourceKey: "item:pool-14", SourceType: "article"}}}}}
+	legacy, err := Run(context.Background(), cfg, st, "alpha", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pooled, deep, err := RunCandidatePool(context.Background(), cfg, st, "alpha", opts, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(pooled, legacy) {
+		t.Fatalf("pooled legacy=%+v direct=%+v", pooled, legacy)
+	}
+	wantKeys := []string{"item:pool-14", "src:text-match", "src:related"}
+	gotKeys := make([]string, len(legacy.Evidence))
+	for i, row := range legacy.Evidence {
+		gotKeys[i] = row.SourceKey
+	}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("legacy keys=%v want=%v", gotKeys, wantKeys)
+	}
+	if len(deep.Evidence) <= len(pooled.Evidence) {
+		t.Fatalf("deep=%d legacy=%d", len(deep.Evidence), len(pooled.Evidence))
+	}
+	deepKeys := make([]string, len(deep.Evidence))
+	for i, row := range deep.Evidence {
+		deepKeys[i] = row.SourceKey
+	}
+	for _, want := range []string{"item:tag-only", "src:text-match"} {
+		found := false
+		for _, key := range deepKeys {
+			if key == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("deep keys=%v missing %s", deepKeys, want)
+		}
+	}
+	sameLegacy, sameDeep, err := RunCandidatePool(context.Background(), cfg, st, "alpha", opts, opts.Limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sameLegacy, legacy) || !reflect.DeepEqual(sameDeep, legacy) {
+		t.Fatalf("same-depth pool diverged: legacy=%+v deep=%+v direct=%+v", sameLegacy, sameDeep, legacy)
+	}
+}
 
 func TestQueryTermsBuildTagAlias(t *testing.T) {
 	t.Parallel()

@@ -64,8 +64,8 @@ func TestRetrieverEmbedsCleanQueryAndBatchHydratesInHitOrder(t *testing.T) {
 	searcher := &fakeSearcher{
 		hits: []semanticindex.Hit{
 			{ChunkID: "deleted", Rank: 1, Distance: 0.05},
-			{ChunkID: "source-chunk", Rank: 2, Distance: 0.1},
-			{ChunkID: "item-chunk", Rank: 3, Distance: 0.2},
+			{ChunkID: "source-chunk", Rank: 2, Distance: 0.1, SourceType: "article", SectionOrdinal: 6},
+			{ChunkID: "item-chunk", Rank: 3, Distance: 0.2, SourceType: "x_bookmark", SectionOrdinal: 7},
 		},
 		status: semanticindex.Status{State: semanticindex.StateSearched, Backend: semanticindex.BackendExact, ProfileID: profileID, GenerationID: "generation-a"},
 	}
@@ -105,8 +105,11 @@ func TestRetrieverEmbedsCleanQueryAndBatchHydratesInHitOrder(t *testing.T) {
 	if docs[0].SourceKey != "src:one" || docs[1].SourceKey != "item:one" || docs[0].Excerpt != "source chunk text" || docs[0].EvidenceRole != "summary" {
 		t.Fatalf("docs=%+v", docs)
 	}
-	if docs[0].Chunk == nil || docs[0].Chunk.Index != 2 || docs[0].Chunk.Hash != "source-hash" || docs[0].Chunk.Heading != "Source heading" {
+	if docs[0].Chunk == nil || docs[0].Chunk.ID != "source-chunk" || docs[0].Chunk.Index != 2 || docs[0].Chunk.SectionOrdinal != 6 || docs[0].Chunk.Hash != "source-hash" || docs[0].Chunk.Heading != "Source heading" || !reflect.DeepEqual(docs[0].Chunk.ContributingIDs, []string{"source-chunk"}) || docs[0].Chunk.WindowHash == "" {
 		t.Fatalf("source chunk=%+v", docs[0].Chunk)
+	}
+	if docs[0].Chunk.WindowHash != retrieval.WindowHash([]string{"source-chunk"}, []string{"source-hash"}, "source chunk text") {
+		t.Fatalf("singleton window hash=%q", docs[0].Chunk.WindowHash)
 	}
 	assertSemanticLane(t, docs[0], 2, 0.1, profileID, semanticindex.BackendExact, "generation-a")
 	assertSemanticLane(t, docs[1], 3, 0.2, profileID, semanticindex.BackendExact, "generation-a")

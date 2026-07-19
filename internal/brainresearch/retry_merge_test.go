@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/darron/dbrain/internal/ask"
+	"github.com/darron/dbrain/internal/retrieval"
 )
 
 func TestMergeRetryPackPreservesInitialAnchoredRowsAndRejectsGenericRetry(t *testing.T) {
@@ -138,6 +139,28 @@ func TestMergeRetryPackRecomputesCoverageAndRecallNote(t *testing.T) {
 	}
 	if got := evidenceSourceKeys(merged.ExactTagEvidence); !reflect.DeepEqual(got, []string{"x:initial-tag", "x:tagged"}) {
 		t.Fatalf("expected exact-tag evidence to append/dedupe, got %v", got)
+	}
+}
+
+func TestMergeRetryPackUsesChunkIdentityButExactTagsUseParentIdentity(t *testing.T) {
+	chunk := func(id string) ask.Evidence {
+		return ask.Evidence{SourceKey: "parent", Chunk: &retrieval.EvidenceChunk{ID: id, ParentSourceKey: "parent"}}
+	}
+	initial := Pack{Evidence: []ask.Evidence{chunk("a"), chunk("b")}, ExactTagEvidence: []ask.Evidence{{SourceKey: "tag-parent"}}}
+	retry := Pack{Evidence: []ask.Evidence{chunk("a"), chunk("c")}, ExactTagEvidence: []ask.Evidence{{SourceKey: "tag-parent"}, {SourceKey: "tag-new"}}}
+	merged, decision := MergeRetryPack(initial, retry, MergeRetryOptions{MissingConcepts: []string{"anything"}})
+	if len(merged.Evidence) != 2 { // retry c is not accepted without filling a missing concept
+		t.Fatalf("evidence=%+v", merged.Evidence)
+	}
+	accepted := mergeEvidenceRows(initial.Evidence, retry.Evidence)
+	if len(accepted) != 3 {
+		t.Fatalf("chunk merge=%+v", accepted)
+	}
+	if len(merged.ExactTagEvidence) != 2 {
+		t.Fatalf("exact tags=%+v", merged.ExactTagEvidence)
+	}
+	if len(decision.PreservedInitialSourceKeys) != 1 || decision.PreservedInitialSourceKeys[0] != "parent" {
+		t.Fatalf("decision=%+v", decision)
 	}
 }
 
