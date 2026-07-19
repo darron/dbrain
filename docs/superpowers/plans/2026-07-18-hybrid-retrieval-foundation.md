@@ -501,7 +501,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/semanticbuild internal/app
+git add internal/semanticbuild internal/retrievalchunk internal/app
 git commit --no-gpg-sign -m "feat: add semantic indexing commands"
 ```
 
