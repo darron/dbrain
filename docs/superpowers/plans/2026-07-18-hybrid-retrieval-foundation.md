@@ -592,15 +592,26 @@ git commit --no-gpg-sign -m "feat: add exact semantic retrieval"
 
 **Files:**
 - Modify: `internal/retrieval/types.go`
+- Modify: `internal/semanticindex/index.go`
+- Modify: `internal/semanticindex/exact.go`
+- Modify: `internal/semanticindex/exact_test.go`
+- Modify: `internal/researchsemantic/retriever.go`
+- Modify: `internal/researchsemantic/retriever_test.go`
+- Modify: `internal/store/retrieval_embeddings.go`
 - Modify: `internal/researchhybrid/hybrid.go`
 - Modify: `internal/researchhybrid/hybrid_test.go`
 - Create: `internal/researchhybrid/consolidation.go`
 - Create: `internal/researchhybrid/consolidation_test.go`
 - Modify: `internal/brainresearch/types.go`
 - Modify: `internal/brainresearch/strategy_evidence.go`
+- Create: `internal/brainresearch/strategy_evidence_test.go`
+- Modify: `internal/brainresearch/coverage.go`
+- Modify: `internal/brainresearch/retry_merge.go`
+- Modify: `internal/brainresearch/retry_merge_test.go`
 - Modify: `internal/brainresearch/inspection.go`
 - Modify: `internal/brainresearch/inspection_test.go`
 - Modify: `internal/ask/inspect.go`
+- Create: `internal/ask/inspect_test.go`
 
 **Interfaces:** Produces `Fuse` with k=60, weights 1.0, depths 50/50, final 20; injects a semantic retriever into `brainresearch.Builder`.
 
@@ -609,39 +620,62 @@ git commit --no-gpg-sign -m "feat: add exact semantic retrieval"
 Cover exact RRF values, ties, lane rank/distance/contribution/fused score,
 lexical-only identity, unavailable identity, duplicate contributions, protected
 anchors, chunk dedupe, max three unanchored chunks per parent, adjacent merge,
-exact-tag separation, and semantic chunk survival through inspection.
+exact-tag separation, source-type filtering before semantic ranking, and
+semantic chunk survival through inspection and retry. Coverage assertions must
+count unique parent sources rather than chunk rows. The corruption regression
+must also prove that one corrupt row makes the whole exact semantic lane
+unavailable without returning healthy partial hits; explicit maintenance then
+quarantines that row so a later search can use the remaining healthy rows.
 
 - [ ] **Step 2: Verify RED**
 
-Run: `go test ./internal/researchhybrid ./internal/brainresearch ./internal/ask`
+Run: `go test ./internal/retrieval ./internal/semanticindex ./internal/researchsemantic ./internal/researchhybrid ./internal/brainresearch ./internal/ask`
 
 Expected: FAIL because live retrieval never calls the current append-only merge.
 
 - [ ] **Step 3: Implement typed provenance and fusion**
 
-```go
-type RetrievalLaneScore struct {
-    Name string `json:"name"`
-    Rank int `json:"rank"`
-    RawScore, Distance, Contribution float64
-}
-```
+Extend the existing `RetrievalLane` with optional structured raw lexical score
+and RRF contribution fields, and add an unrounded `FusedScore` to
+`RetrievalInfo`; do not create a second lane-score array that duplicates Task 7
+rank, distance, profile, backend, or generation fields. Return the original
+lexical slice when no semantic rows are usable. Otherwise compute
+`1/(60+rank)` per lexical/semantic lane, protect exact anchors after fusion,
+consolidate parent chunks, and preserve semantic chunk identity through
+inspection and retry. Exact RRF ties sort by protected/exact identity, best
+contributing rank, lexical rank, semantic rank, parent source key, then chunk
+ID. Adjacent expansion counts toward the three-chunk maximum for an unanchored
+parent.
 
-Add `FusedScore` and lane scores to `RetrievalInfo`. Return the original lexical
-slice when no semantic rows are usable. Otherwise compute `1/(60+rank)` per
-lexical/semantic lane, protect exact anchors after fusion, consolidate parent
-chunks, and preserve semantic chunk identity through inspection.
+Add stable primary chunk ID, section ordinal, ordered contributing chunk IDs,
+and a deterministic consolidated-window hash to `EvidenceChunk`. Compatible
+windows merge only within one parent, role, and section. Remove overlap by rune
+offset, retain the primary heading/hash, and skip expansion that would exceed
+the character budget. Coverage and retry merge use chunk identity internally
+but continue reporting unique parent coverage. Inspection retains the selected
+semantic excerpt and treats a raw-role excerpt as raw verification evidence;
+when fused score is present, the legacy integer score cannot override it.
+
+Embed exactly one canonical semantic query: the final preferred-concept query,
+falling back to normalized text and then the cleaned question. Query variants
+remain lexical-only. Bound lane candidates at 50 each and return at most
+`min(user limit, 20)` fused rows. Pass the research request's source-type
+constraint into exact semantic candidate filtering before top-k scoring;
+project source type with ready embedding rows rather than post-filtering
+hydrated hits. Compute protected source keys in `brainresearch` and pass them
+into `researchhybrid` to avoid a package cycle. Task 8 adds only the injectable
+retriever seam; Task 9 constructs and wires real runtime dependencies.
 
 - [ ] **Step 4: Verify GREEN**
 
-Run: `go test ./internal/researchhybrid ./internal/brainresearch ./internal/ask ./internal/researchrun`
+Run: `go test -race ./internal/retrieval ./internal/semanticindex ./internal/researchsemantic ./internal/researchhybrid ./internal/brainresearch ./internal/ask ./internal/researchrun`
 
 Expected: PASS with semantic-off outputs unchanged.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/retrieval internal/researchhybrid internal/brainresearch internal/ask
+git add internal/retrieval internal/semanticindex internal/researchsemantic internal/store/retrieval_embeddings.go internal/researchhybrid internal/brainresearch internal/ask
 git commit --no-gpg-sign -m "feat: fuse lexical and semantic retrieval"
 ```
 
@@ -778,7 +812,10 @@ git commit --no-gpg-sign -m "docs: ship hybrid retrieval foundation"
 
 Review against this plan and
 `docs/superpowers/specs/2026-07-18-retrieval-first-hybrid-search-design.md`.
-Fix every Critical/Important finding, then rerun focused tests and all gates.
+Review the foundation scope only. Deferred ANN lifecycle, cache-manifest,
+generation-file purge, ANN recall, and ANN release-matrix criteria are not
+foundation blockers. Fix every in-scope Critical/Important finding, then rerun
+focused tests and all gates.
 
 ---
 

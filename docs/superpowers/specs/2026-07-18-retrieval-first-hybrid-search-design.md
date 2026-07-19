@@ -7,6 +7,12 @@ Approved on 2026-07-18. This is the build-ready architecture for improving
 rebuildable local approximate-nearest-neighbour index while preserving SQLite
 as the authoritative database.
 
+This document defines the complete multi-slice architecture. The current
+hybrid-retrieval foundation implements deterministic chunks, portable local
+embeddings, bounded exact search, fusion, and shadow diagnostics. The scalable
+ANN lifecycle remains a separately planned later slice; ANN-only tests and
+acceptance criteria do not block completion or review of the foundation.
+
 The design deliberately does not introduce an ontology engine or replace
 SQLite. It keeps both options open through stable evidence identifiers,
 portable embedding records, and replaceable retrieval interfaces.
@@ -299,6 +305,13 @@ compact retrieval context. They do not become part of raw quoted evidence.
 User tags and resolved entities stay structured metadata rather than being
 repeated throughout every chunk.
 
+The v1 projection pages only parents with a non-empty `note_path`, matching the
+existing materialized/index-eligible evidence boundary. Hydration applies the
+same check and drops a candidate whose parent is no longer materialized. This
+eligibility rule is not a privacy purge: an explicit forget operation must
+still synchronously delete the parent's chunk and embedding rows according to
+the purge contract above.
+
 ### Boundaries
 
 Chunker v1 should:
@@ -540,9 +553,19 @@ removing chat scaffolding and non-evidentiary instructions. It may include
 typed continuity anchors from prior turns, but it must not embed prior model
 answers as factual query context.
 
-Filters such as source type, project, date, tag, or explicitly pinned evidence
-apply to candidate generation where supported. They must not be implemented
-only as post-retrieval deletion that can leave an empty top window.
+The foundation embeds one canonical semantic query per research attempt. It is
+the deterministic preferred-concept query after planner output has passed the
+same role policy; this retains anchors and content concepts while dropping
+intent and frame scaffolding. If that projection is empty, use the normalized
+text query, then the cleaned question. Query variants remain lexical-only and
+must not cause multiple semantic embedding calls.
+
+Filters apply to candidate generation, not only as post-retrieval deletion that
+can leave an empty top window. The foundation supports parent key, parent kind,
+evidence role, and source type; parent keys carry explicitly pinned evidence.
+Project, date, and tag filters remain later typed-query extensions because the
+current research request does not expose those constraints consistently. When
+added, they must follow the same pre-ranking rule.
 
 ## Retrieval Lanes
 
@@ -632,8 +655,21 @@ Each fused candidate records:
 - exact/protected-anchor signals
 - embedding profile and index generation when semantic retrieval contributed
 
-The existing public integer score may remain as a compatibility projection,
-but traces and internal types must retain the unrounded fusion details.
+`RetrievalLane` is the single source of truth for both operational lane
+provenance and per-lane fusion math. Fusion extends it with optional raw lexical
+score and RRF contribution while retaining its existing rank, raw semantic
+distance, profile, backend, and generation fields. A separate parallel lane
+score array must not duplicate those values. `RetrievalInfo` adds an unrounded
+fused score. The existing public integer score remains a compatibility value;
+inspection uses fused score whenever it is present and uses the legacy integer
+score only for lexical-only rows.
+
+Fusion ordering is deterministic. Candidates sort by total fused score
+descending. Exact ties prefer a protected-anchor or exact-identity match, then
+the lower best contributing lane rank, then the lower lexical rank, then the
+lower semantic rank, then parent source key and chunk ID ascending. A missing
+lane rank sorts after a present rank. Raw FTS scores and vector distances are
+diagnostic only and never break a cross-lane tie directly.
 
 ## Deduplication And Parent Consolidation
 
@@ -644,12 +680,34 @@ Fusion initially deduplicates by chunk identity. Before evidence inspection:
   window by default
 - the strongest passage remains primary
 - one adjacent chunk may be expanded on either side when context budget allows
+- adjacent expansion counts toward the same three-chunk maximum, so an
+  unanchored parent contributes at most the primary passage plus two adjacent
+  chunks in total
 - exact anchored evidence cannot be displaced solely because another parent
   produced more semantic chunks
 
 The final evidence document cites the parent source key and carries
 `EvidenceChunk` metadata. Source-level coverage counts remain counts of unique
 parents, not chunk hits.
+
+`EvidenceChunk` carries the stable primary database chunk ID and projected
+section ordinal in addition to its existing role, ordinal, offsets, hash, and
+heading. A consolidated window keeps that strongest chunk as primary and lists
+the ordered contributing chunk IDs. Compatible chunks must share parent,
+evidence role, and section ordinal. Their excerpt is formed in offset order,
+removing overlap by rune offsets and inserting a newline only across a real
+gap. The window start/end span the included chunks, the primary chunk hash is
+retained as primary provenance, and a separate deterministic window hash covers
+the ordered contributing IDs, hashes, and resulting excerpt. The primary
+heading wins. Expansion is skipped when it would exceed the configured
+character budget; a primary chunk is never truncated merely to admit a
+neighbor.
+
+Lane depths are 50/50 and the fused candidate window is at most 20. The
+user-facing research limit remains authoritative, so the returned
+pre-inspection window is `min(user limit, 20)`; implementations may retrieve
+and score deeper candidates but may not silently return more evidence than the
+requested limit.
 
 ## Reranking
 
@@ -781,9 +839,13 @@ state visible.
 
 Vector reads remain non-mutating so read-only MCP/research consumers preserve
 their boundary. A corrupt exact-search read returns a typed `index_corrupt`
-lane status with no hits. The explicit writable embedding-maintenance command
-revalidates ready rows and transactionally marks the current corrupt row blocked
-before continuing; a stale diagnostic may never block a repaired row.
+lane status with no hits. Exact search fails the whole semantic lane closed when
+any ready row in the bounded scan is corrupt; it never returns a partial set of
+healthy hits beside an incomplete index. The explicit writable
+embedding-maintenance command revalidates ready rows and transactionally marks
+the current corrupt row blocked before continuing. A later exact search may use
+the remaining healthy rows, and a stale diagnostic may never block a repaired
+row.
 
 Semantic failures must not be reported as no corpus evidence. The research
 pack distinguishes “semantic unavailable” from “semantic searched and found no
@@ -913,18 +975,23 @@ or rejection of the backend; it cannot be hidden by end-to-end answer quality.
 ### Integration Tests
 
 - local fake embedding provider through exact semantic retrieval
-- ANN build, atomic activation, reopen, and query
-- interrupted build leaves the prior generation active
-- missing/stale/corrupt index follows fallback policy
-- purged/excluded evidence is unreachable through exact and ANN search and its
-  immutable generation files are removed before purge success
-- older restored SQLite state rejects a newer cache manifest
+- foundation: corrupt exact search fails the whole semantic lane closed until
+  explicit maintenance quarantines the corrupt row
+- foundation: purged/excluded evidence is unreachable through exact search
 - CLI and MCP semantic enable/disable behavior
 - shadow mode cannot alter returned evidence or synthesis input
 - MCP shadow diagnostics remain bounded and create no server-side trace files
 - research traces carry comparison and provenance data
 - filtered semantic retrieval does not empty a valid candidate window through
   post-filtering
+- deferred ANN slice: build, atomic activation, reopen, and query
+- deferred ANN slice: interrupted build leaves the prior generation active
+- deferred ANN slice: missing/stale/corrupt index follows fallback policy
+- deferred ANN slice: purged/excluded evidence is unreachable through active
+  ANN generations and immutable generation files are removed before purge
+  success
+- deferred ANN slice: older restored SQLite state rejects a newer cache
+  manifest
 
 ### Regression And Full Gates
 
@@ -1000,7 +1067,13 @@ sync, and default-on semantics remain later work.
 
 ## Acceptance Criteria
 
-The approved design is implemented when:
+The complete architecture is implemented when all criteria below pass. The
+current foundation is complete when criteria 1-3, 5-10, and the chunk,
+embedding, and exact-search portions of criterion 11 pass. Criteria 4 and 12,
+the ANN portions of criterion 11, and ANN-specific integration tests belong to
+the deferred scalable-ANN plan and do not block the foundation review.
+
+The criteria are:
 
 1. SQLite remains the only authoritative database and existing lexical search
    works with semantic retrieval absent or disabled.
