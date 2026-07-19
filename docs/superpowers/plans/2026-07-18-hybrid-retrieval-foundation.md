@@ -449,6 +449,8 @@ git commit --no-gpg-sign -m "feat: configure local semantic embeddings"
 - Create: `internal/semanticbuild/run_test.go`
 - Create: `internal/app/semantic.go`
 - Create: `internal/app/semantic_output.go`
+- Modify: `internal/retrievalchunk/types.go`
+- Modify: `internal/retrievalchunk/chunk_test.go`
 - Modify: `internal/app/root.go`
 - Modify: `internal/app/app_test.go`
 - Modify: `internal/app/stats_read_only_test.go`
@@ -485,7 +487,10 @@ dbrain semantic embed [--limit N] [--batch-size N] [--json]
 ```
 
 Status uses the audit/no-write config resolver and `OpenReadOnly`; mutations
-use normal writable loading.
+use normal writable loading. Export and use a stable
+`retrievalchunk.ProjectionVersion` alongside `retrievalchunk.Version` when
+constructing the embedding profile; do not duplicate either identity as a
+command-local string.
 
 - [ ] **Step 4: Verify GREEN**
 

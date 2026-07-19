@@ -426,6 +426,9 @@ Provider policy:
   hot-looping `error`
 - a selected profile includes projection/chunker version as well as the model
   so an incompatible input change cannot reuse vectors accidentally
+- projection and chunker identities are exported by the retrieval projection
+  package and consumed by operational builders; commands must not carry copied
+  version strings that can drift from the content they identify
 
 The first local embedding model should be selected through a small bakeoff on
 reviewed dbrain queries. The architecture does not hard-code a model before
