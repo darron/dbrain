@@ -53,7 +53,7 @@ func (f *Fake) Embed(ctx context.Context, req embedding.Request) (embedding.Resp
 		}
 		response.Vectors[i] = append([]float32(nil), vector...)
 	}
-	if err := embedding.ValidateResponse(req, response); err != nil {
+	if err := embedding.ValidateResponse(f.info, req, response); err != nil {
 		return embedding.Response{}, embedding.FatalConfigError(fmt.Errorf("strict fake response: %w", err))
 	}
 	return response, nil

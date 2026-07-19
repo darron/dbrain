@@ -12,7 +12,10 @@ import (
 	"github.com/darron/dbrain/internal/embedding"
 )
 
-var ErrRetrievalUnavailable = errors.New("retrieval storage is unavailable")
+var (
+	ErrRetrievalUnavailable              = errors.New("retrieval storage is unavailable")
+	ErrRetrievalEmbeddingNoLongerCorrupt = errors.New("retrieval embedding is no longer corrupt")
+)
 
 type RetrievalEmbeddingStatus string
 
@@ -239,13 +242,8 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 			&row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.Text, &currentChunkTextHash); err != nil {
 			return nil, fmt.Errorf("scan ready retrieval embedding: %w", err)
 		}
-		if row.ChunkTextHash != currentChunkTextHash {
-			return nil, retrievalEmbeddingCorruption(row.ChunkID, row.ProfileID, fmt.Sprintf("chunk text hash %q does not match current hash %q", row.ChunkTextHash, currentChunkTextHash))
-		}
-		if err := embedding.ValidateEncodedVector(
-			row.VectorBytes, row.Dimensions, row.Representation, row.Normalization,
-		); err != nil {
-			return nil, retrievalEmbeddingCorruption(row.ChunkID, row.ProfileID, err.Error())
+		if reason := retrievalEmbeddingCorruptionReason(row, currentChunkTextHash); reason != "" {
+			return nil, retrievalEmbeddingCorruption(row.ChunkID, row.ProfileID, reason)
 		}
 		row.NextAttemptAt = parseStoredTime(nextAttemptAt)
 		row.EmbeddedAt = parseStoredTime(embeddedAt)
@@ -257,15 +255,17 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 	return result, nil
 }
 
-// BlockCorruptRetrievalEmbedding is an explicit writable transition for a
-// corruption error returned by ListReadyEmbeddings. Keeping it separate makes
-// read-only consumers non-mutating while allowing builders to quarantine a bad
-// row and invalidate any generation that might contain it.
-func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, chunkID, profileID, reason string) error {
-	chunkID = strings.TrimSpace(chunkID)
-	profileID = strings.TrimSpace(profileID)
-	reason = strings.TrimSpace(reason)
-	if chunkID == "" || profileID == "" || reason == "" {
+// BlockCorruptRetrievalEmbedding explicitly revalidates and transitions the
+// row identified by a ListReadyEmbeddings diagnostic. Keeping it separate makes
+// read-only consumers non-mutating. Revalidation inside the write transaction
+// prevents a stale diagnostic from blocking a row repaired in the meantime.
+func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, corruption *RetrievalEmbeddingCorruptionError) error {
+	if corruption == nil {
+		return fmt.Errorf("retrieval embedding corruption diagnostic is required")
+	}
+	chunkID := strings.TrimSpace(corruption.ChunkID)
+	profileID := strings.TrimSpace(corruption.ProfileID)
+	if chunkID == "" || profileID == "" || strings.TrimSpace(corruption.Reason) == "" {
 		return fmt.Errorf("corrupt retrieval embedding chunk, profile, and reason are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -273,6 +273,29 @@ func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, chunkID, pro
 		return fmt.Errorf("begin corrupt retrieval embedding transition: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var row RetrievalEmbeddingRow
+	var currentChunkTextHash string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT e.provider, e.model, e.dimensions, e.representation, e.normalization,
+			e.vector_bytes, e.chunk_text_hash, e.status, c.chunk_text_hash
+		FROM retrieval_embeddings e
+		JOIN retrieval_chunks c ON c.chunk_id = e.chunk_id
+		WHERE e.chunk_id = ? AND e.profile_id = ?`, chunkID, profileID).Scan(
+		&row.Provider, &row.Model, &row.Dimensions, &row.Representation, &row.Normalization,
+		&row.VectorBytes, &row.ChunkTextHash, &row.Status, &currentChunkTextHash,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: chunk %s profile %s was removed", ErrRetrievalEmbeddingNoLongerCorrupt, chunkID, profileID)
+		}
+		return fmt.Errorf("reload corrupt retrieval embedding for chunk %s profile %s: %w", chunkID, profileID, err)
+	}
+	if row.Status != RetrievalEmbeddingReady {
+		return fmt.Errorf("%w: chunk %s profile %s status is %q", ErrRetrievalEmbeddingNoLongerCorrupt, chunkID, profileID, row.Status)
+	}
+	reason := retrievalEmbeddingCorruptionReason(row, currentChunkTextHash)
+	if reason == "" {
+		return fmt.Errorf("%w: chunk %s profile %s now passes validation", ErrRetrievalEmbeddingNoLongerCorrupt, chunkID, profileID)
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := tx.ExecContext(ctx, `
 		UPDATE retrieval_embeddings
@@ -300,6 +323,23 @@ func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, chunkID, pro
 
 func retrievalEmbeddingCorruption(chunkID, profileID, reason string) error {
 	return &RetrievalEmbeddingCorruptionError{ChunkID: chunkID, ProfileID: profileID, Reason: reason}
+}
+
+func retrievalEmbeddingCorruptionReason(row RetrievalEmbeddingRow, currentChunkTextHash string) string {
+	if err := (embedding.Info{
+		Provider: row.Provider, Model: row.Model, Dimensions: row.Dimensions,
+	}).Validate(); err != nil {
+		return err.Error()
+	}
+	if row.ChunkTextHash != currentChunkTextHash {
+		return fmt.Sprintf("chunk text hash %q does not match current hash %q", row.ChunkTextHash, currentChunkTextHash)
+	}
+	if err := embedding.ValidateEncodedVector(
+		row.VectorBytes, row.Dimensions, row.Representation, row.Normalization,
+	); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 func validRetrievalEmbeddingStatus(status RetrievalEmbeddingStatus) bool {

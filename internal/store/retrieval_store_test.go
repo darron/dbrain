@@ -612,7 +612,8 @@ func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 	if !errors.As(err, &corruption) || corruption.ChunkID != row.ChunkID || corruption.ProfileID != row.ProfileID {
 		t.Fatalf("read corrupt ready vector error = %v, want typed chunk/profile corruption", err)
 	}
-	if err := st.BlockCorruptRetrievalEmbedding(ctx, corruption.ChunkID, corruption.ProfileID, corruption.Reason); err != nil {
+	corruption.Reason = "stale caller reason"
+	if err := st.BlockCorruptRetrievalEmbedding(ctx, corruption); err != nil {
 		t.Fatalf("block corrupt ready vector: %v", err)
 	}
 	var status, lastError string
@@ -626,6 +627,60 @@ func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 	ready, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 10)
 	if err != nil || len(ready) != 0 {
 		t.Fatalf("ready rows after explicit corruption transition = %+v, %v", ready, err)
+	}
+}
+
+func TestBlockCorruptRetrievalEmbeddingDoesNotBlockConcurrentlyRepairedRow(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunk := testRetrievalChunk("repaired-chunk", "item", "item:repaired", 0, "repaired-hash", "alpha")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:repaired", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatalf("replace chunks: %v", err)
+	}
+	row := testEmbedding(chunk.ID, "repaired-profile", chunk.TextHash)
+	if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
+		t.Fatalf("put valid embedding: %v", err)
+	}
+	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
+		GenerationID: "repaired-generation", ProfileID: row.ProfileID,
+		Backend: "exact", BackendVersion: "v1", Dimensions: row.Dimensions,
+		DistanceMetric: "cosine", BuildStatus: RetrievalGenerationCompleted,
+	}); err != nil {
+		t.Fatalf("put active generation: %v", err)
+	}
+	if err := st.ActivateRetrievalIndexGeneration(ctx, "repaired-generation"); err != nil {
+		t.Fatalf("activate generation: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET vector_bytes = X'00000000' WHERE chunk_id = ? AND profile_id = ?`, row.ChunkID, row.ProfileID); err != nil {
+		t.Fatalf("inject corrupt stored vector: %v", err)
+	}
+	_, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 10)
+	var corruption *RetrievalEmbeddingCorruptionError
+	if !errors.As(err, &corruption) {
+		t.Fatalf("read corrupt ready vector error = %v, want typed corruption", err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET vector_bytes = ? WHERE chunk_id = ? AND profile_id = ?`, row.VectorBytes, row.ChunkID, row.ProfileID); err != nil {
+		t.Fatalf("simulate concurrent repair: %v", err)
+	}
+	if err := st.BlockCorruptRetrievalEmbedding(ctx, corruption); !errors.Is(err, ErrRetrievalEmbeddingNoLongerCorrupt) {
+		t.Fatalf("block repaired embedding error = %v, want ErrRetrievalEmbeddingNoLongerCorrupt", err)
+	}
+	var status string
+	if err := st.db.QueryRow(`SELECT status FROM retrieval_embeddings WHERE chunk_id = ? AND profile_id = ?`, row.ChunkID, row.ProfileID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(RetrievalEmbeddingReady) {
+		t.Fatalf("repaired embedding status = %q, want ready", status)
+	}
+	var generationStatus string
+	var active int
+	if err := st.db.QueryRow(`SELECT build_status, active FROM retrieval_index_generations WHERE generation_id = 'repaired-generation'`).Scan(&generationStatus, &active); err != nil {
+		t.Fatal(err)
+	}
+	if generationStatus != string(RetrievalGenerationCompleted) || active != 1 {
+		t.Fatalf("generation after stale diagnostic = status %q active %d, want completed active", generationStatus, active)
 	}
 }
 

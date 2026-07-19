@@ -66,14 +66,27 @@ func ValidateRequest(req Request) error {
 	return nil
 }
 
-func ValidateResponse(req Request, response Response) error {
+func ValidateResponse(expected Info, req Request, response Response) error {
 	if err := ValidateRequest(req); err != nil {
 		return err
 	}
-	if err := (Info{
+	if err := expected.Validate(); err != nil {
+		return fmt.Errorf("invalid expected embedding provenance: %w", err)
+	}
+	actual := Info{
 		Provider: response.Provider, Model: response.Model, Dimensions: response.Dimensions,
-	}).Validate(); err != nil {
+	}
+	if err := actual.Validate(); err != nil {
 		return fmt.Errorf("invalid embedding response provenance: %w", err)
+	}
+	if actual.Provider != expected.Provider {
+		return fmt.Errorf("embedding response provider %q does not match expected provider %q", actual.Provider, expected.Provider)
+	}
+	if actual.Model != expected.Model {
+		return fmt.Errorf("embedding response model %q does not match expected model %q", actual.Model, expected.Model)
+	}
+	if actual.Dimensions != expected.Dimensions {
+		return fmt.Errorf("embedding response dimensions %d do not match expected dimensions %d", actual.Dimensions, expected.Dimensions)
 	}
 	if len(response.Vectors) != len(req.Texts) {
 		return fmt.Errorf("embedding response vector count %d does not match request text count %d", len(response.Vectors), len(req.Texts))

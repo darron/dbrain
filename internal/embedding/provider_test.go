@@ -29,24 +29,51 @@ func TestValidateResponseRequiresExactCardinalityAndFixedDimensions(t *testing.T
 		Provider: "fake", Model: "fake-v1", Dimensions: 2,
 		Vectors: [][]float32{{1, 0}, {0, 1}},
 	}
-	if err := ValidateResponse(req, valid); err != nil {
+	expected := Info{Provider: "fake", Model: "fake-v1", Dimensions: 2}
+	if err := ValidateResponse(expected, req, valid); err != nil {
 		t.Fatalf("valid response: %v", err)
 	}
 
 	wrongCount := valid
 	wrongCount.Vectors = wrongCount.Vectors[:1]
-	if err := ValidateResponse(req, wrongCount); err == nil {
+	if err := ValidateResponse(expected, req, wrongCount); err == nil {
 		t.Fatal("response with wrong vector count unexpectedly succeeded")
 	}
 	wrongDimensions := valid
 	wrongDimensions.Vectors = [][]float32{{1, 0}, {1}}
-	if err := ValidateResponse(req, wrongDimensions); err == nil {
+	if err := ValidateResponse(expected, req, wrongDimensions); err == nil {
 		t.Fatal("response with mixed dimensions unexpectedly succeeded")
 	}
 	invalidInfo := valid
 	invalidInfo.Dimensions = 0
-	if err := ValidateResponse(req, invalidInfo); err == nil {
+	if err := ValidateResponse(expected, req, invalidInfo); err == nil {
 		t.Fatal("response with non-positive dimensions unexpectedly succeeded")
+	}
+}
+
+func TestValidateResponseRequiresExpectedProvenance(t *testing.T) {
+	t.Parallel()
+	req := Request{Purpose: PurposeQuery, Texts: []string{"alpha"}}
+	expected := Info{Provider: "ollama", Model: "nomic-embed-text:latest", Dimensions: 2}
+	valid := Response{
+		Provider: expected.Provider, Model: expected.Model, Dimensions: expected.Dimensions,
+		Vectors: [][]float32{{1, 0}},
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Response)
+	}{
+		{name: "provider", mutate: func(response *Response) { response.Provider = "hosted" }},
+		{name: "exact model", mutate: func(response *Response) { response.Model = "nomic-embed-text:v2" }},
+		{name: "dimensions", mutate: func(response *Response) { response.Dimensions = 3; response.Vectors = [][]float32{{1, 0, 0}} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := valid
+			tc.mutate(&response)
+			if err := ValidateResponse(expected, req, response); err == nil {
+				t.Fatalf("mismatched %s provenance unexpectedly succeeded", tc.name)
+			}
+		})
 	}
 }
 
