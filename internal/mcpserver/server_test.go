@@ -20,10 +20,110 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/audit"
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/store"
 )
+
+func TestResearchPackSchemaValidatesChunkFusionAndShadowArrays(t *testing.T) {
+	fused, distance, raw, contribution := 0.03, 0.1, 7.0, 0.02
+	pack := brainresearch.Pack{
+		SchemaVersion: brainresearch.SchemaVersion, Question: "q", Mode: "evidence_only",
+		QueryPlan: brainresearch.QueryPlan{TextQuery: "q", QueryTerms: []string{}, TagQueries: []string{}, Limit: 1, MaxCharsPerDoc: 100, SemanticMode: semanticconfig.ModeShadow, ShadowComparison: &brainresearch.ShadowComparison{
+			Status: semanticindex.StateSearched, Lexical: []brainresearch.ShadowRankedReference{}, Hybrid: []brainresearch.ShadowRankedReference{}, Added: []brainresearch.ShadowRankedReference{}, Removed: []brainresearch.ShadowRankedReference{}, Reordered: []brainresearch.ShadowRankedReference{},
+		}},
+		Coverage: brainresearch.Coverage{ByKind: []brainresearch.Bucket{}, BySourceType: []brainresearch.Bucket{}},
+		Evidence: []retrieval.EvidenceDocument{{SourceKey: "src", Kind: "source", Title: "t", URL: "u", NotePath: "n", Summary: "s", Excerpt: "e", EvidenceRole: "raw", ContentSections: []retrieval.ContentSection{}, Chunk: &retrieval.EvidenceChunk{ID: "c", ParentSourceKey: "src", ContributingIDs: []string{}}, Retrieval: &retrieval.RetrievalInfo{FusedScore: &fused, Lanes: []retrieval.RetrievalLane{{Name: "semantic", Rank: 1, RawDistance: &distance, RawScore: &raw, Contribution: &contribution}}, Signals: []retrieval.RetrievalSignal{}, MatchedTerms: []string{}, MissingTerms: []string{}}}},
+	}
+	encoded, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateJSONSchemaValue(researchPackOutputSchema(), decoded); err != nil {
+		t.Fatalf("schema validation: %v\n%s", err, encoded)
+	}
+}
+
+func TestResearchPackConfiguredShadowIsTraceFreeAndConflictIsToolError(t *testing.T) {
+	var embedCalled atomic.Bool
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		embedCalled.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	configYAML := "research:\n  semantic:\n    mode: shadow\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	server := New(cfg, st)
+	result, err := server.toolResearchPack(context.Background(), json.RawMessage(`{"question":"agent memory","disable_planner":true,"include_topic_brief":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack := result["structuredContent"].(brainresearch.Pack)
+	if pack.QueryPlan.SemanticMode != semanticconfig.ModeShadow || pack.QueryPlan.ShadowComparison == nil || !embedCalled.Load() {
+		t.Fatalf("shadow pack=%#v embed_called=%t", pack.QueryPlan, embedCalled.Load())
+	}
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "research-runs")); !os.IsNotExist(err) {
+		t.Fatalf("MCP shadow wrote trace directory: %v", err)
+	}
+	_, err = server.toolResearchPack(context.Background(), json.RawMessage(`{"question":"q","use_semantic":true,"disable_semantic":true}`))
+	if !errors.Is(err, semanticconfig.ErrConflictingOverrides) {
+		t.Fatalf("conflict err=%v", err)
+	}
+}
+
+func TestResearchPackConflictWinsBeforeMalformedSemanticConfig(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ConfigPath, []byte("research:\n  semantic:\n    mode: malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	server := New(cfg, st)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dbrain_research_pack","arguments":{"question":"q","use_semantic":true,"disable_semantic":true}}}`
+	var out bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(framedJSON(req)), &out); err != nil {
+		t.Fatal(err)
+	}
+	responses := parseResponses(t, out.Bytes())
+	result := responses[0]["result"].(map[string]interface{})
+	if result["isError"] != true || !strings.Contains(fmt.Sprint(result["content"]), semanticconfig.ErrConflictingOverrides.Error()) || strings.Contains(fmt.Sprint(result["content"]), "malformed") {
+		t.Fatalf("unexpected structured conflict result: %#v", result)
+	}
+}
 
 func TestServerInitializeAndToolsList(t *testing.T) {
 	root := t.TempDir()

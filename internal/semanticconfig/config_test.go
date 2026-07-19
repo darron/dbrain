@@ -1,11 +1,33 @@
 package semanticconfig
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestEffectiveModePrecedenceAndConflict(t *testing.T) {
+	for _, configured := range []Mode{ModeOff, ModeShadow, ModeOn} {
+		got, err := EffectiveMode(configured, false, false)
+		if err != nil || got != configured {
+			t.Fatalf("EffectiveMode(%q, false, false) = %q, %v", configured, got, err)
+		}
+		got, err = EffectiveMode(configured, true, false)
+		if err != nil || got != ModeOn {
+			t.Fatalf("EffectiveMode(%q, true, false) = %q, %v", configured, got, err)
+		}
+		got, err = EffectiveMode(configured, false, true)
+		if err != nil || got != ModeOff {
+			t.Fatalf("EffectiveMode(%q, false, true) = %q, %v", configured, got, err)
+		}
+	}
+	got, err := EffectiveMode(ModeShadow, true, true)
+	if got != "" || !errors.Is(err, ErrConflictingOverrides) {
+		t.Fatalf("conflict = %q, %v", got, err)
+	}
+}
 
 func TestResolveDefaultsKeepSemanticRetrievalOffAndUnconfigured(t *testing.T) {
 	t.Parallel()

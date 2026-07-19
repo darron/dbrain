@@ -30,6 +30,13 @@ func renderMarkdown(trace ResearchTrace) string {
 	if trace.Pack != nil {
 		b.WriteString("\n## Research Pack\n\n")
 		writeMDLine(&b, "Mode", trace.Pack.Mode)
+		writeMDLine(&b, "Semantic mode", string(trace.Pack.QueryPlan.SemanticMode))
+		if comparison := trace.Pack.QueryPlan.ShadowComparison; comparison != nil {
+			writeMDLine(&b, "Shadow status", string(comparison.Status))
+			writeMDLine(&b, "Shadow reason", string(comparison.Reason))
+			writeMDLine(&b, "Shadow counts", fmt.Sprintf("lexical=%d hybrid=%d", comparison.LexicalCount, comparison.HybridCount))
+			writeMDLine(&b, "Shadow rank deltas", fmt.Sprintf("added=%d removed=%d reordered=%d", len(comparison.Added), len(comparison.Removed), len(comparison.Reordered)))
+		}
 		writeMDLine(&b, "Planner", trace.Pack.QueryPlan.Planner)
 		writeMDLine(&b, "Planner model", trace.Pack.QueryPlan.PlannerModel)
 		writeMDLine(&b, "Planner error", trace.Pack.QueryPlan.PlannerError)

@@ -9,10 +9,17 @@ import (
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/entities"
 	"github.com/darron/dbrain/internal/researchhybrid"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
 )
 
 const exactTagPrimaryBoost = 64
+
+const (
+	shadowReasonRetrieverMissing semanticindex.StatusReason = "retriever_missing"
+	shadowReasonFiltersDisjoint  semanticindex.StatusReason = "filters_disjoint"
+	shadowReasonSearchedEmpty    semanticindex.StatusReason = "searched_empty"
+)
 
 type scoredResearchEvidence struct {
 	doc   ask.Evidence
@@ -33,7 +40,8 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 	legacyPerVariantLimit := max(limit, 8)
 	perVariantLimit := legacyPerVariantLimit
 	semanticSourceTypes, semanticFiltersCompatible := intersectSemanticSourceTypes(b.semanticOptions.Filters.AllowedSourceTypes, opts.SourceTypes)
-	semanticActive := opts.UseSemantic && !opts.DisableSemantic && b.semanticRetriever != nil && semanticFiltersCompatible
+	semanticRequested := (b.semanticMode != semanticconfig.ModeOff || opts.UseSemantic) && !opts.DisableSemantic
+	semanticActive := semanticRequested && b.semanticRetriever != nil && semanticFiltersCompatible
 	deepResponses := make([]ask.Response, len(variants))
 	poolFailed := false
 	entityIndex, err := entities.BuildIndex(ctx, b.st)
@@ -148,6 +156,10 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 	}
 
 	baseline := orderedScoredEvidence(baselineSeen, anchors)
+	comparisonLexical := make([]ask.Evidence, 0, len(baseline))
+	for _, scored := range baseline {
+		comparisonLexical = append(comparisonLexical, scored.doc)
+	}
 	if len(baseline) > limit {
 		baseline = baseline[:limit]
 	}
@@ -155,10 +167,19 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 	for _, scored := range baseline {
 		out = append(out, scored.doc)
 	}
-	if !opts.UseSemantic || opts.DisableSemantic || b.semanticRetriever == nil || !semanticFiltersCompatible {
+	if !semanticRequested {
+		return out, nil
+	}
+	if b.semanticRetriever == nil {
+		b.setShadowComparison(comparisonLexical, comparisonLexical, semanticindex.Status{State: semanticindex.StateUnavailable, Reason: shadowReasonRetrieverMissing})
+		return out, nil
+	}
+	if !semanticFiltersCompatible {
+		b.setShadowComparison(comparisonLexical, comparisonLexical, semanticindex.Status{State: semanticindex.StateUnavailable, Reason: shadowReasonFiltersDisjoint})
 		return out, nil
 	}
 	if poolFailed {
+		b.setShadowComparison(comparisonLexical, comparisonLexical, semanticindex.Status{State: semanticindex.StateUnavailable, Reason: semanticindex.ReasonSearchError})
 		return out, nil
 	}
 	query := canonicalSemanticQuery(strategy, hints, opts.Question)
@@ -169,9 +190,17 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		if errors.Is(semanticErr, context.Canceled) || errors.Is(semanticErr, context.DeadlineExceeded) || ctx.Err() != nil {
 			return nil, semanticErr
 		}
+		if status.State == "" {
+			status = semanticindex.Status{State: semanticindex.StateUnavailable, Reason: semanticindex.ReasonSearchError}
+		}
+		b.setShadowComparison(comparisonLexical, comparisonLexical, status)
 		return out, nil
 	}
 	if status.State != semanticindex.StateSearched || len(semanticRows) == 0 {
+		if status.State == semanticindex.StateSearched && status.Reason == "" {
+			status.Reason = shadowReasonSearchedEmpty
+		}
+		b.setShadowComparison(comparisonLexical, comparisonLexical, status)
 		return out, nil
 	}
 	deepSeen := map[string]scoredResearchEvidence{}
@@ -198,7 +227,70 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		lexical = append(lexical, scored.doc)
 	}
 	protected := protectedSourceKeys(lexical, semanticRows, anchors)
+	hybridWindow := researchhybrid.Fuse(lexical, semanticRows, researchhybrid.DefaultFusedCandidateWindow, maxChars, protected)
+	b.setShadowComparison(comparisonLexical, hybridWindow, status)
+	if b.semanticMode == semanticconfig.ModeShadow {
+		return out, nil
+	}
 	return researchhybrid.Fuse(lexical, semanticRows, limit, maxChars, protected), nil
+}
+
+func (b *Builder) setShadowComparison(lexical, hybrid []ask.Evidence, status semanticindex.Status) {
+	statusCopy := status
+	b.semanticStatus = &statusCopy
+	if b.semanticMode != semanticconfig.ModeShadow {
+		return
+	}
+	b.shadowComparison = buildShadowComparison(lexical, hybrid, status)
+}
+
+func buildShadowComparison(lexical, hybrid []ask.Evidence, status semanticindex.Status) *ShadowComparison {
+	lexicalRefs := shadowReferences(lexical)
+	hybridRefs := shadowReferences(hybrid)
+	comparison := &ShadowComparison{
+		Status: status.State, Reason: status.Reason,
+		LexicalCount: len(lexical), HybridCount: len(hybrid),
+		Lexical: lexicalRefs, Hybrid: hybridRefs,
+		Added: make([]ShadowRankedReference, 0), Removed: make([]ShadowRankedReference, 0), Reordered: make([]ShadowRankedReference, 0),
+	}
+	lexicalRanks := make(map[string]int, len(lexicalRefs))
+	hybridRanks := make(map[string]int, len(hybridRefs))
+	for _, ref := range lexicalRefs {
+		lexicalRanks[shadowReferenceKey(ref)] = ref.Rank
+	}
+	for _, ref := range hybridRefs {
+		key := shadowReferenceKey(ref)
+		hybridRanks[key] = ref.Rank
+		if _, ok := lexicalRanks[key]; !ok {
+			comparison.Added = append(comparison.Added, ref)
+		} else if lexicalRanks[key] != ref.Rank {
+			comparison.Reordered = append(comparison.Reordered, ref)
+		}
+	}
+	for _, ref := range lexicalRefs {
+		if _, ok := hybridRanks[shadowReferenceKey(ref)]; !ok {
+			comparison.Removed = append(comparison.Removed, ref)
+		}
+	}
+	return comparison
+}
+
+func shadowReferences(rows []ask.Evidence) []ShadowRankedReference {
+	limit := min(len(rows), researchhybrid.DefaultFusedCandidateWindow)
+	out := make([]ShadowRankedReference, 0, limit)
+	for i := 0; i < limit; i++ {
+		row := rows[i]
+		ref := ShadowRankedReference{SourceKey: strings.TrimSpace(row.SourceKey), Rank: i + 1}
+		if row.Chunk != nil {
+			ref.ChunkID = strings.TrimSpace(row.Chunk.ID)
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func shadowReferenceKey(ref ShadowRankedReference) string {
+	return ref.SourceKey + "\x00" + ref.ChunkID
 }
 
 func updateScoredEvidence(seen map[string]scoredResearchEvidence, scored scoredResearchEvidence, order *int) {

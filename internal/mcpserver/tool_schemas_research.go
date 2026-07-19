@@ -35,17 +35,48 @@ func researchQueryPlanSchema() map[string]interface{} {
 		"topic":               scalarSchema("string", "Topic used for the topic brief when present."),
 		"topic_source":        scalarSchema("string", "How the topic was selected: explicit, inferred, or normalized_question."),
 		"include_topic_brief": scalarSchema("boolean", "Whether a topic brief was requested for this pack."),
+		"semantic_mode":       enumSchema("Effective semantic retrieval mode.", "off", "shadow", "on"),
+		"shadow_comparison":   shadowComparisonSchema(),
 	}, "text_query", "query_terms", "tag_queries", "limit", "max_chars_per_doc", "include_related", "include_topic_brief")
 }
 
 func retrievalLaneSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
-		"name":     scalarSchema("string", "Retrieval lane name, such as lexical, exact_tag, graph_related, entity, or semantic."),
-		"status":   scalarSchema("string", "Lane status, such as used or disabled."),
-		"reason":   scalarSchema("string", "Why the lane was disabled or included."),
-		"provider": scalarSchema("string", "Provider used by the lane when applicable."),
-		"store":    scalarSchema("string", "Vector or index store used by the lane when applicable."),
+		"name":         scalarSchema("string", "Retrieval lane name, such as lexical, exact_tag, graph_related, entity, or semantic."),
+		"status":       scalarSchema("string", "Lane status, such as used or disabled."),
+		"reason":       scalarSchema("string", "Why the lane was disabled or included."),
+		"provider":     scalarSchema("string", "Provider used by the lane when applicable."),
+		"store":        scalarSchema("string", "Vector or index store used by the lane when applicable."),
+		"rank":         scalarSchema("integer", "One-based lane rank."),
+		"raw_distance": scalarSchema("number", "Raw semantic distance."),
+		"raw_score":    scalarSchema("number", "Raw lexical score."),
+		"contribution": scalarSchema("number", "Fusion contribution."),
+		"profile":      scalarSchema("string", "Embedding profile identifier."),
+		"backend":      scalarSchema("string", "Retrieval backend."),
+		"generation":   scalarSchema("string", "Index generation identifier."),
 	}, "name")
+}
+
+func shadowComparisonSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"status":        scalarSchema("string", "Effective bounded comparison status."),
+		"reason":        scalarSchema("string", "Stable content-free reason code."),
+		"lexical_count": scalarSchema("integer", "Full lexical candidate count."),
+		"hybrid_count":  scalarSchema("integer", "Full hybrid candidate count."),
+		"lexical":       arraySchema(shadowRankedReferenceSchema()),
+		"hybrid":        arraySchema(shadowRankedReferenceSchema()),
+		"added":         arraySchema(shadowRankedReferenceSchema()),
+		"removed":       arraySchema(shadowRankedReferenceSchema()),
+		"reordered":     arraySchema(shadowRankedReferenceSchema()),
+	}, "status", "lexical_count", "hybrid_count", "lexical", "hybrid", "added", "removed", "reordered")
+}
+
+func shadowRankedReferenceSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"source_key": scalarSchema("string", "Stable parent source key."),
+		"chunk_id":   scalarSchema("string", "Optional stable primary chunk identifier."),
+		"rank":       scalarSchema("integer", "One-based rank."),
+	}, "source_key", "rank")
 }
 
 func researchQueryVariantSchema() map[string]interface{} {

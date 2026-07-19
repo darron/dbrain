@@ -14,11 +14,13 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/feedimport"
@@ -30,6 +32,7 @@ import (
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/semanticbuild"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
@@ -38,6 +41,52 @@ import (
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
+
+func TestResearchCommandConfiguredSemanticModesAndOverrides(t *testing.T) {
+	var calls atomic.Int64
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	run := func(mode string, flags ...string) (brainresearch.Pack, int) {
+		root := t.TempDir()
+		cfg, err := config.Load(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+		yaml := "research:\n  semantic:\n    mode: " + mode + "\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
+		if err := os.WriteFile(cfg.ConfigPath, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := calls.Load()
+		args := []string{"research", "agent memory", "--retrieval-only", "--no-trace", "--no-planner", "--json"}
+		args = append(args, flags...)
+		output := runRootCommand(t, root, args...)
+		var pack brainresearch.Pack
+		if err := json.Unmarshal([]byte(output), &pack); err != nil {
+			t.Fatalf("decode pack: %v\n%s", err, output)
+		}
+		return pack, int(calls.Load() - before)
+	}
+	off, offCalls := run("off")
+	shadow, shadowCalls := run("shadow")
+	on, onCalls := run("on")
+	forcedOn, forcedOnCalls := run("off", "--semantic")
+	forcedOff, forcedOffCalls := run("shadow", "--no-semantic")
+	if off.QueryPlan.SemanticMode != semanticconfig.ModeOff || offCalls != 0 || shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadowCalls != 1 || shadow.QueryPlan.ShadowComparison == nil || on.QueryPlan.SemanticMode != semanticconfig.ModeOn || onCalls != 1 || forcedOn.QueryPlan.SemanticMode != semanticconfig.ModeOn || forcedOnCalls != 1 || forcedOff.QueryPlan.SemanticMode != semanticconfig.ModeOff || forcedOffCalls != 0 {
+		t.Fatalf("modes/calls off=%s/%d shadow=%s/%d on=%s/%d forcedOn=%s/%d forcedOff=%s/%d", off.QueryPlan.SemanticMode, offCalls, shadow.QueryPlan.SemanticMode, shadowCalls, on.QueryPlan.SemanticMode, onCalls, forcedOn.QueryPlan.SemanticMode, forcedOnCalls, forcedOff.QueryPlan.SemanticMode, forcedOffCalls)
+	}
+	root := t.TempDir()
+	_, _, err := runRootCommandErr(t, root, "research", "q", "--semantic", "--no-semantic")
+	if err == nil || !strings.Contains(err.Error(), "--semantic and --no-semantic") {
+		t.Fatalf("conflict err=%v", err)
+	}
+}
 
 func TestRepairPrunedMediaCommandDryRunUsesReadOnlyStore(t *testing.T) {
 	root := t.TempDir()

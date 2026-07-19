@@ -256,6 +256,9 @@ func schemaTypeMatches(raw interface{}, value interface{}) bool {
 	case "integer":
 		number, ok := value.(float64)
 		return ok && number >= 0 && number == math.Trunc(number)
+	case "number":
+		_, ok := value.(float64)
+		return ok
 	case "null":
 		return value == nil
 	case "":

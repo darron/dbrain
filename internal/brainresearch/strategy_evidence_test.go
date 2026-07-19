@@ -1,15 +1,19 @@
 package brainresearch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/researchhybrid"
 	"github.com/darron/dbrain/internal/researchsemantic"
 	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
 )
 
@@ -151,6 +155,85 @@ func TestCollectStrategyEvidenceSuccessfulSemanticUsesOneCandidatePoolCallPerVar
 	}
 }
 
+func TestShadowReturnsExactLexicalEvidenceAndBoundedContentFreeComparison(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	legacy := []ask.Evidence{{SourceKey: "legacy:b", Excerpt: "private lexical b"}, {SourceKey: "legacy:a", Excerpt: "private lexical a"}}
+	semanticRows := []retrieval.EvidenceDocument{chunkEvidence("semantic:new", "chunk:new")}
+	build := func(mode semanticconfig.Mode) (Pack, int, int, error) {
+		fake := &fakeSemanticRetriever{rows: semanticRows, status: semanticindex.Status{State: semanticindex.StateSearched}}
+		b := New(config.Config{}, st).WithSemanticMode(mode).WithSemanticRetriever(fake, researchsemantic.Options{})
+		poolCalls := 0
+		lexicalCalls := 0
+		b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+			poolCalls++
+			return ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}, ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}, nil
+		}
+		b.strategyRunner = func(context.Context, string, ask.Options) (ask.Response, error) {
+			lexicalCalls++
+			return ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}, nil
+		}
+		pack, err := b.Build(context.Background(), Options{Question: "one", Limit: 8, DisablePlanner: true})
+		return pack, poolCalls, lexicalCalls, err
+	}
+	off, offPoolCalls, offLexicalCalls, err := build(semanticconfig.ModeOff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offPoolCalls != 0 || offLexicalCalls != 1 {
+		t.Fatalf("off calls: pool=%d lexical=%d", offPoolCalls, offLexicalCalls)
+	}
+	shadow, calls, shadowLexicalCalls, err := build(semanticconfig.ModeShadow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || shadowLexicalCalls != 0 {
+		t.Fatalf("shadow calls: pool=%d lexical=%d", calls, shadowLexicalCalls)
+	}
+	if !reflect.DeepEqual(shadow.Evidence, off.Evidence) {
+		t.Fatalf("shadow evidence changed: shadow=%#v off=%#v", shadow.Evidence, off.Evidence)
+	}
+	if shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadow.QueryPlan.ShadowComparison == nil {
+		t.Fatalf("query plan = %#v", shadow.QueryPlan)
+	}
+	comparison := shadow.QueryPlan.ShadowComparison
+	if comparison.Status != semanticindex.StateSearched || comparison.LexicalCount != 2 || comparison.HybridCount != 3 {
+		t.Fatalf("comparison = %#v", comparison)
+	}
+	if comparison.Lexical == nil || comparison.Hybrid == nil || comparison.Added == nil || comparison.Removed == nil || comparison.Reordered == nil {
+		t.Fatalf("comparison arrays must be non-null: %#v", comparison)
+	}
+	encoded, err := json.Marshal(comparison)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"private lexical"} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("comparison leaked content %q: %s", secret, encoded)
+		}
+	}
+	if len(comparison.Added) != 1 || comparison.Added[0].SourceKey != "semantic:new" || comparison.Added[0].ChunkID != "chunk:new" || comparison.Added[0].Rank < 1 {
+		t.Fatalf("allowed stable diagnostics missing: %#v", comparison.Added)
+	}
+	if len(comparison.Lexical) > researchhybrid.DefaultFusedCandidateWindow || len(comparison.Hybrid) > researchhybrid.DefaultFusedCandidateWindow {
+		t.Fatalf("comparison is unbounded: %#v", comparison)
+	}
+	synthesisCfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	offPrepared, err := PrepareSynthesis(synthesisCfg, SynthesisOptions{Pack: off, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowPrepared, err := PrepareSynthesis(synthesisCfg, SynthesisOptions{Pack: shadow, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offPrepared.Input != shadowPrepared.Input || !reflect.DeepEqual(offPrepared.Citations, shadowPrepared.Citations) {
+		t.Fatalf("shadow changed synthesis input\noff=%q\nshadow=%q", offPrepared.Input, shadowPrepared.Input)
+	}
+}
+
 func TestCollectStrategyEvidenceReturnsLegacyFallbackErrorAfterPoolFailure(t *testing.T) {
 	_, st := inspectionTestStore(t)
 	poolErr := errors.New("pool failed")
@@ -192,5 +275,131 @@ func TestCollectStrategyEvidenceSemanticFailureModesFailOpenAndCancellationPropa
 	_, err := New(config.Config{}, st).WithSemanticRetriever(fake, researchsemantic.Options{}).collectStrategyEvidence(context.Background(), strategy, hints, opts, 5, 100, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestShadowComparisonDistinguishesUnavailableAndSearchedEmpty(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	strategy := researchStrategy{Variants: []QueryVariant{{Query: "one"}}}
+	legacy := ask.Response{Evidence: []ask.Evidence{{SourceKey: "legacy"}}}
+	build := func(retriever SemanticRetriever, filters []string) *Builder {
+		b := New(config.Config{}, st).WithSemanticMode(semanticconfig.ModeShadow).WithSemanticRetriever(retriever, researchsemantic.Options{Filters: semanticindex.Filters{AllowedSourceTypes: filters}})
+		b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+			return legacy, legacy, nil
+		}
+		return b
+	}
+	missing := build(nil, nil)
+	if _, err := missing.collectStrategyEvidence(context.Background(), strategy, ask.QueryHints{}, Options{Question: "one"}, 5, 100, nil); err != nil || missing.shadowComparison == nil || missing.shadowComparison.Status != semanticindex.StateUnavailable || missing.shadowComparison.Reason != shadowReasonRetrieverMissing {
+		t.Fatalf("missing comparison=%#v err=%v", missing.shadowComparison, err)
+	}
+	disjoint := build(&fakeSemanticRetriever{}, []string{"article"})
+	if _, err := disjoint.collectStrategyEvidence(context.Background(), strategy, ask.QueryHints{}, Options{Question: "one", SourceTypes: []string{"x"}}, 5, 100, nil); err != nil || disjoint.shadowComparison == nil || disjoint.shadowComparison.Reason != shadowReasonFiltersDisjoint {
+		t.Fatalf("disjoint comparison=%#v err=%v", disjoint.shadowComparison, err)
+	}
+	empty := build(&fakeSemanticRetriever{status: semanticindex.Status{State: semanticindex.StateSearched}}, nil)
+	if _, err := empty.collectStrategyEvidence(context.Background(), strategy, ask.QueryHints{}, Options{Question: "one"}, 5, 100, nil); err != nil || empty.shadowComparison == nil || empty.shadowComparison.Status != semanticindex.StateSearched || empty.shadowComparison.Reason != shadowReasonSearchedEmpty {
+		t.Fatalf("empty comparison=%#v err=%v", empty.shadowComparison, err)
+	}
+}
+
+func TestOnModeReportsFailOpenSemanticLaneOutcome(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	for _, tc := range []struct {
+		name       string
+		status     semanticindex.Status
+		wantStatus string
+		wantReason string
+	}{
+		{"unavailable", semanticindex.Status{State: semanticindex.StateUnavailable, Reason: semanticindex.ReasonProviderUnavailable}, researchhybrid.StatusDisabled, string(semanticindex.ReasonProviderUnavailable)},
+		{"searched empty", semanticindex.Status{State: semanticindex.StateSearched}, researchhybrid.StatusUsed, string(shadowReasonSearchedEmpty)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := New(config.Config{}, st).WithSemanticMode(semanticconfig.ModeOn).WithSemanticRetriever(&fakeSemanticRetriever{status: tc.status}, researchsemantic.Options{})
+			b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+				legacy := ask.Response{Evidence: []ask.Evidence{{SourceKey: "legacy"}}}
+				return legacy, legacy, nil
+			}
+			pack, err := b.Build(context.Background(), Options{Question: "one", DisablePlanner: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var semantic retrieval.RetrievalLane
+			for _, lane := range pack.QueryPlan.RetrievalLanes {
+				if lane.Name == researchhybrid.LaneSemantic {
+					semantic = lane
+				}
+			}
+			if semantic.Status != tc.wantStatus || semantic.Reason != tc.wantReason || pack.QueryPlan.ShadowComparison != nil {
+				t.Fatalf("semantic lane=%#v comparison=%#v", semantic, pack.QueryPlan.ShadowComparison)
+			}
+		})
+	}
+}
+
+func TestShadowModeReportsTruthfulLaneWithoutChangingLexicalEvidence(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	legacy := []ask.Evidence{{SourceKey: "legacy:one", Excerpt: "lexical evidence"}}
+	for _, tc := range []struct {
+		name       string
+		status     semanticindex.Status
+		rows       []retrieval.EvidenceDocument
+		wantStatus string
+		wantReason string
+	}{
+		{"searched", semanticindex.Status{State: semanticindex.StateSearched, Backend: semanticindex.BackendExact, ProfileID: "profile", GenerationID: "generation"}, []retrieval.EvidenceDocument{chunkEvidence("semantic:new", "chunk:new")}, researchhybrid.StatusUsed, ""},
+		{"unavailable", semanticindex.Status{State: semanticindex.StateUnavailable, Reason: semanticindex.ReasonProviderUnavailable, Backend: semanticindex.BackendExact, ProfileID: "profile"}, nil, researchhybrid.StatusDisabled, string(semanticindex.ReasonProviderUnavailable)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := func(mode semanticconfig.Mode) Pack {
+				b := New(config.Config{}, st).WithSemanticMode(mode).WithSemanticRetriever(&fakeSemanticRetriever{status: tc.status, rows: tc.rows}, researchsemantic.Options{})
+				b.strategyRunner = func(context.Context, string, ask.Options) (ask.Response, error) {
+					return ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}, nil
+				}
+				b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+					response := ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}
+					return response, response, nil
+				}
+				pack, err := b.Build(context.Background(), Options{Question: "one", DisablePlanner: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return pack
+			}
+			off, shadow := build(semanticconfig.ModeOff), build(semanticconfig.ModeShadow)
+			if !reflect.DeepEqual(off.Evidence, shadow.Evidence) {
+				t.Fatalf("shadow evidence changed: off=%#v shadow=%#v", off.Evidence, shadow.Evidence)
+			}
+			var lane retrieval.RetrievalLane
+			for _, candidate := range shadow.QueryPlan.RetrievalLanes {
+				if candidate.Name == researchhybrid.LaneSemantic {
+					lane = candidate
+				}
+			}
+			if lane.Status != tc.wantStatus || lane.Reason != tc.wantReason || lane.Backend != semanticindex.BackendExact || lane.Profile != "profile" || (tc.name == "searched" && lane.Generation != "generation") {
+				t.Fatalf("shadow semantic lane=%#v", lane)
+			}
+		})
+	}
+}
+
+func TestOnModeSmallLimitRetainsProtectedSemanticEvidence(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	protectedKey := "x:protected"
+	fake := &fakeSemanticRetriever{status: semanticindex.Status{State: semanticindex.StateSearched}, rows: []retrieval.EvidenceDocument{
+		chunkEvidence("semantic:distractor", "chunk:distractor"),
+		chunkEvidence(protectedKey, "chunk:protected"),
+	}}
+	b := New(config.Config{}, st).WithSemanticMode(semanticconfig.ModeOn).WithSemanticRetriever(fake, researchsemantic.Options{})
+	b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+		legacy := ask.Response{Evidence: []ask.Evidence{{SourceKey: "lexical:one"}, {SourceKey: "lexical:two"}}}
+		return legacy, legacy, nil
+	}
+	rows, err := b.collectStrategyEvidence(context.Background(), researchStrategy{Variants: []QueryVariant{{Query: "one"}}}, ask.QueryHints{}, Options{Question: "one"}, 1, 100, []ProtectedAnchor{anchorFromSourceKey(protectedKey, "current_user_text")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].SourceKey != protectedKey {
+		t.Fatalf("protected evidence was dropped at small limit: %#v", rows)
 	}
 }

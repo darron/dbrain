@@ -1,6 +1,7 @@
 package semanticconfig
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -22,6 +23,21 @@ const (
 	ProviderOllama    Provider     = "ollama"
 	IndexBackendExact IndexBackend = "exact"
 )
+
+var ErrConflictingOverrides = errors.New("semantic enable and disable overrides conflict")
+
+func EffectiveMode(configured Mode, forceOn, forceOff bool) (Mode, error) {
+	if forceOn && forceOff {
+		return "", ErrConflictingOverrides
+	}
+	if forceOn {
+		return ModeOn, nil
+	}
+	if forceOff {
+		return ModeOff, nil
+	}
+	return configured, nil
+}
 
 type Config struct {
 	Mode                   Mode

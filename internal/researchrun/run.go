@@ -11,6 +11,7 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/researchtrace"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -23,6 +24,9 @@ const (
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Question) == "" {
 		return Result{}, fmt.Errorf("question is required")
+	}
+	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, opts.UseSemantic, opts.DisableSemantic); err != nil {
+		return Result{}, err
 	}
 	r := newRunner(ctx, cfg, st, opts)
 	defer r.cancel()
@@ -284,26 +288,27 @@ func (r *runner) buildPack(includeRelated bool, question string, attempt string)
 	ctx, cancel := r.stageContext()
 	defer cancel()
 	return brainresearch.Build(ctx, r.cfg, r.st, brainresearch.Options{
-		Question:          question,
-		RawQuestion:       r.rawQuestion(),
-		Topic:             r.opts.Topic,
-		Limit:             r.opts.Limit,
-		SourceTypes:       r.opts.SourceTypes,
-		IncludeRelated:    includeRelated,
-		RelatedLimit:      r.opts.RelatedLimit,
-		SeedLimit:         r.opts.SeedLimit,
-		IncludeTopic:      r.opts.IncludeTopic,
-		MaxCharsPerDoc:    r.opts.MaxCharsPerDoc,
-		PlannerModel:      r.opts.PlannerModel,
-		PlannerTimeout:    r.opts.PlannerTimeout,
-		PlannerBinary:     r.opts.PlannerBinary,
-		UseModelPlanner:   r.opts.UseModelPlanner,
-		DisablePlanner:    r.opts.DisablePlanner,
-		UseSemantic:       r.opts.UseSemantic,
-		DisableSemantic:   r.opts.DisableSemantic,
-		ContinuityAnchors: r.continuityAnchors(),
-		Attempt:           attempt,
-		Observer:          r.recorder,
+		Question:              question,
+		RawQuestion:           r.rawQuestion(),
+		Topic:                 r.opts.Topic,
+		Limit:                 r.opts.Limit,
+		SourceTypes:           r.opts.SourceTypes,
+		IncludeRelated:        includeRelated,
+		RelatedLimit:          r.opts.RelatedLimit,
+		SeedLimit:             r.opts.SeedLimit,
+		IncludeTopic:          r.opts.IncludeTopic,
+		MaxCharsPerDoc:        r.opts.MaxCharsPerDoc,
+		PlannerModel:          r.opts.PlannerModel,
+		PlannerTimeout:        r.opts.PlannerTimeout,
+		PlannerBinary:         r.opts.PlannerBinary,
+		UseModelPlanner:       r.opts.UseModelPlanner,
+		DisablePlanner:        r.opts.DisablePlanner,
+		UseSemantic:           r.opts.UseSemantic,
+		DisableSemantic:       r.opts.DisableSemantic,
+		EffectiveSemanticMode: r.opts.EffectiveSemanticMode,
+		ContinuityAnchors:     r.continuityAnchors(),
+		Attempt:               attempt,
+		Observer:              r.recorder,
 	})
 }
 
