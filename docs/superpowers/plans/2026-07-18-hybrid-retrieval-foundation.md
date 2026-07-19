@@ -395,8 +395,9 @@ git commit --no-gpg-sign -m "feat: add portable embedding contracts"
 - [ ] **Step 1: Write failing config and HTTP tests**
 
 Test precedence, invalid mode, default off, default provider Ollama, missing
-model as not configured, hosted rejection, ordered batch input, `truncate:false`,
-redirect/proxy disabling, cardinality, and typed HTTP/context failures.
+model or positive dimensions as not configured, hosted rejection, ordered batch
+input, configured `dimensions`, `truncate:false`, redirect/proxy disabling,
+cardinality, response model/dimension mismatch, and typed HTTP/context failures.
 
 - [ ] **Step 2: Verify RED**
 
@@ -412,13 +413,17 @@ research:
     mode: off
     provider: ollama
     model: ""
+    dimensions: 0
     index_backend: exact
     candidate_depth: 50
     exact_fallback_max_chunks: 25000
 ```
 
 Document matching `DBRAIN_RESEARCH_SEMANTIC_*` keys in `config env` and both
-sample files. Use a dedicated HTTP client; do not route through Chat.
+sample files. A configured non-off profile requires positive dimensions before
+any profile-scoped selector runs; send that value to Ollama and reject a
+different response width. Use a dedicated HTTP client; do not route through
+Chat.
 
 - [ ] **Step 4: Verify GREEN**
 

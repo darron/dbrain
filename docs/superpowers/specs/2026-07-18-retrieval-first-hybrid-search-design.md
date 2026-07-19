@@ -675,7 +675,12 @@ user-facing opt-in and debugging override. MCP retains `use_semantic` and
 
 Configuration should live under a coherent `research.semantic` namespace and
 support environment-variable parity. Required settings include mode, provider,
-model/profile, index backend, candidate depth, and safe exact-fallback policy.
+exact model, positive embedding dimensions, index backend, candidate depth, and
+safe exact-fallback policy. Dimensions are part of the embedding profile and
+must be resolved before selecting rows for that profile; v1 therefore requires
+them explicitly instead of inferring them from the first indexed batch. The
+Ollama adapter sends the configured dimension count on every `/api/embed`
+request and rejects a response whose model or vector width differs.
 The implementation plan must update `config env`, sample config, CLI help,
 MCP schemas, and the installed `dbrain-mcp` skill where behavior is exposed.
 
