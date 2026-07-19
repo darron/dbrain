@@ -12,6 +12,7 @@ web/ui/node_modules/
 /.superpowers/
 /.worktrees/
 /tmp/
+/cache/
 /okf/
 evals/local/*.json
 !evals/local/.gitkeep

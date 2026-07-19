@@ -64,6 +64,22 @@ Important local research cases should usually exist in two forms: one planner
 enabled case for normal behavior and one `disable_planner` baseline case so
 planner outages do not collapse retrieval quality.
 
+For semantic evaluation, retain the lexical baseline and compare it with both
+`shadow` and `on`. `shadow` must keep returned evidence/order and synthesis
+lexical-identical while exposing a bounded, content-free
+`query_plan.shadow_comparison`; `on` may change rank through RRF but must retain
+protected evidence plus `evidence_role`, `chunk`, `content_sections`,
+`retrieval.fused_score`, and retrieval-lane provenance. Treat a semantic lane
+that reports provider/search failure or `too_large` (default exact-scan cap:
+25,000 active chunks) as an expected lexical fail-open, not as successful
+semantic use. Keep corpus-specific cases under ignored `evals/local/*.json`.
+
+Research eval cases inherit `research.semantic.mode` and can set
+`use_semantic`, `disable_semantic`, or a typed `effective_semantic_mode` for
+trace replay. MCP calls use `use_semantic`/`disable_semantic`; the boolean pair
+is force-on/off, and enabling plus disabling together is an error. Direct MCP
+research-pack checks must remain trace-free, including in shadow mode.
+
 Useful `expect_query_family` values:
 
 - `entity_topic_overview`

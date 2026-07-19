@@ -37,7 +37,8 @@ plan below uses the current external MCP-agent workflow as the target shape:
 trace every run, turn transcripts into evals, keep planner-disabled retrieval
 strong, make Chat the default web surface, add a bounded server-side research
 state machine, show progress while the harness works, improve long-source
-evidence, and only then add optional local semantic retrieval.
+evidence, and evaluate the now-shipped optional local semantic foundation
+against lexical baselines before expanding it.
 
 Proposed product decisions for this plan:
 
@@ -48,7 +49,8 @@ Proposed product decisions for this plan:
   diagnostics, and evals still use them.
 - User-facing research always synthesizes an answer. Retrieval-only paths remain
   useful for debugging and eval plumbing, but not as the main product mode.
-- Traces are saved by default for now so harness changes have evidence.
+- Runner-backed CLI/web traces are saved by default for now so harness changes
+  have evidence; direct MCP research-pack calls are trace-free.
 - Evals are not a side project. They are the main feedback loop for improving
   retrieval, synthesis, and citation behavior over time.
 - The user's saved dbrain corpus is evidence for the user's own research. The
@@ -186,9 +188,10 @@ The harness is a shared research pipeline:
 2. Build a deterministic query strategy.
 3. Optionally call a configured model for a bounded query plan.
 4. Merge model-assisted concepts and variants into the deterministic strategy.
-5. Run retrieve-only searches for each query variant.
-6. Rerank evidence by retrieval score, query-variant signal, and concept
-   coverage.
+5. Run retrieve-only lexical searches for each query variant and, when the
+   effective mode is `shadow` or `on`, run the configured local semantic lane.
+6. Keep lexical ordering in shadow mode or RRF-fuse lexical and semantic
+   candidates in on mode, retaining lane provenance and protected evidence.
 7. Hydrate a bounded top-evidence window from authoritative local storage and
    rerank that window by direct/raw support without changing retrieval scores.
 8. Add exact-tag evidence and corpus coverage.
@@ -200,10 +203,13 @@ The harness is a shared research pipeline:
 The pack schema is typed in `internal/brainresearch/types.go`. It includes:
 
 - `query_plan`: text query, query terms, tag queries, query variants, concepts,
-  planner name, planner model/error, filters, limits, and topic flags.
+  planner name, planner model/error, filters, limits, topic flags, effective
+  `semantic_mode`, retrieval lanes, and optional bounded `shadow_comparison`.
 - `coverage`: evidence count, kind/source-type buckets, top user tags, exact
   tag matches, corpus match counts, topic graph counts, and a recall note.
-- `evidence`: ranked item/source evidence rows from `internal/ask`.
+- `evidence`: ranked item/source evidence rows from `internal/ask`, including
+  evidence role, chunk/content-section metadata, optional fused score, and
+  full per-lane provenance when applicable.
 - `exact_tag_evidence`: representative exact user-tag matches.
 - `topic_brief`: optional topic graph summary and pivots.
 - `next_steps`: suggested follow-up tool actions such as inspecting top
@@ -554,8 +560,9 @@ evals can be compared without hidden default drift.
 ### Local-First Semantics
 
 The harness reads the local SQLite/vault corpus and can use local Ollama models.
-Hosted providers are configurable, but the design does not require a SaaS brain
-or an external agent service.
+Hosted providers are configurable for planning and synthesis, but semantic
+embeddings are local Ollama-only; the design does not require a SaaS brain or an
+external agent service.
 
 ### Bounded Planning
 
@@ -658,25 +665,24 @@ When planning, retrieval, synthesis, or a model call takes time, the web UI can
 look hung even if the backend is doing useful work. The next Chat UI should show
 the runner state as a compact live timeline.
 
-### Retrieval Is Still Mostly Lexical
+### Lexical Retrieval Remains The Default
 
-The current stack is good for local FTS, exact tags, summaries, OCR text, media
-transcripts, and source text windows. It is weaker when the user asks a
-semantic question whose answer uses different language than the saved source.
+The current default remains local FTS, exact tags, summaries, OCR text, media
+transcripts, and source text windows. An opt-in local Ollama semantic lane now
+adds different-language passage retrieval through SQLite-authoritative exact
+vector scan. `shadow` measures the proposed hybrid order without changing
+visible evidence or synthesis; `on` RRF-fuses the lanes. This is a bounded
+foundation, not a claim that semantic retrieval should be default.
 
-The optional model planner partially helps by adding aliases and variants. But
-that is not the same as semantic retrieval or reranking.
+### Long Source Handling Uses Deterministic Evidence Chunks
 
-### Long Source Handling Is Not Yet A Research Primitive
-
-The synthesis path has a character budget and truncation metadata. That is
-better than silent overflow, but it still means the research pack can lose
-important detail from long sources.
-
-The right direction is deterministic chunking, raw extract preservation, chunk
-summaries as derived cache, and search over raw text plus derived chunks. That
-should become part of the research harness rather than only a summarization
-concern.
+The synthesis path still has a character budget and truncation metadata, so a
+research pack can omit detail from long sources. The semantic foundation now
+projects deterministic chunks while preserving raw extracts and exposes chunk,
+evidence-role, and content-section provenance. Exact vector search is capped at
+25,000 active chunks by default; above that cap the lane reports `too_large`
+and research remains lexical. ANN lifecycle and background indexing remain
+deferred.
 
 ### Eval Coverage Is Retrieval-Only And Mostly Manual
 
@@ -1285,45 +1291,28 @@ Required tests:
 - synthesis input labels chunk summaries as derived
 - UI/API payloads expose enough evidence-role metadata for display
 
-### Phase 7: Add Optional Local Hybrid Retrieval
+### Phase 7: Optional Local Hybrid Retrieval Foundation (implemented)
 
-Only after the lexical harness is traceable and eval-backed, add local semantic
-retrieval as a second lane.
+The foundation keeps SQLite FTS as the default lexical baseline and adds
+deterministic chunks, portable local Ollama embeddings, SQLite-authoritative
+exact vector search, RRF fusion, and bounded shadow comparisons. Configured mode
+defaults to `off`; `shadow` computes content-free rank differences while
+returning lexical-identical evidence/order/synthesis; `on` returns fused
+evidence. CLI and MCP/web boolean overrides force effective on/off and reject
+enable-plus-disable conflicts.
 
-Plain-English version: current search is mostly "find these words, tags, or
-nearby exact phrases." A semantic lane means "find passages that mean the same
-thing even when they use different words." The risk is that semantic search can
-feel impressive while quietly returning vague near-matches. That is why it
-should wait until traces and evals can prove whether it helps or hurts.
+Semantic candidate depth defaults to 50 and exact scans stop at 25,000 active
+chunks by default. Oversized corpora and valid provider/search failures fail the
+semantic lane open to lexical evidence with explicit status/reason. Exact-tag
+evidence remains separate and representative. Direct MCP pack calls remain
+read-only and trace-free, including in shadow mode.
 
-Operational trigger: do not start this phase until Chat is using the runner,
-default trace saving is working, Harness Lab can compare trace reruns, and
-`dbrain eval research` has at least 25 reviewed local cases with planner-off
-coverage across the major query families. Lexical-only evals should be stable
-before adding a second retrieval lane.
-
-Pragmatic shape:
-
-1. Keep SQLite FTS as the baseline.
-2. Add local embeddings for item/source/chunk text when configured.
-3. Store vectors locally.
-4. Retrieve from both lexical and vector lanes.
-5. Merge and rerank with existing concept coverage and source-type metadata.
-6. Keep `--no-semantic` or equivalent for deterministic lexical debugging.
-
-This should be local-first. Hosted embedding providers can be optional, but
-should not become the default route for private brain search.
-
-Required tests:
-
-- semantic lane can be disabled
-- lexical-only evals still pass
-- merged results keep lane provenance
-- vector hits do not outrank exact lexical/tag evidence without a reason
-
-No first embedding model or vector store needs to be chosen yet. The decision
-should be deferred until the runner and `dbrain eval research` can compare
-lexical-only results against hybrid results on real local traces.
+Operational state is limited to `dbrain semantic status`, `semantic chunk`, and
+`semantic embed`. Existing explicit parent-forget paths synchronously remove
+that parent's derived chunks/embeddings and stale affected retrieval
+generations. There is no ANN index or ANN file lifecycle in this foundation;
+ANN, provider expansion, background sync, and default-on remain deferred until
+reviewed lexical-versus-hybrid evals justify them.
 
 ### Phase 8: Make The UI And Skill Reflect The Runner
 
@@ -1513,12 +1502,27 @@ Resolved decisions:
 - Citation verification failures must be visible to the user and must not
   produce normal shareable answers.
 
+Current semantic foundation:
+
+- Semantic retrieval is opt-in and defaults to `off`. The provider is local
+  Ollama only, and SQLite remains authoritative for deterministic chunks,
+  portable embeddings, and bounded exact vector scans.
+- `shadow` computes a bounded content-free lexical-versus-hybrid comparison but
+  cannot change visible evidence, order, or synthesis. `on` returns RRF-fused
+  evidence while retaining protected anchors and evidence provenance.
+- Semantic failures fail open to lexical evidence with explicit lane status and
+  reason. The exact scan defaults to 50 candidates and a 25,000-active-chunk
+  cap; above the cap the lane is `too_large` and research stays lexical.
+- CLI `--semantic` / `--no-semantic` and MCP/web `use_semantic` /
+  `disable_semantic` force effective on/off; enabling and disabling together is
+  rejected. Direct MCP pack builds remain trace-free.
+- ANN lifecycle, additional providers, background sync, and default-on behavior
+  remain evaluation-gated and deferred.
+
 Remaining questions:
 
-- Which local embedding model and vector store should become the first optional
-  semantic lane? Recommendation: do not choose yet. Build traces, evals, and the
-  runner first, then compare lexical-only against hybrid retrieval on real
-  local traces.
+- Which reviewed lexical-versus-shadow and lexical-versus-on cases justify
+  changing candidate/cap tuning or advancing any deferred lifecycle work?
 - Do the initial runner defaults above create enough useful answers without
   spending too much time on weak queries? Recommendation: ship those conservative
   defaults first, then let `dbrain eval research` and Harness Lab comparisons

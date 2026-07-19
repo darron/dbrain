@@ -130,6 +130,7 @@ Available Commands:
   repair      Repair derived local artifacts
   research    Research the local brain with evidence and local synthesis
   search      Search items and sources
+  semantic    Build and inspect semantic retrieval state
   serve       Serve local interfaces
   sqlite      Manage the local SQLite database
   stats       Show database counts and import progress
@@ -1300,6 +1301,16 @@ Synthesis requires `--model` or a configured `DBRAIN_SUMMARY_MODEL` /
 `SUMMARIZE_MODEL`; it will not silently let the external summarizer choose a
 hosted fallback.
 
+Semantic retrieval defaults to configured mode `off`. `--semantic` force-enables
+effective `on`; `--no-semantic` force-enables effective `off`; passing both is
+an error. Effective `shadow` or `on` requires a configured local Ollama model
+and positive dimensions. `shadow` computes bounded, content-free comparisons
+but preserves lexical evidence/order/synthesis exactly. `on` RRF-fuses lexical
+and semantic candidates while preserving protected evidence and provenance.
+Provider/search failures, or more than the configured exact-scan cap (default
+25,000 chunks), fail the semantic lane open to lexical evidence with an explicit
+status and reason.
+
 ```sh
 dbrain research "What validates Kubernetes manifests?"
 dbrain research "Show me GitHub repos about vector databases" --source-type github
@@ -1309,7 +1320,30 @@ dbrain research "What do I know about local models?" --model ollama/qwen3.6:35b
 dbrain research "Calgary father killed two kids" --retrieval-only
 dbrain research "K8s Helm alternatives" --planner-model ollama/qwen3.6:35b --retrieval-only
 dbrain research "K8s Helm alternatives" --no-planner --retrieval-only
+dbrain research "K8s Helm alternatives" --semantic --retrieval-only --json
 ```
+
+### `dbrain semantic`
+
+The foundation exposes exactly three semantic operational commands. It uses
+deterministic SQLite retrieval chunks, local Ollama embeddings, and an
+SQLite-authoritative exact scan; no ANN index or ANN lifecycle command exists.
+
+```sh
+dbrain semantic status
+dbrain semantic status --json
+dbrain semantic chunk --limit 100 --after-source-key src:example
+dbrain semantic embed --limit 100 --batch-size 16
+```
+
+`status` is read-only and diagnoses configuration/readiness. `chunk` creates,
+updates, and deletes deterministic derived chunks in source-key pages. `embed`
+generates missing embeddings for the configured model/dimension profile. There
+is no standalone semantic purge command. Existing explicit authoritative-parent
+forget flows, such as Apple Notes `--forget-excluded`, synchronously delete that
+parent's retrieval chunks and embeddings and stale affected generation metadata.
+ANN generation files do not exist in this foundation; ANN lifecycle, provider
+expansion, background sync, and default-on behavior are deferred.
 
 ### `dbrain search`
 
