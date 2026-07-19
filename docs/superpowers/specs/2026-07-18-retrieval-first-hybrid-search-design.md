@@ -779,6 +779,12 @@ state visible.
 - Restored/replaced database: reject any cache manifest that does not match the
   active SQLite generation and deterministic high-water hash.
 
+Vector reads remain non-mutating so read-only MCP/research consumers preserve
+their boundary. A corrupt exact-search read returns a typed `index_corrupt`
+lane status with no hits. The explicit writable embedding-maintenance command
+revalidates ready rows and transactionally marks the current corrupt row blocked
+before continuing; a stale diagnostic may never block a repaired row.
+
 Semantic failures must not be reported as no corpus evidence. The research
 pack distinguishes “semantic unavailable” from “semantic searched and found no
 candidate” and from “the complete retrieval system found no evidence.”

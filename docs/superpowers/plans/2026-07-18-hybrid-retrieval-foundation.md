@@ -530,6 +530,8 @@ git commit --no-gpg-sign -m "feat: add semantic indexing commands"
 - Create: `internal/semanticindex/exact_test.go`
 - Create: `internal/researchsemantic/retriever.go`
 - Create: `internal/researchsemantic/retriever_test.go`
+- Modify: `internal/semanticbuild/embed.go`
+- Modify: `internal/semanticbuild/run_test.go`
 - Modify: `internal/store/retrieval_embeddings.go`
 - Modify: `internal/store/retrieval_chunks.go`
 
@@ -539,7 +541,8 @@ git commit --no-gpg-sign -m "feat: add semantic indexing commands"
 
 Cover cosine distance, deterministic ties, limits, dimension/profile mismatch,
 bounded fallback, pre-top-k source filters, deleted/purged hydration, evidence
-roles, and unavailable versus searched-empty states.
+roles, unavailable versus searched-empty states, read-only corrupt-vector
+failure, and explicit writable quarantine before embedding maintenance.
 
 - [ ] **Step 2: Verify RED**
 
@@ -559,7 +562,12 @@ type Searcher interface {
 Scan ready embeddings deterministically with a bounded max heap and refuse
 automatic exact fallback above 25,000 chunks. Embed the cleaned query with
 `PurposeQuery`, hydrate IDs through current SQLite, drop missing/purged rows,
-and return parent-cited chunk evidence with semantic provenance.
+and return parent-cited chunk evidence with semantic provenance. Exact search
+never mutates storage: typed corrupt rows produce an `index_corrupt` status and
+no hits. The explicit writable `semantic embed` path revalidates ready rows,
+uses `BlockCorruptRetrievalEmbedding` on the current typed diagnostic, and then
+continues maintenance; this is the repair/quarantine boundary before the first
+vector consumer.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -570,7 +578,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/semanticindex internal/researchsemantic internal/store/retrieval_embeddings.go internal/store/retrieval_chunks.go
+git add internal/semanticindex internal/researchsemantic internal/semanticbuild internal/store/retrieval_embeddings.go internal/store/retrieval_chunks.go
 git commit --no-gpg-sign -m "feat: add exact semantic retrieval"
 ```
 
