@@ -488,7 +488,7 @@ Commands:
 
 ```text
 dbrain semantic status [--json]
-dbrain semantic chunk [--limit N] [--json]
+dbrain semantic chunk [--limit N] [--after-source-key KEY] [--json]
 dbrain semantic embed [--limit N] [--batch-size N] [--json]
 ```
 
@@ -500,6 +500,12 @@ command-local string. Retryable provider failures set a future retry time and
 increment attempts; blocked input is terminal, fatal configuration aborts the
 operation, and selector/status queries use one due-time predicate so a provider
 outage cannot hot-loop.
+
+Chunking limits are resumable rather than repeatedly selecting the same prefix.
+Output includes `next_after_source_key` and `has_more`; a cursor boundary never
+splits item/source parents that share one source key. `Remaining` describes the
+current bounded page, while `has_more` is the distinct corpus-level continuation
+signal.
 
 - [ ] **Step 4: Verify GREEN**
 

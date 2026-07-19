@@ -747,6 +747,11 @@ Long operations must show advancing counts and distinguish scanning unchanged
 rows from embeddings actually generated. Worker selectors and backlog/status
 queries must share the same eligibility predicate.
 
+Bounded chunk commands must be explicitly resumable. Their cursor is a source
+key boundary, must keep every parent sharing that key together, and must report
+whether more corpus work exists; a repeated default-limit invocation must not
+silently reprocess the same prefix forever.
+
 Retryable embedding errors must honor `next_attempt_at`: future retries remain
 visible as failed/scheduled state but are not selected or counted as immediately
 eligible work until due. Each real provider attempt increments `attempt_count`.
