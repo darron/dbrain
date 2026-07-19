@@ -116,7 +116,9 @@ func TestListReadyEmbeddingsProjectsCurrentSourceTypeAndSectionOrdinal(t *testin
 	for _, row := range rows {
 		got[row.ChunkID] = row
 	}
-	if got[item.ID].SourceType != "apple_note" || got[item.ID].SectionOrdinal != 3 || got[source.ID].SourceType != "article" || got[source.ID].SectionOrdinal != 7 {
+	if got[item.ID].SourceType != "apple_note" || got[item.ID].SectionOrdinal != 3 || got[source.ID].SourceType != "article" || got[source.ID].SectionOrdinal != 7 ||
+		got[item.ID].ProjectionVersion != retrievalchunk.ProjectionVersion || got[item.ID].ChunkerVersion != retrievalchunk.Version ||
+		got[source.ID].ProjectionVersion != retrievalchunk.ProjectionVersion || got[source.ID].ChunkerVersion != retrievalchunk.Version {
 		t.Fatalf("rows=%+v", rows)
 	}
 }
@@ -540,6 +542,57 @@ func TestEmbeddingDuePredicateMatchesStatusAndCarriesAttemptCount(t *testing.T) 
 	}
 }
 
+func TestEmbeddingProfileCandidateSelectorRejectsStaleChunkProvenance(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	profile := embedding.Profile{
+		Provider: "fake", Model: "m", Dimensions: 2,
+		ProjectionVersion: retrievalchunk.ProjectionVersion,
+		ChunkerVersion:    retrievalchunk.Version,
+		Representation:    embedding.RepresentationDenseF32,
+		Normalization:     embedding.NormalizationL2,
+	}
+	chunk := testRetrievalChunk("stale", "item", "item:stale", 0, "hash-stale", "stale")
+	chunk.ProjectionVersion = ""
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:stale", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatalf("seed stale chunk: %v", err)
+	}
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, profileID, chunk.TextHash)); err != nil {
+		t.Fatalf("seed historically mislabeled embedding: %v", err)
+	}
+
+	if _, err := st.CountChunksNeedingEmbeddingForProfileAt(ctx, profile, now); err == nil || !strings.Contains(err.Error(), "run semantic chunk") {
+		t.Fatalf("count stale chunks error = %v, want semantic chunk instruction", err)
+	}
+	if _, err := st.ListChunksNeedingEmbeddingForProfileAt(ctx, profile, "", 10, now); err == nil || !strings.Contains(err.Error(), "run semantic chunk") {
+		t.Fatalf("list stale chunks error = %v, want semantic chunk instruction", err)
+	}
+
+	chunk.ProjectionVersion = retrievalchunk.ProjectionVersion
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:stale", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatalf("replace with current chunk: %v", err)
+	}
+	rows, err := st.ListChunksNeedingEmbeddingForProfileAt(ctx, profile, "", 10, now)
+	if err != nil || len(rows) != 1 || rows[0].ChunkID != chunk.ID || rows[0].ProjectionVersion != retrievalchunk.ProjectionVersion || rows[0].ChunkerVersion != retrievalchunk.Version {
+		t.Fatalf("current candidates=%+v err=%v", rows, err)
+	}
+	ready, err := st.ListReadyEmbeddings(ctx, profileID, 10)
+	if err != nil || len(ready) != 0 {
+		t.Fatalf("ready embeddings after provenance rewrite=%+v err=%v, want invalidated", ready, err)
+	}
+	count, err := st.CountChunksNeedingEmbeddingForProfileAt(ctx, profile, now)
+	if err != nil || count != 1 {
+		t.Fatalf("current candidate count=%d err=%v", count, err)
+	}
+}
+
 func TestRetrievalProjectionUsesAuthoritativeItemEnrichmentMirror(t *testing.T) {
 	t.Parallel()
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
@@ -902,7 +955,7 @@ func testRetrievalChunk(id, parentKind, parentKey string, ordinal int, textHash,
 	return retrievalchunk.Chunk{
 		ID: id, ParentKind: parentKind, ParentSourceKey: parentKey, EvidenceRole: "raw",
 		SectionOrdinal: 0, Ordinal: ordinal, StartChar: 0, EndChar: len([]rune(text)),
-		Heading: "Heading", ChunkerVersion: retrievalchunk.Version,
+		Heading: "Heading", ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version,
 		InputContentHash: "input-hash", TextHash: textHash, Text: text,
 	}
 }

@@ -15,18 +15,20 @@ import (
 )
 
 type fakeStore struct {
-	parents        []retrievalchunk.Parent
-	chunks         []store.RetrievalChunkRow
-	replacements   []string
-	writes         []store.RetrievalEmbeddingRow
-	readyErrs      []error
-	readyCalls     int
-	blockErrs      []error
-	blockCalls     []*store.RetrievalEmbeddingCorruptionError
-	operations     []string
-	candidateCount int
-	replaceResult  store.ChunkReplaceResult
-	replaceErrKey  string
+	parents          []retrievalchunk.Parent
+	chunks           []store.RetrievalChunkRow
+	replacements     []string
+	writes           []store.RetrievalEmbeddingRow
+	readyErrs        []error
+	readyCalls       int
+	blockErrs        []error
+	blockCalls       []*store.RetrievalEmbeddingCorruptionError
+	operations       []string
+	candidateCount   int
+	replaceResult    store.ChunkReplaceResult
+	replaceErrKey    string
+	candidateProfile embedding.Profile
+	candidateErr     error
 }
 
 func (f *fakeStore) ListRetrievalParents(_ context.Context, after string, limit int) ([]retrievalchunk.Parent, error) {
@@ -59,8 +61,12 @@ func (f *fakeStore) ReplaceRetrievalChunks(_ context.Context, kind, key string, 
 	}
 	return store.ChunkReplaceResult{Created: len(chunks)}, nil
 }
-func (f *fakeStore) ListChunksNeedingEmbeddingAt(context.Context, string, string, int, time.Time) ([]store.RetrievalChunkRow, error) {
+func (f *fakeStore) ListChunksNeedingEmbeddingForProfileAt(_ context.Context, profile embedding.Profile, _ string, _ int, _ time.Time) ([]store.RetrievalChunkRow, error) {
 	f.operations = append(f.operations, "candidates")
+	f.candidateProfile = profile
+	if f.candidateErr != nil {
+		return nil, f.candidateErr
+	}
 	return append([]store.RetrievalChunkRow(nil), f.chunks...), nil
 }
 func (f *fakeStore) PutRetrievalEmbedding(_ context.Context, row store.RetrievalEmbeddingRow) error {
@@ -68,8 +74,12 @@ func (f *fakeStore) PutRetrievalEmbedding(_ context.Context, row store.Retrieval
 	f.writes = append(f.writes, row)
 	return nil
 }
-func (f *fakeStore) CountChunksNeedingEmbeddingAt(context.Context, string, time.Time) (int, error) {
+func (f *fakeStore) CountChunksNeedingEmbeddingForProfileAt(_ context.Context, profile embedding.Profile, _ time.Time) (int, error) {
 	f.operations = append(f.operations, "count")
+	f.candidateProfile = profile
+	if f.candidateErr != nil {
+		return 0, f.candidateErr
+	}
 	if f.candidateCount != 0 {
 		return f.candidateCount, nil
 	}
@@ -254,6 +264,27 @@ func TestEmbedBatchesInOrderWritesL2VectorsAndProvenance(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(decoded, []float32{0.6, 0.8}) {
 			t.Fatalf("decoded=%v err=%v", decoded, err)
 		}
+	}
+}
+
+func TestEmbedRejectsStaleChunkProvenanceBeforeProviderCall(t *testing.T) {
+	stale := &store.RetrievalChunkProfileMismatchError{
+		ProjectionVersion: retrievalchunk.ProjectionVersion,
+		ChunkerVersion:    retrievalchunk.Version,
+		Count:             1,
+	}
+	st := &fakeStore{candidateErr: stale}
+	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}}
+
+	_, err := RunEmbed(context.Background(), st, provider, EmbedOptions{Limit: 1, BatchSize: 1})
+	if !errors.Is(err, stale) {
+		t.Fatalf("RunEmbed error = %v, want stale chunk provenance", err)
+	}
+	if len(provider.requests) != 0 || len(st.writes) != 0 {
+		t.Fatalf("provider requests=%+v writes=%+v, want no embedding work", provider.requests, st.writes)
+	}
+	if st.candidateProfile.ProjectionVersion != retrievalchunk.ProjectionVersion || st.candidateProfile.ChunkerVersion != retrievalchunk.Version {
+		t.Fatalf("candidate profile=%+v", st.candidateProfile)
 	}
 }
 

@@ -153,6 +153,34 @@ func TestConsolidateIncompatibleOrdinalNeighborDoesNotConsumeQuota(t *testing.T)
 	}
 }
 
+func TestConsolidatePrefersCompatibleFallbackDespiteChunkIDOrder(t *testing.T) {
+	primary := chunkDoc("p", "primary", 20, 30)
+	primary.Chunk.Index = 3
+	primary.Excerpt = "primary"
+	score := 1.0
+	primary.Retrieval = &retrieval.RetrievalInfo{FusedScore: &score}
+
+	incompatibleLeft := chunkDoc("p", "a-incompatible-left", 10, 20)
+	incompatibleLeft.Chunk.Index = 2
+	incompatibleLeft.Chunk.SectionOrdinal = 2
+	incompatibleLeft.Excerpt = "incompatible"
+	compatibleRight := chunkDoc("p", "right", 30, 40)
+	compatibleRight.Chunk.Index = 4
+	compatibleRight.Excerpt = "right"
+	compatibleFallback := chunkDoc("p", "z-compatible-fallback", 0, 10)
+	compatibleFallback.Chunk.Index = 1
+	compatibleFallback.Excerpt = "fallback"
+
+	got := Consolidate([]retrieval.EvidenceDocument{incompatibleLeft, compatibleFallback, compatibleRight, primary}, 100, nil)
+	var selected []string
+	for _, row := range got {
+		selected = append(selected, row.Chunk.ContributingIDs...)
+	}
+	if !reflect.DeepEqual(selected, []string{"primary", "right", "z-compatible-fallback"}) {
+		t.Fatalf("chunk ID order let incompatible neighbor consume quota: selected=%v got=%+v", selected, got)
+	}
+}
+
 func TestConsolidateKeepsSameSourceKeyKindsDistinct(t *testing.T) {
 	item := chunkDoc("shared", "item-chunk", 0, 10)
 	item.Kind = " ITEM "

@@ -48,7 +48,7 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestMigrationRepairsPartialRetrievalSchema(t *testing.T) {
+func TestRetrievalChunkProvenanceMigrationRepairsV14SchemaIdempotently(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
@@ -61,11 +61,11 @@ func TestMigrationRepairsPartialRetrievalSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite directly: %v", err)
 	}
-	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, retrievalMigrationVersion); err != nil {
-		t.Fatalf("remove retrieval migration metadata: %v", err)
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, retrievalChunkProvenanceVersion); err != nil {
+		t.Fatalf("remove retrieval chunk provenance migration metadata: %v", err)
 	}
-	if _, err := db.Exec(`PRAGMA user_version = 12`); err != nil {
-		t.Fatalf("set pre-retrieval user_version: %v", err)
+	if _, err := db.Exec(`PRAGMA user_version = 14`); err != nil {
+		t.Fatalf("set v14 user_version: %v", err)
 	}
 	for _, table := range []string{"retrieval_embeddings", "retrieval_index_generations", "retrieval_chunks"} {
 		if _, err := db.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
@@ -117,11 +117,22 @@ func TestMigrationRepairsPartialRetrievalSchema(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	var sectionOrdinal int
-	if err := db.QueryRow(`SELECT section_ordinal FROM retrieval_chunks WHERE chunk_id = 'legacy-chunk'`).Scan(&sectionOrdinal); err != nil {
+	var projectionVersion string
+	if err := db.QueryRow(`SELECT section_ordinal, projection_version FROM retrieval_chunks WHERE chunk_id = 'legacy-chunk'`).Scan(&sectionOrdinal, &projectionVersion); err != nil {
 		t.Fatalf("read repaired legacy chunk: %v", err)
 	}
 	if sectionOrdinal != 0 {
 		t.Fatalf("repaired section_ordinal = %d, want 0", sectionOrdinal)
+	}
+	if projectionVersion != "" {
+		t.Fatalf("repaired projection_version = %q, want explicitly stale empty value", projectionVersion)
+	}
+	var migrationName string
+	if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version = 15`).Scan(&migrationName); err != nil {
+		t.Fatalf("read retrieval chunk provenance migration: %v", err)
+	}
+	if migrationName != "retrieval_chunk_projection_provenance" {
+		t.Fatalf("migration 15 name = %q", migrationName)
 	}
 	for _, table := range []string{"retrieval_embeddings", "retrieval_index_generations"} {
 		var count int

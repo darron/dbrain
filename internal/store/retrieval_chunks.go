@@ -19,19 +19,20 @@ type ChunkReplaceResult struct {
 }
 
 type RetrievalChunkRow struct {
-	ChunkID          string
-	ParentKind       string
-	ParentSourceKey  string
-	EvidenceRole     string
-	SectionOrdinal   int
-	Ordinal          int
-	StartChar        int
-	EndChar          int
-	Heading          string
-	ChunkerVersion   string
-	InputContentHash string
-	ChunkTextHash    string
-	Text             string
+	ChunkID           string
+	ParentKind        string
+	ParentSourceKey   string
+	EvidenceRole      string
+	SectionOrdinal    int
+	Ordinal           int
+	StartChar         int
+	EndChar           int
+	Heading           string
+	ProjectionVersion string
+	ChunkerVersion    string
+	InputContentHash  string
+	ChunkTextHash     string
+	Text              string
 	// AttemptCount is populated by embedding candidate selectors. Ordinary
 	// chunk reads leave it zero.
 	AttemptCount int
@@ -82,7 +83,7 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 		return ChunkReplaceResult{}, fmt.Errorf("retrieval parent kind and source key are required")
 	}
 	seen := make(map[string]struct{}, len(chunks))
-	incomingHashes := make(map[string]string, len(chunks))
+	incomingChunks := make(map[string]retrievalchunk.Chunk, len(chunks))
 	for _, chunk := range chunks {
 		if chunk.ID == "" || chunk.ParentKind != parentKind || chunk.ParentSourceKey != parentSourceKey {
 			return ChunkReplaceResult{}, fmt.Errorf("chunk %q does not belong to retrieval parent %s %s", chunk.ID, parentKind, parentSourceKey)
@@ -91,7 +92,7 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 			return ChunkReplaceResult{}, fmt.Errorf("duplicate retrieval chunk ID %q", chunk.ID)
 		}
 		seen[chunk.ID] = struct{}{}
-		incomingHashes[chunk.ID] = chunk.TextHash
+		incomingChunks[chunk.ID] = chunk
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -103,7 +104,7 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 	existing := make(map[string]RetrievalChunkRow)
 	rows, err := tx.QueryContext(ctx, `
 		SELECT chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
-			ordinal, start_char, end_char, heading, chunker_version,
+			ordinal, start_char, end_char, heading, projection_version, chunker_version,
 			input_content_hash, chunk_text_hash, text
 		FROM retrieval_chunks
 		WHERE parent_kind = ? AND parent_source_key = ?`, parentKind, parentSourceKey)
@@ -142,8 +143,9 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 			_ = rows.Close()
 			return ChunkReplaceResult{}, fmt.Errorf("scan affected retrieval profile: %w", err)
 		}
-		newHash, keep := incomingHashes[chunkID]
-		if !keep || newHash != oldHash {
+		incoming, keep := incomingChunks[chunkID]
+		old := existing[chunkID]
+		if !keep || oldHash != incoming.TextHash || old.ProjectionVersion != incoming.ProjectionVersion || old.ChunkerVersion != incoming.ChunkerVersion {
 			affectedProfiles[profileID] = struct{}{}
 		}
 	}
@@ -182,9 +184,9 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 		writeResult, err := tx.ExecContext(ctx, `
 			INSERT INTO retrieval_chunks (
 				chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
-				ordinal, start_char, end_char, heading, chunker_version,
+				ordinal, start_char, end_char, heading, projection_version, chunker_version,
 				input_content_hash, chunk_text_hash, text, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(chunk_id) DO UPDATE SET
 				evidence_role = excluded.evidence_role,
 				section_ordinal = excluded.section_ordinal,
@@ -192,6 +194,7 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 				start_char = excluded.start_char,
 				end_char = excluded.end_char,
 				heading = excluded.heading,
+				projection_version = excluded.projection_version,
 				chunker_version = excluded.chunker_version,
 				input_content_hash = excluded.input_content_hash,
 				chunk_text_hash = excluded.chunk_text_hash,
@@ -200,7 +203,7 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 			WHERE retrieval_chunks.parent_kind = excluded.parent_kind
 				AND retrieval_chunks.parent_source_key = excluded.parent_source_key`,
 			chunk.ID, parentKind, parentSourceKey, chunk.EvidenceRole, chunk.SectionOrdinal,
-			chunk.Ordinal, chunk.StartChar, chunk.EndChar, chunk.Heading, chunk.ChunkerVersion,
+			chunk.Ordinal, chunk.StartChar, chunk.EndChar, chunk.Heading, chunk.ProjectionVersion, chunk.ChunkerVersion,
 			chunk.InputContentHash, chunk.TextHash, chunk.Text, now, now)
 		if err != nil {
 			return ChunkReplaceResult{}, fmt.Errorf("write retrieval chunk %s: %w", chunk.ID, err)
@@ -212,7 +215,7 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 		if affected != 1 {
 			return ChunkReplaceResult{}, fmt.Errorf("retrieval chunk ID %q already belongs to another parent", chunk.ID)
 		}
-		if existed && old.ChunkTextHash != chunk.TextHash {
+		if existed && (old.ChunkTextHash != chunk.TextHash || old.ProjectionVersion != chunk.ProjectionVersion || old.ChunkerVersion != chunk.ChunkerVersion) {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_embeddings WHERE chunk_id = ?`, chunk.ID); err != nil {
 				return ChunkReplaceResult{}, fmt.Errorf("invalidate changed retrieval chunk %s embeddings: %w", chunk.ID, err)
 			}
@@ -234,6 +237,7 @@ func retrievalChunkMatches(old RetrievalChunkRow, chunk retrievalchunk.Chunk) bo
 		old.StartChar == chunk.StartChar &&
 		old.EndChar == chunk.EndChar &&
 		old.Heading == chunk.Heading &&
+		old.ProjectionVersion == chunk.ProjectionVersion &&
 		old.ChunkerVersion == chunk.ChunkerVersion &&
 		old.InputContentHash == chunk.InputContentHash &&
 		old.ChunkTextHash == chunk.TextHash &&
@@ -243,7 +247,7 @@ func retrievalChunkMatches(old RetrievalChunkRow, chunk retrievalchunk.Chunk) bo
 func (s *Store) GetRetrievalChunk(ctx context.Context, chunkID string) (RetrievalChunkRow, error) {
 	row := s.queryer().QueryRowContext(ctx, `
 		SELECT chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
-			ordinal, start_char, end_char, heading, chunker_version,
+			ordinal, start_char, end_char, heading, projection_version, chunker_version,
 			input_content_hash, chunk_text_hash, text
 		FROM retrieval_chunks WHERE chunk_id = ?`, chunkID)
 	chunk, err := scanRetrievalChunk(row)
@@ -259,7 +263,7 @@ func (s *Store) GetRetrievalChunk(ctx context.Context, chunkID string) (Retrieva
 func scanRetrievalChunk(scanner interface{ Scan(...any) error }) (RetrievalChunkRow, error) {
 	var row RetrievalChunkRow
 	err := scanner.Scan(&row.ChunkID, &row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.SectionOrdinal,
-		&row.Ordinal, &row.StartChar, &row.EndChar, &row.Heading, &row.ChunkerVersion,
+		&row.Ordinal, &row.StartChar, &row.EndChar, &row.Heading, &row.ProjectionVersion, &row.ChunkerVersion,
 		&row.InputContentHash, &row.ChunkTextHash, &row.Text)
 	return row, err
 }

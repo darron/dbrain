@@ -59,14 +59,19 @@ func Consolidate(rows []retrieval.EvidenceDocument, charBudget int, protected ma
 				}
 			}
 		}
-		for _, candidate := range group[1:] {
-			if len(selected) >= maxChunks {
-				break
+		for _, wantCompatible := range []bool{true, false} {
+			for _, candidate := range group[1:] {
+				if len(selected) >= maxChunks {
+					break
+				}
+				if _, ok := adjacent[chunkIdentity(candidate)]; ok {
+					continue
+				}
+				if chunksCompatible(primary, candidate) != wantCompatible {
+					continue
+				}
+				selected = append(selected, candidate)
 			}
-			if _, ok := adjacent[chunkIdentity(candidate)]; ok {
-				continue
-			}
-			selected = append(selected, candidate)
 		}
 		if len(selected) > maxChunks {
 			selected = selected[:maxChunks]

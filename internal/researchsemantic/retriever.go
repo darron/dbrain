@@ -67,15 +67,15 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, opts Options) ([
 			unavailable.Reason = semanticindex.ReasonCanceled
 			return empty, unavailable, err
 		}
+		if embedding.IsRetryable(embedErr) {
+			unavailable.Reason = semanticindex.ReasonProviderUnavailable
+			return empty, unavailable, nil
+		}
 		if errors.Is(embedErr, context.Canceled) || errors.Is(embedErr, context.DeadlineExceeded) {
 			unavailable.Reason = semanticindex.ReasonCanceled
 			return empty, unavailable, embedErr
 		}
-		if embedding.IsRetryable(embedErr) {
-			unavailable.Reason = semanticindex.ReasonProviderUnavailable
-		} else {
-			unavailable.Reason = semanticindex.ReasonQueryEmbeddingFailed
-		}
+		unavailable.Reason = semanticindex.ReasonQueryEmbeddingFailed
 		return empty, unavailable, nil
 	}
 	if err := embedding.ValidateResponse(info, req, response); err != nil || len(response.Vectors) != 1 {

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/retrieval"
@@ -133,6 +136,7 @@ func TestRetrieverMapsProviderFailuresAndRejectsNonUnitQuery(t *testing.T) {
 	}{
 		{name: "provider mismatch", provider: &fakeProvider{info: embedding.Info{Provider: "fake", Model: "other", Dimensions: 2}}, want: semanticindex.ReasonProfileMismatch},
 		{name: "retryable", provider: &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}, err: embedding.RetryableError(errors.New("offline"))}, want: semanticindex.ReasonProviderUnavailable},
+		{name: "provider-owned deadline", provider: &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}, err: embedding.RetryableError(context.DeadlineExceeded)}, want: semanticindex.ReasonProviderUnavailable},
 		{name: "blocked", provider: &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}, err: embedding.BlockedError(errors.New("bad input"))}, want: semanticindex.ReasonQueryEmbeddingFailed},
 		{name: "non-unit", provider: &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}, response: embedding.Response{Vectors: [][]float32{{3, 4}}, Provider: "fake", Model: "m", Dimensions: 2}}, want: semanticindex.ReasonQueryEmbeddingFailed},
 	} {
@@ -143,6 +147,35 @@ func TestRetrieverMapsProviderFailuresAndRejectsNonUnitQuery(t *testing.T) {
 				t.Fatalf("docs=%+v status=%+v err=%v search_queries=%v", docs, status, err, searcher.queries)
 			}
 		})
+	}
+}
+
+func TestRetrieverFailsOpenWhenOllamaOwnedTimeoutExpiresBeforeLiveContext(t *testing.T) {
+	accepted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(accepted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	provider, err := embedding.NewOllama(embedding.OllamaOptions{BaseURL: server.URL, Model: "m", Dimensions: 2, Timeout: 25 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testProfile()
+	profile.Provider = embedding.ProviderOllama
+	docs, status, err := New(provider, &fakeSearcher{}, &fakeHydrationStore{}).Retrieve(context.Background(), "query", Options{Profile: profile, Limit: 5, MaxChunks: 10})
+	if err != nil || status.State != semanticindex.StateUnavailable || status.Reason != semanticindex.ReasonProviderUnavailable || docs == nil || len(docs) != 0 {
+		t.Fatalf("docs=%+v status=%+v err=%v", docs, status, err)
+	}
+	select {
+	case <-accepted:
+	default:
+		t.Fatal("Ollama server never accepted the request")
 	}
 }
 

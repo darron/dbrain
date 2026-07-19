@@ -24,8 +24,8 @@ type EmbedOptions struct {
 type EmbedStore interface {
 	ListReadyEmbeddings(context.Context, string, int) ([]store.RetrievalEmbeddingRow, error)
 	BlockCorruptRetrievalEmbedding(context.Context, *store.RetrievalEmbeddingCorruptionError) error
-	ListChunksNeedingEmbeddingAt(context.Context, string, string, int, time.Time) ([]store.RetrievalChunkRow, error)
-	CountChunksNeedingEmbeddingAt(context.Context, string, time.Time) (int, error)
+	ListChunksNeedingEmbeddingForProfileAt(context.Context, embedding.Profile, string, int, time.Time) ([]store.RetrievalChunkRow, error)
+	CountChunksNeedingEmbeddingForProfileAt(context.Context, embedding.Profile, time.Time) (int, error)
 	PutRetrievalEmbedding(context.Context, store.RetrievalEmbeddingRow) error
 }
 
@@ -70,11 +70,11 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 	if err := quarantineCorruptReady(ctx, st, profileID, &progress); err != nil {
 		return progress, err
 	}
-	total, err := st.CountChunksNeedingEmbeddingAt(ctx, profileID, now)
+	total, err := st.CountChunksNeedingEmbeddingForProfileAt(ctx, profile, now)
 	if err != nil {
 		return progress, err
 	}
-	candidates, err := st.ListChunksNeedingEmbeddingAt(ctx, profileID, "", opts.Limit, now)
+	candidates, err := st.ListChunksNeedingEmbeddingForProfileAt(ctx, profile, "", opts.Limit, now)
 	if err != nil {
 		return progress, err
 	}

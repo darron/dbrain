@@ -177,13 +177,15 @@ func TestExactSearchReportsProfileDimensionAndCorruptionUnavailable(t *testing.T
 	}
 }
 
-func TestExactSearchRejectsMislabeledProviderAndModel(t *testing.T) {
+func TestExactSearchRejectsMislabeledProfileProvenance(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*store.RetrievalEmbeddingRow)
 	}{
 		{name: "provider", mutate: func(row *store.RetrievalEmbeddingRow) { row.Provider = "other-provider" }},
 		{name: "model", mutate: func(row *store.RetrievalEmbeddingRow) { row.Model = "other-model" }},
+		{name: "projection", mutate: func(row *store.RetrievalEmbeddingRow) { row.ProjectionVersion = "stale-projection" }},
+		{name: "chunker", mutate: func(row *store.RetrievalEmbeddingRow) { row.ChunkerVersion = "stale-chunker" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			row := readyRow("a", "profile", []float32{1, 0}, "item", "a", "raw")
@@ -229,6 +231,8 @@ func readyRow(id, profile string, vector []float32, parentKind, parentKey, role 
 		VectorBytes: embedding.EncodeDenseF32(vector), ChunkTextHash: "hash-" + id,
 		Status: store.RetrievalEmbeddingReady, ParentKind: parentKind, ParentSourceKey: parentKey,
 		EvidenceRole: role, Text: "text " + id,
+		ProjectionVersion: exactTestProfile().ProjectionVersion,
+		ChunkerVersion:    exactTestProfile().ChunkerVersion,
 	}
 }
 

@@ -26,7 +26,10 @@ development date for the change set.
   splitting immediately before the configured target. This increments the
   deterministic retrieval chunker profile to v2; existing semantic chunks and
   embeddings must be rebuilt with `dbrain semantic chunk` followed by
-  `dbrain semantic embed` before evaluating the new profile.
+  `dbrain semantic embed` before evaluating the new profile. Migration 15 now
+  persists projection provenance on chunks; `semantic embed` refuses stale
+  projection/chunker rows before calling the provider, and exact search rejects
+  historically mislabeled vectors.
 
 ### Production health audit corrections (2026-07-15)
 

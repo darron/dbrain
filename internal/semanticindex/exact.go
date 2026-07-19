@@ -97,6 +97,10 @@ func (e *Exact) Search(ctx context.Context, query []float32, opts SearchOptions)
 			status.Reason = ReasonProfileMismatch
 			return hits, status, nil
 		}
+		if strings.TrimSpace(row.ProjectionVersion) != strings.TrimSpace(opts.Profile.ProjectionVersion) || strings.TrimSpace(row.ChunkerVersion) != strings.TrimSpace(opts.Profile.ChunkerVersion) {
+			status.Reason = ReasonProfileMismatch
+			return hits, status, nil
+		}
 		if row.Dimensions != opts.Profile.Dimensions {
 			status.Reason = ReasonDimensionMismatch
 			return hits, status, nil

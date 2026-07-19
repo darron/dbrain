@@ -29,19 +29,20 @@ type Parent struct {
 }
 
 type Chunk struct {
-	ID               string
-	ParentKind       string
-	ParentSourceKey  string
-	EvidenceRole     string
-	Ordinal          int
-	SectionOrdinal   int
-	StartChar        int
-	EndChar          int
-	Heading          string
-	ChunkerVersion   string
-	InputContentHash string
-	TextHash         string
-	Text             string
+	ID                string
+	ParentKind        string
+	ParentSourceKey   string
+	EvidenceRole      string
+	Ordinal           int
+	SectionOrdinal    int
+	StartChar         int
+	EndChar           int
+	Heading           string
+	ProjectionVersion string
+	ChunkerVersion    string
+	InputContentHash  string
+	TextHash          string
+	Text              string
 }
 
 type Options struct {

@@ -14,6 +14,7 @@ func (s *Store) ensureRetrievalTables() error {
 			start_char INTEGER NOT NULL,
 			end_char INTEGER NOT NULL,
 			heading TEXT NOT NULL DEFAULT '',
+			projection_version TEXT NOT NULL DEFAULT '',
 			chunker_version TEXT NOT NULL,
 			input_content_hash TEXT NOT NULL,
 			chunk_text_hash TEXT NOT NULL,
@@ -30,6 +31,7 @@ func (s *Store) ensureRetrievalTables() error {
 	}
 	if err := s.ensureColumns("retrieval_chunks", []columnDefinition{
 		{Name: "section_ordinal", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "projection_version", Definition: "TEXT NOT NULL DEFAULT ''"},
 	}); err != nil {
 		return fmt.Errorf("repair retrieval chunks: %w", err)
 	}

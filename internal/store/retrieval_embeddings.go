@@ -27,32 +27,47 @@ const (
 )
 
 type RetrievalEmbeddingRow struct {
-	ChunkID         string
-	ProfileID       string
-	Provider        string
-	Model           string
-	Dimensions      int
-	Representation  string
-	Normalization   string
-	VectorBytes     []byte
-	ChunkTextHash   string
-	Status          RetrievalEmbeddingStatus
-	AttemptCount    int
-	LastError       string
-	NextAttemptAt   time.Time
-	EmbeddedAt      time.Time
-	ParentKind      string
-	ParentSourceKey string
-	EvidenceRole    string
-	SourceType      string
-	SectionOrdinal  int
-	Text            string
+	ChunkID           string
+	ProfileID         string
+	Provider          string
+	Model             string
+	Dimensions        int
+	Representation    string
+	Normalization     string
+	VectorBytes       []byte
+	ChunkTextHash     string
+	Status            RetrievalEmbeddingStatus
+	AttemptCount      int
+	LastError         string
+	NextAttemptAt     time.Time
+	EmbeddedAt        time.Time
+	ParentKind        string
+	ParentSourceKey   string
+	EvidenceRole      string
+	SourceType        string
+	SectionOrdinal    int
+	Text              string
+	ProjectionVersion string
+	ChunkerVersion    string
 }
 
 type RetrievalEmbeddingCorruptionError struct {
 	ChunkID   string
 	ProfileID string
 	Reason    string
+}
+
+type RetrievalChunkProfileMismatchError struct {
+	ProjectionVersion string
+	ChunkerVersion    string
+	Count             int
+}
+
+func (e *RetrievalChunkProfileMismatchError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%d retrieval chunks do not match embedding profile projection %q and chunker %q; run semantic chunk before semantic embed", e.Count, e.ProjectionVersion, e.ChunkerVersion)
 }
 
 func (e *RetrievalEmbeddingCorruptionError) Error() string {
@@ -68,17 +83,70 @@ func (s *Store) ListChunksNeedingEmbedding(ctx context.Context, profileID, after
 
 const retrievalEmbeddingDueSQL = `(e.chunk_id IS NULL OR e.chunk_text_hash != c.chunk_text_hash OR e.status = 'pending' OR (e.status = 'error' AND (e.next_attempt_at = '' OR e.next_attempt_at <= ?)))`
 
+func (s *Store) CountChunksNeedingEmbeddingForProfileAt(ctx context.Context, profile embedding.Profile, now time.Time) (int, error) {
+	profileID, err := validateEmbeddingCandidateProfile(profile)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.rejectMismatchedRetrievalChunks(ctx, profile); err != nil {
+		return 0, err
+	}
+	return s.countChunksNeedingEmbeddingAt(ctx, profileID, profile.ProjectionVersion, profile.ChunkerVersion, now)
+}
+
+func (s *Store) ListChunksNeedingEmbeddingForProfileAt(ctx context.Context, profile embedding.Profile, afterChunkID string, limit int, now time.Time) ([]RetrievalChunkRow, error) {
+	profileID, err := validateEmbeddingCandidateProfile(profile)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.rejectMismatchedRetrievalChunks(ctx, profile); err != nil {
+		return nil, err
+	}
+	return s.listChunksNeedingEmbeddingAt(ctx, profileID, profile.ProjectionVersion, profile.ChunkerVersion, afterChunkID, limit, now)
+}
+
+func validateEmbeddingCandidateProfile(profile embedding.Profile) (string, error) {
+	profileID, err := profile.ID()
+	if err != nil {
+		return "", fmt.Errorf("invalid retrieval embedding profile: %w", err)
+	}
+	return profileID, nil
+}
+
+func (s *Store) rejectMismatchedRetrievalChunks(ctx context.Context, profile embedding.Profile) error {
+	var count int
+	if err := s.queryer().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM retrieval_chunks
+		WHERE projection_version != ? OR chunker_version != ?`, profile.ProjectionVersion, profile.ChunkerVersion).Scan(&count); err != nil {
+		return fmt.Errorf("count retrieval chunks with stale provenance: %w", err)
+	}
+	if count > 0 {
+		return &RetrievalChunkProfileMismatchError{ProjectionVersion: profile.ProjectionVersion, ChunkerVersion: profile.ChunkerVersion, Count: count}
+	}
+	return nil
+}
+
 func (s *Store) CountChunksNeedingEmbeddingAt(ctx context.Context, profileID string, now time.Time) (int, error) {
+	return s.countChunksNeedingEmbeddingAt(ctx, profileID, "", "", now)
+}
+
+func (s *Store) countChunksNeedingEmbeddingAt(ctx context.Context, profileID, projectionVersion, chunkerVersion string, now time.Time) (int, error) {
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
 		return 0, fmt.Errorf("retrieval embedding profile is required")
 	}
 	var count int
-	err := s.queryer().QueryRowContext(ctx, `
+	query := `
 		SELECT COUNT(*)
 		FROM retrieval_chunks c
 		LEFT JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id AND e.profile_id = ?
-		WHERE `+retrievalEmbeddingDueSQL, profileID, now.UTC().Format(time.RFC3339)).Scan(&count)
+		WHERE ` + retrievalEmbeddingDueSQL
+	args := []any{profileID, now.UTC().Format(time.RFC3339)}
+	if projectionVersion != "" || chunkerVersion != "" {
+		query += ` AND c.projection_version = ? AND c.chunker_version = ?`
+		args = append(args, projectionVersion, chunkerVersion)
+	}
+	err := s.queryer().QueryRowContext(ctx, query, args...).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count chunks needing embedding: %w", err)
 	}
@@ -86,20 +154,28 @@ func (s *Store) CountChunksNeedingEmbeddingAt(ctx context.Context, profileID str
 }
 
 func (s *Store) ListChunksNeedingEmbeddingAt(ctx context.Context, profileID, afterChunkID string, limit int, now time.Time) ([]RetrievalChunkRow, error) {
+	return s.listChunksNeedingEmbeddingAt(ctx, profileID, "", "", afterChunkID, limit, now)
+}
+
+func (s *Store) listChunksNeedingEmbeddingAt(ctx context.Context, profileID, projectionVersion, chunkerVersion, afterChunkID string, limit int, now time.Time) ([]RetrievalChunkRow, error) {
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
 		return nil, fmt.Errorf("retrieval embedding profile is required")
 	}
 	query := `
 		SELECT c.chunk_id, c.parent_kind, c.parent_source_key, c.evidence_role, c.section_ordinal,
-			c.ordinal, c.start_char, c.end_char, c.heading, c.chunker_version,
+			c.ordinal, c.start_char, c.end_char, c.heading, c.projection_version, c.chunker_version,
 			c.input_content_hash, c.chunk_text_hash, c.text, COALESCE(e.attempt_count, 0)
 		FROM retrieval_chunks c
 		LEFT JOIN retrieval_embeddings e
 			ON e.chunk_id = c.chunk_id AND e.profile_id = ?
-		WHERE c.chunk_id > ? AND ` + retrievalEmbeddingDueSQL + `
-		ORDER BY c.chunk_id`
+		WHERE c.chunk_id > ? AND ` + retrievalEmbeddingDueSQL
 	args := []any{profileID, afterChunkID, now.UTC().Format(time.RFC3339)}
+	if projectionVersion != "" || chunkerVersion != "" {
+		query += ` AND c.projection_version = ? AND c.chunker_version = ?`
+		args = append(args, projectionVersion, chunkerVersion)
+	}
+	query += ` ORDER BY c.chunk_id`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -113,7 +189,7 @@ func (s *Store) ListChunksNeedingEmbeddingAt(ctx context.Context, profileID, aft
 	for rows.Next() {
 		var row RetrievalChunkRow
 		err := rows.Scan(&row.ChunkID, &row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.SectionOrdinal,
-			&row.Ordinal, &row.StartChar, &row.EndChar, &row.Heading, &row.ChunkerVersion,
+			&row.Ordinal, &row.StartChar, &row.EndChar, &row.Heading, &row.ProjectionVersion, &row.ChunkerVersion,
 			&row.InputContentHash, &row.ChunkTextHash, &row.Text, &row.AttemptCount)
 		if err != nil {
 			return nil, fmt.Errorf("scan chunk needing embedding: %w", err)
@@ -246,7 +322,7 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 			e.status, e.attempt_count, e.last_error, e.next_attempt_at, e.embedded_at,
 			c.parent_kind, c.parent_source_key, c.evidence_role,
 			CASE WHEN c.parent_kind = 'source' THEN COALESCE(s.source_type, '') ELSE COALESCE(i.source_type, '') END,
-			c.section_ordinal, c.text, c.chunk_text_hash
+			c.section_ordinal, c.text, c.projection_version, c.chunker_version, c.chunk_text_hash
 		FROM retrieval_embeddings e
 		JOIN retrieval_chunks c ON c.chunk_id = e.chunk_id
 		LEFT JOIN items i ON c.parent_kind = 'item' AND i.source_key = c.parent_source_key
@@ -271,7 +347,7 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 			&row.Representation, &row.Normalization, &row.VectorBytes, &row.ChunkTextHash,
 			&row.Status, &row.AttemptCount, &row.LastError, &nextAttemptAt, &embeddedAt,
 			&row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.SourceType,
-			&row.SectionOrdinal, &row.Text, &currentChunkTextHash); err != nil {
+			&row.SectionOrdinal, &row.Text, &row.ProjectionVersion, &row.ChunkerVersion, &currentChunkTextHash); err != nil {
 			return nil, fmt.Errorf("scan ready retrieval embedding: %w", err)
 		}
 		if reason := retrievalEmbeddingCorruptionReason(row, currentChunkTextHash); reason != "" {

@@ -47,19 +47,20 @@ func chunkSection(parent Parent, section Section, opts Options, firstOrdinal, se
 		hash := textHash(text)
 		ordinal := firstOrdinal + len(chunks)
 		chunks = append(chunks, Chunk{
-			ID:               chunkID(parent, section.Role, ordinal, hash),
-			ParentKind:       parent.Kind,
-			ParentSourceKey:  parent.SourceKey,
-			EvidenceRole:     section.Role,
-			Ordinal:          ordinal,
-			SectionOrdinal:   sectionOrdinal,
-			StartChar:        start,
-			EndChar:          end,
-			Heading:          section.Heading,
-			ChunkerVersion:   Version,
-			InputContentHash: parent.ContentHash,
-			TextHash:         hash,
-			Text:             text,
+			ID:                chunkID(parent, section.Role, ordinal, hash),
+			ParentKind:        parent.Kind,
+			ParentSourceKey:   parent.SourceKey,
+			EvidenceRole:      section.Role,
+			Ordinal:           ordinal,
+			SectionOrdinal:    sectionOrdinal,
+			StartChar:         start,
+			EndChar:           end,
+			Heading:           section.Heading,
+			ProjectionVersion: ProjectionVersion,
+			ChunkerVersion:    Version,
+			InputContentHash:  parent.ContentHash,
+			TextHash:          hash,
+			Text:              text,
 		})
 		if end == len(runes) {
 			break
