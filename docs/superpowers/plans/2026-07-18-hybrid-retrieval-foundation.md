@@ -451,6 +451,9 @@ git commit --no-gpg-sign -m "feat: configure local semantic embeddings"
 - Create: `internal/app/semantic_output.go`
 - Modify: `internal/retrievalchunk/types.go`
 - Modify: `internal/retrievalchunk/chunk_test.go`
+- Modify: `internal/store/retrieval_embeddings.go`
+- Modify: `internal/store/retrieval_projection.go`
+- Modify: `internal/store/retrieval_store_test.go`
 - Modify: `internal/app/root.go`
 - Modify: `internal/app/app_test.go`
 - Modify: `internal/app/stats_read_only_test.go`
@@ -461,7 +464,10 @@ git commit --no-gpg-sign -m "feat: configure local semantic embeddings"
 
 Prove page rows close before writes, unchanged/current counts, selector/status
 predicate parity, blocked versus failed states, cancellation, read-only status
-on pre-v13 DB, non-null JSON arrays, and explicit progress counters.
+on pre-v13 DB, non-null JSON arrays, explicit progress counters, retryable
+failure cooldown, and attempt-count increments. An `error` row with a future
+`next_attempt_at` is failed/scheduled but not currently selectable; once due it
+must appear in both the selector and candidate count.
 
 - [ ] **Step 2: Verify RED**
 
@@ -490,7 +496,10 @@ Status uses the audit/no-write config resolver and `OpenReadOnly`; mutations
 use normal writable loading. Export and use a stable
 `retrievalchunk.ProjectionVersion` alongside `retrievalchunk.Version` when
 constructing the embedding profile; do not duplicate either identity as a
-command-local string.
+command-local string. Retryable provider failures set a future retry time and
+increment attempts; blocked input is terminal, fatal configuration aborts the
+operation, and selector/status queries use one due-time predicate so a provider
+outage cannot hot-loop.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -501,7 +510,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/semanticbuild internal/retrievalchunk internal/app
+git add internal/semanticbuild internal/retrievalchunk internal/store internal/app
 git commit --no-gpg-sign -m "feat: add semantic indexing commands"
 ```
 

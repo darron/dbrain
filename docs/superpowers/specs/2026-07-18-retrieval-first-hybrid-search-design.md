@@ -747,6 +747,10 @@ Long operations must show advancing counts and distinguish scanning unchanged
 rows from embeddings actually generated. Worker selectors and backlog/status
 queries must share the same eligibility predicate.
 
+Retryable embedding errors must honor `next_attempt_at`: future retries remain
+visible as failed/scheduled state but are not selected or counted as immediately
+eligible work until due. Each real provider attempt increments `attempt_count`.
+
 ## Failure Semantics
 
 The retrieval pipeline fails open to lexical search while making semantic
