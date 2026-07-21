@@ -1906,6 +1906,132 @@ func seedRetrievalSource(t *testing.T, st *Store, sourceKey string) {
 	}
 }
 
+func TestGiantProjectionStagingIsNonSearchableResumableAndPromotesOnce(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:giant-stage")
+	work, err := st.ListDirtyRetrievalParents(ctx, projectionRevisionForTest(t, st), 10)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("work=%+v err=%v", work, err)
+	}
+	projection, err := retrievalchunk.BuildProjection(work[0].Parent, retrievalchunk.DefaultOptions())
+	if err != nil || len(projection.Occurrences) == 0 {
+		t.Fatalf("projection=%+v err=%v", projection, err)
+	}
+	row := RetrievalProjectionStageRow{Chunk: projection.Chunks[0], Occurrence: projection.Occurrences[0]}
+	cp, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+		ParentKind: "source", ParentSourceKey: "source:giant-stage", DirtyRevision: work[0].DirtyRevision,
+		ProjectionHash: projection.ParentHash, Cursor: retrievalchunk.Cursor{SectionKey: row.Occurrence.SectionKey, NextBoundary: row.Occurrence.EndChar}, Rows: []RetrievalProjectionStageRow{row},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp.WorkID == "" || cp.DirtyRevision != work[0].DirtyRevision || cp.SectionKey == "" || cp.NextBoundary <= 0 || cp.StagedChunks != 1 {
+		t.Fatalf("checkpoint=%+v", cp)
+	}
+	var searchable int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_source_key='source:giant-stage'`).Scan(&searchable); err != nil || searchable != 0 {
+		t.Fatalf("searchable=%d err=%v", searchable, err)
+	}
+	loaded, ok, err := st.LoadRetrievalProjectionStaging(ctx, work[0].Parent, work[0].DirtyRevision)
+	if err != nil || !ok || loaded != cp {
+		t.Fatalf("loaded=%+v ok=%v err=%v want=%+v", loaded, ok, err, cp)
+	}
+	if _, err := st.PromoteRetrievalProjectionStaging(ctx, cp); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("incomplete promotion err=%v", err)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_source_key='source:giant-stage'`).Scan(&searchable); err != nil || searchable != 0 {
+		t.Fatalf("incomplete promotion searchable=%d err=%v", searchable, err)
+	}
+	cp, err = st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+		WorkID: cp.WorkID, ParentKind: cp.ParentKind, ParentSourceKey: cp.ParentSourceKey,
+		DirtyRevision: cp.DirtyRevision, ProjectionHash: cp.ProjectionHash,
+	})
+	if err != nil || cp.SectionKey != "" || cp.NextBoundary != 0 {
+		t.Fatalf("complete checkpoint=%+v err=%v", cp, err)
+	}
+	result, err := st.PromoteRetrievalProjectionStaging(ctx, cp)
+	if err != nil || result.Created != 1 {
+		t.Fatalf("promote result=%+v err=%v", result, err)
+	}
+	if _, err := st.PromoteRetrievalProjectionStaging(ctx, cp); err == nil {
+		t.Fatal("second promotion unexpectedly succeeded")
+	}
+	var staged, live int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_projection_staging WHERE work_id=?`, cp.WorkID).Scan(&staged); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_source_key='source:giant-stage'`).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if staged != 0 || live != 1 {
+		t.Fatalf("staged=%d live=%d", staged, live)
+	}
+}
+
+func TestGiantProjectionRedirtyDiscardsStaleStaging(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:giant-redirty")
+	work, err := st.ListDirtyRetrievalParents(ctx, projectionRevisionForTest(t, st), 1)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("work=%+v err=%v", work, err)
+	}
+	projection, _ := retrievalchunk.BuildProjection(work[0].Parent, retrievalchunk.DefaultOptions())
+	cp, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+		ParentKind: "source", ParentSourceKey: "source:giant-redirty", DirtyRevision: work[0].DirtyRevision,
+		ProjectionHash: projection.ParentHash, Cursor: retrievalchunk.Cursor{SectionKey: projection.Occurrences[0].SectionKey, NextBoundary: projection.Occurrences[0].EndChar},
+		Rows: []RetrievalProjectionStageRow{{Chunk: projection.Chunks[0], Occurrence: projection.Occurrences[0]}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE sources SET extracted_text='changed source text' WHERE source_key='source:giant-redirty'`); err != nil {
+		t.Fatal(err)
+	}
+	newWork, err := st.ListDirtyRetrievalParents(ctx, projectionRevisionForTest(t, st), 1)
+	if err != nil || len(newWork) != 1 || newWork[0].DirtyRevision == work[0].DirtyRevision {
+		t.Fatalf("new work=%+v err=%v", newWork, err)
+	}
+	if _, ok, err := st.LoadRetrievalProjectionStaging(ctx, newWork[0].Parent, newWork[0].DirtyRevision); err != nil || ok {
+		t.Fatalf("stale staging loaded ok=%v err=%v", ok, err)
+	}
+	var rows int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_projection_staging WHERE work_id=?`, cp.WorkID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("stale rows=%d err=%v", rows, err)
+	}
+}
+
+func TestProjectionTooLargeIsTerminalBlockedAndRemovesSearchableChunks(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:too-large")
+	work, err := st.ListDirtyRetrievalParents(ctx, projectionRevisionForTest(t, st), 1)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("work=%+v err=%v", work, err)
+	}
+	projection, _ := retrievalchunk.BuildProjection(work[0].Parent, retrievalchunk.DefaultOptions())
+	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "source:too-large", projection.Chunks); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BlockRetrievalProjectionTooLarge(ctx, work[0].Parent, work[0].DirtyRevision, projection.ParentHash); err != nil {
+		t.Fatal(err)
+	}
+	var status, reason string
+	var live, staged int
+	if err := st.db.QueryRow(`SELECT status,reason FROM retrieval_parent_projections WHERE parent_kind='source' AND parent_source_key='source:too-large'`).Scan(&status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_source_key='source:too-large'`).Scan(&live)
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_projection_staging WHERE parent_source_key='source:too-large'`).Scan(&staged)
+	if status != string(RetrievalProjectionBlocked) || reason != "projection_too_large_for_flat_retrieval" || live != 0 || staged != 0 {
+		t.Fatalf("status=%q reason=%q live=%d staged=%d", status, reason, live, staged)
+	}
+}
+
 func seedItemEnrichmentRows(t *testing.T, st *Store, itemID int64, rows map[string]string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339)

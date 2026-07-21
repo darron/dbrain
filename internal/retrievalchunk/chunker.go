@@ -36,55 +36,150 @@ func Build(parent Parent, opts Options) ([]Chunk, error) {
 }
 
 func BuildProjection(parent Parent, opts Options) (Projection, error) {
-	if strings.TrimSpace(parent.Kind) == "" {
-		return Projection{}, fmt.Errorf("parent kind is required")
-	}
-	if strings.TrimSpace(parent.SourceKey) == "" {
-		return Projection{}, fmt.Errorf("parent source key is required")
-	}
-	if opts.TargetRunes <= 0 || opts.MaxRunes < opts.TargetRunes {
-		return Projection{}, fmt.Errorf("invalid chunk sizes: target=%d max=%d", opts.TargetRunes, opts.MaxRunes)
-	}
-	if opts.OverlapRunes != 0 {
-		return Projection{}, fmt.Errorf("retrieval chunker v3 requires zero overlap, got %d", opts.OverlapRunes)
-	}
-
-	projection := Projection{ParentHash: parentHash(parent), Chunks: make([]Chunk, 0), Occurrences: make([]Occurrence, 0)}
-	seenSections := make(map[string]struct{}, len(parent.Sections))
+	projection := Projection{Chunks: make([]Chunk, 0), Occurrences: make([]Occurrence, 0)}
 	seenChunks := make(map[string]struct{})
-	for sectionOrdinal, section := range parent.Sections {
-		section.Role = strings.TrimSpace(section.Role)
-		section.Heading = strings.TrimSpace(section.Heading)
-		section.Key = sectionKey(parent, section)
-		if section.Role == "" {
-			return Projection{}, fmt.Errorf("section evidence role is required")
+	_, done, err := Stream(parent, opts, Cursor{}, func(chunk Chunk, occurrence Occurrence) error {
+		if _, found := seenChunks[chunk.ID]; !found {
+			projection.Chunks = append(projection.Chunks, chunk)
+			seenChunks[chunk.ID] = struct{}{}
 		}
-		if _, duplicate := seenSections[section.Key]; duplicate {
-			return Projection{}, fmt.Errorf("duplicate section key %q", section.Key)
+		projection.Occurrences = append(projection.Occurrences, occurrence)
+		return nil
+	})
+	if err != nil {
+		return Projection{}, err
+	}
+	if !done {
+		return Projection{}, fmt.Errorf("retrieval chunk stream ended without completion")
+	}
+	projection.ParentHash = parentHash(parent)
+	return projection, nil
+}
+
+// Cursor is a durable v3 streaming position. SectionKey is the normalized,
+// parent-bound section identity and NextBoundary is the next untrimmed rune
+// boundary to emit within that section.
+type Cursor struct {
+	SectionKey   string
+	NextBoundary int
+}
+
+// ParentProjectionHash returns the exact projection-v2 parent identity without
+// materializing its chunks. It validates the same parent/section contract as
+// Stream and BuildProjection.
+func ParentProjectionHash(parent Parent) (string, error) {
+	if _, err := normalizedStreamingSections(parent, DefaultOptions(), false); err != nil {
+		return "", err
+	}
+	return parentHash(parent), nil
+}
+
+// Stream emits v3 windows from cursor without retaining the complete
+// projection. When emit returns an error, the returned cursor is positioned
+// after the successfully delivered window so callers can durably checkpoint
+// the batch before resuming.
+func Stream(parent Parent, opts Options, cursor Cursor, emit func(Chunk, Occurrence) error) (Cursor, bool, error) {
+	if emit == nil {
+		return cursor, false, fmt.Errorf("retrieval chunk stream emit callback is required")
+	}
+	sections, err := normalizedStreamingSections(parent, opts, true)
+	if err != nil {
+		return cursor, false, err
+	}
+	startSection := 0
+	if cursor.SectionKey != "" {
+		startSection = -1
+		for i := range sections {
+			if sections[i].Key == cursor.SectionKey {
+				startSection = i
+				break
+			}
 		}
-		seenSections[section.Key] = struct{}{}
-		if strings.TrimSpace(section.Text) == "" {
-			continue
+		if startSection < 0 {
+			return cursor, false, fmt.Errorf("retrieval chunk cursor section %q is not in parent", cursor.SectionKey)
 		}
+	}
+	for sectionOrdinal := startSection; sectionOrdinal < len(sections); sectionOrdinal++ {
+		section := sections[sectionOrdinal]
 		sectionRunes := []rune(section.Text)
+		boundary := 0
+		if sectionOrdinal == startSection && cursor.SectionKey != "" {
+			boundary = cursor.NextBoundary
+			if boundary < 0 || boundary > len(sectionRunes) {
+				return cursor, false, fmt.Errorf("retrieval chunk cursor boundary %d is outside section %q", boundary, section.Key)
+			}
+		}
 		windows := chunkSectionRunesV3(sectionRunes, opts)
-		for _, window := range windows {
-			text := strings.TrimSpace(string(sectionRunes[window.start:window.end]))
+		if boundary != 0 {
+			found := boundary == len(sectionRunes)
+			for _, candidate := range windows {
+				if candidate.start == boundary {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return cursor, false, fmt.Errorf("retrieval chunk cursor boundary %d is not a v3 boundary in section %q", boundary, section.Key)
+			}
+		}
+		for _, current := range windows {
+			if current.start < boundary {
+				continue
+			}
+			text := strings.TrimSpace(string(sectionRunes[current.start:current.end]))
 			if text == "" {
 				continue
 			}
-			start, end := trimRuneOffsetsRunes(sectionRunes, window.start, window.end)
-			hash := textHash(text)
-			headHash := headingHash(section.Heading)
-			id := chunkID(section.Key, section.Role, section.Derived, headHash, hash)
-			if _, found := seenChunks[id]; !found {
-				projection.Chunks = append(projection.Chunks, Chunk{ID: id, ParentKind: parent.Kind, ParentSourceKey: parent.SourceKey, SectionKey: section.Key, EvidenceRole: section.Role, SectionOrdinal: sectionOrdinal, Heading: section.Heading, HeadingHash: headHash, Derived: section.Derived, ProjectionVersion: ProjectionVersion, ChunkerVersion: Version, InputContentHash: parent.ContentHash, TextHash: hash, Text: text})
-				seenChunks[id] = struct{}{}
+			start, end := trimRuneOffsetsRunes(sectionRunes, current.start, current.end)
+			textHash := textHash(text)
+			headingHash := headingHash(section.Heading)
+			id := chunkID(section.Key, section.Role, section.Derived, headingHash, textHash)
+			chunk := Chunk{ID: id, ParentKind: parent.Kind, ParentSourceKey: parent.SourceKey, SectionKey: section.Key, EvidenceRole: section.Role, SectionOrdinal: sectionOrdinal, Heading: section.Heading, HeadingHash: headingHash, Derived: section.Derived, ProjectionVersion: ProjectionVersion, ChunkerVersion: Version, InputContentHash: parent.ContentHash, TextHash: textHash, Text: text}
+			occurrence := Occurrence{ChunkID: id, SectionKey: section.Key, StartChar: start, EndChar: end}
+			next := Cursor{SectionKey: section.Key, NextBoundary: current.end}
+			if current.end == len(sectionRunes) && sectionOrdinal+1 < len(sections) {
+				next = Cursor{SectionKey: sections[sectionOrdinal+1].Key}
 			}
-			projection.Occurrences = append(projection.Occurrences, Occurrence{ChunkID: id, SectionKey: section.Key, StartChar: start, EndChar: end})
+			if err := emit(chunk, occurrence); err != nil {
+				return next, false, err
+			}
 		}
 	}
-	return projection, nil
+	return Cursor{}, true, nil
+}
+
+func normalizedStreamingSections(parent Parent, opts Options, validateOptions bool) ([]Section, error) {
+	parent.Kind = strings.TrimSpace(parent.Kind)
+	parent.SourceKey = strings.TrimSpace(parent.SourceKey)
+	if parent.Kind == "" {
+		return nil, fmt.Errorf("parent kind is required")
+	}
+	if parent.SourceKey == "" {
+		return nil, fmt.Errorf("parent source key is required")
+	}
+	if validateOptions {
+		if opts.TargetRunes <= 0 || opts.MaxRunes < opts.TargetRunes {
+			return nil, fmt.Errorf("invalid chunk sizes: target=%d max=%d", opts.TargetRunes, opts.MaxRunes)
+		}
+		if opts.OverlapRunes != 0 {
+			return nil, fmt.Errorf("retrieval chunker v3 requires zero overlap, got %d", opts.OverlapRunes)
+		}
+	}
+	sections := append([]Section(nil), parent.Sections...)
+	seen := make(map[string]struct{}, len(sections))
+	for i := range sections {
+		sections[i].Role = strings.TrimSpace(sections[i].Role)
+		sections[i].Heading = strings.TrimSpace(sections[i].Heading)
+		sections[i].Key = sectionKey(parent, sections[i])
+		if sections[i].Role == "" {
+			return nil, fmt.Errorf("section evidence role is required")
+		}
+		if _, duplicate := seen[sections[i].Key]; duplicate {
+			return nil, fmt.Errorf("duplicate section key %q", sections[i].Key)
+		}
+		seen[sections[i].Key] = struct{}{}
+	}
+	return sections, nil
 }
 
 type window struct{ start, end int }

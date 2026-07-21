@@ -1,6 +1,7 @@
 package retrievalchunk
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -658,5 +659,89 @@ func TestBuildRejectsOverlapAboveVersionMaximum(t *testing.T) {
 	}, opts)
 	if err == nil {
 		t.Fatal("expected nonzero overlap to be rejected by v3")
+	}
+}
+
+func TestGiantStreamResumesAtExactBoundaryWithoutRestart(t *testing.T) {
+	parent := Parent{
+		Kind: "source", SourceKey: "source:giant-stream", ContentHash: "v1",
+		Sections: []Section{
+			{Key: "first", Role: "raw", Heading: "First", Text: strings.Repeat("abcdefghij ", 30)},
+			{Key: "second", Role: "summary", Derived: true, Text: strings.Repeat("klmnopqrst ", 30)},
+		},
+	}
+	opts := Options{TargetRunes: 24, MaxRunes: 32}
+	var first []Occurrence
+	stop := errors.New("batch full")
+	cursor, done, err := Stream(parent, opts, Cursor{}, func(_ Chunk, occurrence Occurrence) error {
+		first = append(first, occurrence)
+		if len(first) == 3 {
+			return stop
+		}
+		return nil
+	})
+	if !errors.Is(err, stop) || done || cursor.SectionKey == "" || cursor.NextBoundary <= 0 {
+		t.Fatalf("cursor=%+v done=%v err=%v", cursor, done, err)
+	}
+
+	var resumed []Occurrence
+	end, done, err := Stream(parent, opts, cursor, func(_ Chunk, occurrence Occurrence) error {
+		resumed = append(resumed, occurrence)
+		return nil
+	})
+	if err != nil || !done || end != (Cursor{}) || len(resumed) == 0 {
+		t.Fatalf("end=%+v done=%v resumed=%d err=%v", end, done, len(resumed), err)
+	}
+	if resumed[0] == first[0] || resumed[0].StartChar < cursor.NextBoundary && resumed[0].SectionKey == cursor.SectionKey {
+		t.Fatalf("resume restarted: first=%+v cursor=%+v resumed=%+v", first[0], cursor, resumed[0])
+	}
+
+	projection, err := BuildProjection(parent, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first)+len(resumed) != len(projection.Occurrences) {
+		t.Fatalf("streamed occurrences=%d want %d", len(first)+len(resumed), len(projection.Occurrences))
+	}
+	hash, err := ParentProjectionHash(parent)
+	if err != nil || hash != projection.ParentHash {
+		t.Fatalf("hash=%q want=%q err=%v", hash, projection.ParentHash, err)
+	}
+}
+
+func TestGiantStreamPreservesV3IdentityBytesAndOccurrences(t *testing.T) {
+	parent := Parent{Kind: "item", SourceKey: "item:stream", ContentHash: "v1", Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat("界 evidence. ", 600)}}}
+	opts := DefaultOptions()
+	projection, err := BuildProjection(parent, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chunks []Chunk
+	var occurrences []Occurrence
+	_, done, err := Stream(parent, opts, Cursor{}, func(chunk Chunk, occurrence Occurrence) error {
+		chunks = append(chunks, chunk)
+		occurrences = append(occurrences, occurrence)
+		if len([]byte(chunk.Text)) > MaxUTF8Bytes {
+			t.Fatalf("streamed chunk bytes=%d", len([]byte(chunk.Text)))
+		}
+		return nil
+	})
+	if err != nil || !done {
+		t.Fatalf("done=%v err=%v", done, err)
+	}
+	if !reflect.DeepEqual(occurrences, projection.Occurrences) {
+		t.Fatalf("stream occurrences differ\n got=%+v\nwant=%+v", occurrences, projection.Occurrences)
+	}
+	unique := make(map[string]Chunk)
+	for _, chunk := range chunks {
+		unique[chunk.ID] = chunk
+	}
+	if len(unique) != len(projection.Chunks) {
+		t.Fatalf("unique streamed chunks=%d want=%d", len(unique), len(projection.Chunks))
+	}
+	for _, chunk := range projection.Chunks {
+		if got, ok := unique[chunk.ID]; !ok || got.TextHash != chunk.TextHash || got.SectionKey != chunk.SectionKey {
+			t.Fatalf("stream identity mismatch for %s: %+v", chunk.ID, got)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -33,6 +34,10 @@ type fakeStore struct {
 	replaceErrKey    string
 	candidateProfile embedding.Profile
 	candidateErr     error
+	staging          map[string]store.RetrievalProjectionCheckpoint
+	stageCalls       []store.StageRetrievalProjectionInput
+	promotions       []store.RetrievalProjectionCheckpoint
+	blockedGiant     []string
 }
 
 func (f *fakeStore) ProjectionWorkRevision(context.Context) (int64, error) {
@@ -74,6 +79,55 @@ func (f *fakeStore) ApplyRetrievalProjection(_ context.Context, input store.Appl
 		return f.replaceResult, nil
 	}
 	return store.ChunkReplaceResult{Created: len(input.Projection.Chunks)}, nil
+}
+
+func (f *fakeStore) LoadRetrievalProjectionStaging(_ context.Context, parent retrievalchunk.Parent, revision int64) (store.RetrievalProjectionCheckpoint, bool, error) {
+	cp, ok := f.staging[parent.Kind+":"+parent.SourceKey]
+	if !ok || cp.DirtyRevision != revision {
+		return store.RetrievalProjectionCheckpoint{}, false, nil
+	}
+	return cp, true, nil
+}
+
+func (f *fakeStore) StageRetrievalProjectionBatch(_ context.Context, input store.StageRetrievalProjectionInput) (store.RetrievalProjectionCheckpoint, error) {
+	f.stageCalls = append(f.stageCalls, input)
+	if f.staging == nil {
+		f.staging = make(map[string]store.RetrievalProjectionCheckpoint)
+	}
+	workID := input.WorkID
+	if workID == "" {
+		workID = "fake-work-" + input.ParentKind + "-" + input.ParentSourceKey
+	}
+	seen := make(map[string]struct{})
+	for _, call := range f.stageCalls {
+		for _, row := range call.Rows {
+			seen[row.Chunk.ID] = struct{}{}
+		}
+	}
+	chunks := len(seen)
+	cp := store.RetrievalProjectionCheckpoint{WorkID: workID, DirtyRevision: input.DirtyRevision, ParentKind: input.ParentKind, ParentSourceKey: input.ParentSourceKey, ProjectionHash: input.ProjectionHash, SectionKey: input.Cursor.SectionKey, NextBoundary: input.Cursor.NextBoundary, StagedChunks: chunks}
+	f.staging[input.ParentKind+":"+input.ParentSourceKey] = cp
+	return cp, nil
+}
+
+func (f *fakeStore) PromoteRetrievalProjectionStaging(_ context.Context, checkpoint store.RetrievalProjectionCheckpoint) (store.ChunkReplaceResult, error) {
+	f.promotions = append(f.promotions, checkpoint)
+	delete(f.staging, checkpoint.ParentKind+":"+checkpoint.ParentSourceKey)
+	if f.applied == nil {
+		f.applied = make(map[string]bool)
+	}
+	f.applied[checkpoint.ParentKind+":"+checkpoint.ParentSourceKey] = true
+	return store.ChunkReplaceResult{Created: checkpoint.StagedChunks}, nil
+}
+
+func (f *fakeStore) BlockRetrievalProjectionTooLarge(_ context.Context, parent retrievalchunk.Parent, revision int64, projectionHash string) error {
+	f.blockedGiant = append(f.blockedGiant, parent.Kind+":"+parent.SourceKey)
+	delete(f.staging, parent.Kind+":"+parent.SourceKey)
+	if f.applied == nil {
+		f.applied = make(map[string]bool)
+	}
+	f.applied[parent.Kind+":"+parent.SourceKey] = true
+	return nil
 }
 func (f *fakeStore) ListChunksNeedingEmbeddingForProfileAt(_ context.Context, profile embedding.Profile, _ string, _ int, _ time.Time) ([]store.RetrievalChunkRow, error) {
 	f.operations = append(f.operations, "candidates")
@@ -246,6 +300,28 @@ func TestChunkClassifiesEmptyProjectionAsBlocked(t *testing.T) {
 	}
 }
 
+func TestChunkDeletedAndIneligibleParentsBypassAbsentStagingAndApplyCleanup(t *testing.T) {
+	st := &fakeStore{
+		parents: []retrievalchunk.Parent{
+			{Kind: "source", SourceKey: "deleted"},
+			{Kind: "item", SourceKey: "ineligible"},
+		},
+		replaceResult: store.ChunkReplaceResult{Deleted: 1},
+	}
+	progress, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.applyInputs) != 2 || len(st.stageCalls) != 0 || progress.Blocked != 2 || progress.Deleted != 2 || progress.Remaining != 0 {
+		t.Fatalf("progress=%+v applies=%+v stage_calls=%d", progress, st.applyInputs, len(st.stageCalls))
+	}
+	for _, input := range st.applyInputs {
+		if input.Status != store.RetrievalProjectionEmpty || input.Reason != "no_chunkable_content" {
+			t.Fatalf("cleanup apply=%+v", input)
+		}
+	}
+}
+
 func TestChunkReportsCurrentReuse(t *testing.T) {
 	st := &fakeStore{
 		parents:       []retrievalchunk.Parent{{Kind: "item", SourceKey: "a", ContentHash: "ha", Sections: []retrievalchunk.Section{{Role: "raw", Text: "alpha"}}}},
@@ -257,6 +333,68 @@ func TestChunkReportsCurrentReuse(t *testing.T) {
 	}
 	if got.Current != 1 || got.Generated != 0 || got.Remaining != 0 {
 		t.Fatalf("progress=%+v", got)
+	}
+}
+
+func TestGiantChunkProjectionStopsAfterTwoDurableBatchesAndResumes(t *testing.T) {
+	parent := retrievalchunk.Parent{
+		Kind: "source", SourceKey: "giant", ContentHash: "v1",
+		Sections: []retrievalchunk.Section{{Key: "body", Role: "raw", Text: strings.Repeat("abcdefghij ", 30)}},
+	}
+	st := &fakeStore{parents: []retrievalchunk.Parent{parent}}
+	base := time.Unix(1_000, 0).UTC()
+	times := []time.Time{base, base.Add(time.Second), base.Add(3 * time.Second)}
+	nowCall := 0
+	now := func() time.Time {
+		if nowCall >= len(times) {
+			return times[len(times)-1]
+		}
+		value := times[nowCall]
+		nowCall++
+		return value
+	}
+	opts := ChunkOptions{Limit: 1, MaxDuration: 2 * time.Second, Now: now}
+	limits := chunkExecutionLimits{GiantThreshold: 2, StageBatchSize: 2, HardChunkLimit: 50}
+	first, err := runChunkWithLimits(context.Background(), st, opts, limits, retrievalchunk.Options{TargetRunes: 10, MaxRunes: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.stageCalls) != 2 || len(st.promotions) != 0 || first.Checkpoint == nil || first.Remaining != 1 {
+		t.Fatalf("first=%+v stage_calls=%d promotions=%d", first, len(st.stageCalls), len(st.promotions))
+	}
+	checkpoint := *first.Checkpoint
+	if checkpoint.WorkID == "" || checkpoint.DirtyRevision != 1 || checkpoint.SectionKey == "" || checkpoint.NextBoundary <= 0 {
+		t.Fatalf("checkpoint=%+v", checkpoint)
+	}
+	if len(st.stageCalls[1].Rows) == 0 || st.stageCalls[1].Rows[0].Occurrence.StartChar < st.stageCalls[0].Cursor.NextBoundary {
+		t.Fatalf("second batch restarted: first cursor=%+v second first=%+v", st.stageCalls[0].Cursor, st.stageCalls[1].Rows)
+	}
+
+	second, err := runChunkWithLimits(context.Background(), st, ChunkOptions{Limit: 1}, limits, retrievalchunk.Options{TargetRunes: 10, MaxRunes: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.promotions) != 1 || second.Generated != 1 || second.Remaining != 0 || second.Checkpoint != nil {
+		t.Fatalf("second=%+v promotions=%+v", second, st.promotions)
+	}
+}
+
+func TestProjectionTooLargeBlocksTerminallyWithoutApply(t *testing.T) {
+	var text strings.Builder
+	for i := 0; i < 80; i++ {
+		_, _ = fmt.Fprintf(&text, "%010d ", i)
+	}
+	parent := retrievalchunk.Parent{
+		Kind: "source", SourceKey: "too-large", ContentHash: "v1",
+		Sections: []retrievalchunk.Section{{Key: "body", Role: "raw", Text: text.String()}},
+	}
+	st := &fakeStore{parents: []retrievalchunk.Parent{parent}}
+	progress, err := runChunkWithLimits(context.Background(), st, ChunkOptions{Limit: 1}, chunkExecutionLimits{GiantThreshold: 2, StageBatchSize: 2, HardChunkLimit: 4}, retrievalchunk.Options{TargetRunes: 10, MaxRunes: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(st.blockedGiant, []string{"source:too-large"}) || len(st.applyInputs) != 0 || len(st.promotions) != 0 || progress.Blocked != 1 || progress.Remaining != 0 {
+		t.Fatalf("progress=%+v blocked=%v applies=%d promotions=%d", progress, st.blockedGiant, len(st.applyInputs), len(st.promotions))
 	}
 }
 
