@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -242,6 +243,7 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 		}
 	}
 	if err := s.ensureColumns("retrieval_state", []columnDefinition{
+		{Name: "database_id", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "projection_work_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
 		{Name: "purge_epoch", Definition: "INTEGER NOT NULL DEFAULT 0"},
 		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
@@ -275,6 +277,47 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 		{Name: "vector_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
 	}); err != nil {
 		return fmt.Errorf("repair retrieval embedding revisions: %w", err)
+	}
+	if err := s.ensureColumns("retrieval_chunk_occurrences", []columnDefinition{
+		{Name: "parent_kind", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "parent_source_key", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "chunk_id", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "section_key", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "start_char", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "end_char", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "created_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval chunk occurrences: %w", err)
+	}
+	if err := s.ensureColumns("retrieval_projection_staging", []columnDefinition{
+		{Name: "work_id", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "dirty_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "parent_kind", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "parent_source_key", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "projection_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "section_key", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "next_boundary", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "chunk_id", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "chunk_json", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "occurrence_json", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "created_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval projection staging: %w", err)
+	}
+	if err := s.ensureColumns("retrieval_embedding_profiles", []columnDefinition{
+		{Name: "profile_id", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "latest_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "purge_epoch", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "active_generation_id", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "active_snapshot_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "active_indexed_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "l0_ready_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "active_tombstone_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval embedding profiles: %w", err)
 	}
 	for _, statement := range []string{
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_chunks_v3_identity_unique
@@ -319,6 +362,13 @@ func (s *Store) seedSemanticFoundationRetrievalParents() error {
 		databaseID = generatedID
 	case err != nil:
 		return fmt.Errorf("read retrieval database identity: %w", err)
+	}
+	if strings.TrimSpace(databaseID) == "" {
+		generatedID, generateErr := newRetrievalDatabaseID()
+		if generateErr != nil {
+			return generateErr
+		}
+		databaseID = generatedID
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := s.db.Exec(`

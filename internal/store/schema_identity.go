@@ -74,11 +74,11 @@ var dbrainSemanticFoundationSchema = []schemaIdentityTable{
 	},
 	{
 		name:    "retrieval_chunk_occurrences",
-		columns: []string{"parent_kind", "parent_source_key", "chunk_id", "section_key", "start_char", "end_char"},
+		columns: []string{"parent_kind", "parent_source_key", "chunk_id", "section_key", "start_char", "end_char", "created_at", "updated_at"},
 	},
 	{
 		name:    "retrieval_projection_staging",
-		columns: []string{"work_id", "dirty_revision", "parent_kind", "parent_source_key", "section_key", "next_boundary"},
+		columns: []string{"work_id", "dirty_revision", "parent_kind", "parent_source_key", "projection_hash", "section_key", "next_boundary", "chunk_id", "chunk_json", "occurrence_json", "created_at", "updated_at"},
 	},
 	{
 		name:    "retrieval_embedding_profiles",

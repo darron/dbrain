@@ -71,13 +71,15 @@ func TestSemanticFoundationMigrationCreatesV2TablesAndColumns(t *testing.T) {
 	for _, column := range []string{"revision", "vector_hash"} {
 		assertTableColumn(t, st, "retrieval_embeddings", column)
 	}
-	for _, index := range []string{
-		"idx_retrieval_chunks_v3_identity_unique",
-		"idx_retrieval_chunk_occurrences_unique",
-		"idx_retrieval_projection_staging_work_unique",
-	} {
-		assertSQLiteObject(t, st.db, "index", index)
-	}
+	assertSQLiteIndex(t, st.db, "idx_retrieval_chunks_v3_identity_unique", "retrieval_chunks", []string{
+		"parent_kind", "parent_source_key", "section_key", "evidence_role", "derived", "heading_hash", "chunk_text_hash",
+	}, "chunker_version = 'retrieval-chunker-v3'")
+	assertSQLiteIndex(t, st.db, "idx_retrieval_chunk_occurrences_unique", "retrieval_chunk_occurrences", []string{
+		"parent_kind", "parent_source_key", "chunk_id", "section_key", "start_char", "end_char",
+	}, "")
+	assertSQLiteIndex(t, st.db, "idx_retrieval_projection_staging_work_unique", "retrieval_projection_staging", []string{
+		"work_id", "dirty_revision", "section_key", "next_boundary", "chunk_id",
+	}, "")
 
 	var databaseID string
 	var projectionWorkRevision, purgeEpoch int64
@@ -259,6 +261,145 @@ func TestSemanticFoundationMigrationRepairsExistingMetadataIdempotently(t *testi
 	}
 }
 
+func TestSemanticFoundationMigrationRepairsEveryPartialFoundationTableAndDatabaseID(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name              string
+		retrievalStateDDL string
+		retrievalStateRow string
+	}{
+		{
+			name:              "missing database id",
+			retrievalStateDDL: `CREATE TABLE retrieval_state (singleton INTEGER PRIMARY KEY)`,
+			retrievalStateRow: `INSERT INTO retrieval_state (singleton) VALUES (1)`,
+		},
+		{
+			name: "empty database id",
+			retrievalStateDDL: `CREATE TABLE retrieval_state (
+				singleton INTEGER PRIMARY KEY,
+				database_id TEXT NOT NULL
+			)`,
+			retrievalStateRow: `INSERT INTO retrieval_state (singleton, database_id) VALUES (1, '')`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := semanticFoundationV15Database(t)
+			db, err := sql.Open(driverName, path)
+			if err != nil {
+				t.Fatalf("open v15 database: %v", err)
+			}
+			if _, err := db.Exec(tc.retrievalStateDDL + `;
+				` + tc.retrievalStateRow + `;
+				CREATE TABLE retrieval_parent_projections (
+					parent_kind TEXT NOT NULL,
+					parent_source_key TEXT NOT NULL,
+					PRIMARY KEY(parent_kind, parent_source_key)
+				);
+				CREATE TABLE retrieval_chunk_occurrences (parent_kind TEXT NOT NULL);
+				CREATE TABLE retrieval_projection_staging (work_id TEXT NOT NULL);
+				CREATE TABLE retrieval_embedding_profiles (profile_id TEXT PRIMARY KEY)`); err != nil {
+				_ = db.Close()
+				t.Fatalf("seed partial foundation metadata: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close partial foundation metadata: %v", err)
+			}
+
+			st := openStoreAtPath(t, path)
+			var databaseID string
+			if err := st.db.QueryRow(`SELECT database_id FROM retrieval_state WHERE singleton = 1`).Scan(&databaseID); err != nil {
+				_ = st.Close()
+				t.Fatalf("read repaired database id: %v", err)
+			}
+			if databaseID == "" {
+				_ = st.Close()
+				t.Fatal("repaired database id is empty")
+			}
+			if err := st.Close(); err != nil {
+				t.Fatalf("close repaired store: %v", err)
+			}
+
+			st = openStoreAtPath(t, path)
+			defer func() { _ = st.Close() }()
+			var reopenedID string
+			if err := st.db.QueryRow(`SELECT database_id FROM retrieval_state WHERE singleton = 1`).Scan(&reopenedID); err != nil {
+				t.Fatalf("read reopened database id: %v", err)
+			}
+			if reopenedID != databaseID {
+				t.Fatalf("database id changed on reopen: got %q, want %q", reopenedID, databaseID)
+			}
+			for table, columns := range map[string][]string{
+				"retrieval_state": {
+					"singleton", "database_id", "projection_work_revision", "purge_epoch", "updated_at",
+				},
+				"retrieval_chunk_occurrences": {
+					"parent_kind", "parent_source_key", "chunk_id", "section_key", "start_char", "end_char", "created_at", "updated_at",
+				},
+				"retrieval_projection_staging": {
+					"work_id", "dirty_revision", "parent_kind", "parent_source_key", "projection_hash", "section_key", "next_boundary", "chunk_id", "chunk_json", "occurrence_json", "created_at", "updated_at",
+				},
+				"retrieval_embedding_profiles": {
+					"profile_id", "latest_revision", "purge_epoch", "active_generation_id", "active_snapshot_revision", "active_indexed_count", "l0_ready_count", "active_tombstone_count", "updated_at",
+				},
+			} {
+				for _, column := range columns {
+					assertTableColumn(t, st, table, column)
+				}
+			}
+		})
+	}
+}
+
+func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *testing.T) {
+	t.Parallel()
+
+	requiredColumns := map[string][]string{
+		"retrieval_chunk_occurrences": {
+			"parent_kind", "parent_source_key", "chunk_id", "section_key", "start_char", "end_char", "created_at", "updated_at",
+		},
+		"retrieval_projection_staging": {
+			"work_id", "dirty_revision", "parent_kind", "parent_source_key", "projection_hash", "section_key", "next_boundary", "chunk_id", "chunk_json", "occurrence_json", "created_at", "updated_at",
+		},
+		"retrieval_embedding_profiles": {
+			"profile_id", "latest_revision", "purge_epoch", "active_generation_id", "active_snapshot_revision", "active_indexed_count", "l0_ready_count", "active_tombstone_count", "updated_at",
+		},
+	}
+	for table, columns := range requiredColumns {
+		for _, missingColumn := range columns {
+			t.Run(table+"/"+missingColumn, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "brain.db")
+				st := openStoreAtPath(t, path)
+				if err := st.Close(); err != nil {
+					t.Fatalf("close current database: %v", err)
+				}
+				db, err := sql.Open(driverName, path)
+				if err != nil {
+					t.Fatalf("open current database directly: %v", err)
+				}
+				columnsAfterDrop := withoutColumn(columns, missingColumn)
+				if _, err := db.Exec(`CREATE TABLE rebuilt AS SELECT ` + strings.Join(columnsAfterDrop, ", ") + ` FROM ` + table + `;
+					DROP TABLE ` + table + `;
+					ALTER TABLE rebuilt RENAME TO ` + table); err != nil {
+					_ = db.Close()
+					t.Fatalf("remove %s.%s: %v", table, missingColumn, err)
+				}
+				if err := db.Close(); err != nil {
+					t.Fatalf("close reduced database: %v", err)
+				}
+
+				err = ValidateRestorableDatabase(t.Context(), path)
+				if !errors.Is(err, ErrDatabaseIncompatible) {
+					t.Fatalf("validation after removing %s.%s = %v, want incompatibility", table, missingColumn, err)
+				}
+				if !strings.Contains(err.Error(), table+"."+missingColumn) {
+					t.Fatalf("validation error = %q, want missing %s.%s", err, table, missingColumn)
+				}
+			})
+		}
+	}
+}
+
 func semanticFoundationV15Database(t *testing.T) string {
 	t.Helper()
 
@@ -366,6 +507,75 @@ func assertSQLiteObject(t *testing.T, db *sql.DB, objectType, name string) {
 	}
 }
 
+func assertSQLiteIndex(t *testing.T, db *sql.DB, index, table string, wantColumns []string, wantPredicate string) {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA index_list(` + table + `)`)
+	if err != nil {
+		t.Fatalf("list indexes for %s: %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var found bool
+	for rows.Next() {
+		var sequence, unique, partial int
+		var name, origin string
+		if err := rows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index for %s: %v", table, err)
+		}
+		if name != index {
+			continue
+		}
+		found = true
+		if unique != 1 {
+			t.Fatalf("index %s unique = %d, want 1", index, unique)
+		}
+		if (wantPredicate != "") != (partial == 1) {
+			t.Fatalf("index %s partial = %d, predicate %q", index, partial, wantPredicate)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate indexes for %s: %v", table, err)
+	}
+	if !found {
+		t.Fatalf("index %s is missing", index)
+	}
+
+	rows, err = db.Query(`PRAGMA index_xinfo(` + index + `)`)
+	if err != nil {
+		t.Fatalf("list index columns for %s: %v", index, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var gotColumns []string
+	for rows.Next() {
+		var sequence, columnID, descending, key int
+		var name sql.NullString
+		var collation string
+		if err := rows.Scan(&sequence, &columnID, &name, &descending, &collation, &key); err != nil {
+			t.Fatalf("scan index column for %s: %v", index, err)
+		}
+		if key != 0 {
+			gotColumns = append(gotColumns, name.String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate index columns for %s: %v", index, err)
+	}
+	if !reflect.DeepEqual(gotColumns, wantColumns) {
+		t.Fatalf("index %s columns = %#v, want %#v", index, gotColumns, wantColumns)
+	}
+
+	var definition string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&definition); err != nil {
+		t.Fatalf("read index %s definition: %v", index, err)
+	}
+	definition = strings.Join(strings.Fields(definition), " ")
+	if wantPredicate != "" && !strings.HasSuffix(definition, "WHERE "+wantPredicate) {
+		t.Fatalf("index %s predicate = %q, want WHERE %s", index, definition, wantPredicate)
+	}
+	if wantPredicate == "" && strings.Contains(definition, " WHERE ") {
+		t.Fatalf("index %s unexpectedly has predicate: %q", index, definition)
+	}
+}
+
 func assertTableColumn(t *testing.T, st *Store, table, column string) {
 	t.Helper()
 	columns, err := st.tableColumns(table)
@@ -399,6 +609,16 @@ func assertDatabaseTableColumn(t *testing.T, db *sql.DB, table, column string) {
 		t.Fatalf("iterate columns for %s: %v", table, err)
 	}
 	t.Fatalf("table %s is missing column %s", table, column)
+}
+
+func withoutColumn(columns []string, without string) []string {
+	result := make([]string, 0, len(columns)-1)
+	for _, column := range columns {
+		if column != without {
+			result = append(result, column)
+		}
+	}
+	return result
 }
 
 func TestRetrievalChunkProvenanceMigrationRepairsV14SchemaIdempotently(t *testing.T) {
