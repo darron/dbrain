@@ -12,6 +12,9 @@ import (
 )
 
 const defaultRetryCooldown = 15 * time.Minute
+const maxEmbeddingBatchSize = 5_000
+
+var ErrEmbedCircuitOpen = errors.New("semantic embedding circuit opened after three consecutive retryable provider failures")
 
 type EmbedOptions struct {
 	Limit         int
@@ -22,11 +25,10 @@ type EmbedOptions struct {
 }
 
 type EmbedStore interface {
-	ListReadyEmbeddings(context.Context, string, int) ([]store.RetrievalEmbeddingRow, error)
-	BlockCorruptRetrievalEmbedding(context.Context, *store.RetrievalEmbeddingCorruptionError) error
 	ListChunksNeedingEmbeddingForProfileAt(context.Context, embedding.Profile, string, int, time.Time) ([]store.RetrievalChunkRow, error)
 	CountChunksNeedingEmbeddingForProfileAt(context.Context, embedding.Profile, time.Time) (int, error)
-	PutRetrievalEmbedding(context.Context, store.RetrievalEmbeddingRow) error
+	RetrievalPurgeEpoch(context.Context) (int64, error)
+	PutRetrievalEmbeddingBatch(context.Context, store.PutRetrievalEmbeddingBatchInput) (int64, error)
 }
 
 func Profile(info embedding.Info) embedding.Profile {
@@ -67,7 +69,8 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 	if err != nil {
 		return progress, embedding.FatalConfigError(err)
 	}
-	if err := quarantineCorruptReady(ctx, st, profileID, &progress); err != nil {
+	purgeEpoch, err := st.RetrievalPurgeEpoch(ctx)
+	if err != nil {
 		return progress, err
 	}
 	total, err := st.CountChunksNeedingEmbeddingForProfileAt(ctx, profile, now)
@@ -86,13 +89,16 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 	for _, candidate := range candidates {
 		attempts[candidate.ChunkID] = candidate.AttemptCount
 	}
-	for start := 0; start < len(candidates); start += opts.BatchSize {
+	batchSize := min(opts.BatchSize, maxEmbeddingBatchSize)
+	consecutiveRetryableFailures := 0
+	for start := 0; start < len(candidates); start += batchSize {
 		if err := ctx.Err(); err != nil {
 			return progress, err
 		}
-		end := min(start+opts.BatchSize, len(candidates))
+		end := min(start+batchSize, len(candidates))
 		batch := candidates[start:end]
-		if err := processEmbedBatch(ctx, st, provider, info, profileID, batch, attempts, now, cooldown, &progress); err != nil {
+		if err := processEmbedBatch(ctx, st, provider, info, profile, profileID, purgeEpoch, batch, attempts, now, cooldown, &progress, &consecutiveRetryableFailures); err != nil {
+			progress.Remaining = max(total-progress.Scanned, 0)
 			return progress, err
 		}
 		progress.Remaining = max(total-progress.Scanned, 0)
@@ -103,30 +109,7 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 	return progress, nil
 }
 
-func quarantineCorruptReady(ctx context.Context, st EmbedStore, profileID string, progress *Progress) error {
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		_, err := st.ListReadyEmbeddings(ctx, profileID, 0)
-		if err == nil {
-			return nil
-		}
-		var corruption *store.RetrievalEmbeddingCorruptionError
-		if !errors.As(err, &corruption) {
-			return err
-		}
-		if err := st.BlockCorruptRetrievalEmbedding(ctx, corruption); err != nil {
-			if errors.Is(err, store.ErrRetrievalEmbeddingNoLongerCorrupt) {
-				continue
-			}
-			return err
-		}
-		progress.Quarantined++
-	}
-}
-
-func processEmbedBatch(ctx context.Context, st EmbedStore, provider embedding.Provider, info embedding.Info, profileID string, batch []store.RetrievalChunkRow, attempts map[string]int, now time.Time, cooldown time.Duration, progress *Progress) error {
+func processEmbedBatch(ctx context.Context, st EmbedStore, provider embedding.Provider, info embedding.Info, profile embedding.Profile, profileID string, purgeEpoch int64, batch []store.RetrievalChunkRow, attempts map[string]int, now time.Time, cooldown time.Duration, progress *Progress, consecutiveRetryableFailures *int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -145,25 +128,30 @@ func processEmbedBatch(ctx context.Context, st EmbedStore, provider embedding.Pr
 			return embedErr
 		}
 		if embedding.IsBlocked(embedErr) && len(batch) > 1 {
+			*consecutiveRetryableFailures = 0
 			middle := len(batch) / 2
-			if err := processEmbedBatch(ctx, st, provider, info, profileID, batch[:middle], attempts, now, cooldown, progress); err != nil {
+			if err := processEmbedBatch(ctx, st, provider, info, profile, profileID, purgeEpoch, batch[:middle], attempts, now, cooldown, progress, consecutiveRetryableFailures); err != nil {
 				return err
 			}
-			return processEmbedBatch(ctx, st, provider, info, profileID, batch[middle:], attempts, now, cooldown, progress)
+			return processEmbedBatch(ctx, st, provider, info, profile, profileID, purgeEpoch, batch[middle:], attempts, now, cooldown, progress, consecutiveRetryableFailures)
 		}
 		status := store.RetrievalEmbeddingError
 		if embedding.IsBlocked(embedErr) {
 			status = store.RetrievalEmbeddingBlocked
 		}
+		rows := make([]store.RetrievalEmbeddingRow, 0, len(batch))
 		for _, candidate := range batch {
 			row := embeddingRow(candidate, profileID, info, status, attempts[candidate.ChunkID], nil, now)
 			row.LastError = embedErr.Error()
 			if status == store.RetrievalEmbeddingError {
 				row.NextAttemptAt = now.Add(cooldown)
 			}
-			if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
-				return err
-			}
+			rows = append(rows, row)
+		}
+		if _, err := st.PutRetrievalEmbeddingBatch(ctx, store.PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: purgeEpoch}); err != nil {
+			return err
+		}
+		for range batch {
 			progress.Scanned++
 			if status == store.RetrievalEmbeddingBlocked {
 				progress.Blocked++
@@ -171,8 +159,17 @@ func processEmbedBatch(ctx context.Context, st EmbedStore, provider embedding.Pr
 				progress.Failed++
 			}
 		}
+		if embedding.IsRetryable(embedErr) {
+			*consecutiveRetryableFailures++
+			if *consecutiveRetryableFailures >= 3 {
+				return ErrEmbedCircuitOpen
+			}
+		} else {
+			*consecutiveRetryableFailures = 0
+		}
 		return nil
 	}
+	*consecutiveRetryableFailures = 0
 	if err := embedding.ValidateResponse(info, req, response); err != nil {
 		return embedding.FatalConfigError(err)
 	}
@@ -181,12 +178,16 @@ func processEmbedBatch(ctx context.Context, st EmbedStore, provider embedding.Pr
 			return embedding.FatalConfigError(fmt.Errorf("invalid L2 embedding vector %d: %w", i, err))
 		}
 	}
+	rows := make([]store.RetrievalEmbeddingRow, 0, len(batch))
 	for i, candidate := range batch {
 		row := embeddingRow(candidate, profileID, info, store.RetrievalEmbeddingReady, attempts[candidate.ChunkID], embedding.EncodeDenseF32(response.Vectors[i]), now)
 		row.EmbeddedAt = now
-		if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
-			return err
-		}
+		rows = append(rows, row)
+	}
+	if _, err := st.PutRetrievalEmbeddingBatch(ctx, store.PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: purgeEpoch}); err != nil {
+		return err
+	}
+	for range batch {
 		progress.Scanned++
 		progress.Generated++
 	}
@@ -194,9 +195,13 @@ func processEmbedBatch(ctx context.Context, st EmbedStore, provider embedding.Pr
 }
 
 func recordEmbedSnapshot(progress *Progress, callback func(Progress) error) error {
+	progress.SnapshotCount++
+	progress.SnapshotsTruncated = progress.SnapshotCount > 1
 	snapshot := *progress
 	snapshot.Snapshots = make([]Progress, 0)
-	progress.Snapshots = append(progress.Snapshots, snapshot)
+	snapshot.LastSnapshot = nil
+	progress.Snapshots = []Progress{snapshot}
+	progress.LastSnapshot = &snapshot
 	if callback != nil {
 		return callback(snapshot)
 	}

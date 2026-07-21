@@ -25,3 +25,16 @@ func TestSemanticProgressOutputIncludesQuarantined(t *testing.T) {
 		})
 	}
 }
+
+func TestSemanticVerifyOutputIncludesResume(t *testing.T) {
+	progress := semanticbuild.VerifyProgress{Progress: semanticbuild.Progress{Stage: "verify", Scanned: 2, Current: 1, Quarantined: 1}, Resume: "chunk-b", HasMore: true}
+	var dst bytes.Buffer
+	if err := writeSemanticVerifyProgress(&dst, progress); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Quarantined: 1", "Resume: chunk-b", "Has more: true"} {
+		if !strings.Contains(dst.String(), want) {
+			t.Fatalf("output=%q missing %q", dst.String(), want)
+		}
+	}
+}

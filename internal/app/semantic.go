@@ -60,7 +60,54 @@ func newSemanticCommandWithDeps(root *rootOptions, deps semanticDeps) *cobra.Com
 		newSemanticStatusCommand(root, deps),
 		newSemanticChunkCommand(root, deps),
 		newSemanticEmbedCommand(root, deps),
+		newSemanticVerifyCommand(root, deps),
 	)
+	return cmd
+}
+
+func newSemanticVerifyCommand(root *rootOptions, deps semanticDeps) *cobra.Command {
+	var limit int
+	var resume string
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use: "verify", Short: "Verify a bounded page of stored semantic vectors", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if limit <= 0 || limit > 5_000 {
+				return fmt.Errorf("limit must be between 1 and 5000")
+			}
+			cfg, err := deps.loadWriteConfig(root.root, root.configFile)
+			if err != nil {
+				return err
+			}
+			semantic, err := deps.resolve(cfg.RootDir)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(semantic.Model) == "" || semantic.Dimensions <= 0 {
+				return fmt.Errorf("semantic embedding model and positive dimensions are not configured")
+			}
+			profileID, err := semanticbuild.Profile(embedding.Info{Provider: string(semantic.Provider), Model: semantic.Model, Dimensions: semantic.Dimensions}).ID()
+			if err != nil {
+				return err
+			}
+			st, err := deps.openWritable(cfg.DBPath)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = st.Close() }()
+			progress, err := semanticbuild.RunVerify(cmd.Context(), st, semanticbuild.VerifyOptions{ProfileID: profileID, Limit: limit, Resume: resume})
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				return writeJSON(cmd.OutOrStdout(), progress)
+			}
+			return writeSemanticVerifyProgress(cmd.OutOrStdout(), progress)
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", defaultSemanticLimit, "Maximum ready vector rows to verify (maximum 5000)")
+	cmd.Flags().StringVar(&resume, "resume", "", "Resume after this chunk ID")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print progress as JSON")
 	return cmd
 }
 

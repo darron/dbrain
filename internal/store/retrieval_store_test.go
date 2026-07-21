@@ -1501,6 +1501,169 @@ func TestPutRetrievalEmbeddingAllowsNonReadyRowsWithoutVectorBytes(t *testing.T)
 	}
 }
 
+func TestEmbeddingBatchUsesOneRevisionAndVectorHashes(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("batch-a", "item", "item:batch", 0, "hash-a", "alpha"),
+		testRetrievalChunk("batch-b", "item", "item:batch", 1, "hash-b", "bravo"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:batch", chunks); err != nil {
+		t.Fatal(err)
+	}
+	profile := embedding.Profile{Provider: "fake", Model: "fake-v1", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []RetrievalEmbeddingRow{testEmbedding(chunks[0].ID, profileID, chunks[0].TextHash), testEmbedding(chunks[1].ID, profileID, chunks[1].TextHash)}
+	revision, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision != 1 {
+		t.Fatalf("revision=%d want 1", revision)
+	}
+	var distinctRevisions, vectorHashes int
+	var storedVectorHash string
+	if err := st.db.QueryRow(`SELECT COUNT(DISTINCT revision), COUNT(DISTINCT vector_hash), MIN(vector_hash) FROM retrieval_embeddings WHERE profile_id=?`, profileID).Scan(&distinctRevisions, &vectorHashes, &storedVectorHash); err != nil {
+		t.Fatal(err)
+	}
+	if distinctRevisions != 1 || vectorHashes != 1 || storedVectorHash != retrievalVectorHash(rows[0].VectorBytes) {
+		t.Fatalf("distinct revisions=%d hashes=%d stored_hash=%q", distinctRevisions, vectorHashes, storedVectorHash)
+	}
+	profileRow, err := st.RetrievalEmbeddingProfile(ctx, profileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profileRow.LatestRevision != revision || profileRow.L0ReadyCount != 2 || profileRow.PurgeEpoch != 0 {
+		t.Fatalf("profile=%+v", profileRow)
+	}
+	rows[0].AttemptCount++
+	later, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows[:1], ExpectedPurgeEpoch: 0})
+	if err != nil || later != revision+1 {
+		t.Fatalf("later revision=%d err=%v", later, err)
+	}
+}
+
+func TestEmbeddingBatchRejectsMoreThanFiveThousandRowsBeforeStorage(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	profile := embedding.Profile{Provider: "fake", Model: "fake-v1", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
+	_, err := st.PutRetrievalEmbeddingBatch(context.Background(), PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: make([]RetrievalEmbeddingRow, 5_001)})
+	if err == nil || !strings.Contains(err.Error(), "between 1 and 5000") {
+		t.Fatalf("oversized batch error=%v", err)
+	}
+}
+
+func TestEmbeddingBatchRollsBackOnHashOrEpochRace(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("race-a", "item", "item:race-batch", 0, "hash-a", "alpha"),
+		testRetrievalChunk("race-b", "item", "item:race-batch", 1, "hash-b", "bravo"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:race-batch", chunks); err != nil {
+		t.Fatal(err)
+	}
+	profile := embedding.Profile{Provider: "fake", Model: "fake-v1", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
+	profileID, _ := profile.ID()
+	rows := []RetrievalEmbeddingRow{testEmbedding(chunks[0].ID, profileID, chunks[0].TextHash), testEmbedding(chunks[1].ID, profileID, "stale")}
+	if _, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: 0}); err == nil {
+		t.Fatal("stale batch unexpectedly committed")
+	}
+	var count int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_embeddings WHERE profile_id=?`, profileID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_state SET purge_epoch=1 WHERE singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	rows[1].ChunkTextHash = chunks[1].TextHash
+	if _, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: 0}); err == nil {
+		t.Fatal("stale purge epoch unexpectedly committed")
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_embeddings WHERE profile_id=?`, profileID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("post-epoch count=%d err=%v", count, err)
+	}
+}
+
+func TestEmbeddingBatchRollsBackEveryRowOnPersistenceFailure(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("rollback-a", "item", "item:rollback-batch", 0, "hash-a", "alpha"),
+		testRetrievalChunk("rollback-b", "item", "item:rollback-batch", 1, "hash-b", "bravo"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:rollback-batch", chunks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`CREATE TRIGGER fail_second_embedding BEFORE INSERT ON retrieval_embeddings WHEN NEW.chunk_id='rollback-b' BEGIN SELECT RAISE(ABORT, 'forced batch failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	profile := embedding.Profile{Provider: "fake", Model: "fake-v1", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
+	profileID, _ := profile.ID()
+	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{GenerationID: "rollback-batch-generation", ProfileID: profileID, Backend: "exact", BackendVersion: "v1", Dimensions: 2, DistanceMetric: "cosine", BuildStatus: RetrievalGenerationCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ActivateRetrievalIndexGeneration(ctx, "rollback-batch-generation"); err != nil {
+		t.Fatal(err)
+	}
+	rows := []RetrievalEmbeddingRow{testEmbedding(chunks[0].ID, profileID, chunks[0].TextHash), testEmbedding(chunks[1].ID, profileID, chunks[1].TextHash)}
+	if _, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: 0}); err == nil {
+		t.Fatal("forced persistence failure unexpectedly committed")
+	}
+	var embeddings, profiles int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_embeddings WHERE profile_id=?`, profileID).Scan(&embeddings); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_embedding_profiles WHERE profile_id=?`, profileID).Scan(&profiles); err != nil {
+		t.Fatal(err)
+	}
+	if embeddings != 0 || profiles != 0 {
+		t.Fatalf("rolled back embeddings=%d profiles=%d", embeddings, profiles)
+	}
+	var generationStatus string
+	var generationActive int
+	if err := st.db.QueryRow(`SELECT build_status,active FROM retrieval_index_generations WHERE generation_id='rollback-batch-generation'`).Scan(&generationStatus, &generationActive); err != nil {
+		t.Fatal(err)
+	}
+	if generationStatus != string(RetrievalGenerationCompleted) || generationActive != 1 {
+		t.Fatalf("generation status=%q active=%d changed despite rollback", generationStatus, generationActive)
+	}
+}
+
+func TestListRetrievalVectorsPagesLeanRows(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("vector-a", "item", "item:vectors", 0, "hash-a", "alpha"),
+		testRetrievalChunk("vector-b", "item", "item:vectors", 1, "hash-b", "bravo"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:vectors", chunks); err != nil {
+		t.Fatal(err)
+	}
+	for _, chunk := range chunks {
+		if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, "vector-profile", chunk.TextHash)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := st.ListRetrievalVectors(ctx, "vector-profile", VectorPage{Limit: 1})
+	if err != nil || len(page) != 1 || page[0].ChunkID != "vector-a" || len(page[0].VectorBytes) == 0 || page[0].CurrentChunkTextHash != "hash-a" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	next, err := st.ListRetrievalVectors(ctx, "vector-profile", VectorPage{AfterChunkID: page[0].ChunkID, Limit: 1})
+	if err != nil || len(next) != 1 || next[0].ChunkID != "vector-b" {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
 func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 	t.Parallel()
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
@@ -1543,6 +1706,13 @@ func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 	}
 	if status != string(RetrievalEmbeddingBlocked) || !strings.Contains(lastError, "byte length") {
 		t.Fatalf("quarantined row = status %q error %q, want blocked corruption", status, lastError)
+	}
+	profileRow, err := st.RetrievalEmbeddingProfile(ctx, row.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profileRow.LatestRevision != 2 || profileRow.L0ReadyCount != 0 {
+		t.Fatalf("profile after quarantine=%+v, want revision 2 and no L0 ready rows", profileRow)
 	}
 	assertRetrievalGenerationStale(t, st, "read-corrupt-generation")
 	ready, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 10)
@@ -1603,6 +1773,39 @@ func TestBlockCorruptRetrievalEmbeddingDoesNotBlockConcurrentlyRepairedRow(t *te
 	}
 	if generationStatus != string(RetrievalGenerationCompleted) || active != 1 {
 		t.Fatalf("generation after stale diagnostic = status %q active %d, want completed active", generationStatus, active)
+	}
+}
+
+func TestListReadyEmbeddingsRejectsStoredVectorHashMismatch(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunk := testRetrievalChunk("hash-corrupt-chunk", "item", "item:hash-corrupt", 0, "hash-corrupt-text", "alpha")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:hash-corrupt", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	markProjectionCurrentForTest(t, st, "item", "item:hash-corrupt")
+	row := testEmbedding(chunk.ID, "hash-corrupt-profile", chunk.TextHash)
+	if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET vector_hash='wrong' WHERE chunk_id=? AND profile_id=?`, row.ChunkID, row.ProfileID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 1)
+	var corruption *RetrievalEmbeddingCorruptionError
+	if !errors.As(err, &corruption) || !strings.Contains(corruption.Reason, "vector hash") {
+		t.Fatalf("error=%v corruption=%+v", err, corruption)
+	}
+	if err := st.BlockCorruptRetrievalEmbedding(ctx, corruption); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := st.db.QueryRow(`SELECT status FROM retrieval_embeddings WHERE chunk_id=? AND profile_id=?`, row.ChunkID, row.ProfileID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(RetrievalEmbeddingBlocked) {
+		t.Fatalf("status=%q", status)
 	}
 }
 

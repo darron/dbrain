@@ -300,6 +300,7 @@ func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
 		{"semantic", "chunk", "--limit", "0", "--json"},
 		{"semantic", "embed", "--limit", "0", "--json"},
 		{"semantic", "embed", "--batch-size", "0", "--json"},
+		{"semantic", "verify", "--limit", "0", "--json"},
 	} {
 		stdout, _, err := runRootCommandErr(t, t.TempDir(), args...)
 		if err == nil {
@@ -308,6 +309,17 @@ func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
 		if stdout != "" {
 			t.Fatalf("%v mixed output with error: %q", args, stdout)
 		}
+	}
+}
+
+func TestSemanticVerifyCommandHasBoundedResumeFlags(t *testing.T) {
+	cmd := NewRootCommand()
+	target, _, err := cmd.Find([]string{"semantic", "verify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Flags().Lookup("limit") == nil || target.Flags().Lookup("resume") == nil || target.Flags().Lookup("json") == nil {
+		t.Fatalf("verify flags=%v", target.Flags().FlagUsages())
 	}
 }
 
@@ -352,7 +364,7 @@ func TestSemanticChunkOutputUsesDurableQueueResumeState(t *testing.T) {
 	if _, found := payload["next_after_source_key"]; found {
 		t.Fatalf("JSON contains obsolete cursor: %s", machine.String())
 	}
-	if string(payload["has_more"]) != "true" || string(payload["snapshots"]) == "null" {
+	if string(payload["has_more"]) != "true" || string(payload["snapshot_count"]) == "" {
 		t.Fatalf("JSON queue state=%+v output=%s", payload, machine.String())
 	}
 }

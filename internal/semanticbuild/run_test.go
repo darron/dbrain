@@ -24,8 +24,9 @@ type fakeStore struct {
 	chunks           []store.RetrievalChunkRow
 	replacements     []string
 	writes           []store.RetrievalEmbeddingRow
-	readyErrs        []error
-	readyCalls       int
+	writeBatches     [][]store.RetrievalEmbeddingRow
+	purgeEpoch       int64
+	vectorRows       []store.RetrievalVectorRow
 	blockErrs        []error
 	blockCalls       []*store.RetrievalEmbeddingCorruptionError
 	operations       []string
@@ -137,10 +138,13 @@ func (f *fakeStore) ListChunksNeedingEmbeddingForProfileAt(_ context.Context, pr
 	}
 	return append([]store.RetrievalChunkRow(nil), f.chunks...), nil
 }
-func (f *fakeStore) PutRetrievalEmbedding(_ context.Context, row store.RetrievalEmbeddingRow) error {
-	f.operations = append(f.operations, "put")
-	f.writes = append(f.writes, row)
-	return nil
+func (f *fakeStore) RetrievalPurgeEpoch(context.Context) (int64, error) { return f.purgeEpoch, nil }
+func (f *fakeStore) PutRetrievalEmbeddingBatch(_ context.Context, input store.PutRetrievalEmbeddingBatchInput) (int64, error) {
+	f.operations = append(f.operations, "batch")
+	rows := append([]store.RetrievalEmbeddingRow(nil), input.Rows...)
+	f.writeBatches = append(f.writeBatches, rows)
+	f.writes = append(f.writes, rows...)
+	return int64(len(f.writeBatches)), nil
 }
 func (f *fakeStore) CountChunksNeedingEmbeddingForProfileAt(_ context.Context, profile embedding.Profile, _ time.Time) (int, error) {
 	f.operations = append(f.operations, "count")
@@ -153,14 +157,18 @@ func (f *fakeStore) CountChunksNeedingEmbeddingForProfileAt(_ context.Context, p
 	}
 	return len(f.chunks), nil
 }
-func (f *fakeStore) ListReadyEmbeddings(context.Context, string, int) ([]store.RetrievalEmbeddingRow, error) {
-	f.operations = append(f.operations, "validate")
-	call := f.readyCalls
-	f.readyCalls++
-	if call < len(f.readyErrs) {
-		return nil, f.readyErrs[call]
+func (f *fakeStore) ListRetrievalVectors(_ context.Context, _ string, page store.VectorPage) ([]store.RetrievalVectorRow, error) {
+	result := make([]store.RetrievalVectorRow, 0, page.Limit)
+	for _, row := range f.vectorRows {
+		if row.ChunkID <= page.AfterChunkID {
+			continue
+		}
+		result = append(result, row)
+		if len(result) == page.Limit {
+			break
+		}
 	}
-	return make([]store.RetrievalEmbeddingRow, 0), nil
+	return result, nil
 }
 func (f *fakeStore) BlockCorruptRetrievalEmbedding(_ context.Context, corruption *store.RetrievalEmbeddingCorruptionError) error {
 	f.operations = append(f.operations, "block")
@@ -414,11 +422,14 @@ func TestEmbedBatchesInOrderWritesL2VectorsAndProvenance(t *testing.T) {
 	if got := []int{len(provider.requests[0].Texts), len(provider.requests[1].Texts)}; !reflect.DeepEqual(got, []int{2, 1}) {
 		t.Fatalf("batch sizes=%v", got)
 	}
-	if progress.Generated != 3 || progress.Remaining != 2 || len(st.writes) != 3 || len(snapshots) != 2 || len(progress.Snapshots) != 2 {
+	if progress.Generated != 3 || progress.Remaining != 2 || len(st.writes) != 3 || len(snapshots) != 2 || len(progress.Snapshots) != 1 || progress.SnapshotCount != 2 || !progress.SnapshotsTruncated {
 		t.Fatalf("progress=%+v writes=%d", progress, len(st.writes))
 	}
 	if snapshots[0].Scanned != 2 || snapshots[0].Remaining != 3 || snapshots[1].Scanned != 3 || snapshots[1].Remaining != 2 {
 		t.Fatalf("snapshots=%+v", snapshots)
+	}
+	if want := []string{"count", "candidates", "batch", "batch"}; !reflect.DeepEqual(st.operations, want) {
+		t.Fatalf("normal embed operations=%v want=%v; it must not scan ready vectors", st.operations, want)
 	}
 	profile := Profile(provider.Info())
 	profileID, _ := profile.ID()
@@ -537,41 +548,52 @@ func TestEmbedIsolatesBlockedInputBeforeTerminalWrites(t *testing.T) {
 	}
 }
 
-func TestEmbedQuarantinesCorruptReadyRowsBeforeCandidateWork(t *testing.T) {
-	corruption := &store.RetrievalEmbeddingCorruptionError{ChunkID: "corrupt", ProfileID: "profile", Reason: "bad bytes"}
-	st := &fakeStore{
-		readyErrs: []error{corruption, nil},
-		chunks:    []store.RetrievalChunkRow{{ChunkID: "candidate", ChunkTextHash: "hash", Text: "candidate"}},
-	}
-	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}}
-	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{Limit: 1, BatchSize: 1})
+func TestSemanticVerifyPagesAndQuarantinesCorruption(t *testing.T) {
+	valid := embedding.EncodeDenseF32([]float32{0.6, 0.8})
+	st := &fakeStore{vectorRows: []store.RetrievalVectorRow{
+		{ChunkID: "a", ProfileID: "profile", Provider: "fake", Model: "m", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: valid, VectorHash: vectorHash(valid), ChunkTextHash: "ha", CurrentChunkTextHash: "ha"},
+		{ChunkID: "b", ProfileID: "profile", Provider: "fake", Model: "m", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: []byte{0}, VectorHash: "bad", ChunkTextHash: "hb", CurrentChunkTextHash: "hb"},
+		{ChunkID: "c", ProfileID: "profile", Provider: "fake", Model: "m", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: valid, VectorHash: vectorHash(valid), ChunkTextHash: "hc", CurrentChunkTextHash: "hc"},
+	}}
+	progress, err := RunVerify(context.Background(), st, VerifyOptions{ProfileID: "profile", Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if progress.Quarantined != 1 || len(st.blockCalls) != 1 || st.blockCalls[0] != corruption {
-		t.Fatalf("progress=%+v block_calls=%+v", progress, st.blockCalls)
+	if progress.Scanned != 2 || progress.Quarantined != 1 || progress.Resume != "b" || !progress.HasMore || len(st.blockCalls) != 1 || st.blockCalls[0].ChunkID != "b" {
+		t.Fatalf("progress=%+v blocks=%+v", progress, st.blockCalls)
 	}
-	wantPrefix := []string{"validate", "block", "validate", "count", "candidates", "put"}
-	if !reflect.DeepEqual(st.operations, wantPrefix) {
-		t.Fatalf("operations=%v want=%v", st.operations, wantPrefix)
+	next, err := RunVerify(context.Background(), st, VerifyOptions{ProfileID: "profile", Limit: 2, Resume: progress.Resume})
+	if err != nil || next.Scanned != 1 || next.Resume != "c" || next.Quarantined != 0 {
+		t.Fatalf("next=%+v err=%v", next, err)
 	}
 }
 
-func TestEmbedRetriesValidationAfterRepairedCorruptionRace(t *testing.T) {
-	corruption := &store.RetrievalEmbeddingCorruptionError{ChunkID: "repaired", ProfileID: "profile", Reason: "stale diagnostic"}
-	st := &fakeStore{
-		readyErrs: []error{corruption, nil},
-		blockErrs: []error{store.ErrRetrievalEmbeddingNoLongerCorrupt},
+func TestEmbedCircuitBreakerPreservesUnattemptedRows(t *testing.T) {
+	chunks := make([]store.RetrievalChunkRow, 5)
+	for i := range chunks {
+		chunks[i] = store.RetrievalChunkRow{ChunkID: fmt.Sprintf("chunk-%d", i), ChunkTextHash: fmt.Sprintf("hash-%d", i), Text: "text"}
 	}
-	progress, err := RunEmbed(context.Background(), st, &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}}, EmbedOptions{Limit: 1, BatchSize: 1})
+	st := &fakeStore{chunks: chunks}
+	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}, err: embedding.RetryableError(errors.New("down"))}
+	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{Limit: 5, BatchSize: 1})
+	if !errors.Is(err, ErrEmbedCircuitOpen) || len(provider.requests) != 3 || len(st.writes) != 3 || progress.Scanned != 3 || progress.Remaining != 2 {
+		t.Fatalf("progress=%+v err=%v requests=%d writes=%d", progress, err, len(provider.requests), len(st.writes))
+	}
+}
+
+func TestEmbedCapsProviderAndPersistenceBatches(t *testing.T) {
+	chunks := make([]store.RetrievalChunkRow, 5001)
+	for i := range chunks {
+		chunks[i] = store.RetrievalChunkRow{ChunkID: fmt.Sprintf("chunk-%05d", i), ChunkTextHash: fmt.Sprintf("hash-%d", i), Text: "text"}
+	}
+	st := &fakeStore{chunks: chunks}
+	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}}
+	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{Limit: len(chunks), BatchSize: 9000})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if progress.Quarantined != 0 || st.readyCalls != 2 || len(st.blockCalls) != 1 {
-		t.Fatalf("progress=%+v ready_calls=%d block_calls=%d", progress, st.readyCalls, len(st.blockCalls))
-	}
-	if want := []string{"validate", "block", "validate", "count", "candidates"}; !reflect.DeepEqual(st.operations, want) {
-		t.Fatalf("operations=%v want=%v", st.operations, want)
+	if progress.Generated != len(chunks) || len(provider.requests) != 2 || len(provider.requests[0].Texts) != 5000 || len(provider.requests[1].Texts) != 1 || len(st.writeBatches) != 2 || len(st.writeBatches[0]) != 5000 {
+		t.Fatalf("progress=%+v requests=%d batches=%d", progress, len(provider.requests), len(st.writeBatches))
 	}
 }
 
@@ -601,12 +623,13 @@ func TestStatusPriorityKeepsConfiguredOffModeDisabled(t *testing.T) {
 	}
 }
 
-func TestProgressJSONUsesNonNullSnapshots(t *testing.T) {
-	payload, err := json.Marshal(Progress{Stage: "embed", Quarantined: 2, Snapshots: make([]Progress, 0)})
+func TestBoundedProgressJSONUsesOnlyLatestSnapshot(t *testing.T) {
+	last := Progress{Stage: "embed", Scanned: 8}
+	payload, err := json.Marshal(Progress{Stage: "embed", Quarantined: 2, SnapshotCount: 9, SnapshotsTruncated: true, LastSnapshot: &last, Snapshots: []Progress{last}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(payload) == "" || strings.Contains(string(payload), `"snapshots":null`) || !strings.Contains(string(payload), `"quarantined":2`) {
+	if string(payload) == "" || strings.Contains(string(payload), `"snapshots"`) || !strings.Contains(string(payload), `"snapshot_count":9`) || !strings.Contains(string(payload), `"snapshots_truncated":true`) || !strings.Contains(string(payload), `"last_snapshot"`) {
 		t.Fatalf("progress JSON=%s", payload)
 	}
 }

@@ -42,6 +42,20 @@ func writeSemanticProgress(dst io.Writer, progress semanticbuild.Progress) error
 	return err
 }
 
+func writeSemanticVerifyProgress(dst io.Writer, progress semanticbuild.VerifyProgress) error {
+	if err := writeSemanticProgress(dst, progress.Progress); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(dst, "Has more: %t\n", progress.HasMore); err != nil {
+		return err
+	}
+	if progress.Resume != "" {
+		_, err := fmt.Fprintf(dst, "Resume: %s\n", progress.Resume)
+		return err
+	}
+	return nil
+}
+
 func writeSemanticChunkProgress(dst io.Writer, progress semanticbuild.ChunkProgress) error {
 	if err := writeSemanticProgress(dst, progress.Progress); err != nil {
 		return err
