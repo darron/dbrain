@@ -24,6 +24,44 @@ func TestValidateRestorableDatabaseAcceptsCurrentSchema(t *testing.T) {
 	}
 }
 
+func TestValidateRestorableDatabaseAcceptsGenuineV16WithoutProjectionDirtyTriggers(t *testing.T) {
+	path := projectionDirtyTriggerV16Database(t)
+
+	if err := ValidateRestorableDatabase(t.Context(), path); err != nil {
+		t.Fatalf("validate genuine v16 database without Task-4 triggers: %v", err)
+	}
+}
+
+func TestValidateRestorableDatabaseRejectsV17MissingProjectionDirtyTrigger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "current.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+	execSchemaIdentityTestDB(t, path, `DROP TRIGGER `+semanticProjectionDirtyTriggers[0].name)
+
+	err := ValidateRestorableDatabase(t.Context(), path)
+	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), semanticProjectionDirtyTriggers[0].name) {
+		t.Fatalf("validation after dropping v17 dirty trigger = %v, want incompatible trigger error", err)
+	}
+}
+
+func TestValidateRestorableDatabaseRejectsV17NonCanonicalProjectionDirtyTrigger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "current.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+	trigger := semanticProjectionDirtyTriggers[0]
+	execSchemaIdentityTestDB(t, path, `DROP TRIGGER `+trigger.name+`;
+		CREATE TRIGGER `+trigger.name+` AFTER INSERT ON `+trigger.table+` BEGIN SELECT 1; END`)
+
+	err := ValidateRestorableDatabase(t.Context(), path)
+	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), "non-canonical definition") {
+		t.Fatalf("validation after replacing v17 dirty trigger = %v, want incompatible non-canonical trigger error", err)
+	}
+}
+
 func TestValidateRestorableDatabaseAcceptsLegacySchemaWithoutMigrationMetadata(t *testing.T) {
 	t.Parallel()
 

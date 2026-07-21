@@ -29,7 +29,7 @@ type retrievalConstraintTrigger struct {
 	sql   string
 }
 
-var semanticFoundationConstraintTriggers = append([]retrievalConstraintTrigger{
+var semanticFoundationConstraintTriggers = []retrievalConstraintTrigger{
 	{
 		name:  "trg_retrieval_state_singleton_insert",
 		table: "retrieval_state",
@@ -94,7 +94,7 @@ var semanticFoundationConstraintTriggers = append([]retrievalConstraintTrigger{
 				SELECT RAISE(ABORT, 'retrieval chunk ID is referenced by an occurrence');
 			END`,
 	},
-}, semanticProjectionDirtyTriggers...)
+}
 
 func (s *Store) ensureRetrievalTables() error {
 	statements := []string{

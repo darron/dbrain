@@ -71,6 +71,18 @@ var semanticProjectionDirtyTriggers = []retrievalConstraintTrigger{
 	),
 }
 
+func (s *Store) ensureSemanticProjectionDirtyTriggers() error {
+	for _, trigger := range semanticProjectionDirtyTriggers {
+		if _, err := s.db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			return fmt.Errorf("drop semantic projection dirty trigger %s: %w", trigger.name, err)
+		}
+		if _, err := s.db.Exec(trigger.sql); err != nil {
+			return fmt.Errorf("create semantic projection dirty trigger %s: %w", trigger.name, err)
+		}
+	}
+	return nil
+}
+
 // MarkRetrievalParentDirtyTx allocates a durable work revision and invalidates
 // legacy generations containing the parent's old chunks in the caller's
 // transaction. Authoritative item, source, and enrichment writes are covered

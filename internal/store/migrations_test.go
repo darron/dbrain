@@ -58,6 +58,102 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestProjectionDirtyTriggerMigrationUpgradesGenuineV16DatabaseOnce(t *testing.T) {
+	path := projectionDirtyTriggerV16Database(t)
+
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close upgraded store: %v", err)
+	}
+	st = openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+
+	var migrationCount int
+	if err := st.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM schema_migrations
+		WHERE version = 17 AND name = 'retrieval_projection_dirty_triggers'`).Scan(&migrationCount); err != nil {
+		t.Fatalf("read migration 17 metadata: %v", err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("migration 17 row count = %d, want 1", migrationCount)
+	}
+	var userVersion int
+	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
+		t.Fatalf("read upgraded user_version: %v", err)
+	}
+	if userVersion != 17 {
+		t.Fatalf("upgraded user_version = %d, want 17", userVersion)
+	}
+	for _, trigger := range semanticProjectionDirtyTriggers {
+		var table, definition string
+		if err := st.db.QueryRow(`
+			SELECT tbl_name, sql
+			FROM sqlite_master
+			WHERE type = 'trigger' AND name = ?`, trigger.name).Scan(&table, &definition); err != nil {
+			t.Fatalf("read upgraded dirty trigger %s: %v", trigger.name, err)
+		}
+		if table != trigger.table || normalizeSQLiteTriggerSQL(definition) != normalizeSQLiteTriggerSQL(trigger.sql) {
+			t.Fatalf("dirty trigger %s was not installed canonically", trigger.name)
+		}
+	}
+}
+
+func TestProjectionDirtyTriggerMigrationRepairsNonCanonicalV16Trigger(t *testing.T) {
+	path := projectionDirtyTriggerV16Database(t)
+	trigger := semanticProjectionDirtyTriggers[0]
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open v16 database directly: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER ` + trigger.name + ` AFTER INSERT ON ` + trigger.table + ` BEGIN SELECT 1; END`); err != nil {
+		_ = db.Close()
+		t.Fatalf("install non-canonical v16 trigger: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v16 database: %v", err)
+	}
+
+	st := openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	var table, definition string
+	if err := st.db.QueryRow(`
+		SELECT tbl_name, sql
+		FROM sqlite_master
+		WHERE type = 'trigger' AND name = ?`, trigger.name).Scan(&table, &definition); err != nil {
+		t.Fatalf("read repaired dirty trigger %s: %v", trigger.name, err)
+	}
+	if table != trigger.table || normalizeSQLiteTriggerSQL(definition) != normalizeSQLiteTriggerSQL(trigger.sql) {
+		t.Fatalf("dirty trigger %s was not repaired canonically", trigger.name)
+	}
+}
+
+func projectionDirtyTriggerV16Database(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close initial store: %v", err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open database directly: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, trigger := range semanticProjectionDirtyTriggers {
+		if _, err := db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			t.Fatalf("drop Task-4 projection dirty trigger %s: %v", trigger.name, err)
+		}
+	}
+	if _, err := db.Exec(`
+		DELETE FROM schema_migrations WHERE version > 16;
+		PRAGMA user_version = 16`); err != nil {
+		t.Fatalf("stamp genuine v16 database: %v", err)
+	}
+	return path
+}
+
 func TestSemanticFoundationMigrationCreatesV2TablesAndColumns(t *testing.T) {
 	t.Parallel()
 
@@ -706,7 +802,7 @@ func semanticFoundationV15Database(t *testing.T) string {
 			t.Fatalf("drop %s: %v", index, err)
 		}
 	}
-	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = 16; PRAGMA user_version = 15`); err != nil {
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version >= 16; PRAGMA user_version = 15`); err != nil {
 		t.Fatalf("stamp database as v15: %v", err)
 	}
 	if _, err := db.Exec(`

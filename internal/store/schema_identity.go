@@ -113,6 +113,7 @@ func ValidateRestorableDatabase(ctx context.Context, path string) error {
 func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 	requiredSchema := dbrainCoreSchema
 	hasSemanticFoundation := false
+	hasSemanticProjectionDirtyTriggers := false
 	hasMigrationTable, err := st.tableExists("schema_migrations")
 	if err != nil {
 		return 0, 0, fmt.Errorf("inspect dbrain migration table: %w", err)
@@ -127,6 +128,14 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
 			return 0, 0, fmt.Errorf("inspect dbrain semantic foundation migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticProjectionDirtyMigrationVersion).Scan(&found)
+		switch {
+		case err == nil:
+			hasSemanticProjectionDirtyTriggers = true
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic projection dirty migration: %w", err)
 		}
 	}
 
@@ -158,31 +167,47 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		}
 	}
 	if hasSemanticFoundation {
-		for _, required := range semanticFoundationConstraintTriggers {
-			var table, definition string
-			err := st.db.QueryRow(`SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND name = ?`, required.name).Scan(&table, &definition)
-			switch {
-			case err == nil && table == required.table && normalizeSQLiteTriggerSQL(definition) == normalizeSQLiteTriggerSQL(required.sql):
-			case err == nil:
-				missingTables++
-				if firstMissing == nil {
-					if table != required.table {
-						firstMissing = fmt.Errorf("%w: dbrain semantic foundation trigger %s belongs to %s, want %s", ErrDatabaseIncompatible, required.name, table, required.table)
-					} else {
-						firstMissing = fmt.Errorf("%w: dbrain semantic foundation trigger %s has a non-canonical definition", ErrDatabaseIncompatible, required.name)
-					}
-				}
-			case errors.Is(err, sql.ErrNoRows):
-				missingTables++
-				if firstMissing == nil {
-					firstMissing = fmt.Errorf("%w: dbrain semantic foundation trigger %s is missing", ErrDatabaseIncompatible, required.name)
-				}
-			case err != nil:
-				return missingTables, missingColumns, fmt.Errorf("inspect dbrain semantic foundation trigger %s: %w", required.name, err)
-			}
+		var err error
+		missingTables, firstMissing, err = inspectCanonicalTriggers(st, "semantic foundation", semanticFoundationConstraintTriggers, missingTables, firstMissing)
+		if err != nil {
+			return missingTables, missingColumns, err
+		}
+	}
+	if hasSemanticProjectionDirtyTriggers {
+		var err error
+		missingTables, firstMissing, err = inspectCanonicalTriggers(st, "semantic projection dirty", semanticProjectionDirtyTriggers, missingTables, firstMissing)
+		if err != nil {
+			return missingTables, missingColumns, err
 		}
 	}
 	return missingTables, missingColumns, firstMissing
+}
+
+func inspectCanonicalTriggers(st *Store, schemaName string, requiredTriggers []retrievalConstraintTrigger, missingTables int, firstMissing error) (int, error, error) {
+	for _, required := range requiredTriggers {
+		var table, definition string
+		err := st.db.QueryRow(`SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND name = ?`, required.name).Scan(&table, &definition)
+		switch {
+		case err == nil && table == required.table && normalizeSQLiteTriggerSQL(definition) == normalizeSQLiteTriggerSQL(required.sql):
+		case err == nil:
+			missingTables++
+			if firstMissing == nil {
+				if table != required.table {
+					firstMissing = fmt.Errorf("%w: dbrain %s trigger %s belongs to %s, want %s", ErrDatabaseIncompatible, schemaName, required.name, table, required.table)
+				} else {
+					firstMissing = fmt.Errorf("%w: dbrain %s trigger %s has a non-canonical definition", ErrDatabaseIncompatible, schemaName, required.name)
+				}
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			missingTables++
+			if firstMissing == nil {
+				firstMissing = fmt.Errorf("%w: dbrain %s trigger %s is missing", ErrDatabaseIncompatible, schemaName, required.name)
+			}
+		case err != nil:
+			return missingTables, firstMissing, fmt.Errorf("inspect dbrain %s trigger %s: %w", schemaName, required.name, err)
+		}
+	}
+	return missingTables, firstMissing, nil
 }
 
 // normalizeSQLiteTriggerSQL compares the canonical trigger definitions with

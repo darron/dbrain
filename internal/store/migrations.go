@@ -9,16 +9,18 @@ import (
 )
 
 const (
-	currentSchemaVersion               = 16
-	auditProvenanceMigrationVersion    = 12
-	auditProvenanceMigrationName       = "audit_provenance_v1"
-	retrievalMigrationVersion          = 13
-	retrievalTriggerRepairVersion      = 14
-	retrievalTriggerRepairName         = "retrieval_profile_invariant_triggers_repair"
-	retrievalChunkProvenanceVersion    = 15
-	retrievalChunkProvenanceName       = "retrieval_chunk_projection_provenance"
-	semanticFoundationMigrationVersion = 16
-	semanticFoundationMigrationName    = "retrieval_semantic_foundation_v2"
+	currentSchemaVersion                    = 17
+	auditProvenanceMigrationVersion         = 12
+	auditProvenanceMigrationName            = "audit_provenance_v1"
+	retrievalMigrationVersion               = 13
+	retrievalTriggerRepairVersion           = 14
+	retrievalTriggerRepairName              = "retrieval_profile_invariant_triggers_repair"
+	retrievalChunkProvenanceVersion         = 15
+	retrievalChunkProvenanceName            = "retrieval_chunk_projection_provenance"
+	semanticFoundationMigrationVersion      = 16
+	semanticFoundationMigrationName         = "retrieval_semantic_foundation_v2"
+	semanticProjectionDirtyMigrationVersion = 17
+	semanticProjectionDirtyMigrationName    = "retrieval_projection_dirty_triggers"
 )
 
 type schemaMigration struct {
@@ -165,6 +167,13 @@ var schemaMigrations = []schemaMigration{
 		Name:    semanticFoundationMigrationName,
 		Run: func(s *Store) error {
 			return s.ensureSemanticFoundationRetrievalSchema()
+		},
+	},
+	{
+		Version: semanticProjectionDirtyMigrationVersion,
+		Name:    semanticProjectionDirtyMigrationName,
+		Run: func(s *Store) error {
+			return s.ensureSemanticProjectionDirtyTriggers()
 		},
 	},
 }
