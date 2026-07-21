@@ -1,6 +1,9 @@
 package retrievalchunk
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // synthetic26512WindowFixture is intentionally synthetic; it models a large
 // restored corpus without placing any private corpus text in the repository.
@@ -16,9 +19,10 @@ func syntheticUnstructuredFixture() string {
 	return repeatedSyntheticToken(7_000)
 }
 func repeatedSyntheticToken(n int) string {
-	result := ""
+	var result strings.Builder
+	result.Grow(n * len("token00000"))
 	for i := 0; i < n; i++ {
-		result += fmt.Sprintf("token%05d", i%997)
+		_, _ = fmt.Fprintf(&result, "token%05d", i%997)
 	}
-	return result
+	return result.String()
 }

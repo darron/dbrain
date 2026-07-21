@@ -173,21 +173,18 @@ func whitespaceAt(text []rune, start, at int) bool {
 // unstructured input. The bounded scan is what limits re-synchronization to a
 // single 1,800-byte ceiling.
 func rollingBoundary(text []rune, start, target, hard int) int {
-	best, distance := 0, int(^uint(0)>>1)
+	best, bestFingerprint := 0, ^uint64(0)
 	const window = 32
-	from := max(start+window, target-256)
+	from := start + window
 	for at := from; at <= hard; at++ {
-		if fixedWindowFingerprint(text, at, window)&0x1f != 0 {
-			continue
-		}
-		d := at - target
-		if d < 0 {
-			d = -d
-		}
-		if d < distance {
-			best, distance = at, d
+		fingerprint := fixedWindowFingerprint(text, at, window)
+		// Rightmost-minimum winnowing always chooses an intrinsic anchor in
+		// every hard interval, including adversarial all-equal input.
+		if fingerprint <= bestFingerprint {
+			best, bestFingerprint = at, fingerprint
 		}
 	}
+	_ = target
 	return best
 }
 

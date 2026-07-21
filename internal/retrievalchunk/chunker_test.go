@@ -133,7 +133,7 @@ func TestChunkerV3ReusesMovedWindowsAndLimitsDistantEditChurn(t *testing.T) {
 	if changed > 8 {
 		t.Fatalf("unstructured insertion changed %d chunk identities, want <= 8", changed)
 	}
-	deleted := afterText[:editAt] + afterText[editAt+1:]
+	deleted := base[:editAt] + base[editAt+1:]
 	afterDeletion, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: deleted}}}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)

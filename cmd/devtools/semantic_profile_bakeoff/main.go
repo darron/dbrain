@@ -83,6 +83,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = st.Close() }()
 	report := report{Database: *dbPath, Model: *model, MaxBytes: *maxBytes, ByteDistribution: map[string]int{"0-450": 0, "451-900": 0, "901-1350": 0, "1351-1800": 0}}
+	if err := writeReport(*reportPath, report); err != nil {
+		return err
+	}
 	if err := forEachParent(ctx, st, func(parent retrievalchunk.Parent) error {
 		projection, err := retrievalchunk.BuildProjection(parent, retrievalchunk.DefaultOptions())
 		if err != nil {
@@ -108,10 +111,15 @@ func run(ctx context.Context, args []string) error {
 	}
 	for _, dimensions := range dimensions {
 		result := profileResult{Dimensions: dimensions, Status: "ready"}
+		report.CandidateProfiles = append(report.CandidateProfiles, result)
+		resultIndex := len(report.CandidateProfiles) - 1
+		if err := writeReport(*reportPath, report); err != nil {
+			return err
+		}
 		provider, err := embedding.NewOllama(embedding.OllamaOptions{BaseURL: *baseURL, Model: *model, Dimensions: dimensions})
 		if err != nil {
 			result.Status, result.Error = "unsupported", err.Error()
-			report.CandidateProfiles = append(report.CandidateProfiles, result)
+			report.CandidateProfiles[resultIndex] = result
 			continue
 		}
 		batch := make([]string, 0, 64)
@@ -121,7 +129,7 @@ func run(ctx context.Context, args []string) error {
 			}
 			response, embedErr := provider.Embed(ctx, embedding.Request{Purpose: embedding.PurposeDocument, Texts: batch})
 			if embedErr != nil {
-				if embedding.IsBlocked(embedErr) {
+				if isDimensionRejection(embedErr) {
 					result.Status = "unsupported"
 				} else {
 					result.Status = "failed"
@@ -139,6 +147,7 @@ func run(ctx context.Context, args []string) error {
 				}
 			}
 			result.Vectors += len(response.Vectors)
+			report.CandidateProfiles[resultIndex] = result
 			batch = batch[:0]
 			return writeReport(*reportPath, report)
 		}
@@ -166,7 +175,7 @@ func run(ctx context.Context, args []string) error {
 				result.Status, result.Error = "failed", err.Error()
 			}
 		}
-		report.CandidateProfiles = append(report.CandidateProfiles, result)
+		report.CandidateProfiles[resultIndex] = result
 		if err := writeReport(*reportPath, report); err != nil {
 			return err
 		}
@@ -183,6 +192,10 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 	return nil
+}
+func isDimensionRejection(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "dimension") && (strings.Contains(message, "unsupported") || strings.Contains(message, "must be") || strings.Contains(message, "not supported"))
 }
 
 func forEachParent(ctx context.Context, st *store.Store, visit func(retrievalchunk.Parent) error) error {
@@ -289,6 +302,12 @@ func refusesLiveProductionDB(path string) (bool, error) {
 	}
 	expectedResolved, err := filepath.EvalSymlinks(expected)
 	if err != nil {
+		if os.IsNotExist(err) {
+			if _, candidateErr := os.Stat(resolved); candidateErr != nil {
+				return false, candidateErr
+			}
+			return false, nil
+		}
 		return false, err
 	}
 	if resolved == expectedResolved {
