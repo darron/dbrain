@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,70 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/retrievalchunk"
 )
+
+func loadCurrentRetrievalParent(ctx context.Context, q sqlQueryer, kind, sourceKey string) (retrievalchunk.Parent, bool, bool, error) {
+	identity := retrievalchunk.Parent{Kind: kind, SourceKey: sourceKey}
+	switch kind {
+	case "item":
+		var contentHash, title, sourceType, authorName, authorHandle, text, xPostText, ocrText string
+		var articleTitle, articleText, transcriptText, summaryText, notePath string
+		var hasAuthoritativeTranscript bool
+		err := q.QueryRowContext(ctx, `
+			SELECT content_hash, title, source_type, author_name, author_handle, text, x_post_text,
+				`+itemOCRTextExpr()+`, article_title, article_text, `+itemXMediaTranscriptTextExpr()+`,
+				EXISTS(SELECT 1 FROM item_enrichments e WHERE e.item_id=items.id AND e.role='`+model.ItemEnrichmentRoleXMediaTranscript+`'),
+				`+itemSummaryTextExpr()+`, note_path
+			FROM items WHERE source_key=?`, sourceKey).Scan(
+			&contentHash, &title, &sourceType, &authorName, &authorHandle, &text, &xPostText,
+			&ocrText, &articleTitle, &articleText, &transcriptText, &hasAuthoritativeTranscript,
+			&summaryText, &notePath,
+		)
+		if err == sql.ErrNoRows {
+			return identity, false, false, nil
+		}
+		if err != nil {
+			return retrievalchunk.Parent{}, false, false, fmt.Errorf("load current retrieval item %s: %w", sourceKey, err)
+		}
+		if strings.TrimSpace(notePath) == "" {
+			return identity, true, false, nil
+		}
+		if hasAuthoritativeTranscript && strings.TrimSpace(articleTitle) == model.XMediaTranscriptArticleTitle {
+			articleTitle = ""
+			articleText = ""
+		}
+		if strings.TrimSpace(transcriptText) != "" {
+			articleTitle = model.XMediaTranscriptArticleTitle
+			articleText = transcriptText
+		}
+		return retrievalchunk.ProjectItem(model.Item{
+			SourceKey: sourceKey, ContentHash: contentHash, Title: title, SourceType: sourceType,
+			AuthorName: authorName, AuthorHandle: authorHandle, Text: text, XPostText: xPostText,
+			OCRText: ocrText, ArticleTitle: articleTitle, ArticleText: articleText, SummaryText: summaryText,
+		}), true, true, nil
+	case "source":
+		var contentHash, title, sourceType, domain, extractedText, summaryText, notePath string
+		err := q.QueryRowContext(ctx, `
+			SELECT content_hash, title, source_type, domain, extracted_text, summary_text, note_path
+			FROM sources WHERE source_key=?`, sourceKey).Scan(
+			&contentHash, &title, &sourceType, &domain, &extractedText, &summaryText, &notePath,
+		)
+		if err == sql.ErrNoRows {
+			return identity, false, false, nil
+		}
+		if err != nil {
+			return retrievalchunk.Parent{}, false, false, fmt.Errorf("load current retrieval source %s: %w", sourceKey, err)
+		}
+		if strings.TrimSpace(notePath) == "" {
+			return identity, true, false, nil
+		}
+		return retrievalchunk.ProjectSource(model.SourceDocument{
+			SourceKey: sourceKey, ContentHash: contentHash, Title: title, SourceType: sourceType,
+			Domain: domain, ExtractedText: extractedText, SummaryText: summaryText,
+		}), true, true, nil
+	default:
+		return retrievalchunk.Parent{}, false, false, fmt.Errorf("invalid retrieval parent kind %q", kind)
+	}
+}
 
 // ListRetrievalParents pages distinct source keys and returns every item/source
 // parent for each selected key. limit is therefore a key-page size; a page can

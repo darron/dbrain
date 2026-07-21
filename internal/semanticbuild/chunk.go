@@ -2,6 +2,7 @@ package semanticbuild
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/darron/dbrain/internal/retrievalchunk"
@@ -36,8 +37,9 @@ type ChunkOptions struct {
 }
 
 type ChunkStore interface {
-	ListRetrievalParents(context.Context, string, int) ([]retrievalchunk.Parent, error)
-	ReplaceRetrievalChunks(context.Context, string, string, []retrievalchunk.Chunk) (store.ChunkReplaceResult, error)
+	ProjectionWorkRevision(context.Context) (int64, error)
+	ListDirtyRetrievalParents(context.Context, int64, int) ([]store.RetrievalParentWork, error)
+	ApplyRetrievalProjection(context.Context, store.ApplyRetrievalProjectionInput) (store.ChunkReplaceResult, error)
 }
 
 func RunChunk(ctx context.Context, st ChunkStore, opts ChunkOptions) (ChunkProgress, error) {
@@ -45,64 +47,68 @@ func RunChunk(ctx context.Context, st ChunkStore, opts ChunkOptions) (ChunkProgr
 	if opts.Limit <= 0 {
 		return progress, fmt.Errorf("semantic chunk limit must be positive")
 	}
-	parents, err := st.ListRetrievalParents(ctx, opts.AfterSourceKey, opts.Limit+1)
+	watermark, err := st.ProjectionWorkRevision(ctx)
 	if err != nil {
 		return progress, err
 	}
-	selected := make([]retrievalchunk.Parent, 0, len(parents))
-	selectedKeys := 0
-	lastKey := ""
-	for _, parent := range parents {
-		if parent.SourceKey != lastKey {
-			selectedKeys++
-			lastKey = parent.SourceKey
-		}
-		if selectedKeys > opts.Limit {
-			progress.HasMore = true
-			break
-		}
-		selected = append(selected, parent)
+	work, err := st.ListDirtyRetrievalParents(ctx, watermark, opts.Limit+1)
+	if err != nil {
+		return progress, err
+	}
+	selected := work
+	if len(selected) > opts.Limit {
+		selected = selected[:opts.Limit]
+		progress.HasMore = true
 	}
 	progress.Remaining = len(selected)
-	for start := 0; start < len(selected); {
-		groupKey := selected[start].SourceKey
-		end := start + 1
-		for end < len(selected) && selected[end].SourceKey == groupKey {
-			end++
+	for _, selectedWork := range selected {
+		if err := ctx.Err(); err != nil {
+			return progress, err
 		}
-		for _, parent := range selected[start:end] {
-			if err := ctx.Err(); err != nil {
-				return progress, err
-			}
-			progress.Scanned++
-			chunks, buildErr := retrievalchunk.Build(parent, retrievalchunk.DefaultOptions())
-			if buildErr != nil {
-				progress.Blocked++
+		parent := selectedWork.Parent
+		progress.Scanned++
+		projection, buildErr := retrievalchunk.BuildProjection(parent, retrievalchunk.DefaultOptions())
+		if buildErr != nil {
+			progress.Blocked++
+			progress.Remaining--
+			continue
+		}
+		status := store.RetrievalProjectionCurrent
+		reason := ""
+		if len(projection.Chunks) == 0 {
+			status = store.RetrievalProjectionEmpty
+			reason = "no_chunkable_content"
+		}
+		result, err := st.ApplyRetrievalProjection(ctx, store.ApplyRetrievalProjectionInput{
+			ParentKind: parent.Kind, ParentSourceKey: parent.SourceKey,
+			DirtyRevision: selectedWork.DirtyRevision, Projection: projection,
+			Status: status, Reason: reason,
+		})
+		if err != nil {
+			var stale *store.RetrievalProjectionStaleWorkError
+			if errors.As(err, &stale) {
+				progress.Current++
 				progress.Remaining--
 				continue
 			}
-			result, err := st.ReplaceRetrievalChunks(ctx, parent.Kind, parent.SourceKey, chunks)
-			if err != nil {
-				progress.Failed++
-				return progress, err
-			}
-			progress.Remaining--
-			progress.Created += result.Created
-			progress.Updated += result.Updated
-			progress.Deleted += result.Deleted
-			if len(chunks) == 0 {
-				progress.Blocked++
-			} else if result.Created == 0 && result.Updated == 0 && result.Deleted == 0 {
-				progress.Current++
-			} else {
-				progress.Generated++
-			}
+			progress.Failed++
+			return progress, err
 		}
-		progress.NextAfterSourceKey = groupKey
+		progress.Remaining--
+		progress.Created += result.Created
+		progress.Updated += result.Updated
+		progress.Deleted += result.Deleted
+		if len(projection.Chunks) == 0 {
+			progress.Blocked++
+		} else if result.Created == 0 && result.Updated == 0 && result.Deleted == 0 {
+			progress.Current++
+		} else {
+			progress.Generated++
+		}
+		progress.NextAfterSourceKey = parent.SourceKey
 		if err := recordChunkSnapshot(&progress, opts.Progress); err != nil {
 			return progress, err
 		}
-		start = end
 	}
 	return progress, nil
 }
@@ -110,7 +116,7 @@ func RunChunk(ctx context.Context, st ChunkStore, opts ChunkOptions) (ChunkProgr
 func recordChunkSnapshot(progress *ChunkProgress, callback func(ChunkProgress) error) error {
 	snapshot := progress.Progress
 	snapshot.Snapshots = make([]Progress, 0)
-	progress.Snapshots = append(progress.Snapshots, snapshot)
+	progress.Snapshots = []Progress{snapshot}
 	if callback != nil {
 		return callback(*progress)
 	}

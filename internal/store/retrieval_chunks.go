@@ -227,6 +227,192 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 	return result, nil
 }
 
+func replaceRetrievalProjectionTx(ctx context.Context, tx *sql.Tx, parentKind, parentSourceKey string, projection retrievalchunk.Projection) (ChunkReplaceResult, error) {
+	chunks := append([]retrievalchunk.Chunk(nil), projection.Chunks...)
+	occurrences := append([]retrievalchunk.Occurrence(nil), projection.Occurrences...)
+	incoming := make(map[string]retrievalchunk.Chunk, len(chunks))
+	firstOccurrence := make(map[string]retrievalchunk.Occurrence, len(chunks))
+	for ordinal, chunk := range chunks {
+		if chunk.ID == "" || chunk.ParentKind != parentKind || chunk.ParentSourceKey != parentSourceKey {
+			return ChunkReplaceResult{}, fmt.Errorf("chunk %q does not belong to retrieval parent %s %s", chunk.ID, parentKind, parentSourceKey)
+		}
+		if strings.TrimSpace(chunk.SectionKey) == "" {
+			return ChunkReplaceResult{}, fmt.Errorf("retrieval chunk %q section key is required", chunk.ID)
+		}
+		if _, duplicate := incoming[chunk.ID]; duplicate {
+			return ChunkReplaceResult{}, fmt.Errorf("duplicate retrieval chunk ID %q", chunk.ID)
+		}
+		chunk.Ordinal = ordinal
+		chunks[ordinal] = chunk
+		incoming[chunk.ID] = chunk
+	}
+	seenOccurrences := make(map[string]struct{}, len(occurrences))
+	for _, occurrence := range occurrences {
+		chunk, ok := incoming[occurrence.ChunkID]
+		if !ok {
+			return ChunkReplaceResult{}, fmt.Errorf("retrieval occurrence references unknown chunk %q", occurrence.ChunkID)
+		}
+		if occurrence.SectionKey != chunk.SectionKey {
+			return ChunkReplaceResult{}, fmt.Errorf("retrieval occurrence section %q does not match chunk %q section %q", occurrence.SectionKey, occurrence.ChunkID, chunk.SectionKey)
+		}
+		if occurrence.StartChar < 0 || occurrence.EndChar <= occurrence.StartChar {
+			return ChunkReplaceResult{}, fmt.Errorf("invalid retrieval occurrence offsets %d:%d for chunk %q", occurrence.StartChar, occurrence.EndChar, occurrence.ChunkID)
+		}
+		identity := fmt.Sprintf("%s\x00%s\x00%d\x00%d", occurrence.ChunkID, occurrence.SectionKey, occurrence.StartChar, occurrence.EndChar)
+		if _, duplicate := seenOccurrences[identity]; duplicate {
+			return ChunkReplaceResult{}, fmt.Errorf("duplicate retrieval occurrence for chunk %q section %q offsets %d:%d", occurrence.ChunkID, occurrence.SectionKey, occurrence.StartChar, occurrence.EndChar)
+		}
+		seenOccurrences[identity] = struct{}{}
+		if _, found := firstOccurrence[occurrence.ChunkID]; !found {
+			firstOccurrence[occurrence.ChunkID] = occurrence
+		}
+	}
+	for ordinal, chunk := range chunks {
+		occurrence, ok := firstOccurrence[chunk.ID]
+		if !ok {
+			return ChunkReplaceResult{}, fmt.Errorf("retrieval chunk %q has no occurrence", chunk.ID)
+		}
+		chunk.StartChar = occurrence.StartChar
+		chunk.EndChar = occurrence.EndChar
+		chunks[ordinal] = chunk
+		incoming[chunk.ID] = chunk
+	}
+
+	existing := make(map[string]RetrievalChunkRow)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal,
+			ordinal, start_char, end_char, heading, projection_version, chunker_version,
+			input_content_hash, chunk_text_hash, text
+		FROM retrieval_chunks
+		WHERE parent_kind = ? AND parent_source_key = ?`, parentKind, parentSourceKey)
+	if err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("list existing retrieval projection chunks: %w", err)
+	}
+	for rows.Next() {
+		row, err := scanRetrievalChunk(rows)
+		if err != nil {
+			_ = rows.Close()
+			return ChunkReplaceResult{}, fmt.Errorf("scan existing retrieval projection chunk: %w", err)
+		}
+		existing[row.ChunkID] = row
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return ChunkReplaceResult{}, fmt.Errorf("iterate existing retrieval projection chunks: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("close existing retrieval projection chunks: %w", err)
+	}
+
+	affectedProfiles := make(map[string]struct{})
+	rows, err = tx.QueryContext(ctx, `
+		SELECT DISTINCT e.profile_id, c.chunk_id, c.chunk_text_hash, c.projection_version, c.chunker_version
+		FROM retrieval_chunks c
+		JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id
+		WHERE c.parent_kind = ? AND c.parent_source_key = ?`, parentKind, parentSourceKey)
+	if err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("list affected retrieval projection profiles: %w", err)
+	}
+	for rows.Next() {
+		var profileID, chunkID, textHash, projectionVersion, chunkerVersion string
+		if err := rows.Scan(&profileID, &chunkID, &textHash, &projectionVersion, &chunkerVersion); err != nil {
+			_ = rows.Close()
+			return ChunkReplaceResult{}, fmt.Errorf("scan affected retrieval projection profile: %w", err)
+		}
+		chunk, keep := incoming[chunkID]
+		if !keep || chunk.TextHash != textHash || chunk.ProjectionVersion != projectionVersion || chunk.ChunkerVersion != chunkerVersion {
+			affectedProfiles[profileID] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return ChunkReplaceResult{}, fmt.Errorf("iterate affected retrieval projection profiles: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("close affected retrieval projection profiles: %w", err)
+	}
+	for profileID := range affectedProfiles {
+		if err := markRetrievalProfileGenerationsStaleTx(ctx, tx, profileID); err != nil {
+			return ChunkReplaceResult{}, err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_chunk_occurrences WHERE parent_kind=? AND parent_source_key=?`, parentKind, parentSourceKey); err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("delete prior retrieval chunk occurrences: %w", err)
+	}
+	result := ChunkReplaceResult{}
+	for id := range existing {
+		if _, keep := incoming[id]; keep {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_chunks WHERE chunk_id=?`, id); err != nil {
+			return ChunkReplaceResult{}, fmt.Errorf("delete obsolete retrieval projection chunk %s: %w", id, err)
+		}
+		result.Deleted++
+	}
+	// Move retained ordinals out of the unique parent-ordinal namespace before
+	// assigning the new deterministic ordering. This avoids transient conflicts
+	// when two retained identities exchange positions.
+	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_chunks SET ordinal=-(ordinal+1) WHERE parent_kind=? AND parent_source_key=?`, parentKind, parentSourceKey); err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("stage retrieval projection ordinals: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, chunk := range chunks {
+		old, existed := existing[chunk.ID]
+		if existed && retrievalChunkMatches(old, chunk) {
+			result.Reused++
+		} else if existed && old.ChunkTextHash == chunk.TextHash {
+			result.Updated++
+		} else {
+			result.Created++
+		}
+		write, err := tx.ExecContext(ctx, `
+			INSERT INTO retrieval_chunks (
+				chunk_id, parent_kind, parent_source_key, evidence_role, section_key, section_ordinal,
+				ordinal, start_char, end_char, heading, heading_hash, derived, projection_version,
+				chunker_version, input_content_hash, chunk_text_hash, text, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(chunk_id) DO UPDATE SET
+				evidence_role=excluded.evidence_role, section_key=excluded.section_key,
+				section_ordinal=excluded.section_ordinal, ordinal=excluded.ordinal,
+				start_char=excluded.start_char, end_char=excluded.end_char,
+				heading=excluded.heading, heading_hash=excluded.heading_hash, derived=excluded.derived,
+				projection_version=excluded.projection_version, chunker_version=excluded.chunker_version,
+				input_content_hash=excluded.input_content_hash, chunk_text_hash=excluded.chunk_text_hash,
+				text=excluded.text, updated_at=excluded.updated_at
+			WHERE retrieval_chunks.parent_kind=excluded.parent_kind AND retrieval_chunks.parent_source_key=excluded.parent_source_key`,
+			chunk.ID, parentKind, parentSourceKey, chunk.EvidenceRole, chunk.SectionKey, chunk.SectionOrdinal,
+			chunk.Ordinal, chunk.StartChar, chunk.EndChar, chunk.Heading, chunk.HeadingHash, boolInt(chunk.Derived),
+			chunk.ProjectionVersion, chunk.ChunkerVersion, chunk.InputContentHash, chunk.TextHash, chunk.Text, now, now)
+		if err != nil {
+			return ChunkReplaceResult{}, fmt.Errorf("write retrieval projection chunk %s: %w", chunk.ID, err)
+		}
+		affected, err := write.RowsAffected()
+		if err != nil {
+			return ChunkReplaceResult{}, fmt.Errorf("inspect retrieval projection chunk write %s: %w", chunk.ID, err)
+		}
+		if affected != 1 {
+			return ChunkReplaceResult{}, fmt.Errorf("retrieval chunk ID %q already belongs to another parent", chunk.ID)
+		}
+		if existed && (old.ChunkTextHash != chunk.TextHash || old.ProjectionVersion != chunk.ProjectionVersion || old.ChunkerVersion != chunk.ChunkerVersion) {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_embeddings WHERE chunk_id=?`, chunk.ID); err != nil {
+				return ChunkReplaceResult{}, fmt.Errorf("invalidate changed retrieval projection chunk %s embeddings: %w", chunk.ID, err)
+			}
+		}
+	}
+	for _, occurrence := range occurrences {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO retrieval_chunk_occurrences (
+				parent_kind,parent_source_key,chunk_id,section_key,start_char,end_char,created_at,updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			parentKind, parentSourceKey, occurrence.ChunkID, occurrence.SectionKey,
+			occurrence.StartChar, occurrence.EndChar, now, now); err != nil {
+			return ChunkReplaceResult{}, fmt.Errorf("write retrieval chunk occurrence for %s: %w", occurrence.ChunkID, err)
+		}
+	}
+	return result, nil
+}
+
 func retrievalChunkMatches(old RetrievalChunkRow, chunk retrievalchunk.Chunk) bool {
 	return old.ChunkID == chunk.ID &&
 		old.ParentKind == chunk.ParentKind &&
