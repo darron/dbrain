@@ -13,6 +13,8 @@ import (
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/retrievalchunk"
+	modernsqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 func TestReplaceRetrievalChunksReusesUnchangedEmbeddings(t *testing.T) {
@@ -939,7 +941,7 @@ func TestApplyRetrievalProjectionRejectsMalformedEmptyPayloadWithoutDeletingVali
 	}
 }
 
-func TestApplyRetrievalProjectionWaitsForDirtyWriterThenReturnsStale(t *testing.T) {
+func TestApplyRetrievalProjectionDirtyWriterReservationRejectsThenReturnsStale(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
 	applyStore := openStoreAtPath(t, path)
 	defer func() { _ = applyStore.Close() }()
@@ -970,30 +972,21 @@ func TestApplyRetrievalProjectionWaitsForDirtyWriterThenReturnsStale(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	type applyOutcome struct {
-		result ChunkReplaceResult
-		err    error
+	if _, err := applyStore.db.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		t.Fatal(err)
 	}
-	started := make(chan struct{})
-	done := make(chan applyOutcome, 1)
-	go func() {
-		close(started)
-		result, applyErr := applyStore.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{ParentKind: "source", ParentSourceKey: "source:dirty-wins", DirtyRevision: oldWork.DirtyRevision, Projection: oldProjection, Status: RetrievalProjectionCurrent})
-		done <- applyOutcome{result: result, err: applyErr}
-	}()
-	<-started
-	select {
-	case outcome := <-done:
-		t.Fatalf("apply did not wait for dirty writer: %+v", outcome)
-	case <-time.After(150 * time.Millisecond):
-	}
+	_, err = applyStore.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{ParentKind: "source", ParentSourceKey: "source:dirty-wins", DirtyRevision: oldWork.DirtyRevision, Projection: oldProjection, Status: RetrievalProjectionCurrent})
+	requireSQLiteBusy(t, err)
 	if err := dirtyTx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	outcome := <-done
+	if _, err := applyStore.db.ExecContext(ctx, `PRAGMA busy_timeout = 60000`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = applyStore.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{ParentKind: "source", ParentSourceKey: "source:dirty-wins", DirtyRevision: oldWork.DirtyRevision, Projection: oldProjection, Status: RetrievalProjectionCurrent})
 	var stale *RetrievalProjectionStaleWorkError
-	if !errors.As(outcome.err, &stale) || stale.CurrentRevision != newRevision {
-		t.Fatalf("apply outcome=%+v stale=%+v", outcome, stale)
+	if !errors.As(err, &stale) || stale.CurrentRevision != newRevision {
+		t.Fatalf("apply error=%v stale=%+v", err, stale)
 	}
 	var status string
 	var dirty, projected int64
@@ -1037,35 +1030,17 @@ func TestApplyRetrievalProjectionReservationWinsThenDirtyWriterRemainsPending(t 
 	if err := reserveRetrievalProjectionApplyTx(ctx, applyTx); err != nil {
 		t.Fatal(err)
 	}
-	type dirtyOutcome struct {
-		revision int64
-		err      error
+	if _, err := dirtyStore.db.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		t.Fatal(err)
 	}
-	started := make(chan struct{})
-	dirtyDone := make(chan dirtyOutcome, 1)
-	go func() {
-		tx, beginErr := dirtyStore.db.BeginTx(ctx, nil)
-		if beginErr != nil {
-			dirtyDone <- dirtyOutcome{err: beginErr}
-			return
-		}
-		defer func() { _ = tx.Rollback() }()
-		close(started)
-		if _, updateErr := tx.ExecContext(ctx, `UPDATE sources SET extracted_text='dirty writer followed apply' WHERE source_key='source:apply-wins'`); updateErr != nil {
-			dirtyDone <- dirtyOutcome{err: updateErr}
-			return
-		}
-		revision, dirtyErr := allocateRetrievalParentDirtyTx(ctx, tx, "source", "source:apply-wins")
-		if dirtyErr == nil {
-			dirtyErr = tx.Commit()
-		}
-		dirtyDone <- dirtyOutcome{revision: revision, err: dirtyErr}
-	}()
-	<-started
-	select {
-	case outcome := <-dirtyDone:
-		t.Fatalf("dirty writer did not wait for apply reservation: %+v", outcome)
-	case <-time.After(150 * time.Millisecond):
+	blockedDirtyTx, err := dirtyStore.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = allocateRetrievalParentDirtyTx(ctx, blockedDirtyTx, "source", "source:apply-wins")
+	requireSQLiteBusy(t, err)
+	if err := blockedDirtyTx.Rollback(); err != nil {
+		t.Fatal(err)
 	}
 	result, err := applyRetrievalProjectionReservedTx(ctx, applyTx, input)
 	if err != nil {
@@ -1074,9 +1049,23 @@ func TestApplyRetrievalProjectionReservationWinsThenDirtyWriterRemainsPending(t 
 	if err := applyTx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	dirtyResult := <-dirtyDone
-	if dirtyResult.err != nil {
-		t.Fatal(dirtyResult.err)
+	if _, err := dirtyStore.db.ExecContext(ctx, `PRAGMA busy_timeout = 60000`); err != nil {
+		t.Fatal(err)
+	}
+	dirtyTx, err := dirtyStore.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dirtyTx.Rollback() }()
+	if _, err := dirtyTx.ExecContext(ctx, `UPDATE sources SET extracted_text='dirty writer followed apply' WHERE source_key='source:apply-wins'`); err != nil {
+		t.Fatal(err)
+	}
+	newRevision, err := allocateRetrievalParentDirtyTx(ctx, dirtyTx, "source", "source:apply-wins")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dirtyTx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	var status string
 	var dirty, projected int64
@@ -1087,8 +1076,19 @@ func TestApplyRetrievalProjectionReservationWinsThenDirtyWriterRemainsPending(t 
 	if err := applyStore.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_kind='source' AND parent_source_key='source:apply-wins'`).Scan(&chunks); err != nil {
 		t.Fatal(err)
 	}
-	if result.Created != len(projection.Chunks) || status != "pending" || dirty != dirtyResult.revision || dirty <= work.DirtyRevision || projected != work.DirtyRevision || chunks != len(projection.Chunks) {
-		t.Fatalf("result=%+v status=%q dirty=%d projected=%d chunks=%d dirty_result=%+v", result, status, dirty, projected, chunks, dirtyResult)
+	if result.Created != len(projection.Chunks) || status != "pending" || dirty != newRevision || dirty <= work.DirtyRevision || projected != work.DirtyRevision || chunks != len(projection.Chunks) {
+		t.Fatalf("result=%+v status=%q dirty=%d projected=%d chunks=%d new_revision=%d", result, status, dirty, projected, chunks, newRevision)
+	}
+}
+
+func requireSQLiteBusy(t *testing.T, err error) {
+	t.Helper()
+	var sqliteErr *modernsqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		t.Fatalf("error=%v, want wrapped *sqlite.Error", err)
+	}
+	if primaryCode := sqliteErr.Code() & 0xff; primaryCode != sqlite3.SQLITE_BUSY {
+		t.Fatalf("sqlite error=%v code=%d primary=%d, want SQLITE_BUSY=%d", sqliteErr, sqliteErr.Code(), primaryCode, sqlite3.SQLITE_BUSY)
 	}
 }
 
