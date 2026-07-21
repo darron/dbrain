@@ -636,9 +636,11 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *test
 					t.Fatalf("open current database directly: %v", err)
 				}
 				if table == "retrieval_chunk_occurrences" {
-					if _, err := db.Exec(`DROP TRIGGER trg_retrieval_chunks_delete_occurrences`); err != nil {
+					if _, err := db.Exec(`
+						DROP TRIGGER trg_retrieval_chunks_delete_occurrences;
+						DROP TRIGGER trg_retrieval_chunks_update_occurrences`); err != nil {
 						_ = db.Close()
-						t.Fatalf("drop occurrence cascade trigger: %v", err)
+						t.Fatalf("drop parent-side occurrence triggers: %v", err)
 					}
 				}
 				columnsAfterDrop := withoutColumn(columns, missingColumn)
