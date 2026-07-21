@@ -2,14 +2,83 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/darron/dbrain/internal/retrievalchunk"
 )
+
+func TestTask5StagedBytesCountUTF8Bytes(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:task5-utf8-bytes")
+	if _, err := st.db.Exec(`
+		UPDATE sources SET extracted_text=?
+		WHERE source_key='source:task5-utf8-bytes'`, strings.Repeat("semantic 🧠 evidence 漢字. ", 20)); err != nil {
+		t.Fatal(err)
+	}
+	work, err := st.ListDirtyRetrievalParents(ctx, projectionRevisionForTest(t, st), 1)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("work=%+v err=%v", work, err)
+	}
+	projection, err := retrievalchunk.BuildProjection(work[0].Parent, retrievalchunk.DefaultOptions())
+	if err != nil || len(projection.Occurrences) == 0 {
+		t.Fatalf("occurrences=%d err=%v", len(projection.Occurrences), err)
+	}
+	row := task5StageRowForOccurrence(t, projection, projection.Occurrences[0])
+	cp, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+		ParentKind: work[0].Parent.Kind, ParentSourceKey: work[0].Parent.SourceKey,
+		DirtyRevision: work[0].DirtyRevision, ProjectionHash: projection.ParentHash,
+		Cursor: retrievalchunk.Cursor{SectionKey: row.Occurrence.SectionKey, NextBoundary: row.Occurrence.EndChar},
+		Rows:   []RetrievalProjectionStageRow{row},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp, err = st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+		WorkID: cp.WorkID, ParentKind: cp.ParentKind, ParentSourceKey: cp.ParentSourceKey,
+		DirtyRevision: cp.DirtyRevision, ProjectionHash: cp.ProjectionHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunkJSON, err := json.Marshal(row.Chunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occurrenceJSON, err := json.Marshal(row.Occurrence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int64(len(chunkJSON) + len(occurrenceJSON))
+	if cp.StagedBytes != want {
+		t.Fatalf("staged bytes=%d want UTF-8 byte length %d", cp.StagedBytes, want)
+	}
+
+	loaded, ok, err := st.LoadRetrievalProjectionStaging(ctx, work[0].Parent, work[0].DirtyRevision)
+	if err != nil || !ok {
+		t.Fatalf("load checkpoint ok=%v err=%v", ok, err)
+	}
+	if loaded.StagedBytes != want {
+		t.Fatalf("loaded staged bytes=%d want UTF-8 byte length %d", loaded.StagedBytes, want)
+	}
+	runeCount := int64(utf8.RuneCount(chunkJSON) + utf8.RuneCount(occurrenceJSON))
+	if runeCount >= want {
+		t.Fatalf("fixture rune count=%d must be below byte count=%d", runeCount, want)
+	}
+	byteLimit := int(runeCount + (want-runeCount)/2)
+	_, err = st.promoteRetrievalProjectionStagingWithByteLimit(ctx, loaded, byteLimit)
+	var tooLarge *RetrievalProjectionTooLargeError
+	if !errors.As(err, &tooLarge) || tooLarge.ByteCount != want || tooLarge.Limit != byteLimit {
+		t.Fatalf("multibyte promotion err=%v too_large=%+v want bytes=%d limit=%d", err, tooLarge, want, byteLimit)
+	}
+}
 
 func TestTask5PromotionRejectsIncompleteAndFabricatedStaging(t *testing.T) {
 	for _, tc := range []struct {

@@ -457,8 +457,9 @@ git commit --no-gpg-sign -m "feat: dirty semantic projections atomically"
 Use a fake clock/deadline to stop after two staged batches. Assert the checkpoint
 contains work ID, dirty revision, section key, and next boundary; no staged row
 is searchable; resume advances rather than restarting; completion promotes once;
-redirty discards stale staged work; planning runs once and its opaque versioned
-plan survives restart; fabricated, altered, missing, or extra staging cannot be
+redirty discards stale staged work; staging preparation runs once and its opaque
+versioned plan survives restart; one independent bounded authoritative pass
+runs at promotion; fabricated, altered, missing, or extra staging cannot be
 promoted; and exceeding 50,000 unique chunks, 200,000 occurrences, or 128 MiB
 produces terminal blocked state with no searchable partial chunks. Also prove a
 loaded complete checkpoint cannot bypass those limits and `MaxDuration` is

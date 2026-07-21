@@ -397,9 +397,11 @@ Only a complete staged projection enters the atomic parent apply transaction
 above. Promotion independently streams the current authoritative parent and
 requires exact canonical equality with every staged chunk and occurrence;
 caller-supplied completion state is not accepted as proof. Missing, fabricated,
-altered, or extra staged rows fail closed. Abandoned staging belongs to the
-derived-state cleanup and purge contracts and is never included by retrieval
-queries.
+altered, or extra staged rows fail closed. The intentional cost is exactly one
+prepared boundary pass for staging plus one bounded authoritative pass at
+promotion; avoiding the second pass would require trusting mutable staged JSON
+as evidence of completeness. Abandoned staging belongs to the derived-state
+cleanup and purge contracts and is never included by retrieval queries.
 
 Staging begins when a batch reaches any of 1,000 unique chunks, 1,000
 occurrences, or 4 MiB of staged JSON. The first release hard-limits one parent
@@ -408,8 +410,10 @@ chunk/occurrence JSON. Exceeding any limit becomes terminal `blocked` with reaso
 `projection_too_large_for_flat_retrieval`; partial staged chunks never become
 searchable, including after restart from a previously complete checkpoint.
 Raising a limit or adding a hierarchical representation requires a new measured
-design. The current 26,512-window production outlier remains inside the explicit
-bounds.
+design. On the 2026-07-21 restored corpus, chunker v3's largest parent produced
+1,785 unique chunks and 1,967 occurrences; its two independent projection
+passes took 56.5 ms and 54.7 ms respectively. The synthetic 26,512-window
+regression also remains inside the explicit bounds.
 
 ## Chunker V3
 

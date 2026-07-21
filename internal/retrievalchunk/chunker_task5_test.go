@@ -5,7 +5,27 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+func TestTask5PreparedStreamNormalizesMalformedUTF8BeforeByteSlicing(t *testing.T) {
+	parent := Parent{
+		Kind: "source", SourceKey: "source:malformed-utf8",
+		Sections: []Section{{Key: "body", Role: "raw", Text: "valid evidence \xff broken \xc3 tail"}},
+	}
+	projection, err := BuildProjection(parent, Options{TargetRunes: 8, MaxRunes: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Chunks) == 0 {
+		t.Fatal("malformed UTF-8 projection emitted no chunks")
+	}
+	for _, chunk := range projection.Chunks {
+		if !utf8.ValidString(chunk.Text) {
+			t.Fatalf("chunk contains malformed UTF-8: %q", chunk.Text)
+		}
+	}
+}
 
 func TestTask5PreparedGiantStreamPlansBoundariesOnceAcrossBatchesAndRestart(t *testing.T) {
 	originalPlanner := prepareStreamSectionWindows
