@@ -12,15 +12,18 @@ import (
 )
 
 type Progress struct {
-	Stage       string     `json:"stage"`
-	Scanned     int        `json:"scanned"`
-	Current     int        `json:"current"`
-	Generated   int        `json:"generated"`
-	Quarantined int        `json:"quarantined"`
-	Blocked     int        `json:"blocked"`
-	Failed      int        `json:"failed"`
-	Remaining   int        `json:"remaining"`
-	Snapshots   []Progress `json:"snapshots"`
+	Stage              string     `json:"stage"`
+	Scanned            int        `json:"scanned"`
+	Current            int        `json:"current"`
+	Generated          int        `json:"generated"`
+	Quarantined        int        `json:"quarantined"`
+	Blocked            int        `json:"blocked"`
+	Failed             int        `json:"failed"`
+	Remaining          int        `json:"remaining"`
+	SnapshotCount      int        `json:"snapshot_count"`
+	SnapshotsTruncated bool       `json:"snapshots_truncated"`
+	LastSnapshot       *Progress  `json:"last_snapshot,omitempty"`
+	Snapshots          []Progress `json:"-"`
 }
 
 type ChunkProgress struct {
@@ -55,12 +58,20 @@ type ChunkStore interface {
 }
 
 type chunkExecutionLimits struct {
-	GiantThreshold int
-	StageBatchSize int
-	HardChunkLimit int
+	GiantThreshold      int
+	StageBatchSize      int
+	StageBatchBytes     int
+	HardChunkLimit      int
+	HardOccurrenceLimit int
+	HardStagedBytes     int64
 }
 
-var defaultChunkExecutionLimits = chunkExecutionLimits{GiantThreshold: 1_000, StageBatchSize: 1_000, HardChunkLimit: 50_000}
+var defaultChunkExecutionLimits = chunkExecutionLimits{
+	GiantThreshold: 1_000, StageBatchSize: 1_000, StageBatchBytes: 4 << 20,
+	HardChunkLimit:      store.MaxRetrievalProjectionChunks,
+	HardOccurrenceLimit: store.MaxRetrievalProjectionOccurrences,
+	HardStagedBytes:     store.MaxRetrievalProjectionStagedBytes,
+}
 
 var errProjectionStageBatchFull = errors.New("retrieval projection stage batch full")
 
@@ -69,9 +80,24 @@ func RunChunk(ctx context.Context, st ChunkStore, opts ChunkOptions) (ChunkProgr
 }
 
 func runChunkWithLimits(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options) (ChunkProgress, error) {
+	return runChunkWithLimitsAndPlanner(ctx, st, opts, limits, chunkOpts, retrievalchunk.PrepareStream)
+}
+
+type chunkPlanPreparer func(retrievalchunk.Parent, retrievalchunk.Options, int) (retrievalchunk.PreparedStreamPlan, error)
+
+func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer) (ChunkProgress, error) {
 	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
 	if opts.Limit <= 0 {
 		return progress, fmt.Errorf("semantic chunk limit must be positive")
+	}
+	if limits.StageBatchBytes <= 0 {
+		limits.StageBatchBytes = 4 << 20
+	}
+	if limits.HardOccurrenceLimit <= 0 {
+		limits.HardOccurrenceLimit = store.MaxRetrievalProjectionOccurrences
+	}
+	if limits.HardStagedBytes <= 0 {
+		limits.HardStagedBytes = store.MaxRetrievalProjectionStagedBytes
 	}
 	if limits.GiantThreshold <= 0 || limits.StageBatchSize <= 0 || limits.HardChunkLimit <= limits.GiantThreshold {
 		return progress, fmt.Errorf("invalid semantic giant projection limits")
@@ -102,6 +128,10 @@ func runChunkWithLimits(ctx context.Context, st ChunkStore, opts ChunkOptions, l
 		deadline = now().Add(opts.MaxDuration)
 	}
 	for _, selectedWork := range selected {
+		if progress.Scanned > 0 && deadlineReached(deadline, now) {
+			progress.HasMore = true
+			return progress, nil
+		}
 		if err := ctx.Err(); err != nil {
 			return progress, err
 		}
@@ -151,20 +181,43 @@ func runChunkWithLimits(ctx context.Context, st ChunkStore, opts ChunkOptions, l
 			continue
 		}
 
+		plan, err := prepare(parent, chunkOpts, limits.HardOccurrenceLimit)
+		if err != nil {
+			var occurrenceLimit *retrievalchunk.PreparedStreamOccurrenceLimitError
+			if errors.As(err, &occurrenceLimit) {
+				if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, selectedWork.DirtyRevision, projectionHash); err != nil {
+					progress.Failed++
+					return progress, err
+				}
+				progress.Blocked++
+				progress.Remaining--
+				continue
+			}
+			progress.Blocked++
+			progress.Remaining--
+			continue
+		}
+		encodedPlan, err := plan.MarshalBinary()
+		if err != nil {
+			progress.Failed++
+			return progress, err
+		}
 		projection := retrievalchunk.Projection{ParentHash: projectionHash, Chunks: make([]retrievalchunk.Chunk, 0), Occurrences: make([]retrievalchunk.Occurrence, 0)}
 		rows := make([]store.RetrievalProjectionStageRow, 0, limits.GiantThreshold+1)
 		seen := make(map[string]struct{}, limits.GiantThreshold+1)
-		cursor, done, streamErr := retrievalchunk.Stream(parent, chunkOpts, retrievalchunk.Cursor{}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
+		batchBytes := 0
+		cursor, done, streamErr := retrievalchunk.StreamPrepared(parent, chunkOpts, plan, retrievalchunk.Cursor{}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			rows = append(rows, store.RetrievalProjectionStageRow{Chunk: chunk, Occurrence: occurrence})
+			batchBytes += stagedProjectionRowBytes(chunk, occurrence)
 			projection.Occurrences = append(projection.Occurrences, occurrence)
 			if _, ok := seen[chunk.ID]; !ok {
 				seen[chunk.ID] = struct{}{}
 				projection.Chunks = append(projection.Chunks, chunk)
 			}
-			if len(seen) > limits.GiantThreshold {
+			if len(seen) > limits.GiantThreshold || len(rows) >= limits.StageBatchSize || batchBytes >= limits.StageBatchBytes {
 				return errProjectionStageBatchFull
 			}
 			return nil
@@ -219,13 +272,13 @@ func runChunkWithLimits(ctx context.Context, st ChunkStore, opts ChunkOptions, l
 		checkpoint, err = st.StageRetrievalProjectionBatch(ctx, store.StageRetrievalProjectionInput{
 			DirtyRevision: selectedWork.DirtyRevision, ParentKind: parent.Kind,
 			ParentSourceKey: parent.SourceKey, ProjectionHash: projectionHash,
-			Cursor: cursor, Rows: rows,
+			Cursor: cursor, Rows: rows, PreparedPlan: encodedPlan,
 		})
 		if err != nil {
 			progress.Failed++
 			return progress, err
 		}
-		if checkpoint.StagedChunks > limits.HardChunkLimit {
+		if checkpointExceedsProjectionLimits(checkpoint, limits) {
 			if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, selectedWork.DirtyRevision, projectionHash); err != nil {
 				progress.Failed++
 				return progress, err
@@ -262,21 +315,67 @@ func runChunkWithLimits(ctx context.Context, st ChunkStore, opts ChunkOptions, l
 }
 
 func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalchunk.Parent, dirtyRevision int64, checkpoint store.RetrievalProjectionCheckpoint, chunkOpts retrievalchunk.Options, limits chunkExecutionLimits, deadline time.Time, now func() time.Time, progress *ChunkProgress, callback func(ChunkProgress) error) (store.ChunkReplaceResult, bool, error) {
+	if checkpointExceedsProjectionLimits(checkpoint, limits) {
+		if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); err != nil {
+			return store.ChunkReplaceResult{}, false, err
+		}
+		progress.Checkpoint = nil
+		progress.Blocked++
+		progress.Remaining--
+		return store.ChunkReplaceResult{}, true, nil
+	}
+	var plan retrievalchunk.PreparedStreamPlan
+	var planBytes []byte
+	var err error
+	if checkpoint.PreparedPlan != "" {
+		planBytes = []byte(checkpoint.PreparedPlan)
+		plan, err = retrievalchunk.ParsePreparedStreamPlan(parent, chunkOpts, planBytes, limits.HardOccurrenceLimit)
+	} else {
+		plan, err = retrievalchunk.PrepareStream(parent, chunkOpts, limits.HardOccurrenceLimit)
+		if err == nil {
+			planBytes, err = plan.MarshalBinary()
+		}
+	}
+	if err != nil {
+		var occurrenceLimit *retrievalchunk.PreparedStreamOccurrenceLimitError
+		if errors.As(err, &occurrenceLimit) {
+			if blockErr := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); blockErr != nil {
+				return store.ChunkReplaceResult{}, false, blockErr
+			}
+			progress.Checkpoint = nil
+			progress.Blocked++
+			progress.Remaining--
+			return store.ChunkReplaceResult{}, true, nil
+		}
+		return store.ChunkReplaceResult{}, false, err
+	}
 	for {
 		if checkpoint.SectionKey == "" {
 			result, err := st.PromoteRetrievalProjectionStaging(ctx, checkpoint)
+			var tooLarge *store.RetrievalProjectionTooLargeError
+			if errors.As(err, &tooLarge) {
+				if blockErr := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); blockErr != nil {
+					return store.ChunkReplaceResult{}, false, blockErr
+				}
+				progress.Checkpoint = nil
+				progress.Blocked++
+				progress.Remaining--
+				return store.ChunkReplaceResult{}, true, nil
+			}
 			if err == nil {
 				progress.Checkpoint = nil
 			}
 			return result, false, err
 		}
 		rows := make([]store.RetrievalProjectionStageRow, 0, limits.StageBatchSize)
-		cursor, done, err := retrievalchunk.Stream(parent, chunkOpts, retrievalchunk.Cursor{SectionKey: checkpoint.SectionKey, NextBoundary: checkpoint.NextBoundary}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
+		batchBytes := 0
+		cursor, done, err := retrievalchunk.StreamPrepared(parent, chunkOpts, plan, retrievalchunk.Cursor{SectionKey: checkpoint.SectionKey, NextBoundary: checkpoint.NextBoundary}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			rows = append(rows, store.RetrievalProjectionStageRow{Chunk: chunk, Occurrence: occurrence})
-			if len(rows) >= limits.StageBatchSize {
+			batchBytes += stagedProjectionRowBytes(chunk, occurrence)
+			if len(rows) >= limits.StageBatchSize || batchBytes >= limits.StageBatchBytes {
 				return errProjectionStageBatchFull
 			}
 			return nil
@@ -290,13 +389,13 @@ func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalc
 		checkpoint, err = st.StageRetrievalProjectionBatch(ctx, store.StageRetrievalProjectionInput{
 			WorkID: checkpoint.WorkID, DirtyRevision: dirtyRevision, ParentKind: parent.Kind,
 			ParentSourceKey: parent.SourceKey, ProjectionHash: checkpoint.ProjectionHash,
-			Cursor: cursor, Rows: rows,
+			Cursor: cursor, Rows: rows, PreparedPlan: planBytes,
 		})
 		if err != nil {
 			return store.ChunkReplaceResult{}, false, err
 		}
 		progress.Checkpoint = &checkpoint
-		if checkpoint.StagedChunks > limits.HardChunkLimit {
+		if checkpointExceedsProjectionLimits(checkpoint, limits) {
 			if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); err != nil {
 				return store.ChunkReplaceResult{}, false, err
 			}
@@ -328,14 +427,31 @@ func finishChunkProjectionProgress(progress *ChunkProgress, result store.ChunkRe
 	}
 }
 
+func checkpointExceedsProjectionLimits(checkpoint store.RetrievalProjectionCheckpoint, limits chunkExecutionLimits) bool {
+	return checkpoint.StagedChunks > limits.HardChunkLimit ||
+		checkpoint.StagedOccurrences > limits.HardOccurrenceLimit ||
+		checkpoint.StagedBytes > limits.HardStagedBytes
+}
+
+func stagedProjectionRowBytes(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) int {
+	return len(chunk.ID) + len(chunk.ParentKind) + len(chunk.ParentSourceKey) + len(chunk.EvidenceRole) +
+		len(chunk.SectionKey) + len(chunk.Heading) + len(chunk.HeadingHash) + len(chunk.ProjectionVersion) +
+		len(chunk.ChunkerVersion) + len(chunk.InputContentHash) + len(chunk.TextHash) + len(chunk.Text) +
+		len(occurrence.ChunkID) + len(occurrence.SectionKey) + 256
+}
+
 func deadlineReached(deadline time.Time, now func() time.Time) bool {
 	return !deadline.IsZero() && !now().Before(deadline)
 }
 
 func recordChunkSnapshot(progress *ChunkProgress, callback func(ChunkProgress) error) error {
+	progress.SnapshotCount++
+	progress.SnapshotsTruncated = progress.SnapshotCount > 1
 	snapshot := progress.Progress
 	snapshot.Snapshots = make([]Progress, 0)
+	snapshot.LastSnapshot = nil
 	progress.Snapshots = []Progress{snapshot}
+	progress.LastSnapshot = &snapshot
 	if callback != nil {
 		return callback(*progress)
 	}

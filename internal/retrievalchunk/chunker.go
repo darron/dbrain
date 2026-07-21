@@ -1,12 +1,61 @@
 package retrievalchunk
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
+
+const preparedStreamPlanVersion = "retrieval-stream-plan-v1"
+
+type PreparedStreamPlan struct {
+	data preparedStreamPlanData
+}
+
+type preparedStreamPlanData struct {
+	Version           string                  `json:"version"`
+	ProjectionVersion string                  `json:"projection_version"`
+	ChunkerVersion    string                  `json:"chunker_version"`
+	ParentHash        string                  `json:"parent_hash"`
+	TargetRunes       int                     `json:"target_runes"`
+	MaxRunes          int                     `json:"max_runes"`
+	OverlapRunes      int                     `json:"overlap_runes"`
+	OccurrenceCount   int                     `json:"occurrence_count"`
+	Sections          []preparedStreamSection `json:"sections"`
+}
+
+type preparedStreamSection struct {
+	Key       string                 `json:"key"`
+	RuneCount int                    `json:"rune_count"`
+	Windows   []preparedStreamWindow `json:"windows"`
+}
+
+type preparedStreamWindow struct {
+	StartBoundary int  `json:"start_boundary"`
+	NextBoundary  int  `json:"next_boundary"`
+	StartChar     int  `json:"start_char"`
+	EndChar       int  `json:"end_char"`
+	StartByte     int  `json:"start_byte"`
+	EndByte       int  `json:"end_byte"`
+	Emit          bool `json:"emit"`
+}
+
+type PreparedStreamOccurrenceLimitError struct {
+	OccurrenceCount int
+	Limit           int
+}
+
+var prepareStreamSectionWindows = chunkSectionRunesV3
+
+func (e *PreparedStreamOccurrenceLimitError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("retrieval stream plan contains at least %d occurrences, limit %d", e.OccurrenceCount, e.Limit)
+}
 
 // Build is retained for v1 callers until occurrence persistence lands. New
 // callers must use BuildProjection so they do not mistake a content window for
@@ -79,6 +128,107 @@ func ParentProjectionHash(parent Parent) (string, error) {
 // after the successfully delivered window so callers can durably checkpoint
 // the batch before resuming.
 func Stream(parent Parent, opts Options, cursor Cursor, emit func(Chunk, Occurrence) error) (Cursor, bool, error) {
+	plan, err := PrepareStream(parent, opts, 0)
+	if err != nil {
+		return cursor, false, err
+	}
+	return StreamPrepared(parent, opts, plan, cursor, emit)
+}
+
+// PrepareStream computes the content-defined boundary plan once. The opaque
+// result can be persisted and reused across batches without rescanning section
+// text from the beginning. maxOccurrences <= 0 means no caller-imposed limit.
+func PrepareStream(parent Parent, opts Options, maxOccurrences int) (PreparedStreamPlan, error) {
+	sections, err := normalizedStreamingSections(parent, opts, true)
+	if err != nil {
+		return PreparedStreamPlan{}, err
+	}
+	data := preparedStreamPlanData{
+		Version: preparedStreamPlanVersion, ProjectionVersion: ProjectionVersion,
+		ChunkerVersion: Version, ParentHash: parentHash(parent),
+		TargetRunes: opts.TargetRunes, MaxRunes: opts.MaxRunes, OverlapRunes: opts.OverlapRunes,
+		Sections: make([]preparedStreamSection, 0, len(sections)),
+	}
+	for _, section := range sections {
+		runes := []rune(section.Text)
+		byteOffsets := make([]int, len(runes)+1)
+		for i, value := range runes {
+			byteOffsets[i+1] = byteOffsets[i] + utf8.RuneLen(value)
+		}
+		prepared := preparedStreamSection{Key: section.Key, RuneCount: len(runes)}
+		for _, current := range prepareStreamSectionWindows(runes, opts) {
+			start, end := trimRuneOffsetsRunes(runes, current.start, current.end)
+			emit := start < end
+			prepared.Windows = append(prepared.Windows, preparedStreamWindow{
+				StartBoundary: current.start, NextBoundary: current.end,
+				StartChar: start, EndChar: end, StartByte: byteOffsets[start], EndByte: byteOffsets[end], Emit: emit,
+			})
+			if emit {
+				data.OccurrenceCount++
+				if maxOccurrences > 0 && data.OccurrenceCount > maxOccurrences {
+					return PreparedStreamPlan{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: data.OccurrenceCount, Limit: maxOccurrences}
+				}
+			}
+		}
+		data.Sections = append(data.Sections, prepared)
+	}
+	return PreparedStreamPlan{data: data}, nil
+}
+
+func (p PreparedStreamPlan) MarshalBinary() ([]byte, error) {
+	if p.data.Version != preparedStreamPlanVersion {
+		return nil, fmt.Errorf("invalid retrieval prepared stream plan")
+	}
+	return json.Marshal(p.data)
+}
+
+func (p PreparedStreamPlan) OccurrenceCount() int { return p.data.OccurrenceCount }
+
+func ParsePreparedStreamPlan(parent Parent, opts Options, encoded []byte, maxOccurrences int) (PreparedStreamPlan, error) {
+	var data preparedStreamPlanData
+	if err := json.Unmarshal(encoded, &data); err != nil {
+		return PreparedStreamPlan{}, fmt.Errorf("decode retrieval prepared stream plan: %w", err)
+	}
+	sections, err := normalizedStreamingSections(parent, opts, true)
+	if err != nil {
+		return PreparedStreamPlan{}, err
+	}
+	if data.Version != preparedStreamPlanVersion || data.ProjectionVersion != ProjectionVersion || data.ChunkerVersion != Version ||
+		data.ParentHash != parentHash(parent) || data.TargetRunes != opts.TargetRunes || data.MaxRunes != opts.MaxRunes || data.OverlapRunes != opts.OverlapRunes ||
+		len(data.Sections) != len(sections) {
+		return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan provenance does not match parent and chunker")
+	}
+	count := 0
+	for i, prepared := range data.Sections {
+		if prepared.Key != sections[i].Key || prepared.RuneCount != utf8.RuneCountInString(sections[i].Text) {
+			return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan section %d does not match parent", i)
+		}
+		previous := 0
+		for _, window := range prepared.Windows {
+			if window.StartBoundary != previous || window.NextBoundary <= window.StartBoundary || window.NextBoundary > prepared.RuneCount ||
+				window.StartChar < window.StartBoundary || window.EndChar > window.NextBoundary || window.EndChar < window.StartChar ||
+				window.StartByte < 0 || window.EndByte < window.StartByte || window.EndByte > len(sections[i].Text) {
+				return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan has invalid section %d boundary", i)
+			}
+			if window.Emit {
+				count++
+			}
+			previous = window.NextBoundary
+		}
+		if len(prepared.Windows) > 0 && previous != prepared.RuneCount {
+			return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan does not cover section %d", i)
+		}
+	}
+	if count != data.OccurrenceCount {
+		return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan occurrence count mismatch")
+	}
+	if maxOccurrences > 0 && count > maxOccurrences {
+		return PreparedStreamPlan{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: maxOccurrences + 1, Limit: maxOccurrences}
+	}
+	return PreparedStreamPlan{data: data}, nil
+}
+
+func StreamPrepared(parent Parent, opts Options, plan PreparedStreamPlan, cursor Cursor, emit func(Chunk, Occurrence) error) (Cursor, bool, error) {
 	if emit == nil {
 		return cursor, false, fmt.Errorf("retrieval chunk stream emit callback is required")
 	}
@@ -86,11 +236,15 @@ func Stream(parent Parent, opts Options, cursor Cursor, emit func(Chunk, Occurre
 	if err != nil {
 		return cursor, false, err
 	}
+	if plan.data.Version != preparedStreamPlanVersion || plan.data.ParentHash != parentHash(parent) || plan.data.ProjectionVersion != ProjectionVersion || plan.data.ChunkerVersion != Version ||
+		plan.data.TargetRunes != opts.TargetRunes || plan.data.MaxRunes != opts.MaxRunes || plan.data.OverlapRunes != opts.OverlapRunes || len(plan.data.Sections) != len(sections) {
+		return cursor, false, fmt.Errorf("retrieval prepared stream plan provenance does not match parent and chunker")
+	}
 	startSection := 0
 	if cursor.SectionKey != "" {
 		startSection = -1
-		for i := range sections {
-			if sections[i].Key == cursor.SectionKey {
+		for i := range plan.data.Sections {
+			if plan.data.Sections[i].Key == cursor.SectionKey {
 				startSection = i
 				break
 			}
@@ -101,19 +255,18 @@ func Stream(parent Parent, opts Options, cursor Cursor, emit func(Chunk, Occurre
 	}
 	for sectionOrdinal := startSection; sectionOrdinal < len(sections); sectionOrdinal++ {
 		section := sections[sectionOrdinal]
-		sectionRunes := []rune(section.Text)
+		prepared := plan.data.Sections[sectionOrdinal]
 		boundary := 0
 		if sectionOrdinal == startSection && cursor.SectionKey != "" {
 			boundary = cursor.NextBoundary
-			if boundary < 0 || boundary > len(sectionRunes) {
+			if boundary < 0 || boundary > prepared.RuneCount {
 				return cursor, false, fmt.Errorf("retrieval chunk cursor boundary %d is outside section %q", boundary, section.Key)
 			}
 		}
-		windows := chunkSectionRunesV3(sectionRunes, opts)
 		if boundary != 0 {
-			found := boundary == len(sectionRunes)
-			for _, candidate := range windows {
-				if candidate.start == boundary {
+			found := boundary == prepared.RuneCount
+			for _, candidate := range prepared.Windows {
+				if candidate.StartBoundary == boundary {
 					found = true
 					break
 				}
@@ -122,22 +275,21 @@ func Stream(parent Parent, opts Options, cursor Cursor, emit func(Chunk, Occurre
 				return cursor, false, fmt.Errorf("retrieval chunk cursor boundary %d is not a v3 boundary in section %q", boundary, section.Key)
 			}
 		}
-		for _, current := range windows {
-			if current.start < boundary {
+		for _, current := range prepared.Windows {
+			if current.StartBoundary < boundary {
 				continue
 			}
-			text := strings.TrimSpace(string(sectionRunes[current.start:current.end]))
-			if text == "" {
+			if !current.Emit {
 				continue
 			}
-			start, end := trimRuneOffsetsRunes(sectionRunes, current.start, current.end)
+			text := section.Text[current.StartByte:current.EndByte]
 			textHash := textHash(text)
 			headingHash := headingHash(section.Heading)
 			id := chunkID(section.Key, section.Role, section.Derived, headingHash, textHash)
 			chunk := Chunk{ID: id, ParentKind: parent.Kind, ParentSourceKey: parent.SourceKey, SectionKey: section.Key, EvidenceRole: section.Role, SectionOrdinal: sectionOrdinal, Heading: section.Heading, HeadingHash: headingHash, Derived: section.Derived, ProjectionVersion: ProjectionVersion, ChunkerVersion: Version, InputContentHash: parent.ContentHash, TextHash: textHash, Text: text}
-			occurrence := Occurrence{ChunkID: id, SectionKey: section.Key, StartChar: start, EndChar: end}
-			next := Cursor{SectionKey: section.Key, NextBoundary: current.end}
-			if current.end == len(sectionRunes) && sectionOrdinal+1 < len(sections) {
+			occurrence := Occurrence{ChunkID: id, SectionKey: section.Key, StartChar: current.StartChar, EndChar: current.EndChar}
+			next := Cursor{SectionKey: section.Key, NextBoundary: current.NextBoundary}
+			if current.NextBoundary == prepared.RuneCount && sectionOrdinal+1 < len(sections) {
 				next = Cursor{SectionKey: sections[sectionOrdinal+1].Key}
 			}
 			if err := emit(chunk, occurrence); err != nil {

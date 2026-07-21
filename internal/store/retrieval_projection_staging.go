@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -15,7 +17,33 @@ import (
 	"github.com/darron/dbrain/internal/retrievalchunk"
 )
 
-const projectionTooLargeReason = "projection_too_large_for_flat_retrieval"
+const (
+	projectionTooLargeReason          = "projection_too_large_for_flat_retrieval"
+	MaxRetrievalProjectionChunks      = 50_000
+	MaxRetrievalProjectionOccurrences = 200_000
+	MaxRetrievalProjectionStagedBytes = 128 << 20
+	retrievalProjectionPlanRowID      = "__dbrain_projection_plan_v1__"
+)
+
+type RetrievalProjectionTooLargeError struct {
+	ChunkCount      int
+	OccurrenceCount int
+	ByteCount       int64
+	Limit           int
+}
+
+func (e *RetrievalProjectionTooLargeError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.OccurrenceCount > 0 {
+		return fmt.Sprintf("retrieval projection contains at least %d occurrences, limit %d", e.OccurrenceCount, e.Limit)
+	}
+	if e.ByteCount > 0 {
+		return fmt.Sprintf("retrieval projection staging contains at least %d bytes, limit %d", e.ByteCount, e.Limit)
+	}
+	return fmt.Sprintf("retrieval projection contains at least %d unique chunks, limit %d", e.ChunkCount, e.Limit)
+}
 
 type RetrievalProjectionStageRow struct {
 	Chunk      retrievalchunk.Chunk
@@ -30,17 +58,21 @@ type StageRetrievalProjectionInput struct {
 	ProjectionHash  string
 	Cursor          retrievalchunk.Cursor
 	Rows            []RetrievalProjectionStageRow
+	PreparedPlan    []byte
 }
 
 type RetrievalProjectionCheckpoint struct {
-	WorkID          string `json:"work_id"`
-	DirtyRevision   int64  `json:"dirty_revision"`
-	ParentKind      string `json:"parent_kind"`
-	ParentSourceKey string `json:"parent_source_key"`
-	ProjectionHash  string `json:"projection_hash"`
-	SectionKey      string `json:"section_key"`
-	NextBoundary    int    `json:"next_boundary"`
-	StagedChunks    int    `json:"staged_chunks"`
+	WorkID            string `json:"work_id"`
+	DirtyRevision     int64  `json:"dirty_revision"`
+	ParentKind        string `json:"parent_kind"`
+	ParentSourceKey   string `json:"parent_source_key"`
+	ProjectionHash    string `json:"projection_hash"`
+	SectionKey        string `json:"section_key"`
+	NextBoundary      int    `json:"next_boundary"`
+	StagedChunks      int    `json:"staged_chunks"`
+	StagedOccurrences int    `json:"staged_occurrences"`
+	StagedBytes       int64  `json:"staged_bytes"`
+	PreparedPlan      string `json:"-"`
 }
 
 func (s *Store) LoadRetrievalProjectionStaging(ctx context.Context, parent retrievalchunk.Parent, dirtyRevision int64) (RetrievalProjectionCheckpoint, bool, error) {
@@ -86,10 +118,18 @@ func (s *Store) LoadRetrievalProjectionStaging(ctx context.Context, parent retri
 		return RetrievalProjectionCheckpoint{}, false, err
 	}
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT chunk_id)
+		SELECT COUNT(DISTINCT chunk_id), COUNT(*), COALESCE(SUM(LENGTH(chunk_json) + LENGTH(occurrence_json)), 0)
 		FROM retrieval_projection_staging
-		WHERE work_id=? AND dirty_revision=? AND chunk_id!=''`, workID, dirtyRevision).Scan(&cp.StagedChunks); err != nil {
+		WHERE work_id=? AND dirty_revision=? AND chunk_id!='' AND chunk_id!=?`, workID, dirtyRevision, retrievalProjectionPlanRowID).Scan(&cp.StagedChunks, &cp.StagedOccurrences, &cp.StagedBytes); err != nil {
 		return RetrievalProjectionCheckpoint{}, false, fmt.Errorf("count staged retrieval projection chunks: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT chunk_json FROM retrieval_projection_staging
+		WHERE work_id=? AND dirty_revision=? AND chunk_id=?`, workID, dirtyRevision, retrievalProjectionPlanRowID).Scan(&cp.PreparedPlan); err != nil {
+		return RetrievalProjectionCheckpoint{}, false, fmt.Errorf("load retrieval prepared stream plan: %w", err)
+	}
+	if _, err := retrievalchunk.ParsePreparedStreamPlan(parent, retrievalchunk.DefaultOptions(), []byte(cp.PreparedPlan), MaxRetrievalProjectionOccurrences); err != nil {
+		return RetrievalProjectionCheckpoint{}, false, fmt.Errorf("validate retrieval prepared stream plan: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return RetrievalProjectionCheckpoint{}, false, fmt.Errorf("commit retrieval projection staging load: %w", err)
@@ -129,13 +169,50 @@ func (s *Store) StageRetrievalProjectionBatch(ctx context.Context, input StageRe
 	if err := reserveRetrievalProjectionApplyTx(ctx, tx); err != nil {
 		return RetrievalProjectionCheckpoint{}, err
 	}
-	if _, err := validateRetrievalProjectionStagingWorkTx(ctx, tx, input.ParentKind, input.ParentSourceKey, input.DirtyRevision, input.ProjectionHash); err != nil {
+	parent, err := validateRetrievalProjectionStagingWorkTx(ctx, tx, input.ParentKind, input.ParentSourceKey, input.DirtyRevision, input.ProjectionHash)
+	if err != nil {
 		return RetrievalProjectionCheckpoint{}, err
+	}
+	var storedPlan []byte
+	err = tx.QueryRowContext(ctx, `
+		SELECT chunk_json FROM retrieval_projection_staging
+		WHERE work_id=? AND dirty_revision=? AND chunk_id=?`, input.WorkID, input.DirtyRevision, retrievalProjectionPlanRowID).Scan(&storedPlan)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return RetrievalProjectionCheckpoint{}, fmt.Errorf("load stored retrieval prepared stream plan: %w", err)
+	}
+	if len(input.PreparedPlan) == 0 && len(storedPlan) == 0 {
+		plan, err := retrievalchunk.PrepareStream(parent, retrievalchunk.DefaultOptions(), MaxRetrievalProjectionOccurrences)
+		if err != nil {
+			return RetrievalProjectionCheckpoint{}, fmt.Errorf("prepare retrieval stream plan: %w", err)
+		}
+		input.PreparedPlan, err = plan.MarshalBinary()
+		if err != nil {
+			return RetrievalProjectionCheckpoint{}, fmt.Errorf("encode retrieval prepared stream plan: %w", err)
+		}
+	} else if len(input.PreparedPlan) == 0 {
+		input.PreparedPlan = storedPlan
+	}
+	if _, err := retrievalchunk.ParsePreparedStreamPlan(parent, retrievalchunk.DefaultOptions(), input.PreparedPlan, MaxRetrievalProjectionOccurrences); err != nil {
+		return RetrievalProjectionCheckpoint{}, fmt.Errorf("validate retrieval prepared stream plan: %w", err)
+	}
+	if len(storedPlan) != 0 && !bytes.Equal(storedPlan, input.PreparedPlan) {
+		return RetrievalProjectionCheckpoint{}, fmt.Errorf("retrieval prepared stream plan changed within work item")
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_projection_staging WHERE work_id=? AND dirty_revision=? AND chunk_id=''`, input.WorkID, input.DirtyRevision); err != nil {
 		return RetrievalProjectionCheckpoint{}, fmt.Errorf("replace retrieval projection checkpoint: %w", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if len(storedPlan) == 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO retrieval_projection_staging (
+				work_id, dirty_revision, parent_kind, parent_source_key, projection_hash,
+				section_key, next_boundary, chunk_id, chunk_json, occurrence_json, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, '', -1, ?, ?, '', ?, ?)`,
+			input.WorkID, input.DirtyRevision, input.ParentKind, input.ParentSourceKey, input.ProjectionHash,
+			retrievalProjectionPlanRowID, input.PreparedPlan, now, now); err != nil {
+			return RetrievalProjectionCheckpoint{}, fmt.Errorf("write retrieval prepared stream plan: %w", err)
+		}
+	}
 	for _, row := range input.Rows {
 		chunkJSON, err := json.Marshal(row.Chunk)
 		if err != nil {
@@ -170,10 +247,12 @@ func (s *Store) StageRetrievalProjectionBatch(ctx context.Context, input StageRe
 		WorkID: input.WorkID, DirtyRevision: input.DirtyRevision, ParentKind: input.ParentKind,
 		ParentSourceKey: input.ParentSourceKey, ProjectionHash: input.ProjectionHash,
 		SectionKey: input.Cursor.SectionKey, NextBoundary: input.Cursor.NextBoundary,
+		PreparedPlan: string(input.PreparedPlan),
 	}
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT chunk_id) FROM retrieval_projection_staging
-		WHERE work_id=? AND dirty_revision=? AND chunk_id!=''`, input.WorkID, input.DirtyRevision).Scan(&cp.StagedChunks); err != nil {
+		SELECT COUNT(DISTINCT chunk_id), COUNT(*), COALESCE(SUM(LENGTH(chunk_json) + LENGTH(occurrence_json)), 0)
+		FROM retrieval_projection_staging
+		WHERE work_id=? AND dirty_revision=? AND chunk_id!='' AND chunk_id!=?`, input.WorkID, input.DirtyRevision, retrievalProjectionPlanRowID).Scan(&cp.StagedChunks, &cp.StagedOccurrences, &cp.StagedBytes); err != nil {
 		return RetrievalProjectionCheckpoint{}, fmt.Errorf("count staged retrieval chunks: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -194,7 +273,8 @@ func (s *Store) PromoteRetrievalProjectionStaging(ctx context.Context, checkpoin
 	if err := reserveRetrievalProjectionApplyTx(ctx, tx); err != nil {
 		return ChunkReplaceResult{}, err
 	}
-	if _, err := validateRetrievalProjectionStagingWorkTx(ctx, tx, checkpoint.ParentKind, checkpoint.ParentSourceKey, checkpoint.DirtyRevision, checkpoint.ProjectionHash); err != nil {
+	parent, err := validateRetrievalProjectionStagingWorkTx(ctx, tx, checkpoint.ParentKind, checkpoint.ParentSourceKey, checkpoint.DirtyRevision, checkpoint.ProjectionHash)
+	if err != nil {
 		return ChunkReplaceResult{}, err
 	}
 	var stagedSection string
@@ -213,6 +293,31 @@ func (s *Store) PromoteRetrievalProjectionStaging(ctx context.Context, checkpoin
 	}
 	if stagedSection != "" || stagedBoundary != 0 || checkpoint.SectionKey != "" || checkpoint.NextBoundary != 0 {
 		return ChunkReplaceResult{}, fmt.Errorf("retrieval projection staging work %s is incomplete", checkpoint.WorkID)
+	}
+	var storedPlan []byte
+	if err := tx.QueryRowContext(ctx, `
+		SELECT chunk_json FROM retrieval_projection_staging
+		WHERE work_id=? AND dirty_revision=? AND chunk_id=?`, checkpoint.WorkID, checkpoint.DirtyRevision, retrievalProjectionPlanRowID).Scan(&storedPlan); err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("load retrieval promotion stream plan: %w", err)
+	}
+	if checkpoint.PreparedPlan != "" && !bytes.Equal([]byte(checkpoint.PreparedPlan), storedPlan) {
+		return ChunkReplaceResult{}, fmt.Errorf("retrieval promotion stream plan does not match durable plan")
+	}
+	if _, err := retrievalchunk.ParsePreparedStreamPlan(parent, retrievalchunk.DefaultOptions(), storedPlan, MaxRetrievalProjectionOccurrences); err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("validate retrieval promotion stream plan: %w", err)
+	}
+	var stagedOccurrences int
+	var stagedBytes int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(LENGTH(chunk_json) + LENGTH(occurrence_json)), 0) FROM retrieval_projection_staging
+		WHERE work_id=? AND dirty_revision=? AND chunk_id!='' AND chunk_id!=?`, checkpoint.WorkID, checkpoint.DirtyRevision, retrievalProjectionPlanRowID).Scan(&stagedOccurrences, &stagedBytes); err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("count retrieval promotion occurrences: %w", err)
+	}
+	if stagedOccurrences > MaxRetrievalProjectionOccurrences {
+		return ChunkReplaceResult{}, &RetrievalProjectionTooLargeError{OccurrenceCount: stagedOccurrences, Limit: MaxRetrievalProjectionOccurrences}
+	}
+	if stagedBytes > MaxRetrievalProjectionStagedBytes {
+		return ChunkReplaceResult{}, &RetrievalProjectionTooLargeError{ByteCount: stagedBytes, Limit: MaxRetrievalProjectionStagedBytes}
 	}
 	rows, err := loadStagedRetrievalProjectionRows(ctx, tx, checkpoint)
 	if err != nil {
@@ -241,6 +346,13 @@ func (s *Store) PromoteRetrievalProjectionStaging(ctx context.Context, checkpoin
 			seen[row.Chunk.ID] = struct{}{}
 		}
 		projection.Occurrences = append(projection.Occurrences, row.Occurrence)
+	}
+	authoritative, err := buildBoundedAuthoritativeProjection(parent, retrievalchunk.DefaultOptions(), MaxRetrievalProjectionChunks)
+	if err != nil {
+		return ChunkReplaceResult{}, err
+	}
+	if !reflect.DeepEqual(projection, authoritative) {
+		return ChunkReplaceResult{}, fmt.Errorf("staged retrieval projection does not match authoritative projection")
 	}
 	result, err := replaceRetrievalProjectionTx(ctx, tx, checkpoint.ParentKind, checkpoint.ParentSourceKey, projection)
 	if err != nil {
@@ -272,6 +384,48 @@ func (s *Store) PromoteRetrievalProjectionStaging(ctx context.Context, checkpoin
 		return ChunkReplaceResult{}, fmt.Errorf("commit retrieval projection staging promotion: %w", err)
 	}
 	return result, nil
+}
+
+func buildBoundedAuthoritativeProjection(parent retrievalchunk.Parent, opts retrievalchunk.Options, maxChunks int) (retrievalchunk.Projection, error) {
+	if maxChunks <= 0 {
+		return retrievalchunk.Projection{}, fmt.Errorf("retrieval projection chunk limit must be positive")
+	}
+	plan, err := retrievalchunk.PrepareStream(parent, opts, MaxRetrievalProjectionOccurrences)
+	if err != nil {
+		var occurrences *retrievalchunk.PreparedStreamOccurrenceLimitError
+		if errors.As(err, &occurrences) {
+			return retrievalchunk.Projection{}, &RetrievalProjectionTooLargeError{OccurrenceCount: occurrences.OccurrenceCount, Limit: occurrences.Limit}
+		}
+		return retrievalchunk.Projection{}, err
+	}
+	projectionHash, err := retrievalchunk.ParentProjectionHash(parent)
+	if err != nil {
+		return retrievalchunk.Projection{}, err
+	}
+	projection := retrievalchunk.Projection{
+		ParentHash:  projectionHash,
+		Chunks:      make([]retrievalchunk.Chunk, 0, min(maxChunks, 1_000)),
+		Occurrences: make([]retrievalchunk.Occurrence, 0, min(maxChunks, 1_000)),
+	}
+	seen := make(map[string]struct{}, min(maxChunks, 1_000))
+	_, done, err := retrievalchunk.StreamPrepared(parent, opts, plan, retrievalchunk.Cursor{}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
+		if _, ok := seen[chunk.ID]; !ok {
+			seen[chunk.ID] = struct{}{}
+			projection.Chunks = append(projection.Chunks, chunk)
+			if len(seen) > maxChunks {
+				return &RetrievalProjectionTooLargeError{ChunkCount: len(seen), Limit: maxChunks}
+			}
+		}
+		projection.Occurrences = append(projection.Occurrences, occurrence)
+		return nil
+	})
+	if err != nil {
+		return retrievalchunk.Projection{}, err
+	}
+	if !done {
+		return retrievalchunk.Projection{}, fmt.Errorf("authoritative retrieval projection stream ended without completion")
+	}
+	return projection, nil
 }
 
 func (s *Store) BlockRetrievalProjectionTooLarge(ctx context.Context, parent retrievalchunk.Parent, dirtyRevision int64, projectionHash string) error {
@@ -351,8 +505,8 @@ func loadStagedRetrievalProjectionRows(ctx context.Context, tx *sql.Tx, checkpoi
 		SELECT chunk_json, occurrence_json
 		FROM retrieval_projection_staging
 		WHERE work_id=? AND dirty_revision=? AND parent_kind=? AND parent_source_key=?
-			AND projection_hash=? AND chunk_id!=''`, checkpoint.WorkID, checkpoint.DirtyRevision,
-		checkpoint.ParentKind, checkpoint.ParentSourceKey, checkpoint.ProjectionHash)
+			AND projection_hash=? AND chunk_id!='' AND chunk_id!=?`, checkpoint.WorkID, checkpoint.DirtyRevision,
+		checkpoint.ParentKind, checkpoint.ParentSourceKey, checkpoint.ProjectionHash, retrievalProjectionPlanRowID)
 	if err != nil {
 		return nil, fmt.Errorf("list staged retrieval projection: %w", err)
 	}
