@@ -152,32 +152,8 @@ func (s *Store) ListDirtyRetrievalParents(ctx context.Context, watermark int64, 
 }
 
 func (s *Store) ApplyRetrievalProjection(ctx context.Context, input ApplyRetrievalProjectionInput) (ChunkReplaceResult, error) {
-	input.ParentKind = strings.TrimSpace(input.ParentKind)
-	input.ParentSourceKey = strings.TrimSpace(input.ParentSourceKey)
-	input.Reason = strings.TrimSpace(input.Reason)
-	if input.ParentKind != "item" && input.ParentKind != "source" {
-		return ChunkReplaceResult{}, fmt.Errorf("invalid retrieval parent kind %q", input.ParentKind)
-	}
-	if input.ParentSourceKey == "" || input.DirtyRevision <= 0 {
-		return ChunkReplaceResult{}, fmt.Errorf("retrieval projection parent and positive dirty revision are required")
-	}
-	if !validTerminalRetrievalProjectionStatus(input.Status) {
-		return ChunkReplaceResult{}, fmt.Errorf("invalid terminal retrieval projection status %q", input.Status)
-	}
-	if input.Status == RetrievalProjectionCurrent && len(input.Projection.Chunks) == 0 {
-		return ChunkReplaceResult{}, fmt.Errorf("current retrieval projection must contain chunks")
-	}
-	if input.Status != RetrievalProjectionCurrent && len(input.Projection.Chunks) != 0 {
-		return ChunkReplaceResult{}, fmt.Errorf("%s retrieval projection must not contain chunks", input.Status)
-	}
-	if input.Status != RetrievalProjectionCurrent && len(input.Projection.Occurrences) != 0 {
-		return ChunkReplaceResult{}, fmt.Errorf("%s retrieval projection must not contain occurrences", input.Status)
-	}
-	if input.Status != RetrievalProjectionCurrent && input.Reason == "" {
-		return ChunkReplaceResult{}, fmt.Errorf("%s retrieval projection requires a reason", input.Status)
-	}
-	if input.Status == RetrievalProjectionEmpty && input.Reason != "no_chunkable_content" {
-		return ChunkReplaceResult{}, fmt.Errorf("empty retrieval projection reason must be no_chunkable_content")
+	if err := validateRetrievalProjectionApplyInput(&input); err != nil {
+		return ChunkReplaceResult{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -185,15 +161,70 @@ func (s *Store) ApplyRetrievalProjection(ctx context.Context, input ApplyRetriev
 		return ChunkReplaceResult{}, fmt.Errorf("begin retrieval projection apply: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := reserveRetrievalProjectionApplyTx(ctx, tx); err != nil {
+		return ChunkReplaceResult{}, err
+	}
+	result, err := applyRetrievalProjectionReservedTx(ctx, tx, input)
+	if err != nil {
+		return ChunkReplaceResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ChunkReplaceResult{}, fmt.Errorf("commit retrieval projection apply: %w", err)
+	}
+	return result, nil
+}
+
+func validateRetrievalProjectionApplyInput(input *ApplyRetrievalProjectionInput) error {
+	input.ParentKind = strings.TrimSpace(input.ParentKind)
+	input.ParentSourceKey = strings.TrimSpace(input.ParentSourceKey)
+	input.Reason = strings.TrimSpace(input.Reason)
+	if input.ParentKind != "item" && input.ParentKind != "source" {
+		return fmt.Errorf("invalid retrieval parent kind %q", input.ParentKind)
+	}
+	if input.ParentSourceKey == "" || input.DirtyRevision <= 0 {
+		return fmt.Errorf("retrieval projection parent and positive dirty revision are required")
+	}
+	if input.Status != RetrievalProjectionCurrent && input.Status != RetrievalProjectionEmpty {
+		return fmt.Errorf("only current and empty retrieval projection applies are supported, got %q", input.Status)
+	}
+	if input.Status == RetrievalProjectionCurrent && len(input.Projection.Chunks) == 0 {
+		return fmt.Errorf("current retrieval projection must contain chunks")
+	}
+	if input.Status == RetrievalProjectionCurrent && input.Reason != "" {
+		return fmt.Errorf("current retrieval projection must not contain a reason")
+	}
+	if input.Status != RetrievalProjectionCurrent && len(input.Projection.Chunks) != 0 {
+		return fmt.Errorf("%s retrieval projection must not contain chunks", input.Status)
+	}
+	if input.Status != RetrievalProjectionCurrent && len(input.Projection.Occurrences) != 0 {
+		return fmt.Errorf("%s retrieval projection must not contain occurrences", input.Status)
+	}
+	if input.Status != RetrievalProjectionCurrent && input.Reason == "" {
+		return fmt.Errorf("%s retrieval projection requires a reason", input.Status)
+	}
+	if input.Status == RetrievalProjectionEmpty && input.Reason != "no_chunkable_content" {
+		return fmt.Errorf("empty retrieval projection reason must be no_chunkable_content")
+	}
+	return nil
+}
+
+func reserveRetrievalProjectionApplyTx(ctx context.Context, tx *sql.Tx) error {
 	// Acquire SQLite's writer reservation before validating. A concurrent
 	// dirtying commit therefore linearizes either before this validation (and is
 	// rejected below) or after this complete apply transaction.
 	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_state SET updated_at = updated_at WHERE singleton = 1`); err != nil {
-		return ChunkReplaceResult{}, fmt.Errorf("reserve retrieval projection apply transaction: %w", err)
+		return fmt.Errorf("reserve retrieval projection apply transaction: %w", err)
 	}
+	return nil
+}
 
+// applyRetrievalProjectionReservedTx applies an already validated input after
+// reserveRetrievalProjectionApplyTx has acquired SQLite's writer reservation.
+// Keeping this core separate lets concurrency tests pause at the actual
+// linearization point used by the public API.
+func applyRetrievalProjectionReservedTx(ctx context.Context, tx *sql.Tx, input ApplyRetrievalProjectionInput) (ChunkReplaceResult, error) {
 	var currentRevision, projectedRevision int64
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		SELECT dirty_revision, projected_revision
 		FROM retrieval_parent_projections
 		WHERE parent_kind = ? AND parent_source_key = ?`, input.ParentKind, input.ParentSourceKey).Scan(&currentRevision, &projectedRevision)
@@ -218,7 +249,7 @@ func (s *Store) ApplyRetrievalProjection(ctx context.Context, input ApplyRetriev
 	if fresh.ParentHash != input.Projection.ParentHash {
 		return ChunkReplaceResult{}, staleRetrievalProjectionError(input, currentRevision, "parent projection hash changed")
 	}
-	if (input.Status == RetrievalProjectionCurrent || input.Status == RetrievalProjectionEmpty) && !reflect.DeepEqual(fresh, input.Projection) {
+	if !reflect.DeepEqual(fresh, input.Projection) {
 		return ChunkReplaceResult{}, fmt.Errorf("retrieval projection payload does not match freshly computed parent projection")
 	}
 	if input.Status == RetrievalProjectionCurrent && len(fresh.Chunks) == 0 || input.Status == RetrievalProjectionEmpty && len(fresh.Chunks) != 0 {
@@ -260,19 +291,7 @@ func (s *Store) ApplyRetrievalProjection(ctx context.Context, input ApplyRetriev
 			return ChunkReplaceResult{}, staleRetrievalProjectionError(input, currentRevision, "work item changed during apply")
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return ChunkReplaceResult{}, fmt.Errorf("commit retrieval projection apply: %w", err)
-	}
 	return result, nil
-}
-
-func validTerminalRetrievalProjectionStatus(status RetrievalProjectionStatus) bool {
-	switch status {
-	case RetrievalProjectionCurrent, RetrievalProjectionEmpty, RetrievalProjectionBlocked, RetrievalProjectionError:
-		return true
-	default:
-		return false
-	}
 }
 
 func staleRetrievalProjectionError(input ApplyRetrievalProjectionInput, current int64, reason string) error {

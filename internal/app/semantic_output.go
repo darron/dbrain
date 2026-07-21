@@ -46,6 +46,12 @@ func writeSemanticChunkProgress(dst io.Writer, progress semanticbuild.ChunkProgr
 	if err := writeSemanticProgress(dst, progress.Progress); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(dst, "Created: %d\nUpdated: %d\nDeleted: %d\nNext after source key: %s\nHas more: %t\n", progress.Created, progress.Updated, progress.Deleted, progress.NextAfterSourceKey, progress.HasMore)
-	return err
+	if _, err := fmt.Fprintf(dst, "Created: %d\nUpdated: %d\nDeleted: %d\nHas more: %t\n", progress.Created, progress.Updated, progress.Deleted, progress.HasMore); err != nil {
+		return err
+	}
+	if progress.HasMore {
+		_, err := fmt.Fprintln(dst, "Resume: rerun semantic chunk without a cursor; the durable dirty queue resumes automatically.")
+		return err
+	}
+	return nil
 }

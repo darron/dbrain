@@ -155,8 +155,19 @@ func TestChunkIsParentBoundedAndReportsCreatedDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunChunk: %v", err)
 	}
-	if progress.Scanned != 2 || len(st.replacements) != 2 || progress.Created != 2 || progress.Deleted != 0 || progress.Remaining != 0 || progress.HasMore || progress.NextAfterSourceKey != "a" || len(snapshots) != 2 || len(progress.Snapshots) != 1 {
+	if progress.Scanned != 2 || len(st.replacements) != 2 || progress.Created != 2 || progress.Deleted != 0 || progress.Remaining != 0 || progress.HasMore || progress.NextAfterSourceKey != "" || len(snapshots) != 2 || len(progress.Snapshots) != 1 {
 		t.Fatalf("progress=%+v replacements=%v", progress, st.replacements)
+	}
+}
+
+func TestChunkRejectsLegacySourceCursor(t *testing.T) {
+	st := &fakeStore{parents: []retrievalchunk.Parent{{Kind: "item", SourceKey: "a"}}}
+	progress, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 1, AfterSourceKey: "item:old-cursor"})
+	if err == nil || err.Error() != "semantic chunk --after-source-key is no longer supported; rerun without it because the durable dirty queue resumes automatically" {
+		t.Fatalf("progress=%+v err=%v", progress, err)
+	}
+	if len(st.watermarks) != 0 || len(st.applyInputs) != 0 {
+		t.Fatalf("legacy cursor performed work: watermarks=%v applies=%d", st.watermarks, len(st.applyInputs))
 	}
 }
 
@@ -170,14 +181,14 @@ func TestChunkPagesOnlyThroughCapturedWorkRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.HasMore || first.NextAfterSourceKey != "a" || first.Scanned != 1 {
+	if !first.HasMore || first.NextAfterSourceKey != "" || first.Scanned != 1 {
 		t.Fatalf("first=%+v", first)
 	}
 	second, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.HasMore || second.NextAfterSourceKey != "a" || second.Scanned != 1 {
+	if second.HasMore || second.NextAfterSourceKey != "" || second.Scanned != 1 {
 		t.Fatalf("second=%+v", second)
 	}
 	if got := st.replacements; !reflect.DeepEqual(got, []string{"item:a", "source:a"}) {
@@ -202,7 +213,7 @@ func TestChunkProgressKeepsOnlyLastSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshots) != 2 || len(progress.Snapshots) != 1 || snapshots[0].NextAfterSourceKey != "a" || snapshots[0].Remaining != 1 || snapshots[1].NextAfterSourceKey != "a" || snapshots[1].Remaining != 0 {
+	if len(snapshots) != 2 || len(progress.Snapshots) != 1 || snapshots[0].NextAfterSourceKey != "" || snapshots[0].Remaining != 1 || snapshots[1].NextAfterSourceKey != "" || snapshots[1].Remaining != 0 {
 		t.Fatalf("snapshots=%+v progress=%+v", snapshots, progress)
 	}
 }
@@ -219,8 +230,8 @@ func TestChunkDoesNotAdvanceCursorPastFailedSourceKeyGroup(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunChunk unexpectedly succeeded")
 	}
-	if progress.NextAfterSourceKey != "a" || progress.Remaining != 1 {
-		t.Fatalf("failed work progress=%+v, want last successful key and one unfinished row", progress)
+	if progress.NextAfterSourceKey != "" || progress.Remaining != 1 {
+		t.Fatalf("failed work progress=%+v, want no legacy cursor and one unfinished row", progress)
 	}
 }
 
@@ -230,7 +241,7 @@ func TestChunkClassifiesEmptyProjectionAsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if progress.Blocked != 1 || progress.Current != 0 || progress.Generated != 0 || progress.NextAfterSourceKey != "empty" || len(st.replacements) != 1 || len(st.applyInputs) != 1 || st.applyInputs[0].Status != store.RetrievalProjectionEmpty || st.applyInputs[0].Reason != "no_chunkable_content" {
+	if progress.Blocked != 1 || progress.Current != 0 || progress.Generated != 0 || progress.NextAfterSourceKey != "" || len(st.replacements) != 1 || len(st.applyInputs) != 1 || st.applyInputs[0].Status != store.RetrievalProjectionEmpty || st.applyInputs[0].Reason != "no_chunkable_content" {
 		t.Fatalf("progress=%+v replacements=%v", progress, st.replacements)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/darron/dbrain/internal/retrievalchunk"
 	"github.com/darron/dbrain/internal/store"
@@ -23,15 +24,18 @@ type Progress struct {
 
 type ChunkProgress struct {
 	Progress
-	Created            int    `json:"created"`
-	Updated            int    `json:"updated"`
-	Deleted            int    `json:"deleted"`
-	NextAfterSourceKey string `json:"next_after_source_key"`
+	Created int `json:"created"`
+	Updated int `json:"updated"`
+	Deleted int `json:"deleted"`
+	// Deprecated: the durable dirty ledger resumes automatically.
+	NextAfterSourceKey string `json:"next_after_source_key,omitempty"`
 	HasMore            bool   `json:"has_more"`
 }
 
 type ChunkOptions struct {
-	Limit          int
+	Limit int
+	// Deprecated: nonblank source cursors are rejected because the durable dirty
+	// ledger provides the resume position.
 	AfterSourceKey string
 	Progress       func(ChunkProgress) error
 }
@@ -46,6 +50,9 @@ func RunChunk(ctx context.Context, st ChunkStore, opts ChunkOptions) (ChunkProgr
 	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
 	if opts.Limit <= 0 {
 		return progress, fmt.Errorf("semantic chunk limit must be positive")
+	}
+	if strings.TrimSpace(opts.AfterSourceKey) != "" {
+		return progress, fmt.Errorf("semantic chunk --after-source-key is no longer supported; rerun without it because the durable dirty queue resumes automatically")
 	}
 	watermark, err := st.ProjectionWorkRevision(ctx)
 	if err != nil {
@@ -105,7 +112,6 @@ func RunChunk(ctx context.Context, st ChunkStore, opts ChunkOptions) (ChunkProgr
 		} else {
 			progress.Generated++
 		}
-		progress.NextAfterSourceKey = parent.SourceKey
 		if err := recordChunkSnapshot(&progress, opts.Progress); err != nil {
 			return progress, err
 		}

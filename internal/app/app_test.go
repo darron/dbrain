@@ -311,31 +311,32 @@ func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
 	}
 }
 
-func TestSemanticChunkHelpIncludesResumeCursor(t *testing.T) {
+func TestSemanticChunkMarksLegacyCursorDeprecated(t *testing.T) {
 	cmd := NewRootCommand()
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"semantic", "chunk", "--help"})
-	if err := cmd.ExecuteContext(context.Background()); err != nil {
+	target, _, err := cmd.Find([]string{"semantic", "chunk"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "--after-source-key") {
-		t.Fatalf("help=%s", stdout.String())
+	legacy := target.Flags().Lookup("after-source-key")
+	if legacy == nil || !strings.Contains(legacy.Deprecated, "durable dirty queue resumes automatically") {
+		t.Fatalf("legacy cursor flag=%+v", legacy)
+	}
+	limit := target.Flags().Lookup("limit")
+	if limit == nil || !strings.Contains(limit.Usage, "dirty parents") {
+		t.Fatalf("limit flag=%+v", limit)
 	}
 }
 
-func TestSemanticChunkOutputIncludesResumeState(t *testing.T) {
+func TestSemanticChunkOutputUsesDurableQueueResumeState(t *testing.T) {
 	progress := semanticbuild.ChunkProgress{
-		Progress:           semanticbuild.Progress{Stage: "chunk", Snapshots: make([]semanticbuild.Progress, 0)},
-		NextAfterSourceKey: "item:one",
-		HasMore:            true,
+		Progress: semanticbuild.Progress{Stage: "chunk", Snapshots: make([]semanticbuild.Progress, 0)},
+		HasMore:  true,
 	}
 	var human bytes.Buffer
 	if err := writeSemanticChunkProgress(&human, progress); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Next after source key: item:one", "Has more: true"} {
+	for _, want := range []string{"Has more: true", "durable dirty queue resumes automatically"} {
 		if !strings.Contains(human.String(), want) {
 			t.Fatalf("human output missing %q: %s", want, human.String())
 		}
@@ -344,16 +345,15 @@ func TestSemanticChunkOutputIncludesResumeState(t *testing.T) {
 	if err := writeJSON(&machine, progress); err != nil {
 		t.Fatal(err)
 	}
-	var payload struct {
-		NextAfterSourceKey string                   `json:"next_after_source_key"`
-		HasMore            bool                     `json:"has_more"`
-		Snapshots          []semanticbuild.Progress `json:"snapshots"`
-	}
+	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(machine.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.NextAfterSourceKey != "item:one" || !payload.HasMore || payload.Snapshots == nil {
-		t.Fatalf("JSON resume state=%+v output=%s", payload, machine.String())
+	if _, found := payload["next_after_source_key"]; found {
+		t.Fatalf("JSON contains obsolete cursor: %s", machine.String())
+	}
+	if string(payload["has_more"]) != "true" || string(payload["snapshots"]) == "null" {
+		t.Fatalf("JSON queue state=%+v output=%s", payload, machine.String())
 	}
 }
 

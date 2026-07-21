@@ -850,6 +850,248 @@ func TestApplyRetrievalProjectionRejectsFreshParentHashMismatch(t *testing.T) {
 	}
 }
 
+func TestApplyRetrievalProjectionRejectsUnsupportedStatusWithoutDeletingValidChunks(t *testing.T) {
+	for _, status := range []RetrievalProjectionStatus{RetrievalProjectionBlocked, RetrievalProjectionError} {
+		t.Run(string(status), func(t *testing.T) {
+			st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			defer func() { _ = st.Close() }()
+			ctx := context.Background()
+			seedRetrievalSource(t, st, "source:status")
+			dirtyRetrievalParentForTest(t, st, "source", "source:status", nil)
+			initial := oneDirtyProjectionWork(t, st)
+			projection, err := retrievalchunk.BuildProjection(initial.Parent, retrievalchunk.DefaultOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{ParentKind: "source", ParentSourceKey: "source:status", DirtyRevision: initial.DirtyRevision, Projection: projection, Status: RetrievalProjectionCurrent}); err != nil {
+				t.Fatal(err)
+			}
+			newRevision := dirtyRetrievalParentForTest(t, st, "source", "source:status", nil)
+			_, err = st.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{
+				ParentKind: "source", ParentSourceKey: "source:status", DirtyRevision: newRevision,
+				Projection: retrievalchunk.Projection{ParentHash: projection.ParentHash, Chunks: make([]retrievalchunk.Chunk, 0), Occurrences: make([]retrievalchunk.Occurrence, 0)},
+				Status:     status, Reason: "unsupported terminal state",
+			})
+			if err == nil || !strings.Contains(err.Error(), "only current and empty retrieval projection applies are supported") {
+				t.Fatalf("apply status %q error=%v", status, err)
+			}
+			var chunks int
+			var state string
+			var dirty, projected int64
+			if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_kind='source' AND parent_source_key='source:status'`).Scan(&chunks); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.db.QueryRow(`SELECT status,dirty_revision,projected_revision FROM retrieval_parent_projections WHERE parent_kind='source' AND parent_source_key='source:status'`).Scan(&state, &dirty, &projected); err != nil {
+				t.Fatal(err)
+			}
+			if chunks != len(projection.Chunks) || state != "pending" || dirty != newRevision || projected != initial.DirtyRevision {
+				t.Fatalf("malformed status changed DB: chunks=%d state=%q dirty=%d projected=%d", chunks, state, dirty, projected)
+			}
+		})
+	}
+}
+
+func TestApplyRetrievalProjectionRejectsMalformedEmptyPayloadWithoutDeletingValidChunks(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:malformed-empty")
+	dirtyRetrievalParentForTest(t, st, "source", "source:malformed-empty", nil)
+	initial := oneDirtyProjectionWork(t, st)
+	projection, err := retrievalchunk.BuildProjection(initial.Parent, retrievalchunk.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{ParentKind: "source", ParentSourceKey: "source:malformed-empty", DirtyRevision: initial.DirtyRevision, Projection: projection, Status: RetrievalProjectionCurrent}); err != nil {
+		t.Fatal(err)
+	}
+	newRevision := dirtyRetrievalParentForTest(t, st, "source", "source:malformed-empty", nil)
+	malformed := retrievalchunk.Projection{
+		ParentHash:  projection.ParentHash,
+		Chunks:      make([]retrievalchunk.Chunk, 0),
+		Occurrences: make([]retrievalchunk.Occurrence, 0),
+	}
+	_, err = st.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{
+		ParentKind: "source", ParentSourceKey: "source:malformed-empty", DirtyRevision: newRevision,
+		Projection: malformed, Status: RetrievalProjectionEmpty, Reason: "no_chunkable_content",
+	})
+	if err == nil || !strings.Contains(err.Error(), "payload does not match freshly computed parent projection") {
+		t.Fatalf("malformed empty apply error=%v", err)
+	}
+	_, err = st.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{
+		ParentKind: "source", ParentSourceKey: "source:malformed-empty", DirtyRevision: newRevision,
+		Projection: projection, Status: RetrievalProjectionCurrent, Reason: "unexpected current reason",
+	})
+	if err == nil || !strings.Contains(err.Error(), "current retrieval projection must not contain a reason") {
+		t.Fatalf("malformed current apply error=%v", err)
+	}
+	var chunks int
+	var status string
+	var dirty, projected int64
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_kind='source' AND parent_source_key='source:malformed-empty'`).Scan(&chunks); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRow(`SELECT status,dirty_revision,projected_revision FROM retrieval_parent_projections WHERE parent_kind='source' AND parent_source_key='source:malformed-empty'`).Scan(&status, &dirty, &projected); err != nil {
+		t.Fatal(err)
+	}
+	if chunks != len(projection.Chunks) || status != "pending" || dirty != newRevision || projected != initial.DirtyRevision {
+		t.Fatalf("malformed payload changed DB: chunks=%d status=%q dirty=%d projected=%d", chunks, status, dirty, projected)
+	}
+}
+
+func TestApplyRetrievalProjectionWaitsForDirtyWriterThenReturnsStale(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	applyStore := openStoreAtPath(t, path)
+	defer func() { _ = applyStore.Close() }()
+	dirtyStore, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dirtyStore.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seedRetrievalSource(t, applyStore, "source:dirty-wins")
+	dirtyRetrievalParentForTest(t, applyStore, "source", "source:dirty-wins", nil)
+	oldWork := oneDirtyProjectionWork(t, applyStore)
+	oldProjection, err := retrievalchunk.BuildProjection(oldWork.Parent, retrievalchunk.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dirtyTx, err := dirtyStore.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dirtyTx.Rollback() }()
+	if _, err := dirtyTx.ExecContext(ctx, `UPDATE sources SET extracted_text='dirty writer won' WHERE source_key='source:dirty-wins'`); err != nil {
+		t.Fatal(err)
+	}
+	newRevision, err := allocateRetrievalParentDirtyTx(ctx, dirtyTx, "source", "source:dirty-wins")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type applyOutcome struct {
+		result ChunkReplaceResult
+		err    error
+	}
+	started := make(chan struct{})
+	done := make(chan applyOutcome, 1)
+	go func() {
+		close(started)
+		result, applyErr := applyStore.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{ParentKind: "source", ParentSourceKey: "source:dirty-wins", DirtyRevision: oldWork.DirtyRevision, Projection: oldProjection, Status: RetrievalProjectionCurrent})
+		done <- applyOutcome{result: result, err: applyErr}
+	}()
+	<-started
+	select {
+	case outcome := <-done:
+		t.Fatalf("apply did not wait for dirty writer: %+v", outcome)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := dirtyTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	outcome := <-done
+	var stale *RetrievalProjectionStaleWorkError
+	if !errors.As(outcome.err, &stale) || stale.CurrentRevision != newRevision {
+		t.Fatalf("apply outcome=%+v stale=%+v", outcome, stale)
+	}
+	var status string
+	var dirty, projected int64
+	var chunks int
+	if err := applyStore.db.QueryRow(`SELECT status,dirty_revision,projected_revision FROM retrieval_parent_projections WHERE parent_kind='source' AND parent_source_key='source:dirty-wins'`).Scan(&status, &dirty, &projected); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyStore.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_kind='source' AND parent_source_key='source:dirty-wins'`).Scan(&chunks); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || dirty != newRevision || projected != 0 || chunks != 0 {
+		t.Fatalf("final state status=%q dirty=%d projected=%d chunks=%d", status, dirty, projected, chunks)
+	}
+}
+
+func TestApplyRetrievalProjectionReservationWinsThenDirtyWriterRemainsPending(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	applyStore := openStoreAtPath(t, path)
+	defer func() { _ = applyStore.Close() }()
+	dirtyStore, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dirtyStore.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seedRetrievalSource(t, applyStore, "source:apply-wins")
+	dirtyRetrievalParentForTest(t, applyStore, "source", "source:apply-wins", nil)
+	work := oneDirtyProjectionWork(t, applyStore)
+	projection, err := retrievalchunk.BuildProjection(work.Parent, retrievalchunk.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ApplyRetrievalProjectionInput{ParentKind: "source", ParentSourceKey: "source:apply-wins", DirtyRevision: work.DirtyRevision, Projection: projection, Status: RetrievalProjectionCurrent}
+
+	applyTx, err := applyStore.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = applyTx.Rollback() }()
+	if err := reserveRetrievalProjectionApplyTx(ctx, applyTx); err != nil {
+		t.Fatal(err)
+	}
+	type dirtyOutcome struct {
+		revision int64
+		err      error
+	}
+	started := make(chan struct{})
+	dirtyDone := make(chan dirtyOutcome, 1)
+	go func() {
+		tx, beginErr := dirtyStore.db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			dirtyDone <- dirtyOutcome{err: beginErr}
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		close(started)
+		if _, updateErr := tx.ExecContext(ctx, `UPDATE sources SET extracted_text='dirty writer followed apply' WHERE source_key='source:apply-wins'`); updateErr != nil {
+			dirtyDone <- dirtyOutcome{err: updateErr}
+			return
+		}
+		revision, dirtyErr := allocateRetrievalParentDirtyTx(ctx, tx, "source", "source:apply-wins")
+		if dirtyErr == nil {
+			dirtyErr = tx.Commit()
+		}
+		dirtyDone <- dirtyOutcome{revision: revision, err: dirtyErr}
+	}()
+	<-started
+	select {
+	case outcome := <-dirtyDone:
+		t.Fatalf("dirty writer did not wait for apply reservation: %+v", outcome)
+	case <-time.After(150 * time.Millisecond):
+	}
+	result, err := applyRetrievalProjectionReservedTx(ctx, applyTx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	dirtyResult := <-dirtyDone
+	if dirtyResult.err != nil {
+		t.Fatal(dirtyResult.err)
+	}
+	var status string
+	var dirty, projected int64
+	var chunks int
+	if err := applyStore.db.QueryRow(`SELECT status,dirty_revision,projected_revision FROM retrieval_parent_projections WHERE parent_kind='source' AND parent_source_key='source:apply-wins'`).Scan(&status, &dirty, &projected); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyStore.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_kind='source' AND parent_source_key='source:apply-wins'`).Scan(&chunks); err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != len(projection.Chunks) || status != "pending" || dirty != dirtyResult.revision || dirty <= work.DirtyRevision || projected != work.DirtyRevision || chunks != len(projection.Chunks) {
+		t.Fatalf("result=%+v status=%q dirty=%d projected=%d chunks=%d dirty_result=%+v", result, status, dirty, projected, chunks, dirtyResult)
+	}
+}
+
 func TestApplyRetrievalProjectionPersistsEmptyParentTerminalState(t *testing.T) {
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()

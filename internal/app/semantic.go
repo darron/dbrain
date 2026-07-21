@@ -158,8 +158,11 @@ func newSemanticChunkCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 			return writeSemanticChunkProgress(cmd.OutOrStdout(), progress)
 		},
 	}
-	cmd.Flags().IntVar(&limit, "limit", defaultSemanticLimit, "Maximum source-key groups to process")
-	cmd.Flags().StringVar(&afterSourceKey, "after-source-key", "", "Resume after this source-key group")
+	cmd.Flags().IntVar(&limit, "limit", defaultSemanticLimit, "Maximum dirty parents to process")
+	cmd.Flags().StringVar(&afterSourceKey, "after-source-key", "", "Deprecated source-key cursor")
+	if err := cmd.Flags().MarkDeprecated("after-source-key", "the durable dirty queue resumes automatically; rerun without this flag"); err != nil {
+		panic(err)
+	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print progress as JSON")
 	return cmd
 }
