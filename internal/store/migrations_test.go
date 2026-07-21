@@ -60,6 +60,24 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 
 func TestProjectionDirtyTriggerMigrationUpgradesGenuineV16DatabaseOnce(t *testing.T) {
 	path := projectionDirtyTriggerV16Database(t)
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open genuine v16 database directly: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, title,
+			extracted_text, content_hash, note_path, created_at, updated_at
+		) VALUES ('source:v16-upgrade', 'https://example.com/v16-upgrade',
+			'https://example.com/v16-upgrade', 'article', 'before', 'body',
+			'hash', 'source-v16-upgrade.md', ?, ?)`, now, now); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed genuine v16 source without dirty triggers: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close genuine v16 database: %v", err)
+	}
 
 	st := openStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
@@ -97,6 +115,14 @@ func TestProjectionDirtyTriggerMigrationUpgradesGenuineV16DatabaseOnce(t *testin
 			t.Fatalf("dirty trigger %s was not installed canonically", trigger.name)
 		}
 	}
+	before := projectionRevisionForTest(t, st)
+	if _, err := st.db.Exec(`UPDATE sources SET title = 'after' WHERE source_key = 'source:v16-upgrade'`); err != nil {
+		t.Fatalf("mutate projected source after v16 upgrade: %v", err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+1 {
+		t.Fatalf("post-upgrade projected mutation revision = %d, want %d", got, before+1)
+	}
+	assertProjectionPendingAtRevision(t, st, "source", "source:v16-upgrade", before+1)
 }
 
 func TestProjectionDirtyTriggerMigrationRepairsNonCanonicalV16Trigger(t *testing.T) {
