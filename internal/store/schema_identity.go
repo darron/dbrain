@@ -113,7 +113,7 @@ func ValidateRestorableDatabase(ctx context.Context, path string) error {
 func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 	requiredSchema := dbrainCoreSchema
 	hasSemanticFoundation := false
-	hasSemanticProjectionDirtyTriggers := false
+	var semanticProjectionDirtyTriggersForVersion []retrievalConstraintTrigger
 	hasMigrationTable, err := st.tableExists("schema_migrations")
 	if err != nil {
 		return 0, 0, fmt.Errorf("inspect dbrain migration table: %w", err)
@@ -132,10 +132,18 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticProjectionDirtyMigrationVersion).Scan(&found)
 		switch {
 		case err == nil:
-			hasSemanticProjectionDirtyTriggers = true
+			semanticProjectionDirtyTriggersForVersion = semanticProjectionDirtyTriggersV17
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
 			return 0, 0, fmt.Errorf("inspect dbrain semantic projection dirty migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticProjectionDirtyRepairVersion).Scan(&found)
+		switch {
+		case err == nil:
+			semanticProjectionDirtyTriggersForVersion = semanticProjectionDirtyTriggers
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic projection dirty repair migration: %w", err)
 		}
 	}
 
@@ -173,9 +181,9 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 			return missingTables, missingColumns, err
 		}
 	}
-	if hasSemanticProjectionDirtyTriggers {
+	if len(semanticProjectionDirtyTriggersForVersion) != 0 {
 		var err error
-		missingTables, firstMissing, err = inspectCanonicalTriggers(st, "semantic projection dirty", semanticProjectionDirtyTriggers, missingTables, firstMissing)
+		missingTables, firstMissing, err = inspectCanonicalTriggers(st, "semantic projection dirty", semanticProjectionDirtyTriggersForVersion, missingTables, firstMissing)
 		if err != nil {
 			return missingTables, missingColumns, err
 		}

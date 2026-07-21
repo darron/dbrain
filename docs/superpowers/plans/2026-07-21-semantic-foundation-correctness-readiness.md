@@ -16,7 +16,14 @@
   authoritative dirtying triggers were added, install and repair those triggers
   with append-only migration **17** named
   `retrieval_projection_dirty_triggers`; never fold the new trigger identity
-  into migration 16.
+  into migration 16. Because migration 17 was then exercised with raw
+  `content_hash` in its update-trigger identity, append-only migration **18**
+  named `retrieval_projection_dirty_trigger_provenance_repair` repairs the
+  triggers to treat that hash as provenance-only; never reinterpret migration
+  17 in place. Migration 18 also gives all existing ledger parents one shared
+  new pending revision, clears partial projection staging, and marks index
+  generations stale/inactive while preserving raw evidence, chunks, and
+  embeddings for normal maintenance.
 - Projection identity is exactly `retrieval-projection-v2`; chunk identity is exactly `retrieval-chunker-v3`.
 - Chunker v3 hard UTF-8 ceiling is 1,800 bytes; emitted text must also obey existing rune bounds, preserve exact rune offsets, never be blank after trimming, and always make forward progress.
 - Stable chunk identity excludes absolute offsets, whole-parent hashes, whole-section hashes, and occurrence number.
@@ -363,10 +370,12 @@ git commit --no-gpg-sign -m "feat: persist semantic projection state"
 - Consumes: projection ledger from Task 3.
 - Produces: database-trigger coverage floor and immediate exclusion of non-current parents.
 
-Migration 17 owns the dirty-trigger definitions. Read-only schema identity
-requires the foundation constraints only when migration 16 is present and the
-dirty triggers only when migration 17 is present. A genuine v15 database must
-report semantic retrieval unavailable before any selector joins the v16
+Migration 17 owns the historical dirty-trigger definitions and migration 18
+owns the provenance correction. Read-only schema identity requires the
+foundation constraints only when migration 16 is present, validates the
+historical trigger definitions for a genuine v17 database, and validates the
+corrected definitions when migration 18 is present. A genuine v15 database
+must report semantic retrieval unavailable before any selector joins the v16
 projection ledger.
 
 - [ ] **Step 1: Write failing mutation/exclusion tests**
@@ -390,9 +399,10 @@ Expected: FAIL because no authoritative dirtying triggers or pending-parent filt
 
 - [ ] **Step 3: Implement triggers and named helpers**
 
-Add repair-safe item/source/enrichment triggers in migration 17 whose `WHEN`
-clauses compare only projected fields/roles. Raw `content_hash` is provenance,
-not a projection input, and a hash-only recalculation must not dirty a parent.
+Preserve the exercised migration 17 item/source/enrichment trigger identity,
+then add repair-safe migration 18 trigger definitions whose `WHEN` clauses
+compare only projected fields/roles. Raw `content_hash` is provenance, not a
+projection input, and a hash-only recalculation must not dirty a parent.
 Triggers increment `retrieval_state` and upsert the ledger as `pending`.
 Provide:
 

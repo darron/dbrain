@@ -12,15 +12,16 @@ import (
 
 const retrievalDirtyTimestampSQL = `strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`
 
-var semanticProjectionDirtyTriggers = []retrievalConstraintTrigger{
+// Migration 17 is immutable history. It included the raw content_hash columns
+// in the item/source UPDATE triggers before those columns were classified as
+// provenance-only. Migration 18 repairs existing v17 databases to the current
+// definitions below.
+var semanticProjectionDirtyTriggersV17 = []retrievalConstraintTrigger{
 	projectionDirtyInsertTrigger("trg_retrieval_items_dirty_insert", "items", "item", "NEW.source_key", "1"),
 	projectionDirtyUpdateTrigger(
-		"trg_retrieval_items_dirty_update",
-		"items",
-		"item",
+		"trg_retrieval_items_dirty_update", "items", "item",
 		"source_key, content_hash, title, source_type, author_name, author_handle, text, x_post_text, ocr_text, article_title, article_text, summary_text, note_path",
-		"OLD.source_key",
-		"NEW.source_key",
+		"OLD.source_key", "NEW.source_key",
 		`OLD.source_key IS NOT NEW.source_key
 			OR OLD.content_hash IS NOT NEW.content_hash
 			OR OLD.title IS NOT NEW.title
@@ -38,12 +39,9 @@ var semanticProjectionDirtyTriggers = []retrievalConstraintTrigger{
 	projectionDirtyDeleteTrigger("trg_retrieval_items_dirty_delete", "items", "item", "OLD.source_key", "1"),
 	projectionDirtyInsertTrigger("trg_retrieval_sources_dirty_insert", "sources", "source", "NEW.source_key", "1"),
 	projectionDirtyUpdateTrigger(
-		"trg_retrieval_sources_dirty_update",
-		"sources",
-		"source",
+		"trg_retrieval_sources_dirty_update", "sources", "source",
 		"source_key, content_hash, title, source_type, domain, extracted_text, summary_text, note_path",
-		"OLD.source_key",
-		"NEW.source_key",
+		"OLD.source_key", "NEW.source_key",
 		`OLD.source_key IS NOT NEW.source_key
 			OR OLD.content_hash IS NOT NEW.content_hash
 			OR OLD.title IS NOT NEW.title
@@ -55,24 +53,118 @@ var semanticProjectionDirtyTriggers = []retrievalConstraintTrigger{
 	),
 	projectionDirtyDeleteTrigger("trg_retrieval_sources_dirty_delete", "sources", "source", "OLD.source_key", "1"),
 	projectionDirtyInsertTrigger(
-		"trg_retrieval_item_enrichments_dirty_insert",
-		"item_enrichments",
-		"item",
-		"(SELECT source_key FROM items WHERE id = NEW.item_id)",
-		projectedEnrichmentRoleSQL("NEW.role"),
+		"trg_retrieval_item_enrichments_dirty_insert", "item_enrichments", "item",
+		"(SELECT source_key FROM items WHERE id = NEW.item_id)", projectedEnrichmentRoleSQL("NEW.role"),
 	),
 	projectionDirtyEnrichmentUpdateTrigger(),
 	projectionDirtyDeleteTrigger(
-		"trg_retrieval_item_enrichments_dirty_delete",
-		"item_enrichments",
-		"item",
-		"(SELECT source_key FROM items WHERE id = OLD.item_id)",
-		projectedEnrichmentRoleSQL("OLD.role"),
+		"trg_retrieval_item_enrichments_dirty_delete", "item_enrichments", "item",
+		"(SELECT source_key FROM items WHERE id = OLD.item_id)", projectedEnrichmentRoleSQL("OLD.role"),
+	),
+}
+
+var semanticProjectionDirtyTriggers = []retrievalConstraintTrigger{
+	projectionDirtyInsertTrigger("trg_retrieval_items_dirty_insert", "items", "item", "NEW.source_key", "1"),
+	projectionDirtyUpdateTrigger(
+		"trg_retrieval_items_dirty_update", "items", "item",
+		"source_key, title, source_type, author_name, author_handle, text, x_post_text, ocr_text, article_title, article_text, summary_text, note_path",
+		"OLD.source_key", "NEW.source_key",
+		`OLD.source_key IS NOT NEW.source_key
+			OR OLD.title IS NOT NEW.title
+			OR OLD.source_type IS NOT NEW.source_type
+			OR OLD.author_name IS NOT NEW.author_name
+			OR OLD.author_handle IS NOT NEW.author_handle
+			OR OLD.text IS NOT NEW.text
+			OR OLD.x_post_text IS NOT NEW.x_post_text
+			OR OLD.ocr_text IS NOT NEW.ocr_text
+			OR OLD.article_title IS NOT NEW.article_title
+			OR OLD.article_text IS NOT NEW.article_text
+			OR OLD.summary_text IS NOT NEW.summary_text
+			OR OLD.note_path IS NOT NEW.note_path`,
+	),
+	projectionDirtyDeleteTrigger("trg_retrieval_items_dirty_delete", "items", "item", "OLD.source_key", "1"),
+	projectionDirtyInsertTrigger("trg_retrieval_sources_dirty_insert", "sources", "source", "NEW.source_key", "1"),
+	projectionDirtyUpdateTrigger(
+		"trg_retrieval_sources_dirty_update", "sources", "source",
+		"source_key, title, source_type, domain, extracted_text, summary_text, note_path",
+		"OLD.source_key", "NEW.source_key",
+		`OLD.source_key IS NOT NEW.source_key
+			OR OLD.title IS NOT NEW.title
+			OR OLD.source_type IS NOT NEW.source_type
+			OR OLD.domain IS NOT NEW.domain
+			OR OLD.extracted_text IS NOT NEW.extracted_text
+			OR OLD.summary_text IS NOT NEW.summary_text
+			OR OLD.note_path IS NOT NEW.note_path`,
+	),
+	projectionDirtyDeleteTrigger("trg_retrieval_sources_dirty_delete", "sources", "source", "OLD.source_key", "1"),
+	projectionDirtyInsertTrigger(
+		"trg_retrieval_item_enrichments_dirty_insert", "item_enrichments", "item",
+		"(SELECT source_key FROM items WHERE id = NEW.item_id)", projectedEnrichmentRoleSQL("NEW.role"),
+	),
+	projectionDirtyEnrichmentUpdateTrigger(),
+	projectionDirtyDeleteTrigger(
+		"trg_retrieval_item_enrichments_dirty_delete", "item_enrichments", "item",
+		"(SELECT source_key FROM items WHERE id = OLD.item_id)", projectedEnrichmentRoleSQL("OLD.role"),
 	),
 }
 
 func (s *Store) ensureSemanticProjectionDirtyTriggers() error {
-	for _, trigger := range semanticProjectionDirtyTriggers {
+	return s.ensureSemanticProjectionDirtyTriggerDefinitions(semanticProjectionDirtyTriggers)
+}
+
+func (s *Store) ensureSemanticProjectionDirtyTriggersV17() error {
+	return s.ensureSemanticProjectionDirtyTriggerDefinitions(semanticProjectionDirtyTriggersV17)
+}
+
+func (s *Store) repairSemanticProjectionDirtyTriggerProvenance() error {
+	if err := s.ensureSemanticProjectionDirtyTriggers(); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin semantic projection provenance repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var parentCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM retrieval_parent_projections`).Scan(&parentCount); err != nil {
+		return fmt.Errorf("count semantic parents for provenance repair: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM retrieval_projection_staging`); err != nil {
+		return fmt.Errorf("clear semantic projection staging for provenance repair: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if parentCount > 0 {
+		if _, err := tx.Exec(`
+			UPDATE retrieval_state
+			SET projection_work_revision=projection_work_revision+1, updated_at=?
+			WHERE singleton=1`, now); err != nil {
+			return fmt.Errorf("allocate semantic projection provenance repair revision: %w", err)
+		}
+		var revision int64
+		if err := tx.QueryRow(`SELECT projection_work_revision FROM retrieval_state WHERE singleton=1`).Scan(&revision); err != nil {
+			return fmt.Errorf("read semantic projection provenance repair revision: %w", err)
+		}
+		if _, err := tx.Exec(`
+			UPDATE retrieval_parent_projections
+			SET status='pending', reason='', dirty_at=?, dirty_revision=?, updated_at=?`,
+			now, revision, now); err != nil {
+			return fmt.Errorf("dirty semantic parents for provenance repair: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`
+		UPDATE retrieval_index_generations
+		SET build_status='stale', active=0, activated_at='', updated_at=?`, now); err != nil {
+		return fmt.Errorf("stale semantic generations for provenance repair: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit semantic projection provenance repair: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureSemanticProjectionDirtyTriggerDefinitions(triggers []retrievalConstraintTrigger) error {
+	for _, trigger := range triggers {
 		if _, err := s.db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
 			return fmt.Errorf("drop semantic projection dirty trigger %s: %w", trigger.name, err)
 		}

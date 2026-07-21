@@ -100,8 +100,8 @@ func TestProjectionDirtyTriggerMigrationUpgradesGenuineV16DatabaseOnce(t *testin
 	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read upgraded user_version: %v", err)
 	}
-	if userVersion != 17 {
-		t.Fatalf("upgraded user_version = %d, want 17", userVersion)
+	if userVersion != currentSchemaVersion {
+		t.Fatalf("upgraded user_version = %d, want %d", userVersion, currentSchemaVersion)
 	}
 	for _, trigger := range semanticProjectionDirtyTriggers {
 		var table, definition string

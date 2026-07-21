@@ -32,7 +32,7 @@ func TestValidateRestorableDatabaseAcceptsGenuineV16WithoutProjectionDirtyTrigge
 	}
 }
 
-func TestValidateRestorableDatabaseRejectsV17MissingProjectionDirtyTrigger(t *testing.T) {
+func TestValidateRestorableDatabaseRejectsV18MissingProjectionDirtyTrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "current.db")
 	st := openStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
@@ -42,11 +42,11 @@ func TestValidateRestorableDatabaseRejectsV17MissingProjectionDirtyTrigger(t *te
 
 	err := ValidateRestorableDatabase(t.Context(), path)
 	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), semanticProjectionDirtyTriggers[0].name) {
-		t.Fatalf("validation after dropping v17 dirty trigger = %v, want incompatible trigger error", err)
+		t.Fatalf("validation after dropping v18 dirty trigger = %v, want incompatible trigger error", err)
 	}
 }
 
-func TestValidateRestorableDatabaseRejectsV17NonCanonicalProjectionDirtyTrigger(t *testing.T) {
+func TestValidateRestorableDatabaseRejectsV18NonCanonicalProjectionDirtyTrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "current.db")
 	st := openStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
@@ -58,7 +58,7 @@ func TestValidateRestorableDatabaseRejectsV17NonCanonicalProjectionDirtyTrigger(
 
 	err := ValidateRestorableDatabase(t.Context(), path)
 	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), "non-canonical definition") {
-		t.Fatalf("validation after replacing v17 dirty trigger = %v, want incompatible non-canonical trigger error", err)
+		t.Fatalf("validation after replacing v18 dirty trigger = %v, want incompatible non-canonical trigger error", err)
 	}
 }
 

@@ -267,9 +267,21 @@ parent pending; they do not perform chunking or model work.
 
 The foundation tables and constraints belong to migration 16
 `retrieval_semantic_foundation_v2`. Authoritative dirtying triggers belong to
-append-only migration 17 `retrieval_projection_dirty_triggers`. Schema identity
-validation is version-gated accordingly so an already-recorded migration 16 is
-never reinterpreted to require objects it did not originally install.
+append-only migration 17 `retrieval_projection_dirty_triggers`. Because the
+exercised migration 17 definitions also dirtied on raw `content_hash`,
+append-only migration 18
+`retrieval_projection_dirty_trigger_provenance_repair` installs the corrected
+canonical definitions. Schema identity validation is version-gated to the
+historical v17 definitions or corrected v18 definitions accordingly, so an
+already-recorded migration is never silently reinterpreted.
+
+Migration 18 also canonicalizes pre-release derived state that may have been
+projected under the historical parent-hash contract. When ledger parents
+exist, they all receive one shared new pending revision; partial projection
+staging is cleared and index generations become stale/inactive. Raw evidence,
+chunks, and embeddings remain preserved until ordinary projection maintenance
+replaces or reuses them, while pending-parent filtering excludes them
+immediately.
 
 Raw item/source `content_hash` remains provenance only. It is not part of the
 parent projection hash and a hash-only recalculation does not dirty semantic

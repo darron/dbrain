@@ -21,7 +21,7 @@ func identityHash(values ...string) string {
 }
 
 func parentHash(parent Parent) string {
-	values := []string{"parent", ProjectionVersion, strings.TrimSpace(parent.Kind), strings.TrimSpace(parent.SourceKey), strings.TrimSpace(parent.ContentHash), strings.TrimSpace(parent.Title), strings.TrimSpace(parent.SourceType), strings.TrimSpace(parent.Author)}
+	values := []string{"parent", ProjectionVersion, strings.TrimSpace(parent.Kind), strings.TrimSpace(parent.SourceKey), strings.TrimSpace(parent.Title), strings.TrimSpace(parent.SourceType), strings.TrimSpace(parent.Author)}
 	for _, section := range parent.Sections {
 		values = append(values, strings.TrimSpace(section.Key), strings.TrimSpace(section.Role), boolIdentity(section.Derived), strings.TrimSpace(section.Heading), textHash(section.Text))
 	}
