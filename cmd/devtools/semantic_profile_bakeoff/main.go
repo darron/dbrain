@@ -65,7 +65,11 @@ func run(ctx context.Context, args []string) error {
 	if *maxBytes != retrievalchunk.MaxUTF8Bytes {
 		return fmt.Errorf("--max-bytes must be %d for chunker %s", retrievalchunk.MaxUTF8Bytes, retrievalchunk.Version)
 	}
-	if refusesLiveProductionDB(*dbPath) {
+	production, err := refusesLiveProductionDB(*dbPath)
+	if err != nil {
+		return fmt.Errorf("resolve production database boundary: %w", err)
+	}
+	if production {
 		return fmt.Errorf("refusing live production XDG database %s; pass an explicit restored corpus copy", *dbPath)
 	}
 	dimensions, err := parseDimensions(*dimensionList)
@@ -78,17 +82,13 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("open explicit database read-only: %w", err)
 	}
 	defer func() { _ = st.Close() }()
-	parents, err := listAllParents(ctx, st)
-	if err != nil {
-		return err
-	}
-	report := report{Database: *dbPath, Model: *model, MaxBytes: *maxBytes, Parents: len(parents), ByteDistribution: map[string]int{"0-450": 0, "451-900": 0, "901-1350": 0, "1351-1800": 0}}
-	texts := make([]string, 0)
-	for _, parent := range parents {
+	report := report{Database: *dbPath, Model: *model, MaxBytes: *maxBytes, ByteDistribution: map[string]int{"0-450": 0, "451-900": 0, "901-1350": 0, "1351-1800": 0}}
+	if err := forEachParent(ctx, st, func(parent retrievalchunk.Parent) error {
 		projection, err := retrievalchunk.BuildProjection(parent, retrievalchunk.DefaultOptions())
 		if err != nil {
 			return fmt.Errorf("project %s %s: %w", parent.Kind, parent.SourceKey, err)
 		}
+		report.Parents++
 		report.UniqueChunks += len(projection.Chunks)
 		report.Occurrences += len(projection.Occurrences)
 		for _, chunk := range projection.Chunks {
@@ -97,8 +97,14 @@ func run(ctx context.Context, args []string) error {
 				report.OversizedWindows++
 			}
 			report.ByteDistribution[bucket(bytes)]++
-			texts = append(texts, chunk.Text)
 		}
+		return nil
+	}); err != nil {
+		_ = writeReport(*reportPath, report)
+		return err
+	}
+	if err := writeReport(*reportPath, report); err != nil {
+		return err
 	}
 	for _, dimensions := range dimensions {
 		result := profileResult{Dimensions: dimensions, Status: "ready"}
@@ -108,8 +114,12 @@ func run(ctx context.Context, args []string) error {
 			report.CandidateProfiles = append(report.CandidateProfiles, result)
 			continue
 		}
-		for _, text := range texts {
-			response, embedErr := provider.Embed(ctx, embedding.Request{Purpose: embedding.PurposeDocument, Texts: []string{text}})
+		batch := make([]string, 0, 64)
+		embedBatch := func() error {
+			if len(batch) == 0 {
+				return nil
+			}
+			response, embedErr := provider.Embed(ctx, embedding.Request{Purpose: embedding.PurposeDocument, Texts: batch})
 			if embedErr != nil {
 				if embedding.IsBlocked(embedErr) {
 					result.Status = "unsupported"
@@ -120,15 +130,46 @@ func run(ctx context.Context, args []string) error {
 				if embedding.IsBlocked(embedErr) {
 					report.ContextFailures++
 				}
-				break
+				return embedErr
 			}
-			if err := finiteL2(response.Vectors[0]); err != nil {
+			for _, vector := range response.Vectors {
+				if err := finiteL2(vector); err != nil {
+					result.Status, result.Error = "failed", err.Error()
+					return err
+				}
+			}
+			result.Vectors += len(response.Vectors)
+			batch = batch[:0]
+			return writeReport(*reportPath, report)
+		}
+		err = forEachParent(ctx, st, func(parent retrievalchunk.Parent) error {
+			projection, projectErr := retrievalchunk.BuildProjection(parent, retrievalchunk.DefaultOptions())
+			if projectErr != nil {
+				return projectErr
+			}
+			for _, chunk := range projection.Chunks {
+				batch = append(batch, chunk.Text)
+				if len(batch) == cap(batch) {
+					if err := embedBatch(); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		})
+		if err == nil {
+			err = embedBatch()
+		}
+		if err != nil {
+			_ = writeReport(*reportPath, report)
+			if result.Status == "ready" {
 				result.Status, result.Error = "failed", err.Error()
-				break
 			}
-			result.Vectors++
 		}
 		report.CandidateProfiles = append(report.CandidateProfiles, result)
+		if err := writeReport(*reportPath, report); err != nil {
+			return err
+		}
 	}
 	if err := writeReport(*reportPath, report); err != nil {
 		return err
@@ -144,18 +185,21 @@ func run(ctx context.Context, args []string) error {
 	return nil
 }
 
-func listAllParents(ctx context.Context, st *store.Store) ([]retrievalchunk.Parent, error) {
-	var result []retrievalchunk.Parent
+func forEachParent(ctx context.Context, st *store.Store, visit func(retrievalchunk.Parent) error) error {
 	after := ""
 	for {
 		page, err := st.ListRetrievalParents(ctx, after, 500)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if len(page) == 0 {
-			return result, nil
+			return nil
 		}
-		result = append(result, page...)
+		for _, parent := range page {
+			if err := visit(parent); err != nil {
+				return err
+			}
+		}
 		after = page[len(page)-1].SourceKey
 	}
 }
@@ -216,35 +260,55 @@ func verifyEmbedding(baseURL, model string, dimensions int, text string) error {
 	}
 	return finiteL2(response.Vectors[0])
 }
-func defaultProductionDBPath() string {
+func defaultProductionDBPath() (string, error) {
 	cfg, err := config.Load("")
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return cfg.DBPath
+	return cfg.DBPath, nil
 }
-func refusesLiveProductionDB(path string) bool {
-	live := defaultProductionDBPath()
-	if live == "" {
-		return false
+func refusesLiveProductionDB(path string) (bool, error) {
+	live, err := defaultProductionDBPath()
+	if err != nil {
+		return false, err
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return false
+		return false, err
 	}
 	expected, err := filepath.Abs(live)
 	if err != nil {
-		return false
+		return false, err
 	}
-	return absolute == expected
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return false, err
+	}
+	expectedResolved, err := filepath.EvalSymlinks(expected)
+	if err != nil {
+		return false, err
+	}
+	if resolved == expectedResolved {
+		return true, nil
+	}
+	a, err := os.Stat(resolved)
+	if err != nil {
+		return false, err
+	}
+	b, err := os.Stat(expectedResolved)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(a, b), nil
 }
 func writeReport(path string, value report) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write report: %w", err)
 	}
-	return nil
+	return os.Rename(tmp, path)
 }

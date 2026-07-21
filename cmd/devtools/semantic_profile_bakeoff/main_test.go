@@ -4,15 +4,31 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestBakeoffRefusesLiveProductionXDGDatabase(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	if !refusesLiveProductionDB(defaultProductionDBPath()) {
+	live, err := defaultProductionDBPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(live), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if refused, err := refusesLiveProductionDB(live); err != nil || !refused {
 		t.Fatal("live production XDG database must be refused")
 	}
-	if refusesLiveProductionDB(t.TempDir() + "/restored-brain.db") {
+	restored := filepath.Join(t.TempDir(), "restored-brain.db")
+	if err := os.WriteFile(restored, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if refused, err := refusesLiveProductionDB(restored); err != nil || refused {
 		t.Fatal("explicit restored corpus must remain allowed")
 	}
 }

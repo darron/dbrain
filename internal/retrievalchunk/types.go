@@ -9,7 +9,7 @@ const (
 const (
 	defaultTargetRunes  = 2400
 	defaultMaxRunes     = 3600
-	defaultOverlapRunes = 300
+	defaultOverlapRunes = 0
 )
 
 type Section struct {

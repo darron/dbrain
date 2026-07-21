@@ -21,12 +21,16 @@ func identityHash(values ...string) string {
 }
 
 func parentHash(parent Parent) string {
-	return identityHash("parent", ProjectionVersion, strings.TrimSpace(parent.Kind), strings.TrimSpace(parent.SourceKey), strings.TrimSpace(parent.ContentHash), strings.TrimSpace(parent.Title), strings.TrimSpace(parent.SourceType), strings.TrimSpace(parent.Author))
+	values := []string{"parent", ProjectionVersion, strings.TrimSpace(parent.Kind), strings.TrimSpace(parent.SourceKey), strings.TrimSpace(parent.ContentHash), strings.TrimSpace(parent.Title), strings.TrimSpace(parent.SourceType), strings.TrimSpace(parent.Author)}
+	for _, section := range parent.Sections {
+		values = append(values, strings.TrimSpace(section.Key), strings.TrimSpace(section.Role), boolIdentity(section.Derived), strings.TrimSpace(section.Heading), textHash(section.Text))
+	}
+	return identityHash(values...)
 }
 
 func sectionKey(parent Parent, section Section) string {
 	if key := strings.TrimSpace(section.Key); key != "" {
-		return key
+		return identityHash("section", ProjectionVersion, strings.TrimSpace(parent.Kind), strings.TrimSpace(parent.SourceKey), key)
 	}
 	return identityHash("section", ProjectionVersion, strings.TrimSpace(parent.Kind), strings.TrimSpace(parent.SourceKey), strings.TrimSpace(section.Role), boolIdentity(section.Derived), strings.TrimSpace(section.Heading))
 }

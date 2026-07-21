@@ -58,6 +58,36 @@ func TestBuildProjectionV2RejectsDuplicateSectionKeys(t *testing.T) {
 	}
 }
 
+func TestProjectionV2NamespacesChunksByStableParentIdentity(t *testing.T) {
+	build := func(source string) Projection {
+		p, err := BuildProjection(Parent{Kind: "source", SourceKey: source, Sections: []Section{{Key: "body", Role: "raw", Heading: "Body", Text: "identical evidence"}}}, DefaultOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	if build("src:one").Chunks[0].ID == build("src:two").Chunks[0].ID {
+		t.Fatal("cross-parent chunk identities collided")
+	}
+}
+
+func TestProjectionV2ParentHashIncludesEveryProjectedSectionField(t *testing.T) {
+	base := Parent{Kind: "source", SourceKey: "src:hash", ContentHash: "unchanged", Sections: []Section{{Key: "body", Role: "raw", Heading: "One", Text: "evidence"}}}
+	one, err := BuildProjection(base, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := base
+	changed.Sections[0].Derived = true
+	two, err := BuildProjection(changed, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.ParentHash == two.ParentHash {
+		t.Fatal("derived change did not affect parent hash")
+	}
+}
+
 func TestChunkerV3EnforcesUTF8ByteCeilingAndRuneOffsets(t *testing.T) {
 	text := "  " + strings.Repeat("🧠漢字é ", 800) + "  "
 	projection, err := BuildProjection(Parent{Kind: "item", SourceKey: "item:utf8-v3", Sections: []Section{{Key: "body", Role: "raw", Text: text}}}, DefaultOptions())
@@ -80,19 +110,36 @@ func TestChunkerV3EnforcesUTF8ByteCeilingAndRuneOffsets(t *testing.T) {
 }
 
 func TestChunkerV3ReusesMovedWindowsAndLimitsDistantEditChurn(t *testing.T) {
-	base := synthetic26512WindowFixture()
+	sections := synthetic26512WindowFixture()
+	fixture, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:fixture", Sections: sections}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Chunks) != 26_512 || len(fixture.Occurrences) != 26_512 {
+		t.Fatalf("fixture windows chunks=%d occurrences=%d, want 26512", len(fixture.Chunks), len(fixture.Occurrences))
+	}
+	base := syntheticUnstructuredFixture()
 	before, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: base}}}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	afterText := strings.Replace(base, "window-001326", "window-X01326", 1)
+	editAt := len(base) / 2
+	afterText := base[:editAt] + "X" + base[editAt:]
 	after, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: afterText}}}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	changed := symmetricChunkIDs(before.Chunks, after.Chunks)
 	if changed > 8 {
-		t.Fatalf("distant one-byte edit changed %d chunk identities, want <= 8", changed)
+		t.Fatalf("unstructured insertion changed %d chunk identities, want <= 8", changed)
+	}
+	deleted := afterText[:editAt] + afterText[editAt+1:]
+	afterDeletion, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: deleted}}}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed := symmetricChunkIDs(before.Chunks, afterDeletion.Chunks); changed > 8 {
+		t.Fatalf("unstructured deletion changed %d chunk identities, want <= 8", changed)
 	}
 	// Moving an unchanged paragraph changes its occurrence, not its chunk identity.
 	movable := strings.Repeat("movable semantic evidence ", 60)
@@ -238,7 +285,7 @@ func TestBuildUsesTargetHardMaximumAndBoundedOverlap(t *testing.T) {
 
 func TestBuildUsesRuneOffsetsForUTF8(t *testing.T) {
 	text := strings.Repeat("é🧠漢字 ", 900)
-	opts := Options{TargetRunes: 120, MaxRunes: 160, OverlapRunes: 20}
+	opts := Options{TargetRunes: 120, MaxRunes: 160, OverlapRunes: 0}
 	chunks, err := Build(Parent{
 		Kind: "item", SourceKey: "x:utf8", ContentHash: "utf8-v1",
 		Sections: []Section{{Role: "raw", Text: text}},
@@ -449,12 +496,12 @@ func TestBuildStableIDsUseAllIdentityFields(t *testing.T) {
 
 func TestBuildRejectsOverlapAboveVersionMaximum(t *testing.T) {
 	opts := DefaultOptions()
-	opts.OverlapRunes = 301
+	opts.OverlapRunes = 1
 	_, err := Build(Parent{
 		Kind: "source", SourceKey: "src:overlap", ContentHash: "overlap-v1",
 		Sections: []Section{{Role: "raw", Text: "evidence"}},
 	}, opts)
 	if err == nil {
-		t.Fatal("expected overlap above 300 runes to be rejected")
+		t.Fatal("expected nonzero overlap to be rejected by v3")
 	}
 }

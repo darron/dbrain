@@ -43,8 +43,8 @@ func BuildProjection(parent Parent, opts Options) (Projection, error) {
 	if opts.TargetRunes <= 0 || opts.MaxRunes < opts.TargetRunes {
 		return Projection{}, fmt.Errorf("invalid chunk sizes: target=%d max=%d", opts.TargetRunes, opts.MaxRunes)
 	}
-	if opts.OverlapRunes < 0 || opts.OverlapRunes > defaultOverlapRunes || opts.OverlapRunes > opts.TargetRunes {
-		return Projection{}, fmt.Errorf("invalid overlap: %d", opts.OverlapRunes)
+	if opts.OverlapRunes != 0 {
+		return Projection{}, fmt.Errorf("retrieval chunker v3 requires zero overlap, got %d", opts.OverlapRunes)
 	}
 
 	projection := Projection{ParentHash: parentHash(parent), Chunks: make([]Chunk, 0), Occurrences: make([]Occurrence, 0)}
@@ -174,14 +174,12 @@ func whitespaceAt(text []rune, start, at int) bool {
 // single 1,800-byte ceiling.
 func rollingBoundary(text []rune, start, target, hard int) int {
 	best, distance := 0, int(^uint(0)>>1)
-	var rolling uint64
-	from := max(start, target-256)
-	for i := from; i < hard; i++ {
-		rolling = rolling*1099511628211 ^ uint64(text[i])
-		if i-start < 16 || rolling&0x1f != 0 {
+	const window = 32
+	from := max(start+window, target-256)
+	for at := from; at <= hard; at++ {
+		if fixedWindowFingerprint(text, at, window)&0x1f != 0 {
 			continue
 		}
-		at := i + 1
 		d := at - target
 		if d < 0 {
 			d = -d
@@ -191,6 +189,17 @@ func rollingBoundary(text []rune, start, target, hard int) int {
 		}
 	}
 	return best
+}
+
+// fixedWindowFingerprint is deliberately calculated from the preceding fixed
+// window only. Once that window is beyond an edit, its state is independent of
+// the prior chunk start and enables content-defined re-synchronization.
+func fixedWindowFingerprint(text []rune, at, window int) uint64 {
+	var value uint64 = 1469598103934665603
+	for _, r := range text[at-window : at] {
+		value = (value ^ uint64(r)) * 1099511628211
+	}
+	return value
 }
 
 func nextByteSafe(text []rune, start, limit int) int {
