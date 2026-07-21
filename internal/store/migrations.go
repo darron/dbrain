@@ -1,20 +1,24 @@
 package store
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"time"
 )
 
 const (
-	currentSchemaVersion            = 15
-	auditProvenanceMigrationVersion = 12
-	auditProvenanceMigrationName    = "audit_provenance_v1"
-	retrievalMigrationVersion       = 13
-	retrievalTriggerRepairVersion   = 14
-	retrievalTriggerRepairName      = "retrieval_profile_invariant_triggers_repair"
-	retrievalChunkProvenanceVersion = 15
-	retrievalChunkProvenanceName    = "retrieval_chunk_projection_provenance"
+	currentSchemaVersion               = 16
+	auditProvenanceMigrationVersion    = 12
+	auditProvenanceMigrationName       = "audit_provenance_v1"
+	retrievalMigrationVersion          = 13
+	retrievalTriggerRepairVersion      = 14
+	retrievalTriggerRepairName         = "retrieval_profile_invariant_triggers_repair"
+	retrievalChunkProvenanceVersion    = 15
+	retrievalChunkProvenanceName       = "retrieval_chunk_projection_provenance"
+	semanticFoundationMigrationVersion = 16
+	semanticFoundationMigrationName    = "retrieval_semantic_foundation_v2"
 )
 
 type schemaMigration struct {
@@ -156,6 +160,21 @@ var schemaMigrations = []schemaMigration{
 			return s.ensureRetrievalTables()
 		},
 	},
+	{
+		Version: semanticFoundationMigrationVersion,
+		Name:    semanticFoundationMigrationName,
+		Run: func(s *Store) error {
+			return s.ensureSemanticFoundationRetrievalSchema()
+		},
+	},
+}
+
+func newRetrievalDatabaseID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate retrieval database id: %w", err)
+	}
+	return hex.EncodeToString(random[:]), nil
 }
 
 func (s *Store) migrate(reporter MigrationReporter) error {

@@ -353,6 +353,62 @@ func TestOpenReadOnlyPreRetrievalSchemaDoesNotWrite(t *testing.T) {
 	}
 }
 
+func TestOpenReadOnlyPreSemanticFoundationDoesNotWrite(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "brain.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open pre-semantic-foundation database: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE items (id INTEGER PRIMARY KEY, source_key TEXT NOT NULL);
+		CREATE TABLE sources (id INTEGER PRIMARY KEY, source_key TEXT NOT NULL);
+		CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);
+		PRAGMA user_version = 15`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create pre-semantic-foundation schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close pre-semantic-foundation database: %v", err)
+	}
+
+	ro, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("open pre-semantic-foundation database read-only: %v", err)
+	}
+	if err := ro.Close(); err != nil {
+		t.Fatalf("close read-only database: %v", err)
+	}
+
+	db, err = sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("reopen pre-semantic-foundation database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, table := range []string{
+		"retrieval_state",
+		"retrieval_parent_projections",
+		"retrieval_chunk_occurrences",
+		"retrieval_projection_staging",
+		"retrieval_embedding_profiles",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+			t.Fatalf("look up %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("read-only open created %s", table)
+		}
+	}
+	var userVersion int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
+		t.Fatalf("read user version: %v", err)
+	}
+	if userVersion != 15 {
+		t.Fatalf("user version = %d, want 15", userVersion)
+	}
+}
+
 func TestPurgeItemIndexedContentDeletesRetrievalState(t *testing.T) {
 	t.Parallel()
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))

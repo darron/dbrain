@@ -50,6 +50,42 @@ var dbrainCoreSchema = []schemaIdentityTable{
 	},
 }
 
+var dbrainSemanticFoundationSchema = []schemaIdentityTable{
+	{
+		name: "retrieval_state",
+		columns: []string{
+			"singleton", "database_id", "projection_work_revision", "purge_epoch", "updated_at",
+		},
+	},
+	{
+		name: "retrieval_parent_projections",
+		columns: []string{
+			"parent_kind", "parent_source_key", "projection_hash", "projection_version", "chunker_version",
+			"status", "chunk_count", "reason", "dirty_at", "dirty_revision", "projected_revision", "projected_at", "updated_at",
+		},
+	},
+	{
+		name:    "retrieval_chunks",
+		columns: []string{"section_key", "heading_hash", "derived"},
+	},
+	{
+		name:    "retrieval_embeddings",
+		columns: []string{"revision", "vector_hash"},
+	},
+	{
+		name:    "retrieval_chunk_occurrences",
+		columns: []string{"parent_kind", "parent_source_key", "chunk_id", "section_key", "start_char", "end_char"},
+	},
+	{
+		name:    "retrieval_projection_staging",
+		columns: []string{"work_id", "dirty_revision", "parent_kind", "parent_source_key", "section_key", "next_boundary"},
+	},
+	{
+		name:    "retrieval_embedding_profiles",
+		columns: []string{"profile_id", "latest_revision", "purge_epoch", "active_generation_id", "active_snapshot_revision", "active_indexed_count", "l0_ready_count", "active_tombstone_count", "updated_at"},
+	},
+}
+
 var compatibleSchemaMigrationNames = map[int]map[string]struct{}{
 	6: {
 		"source_summary_failure_timestamp": {},
@@ -73,9 +109,26 @@ func ValidateRestorableDatabase(ctx context.Context, path string) error {
 }
 
 func inspectDbrainCoreSchema(st *Store) (int, int, error) {
+	requiredSchema := dbrainCoreSchema
+	hasMigrationTable, err := st.tableExists("schema_migrations")
+	if err != nil {
+		return 0, 0, fmt.Errorf("inspect dbrain migration table: %w", err)
+	}
+	if hasMigrationTable {
+		var found int
+		err := st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticFoundationMigrationVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainSemanticFoundationSchema...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic foundation migration: %w", err)
+		}
+	}
+
 	missingTables, missingColumns := 0, 0
 	var firstMissing error
-	for _, required := range dbrainCoreSchema {
+	for _, required := range requiredSchema {
 		exists, err := st.tableExists(required.name)
 		if err != nil {
 			return missingTables, missingColumns, fmt.Errorf("inspect dbrain core schema table %s: %w", required.name, err)

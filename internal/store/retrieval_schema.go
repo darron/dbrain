@@ -1,6 +1,26 @@
 package store
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+	"time"
+)
+
+type RetrievalProjectionStatus string
+
+const (
+	RetrievalProjectionPending RetrievalProjectionStatus = "pending"
+	RetrievalProjectionCurrent RetrievalProjectionStatus = "current"
+	RetrievalProjectionEmpty   RetrievalProjectionStatus = "empty"
+	RetrievalProjectionBlocked RetrievalProjectionStatus = "blocked"
+	RetrievalProjectionError   RetrievalProjectionStatus = "error"
+)
+
+type RetrievalEmbeddingProfileRow struct {
+	ProfileID, ActiveGenerationID                          string
+	LatestRevision, PurgeEpoch, ActiveSnapshotRevision     int64
+	ActiveIndexedCount, L0ReadyCount, ActiveTombstoneCount int
+}
 
 func (s *Store) ensureRetrievalTables() error {
 	statements := []string{
@@ -150,6 +170,198 @@ func (s *Store) ensureRetrievalTables() error {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("ensure retrieval schema: %w", err)
 		}
+	}
+	return nil
+}
+
+func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS retrieval_state (
+			singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+			database_id TEXT NOT NULL,
+			projection_work_revision INTEGER NOT NULL DEFAULT 0,
+			purge_epoch INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_parent_projections (
+			parent_kind TEXT NOT NULL,
+			parent_source_key TEXT NOT NULL,
+			projection_hash TEXT NOT NULL DEFAULT '',
+			projection_version TEXT NOT NULL DEFAULT '',
+			chunker_version TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			chunk_count INTEGER NOT NULL DEFAULT 0,
+			reason TEXT NOT NULL DEFAULT '',
+			dirty_at TEXT NOT NULL DEFAULT '',
+			dirty_revision INTEGER NOT NULL DEFAULT 0,
+			projected_revision INTEGER NOT NULL DEFAULT 0,
+			projected_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY(parent_kind, parent_source_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_chunk_occurrences (
+			parent_kind TEXT NOT NULL,
+			parent_source_key TEXT NOT NULL,
+			chunk_id TEXT NOT NULL,
+			section_key TEXT NOT NULL,
+			start_char INTEGER NOT NULL,
+			end_char INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY(chunk_id) REFERENCES retrieval_chunks(chunk_id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_projection_staging (
+			work_id TEXT NOT NULL,
+			dirty_revision INTEGER NOT NULL,
+			parent_kind TEXT NOT NULL,
+			parent_source_key TEXT NOT NULL,
+			projection_hash TEXT NOT NULL DEFAULT '',
+			section_key TEXT NOT NULL DEFAULT '',
+			next_boundary INTEGER NOT NULL DEFAULT 0,
+			chunk_id TEXT NOT NULL DEFAULT '',
+			chunk_json TEXT NOT NULL DEFAULT '',
+			occurrence_json TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_embedding_profiles (
+			profile_id TEXT PRIMARY KEY,
+			latest_revision INTEGER NOT NULL DEFAULT 0,
+			purge_epoch INTEGER NOT NULL DEFAULT 0,
+			active_generation_id TEXT NOT NULL DEFAULT '',
+			active_snapshot_revision INTEGER NOT NULL DEFAULT 0,
+			active_indexed_count INTEGER NOT NULL DEFAULT 0,
+			l0_ready_count INTEGER NOT NULL DEFAULT 0,
+			active_tombstone_count INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL
+		)`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.Exec(statement); err != nil {
+			return fmt.Errorf("ensure semantic retrieval foundation schema: %w", err)
+		}
+	}
+	if err := s.ensureColumns("retrieval_state", []columnDefinition{
+		{Name: "projection_work_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "purge_epoch", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval state: %w", err)
+	}
+	if err := s.ensureColumns("retrieval_parent_projections", []columnDefinition{
+		{Name: "projection_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "projection_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "chunker_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "status", Definition: "TEXT NOT NULL DEFAULT 'pending'"},
+		{Name: "chunk_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "reason", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "dirty_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "dirty_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "projected_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "projected_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "updated_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval parent projections: %w", err)
+	}
+	if err := s.ensureColumns("retrieval_chunks", []columnDefinition{
+		{Name: "section_key", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "heading_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "derived", Definition: "INTEGER NOT NULL DEFAULT 0"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval chunks semantic identity: %w", err)
+	}
+	if err := s.ensureColumns("retrieval_embeddings", []columnDefinition{
+		{Name: "revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "vector_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval embedding revisions: %w", err)
+	}
+	for _, statement := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_chunks_v3_identity_unique
+			ON retrieval_chunks(parent_kind, parent_source_key, section_key, evidence_role, derived, heading_hash, chunk_text_hash)
+			WHERE chunker_version = 'retrieval-chunker-v3'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_chunk_occurrences_unique
+			ON retrieval_chunk_occurrences(parent_kind, parent_source_key, chunk_id, section_key, start_char, end_char)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_projection_staging_work_unique
+			ON retrieval_projection_staging(work_id, dirty_revision, section_key, next_boundary, chunk_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_parent_projections_pending
+			ON retrieval_parent_projections(status, dirty_revision, parent_kind, parent_source_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_chunk_occurrences_parent
+			ON retrieval_chunk_occurrences(parent_kind, parent_source_key, section_key, start_char)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_projection_staging_parent
+			ON retrieval_projection_staging(parent_kind, parent_source_key, dirty_revision, work_id)`,
+	} {
+		if _, err := s.db.Exec(statement); err != nil {
+			return fmt.Errorf("ensure semantic retrieval foundation index: %w", err)
+		}
+	}
+	return s.seedSemanticFoundationRetrievalParents()
+}
+
+func (s *Store) seedSemanticFoundationRetrievalParents() error {
+	const eligibleParents = `
+		SELECT 'item' AS parent_kind, source_key AS parent_source_key
+		FROM items
+		WHERE trim(note_path) != ''
+		UNION ALL
+		SELECT 'source' AS parent_kind, source_key AS parent_source_key
+		FROM sources
+		WHERE trim(note_path) != ''`
+
+	var databaseID string
+	err := s.db.QueryRow(`SELECT database_id FROM retrieval_state WHERE singleton = 1`).Scan(&databaseID)
+	switch {
+	case err == sql.ErrNoRows:
+		generatedID, generateErr := newRetrievalDatabaseID()
+		if generateErr != nil {
+			return generateErr
+		}
+		databaseID = generatedID
+	case err != nil:
+		return fmt.Errorf("read retrieval database identity: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(`
+		INSERT INTO retrieval_state (singleton, database_id, projection_work_revision, purge_epoch, updated_at)
+		VALUES (1, ?, 0, 0, ?)
+		ON CONFLICT(singleton) DO UPDATE SET
+			database_id = CASE WHEN retrieval_state.database_id = '' THEN excluded.database_id ELSE retrieval_state.database_id END,
+			updated_at = CASE WHEN retrieval_state.updated_at = '' THEN excluded.updated_at ELSE retrieval_state.updated_at END`, databaseID, now); err != nil {
+		return fmt.Errorf("initialize retrieval state: %w", err)
+	}
+
+	var needsSeed bool
+	if err := s.db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM (` + eligibleParents + `) eligible
+			LEFT JOIN retrieval_parent_projections parent
+				ON parent.parent_kind = eligible.parent_kind
+				AND parent.parent_source_key = eligible.parent_source_key
+			WHERE parent.parent_source_key IS NULL
+		)`).Scan(&needsSeed); err != nil {
+		return fmt.Errorf("check retrieval parent migration seed: %w", err)
+	}
+	if !needsSeed {
+		return nil
+	}
+	if _, err := s.db.Exec(`UPDATE retrieval_state
+		SET projection_work_revision = projection_work_revision + 1, updated_at = ?
+		WHERE singleton = 1`, now); err != nil {
+		return fmt.Errorf("allocate retrieval parent migration revision: %w", err)
+	}
+	var revision int64
+	if err := s.db.QueryRow(`SELECT projection_work_revision FROM retrieval_state WHERE singleton = 1`).Scan(&revision); err != nil {
+		return fmt.Errorf("read retrieval parent migration revision: %w", err)
+	}
+	if _, err := s.db.Exec(`
+		INSERT OR IGNORE INTO retrieval_parent_projections (
+			parent_kind, parent_source_key, projection_version, chunker_version,
+			status, dirty_at, dirty_revision, updated_at
+		)
+		SELECT parent_kind, parent_source_key, 'retrieval-projection-v2', 'retrieval-chunker-v3', 'pending', ?, ?, ?
+		FROM (`+eligibleParents+`)`, now, revision, now); err != nil {
+		return fmt.Errorf("seed retrieval parent projections: %w", err)
 	}
 	return nil
 }

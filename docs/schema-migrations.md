@@ -39,6 +39,19 @@ Current migration history:
 | 1       | `current_schema_baseline`        | Adopt the checked-in schema that existed when migrations were introduced. |
 | 2       | `media_download_retry_state`     | Add/backfill media download retry state for errored media assets. |
 | 3       | `item_enrichments_current_state` | Add/backfill current item enrichment state for summaries, OCR, and X media transcripts. |
+| 4       | `x_article_canonical_i_article_urls` | Backfill canonical URLs for X article references. |
+| 5       | `feed_ingestion_tables` | Add feed-ingestion state tables. |
+| 6       | `auth_user_approvals` | Add authenticated-user approval state. |
+| 7       | `mcp_bearer_tokens` | Add MCP bearer-token state. |
+| 8       | `auth_user_approvals_repair` | Repair authenticated-user approval state. |
+| 9       | `public_chat_shares` | Add private public-chat-share records. |
+| 10      | `feed_parse_error_retry_repair` | Repair retryable feed parse errors. |
+| 11      | `review_event_indexes` | Add review-event indexes. |
+| 12      | `audit_provenance_v1` | Add and backfill audit provenance for enrichments. |
+| 13      | `retrieval_hybrid_storage_v1` | Add local hybrid retrieval chunks, embeddings, and generation state. |
+| 14      | `retrieval_profile_invariant_triggers_repair` | Repair retrieval embedding profile invariant triggers. |
+| 15      | `retrieval_chunk_projection_provenance` | Persist retrieval chunk projection provenance. |
+| 16      | `retrieval_semantic_foundation_v2` | Add the v2 semantic projection ledger, occurrence and staging tables, profile aggregates, stable database identity, and revision columns. Existing v2 chunks and embeddings remain in place for explicit v3 projection/embedding replacement. |
 
 Version 1 is the adoption baseline, not a permanent "current schema" label.
 The current schema version is the highest registered migration version.
