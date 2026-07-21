@@ -2,13 +2,42 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/darron/dbrain/internal/retrievalchunk"
 )
+
+func TestProjectionDirtyTriggerV17HistoricalFingerprints(t *testing.T) {
+	// These hashes freeze migration 17's normalized trigger SQL even though its
+	// definitions still share construction helpers with the current migration.
+	// A future helper change must fork the historical definitions instead of
+	// silently changing schema identity for databases that already applied v17.
+	want := map[string]string{
+		"trg_retrieval_items_dirty_insert":            "f7c4df8dbe8886a56ca20dd8824c8992d9d3ab8e6d5131e29a9d4917818ae774",
+		"trg_retrieval_items_dirty_update":            "b00fd79c061d52400e746cc3dcc2c9cd0fb79dca5b7344312b75fa940c1d2ca5",
+		"trg_retrieval_items_dirty_delete":            "24d42c0570e9b0b70baa0434c6202034d58ef6da23488eb2ca9df354e491b417",
+		"trg_retrieval_sources_dirty_insert":          "2a636afe397f8f98a6e58e5c9ba3fa351f91540baf345fdd331933a6b00ec721",
+		"trg_retrieval_sources_dirty_update":          "da029ceab159800f0bf9584415afc52af8e3c30e73ac30eec2f0ede480825cf6",
+		"trg_retrieval_sources_dirty_delete":          "bfeafe88a5adbba6e3740bbc189afa9a6609f8eefba7443847f980d372f2ba2d",
+		"trg_retrieval_item_enrichments_dirty_insert": "450b7604d4c92bc1cd8bfc2717de57573855f1cdc2c9b814b5dc2f201c914522",
+		"trg_retrieval_item_enrichments_dirty_update": "13f06bba5a28a3b59a7e4c295bcc06f2ac8b13cd0b222860306615f82c5c52f6",
+		"trg_retrieval_item_enrichments_dirty_delete": "f7e2102cae4c5ce55c7545a64b23f83f03e186a1fa88f2d06f90701d4d26d368",
+	}
+	if len(semanticProjectionDirtyTriggersV17) != len(want) {
+		t.Fatalf("historical v17 trigger count=%d want %d", len(semanticProjectionDirtyTriggersV17), len(want))
+	}
+	for _, trigger := range semanticProjectionDirtyTriggersV17 {
+		got := fmt.Sprintf("%x", sha256.Sum256([]byte(normalizeSQLiteTriggerSQL(trigger.sql))))
+		if want[trigger.name] != got {
+			t.Errorf("historical v17 trigger %s fingerprint=%s", trigger.name, got)
+		}
+	}
+}
 
 func TestProjectionDirtyTriggerV18RepairsGenuineV17ContentHashTriggers(t *testing.T) {
 	path, v17Revision := projectionDirtyTriggerV17DatabaseForContentHashTest(t)
@@ -89,6 +118,71 @@ func TestProjectionDirtyTriggerV18RepairsGenuineV17ContentHashTriggers(t *testin
 	}
 	if got := projectionRevisionForTest(t, st); got != before {
 		t.Fatalf("v18 content-hash-only update revision=%d want unchanged %d", got, before)
+	}
+}
+
+func TestProjectionDirtyTriggerV18BackfillsParentCreatedWhileTriggersAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close initial store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open database directly: %v", err)
+	}
+	for _, trigger := range semanticProjectionDirtyTriggers {
+		if _, err := db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			_ = db.Close()
+			t.Fatalf("drop projection dirty trigger %s: %v", trigger.name, err)
+		}
+	}
+	if _, err := db.Exec(`
+		DELETE FROM schema_migrations WHERE version > 16;
+		PRAGMA user_version = 16`); err != nil {
+		_ = db.Close()
+		t.Fatalf("stamp database at migration 16: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`
+		INSERT INTO sources (
+			source_key, canonical_url, normalized_url, source_type, title,
+			extracted_text, content_hash, note_path, created_at, updated_at
+		) VALUES ('source:trigger-gap', 'https://example.com/trigger-gap',
+			'https://example.com/trigger-gap', 'article', 'gap', 'body',
+			'raw-hash', 'sources/trigger-gap.md', ?, ?)`, now, now); err != nil {
+		_ = db.Close()
+		t.Fatalf("insert source while projection triggers are absent: %v", err)
+	}
+	var before int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM retrieval_parent_projections
+		WHERE parent_kind='source' AND parent_source_key='source:trigger-gap'`).Scan(&before); err != nil {
+		_ = db.Close()
+		t.Fatalf("count pre-repair projection ledger rows: %v", err)
+	}
+	if before != 0 {
+		_ = db.Close()
+		t.Fatalf("pre-repair projection ledger rows=%d want 0", before)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close migration-16 database: %v", err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	var status string
+	var dirtyRevision int64
+	if err := st.db.QueryRow(`
+		SELECT status, dirty_revision
+		FROM retrieval_parent_projections
+		WHERE parent_kind='source' AND parent_source_key='source:trigger-gap'`).Scan(
+		&status, &dirtyRevision); err != nil {
+		t.Fatalf("read repaired trigger-gap projection ledger: %v", err)
+	}
+	if status != string(RetrievalProjectionPending) || dirtyRevision <= 0 {
+		t.Fatalf("repaired trigger-gap projection state=%s dirty=%d want pending positive revision", status, dirtyRevision)
 	}
 }
 

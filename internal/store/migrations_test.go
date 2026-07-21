@@ -298,8 +298,9 @@ func TestSemanticFoundationMigrationSeedsEveryEligibleParentPending(t *testing.T
 		t.Fatalf("iterate seeded retrieval parents: %v", err)
 	}
 	want := []parentState{
-		{kind: "item", key: "item:eligible", status: "pending", dirty: 1, projected: 0},
-		{kind: "source", key: "source:eligible", status: "pending", dirty: 1, projected: 0},
+		{kind: "item", key: "item:eligible", status: "pending", dirty: 2, projected: 0},
+		{kind: "item", key: "item:legacy", status: "pending", dirty: 2, projected: 0},
+		{kind: "source", key: "source:eligible", status: "pending", dirty: 2, projected: 0},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("seeded retrieval parents = %#v, want %#v", got, want)
@@ -308,8 +309,8 @@ func TestSemanticFoundationMigrationSeedsEveryEligibleParentPending(t *testing.T
 	if err := st.db.QueryRow(`SELECT projection_work_revision FROM retrieval_state WHERE singleton = 1`).Scan(&workRevision); err != nil {
 		t.Fatalf("read seeded work revision: %v", err)
 	}
-	if workRevision != 1 {
-		t.Fatalf("seeded work revision = %d, want 1", workRevision)
+	if workRevision != 2 {
+		t.Fatalf("seeded work revision = %d, want 2 (foundation seed plus provenance repair)", workRevision)
 	}
 }
 

@@ -126,15 +126,28 @@ func (s *Store) repairSemanticProjectionDirtyTriggerProvenance() error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var parentCount int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM retrieval_parent_projections`).Scan(&parentCount); err != nil {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Migration 17's triggers may have been absent or non-canonical for some
+	// interval before this repair is applied. Build the repair set from both the
+	// ledger and authoritative/derived state so parents created during that gap
+	// cannot remain invisible forever. Staging is included before it is cleared
+	// so an interrupted projection for an otherwise deleted parent is retired by
+	// the same cleanup pass.
+	const repairParents = `
+		SELECT parent_kind, parent_source_key FROM retrieval_parent_projections
+		UNION
+		SELECT 'item', source_key FROM items WHERE trim(note_path) != ''
+		UNION
+		SELECT 'source', source_key FROM sources WHERE trim(note_path) != ''
+		UNION
+		SELECT parent_kind, parent_source_key FROM retrieval_chunks
+		UNION
+		SELECT parent_kind, parent_source_key FROM retrieval_projection_staging`
+	var repairParentCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM (` + repairParents + `)`).Scan(&repairParentCount); err != nil {
 		return fmt.Errorf("count semantic parents for provenance repair: %w", err)
 	}
-	if _, err := tx.Exec(`DELETE FROM retrieval_projection_staging`); err != nil {
-		return fmt.Errorf("clear semantic projection staging for provenance repair: %w", err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if parentCount > 0 {
+	if repairParentCount > 0 {
 		if _, err := tx.Exec(`
 			UPDATE retrieval_state
 			SET projection_work_revision=projection_work_revision+1, updated_at=?
@@ -146,11 +159,23 @@ func (s *Store) repairSemanticProjectionDirtyTriggerProvenance() error {
 			return fmt.Errorf("read semantic projection provenance repair revision: %w", err)
 		}
 		if _, err := tx.Exec(`
+			INSERT OR IGNORE INTO retrieval_parent_projections (
+				parent_kind, parent_source_key, projection_version, chunker_version,
+				status, dirty_at, dirty_revision, updated_at
+			)
+			SELECT parent_kind, parent_source_key, ?, ?, 'pending', ?, ?, ?
+			FROM (`+repairParents+`)`, retrievalchunk.ProjectionVersion, retrievalchunk.Version, now, revision, now); err != nil {
+			return fmt.Errorf("backfill semantic parents for provenance repair: %w", err)
+		}
+		if _, err := tx.Exec(`
 			UPDATE retrieval_parent_projections
 			SET status='pending', reason='', dirty_at=?, dirty_revision=?, updated_at=?`,
 			now, revision, now); err != nil {
 			return fmt.Errorf("dirty semantic parents for provenance repair: %w", err)
 		}
+	}
+	if _, err := tx.Exec(`DELETE FROM retrieval_projection_staging`); err != nil {
+		return fmt.Errorf("clear semantic projection staging for provenance repair: %w", err)
 	}
 	if _, err := tx.Exec(`
 		UPDATE retrieval_index_generations
