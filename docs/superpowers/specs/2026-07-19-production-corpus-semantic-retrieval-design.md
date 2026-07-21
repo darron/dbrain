@@ -386,17 +386,30 @@ A parent estimated to produce more than 1,000 chunks is a giant projection
 job. `retrieval_projection_staging` stores its section-local chunks in durable,
 non-searchable batches keyed by a work ID. The associated checkpoint records
 section key and next window boundary, so `max-duration` can stop and resume
-without reprocessing the parent from the beginning. Only a complete staged
-projection enters the atomic parent apply transaction above. Abandoned staging
-belongs to the derived-state cleanup and purge contracts and is never included
-by retrieval queries.
+without reprocessing the parent from the beginning. The chunker prepares each
+section's content-defined boundary plan once and stores the opaque, versioned
+seek state in a reserved metadata row. That row is not a chunk or occurrence,
+is excluded from progress JSON and staging counts, and never enters promotion
+or search. Resume validates the plan's projection/chunker versions, parent
+hash, and options before using it.
 
-The first release has a hard limit of 50,000 staged chunks for one parent. A
-larger result becomes terminal `blocked` with reason
+Only a complete staged projection enters the atomic parent apply transaction
+above. Promotion independently streams the current authoritative parent and
+requires exact canonical equality with every staged chunk and occurrence;
+caller-supplied completion state is not accepted as proof. Missing, fabricated,
+altered, or extra staged rows fail closed. Abandoned staging belongs to the
+derived-state cleanup and purge contracts and is never included by retrieval
+queries.
+
+Staging begins when a batch reaches any of 1,000 unique chunks, 1,000
+occurrences, or 4 MiB of staged JSON. The first release hard-limits one parent
+to 50,000 unique chunks, 200,000 occurrences, and 128 MiB of staged
+chunk/occurrence JSON. Exceeding any limit becomes terminal `blocked` with reason
 `projection_too_large_for_flat_retrieval`; partial staged chunks never become
-searchable. Raising the limit or adding a hierarchical representation requires
-a new measured design. The current 26,512-chunk production outlier remains
-inside the explicit bound.
+searchable, including after restart from a previously complete checkpoint.
+Raising a limit or adding a hierarchical representation requires a new measured
+design. The current 26,512-window production outlier remains inside the explicit
+bounds.
 
 ## Chunker V3
 

@@ -29,7 +29,10 @@
 - Stable chunk identity excludes absolute offsets, whole-parent hashes, whole-section hashes, and occurrence number.
 - Identical embedded windows within one parent section share one chunk/embedding; every location is retained in `retrieval_chunk_occurrences`.
 - One-byte edits at least one hard ceiling from a section edge may change no more than eight chunk identities.
-- Giant staging starts above 1,000 chunks and hard-blocks above 50,000 chunks with reason `projection_too_large_for_flat_retrieval`.
+- Giant staging starts when one batch reaches 1,000 unique chunks, 1,000
+  occurrences, or 4 MiB of staged JSON. One parent hard-blocks above 50,000
+  unique chunks, 200,000 occurrences, or 128 MiB of staged chunk/occurrence
+  JSON with reason `projection_too_large_for_flat_retrieval`.
 - Embedding provider requests and persistence batches never exceed 5,000 rows. One persistence batch gets one monotonic profile revision and commits atomically.
 - Normal embedding work never scans the full ready profile and final progress output is constant-memory.
 - `ready` requires the approved 99.9/0.1 coverage gates and, eventually, a valid root. `catching_up` permits at most 500 dirty parents, 2,500 estimated chunks, 30 minutes oldest dirtiness, 10,000 L0 rows, and two percent tombstones.
@@ -446,15 +449,20 @@ git commit --no-gpg-sign -m "feat: dirty semantic projections atomically"
 
 **Interfaces:**
 - Consumes: streaming v3 section windows and atomic apply.
-- Produces: resumable non-searchable staging above 1,000 chunks with 50,000 hard limit.
+- Produces: resumable non-searchable staging with bounded chunk, occurrence,
+  byte, and boundary-planning costs.
 
 - [ ] **Step 1: Write failing interruption/resume tests**
 
 Use a fake clock/deadline to stop after two staged batches. Assert the checkpoint
 contains work ID, dirty revision, section key, and next boundary; no staged row
 is searchable; resume advances rather than restarting; completion promotes once;
-redirty discards stale staged work; and 50,001 chunks produce terminal blocked
-state with no searchable partial chunks.
+redirty discards stale staged work; planning runs once and its opaque versioned
+plan survives restart; fabricated, altered, missing, or extra staging cannot be
+promoted; and exceeding 50,000 unique chunks, 200,000 occurrences, or 128 MiB
+produces terminal blocked state with no searchable partial chunks. Also prove a
+loaded complete checkpoint cannot bypass those limits and `MaxDuration` is
+checked between ordinary parents.
 
 - [ ] **Step 2: Verify RED**
 
@@ -475,10 +483,15 @@ type Cursor struct { SectionKey string; NextBoundary int }
 func Stream(parent Parent, opts Options, cursor Cursor, emit func(Chunk, Occurrence) error) (Cursor, bool, error)
 ```
 
-Persist batches keyed by `(work_id, dirty_revision)`. Promote only after the
-complete parent hash and selected revision revalidate in one apply transaction.
-Cleanup abandoned/stale work explicitly. `RunChunk` accepts `MaxDuration` and
-returns a durable resume checkpoint without accumulating batch history.
+Persist batches keyed by `(work_id, dirty_revision)`. Prepare section boundary
+state once, persist it as hidden versioned metadata, and resume directly from
+that plan without re-planning the giant section on every batch or restart.
+Exclude metadata from staged counts, JSON progress, and promotion. Promote only
+after independently streaming the current authoritative projection and proving
+exact equality with every staged chunk and occurrence, then revalidate the
+complete parent hash and selected revision in one apply transaction. Cleanup
+abandoned/stale work explicitly. `RunChunk` accepts `MaxDuration` and returns a
+durable resume checkpoint without accumulating batch history.
 
 - [ ] **Step 4: Verify GREEN**
 
