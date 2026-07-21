@@ -11,9 +11,9 @@ import (
 func TestTask5PreparedStreamNormalizesMalformedUTF8BeforeByteSlicing(t *testing.T) {
 	parent := Parent{
 		Kind: "source", SourceKey: "source:malformed-utf8",
-		Sections: []Section{{Key: "body", Role: "raw", Text: "valid evidence \xff broken \xc3 tail"}},
+		Sections: []Section{{Key: "body", Role: "raw", Text: "a\xff\xfeb"}},
 	}
-	projection, err := BuildProjection(parent, Options{TargetRunes: 8, MaxRunes: 12})
+	projection, err := BuildProjection(parent, Options{TargetRunes: 100, MaxRunes: 200})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,6 +24,12 @@ func TestTask5PreparedStreamNormalizesMalformedUTF8BeforeByteSlicing(t *testing.
 		if !utf8.ValidString(chunk.Text) {
 			t.Fatalf("chunk contains malformed UTF-8: %q", chunk.Text)
 		}
+	}
+	if got, want := projection.Chunks[0].Text, "a\uFFFD\uFFFDb"; got != want {
+		t.Fatalf("projected malformed text=%q want rune-decoder parity %q", got, want)
+	}
+	if len(projection.Occurrences) != 1 || projection.Occurrences[0].StartChar != 0 || projection.Occurrences[0].EndChar != 4 {
+		t.Fatalf("malformed UTF-8 occurrence=%+v want exact sanitized rune offsets [0,4)", projection.Occurrences)
 	}
 }
 

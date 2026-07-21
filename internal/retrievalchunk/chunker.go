@@ -325,7 +325,7 @@ func normalizedStreamingSections(parent Parent, opts Options, validateOptions bo
 		// U+FFFD. Normalize once here so the prepared byte offsets address the
 		// exact string later sliced by StreamPrepared instead of the shorter raw
 		// byte string.
-		sections[i].Text = strings.ToValidUTF8(sections[i].Text, "\uFFFD")
+		sections[i].Text = string([]rune(sections[i].Text))
 		sections[i].Role = strings.TrimSpace(sections[i].Role)
 		sections[i].Heading = strings.TrimSpace(sections[i].Heading)
 		sections[i].Key = sectionKey(parent, sections[i])
