@@ -7,6 +7,96 @@ import (
 	"unicode/utf8"
 )
 
+func TestChunkerV3GlobalAnchorsDoNotCascadeOnAllEqualInput(t *testing.T) {
+	opts := DefaultOptions()
+	base := strings.Repeat("a", 9_000)
+	editAt := len(base) / 2
+	if editAt < MaxUTF8Bytes || len(base)-editAt < MaxUTF8Bytes {
+		t.Fatal("test edit must be at least one byte ceiling from both edges")
+	}
+
+	before := chunkSectionV3(base, opts)
+	again := chunkSectionV3(base, opts)
+	if !reflect.DeepEqual(before, again) {
+		t.Fatal("all-equal boundaries are not deterministic")
+	}
+	assertValidWindows(t, base, before, opts)
+
+	inserted := base[:editAt] + "b" + base[editAt:]
+	afterInsertion := chunkSectionV3(inserted, opts)
+	assertValidWindows(t, inserted, afterInsertion, opts)
+	assertShiftedBoundariesOutsideEdit(t, before, afterInsertion, editAt, 1, MaxUTF8Bytes)
+
+	deleted := base[:editAt] + base[editAt+1:]
+	afterDeletion := chunkSectionV3(deleted, opts)
+	assertValidWindows(t, deleted, afterDeletion, opts)
+	assertShiftedBoundariesOutsideEdit(t, before, afterDeletion, editAt, -1, MaxUTF8Bytes)
+}
+
+func TestChunkerV3GloballyPrefersParagraphThenSentenceBoundaries(t *testing.T) {
+	paragraphAt := 900
+	paragraphText := strings.Repeat("a", paragraphAt-2) + "\n\n" + strings.Repeat("b", 2_000)
+	if !containsWindowEnd(chunkSectionV3(paragraphText, DefaultOptions()), paragraphAt) {
+		t.Fatalf("global anchors omitted paragraph boundary at %d", paragraphAt)
+	}
+
+	sentenceAt := 800
+	sentenceText := strings.Repeat("c", sentenceAt-2) + ". " + strings.Repeat("d", 2_000)
+	if !containsWindowEnd(chunkSectionV3(sentenceText, DefaultOptions()), sentenceAt) {
+		t.Fatalf("global anchors omitted sentence boundary at %d", sentenceAt)
+	}
+}
+
+func assertValidWindows(t *testing.T, text string, windows []window, opts Options) {
+	t.Helper()
+	runes := []rune(text)
+	if len(windows) == 0 {
+		t.Fatal("nonblank input produced no windows")
+	}
+	previousEnd := 0
+	for i, window := range windows {
+		if window.start != previousEnd || window.end <= window.start || window.end > len(runes) {
+			t.Fatalf("window %d is not contiguous forward progress: %+v after %d", i, window, previousEnd)
+		}
+		value := string(runes[window.start:window.end])
+		if strings.TrimSpace(value) == "" || strings.TrimSpace(value) != value {
+			t.Fatalf("window %d is blank or has a whitespace tail: %q", i, value)
+		}
+		if len([]byte(value)) > MaxUTF8Bytes || window.end-window.start > opts.MaxRunes {
+			t.Fatalf("window %d exceeds bounds: bytes=%d runes=%d", i, len([]byte(value)), window.end-window.start)
+		}
+		previousEnd = window.end
+	}
+	if previousEnd != len(runes) {
+		t.Fatalf("tail omitted: final end=%d runes=%d", previousEnd, len(runes))
+	}
+}
+
+func assertShiftedBoundariesOutsideEdit(t *testing.T, before, after []window, editAt, delta, neighborhood int) {
+	t.Helper()
+	afterEnds := make(map[int]bool, len(after))
+	for _, window := range after {
+		afterEnds[window.end] = true
+	}
+	for _, window := range before {
+		if window.end <= editAt+neighborhood {
+			continue
+		}
+		if !afterEnds[window.end+delta] {
+			t.Fatalf("global boundary %d did not survive distant edit as %d", window.end, window.end+delta)
+		}
+	}
+}
+
+func containsWindowEnd(windows []window, end int) bool {
+	for _, window := range windows {
+		if window.end == end {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildProjectionV2UsesContentLocalChunksAndOccurrences(t *testing.T) {
 	parent := Parent{Kind: "source", SourceKey: "src:projection", ContentHash: "parent-v1", Sections: []Section{
 		{Key: "body", Role: "raw", Heading: "Body", Text: "  same window  "},
@@ -124,6 +214,9 @@ func TestChunkerV3ReusesMovedWindowsAndLimitsDistantEditChurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	editAt := len(base) / 2
+	if editAt < MaxUTF8Bytes || len(base)-editAt < MaxUTF8Bytes {
+		t.Fatal("unstructured edit must be at least 1,800 bytes from both edges")
+	}
 	afterText := base[:editAt] + "X" + base[editAt:]
 	after, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: afterText}}}, DefaultOptions())
 	if err != nil {

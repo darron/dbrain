@@ -2,7 +2,6 @@ package retrievalchunk
 
 import (
 	"fmt"
-	"strings"
 )
 
 // synthetic26512WindowFixture is intentionally synthetic; it models a large
@@ -16,13 +15,16 @@ func synthetic26512WindowFixture() []Section {
 }
 
 func syntheticUnstructuredFixture() string {
-	return repeatedSyntheticToken(7_000)
-}
-func repeatedSyntheticToken(n int) string {
-	var result strings.Builder
-	result.Grow(n * len("token00000"))
-	for i := 0; i < n; i++ {
-		_, _ = fmt.Fprintf(&result, "token%05d", i%997)
+	const size = 20_000
+	result := make([]byte, size)
+	state := uint32(0x5eed1234)
+	for i := range result {
+		// Deterministic xorshift bytes provide unstructured valid UTF-8 without
+		// introducing natural paragraph, sentence, or whitespace boundaries.
+		state ^= state << 13
+		state ^= state >> 17
+		state ^= state << 5
+		result[i] = 'a' + byte(state%26)
 	}
-	return result.String()
+	return string(result)
 }

@@ -40,6 +40,24 @@ type report struct {
 	CandidateProfiles []profileResult `json:"candidate_profiles"`
 }
 
+type bakeoffOptions struct {
+	database   string
+	reportPath string
+	baseURL    string
+	model      string
+	dimensions []int
+	maxBytes   int
+}
+
+type parentCorpus interface {
+	ListRetrievalParents(context.Context, string, int) ([]retrievalchunk.Parent, error)
+}
+
+type bakeoffDeps struct {
+	newProvider func(embedding.OllamaOptions) (embedding.Provider, error)
+	writeReport func(string, report) error
+}
+
 func main() {
 	ctx := context.Background()
 	if err := run(ctx, os.Args[1:]); err != nil {
@@ -82,44 +100,63 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("open explicit database read-only: %w", err)
 	}
 	defer func() { _ = st.Close() }()
-	report := report{Database: *dbPath, Model: *model, MaxBytes: *maxBytes, ByteDistribution: map[string]int{"0-450": 0, "451-900": 0, "901-1350": 0, "1351-1800": 0}}
-	if err := writeReport(*reportPath, report); err != nil {
+	return executeBakeoff(ctx, bakeoffOptions{
+		database: *dbPath, reportPath: *reportPath, baseURL: *baseURL,
+		model: *model, dimensions: dimensions, maxBytes: *maxBytes,
+	}, st, bakeoffDeps{})
+}
+
+func executeBakeoff(ctx context.Context, opts bakeoffOptions, corpus parentCorpus, deps bakeoffDeps) error {
+	if deps.newProvider == nil {
+		deps.newProvider = func(options embedding.OllamaOptions) (embedding.Provider, error) {
+			return embedding.NewOllama(options)
+		}
+	}
+	if deps.writeReport == nil {
+		deps.writeReport = writeReport
+	}
+	result := report{Database: opts.database, Model: opts.model, MaxBytes: opts.maxBytes, ByteDistribution: map[string]int{"0-450": 0, "451-900": 0, "901-1350": 0, "1351-1800": 0}}
+	persist := func() error { return deps.writeReport(opts.reportPath, result) }
+	// The initial report is durable before the first potentially expensive page.
+	if err := persist(); err != nil {
 		return err
 	}
-	if err := forEachParent(ctx, st, func(parent retrievalchunk.Parent) error {
+	if err := forEachParentPage(ctx, corpus, func(parent retrievalchunk.Parent) error {
 		projection, err := retrievalchunk.BuildProjection(parent, retrievalchunk.DefaultOptions())
 		if err != nil {
 			return fmt.Errorf("project %s %s: %w", parent.Kind, parent.SourceKey, err)
 		}
-		report.Parents++
-		report.UniqueChunks += len(projection.Chunks)
-		report.Occurrences += len(projection.Occurrences)
+		result.Parents++
+		result.UniqueChunks += len(projection.Chunks)
+		result.Occurrences += len(projection.Occurrences)
 		for _, chunk := range projection.Chunks {
-			bytes := len([]byte(chunk.Text))
-			if bytes > *maxBytes {
-				report.OversizedWindows++
+			byteCount := len([]byte(chunk.Text))
+			if byteCount > opts.maxBytes {
+				result.OversizedWindows++
 			}
-			report.ByteDistribution[bucket(bytes)]++
+			result.ByteDistribution[bucket(byteCount)]++
 		}
 		return nil
-	}); err != nil {
-		_ = writeReport(*reportPath, report)
+	}, persist); err != nil {
+		_ = persist()
 		return err
 	}
-	if err := writeReport(*reportPath, report); err != nil {
+	if err := persist(); err != nil {
 		return err
 	}
-	for _, dimensions := range dimensions {
-		result := profileResult{Dimensions: dimensions, Status: "ready"}
-		report.CandidateProfiles = append(report.CandidateProfiles, result)
-		resultIndex := len(report.CandidateProfiles) - 1
-		if err := writeReport(*reportPath, report); err != nil {
+	for _, dimensions := range opts.dimensions {
+		result.CandidateProfiles = append(result.CandidateProfiles, profileResult{Dimensions: dimensions, Status: "running"})
+		resultIndex := len(result.CandidateProfiles) - 1
+		candidate := &result.CandidateProfiles[resultIndex]
+		if err := persist(); err != nil {
 			return err
 		}
-		provider, err := embedding.NewOllama(embedding.OllamaOptions{BaseURL: *baseURL, Model: *model, Dimensions: dimensions})
+		provider, err := deps.newProvider(embedding.OllamaOptions{BaseURL: opts.baseURL, Model: opts.model, Dimensions: dimensions})
 		if err != nil {
-			result.Status, result.Error = "unsupported", err.Error()
-			report.CandidateProfiles[resultIndex] = result
+			candidate.Status, candidate.Error = "failed", err.Error()
+			if err := persist(); err != nil {
+				return err
+			}
 			continue
 		}
 		batch := make([]string, 0, 64)
@@ -127,31 +164,38 @@ func run(ctx context.Context, args []string) error {
 			if len(batch) == 0 {
 				return nil
 			}
-			response, embedErr := provider.Embed(ctx, embedding.Request{Purpose: embedding.PurposeDocument, Texts: batch})
+			request := embedding.Request{Purpose: embedding.PurposeDocument, Texts: batch}
+			response, embedErr := provider.Embed(ctx, request)
 			if embedErr != nil {
-				if isDimensionRejection(embedErr) {
-					result.Status = "unsupported"
+				if isDimensionRejection(embedErr, dimensions) {
+					candidate.Status = "unsupported"
 				} else {
-					result.Status = "failed"
+					candidate.Status = "failed"
 				}
-				result.Error = embedErr.Error()
+				candidate.Error = embedErr.Error()
 				if embedding.IsBlocked(embedErr) {
-					report.ContextFailures++
+					result.ContextFailures++
 				}
+				_ = persist()
 				return embedErr
+			}
+			if validateErr := embedding.ValidateResponse(provider.Info(), request, response); validateErr != nil {
+				candidate.Status, candidate.Error = "failed", validateErr.Error()
+				_ = persist()
+				return validateErr
 			}
 			for _, vector := range response.Vectors {
 				if err := finiteL2(vector); err != nil {
-					result.Status, result.Error = "failed", err.Error()
+					candidate.Status, candidate.Error = "failed", err.Error()
+					_ = persist()
 					return err
 				}
 			}
-			result.Vectors += len(response.Vectors)
-			report.CandidateProfiles[resultIndex] = result
+			candidate.Vectors += len(response.Vectors)
 			batch = batch[:0]
-			return writeReport(*reportPath, report)
+			return persist()
 		}
-		err = forEachParent(ctx, st, func(parent retrievalchunk.Parent) error {
+		err = forEachParentPage(ctx, corpus, func(parent retrievalchunk.Parent) error {
 			projection, projectErr := retrievalchunk.BuildProjection(parent, retrievalchunk.DefaultOptions())
 			if projectErr != nil {
 				return projectErr
@@ -165,43 +209,56 @@ func run(ctx context.Context, args []string) error {
 				}
 			}
 			return nil
-		})
+		}, nil)
 		if err == nil {
 			err = embedBatch()
 		}
 		if err != nil {
-			_ = writeReport(*reportPath, report)
-			if result.Status == "ready" {
-				result.Status, result.Error = "failed", err.Error()
+			if candidate.Status == "running" {
+				candidate.Status, candidate.Error = "failed", err.Error()
 			}
+			if persistErr := persist(); persistErr != nil {
+				return persistErr
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
 		}
-		report.CandidateProfiles[resultIndex] = result
-		if err := writeReport(*reportPath, report); err != nil {
+		candidate.Status = "ready"
+		if err := persist(); err != nil {
 			return err
 		}
 	}
-	if err := writeReport(*reportPath, report); err != nil {
+	if err := persist(); err != nil {
 		return err
 	}
-	if report.OversizedWindows != 0 || report.ContextFailures != 0 {
-		return fmt.Errorf("bakeoff found oversized=%d context_failures=%d", report.OversizedWindows, report.ContextFailures)
+	if result.OversizedWindows != 0 || result.ContextFailures != 0 {
+		return fmt.Errorf("bakeoff found oversized=%d context_failures=%d", result.OversizedWindows, result.ContextFailures)
 	}
-	for _, candidate := range report.CandidateProfiles {
+	for _, candidate := range result.CandidateProfiles {
 		if candidate.Dimensions == 768 && candidate.Status != "ready" {
 			return fmt.Errorf("768-dimensional foundation profile failed: %s", candidate.Error)
 		}
 	}
 	return nil
 }
-func isDimensionRejection(err error) bool {
+func isDimensionRejection(err error, dimensions int) bool {
+	if !embedding.IsFatalConfig(err) {
+		return false
+	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "dimension") && (strings.Contains(message, "unsupported") || strings.Contains(message, "must be") || strings.Contains(message, "not supported"))
+	dimension := strconv.Itoa(dimensions)
+	httpRejection := strings.Contains(message, "ollama embedding endpoint returned http 4")
+	explicitDimension := strings.Contains(message, "dimension "+dimension) || strings.Contains(message, "dimensions "+dimension) || strings.Contains(message, `"dimensions":`+dimension) || strings.Contains(message, `"dimensions": `+dimension)
+	unsupported := strings.Contains(message, "unsupported") || strings.Contains(message, "not supported") || strings.Contains(message, "must be")
+	return httpRejection && explicitDimension && unsupported
 }
 
-func forEachParent(ctx context.Context, st *store.Store, visit func(retrievalchunk.Parent) error) error {
+func forEachParentPage(ctx context.Context, corpus parentCorpus, visit func(retrievalchunk.Parent) error, afterPage func() error) error {
 	after := ""
 	for {
-		page, err := st.ListRetrievalParents(ctx, after, 500)
+		page, err := corpus.ListRetrievalParents(ctx, after, 500)
 		if err != nil {
 			return err
 		}
@@ -214,6 +271,11 @@ func forEachParent(ctx context.Context, st *store.Store, visit func(retrievalchu
 			}
 		}
 		after = page[len(page)-1].SourceKey
+		if afterPage != nil {
+			if err := afterPage(); err != nil {
+				return err
+			}
+		}
 	}
 }
 func parseDimensions(raw string) ([]int, error) {
@@ -267,8 +329,12 @@ func verifyEmbedding(baseURL, model string, dimensions int, text string) error {
 	if err != nil {
 		return err
 	}
-	response, err := provider.Embed(context.Background(), embedding.Request{Purpose: embedding.PurposeDocument, Texts: []string{text}})
+	request := embedding.Request{Purpose: embedding.PurposeDocument, Texts: []string{text}}
+	response, err := provider.Embed(context.Background(), request)
 	if err != nil {
+		return err
+	}
+	if err := embedding.ValidateResponse(provider.Info(), request, response); err != nil {
 		return err
 	}
 	return finiteL2(response.Vectors[0])
@@ -287,6 +353,12 @@ func refusesLiveProductionDB(path string) (bool, error) {
 	live, err := defaultProductionDBPath()
 	if err != nil {
 		return false, err
+	}
+	if strings.TrimSpace(path) == "" {
+		return false, errors.New("candidate database path is empty")
+	}
+	if strings.TrimSpace(live) == "" {
+		return false, errors.New("configured production database path is empty")
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -323,14 +395,31 @@ func refusesLiveProductionDB(path string) (bool, error) {
 	}
 	return os.SameFile(a, b), nil
 }
+
+type reportFileOps struct {
+	writeFile func(string, []byte, os.FileMode) error
+	rename    func(string, string) error
+	remove    func(string) error
+}
+
 func writeReport(path string, value report) error {
+	return writeReportWithOps(path, value, reportFileOps{writeFile: os.WriteFile, rename: os.Rename, remove: os.Remove})
+}
+
+func writeReportWithOps(path string, value report, ops reportFileOps) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	// Cleanup is unconditional: write implementations can create a partial file
+	// before returning an error, and rename failures must not strand stale state.
+	defer func() { _ = ops.remove(tmp) }()
+	if err := ops.writeFile(tmp, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write report: %w", err)
 	}
-	return os.Rename(tmp, path)
+	if err := ops.rename(tmp, path); err != nil {
+		return fmt.Errorf("rename report: %w", err)
+	}
+	return nil
 }
