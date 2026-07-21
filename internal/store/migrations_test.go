@@ -13,6 +13,14 @@ import (
 	"github.com/darron/dbrain/internal/model"
 )
 
+var expectedSemanticFoundationConstraintTriggerNames = []string{
+	"trg_retrieval_state_singleton_insert",
+	"trg_retrieval_state_singleton_update",
+	"trg_retrieval_chunk_occurrences_chunk_insert",
+	"trg_retrieval_chunk_occurrences_chunk_update",
+	"trg_retrieval_chunks_delete_occurrences",
+}
+
 func TestOpenRecordsCurrentSchemaMigration(t *testing.T) {
 	t.Parallel()
 
@@ -282,6 +290,14 @@ func TestSemanticFoundationMigrationRepairsEveryPartialFoundationTableAndDatabas
 			)`,
 			retrievalStateRow: `INSERT INTO retrieval_state (singleton, database_id) VALUES (1, '')`,
 		},
+		{
+			name: "whitespace database id",
+			retrievalStateDDL: `CREATE TABLE retrieval_state (
+				singleton INTEGER PRIMARY KEY,
+				database_id TEXT NOT NULL
+			)`,
+			retrievalStateRow: `INSERT INTO retrieval_state (singleton, database_id) VALUES (1, char(9) || char(10) || ' ')`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := semanticFoundationV15Database(t)
@@ -312,7 +328,7 @@ func TestSemanticFoundationMigrationRepairsEveryPartialFoundationTableAndDatabas
 				_ = st.Close()
 				t.Fatalf("read repaired database id: %v", err)
 			}
-			if databaseID == "" {
+			if strings.TrimSpace(databaseID) == "" {
 				_ = st.Close()
 				t.Fatal("repaired database id is empty")
 			}
@@ -351,6 +367,207 @@ func TestSemanticFoundationMigrationRepairsEveryPartialFoundationTableAndDatabas
 	}
 }
 
+func TestSemanticFoundationMigrationRepairsConstraintEquivalentTriggers(t *testing.T) {
+	t.Parallel()
+
+	path := semanticFoundationV15Database(t)
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open v15 database: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE retrieval_state (
+			singleton INTEGER,
+			database_id TEXT NOT NULL
+		);
+		INSERT INTO retrieval_state (singleton, database_id) VALUES (1, 'preserved-id');
+		CREATE TABLE retrieval_parent_projections (
+			parent_kind TEXT NOT NULL,
+			parent_source_key TEXT NOT NULL,
+			PRIMARY KEY(parent_kind, parent_source_key)
+		);
+		CREATE TABLE retrieval_chunk_occurrences (
+			parent_kind TEXT NOT NULL,
+			parent_source_key TEXT NOT NULL,
+			chunk_id TEXT NOT NULL,
+			section_key TEXT NOT NULL,
+			start_char INTEGER NOT NULL,
+			end_char INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		INSERT INTO retrieval_chunk_occurrences (
+			parent_kind, parent_source_key, chunk_id, section_key, start_char, end_char, created_at, updated_at
+		) VALUES ('item', 'item:legacy', 'legacy-chunk', 'body', 0, 11, '2026-07-21T00:00:00Z', '2026-07-21T00:00:00Z')`); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed partial constraint schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close partial constraint schema: %v", err)
+	}
+
+	st := openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	for _, trigger := range expectedSemanticFoundationConstraintTriggerNames {
+		assertSQLiteObject(t, st.db, "trigger", trigger)
+	}
+	var databaseID string
+	if err := st.db.QueryRow(`SELECT database_id FROM retrieval_state WHERE singleton = 1`).Scan(&databaseID); err != nil {
+		t.Fatalf("read preserved state identity: %v", err)
+	}
+	if databaseID != "preserved-id" {
+		t.Fatalf("preserved state identity = %q, want preserved-id", databaseID)
+	}
+	var preservedOccurrences int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunk_occurrences WHERE chunk_id = 'legacy-chunk'`).Scan(&preservedOccurrences); err != nil {
+		t.Fatalf("count preserved occurrence: %v", err)
+	}
+	if preservedOccurrences != 1 {
+		t.Fatalf("preserved occurrence count = %d, want 1", preservedOccurrences)
+	}
+	if _, err := st.db.Exec(`INSERT INTO retrieval_state (singleton, database_id, updated_at) VALUES (2, 'other', '')`); err == nil {
+		t.Fatal("repaired retrieval state accepted singleton 2")
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_state SET singleton = 2 WHERE singleton = 1`); err == nil {
+		t.Fatal("repaired retrieval state accepted singleton update to 2")
+	}
+	if _, err := st.db.Exec(`INSERT INTO retrieval_state (singleton, database_id, updated_at) VALUES (1, 'other', '')`); err == nil {
+		t.Fatal("repaired retrieval state accepted duplicate singleton 1")
+	}
+	if _, err := st.db.Exec(`
+		INSERT INTO retrieval_chunk_occurrences (
+			parent_kind, parent_source_key, chunk_id, section_key, start_char, end_char, created_at, updated_at
+		) VALUES ('item', 'item:legacy', 'orphan-chunk', 'body', 12, 16, '', '')`); err == nil {
+		t.Fatal("repaired occurrences accepted an orphan chunk")
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_chunk_occurrences SET chunk_id = 'orphan-chunk' WHERE chunk_id = 'legacy-chunk'`); err == nil {
+		t.Fatal("repaired occurrences accepted an orphan chunk update")
+	}
+	if _, err := st.db.Exec(`DELETE FROM retrieval_chunks WHERE chunk_id = 'legacy-chunk'`); err != nil {
+		t.Fatalf("delete legacy chunk: %v", err)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunk_occurrences WHERE chunk_id = 'legacy-chunk'`).Scan(&preservedOccurrences); err != nil {
+		t.Fatalf("count cascaded occurrences: %v", err)
+	}
+	if preservedOccurrences != 0 {
+		t.Fatalf("deleted chunk left %d occurrences, want zero", preservedOccurrences)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close constraint-repaired store: %v", err)
+	}
+	st = openStoreAtPath(t, path)
+	for _, trigger := range expectedSemanticFoundationConstraintTriggerNames {
+		assertSQLiteObject(t, st.db, "trigger", trigger)
+	}
+}
+
+func TestSemanticFoundationMigrationRejectsInvalidConstraintRows(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, setup, want string
+	}{
+		{
+			name: "invalid singleton",
+			setup: `
+				CREATE TABLE retrieval_state (singleton INTEGER, database_id TEXT NOT NULL);
+				INSERT INTO retrieval_state (singleton, database_id) VALUES (2, 'invalid');
+				CREATE TABLE retrieval_parent_projections (parent_kind TEXT, parent_source_key TEXT);
+				CREATE TABLE retrieval_chunk_occurrences (parent_kind TEXT);
+				CREATE TABLE retrieval_projection_staging (work_id TEXT);
+				CREATE TABLE retrieval_embedding_profiles (profile_id TEXT)`,
+			want: "invalid retrieval_state singleton",
+		},
+		{
+			name: "duplicate singleton",
+			setup: `
+				CREATE TABLE retrieval_state (singleton INTEGER, database_id TEXT NOT NULL);
+				INSERT INTO retrieval_state (singleton, database_id) VALUES (1, 'first'), (1, 'second');
+				CREATE TABLE retrieval_parent_projections (parent_kind TEXT, parent_source_key TEXT);
+				CREATE TABLE retrieval_chunk_occurrences (parent_kind TEXT);
+				CREATE TABLE retrieval_projection_staging (work_id TEXT);
+				CREATE TABLE retrieval_embedding_profiles (profile_id TEXT)`,
+			want: "duplicate retrieval_state singleton",
+		},
+		{
+			name: "orphan occurrence",
+			setup: `
+				CREATE TABLE retrieval_state (singleton INTEGER PRIMARY KEY, database_id TEXT NOT NULL);
+				INSERT INTO retrieval_state (singleton, database_id) VALUES (1, 'valid');
+				CREATE TABLE retrieval_parent_projections (parent_kind TEXT, parent_source_key TEXT);
+				CREATE TABLE retrieval_chunk_occurrences (
+					parent_kind TEXT, parent_source_key TEXT, chunk_id TEXT, section_key TEXT,
+					start_char INTEGER, end_char INTEGER, created_at TEXT, updated_at TEXT
+				);
+				INSERT INTO retrieval_chunk_occurrences (parent_kind, parent_source_key, chunk_id, section_key, start_char, end_char, created_at, updated_at)
+				VALUES ('item', 'item:legacy', 'missing-chunk', 'body', 0, 1, '', '');
+				CREATE TABLE retrieval_projection_staging (work_id TEXT);
+				CREATE TABLE retrieval_embedding_profiles (profile_id TEXT)`,
+			want: "orphan retrieval_chunk_occurrences",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := semanticFoundationV15Database(t)
+			db, err := sql.Open(driverName, path)
+			if err != nil {
+				t.Fatalf("open v15 database: %v", err)
+			}
+			if _, err := db.Exec(tc.setup); err != nil {
+				_ = db.Close()
+				t.Fatalf("seed invalid partial schema: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close invalid partial schema: %v", err)
+			}
+			_, err = Open(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("open invalid partial schema = %v, want %q", err, tc.want)
+			}
+			db, err = sql.Open(driverName, path)
+			if err != nil {
+				t.Fatalf("reopen invalid partial database: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, semanticFoundationMigrationVersion).Scan(&count); err != nil {
+				t.Fatalf("read migration 16 metadata: %v", err)
+			}
+			if count != 0 {
+				t.Fatalf("invalid schema recorded migration 16 %d times", count)
+			}
+		})
+	}
+}
+
+func TestSemanticFoundationSchemaIdentityRejectsMissingConstraintTriggers(t *testing.T) {
+	t.Parallel()
+
+	for _, trigger := range expectedSemanticFoundationConstraintTriggerNames {
+		t.Run(trigger, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "brain.db")
+			st := openStoreAtPath(t, path)
+			if err := st.Close(); err != nil {
+				t.Fatalf("close current database: %v", err)
+			}
+			db, err := sql.Open(driverName, path)
+			if err != nil {
+				t.Fatalf("open current database directly: %v", err)
+			}
+			if _, err := db.Exec(`DROP TRIGGER ` + trigger); err != nil {
+				_ = db.Close()
+				t.Fatalf("drop %s: %v", trigger, err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close trigger-reduced database: %v", err)
+			}
+			err = ValidateRestorableDatabase(t.Context(), path)
+			if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), trigger) {
+				t.Fatalf("validation after dropping %s = %v, want incompatible trigger error", trigger, err)
+			}
+		})
+	}
+}
+
 func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *testing.T) {
 	t.Parallel()
 
@@ -376,6 +593,12 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *test
 				db, err := sql.Open(driverName, path)
 				if err != nil {
 					t.Fatalf("open current database directly: %v", err)
+				}
+				if table == "retrieval_chunk_occurrences" {
+					if _, err := db.Exec(`DROP TRIGGER trg_retrieval_chunks_delete_occurrences`); err != nil {
+						_ = db.Close()
+						t.Fatalf("drop occurrence cascade trigger: %v", err)
+					}
 				}
 				columnsAfterDrop := withoutColumn(columns, missingColumn)
 				if _, err := db.Exec(`CREATE TABLE rebuilt AS SELECT ` + strings.Join(columnsAfterDrop, ", ") + ` FROM ` + table + `;

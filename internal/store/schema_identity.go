@@ -17,6 +17,11 @@ type schemaIdentityTable struct {
 	columns []string
 }
 
+type schemaIdentityTrigger struct {
+	name  string
+	table string
+}
+
 var dbrainCoreSchema = []schemaIdentityTable{
 	{
 		name: "items",
@@ -86,6 +91,14 @@ var dbrainSemanticFoundationSchema = []schemaIdentityTable{
 	},
 }
 
+var dbrainSemanticFoundationTriggers = []schemaIdentityTrigger{
+	{name: "trg_retrieval_state_singleton_insert", table: "retrieval_state"},
+	{name: "trg_retrieval_state_singleton_update", table: "retrieval_state"},
+	{name: "trg_retrieval_chunk_occurrences_chunk_insert", table: "retrieval_chunk_occurrences"},
+	{name: "trg_retrieval_chunk_occurrences_chunk_update", table: "retrieval_chunk_occurrences"},
+	{name: "trg_retrieval_chunks_delete_occurrences", table: "retrieval_chunks"},
+}
+
 var compatibleSchemaMigrationNames = map[int]map[string]struct{}{
 	6: {
 		"source_summary_failure_timestamp": {},
@@ -110,6 +123,7 @@ func ValidateRestorableDatabase(ctx context.Context, path string) error {
 
 func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 	requiredSchema := dbrainCoreSchema
+	hasSemanticFoundation := false
 	hasMigrationTable, err := st.tableExists("schema_migrations")
 	if err != nil {
 		return 0, 0, fmt.Errorf("inspect dbrain migration table: %w", err)
@@ -120,6 +134,7 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		switch {
 		case err == nil:
 			requiredSchema = append(requiredSchema, dbrainSemanticFoundationSchema...)
+			hasSemanticFoundation = true
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
 			return 0, 0, fmt.Errorf("inspect dbrain semantic foundation migration: %w", err)
@@ -150,6 +165,27 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 				if firstMissing == nil {
 					firstMissing = fmt.Errorf("%w: dbrain core schema column %s.%s is missing", ErrDatabaseIncompatible, required.name, column)
 				}
+			}
+		}
+	}
+	if hasSemanticFoundation {
+		for _, required := range dbrainSemanticFoundationTriggers {
+			var table string
+			err := st.db.QueryRow(`SELECT tbl_name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, required.name).Scan(&table)
+			switch {
+			case err == nil && table == required.table:
+			case err == nil:
+				missingTables++
+				if firstMissing == nil {
+					firstMissing = fmt.Errorf("%w: dbrain semantic foundation trigger %s belongs to %s, want %s", ErrDatabaseIncompatible, required.name, table, required.table)
+				}
+			case errors.Is(err, sql.ErrNoRows):
+				missingTables++
+				if firstMissing == nil {
+					firstMissing = fmt.Errorf("%w: dbrain semantic foundation trigger %s is missing", ErrDatabaseIncompatible, required.name)
+				}
+			case err != nil:
+				return missingTables, missingColumns, fmt.Errorf("inspect dbrain semantic foundation trigger %s: %w", required.name, err)
 			}
 		}
 	}

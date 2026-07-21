@@ -23,6 +23,68 @@ type RetrievalEmbeddingProfileRow struct {
 	ActiveIndexedCount, L0ReadyCount, ActiveTombstoneCount int
 }
 
+type retrievalConstraintTrigger struct {
+	name  string
+	table string
+	sql   string
+}
+
+var semanticFoundationConstraintTriggers = []retrievalConstraintTrigger{
+	{
+		name:  "trg_retrieval_state_singleton_insert",
+		table: "retrieval_state",
+		sql: `CREATE TRIGGER trg_retrieval_state_singleton_insert
+			BEFORE INSERT ON retrieval_state
+			WHEN NEW.singleton IS NULL OR NEW.singleton != 1
+				OR EXISTS (SELECT 1 FROM retrieval_state WHERE singleton = 1)
+			BEGIN
+				SELECT RAISE(ABORT, 'retrieval state requires one singleton = 1 row');
+			END`,
+	},
+	{
+		name:  "trg_retrieval_state_singleton_update",
+		table: "retrieval_state",
+		sql: `CREATE TRIGGER trg_retrieval_state_singleton_update
+			BEFORE UPDATE OF singleton ON retrieval_state
+			WHEN NEW.singleton IS NULL OR NEW.singleton != 1
+				OR (NEW.singleton != OLD.singleton AND EXISTS (SELECT 1 FROM retrieval_state WHERE singleton = 1))
+			BEGIN
+				SELECT RAISE(ABORT, 'retrieval state requires one singleton = 1 row');
+			END`,
+	},
+	{
+		name:  "trg_retrieval_chunk_occurrences_chunk_insert",
+		table: "retrieval_chunk_occurrences",
+		sql: `CREATE TRIGGER trg_retrieval_chunk_occurrences_chunk_insert
+			BEFORE INSERT ON retrieval_chunk_occurrences
+			WHEN NEW.chunk_id IS NULL
+				OR NOT EXISTS (SELECT 1 FROM retrieval_chunks WHERE chunk_id = NEW.chunk_id)
+			BEGIN
+				SELECT RAISE(ABORT, 'retrieval chunk occurrence requires an existing chunk');
+			END`,
+	},
+	{
+		name:  "trg_retrieval_chunk_occurrences_chunk_update",
+		table: "retrieval_chunk_occurrences",
+		sql: `CREATE TRIGGER trg_retrieval_chunk_occurrences_chunk_update
+			BEFORE UPDATE OF chunk_id ON retrieval_chunk_occurrences
+			WHEN NEW.chunk_id IS NULL
+				OR NOT EXISTS (SELECT 1 FROM retrieval_chunks WHERE chunk_id = NEW.chunk_id)
+			BEGIN
+				SELECT RAISE(ABORT, 'retrieval chunk occurrence requires an existing chunk');
+			END`,
+	},
+	{
+		name:  "trg_retrieval_chunks_delete_occurrences",
+		table: "retrieval_chunks",
+		sql: `CREATE TRIGGER trg_retrieval_chunks_delete_occurrences
+			AFTER DELETE ON retrieval_chunks
+			BEGIN
+				DELETE FROM retrieval_chunk_occurrences WHERE chunk_id = OLD.chunk_id;
+			END`,
+	},
+}
+
 func (s *Store) ensureRetrievalTables() error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS retrieval_chunks (
@@ -243,6 +305,7 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 		}
 	}
 	if err := s.ensureColumns("retrieval_state", []columnDefinition{
+		{Name: "singleton", Definition: "INTEGER NOT NULL DEFAULT 1"},
 		{Name: "database_id", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "projection_work_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
 		{Name: "purge_epoch", Definition: "INTEGER NOT NULL DEFAULT 0"},
@@ -319,6 +382,9 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 	}); err != nil {
 		return fmt.Errorf("repair retrieval embedding profiles: %w", err)
 	}
+	if err := s.ensureSemanticFoundationConstraints(); err != nil {
+		return err
+	}
 	for _, statement := range []string{
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_chunks_v3_identity_unique
 			ON retrieval_chunks(parent_kind, parent_source_key, section_key, evidence_role, derived, heading_hash, chunk_text_hash)
@@ -339,6 +405,46 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 		}
 	}
 	return s.seedSemanticFoundationRetrievalParents()
+}
+
+func (s *Store) ensureSemanticFoundationConstraints() error {
+	var invalidSingletons int
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM retrieval_state
+		WHERE singleton IS NULL OR singleton != 1`).Scan(&invalidSingletons); err != nil {
+		return fmt.Errorf("validate retrieval_state singleton: %w", err)
+	}
+	if invalidSingletons != 0 {
+		return fmt.Errorf("invalid retrieval_state singleton: %d rows are not singleton = 1", invalidSingletons)
+	}
+	var singletonRows int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM retrieval_state`).Scan(&singletonRows); err != nil {
+		return fmt.Errorf("count retrieval_state singleton rows: %w", err)
+	}
+	if singletonRows > 1 {
+		return fmt.Errorf("duplicate retrieval_state singleton: found %d rows", singletonRows)
+	}
+	var orphanOccurrences int
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM retrieval_chunk_occurrences occurrence
+		LEFT JOIN retrieval_chunks chunk ON chunk.chunk_id = occurrence.chunk_id
+		WHERE chunk.chunk_id IS NULL`).Scan(&orphanOccurrences); err != nil {
+		return fmt.Errorf("validate retrieval_chunk_occurrences references: %w", err)
+	}
+	if orphanOccurrences != 0 {
+		return fmt.Errorf("orphan retrieval_chunk_occurrences: %d rows reference missing retrieval_chunks", orphanOccurrences)
+	}
+	for _, trigger := range semanticFoundationConstraintTriggers {
+		if _, err := s.db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			return fmt.Errorf("drop semantic retrieval constraint trigger %s: %w", trigger.name, err)
+		}
+		if _, err := s.db.Exec(trigger.sql); err != nil {
+			return fmt.Errorf("create semantic retrieval constraint trigger %s: %w", trigger.name, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) seedSemanticFoundationRetrievalParents() error {
@@ -371,13 +477,18 @@ func (s *Store) seedSemanticFoundationRetrievalParents() error {
 		databaseID = generatedID
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.Exec(`
-		INSERT INTO retrieval_state (singleton, database_id, projection_work_revision, purge_epoch, updated_at)
-		VALUES (1, ?, 0, 0, ?)
-		ON CONFLICT(singleton) DO UPDATE SET
-			database_id = CASE WHEN retrieval_state.database_id = '' THEN excluded.database_id ELSE retrieval_state.database_id END,
-			updated_at = CASE WHEN retrieval_state.updated_at = '' THEN excluded.updated_at ELSE retrieval_state.updated_at END`, databaseID, now); err != nil {
-		return fmt.Errorf("initialize retrieval state: %w", err)
+	if err == sql.ErrNoRows {
+		if _, err := s.db.Exec(`
+			INSERT INTO retrieval_state (singleton, database_id, projection_work_revision, purge_epoch, updated_at)
+			VALUES (1, ?, 0, 0, ?)`, databaseID, now); err != nil {
+			return fmt.Errorf("initialize retrieval state: %w", err)
+		}
+	} else if _, err := s.db.Exec(`
+		UPDATE retrieval_state
+		SET database_id = ?,
+			updated_at = CASE WHEN trim(updated_at) = '' THEN ? ELSE updated_at END
+		WHERE singleton = 1`, databaseID, now); err != nil {
+		return fmt.Errorf("repair retrieval state identity: %w", err)
 	}
 
 	var needsSeed bool
