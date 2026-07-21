@@ -83,6 +83,17 @@ var semanticFoundationConstraintTriggers = []retrievalConstraintTrigger{
 				DELETE FROM retrieval_chunk_occurrences WHERE chunk_id = OLD.chunk_id;
 			END`,
 	},
+	{
+		name:  "trg_retrieval_chunks_update_occurrences",
+		table: "retrieval_chunks",
+		sql: `CREATE TRIGGER trg_retrieval_chunks_update_occurrences
+			BEFORE UPDATE OF chunk_id ON retrieval_chunks
+			WHEN NEW.chunk_id IS NOT OLD.chunk_id
+				AND EXISTS (SELECT 1 FROM retrieval_chunk_occurrences WHERE chunk_id = OLD.chunk_id)
+			BEGIN
+				SELECT RAISE(ABORT, 'retrieval chunk ID is referenced by an occurrence');
+			END`,
+	},
 }
 
 func (s *Store) ensureRetrievalTables() error {

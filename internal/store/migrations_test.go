@@ -19,6 +19,7 @@ var expectedSemanticFoundationConstraintTriggerNames = []string{
 	"trg_retrieval_chunk_occurrences_chunk_insert",
 	"trg_retrieval_chunk_occurrences_chunk_update",
 	"trg_retrieval_chunks_delete_occurrences",
+	"trg_retrieval_chunks_update_occurrences",
 }
 
 func TestOpenRecordsCurrentSchemaMigration(t *testing.T) {
@@ -443,6 +444,17 @@ func TestSemanticFoundationMigrationRepairsConstraintEquivalentTriggers(t *testi
 	if _, err := st.db.Exec(`UPDATE retrieval_chunk_occurrences SET chunk_id = 'orphan-chunk' WHERE chunk_id = 'legacy-chunk'`); err == nil {
 		t.Fatal("repaired occurrences accepted an orphan chunk update")
 	}
+	if _, err := st.db.Exec(`UPDATE retrieval_chunks SET chunk_id = 'renamed-legacy-chunk' WHERE chunk_id = 'legacy-chunk'`); err == nil {
+		t.Fatal("repaired chunks accepted a referenced chunk ID update")
+	}
+	if _, err := st.db.Exec(`INSERT INTO retrieval_chunks
+		(chunk_id, parent_kind, parent_source_key, evidence_role, section_ordinal, ordinal, start_char, end_char, heading, projection_version, chunker_version, input_content_hash, chunk_text_hash, text, created_at, updated_at)
+		VALUES ('unreferenced-chunk', 'item', 'item:unreferenced', 'raw', 0, 0, 0, 1, '', 'v1', 'v1', 'input-hash', 'chunk-hash', 'text', '2026-07-21T00:00:00Z', '2026-07-21T00:00:00Z')`); err != nil {
+		t.Fatalf("insert unreferenced chunk after repair: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_chunks SET chunk_id = 'renamed-unreferenced-chunk' WHERE chunk_id = 'unreferenced-chunk'`); err != nil {
+		t.Fatalf("repaired chunks rejected an unreferenced chunk ID update: %v", err)
+	}
 	if _, err := st.db.Exec(`DELETE FROM retrieval_chunks WHERE chunk_id = 'legacy-chunk'`); err != nil {
 		t.Fatalf("delete legacy chunk: %v", err)
 	}
@@ -565,6 +577,35 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingConstraintTriggers(t *tes
 				t.Fatalf("validation after dropping %s = %v, want incompatible trigger error", trigger, err)
 			}
 		})
+	}
+}
+
+func TestSemanticFoundationSchemaIdentityRejectsWrongConstraintTriggerBody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close current database: %v", err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open current database directly: %v", err)
+	}
+	if _, err := db.Exec(`DROP TRIGGER trg_retrieval_chunks_delete_occurrences`); err != nil {
+		_ = db.Close()
+		t.Fatalf("drop canonical trigger: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER trg_retrieval_chunks_delete_occurrences
+		AFTER DELETE ON retrieval_chunks
+		BEGIN SELECT 1; END`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create same-name no-op trigger: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close wrong-trigger database: %v", err)
+	}
+	err = ValidateRestorableDatabase(t.Context(), path)
+	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), "non-canonical definition") {
+		t.Fatalf("validation after replacing a trigger body = %v, want incompatible non-canonical trigger error", err)
 	}
 }
 

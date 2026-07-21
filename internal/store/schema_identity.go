@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode"
 )
 
 // ErrDatabaseIncompatible marks an observed dbrain schema or migration
@@ -15,11 +17,6 @@ var ErrDatabaseIncompatible = errors.New("database is incompatible")
 type schemaIdentityTable struct {
 	name    string
 	columns []string
-}
-
-type schemaIdentityTrigger struct {
-	name  string
-	table string
 }
 
 var dbrainCoreSchema = []schemaIdentityTable{
@@ -89,14 +86,6 @@ var dbrainSemanticFoundationSchema = []schemaIdentityTable{
 		name:    "retrieval_embedding_profiles",
 		columns: []string{"profile_id", "latest_revision", "purge_epoch", "active_generation_id", "active_snapshot_revision", "active_indexed_count", "l0_ready_count", "active_tombstone_count", "updated_at"},
 	},
-}
-
-var dbrainSemanticFoundationTriggers = []schemaIdentityTrigger{
-	{name: "trg_retrieval_state_singleton_insert", table: "retrieval_state"},
-	{name: "trg_retrieval_state_singleton_update", table: "retrieval_state"},
-	{name: "trg_retrieval_chunk_occurrences_chunk_insert", table: "retrieval_chunk_occurrences"},
-	{name: "trg_retrieval_chunk_occurrences_chunk_update", table: "retrieval_chunk_occurrences"},
-	{name: "trg_retrieval_chunks_delete_occurrences", table: "retrieval_chunks"},
 }
 
 var compatibleSchemaMigrationNames = map[int]map[string]struct{}{
@@ -169,15 +158,19 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		}
 	}
 	if hasSemanticFoundation {
-		for _, required := range dbrainSemanticFoundationTriggers {
-			var table string
-			err := st.db.QueryRow(`SELECT tbl_name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, required.name).Scan(&table)
+		for _, required := range semanticFoundationConstraintTriggers {
+			var table, definition string
+			err := st.db.QueryRow(`SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND name = ?`, required.name).Scan(&table, &definition)
 			switch {
-			case err == nil && table == required.table:
+			case err == nil && table == required.table && normalizeSQLiteTriggerSQL(definition) == normalizeSQLiteTriggerSQL(required.sql):
 			case err == nil:
 				missingTables++
 				if firstMissing == nil {
-					firstMissing = fmt.Errorf("%w: dbrain semantic foundation trigger %s belongs to %s, want %s", ErrDatabaseIncompatible, required.name, table, required.table)
+					if table != required.table {
+						firstMissing = fmt.Errorf("%w: dbrain semantic foundation trigger %s belongs to %s, want %s", ErrDatabaseIncompatible, required.name, table, required.table)
+					} else {
+						firstMissing = fmt.Errorf("%w: dbrain semantic foundation trigger %s has a non-canonical definition", ErrDatabaseIncompatible, required.name)
+					}
 				}
 			case errors.Is(err, sql.ErrNoRows):
 				missingTables++
@@ -190,6 +183,21 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		}
 	}
 	return missingTables, missingColumns, firstMissing
+}
+
+// normalizeSQLiteTriggerSQL compares the canonical trigger definitions with
+// SQLite's sqlite_master representation without treating layout or case as
+// schema identity. The definitions are static trusted SQL, so a compact token
+// form is sufficient and keeps validation independent of SQLite formatting.
+func normalizeSQLiteTriggerSQL(definition string) string {
+	var normalized strings.Builder
+	normalized.Grow(len(definition))
+	for _, r := range strings.ToLower(definition) {
+		if !unicode.IsSpace(r) {
+			normalized.WriteRune(r)
+		}
+	}
+	return normalized.String()
 }
 
 func validateAppliedSchemaMigrations(ctx context.Context, db *sql.DB, userVersion int) error {
