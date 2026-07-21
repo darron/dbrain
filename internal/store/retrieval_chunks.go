@@ -64,7 +64,7 @@ type RetrievalChunkEvidenceRow struct {
 }
 
 func (s *Store) RetrievalAvailable(ctx context.Context) (bool, error) {
-	for _, table := range []string{"retrieval_chunks", "retrieval_embeddings", "retrieval_index_generations"} {
+	for _, table := range []string{"retrieval_chunks", "retrieval_embeddings", "retrieval_index_generations", "retrieval_parent_projections"} {
 		exists, err := s.tableExistsContext(ctx, table)
 		if err != nil {
 			return false, err
