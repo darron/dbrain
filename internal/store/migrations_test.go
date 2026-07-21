@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/retrievalchunk"
 )
 
 var expectedSemanticFoundationConstraintTriggerNames = []string{
@@ -481,6 +482,8 @@ func TestSemanticFoundationMigrationRepairsEveryPartialFoundationTableAndDatabas
 				},
 				"retrieval_embedding_profiles": {
 					"profile_id", "latest_revision", "purge_epoch", "active_generation_id", "active_snapshot_revision", "active_indexed_count", "l0_ready_count", "active_tombstone_count", "updated_at",
+					"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
+					"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
 				},
 			} {
 				for _, column := range columns {
@@ -744,6 +747,8 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *test
 		},
 		"retrieval_embedding_profiles": {
 			"profile_id", "latest_revision", "purge_epoch", "active_generation_id", "active_snapshot_revision", "active_indexed_count", "l0_ready_count", "active_tombstone_count", "updated_at",
+			"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
+			"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
 		},
 	}
 	for table, columns := range requiredColumns {
@@ -764,6 +769,22 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *test
 						DROP TRIGGER trg_retrieval_chunks_update_occurrences`); err != nil {
 						_ = db.Close()
 						t.Fatalf("drop parent-side occurrence triggers: %v", err)
+					}
+				}
+				if table == "retrieval_embedding_profiles" {
+					for _, trigger := range retrievalEmbeddingProfileTriggersV19 {
+						if _, err := db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+							_ = db.Close()
+							t.Fatalf("drop embedding profile trigger %s: %v", trigger.name, err)
+						}
+					}
+				}
+				if table == "retrieval_embedding_profiles" {
+					for _, trigger := range retrievalEmbeddingProfileTriggersV19 {
+						if _, err := db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+							_ = db.Close()
+							t.Fatalf("drop embedding profile trigger %s: %v", trigger.name, err)
+						}
 					}
 				}
 				columnsAfterDrop := withoutColumn(columns, missingColumn)
@@ -1264,6 +1285,55 @@ func TestMigrationRepairsProfileInvariantTriggersAfterRetrievalMigration(t *test
 	}
 	if repairMigrationCount != 1 {
 		t.Fatalf("retrieval trigger repair migration count = %d, want 1", repairMigrationCount)
+	}
+}
+
+func TestEmbeddingProfileDefinitionMigrationRejectsMixedChunkProvenance(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	ctx := t.Context()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("migration-profile-a", "item", "item:migration-profile", 0, "hash-a", "alpha"),
+		testRetrievalChunk("migration-profile-b", "item", "item:migration-profile", 1, "hash-b", "bravo"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:migration-profile", chunks); err != nil {
+		t.Fatal(err)
+	}
+	for _, chunk := range chunks {
+		if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, "migration-profile", chunk.TextHash)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, trigger := range retrievalEmbeddingProfileTriggersV19 {
+		if _, err := db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE retrieval_chunks SET projection_version='mixed-projection' WHERE chunk_id='migration-profile-b'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version=?`, retrievalEmbeddingProfileVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version=%d`, semanticProjectionDirtyRepairVersion)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := Open(path); err == nil {
+		_ = reopened.Close()
+		t.Fatal("migration accepted mixed projection provenance under one embedding profile")
+	} else if !strings.Contains(err.Error(), "mixed chunk provenance") {
+		t.Fatalf("migration error=%v, want mixed chunk provenance", err)
 	}
 }
 

@@ -19,6 +19,8 @@ type RetrievalVectorRow struct {
 	VectorBytes                   []byte
 	VectorHash, ChunkTextHash     string
 	CurrentChunkTextHash          string
+	ProjectionVersion             string
+	ChunkerVersion                string
 	Revision                      int64
 }
 
@@ -33,7 +35,7 @@ func (s *Store) ListRetrievalVectors(ctx context.Context, profileID string, page
 	rows, err := s.queryer().QueryContext(ctx, `
 		SELECT e.chunk_id, e.profile_id, e.provider, e.model, e.dimensions,
 			e.representation, e.normalization, e.vector_bytes, e.vector_hash,
-			e.chunk_text_hash, c.chunk_text_hash, e.revision
+			e.chunk_text_hash, c.chunk_text_hash, c.projection_version, c.chunker_version, e.revision
 		FROM retrieval_embeddings e
 		JOIN retrieval_chunks c ON c.chunk_id=e.chunk_id
 		WHERE e.profile_id=? AND e.status='ready' AND e.chunk_id>?
@@ -48,7 +50,7 @@ func (s *Store) ListRetrievalVectors(ctx context.Context, profileID string, page
 		var row RetrievalVectorRow
 		if err := rows.Scan(&row.ChunkID, &row.ProfileID, &row.Provider, &row.Model, &row.Dimensions,
 			&row.Representation, &row.Normalization, &row.VectorBytes, &row.VectorHash,
-			&row.ChunkTextHash, &row.CurrentChunkTextHash, &row.Revision); err != nil {
+			&row.ChunkTextHash, &row.CurrentChunkTextHash, &row.ProjectionVersion, &row.ChunkerVersion, &row.Revision); err != nil {
 			return nil, fmt.Errorf("scan retrieval vector: %w", err)
 		}
 		result = append(result, row)

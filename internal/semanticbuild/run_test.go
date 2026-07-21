@@ -27,6 +27,7 @@ type fakeStore struct {
 	writeBatches     [][]store.RetrievalEmbeddingRow
 	purgeEpoch       int64
 	vectorRows       []store.RetrievalVectorRow
+	verification     store.RetrievalEmbeddingVerificationState
 	blockErrs        []error
 	blockCalls       []*store.RetrievalEmbeddingCorruptionError
 	operations       []string
@@ -169,6 +170,9 @@ func (f *fakeStore) ListRetrievalVectors(_ context.Context, _ string, page store
 		}
 	}
 	return result, nil
+}
+func (f *fakeStore) RetrievalEmbeddingVerificationState(context.Context, string) (store.RetrievalEmbeddingVerificationState, error) {
+	return f.verification, nil
 }
 func (f *fakeStore) BlockCorruptRetrievalEmbedding(_ context.Context, corruption *store.RetrievalEmbeddingCorruptionError) error {
 	f.operations = append(f.operations, "block")
@@ -550,21 +554,60 @@ func TestEmbedIsolatesBlockedInputBeforeTerminalWrites(t *testing.T) {
 
 func TestSemanticVerifyPagesAndQuarantinesCorruption(t *testing.T) {
 	valid := embedding.EncodeDenseF32([]float32{0.6, 0.8})
-	st := &fakeStore{vectorRows: []store.RetrievalVectorRow{
-		{ChunkID: "a", ProfileID: "profile", Provider: "fake", Model: "m", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: valid, VectorHash: vectorHash(valid), ChunkTextHash: "ha", CurrentChunkTextHash: "ha"},
-		{ChunkID: "b", ProfileID: "profile", Provider: "fake", Model: "m", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: []byte{0}, VectorHash: "bad", ChunkTextHash: "hb", CurrentChunkTextHash: "hb"},
-		{ChunkID: "c", ProfileID: "profile", Provider: "fake", Model: "m", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: valid, VectorHash: vectorHash(valid), ChunkTextHash: "hc", CurrentChunkTextHash: "hc"},
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	profileID, _ := profile.ID()
+	verification := store.RetrievalEmbeddingVerificationState{ProfileID: profileID, Profile: profile, LatestRevision: 3, PurgeEpoch: 4, GlobalPurgeEpoch: 4}
+	st := &fakeStore{verification: verification, vectorRows: []store.RetrievalVectorRow{
+		{ChunkID: "a", ProfileID: profileID, Provider: "fake", Model: "m", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: valid, VectorHash: vectorHash(valid), ChunkTextHash: "ha", CurrentChunkTextHash: "ha", Revision: 1},
+		{ChunkID: "b", ProfileID: profileID, Provider: "fake", Model: "m", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: []byte{0}, VectorHash: "bad", ChunkTextHash: "hb", CurrentChunkTextHash: "hb", Revision: 2},
+		{ChunkID: "c", ProfileID: profileID, Provider: "fake", Model: "m", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: valid, VectorHash: vectorHash(valid), ChunkTextHash: "hc", CurrentChunkTextHash: "hc", Revision: 3},
 	}}
-	progress, err := RunVerify(context.Background(), st, VerifyOptions{ProfileID: "profile", Limit: 2})
+	progress, err := RunVerify(context.Background(), st, VerifyOptions{Profile: profile, Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if progress.Scanned != 2 || progress.Quarantined != 1 || progress.Resume != "b" || !progress.HasMore || len(st.blockCalls) != 1 || st.blockCalls[0].ChunkID != "b" {
 		t.Fatalf("progress=%+v blocks=%+v", progress, st.blockCalls)
 	}
-	next, err := RunVerify(context.Background(), st, VerifyOptions{ProfileID: "profile", Limit: 2, Resume: progress.Resume})
+	next, err := RunVerify(context.Background(), st, VerifyOptions{Profile: profile, Limit: 2, Resume: progress.Resume})
 	if err != nil || next.Scanned != 1 || next.Resume != "c" || next.Quarantined != 0 {
 		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
+func TestSemanticVerifyRejectsProfileRootAndRevisionProvenance(t *testing.T) {
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	profileID, _ := profile.ID()
+	valid := embedding.EncodeDenseF32([]float32{0.6, 0.8})
+	base := store.RetrievalEmbeddingVerificationState{ProfileID: profileID, Profile: profile, LatestRevision: 2, PurgeEpoch: 1, GlobalPurgeEpoch: 1}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*store.RetrievalEmbeddingVerificationState, *store.RetrievalVectorRow)
+	}{
+		{"profile id", func(state *store.RetrievalEmbeddingVerificationState, _ *store.RetrievalVectorRow) {
+			state.ProfileID = "wrong"
+		}},
+		{"purge epoch", func(state *store.RetrievalEmbeddingVerificationState, _ *store.RetrievalVectorRow) {
+			state.GlobalPurgeEpoch++
+		}},
+		{"backend", func(state *store.RetrievalEmbeddingVerificationState, _ *store.RetrievalVectorRow) {
+			state.ActiveGenerationID, state.GenerationBackend, state.GenerationStatus = "root", "hnsw", store.RetrievalGenerationCompleted
+			state.GenerationActive, state.GenerationDimensions, state.GenerationDistanceMetric = true, 2, "dot"
+		}},
+		{"chunker", func(_ *store.RetrievalEmbeddingVerificationState, row *store.RetrievalVectorRow) {
+			row.ChunkerVersion = "old"
+		}},
+		{"revision", func(_ *store.RetrievalEmbeddingVerificationState, row *store.RetrievalVectorRow) { row.Revision = 3 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := base
+			row := store.RetrievalVectorRow{ChunkID: "a", ProfileID: profileID, Provider: "fake", Model: "m", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: valid, VectorHash: vectorHash(valid), ChunkTextHash: "ha", CurrentChunkTextHash: "ha", Revision: 1}
+			tc.mutate(&state, &row)
+			st := &fakeStore{verification: state, vectorRows: []store.RetrievalVectorRow{row}}
+			if _, err := RunVerify(context.Background(), st, VerifyOptions{Profile: profile, Limit: 1}); err == nil {
+				t.Fatal("invalid verification provenance accepted")
+			}
+		})
 	}
 }
 

@@ -86,7 +86,8 @@ func newSemanticVerifyCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			if strings.TrimSpace(semantic.Model) == "" || semantic.Dimensions <= 0 {
 				return fmt.Errorf("semantic embedding model and positive dimensions are not configured")
 			}
-			profileID, err := semanticbuild.Profile(embedding.Info{Provider: string(semantic.Provider), Model: semantic.Model, Dimensions: semantic.Dimensions}).ID()
+			profile := semanticbuild.Profile(embedding.Info{Provider: string(semantic.Provider), Model: semantic.Model, Dimensions: semantic.Dimensions})
+			_, err = profile.ID()
 			if err != nil {
 				return err
 			}
@@ -95,7 +96,7 @@ func newSemanticVerifyCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			progress, err := semanticbuild.RunVerify(cmd.Context(), st, semanticbuild.VerifyOptions{ProfileID: profileID, Limit: limit, Resume: resume})
+			progress, err := semanticbuild.RunVerify(cmd.Context(), st, semanticbuild.VerifyOptions{Profile: profile, Limit: limit, Resume: resume})
 			if err != nil {
 				return err
 			}

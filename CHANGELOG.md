@@ -30,6 +30,15 @@ development date for the change set.
   persists projection provenance on chunks; `semantic embed` refuses stale
   projection/chunker rows before calling the provider, and exact search rejects
   historically mislabeled vectors.
+- **Revisioned embedding lifecycle**: Semantic embedding provider batches now
+  commit atomically under one membership revision, preserve a valid active
+  root by accounting changed rows in L0 plus tombstones, and treat
+  operationally identical re-puts as revision/counter no-ops. Bounded
+  `semantic verify` pages validate immutable profile, chunk provenance,
+  purge-epoch, revision, root backend, vector bytes, and vector hashes before
+  quarantining corrupt ready rows. Migration 19 replaces full-profile write
+  scans with primary-key profile/chunk checks and rejects mixed legacy profile
+  provenance.
 
 ### Production health audit corrections (2026-07-15)
 

@@ -225,6 +225,13 @@ func TestOnlyOneGenerationIsActivePerProfile(t *testing.T) {
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
+	chunk := testRetrievalChunk("generation-chunk", "item", "item:generations", 0, "generation-hash", "alpha")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:generations", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, "profile-a", chunk.TextHash)); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, id := range []string{"generation-a", "generation-b"} {
 		if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
@@ -296,7 +303,8 @@ func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T
 	if err := st.PutRetrievalEmbedding(ctx, changedEmbedding); err != nil {
 		t.Fatalf("change embedding: %v", err)
 	}
-	assertRetrievalGenerationStale(t, st, "generation-a")
+	assertGenerationActiveForTest(t, st, "generation-a")
+	assertProfileAggregatesForTest(t, st, "profile-a", "generation-a", 0, 1, 1)
 
 	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
 		GenerationID: "generation-b", ProfileID: "profile-a", Backend: "hnsw", BackendVersion: "1",
@@ -472,6 +480,7 @@ func TestPurgeItemIndexedContentDeletesRetrievalState(t *testing.T) {
 	if status != string(RetrievalGenerationStale) || active != 0 {
 		t.Fatalf("affected generation = status %q active %d, want stale inactive", status, active)
 	}
+	assertProfileAggregatesForTest(t, st, "profile-a", "", 0, 0, 0)
 	var enrichmentCount int
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM item_enrichments WHERE item_id = ?`, itemID).Scan(&enrichmentCount); err != nil {
 		t.Fatalf("count purged item enrichments: %v", err)
@@ -1542,8 +1551,84 @@ func TestEmbeddingBatchUsesOneRevisionAndVectorHashes(t *testing.T) {
 	}
 	rows[0].AttemptCount++
 	later, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows[:1], ExpectedPurgeEpoch: 0})
-	if err != nil || later != revision+1 {
+	if err != nil || later != revision {
 		t.Fatalf("later revision=%d err=%v", later, err)
+	}
+	afterIdempotent, err := st.RetrievalEmbeddingProfile(ctx, profileID)
+	if err != nil || afterIdempotent.LatestRevision != revision || afterIdempotent.L0ReadyCount != 2 {
+		t.Fatalf("profile after idempotent re-put=%+v err=%v", afterIdempotent, err)
+	}
+}
+
+func TestEmbeddingBatchPreservesActiveRootAndAccountsL0AndTombstones(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("aggregate-a", "item", "item:aggregates", 0, "hash-a", "alpha"),
+		testRetrievalChunk("aggregate-b", "item", "item:aggregates", 1, "hash-b", "bravo"),
+		testRetrievalChunk("aggregate-c", "item", "item:aggregates", 2, "hash-c", "charlie"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:aggregates", chunks); err != nil {
+		t.Fatal(err)
+	}
+	profile := embedding.Profile{Provider: "fake", Model: "fake-v1", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
+	profileID, _ := profile.ID()
+	rows := make([]RetrievalEmbeddingRow, 0, len(chunks))
+	for _, chunk := range chunks {
+		rows = append(rows, testEmbedding(chunk.ID, profileID, chunk.TextHash))
+	}
+	if _, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{GenerationID: "aggregate-root", ProfileID: profileID, Backend: "exact", BackendVersion: "v1", Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 3, BuildStatus: RetrievalGenerationCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ActivateRetrievalIndexGeneration(ctx, "aggregate-root"); err != nil {
+		t.Fatal(err)
+	}
+	rows[0].AttemptCount++
+	idempotentRevision, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows[:1], ExpectedPurgeEpoch: 0})
+	if err != nil || idempotentRevision != 1 {
+		t.Fatalf("idempotent indexed re-put revision=%d err=%v", idempotentRevision, err)
+	}
+	assertProfileAggregatesForTest(t, st, profileID, "aggregate-root", 3, 0, 0)
+	assertGenerationActiveForTest(t, st, "aggregate-root")
+	rows[0].VectorBytes = embedding.EncodeDenseF32([]float32{0, 1})
+	if _, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows[:1], ExpectedPurgeEpoch: 0}); err != nil {
+		t.Fatal(err)
+	}
+	assertProfileAggregatesForTest(t, st, profileID, "aggregate-root", 3, 1, 1)
+	assertGenerationActiveForTest(t, st, "aggregate-root")
+	if _, err := st.db.Exec(`DELETE FROM retrieval_chunks WHERE chunk_id IN ('aggregate-a','aggregate-b')`); err != nil {
+		t.Fatal(err)
+	}
+	assertProfileAggregatesForTest(t, st, profileID, "aggregate-root", 3, 0, 2)
+	assertGenerationActiveForTest(t, st, "aggregate-root")
+}
+
+func TestEmbeddingDeletionFailsClosedOnAggregateDrift(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunk := testRetrievalChunk("drift-l0", "item", "item:drift-l0", 0, "hash", "alpha")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:drift-l0", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, "drift-profile", chunk.TextHash)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embedding_profiles SET l0_ready_count=0 WHERE profile_id='drift-profile'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`DELETE FROM retrieval_chunks WHERE chunk_id='drift-l0'`); err == nil {
+		t.Fatal("aggregate drift allowed embedding cascade delete")
+	}
+	var chunks, embeddings int
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE chunk_id='drift-l0'`).Scan(&chunks)
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_embeddings WHERE chunk_id='drift-l0'`).Scan(&embeddings)
+	if chunks != 1 || embeddings != 1 {
+		t.Fatalf("failed-closed delete chunks=%d embeddings=%d", chunks, embeddings)
 	}
 }
 
@@ -1611,7 +1696,7 @@ func TestEmbeddingBatchRollsBackEveryRowOnPersistenceFailure(t *testing.T) {
 	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{GenerationID: "rollback-batch-generation", ProfileID: profileID, Backend: "exact", BackendVersion: "v1", Dimensions: 2, DistanceMetric: "cosine", BuildStatus: RetrievalGenerationCompleted}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "rollback-batch-generation"); err != nil {
+	if _, err := st.db.Exec(`UPDATE retrieval_index_generations SET active=1 WHERE generation_id='rollback-batch-generation'`); err != nil {
 		t.Fatal(err)
 	}
 	rows := []RetrievalEmbeddingRow{testEmbedding(chunks[0].ID, profileID, chunks[0].TextHash), testEmbedding(chunks[1].ID, profileID, chunks[1].TextHash)}
@@ -1714,7 +1799,8 @@ func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 	if profileRow.LatestRevision != 2 || profileRow.L0ReadyCount != 0 {
 		t.Fatalf("profile after quarantine=%+v, want revision 2 and no L0 ready rows", profileRow)
 	}
-	assertRetrievalGenerationStale(t, st, "read-corrupt-generation")
+	assertGenerationActiveForTest(t, st, "read-corrupt-generation")
+	assertProfileAggregatesForTest(t, st, row.ProfileID, "read-corrupt-generation", 0, 0, 1)
 	ready, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 10)
 	if err != nil || len(ready) != 0 {
 		t.Fatalf("ready rows after explicit corruption transition = %+v, %v", ready, err)
@@ -2262,6 +2348,29 @@ func assertRetrievalGenerationStale(t *testing.T, st *Store, generationID string
 	}
 }
 
+func assertProfileAggregatesForTest(t *testing.T, st *Store, profileID, activeGenerationID string, indexed, l0, tombstones int) {
+	t.Helper()
+	row, err := st.RetrievalEmbeddingProfile(context.Background(), profileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ActiveGenerationID != activeGenerationID || row.ActiveIndexedCount != indexed || row.L0ReadyCount != l0 || row.ActiveTombstoneCount != tombstones {
+		t.Fatalf("profile aggregates=%+v want active=%q indexed=%d l0=%d tombstones=%d", row, activeGenerationID, indexed, l0, tombstones)
+	}
+}
+
+func assertGenerationActiveForTest(t *testing.T, st *Store, generationID string) {
+	t.Helper()
+	var status string
+	var active int
+	if err := st.db.QueryRow(`SELECT build_status,active FROM retrieval_index_generations WHERE generation_id=?`, generationID).Scan(&status, &active); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(RetrievalGenerationCompleted) || active != 1 {
+		t.Fatalf("generation %s status=%q active=%d", generationID, status, active)
+	}
+}
+
 func TestListChunksNeedingEmbeddingExcludesCurrentAndIncludesChanged(t *testing.T) {
 	t.Parallel()
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
@@ -2359,6 +2468,28 @@ func TestRetrievalEmbeddingProfileInvariantsRejectMixedProvenance(t *testing.T) 
 	}
 	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET model = 'different-model' WHERE chunk_id = ? AND profile_id = ?`, first.ChunkID, first.ProfileID); err == nil {
 		t.Fatal("SQLite allowed an existing profile invariant to mutate")
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_chunks SET projection_version='different-projection' WHERE chunk_id=?`, chunks[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`
+		INSERT INTO retrieval_embeddings (
+			chunk_id, profile_id, provider, model, dimensions, representation,
+			normalization, vector_bytes, chunk_text_hash, status, revision, vector_hash, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 2, ?, ?)`,
+		chunks[1].ID, first.ProfileID, first.Provider, first.Model, first.Dimensions,
+		first.Representation, first.Normalization, first.VectorBytes, chunks[1].TextHash,
+		retrievalVectorHash(first.VectorBytes), time.Now().UTC().Format(time.RFC3339)); err == nil {
+		t.Fatal("SQLite accepted chunk projection provenance that conflicts with the profile definition")
+	}
+	for _, trigger := range retrievalEmbeddingProfileTriggersV19[:2] {
+		definition := normalizeSQLiteTriggerSQL(trigger.sql)
+		if strings.Contains(definition, "fromretrieval_embeddingse") {
+			t.Fatalf("profile invariant trigger %s scans retrieval_embeddings: %s", trigger.name, definition)
+		}
+		if !strings.Contains(definition, "p.profile_id=new.profile_id") || !strings.Contains(definition, "c.chunk_id=new.chunk_id") {
+			t.Fatalf("profile invariant trigger %s lacks primary-key profile/chunk lookups: %s", trigger.name, definition)
+		}
 	}
 }
 

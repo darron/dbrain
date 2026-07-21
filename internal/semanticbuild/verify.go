@@ -15,10 +15,10 @@ import (
 const maxVerifyPageSize = 5_000
 
 type VerifyOptions struct {
-	ProfileID string
-	Limit     int
-	Resume    string
-	Progress  func(VerifyProgress) error
+	Profile  embedding.Profile
+	Limit    int
+	Resume   string
+	Progress func(VerifyProgress) error
 }
 
 type VerifyProgress struct {
@@ -28,14 +28,16 @@ type VerifyProgress struct {
 }
 
 type VerifyStore interface {
+	RetrievalEmbeddingVerificationState(context.Context, string) (store.RetrievalEmbeddingVerificationState, error)
 	ListRetrievalVectors(context.Context, string, store.VectorPage) ([]store.RetrievalVectorRow, error)
 	BlockCorruptRetrievalEmbedding(context.Context, *store.RetrievalEmbeddingCorruptionError) error
 }
 
 func RunVerify(ctx context.Context, st VerifyStore, opts VerifyOptions) (VerifyProgress, error) {
 	progress := VerifyProgress{Progress: Progress{Stage: "verify", Snapshots: make([]Progress, 0)}}
-	if strings.TrimSpace(opts.ProfileID) == "" {
-		return progress, fmt.Errorf("semantic verify profile is required")
+	profileID, err := opts.Profile.ID()
+	if err != nil {
+		return progress, fmt.Errorf("semantic verify profile is invalid: %w", err)
 	}
 	if opts.Limit <= 0 || opts.Limit > maxVerifyPageSize {
 		return progress, fmt.Errorf("semantic verify limit must be between 1 and %d", maxVerifyPageSize)
@@ -43,7 +45,14 @@ func RunVerify(ctx context.Context, st VerifyStore, opts VerifyOptions) (VerifyP
 	if err := ctx.Err(); err != nil {
 		return progress, err
 	}
-	rows, err := st.ListRetrievalVectors(ctx, opts.ProfileID, store.VectorPage{AfterChunkID: opts.Resume, Limit: opts.Limit})
+	state, err := st.RetrievalEmbeddingVerificationState(ctx, profileID)
+	if err != nil {
+		return progress, err
+	}
+	if err := validateVerificationState(profileID, opts.Profile, state); err != nil {
+		return progress, err
+	}
+	rows, err := st.ListRetrievalVectors(ctx, profileID, store.VectorPage{AfterChunkID: opts.Resume, Limit: opts.Limit})
 	if err != nil {
 		return progress, err
 	}
@@ -53,6 +62,9 @@ func RunVerify(ctx context.Context, st VerifyStore, opts VerifyOptions) (VerifyP
 		}
 		progress.Scanned++
 		progress.Resume = row.ChunkID
+		if err := validateVerificationRow(profileID, opts.Profile, state.LatestRevision, row); err != nil {
+			return progress, err
+		}
 		if reason := retrievalVectorCorruptionReason(row); reason != "" {
 			corruption := &store.RetrievalEmbeddingCorruptionError{ChunkID: row.ChunkID, ProfileID: row.ProfileID, Reason: reason}
 			if err := st.BlockCorruptRetrievalEmbedding(ctx, corruption); err != nil {
@@ -82,6 +94,54 @@ func RunVerify(ctx context.Context, st VerifyStore, opts VerifyOptions) (VerifyP
 		}
 	}
 	return progress, nil
+}
+
+func validateVerificationState(profileID string, profile embedding.Profile, state store.RetrievalEmbeddingVerificationState) error {
+	storedProfileID, err := state.Profile.ID()
+	if err != nil {
+		return fmt.Errorf("semantic verify stored profile %s is invalid: %w", state.ProfileID, err)
+	}
+	if state.ProfileID != profileID || storedProfileID != profileID || state.Profile != profile {
+		return fmt.Errorf("semantic verify profile definition does not match requested profile %s", profileID)
+	}
+	if state.PurgeEpoch != state.GlobalPurgeEpoch {
+		return fmt.Errorf("semantic verify profile %s purge epoch %d does not match database epoch %d", profileID, state.PurgeEpoch, state.GlobalPurgeEpoch)
+	}
+	if state.LatestRevision < 0 || state.ActiveSnapshotRevision < 0 || state.ActiveSnapshotRevision > state.LatestRevision {
+		return fmt.Errorf("semantic verify profile %s has invalid revision bounds latest=%d snapshot=%d", profileID, state.LatestRevision, state.ActiveSnapshotRevision)
+	}
+	if state.ActiveIndexedCount < 0 || state.L0ReadyCount < 0 || state.ActiveTombstoneCount < 0 {
+		return fmt.Errorf("semantic verify profile %s has negative aggregate counts", profileID)
+	}
+	if state.ActiveGenerationID == "" {
+		if state.ActiveSnapshotRevision != 0 || state.ActiveIndexedCount != 0 || state.ActiveTombstoneCount != 0 {
+			return fmt.Errorf("semantic verify profile %s has root aggregates without an active generation", profileID)
+		}
+		return nil
+	}
+	if !state.GenerationActive || state.GenerationStatus != store.RetrievalGenerationCompleted {
+		return fmt.Errorf("semantic verify profile %s active generation %s is not active and completed", profileID, state.ActiveGenerationID)
+	}
+	if state.GenerationBackend != "exact" || strings.TrimSpace(state.GenerationBackendVersion) == "" || state.GenerationDistanceMetric != "cosine" {
+		return fmt.Errorf("semantic verify profile %s active generation %s has unsupported backend provenance %q/%q/%q", profileID, state.ActiveGenerationID, state.GenerationBackend, state.GenerationBackendVersion, state.GenerationDistanceMetric)
+	}
+	if state.GenerationDimensions != profile.Dimensions {
+		return fmt.Errorf("semantic verify profile %s active generation %s dimensions %d do not match %d", profileID, state.ActiveGenerationID, state.GenerationDimensions, profile.Dimensions)
+	}
+	return nil
+}
+
+func validateVerificationRow(profileID string, profile embedding.Profile, latestRevision int64, row store.RetrievalVectorRow) error {
+	if row.ProfileID != profileID || row.Provider != profile.Provider || row.Model != profile.Model ||
+		row.Dimensions != profile.Dimensions || row.ProjectionVersion != profile.ProjectionVersion ||
+		row.ChunkerVersion != profile.ChunkerVersion || row.Representation != profile.Representation ||
+		row.Normalization != profile.Normalization {
+		return fmt.Errorf("semantic verify row %s provenance does not match profile %s", row.ChunkID, profileID)
+	}
+	if row.Revision <= 0 || row.Revision > latestRevision {
+		return fmt.Errorf("semantic verify row %s revision %d is outside profile range 1..%d", row.ChunkID, row.Revision, latestRevision)
+	}
+	return nil
 }
 
 func retrievalVectorCorruptionReason(row store.RetrievalVectorRow) string {

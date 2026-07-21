@@ -88,6 +88,13 @@ var dbrainSemanticFoundationSchema = []schemaIdentityTable{
 	},
 }
 
+var dbrainEmbeddingProfileDefinitionSchema = []schemaIdentityTable{{
+	name: "retrieval_embedding_profiles",
+	columns: []string{
+		"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
+	},
+}}
+
 var compatibleSchemaMigrationNames = map[int]map[string]struct{}{
 	6: {
 		"source_summary_failure_timestamp": {},
@@ -145,6 +152,14 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		case err != nil:
 			return 0, 0, fmt.Errorf("inspect dbrain semantic projection dirty repair migration: %w", err)
 		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalEmbeddingProfileVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainEmbeddingProfileDefinitionSchema...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain embedding profile migration: %w", err)
+		}
 	}
 
 	missingTables, missingColumns := 0, 0
@@ -186,6 +201,19 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		missingTables, firstMissing, err = inspectCanonicalTriggers(st, "semantic projection dirty", semanticProjectionDirtyTriggersForVersion, missingTables, firstMissing)
 		if err != nil {
 			return missingTables, missingColumns, err
+		}
+	}
+	if hasMigrationTable {
+		var found int
+		err := st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalEmbeddingProfileVersion).Scan(&found)
+		if err == nil {
+			var inspectErr error
+			missingTables, firstMissing, inspectErr = inspectCanonicalTriggers(st, "embedding profile definitions", retrievalEmbeddingProfileTriggersV19, missingTables, firstMissing)
+			if inspectErr != nil {
+				return missingTables, missingColumns, inspectErr
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return missingTables, missingColumns, fmt.Errorf("inspect embedding profile migration triggers: %w", err)
 		}
 	}
 	return missingTables, missingColumns, firstMissing

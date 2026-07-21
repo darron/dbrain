@@ -274,11 +274,8 @@ func (s *Store) putRetrievalEmbeddingBatch(ctx context.Context, input PutRetriev
 	if purgeEpoch != input.ExpectedPurgeEpoch {
 		return 0, fmt.Errorf("%w: database is at epoch %d, expected %d", ErrRetrievalPurgeEpochChanged, purgeEpoch, input.ExpectedPurgeEpoch)
 	}
-	profileRow, err := ensureRetrievalEmbeddingProfileTx(ctx, tx, profileID, purgeEpoch)
+	profileRow, err := ensureRetrievalEmbeddingProfileTx(ctx, tx, profileID, purgeEpoch, input.Profile)
 	if err != nil {
-		return 0, err
-	}
-	if err := validateRetrievalEmbeddingProfileInvariantsTx(ctx, tx, profileID, input.Profile); err != nil {
 		return 0, err
 	}
 	for _, row := range rows {
@@ -295,35 +292,63 @@ func (s *Store) putRetrievalEmbeddingBatch(ctx context.Context, input PutRetriev
 			return 0, fmt.Errorf("retrieval chunk %s provenance %q/%q does not match profile %q/%q", row.ChunkID, projectionVersion, chunkerVersion, input.Profile.ProjectionVersion, input.Profile.ChunkerVersion)
 		}
 	}
-	revision := profileRow.LatestRevision + 1
 	now := time.Now().UTC().Format(time.RFC3339)
+	type plannedEmbeddingWrite struct {
+		row               RetrievalEmbeddingRow
+		old               RetrievalEmbeddingRow
+		exists            bool
+		membershipChanged bool
+	}
+	planned := make([]plannedEmbeddingWrite, 0, len(rows))
+	anyMembershipChanged := false
 	l0Delta := 0
-	embeddingChanged := false
+	tombstoneDelta := 0
 	for _, row := range rows {
 		var old RetrievalEmbeddingRow
-		var oldRevision int64
 		readErr := tx.QueryRowContext(ctx, `
 			SELECT provider, model, dimensions, representation, normalization,
 				vector_bytes, chunk_text_hash, status, revision
 			FROM retrieval_embeddings WHERE chunk_id=? AND profile_id=?`, row.ChunkID, profileID).Scan(
 			&old.Provider, &old.Model, &old.Dimensions, &old.Representation, &old.Normalization,
-			&old.VectorBytes, &old.ChunkTextHash, &old.Status, &oldRevision,
+			&old.VectorBytes, &old.ChunkTextHash, &old.Status, &old.Revision,
 		)
 		if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
 			return 0, fmt.Errorf("load prior retrieval embedding for chunk %s profile %s: %w", row.ChunkID, profileID, readErr)
 		}
-		oldL0Ready := readErr == nil && old.Status == RetrievalEmbeddingReady && oldRevision > profileRow.ActiveSnapshotRevision
-		newL0Ready := row.Status == RetrievalEmbeddingReady
-		if !oldL0Ready && newL0Ready {
-			l0Delta++
-		} else if oldL0Ready && !newL0Ready {
+		exists := readErr == nil
+		membershipChanged := !exists || !retrievalEmbeddingMembershipEqual(old, row)
+		planned = append(planned, plannedEmbeddingWrite{
+			row: row, old: old, exists: exists, membershipChanged: membershipChanged,
+		})
+		if !membershipChanged {
+			continue
+		}
+		anyMembershipChanged = true
+		oldL0Ready := exists && old.Status == RetrievalEmbeddingReady &&
+			(profileRow.ActiveGenerationID == "" || old.Revision > profileRow.ActiveSnapshotRevision)
+		if oldL0Ready {
 			l0Delta--
 		}
-		if errors.Is(readErr, sql.ErrNoRows) || old.Provider != row.Provider || old.Model != row.Model || old.Dimensions != row.Dimensions ||
-			old.Representation != row.Representation || old.Normalization != row.Normalization || !bytes.Equal(old.VectorBytes, row.VectorBytes) ||
-			old.ChunkTextHash != row.ChunkTextHash || old.Status != row.Status {
-			embeddingChanged = true
+		if row.Status == RetrievalEmbeddingReady {
+			l0Delta++
 		}
+		if exists && old.Status == RetrievalEmbeddingReady && profileRow.ActiveGenerationID != "" && old.Revision <= profileRow.ActiveSnapshotRevision {
+			tombstoneDelta++
+		}
+	}
+	if profileRow.L0ReadyCount+l0Delta < 0 {
+		return 0, fmt.Errorf("retrieval embedding profile %s L0 aggregate drift: count %d delta %d", profileID, profileRow.L0ReadyCount, l0Delta)
+	}
+	revision := profileRow.LatestRevision
+	if anyMembershipChanged {
+		revision++
+	}
+	for _, write := range planned {
+		rowRevision := revision
+		if write.exists && !write.membershipChanged {
+			rowRevision = write.old.Revision
+		}
+		row := write.row
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO retrieval_embeddings (
 				chunk_id, profile_id, provider, model, dimensions, representation,
@@ -341,21 +366,23 @@ func (s *Store) putRetrievalEmbeddingBatch(ctx context.Context, input PutRetriev
 			row.ChunkID, profileID, row.Provider, row.Model, row.Dimensions, row.Representation,
 			row.Normalization, row.VectorBytes, row.ChunkTextHash, row.Status, row.AttemptCount,
 			row.LastError, formatOptionalTime(row.NextAttemptAt), formatOptionalTime(row.EmbeddedAt),
-			revision, retrievalVectorHash(row.VectorBytes), now)
+			rowRevision, retrievalVectorHash(row.VectorBytes), now)
 		if err != nil {
 			return 0, fmt.Errorf("put retrieval embedding batch row %s profile %s: %w", row.ChunkID, profileID, err)
 		}
 	}
-	if embeddingChanged {
-		if err := markRetrievalProfileGenerationsStaleTx(ctx, tx, profileID); err != nil {
-			return 0, err
+	if !anyMembershipChanged {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit idempotent retrieval embedding batch profile %s: %w", profileID, err)
 		}
+		return revision, nil
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE retrieval_embedding_profiles
-		SET latest_revision=?, l0_ready_count=l0_ready_count+?, updated_at=?
+		SET latest_revision=?, l0_ready_count=l0_ready_count+?,
+			active_tombstone_count=active_tombstone_count+?, updated_at=?
 		WHERE profile_id=? AND latest_revision=? AND purge_epoch=?`,
-		revision, l0Delta, now, profileID, profileRow.LatestRevision, purgeEpoch)
+		revision, l0Delta, tombstoneDelta, now, profileID, profileRow.LatestRevision, purgeEpoch)
 	if err != nil {
 		return 0, fmt.Errorf("update retrieval embedding profile %s: %w", profileID, err)
 	}
@@ -367,6 +394,13 @@ func (s *Store) putRetrievalEmbeddingBatch(ctx context.Context, input PutRetriev
 		return 0, fmt.Errorf("commit retrieval embedding batch profile %s revision %d: %w", profileID, revision, err)
 	}
 	return revision, nil
+}
+
+func retrievalEmbeddingMembershipEqual(old, next RetrievalEmbeddingRow) bool {
+	return old.Provider == next.Provider && old.Model == next.Model &&
+		old.Dimensions == next.Dimensions && old.Representation == next.Representation &&
+		old.Normalization == next.Normalization && bytes.Equal(old.VectorBytes, next.VectorBytes) &&
+		old.ChunkTextHash == next.ChunkTextHash && old.Status == next.Status
 }
 
 func validateRetrievalEmbeddingBatch(profile embedding.Profile, profileID string, input []RetrievalEmbeddingRow, requireCurrentProfile bool) ([]RetrievalEmbeddingRow, error) {
@@ -412,20 +446,6 @@ func validateRetrievalEmbeddingBatch(profile embedding.Profile, profileID string
 		}
 	}
 	return rows, nil
-}
-
-func validateRetrievalEmbeddingProfileInvariantsTx(ctx context.Context, tx *sql.Tx, profileID string, profile embedding.Profile) error {
-	var count int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM retrieval_embeddings
-		WHERE profile_id=? AND (provider!=? OR model!=? OR dimensions!=? OR representation!=? OR normalization!=?)`,
-		profileID, profile.Provider, profile.Model, profile.Dimensions, profile.Representation, profile.Normalization).Scan(&count); err != nil {
-		return fmt.Errorf("validate retrieval embedding profile %s invariants: %w", profileID, err)
-	}
-	if count != 0 {
-		return fmt.Errorf("retrieval embedding profile %s invariants do not match", profileID)
-	}
-	return nil
 }
 
 func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit int) ([]RetrievalEmbeddingRow, error) {
@@ -525,7 +545,14 @@ func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, corruption *
 	if err := tx.QueryRowContext(ctx, `SELECT purge_epoch FROM retrieval_state WHERE singleton=1`).Scan(&purgeEpoch); err != nil {
 		return fmt.Errorf("read retrieval purge epoch while blocking corrupt embedding: %w", err)
 	}
-	profileRow, err := ensureRetrievalEmbeddingProfileTx(ctx, tx, profileID, purgeEpoch)
+	var projectionVersion, chunkerVersion string
+	if err := tx.QueryRowContext(ctx, `SELECT projection_version,chunker_version FROM retrieval_chunks WHERE chunk_id=?`, chunkID).Scan(&projectionVersion, &chunkerVersion); err != nil {
+		return fmt.Errorf("read corrupt embedding chunk provenance: %w", err)
+	}
+	profile := embedding.Profile{Provider: row.Provider, Model: row.Model, Dimensions: row.Dimensions,
+		ProjectionVersion: projectionVersion, ChunkerVersion: chunkerVersion,
+		Representation: row.Representation, Normalization: row.Normalization}
+	profileRow, err := ensureRetrievalEmbeddingProfileTx(ctx, tx, profileID, purgeEpoch, profile)
 	if err != nil {
 		return err
 	}
@@ -547,23 +574,27 @@ func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, corruption *
 		return fmt.Errorf("ready retrieval embedding for chunk %s profile %s was not found", chunkID, profileID)
 	}
 	l0Delta := 0
-	if row.Revision > profileRow.ActiveSnapshotRevision {
+	tombstoneDelta := 0
+	if profileRow.ActiveGenerationID == "" || row.Revision > profileRow.ActiveSnapshotRevision {
 		l0Delta = -1
+	} else {
+		tombstoneDelta = 1
+	}
+	if profileRow.L0ReadyCount+l0Delta < 0 {
+		return fmt.Errorf("retrieval embedding profile %s L0 aggregate drift: count %d delta %d", profileID, profileRow.L0ReadyCount, l0Delta)
 	}
 	profileResult, err := tx.ExecContext(ctx, `
 		UPDATE retrieval_embedding_profiles
-		SET latest_revision=?, l0_ready_count=MAX(l0_ready_count+?, 0), updated_at=?
+		SET latest_revision=?, l0_ready_count=l0_ready_count+?,
+			active_tombstone_count=active_tombstone_count+?, updated_at=?
 		WHERE profile_id=? AND latest_revision=? AND purge_epoch=?`,
-		revision, l0Delta, now, profileID, profileRow.LatestRevision, purgeEpoch)
+		revision, l0Delta, tombstoneDelta, now, profileID, profileRow.LatestRevision, purgeEpoch)
 	if err != nil {
 		return fmt.Errorf("update retrieval embedding profile after corruption %s: %w", profileID, err)
 	}
 	profileAffected, err := profileResult.RowsAffected()
 	if err != nil || profileAffected != 1 {
 		return fmt.Errorf("retrieval embedding profile %s changed while blocking corruption", profileID)
-	}
-	if err := markRetrievalProfileGenerationsStaleTx(ctx, tx, profileID); err != nil {
-		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit corrupt retrieval embedding transition for chunk %s profile %s: %w", chunkID, profileID, err)
