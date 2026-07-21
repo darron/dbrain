@@ -1,10 +1,177 @@
 package retrievalchunk
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+func TestBuildProjectionV2UsesContentLocalChunksAndOccurrences(t *testing.T) {
+	parent := Parent{Kind: "source", SourceKey: "src:projection", ContentHash: "parent-v1", Sections: []Section{
+		{Key: "body", Role: "raw", Heading: "Body", Text: "  same window  "},
+		{Key: "body-copy", Role: "raw", Heading: "Body", Text: "same window"},
+	}}
+	projection, err := BuildProjection(parent, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.ParentHash == "" || len(projection.Chunks) != 2 || len(projection.Occurrences) != 2 {
+		t.Fatalf("projection = %+v", projection)
+	}
+	if projection.Chunks[0].Text != "same window" || projection.Occurrences[0].StartChar != 2 || projection.Occurrences[0].EndChar != 13 {
+		t.Fatalf("trimmed occurrence = %+v chunk=%+v", projection.Occurrences[0], projection.Chunks[0])
+	}
+	if projection.Chunks[0].ID == projection.Chunks[1].ID {
+		t.Fatal("section keys must keep equal text from distinct sections distinct")
+	}
+}
+
+func TestOccurrenceDeduplicatesDuplicateWindowsDeterministically(t *testing.T) {
+	repeated := strings.Repeat("repeat ", 200)
+	parent := Parent{Kind: "item", SourceKey: "item:dupes", Sections: []Section{{Key: "body", Role: "raw", Heading: "Body", Text: repeated + "\n\n" + repeated}}}
+	first, err := BuildProjection(parent, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := BuildProjection(parent, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Chunks) >= len(first.Occurrences) {
+		t.Fatalf("projection = %+v", first)
+	}
+	if first.Occurrences[0].ChunkID != first.Occurrences[1].ChunkID {
+		t.Fatal("duplicate window got distinct identities")
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatal("projection output is not deterministic")
+	}
+}
+
+func TestBuildProjectionV2RejectsDuplicateSectionKeys(t *testing.T) {
+	_, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:duplicate", Sections: []Section{
+		{Key: "same", Role: "raw", Text: "one"}, {Key: "same", Role: "raw", Text: "two"},
+	}}, DefaultOptions())
+	if err == nil || !strings.Contains(err.Error(), "duplicate section key") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestChunkerV3EnforcesUTF8ByteCeilingAndRuneOffsets(t *testing.T) {
+	text := "  " + strings.Repeat("🧠漢字é ", 800) + "  "
+	projection, err := BuildProjection(Parent{Kind: "item", SourceKey: "item:utf8-v3", Sections: []Section{{Key: "body", Role: "raw", Text: text}}}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runes := []rune(text)
+	for _, occurrence := range projection.Occurrences {
+		chunk := projection.Chunks[chunkIndex(t, projection.Chunks, occurrence.ChunkID)]
+		if len([]byte(chunk.Text)) > MaxUTF8Bytes || !utf8.ValidString(chunk.Text) {
+			t.Fatalf("invalid chunk: bytes=%d text=%q", len([]byte(chunk.Text)), chunk.Text)
+		}
+		if chunk.Text != string(runes[occurrence.StartChar:occurrence.EndChar]) {
+			t.Fatalf("offsets [%d,%d) do not select chunk", occurrence.StartChar, occurrence.EndChar)
+		}
+		if strings.TrimSpace(chunk.Text) != chunk.Text {
+			t.Fatalf("chunk has whitespace tail: %q", chunk.Text)
+		}
+	}
+}
+
+func TestChunkerV3ReusesMovedWindowsAndLimitsDistantEditChurn(t *testing.T) {
+	base := synthetic26512WindowFixture()
+	before, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: base}}}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterText := strings.Replace(base, "window-001326", "window-X01326", 1)
+	after, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: afterText}}}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := symmetricChunkIDs(before.Chunks, after.Chunks)
+	if changed > 8 {
+		t.Fatalf("distant one-byte edit changed %d chunk identities, want <= 8", changed)
+	}
+	// Moving an unchanged paragraph changes its occurrence, not its chunk identity.
+	movable := strings.Repeat("movable semantic evidence ", 60)
+	filler := strings.Repeat("unstructured filler ", 80)
+	movedBefore, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:moved", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: movable + "\n\n" + filler + "\n\n" + filler}}}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	movedProjection, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:moved", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: filler + "\n\n" + filler + "\n\n" + movable}}}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sharesChunkText(movedBefore.Chunks, movedProjection.Chunks, strings.TrimSpace(movable)) {
+		t.Fatal("moved window did not reuse content-local identity")
+	}
+}
+
+func TestChunkerV3HeadingChangesIdentity(t *testing.T) {
+	build := func(heading string) Projection {
+		p, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:heading", Sections: []Section{{Key: "body", Role: "raw", Heading: heading, Text: "same body"}}}, DefaultOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	if build("One").Chunks[0].ID == build("Two").Chunks[0].ID {
+		t.Fatal("heading did not affect content-local identity")
+	}
+}
+
+func chunkIndex(t *testing.T, chunks []Chunk, id string) int {
+	t.Helper()
+	for i := range chunks {
+		if chunks[i].ID == id {
+			return i
+		}
+	}
+	t.Fatalf("chunk %s missing", id)
+	return 0
+}
+func symmetricChunkIDs(left, right []Chunk) int {
+	a, b := map[string]bool{}, map[string]bool{}
+	for _, c := range left {
+		a[c.ID] = true
+	}
+	for _, c := range right {
+		b[c.ID] = true
+	}
+	n := 0
+	for id := range a {
+		if !b[id] {
+			n++
+		}
+	}
+	for id := range b {
+		if !a[id] {
+			n++
+		}
+	}
+	return n
+}
+func sharesChunkText(left, right []Chunk, text string) bool {
+	var id string
+	for _, c := range left {
+		if c.Text == text {
+			id = c.ID
+			break
+		}
+	}
+	if id == "" {
+		return false
+	}
+	for _, c := range right {
+		if c.ID == id {
+			return true
+		}
+	}
+	return false
+}
 
 func TestBuildKeepsShortSectionAsOneChunk(t *testing.T) {
 	parent := Parent{
@@ -60,11 +227,8 @@ func TestBuildUsesTargetHardMaximumAndBoundedOverlap(t *testing.T) {
 		if chunk.Text != string(runes[chunk.StartChar:chunk.EndChar]) {
 			t.Fatalf("chunk %d text does not match its offsets", i)
 		}
-		if i > 0 {
-			overlap := chunks[i-1].EndChar - chunk.StartChar
-			if overlap < 0 || overlap > DefaultOptions().OverlapRunes {
-				t.Fatalf("chunk %d overlap is %d, want 0..%d", i, overlap, DefaultOptions().OverlapRunes)
-			}
+		if i > 0 && chunks[i-1].EndChar > chunk.StartChar {
+			t.Fatalf("v3 content windows must make forward progress: chunk %d starts at %d after prior end %d", i, chunk.StartChar, chunks[i-1].EndChar)
 		}
 	}
 	if got := chunks[0].EndChar - chunks[0].StartChar; got > DefaultOptions().TargetRunes {
@@ -148,8 +312,8 @@ func TestBuildIdentifiesSameRoleSameHeadingSectionsByOrdinal(t *testing.T) {
 	chunks, err := Build(Parent{
 		Kind: "item", SourceKey: "item:ambiguous", ContentHash: "ambiguous-v1",
 		Sections: []Section{
-			{Role: "raw", Heading: "", Text: "first raw field"},
-			{Role: "raw", Heading: "", Text: "second raw field"},
+			{Key: "first", Role: "raw", Heading: "", Text: "first raw field"},
+			{Key: "second", Role: "raw", Heading: "", Text: "second raw field"},
 		},
 	}, DefaultOptions())
 	if err != nil {
@@ -183,7 +347,7 @@ func TestBuildPreservesCRLFParagraphBoundaryPastTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantEnd := len([]rune(firstParagraph + "\r\n\r\n"))
+	wantEnd := len([]rune(firstParagraph))
 	if chunks[0].EndChar != wantEnd {
 		t.Fatalf("first chunk ends at %d, want CRLF paragraph boundary %d", chunks[0].EndChar, wantEnd)
 	}
@@ -203,11 +367,11 @@ func TestBuildSkipsTinyIntroForCloserForwardParagraphBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantEnd := len([]rune(intro + middle))
+	wantEnd := len([]rune(strings.TrimSpace(intro + middle)))
 	if chunks[0].EndChar != wantEnd {
 		t.Fatalf("first chunk ends at %d, want closer forward paragraph boundary %d", chunks[0].EndChar, wantEnd)
 	}
-	if chunks[0].ChunkerVersion != "retrieval-chunker-v2" {
+	if chunks[0].ChunkerVersion != "retrieval-chunker-v3" {
 		t.Fatalf("boundary behavior changed without a new chunk identity version: %q", chunks[0].ChunkerVersion)
 	}
 }
@@ -222,7 +386,7 @@ func TestBuildFallsBackToWhitespaceBeforeRuneBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chunks[0].EndChar != 20 || chunks[0].Text != "word word word word " {
+	if chunks[0].EndChar != 19 || chunks[0].Text != "word word word word" {
 		t.Fatalf("whitespace fallback chose %+v", chunks[0])
 	}
 }
@@ -237,7 +401,7 @@ func TestBuildFallsBackToRuneBoundaryWithoutWhitespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chunks[0].EndChar != 20 || chunks[0].Text != strings.Repeat("界", 20) {
+	if chunks[0].EndChar <= 0 || chunks[0].EndChar > opts.MaxRunes || chunks[0].Text != strings.Repeat("界", chunks[0].EndChar) {
 		t.Fatalf("rune fallback chose %+v", chunks[0])
 	}
 }
@@ -268,8 +432,8 @@ func TestBuildStableIDsUseAllIdentityFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if one[0].ID == three[0].ID {
-		t.Fatal("input content hash did not affect chunk ID")
+	if one[0].ID != three[0].ID {
+		t.Fatal("parent content hash must not affect content-local chunk ID")
 	}
 
 	changed = base
