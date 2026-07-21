@@ -596,6 +596,8 @@ git commit --no-gpg-sign -m "feat: batch and verify semantic embeddings"
 **Files:**
 - Create: `internal/semanticreadiness/readiness.go`
 - Create: `internal/semanticreadiness/readiness_test.go`
+- Modify: `internal/retrievalchunk/types.go`
+- Modify: `internal/retrievalchunk/chunker_test.go`
 - Modify: `internal/store/retrieval_projection.go`
 - Modify: `internal/store/retrieval_embedding_profiles.go`
 - Modify: `internal/semanticbuild/status.go`
@@ -642,6 +644,9 @@ Table-test every priority and numeric boundary: 99.9/0.1 coverage, 500/501
 dirty parents, 2,500/2,501 estimated chunks, 30-minute age, 5,000/10,000 L0,
 one/two-percent tombstones, due versus scheduled retry, corrupt/unclassified
 error, absent/invalid root, and small exact profile versus large `needs_index`.
+Add estimator tests at every published chunker-v3 bound, including multibyte
+text, dense natural boundaries, a new parent with no prior chunk count, and an
+existing parent whose last current chunk count exceeds its byte estimate.
 
 - [ ] **Step 2: Verify RED**
 
@@ -656,6 +661,13 @@ Expected: FAIL because the evaluator does not exist and runtime currently embeds
 - [ ] **Step 3: Implement one store snapshot and evaluator**
 
 Read all counts/ages/profile/index health from one SQLite read transaction.
+Publish chunker v3's byte ceiling, maximum overlap, and minimum guaranteed
+forward byte advance as versioned constants, and use one shared deterministic
+not-ready estimator in snapshot/status/admission; do not substitute only the
+last `chunk_count`, because new parents have none. If the conservative guaranteed
+advance makes ordinary new corpus items exceed the 2,500 budget, stop and amend
+the accepted policy with measured corpus evidence rather than silently using a
+non-guaranteed target size.
 `semanticbuild.ReadStatus` delegates to `semanticreadiness.Evaluate`.
 `NewRuntimeBuilder` evaluates before constructing Ollama; force-on changes mode,
 not readiness. In this plan, only exact-eligible small corpora can become
