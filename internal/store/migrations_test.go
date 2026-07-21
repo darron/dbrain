@@ -679,6 +679,11 @@ func semanticFoundationV15Database(t *testing.T) string {
 		t.Fatalf("open database directly: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	for _, trigger := range semanticProjectionDirtyTriggers {
+		if _, err := db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			t.Fatalf("drop Task-4 projection dirty trigger %s: %v", trigger.name, err)
+		}
+	}
 	for _, table := range []string{
 		"retrieval_chunk_occurrences",
 		"retrieval_projection_staging",

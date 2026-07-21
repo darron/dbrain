@@ -487,6 +487,10 @@ func (s *Store) HydrateRetrievalChunks(ctx context.Context, chunkIDs []string) (
 			p.author_name, p.author_handle, p.source_type, p.published_at,
 			p.extracted_at, p.summarized_at, p.user_tags
 		FROM retrieval_chunks c
+		JOIN retrieval_parent_projections projection
+			ON projection.parent_kind = c.parent_kind
+			AND projection.parent_source_key = c.parent_source_key
+			AND projection.status = 'current'
 		JOIN (
 			SELECT 'item' AS parent_kind, source_key, title, canonical_url, note_path,
 				` + itemSummaryTextExpr() + ` AS summary_text, author_name, author_handle, source_type, published_at,

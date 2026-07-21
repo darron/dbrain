@@ -30,6 +30,7 @@ func TestReplaceRetrievalChunksReusesUnchangedEmbeddings(t *testing.T) {
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:one", initial); err != nil {
 		t.Fatalf("initial replacement: %v", err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:one")
 	if err := st.PutRetrievalEmbedding(ctx, testEmbedding("chunk-a", "profile-a", "hash-a")); err != nil {
 		t.Fatalf("put unchanged embedding: %v", err)
 	}
@@ -67,6 +68,7 @@ func TestReplaceRetrievalChunksReportsMetadataUpdateAndKeepsEmbedding(t *testing
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:one", []retrievalchunk.Chunk{chunk}); err != nil {
 		t.Fatal(err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:one")
 	if err := st.PutRetrievalEmbedding(ctx, testEmbedding("chunk-a", "profile-a", "hash-a")); err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +106,8 @@ func TestListReadyEmbeddingsProjectsCurrentSourceTypeAndSectionOrdinal(t *testin
 	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "src:projection", []retrievalchunk.Chunk{source}); err != nil {
 		t.Fatal(err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:projection")
+	markProjectionCurrentForTest(t, st, "source", "src:projection")
 	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(item.ID, "projection-profile", item.TextHash)); err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +179,7 @@ func TestRetrievalProfilesCoexist(t *testing.T) {
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:one", []retrievalchunk.Chunk{chunk}); err != nil {
 		t.Fatalf("replace chunks: %v", err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:one")
 	for _, profile := range []string{"profile-a", "profile-b"} {
 		if err := st.PutRetrievalEmbedding(ctx, testEmbedding("chunk-a", profile, "hash-a")); err != nil {
 			t.Fatalf("put embedding %s: %v", profile, err)
@@ -627,7 +632,10 @@ func TestListDirtyRetrievalParentsIsDeterministicThroughWatermarkAndIncludesClea
 	seedRetrievalSource(t, st, "source:deleted")
 	seedRetrievalSource(t, st, "source:ineligible")
 	seedRetrievalSource(t, st, "source:later")
-	deletedRevision := dirtyRetrievalParentForTest(t, st, "source", "source:deleted", nil)
+	deletedRevision := dirtyRetrievalParentForTest(t, st, "source", "source:deleted", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM sources WHERE source_key='source:deleted'`)
+		return err
+	})
 	ineligibleRevision := dirtyRetrievalParentForTest(t, st, "source", "source:ineligible", func(tx *sql.Tx) error {
 		_, err := tx.Exec(`UPDATE sources SET note_path='' WHERE source_key='source:ineligible'`)
 		return err
@@ -638,9 +646,6 @@ func TestListDirtyRetrievalParentsIsDeterministicThroughWatermarkAndIncludesClea
 	}
 	if watermark != ineligibleRevision {
 		t.Fatalf("watermark=%d want %d", watermark, ineligibleRevision)
-	}
-	if _, err := st.db.Exec(`DELETE FROM sources WHERE source_key='source:deleted'`); err != nil {
-		t.Fatal(err)
 	}
 	dirtyRetrievalParentForTest(t, st, "source", "source:later", nil)
 
@@ -823,7 +828,7 @@ func TestApplyRetrievalProjectionRejectsSameTimestampNewerDirtyRevision(t *testi
 	}
 }
 
-func TestApplyRetrievalProjectionRejectsFreshParentHashMismatch(t *testing.T) {
+func TestApplyRetrievalProjectionRejectsProjectedMutationWithNewDirtyRevision(t *testing.T) {
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
@@ -839,7 +844,7 @@ func TestApplyRetrievalProjectionRejectsFreshParentHashMismatch(t *testing.T) {
 	}
 	_, err = st.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{ParentKind: "source", ParentSourceKey: "source:hash-race", DirtyRevision: work.DirtyRevision, Projection: projection, Status: RetrievalProjectionCurrent})
 	var stale *RetrievalProjectionStaleWorkError
-	if !errors.As(err, &stale) || stale.Reason != "parent projection hash changed" {
+	if !errors.As(err, &stale) || stale.Reason != "dirty revision no longer matches" {
 		t.Fatalf("apply error=%v stale=%+v", err, stale)
 	}
 	var status string
@@ -1165,6 +1170,7 @@ func TestApplyRetrievalProjectionCleansDeletedParentAndRemovesLedger(t *testing.
 
 func dirtyRetrievalParentForTest(t *testing.T, st *Store, kind, sourceKey string, mutate func(*sql.Tx) error) int64 {
 	t.Helper()
+	before := projectionRevisionForTest(t, st)
 	tx, err := st.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1175,9 +1181,15 @@ func dirtyRetrievalParentForTest(t *testing.T, st *Store, kind, sourceKey string
 			t.Fatal(err)
 		}
 	}
-	revision, err := allocateRetrievalParentDirtyTx(context.Background(), tx, kind, sourceKey)
-	if err != nil {
+	var revision int64
+	if err := tx.QueryRow(`SELECT projection_work_revision FROM retrieval_state WHERE singleton=1`).Scan(&revision); err != nil {
 		t.Fatal(err)
+	}
+	if revision == before {
+		revision, err = MarkRetrievalParentDirtyTx(context.Background(), tx, kind, sourceKey)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -1227,6 +1239,7 @@ func TestEmbeddingDuePredicateMatchesStatusAndCarriesAttemptCount(t *testing.T) 
 		if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:"+id, []retrievalchunk.Chunk{chunk}); err != nil {
 			t.Fatalf("seed %s chunk: %v", id, err)
 		}
+		markProjectionCurrentForTest(t, st, "item", "item:"+id)
 		row := testEmbedding(id, "profile-a", "hash-"+id)
 		row.Status = RetrievalEmbeddingError
 		row.AttemptCount = 3
@@ -1278,6 +1291,7 @@ func TestEmbeddingProfileCandidateSelectorRejectsStaleChunkProvenance(t *testing
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:stale", []retrievalchunk.Chunk{chunk}); err != nil {
 		t.Fatalf("seed stale chunk: %v", err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:stale")
 	profileID, err := profile.ID()
 	if err != nil {
 		t.Fatal(err)
@@ -1496,6 +1510,7 @@ func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:read-corrupt", []retrievalchunk.Chunk{chunk}); err != nil {
 		t.Fatalf("replace chunks: %v", err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:read-corrupt")
 	row := testEmbedding(chunk.ID, "read-corrupt-profile", chunk.TextHash)
 	if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
 		t.Fatalf("put valid embedding: %v", err)
@@ -1545,6 +1560,7 @@ func TestBlockCorruptRetrievalEmbeddingDoesNotBlockConcurrentlyRepairedRow(t *te
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:repaired", []retrievalchunk.Chunk{chunk}); err != nil {
 		t.Fatalf("replace chunks: %v", err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:repaired")
 	row := testEmbedding(chunk.ID, "repaired-profile", chunk.TextHash)
 	if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
 		t.Fatalf("put valid embedding: %v", err)
@@ -1599,6 +1615,7 @@ func TestListReadyEmbeddingsRejectsStoredStaleHash(t *testing.T) {
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:read-stale", []retrievalchunk.Chunk{chunk}); err != nil {
 		t.Fatalf("replace chunks: %v", err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:read-stale")
 	row := testEmbedding(chunk.ID, "read-stale-profile", chunk.TextHash)
 	if err := st.PutRetrievalEmbedding(ctx, row); err != nil {
 		t.Fatalf("put valid embedding: %v", err)
@@ -1643,6 +1660,8 @@ func TestHydrateRetrievalChunksBatchesCurrentParentEvidenceAndDropsPurgedParents
 	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "src:hydrate", []retrievalchunk.Chunk{sourceChunk}); err != nil {
 		t.Fatal(err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:hydrate")
+	markProjectionCurrentForTest(t, st, "source", "src:hydrate")
 	rows, err := st.HydrateRetrievalChunks(ctx, []string{sourceChunk.ID, "missing", itemChunk.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -1666,6 +1685,177 @@ func TestHydrateRetrievalChunksBatchesCurrentParentEvidenceAndDropsPurgedParents
 	rows, err = st.HydrateRetrievalChunks(ctx, []string{sourceChunk.ID, itemChunk.ID})
 	if err != nil || len(rows) != 1 || rows[0].ChunkID != itemChunk.ID {
 		t.Fatalf("rows after purge marker=%+v err=%v", rows, err)
+	}
+}
+
+func TestPendingParentIsExcludedFromEverySemanticVectorSelectorAndHydration(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:pending-selector")
+	markProjectionCurrentForTest(t, st, "source", "source:pending-selector")
+
+	chunk := testRetrievalChunk("pending-selector-chunk", "source", "source:pending-selector", 0, "pending-selector-hash", "stale text")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "source:pending-selector", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, "pending-selector-profile", chunk.TextHash)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
+		GenerationID: "pending-selector-generation", ProfileID: "pending-selector-profile",
+		Backend: "exact", BackendVersion: "v1", Dimensions: 2,
+		DistanceMetric: "cosine", BuildStatus: RetrievalGenerationCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ActivateRetrievalIndexGeneration(ctx, "pending-selector-generation"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE sources SET title='mutated projected title' WHERE source_key='source:pending-selector'`); err != nil {
+		t.Fatal(err)
+	}
+	assertRetrievalGenerationStale(t, st, "pending-selector-generation")
+
+	ready, err := st.ListReadyEmbeddings(ctx, "pending-selector-profile", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	needed, err := st.ListChunksNeedingEmbedding(ctx, "another-profile", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := st.CountChunksNeedingEmbeddingAt(ctx, "another-profile", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hydrated, err := st.HydrateRetrievalChunks(ctx, []string{chunk.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := st.RetrievalStatus(ctx, "another-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready) != 0 || len(needed) != 0 || count != 0 || len(hydrated) != 0 || status.ChunkCount != 0 || status.EmbeddingCandidates != 0 {
+		t.Fatalf("non-current parent leaked: ready=%+v needed=%+v count=%d hydrated=%+v status=%+v", ready, needed, count, hydrated, status)
+	}
+}
+
+func TestProjectedMutationDirtiesOnceAndIrrelevantItemMutationDoesNot(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	beforeInsert := projectionRevisionForTest(t, st)
+	seedPurgeItem(t, st, "item:projected-mutation")
+	if got := projectionRevisionForTest(t, st); got != beforeInsert+1 {
+		t.Fatalf("item insert revision=%d want %d", got, beforeInsert+1)
+	}
+	markProjectionCurrentForTest(t, st, "item", "item:projected-mutation")
+	before := projectionRevisionForTest(t, st)
+
+	if _, err := st.db.Exec(`UPDATE items SET title='new title', text='new body' WHERE source_key='item:projected-mutation'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+1 {
+		t.Fatalf("projected multi-field update revision=%d want %d", got, before+1)
+	}
+	assertProjectionPendingAtRevision(t, st, "item", "item:projected-mutation", before+1)
+
+	if _, err := st.db.Exec(`UPDATE items SET like_count=like_count+1, last_seen_at='2099-01-01T00:00:00Z' WHERE source_key='item:projected-mutation'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+1 {
+		t.Fatalf("irrelevant item update dirtied revision=%d want %d", got, before+1)
+	}
+	if _, err := st.db.Exec(`DELETE FROM items WHERE source_key='item:projected-mutation'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+2 {
+		t.Fatalf("item delete revision=%d want %d", got, before+2)
+	}
+	assertProjectionPendingAtRevision(t, st, "item", "item:projected-mutation", before+2)
+}
+
+func TestMarkRetrievalParentDirtyTxAllocatesOnceAndInvalidatesLegacyGeneration(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:named-dirty")
+	chunk := testRetrievalChunk("named-dirty-chunk", "source", "source:named-dirty", 0, "named-dirty-hash", "text")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "source:named-dirty", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	markProjectionCurrentForTest(t, st, "source", "source:named-dirty")
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, "named-dirty-profile", chunk.TextHash)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
+		GenerationID: "named-dirty-generation", ProfileID: "named-dirty-profile",
+		Backend: "exact", BackendVersion: "v1", Dimensions: 2,
+		DistanceMetric: "cosine", BuildStatus: RetrievalGenerationCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ActivateRetrievalIndexGeneration(ctx, "named-dirty-generation"); err != nil {
+		t.Fatal(err)
+	}
+	before := projectionRevisionForTest(t, st)
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := MarkRetrievalParentDirtyTx(ctx, tx, "source", "source:named-dirty")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if revision != before+1 || projectionRevisionForTest(t, st) != before+1 {
+		t.Fatalf("named dirty revision=%d watermark=%d want %d", revision, projectionRevisionForTest(t, st), before+1)
+	}
+	assertRetrievalGenerationStale(t, st, "named-dirty-generation")
+}
+
+func markProjectionCurrentForTest(t *testing.T, st *Store, kind, sourceKey string) int64 {
+	t.Helper()
+	tx, err := st.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	revision, err := allocateRetrievalParentDirtyTx(context.Background(), tx, kind, sourceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE retrieval_parent_projections SET status='current', projected_revision=dirty_revision WHERE parent_kind=? AND parent_source_key=?`, kind, sourceKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return revision
+}
+
+func projectionRevisionForTest(t *testing.T, st *Store) int64 {
+	t.Helper()
+	revision, err := st.ProjectionWorkRevision(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return revision
+}
+
+func assertProjectionPendingAtRevision(t *testing.T, st *Store, kind, sourceKey string, revision int64) {
+	t.Helper()
+	var status string
+	var dirtyRevision int64
+	if err := st.db.QueryRow(`SELECT status, dirty_revision FROM retrieval_parent_projections WHERE parent_kind=? AND parent_source_key=?`, kind, sourceKey).Scan(&status, &dirtyRevision); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(RetrievalProjectionPending) || dirtyRevision != revision {
+		t.Fatalf("projection %s/%s status=%q revision=%d want pending/%d", kind, sourceKey, status, dirtyRevision, revision)
 	}
 }
 
@@ -1755,6 +1945,7 @@ func TestListChunksNeedingEmbeddingExcludesCurrentAndIncludesChanged(t *testing.
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:one", chunks); err != nil {
 		t.Fatalf("replace chunks: %v", err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:one")
 	if err := st.PutRetrievalEmbedding(ctx, testEmbedding("chunk-a", "profile-a", "hash-a")); err != nil {
 		t.Fatalf("put embedding: %v", err)
 	}
@@ -1783,6 +1974,7 @@ func TestRetrievalStatusEmbeddingCandidatesMatchesCurrentHashErrorSelector(t *te
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:error", []retrievalchunk.Chunk{chunk}); err != nil {
 		t.Fatalf("replace chunks: %v", err)
 	}
+	markProjectionCurrentForTest(t, st, "item", "item:error")
 	embedding := testEmbedding(chunk.ID, "profile-error", chunk.TextHash)
 	embedding.Status = RetrievalEmbeddingError
 	embedding.LastError = "provider unavailable"

@@ -116,8 +116,13 @@ func validateEmbeddingCandidateProfile(profile embedding.Profile) (string, error
 func (s *Store) rejectMismatchedRetrievalChunks(ctx context.Context, profile embedding.Profile) error {
 	var count int
 	if err := s.queryer().QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM retrieval_chunks
-		WHERE projection_version != ? OR chunker_version != ?`, profile.ProjectionVersion, profile.ChunkerVersion).Scan(&count); err != nil {
+		SELECT COUNT(*)
+		FROM retrieval_chunks c
+		JOIN retrieval_parent_projections parent
+			ON parent.parent_kind = c.parent_kind
+			AND parent.parent_source_key = c.parent_source_key
+			AND parent.status = 'current'
+		WHERE c.projection_version != ? OR c.chunker_version != ?`, profile.ProjectionVersion, profile.ChunkerVersion).Scan(&count); err != nil {
 		return fmt.Errorf("count retrieval chunks with stale provenance: %w", err)
 	}
 	if count > 0 {
@@ -139,6 +144,10 @@ func (s *Store) countChunksNeedingEmbeddingAt(ctx context.Context, profileID, pr
 	query := `
 		SELECT COUNT(*)
 		FROM retrieval_chunks c
+		JOIN retrieval_parent_projections parent
+			ON parent.parent_kind = c.parent_kind
+			AND parent.parent_source_key = c.parent_source_key
+			AND parent.status = 'current'
 		LEFT JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id AND e.profile_id = ?
 		WHERE ` + retrievalEmbeddingDueSQL
 	args := []any{profileID, now.UTC().Format(time.RFC3339)}
@@ -167,6 +176,10 @@ func (s *Store) listChunksNeedingEmbeddingAt(ctx context.Context, profileID, pro
 			c.ordinal, c.start_char, c.end_char, c.heading, c.projection_version, c.chunker_version,
 			c.input_content_hash, c.chunk_text_hash, c.text, COALESCE(e.attempt_count, 0)
 		FROM retrieval_chunks c
+		JOIN retrieval_parent_projections parent
+			ON parent.parent_kind = c.parent_kind
+			AND parent.parent_source_key = c.parent_source_key
+			AND parent.status = 'current'
 		LEFT JOIN retrieval_embeddings e
 			ON e.chunk_id = c.chunk_id AND e.profile_id = ?
 		WHERE c.chunk_id > ? AND ` + retrievalEmbeddingDueSQL
@@ -325,6 +338,10 @@ func (s *Store) ListReadyEmbeddings(ctx context.Context, profileID string, limit
 			c.section_ordinal, c.text, c.projection_version, c.chunker_version, c.chunk_text_hash
 		FROM retrieval_embeddings e
 		JOIN retrieval_chunks c ON c.chunk_id = e.chunk_id
+		JOIN retrieval_parent_projections parent
+			ON parent.parent_kind = c.parent_kind
+			AND parent.parent_source_key = c.parent_source_key
+			AND parent.status = 'current'
 		LEFT JOIN items i ON c.parent_kind = 'item' AND i.source_key = c.parent_source_key
 		LEFT JOIN sources s ON c.parent_kind = 'source' AND s.source_key = c.parent_source_key
 		WHERE e.profile_id = ? AND e.status = 'ready'

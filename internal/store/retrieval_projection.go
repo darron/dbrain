@@ -191,7 +191,13 @@ func (s *Store) RetrievalStatusAt(ctx context.Context, profileID string, now tim
 		return RetrievalStatus{ProfileID: profileID}, ErrRetrievalUnavailable
 	}
 	status := RetrievalStatus{Available: true, ProfileID: profileID}
-	if err := s.queryer().QueryRowContext(ctx, `SELECT COUNT(*) FROM retrieval_chunks`).Scan(&status.ChunkCount); err != nil {
+	if err := s.queryer().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM retrieval_chunks chunk
+		JOIN retrieval_parent_projections parent
+			ON parent.parent_kind = chunk.parent_kind
+			AND parent.parent_source_key = chunk.parent_source_key
+			AND parent.status = 'current'`).Scan(&status.ChunkCount); err != nil {
 		return RetrievalStatus{}, fmt.Errorf("count retrieval chunks: %w", err)
 	}
 	if err := s.queryer().QueryRowContext(ctx, `
@@ -202,6 +208,10 @@ func (s *Store) RetrievalStatusAt(ctx context.Context, profileID string, now tim
 			COALESCE(SUM(CASE WHEN e.status = 'error' AND e.chunk_text_hash = c.chunk_text_hash THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN `+retrievalEmbeddingDueSQL+` THEN 1 ELSE 0 END), 0)
 		FROM retrieval_chunks c
+		JOIN retrieval_parent_projections parent
+			ON parent.parent_kind = c.parent_kind
+			AND parent.parent_source_key = c.parent_source_key
+			AND parent.status = 'current'
 		LEFT JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id AND e.profile_id = ?`, now.UTC().Format(time.RFC3339), profileID).Scan(
 		&status.ReadyEmbeddings, &status.PendingEmbeddings, &status.BlockedEmbeddings, &status.FailedEmbeddings,
 		&status.EmbeddingCandidates,
