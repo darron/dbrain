@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/retrievalchunk"
 )
@@ -1335,6 +1336,126 @@ func TestEmbeddingProfileDefinitionMigrationRejectsMixedChunkProvenance(t *testi
 	} else if !strings.Contains(err.Error(), "mixed chunk provenance") {
 		t.Fatalf("migration error=%v, want mixed chunk provenance", err)
 	}
+}
+
+func TestEmbeddingRevisionRepairV20UpgradesGenuineV18ReadyRow(t *testing.T) {
+	t.Parallel()
+	path, profile, profileID := genuineV18DatabaseWithUnprovenReadyEmbedding(t)
+	if err := ValidateRestorableDatabase(t.Context(), path); err != nil {
+		t.Fatalf("validate genuine v18 database: %v", err)
+	}
+	st := openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	var migrationCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=20 AND name='retrieval_embedding_revision_provenance_repair'`).Scan(&migrationCount); err != nil {
+		t.Fatal(err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("migration 20 count=%d want 1", migrationCount)
+	}
+	rows, err := st.db.Query(`SELECT chunk_id,status,vector_bytes,vector_hash,revision FROM retrieval_embeddings WHERE profile_id=? ORDER BY chunk_id`, profileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	repairedRows := 0
+	for rows.Next() {
+		var chunkID, status, vectorHash string
+		var vectorBytes []byte
+		var revision int64
+		if err := rows.Scan(&chunkID, &status, &vectorBytes, &vectorHash, &revision); err != nil {
+			t.Fatal(err)
+		}
+		if status != string(RetrievalEmbeddingPending) || len(vectorBytes) != 0 || vectorHash != retrievalVectorHash([]byte{}) {
+			t.Fatalf("repaired row %s status=%q vector_len=%d hash=%q revision=%d", chunkID, status, len(vectorBytes), vectorHash, revision)
+		}
+		repairedRows++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if repairedRows != 2 {
+		t.Fatalf("repaired rows=%d want 2", repairedRows)
+	}
+	assertProfileAggregatesForTest(t, st, profileID, "", 0, 0, 0)
+	candidates, err := st.ListChunksNeedingEmbeddingForProfileAt(t.Context(), profile, "", 10, time.Now().UTC())
+	if err != nil || len(candidates) != 2 {
+		t.Fatalf("re-embedding candidates=%+v err=%v", candidates, err)
+	}
+	repaired := []RetrievalEmbeddingRow{
+		testEmbedding("migration-v20-hash", profileID, "migration-v20-hash-text"),
+		testEmbedding("migration-v20-revision", profileID, "migration-v20-revision-text"),
+	}
+	batchRevision, err := st.PutRetrievalEmbeddingBatch(t.Context(), PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: repaired, ExpectedPurgeEpoch: 0})
+	if err != nil || batchRevision <= 0 {
+		t.Fatalf("repair batch revision=%d err=%v", batchRevision, err)
+	}
+	candidates, err = st.ListChunksNeedingEmbeddingForProfileAt(t.Context(), profile, "", 10, time.Now().UTC())
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("post-repair candidates=%+v err=%v", candidates, err)
+	}
+}
+
+func genuineV18DatabaseWithUnprovenReadyEmbedding(t *testing.T) (string, embedding.Profile, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	profile := embedding.Profile{Provider: "fake", Model: "fake-v1", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("migration-v20-hash", "item", "item:migration-v20", 0, "migration-v20-hash-text", "alpha"),
+		testRetrievalChunk("migration-v20-revision", "item", "item:migration-v20", 1, "migration-v20-revision-text", "bravo"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(t.Context(), "item", "item:migration-v20", chunks); err != nil {
+		t.Fatal(err)
+	}
+	markProjectionCurrentForTest(t, st, "item", "item:migration-v20")
+	for _, chunk := range chunks {
+		if err := st.PutRetrievalEmbedding(t.Context(), testEmbedding(chunk.ID, profileID, chunk.TextHash)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, trigger := range retrievalEmbeddingProfileTriggersV19 {
+		if _, err := st.db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.ensureRetrievalTables(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET vector_hash='' WHERE chunk_id='migration-v20-hash'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET revision=0 WHERE chunk_id='migration-v20-revision'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`
+		CREATE TABLE retrieval_embedding_profiles_v18 (
+			profile_id TEXT PRIMARY KEY,
+			latest_revision INTEGER NOT NULL DEFAULT 0,
+			purge_epoch INTEGER NOT NULL DEFAULT 0,
+			active_generation_id TEXT NOT NULL DEFAULT '',
+			active_snapshot_revision INTEGER NOT NULL DEFAULT 0,
+			active_indexed_count INTEGER NOT NULL DEFAULT 0,
+			l0_ready_count INTEGER NOT NULL DEFAULT 0,
+			active_tombstone_count INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL
+		);
+		INSERT INTO retrieval_embedding_profiles_v18
+			SELECT profile_id,0,purge_epoch,'',0,0,2,0,updated_at FROM retrieval_embedding_profiles;
+		DROP TABLE retrieval_embedding_profiles;
+		ALTER TABLE retrieval_embedding_profiles_v18 RENAME TO retrieval_embedding_profiles;
+		DELETE FROM schema_migrations WHERE version>18;
+		PRAGMA user_version=18`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path, profile, profileID
 }
 
 func TestMigrationRepairsAuditProvenanceStateIdempotently(t *testing.T) {

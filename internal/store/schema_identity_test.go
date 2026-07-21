@@ -24,6 +24,27 @@ func TestValidateRestorableDatabaseAcceptsCurrentSchema(t *testing.T) {
 	}
 }
 
+func TestValidateRestorableDatabasePreservesV19EmbeddingProfileIdentity(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "v19.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	execSchemaIdentityTestDB(t, path, `
+		DELETE FROM schema_migrations WHERE version=20;
+		PRAGMA user_version=19`)
+	if err := ValidateRestorableDatabase(t.Context(), path); err != nil {
+		t.Fatalf("validate genuine v19 embedding profile schema: %v", err)
+	}
+	trigger := retrievalEmbeddingProfileTriggersV19[0]
+	execSchemaIdentityTestDB(t, path, `DROP TRIGGER `+trigger.name)
+	err := ValidateRestorableDatabase(t.Context(), path)
+	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), trigger.name) {
+		t.Fatalf("validation after dropping historical v19 trigger=%v", err)
+	}
+}
+
 func TestValidateRestorableDatabaseAcceptsGenuineV16WithoutProjectionDirtyTriggers(t *testing.T) {
 	path := projectionDirtyTriggerV16Database(t)
 

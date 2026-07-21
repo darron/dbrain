@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	currentSchemaVersion                    = 19
+	currentSchemaVersion                    = 20
 	auditProvenanceMigrationVersion         = 12
 	auditProvenanceMigrationName            = "audit_provenance_v1"
 	retrievalMigrationVersion               = 13
@@ -25,6 +25,8 @@ const (
 	semanticProjectionDirtyRepairName       = "retrieval_projection_dirty_trigger_provenance_repair"
 	retrievalEmbeddingProfileVersion        = 19
 	retrievalEmbeddingProfileName           = "retrieval_embedding_profile_definitions"
+	retrievalEmbeddingRevisionRepairVersion = 20
+	retrievalEmbeddingRevisionRepairName    = "retrieval_embedding_revision_provenance_repair"
 )
 
 type schemaMigration struct {
@@ -192,6 +194,13 @@ var schemaMigrations = []schemaMigration{
 		Name:    retrievalEmbeddingProfileName,
 		Run: func(s *Store) error {
 			return s.ensureRetrievalEmbeddingProfileDefinitions()
+		},
+	},
+	{
+		Version: retrievalEmbeddingRevisionRepairVersion,
+		Name:    retrievalEmbeddingRevisionRepairName,
+		Run: func(s *Store) error {
+			return s.repairRetrievalEmbeddingRevisionProvenance()
 		},
 	},
 }

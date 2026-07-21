@@ -30,9 +30,7 @@ func TestProjectedMutationRollbackRestoresAuthoritativeAndRetrievalState(t *test
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "rollback-dirty-generation"); err != nil {
-		t.Fatal(err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "rollback-dirty-generation")
 
 	type projectionState struct {
 		Title                 string

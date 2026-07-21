@@ -86,7 +86,7 @@ type RetrievalEmbeddingVerificationState struct {
 	ActiveIndexedCount, L0ReadyCount, ActiveTombstoneCount                int
 	GenerationBackend, GenerationBackendVersion, GenerationDistanceMetric string
 	GenerationStatus                                                      RetrievalGenerationStatus
-	GenerationDimensions                                                  int
+	GenerationDimensions, GenerationIndexedChunkCount                     int
 	GenerationActive                                                      bool
 }
 
@@ -176,7 +176,7 @@ func (s *Store) RetrievalEmbeddingVerificationState(ctx context.Context, profile
 		SELECT p.profile_id,p.latest_revision,p.purge_epoch,rs.purge_epoch,p.active_generation_id,
 			p.active_snapshot_revision,p.active_indexed_count,p.l0_ready_count,p.active_tombstone_count,
 			p.provider,p.model,p.dimensions,p.projection_version,p.chunker_version,p.representation,p.normalization,
-			COALESCE(g.backend,''),COALESCE(g.backend_version,''),COALESCE(g.dimensions,0),
+			COALESCE(g.backend,''),COALESCE(g.backend_version,''),COALESCE(g.dimensions,0),COALESCE(g.indexed_chunk_count,0),
 			COALESCE(g.distance_metric,''),COALESCE(g.build_status,''),COALESCE(g.active,0)
 		FROM retrieval_embedding_profiles p CROSS JOIN retrieval_state rs
 		LEFT JOIN retrieval_index_generations g ON g.generation_id=p.active_generation_id
@@ -186,6 +186,7 @@ func (s *Store) RetrievalEmbeddingVerificationState(ctx context.Context, profile
 		&state.Profile.Provider, &state.Profile.Model, &state.Profile.Dimensions, &state.Profile.ProjectionVersion,
 		&state.Profile.ChunkerVersion, &state.Profile.Representation, &state.Profile.Normalization,
 		&state.GenerationBackend, &state.GenerationBackendVersion, &state.GenerationDimensions,
+		&state.GenerationIndexedChunkCount,
 		&state.GenerationDistanceMetric, &state.GenerationStatus, &active,
 	)
 	if err != nil {
@@ -320,6 +321,72 @@ func (s *Store) ensureRetrievalEmbeddingProfileDefinitions() error {
 		if _, err := s.db.Exec(trigger.sql); err != nil {
 			return fmt.Errorf("create retrieval embedding profile trigger %s: %w", trigger.name, err)
 		}
+	}
+	return nil
+}
+
+func (s *Store) repairRetrievalEmbeddingRevisionProvenance() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin retrieval embedding revision provenance repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.Query(`
+		SELECT DISTINCT profile_id
+		FROM retrieval_embeddings
+		WHERE status='ready' AND (revision<=0 OR vector_hash='')
+		ORDER BY profile_id`)
+	if err != nil {
+		return fmt.Errorf("list retrieval profiles with unproven ready embeddings: %w", err)
+	}
+	profiles := make([]string, 0)
+	for rows.Next() {
+		var profileID string
+		if err := rows.Scan(&profileID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan retrieval profile with unproven ready embeddings: %w", err)
+		}
+		profiles = append(profiles, profileID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate retrieval profiles with unproven ready embeddings: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close retrieval profiles with unproven ready embeddings: %w", err)
+	}
+	for _, profileID := range profiles {
+		if err := markRetrievalProfileGenerationsStaleTx(context.Background(), tx, profileID); err != nil {
+			return err
+		}
+	}
+	if len(profiles) == 0 {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit empty retrieval embedding revision provenance repair: %w", err)
+		}
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := tx.Exec(`
+		UPDATE retrieval_embeddings SET
+			status='pending', vector_bytes=X'', vector_hash=?,
+			last_error='re-embedding required: unproven pre-v20 revision or vector hash',
+			next_attempt_at='', embedded_at='', updated_at=?
+		WHERE status='ready' AND (revision<=0 OR vector_hash='')`, retrievalVectorHash([]byte{}), now); err != nil {
+		return fmt.Errorf("queue unproven ready embeddings for re-embedding: %w", err)
+	}
+	for _, profileID := range profiles {
+		if _, err := tx.Exec(`
+			UPDATE retrieval_embedding_profiles SET
+				active_generation_id='', active_snapshot_revision=0, active_indexed_count=0,
+				l0_ready_count=(SELECT COUNT(*) FROM retrieval_embeddings WHERE profile_id=? AND status='ready'),
+				active_tombstone_count=0, updated_at=?
+			WHERE profile_id=?`, profileID, now, profileID); err != nil {
+			return fmt.Errorf("repair retrieval embedding profile counters %s: %w", profileID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit retrieval embedding revision provenance repair: %w", err)
 	}
 	return nil
 }

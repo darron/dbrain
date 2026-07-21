@@ -580,6 +580,19 @@ func TestSemanticVerifyRejectsProfileRootAndRevisionProvenance(t *testing.T) {
 	profileID, _ := profile.ID()
 	valid := embedding.EncodeDenseF32([]float32{0.6, 0.8})
 	base := store.RetrievalEmbeddingVerificationState{ProfileID: profileID, Profile: profile, LatestRevision: 2, PurgeEpoch: 1, GlobalPurgeEpoch: 1}
+	seedValidRoot := func(state *store.RetrievalEmbeddingVerificationState) {
+		state.ActiveGenerationID = "root"
+		state.ActiveSnapshotRevision = 2
+		state.ActiveIndexedCount = 2
+		state.ActiveTombstoneCount = 1
+		state.GenerationBackend = "exact"
+		state.GenerationBackendVersion = "v1"
+		state.GenerationStatus = store.RetrievalGenerationCompleted
+		state.GenerationActive = true
+		state.GenerationDimensions = 2
+		state.GenerationDistanceMetric = "cosine"
+		state.GenerationIndexedChunkCount = 2
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*store.RetrievalEmbeddingVerificationState, *store.RetrievalVectorRow)
@@ -598,6 +611,14 @@ func TestSemanticVerifyRejectsProfileRootAndRevisionProvenance(t *testing.T) {
 			row.ChunkerVersion = "old"
 		}},
 		{"revision", func(_ *store.RetrievalEmbeddingVerificationState, row *store.RetrievalVectorRow) { row.Revision = 3 }},
+		{"tombstones exceed indexed membership", func(state *store.RetrievalEmbeddingVerificationState, _ *store.RetrievalVectorRow) {
+			seedValidRoot(state)
+			state.ActiveTombstoneCount = 3
+		}},
+		{"generation indexed count mismatch", func(state *store.RetrievalEmbeddingVerificationState, _ *store.RetrievalVectorRow) {
+			seedValidRoot(state)
+			state.GenerationIndexedChunkCount = 1
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := base

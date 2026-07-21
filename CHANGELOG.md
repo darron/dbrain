@@ -39,6 +39,13 @@ development date for the change set.
   quarantining corrupt ready rows. Migration 19 replaces full-profile write
   scans with primary-key profile/chunk checks and rejects mixed legacy profile
   provenance.
+- **Fail-closed generation provenance**: Generation activation now returns a
+  typed error instead of manufacturing an index snapshot from the profile's
+  latest embedding revision. Verification also rejects impossible tombstone
+  counts and disagreement between profile and generation membership counts.
+  Migration 20 queues legacy ready rows with a non-positive revision or empty
+  vector hash for explicit re-embedding so upgraded databases cannot strand
+  unverified vectors outside the worker selector.
 
 ### Production health audit corrections (2026-07-15)
 

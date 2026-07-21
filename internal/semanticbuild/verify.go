@@ -113,6 +113,9 @@ func validateVerificationState(profileID string, profile embedding.Profile, stat
 	if state.ActiveIndexedCount < 0 || state.L0ReadyCount < 0 || state.ActiveTombstoneCount < 0 {
 		return fmt.Errorf("semantic verify profile %s has negative aggregate counts", profileID)
 	}
+	if state.ActiveTombstoneCount > state.ActiveIndexedCount {
+		return fmt.Errorf("semantic verify profile %s tombstone count %d exceeds active indexed count %d", profileID, state.ActiveTombstoneCount, state.ActiveIndexedCount)
+	}
 	if state.ActiveGenerationID == "" {
 		if state.ActiveSnapshotRevision != 0 || state.ActiveIndexedCount != 0 || state.ActiveTombstoneCount != 0 {
 			return fmt.Errorf("semantic verify profile %s has root aggregates without an active generation", profileID)
@@ -127,6 +130,9 @@ func validateVerificationState(profileID string, profile embedding.Profile, stat
 	}
 	if state.GenerationDimensions != profile.Dimensions {
 		return fmt.Errorf("semantic verify profile %s active generation %s dimensions %d do not match %d", profileID, state.ActiveGenerationID, state.GenerationDimensions, profile.Dimensions)
+	}
+	if state.GenerationIndexedChunkCount != state.ActiveIndexedCount {
+		return fmt.Errorf("semantic verify profile %s active indexed count %d does not match generation %s indexed count %d", profileID, state.ActiveIndexedCount, state.ActiveGenerationID, state.GenerationIndexedChunkCount)
 	}
 	return nil
 }

@@ -88,7 +88,7 @@ var dbrainSemanticFoundationSchema = []schemaIdentityTable{
 	},
 }
 
-var dbrainEmbeddingProfileDefinitionSchema = []schemaIdentityTable{{
+var dbrainEmbeddingProfileDefinitionSchemaV19 = []schemaIdentityTable{{
 	name: "retrieval_embedding_profiles",
 	columns: []string{
 		"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
@@ -155,7 +155,7 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalEmbeddingProfileVersion).Scan(&found)
 		switch {
 		case err == nil:
-			requiredSchema = append(requiredSchema, dbrainEmbeddingProfileDefinitionSchema...)
+			requiredSchema = append(requiredSchema, dbrainEmbeddingProfileDefinitionSchemaV19...)
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
 			return 0, 0, fmt.Errorf("inspect dbrain embedding profile migration: %w", err)

@@ -220,7 +220,7 @@ func TestOnlyCompletedGenerationCanActivate(t *testing.T) {
 	}
 }
 
-func TestOnlyOneGenerationIsActivePerProfile(t *testing.T) {
+func TestCompletedGenerationActivationFailsClosedWithoutMembershipProvenance(t *testing.T) {
 	t.Parallel()
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
@@ -233,36 +233,31 @@ func TestOnlyOneGenerationIsActivePerProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, id := range []string{"generation-a", "generation-b"} {
-		if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
-			GenerationID: id, ProfileID: "profile-a", Backend: "hnsw", BackendVersion: "1",
-			Dimensions: 2, DistanceMetric: "cosine", BuildStatus: RetrievalGenerationCompleted,
-		}); err != nil {
-			t.Fatalf("put generation %s: %v", id, err)
-		}
+	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
+		GenerationID: "generation-a", ProfileID: "profile-a", Backend: "exact", BackendVersion: "v1",
+		Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 1, BuildStatus: RetrievalGenerationCompleted,
+	}); err != nil {
+		t.Fatalf("put generation: %v", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "generation-a"); err != nil {
-		t.Fatalf("activate generation-a: %v", err)
+	err := st.ActivateRetrievalIndexGeneration(ctx, "generation-a")
+	if !errors.Is(err, ErrRetrievalGenerationMembershipUnproven) {
+		t.Fatalf("activate generation error=%v, want ErrRetrievalGenerationMembershipUnproven", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "generation-b"); err != nil {
-		t.Fatalf("activate generation-b: %v", err)
+	var active int
+	if err := st.db.QueryRow(`SELECT active FROM retrieval_index_generations WHERE generation_id='generation-a'`).Scan(&active); err != nil {
+		t.Fatal(err)
 	}
-
-	rows, err := st.db.Query(`SELECT generation_id FROM retrieval_index_generations WHERE profile_id = 'profile-a' AND active = 1`)
-	if err != nil {
-		t.Fatalf("query active generation: %v", err)
+	if active != 0 {
+		t.Fatalf("generation active=%d after rejected activation", active)
 	}
-	defer func() { _ = rows.Close() }()
-	var active []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatalf("scan active generation: %v", err)
-		}
-		active = append(active, id)
-	}
-	if len(active) != 1 || active[0] != "generation-b" {
-		t.Fatalf("active generations = %v, want generation-b only", active)
+	assertProfileAggregatesForTest(t, st, "profile-a", "", 0, 1, 0)
+	err = st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
+		GenerationID: "generation-direct-active", ProfileID: "profile-a", Backend: "exact", BackendVersion: "v1",
+		Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 1,
+		BuildStatus: RetrievalGenerationCompleted, Active: true,
+	})
+	if !errors.Is(err, ErrRetrievalGenerationMembershipUnproven) {
+		t.Fatalf("direct active generation put error=%v, want ErrRetrievalGenerationMembershipUnproven", err)
 	}
 }
 
@@ -284,9 +279,7 @@ func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T
 	}); err != nil {
 		t.Fatalf("put generation: %v", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "generation-a"); err != nil {
-		t.Fatalf("activate generation: %v", err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "generation-a")
 	if err := st.PutRetrievalEmbedding(ctx, testEmbedding("chunk-a", "profile-a", "hash-a")); err != nil {
 		t.Fatalf("rewrite unchanged embedding: %v", err)
 	}
@@ -304,7 +297,7 @@ func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T
 		t.Fatalf("change embedding: %v", err)
 	}
 	assertGenerationActiveForTest(t, st, "generation-a")
-	assertProfileAggregatesForTest(t, st, "profile-a", "generation-a", 0, 1, 1)
+	assertProfileAggregatesForTest(t, st, "profile-a", "generation-a", 1, 1, 1)
 
 	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
 		GenerationID: "generation-b", ProfileID: "profile-a", Backend: "hnsw", BackendVersion: "1",
@@ -312,9 +305,7 @@ func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T
 	}); err != nil {
 		t.Fatalf("put replacement generation: %v", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "generation-b"); err != nil {
-		t.Fatalf("activate replacement generation: %v", err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "generation-b")
 	changed := testRetrievalChunk("chunk-b", "item", "item:one", 0, "hash-b", "bravo")
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:one", []retrievalchunk.Chunk{changed}); err != nil {
 		t.Fatalf("replace embedded chunk: %v", err)
@@ -452,9 +443,7 @@ func TestPurgeItemIndexedContentDeletesRetrievalState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put generation: %v", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "generation-a"); err != nil {
-		t.Fatalf("activate generation: %v", err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "generation-a")
 
 	purged, err := st.PurgeItemIndexedContent(ctx, "apple-note:one", `{"purged":true}`)
 	if err != nil {
@@ -706,9 +695,7 @@ func TestApplyRetrievalProjectionAtomicallyReplacesOccurrencesAndOnlyObsoleteEmb
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "generation-apply"); err != nil {
-		t.Fatal(err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "generation-apply")
 
 	dirtyRetrievalParentForTest(t, st, "source", "source:apply", func(tx *sql.Tx) error {
 		_, err := tx.Exec(`UPDATE sources SET extracted_text='changed source text', content_hash='changed-hash' WHERE source_key='source:apply'`)
@@ -1584,9 +1571,7 @@ func TestEmbeddingBatchPreservesActiveRootAndAccountsL0AndTombstones(t *testing.
 	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{GenerationID: "aggregate-root", ProfileID: profileID, Backend: "exact", BackendVersion: "v1", Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 3, BuildStatus: RetrievalGenerationCompleted}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "aggregate-root"); err != nil {
-		t.Fatal(err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "aggregate-root")
 	rows[0].AttemptCount++
 	idempotentRevision, err := st.PutRetrievalEmbeddingBatch(ctx, PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows[:1], ExpectedPurgeEpoch: 0})
 	if err != nil || idempotentRevision != 1 {
@@ -1770,9 +1755,7 @@ func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put active generation: %v", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "read-corrupt-generation"); err != nil {
-		t.Fatalf("activate generation: %v", err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "read-corrupt-generation")
 	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET vector_bytes = X'00000000' WHERE chunk_id = ? AND profile_id = ?`, row.ChunkID, row.ProfileID); err != nil {
 		t.Fatalf("inject corrupt stored vector: %v", err)
 	}
@@ -1800,7 +1783,7 @@ func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 		t.Fatalf("profile after quarantine=%+v, want revision 2 and no L0 ready rows", profileRow)
 	}
 	assertGenerationActiveForTest(t, st, "read-corrupt-generation")
-	assertProfileAggregatesForTest(t, st, row.ProfileID, "read-corrupt-generation", 0, 0, 1)
+	assertProfileAggregatesForTest(t, st, row.ProfileID, "read-corrupt-generation", 1, 0, 1)
 	ready, err := st.ListReadyEmbeddings(ctx, row.ProfileID, 10)
 	if err != nil || len(ready) != 0 {
 		t.Fatalf("ready rows after explicit corruption transition = %+v, %v", ready, err)
@@ -1828,9 +1811,7 @@ func TestBlockCorruptRetrievalEmbeddingDoesNotBlockConcurrentlyRepairedRow(t *te
 	}); err != nil {
 		t.Fatalf("put active generation: %v", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "repaired-generation"); err != nil {
-		t.Fatalf("activate generation: %v", err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "repaired-generation")
 	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET vector_bytes = X'00000000' WHERE chunk_id = ? AND profile_id = ?`, row.ChunkID, row.ProfileID); err != nil {
 		t.Fatalf("inject corrupt stored vector: %v", err)
 	}
@@ -1998,9 +1979,7 @@ func TestPendingParentIsExcludedFromEverySemanticVectorSelectorAndHydration(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "pending-selector-generation"); err != nil {
-		t.Fatal(err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "pending-selector-generation")
 	if _, err := st.db.Exec(`UPDATE sources SET title='mutated projected title' WHERE source_key='source:pending-selector'`); err != nil {
 		t.Fatal(err)
 	}
@@ -2085,9 +2064,7 @@ func TestMarkRetrievalParentDirtyTxAllocatesOnceAndInvalidatesLegacyGeneration(t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "named-dirty-generation"); err != nil {
-		t.Fatal(err)
-	}
+	seedActiveRetrievalGenerationForTest(t, st, "named-dirty-generation")
 	before := projectionRevisionForTest(t, st)
 	tx, err := st.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2345,6 +2322,44 @@ func assertRetrievalGenerationStale(t *testing.T, st *Store, generationID string
 	}
 	if status != string(RetrievalGenerationStale) || active != 0 {
 		t.Fatalf("generation %s = status %q active %d, want stale inactive", generationID, status, active)
+	}
+}
+
+// seedActiveRetrievalGenerationForTest explicitly creates the source-revision
+// and membership relationship that the current production schema cannot prove.
+// Production activation must remain fail-closed until segmented generations
+// persist that provenance themselves.
+func seedActiveRetrievalGenerationForTest(t *testing.T, st *Store, generationID string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var profileID string
+	if err := tx.QueryRowContext(ctx, `SELECT profile_id FROM retrieval_index_generations WHERE generation_id=?`, generationID).Scan(&profileID); err != nil {
+		t.Fatal(err)
+	}
+	var revision int64
+	if err := tx.QueryRowContext(ctx, `SELECT latest_revision FROM retrieval_embedding_profiles WHERE profile_id=?`, profileID).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	var indexed int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM retrieval_embeddings WHERE profile_id=? AND status='ready'`, profileID).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active=0,activated_at='' WHERE profile_id=?`, profileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active=1,indexed_chunk_count=?,activated_at=? WHERE generation_id=?`, indexed, time.Now().UTC().Format(time.RFC3339), generationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_embedding_profiles SET active_generation_id=?,active_snapshot_revision=?,active_indexed_count=?,l0_ready_count=0,active_tombstone_count=0 WHERE profile_id=?`, generationID, revision, indexed, profileID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }
 

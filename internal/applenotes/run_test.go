@@ -323,9 +323,6 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed retrieval generation: %v", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "apple-note-generation"); err != nil {
-		t.Fatalf("activate retrieval generation: %v", err)
-	}
 	stats, err := Run(context.Background(), cfg, st, Options{
 		DBPath:         dbPath,
 		ExcludeFolders: []string{"Private"},

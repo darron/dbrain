@@ -216,9 +216,12 @@ func projectionDirtyTriggerV17DatabaseForContentHashTest(t *testing.T) (string, 
 	if err := st.PutRetrievalIndexGeneration(t.Context(), RetrievalIndexGenerationRow{
 		GenerationID: "generation:v17-content-hash", ProfileID: "profile:v17-content-hash",
 		Backend: "exact", BackendVersion: "v1", Dimensions: 2, DistanceMetric: "cosine",
-		BuildStatus: RetrievalGenerationCompleted, Active: true, ActivatedAt: time.Now().UTC(),
+		BuildStatus: RetrievalGenerationCompleted,
 	}); err != nil {
 		t.Fatalf("seed v17 active generation: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_index_generations SET active=1,activated_at=? WHERE generation_id='generation:v17-content-hash'`, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("seed explicit v17 active generation state: %v", err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("close initial store: %v", err)
