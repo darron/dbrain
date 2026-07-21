@@ -265,6 +265,16 @@ write path. Store methods still expose named invalidation helpers for tests and
 for transitions that need stronger synchronous semantics. Triggers only mark a
 parent pending; they do not perform chunking or model work.
 
+The foundation tables and constraints belong to migration 16
+`retrieval_semantic_foundation_v2`. Authoritative dirtying triggers belong to
+append-only migration 17 `retrieval_projection_dirty_triggers`. Schema identity
+validation is version-gated accordingly so an already-recorded migration 16 is
+never reinterpreted to require objects it did not originally install.
+
+Raw item/source `content_hash` remains provenance only. It is not part of the
+parent projection hash and a hash-only recalculation does not dirty semantic
+state; changes to the actual projected fields above do.
+
 A pending parent becomes immediately ineligible for semantic hydration. This
 prevents old excerpts or vectors from being returned while maintenance catches
 up.

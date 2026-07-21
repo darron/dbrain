@@ -52,6 +52,7 @@ Current migration history:
 | 14      | `retrieval_profile_invariant_triggers_repair` | Repair retrieval embedding profile invariant triggers. |
 | 15      | `retrieval_chunk_projection_provenance` | Persist retrieval chunk projection provenance. |
 | 16      | `retrieval_semantic_foundation_v2` | Add the v2 semantic projection ledger, occurrence and staging tables, profile aggregates, stable database identity, and revision columns. Existing v2 chunks and embeddings remain in place for explicit v3 projection/embedding replacement. |
+| 17      | `retrieval_projection_dirty_triggers` | Install and repair authoritative item, source, and enrichment triggers that atomically dirty semantic parent projections. Kept separate so databases that already recorded migration 16 upgrade safely. |
 
 Version 1 is the adoption baseline, not a permanent "current schema" label.
 The current schema version is the highest registered migration version.

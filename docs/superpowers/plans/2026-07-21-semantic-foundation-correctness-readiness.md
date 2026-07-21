@@ -11,7 +11,12 @@
 ## Global Constraints
 
 - SQLite remains the sole authoritative working database; chunks, embeddings, ledgers, and later ANN files are derived state.
-- Use additive migration **16** named `retrieval_semantic_foundation_v2`; re-scan `main` and recent branches immediately before editing migration history and choose a higher unused version if 16 has appeared.
+- Use additive migration **16** named `retrieval_semantic_foundation_v2` for the
+  foundation tables and constraints. Because migration 16 was exercised before
+  authoritative dirtying triggers were added, install and repair those triggers
+  with append-only migration **17** named
+  `retrieval_projection_dirty_triggers`; never fold the new trigger identity
+  into migration 16.
 - Projection identity is exactly `retrieval-projection-v2`; chunk identity is exactly `retrieval-chunker-v3`.
 - Chunker v3 hard UTF-8 ceiling is 1,800 bytes; emitted text must also obey existing rune bounds, preserve exact rune offsets, never be blank after trimming, and always make forward progress.
 - Stable chunk identity excludes absolute offsets, whole-parent hashes, whole-section hashes, and occurrence number.
@@ -358,6 +363,12 @@ git commit --no-gpg-sign -m "feat: persist semantic projection state"
 - Consumes: projection ledger from Task 3.
 - Produces: database-trigger coverage floor and immediate exclusion of non-current parents.
 
+Migration 17 owns the dirty-trigger definitions. Read-only schema identity
+requires the foundation constraints only when migration 16 is present and the
+dirty triggers only when migration 17 is present. A genuine v15 database must
+report semantic retrieval unavailable before any selector joins the v16
+projection ledger.
+
 - [ ] **Step 1: Write failing mutation/exclusion tests**
 
 Prove projected item/source fields and summary/OCR/transcript enrichment
@@ -379,9 +390,11 @@ Expected: FAIL because no authoritative dirtying triggers or pending-parent filt
 
 - [ ] **Step 3: Implement triggers and named helpers**
 
-Add repair-safe item/source/enrichment triggers whose `WHEN` clauses compare
-only projected fields/roles. Triggers increment `retrieval_state` and upsert the
-ledger as `pending`. Provide:
+Add repair-safe item/source/enrichment triggers in migration 17 whose `WHEN`
+clauses compare only projected fields/roles. Raw `content_hash` is provenance,
+not a projection input, and a hash-only recalculation must not dirty a parent.
+Triggers increment `retrieval_state` and upsert the ledger as `pending`.
+Provide:
 
 ```go
 func MarkRetrievalParentDirtyTx(ctx context.Context, tx *sql.Tx, kind, sourceKey string) (int64, error)
