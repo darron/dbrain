@@ -1,12 +1,15 @@
 package main
 
 import (
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/darron/dbrain/internal/config"
 )
 
 func TestBakeoffRefusesLiveProductionXDGDatabase(t *testing.T) {
@@ -30,6 +33,29 @@ func TestBakeoffRefusesLiveProductionXDGDatabase(t *testing.T) {
 	}
 	if refused, err := refusesLiveProductionDB(restored); err != nil || refused {
 		t.Fatal("explicit restored corpus must remain allowed")
+	}
+}
+
+func TestBakeoffProductionRefusalFailsClosedForResolutionErrorAndAlias(t *testing.T) {
+	original := loadProductionConfig
+	t.Cleanup(func() { loadProductionConfig = original })
+	loadProductionConfig = func(string) (config.Config, error) { return config.Config{}, errors.New("config unavailable") }
+	if _, err := refusesLiveProductionDB(filepath.Join(t.TempDir(), "restored.db")); err == nil {
+		t.Fatal("production resolution error must fail closed")
+	}
+
+	root := t.TempDir()
+	live := filepath.Join(root, "brain.db")
+	if err := os.WriteFile(live, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loadProductionConfig = func(string) (config.Config, error) { return config.Config{DBPath: live}, nil }
+	alias := filepath.Join(root, "alias.db")
+	if err := os.Symlink(live, alias); err != nil {
+		t.Fatal(err)
+	}
+	if refused, err := refusesLiveProductionDB(alias); err != nil || !refused {
+		t.Fatalf("symlink alias refused=%v err=%v", refused, err)
 	}
 }
 

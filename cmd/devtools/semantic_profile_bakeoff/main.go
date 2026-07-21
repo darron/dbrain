@@ -260,8 +260,11 @@ func verifyEmbedding(baseURL, model string, dimensions int, text string) error {
 	}
 	return finiteL2(response.Vectors[0])
 }
+
+var loadProductionConfig = config.Load
+
 func defaultProductionDBPath() (string, error) {
-	cfg, err := config.Load("")
+	cfg, err := loadProductionConfig("")
 	if err != nil {
 		return "", err
 	}
