@@ -155,6 +155,9 @@ func TestBakeoffPersistsCancellationAndProviderFailureTerminalState(t *testing.T
 			if tc.cancel && !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancellation error = %v", err)
 			}
+			if !tc.cancel && err == nil {
+				t.Fatal("provider failure must make the bakeoff fail")
+			}
 			got := readReport(t, path)
 			if len(got.CandidateProfiles) != 1 || got.CandidateProfiles[0].Status != "failed" || got.CandidateProfiles[0].Vectors != 64 || got.CandidateProfiles[0].Error == "" {
 				t.Fatalf("terminal report = %+v", got)
@@ -175,7 +178,10 @@ func TestBakeoffEnforcesProviderCardinalityAndDimensions(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "report.json")
 			provider := fakeProvider{info: embedding.Info{Provider: "fake", Model: "fake", Dimensions: 2}, embed: func(context.Context, embedding.Request) (embedding.Response, error) { return tc.response, nil }}
 			deps := bakeoffDeps{newProvider: func(embedding.OllamaOptions) (embedding.Provider, error) { return provider, nil }, writeReport: writeReport}
-			_ = executeBakeoff(t.Context(), bakeoffOptions{database: "restored.db", reportPath: path, model: "fake", dimensions: []int{2}, maxBytes: retrievalchunk.MaxUTF8Bytes}, &fakeCorpus{parents: syntheticParents(2)}, deps)
+			err := executeBakeoff(t.Context(), bakeoffOptions{database: "restored.db", reportPath: path, model: "fake", dimensions: []int{2}, maxBytes: retrievalchunk.MaxUTF8Bytes}, &fakeCorpus{parents: syntheticParents(2)}, deps)
+			if err == nil {
+				t.Fatal("invalid provider response must make the bakeoff fail")
+			}
 			if got := readReport(t, path).CandidateProfiles[0]; got.Status != "failed" || got.Error == "" {
 				t.Fatalf("candidate = %+v", got)
 			}
@@ -227,7 +233,13 @@ func TestBakeoffClassifiesDimensionAndContextFailuresNarrowly(t *testing.T) {
 			defer server.Close()
 			path := filepath.Join(t.TempDir(), "report.json")
 			deps := bakeoffDeps{newProvider: func(opts embedding.OllamaOptions) (embedding.Provider, error) { return embedding.NewOllama(opts) }, writeReport: writeReport}
-			_ = executeBakeoff(t.Context(), bakeoffOptions{database: "restored.db", reportPath: path, baseURL: server.URL, model: "fake", dimensions: []int{tc.dimensions}, maxBytes: retrievalchunk.MaxUTF8Bytes}, &fakeCorpus{parents: syntheticParents(1)}, deps)
+			err := executeBakeoff(t.Context(), bakeoffOptions{database: "restored.db", reportPath: path, baseURL: server.URL, model: "fake", dimensions: []int{tc.dimensions}, maxBytes: retrievalchunk.MaxUTF8Bytes}, &fakeCorpus{parents: syntheticParents(1)}, deps)
+			if tc.wantStatus == "failed" && err == nil {
+				t.Fatal("failed candidate must make the bakeoff fail")
+			}
+			if tc.wantStatus == "unsupported" && err != nil {
+				t.Fatalf("explicit unsupported non-foundation candidate returned %v", err)
+			}
 			got := readReport(t, path)
 			if got.CandidateProfiles[0].Status != tc.wantStatus || got.ContextFailures != tc.wantContextFail {
 				t.Fatalf("report = %+v", got)
@@ -244,7 +256,10 @@ func TestBakeoffOrdinaryFatalConstructorErrorIsFailed(t *testing.T) {
 		},
 		writeReport: writeReport,
 	}
-	_ = executeBakeoff(t.Context(), bakeoffOptions{database: "restored.db", reportPath: path, model: "fake", dimensions: []int{384}, maxBytes: retrievalchunk.MaxUTF8Bytes}, &fakeCorpus{parents: syntheticParents(1)}, deps)
+	err := executeBakeoff(t.Context(), bakeoffOptions{database: "restored.db", reportPath: path, model: "fake", dimensions: []int{384}, maxBytes: retrievalchunk.MaxUTF8Bytes}, &fakeCorpus{parents: syntheticParents(1)}, deps)
+	if err == nil {
+		t.Fatal("fatal constructor failure must make the bakeoff fail")
+	}
 	if got := readReport(t, path).CandidateProfiles[0]; got.Status != "failed" {
 		t.Fatalf("constructor failure = %+v", got)
 	}

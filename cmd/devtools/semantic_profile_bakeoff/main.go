@@ -233,6 +233,11 @@ func executeBakeoff(ctx context.Context, opts bakeoffOptions, corpus parentCorpu
 	if err := persist(); err != nil {
 		return err
 	}
+	for _, candidate := range result.CandidateProfiles {
+		if candidate.Status == "failed" {
+			return fmt.Errorf("%d-dimensional candidate failed: %s", candidate.Dimensions, candidate.Error)
+		}
+	}
 	if result.OversizedWindows != 0 || result.ContextFailures != 0 {
 		return fmt.Errorf("bakeoff found oversized=%d context_failures=%d", result.OversizedWindows, result.ContextFailures)
 	}

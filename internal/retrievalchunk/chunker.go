@@ -124,23 +124,23 @@ type anchorCandidate struct {
 // byte ceilings. Their union remains content-local: a prior emitted boundary
 // is never an input to selecting a later boundary.
 func globalAnchors(text []rune, opts Options) []int {
-	const fingerprintRunes = 32
+	fingerprintRunes := min(32, max(1, min(opts.TargetRunes, opts.MaxRunes)/4))
 	candidates := make([]anchorCandidate, 0, max(0, len(text)-1))
-	bytePosition := 0
+	byteOffsets := make([]int, len(text)+1)
 	for at, r := range text {
-		bytePosition += utf8.RuneLen(r)
+		byteOffsets[at+1] = byteOffsets[at] + utf8.RuneLen(r)
 		runePosition := at + 1
 		if runePosition == len(text) {
 			break
 		}
 		candidates = append(candidates, anchorCandidate{
 			runePosition: runePosition,
-			bytePosition: bytePosition,
+			bytePosition: byteOffsets[runePosition],
 			rank:         boundaryRank(text, runePosition),
 			fingerprint:  fixedWindowFingerprint(text, runePosition, fingerprintRunes),
 		})
 	}
-	totalBytes := bytePosition
+	totalBytes := byteOffsets[len(text)]
 	selected := make(map[int]struct{})
 	// Reserve the local fingerprint radius inside each hard limit so an edit's
 	// influence plus the minimizer window remains bounded by that limit.
@@ -151,46 +151,103 @@ func globalAnchors(text []rune, opts Options) []int {
 	// every later cut. This avoids arbitrary prefix fingerprints defeating an
 	// immediately available paragraph or sentence without coupling later cuts
 	// to the emitted prefix.
-	if prefix := prefixPreferredBoundary(text, opts); prefix > 0 {
+	protected := -1
+	if prefix, natural := prefixBoundary(text, byteOffsets, opts); prefix > 0 {
 		for at := range selected {
-			if at < prefix {
+			if at < prefix || (!natural && at <= hardEnd(byteOffsets, prefix, opts)) {
 				delete(selected, at)
 			}
 		}
 		selected[prefix] = struct{}{}
+		protected = prefix
 	}
 	anchors := make([]int, 0, len(selected))
 	for at := range selected {
 		anchors = append(anchors, at)
 	}
 	sort.Ints(anchors)
-	return anchors
+	anchors = compactDenseAnchors(text, anchors, fingerprintRunes, protected)
+	return boundAnchorGaps(byteOffsets, anchors, opts)
 }
 
-func prefixPreferredBoundary(text []rune, opts Options) int {
-	hard := min(opts.MaxRunes, len(text))
-	bytes := 0
-	for at := 0; at < hard; at++ {
-		width := utf8.RuneLen(text[at])
-		if bytes+width > MaxUTF8Bytes {
-			hard = at
-			break
+// compactDenseAnchors collapses the short burst of distinct fingerprints that
+// a local edit can create. It keeps the rightmost boundary in each non-natural
+// cluster, so compaction depends only on the precomputed global anchors within
+// one fingerprint radius. Paragraph/sentence anchors and the stable prefix are
+// never removed.
+func compactDenseAnchors(text []rune, anchors []int, radius, protected int) []int {
+	result := make([]int, 0, len(anchors))
+	for i := 0; i < len(anchors); {
+		at := anchors[i]
+		if at == protected || boundaryRank(text, at) <= 1 {
+			result = append(result, at)
+			i++
+			continue
 		}
-		bytes += width
+		last := i
+		for last+1 < len(anchors) && anchors[last+1] != protected && boundaryRank(text, anchors[last+1]) > 1 && anchors[last+1]-anchors[last] < radius {
+			last++
+		}
+		result = append(result, anchors[last])
+		i = last + 1
 	}
+	return result
+}
+
+func prefixBoundary(text []rune, byteOffsets []int, opts Options) (int, bool) {
+	hard := hardEnd(byteOffsets, 0, opts)
 	if hard == len(text) {
-		return 0
+		return 0, false
 	}
 	target := min(opts.TargetRunes, hard)
 	if end := preferredBoundary(text, 0, target, hard, paragraphBoundary); end > 0 {
-		return end
+		return end, true
 	}
 	if end := preferredBoundary(text, 0, target, hard, sentenceAt); end > 0 {
-		return end
+		return end, true
 	}
-	return preferredBoundary(text, 0, target, hard, func(value []rune, at int) bool {
+	if end := preferredBoundary(text, 0, target, hard, func(value []rune, at int) bool {
 		return whitespaceAt(value, 0, at)
-	})
+	}); end > 0 {
+		return end, true
+	}
+	// A section edge is a stable exception to the global minimizer stream. It
+	// restores a useful target-sized first window when no natural boundary is
+	// available; later ordinary-content cuts still come from global anchors.
+	return target, false
+}
+
+// boundAnchorGaps fills only gaps where indistinguishable minimizer scores were
+// suppressed. Ordinary content retains its globally selected boundaries. Each
+// inserted cut uses the useful target, capped by both independent hard limits.
+func boundAnchorGaps(byteOffsets, anchors []int, opts Options) []int {
+	result := make([]int, 0, len(anchors)+1)
+	start := 0
+	for _, end := range append(append([]int(nil), anchors...), len(byteOffsets)-1) {
+		if end <= start {
+			continue
+		}
+		for end > hardEnd(byteOffsets, start, opts) {
+			cut := min(start+opts.TargetRunes, hardEnd(byteOffsets, start, opts))
+			if cut <= start {
+				cut = hardEnd(byteOffsets, start, opts)
+			}
+			result = append(result, cut)
+			start = cut
+		}
+		if end < len(byteOffsets)-1 {
+			result = append(result, end)
+		}
+		start = end
+	}
+	return result
+}
+
+func hardEnd(byteOffsets []int, start int, opts Options) int {
+	runeEnd := min(start+opts.MaxRunes, len(byteOffsets)-1)
+	byteLimit := byteOffsets[start] + MaxUTF8Bytes
+	byteEnd := sort.Search(len(byteOffsets), func(at int) bool { return byteOffsets[at] > byteLimit }) - 1
+	return min(runeEnd, max(start+1, byteEnd))
 }
 
 func preferredBoundary(text []rune, start, target, hard int, predicate func([]rune, int) bool) int {
@@ -224,10 +281,9 @@ func boundaryRank(text []rune, at int) uint8 {
 }
 
 // winnowAnchors selects the rightmost lexicographic minimum in every fixed
-// coordinate window. The deque makes the pass linear. Equal fingerprints on
-// adversarial periodic input intentionally select every rightmost minimum;
-// translationally invariant content cannot otherwise provide sparse anchors
-// while also guaranteeing a hard maximum gap.
+// coordinate window. The deque makes the pass linear. Consecutive equal-score
+// minima are emitted once; boundAnchorGaps later supplies useful target-sized
+// cuts inside that mathematically indistinguishable region.
 func winnowAnchors(candidates []anchorCandidate, total, span int, bytes bool, selected map[int]struct{}) {
 	if span <= 0 || total <= span || len(candidates) == 0 {
 		return
@@ -240,6 +296,7 @@ func winnowAnchors(candidates []anchorCandidate, total, span int, bytes bool, se
 	}
 	deque := make([]int, 0, span)
 	next := 0
+	lastSelected := -1
 	for at := 1; at < total; at++ {
 		for next < len(candidates) && position(candidates[next]) == at {
 			candidate := candidates[next]
@@ -254,13 +311,21 @@ func winnowAnchors(candidates []anchorCandidate, total, span int, bytes bool, se
 			deque = deque[1:]
 		}
 		if at >= span && len(deque) > 0 {
-			selected[candidates[deque[0]].runePosition] = struct{}{}
+			minimum := deque[0]
+			if lastSelected < 0 || !anchorSameScore(candidates[minimum], candidates[lastSelected]) {
+				selected[candidates[minimum].runePosition] = struct{}{}
+				lastSelected = minimum
+			}
 		}
 	}
 }
 
 func anchorLessOrEqual(left, right anchorCandidate) bool {
 	return left.rank < right.rank || (left.rank == right.rank && left.fingerprint <= right.fingerprint)
+}
+
+func anchorSameScore(left, right anchorCandidate) bool {
+	return left.rank == right.rank && left.fingerprint == right.fingerprint
 }
 
 func paragraphBoundary(text []rune, at int) bool {

@@ -20,17 +20,71 @@ func TestChunkerV3GlobalAnchorsDoNotCascadeOnAllEqualInput(t *testing.T) {
 	if !reflect.DeepEqual(before, again) {
 		t.Fatal("all-equal boundaries are not deterministic")
 	}
+	if len(before) > 8 {
+		t.Fatalf("all-equal input amplified to %d windows, want <= 8", len(before))
+	}
+	for i, window := range before[:len(before)-1] {
+		if window.end-window.start < MaxUTF8Bytes/2 {
+			t.Fatalf("all-equal steady-state window %d has only %d runes", i, window.end-window.start)
+		}
+	}
 	assertValidWindows(t, base, before, opts)
 
 	inserted := base[:editAt] + "b" + base[editAt:]
 	afterInsertion := chunkSectionV3(inserted, opts)
 	assertValidWindows(t, inserted, afterInsertion, opts)
-	assertShiftedBoundariesOutsideEdit(t, before, afterInsertion, editAt, 1, MaxUTF8Bytes)
 
 	deleted := base[:editAt] + base[editAt+1:]
 	afterDeletion := chunkSectionV3(deleted, opts)
 	assertValidWindows(t, deleted, afterDeletion, opts)
-	assertShiftedBoundariesOutsideEdit(t, before, afterDeletion, editAt, -1, MaxUTF8Bytes)
+
+	project := func(text string) Projection {
+		projection, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:equal", Sections: []Section{{Key: "body", Role: "raw", Text: text}}}, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return projection
+	}
+	baseProjection := project(base)
+	if len(baseProjection.Occurrences) > 8 {
+		t.Fatalf("all-equal input amplified to %d occurrences, want <= 8", len(baseProjection.Occurrences))
+	}
+	if changed := symmetricChunkIDs(baseProjection.Chunks, project(inserted).Chunks); changed > 8 {
+		t.Fatalf("all-equal insertion changed %d chunk identities, want <= 8; before=%v after=%v", changed, chunkLengths(baseProjection.Chunks), chunkLengths(project(inserted).Chunks))
+	}
+	if changed := symmetricChunkIDs(baseProjection.Chunks, project(deleted).Chunks); changed > 8 {
+		t.Fatalf("all-equal deletion changed %d chunk identities, want <= 8", changed)
+	}
+}
+
+func chunkLengths(chunks []Chunk) []int {
+	result := make([]int, len(chunks))
+	for i, chunk := range chunks {
+		result[i] = len([]rune(chunk.Text))
+	}
+	return result
+}
+
+func TestChunkerV3BoundsPeriodicWindowAmplification(t *testing.T) {
+	opts := DefaultOptions()
+	text := strings.Repeat("ab", 4_500)
+	windows := chunkSectionV3(text, opts)
+	assertValidWindows(t, text, windows, opts)
+	if len(windows) > 8 {
+		t.Fatalf("periodic input amplified to %d windows, want <= 8", len(windows))
+	}
+	projection, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:periodic", Sections: []Section{{Key: "body", Role: "raw", Text: text}}}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Occurrences) > 8 {
+		t.Fatalf("periodic input amplified to %d occurrences, want <= 8", len(projection.Occurrences))
+	}
+	for i, window := range windows[:len(windows)-1] {
+		if window.end-window.start < MaxUTF8Bytes/2 {
+			t.Fatalf("periodic steady-state window %d has only %d runes", i, window.end-window.start)
+		}
+	}
 }
 
 func TestChunkerV3GloballyPrefersParagraphThenSentenceBoundaries(t *testing.T) {
@@ -218,6 +272,8 @@ func TestChunkerV3ReusesMovedWindowsAndLimitsDistantEditChurn(t *testing.T) {
 		t.Fatal("unstructured edit must be at least 1,800 bytes from both edges")
 	}
 	afterText := base[:editAt] + "X" + base[editAt:]
+	beforeWindows := chunkSectionV3(base, DefaultOptions())
+	assertShiftedBoundariesOutsideEdit(t, beforeWindows, chunkSectionV3(afterText, DefaultOptions()), editAt, 1, MaxUTF8Bytes)
 	after, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: afterText}}}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -227,6 +283,7 @@ func TestChunkerV3ReusesMovedWindowsAndLimitsDistantEditChurn(t *testing.T) {
 		t.Fatalf("unstructured insertion changed %d chunk identities, want <= 8", changed)
 	}
 	deleted := base[:editAt] + base[editAt+1:]
+	assertShiftedBoundariesOutsideEdit(t, beforeWindows, chunkSectionV3(deleted, DefaultOptions()), editAt, -1, MaxUTF8Bytes)
 	afterDeletion, err := BuildProjection(Parent{Kind: "source", SourceKey: "src:local", Sections: []Section{{Key: "body", Role: "raw", Heading: "Fixture", Text: deleted}}}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -541,8 +598,13 @@ func TestBuildFallsBackToRuneBoundaryWithoutWhitespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chunks[0].EndChar <= 0 || chunks[0].EndChar > opts.MaxRunes || chunks[0].Text != strings.Repeat("界", chunks[0].EndChar) {
+	if chunks[0].EndChar != opts.TargetRunes || chunks[0].Text != strings.Repeat("界", opts.TargetRunes) {
 		t.Fatalf("rune fallback chose %+v", chunks[0])
+	}
+	for i, chunk := range chunks[:len(chunks)-1] {
+		if chunk.EndChar-chunk.StartChar < opts.TargetRunes {
+			t.Fatalf("steady-state chunk %d has only %d runes", i, chunk.EndChar-chunk.StartChar)
+		}
 	}
 }
 
