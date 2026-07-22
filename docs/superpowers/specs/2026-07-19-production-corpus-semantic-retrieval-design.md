@@ -629,6 +629,14 @@ embedding drain, release packaging, or semantic `on`. Each remains separately
 gated by the resource, freshness, recall, and operational checks below.
 Semantic mode remains off and all unavailable paths remain lexical fail-open.
 
+The optional evaluator is deliberately separate from the dbrain CLI. Under
+`usearch && cgo`, it may build one opaque payload only through the internal
+5,000-vector lifecycle seam and only after explicit `--apply`. It requires an
+explicit database, cache, profile, and report path, rejects the configured
+production database before opening it, and also rejects a candidate path that
+is its own `<root>/data/brain.db` configured database. This supports controlled
+restored-corpus evidence without weakening the local-first production boundary.
+
 Graph identifiers are dense unsigned integer ordinals. A separate immutable
 membership map relates each ordinal to its chunk, parent, embedding revision,
 and vector hash. Chunk ID strings are not used as graph node keys.

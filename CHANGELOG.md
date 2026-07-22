@@ -19,6 +19,11 @@ development date for the change set.
   leaves newer vectors in exact L0. No CLI command, USearch runtime dependency,
   semantic retrieval serving, embedding backfill, or compaction is enabled by
   this groundwork.
+- **Controlled native evaluation**: Added a USearch-tagged segment payload
+  builder and explicit restored-corpus evaluator. It requires `--apply`, an
+  explicit database/cache/report, and rejects both configured and candidate-root
+  production databases before opening them. This is an operator-only evaluation
+  boundary; it does not make native ANN a runtime dependency.
 
 ### Optional native ANN backend screening (2026-07-22)
 
