@@ -30,7 +30,7 @@
 
 - NewUSearch(USearchOptions) (*USearch, error) exists only with usearch and cgo.
 - USearchOptions: Dimensions, Connectivity, ExpansionAdd, ExpansionSearch.
-- USearch implements Add(...HNSWNode), Search([]float32, int), Export(io.Writer), Import(io.Reader), and Close().
+- USearch implements Reserve(int) error, Add(...HNSWNode), Search([]float32, int), Export(io.Writer), Import(io.Reader), and Close().
 
 - [ ] **Step 1: Write failing tag-gated tests.**
 
@@ -97,7 +97,7 @@ CGO_ENABLED=0 go test ./internal/semanticindex -count=1
 
 **Interfaces:**
 
-- Index has Add, Search, Export, Import, and Close methods matching the existing HNSW ordinal/vector contract.
+- Index has Reserve, Add, Search, Export, Import, and Close methods matching the existing HNSW ordinal/vector contract. HNSW Reserve is a no-op; USearch reserves the current stage's exact capacity before additions.
 - Factory is func(Options) (Index, error).
 - RunWith(ctx, opts, backend, factory) returns the existing Report.
 - Run remains a wrapper for HNSW.
@@ -122,7 +122,7 @@ func TestRunWithRecordsCandidateAndClosesIndexes(t *testing.T) {
 
 - [ ] **Step 3: Refactor Run and runStage.**
 
-Pass the factory through RunWith; defer Close on the built and reopened indexes; retain corpus generator, exact oracle, gate order, report schema, and HNSW behavior.
+Pass the factory through RunWith; call Reserve(size) before additions; defer Close on the built and reopened indexes; retain corpus generator, exact oracle, gate order, report schema, and HNSW behavior.
 
 ~~~go
 func Run(ctx context.Context, opts Options) (Report, error) {
@@ -212,4 +212,3 @@ git diff --check
 - The three tasks cover tag isolation, opaque payloads, exact/reopen recall, staged resource gates, and default lexical safety.
 - Segment lifecycle, cache publication, semantic runtime integration, and release packaging are intentionally out of scope.
 - The same ordinal/vector/hit contract is shared by HNSW and USearch through RunWith.
-

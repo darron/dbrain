@@ -17,6 +17,7 @@ require (
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/steipete/sweetcookie v0.0.0-20260102214724-68ec5a0bced4
+	github.com/unum-cloud/usearch/golang v0.0.0-20260710183501-cc23bbaf21ef
 	github.com/yuin/goldmark v1.8.2
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/net v0.55.0
