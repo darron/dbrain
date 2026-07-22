@@ -5,48 +5,57 @@ import (
 	"errors"
 	"time"
 
+	"github.com/darron/dbrain/internal/embedding"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
 
 type Status struct {
-	Status    string                `json:"status"`
-	Reason    string                `json:"reason"`
-	Mode      string                `json:"mode"`
-	ProfileID string                `json:"profile_id"`
-	Store     store.RetrievalStatus `json:"store"`
-	Problems  []string              `json:"problems"`
-	Next      []string              `json:"next_steps"`
+	Status     string                     `json:"status"`
+	Reason     string                     `json:"reason"`
+	Searchable bool                       `json:"searchable"`
+	Mode       string                     `json:"mode"`
+	ProfileID  string                     `json:"profile_id"`
+	Store      semanticreadiness.Snapshot `json:"store"`
+	Problems   []string                   `json:"problems"`
+	Next       []string                   `json:"next_steps"`
 }
 
 type StatusStore interface {
-	RetrievalStatusAt(context.Context, string, time.Time) (store.RetrievalStatus, error)
+	SemanticReadinessSnapshotAt(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
 }
 
-func ReadStatus(ctx context.Context, st StatusStore, profileID string, configured bool, enabled bool, now time.Time) (Status, error) {
+func ReadStatus(ctx context.Context, st StatusStore, profile embedding.Profile, configured bool, enabled bool, exactMaxChunks int, now time.Time) (Status, error) {
 	result := Status{Problems: make([]string, 0), Next: make([]string, 0)}
-	if !configured {
-		result.Status, result.Reason = "not_configured", "embedding model and positive dimensions are required"
-		return result, nil
-	}
-	storage, err := st.RetrievalStatusAt(ctx, profileID, now)
-	if !enabled {
-		if err != nil && !errors.Is(err, store.ErrRetrievalUnavailable) {
+	exactMaxChunks = semanticreadiness.EffectiveExactMaxChunks(exactMaxChunks)
+	if configured {
+		profileID, err := profile.ID()
+		if err != nil {
 			return result, err
 		}
+		result.ProfileID = profileID
+	}
+	snapshot := semanticreadiness.Snapshot{Configured: configured, Enabled: enabled, ExactMaxChunks: exactMaxChunks, Now: now.UTC()}
+	if !configured {
+		return statusFromDecision(result, snapshot), nil
+	}
+	if st != nil {
+		storage, err := st.SemanticReadinessSnapshotAt(ctx, profile, exactMaxChunks, now)
 		if err == nil {
-			result.Store = storage
+			snapshot = storage
+			snapshot.Configured, snapshot.Enabled = true, enabled
+			snapshot.ExactMaxChunks = exactMaxChunks
+			snapshot.Now = now.UTC()
+		} else if !errors.Is(err, store.ErrRetrievalUnavailable) {
+			return result, err
 		}
-		result.Status, result.Reason = "disabled", "semantic retrieval mode is off"
-		return result, nil
 	}
-	if errors.Is(err, store.ErrRetrievalUnavailable) {
-		result.Status, result.Reason = "unavailable", "retrieval schema is unavailable"
-		return result, nil
-	}
-	if err != nil {
-		return result, err
-	}
-	result.Store = storage
-	result.Status = "ready"
-	return result, nil
+	return statusFromDecision(result, snapshot), nil
+}
+
+func statusFromDecision(result Status, snapshot semanticreadiness.Snapshot) Status {
+	decision := semanticreadiness.Evaluate(snapshot)
+	result.Status, result.Reason, result.Searchable = string(decision.State), decision.Reason, decision.Searchable
+	result.Store = snapshot
+	return result
 }

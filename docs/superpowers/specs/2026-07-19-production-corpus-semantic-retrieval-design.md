@@ -882,6 +882,19 @@ Normal `on` retrieval is fully `ready` only when:
 - aggregate active tombstones are no more than one percent
 - segment fanout and resource projections remain inside measured gates
 
+Temporary foundation exception: before segmented ANN and membership manifests
+ship, a complete and provenance-valid profile with at most 25,000 current ready
+embeddings is `ready` through bounded exact search even though it has no active
+root. A complete profile above 25,000 is `needs_index` and is not searchable.
+The 25,000-vector value is a measured hard safety ceiling. Configuration may
+select a smaller exact-search cap, but a larger configured value must be clamped
+for readiness admission and query execution and cannot authorize a larger scan.
+Any claimed legacy active root is `corrupt` in this phase because the current
+schema cannot prove its source revision, purge epoch, membership hash, or
+segment manifest. This exception is removed when the segmented lifecycle can
+persist and validate those facts; it does not weaken the eventual active-root
+gate above.
+
 Failure of a full-readiness invariant enters `catching_up` only when every
 bounded catch-up invariant below holds. Otherwise it disables only the semantic
 lane and records a precise reason. Returned lexical evidence and ordering then
@@ -900,8 +913,10 @@ lane until a human runs maintenance. `catching_up` is therefore eligible for
 normal retrieval only when all of these initial limits hold:
 
 - at most 500 dirty or unprojected parents
-- at most 2,500 estimated not-ready chunks
-- oldest dirty state no more than 30 minutes old
+- at most 2,500 total not-ready chunks, combining exact dirty-parent occurrence
+  plans with every current missing, stale, pending, retryable-error, or
+  scheduled-retry embedding row not already counted by those dirty parents
+- the oldest projection or embedding debt is no more than 30 minutes old
 - L0 no larger than 10,000 vectors
 - aggregate active tombstones no more than two percent
 - every dirty existing parent is excluded immediately from segment, L0, and
@@ -912,13 +927,24 @@ normal retrieval only when all of these initial limits hold:
 - the active root, remaining segment memberships, profile, and purge epoch are
   otherwise valid
 
-The estimate is deterministic. For each projected section it divides UTF-8
-bytes by chunker v3's minimum guaranteed forward byte advance, rounds up, and
-adds one boundary allowance. The parent estimate is the sum of those section
-estimates and, for an existing parent, is never lower than its last current
-chunk count. The chunker publishes the byte ceiling, maximum overlap, and
-minimum forward advance as versioned constants, so the estimate is identical
-across status, admission, and maintenance selection.
+The estimate is deterministic and uses exact capped chunker-v3 occurrence
+planning. Status and admission load dirty parent evidence through the same
+immutable SQLite read transaction, run the production v3 boundary planner, and
+stop as soon as the shared 2,501 over-budget sentinel is reached. A parent's
+estimate is its exact planned occurrence count and, for an existing parent, is
+never lower than its last current chunk count. Planner cancellation, resource
+failure, or input beyond the authoritative readiness planning ceiling fails
+semantic admission closed while lexical retrieval remains available.
+
+The byte-ratio proposal was rejected with restored-corpus evidence. Chunker v3
+can guarantee only one byte of forward progress because natural boundaries may
+be dense. Dividing by that guarantee would classify 14,197 of 34,180 parents
+(41.5 percent) above the 2,500 budget, while exact v3 planning classifies zero
+current parents above it. The observed distribution was p50 1,344 bytes / 2
+occurrences, p90 15,268 / 18, p95 23,796 / 28, p99 72,325 / 85, and maximum
+1,881,497 / 2,208. Chunker v3 still publishes its 1,800-byte ceiling,
+zero-byte maximum overlap, and one-byte minimum guaranteed advance as truthful
+versioned constants; readiness does not misuse the minimum as an estimator.
 
 A single parent estimated above the 2,500-chunk catch-up budget makes normal
 semantic retrieval ineligible until it is projected and embedded; it is not

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/darron/dbrain/internal/semanticbuild"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 )
 
 func TestSemanticProgressOutputIncludesQuarantined(t *testing.T) {
@@ -23,6 +24,22 @@ func TestSemanticProgressOutputIncludesQuarantined(t *testing.T) {
 				t.Fatalf("progress output = %q, want quarantine count", dst.String())
 			}
 		})
+	}
+}
+
+func TestSemanticStatusOutputReportsSharedReadinessSnapshot(t *testing.T) {
+	status := semanticbuild.Status{
+		Status: "catching_up", Reason: "bounded debt", Searchable: true, Mode: "on", ProfileID: "profile",
+		Store: semanticreadiness.Snapshot{Available: true, ExpectedParents: 5, CurrentParents: 4, PendingParents: 1, DirtyParents: 1, EstimatedNotReadyChunks: 3, ChunkCount: 8, ReadyEmbeddings: 7, PendingEmbeddings: 1, ActiveGenerationID: "root", L0ReadyCount: 2},
+	}
+	var dst bytes.Buffer
+	if err := writeSemanticStatus(&dst, status); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Status: catching_up", "Searchable: true", "Parents: expected=5 current=4", "Estimated not-ready chunks: 3", "Ready embeddings: 7", "Index: active=root l0=2"} {
+		if !strings.Contains(dst.String(), want) {
+			t.Fatalf("output=%q missing %q", dst.String(), want)
+		}
 	}
 }
 

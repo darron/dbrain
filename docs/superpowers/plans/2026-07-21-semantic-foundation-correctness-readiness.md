@@ -35,8 +35,12 @@
   JSON with reason `projection_too_large_for_flat_retrieval`.
 - Embedding provider requests and persistence batches never exceed 5,000 rows. One persistence batch gets one monotonic profile revision and commits atomically.
 - Normal embedding work never scans the full ready profile and final progress output is constant-memory.
-- `ready` requires the approved 99.9/0.1 coverage gates and, eventually, a valid root. `catching_up` permits at most 500 dirty parents, 2,500 estimated chunks, 30 minutes oldest dirtiness, 10,000 L0 rows, and two percent tombstones.
-- This plan does not implement ANN segments. Profiles above the exact cap with otherwise complete foundation state report `needs_index`; semantic runtime fails open before calling the query provider.
+- `ready` requires the approved 99.9/0.1 coverage gates and, eventually, a valid root. `catching_up` permits at most 500 dirty parents, 2,500 total not-ready occurrences across exact dirty-parent plans and current embedding debt, 30 minutes since the oldest projection or embedding debt, 10,000 L0 rows, and two percent tombstones. Exact v3 readiness planning stops at the 2,501 sentinel and fails closed on cancellation, resource failure, or the 128 MiB normalized-input planning ceiling.
+- This plan does not implement ANN segments. The measured 25,000-vector exact
+  cap is a hard runtime safety ceiling: configuration may lower it but cannot
+  raise it. Profiles above the effective cap with otherwise complete foundation
+  state report `needs_index`; semantic runtime fails open before calling the
+  query provider.
 - Semantic mode remains off by default. No command, migration, sync, research, MCP, or web request starts a backfill implicitly.
 - Preserve raw evidence, lexical ordering, protected anchors, RRF semantics, shadow isolation, and `CGO_ENABLED=0` compatibility.
 - Code changes end with `task fmt`, `task lint`, `task test-ci`, and `task build`.
@@ -644,9 +648,11 @@ Table-test every priority and numeric boundary: 99.9/0.1 coverage, 500/501
 dirty parents, 2,500/2,501 estimated chunks, 30-minute age, 5,000/10,000 L0,
 one/two-percent tombstones, due versus scheduled retry, corrupt/unclassified
 error, absent/invalid root, and small exact profile versus large `needs_index`.
-Add estimator tests at every published chunker-v3 bound, including multibyte
-text, dense natural boundaries, a new parent with no prior chunk count, and an
-existing parent whose last current chunk count exceeds its byte estimate.
+Add exact capped planner tests at every published chunker-v3 bound, including
+multibyte text, dense natural boundaries, a new parent with no prior chunk
+count, an existing parent whose last current chunk count exceeds its exact
+occurrence count, 2,500/2,501 sentinel behavior, bounded loading, giant input,
+and cooperative cancellation during section planning.
 
 - [ ] **Step 2: Verify RED**
 
@@ -660,14 +666,16 @@ Expected: FAIL because the evaluator does not exist and runtime currently embeds
 
 - [ ] **Step 3: Implement one store snapshot and evaluator**
 
-Read all counts/ages/profile/index health from one SQLite read transaction.
-Publish chunker v3's byte ceiling, maximum overlap, and minimum guaranteed
-forward byte advance as versioned constants, and use one shared deterministic
-not-ready estimator in snapshot/status/admission; do not substitute only the
-last `chunk_count`, because new parents have none. If the conservative guaranteed
-advance makes ordinary new corpus items exceed the 2,500 budget, stop and amend
-the accepted policy with measured corpus evidence rather than silently using a
-non-guaranteed target size.
+Read all counts/ages/profile/index health and dirty parent evidence from one
+SQLite read transaction. Publish chunker v3's byte ceiling, maximum overlap,
+and minimum guaranteed forward byte advance as versioned constants. Use exact
+capped v3 occurrence planning in snapshot/status/admission and stop loading as
+soon as 2,501 is known; do not substitute only the last `chunk_count`, because
+new parents have none. Restored-corpus measurement showed the truthful one-byte
+guarantee would falsely put 14,197/34,180 parents (41.5 percent) over budget,
+while exact v3 planning puts zero over budget (p50 2, p90 18, p95 28, p99 85,
+max 2,208 occurrences). Fail closed on planner error or cancellation rather
+than inventing a non-guaranteed byte constant.
 `semanticbuild.ReadStatus` delegates to `semanticreadiness.Evaluate`.
 `NewRuntimeBuilder` evaluates before constructing Ollama; force-on changes mode,
 not readiness. In this plan, only exact-eligible small corpora can become

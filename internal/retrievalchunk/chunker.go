@@ -1,6 +1,7 @@
 package retrievalchunk
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -139,6 +140,29 @@ func Stream(parent Parent, opts Options, cursor Cursor, emit func(Chunk, Occurre
 // result can be persisted and reused across batches without rescanning section
 // text from the beginning. maxOccurrences <= 0 means no caller-imposed limit.
 func PrepareStream(parent Parent, opts Options, maxOccurrences int) (PreparedStreamPlan, error) {
+	return prepareStreamWithPlanner(context.Background(), parent, opts, maxOccurrences, 0, func(text []rune) ([]window, error) {
+		return prepareStreamSectionWindows(text, opts), nil
+	})
+}
+
+// PrepareStreamContext computes the same deterministic plan as PrepareStream
+// while allowing readiness/status callers to cancel bounded planning before a
+// large dirty parent monopolizes a read transaction.
+func PrepareStreamContext(ctx context.Context, parent Parent, opts Options, maxOccurrences int) (PreparedStreamPlan, error) {
+	return prepareStreamWithPlanner(ctx, parent, opts, maxOccurrences, V3MaximumPlanningInputUTF8Bytes, func(text []rune) ([]window, error) {
+		return chunkSectionRunesV3Context(ctx, text, opts)
+	})
+}
+
+func prepareStreamWithPlanner(ctx context.Context, parent Parent, opts Options, maxOccurrences, planningByteLimit int, planSection func([]rune) ([]window, error)) (PreparedStreamPlan, error) {
+	if err := ctx.Err(); err != nil {
+		return PreparedStreamPlan{}, err
+	}
+	if planningByteLimit > 0 {
+		if err := validatePlanningInputBytes(parent, planningByteLimit); err != nil {
+			return PreparedStreamPlan{}, err
+		}
+	}
 	sections, err := normalizedStreamingSections(parent, opts, true)
 	if err != nil {
 		return PreparedStreamPlan{}, err
@@ -150,13 +174,25 @@ func PrepareStream(parent Parent, opts Options, maxOccurrences int) (PreparedStr
 		Sections: make([]preparedStreamSection, 0, len(sections)),
 	}
 	for _, section := range sections {
+		if err := ctx.Err(); err != nil {
+			return PreparedStreamPlan{}, err
+		}
 		runes := []rune(section.Text)
 		byteOffsets := make([]int, len(runes)+1)
 		for i, value := range runes {
 			byteOffsets[i+1] = byteOffsets[i] + utf8.RuneLen(value)
 		}
 		prepared := preparedStreamSection{Key: section.Key, RuneCount: len(runes)}
-		for _, current := range prepareStreamSectionWindows(runes, opts) {
+		windows, err := planSection(runes)
+		if err != nil {
+			return PreparedStreamPlan{}, err
+		}
+		for windowIndex, current := range windows {
+			if windowIndex%64 == 0 {
+				if err := ctx.Err(); err != nil {
+					return PreparedStreamPlan{}, err
+				}
+			}
 			start, end := trimRuneOffsetsRunes(runes, current.start, current.end)
 			emit := start < end
 			prepared.Windows = append(prepared.Windows, preparedStreamWindow{
@@ -173,6 +209,28 @@ func PrepareStream(parent Parent, opts Options, maxOccurrences int) (PreparedStr
 		data.Sections = append(data.Sections, prepared)
 	}
 	return PreparedStreamPlan{data: data}, nil
+}
+
+func validatePlanningInputBytes(parent Parent, limit int) error {
+	if limit <= 0 {
+		return fmt.Errorf("retrieval planning byte ceiling must be positive")
+	}
+	total := 0
+	for i, section := range parent.Sections {
+		sectionBytes := 0
+		for _, value := range section.Text {
+			width := utf8.RuneLen(value)
+			if width < 0 || sectionBytes > limit-width {
+				return fmt.Errorf("retrieval parent %s %s section %d exceeds planning byte ceiling %d", parent.Kind, parent.SourceKey, i, limit)
+			}
+			sectionBytes += width
+		}
+		if total > limit-sectionBytes {
+			return fmt.Errorf("retrieval parent %s %s section %d exceeds planning byte ceiling %d", parent.Kind, parent.SourceKey, i, limit)
+		}
+		total += sectionBytes
+	}
+	return nil
 }
 
 func (p PreparedStreamPlan) MarshalBinary() ([]byte, error) {
@@ -347,13 +405,26 @@ func chunkSectionV3(text string, opts Options) []window {
 }
 
 func chunkSectionRunesV3(text []rune, opts Options) []window {
+	result, _ := chunkSectionRunesV3Context(context.Background(), text, opts)
+	return result
+}
+
+func chunkSectionRunesV3Context(ctx context.Context, text []rune, opts Options) ([]window, error) {
 	if len(text) == 0 {
-		return nil
+		return nil, nil
 	}
-	anchors := globalAnchors(text, opts)
+	anchors, err := globalAnchorsContext(ctx, text, opts)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]window, 0, len(anchors)+1)
 	start := 0
-	for _, end := range anchors {
+	for i, end := range anchors {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		if end > start && end < len(text) {
 			result = append(result, window{start: start, end: end})
 			start = end
@@ -362,7 +433,7 @@ func chunkSectionRunesV3(text []rune, opts Options) []window {
 	if start < len(text) {
 		result = append(result, window{start: start, end: len(text)})
 	}
-	return result
+	return result, nil
 }
 
 type anchorCandidate struct {
@@ -372,15 +443,16 @@ type anchorCandidate struct {
 	fingerprint  uint64
 }
 
-// globalAnchors computes all section boundaries before emitting any window.
-// Two deterministic winnowing passes enforce the independent rune and UTF-8
-// byte ceilings. Their union remains content-local: a prior emitted boundary
-// is never an input to selecting a later boundary.
-func globalAnchors(text []rune, opts Options) []int {
+func globalAnchorsContext(ctx context.Context, text []rune, opts Options) ([]int, error) {
 	fingerprintRunes := min(32, max(1, min(opts.TargetRunes, opts.MaxRunes)/4))
 	candidates := make([]anchorCandidate, 0, max(0, len(text)-1))
 	byteOffsets := make([]int, len(text)+1)
 	for at, r := range text {
+		if at%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		byteOffsets[at+1] = byteOffsets[at] + utf8.RuneLen(r)
 		runePosition := at + 1
 		if runePosition == len(text) {
@@ -397,8 +469,12 @@ func globalAnchors(text []rune, opts Options) []int {
 	selected := make(map[int]struct{})
 	// Reserve the local fingerprint radius inside each hard limit so an edit's
 	// influence plus the minimizer window remains bounded by that limit.
-	winnowAnchors(candidates, len(text), max(1, opts.MaxRunes-fingerprintRunes), false, selected)
-	winnowAnchors(candidates, totalBytes, MaxUTF8Bytes-fingerprintRunes*utf8.UTFMax, true, selected)
+	if err := winnowAnchorsContext(ctx, candidates, len(text), max(1, opts.MaxRunes-fingerprintRunes), false, selected); err != nil {
+		return nil, err
+	}
+	if err := winnowAnchorsContext(ctx, candidates, totalBytes, MaxUTF8Bytes-fingerprintRunes*utf8.UTFMax, true, selected); err != nil {
+		return nil, err
+	}
 	// The section edge is itself a stable global boundary. Honor the historical
 	// target-sized natural prefix from that edge, then let global minimizers own
 	// every later cut. This avoids arbitrary prefix fingerprints defeating an
@@ -419,8 +495,11 @@ func globalAnchors(text []rune, opts Options) []int {
 		anchors = append(anchors, at)
 	}
 	sort.Ints(anchors)
-	anchors = compactDenseAnchors(text, anchors, fingerprintRunes, protected)
-	return boundAnchorGaps(byteOffsets, anchors, opts)
+	anchors, err := compactDenseAnchorsContext(ctx, text, anchors, fingerprintRunes, protected)
+	if err != nil {
+		return nil, err
+	}
+	return boundAnchorGapsContext(ctx, byteOffsets, anchors, opts)
 }
 
 // compactDenseAnchors collapses the short burst of distinct fingerprints that
@@ -428,9 +507,14 @@ func globalAnchors(text []rune, opts Options) []int {
 // cluster, so compaction depends only on the precomputed global anchors within
 // one fingerprint radius. Paragraph/sentence anchors and the stable prefix are
 // never removed.
-func compactDenseAnchors(text []rune, anchors []int, radius, protected int) []int {
+func compactDenseAnchorsContext(ctx context.Context, text []rune, anchors []int, radius, protected int) ([]int, error) {
 	result := make([]int, 0, len(anchors))
 	for i := 0; i < len(anchors); {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		at := anchors[i]
 		if at == protected || boundaryRank(text, at) <= 1 {
 			result = append(result, at)
@@ -444,7 +528,7 @@ func compactDenseAnchors(text []rune, anchors []int, radius, protected int) []in
 		result = append(result, anchors[last])
 		i = last + 1
 	}
-	return result
+	return result, nil
 }
 
 func prefixBoundary(text []rune, byteOffsets []int, opts Options) (int, bool) {
@@ -473,10 +557,15 @@ func prefixBoundary(text []rune, byteOffsets []int, opts Options) (int, bool) {
 // boundAnchorGaps fills only gaps where indistinguishable minimizer scores were
 // suppressed. Ordinary content retains its globally selected boundaries. Each
 // inserted cut uses the useful target, capped by both independent hard limits.
-func boundAnchorGaps(byteOffsets, anchors []int, opts Options) []int {
+func boundAnchorGapsContext(ctx context.Context, byteOffsets, anchors []int, opts Options) ([]int, error) {
 	result := make([]int, 0, len(anchors)+1)
 	start := 0
-	for _, end := range append(append([]int(nil), anchors...), len(byteOffsets)-1) {
+	for i, end := range append(append([]int(nil), anchors...), len(byteOffsets)-1) {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		if end <= start {
 			continue
 		}
@@ -493,7 +582,7 @@ func boundAnchorGaps(byteOffsets, anchors []int, opts Options) []int {
 		}
 		start = end
 	}
-	return result
+	return result, nil
 }
 
 func hardEnd(byteOffsets []int, start int, opts Options) int {
@@ -533,13 +622,9 @@ func boundaryRank(text []rune, at int) uint8 {
 	}
 }
 
-// winnowAnchors selects the rightmost lexicographic minimum in every fixed
-// coordinate window. The deque makes the pass linear. Consecutive equal-score
-// minima are emitted once; boundAnchorGaps later supplies useful target-sized
-// cuts inside that mathematically indistinguishable region.
-func winnowAnchors(candidates []anchorCandidate, total, span int, bytes bool, selected map[int]struct{}) {
+func winnowAnchorsContext(ctx context.Context, candidates []anchorCandidate, total, span int, bytes bool, selected map[int]struct{}) error {
 	if span <= 0 || total <= span || len(candidates) == 0 {
-		return
+		return nil
 	}
 	position := func(candidate anchorCandidate) int {
 		if bytes {
@@ -551,6 +636,11 @@ func winnowAnchors(candidates []anchorCandidate, total, span int, bytes bool, se
 	next := 0
 	lastSelected := -1
 	for at := 1; at < total; at++ {
+		if at%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		for next < len(candidates) && position(candidates[next]) == at {
 			candidate := candidates[next]
 			for len(deque) > 0 && anchorLessOrEqual(candidate, candidates[deque[len(deque)-1]]) {
@@ -571,6 +661,7 @@ func winnowAnchors(candidates []anchorCandidate, total, span int, bytes bool, se
 			}
 		}
 	}
+	return nil
 }
 
 func anchorLessOrEqual(left, right anchorCandidate) bool {

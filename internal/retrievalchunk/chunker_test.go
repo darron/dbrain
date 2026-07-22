@@ -1,10 +1,12 @@
 package retrievalchunk
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -56,6 +58,76 @@ func TestChunkerV3GlobalAnchorsDoNotCascadeOnAllEqualInput(t *testing.T) {
 	if changed := symmetricChunkIDs(baseProjection.Chunks, project(deleted).Chunks); changed > 8 {
 		t.Fatalf("all-equal deletion changed %d chunk identities, want <= 8", changed)
 	}
+}
+
+func TestV3PublishedPlanningBoundsMatchDenseAndMultibyteProgress(t *testing.T) {
+	if V3ByteCeiling != MaxUTF8Bytes || V3MaximumOverlapUTF8Bytes != 0 || V3MinimumForwardUTF8Bytes != 1 {
+		t.Fatalf("v3 bounds ceiling=%d overlap=%d forward=%d", V3ByteCeiling, V3MaximumOverlapUTF8Bytes, V3MinimumForwardUTF8Bytes)
+	}
+	for _, text := range []string{strings.Repeat("a. ", 4_000), strings.Repeat("界。", 4_000)} {
+		parent := Parent{Kind: "source", SourceKey: "bounds", Sections: []Section{{Key: "body", Role: "raw", Text: text}}}
+		projection, err := BuildProjection(parent, DefaultOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := -1
+		for _, occurrence := range projection.Occurrences {
+			if occurrence.EndChar <= occurrence.StartChar || occurrence.StartChar <= previous {
+				t.Fatalf("non-forward occurrence after %d: %+v", previous, occurrence)
+			}
+			previous = occurrence.StartChar
+		}
+	}
+}
+
+func TestPrepareStreamContextHonorsCancellationBeforeGiantPlanning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	parent := Parent{Kind: "source", SourceKey: "giant", Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat("boundary. ", 1_000_000)}}}
+	if _, err := PrepareStreamContext(ctx, parent, DefaultOptions(), 2_500); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PrepareStreamContext error=%v", err)
+	}
+}
+
+func TestPrepareStreamContextCooperativelyCancelsDuringSectionPlanning(t *testing.T) {
+	ctx := &cancelAfterErrChecks{remaining: 12}
+	parent := Parent{Kind: "source", SourceKey: "mid-plan", Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat("dense boundary. ", 100_000)}}}
+	if _, err := PrepareStreamContext(ctx, parent, DefaultOptions(), 2_500); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PrepareStreamContext error=%v after %d checks", err, ctx.checks)
+	}
+	if ctx.checks <= 12 {
+		t.Fatalf("planner did not reach cooperative mid-plan checks: %d", ctx.checks)
+	}
+}
+
+func TestPlanningInputByteCeilingFailsClosedBeforeNormalization(t *testing.T) {
+	parent := Parent{Kind: "source", SourceKey: "oversize", Sections: []Section{{Key: "body", Role: "raw", Text: "123456789"}}}
+	if err := validatePlanningInputBytes(parent, 8); err == nil || !strings.Contains(err.Error(), "planning byte ceiling") {
+		t.Fatalf("validatePlanningInputBytes error=%v", err)
+	}
+}
+
+func TestPlanningInputByteCeilingAccountsForMalformedUTF8Expansion(t *testing.T) {
+	parent := Parent{Kind: "source", SourceKey: "malformed", Sections: []Section{{Key: "body", Role: "raw", Text: string([]byte{0xff, 0xff, 0xff})}}}
+	if err := validatePlanningInputBytes(parent, 8); err == nil || !strings.Contains(err.Error(), "planning byte ceiling") {
+		t.Fatalf("validatePlanningInputBytes malformed error=%v", err)
+	}
+}
+
+type cancelAfterErrChecks struct {
+	remaining int
+	checks    int
+}
+
+func (c *cancelAfterErrChecks) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *cancelAfterErrChecks) Done() <-chan struct{}       { return nil }
+func (c *cancelAfterErrChecks) Value(any) any               { return nil }
+func (c *cancelAfterErrChecks) Err() error {
+	c.checks++
+	if c.checks > c.remaining {
+		return context.Canceled
+	}
+	return nil
 }
 
 func chunkLengths(chunks []Chunk) []int {

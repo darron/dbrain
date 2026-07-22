@@ -4,6 +4,16 @@ const (
 	Version           = "retrieval-chunker-v3"
 	ProjectionVersion = "retrieval-projection-v2"
 	MaxUTF8Bytes      = 1800
+
+	// V3ByteCeiling, V3MaximumOverlapUTF8Bytes, and
+	// V3MinimumForwardUTF8Bytes are the published deterministic planning
+	// bounds for chunker v3. Natural boundaries may be dense, so the only
+	// guaranteed forward byte advance is one. Readiness therefore uses exact
+	// capped v3 occurrence planning rather than a byte-ratio approximation.
+	V3ByteCeiling                   = MaxUTF8Bytes
+	V3MaximumOverlapUTF8Bytes       = 0
+	V3MinimumForwardUTF8Bytes       = 1
+	V3MaximumPlanningInputUTF8Bytes = 128 << 20
 )
 
 const (

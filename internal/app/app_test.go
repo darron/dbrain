@@ -23,16 +23,19 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/feedimport"
 	installer "github.com/darron/dbrain/internal/install"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/prunedmediarepair"
 	"github.com/darron/dbrain/internal/remote"
+	"github.com/darron/dbrain/internal/retrievalchunk"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
@@ -78,13 +81,111 @@ func TestResearchCommandConfiguredSemanticModesAndOverrides(t *testing.T) {
 	on, onCalls := run("on")
 	forcedOn, forcedOnCalls := run("off", "--semantic")
 	forcedOff, forcedOffCalls := run("shadow", "--no-semantic")
-	if off.QueryPlan.SemanticMode != semanticconfig.ModeOff || offCalls != 0 || shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadowCalls != 1 || shadow.QueryPlan.ShadowComparison == nil || on.QueryPlan.SemanticMode != semanticconfig.ModeOn || onCalls != 1 || forcedOn.QueryPlan.SemanticMode != semanticconfig.ModeOn || forcedOnCalls != 1 || forcedOff.QueryPlan.SemanticMode != semanticconfig.ModeOff || forcedOffCalls != 0 {
+	if off.QueryPlan.SemanticMode != semanticconfig.ModeOff || offCalls != 0 || shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadowCalls != 0 || shadow.QueryPlan.SemanticReadiness != semanticreadiness.StateNeedsEmbeddings || shadow.QueryPlan.ShadowComparison == nil || on.QueryPlan.SemanticMode != semanticconfig.ModeOn || onCalls != 0 || on.QueryPlan.SemanticReadiness != semanticreadiness.StateNeedsEmbeddings || forcedOn.QueryPlan.SemanticMode != semanticconfig.ModeOn || forcedOnCalls != 0 || forcedOn.QueryPlan.SemanticReadiness != semanticreadiness.StateNeedsEmbeddings || forcedOff.QueryPlan.SemanticMode != semanticconfig.ModeOff || forcedOffCalls != 0 {
 		t.Fatalf("modes/calls off=%s/%d shadow=%s/%d on=%s/%d forcedOn=%s/%d forcedOff=%s/%d", off.QueryPlan.SemanticMode, offCalls, shadow.QueryPlan.SemanticMode, shadowCalls, on.QueryPlan.SemanticMode, onCalls, forcedOn.QueryPlan.SemanticMode, forcedOnCalls, forcedOff.QueryPlan.SemanticMode, forcedOffCalls)
 	}
 	root := t.TempDir()
 	_, _, err := runRootCommandErr(t, root, "research", "q", "--semantic", "--no-semantic")
 	if err == nil || !strings.Contains(err.Error(), "--semantic and --no-semantic") {
 		t.Fatalf("conflict err=%v", err)
+	}
+}
+
+func TestResearchCommandReadyExactProfileReachesProviderAfterAdmission(t *testing.T) {
+	var calls atomic.Int64
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "research:\n  semantic:\n    mode: on\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
+	if err := os.WriteFile(cfg.ConfigPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedReadyExactSemanticProfile(t, cfg)
+	output := runRootCommand(t, root, "research", "agent memory", "--retrieval-only", "--no-trace", "--no-planner", "--json")
+	var pack brainresearch.Pack
+	if err := json.Unmarshal([]byte(output), &pack); err != nil {
+		t.Fatalf("decode pack: %v\n%s", err, output)
+	}
+	if pack.QueryPlan.SemanticMode != semanticconfig.ModeOn || pack.QueryPlan.SemanticReadiness != semanticreadiness.StateReady || calls.Load() != 1 {
+		t.Fatalf("mode=%s readiness=%s calls=%d", pack.QueryPlan.SemanticMode, pack.QueryPlan.SemanticReadiness, calls.Load())
+	}
+}
+
+func seedReadyExactSemanticProfile(t *testing.T, cfg config.Config) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UTC()
+	source, err := st.UpsertSource(ctx, model.SourceCandidate{
+		OriginalURL: "https://example.com/semantic-ready", CanonicalURL: "https://example.com/semantic-ready",
+		NormalizedURL: "https://example.com/semantic-ready", SourceType: "article", Domain: "example.com", SourceKey: "source:semantic-ready",
+		NotePath: "sources/article/semantic-ready.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, source.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/semantic-ready", FinalURL: "https://example.com/semantic-ready",
+		Title: "Agent Memory", Content: strings.Repeat("Evidence about agent memory and retrieval readiness. ", 20), Status: "ok", FetchedAt: now, Tool: "test", ToolVersion: "1",
+	}, "semantic-ready-content"); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := st.ProjectionWorkRevision(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := st.ListDirtyRetrievalParents(ctx, revision, 10)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("projection work=%+v err=%v", work, err)
+	}
+	projection, err := retrievalchunk.BuildProjection(work[0].Parent, retrievalchunk.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Chunks) == 0 {
+		t.Fatalf("empty projection for parent=%+v", work[0].Parent)
+	}
+	if _, err := st.ApplyRetrievalProjection(ctx, store.ApplyRetrievalProjectionInput{
+		ParentKind: work[0].Parent.Kind, ParentSourceKey: work[0].Parent.SourceKey,
+		DirtyRevision: work[0].DirtyRevision, Projection: projection, Status: store.RetrievalProjectionCurrent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	profile := semanticbuild.Profile(embedding.Info{Provider: "ollama", Model: "test-model", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]store.RetrievalEmbeddingRow, 0, len(projection.Chunks))
+	for _, chunk := range projection.Chunks {
+		rows = append(rows, store.RetrievalEmbeddingRow{
+			ChunkID: chunk.ID, ProfileID: profileID, Provider: profile.Provider, Model: profile.Model,
+			Dimensions: profile.Dimensions, Representation: profile.Representation, Normalization: profile.Normalization,
+			VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), ChunkTextHash: chunk.TextHash,
+			Status: store.RetrievalEmbeddingReady, AttemptCount: 1, EmbeddedAt: now,
+		})
+	}
+	epoch, err := st.RetrievalPurgeEpoch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutRetrievalEmbeddingBatch(ctx, store.PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: epoch}); err != nil {
+		t.Fatal(err)
 	}
 }
 

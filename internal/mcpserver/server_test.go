@@ -27,6 +27,7 @@ import (
 	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -101,7 +102,7 @@ func TestResearchPackConfiguredShadowIsTraceFreeAndConflictIsToolError(t *testin
 		t.Fatal(err)
 	}
 	pack := result["structuredContent"].(brainresearch.Pack)
-	if pack.QueryPlan.SemanticMode != semanticconfig.ModeShadow || pack.QueryPlan.ShadowComparison == nil || !embedCalled.Load() {
+	if pack.QueryPlan.SemanticMode != semanticconfig.ModeShadow || pack.QueryPlan.SemanticReadiness != semanticreadiness.StateNeedsEmbeddings || pack.QueryPlan.ShadowComparison == nil || embedCalled.Load() {
 		t.Fatalf("shadow pack=%#v embed_called=%t", pack.QueryPlan, embedCalled.Load())
 	}
 	if _, err := os.Stat(filepath.Join(cfg.DataDir, "research-runs")); !os.IsNotExist(err) {

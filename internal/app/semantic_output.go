@@ -14,15 +14,23 @@ func writeSemanticStatus(dst io.Writer, status semanticbuild.Status) error {
 	if _, err := fmt.Fprintf(dst, "Mode: %s\nProfile: %s\n", status.Mode, status.ProfileID); err != nil {
 		return err
 	}
+	if _, err := fmt.Fprintf(dst, "Searchable: %t\n", status.Searchable); err != nil {
+		return err
+	}
 	if status.Reason != "" {
 		if _, err := fmt.Fprintf(dst, "Reason: %s\n", status.Reason); err != nil {
 			return err
 		}
 	}
 	if status.Store.Available {
-		_, err := fmt.Fprintf(dst, "Chunks: %d\nReady embeddings: %d\nEmbedding candidates: %d\nBlocked embeddings: %d\nFailed embeddings: %d\n",
-			status.Store.ChunkCount, status.Store.ReadyEmbeddings, status.Store.EmbeddingCandidates,
-			status.Store.BlockedEmbeddings, status.Store.FailedEmbeddings)
+		_, err := fmt.Fprintf(dst, "Parents: expected=%d current=%d empty=%d pending=%d blocked=%d error=%d\nDirty parents: %d\nEstimated not-ready chunks: %d\nChunks: %d\nReady embeddings: %d\nPending embeddings: %d\nBlocked embeddings: %d\nFailed embeddings: %d\nRetries: due=%d scheduled=%d\nIndex: active=%s l0=%d tombstones=%d building=%d stale=%d error=%d\n",
+			status.Store.ExpectedParents, status.Store.CurrentParents, status.Store.EmptyParents,
+			status.Store.PendingParents, status.Store.BlockedParents, status.Store.ErrorParents,
+			status.Store.DirtyParents, status.Store.EstimatedNotReadyChunks, status.Store.ChunkCount,
+			status.Store.ReadyEmbeddings, status.Store.PendingEmbeddings, status.Store.BlockedEmbeddings,
+			status.Store.ErrorEmbeddings, status.Store.DueRetries, status.Store.ScheduledRetries,
+			status.Store.ActiveGenerationID, status.Store.L0ReadyCount, status.Store.ActiveTombstones,
+			status.Store.BuildingGenerations, status.Store.StaleGenerations, status.Store.ErrorGenerations)
 		return err
 	}
 	return nil

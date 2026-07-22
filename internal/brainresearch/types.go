@@ -10,6 +10,7 @@ import (
 	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
 )
@@ -28,6 +29,7 @@ type Builder struct {
 	strategyRunner     func(context.Context, string, ask.Options) (ask.Response, error)
 	strategyPoolRunner func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error)
 	semanticMode       semanticconfig.Mode
+	semanticReadiness  semanticreadiness.Decision
 	semanticStatus     *semanticindex.Status
 	shadowComparison   *ShadowComparison
 }
@@ -54,6 +56,9 @@ func (b *Builder) WithSemanticRetriever(retriever SemanticRetriever, opts resear
 	opts.Filters.AllowedEvidenceRoles = append([]string(nil), opts.Filters.AllowedEvidenceRoles...)
 	opts.Filters.AllowedSourceTypes = append([]string(nil), opts.Filters.AllowedSourceTypes...)
 	b.semanticRetriever, b.semanticOptions = retriever, opts
+	if retriever != nil && b.semanticReadiness.State == "" {
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateReady, Reason: "explicit semantic retriever", Searchable: true}
+	}
 	return b
 }
 
@@ -136,6 +141,7 @@ type QueryPlan struct {
 	TopicSource           string                    `json:"topic_source,omitempty"`
 	IncludeTopicBrief     bool                      `json:"include_topic_brief"`
 	SemanticMode          semanticconfig.Mode       `json:"semantic_mode"`
+	SemanticReadiness     semanticreadiness.State   `json:"semantic_readiness,omitempty"`
 	ShadowComparison      *ShadowComparison         `json:"shadow_comparison,omitempty"`
 	RetryShadowComparison *ShadowComparison         `json:"retry_shadow_comparison,omitempty"`
 }

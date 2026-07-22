@@ -12,6 +12,7 @@ import (
 	"github.com/darron/dbrain/internal/researchsemantic"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 )
 
 const exactTagPrimaryBoost = 64
@@ -172,7 +173,11 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		return out, nil
 	}
 	if b.semanticRetriever == nil {
-		b.setShadowComparison(comparisonLexical, comparisonLexical, semanticindex.Status{State: semanticindex.StateUnavailable, Reason: shadowReasonRetrieverMissing})
+		reason := shadowReasonRetrieverMissing
+		if b.semanticReadiness.Reason != "" {
+			reason = semanticindex.StatusReason(b.semanticReadiness.Reason)
+		}
+		b.setShadowComparison(comparisonLexical, comparisonLexical, semanticindex.Status{State: semanticindex.StateUnavailable, Reason: reason})
 		return out, nil
 	}
 	if !semanticFiltersCompatible {
@@ -223,6 +228,9 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 		b.setShadowComparison(comparisonLexical, comparisonLexical, status)
 		return out, nil
 	}
+	if b.semanticReadiness.State == semanticreadiness.StateCatchingUp {
+		status.Reason = semanticindex.StatusReason(semanticreadiness.StateCatchingUp)
+	}
 	deepSeen := map[string]scoredResearchEvidence{}
 	deepOrder := 0
 	for variantIndex, variant := range variants {
@@ -248,11 +256,73 @@ func (b *Builder) collectStrategyEvidence(ctx context.Context, strategy research
 	}
 	protected := protectedSourceKeys(lexical, semanticRows, anchors)
 	hybridWindow := researchhybrid.Fuse(lexical, semanticRows, researchhybrid.DefaultFusedCandidateWindow, maxChars, protected)
+	if b.semanticReadiness.State == semanticreadiness.StateCatchingUp {
+		hybridWindow = preserveLeadingLexicalParents(hybridWindow, lexical, 3)
+	}
 	b.setShadowComparison(comparisonLexical, hybridWindow, status)
 	if b.semanticMode == semanticconfig.ModeShadow {
 		return out, nil
 	}
-	return researchhybrid.Fuse(lexical, semanticRows, limit, maxChars, protected), nil
+	fused := researchhybrid.Fuse(lexical, semanticRows, limit, maxChars, protected)
+	if b.semanticReadiness.State == semanticreadiness.StateCatchingUp {
+		fused = preserveLeadingLexicalParents(fused, lexical, 3)
+	}
+	return fused, nil
+}
+
+func preserveLeadingLexicalParents(fused, lexical []ask.Evidence, count int) []ask.Evidence {
+	if count <= 0 || len(fused) == 0 {
+		return fused
+	}
+	required := make([]ask.Evidence, 0, min(count, len(fused)))
+	requiredKeys := make(map[string]struct{}, count)
+	for _, row := range lexical {
+		key := evidenceParentKey(row)
+		if key == "" {
+			continue
+		}
+		if _, exists := requiredKeys[key]; exists {
+			continue
+		}
+		requiredKeys[key] = struct{}{}
+		required = append(required, row)
+		if len(required) >= count || len(required) >= len(fused) {
+			break
+		}
+	}
+	out := append([]ask.Evidence(nil), fused...)
+	present := make(map[string]struct{}, len(out))
+	for _, row := range out {
+		present[evidenceParentKey(row)] = struct{}{}
+	}
+	for _, row := range required {
+		key := evidenceParentKey(row)
+		if _, exists := present[key]; exists {
+			continue
+		}
+		replace := -1
+		for i := len(out) - 1; i >= 0; i-- {
+			candidateKey := evidenceParentKey(out[i])
+			if _, protected := requiredKeys[candidateKey]; !protected {
+				replace = i
+				break
+			}
+		}
+		if replace < 0 {
+			continue
+		}
+		delete(present, evidenceParentKey(out[replace]))
+		out[replace] = row
+		present[key] = struct{}{}
+	}
+	return out
+}
+
+func evidenceParentKey(row ask.Evidence) string {
+	if row.Chunk != nil && strings.TrimSpace(row.Chunk.ParentSourceKey) != "" {
+		return strings.TrimSpace(row.Chunk.ParentSourceKey)
+	}
+	return strings.TrimSpace(row.SourceKey)
 }
 
 func (b *Builder) setShadowComparison(lexical, hybrid []ask.Evidence, status semanticindex.Status) {

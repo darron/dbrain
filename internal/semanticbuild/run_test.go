@@ -12,6 +12,7 @@ import (
 
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/retrievalchunk"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -669,21 +670,59 @@ func TestProfileUsesExportedProjectionAndChunkVersions(t *testing.T) {
 }
 
 type fakeStatusStore struct {
-	status store.RetrievalStatus
-	err    error
+	status      semanticreadiness.Snapshot
+	err         error
+	observedCap *int
 }
 
-func (f fakeStatusStore) RetrievalStatusAt(context.Context, string, time.Time) (store.RetrievalStatus, error) {
+func (f fakeStatusStore) SemanticReadinessSnapshotAt(_ context.Context, _ embedding.Profile, exactCap int, _ time.Time) (semanticreadiness.Snapshot, error) {
+	if f.observedCap != nil {
+		*f.observedCap = exactCap
+	}
 	return f.status, f.err
 }
 
+func TestStatusClampsConfiguredExactCapToSafetyCeiling(t *testing.T) {
+	observedCap := 0
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	got, err := ReadStatus(context.Background(), fakeStatusStore{
+		err: store.ErrRetrievalUnavailable, observedCap: &observedCap,
+	}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, true, 300_000, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observedCap != semanticreadiness.DefaultExactMaxChunks || got.Store.ExactMaxChunks != semanticreadiness.DefaultExactMaxChunks {
+		t.Fatalf("observed_cap=%d store.exact_max_chunks=%d", observedCap, got.Store.ExactMaxChunks)
+	}
+}
+
 func TestStatusPriorityKeepsConfiguredOffModeDisabled(t *testing.T) {
-	got, err := ReadStatus(context.Background(), fakeStatusStore{err: store.ErrRetrievalUnavailable}, "profile", true, false, time.Now())
+	got, err := ReadStatus(context.Background(), fakeStatusStore{err: store.ErrRetrievalUnavailable}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, false, 25_000, time.Now())
 	if err != nil {
 		t.Fatalf("ReadStatus: %v", err)
 	}
 	if got.Status != "disabled" {
 		t.Fatalf("status=%q reason=%q", got.Status, got.Reason)
+	}
+}
+
+func TestReadinessStatusDelegatesToPureEvaluator(t *testing.T) {
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	snapshot := semanticreadiness.Snapshot{
+		Available: true, ProfileExists: true, ProfileProvenanceValid: true,
+		ExpectedParents: 2, CurrentParents: 1, PendingParents: 1, DirtyParents: 1,
+		EstimatedNotReadyChunks: 1, OldestDirtyAt: now.Add(-time.Minute),
+		ChunkableParents: 1, ParentsWithReadyChunk: 1, ChunkCount: 1, ReadyEmbeddings: 1,
+		GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1, LatestRevision: 1, ObservedLatestRevision: 1,
+		L0ReadyCount: 1, ObservedL0ReadyCount: 1,
+	}
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	got, err := ReadStatus(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != string(semanticreadiness.StateCatchingUp) || !got.Searchable || got.Reason == "" || got.Store.EstimatedNotReadyChunks != 1 {
+		t.Fatalf("status=%+v", got)
 	}
 }
 

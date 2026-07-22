@@ -129,30 +129,33 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			}
 			configured := strings.TrimSpace(semantic.Model) != "" && semantic.Dimensions > 0
 			if !configured {
-				status, err := semanticbuild.ReadStatus(cmd.Context(), nil, "", false, semantic.Mode != semanticconfig.ModeOff, time.Now().UTC())
+				status, err := semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, time.Now().UTC())
 				if err != nil {
 					return err
 				}
 				status.Mode = string(semantic.Mode)
 				return outputSemanticStatus(cmd, status, jsonOut)
 			}
-			profileID, err := semanticbuild.Profile(embedding.Info{
+			profile := semanticbuild.Profile(embedding.Info{
 				Provider: string(semantic.Provider), Model: semantic.Model, Dimensions: semantic.Dimensions,
-			}).ID()
+			})
+			profileID, err := profile.ID()
 			if err != nil {
 				return err
 			}
 			st, err := deps.openReadOnly(cfg.DBPath)
 			if err != nil {
-				state, reason := "unavailable", "semantic storage is unavailable: "+err.Error()
-				if semantic.Mode == semanticconfig.ModeOff {
-					state, reason = "disabled", "semantic retrieval mode is off; storage diagnostics are unavailable: "+err.Error()
+				status, statusErr := semanticbuild.ReadStatus(cmd.Context(), nil, profile, configured, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, time.Now().UTC())
+				if statusErr != nil {
+					return statusErr
 				}
-				status := semanticbuild.Status{Status: state, Reason: reason, Mode: string(semantic.Mode), ProfileID: profileID, Problems: []string{err.Error()}, Next: make([]string, 0)}
+				status.Mode, status.ProfileID = string(semantic.Mode), profileID
+				status.Problems = append(status.Problems, err.Error())
+				status.Reason += "; storage diagnostics are unavailable: " + err.Error()
 				return outputSemanticStatus(cmd, status, jsonOut)
 			}
 			defer func() { _ = st.Close() }()
-			status, err := semanticbuild.ReadStatus(cmd.Context(), st, profileID, configured, semantic.Mode != semanticconfig.ModeOff, time.Now().UTC())
+			status, err := semanticbuild.ReadStatus(cmd.Context(), st, profile, configured, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, time.Now().UTC())
 			if err != nil {
 				return err
 			}

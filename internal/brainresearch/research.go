@@ -20,7 +20,7 @@ func New(cfg config.Config, st *store.Store) *Builder {
 }
 
 func Build(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Pack, error) {
-	b, err := NewRuntimeBuilder(cfg, st, opts.EffectiveSemanticMode, opts.UseSemantic, opts.DisableSemantic)
+	b, err := NewRuntimeBuilderContext(ctx, cfg, st, opts.EffectiveSemanticMode, opts.UseSemantic, opts.DisableSemantic)
 	if err != nil {
 		return Pack{}, err
 	}
@@ -169,6 +169,7 @@ func (b *Builder) buildResolved(ctx context.Context, opts Options) (Pack, error)
 			TopicSource:       topicSource,
 			IncludeTopicBrief: includeTopic,
 			SemanticMode:      b.semanticMode,
+			SemanticReadiness: b.semanticReadiness.State,
 			ShadowComparison:  b.shadowComparison,
 		},
 		Evidence:         evidence,

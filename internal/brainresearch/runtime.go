@@ -1,7 +1,10 @@
 package brainresearch
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/embedding"
@@ -9,15 +12,45 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
 
+type runtimeDeps struct {
+	readiness func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
+	provider  func(semanticconfig.Config) (embedding.Provider, error)
+}
+
+func defaultRuntimeDeps() runtimeDeps {
+	return runtimeDeps{
+		readiness: func(ctx context.Context, st *store.Store, profile embedding.Profile, exactMax int, now time.Time) (semanticreadiness.Snapshot, error) {
+			if st == nil {
+				return semanticreadiness.Snapshot{}, store.ErrRetrievalUnavailable
+			}
+			return st.SemanticReadinessSnapshotAt(ctx, profile, exactMax, now)
+		},
+		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
+			return embedding.NewOllama(embedding.OllamaOptions{BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions})
+		},
+	}
+}
+
 func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool) (*Builder, error) {
+	return NewRuntimeBuilderContext(context.Background(), cfg, st, configuredOverride, forceOn, forceOff)
+}
+
+func NewRuntimeBuilderContext(ctx context.Context, cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool) (*Builder, error) {
+	return newRuntimeBuilderWithDeps(ctx, cfg, st, configuredOverride, forceOn, forceOff, defaultRuntimeDeps())
+}
+
+func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool, deps runtimeDeps) (*Builder, error) {
 	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, forceOn, forceOff); err != nil {
 		return nil, err
 	}
 	if forceOff {
-		return New(cfg, st).WithSemanticMode(semanticconfig.ModeOff), nil
+		b := New(cfg, st).WithSemanticMode(semanticconfig.ModeOff)
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateDisabled, Reason: "semantic retrieval mode is off"}
+		return b, nil
 	}
 	configured, err := semanticconfig.ResolveDiagnostic(cfg.RootDir)
 	if err != nil {
@@ -33,6 +66,7 @@ func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride se
 	}
 	b := New(cfg, st).WithSemanticMode(mode)
 	if mode == semanticconfig.ModeOff {
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateDisabled, Reason: "semantic retrieval mode is off"}
 		return b, nil
 	}
 	ready := configured
@@ -40,16 +74,41 @@ func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride se
 	if err := ready.Validate(); err != nil {
 		return nil, err
 	}
-	provider, err := embedding.NewOllama(embedding.OllamaOptions{
-		BaseURL: ready.OllamaBaseURL, Model: ready.Model, Dimensions: ready.Dimensions,
-	})
+	exactMaxChunks := semanticreadiness.EffectiveExactMaxChunks(ready.ExactFallbackMaxChunks)
+	profile := semanticbuild.Profile(embedding.Info{Provider: string(ready.Provider), Model: ready.Model, Dimensions: ready.Dimensions})
+	readinessCtx, cancelReadiness := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelReadiness()
+	snapshot, snapshotErr := deps.readiness(readinessCtx, st, profile, exactMaxChunks, time.Now().UTC())
+	if snapshotErr != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if errors.Is(snapshotErr, store.ErrRetrievalUnavailable) {
+			b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: "retrieval schema is unavailable"}
+			return b, nil
+		}
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: "semantic readiness snapshot unavailable: " + snapshotErr.Error()}
+		return b, nil
+	}
+	snapshot.Configured, snapshot.Enabled = true, true
+	snapshot.ExactMaxChunks = exactMaxChunks
+	if snapshot.Now.IsZero() {
+		snapshot.Now = time.Now().UTC()
+	}
+	b.semanticReadiness = semanticreadiness.Evaluate(snapshot)
+	if !b.semanticReadiness.Searchable {
+		return b, nil
+	}
+	provider, err := deps.provider(ready)
 	if err != nil {
 		return nil, fmt.Errorf("construct semantic embedding provider: %w", err)
 	}
-	profile := semanticbuild.Profile(provider.Info())
+	if actual := semanticbuild.Profile(provider.Info()); actual != profile {
+		return nil, fmt.Errorf("constructed semantic provider provenance does not match admitted profile")
+	}
 	retriever := researchsemantic.New(provider, semanticindex.NewExact(st), st)
 	return b.WithSemanticRetriever(retriever, researchsemantic.Options{
-		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: ready.ExactFallbackMaxChunks,
+		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: exactMaxChunks,
 		Timeout: researchsemantic.DefaultQueryTimeout,
 	}), nil
 }
