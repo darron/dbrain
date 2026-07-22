@@ -51,6 +51,11 @@ development date for the change set.
   preserving its existing flush interface. Native graph and final serialized
   payload memory remain evaluation concerns; no compactor calls this session,
   and no runtime behavior changes.
+- **Bounded physical compaction**: Added an internal executor that selects one
+  singleton/pair plan, streams only its current members, publishes/reopens
+  replacement segments and a rewrite root, and uses existing root CAS
+  activation. It retains unselected segments and leaves failed publications
+  unreferenced; no command, cache cleanup, or serving path is enabled.
 
 ### Optional native ANN backend screening (2026-07-22)
 

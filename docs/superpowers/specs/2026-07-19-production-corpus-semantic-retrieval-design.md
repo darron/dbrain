@@ -913,6 +913,22 @@ buffer streaming; those peak-memory costs remain measured native-backend gates.
 No compactor invokes the session yet, and it does not publish a root, alter
 cache state, or enable semantic serving.
 
+### Implemented Bounded Physical Compaction (2026-07-22)
+
+`internal/semanticbuild.Compact` now composes the active-root snapshot, pure
+planner, CAS-checked live-member stream, and injected streaming payload builder
+into one bounded singleton/pair rewrite. It creates/reopens replacement
+segments, keeps unselected immutable segments in the new root, reopens that
+root, and activates only through the existing equal-snapshot CAS contract.
+Only replacement memberships are inserted; retained segment membership is
+reused as immutable catalog state.
+
+If the live stream differs from the selected plan or activation loses its CAS,
+the old root remains active and any completed output is unreferenced. The
+executor refuses the last-segment-to-exact-L0 transition because the present
+root format requires at least one segment. It does not expose a command, remove
+input/cache paths, retain rollback roots, or enable semantic serving.
+
 ### Query Lifecycle
 
 A normal semantic search:
