@@ -15,6 +15,7 @@ const BackendHNSW = "hnsw"
 type HNSWOptions struct {
 	Dimensions int
 	Seed       uint64
+	M          int
 	EfSearch   int
 }
 
@@ -41,8 +42,14 @@ func NewHNSW(opts HNSWOptions) (*HNSW, error) {
 	if opts.Dimensions <= 0 {
 		return nil, fmt.Errorf("hnsw dimensions must be positive")
 	}
+	if opts.M < 0 {
+		return nil, fmt.Errorf("hnsw neighbor degree cannot be negative")
+	}
 	graph := hnsw.NewGraph[uint64]()
 	graph.Rng = rand.New(rand.NewSource(int64(opts.Seed)))
+	if opts.M > 0 {
+		graph.M = opts.M
+	}
 	if opts.EfSearch > 0 {
 		graph.EfSearch = opts.EfSearch
 	}

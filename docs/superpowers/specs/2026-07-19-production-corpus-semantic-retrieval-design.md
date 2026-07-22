@@ -550,6 +550,40 @@ document. The adapter owns both the segment format and search contract so a
 library can be forked or replaced without changing SQLite evidence, embedding,
 or root-manifest schemas.
 
+#### 2026-07-21 Backend Screening Record
+
+`github.com/coder/hnsw` is rejected before any segment-lifecycle implementation.
+The deterministic screening harness used the same 768 float32 dimensions and
+top-20 recall target as the restored-corpus profile. At only 1,000 vectors it
+returned sampled recall@20 of 0.355 against the exact oracle, below the 0.95
+gate. Export/import reproduced the same result, so persistence did not explain
+the failure. A 64-dimensional diagnostic run also failed at 0.85; increasing
+`EfSearch` from 256 to 1,024 did not change recall, and raising `M` from 16 to
+32 reduced it to 0.56.
+
+The source explains why this is not a scale experiment worth extending: the
+library's graph search retains only `k` results and may terminate as soon as
+there is no immediate improvement. Its `EfSearch` setting therefore does not
+provide the normal wider result-beam behavior needed to tune recall. The
+adapter and devtool remain as content-free rejection evidence only; they do
+not authorize a graph payload in an immutable segment.
+
+The bounded pure-Go disk-persistence survey did not identify an acceptable
+replacement. [`habedi/hann`](https://github.com/habedi/hann) requires a C/C++
+compiler and AVX, violating the CGO-free boundary. [`viant/sqlite-vec`](https://github.com/viant/sqlite-vec)
+is CGO-free, but its public cover package documents a brute-force delegate,
+has no cover-index tests in its v0.3.0 source tree, and persists/rebuilds a
+mutable index blob in a separate shadow SQLite schema. It is neither a proven
+ANN accelerator nor compatible with the SQLite-authoritative immutable-segment
+contract.
+
+Backend status is consequently **unresolved**. Do not implement root manifests,
+segment publication, L0 flush, or compaction against either library. The next
+implementation proposal must specify and obtain approval for a replacement
+backend strategy—most likely a separately evaluated native optional backend or
+a separately designed parent-first accelerator—while keeping semantic retrieval
+off and lexical fail-open intact.
+
 Graph identifiers are dense unsigned integer ordinals. A separate immutable
 membership map relates each ordinal to its chunk, parent, embedding revision,
 and vector hash. Chunk ID strings are not used as graph node keys.

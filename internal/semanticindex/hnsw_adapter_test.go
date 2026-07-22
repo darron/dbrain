@@ -34,6 +34,22 @@ func TestHNSWAdapterSearchAndReopenPreservesNearestOrdinals(t *testing.T) {
 	assertHNSWOrdinals(t, reopened, []uint64{11, 22})
 }
 
+func TestHNSWAdapterAppliesConfiguredNeighborDegree(t *testing.T) {
+	index, err := NewHNSW(HNSWOptions{Dimensions: 2, Seed: 7, M: 48})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index.graph.M != 48 {
+		t.Fatalf("graph M = %d", index.graph.M)
+	}
+}
+
+func TestHNSWAdapterRejectsNegativeNeighborDegree(t *testing.T) {
+	if _, err := NewHNSW(HNSWOptions{Dimensions: 2, M: -1}); err == nil {
+		t.Fatal("expected negative neighbor degree to be rejected")
+	}
+}
+
 func assertHNSWOrdinals(t *testing.T, index *HNSW, want []uint64) {
 	t.Helper()
 	hits, err := index.Search([]float32{1, 0}, len(want))
