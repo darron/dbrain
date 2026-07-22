@@ -33,6 +33,11 @@ func TestFlushPublishesBeforeActivatingRoot(t *testing.T) {
 	if st.completed.Generation.GenerationID != result.GenerationID || st.completed.Generation.SourceManifestHash == "" {
 		t.Fatalf("completion = %+v result = %+v", st.completed, result)
 	}
+	if st.completed.ActivationMode != store.RetrievalGenerationAdvanceSnapshot ||
+		st.completed.ExpectedActiveGenerationID != "" || st.completed.ExpectedPurgeEpoch != 3 ||
+		st.completed.ExpectedActiveSnapshotRevision != 0 {
+		t.Fatalf("activation expectations = %+v", st.completed)
+	}
 	if _, err := semanticsegment.OpenRoot(st.cacheDir, "db-1", profileID, result.GenerationID); err != nil {
 		t.Fatalf("root was not published before completion: %v", err)
 	}
@@ -76,6 +81,33 @@ func TestFlushStopsAtFiveThousandAndReportsExactL0Tail(t *testing.T) {
 	}
 	if st.windowLimit != store.RetrievalSegmentTarget || len(st.completed.Members) != store.RetrievalSegmentTarget || result.Indexed != store.RetrievalSegmentTarget || result.L0Ready != 1 {
 		t.Fatalf("limit=%d members=%d result=%+v", st.windowLimit, len(st.completed.Members), result)
+	}
+}
+
+func TestFlushRewritesRootForMembershipL0AtActiveSnapshot(t *testing.T) {
+	t.Parallel()
+	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := flushRows(profileID, store.RetrievalSegmentTarget)
+	st := &flushFakeStore{databaseID: "db-1", window: store.RetrievalFlushWindow{
+		Profile: store.RetrievalEmbeddingProfileRow{
+			ProfileID: profileID, ActiveGenerationID: "generation-old", ActiveSnapshotRevision: store.RetrievalSegmentTarget,
+			PurgeEpoch: 3, L0ReadyCount: store.RetrievalSegmentTarget,
+		},
+		Rows: rows, SnapshotRevision: store.RetrievalSegmentTarget,
+	}}
+	if _, err := Flush(context.Background(), st, flushPayloadBuilder{}, FlushOptions{
+		Profile: profile, Backend: "usearch", BackendVersion: "2.26.0", DistanceMetric: "cosine", CacheDir: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if st.completed.ActivationMode != store.RetrievalGenerationRewriteSnapshot ||
+		st.completed.ExpectedActiveGenerationID != "generation-old" ||
+		st.completed.ExpectedActiveSnapshotRevision != store.RetrievalSegmentTarget {
+		t.Fatalf("completion = %+v", st.completed)
 	}
 }
 

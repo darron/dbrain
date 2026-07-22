@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -57,6 +58,61 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 	if count != len(schemaMigrations) {
 		t.Fatalf("expected %d schema migration rows after reopen, got %d", len(schemaMigrations), count)
+	}
+}
+
+func TestMembershipL0ActivationMigrationRepairsCounters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	ctx := context.Background()
+	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 2)
+	first, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := testRetrievalSegment("migration-initial", 2)
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: testCompletedGeneration("migration-generation-initial", 2), Segments: []RetrievalIndexSegmentRow{initial},
+		Members: retrievalSegmentMembers(first.Rows, initial.SegmentHash), SnapshotRevision: first.SnapshotRevision,
+		ExpectedActiveGenerationID: first.Profile.ActiveGenerationID, ExpectedPurgeEpoch: first.Profile.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: first.Profile.ActiveSnapshotRevision, ActivationMode: RetrievalGenerationAdvanceSnapshot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	active, err := st.RetrievalEmbeddingProfile(ctx, "flush-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := testRetrievalSegment("migration-replacement", 1)
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: testCompletedGeneration("migration-generation-replacement", 1), Segments: []RetrievalIndexSegmentRow{replacement},
+		Members: retrievalSegmentMembers(first.Rows[:1], replacement.SegmentHash), SnapshotRevision: active.ActiveSnapshotRevision,
+		ExpectedActiveGenerationID: active.ActiveGenerationID, ExpectedPurgeEpoch: active.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: active.ActiveSnapshotRevision, ActivationMode: RetrievalGenerationRewriteSnapshot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embedding_profiles SET l0_ready_count=0,active_tombstone_count=99 WHERE profile_id='flush-profile'; DELETE FROM schema_migrations WHERE version=?`, retrievalMembershipL0ActivationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st = openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	profile, err := st.RetrievalEmbeddingProfile(ctx, "flush-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.L0ReadyCount != 1 || profile.ActiveTombstoneCount != 0 {
+		t.Fatalf("profile = %+v", profile)
+	}
+	var migrationCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=? AND name=?`, retrievalMembershipL0ActivationVersion, retrievalMembershipL0ActivationName).Scan(&migrationCount); err != nil {
+		t.Fatal(err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("migration count = %d", migrationCount)
 	}
 }
 

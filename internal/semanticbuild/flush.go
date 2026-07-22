@@ -76,6 +76,10 @@ func Flush(ctx context.Context, st FlushStore, builder SegmentPayloadBuilder, op
 	if err := validateFlushWindow(profileID, opts.Profile.Dimensions, window, limit); err != nil {
 		return FlushResult{}, err
 	}
+	activationMode := store.RetrievalGenerationAdvanceSnapshot
+	if window.SnapshotRevision == window.Profile.ActiveSnapshotRevision {
+		activationMode = store.RetrievalGenerationRewriteSnapshot
+	}
 	payload, err := builder.Build(ctx, append([]store.RetrievalEmbeddingRow(nil), window.Rows...))
 	if err != nil {
 		return FlushResult{}, fmt.Errorf("build semantic segment payload: %w", err)
@@ -122,6 +126,8 @@ func Flush(ctx context.Context, st FlushStore, builder SegmentPayloadBuilder, op
 			RelativeCachePath: root.RelativePath, BuildStartedAt: now, BuildCompletedAt: now,
 		},
 		Segments: segmentRows, Members: storeSegmentMembers(window.Rows, segment.Hash), SnapshotRevision: window.SnapshotRevision,
+		ExpectedActiveGenerationID: window.Profile.ActiveGenerationID, ExpectedPurgeEpoch: window.Profile.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: window.Profile.ActiveSnapshotRevision, ActivationMode: activationMode,
 	}
 	if err := st.CompleteRetrievalIndexGeneration(ctx, completion); err != nil {
 		return FlushResult{}, fmt.Errorf("activate published semantic root: %w", err)
@@ -134,10 +140,10 @@ func validateFlushWindow(profileID string, dimensions int, window store.Retrieva
 	if window.Profile.ProfileID != profileID || len(window.Rows) != store.RetrievalSegmentTarget || len(window.Rows) > limit || len(window.Rows) > store.RetrievalSegmentTarget {
 		return fmt.Errorf("semantic flush window is empty or does not match requested profile")
 	}
-	if window.SnapshotRevision <= window.Profile.ActiveSnapshotRevision {
-		return fmt.Errorf("semantic flush window does not advance snapshot revision")
+	if window.SnapshotRevision < window.Profile.ActiveSnapshotRevision {
+		return fmt.Errorf("semantic flush window snapshot revision predates active snapshot")
 	}
-	previous := window.Profile.ActiveSnapshotRevision
+	previous := int64(0)
 	for _, row := range window.Rows {
 		if row.ProfileID != profileID || row.Dimensions != dimensions || row.Revision <= previous || strings.TrimSpace(row.VectorHash) == "" {
 			return fmt.Errorf("semantic flush window has invalid member provenance")

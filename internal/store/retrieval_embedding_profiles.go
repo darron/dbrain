@@ -66,16 +66,28 @@ var retrievalEmbeddingProfileTriggersV19 = []retrievalConstraintTrigger{
 					SELECT 1 FROM retrieval_embedding_profiles WHERE profile_id=OLD.profile_id
 				) THEN RAISE(ABORT, 'retrieval embedding profile aggregate row is missing') END;
 				SELECT CASE WHEN OLD.status='ready' AND EXISTS (
-					SELECT 1 FROM retrieval_embedding_profiles
-					WHERE profile_id=OLD.profile_id
-						AND (active_generation_id='' OR OLD.revision>active_snapshot_revision)
-						AND l0_ready_count<=0
+				SELECT 1 FROM retrieval_embedding_profiles profile
+					WHERE profile.profile_id=OLD.profile_id AND profile.l0_ready_count<=0
+						AND NOT EXISTS (
+							SELECT 1 FROM retrieval_generation_segments generation
+							JOIN retrieval_index_segment_members member ON member.segment_hash=generation.segment_hash
+							WHERE generation.generation_id=profile.active_generation_id AND member.chunk_id=OLD.chunk_id
+								AND member.revision=OLD.revision AND member.vector_hash=OLD.vector_hash
+						)
 				) THEN RAISE(ABORT, 'retrieval embedding profile L0 aggregate drift') END;
 				UPDATE retrieval_embedding_profiles SET
-					l0_ready_count=l0_ready_count-CASE WHEN OLD.status='ready'
-						AND (active_generation_id='' OR OLD.revision>active_snapshot_revision) THEN 1 ELSE 0 END,
-					active_tombstone_count=active_tombstone_count+CASE WHEN OLD.status='ready'
-						AND active_generation_id!='' AND OLD.revision<=active_snapshot_revision THEN 1 ELSE 0 END,
+					l0_ready_count=l0_ready_count-CASE WHEN OLD.status='ready' AND NOT EXISTS (
+						SELECT 1 FROM retrieval_generation_segments generation
+						JOIN retrieval_index_segment_members member ON member.segment_hash=generation.segment_hash
+						WHERE generation.generation_id=retrieval_embedding_profiles.active_generation_id AND member.chunk_id=OLD.chunk_id
+							AND member.revision=OLD.revision AND member.vector_hash=OLD.vector_hash
+					) THEN 1 ELSE 0 END,
+					active_tombstone_count=active_tombstone_count+CASE WHEN OLD.status='ready' AND EXISTS (
+						SELECT 1 FROM retrieval_generation_segments generation
+						JOIN retrieval_index_segment_members member ON member.segment_hash=generation.segment_hash
+						WHERE generation.generation_id=retrieval_embedding_profiles.active_generation_id AND member.chunk_id=OLD.chunk_id
+							AND member.revision=OLD.revision AND member.vector_hash=OLD.vector_hash
+					) THEN 1 ELSE 0 END,
 					updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
 				WHERE profile_id=OLD.profile_id;
 			END`,
@@ -327,6 +339,57 @@ func (s *Store) ensureRetrievalEmbeddingProfileDefinitions() error {
 		if _, err := s.db.Exec(trigger.sql); err != nil {
 			return fmt.Errorf("create retrieval embedding profile trigger %s: %w", trigger.name, err)
 		}
+	}
+	return nil
+}
+
+func (s *Store) repairRetrievalMembershipL0Activation() error {
+	for _, trigger := range retrievalEmbeddingProfileTriggersV19 {
+		if _, err := s.db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			return fmt.Errorf("drop retrieval embedding profile trigger %s: %w", trigger.name, err)
+		}
+		if _, err := s.db.Exec(trigger.sql); err != nil {
+			return fmt.Errorf("create retrieval embedding profile trigger %s: %w", trigger.name, err)
+		}
+	}
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin retrieval membership L0 counter repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.Query(`SELECT profile_id,active_generation_id FROM retrieval_embedding_profiles ORDER BY profile_id`)
+	if err != nil {
+		return fmt.Errorf("list retrieval profiles for membership L0 repair: %w", err)
+	}
+	type profileIdentity struct{ profileID, generationID string }
+	profiles := make([]profileIdentity, 0)
+	for rows.Next() {
+		var profile profileIdentity
+		if err := rows.Scan(&profile.profileID, &profile.generationID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan retrieval profile for membership L0 repair: %w", err)
+		}
+		profiles = append(profiles, profile)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate retrieval profiles for membership L0 repair: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close retrieval profiles for membership L0 repair: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, profile := range profiles {
+		var l0Ready, tombstones int
+		if err := countRetrievalGenerationCountersTx(context.Background(), tx, profile.profileID, profile.generationID, &l0Ready, &tombstones); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE retrieval_embedding_profiles SET l0_ready_count=?,active_tombstone_count=?,updated_at=? WHERE profile_id=?`, l0Ready, tombstones, now, profile.profileID); err != nil {
+			return fmt.Errorf("repair retrieval membership L0 counters for %s: %w", profile.profileID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit retrieval membership L0 counter repair: %w", err)
 	}
 	return nil
 }

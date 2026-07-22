@@ -304,13 +304,13 @@ func (s *Store) putRetrievalEmbeddingBatch(ctx context.Context, input PutRetriev
 	l0Delta := 0
 	tombstoneDelta := 0
 	for _, row := range rows {
-		var old RetrievalEmbeddingRow
+		old := RetrievalEmbeddingRow{ChunkID: row.ChunkID, ProfileID: profileID}
 		readErr := tx.QueryRowContext(ctx, `
 			SELECT provider, model, dimensions, representation, normalization,
-				vector_bytes, chunk_text_hash, status, revision
+				vector_bytes, vector_hash, chunk_text_hash, status, revision
 			FROM retrieval_embeddings WHERE chunk_id=? AND profile_id=?`, row.ChunkID, profileID).Scan(
 			&old.Provider, &old.Model, &old.Dimensions, &old.Representation, &old.Normalization,
-			&old.VectorBytes, &old.ChunkTextHash, &old.Status, &old.Revision,
+			&old.VectorBytes, &old.VectorHash, &old.ChunkTextHash, &old.Status, &old.Revision,
 		)
 		if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
 			return 0, fmt.Errorf("load prior retrieval embedding for chunk %s profile %s: %w", row.ChunkID, profileID, readErr)
@@ -324,15 +324,21 @@ func (s *Store) putRetrievalEmbeddingBatch(ctx context.Context, input PutRetriev
 			continue
 		}
 		anyMembershipChanged = true
-		oldL0Ready := exists && old.Status == RetrievalEmbeddingReady &&
-			(profileRow.ActiveGenerationID == "" || old.Revision > profileRow.ActiveSnapshotRevision)
+		oldActiveMember := false
+		if exists && old.Status == RetrievalEmbeddingReady {
+			oldActiveMember, err = retrievalEmbeddingHasActiveMembershipTx(ctx, tx, profileID, profileRow.ActiveGenerationID, old)
+			if err != nil {
+				return 0, err
+			}
+		}
+		oldL0Ready := exists && old.Status == RetrievalEmbeddingReady && !oldActiveMember
 		if oldL0Ready {
 			l0Delta--
 		}
 		if row.Status == RetrievalEmbeddingReady {
 			l0Delta++
 		}
-		if exists && old.Status == RetrievalEmbeddingReady && profileRow.ActiveGenerationID != "" && old.Revision <= profileRow.ActiveSnapshotRevision {
+		if oldActiveMember {
 			tombstoneDelta++
 		}
 	}
@@ -534,6 +540,7 @@ func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, corruption *
 		}
 		return fmt.Errorf("reload corrupt retrieval embedding for chunk %s profile %s: %w", chunkID, profileID, err)
 	}
+	row.ChunkID, row.ProfileID = chunkID, profileID
 	if row.Status != RetrievalEmbeddingReady {
 		return fmt.Errorf("%w: chunk %s profile %s status is %q", ErrRetrievalEmbeddingNoLongerCorrupt, chunkID, profileID, row.Status)
 	}
@@ -575,7 +582,11 @@ func (s *Store) BlockCorruptRetrievalEmbedding(ctx context.Context, corruption *
 	}
 	l0Delta := 0
 	tombstoneDelta := 0
-	if profileRow.ActiveGenerationID == "" || row.Revision > profileRow.ActiveSnapshotRevision {
+	activeMember, err := retrievalEmbeddingHasActiveMembershipTx(ctx, tx, profileID, profileRow.ActiveGenerationID, row)
+	if err != nil {
+		return err
+	}
+	if !activeMember {
 		l0Delta = -1
 	} else {
 		tombstoneDelta = 1

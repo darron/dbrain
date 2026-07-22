@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ const (
 	RetrievalSegmentTarget    = 5_000
 	RetrievalSegmentHardLimit = 10_000
 )
+
+var ErrRetrievalGenerationActivationStale = errors.New("retrieval generation activation expectations changed")
 
 type RetrievalIndexSegmentRow struct {
 	SegmentHash, ProfileID, Backend, BackendVersion, DistanceMetric, RelativeCachePath string
@@ -31,11 +34,20 @@ type RetrievalFlushWindow struct {
 	SnapshotRevision int64
 }
 
+type RetrievalGenerationActivationMode string
+
+const (
+	RetrievalGenerationAdvanceSnapshot RetrievalGenerationActivationMode = "advance_snapshot"
+	RetrievalGenerationRewriteSnapshot RetrievalGenerationActivationMode = "rewrite_snapshot"
+)
+
 type CompleteRetrievalIndexGenerationInput struct {
-	Generation       RetrievalIndexGenerationRow
-	Segments         []RetrievalIndexSegmentRow
-	Members          []RetrievalIndexSegmentMember
-	SnapshotRevision int64
+	Generation                                                           RetrievalIndexGenerationRow
+	Segments                                                             []RetrievalIndexSegmentRow
+	Members                                                              []RetrievalIndexSegmentMember
+	SnapshotRevision, ExpectedPurgeEpoch, ExpectedActiveSnapshotRevision int64
+	ExpectedActiveGenerationID                                           string
+	ActivationMode                                                       RetrievalGenerationActivationMode
 }
 
 func (s *Store) RetrievalDatabaseID(ctx context.Context) (string, error) {
@@ -111,9 +123,16 @@ func (s *Store) NextRetrievalFlushWindow(ctx context.Context, profileID string, 
 			AND parent.parent_source_key=c.parent_source_key AND parent.status='current'
 		LEFT JOIN items item ON c.parent_kind='item' AND item.source_key=c.parent_source_key
 		LEFT JOIN sources source ON c.parent_kind='source' AND source.source_key=c.parent_source_key
-		WHERE e.profile_id=? AND e.status='ready' AND e.revision>?
+		WHERE e.profile_id=? AND e.status='ready'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM retrieval_generation_segments generation
+				JOIN retrieval_index_segment_members member ON member.segment_hash=generation.segment_hash
+				WHERE generation.generation_id=? AND member.chunk_id=e.chunk_id
+					AND member.revision=e.revision AND member.vector_hash=e.vector_hash
+			)
 		ORDER BY e.revision,e.chunk_id
-		LIMIT ?`, profileID, profile.ActiveSnapshotRevision, limit)
+		LIMIT ?`, profileID, profile.ActiveGenerationID, limit)
 	if err != nil {
 		return RetrievalFlushWindow{}, fmt.Errorf("list retrieval L0 flush window: %w", err)
 	}
@@ -166,8 +185,17 @@ func (s *Store) CompleteRetrievalIndexGeneration(ctx context.Context, input Comp
 		}
 		return fmt.Errorf("load retrieval generation profile: %w", err)
 	}
-	if input.SnapshotRevision <= profile.ActiveSnapshotRevision {
-		return fmt.Errorf("retrieval generation snapshot revision %d does not advance active snapshot %d", input.SnapshotRevision, profile.ActiveSnapshotRevision)
+	var globalPurgeEpoch int64
+	if err := tx.QueryRowContext(ctx, `SELECT purge_epoch FROM retrieval_state WHERE singleton=1`).Scan(&globalPurgeEpoch); err != nil {
+		return fmt.Errorf("load retrieval generation purge epoch: %w", err)
+	}
+	if profile.ActiveGenerationID != input.ExpectedActiveGenerationID ||
+		profile.PurgeEpoch != input.ExpectedPurgeEpoch || globalPurgeEpoch != input.ExpectedPurgeEpoch ||
+		profile.ActiveSnapshotRevision != input.ExpectedActiveSnapshotRevision {
+		return fmt.Errorf("%w: expected root %q epoch %d snapshot %d, found root %q profile epoch %d global epoch %d snapshot %d",
+			ErrRetrievalGenerationActivationStale, input.ExpectedActiveGenerationID, input.ExpectedPurgeEpoch,
+			input.ExpectedActiveSnapshotRevision, profile.ActiveGenerationID, profile.PurgeEpoch, globalPurgeEpoch,
+			profile.ActiveSnapshotRevision)
 	}
 	for _, member := range input.Members {
 		var status RetrievalEmbeddingStatus
@@ -240,6 +268,9 @@ func (s *Store) CompleteRetrievalIndexGeneration(ctx context.Context, input Comp
 	if indexed != input.Generation.IndexedChunkCount {
 		return fmt.Errorf("retrieval generation indexed count %d does not equal proved segment count %d", input.Generation.IndexedChunkCount, indexed)
 	}
+	if err := proveNoDuplicateUsableGenerationMembersTx(ctx, tx, input.Generation.GenerationID, input.Generation.ProfileID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active=0,activated_at='' WHERE profile_id=? AND active=1`, input.Generation.ProfileID); err != nil {
 		return fmt.Errorf("deactivate prior retrieval generation: %w", err)
 	}
@@ -247,22 +278,24 @@ func (s *Store) CompleteRetrievalIndexGeneration(ctx context.Context, input Comp
 		return fmt.Errorf("activate retrieval generation: %w", err)
 	}
 	var l0Ready, tombstones int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM retrieval_embeddings WHERE profile_id=? AND status='ready' AND revision>?`, input.Generation.ProfileID, input.SnapshotRevision).Scan(&l0Ready); err != nil {
-		return fmt.Errorf("count retrieval L0 tail: %w", err)
+	if err := countRetrievalGenerationCountersTx(ctx, tx, input.Generation.ProfileID, input.Generation.GenerationID, &l0Ready, &tombstones); err != nil {
+		return err
 	}
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM retrieval_index_segment_members member
-		JOIN retrieval_generation_segments generation ON generation.segment_hash=member.segment_hash
-		LEFT JOIN retrieval_embeddings embedding ON embedding.chunk_id=member.chunk_id AND embedding.profile_id=?
-			AND embedding.status='ready' AND embedding.revision=member.revision AND embedding.vector_hash=member.vector_hash
-		WHERE generation.generation_id=? AND embedding.chunk_id IS NULL`, input.Generation.ProfileID, input.Generation.GenerationID).Scan(&tombstones); err != nil {
-		return fmt.Errorf("count retrieval root tombstones: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE retrieval_embedding_profiles SET active_generation_id=?,active_snapshot_revision=?,active_indexed_count=?,
-			l0_ready_count=?,active_tombstone_count=?,updated_at=? WHERE profile_id=?`,
-		input.Generation.GenerationID, input.SnapshotRevision, indexed, l0Ready, tombstones, now, input.Generation.ProfileID); err != nil {
+			l0_ready_count=?,active_tombstone_count=?,updated_at=?
+		WHERE profile_id=? AND active_generation_id=? AND purge_epoch=? AND active_snapshot_revision=?`,
+		input.Generation.GenerationID, input.SnapshotRevision, indexed, l0Ready, tombstones, now, input.Generation.ProfileID,
+		input.ExpectedActiveGenerationID, input.ExpectedPurgeEpoch, input.ExpectedActiveSnapshotRevision)
+	if err != nil {
 		return fmt.Errorf("activate retrieval embedding profile root: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count retrieval embedding profile root activation: %w", err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("%w: profile root changed before activation", ErrRetrievalGenerationActivationStale)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit retrieval generation activation: %w", err)
@@ -288,6 +321,67 @@ func proveGenerationSegmentsTx(ctx context.Context, tx *sql.Tx, generationID str
 	return indexed, nil
 }
 
+func proveNoDuplicateUsableGenerationMembersTx(ctx context.Context, tx *sql.Tx, generationID, profileID string) error {
+	var duplicates int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT member.chunk_id,member.revision,member.vector_hash
+			FROM retrieval_generation_segments generation
+			JOIN retrieval_index_segment_members member ON member.segment_hash=generation.segment_hash
+			JOIN retrieval_embeddings embedding ON embedding.chunk_id=member.chunk_id AND embedding.profile_id=?
+				AND embedding.status='ready' AND embedding.revision=member.revision AND embedding.vector_hash=member.vector_hash
+			WHERE generation.generation_id=?
+			GROUP BY member.chunk_id,member.revision,member.vector_hash
+			HAVING COUNT(*)>1
+		)`, profileID, generationID).Scan(&duplicates); err != nil {
+		return fmt.Errorf("prove retrieval generation member uniqueness: %w", err)
+	}
+	if duplicates != 0 {
+		return fmt.Errorf("retrieval generation %s has duplicate usable segment membership", generationID)
+	}
+	return nil
+}
+
+func countRetrievalGenerationCountersTx(ctx context.Context, tx *sql.Tx, profileID, generationID string, l0Ready, tombstones *int) error {
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM retrieval_embeddings embedding
+		WHERE embedding.profile_id=? AND embedding.status='ready'
+			AND NOT EXISTS (
+				SELECT 1 FROM retrieval_generation_segments generation
+				JOIN retrieval_index_segment_members member ON member.segment_hash=generation.segment_hash
+				WHERE generation.generation_id=? AND member.chunk_id=embedding.chunk_id
+					AND member.revision=embedding.revision AND member.vector_hash=embedding.vector_hash
+			)`, profileID, generationID).Scan(l0Ready); err != nil {
+		return fmt.Errorf("count retrieval membership L0: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM retrieval_index_segment_members member
+		JOIN retrieval_generation_segments generation ON generation.segment_hash=member.segment_hash
+		LEFT JOIN retrieval_embeddings embedding ON embedding.chunk_id=member.chunk_id AND embedding.profile_id=?
+			AND embedding.status='ready' AND embedding.revision=member.revision AND embedding.vector_hash=member.vector_hash
+		WHERE generation.generation_id=? AND embedding.chunk_id IS NULL`, profileID, generationID).Scan(tombstones); err != nil {
+		return fmt.Errorf("count retrieval root tombstones: %w", err)
+	}
+	return nil
+}
+
+func retrievalEmbeddingHasActiveMembershipTx(ctx context.Context, tx *sql.Tx, profileID, generationID string, row RetrievalEmbeddingRow) (bool, error) {
+	if generationID == "" || row.Status != RetrievalEmbeddingReady {
+		return false, nil
+	}
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM retrieval_generation_segments generation
+			JOIN retrieval_index_segment_members member ON member.segment_hash=generation.segment_hash
+			WHERE generation.generation_id=? AND member.chunk_id=? AND member.revision=? AND member.vector_hash=?
+		)`, generationID, row.ChunkID, row.Revision, row.VectorHash).Scan(&exists); err != nil {
+		return false, fmt.Errorf("read retrieval active membership for %s profile %s: %w", row.ChunkID, profileID, err)
+	}
+	return exists, nil
+}
+
 func validateGenerationCompletionInput(input CompleteRetrievalIndexGenerationInput) error {
 	generation := input.Generation
 	if strings.TrimSpace(generation.GenerationID) == "" || strings.TrimSpace(generation.ProfileID) == "" {
@@ -301,6 +395,18 @@ func validateGenerationCompletionInput(input CompleteRetrievalIndexGenerationInp
 	}
 	if len(input.Segments) == 0 || len(input.Members) == 0 || input.SnapshotRevision <= 0 {
 		return fmt.Errorf("retrieval generation segments, members, and snapshot revision are required")
+	}
+	switch input.ActivationMode {
+	case RetrievalGenerationAdvanceSnapshot:
+		if input.SnapshotRevision <= input.ExpectedActiveSnapshotRevision {
+			return fmt.Errorf("retrieval generation snapshot revision %d does not advance expected active snapshot %d", input.SnapshotRevision, input.ExpectedActiveSnapshotRevision)
+		}
+	case RetrievalGenerationRewriteSnapshot:
+		if input.SnapshotRevision != input.ExpectedActiveSnapshotRevision {
+			return fmt.Errorf("retrieval generation rewrite snapshot revision %d does not match expected active snapshot %d", input.SnapshotRevision, input.ExpectedActiveSnapshotRevision)
+		}
+	default:
+		return fmt.Errorf("retrieval generation activation mode is required")
 	}
 	segmentCounts := make(map[string]int, len(input.Segments))
 	for _, segment := range input.Segments {
@@ -335,8 +441,11 @@ func validateGenerationCompletionInput(input CompleteRetrievalIndexGenerationInp
 			maximumRevision = member.Revision
 		}
 	}
-	if maximumRevision != input.SnapshotRevision {
+	if input.ActivationMode == RetrievalGenerationAdvanceSnapshot && maximumRevision != input.SnapshotRevision {
 		return fmt.Errorf("retrieval generation snapshot revision %d does not equal member maximum %d", input.SnapshotRevision, maximumRevision)
+	}
+	if input.ActivationMode == RetrievalGenerationRewriteSnapshot && maximumRevision > input.SnapshotRevision {
+		return fmt.Errorf("retrieval generation rewrite member revision %d exceeds snapshot %d", maximumRevision, input.SnapshotRevision)
 	}
 	return nil
 }

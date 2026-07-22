@@ -2325,10 +2325,10 @@ func assertRetrievalGenerationStale(t *testing.T, st *Store, generationID string
 	}
 }
 
-// seedActiveRetrievalGenerationForTest explicitly creates the source-revision
-// and membership relationship that the current production schema cannot prove.
-// Production activation must remain fail-closed until segmented generations
-// persist that provenance themselves.
+// seedActiveRetrievalGenerationForTest constructs a test-only active segment
+// membership relation for every currently ready embedding. Production
+// activation remains fail-closed unless CompleteRetrievalIndexGeneration has
+// recorded the same provenance from a published root.
 func seedActiveRetrievalGenerationForTest(t *testing.T, st *Store, generationID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -2345,8 +2345,43 @@ func seedActiveRetrievalGenerationForTest(t *testing.T, st *Store, generationID 
 	if err := tx.QueryRowContext(ctx, `SELECT latest_revision FROM retrieval_embedding_profiles WHERE profile_id=?`, profileID).Scan(&revision); err != nil {
 		t.Fatal(err)
 	}
-	var indexed int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM retrieval_embeddings WHERE profile_id=? AND status='ready'`, profileID).Scan(&indexed); err != nil {
+	rows, err := tx.QueryContext(ctx, `SELECT chunk_id,revision,vector_hash FROM retrieval_embeddings WHERE profile_id=? AND status='ready' ORDER BY chunk_id`, profileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members := make([]RetrievalIndexSegmentMember, 0)
+	for rows.Next() {
+		var member RetrievalIndexSegmentMember
+		if err := rows.Scan(&member.ChunkID, &member.Revision, &member.VectorHash); err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		member.Ordinal = uint64(len(members))
+		members = append(members, member)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	indexed := len(members)
+	segmentHash := "test-active-segment:" + generationID
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO retrieval_index_segments (
+			segment_hash,profile_id,backend,backend_version,dimensions,distance_metric,indexed_chunk_count,
+			relative_cache_path,membership_hash,payload_hash,manifest_hash,created_at
+		) VALUES (?,?, 'test', 'v1', 2, 'cosine', ?, ?, 'test-members', 'test-payload', 'test-manifest', ?)
+		ON CONFLICT(segment_hash) DO NOTHING`, segmentHash, profileID, indexed, "semantic/test/segments/"+generationID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range members {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO retrieval_index_segment_members (segment_hash,ordinal,chunk_id,revision,vector_hash) VALUES (?,?,?,?,?)`, segmentHash, member.Ordinal, member.ChunkID, member.Revision, member.VectorHash); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO retrieval_generation_segments (generation_id,segment_hash) VALUES (?,?) ON CONFLICT DO NOTHING`, generationID, segmentHash); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active=0,activated_at='' WHERE profile_id=?`, profileID); err != nil {
