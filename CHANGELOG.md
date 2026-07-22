@@ -44,8 +44,13 @@ development date for the change set.
 - **Bounded compaction member stream**: Added a read-only callback stream for
   the live rows of one or two CAS-checked active segments. It revalidates exact
   ready/current membership, encoded vector integrity, and catalog counts before
-  yielding each vector. The current native builder still materializes its input;
-  this creates no payload, root, cache, command, or serving change.
+  yielding each vector. The stream itself creates no payload, root, cache,
+  command, or serving change.
+- **Incremental optional payload build**: The tag-gated USearch builder can now
+  reserve a known segment size and ingest source vectors one at a time while
+  preserving its existing flush interface. Native graph and final serialized
+  payload memory remain evaluation concerns; no compactor calls this session,
+  and no runtime behavior changes.
 
 ### Optional native ANN backend screening (2026-07-22)
 

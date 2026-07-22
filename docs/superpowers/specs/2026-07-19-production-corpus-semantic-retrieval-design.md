@@ -898,6 +898,21 @@ payload/root, remove input segments, clean cache paths, or enable semantic
 serving. Final activation must still use the existing root CAS because current
 state can change after this read stream closes.
 
+### Implemented Optional Streaming Payload Session (2026-07-22)
+
+The optional `usearch && cgo` payload builder now has a bounded session that
+reserves a known segment size and accepts vectors one at a time with dense
+ordinals. It rejects overflow, underfilled finish, corrupt vectors, cancellation,
+and use after close; finishing releases native state before returning the opaque
+payload writer. The existing 5,000-row flush API is a compatibility adapter over
+that same session, so default CGO-free builds and flush callers are unchanged.
+
+This removes the future compactor's Go source-vector slice and a second payload
+copy. It does not make USearch's in-memory graph or its final serialized payload
+buffer streaming; those peak-memory costs remain measured native-backend gates.
+No compactor invokes the session yet, and it does not publish a root, alter
+cache state, or enable semantic serving.
+
 ### Query Lifecycle
 
 A normal semantic search:

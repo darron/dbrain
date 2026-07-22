@@ -44,6 +44,96 @@ func TestUSearchSegmentBuilderExportsReopenablePayload(t *testing.T) {
 	}
 }
 
+func TestUSearchSegmentBuilderStreamsReopenablePayload(t *testing.T) {
+	builder, err := NewUSearchSegmentBuilder(USearchSegmentBuilderOptions{Dimensions: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := builder.Begin(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Add(context.Background(), store.RetrievalEmbeddingRow{VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), Dimensions: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Add(context.Background(), store.RetrievalEmbeddingRow{VectorBytes: embedding.EncodeDenseF32([]float32{0, 1}), Dimensions: 2}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := session.Finish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	if err := payload(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := semanticindex.NewUSearch(semanticindex.USearchOptions{Dimensions: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if err := reopened.Import(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := reopened.Search([]float32{1, 0}, 2)
+	if err != nil || len(hits) != 2 || hits[0].Ordinal != 0 {
+		t.Fatalf("hits=%+v err=%v", hits, err)
+	}
+	if err := session.Add(context.Background(), store.RetrievalEmbeddingRow{VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), Dimensions: 2}); err == nil {
+		t.Fatal("Add succeeded after Finish")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUSearchSegmentBuilderStreamingSessionRejectsInvalidLifecycle(t *testing.T) {
+	builder, err := NewUSearchSegmentBuilder(USearchSegmentBuilderOptions{Dimensions: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Begin(context.Background(), 0); err == nil {
+		t.Fatal("Begin accepted zero expected rows")
+	}
+	session, err := builder.Begin(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Finish(context.Background()); err == nil {
+		t.Fatal("Finish accepted underfilled session")
+	}
+	if err := session.Add(context.Background(), store.RetrievalEmbeddingRow{VectorBytes: []byte{1}, Dimensions: 2}); err == nil {
+		t.Fatal("Add accepted malformed vector")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := session.Add(ctx, store.RetrievalEmbeddingRow{VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), Dimensions: 2}); err == nil {
+		t.Fatal("Add ignored cancelled context")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Add(context.Background(), store.RetrievalEmbeddingRow{VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), Dimensions: 2}); err == nil {
+		t.Fatal("Add succeeded after Close")
+	}
+	full, err := builder.Begin(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := full.Add(context.Background(), store.RetrievalEmbeddingRow{VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), Dimensions: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := full.Add(context.Background(), store.RetrievalEmbeddingRow{VectorBytes: embedding.EncodeDenseF32([]float32{0, 1}), Dimensions: 2}); err == nil {
+		t.Fatal("Add accepted more than expected rows")
+	}
+	if err := full.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUSearchSegmentBuilderRejectsInvalidRowsAndCancellation(t *testing.T) {
 	builder, err := NewUSearchSegmentBuilder(USearchSegmentBuilderOptions{Dimensions: 2})
 	if err != nil {
