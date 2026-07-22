@@ -217,7 +217,7 @@ go test -tags usearch ./internal/semanticindex ./internal/annbakeoff ./cmd/devto
 git diff --check
 ~~~
 
-- [ ] **Step 7: Commit** the screening-only runner, tests, evidence documentation, and changelog.
+- [x] **Step 7: Commit** the screening-only runner, tests, evidence documentation, and changelog.
 
 ## Plan Self-Review
 
