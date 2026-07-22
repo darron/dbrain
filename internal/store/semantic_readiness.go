@@ -131,14 +131,21 @@ var retrievalRuntimeProjectionCounterTriggers = []retrievalConstraintTrigger{
 	},
 }
 
-func (s *Store) ensureRetrievalRuntimeReadinessCounters() error {
-	tx, err := s.db.BeginTx(context.Background(), nil)
+// RepairRetrievalRuntimeReadinessCounters rebuilds the migration-21 projection
+// and embedding-profile aggregates from authoritative rows. Trigger replacement,
+// both backfills, and supporting indexes commit atomically in one cancellable
+// write transaction.
+func (s *Store) RepairRetrievalRuntimeReadinessCounters(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin retrieval runtime readiness counter repair: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := ensureColumnsTx(tx, "retrieval_state", []columnDefinition{
+	if err := ensureColumnsTxContext(ctx, tx, "retrieval_state", []columnDefinition{
 		{Name: "projection_parent_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
 		{Name: "current_parent_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
 		{Name: "empty_parent_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
@@ -150,7 +157,7 @@ func (s *Store) ensureRetrievalRuntimeReadinessCounters() error {
 	}); err != nil {
 		return fmt.Errorf("ensure retrieval runtime projection counters: %w", err)
 	}
-	if err := ensureColumnsTx(tx, "retrieval_embedding_profiles", []columnDefinition{
+	if err := ensureColumnsTxContext(ctx, tx, "retrieval_embedding_profiles", []columnDefinition{
 		{Name: "ready_embedding_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
 		{Name: "pending_embedding_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
 		{Name: "blocked_embedding_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
@@ -164,22 +171,22 @@ func (s *Store) ensureRetrievalRuntimeReadinessCounters() error {
 	// trigger replacement, backfill, and indexes in this transaction prevents a
 	// concurrent writer from landing in an uncounted gap.
 	for _, trigger := range retrievalRuntimeReadinessCounterTriggers {
-		if _, err := tx.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+		if _, err := tx.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+trigger.name); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(trigger.sql); err != nil {
+		if _, err := tx.ExecContext(ctx, trigger.sql); err != nil {
 			return fmt.Errorf("create retrieval runtime readiness trigger %s: %w", trigger.name, err)
 		}
 	}
 	for _, trigger := range retrievalRuntimeProjectionCounterTriggers {
-		if _, err := tx.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+		if _, err := tx.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+trigger.name); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(trigger.sql); err != nil {
+		if _, err := tx.ExecContext(ctx, trigger.sql); err != nil {
 			return fmt.Errorf("create retrieval runtime projection trigger %s: %w", trigger.name, err)
 		}
 	}
-	if _, err := tx.Exec(`
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE retrieval_embedding_profiles SET
 			ready_embedding_count=(SELECT COUNT(*) FROM retrieval_embeddings e WHERE e.profile_id=retrieval_embedding_profiles.profile_id AND e.status='ready'),
 			pending_embedding_count=(SELECT COUNT(*) FROM retrieval_embeddings e WHERE e.profile_id=retrieval_embedding_profiles.profile_id AND e.status='pending'),
@@ -188,7 +195,7 @@ func (s *Store) ensureRetrievalRuntimeReadinessCounters() error {
 			corrupt_embedding_count=(SELECT COUNT(*) FROM retrieval_embeddings e WHERE e.profile_id=retrieval_embedding_profiles.profile_id AND e.status='blocked' AND e.last_error LIKE 'corrupt:%')`); err != nil {
 		return fmt.Errorf("backfill retrieval runtime readiness counters: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE retrieval_state SET
+	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_state SET
 		projection_parent_count=(SELECT COUNT(*) FROM retrieval_parent_projections),
 		current_parent_count=(SELECT COUNT(*) FROM retrieval_parent_projections WHERE status='current' AND projected_revision>=dirty_revision),
 		empty_parent_count=(SELECT COUNT(*) FROM retrieval_parent_projections WHERE status='empty' AND projected_revision>=dirty_revision),
@@ -200,11 +207,14 @@ func (s *Store) ensureRetrievalRuntimeReadinessCounters() error {
 		WHERE singleton=1`); err != nil {
 		return fmt.Errorf("backfill retrieval runtime projection counters: %w", err)
 	}
-	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_retrieval_parent_projections_dirty_age ON retrieval_parent_projections(dirty_at) WHERE projected_revision<dirty_revision`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_retrieval_parent_projections_dirty_age ON retrieval_parent_projections(dirty_at) WHERE projected_revision<dirty_revision`); err != nil {
 		return fmt.Errorf("create retrieval runtime dirty age index: %w", err)
 	}
-	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_retrieval_parent_projections_dirty_keyset ON retrieval_parent_projections(dirty_revision,parent_kind,parent_source_key) WHERE projected_revision<dirty_revision`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_retrieval_parent_projections_dirty_keyset ON retrieval_parent_projections(dirty_revision,parent_kind,parent_source_key) WHERE projected_revision<dirty_revision`); err != nil {
 		return fmt.Errorf("create retrieval runtime dirty keyset index: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit retrieval runtime readiness counter repair: %w", err)
@@ -212,8 +222,8 @@ func (s *Store) ensureRetrievalRuntimeReadinessCounters() error {
 	return nil
 }
 
-func ensureColumnsTx(tx *sql.Tx, table string, required []columnDefinition) error {
-	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)
+func ensureColumnsTxContext(ctx context.Context, tx *sql.Tx, table string, required []columnDefinition) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
 	if err != nil {
 		return fmt.Errorf("load %s table info: %w", table, err)
 	}
@@ -239,7 +249,7 @@ func ensureColumnsTx(tx *sql.Tx, table string, required []columnDefinition) erro
 		if existing[column.Name] {
 			continue
 		}
-		if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column.Name, column.Definition)); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column.Name, column.Definition)); err != nil {
 			return fmt.Errorf("add %s.%s: %w", table, column.Name, err)
 		}
 	}

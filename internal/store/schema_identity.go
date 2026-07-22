@@ -241,7 +241,7 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalReadinessCountersVersion).Scan(&found)
 		if err == nil {
 			for name, triggers := range map[string][]retrievalConstraintTrigger{
-				"runtime embedding readiness": retrievalRuntimeReadinessCounterTriggers,
+				"runtime embedding readiness":  retrievalRuntimeReadinessCounterTriggers,
 				"runtime projection readiness": retrievalRuntimeProjectionCounterTriggers,
 			} {
 				var inspectErr error

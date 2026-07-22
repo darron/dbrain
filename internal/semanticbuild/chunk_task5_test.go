@@ -50,9 +50,9 @@ func TestTask5RepeatedOccurrencesEnterBoundedStagingBeforeUniqueThreshold(t *tes
 	n := 0
 	now := func() time.Time { value := times[min(n, len(times)-1)]; n++; return value }
 	planningCalls := 0
-	prepare := func(parent retrievalchunk.Parent, opts retrievalchunk.Options, max int) (retrievalchunk.PreparedStreamPlan, error) {
+	prepare := func(ctx context.Context, parent retrievalchunk.Parent, opts retrievalchunk.Options, max int) (retrievalchunk.PreparedStreamSession, error) {
 		planningCalls++
-		return retrievalchunk.PrepareStream(parent, opts, max)
+		return retrievalchunk.PrepareStreamCommandSessionContext(ctx, parent, opts, max)
 	}
 	limits := chunkExecutionLimits{
 		GiantThreshold: 1_000, StageBatchSize: 5, StageBatchBytes: 1 << 20,
@@ -81,7 +81,11 @@ func (f *task5PreparedFakeStore) StageRetrievalProjectionBatch(ctx context.Conte
 	if err != nil {
 		return cp, err
 	}
-	cp.PreparedPlan = string(input.PreparedPlan)
+	if len(input.PreparedPlan) != 0 {
+		cp.PreparedPlan = string(input.PreparedPlan)
+	} else if previous, ok := f.staging[input.ParentKind+":"+input.ParentSourceKey]; ok {
+		cp.PreparedPlan = previous.PreparedPlan
+	}
 	cp.StagedOccurrences += len(input.Rows)
 	for _, row := range input.Rows {
 		cp.StagedBytes += int64(stagedProjectionRowBytes(row.Chunk, row.Occurrence))

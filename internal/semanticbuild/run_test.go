@@ -29,6 +29,8 @@ type fakeStore struct {
 	purgeEpoch       int64
 	vectorRows       []store.RetrievalVectorRow
 	verification     store.RetrievalEmbeddingVerificationState
+	verificationErr  error
+	vectorListCalls  int
 	blockErrs        []error
 	blockCalls       []*store.RetrievalEmbeddingCorruptionError
 	operations       []string
@@ -41,6 +43,11 @@ type fakeStore struct {
 	stageCalls       []store.StageRetrievalProjectionInput
 	promotions       []store.RetrievalProjectionCheckpoint
 	blockedGiant     []string
+	candidateTimes   []time.Time
+	candidateAfters  []string
+	listDirty        func(context.Context, int64, int) ([]store.RetrievalParentWork, error)
+	repairCalls      int
+	repairErr        error
 }
 
 func (f *fakeStore) ProjectionWorkRevision(context.Context) (int64, error) {
@@ -50,8 +57,11 @@ func (f *fakeStore) ProjectionWorkRevision(context.Context) (int64, error) {
 	return int64(len(f.parents)), nil
 }
 
-func (f *fakeStore) ListDirtyRetrievalParents(_ context.Context, watermark int64, limit int) ([]store.RetrievalParentWork, error) {
+func (f *fakeStore) ListDirtyRetrievalParents(ctx context.Context, watermark int64, limit int) ([]store.RetrievalParentWork, error) {
 	f.watermarks = append(f.watermarks, watermark)
+	if f.listDirty != nil {
+		return f.listDirty(ctx, watermark, limit)
+	}
 	result := make([]store.RetrievalParentWork, 0, limit)
 	for i, parent := range f.parents {
 		revision := int64(i + 1)
@@ -132,13 +142,32 @@ func (f *fakeStore) BlockRetrievalProjectionTooLarge(_ context.Context, parent r
 	f.applied[parent.Kind+":"+parent.SourceKey] = true
 	return nil
 }
-func (f *fakeStore) ListChunksNeedingEmbeddingForProfileAt(_ context.Context, profile embedding.Profile, _ string, _ int, _ time.Time) ([]store.RetrievalChunkRow, error) {
+func (f *fakeStore) ListChunksNeedingEmbeddingForProfileAt(_ context.Context, profile embedding.Profile, after string, limit int, now time.Time) ([]store.RetrievalChunkRow, error) {
 	f.operations = append(f.operations, "candidates")
+	f.candidateTimes = append(f.candidateTimes, now)
+	f.candidateAfters = append(f.candidateAfters, after)
 	f.candidateProfile = profile
 	if f.candidateErr != nil {
 		return nil, f.candidateErr
 	}
-	return append([]store.RetrievalChunkRow(nil), f.chunks...), nil
+	completed := make(map[string]struct{}, len(f.writes))
+	for _, row := range f.writes {
+		completed[row.ChunkID] = struct{}{}
+	}
+	result := make([]store.RetrievalChunkRow, 0, min(limit, len(f.chunks)))
+	for _, row := range f.chunks {
+		if row.ChunkID <= after {
+			continue
+		}
+		if _, ok := completed[row.ChunkID]; ok {
+			continue
+		}
+		result = append(result, row)
+		if limit > 0 && len(result) == limit {
+			break
+		}
+	}
+	return result, nil
 }
 func (f *fakeStore) RetrievalPurgeEpoch(context.Context) (int64, error) { return f.purgeEpoch, nil }
 func (f *fakeStore) PutRetrievalEmbeddingBatch(_ context.Context, input store.PutRetrievalEmbeddingBatchInput) (int64, error) {
@@ -160,6 +189,7 @@ func (f *fakeStore) CountChunksNeedingEmbeddingForProfileAt(_ context.Context, p
 	return len(f.chunks), nil
 }
 func (f *fakeStore) ListRetrievalVectors(_ context.Context, _ string, page store.VectorPage) ([]store.RetrievalVectorRow, error) {
+	f.vectorListCalls++
 	result := make([]store.RetrievalVectorRow, 0, page.Limit)
 	for _, row := range f.vectorRows {
 		if row.ChunkID <= page.AfterChunkID {
@@ -173,7 +203,7 @@ func (f *fakeStore) ListRetrievalVectors(_ context.Context, _ string, page store
 	return result, nil
 }
 func (f *fakeStore) RetrievalEmbeddingVerificationState(context.Context, string) (store.RetrievalEmbeddingVerificationState, error) {
-	return f.verification, nil
+	return f.verification, f.verificationErr
 }
 func (f *fakeStore) BlockCorruptRetrievalEmbedding(_ context.Context, corruption *store.RetrievalEmbeddingCorruptionError) error {
 	f.operations = append(f.operations, "block")
@@ -183,6 +213,11 @@ func (f *fakeStore) BlockCorruptRetrievalEmbedding(_ context.Context, corruption
 		return f.blockErrs[call]
 	}
 	return nil
+}
+func (f *fakeStore) RepairRetrievalRuntimeReadinessCounters(context.Context) error {
+	f.repairCalls++
+	f.operations = append(f.operations, "repair-counters")
+	return f.repairErr
 }
 
 type fakeProvider struct {
@@ -263,6 +298,131 @@ func TestChunkPagesOnlyThroughCapturedWorkRevision(t *testing.T) {
 	}
 	if !reflect.DeepEqual(st.watermarks, []int64{2, 2}) {
 		t.Fatalf("selector watermarks=%v, want every page bounded by W=2", st.watermarks)
+	}
+}
+
+func TestChunkUntilIdleProcessesEveryDurableQueuePage(t *testing.T) {
+	st := &fakeStore{parents: []retrievalchunk.Parent{
+		{Kind: "item", SourceKey: "a", ContentHash: "ha", Sections: []retrievalchunk.Section{{Role: "raw", Text: "alpha"}}},
+		{Kind: "item", SourceKey: "b", ContentHash: "hb", Sections: []retrievalchunk.Section{{Role: "raw", Text: "bravo"}}},
+		{Kind: "item", SourceKey: "c", ContentHash: "hc", Sections: []retrievalchunk.Section{{Role: "raw", Text: "charlie"}}},
+	}}
+	progress, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 1, UntilIdle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress.Scanned != 3 || progress.Generated != 3 || progress.Created != 3 || progress.Remaining != 0 || progress.HasMore || progress.Checkpoint != nil {
+		t.Fatalf("progress=%+v", progress)
+	}
+	if !reflect.DeepEqual(st.replacements, []string{"item:a", "item:b", "item:c"}) {
+		t.Fatalf("replacements=%v", st.replacements)
+	}
+	if len(progress.Snapshots) != 1 || progress.LastSnapshot == nil || progress.LastSnapshot.Scanned != 3 {
+		t.Fatalf("bounded final snapshots=%+v", progress)
+	}
+}
+
+func TestChunkOwnMaxDurationEndsGracefullyButCallerCancellationPropagates(t *testing.T) {
+	blockingStore := func() *fakeStore {
+		return &fakeStore{listDirty: func(ctx context.Context, _ int64, _ int) ([]store.RetrievalParentWork, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+	}
+	progress, err := RunChunk(context.Background(), blockingStore(), ChunkOptions{Limit: 1, UntilIdle: true, MaxDuration: 10 * time.Millisecond})
+	if err != nil || !progress.Interrupted || !progress.HasMore {
+		t.Fatalf("own deadline progress=%+v err=%v", progress, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = RunChunk(ctx, blockingStore(), ChunkOptions{Limit: 1, UntilIdle: true, MaxDuration: time.Second})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller cancellation err=%v", err)
+	}
+}
+
+func TestChunkOwnDeadlineDoesNotMaskIndependentStoreError(t *testing.T) {
+	independent := errors.New("independent list failure")
+	st := &fakeStore{listDirty: func(ctx context.Context, _ int64, _ int) ([]store.RetrievalParentWork, error) {
+		<-ctx.Done()
+		return nil, independent
+	}}
+	progress, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 1, UntilIdle: true, MaxDuration: 10 * time.Millisecond})
+	if !errors.Is(err, independent) || progress.Interrupted {
+		t.Fatalf("progress=%+v err=%v, want independent failure", progress, err)
+	}
+}
+
+func TestChunkUntilIdleStopsOnNondurableHashAndPlannerFailures(t *testing.T) {
+	t.Run("hash", func(t *testing.T) {
+		st := &fakeStore{parents: []retrievalchunk.Parent{{SourceKey: "missing-kind", Sections: []retrievalchunk.Section{{Role: "raw", Text: "text"}}}}}
+		progress, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 1, UntilIdle: true})
+		if err == nil || !strings.Contains(err.Error(), "parent kind is required") || progress.Failed != 1 || len(st.watermarks) != 1 {
+			t.Fatalf("progress=%+v err=%v watermarks=%v", progress, err, st.watermarks)
+		}
+	})
+
+	t.Run("planner", func(t *testing.T) {
+		st := &fakeStore{parents: []retrievalchunk.Parent{{Kind: "source", SourceKey: "invalid-options", Sections: []retrievalchunk.Section{{Role: "raw", Text: "x"}}}}}
+		progress, err := runChunkUntilIdle(context.Background(), st, ChunkOptions{Limit: 1, UntilIdle: true}, defaultChunkExecutionLimits, retrievalchunk.Options{})
+		if err == nil || !strings.Contains(err.Error(), "invalid chunk sizes") || progress.Failed != 1 || len(st.watermarks) != 1 {
+			t.Fatalf("progress=%+v err=%v watermarks=%v", progress, err, st.watermarks)
+		}
+	})
+}
+
+func TestChunkResumeUsesBoundedContextPlannerValidation(t *testing.T) {
+	sections := make([]retrievalchunk.Section, retrievalchunk.V3MaximumPlanningSections+1)
+	for i := range sections {
+		sections[i] = retrievalchunk.Section{Key: fmt.Sprintf("section-%d", i), Role: "raw", Text: "x"}
+	}
+	parent := retrievalchunk.Parent{Kind: "source", SourceKey: "legacy-staging", Sections: sections}
+	hash, err := retrievalchunk.ParentProjectionHash(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, preparedPlan := range []string{"", `{}`} {
+		name := "missing-plan"
+		if preparedPlan != "" {
+			name = "persisted-plan"
+		}
+		t.Run(name, func(t *testing.T) {
+			st := &fakeStore{parents: []retrievalchunk.Parent{parent}, staging: map[string]store.RetrievalProjectionCheckpoint{
+				"source:legacy-staging": {WorkID: "legacy", DirtyRevision: 1, ParentKind: "source", ParentSourceKey: "legacy-staging", ProjectionHash: hash, SectionKey: "not-empty", PreparedPlan: preparedPlan},
+			}}
+			progress, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 1, UntilIdle: true})
+			if err == nil || !strings.Contains(err.Error(), "planning section ceiling") || progress.Failed != 1 || len(st.stageCalls) != 0 || len(st.promotions) != 0 {
+				t.Fatalf("progress=%+v err=%v stage_calls=%d promotions=%d", progress, err, len(st.stageCalls), len(st.promotions))
+			}
+		})
+	}
+}
+
+func TestChunkNonUntilIdleCooperativeDeadlineReportsInterrupted(t *testing.T) {
+	st := &fakeStore{parents: []retrievalchunk.Parent{
+		{Kind: "item", SourceKey: "a", ContentHash: "ha", Sections: []retrievalchunk.Section{{Role: "raw", Text: "alpha"}}},
+		{Kind: "item", SourceKey: "b", ContentHash: "hb", Sections: []retrievalchunk.Section{{Role: "raw", Text: "bravo"}}},
+	}}
+	base := time.Unix(2_000, 0).UTC()
+	times := []time.Time{base, base.Add(3 * time.Second)}
+	nowCall := 0
+	progress, err := RunChunk(context.Background(), st, ChunkOptions{
+		Limit: 2, MaxDuration: 2 * time.Second,
+		Now: func() time.Time {
+			value := times[min(nowCall, len(times)-1)]
+			nowCall++
+			return value
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !progress.Interrupted || !progress.HasMore || progress.Scanned != 1 || progress.Remaining != 1 {
+		t.Fatalf("progress=%+v", progress)
+	}
+	if progress.LastSnapshot == nil || !progress.LastSnapshot.Interrupted {
+		t.Fatalf("final snapshot=%+v", progress.LastSnapshot)
 	}
 }
 
@@ -372,8 +532,11 @@ func TestGiantChunkProjectionStopsAfterTwoDurableBatchesAndResumes(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(st.stageCalls) != 2 || len(st.promotions) != 0 || first.Checkpoint == nil || first.Remaining != 1 {
+	if len(st.stageCalls) != 2 || len(st.promotions) != 0 || first.Checkpoint == nil || first.Remaining != 1 || !first.Interrupted {
 		t.Fatalf("first=%+v stage_calls=%d promotions=%d", first, len(st.stageCalls), len(st.promotions))
+	}
+	if !first.HasMore {
+		t.Fatalf("paused giant must report pending durable work: %+v", first)
 	}
 	checkpoint := *first.Checkpoint
 	if checkpoint.WorkID == "" || checkpoint.DirtyRevision != 1 || checkpoint.SectionKey == "" || checkpoint.NextBoundary <= 0 {
@@ -447,6 +610,111 @@ func TestEmbedBatchesInOrderWritesL2VectorsAndProvenance(t *testing.T) {
 			t.Fatalf("decoded=%v err=%v", decoded, err)
 		}
 	}
+}
+
+func TestEmbedUntilIdlePreservesCircuitBreakerAcrossPagesAndFreezesEligibilityTime(t *testing.T) {
+	chunks := make([]store.RetrievalChunkRow, 5)
+	for i := range chunks {
+		chunks[i] = store.RetrievalChunkRow{ChunkID: fmt.Sprintf("chunk-%d", i), ChunkTextHash: fmt.Sprintf("hash-%d", i), Text: "text"}
+	}
+	st := &fakeStore{chunks: chunks}
+	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}, err: embedding.RetryableError(errors.New("down"))}
+	eligibility := time.Date(2026, 7, 21, 15, 0, 0, 0, time.UTC)
+	nowCalls := 0
+	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{
+		Limit: 2, BatchSize: 1, UntilIdle: true,
+		Now: func() time.Time {
+			nowCalls++
+			return eligibility.Add(time.Duration(nowCalls) * time.Hour)
+		},
+	})
+	if !errors.Is(err, ErrEmbedCircuitOpen) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(provider.requests) != 3 || len(st.writes) != 3 || progress.Scanned != 3 || progress.Remaining != 2 {
+		t.Fatalf("progress=%+v requests=%d writes=%d", progress, len(provider.requests), len(st.writes))
+	}
+	if nowCalls != 1 || len(st.candidateTimes) != 2 {
+		t.Fatalf("now calls=%d candidate times=%v", nowCalls, st.candidateTimes)
+	}
+	if !reflect.DeepEqual(st.candidateAfters, []string{"", "chunk-1"}) {
+		t.Fatalf("candidate cursors=%v", st.candidateAfters)
+	}
+	for _, got := range st.candidateTimes {
+		if !got.Equal(eligibility.Add(time.Hour)) {
+			t.Fatalf("eligibility drifted: got=%s times=%v", got, st.candidateTimes)
+		}
+	}
+}
+
+func TestEmbedUntilIdleProcessesAllPagesWithBoundedProgress(t *testing.T) {
+	chunks := make([]store.RetrievalChunkRow, 5)
+	for i := range chunks {
+		chunks[i] = store.RetrievalChunkRow{ChunkID: fmt.Sprintf("chunk-%d", i), ChunkTextHash: fmt.Sprintf("hash-%d", i), Text: "text"}
+	}
+	st := &fakeStore{chunks: chunks}
+	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}}
+	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{Limit: 2, BatchSize: 1, UntilIdle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress.Scanned != 5 || progress.Generated != 5 || progress.Remaining != 0 || len(st.writes) != 5 {
+		t.Fatalf("progress=%+v writes=%d", progress, len(st.writes))
+	}
+	if !reflect.DeepEqual(st.candidateAfters, []string{"", "chunk-1", "chunk-3", "chunk-4", ""}) {
+		t.Fatalf("candidate cursors=%v", st.candidateAfters)
+	}
+	if len(progress.Snapshots) != 1 || progress.LastSnapshot == nil || progress.LastSnapshot.Scanned != 5 || progress.SnapshotCount != 5 {
+		t.Fatalf("progress snapshots=%+v", progress)
+	}
+}
+
+func TestEmbedOwnMaxDurationEndsGracefullyButCallerCancellationPropagates(t *testing.T) {
+	blocking := func(ctx context.Context) embedding.Provider {
+		info := embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}
+		return &contextProvider{info: info, embed: func(ctx context.Context, _ embedding.Request) (embedding.Response, error) {
+			<-ctx.Done()
+			return embedding.Response{}, ctx.Err()
+		}}
+	}
+	st := &fakeStore{chunks: []store.RetrievalChunkRow{{ChunkID: "a", ChunkTextHash: "ha", Text: "alpha"}}}
+	progress, err := RunEmbed(context.Background(), st, blocking(context.Background()), EmbedOptions{Limit: 1, BatchSize: 1, UntilIdle: true, MaxDuration: 10 * time.Millisecond})
+	if err != nil || !progress.Interrupted || progress.Scanned != 0 || progress.Remaining != 1 || len(st.writes) != 0 {
+		t.Fatalf("own deadline progress=%+v err=%v writes=%d", progress, err, len(st.writes))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = RunEmbed(ctx, st, blocking(ctx), EmbedOptions{Limit: 1, BatchSize: 1, UntilIdle: true, MaxDuration: time.Second})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller cancellation err=%v", err)
+	}
+}
+
+func TestEmbedOwnDeadlineDoesNotMaskIndependentProviderError(t *testing.T) {
+	independent := errors.New("independent provider failure")
+	provider := &contextProvider{
+		info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2},
+		embed: func(ctx context.Context, _ embedding.Request) (embedding.Response, error) {
+			<-ctx.Done()
+			return embedding.Response{}, independent
+		},
+	}
+	st := &fakeStore{chunks: []store.RetrievalChunkRow{{ChunkID: "a", ChunkTextHash: "ha", Text: "alpha"}}}
+	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{Limit: 1, BatchSize: 1, UntilIdle: true, MaxDuration: 10 * time.Millisecond})
+	if !errors.Is(err, independent) || progress.Interrupted {
+		t.Fatalf("progress=%+v err=%v, want independent failure", progress, err)
+	}
+}
+
+type contextProvider struct {
+	info  embedding.Info
+	embed func(context.Context, embedding.Request) (embedding.Response, error)
+}
+
+func (p *contextProvider) Info() embedding.Info { return p.info }
+func (p *contextProvider) Embed(ctx context.Context, req embedding.Request) (embedding.Response, error) {
+	return p.embed(ctx, req)
 }
 
 func TestEmbedRejectsStaleChunkProvenanceBeforeProviderCall(t *testing.T) {
@@ -573,6 +841,49 @@ func TestSemanticVerifyPagesAndQuarantinesCorruption(t *testing.T) {
 	next, err := RunVerify(context.Background(), st, VerifyOptions{Profile: profile, Limit: 2, Resume: progress.Resume})
 	if err != nil || next.Scanned != 1 || next.Resume != "c" || next.Quarantined != 0 {
 		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
+func TestSemanticVerifyRepairsReadinessCountersOnlyWhenExplicitlyRequested(t *testing.T) {
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	profileID, _ := profile.ID()
+	state := store.RetrievalEmbeddingVerificationState{ProfileID: profileID, Profile: profile}
+
+	ordinary := &fakeStore{verification: state}
+	progress, err := RunVerify(context.Background(), ordinary, VerifyOptions{Profile: profile, Limit: 1})
+	if err != nil || ordinary.repairCalls != 0 || progress.CountersRepaired {
+		t.Fatalf("ordinary progress=%+v repair_calls=%d err=%v", progress, ordinary.repairCalls, err)
+	}
+
+	repair := &fakeStore{verification: state}
+	progress, err = RunVerify(context.Background(), repair, VerifyOptions{Profile: profile, Limit: 1, RepairCounters: true})
+	if err != nil || repair.repairCalls != 1 || !progress.CountersRepaired {
+		t.Fatalf("repair progress=%+v repair_calls=%d err=%v", progress, repair.repairCalls, err)
+	}
+	if len(repair.operations) == 0 || repair.operations[0] != "repair-counters" {
+		t.Fatalf("operations=%v", repair.operations)
+	}
+
+	failed := &fakeStore{verification: state, repairErr: errors.New("repair failed")}
+	progress, err = RunVerify(context.Background(), failed, VerifyOptions{Profile: profile, Limit: 1, RepairCounters: true})
+	if err == nil || progress.CountersRepaired || failed.repairCalls != 1 {
+		t.Fatalf("failed progress=%+v repair_calls=%d err=%v", progress, failed.repairCalls, err)
+	}
+}
+
+func TestSemanticVerifyTreatsMissingProfileAsEmptyBeginningState(t *testing.T) {
+	profile := Profile(embedding.Info{Provider: "fake", Model: "unbuilt", Dimensions: 2})
+	st := &fakeStore{verificationErr: fmt.Errorf("missing configured profile: %w", store.ErrRetrievalEmbeddingProfileNotFound)}
+
+	progress, err := RunVerify(context.Background(), st, VerifyOptions{Profile: profile, Limit: 1, RepairCounters: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !progress.CountersRepaired || progress.Scanned != 0 || progress.HasMore || progress.Resume != "" {
+		t.Fatalf("progress=%+v", progress)
+	}
+	if st.repairCalls != 1 || st.vectorListCalls != 0 {
+		t.Fatalf("repair_calls=%d vector_list_calls=%d", st.repairCalls, st.vectorListCalls)
 	}
 }
 
@@ -728,11 +1039,11 @@ func TestReadinessStatusDelegatesToPureEvaluator(t *testing.T) {
 
 func TestBoundedProgressJSONUsesOnlyLatestSnapshot(t *testing.T) {
 	last := Progress{Stage: "embed", Scanned: 8}
-	payload, err := json.Marshal(Progress{Stage: "embed", Quarantined: 2, SnapshotCount: 9, SnapshotsTruncated: true, LastSnapshot: &last, Snapshots: []Progress{last}})
+	payload, err := json.Marshal(Progress{Stage: "embed", Interrupted: true, Quarantined: 2, SnapshotCount: 9, SnapshotsTruncated: true, LastSnapshot: &last, Snapshots: []Progress{last}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(payload) == "" || strings.Contains(string(payload), `"snapshots"`) || !strings.Contains(string(payload), `"snapshot_count":9`) || !strings.Contains(string(payload), `"snapshots_truncated":true`) || !strings.Contains(string(payload), `"last_snapshot"`) {
+	if string(payload) == "" || strings.Contains(string(payload), `"snapshots"`) || !strings.Contains(string(payload), `"interrupted":true`) || !strings.Contains(string(payload), `"snapshot_count":9`) || !strings.Contains(string(payload), `"snapshots_truncated":true`) || !strings.Contains(string(payload), `"last_snapshot"`) {
 		t.Fatalf("progress JSON=%s", payload)
 	}
 }

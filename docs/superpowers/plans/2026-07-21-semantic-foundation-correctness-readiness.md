@@ -742,14 +742,15 @@ git commit --no-gpg-sign -m "feat: gate semantic runtime on readiness"
 
 **Interfaces:**
 - Consumes: all foundation behavior from Tasks 1-7.
-- Produces: documented `chunk --until-idle --max-duration`, `embed --until-idle --max-duration`, `verify --limit --resume`, truthful status, and an implementation handoff to the segmented-index plan.
+- Produces: documented `chunk --until-idle --max-duration`, `embed --until-idle --max-duration`, `verify --limit --resume`, explicit `verify --repair-counters`, truthful status, and an implementation handoff to the segmented-index plan.
 
 - [ ] **Step 1: Write failing CLI contract tests**
 
 Test exact help/JSON fields, read-only status, duration cancellation, durable
-resume checkpoint, default-off behavior, and that research/MCP/web cannot launch
-chunk/embed/verify. Prove config samples remain semantic off and exact fallback
-does not claim production readiness above 25,000 vectors.
+resume checkpoint, explicit transactional counter repair, default-off behavior,
+and that research/MCP/web cannot launch chunk/embed/verify. Prove config samples
+remain semantic off and exact fallback does not claim production readiness above
+25,000 vectors.
 
 - [ ] **Step 2: Verify RED**
 

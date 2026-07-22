@@ -5,6 +5,23 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Production-corpus semantic readiness foundation (2026-07-21)
+
+- **Bounded projection and readiness**: Added a durable dirty-parent ledger,
+  stable content-local chunk identity, occurrence provenance, bounded giant-item
+  staging, aggregate readiness counters, and fail-closed migration/verification
+  checks designed from the restored production corpus.
+- **Scalable request admission**: Semantic readiness now uses indexed bounded
+  work, an immutable 25,000-vector exact safety ceiling, and a 250 ms admission
+  budget before provider construction. Larger complete profiles report
+  `needs_index` and preserve lexical behavior until segmented ANN ships.
+- **Resumable operators and explicit recovery**: Added durable
+  `semantic chunk`/`embed --until-idle --max-duration` processing, bounded
+  paged verification, and explicit transactional readiness-counter repair.
+  Verification reports a clean empty result before the configured profile has
+  been built. Semantic retrieval remains off by default and no request starts a
+  backfill.
+
 ### Local hybrid retrieval foundation (2026-07-18)
 
 - **Opt-in semantic retrieval**: Added deterministic evidence chunks, portable
@@ -12,8 +29,8 @@ development date for the change set.
   and content-free shadow comparisons. Lexical retrieval remains the default;
   `shadow` measures hybrid ordering without changing visible evidence, while
   `on` returns fused evidence and fails open to lexical results when the local
-  semantic lane is unavailable or when the configured profile has more than
-  25,000 current ready embeddings (counted before request filters).
+  semantic lane is unavailable or exceeds its effective exact limit, whose hard
+  ceiling is 25,000 current ready embeddings counted before request filters.
 - **Operational and transport controls**: Added `dbrain semantic status`,
   `semantic chunk`, and `semantic embed`, plus CLI and MCP/web per-request
   semantic overrides with conflict rejection. Direct MCP research remains

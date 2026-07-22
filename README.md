@@ -590,7 +590,7 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_RESEARCH_SEMANTIC_DIMENSIONS` | `research.semantic.dimensions` | `0` | Positive embedding width; required for effective `shadow` or `on`. |
 | `DBRAIN_RESEARCH_SEMANTIC_INDEX_BACKEND` | `research.semantic.index_backend` | `exact` | SQLite-authoritative exact vector search; ANN is not available. |
 | `DBRAIN_RESEARCH_SEMANTIC_CANDIDATE_DEPTH` | `research.semantic.candidate_depth` | `50` | Semantic candidates retained for fusion. |
-| `DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS` | `research.semantic.exact_fallback_max_chunks` | `25000` | Maximum current ready embeddings for the configured profile in one exact scan, counted before request filters; larger profile sets fail the semantic lane open to lexical evidence. |
+| `DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS` | `research.semantic.exact_fallback_max_chunks` | `25000` | Requested exact-vector limit. Configuration may lower the measured 25,000-vector safety ceiling but cannot raise it; larger current profiles report `needs_index` and remain lexical. |
 | `DBRAIN_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | `ollama.base_url` | `http://127.0.0.1:11434` | Ollama endpoint for local model calls. |
 | `DBRAIN_OLLAMA_API_KEY` / `OLLAMA_API_KEY` | `ollama.api_key` | `ollama` | API key label used for Ollama-compatible local calls. |
 | `DBRAIN_LMSTUDIO_BASE_URL` | `lmstudio.base_url` | `http://127.0.0.1:1234/v1` | LM Studio OpenAI-compatible endpoint for local model calls. |
@@ -1130,9 +1130,11 @@ the bundle first.
 Optional semantic retrieval defaults to `off`. `shadow` runs the local Ollama
 exact-vector lane and records bounded, content-free rank comparisons without
 changing visible evidence, order, or synthesis; `on` returns RRF-fused evidence.
-Provider/search failures and configured profiles with more than 25,000 current
-ready embeddings remain lexical with an explicit lane status and reason. The
-cap is checked before request filters are applied. Direct
+Readiness is evaluated before provider construction under a 250 ms request
+budget. Incomplete, corrupt, stale, or unavailable state remains lexical with
+an explicit lane status and reason. Configuration may lower but cannot raise
+the measured 25,000-vector exact ceiling; larger complete profiles report
+`needs_index`. The cap is checked before request filters are applied. Direct
 `dbrain_research_pack` calls never write research traces. See
 [MCP.md](MCP.md#semantic-retrieval-contract) for overrides and response fields.
 

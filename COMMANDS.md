@@ -66,6 +66,7 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain semantic status`
 - `dbrain semantic chunk`
 - `dbrain semantic embed`
+- `dbrain semantic verify`
 - `dbrain serve mcp`
 - `dbrain serve remote`
 - `dbrain serve web`
@@ -1329,20 +1330,31 @@ dbrain research "K8s Helm alternatives" --semantic --retrieval-only --json
 
 ### `dbrain semantic`
 
-The foundation exposes exactly three semantic operational commands. It uses
+The foundation exposes four semantic operational commands. It uses
 deterministic SQLite retrieval chunks, local Ollama embeddings, and an
 SQLite-authoritative exact scan; no ANN index or ANN lifecycle command exists.
 
 ```sh
 dbrain semantic status
 dbrain semantic status --json
-dbrain semantic chunk --limit 100 --after-source-key src:example
+dbrain semantic chunk --limit 100
+dbrain semantic chunk --until-idle --max-duration 20m
 dbrain semantic embed --limit 100 --batch-size 16
+dbrain semantic embed --until-idle --max-duration 20m
+dbrain semantic verify --limit 1000 --resume <chunk-id>
+dbrain semantic verify --repair-counters --limit 1000
 ```
 
 `status` is read-only and diagnoses configuration/readiness. `chunk` creates,
-updates, and deletes deterministic derived chunks in source-key pages. `embed`
-generates missing embeddings for the configured model/dimension profile. There
+updates, and deletes deterministic derived chunks from a durable dirty-parent
+queue. `embed` generates missing embeddings for the configured model/dimension
+profile with keyset pagination. `--until-idle` drains observed work across
+pages, while `--max-duration` returns an `interrupted` resumable result instead
+of losing progress. `verify` checks bounded pages of ready vectors and
+provenance; the explicit `--repair-counters` option transactionally rebuilds
+the readiness aggregates before verification. An unbuilt configured profile is
+a valid empty verification result. Ordinary status and research do not repair
+state implicitly. There
 is no implicit migration between chunker profiles: after a chunker version
 change, run `semantic chunk` to replace derived chunks, then `semantic embed`
 to build embeddings for the new profile before comparing retrieval quality.
@@ -1352,8 +1364,16 @@ indexed-content purge, which synchronously deletes that item's retrieval chunks,
 embeddings, and stale affected generation metadata. This does not claim that
 every delete path or future parent kind has the same integration.
 
-ANN generation files do not exist in this foundation; ANN lifecycle, provider
-expansion, background sync, and default-on behavior are deferred.
+Semantic admission runs before query-provider construction under a 250 ms
+budget. Configuration may lower, but cannot raise, the hard 25,000-vector exact
+scan ceiling. Complete larger profiles report `needs_index` and stay lexical.
+The readiness planner is also bounded: it rejects more than 4,096 evidence
+sections, limits exact materialization to 8 MiB, and limits allocation-free
+preflight scanning to 128 MiB. Full `status` and `verify` remain the
+authoritative maintenance surfaces for detecting aggregate drift.
+
+ANN generation files do not exist in this foundation; segmented ANN lifecycle,
+provider expansion, background sync, and default-on behavior are deferred.
 
 ### `dbrain search`
 

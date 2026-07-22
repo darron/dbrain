@@ -42,7 +42,7 @@ research:
     dimensions: 0 # DBRAIN_RESEARCH_SEMANTIC_DIMENSIONS; positive and required for shadow/on
     index_backend: exact # DBRAIN_RESEARCH_SEMANTIC_INDEX_BACKEND
     candidate_depth: 50 # DBRAIN_RESEARCH_SEMANTIC_CANDIDATE_DEPTH
-    exact_fallback_max_chunks: 25000 # DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS
+    exact_fallback_max_chunks: 25000 # DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS; lower-only, hard runtime ceiling is 25000
 
 ollama:
   base_url: "http://127.0.0.1:11434" # DBRAIN_OLLAMA_BASE_URL, OLLAMA_BASE_URL, OLLAMA_HOST

@@ -11,7 +11,10 @@ import (
 	"github.com/darron/dbrain/internal/embedding"
 )
 
-var ErrRetrievalPurgeEpochChanged = errors.New("retrieval purge epoch changed")
+var (
+	ErrRetrievalPurgeEpochChanged        = errors.New("retrieval purge epoch changed")
+	ErrRetrievalEmbeddingProfileNotFound = errors.New("retrieval embedding profile not found")
+)
 
 var retrievalEmbeddingProfileTriggersV19 = []retrievalConstraintTrigger{
 	{
@@ -190,6 +193,9 @@ func (s *Store) RetrievalEmbeddingVerificationState(ctx context.Context, profile
 		&state.GenerationDistanceMetric, &state.GenerationStatus, &active,
 	)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RetrievalEmbeddingVerificationState{}, fmt.Errorf("%w: %s", ErrRetrievalEmbeddingProfileNotFound, profileID)
+		}
 		return RetrievalEmbeddingVerificationState{}, fmt.Errorf("read retrieval embedding verification state %s: %w", profileID, err)
 	}
 	state.GenerationActive = active == 1

@@ -49,21 +49,31 @@ func (s *Store) SemanticRuntimeReadinessSnapshotAt(ctx context.Context, profile 
 	); err != nil {
 		return semanticreadiness.Snapshot{}, fmt.Errorf("read semantic runtime purge epoch: %w", err)
 	}
-	if min(snapshot.ExpectedParents, snapshot.CurrentParents, snapshot.EmptyParents, snapshot.PendingParents,
-		snapshot.BlockedParents, snapshot.ErrorParents, snapshot.DirtyParents, snapshot.ChunkCount) < 0 ||
-		snapshot.CurrentParents+snapshot.EmptyParents > snapshot.ExpectedParents || snapshot.DirtyParents > snapshot.ExpectedParents {
+	if !semanticRuntimeProjectionCountersPlausible(snapshot) {
 		snapshot.AggregateCountersCorrupt = true
 	}
-	if snapshot.DirtyParents > 0 {
-		if err := tx.QueryRowContext(ctx, `SELECT dirty_at FROM retrieval_parent_projections INDEXED BY idx_retrieval_parent_projections_dirty_age WHERE projected_revision<dirty_revision ORDER BY dirty_at LIMIT 1`).Scan(newOptionalRFC3339Scanner(&snapshot.OldestDirtyAt)); err != nil {
+	oldestDirtyExists := true
+	if err := tx.QueryRowContext(ctx, `SELECT dirty_at FROM retrieval_parent_projections INDEXED BY idx_retrieval_parent_projections_dirty_age WHERE projected_revision<dirty_revision ORDER BY dirty_at LIMIT 1`).Scan(newOptionalRFC3339Scanner(&snapshot.OldestDirtyAt)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			oldestDirtyExists = false
+		} else {
 			return semanticreadiness.Snapshot{}, fmt.Errorf("read semantic runtime oldest projection debt: %w", err)
 		}
 	}
+	dirtyIdentities, dirtyOverflow, err := observeSemanticRuntimeDirtyIdentities(ctx, tx)
+	if err != nil {
+		return semanticreadiness.Snapshot{}, err
+	}
+	if oldestDirtyExists != (len(dirtyIdentities) > 0) ||
+		(dirtyOverflow && snapshot.DirtyParents <= semanticreadiness.MaxDirtyParents) ||
+		(!dirtyOverflow && snapshot.DirtyParents != len(dirtyIdentities)) {
+		snapshot.AggregateCountersCorrupt = true
+	}
 	snapshot.ChunkableParents = snapshot.CurrentParents
-	if max(snapshot.DirtyParents, snapshot.PendingParents) > semanticreadiness.MaxDirtyParents {
+	if snapshot.AggregateCountersCorrupt || dirtyOverflow || snapshot.PendingParents > semanticreadiness.MaxDirtyParents {
 		snapshot.EstimatedNotReadyChunks = semanticreadiness.MaxNotReadyChunks + 1
 	} else {
-		snapshot.EstimatedNotReadyChunks, err = estimateSemanticReadinessDirtyParents(ctx, tx)
+		snapshot.EstimatedNotReadyChunks, err = estimateSemanticRuntimeDirtyIdentities(ctx, tx, dirtyIdentities)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return semanticreadiness.Snapshot{}, err
@@ -125,16 +135,102 @@ func (s *Store) SemanticRuntimeReadinessSnapshotAt(ctx context.Context, profile 
 	} else {
 		snapshot.EstimatedNotReadyChunks += embeddingDebt
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(build_status='building'),0),COALESCE(SUM(build_status='stale'),0),COALESCE(SUM(build_status='error'),0) FROM retrieval_index_generations WHERE profile_id=?`, profileID).Scan(
+	if err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM retrieval_index_generations INDEXED BY idx_retrieval_generations_profile_status WHERE profile_id=? AND build_status='building' LIMIT 1),
+		EXISTS(SELECT 1 FROM retrieval_index_generations INDEXED BY idx_retrieval_generations_profile_status WHERE profile_id=? AND build_status='stale' LIMIT 1),
+		EXISTS(SELECT 1 FROM retrieval_index_generations INDEXED BY idx_retrieval_generations_profile_status WHERE profile_id=? AND build_status='error' LIMIT 1)`, profileID, profileID, profileID).Scan(
 		&snapshot.BuildingGenerations, &snapshot.StaleGenerations, &snapshot.ErrorGenerations,
 	); err != nil {
-		return semanticreadiness.Snapshot{}, fmt.Errorf("count semantic runtime generations: %w", err)
+		return semanticreadiness.Snapshot{}, fmt.Errorf("inspect semantic runtime generation presence: %w", err)
 	}
 	snapshot.ActiveGenerationValid = snapshot.ActiveGenerationID == ""
 	if err := tx.Commit(); err != nil {
 		return semanticreadiness.Snapshot{}, fmt.Errorf("commit semantic runtime readiness snapshot: %w", err)
 	}
 	return snapshot, nil
+}
+
+type semanticRuntimeDirtyIdentity struct {
+	revision  int64
+	kind      string
+	sourceKey string
+}
+
+func semanticRuntimeProjectionCountersPlausible(snapshot semanticreadiness.Snapshot) bool {
+	if min(snapshot.ExpectedParents, snapshot.CurrentParents, snapshot.EmptyParents, snapshot.PendingParents,
+		snapshot.BlockedParents, snapshot.ErrorParents, snapshot.DirtyParents, snapshot.ChunkCount) < 0 ||
+		snapshot.PendingParents < snapshot.DirtyParents || snapshot.PendingParents > snapshot.ExpectedParents ||
+		snapshot.DirtyParents > snapshot.ExpectedParents ||
+		(snapshot.CurrentParents == 0 && snapshot.ChunkCount != 0) || snapshot.ChunkCount < snapshot.CurrentParents {
+		return false
+	}
+	// Clean current/empty and all blocked/error rows are disjoint categories.
+	// Subtracting them from the ledger total avoids trusting overflow-prone
+	// aggregate arithmetic when the durable counters themselves are corrupt.
+	unclassified := snapshot.ExpectedParents
+	for _, classified := range []int{snapshot.CurrentParents, snapshot.EmptyParents, snapshot.BlockedParents, snapshot.ErrorParents} {
+		if classified > unclassified {
+			return false
+		}
+		unclassified -= classified
+	}
+	// pending_parent_count covers every otherwise-unclassified row. It may also
+	// overlap a blocked/error category, but only when that same identity is dirty.
+	return snapshot.PendingParents >= unclassified && snapshot.PendingParents-unclassified <= snapshot.DirtyParents
+}
+
+// observeSemanticRuntimeDirtyIdentities proves the runtime identity budget
+// independently of the projection counters. The 501st row is a stable
+// over-budget sentinel; no caller plans or loads parent content after seeing it.
+func observeSemanticRuntimeDirtyIdentities(ctx context.Context, tx *sql.Tx) ([]semanticRuntimeDirtyIdentity, bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT dirty_revision,parent_kind,parent_source_key
+		FROM retrieval_parent_projections INDEXED BY idx_retrieval_parent_projections_dirty_keyset
+		WHERE projected_revision<dirty_revision
+		ORDER BY dirty_revision,parent_kind,parent_source_key
+		LIMIT ?`, semanticreadiness.MaxDirtyParents+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("observe semantic runtime dirty identities: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	identities := make([]semanticRuntimeDirtyIdentity, 0, semanticreadiness.MaxDirtyParents+1)
+	for rows.Next() {
+		var identity semanticRuntimeDirtyIdentity
+		if err := rows.Scan(&identity.revision, &identity.kind, &identity.sourceKey); err != nil {
+			return nil, false, fmt.Errorf("scan semantic runtime dirty identity: %w", err)
+		}
+		identities = append(identities, identity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("iterate semantic runtime dirty identities: %w", err)
+	}
+	if len(identities) > semanticreadiness.MaxDirtyParents {
+		return identities[:semanticreadiness.MaxDirtyParents], true, nil
+	}
+	return identities, false, nil
+}
+
+func estimateSemanticRuntimeDirtyIdentities(ctx context.Context, tx *sql.Tx, identities []semanticRuntimeDirtyIdentity) (int, error) {
+	next := 0
+	return semanticreadiness.EstimateDirtyParentStream(ctx, semanticreadiness.MaxNotReadyChunks, func() (semanticreadiness.DirtyParent, bool, error) {
+		for next < len(identities) {
+			identity := identities[next]
+			next++
+			var chunkCount int
+			if err := tx.QueryRowContext(ctx, `SELECT chunk_count FROM retrieval_parent_projections WHERE parent_kind=? AND parent_source_key=? AND projected_revision<dirty_revision`, identity.kind, identity.sourceKey).Scan(&chunkCount); err != nil {
+				return semanticreadiness.DirtyParent{}, false, fmt.Errorf("load semantic runtime dirty identity %s %s: %w", identity.kind, identity.sourceKey, err)
+			}
+			parent, exists, eligible, err := loadCurrentRetrievalParent(ctx, tx, identity.kind, identity.sourceKey)
+			if err != nil {
+				return semanticreadiness.DirtyParent{}, false, err
+			}
+			if !exists || !eligible {
+				continue
+			}
+			return semanticreadiness.DirtyParent{Parent: parent, LastCurrentChunkCount: chunkCount}, true, nil
+		}
+		return semanticreadiness.DirtyParent{}, false, nil
+	})
 }
 
 func validateExactSmallRuntimeProfile(ctx context.Context, tx *sql.Tx, profileID string, profile embedding.Profile, activeSnapshotRevision int64, counterReady, counterPending, counterBlocked, counterError, counterCorrupt int, snapshot *semanticreadiness.Snapshot) error {

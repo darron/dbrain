@@ -13,6 +13,7 @@ import (
 
 type Progress struct {
 	Stage              string     `json:"stage"`
+	Interrupted        bool       `json:"interrupted"`
 	Scanned            int        `json:"scanned"`
 	Current            int        `json:"current"`
 	Generated          int        `json:"generated"`
@@ -41,10 +42,12 @@ type ChunkOptions struct {
 	Limit int
 	// Deprecated: nonblank source cursors are rejected because the durable dirty
 	// ledger provides the resume position.
-	AfterSourceKey string
-	Progress       func(ChunkProgress) error
-	MaxDuration    time.Duration
-	Now            func() time.Time
+	AfterSourceKey  string
+	Progress        func(ChunkProgress) error
+	MaxDuration     time.Duration
+	UntilIdle       bool
+	Now             func() time.Time
+	commandDeadline time.Time
 }
 
 type ChunkStore interface {
@@ -76,19 +79,137 @@ var defaultChunkExecutionLimits = chunkExecutionLimits{
 var errProjectionStageBatchFull = errors.New("retrieval projection stage batch full")
 
 func RunChunk(ctx context.Context, st ChunkStore, opts ChunkOptions) (ChunkProgress, error) {
-	return runChunkWithLimits(ctx, st, opts, defaultChunkExecutionLimits, retrievalchunk.DefaultOptions())
+	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
+	if opts.MaxDuration < 0 {
+		return progress, fmt.Errorf("semantic chunk max duration must not be negative")
+	}
+	workCtx := ctx
+	cancel := func() {}
+	if opts.MaxDuration > 0 {
+		workCtx, cancel = context.WithTimeout(ctx, opts.MaxDuration)
+	}
+	defer cancel()
+	progress, err := runChunkWithLimits(workCtx, st, opts, defaultChunkExecutionLimits, retrievalchunk.DefaultOptions())
+	if commandContextInterrupted(ctx, workCtx, opts.MaxDuration, err) {
+		progress.Interrupted = true
+		progress.HasMore = true
+		finalizeChunkAggregate(&progress)
+		return progress, nil
+	}
+	return progress, err
 }
 
 func runChunkWithLimits(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options) (ChunkProgress, error) {
-	return runChunkWithLimitsAndPlanner(ctx, st, opts, limits, chunkOpts, retrievalchunk.PrepareStream)
+	if opts.UntilIdle {
+		return runChunkUntilIdle(ctx, st, opts, limits, chunkOpts)
+	}
+	return runChunkWithLimitsAndPlanner(ctx, st, opts, limits, chunkOpts, retrievalchunk.PrepareStreamCommandSessionContext)
 }
 
-type chunkPlanPreparer func(retrievalchunk.Parent, retrievalchunk.Options, int) (retrievalchunk.PreparedStreamPlan, error)
+func runChunkUntilIdle(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options) (ChunkProgress, error) {
+	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
+	if opts.MaxDuration < 0 {
+		return progress, fmt.Errorf("semantic chunk max duration must not be negative")
+	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	deadline := opts.commandDeadline
+	if deadline.IsZero() && opts.MaxDuration > 0 {
+		deadline = now().Add(opts.MaxDuration)
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return progress, err
+		}
+		if deadlineReached(deadline, now) {
+			progress.Interrupted = true
+			progress.HasMore = true
+			finalizeChunkAggregate(&progress)
+			return progress, nil
+		}
+		base := progress
+		pageOpts := opts
+		pageOpts.UntilIdle = false
+		pageOpts.MaxDuration = 0
+		pageOpts.commandDeadline = deadline
+		pageOpts.Progress = func(page ChunkProgress) error {
+			if opts.Progress == nil {
+				return nil
+			}
+			return opts.Progress(mergeChunkProgress(base, page))
+		}
+		page, err := runChunkWithLimitsAndPlanner(ctx, st, pageOpts, limits, chunkOpts, retrievalchunk.PrepareStreamCommandSessionContext)
+		progress = mergeChunkProgress(progress, page)
+		if err != nil {
+			finalizeChunkAggregate(&progress)
+			return progress, err
+		}
+		pending := page.HasMore || page.Checkpoint != nil || page.Remaining > 0
+		if deadlineReached(deadline, now) {
+			progress.Interrupted = true
+			progress.HasMore = true
+			finalizeChunkAggregate(&progress)
+			return progress, nil
+		}
+		if pending {
+			continue
+		}
+		if page.Scanned == 0 {
+			progress.HasMore = false
+			progress.Remaining = 0
+			progress.Checkpoint = nil
+			finalizeChunkAggregate(&progress)
+			return progress, nil
+		}
+		// A nonempty page can finish without HasMore even if new work arrived
+		// after its watermark. Probe once more and stop only on an empty page.
+	}
+}
+
+func mergeChunkProgress(total, page ChunkProgress) ChunkProgress {
+	total.Scanned += page.Scanned
+	total.Interrupted = total.Interrupted || page.Interrupted
+	total.Current += page.Current
+	total.Generated += page.Generated
+	total.Quarantined += page.Quarantined
+	total.Blocked += page.Blocked
+	total.Failed += page.Failed
+	total.Created += page.Created
+	total.Updated += page.Updated
+	total.Deleted += page.Deleted
+	total.Remaining = page.Remaining
+	total.HasMore = page.HasMore
+	total.Checkpoint = page.Checkpoint
+	total.SnapshotCount += page.SnapshotCount
+	total.SnapshotsTruncated = total.SnapshotCount > 1
+	finalizeChunkAggregate(&total)
+	return total
+}
+
+func finalizeChunkAggregate(progress *ChunkProgress) {
+	if progress.SnapshotCount == 0 {
+		progress.Snapshots = make([]Progress, 0)
+		progress.LastSnapshot = nil
+		return
+	}
+	snapshot := progress.Progress
+	snapshot.Snapshots = make([]Progress, 0)
+	snapshot.LastSnapshot = nil
+	progress.Snapshots = []Progress{snapshot}
+	progress.LastSnapshot = &snapshot
+}
+
+type chunkPlanPreparer func(context.Context, retrievalchunk.Parent, retrievalchunk.Options, int) (retrievalchunk.PreparedStreamSession, error)
 
 func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer) (ChunkProgress, error) {
 	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
 	if opts.Limit <= 0 {
 		return progress, fmt.Errorf("semantic chunk limit must be positive")
+	}
+	if opts.MaxDuration < 0 {
+		return progress, fmt.Errorf("semantic chunk max duration must not be negative")
 	}
 	if limits.StageBatchBytes <= 0 {
 		limits.StageBatchBytes = 4 << 20
@@ -123,13 +244,15 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 	if now == nil {
 		now = time.Now
 	}
-	var deadline time.Time
-	if opts.MaxDuration > 0 {
+	deadline := opts.commandDeadline
+	if deadline.IsZero() && opts.MaxDuration > 0 {
 		deadline = now().Add(opts.MaxDuration)
 	}
 	for _, selectedWork := range selected {
 		if progress.Scanned > 0 && deadlineReached(deadline, now) {
+			progress.Interrupted = true
 			progress.HasMore = true
+			finalizeChunkAggregate(&progress)
 			return progress, nil
 		}
 		if err := ctx.Err(); err != nil {
@@ -137,11 +260,10 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 		}
 		parent := selectedWork.Parent
 		progress.Scanned++
-		projectionHash, buildErr := retrievalchunk.ParentProjectionHash(parent)
+		projectionHash, buildErr := retrievalchunk.ParentProjectionHashContext(ctx, parent)
 		if buildErr != nil {
-			progress.Blocked++
-			progress.Remaining--
-			continue
+			progress.Failed++
+			return progress, fmt.Errorf("hash retrieval projection %s %s: %w", parent.Kind, parent.SourceKey, buildErr)
 		}
 		checkpoint, staged, err := st.LoadRetrievalProjectionStaging(ctx, parent, selectedWork.DirtyRevision)
 		if err != nil {
@@ -159,7 +281,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 				progress.Failed++
 				return progress, fmt.Errorf("loaded retrieval projection checkpoint hash does not match parent")
 			}
-			result, paused, err := resumeGiantProjection(ctx, st, parent, selectedWork.DirtyRevision, checkpoint, chunkOpts, limits, deadline, now, &progress, opts.Progress)
+			result, paused, err := resumeGiantProjection(ctx, st, parent, selectedWork.DirtyRevision, checkpoint, nil, chunkOpts, limits, deadline, now, &progress, opts.Progress)
 			if err != nil {
 				var stale *store.RetrievalProjectionStaleWorkError
 				if errors.As(err, &stale) {
@@ -171,6 +293,11 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 				return progress, err
 			}
 			if paused {
+				if deadlineReached(deadline, now) {
+					progress.Interrupted = true
+				}
+				progress.HasMore = progress.Checkpoint != nil || progress.Remaining > 0
+				finalizeChunkAggregate(&progress)
 				return progress, nil
 			}
 			finishChunkProjectionProgress(&progress, result, checkpoint.StagedChunks)
@@ -181,7 +308,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 			continue
 		}
 
-		plan, err := prepare(parent, chunkOpts, limits.HardOccurrenceLimit)
+		session, err := prepare(ctx, parent, chunkOpts, limits.HardOccurrenceLimit)
 		if err != nil {
 			var occurrenceLimit *retrievalchunk.PreparedStreamOccurrenceLimitError
 			if errors.As(err, &occurrenceLimit) {
@@ -193,11 +320,10 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 				progress.Remaining--
 				continue
 			}
-			progress.Blocked++
-			progress.Remaining--
-			continue
+			progress.Failed++
+			return progress, fmt.Errorf("plan retrieval projection %s %s: %w", parent.Kind, parent.SourceKey, err)
 		}
-		encodedPlan, err := plan.MarshalBinary()
+		encodedPlan, planDigest, err := session.MarshalPlanBinary()
 		if err != nil {
 			progress.Failed++
 			return progress, err
@@ -206,7 +332,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 		rows := make([]store.RetrievalProjectionStageRow, 0, limits.GiantThreshold+1)
 		seen := make(map[string]struct{}, limits.GiantThreshold+1)
 		batchBytes := 0
-		cursor, done, streamErr := retrievalchunk.StreamPrepared(parent, chunkOpts, plan, retrievalchunk.Cursor{}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
+		cursor, done, streamErr := session.StreamContext(ctx, retrievalchunk.Cursor{}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -272,7 +398,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 		checkpoint, err = st.StageRetrievalProjectionBatch(ctx, store.StageRetrievalProjectionInput{
 			DirtyRevision: selectedWork.DirtyRevision, ParentKind: parent.Kind,
 			ParentSourceKey: parent.SourceKey, ProjectionHash: projectionHash,
-			Cursor: cursor, Rows: rows, PreparedPlan: encodedPlan,
+			Cursor: cursor, Rows: rows, PreparedPlan: encodedPlan, PreparedPlanDigest: planDigest,
 		})
 		if err != nil {
 			progress.Failed++
@@ -292,17 +418,23 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 		}
 		progress.Checkpoint = &checkpoint
 		if deadlineReached(deadline, now) {
+			progress.Interrupted = true
 			if err := recordChunkSnapshot(&progress, opts.Progress); err != nil {
 				return progress, err
 			}
 			return progress, nil
 		}
-		result, paused, err := resumeGiantProjection(ctx, st, parent, selectedWork.DirtyRevision, checkpoint, chunkOpts, limits, deadline, now, &progress, opts.Progress)
+		result, paused, err := resumeGiantProjection(ctx, st, parent, selectedWork.DirtyRevision, checkpoint, &session, chunkOpts, limits, deadline, now, &progress, opts.Progress)
 		if err != nil {
 			progress.Failed++
 			return progress, err
 		}
 		if paused {
+			if deadlineReached(deadline, now) {
+				progress.Interrupted = true
+			}
+			progress.HasMore = progress.Checkpoint != nil || progress.Remaining > 0
+			finalizeChunkAggregate(&progress)
 			return progress, nil
 		}
 		finishChunkProjectionProgress(&progress, result, checkpoint.StagedChunks)
@@ -314,7 +446,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 	return progress, nil
 }
 
-func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalchunk.Parent, dirtyRevision int64, checkpoint store.RetrievalProjectionCheckpoint, chunkOpts retrievalchunk.Options, limits chunkExecutionLimits, deadline time.Time, now func() time.Time, progress *ChunkProgress, callback func(ChunkProgress) error) (store.ChunkReplaceResult, bool, error) {
+func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalchunk.Parent, dirtyRevision int64, checkpoint store.RetrievalProjectionCheckpoint, preparedSession *retrievalchunk.PreparedStreamSession, chunkOpts retrievalchunk.Options, limits chunkExecutionLimits, deadline time.Time, now func() time.Time, progress *ChunkProgress, callback func(ChunkProgress) error) (store.ChunkReplaceResult, bool, error) {
 	if checkpointExceedsProjectionLimits(checkpoint, limits) {
 		if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); err != nil {
 			return store.ChunkReplaceResult{}, false, err
@@ -324,16 +456,24 @@ func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalc
 		progress.Remaining--
 		return store.ChunkReplaceResult{}, true, nil
 	}
-	var plan retrievalchunk.PreparedStreamPlan
+	var session retrievalchunk.PreparedStreamSession
 	var planBytes []byte
+	var planDigest string
 	var err error
-	if checkpoint.PreparedPlan != "" {
+	if preparedSession != nil {
+		session = *preparedSession
+		planDigest = session.PlanDigest()
+		if planDigest == "" {
+			_, planDigest, err = session.MarshalPlanBinary()
+		}
+	} else if checkpoint.PreparedPlan != "" {
 		planBytes = []byte(checkpoint.PreparedPlan)
-		plan, err = retrievalchunk.ParsePreparedStreamPlan(parent, chunkOpts, planBytes, limits.HardOccurrenceLimit)
+		session, err = retrievalchunk.ParsePreparedStreamSessionContext(ctx, parent, chunkOpts, planBytes, limits.HardOccurrenceLimit)
+		planDigest = session.PlanDigest()
 	} else {
-		plan, err = retrievalchunk.PrepareStream(parent, chunkOpts, limits.HardOccurrenceLimit)
+		session, err = retrievalchunk.PrepareStreamCommandSessionContext(ctx, parent, chunkOpts, limits.HardOccurrenceLimit)
 		if err == nil {
-			planBytes, err = plan.MarshalBinary()
+			_, planDigest, err = session.MarshalPlanBinary()
 		}
 	}
 	if err != nil {
@@ -369,7 +509,7 @@ func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalc
 		}
 		rows := make([]store.RetrievalProjectionStageRow, 0, limits.StageBatchSize)
 		batchBytes := 0
-		cursor, done, err := retrievalchunk.StreamPrepared(parent, chunkOpts, plan, retrievalchunk.Cursor{SectionKey: checkpoint.SectionKey, NextBoundary: checkpoint.NextBoundary}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
+		cursor, done, err := session.StreamContext(ctx, retrievalchunk.Cursor{SectionKey: checkpoint.SectionKey, NextBoundary: checkpoint.NextBoundary}, func(chunk retrievalchunk.Chunk, occurrence retrievalchunk.Occurrence) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -389,7 +529,7 @@ func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalc
 		checkpoint, err = st.StageRetrievalProjectionBatch(ctx, store.StageRetrievalProjectionInput{
 			WorkID: checkpoint.WorkID, DirtyRevision: dirtyRevision, ParentKind: parent.Kind,
 			ParentSourceKey: parent.SourceKey, ProjectionHash: checkpoint.ProjectionHash,
-			Cursor: cursor, Rows: rows, PreparedPlan: planBytes,
+			Cursor: cursor, Rows: rows, PreparedPlanDigest: planDigest,
 		})
 		if err != nil {
 			return store.ChunkReplaceResult{}, false, err
@@ -407,10 +547,14 @@ func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalc
 			}
 			return store.ChunkReplaceResult{}, true, nil
 		}
+		reachedDeadline := deadlineReached(deadline, now)
+		if reachedDeadline {
+			progress.Interrupted = true
+		}
 		if err := recordChunkSnapshot(progress, callback); err != nil {
 			return store.ChunkReplaceResult{}, false, err
 		}
-		if deadlineReached(deadline, now) {
+		if reachedDeadline {
 			return store.ChunkReplaceResult{}, true, nil
 		}
 	}
@@ -442,6 +586,14 @@ func stagedProjectionRowBytes(chunk retrievalchunk.Chunk, occurrence retrievalch
 
 func deadlineReached(deadline time.Time, now func() time.Time) bool {
 	return !deadline.IsZero() && !now().Before(deadline)
+}
+
+func commandContextInterrupted(parentCtx, workCtx context.Context, maxDuration time.Duration, err error) bool {
+	if err == nil || maxDuration <= 0 || parentCtx.Err() != nil {
+		return false
+	}
+	workErr := workCtx.Err()
+	return workErr != nil && errors.Is(err, workErr)
 }
 
 func recordChunkSnapshot(progress *ChunkProgress, callback func(ChunkProgress) error) error {

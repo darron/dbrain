@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -209,7 +210,7 @@ var schemaMigrations = []schemaMigration{
 		Version: retrievalReadinessCountersVersion,
 		Name:    retrievalReadinessCountersName,
 		Run: func(s *Store) error {
-			return s.ensureRetrievalRuntimeReadinessCounters()
+			return s.RepairRetrievalRuntimeReadinessCounters(context.Background())
 		},
 	},
 }

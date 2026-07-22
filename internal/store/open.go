@@ -17,6 +17,9 @@ type Store struct {
 	read       sqlQueryer
 	hasFTS     bool
 	auditBegin func(context.Context, *sql.Conn) error
+	// Test-only observation seam for expensive authoritative projection checks.
+	retrievalProjectionFullValidation   func()
+	retrievalProjectionPlanHashObserved func(int)
 }
 
 type sqlQueryer interface {

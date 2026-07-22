@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"strings"
@@ -415,7 +416,7 @@ func TestRetrievalRuntimeCounterRepairIsAtomicAndRebuildsAuthoritativeState(t *t
 	if _, err := st.db.Exec(`CREATE TRIGGER fail_runtime_counter_backfill BEFORE UPDATE ON retrieval_state BEGIN SELECT RAISE(ABORT,'forced runtime counter repair failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ensureRetrievalRuntimeReadinessCounters(); err == nil || !strings.Contains(err.Error(), "forced runtime counter repair failure") {
+	if err := st.RepairRetrievalRuntimeReadinessCounters(context.Background()); err == nil || !strings.Contains(err.Error(), "forced runtime counter repair failure") {
 		t.Fatalf("repair error=%v", err)
 	}
 	var triggerCount, readyCount int
@@ -432,7 +433,7 @@ func TestRetrievalRuntimeCounterRepairIsAtomicAndRebuildsAuthoritativeState(t *t
 	if _, err := st.db.Exec(`DROP TRIGGER fail_runtime_counter_backfill`); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ensureRetrievalRuntimeReadinessCounters(); err != nil {
+	if err := st.RepairRetrievalRuntimeReadinessCounters(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name='trg_retrieval_embeddings_readiness_count_insert'`).Scan(&triggerCount); err != nil {
@@ -447,6 +448,33 @@ func TestRetrievalRuntimeCounterRepairIsAtomicAndRebuildsAuthoritativeState(t *t
 	snapshot, err := st.SemanticReadinessSnapshotAt(context.Background(), profile, 25_000, time.Now())
 	if err != nil || snapshot.AggregateCountersCorrupt {
 		t.Fatalf("repaired snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestRetrievalRuntimeCounterRepairHonorsCanceledContextWithoutMutation(t *testing.T) {
+	st, _, profile := seedReadySemanticReadinessStore(t, "source:repair-canceled")
+	defer func() { _ = st.Close() }()
+	profileID, _ := profile.ID()
+	if _, err := st.db.Exec(`DROP TRIGGER trg_retrieval_embeddings_readiness_count_insert`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embedding_profiles SET ready_embedding_count=0 WHERE profile_id=?`, profileID); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := st.RepairRetrievalRuntimeReadinessCounters(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("repair error=%v, want context cancellation", err)
+	}
+	var triggerCount, readyCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name='trg_retrieval_embeddings_readiness_count_insert'`).Scan(&triggerCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRow(`SELECT ready_embedding_count FROM retrieval_embedding_profiles WHERE profile_id=?`, profileID).Scan(&readyCount); err != nil {
+		t.Fatal(err)
+	}
+	if triggerCount != 0 || readyCount != 0 {
+		t.Fatalf("canceled repair mutated state: trigger_count=%d ready_count=%d", triggerCount, readyCount)
 	}
 }
 

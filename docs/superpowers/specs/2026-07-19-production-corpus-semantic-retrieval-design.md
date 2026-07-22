@@ -1171,6 +1171,7 @@ dbrain semantic status
 dbrain semantic chunk --until-idle --max-duration <duration>
 dbrain semantic embed --until-idle --max-duration <duration>
 dbrain semantic verify --limit <rows> --resume
+dbrain semantic verify --repair-counters --limit <rows>
 dbrain semantic index build --full
 dbrain semantic index flush
 dbrain semantic index compact --max-duration <duration>

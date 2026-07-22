@@ -399,8 +399,10 @@ func TestSemanticStatusNotConfiguredDoesNotRequireDatabase(t *testing.T) {
 func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
 	for _, args := range [][]string{
 		{"semantic", "chunk", "--limit", "0", "--json"},
+		{"semantic", "chunk", "--max-duration", "-1s", "--json"},
 		{"semantic", "embed", "--limit", "0", "--json"},
 		{"semantic", "embed", "--batch-size", "0", "--json"},
+		{"semantic", "embed", "--max-duration", "-1s", "--json"},
 		{"semantic", "verify", "--limit", "0", "--json"},
 	} {
 		stdout, _, err := runRootCommandErr(t, t.TempDir(), args...)
@@ -419,8 +421,23 @@ func TestSemanticVerifyCommandHasBoundedResumeFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Flags().Lookup("limit") == nil || target.Flags().Lookup("resume") == nil || target.Flags().Lookup("json") == nil {
+	if target.Flags().Lookup("limit") == nil || target.Flags().Lookup("resume") == nil || target.Flags().Lookup("repair-counters") == nil || target.Flags().Lookup("json") == nil {
 		t.Fatalf("verify flags=%v", target.Flags().FlagUsages())
+	}
+}
+
+func TestSemanticBuildCommandsExposeUntilIdleAndCommandDeadlineFlags(t *testing.T) {
+	cmd := NewRootCommand()
+	for _, path := range []string{"chunk", "embed"} {
+		target, _, err := cmd.Find([]string{"semantic", path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		untilIdle := target.Flags().Lookup("until-idle")
+		maxDuration := target.Flags().Lookup("max-duration")
+		if untilIdle == nil || !strings.Contains(untilIdle.Usage, "durable") || maxDuration == nil || !strings.Contains(maxDuration.Usage, "command") {
+			t.Fatalf("semantic %s flags=%s", path, target.Flags().FlagUsages())
+		}
 	}
 }
 

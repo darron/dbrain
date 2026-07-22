@@ -1,12 +1,98 @@
 package retrievalchunk
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+type countingContext struct {
+	context.Context
+	checks int
+}
+
+func (c *countingContext) Err() error {
+	c.checks++
+	return c.Context.Err()
+}
+
+func TestPreparedStreamSessionDoesNotRescanParentAcrossBatches(t *testing.T) {
+	parent := Parent{Kind: "source", SourceKey: "session-scans", ContentHash: "v1", Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat("unique evidence boundary. ", 2_000)}}}
+	opts := Options{TargetRunes: 24, MaxRunes: 32}
+	ctx := &countingContext{Context: context.Background()}
+	session, err := PrepareStreamCommandSessionContext(ctx, parent, opts, 20_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksAfterPreparation := ctx.checks
+	stop := errors.New("batch full")
+	cursor := Cursor{}
+	batches := 0
+	for {
+		batch := 0
+		next, done, err := session.Stream(cursor, func(Chunk, Occurrence) error {
+			batch++
+			if batch == 7 {
+				return stop
+			}
+			return nil
+		})
+		batches++
+		if done {
+			break
+		}
+		if !errors.Is(err, stop) {
+			t.Fatalf("batch %d err=%v", batches, err)
+		}
+		cursor = next
+	}
+	if batches < 10 || ctx.checks != checksAfterPreparation {
+		t.Fatalf("batches=%d context checks before=%d after=%d; streaming rescanned parent", batches, checksAfterPreparation, ctx.checks)
+	}
+}
+
+func TestPreparedStreamNormalizationCooperativelyCancelsSingleGiantSection(t *testing.T) {
+	parent := Parent{Kind: "source", SourceKey: "normalize-cancel", Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat("boundary ", 100_000)}}}
+	ctx := &cancelAfterErrChecks{remaining: 3}
+	if _, err := normalizedStreamingSectionsContext(ctx, parent, DefaultOptions(), true); !errors.Is(err, context.Canceled) || ctx.checks <= 3 {
+		t.Fatalf("normalization err=%v checks=%d", err, ctx.checks)
+	}
+}
+
+func TestPreparedStreamSessionCancelsAcrossNonEmittingWindows(t *testing.T) {
+	const windowCount = 1_000
+	windows := make([]preparedStreamWindow, windowCount)
+	for i := range windows {
+		windows[i] = preparedStreamWindow{
+			StartBoundary: i, NextBoundary: i + 1,
+			StartChar: i, EndChar: i, StartByte: i, EndByte: i,
+			Emit: false,
+		}
+	}
+	parent := Parent{Kind: "source", SourceKey: "non-emitting", Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat(" ", windowCount)}}}
+	section := parent.Sections[0]
+	section.Key = sectionKey(parent, section)
+	session := PreparedStreamSession{
+		parent:   parent,
+		sections: []Section{section},
+		plan: PreparedStreamPlan{data: preparedStreamPlanData{
+			Version: preparedStreamPlanVersion, ProjectionVersion: ProjectionVersion, ChunkerVersion: Version,
+			Sections: []preparedStreamSection{{Key: section.Key, RuneCount: windowCount, Windows: windows}},
+		}},
+	}
+	ctx := &cancelAfterErrChecks{remaining: 3}
+	emitted := 0
+	_, done, err := session.StreamContext(ctx, Cursor{}, func(Chunk, Occurrence) error {
+		emitted++
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || done || emitted != 0 || ctx.checks <= 3 {
+		t.Fatalf("done=%v emitted=%d err=%v checks=%d", done, emitted, err, ctx.checks)
+	}
+}
 
 func TestTask5PreparedStreamNormalizesMalformedUTF8BeforeByteSlicing(t *testing.T) {
 	parent := Parent{

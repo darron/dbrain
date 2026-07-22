@@ -37,21 +37,24 @@ func writeSemanticStatus(dst io.Writer, status semanticbuild.Status) error {
 }
 
 func writeSemanticProgressSnapshot(dst io.Writer, progress semanticbuild.Progress) error {
-	_, err := fmt.Fprintf(dst, "Progress: stage=%s scanned=%d current=%d generated=%d quarantined=%d blocked=%d failed=%d remaining=%d\n",
-		progress.Stage, progress.Scanned, progress.Current, progress.Generated,
+	_, err := fmt.Fprintf(dst, "Progress: stage=%s interrupted=%t scanned=%d current=%d generated=%d quarantined=%d blocked=%d failed=%d remaining=%d\n",
+		progress.Stage, progress.Interrupted, progress.Scanned, progress.Current, progress.Generated,
 		progress.Quarantined, progress.Blocked, progress.Failed, progress.Remaining)
 	return err
 }
 
 func writeSemanticProgress(dst io.Writer, progress semanticbuild.Progress) error {
-	_, err := fmt.Fprintf(dst, "Stage: %s\nScanned: %d\nCurrent: %d\nGenerated: %d\nQuarantined: %d\nBlocked: %d\nFailed: %d\nRemaining: %d\n",
-		progress.Stage, progress.Scanned, progress.Current, progress.Generated,
+	_, err := fmt.Fprintf(dst, "Stage: %s\nInterrupted: %t\nScanned: %d\nCurrent: %d\nGenerated: %d\nQuarantined: %d\nBlocked: %d\nFailed: %d\nRemaining: %d\n",
+		progress.Stage, progress.Interrupted, progress.Scanned, progress.Current, progress.Generated,
 		progress.Quarantined, progress.Blocked, progress.Failed, progress.Remaining)
 	return err
 }
 
 func writeSemanticVerifyProgress(dst io.Writer, progress semanticbuild.VerifyProgress) error {
 	if err := writeSemanticProgress(dst, progress.Progress); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(dst, "Counters repaired: %t\n", progress.CountersRepaired); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(dst, "Has more: %t\n", progress.HasMore); err != nil {

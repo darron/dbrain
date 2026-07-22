@@ -1,6 +1,42 @@
 package retrievalchunk
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestParentProjectionHashContextMatchesIdentityAndHonorsBounds(t *testing.T) {
+	parent := Parent{
+		Kind: "source", SourceKey: "bounded-hash", Title: "Title",
+		Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat("evidence ", 2_000)}},
+	}
+	want, err := ParentProjectionHash(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParentProjectionHashContext(context.Background(), parent)
+	if err != nil || got != want {
+		t.Fatalf("bounded hash=%q err=%v want=%q", got, err, want)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ParentProjectionHashContext(ctx, parent); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled hash error=%v", err)
+	}
+	cooperativeCtx := &cancelAfterErrChecks{remaining: 3}
+	if _, err := ParentProjectionHashContext(cooperativeCtx, parent); !errors.Is(err, context.Canceled) || cooperativeCtx.checks <= 3 {
+		t.Fatalf("cooperative hash error=%v checks=%d", err, cooperativeCtx.checks)
+	}
+
+	oversized := parent
+	oversized.Sections = []Section{{Key: "body", Role: "raw", Text: "123456789"}}
+	if _, err := parentProjectionHashContext(context.Background(), oversized, V3MaximumPlanningSections, 8); err == nil || !strings.Contains(err.Error(), "planning byte ceiling") {
+		t.Fatalf("oversized hash error=%v", err)
+	}
+}
 
 func TestParentProjectionHashExcludesRawContentHashProvenance(t *testing.T) {
 	base := Parent{

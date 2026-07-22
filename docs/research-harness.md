@@ -680,10 +680,11 @@ foundation, not a claim that semantic retrieval should be default.
 The synthesis path still has a character budget and truncation metadata, so a
 research pack can omit detail from long sources. The semantic foundation now
 projects deterministic chunks while preserving raw extracts and exposes chunk,
-evidence-role, and content-section provenance. Exact vector search is capped at
-25,000 current ready embeddings for the configured profile by default, counted
-before request filters; above that cap the lane reports `too_large` and research
-remains lexical. ANN lifecycle and background indexing remain
+evidence-role, and content-section provenance. Exact vector search has a hard
+measured ceiling of 25,000 current ready embeddings for the configured profile,
+counted before request filters. Configuration may lower but cannot raise the
+ceiling; above it the lane reports `needs_index` and research remains lexical.
+ANN lifecycle and background indexing remain
 deferred.
 
 ### Eval Coverage Is Retrieval-Only And Mostly Manual
@@ -1303,15 +1304,19 @@ returning lexical-identical evidence/order/synthesis; `on` returns fused
 evidence. CLI and MCP/web boolean overrides force effective on/off and reject
 enable-plus-disable conflicts.
 
-Semantic candidate depth defaults to 50 and exact scans stop at 25,000 current
-ready embeddings for the configured profile by default, counted before request
-filters. Oversized ready profile sets and valid provider/search failures fail
-the semantic lane open to lexical evidence with explicit status/reason. Exact-tag
+Semantic candidate depth defaults to 50 and exact scans stop at the lower of
+the configured limit and the immutable 25,000-vector safety ceiling, counted
+before request filters. Oversized ready profile sets report `needs_index`;
+readiness and valid provider/search failures fail the semantic lane open to
+lexical evidence with explicit status/reason before provider construction. Exact-tag
 evidence remains separate and representative. Direct MCP pack calls remain
 read-only and trace-free, including in shadow mode.
 
-Operational state is limited to `dbrain semantic status`, `semantic chunk`, and
-`semantic embed`. The current deletion integration is item-only: Apple Notes
+Operational state is limited to `dbrain semantic status`, `semantic chunk`,
+`semantic embed`, and bounded `semantic verify`. Chunk and embed support
+durable `--until-idle` processing with graceful `--max-duration` interruption;
+counter rebuilding is an explicit verify repair and never occurs on research
+requests. The current deletion integration is item-only: Apple Notes
 `--forget-excluded` synchronously removes that item's derived chunks/embeddings
 and stale affected retrieval generations through the explicit indexed-content
 purge. Other delete paths and future parent kinds are not covered by this claim.
@@ -1516,9 +1521,10 @@ Current semantic foundation:
   cannot change visible evidence, order, or synthesis. `on` returns RRF-fused
   evidence while retaining protected anchors and evidence provenance.
 - Semantic failures fail open to lexical evidence with explicit lane status and
-  reason. The exact scan defaults to 50 candidates and a cap of 25,000 current
-  ready embeddings for the configured profile, counted before request filters;
-  above the cap the lane is `too_large` and research stays lexical.
+  reason. The exact scan defaults to 50 candidates and has an immutable cap of
+  25,000 current ready embeddings for the configured profile, counted before
+  request filters; configuration may lower but cannot raise it. Above the cap
+  the lane is `needs_index` and research stays lexical.
 - CLI `--semantic` / `--no-semantic` and MCP/web `use_semantic` /
   `disable_semantic` force effective on/off; enabling and disabling together is
   rejected. Direct MCP pack builds remain trace-free.

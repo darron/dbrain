@@ -17,6 +17,28 @@ type PreparedStreamPlan struct {
 	data preparedStreamPlanData
 }
 
+// PreparedStreamSession owns the normalized parent and its validated plan for
+// one projection invocation. Reusing it across batches avoids re-normalizing
+// and re-hashing the complete parent at every durable checkpoint.
+type PreparedStreamSession struct {
+	parent   Parent
+	sections []Section
+	plan     PreparedStreamPlan
+	planHash string
+}
+
+func (s PreparedStreamSession) Plan() PreparedStreamPlan { return s.plan }
+func (s PreparedStreamSession) PlanDigest() string       { return s.planHash }
+
+func (s *PreparedStreamSession) MarshalPlanBinary() ([]byte, string, error) {
+	encoded, err := s.plan.MarshalBinary()
+	if err != nil {
+		return nil, "", err
+	}
+	s.planHash = PreparedStreamPlanDigest(encoded)
+	return encoded, s.planHash, nil
+}
+
 type preparedStreamPlanData struct {
 	Version           string                  `json:"version"`
 	ProjectionVersion string                  `json:"projection_version"`
@@ -125,6 +147,24 @@ func ParentProjectionHash(parent Parent) (string, error) {
 	return parentHash(parent), nil
 }
 
+// ParentProjectionHashContext computes the same projection identity while
+// bounding metadata and input scanning and honoring command cancellation. Hash
+// construction is streaming, so it uses the 128 MiB command-planning ceiling
+// rather than readiness's separate 8 MiB exact-window allocation ceiling.
+func ParentProjectionHashContext(ctx context.Context, parent Parent) (string, error) {
+	return parentProjectionHashContext(ctx, parent, V3MaximumPlanningSections, V3MaximumPlanningInputUTF8Bytes)
+}
+
+func parentProjectionHashContext(ctx context.Context, parent Parent, maxSections, maxBytes int) (string, error) {
+	if err := validateStreamingMetadataContext(ctx, parent, DefaultOptions(), maxSections); err != nil {
+		return "", err
+	}
+	if err := validatePlanningInputBytes(ctx, parent, maxBytes); err != nil {
+		return "", err
+	}
+	return parentHashContext(ctx, parent)
+}
+
 // Stream emits v3 windows from cursor without retaining the complete
 // projection. When emit returns an error, the returned cursor is positioned
 // after the successfully delivered window so callers can durably checkpoint
@@ -155,6 +195,77 @@ func PrepareStreamContext(ctx context.Context, parent Parent, opts Options, maxO
 	})
 }
 
+// PrepareStreamCappedContext is the readiness planner. It performs the
+// allocation-free v3 preflight before materializing an exact boundary plan.
+// Dense inputs can stop at the maxOccurrences+1 sentinel while sparse inputs
+// fail closed above readiness's separate exact-planning allocation ceiling.
+func PrepareStreamCappedContext(ctx context.Context, parent Parent, opts Options, maxOccurrences int) (PreparedStreamPlan, error) {
+	if maxOccurrences < 0 {
+		return PreparedStreamPlan{}, fmt.Errorf("retrieval occurrence limit must not be negative")
+	}
+	if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
+		return PreparedStreamPlan{}, err
+	}
+	if maxOccurrences == 0 {
+		if err := validatePlanningInputBytes(ctx, parent, V3MaximumExactPlanningInputUTF8Bytes); err != nil {
+			return PreparedStreamPlan{}, err
+		}
+		return PrepareStreamContext(ctx, parent, opts, 0)
+	}
+	over, normalizedBytes, err := occurrenceLimitPreflight(ctx, parent, maxOccurrences)
+	if err != nil {
+		return PreparedStreamPlan{}, err
+	}
+	if over {
+		return PreparedStreamPlan{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: maxOccurrences + 1, Limit: maxOccurrences}
+	}
+	if normalizedBytes > V3MaximumExactPlanningInputUTF8Bytes {
+		return PreparedStreamPlan{}, fmt.Errorf("retrieval parent %s %s normalized input %d exceeds exact planning allocation ceiling %d", parent.Kind, parent.SourceKey, normalizedBytes, V3MaximumExactPlanningInputUTF8Bytes)
+	}
+	return PrepareStreamContext(ctx, parent, opts, maxOccurrences)
+}
+
+// PrepareStreamCommandContext is the projection-worker planner. It shares the
+// allocation-free occurrence preflight, cancellation checks, 4,096-section
+// metadata cap, and 128 MiB input ceiling, but intentionally does not apply
+// readiness's narrower 8 MiB exact-planning cap. Projection execution is
+// independently bounded by its 50k chunk, 200k occurrence, and 128 MiB staged
+// state contract.
+func PrepareStreamCommandContext(ctx context.Context, parent Parent, opts Options, maxOccurrences int) (PreparedStreamPlan, error) {
+	session, err := PrepareStreamCommandSessionContext(ctx, parent, opts, maxOccurrences)
+	if err != nil {
+		return PreparedStreamPlan{}, err
+	}
+	return session.plan, nil
+}
+
+func PrepareStreamCommandSessionContext(ctx context.Context, parent Parent, opts Options, maxOccurrences int) (PreparedStreamSession, error) {
+	if maxOccurrences < 0 {
+		return PreparedStreamSession{}, fmt.Errorf("retrieval occurrence limit must not be negative")
+	}
+	if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
+		return PreparedStreamSession{}, err
+	}
+	if maxOccurrences == 0 {
+		if err := validatePlanningInputBytes(ctx, parent, V3MaximumPlanningInputUTF8Bytes); err != nil {
+			return PreparedStreamSession{}, err
+		}
+		return prepareStreamSessionWithPlanner(ctx, parent, opts, 0, V3MaximumPlanningInputUTF8Bytes, func(text []rune) ([]window, error) {
+			return chunkSectionRunesV3Context(ctx, text, opts)
+		})
+	}
+	over, _, err := occurrenceLimitPreflight(ctx, parent, maxOccurrences)
+	if err != nil {
+		return PreparedStreamSession{}, err
+	}
+	if over {
+		return PreparedStreamSession{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: maxOccurrences + 1, Limit: maxOccurrences}
+	}
+	return prepareStreamSessionWithPlanner(ctx, parent, opts, maxOccurrences, V3MaximumPlanningInputUTF8Bytes, func(text []rune) ([]window, error) {
+		return chunkSectionRunesV3Context(ctx, text, opts)
+	})
+}
+
 // CountOccurrencesCappedContext returns the exact chunker-v3 occurrence count
 // when it is at most limit, and limit+1 as a stable over-budget sentinel. The
 // preflight is deliberately only a proof of overage, never an estimator: v3
@@ -169,20 +280,20 @@ func CountOccurrencesCappedContext(ctx context.Context, parent Parent, opts Opti
 	if limit < 0 {
 		return 0, fmt.Errorf("retrieval occurrence limit must not be negative")
 	}
-	if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
-		return 0, err
+	if limit == 0 {
+		if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
+			return 0, err
+		}
+		over, _, err := occurrenceLimitPreflight(ctx, parent, 0)
+		if err != nil {
+			return 0, err
+		}
+		if over {
+			return 1, nil
+		}
+		return 0, nil
 	}
-	over, normalizedBytes, err := occurrenceLimitPreflight(ctx, parent, limit)
-	if err != nil {
-		return 0, err
-	}
-	if over {
-		return limit + 1, nil
-	}
-	if normalizedBytes > V3MaximumExactPlanningInputUTF8Bytes {
-		return 0, fmt.Errorf("retrieval parent %s %s normalized input %d exceeds exact planning allocation ceiling %d", parent.Kind, parent.SourceKey, normalizedBytes, V3MaximumExactPlanningInputUTF8Bytes)
-	}
-	plan, err := PrepareStreamContext(ctx, parent, opts, limit)
+	plan, err := PrepareStreamCappedContext(ctx, parent, opts, limit)
 	if err != nil {
 		var exceeded *PreparedStreamOccurrenceLimitError
 		if errors.As(err, &exceeded) {
@@ -289,45 +400,65 @@ func occurrenceLimitPreflight(ctx context.Context, parent Parent, limit int) (bo
 }
 
 func prepareStreamWithPlanner(ctx context.Context, parent Parent, opts Options, maxOccurrences, planningByteLimit int, planSection func([]rune) ([]window, error)) (PreparedStreamPlan, error) {
-	if err := ctx.Err(); err != nil {
-		return PreparedStreamPlan{}, err
-	}
-	if planningByteLimit > 0 {
-		if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
-			return PreparedStreamPlan{}, err
-		}
-		if err := validatePlanningInputBytes(ctx, parent, planningByteLimit); err != nil {
-			return PreparedStreamPlan{}, err
-		}
-	}
-	sections, err := normalizedStreamingSections(parent, opts, true)
+	session, err := prepareStreamSessionWithPlanner(ctx, parent, opts, maxOccurrences, planningByteLimit, planSection)
 	if err != nil {
 		return PreparedStreamPlan{}, err
 	}
+	return session.plan, nil
+}
+
+func prepareStreamSessionWithPlanner(ctx context.Context, parent Parent, opts Options, maxOccurrences, planningByteLimit int, planSection func([]rune) ([]window, error)) (PreparedStreamSession, error) {
+	if err := ctx.Err(); err != nil {
+		return PreparedStreamSession{}, err
+	}
+	if planningByteLimit > 0 {
+		if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
+			return PreparedStreamSession{}, err
+		}
+		if err := validatePlanningInputBytes(ctx, parent, planningByteLimit); err != nil {
+			return PreparedStreamSession{}, err
+		}
+	}
+	sections, err := normalizedStreamingSectionsContext(ctx, parent, opts, true)
+	if err != nil {
+		return PreparedStreamSession{}, err
+	}
+	projectionHash, err := parentHashContext(ctx, parent)
+	if err != nil {
+		return PreparedStreamSession{}, err
+	}
 	data := preparedStreamPlanData{
 		Version: preparedStreamPlanVersion, ProjectionVersion: ProjectionVersion,
-		ChunkerVersion: Version, ParentHash: parentHash(parent),
+		ChunkerVersion: Version, ParentHash: projectionHash,
 		TargetRunes: opts.TargetRunes, MaxRunes: opts.MaxRunes, OverlapRunes: opts.OverlapRunes,
 		Sections: make([]preparedStreamSection, 0, len(sections)),
 	}
 	for _, section := range sections {
 		if err := ctx.Err(); err != nil {
-			return PreparedStreamPlan{}, err
+			return PreparedStreamSession{}, err
 		}
-		runes := []rune(section.Text)
+		runes, err := stringRunesContext(ctx, section.Text)
+		if err != nil {
+			return PreparedStreamSession{}, err
+		}
 		byteOffsets := make([]int, len(runes)+1)
 		for i, value := range runes {
+			if i%1_024 == 0 {
+				if err := ctx.Err(); err != nil {
+					return PreparedStreamSession{}, err
+				}
+			}
 			byteOffsets[i+1] = byteOffsets[i] + utf8.RuneLen(value)
 		}
 		prepared := preparedStreamSection{Key: section.Key, RuneCount: len(runes)}
 		windows, err := planSection(runes)
 		if err != nil {
-			return PreparedStreamPlan{}, err
+			return PreparedStreamSession{}, err
 		}
 		for windowIndex, current := range windows {
 			if windowIndex%64 == 0 {
 				if err := ctx.Err(); err != nil {
-					return PreparedStreamPlan{}, err
+					return PreparedStreamSession{}, err
 				}
 			}
 			start, end := trimRuneOffsetsRunes(runes, current.start, current.end)
@@ -339,13 +470,14 @@ func prepareStreamWithPlanner(ctx context.Context, parent Parent, opts Options, 
 			if emit {
 				data.OccurrenceCount++
 				if maxOccurrences > 0 && data.OccurrenceCount > maxOccurrences {
-					return PreparedStreamPlan{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: data.OccurrenceCount, Limit: maxOccurrences}
+					return PreparedStreamSession{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: data.OccurrenceCount, Limit: maxOccurrences}
 				}
 			}
 		}
 		data.Sections = append(data.Sections, prepared)
 	}
-	return PreparedStreamPlan{data: data}, nil
+	plan := PreparedStreamPlan{data: data}
+	return PreparedStreamSession{parent: parent, sections: sections, plan: plan}, nil
 }
 
 func validatePlanningInputBytes(ctx context.Context, parent Parent, limit int) error {
@@ -388,30 +520,92 @@ func (p PreparedStreamPlan) MarshalBinary() ([]byte, error) {
 func (p PreparedStreamPlan) OccurrenceCount() int { return p.data.OccurrenceCount }
 
 func ParsePreparedStreamPlan(parent Parent, opts Options, encoded []byte, maxOccurrences int) (PreparedStreamPlan, error) {
-	var data preparedStreamPlanData
-	if err := json.Unmarshal(encoded, &data); err != nil {
-		return PreparedStreamPlan{}, fmt.Errorf("decode retrieval prepared stream plan: %w", err)
-	}
-	sections, err := normalizedStreamingSections(parent, opts, true)
+	return ParsePreparedStreamPlanContext(context.Background(), parent, opts, encoded, maxOccurrences)
+}
+
+// ParsePreparedStreamPlanContext validates persisted seek state under the same
+// section, input, occurrence, and cancellation bounds as fresh command
+// planning. A checkpoint created by an older unbounded command cannot bypass
+// the current v3 planner ceilings on resume.
+func ParsePreparedStreamPlanContext(ctx context.Context, parent Parent, opts Options, encoded []byte, maxOccurrences int) (PreparedStreamPlan, error) {
+	session, err := ParsePreparedStreamSessionContext(ctx, parent, opts, encoded, maxOccurrences)
 	if err != nil {
 		return PreparedStreamPlan{}, err
 	}
+	return session.plan, nil
+}
+
+func ParsePreparedStreamSessionContext(ctx context.Context, parent Parent, opts Options, encoded []byte, maxOccurrences int) (PreparedStreamSession, error) {
+	if maxOccurrences < 0 {
+		return PreparedStreamSession{}, fmt.Errorf("retrieval occurrence limit must not be negative")
+	}
+	if len(encoded) > V3MaximumPlanningInputUTF8Bytes {
+		return PreparedStreamSession{}, fmt.Errorf("retrieval prepared stream plan %d exceeds plan byte ceiling %d", len(encoded), V3MaximumPlanningInputUTF8Bytes)
+	}
+	if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
+		return PreparedStreamSession{}, err
+	}
+	if maxOccurrences == 0 {
+		if err := validatePlanningInputBytes(ctx, parent, V3MaximumPlanningInputUTF8Bytes); err != nil {
+			return PreparedStreamSession{}, err
+		}
+	} else {
+		over, _, err := occurrenceLimitPreflight(ctx, parent, maxOccurrences)
+		if err != nil {
+			return PreparedStreamSession{}, err
+		}
+		if over {
+			return PreparedStreamSession{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: maxOccurrences + 1, Limit: maxOccurrences}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return PreparedStreamSession{}, err
+	}
+	var data preparedStreamPlanData
+	if err := json.Unmarshal(encoded, &data); err != nil {
+		return PreparedStreamSession{}, fmt.Errorf("decode retrieval prepared stream plan: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return PreparedStreamSession{}, err
+	}
+	sections, err := normalizedStreamingSectionsContext(ctx, parent, opts, true)
+	if err != nil {
+		return PreparedStreamSession{}, err
+	}
+	projectionHash, err := parentHashContext(ctx, parent)
+	if err != nil {
+		return PreparedStreamSession{}, err
+	}
 	if data.Version != preparedStreamPlanVersion || data.ProjectionVersion != ProjectionVersion || data.ChunkerVersion != Version ||
-		data.ParentHash != parentHash(parent) || data.TargetRunes != opts.TargetRunes || data.MaxRunes != opts.MaxRunes || data.OverlapRunes != opts.OverlapRunes ||
+		data.ParentHash != projectionHash || data.TargetRunes != opts.TargetRunes || data.MaxRunes != opts.MaxRunes || data.OverlapRunes != opts.OverlapRunes ||
 		len(data.Sections) != len(sections) {
-		return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan provenance does not match parent and chunker")
+		return PreparedStreamSession{}, fmt.Errorf("retrieval prepared stream plan provenance does not match parent and chunker")
 	}
 	count := 0
 	for i, prepared := range data.Sections {
-		if prepared.Key != sections[i].Key || prepared.RuneCount != utf8.RuneCountInString(sections[i].Text) {
-			return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan section %d does not match parent", i)
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return PreparedStreamSession{}, err
+			}
+		}
+		runeCount, err := runeCountContext(ctx, sections[i].Text)
+		if err != nil {
+			return PreparedStreamSession{}, err
+		}
+		if prepared.Key != sections[i].Key || prepared.RuneCount != runeCount {
+			return PreparedStreamSession{}, fmt.Errorf("retrieval prepared stream plan section %d does not match parent", i)
 		}
 		previous := 0
-		for _, window := range prepared.Windows {
+		for windowIndex, window := range prepared.Windows {
+			if windowIndex%64 == 0 {
+				if err := ctx.Err(); err != nil {
+					return PreparedStreamSession{}, err
+				}
+			}
 			if window.StartBoundary != previous || window.NextBoundary <= window.StartBoundary || window.NextBoundary > prepared.RuneCount ||
 				window.StartChar < window.StartBoundary || window.EndChar > window.NextBoundary || window.EndChar < window.StartChar ||
 				window.StartByte < 0 || window.EndByte < window.StartByte || window.EndByte > len(sections[i].Text) {
-				return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan has invalid section %d boundary", i)
+				return PreparedStreamSession{}, fmt.Errorf("retrieval prepared stream plan has invalid section %d boundary", i)
 			}
 			if window.Emit {
 				count++
@@ -419,16 +613,20 @@ func ParsePreparedStreamPlan(parent Parent, opts Options, encoded []byte, maxOcc
 			previous = window.NextBoundary
 		}
 		if len(prepared.Windows) > 0 && previous != prepared.RuneCount {
-			return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan does not cover section %d", i)
+			return PreparedStreamSession{}, fmt.Errorf("retrieval prepared stream plan does not cover section %d", i)
 		}
 	}
 	if count != data.OccurrenceCount {
-		return PreparedStreamPlan{}, fmt.Errorf("retrieval prepared stream plan occurrence count mismatch")
+		return PreparedStreamSession{}, fmt.Errorf("retrieval prepared stream plan occurrence count mismatch")
 	}
 	if maxOccurrences > 0 && count > maxOccurrences {
-		return PreparedStreamPlan{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: maxOccurrences + 1, Limit: maxOccurrences}
+		return PreparedStreamSession{}, &PreparedStreamOccurrenceLimitError{OccurrenceCount: maxOccurrences + 1, Limit: maxOccurrences}
 	}
-	return PreparedStreamPlan{data: data}, nil
+	if err := ctx.Err(); err != nil {
+		return PreparedStreamSession{}, err
+	}
+	plan := PreparedStreamPlan{data: data}
+	return PreparedStreamSession{parent: parent, sections: sections, plan: plan, planHash: PreparedStreamPlanDigest(encoded)}, nil
 }
 
 func StreamPrepared(parent Parent, opts Options, plan PreparedStreamPlan, cursor Cursor, emit func(Chunk, Occurrence) error) (Cursor, bool, error) {
@@ -443,6 +641,31 @@ func StreamPrepared(parent Parent, opts Options, plan PreparedStreamPlan, cursor
 		plan.data.TargetRunes != opts.TargetRunes || plan.data.MaxRunes != opts.MaxRunes || plan.data.OverlapRunes != opts.OverlapRunes || len(plan.data.Sections) != len(sections) {
 		return cursor, false, fmt.Errorf("retrieval prepared stream plan provenance does not match parent and chunker")
 	}
+	return streamPreparedSession(context.Background(), PreparedStreamSession{parent: parent, sections: sections, plan: plan}, cursor, emit)
+}
+
+func (s PreparedStreamSession) Stream(cursor Cursor, emit func(Chunk, Occurrence) error) (Cursor, bool, error) {
+	return s.StreamContext(context.Background(), cursor, emit)
+}
+
+func (s PreparedStreamSession) StreamContext(ctx context.Context, cursor Cursor, emit func(Chunk, Occurrence) error) (Cursor, bool, error) {
+	if emit == nil {
+		return cursor, false, fmt.Errorf("retrieval chunk stream emit callback is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return cursor, false, err
+	}
+	if s.plan.data.Version != preparedStreamPlanVersion || len(s.sections) != len(s.plan.data.Sections) {
+		return cursor, false, fmt.Errorf("invalid retrieval prepared stream session")
+	}
+	return streamPreparedSession(ctx, s, cursor, emit)
+}
+
+func streamPreparedSession(ctx context.Context, session PreparedStreamSession, cursor Cursor, emit func(Chunk, Occurrence) error) (Cursor, bool, error) {
+	parent := session.parent
+	sections := session.sections
+	plan := session.plan
+	resumeCursor := cursor
 	startSection := 0
 	if cursor.SectionKey != "" {
 		startSection = -1
@@ -457,6 +680,9 @@ func StreamPrepared(parent Parent, opts Options, plan PreparedStreamPlan, cursor
 		}
 	}
 	for sectionOrdinal := startSection; sectionOrdinal < len(sections); sectionOrdinal++ {
+		if err := ctx.Err(); err != nil {
+			return resumeCursor, false, err
+		}
 		section := sections[sectionOrdinal]
 		prepared := plan.data.Sections[sectionOrdinal]
 		boundary := 0
@@ -478,7 +704,12 @@ func StreamPrepared(parent Parent, opts Options, plan PreparedStreamPlan, cursor
 				return cursor, false, fmt.Errorf("retrieval chunk cursor boundary %d is not a v3 boundary in section %q", boundary, section.Key)
 			}
 		}
-		for _, current := range prepared.Windows {
+		for windowIndex, current := range prepared.Windows {
+			if windowIndex%64 == 0 {
+				if err := ctx.Err(); err != nil {
+					return resumeCursor, false, err
+				}
+			}
 			if current.StartBoundary < boundary {
 				continue
 			}
@@ -498,12 +729,23 @@ func StreamPrepared(parent Parent, opts Options, plan PreparedStreamPlan, cursor
 			if err := emit(chunk, occurrence); err != nil {
 				return next, false, err
 			}
+			resumeCursor = next
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return resumeCursor, false, err
 	}
 	return Cursor{}, true, nil
 }
 
 func normalizedStreamingSections(parent Parent, opts Options, validateOptions bool) ([]Section, error) {
+	return normalizedStreamingSectionsContext(context.Background(), parent, opts, validateOptions)
+}
+
+func normalizedStreamingSectionsContext(ctx context.Context, parent Parent, opts Options, validateOptions bool) ([]Section, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	parent.Kind = strings.TrimSpace(parent.Kind)
 	parent.SourceKey = strings.TrimSpace(parent.SourceKey)
 	if parent.Kind == "" {
@@ -520,15 +762,25 @@ func normalizedStreamingSections(parent Parent, opts Options, validateOptions bo
 			return nil, fmt.Errorf("retrieval chunker v3 requires zero overlap, got %d", opts.OverlapRunes)
 		}
 	}
-	sections := append([]Section(nil), parent.Sections...)
+	sections := make([]Section, len(parent.Sections))
 	seen := make(map[string]struct{}, len(sections))
-	for i := range sections {
+	for i := range parent.Sections {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		sections[i] = parent.Sections[i]
 		// Imported evidence can contain malformed UTF-8. Chunker v3 has always
 		// operated on Go runes, which replaces malformed byte sequences with
 		// U+FFFD. Normalize once here so the prepared byte offsets address the
 		// exact string later sliced by StreamPrepared instead of the shorter raw
 		// byte string.
-		sections[i].Text = string([]rune(sections[i].Text))
+		normalized, err := normalizeUTF8Context(ctx, sections[i].Text)
+		if err != nil {
+			return nil, err
+		}
+		sections[i].Text = normalized
 		sections[i].Role = strings.TrimSpace(sections[i].Role)
 		sections[i].Heading = strings.TrimSpace(sections[i].Heading)
 		sections[i].Key = sectionKey(parent, sections[i])
@@ -541,6 +793,64 @@ func normalizedStreamingSections(parent Parent, opts Options, validateOptions bo
 		seen[sections[i].Key] = struct{}{}
 	}
 	return sections, nil
+}
+
+func normalizeUTF8Context(ctx context.Context, value string) (string, error) {
+	var normalized strings.Builder
+	normalized.Grow(min(len(value), 4<<10))
+	checkedBytes := 0
+	for _, current := range value {
+		if checkedBytes >= 4<<10 {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			checkedBytes = 0
+		}
+		checkedBytes += utf8.RuneLen(current)
+		_, _ = normalized.WriteRune(current)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return normalized.String(), nil
+}
+
+func stringRunesContext(ctx context.Context, value string) ([]rune, error) {
+	result := make([]rune, 0, min(len(value), 4<<10))
+	checkedBytes := 0
+	for _, current := range value {
+		if checkedBytes >= 4<<10 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			checkedBytes = 0
+		}
+		checkedBytes += utf8.RuneLen(current)
+		result = append(result, current)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func runeCountContext(ctx context.Context, value string) (int, error) {
+	count := 0
+	checkedBytes := 0
+	for _, current := range value {
+		if checkedBytes >= 4<<10 {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+			checkedBytes = 0
+		}
+		checkedBytes += utf8.RuneLen(current)
+		count++
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 type window struct{ start, end int }

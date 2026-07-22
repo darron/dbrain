@@ -68,6 +68,7 @@ func newSemanticCommandWithDeps(root *rootOptions, deps semanticDeps) *cobra.Com
 func newSemanticVerifyCommand(root *rootOptions, deps semanticDeps) *cobra.Command {
 	var limit int
 	var resume string
+	var repairCounters bool
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use: "verify", Short: "Verify a bounded page of stored semantic vectors", Args: cobra.NoArgs,
@@ -96,7 +97,7 @@ func newSemanticVerifyCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			progress, err := semanticbuild.RunVerify(cmd.Context(), st, semanticbuild.VerifyOptions{Profile: profile, Limit: limit, Resume: resume})
+			progress, err := semanticbuild.RunVerify(cmd.Context(), st, semanticbuild.VerifyOptions{Profile: profile, Limit: limit, Resume: resume, RepairCounters: repairCounters})
 			if err != nil {
 				return err
 			}
@@ -108,6 +109,7 @@ func newSemanticVerifyCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 	}
 	cmd.Flags().IntVar(&limit, "limit", defaultSemanticLimit, "Maximum ready vector rows to verify (maximum 5000)")
 	cmd.Flags().StringVar(&resume, "resume", "", "Resume after this chunk ID")
+	cmd.Flags().BoolVar(&repairCounters, "repair-counters", false, "Atomically rebuild semantic readiness counters before verification")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print progress as JSON")
 	return cmd
 }
@@ -177,12 +179,17 @@ func outputSemanticStatus(cmd *cobra.Command, status semanticbuild.Status, jsonO
 func newSemanticChunkCommand(root *rootOptions, deps semanticDeps) *cobra.Command {
 	var limit int
 	var afterSourceKey string
+	var untilIdle bool
+	var maxDuration time.Duration
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use: "chunk", Short: "Build deterministic retrieval chunks", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if limit <= 0 {
 				return fmt.Errorf("limit must be positive")
+			}
+			if maxDuration < 0 {
+				return fmt.Errorf("max-duration must not be negative")
 			}
 			cfg, err := deps.loadWriteConfig(root.root, root.configFile)
 			if err != nil {
@@ -193,7 +200,7 @@ func newSemanticChunkCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			chunkOpts := semanticbuild.ChunkOptions{Limit: limit, AfterSourceKey: afterSourceKey}
+			chunkOpts := semanticbuild.ChunkOptions{Limit: limit, AfterSourceKey: afterSourceKey, UntilIdle: untilIdle, MaxDuration: maxDuration}
 			if !jsonOut {
 				chunkOpts.Progress = func(snapshot semanticbuild.ChunkProgress) error {
 					return writeSemanticProgressSnapshot(cmd.OutOrStdout(), snapshot.Progress)
@@ -210,6 +217,8 @@ func newSemanticChunkCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", defaultSemanticLimit, "Maximum dirty parents to process")
+	cmd.Flags().BoolVar(&untilIdle, "until-idle", false, "Continue through the durable dirty queue until no work remains")
+	cmd.Flags().DurationVar(&maxDuration, "max-duration", 0, "Maximum command runtime before a graceful resumable stop (0 is unlimited)")
 	cmd.Flags().StringVar(&afterSourceKey, "after-source-key", "", "Deprecated source-key cursor")
 	if err := cmd.Flags().MarkDeprecated("after-source-key", "the durable dirty queue resumes automatically; rerun without this flag"); err != nil {
 		panic(err)
@@ -220,6 +229,8 @@ func newSemanticChunkCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 
 func newSemanticEmbedCommand(root *rootOptions, deps semanticDeps) *cobra.Command {
 	var limit, batchSize int
+	var untilIdle bool
+	var maxDuration time.Duration
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use: "embed", Short: "Generate missing embeddings for the configured profile", Args: cobra.NoArgs,
@@ -229,6 +240,9 @@ func newSemanticEmbedCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 			}
 			if batchSize <= 0 {
 				return fmt.Errorf("batch-size must be positive")
+			}
+			if maxDuration < 0 {
+				return fmt.Errorf("max-duration must not be negative")
 			}
 			cfg, err := deps.loadWriteConfig(root.root, root.configFile)
 			if err != nil {
@@ -250,7 +264,7 @@ func newSemanticEmbedCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			embedOpts := semanticbuild.EmbedOptions{Limit: limit, BatchSize: batchSize}
+			embedOpts := semanticbuild.EmbedOptions{Limit: limit, BatchSize: batchSize, UntilIdle: untilIdle, MaxDuration: maxDuration}
 			if !jsonOut {
 				embedOpts.Progress = func(snapshot semanticbuild.Progress) error {
 					return writeSemanticProgressSnapshot(cmd.OutOrStdout(), snapshot)
@@ -268,6 +282,8 @@ func newSemanticEmbedCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 	}
 	cmd.Flags().IntVar(&limit, "limit", defaultSemanticLimit, "Maximum chunk rows to process")
 	cmd.Flags().IntVar(&batchSize, "batch-size", defaultSemanticBatchSize, "Embedding request batch size")
+	cmd.Flags().BoolVar(&untilIdle, "until-idle", false, "Continue through durable embedding work until no eligible chunks remain")
+	cmd.Flags().DurationVar(&maxDuration, "max-duration", 0, "Maximum command runtime before a graceful resumable stop (0 is unlimited)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print progress as JSON")
 	return cmd
 }

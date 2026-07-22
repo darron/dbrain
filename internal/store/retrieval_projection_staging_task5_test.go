@@ -80,6 +80,99 @@ func TestTask5StagedBytesCountUTF8Bytes(t *testing.T) {
 	}
 }
 
+func TestTask5StoreStagingFullyValidatesOncePerLifecycleBoundary(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:task5-validation-lifecycle")
+	if _, err := st.db.Exec(`UPDATE sources SET extracted_text=? WHERE source_key='source:task5-validation-lifecycle'`, strings.Repeat("unique semantic evidence sentence. ", 1_000)); err != nil {
+		t.Fatal(err)
+	}
+	work, err := st.ListDirtyRetrievalParents(ctx, projectionRevisionForTest(t, st), 1)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("work=%+v err=%v", work, err)
+	}
+	projection, err := retrievalchunk.BuildProjection(work[0].Parent, retrievalchunk.DefaultOptions())
+	if err != nil || len(projection.Occurrences) < 4 {
+		t.Fatalf("occurrences=%d err=%v", len(projection.Occurrences), err)
+	}
+	session, err := retrievalchunk.PrepareStreamCommandSessionContext(ctx, work[0].Parent, retrievalchunk.DefaultOptions(), MaxRetrievalProjectionOccurrences)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedPlan, planDigest, err := session.MarshalPlanBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]RetrievalProjectionStageRow, 0, len(projection.Occurrences))
+	for _, occurrence := range projection.Occurrences {
+		rows = append(rows, task5StageRowForOccurrence(t, projection, occurrence))
+	}
+	fullValidations := 0
+	planHashCalls := 0
+	planHashBytes := 0
+	st.retrievalProjectionFullValidation = func() { fullValidations++ }
+	st.retrievalProjectionPlanHashObserved = func(size int) {
+		planHashCalls++
+		planHashBytes += size
+	}
+
+	var cp RetrievalProjectionCheckpoint
+	for start := 0; start < len(rows); start += 2 {
+		end := min(start+2, len(rows))
+		cursor := retrievalchunk.Cursor{}
+		if end < len(rows) {
+			cursor = retrievalchunk.Cursor{SectionKey: rows[end-1].Occurrence.SectionKey, NextBoundary: rows[end-1].Occurrence.EndChar}
+		}
+		input := StageRetrievalProjectionInput{
+			ParentKind: work[0].Parent.Kind, ParentSourceKey: work[0].Parent.SourceKey,
+			DirtyRevision: work[0].DirtyRevision, ProjectionHash: projection.ParentHash,
+			Cursor: cursor, Rows: rows[start:end], PreparedPlanDigest: planDigest,
+		}
+		if start == 0 {
+			input.PreparedPlan = encodedPlan
+		}
+		if cp.WorkID != "" {
+			input.WorkID = cp.WorkID
+		}
+		cp, err = st.StageRetrievalProjectionBatch(ctx, input)
+		if err != nil {
+			t.Fatalf("stage batch %d: %v", start/2, err)
+		}
+		if fullValidations != 1 {
+			t.Fatalf("stage batch %d full validations=%d want 1", start/2, fullValidations)
+		}
+		if planHashCalls != 1 || planHashBytes != len(encodedPlan) {
+			t.Fatalf("stage batch %d plan hash calls=%d bytes=%d want 1/%d", start/2, planHashCalls, planHashBytes, len(encodedPlan))
+		}
+	}
+	loaded, ok, err := st.LoadRetrievalProjectionStaging(ctx, work[0].Parent, work[0].DirtyRevision)
+	if err != nil || !ok || fullValidations != 2 {
+		t.Fatalf("load ok=%v err=%v full_validations=%d", ok, err, fullValidations)
+	}
+	if planHashCalls != 2 || planHashBytes != 2*len(encodedPlan) {
+		t.Fatalf("load plan hash calls=%d bytes=%d want 2/%d", planHashCalls, planHashBytes, 2*len(encodedPlan))
+	}
+	if _, err := st.PromoteRetrievalProjectionStaging(ctx, loaded); err != nil || fullValidations != 3 {
+		t.Fatalf("promote err=%v full_validations=%d", err, fullValidations)
+	}
+	if planHashCalls != 3 || planHashBytes != 3*len(encodedPlan) {
+		t.Fatalf("promotion plan hash calls=%d bytes=%d want 3/%d", planHashCalls, planHashBytes, 3*len(encodedPlan))
+	}
+
+	tx, err := st.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = st.validateRetrievalProjectionStagingWorkTx(canceled, tx, work[0].Parent.Kind, work[0].Parent.SourceKey, work[0].DirtyRevision, projection.ParentHash)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled full validation err=%v", err)
+	}
+}
+
 func TestTask5PromotionRejectsIncompleteAndFabricatedStaging(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -157,7 +250,7 @@ func TestTask5BoundedAuthoritativeProjectionStopsAboveLimit(t *testing.T) {
 		_, _ = fmt.Fprintf(&text, "%010d ", i)
 	}
 	parent := retrievalchunk.Parent{Kind: "source", SourceKey: "source:task5-limit", ContentHash: "v1", Sections: []retrievalchunk.Section{{Key: "body", Role: "raw", Text: text.String()}}}
-	_, err := buildBoundedAuthoritativeProjection(parent, retrievalchunk.Options{TargetRunes: 10, MaxRunes: 12}, 4)
+	_, err := buildBoundedAuthoritativeProjection(context.Background(), parent, retrievalchunk.Options{TargetRunes: 10, MaxRunes: 12}, 4)
 	var tooLarge *RetrievalProjectionTooLargeError
 	if !errors.As(err, &tooLarge) || tooLarge.ChunkCount != 5 {
 		t.Fatalf("err=%v too_large=%+v", err, tooLarge)

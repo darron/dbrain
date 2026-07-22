@@ -15,19 +15,22 @@ import (
 const maxVerifyPageSize = 5_000
 
 type VerifyOptions struct {
-	Profile  embedding.Profile
-	Limit    int
-	Resume   string
-	Progress func(VerifyProgress) error
+	Profile        embedding.Profile
+	Limit          int
+	Resume         string
+	RepairCounters bool
+	Progress       func(VerifyProgress) error
 }
 
 type VerifyProgress struct {
 	Progress
-	Resume  string `json:"resume,omitempty"`
-	HasMore bool   `json:"has_more"`
+	Resume           string `json:"resume,omitempty"`
+	HasMore          bool   `json:"has_more"`
+	CountersRepaired bool   `json:"counters_repaired"`
 }
 
 type VerifyStore interface {
+	RepairRetrievalRuntimeReadinessCounters(context.Context) error
 	RetrievalEmbeddingVerificationState(context.Context, string) (store.RetrievalEmbeddingVerificationState, error)
 	ListRetrievalVectors(context.Context, string, store.VectorPage) ([]store.RetrievalVectorRow, error)
 	BlockCorruptRetrievalEmbedding(context.Context, *store.RetrievalEmbeddingCorruptionError) error
@@ -45,8 +48,17 @@ func RunVerify(ctx context.Context, st VerifyStore, opts VerifyOptions) (VerifyP
 	if err := ctx.Err(); err != nil {
 		return progress, err
 	}
+	if opts.RepairCounters {
+		if err := st.RepairRetrievalRuntimeReadinessCounters(ctx); err != nil {
+			return progress, err
+		}
+		progress.CountersRepaired = true
+	}
 	state, err := st.RetrievalEmbeddingVerificationState(ctx, profileID)
 	if err != nil {
+		if errors.Is(err, store.ErrRetrievalEmbeddingProfileNotFound) {
+			return progress, nil
+		}
 		return progress, err
 	}
 	if err := validateVerificationState(profileID, opts.Profile, state); err != nil {
