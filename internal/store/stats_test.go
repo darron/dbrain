@@ -269,7 +269,8 @@ func TestBacklogAndPipelineCountQuotedPostRepairAsHydrationPending(t *testing.T)
 		SET x_post_text = ?,
 			x_post_status = ?,
 			x_post_fetched_at = ?,
-			x_post_json = ?
+			x_post_json = ?,
+			updated_at = ?
 		WHERE id = ?`,
 		"Oh this is delicious...",
 		"ok_syndication",
@@ -286,6 +287,7 @@ func TestBacklogAndPipelineCountQuotedPostRepairAsHydrationPending(t *testing.T)
 				}
 			}
 		}`,
+		now.Add(100*time.Hour).Format(time.RFC3339),
 		itemID,
 	); err != nil {
 		t.Fatalf("seed quoted hydration: %v", err)
@@ -304,6 +306,12 @@ func TestBacklogAndPipelineCountQuotedPostRepairAsHydrationPending(t *testing.T)
 		t.Fatalf("Pipeline: %v", err)
 	}
 	assertPipelineRowCounts(t, stats.Hydration, "x_bookmark", 1, 0, 1, 0, 0)
+	if !stats.Hydration[0].OldestPendingKnown || stats.Hydration[0].OldestPendingAt.IsZero() {
+		t.Fatalf("hydration oldest pending timestamp missing: %+v", stats.Hydration[0])
+	}
+	if !stats.Hydration[0].OldestPendingAt.Equal(now) {
+		t.Fatalf("hydration repair pending at = %s, want fetch time %s", stats.Hydration[0].OldestPendingAt, now)
+	}
 }
 
 func TestBacklogAndPipelineCountQuotedSnapshotRepairAsHydrationPending(t *testing.T) {
@@ -427,6 +435,9 @@ func TestPipelineSummaryTreatsPendingExtractionAsPendingNotBlocked(t *testing.T)
 		t.Fatalf("Pipeline: %v", err)
 	}
 	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 0, 1, 0, 0)
+	if !stats.Summary[0].OldestPendingKnown || stats.Summary[0].OldestPendingAt.IsZero() {
+		t.Fatalf("summary oldest pending timestamp missing: %+v", stats.Summary[0])
+	}
 }
 
 func TestPipelineTreatsShortLocalXArticlePreviewAsPendingExtraction(t *testing.T) {
@@ -466,6 +477,9 @@ func TestPipelineTreatsShortLocalXArticlePreviewAsPendingExtraction(t *testing.T
 	}
 	assertPipelineRowCounts(t, stats.Extraction, "x_article", 1, 0, 1, 0, 0)
 	assertPipelineRowCounts(t, stats.Summary, "x_article", 1, 0, 1, 0, 0)
+	if !stats.Extraction[0].OldestPendingKnown || !stats.Summary[0].OldestPendingKnown {
+		t.Fatalf("source pipeline oldest pending timestamps missing: extraction=%+v summary=%+v", stats.Extraction[0], stats.Summary[0])
+	}
 }
 
 func TestBacklogAndPipelineRequeueInvalidCurrentSummariesForRepair(t *testing.T) {
@@ -671,7 +685,7 @@ func TestBacklogSkipsRecentExtractErrorsDuringCooldown(t *testing.T) {
 	}
 }
 
-func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
+func TestPipelineXMediaTranscriptionClassifiesTerminalRetryAndUnknown(t *testing.T) {
 	t.Parallel()
 
 	st := openTestStore(t)
@@ -775,16 +789,51 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 		t.Fatalf("seed blocked transcript: %v", err)
 	}
 
-	failedID := insertVideoCandidate("x-media-failed")
+	for _, status := range []string{
+		model.XMediaTranscriptStatusNoAudio,
+		model.XMediaTranscriptStatusNoise,
+		model.XMediaTranscriptStatusTooShort,
+		model.XMediaTranscriptStatusEmpty,
+	} {
+		itemID := insertVideoCandidate("x-media-terminal-" + status)
+		if status == model.XMediaTranscriptStatusTooShort {
+			if _, err := st.db.ExecContext(ctx, `
+				UPDATE items
+				SET article_title = ?, article_text = 'preserved raw transcript text'
+				WHERE id = ?`, model.XMediaTranscriptArticleTitle, itemID); err != nil {
+				t.Fatalf("seed preserved terminal transcript text: %v", err)
+			}
+		}
+		if err := st.SaveXMediaTranscriptionState(ctx, itemID, status, "terminal", now); err != nil {
+			t.Fatalf("seed terminal transcript %s: %v", status, err)
+		}
+	}
+
+	dueErrorID := insertVideoCandidate("x-media-error-due")
+	if err := st.SaveXMediaTranscriptionState(ctx, dueErrorID, model.XMediaTranscriptStatusError, "retry", now.Add(-25*time.Hour)); err != nil {
+		t.Fatalf("seed due transcript error: %v", err)
+	}
+	youngErrorID := insertVideoCandidate("x-media-error-young")
+	if err := st.SaveXMediaTranscriptionState(ctx, youngErrorID, model.XMediaTranscriptStatusError, "cooldown", now); err != nil {
+		t.Fatalf("seed young transcript error: %v", err)
+	}
+	missingAttemptID := insertVideoCandidate("x-media-error-missing-attempt")
+	if err := st.SaveXMediaTranscriptionState(ctx, missingAttemptID, model.XMediaTranscriptStatusError, "missing attempt time", time.Time{}); err != nil {
+		t.Fatalf("seed transcript error without attempt time: %v", err)
+	}
+	ambiguousPendingID := insertVideoCandidate("x-media-pending-ambiguous")
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET updated_at = ? WHERE id = ?`, now.Add(2*time.Hour).Format(time.RFC3339), ambiguousPendingID); err != nil {
+		t.Fatalf("seed unrelated update after transcription became pending: %v", err)
+	}
+	invalidID := insertVideoCandidate("x-media-invalid")
 	if _, err := st.db.ExecContext(ctx, `
 		UPDATE items
-		SET x_media_transcript_status = 'no_audio',
-			x_media_transcript_at = ?
-		WHERE id = ?`,
-		now.Format(time.RFC3339),
-		failedID,
-	); err != nil {
-		t.Fatalf("seed failed transcript: %v", err)
+		SET article_title = 'X Media Transcript', article_text = 'legacy transcript text'
+		WHERE id = ?`, invalidID); err != nil {
+		t.Fatalf("seed invalid transcript text: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(ctx, invalidID, "legacy_bogus", "unknown", now); err != nil {
+		t.Fatalf("seed invalid transcript status: %v", err)
 	}
 
 	prunedPendingID := insertVideoCandidate("x-media-pruned-pending")
@@ -807,8 +856,8 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItemsForXMediaTranscription: %v", err)
 	}
-	if len(items) != 0 {
-		t.Fatalf("expected no runnable transcription candidates, got %d", len(items))
+	if len(items) != 2 {
+		t.Fatalf("expected due and never-attempted transcription candidates, got %+v", items)
 	}
 
 	stats, err := st.Pipeline(ctx, "", "", "")
@@ -816,7 +865,13 @@ func TestPipelineXMediaTranscriptionClassifiesBlockedAndFailed(t *testing.T) {
 		t.Fatalf("Pipeline: %v", err)
 	}
 
-	assertPipelineRowCounts(t, stats.Transcription, "x_media_transcript", 4, 1, 0, 2, 1)
+	row := pipelineRowByKind(t, stats.Transcription, "x_media_transcript")
+	if row.Total != 12 || row.Current != 1 || row.Pending != 2 || row.Blocked != 4 || row.Terminal != 4 || row.Failed != 0 || row.Unknown != 1 || !row.PartitionValid {
+		t.Fatalf("unexpected transcription partitions: %+v", row)
+	}
+	if row.OldestPendingKnown || !row.OldestPendingAt.IsZero() {
+		t.Fatalf("transcription age must be unknown after ambiguous unrelated item update: %+v", row)
+	}
 }
 
 func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
@@ -894,7 +949,11 @@ func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
 		t.Fatalf("clear current x media summary compatibility columns: %v", err)
 	}
 
-	_ = insertTranscriptItem("x-media-summary-pending")
+	pendingID := insertTranscriptItem("x-media-summary-pending")
+	pendingSince := now.Add(2 * time.Hour).Truncate(time.Second)
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET updated_at = ? WHERE id = ?`, pendingSince.Format(time.RFC3339), pendingID); err != nil {
+		t.Fatalf("set x media summary invalidation time: %v", err)
+	}
 
 	blockedID := insertTranscriptItem("x-media-summary-blocked")
 	if _, err := st.db.ExecContext(ctx, `
@@ -931,7 +990,13 @@ func TestPipelineXMediaSummaryClassifiesPendingBlockedAndFailed(t *testing.T) {
 		t.Fatalf("Pipeline: %v", err)
 	}
 
-	assertPipelineRowCounts(t, stats.Summary, "x_media_summary", 4, 1, 1, 1, 1)
+	xSummaryRow := pipelineRowByKind(t, stats.Summary, "x_media_summary")
+	if xSummaryRow.Failed != 0 || xSummaryRow.Unknown != 1 || !xSummaryRow.PartitionValid {
+		t.Fatalf("invalid x media summary status must be unknown: %+v", xSummaryRow)
+	}
+	if xSummaryRow.OldestPendingKnown || !xSummaryRow.OldestPendingAt.IsZero() {
+		t.Fatalf("x media summary age must be unknown after ambiguous item update: %+v", xSummaryRow)
+	}
 }
 
 func TestPipelineAppleNoteExtractionAndSummaryClassifyItemCoverage(t *testing.T) {
@@ -974,7 +1039,11 @@ func TestPipelineAppleNoteExtractionAndSummaryClassifyItemCoverage(t *testing.T)
 		t.Fatalf("clear current apple note summary compatibility columns: %v", err)
 	}
 
-	_ = insertAppleNote("apple-note-summary-pending", "pending body", "")
+	pendingID := insertAppleNote("apple-note-summary-pending", "pending body", "")
+	pendingSince := now.Add(2 * time.Hour).Truncate(time.Second)
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET imported_at = ?, updated_at = ? WHERE id = ?`, now.Add(-30*24*time.Hour).Format(time.RFC3339), pendingSince.Format(time.RFC3339), pendingID); err != nil {
+		t.Fatalf("set Apple Notes summary invalidation time: %v", err)
+	}
 
 	blockedID := insertAppleNote("apple-note-summary-blocked", "", "attachment-only note")
 	if _, err := st.db.ExecContext(ctx, `
@@ -1006,7 +1075,13 @@ func TestPipelineAppleNoteExtractionAndSummaryClassifyItemCoverage(t *testing.T)
 	}
 
 	assertPipelineRowCounts(t, stats.Extraction, "apple_note", 5, 4, 0, 1, 0)
-	assertPipelineRowCounts(t, stats.Summary, "apple_note", 4, 1, 1, 1, 1)
+	appleSummaryRow := pipelineRowByKind(t, stats.Summary, "apple_note")
+	if appleSummaryRow.Failed != 0 || appleSummaryRow.Unknown != 1 || !appleSummaryRow.PartitionValid {
+		t.Fatalf("invalid Apple Notes summary status must be unknown: %+v", appleSummaryRow)
+	}
+	if appleSummaryRow.OldestPendingKnown || !appleSummaryRow.OldestPendingAt.IsZero() {
+		t.Fatalf("Apple Notes summary age must be unknown after ambiguous item update: %+v", appleSummaryRow)
+	}
 }
 
 func TestPipelineSafariTabExtractionClassifiesItemMaterialization(t *testing.T) {
@@ -1050,6 +1125,74 @@ func TestAppendPipelineStageRowRecomputesAggregate(t *testing.T) {
 	got := appendPipelineStageRow(rows, extra)
 	assertPipelineRowCounts(t, got, "ALL", 3, 2, 0, 0, 1)
 	assertPipelineRowCounts(t, got, "apple_note", 1, 1, 0, 0, 0)
+}
+
+func TestOldestTimestampWhereRejectsAnyMalformedCandidate(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	firstID := insertTestSource(t, st, "src:valid-pending-time", "https://example.com/valid-pending-time")
+	secondID := insertTestSource(t, st, "src:invalid-pending-time", "https://example.com/invalid-pending-time")
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET created_at = ? WHERE id = ?`, "2026-07-01T00:00:00Z", firstID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET created_at = ? WHERE id = ?`, "not-a-timestamp", secondID); err != nil {
+		t.Fatal(err)
+	}
+
+	if at, known, err := st.oldestTimestampWhere(ctx, "sources", "created_at", ""); err != nil {
+		t.Fatal(err)
+	} else if known || !at.IsZero() {
+		t.Fatalf("mixed valid/malformed timestamps = %s known=%v, want unknown", at, known)
+	}
+}
+
+func TestOldestTimestampWhereComparesRFC3339OffsetsChronologically(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	firstID := insertTestSource(t, st, "src:offset-pending-time", "https://example.com/offset-pending-time")
+	secondID := insertTestSource(t, st, "src:utc-pending-time", "https://example.com/utc-pending-time")
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET created_at = ? WHERE id = ?`, "2026-07-01T01:00:00+02:00", firstID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET created_at = ? WHERE id = ?`, "2026-07-01T00:00:00Z", secondID); err != nil {
+		t.Fatal(err)
+	}
+
+	at, known, err := st.oldestTimestampWhere(ctx, "sources", "created_at", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 6, 30, 23, 0, 0, 0, time.UTC)
+	if !known || !at.Equal(want) {
+		t.Fatalf("offset-aware oldest timestamp = %s known=%v, want %s", at, known, want)
+	}
+}
+
+func TestScanMediaPendingTimestampsComparesAssetOffsetsChronologically(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	rows, err := st.queryer().QueryContext(t.Context(), `
+		SELECT 1, '', '2026-06-30T22:00:00Z', '', '', '2026-07-01T01:00:00+02:00'
+		UNION ALL
+		SELECT 1, '', '2026-06-30T22:00:00Z', '', '', '2026-07-01T00:00:00Z'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	at, known, err := scanMediaPendingTimestamps(rows, model.ItemOCRStatusError, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 6, 30, 23, 0, 0, 0, time.UTC)
+	if !known || !at.Equal(want) {
+		t.Fatalf("media pending timestamp = %s known=%v, want %s", at, known, want)
+	}
 }
 
 func TestPipelineXMediaTranscriptionCountsPrunedCurrentItems(t *testing.T) {
@@ -1221,7 +1364,11 @@ func TestPipelineXPhotoOCRClassifiesPendingBlockedAndFailed(t *testing.T) {
 		t.Fatalf("clear current ocr compatibility columns: %v", err)
 	}
 
-	_ = insertPhotoCandidate("x-photo-ocr-pending")
+	pendingID := insertPhotoCandidate("x-photo-ocr-pending")
+	pendingSince := now.Add(2 * time.Hour).Truncate(time.Second)
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET updated_at = ? WHERE id = ?`, pendingSince.Format(time.RFC3339), pendingID); err != nil {
+		t.Fatalf("set OCR invalidation time: %v", err)
+	}
 
 	blockedID := insertPhotoCandidate("x-photo-ocr-blocked")
 	if _, err := st.db.ExecContext(ctx, `
@@ -1258,7 +1405,13 @@ func TestPipelineXPhotoOCRClassifiesPendingBlockedAndFailed(t *testing.T) {
 		t.Fatalf("Pipeline: %v", err)
 	}
 
-	assertPipelineRowCounts(t, stats.OCR, "x_photo_ocr", 4, 1, 1, 1, 1)
+	ocrRow := pipelineRowByKind(t, stats.OCR, "x_photo_ocr")
+	if ocrRow.Total != 4 || ocrRow.Current != 1 || ocrRow.Pending != 1 || ocrRow.Blocked != 1 || ocrRow.Failed != 0 || ocrRow.Unknown != 1 || !ocrRow.PartitionValid {
+		t.Fatalf("unexpected OCR partitions: %+v", ocrRow)
+	}
+	if ocrRow.OldestPendingKnown || !ocrRow.OldestPendingAt.IsZero() {
+		t.Fatalf("OCR age must be unknown after ambiguous unrelated item update: %+v", ocrRow)
+	}
 }
 
 func TestPipelineXPhotoOCRCountsPrunedCurrentItems(t *testing.T) {
@@ -1750,4 +1903,31 @@ func assertPipelineRowCounts(t *testing.T, rows []PipelineStageRow, kind string,
 		return
 	}
 	t.Fatalf("missing pipeline row for %s in %+v", kind, rows)
+}
+
+func TestPipelinePartitionsClassifiesUnexplainedRemainderAsUnknown(t *testing.T) {
+	t.Parallel()
+
+	row := PipelineStageRow{Kind: "legacy", Total: 3, Current: 1, Pending: 1}
+	finalizePipelineStageRow(&row)
+	if row.Failed != 0 || row.Unknown != 1 || !row.PartitionValid {
+		t.Fatalf("unexplained remainder must be unknown, got %+v", row)
+	}
+
+	overlap := PipelineStageRow{Kind: "overlap", Total: 1, Current: 1, Pending: 1}
+	finalizePipelineStageRow(&overlap)
+	if overlap.PartitionValid {
+		t.Fatalf("overlapping partitions must be invalid: %+v", overlap)
+	}
+}
+
+func pipelineRowByKind(t *testing.T, rows []PipelineStageRow, kind string) PipelineStageRow {
+	t.Helper()
+	for _, row := range rows {
+		if row.Kind == kind {
+			return row
+		}
+	}
+	t.Fatalf("missing pipeline row %q in %+v", kind, rows)
+	return PipelineStageRow{}
 }

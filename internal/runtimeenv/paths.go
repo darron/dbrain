@@ -23,6 +23,22 @@ func configValuePaths(key string) [][]string {
 	if short, ok := strings.CutPrefix(key, "DBRAIN_SCHEDULER_SYNC_ALL_"); ok {
 		paths = append(paths, []string{"scheduler", "sync_all", strings.ToLower(strings.Trim(short, "_"))})
 	}
+	if short, ok := strings.CutPrefix(key, "DBRAIN_SCHEDULER_SQLITE_ARCHIVE_"); ok {
+		paths = append(paths, []string{"scheduler", "sqlite_archive", strings.ToLower(strings.Trim(short, "_"))})
+	}
+	if short, ok := strings.CutPrefix(key, "DBRAIN_AUDIT_TIMEOUT_"); ok {
+		paths = append(paths, []string{"audit", "timeouts", strings.ToLower(strings.Trim(short, "_"))})
+	}
+	if short, ok := strings.CutPrefix(key, "DBRAIN_AUDIT_ALERT_"); ok {
+		paths = append(paths, []string{"audit", "alert", strings.ToLower(strings.Trim(short, "_"))})
+	} else if short, ok := strings.CutPrefix(key, "DBRAIN_AUDIT_"); ok {
+		paths = append(paths, []string{"audit", strings.ToLower(strings.Trim(short, "_"))})
+	}
+	if short, ok := strings.CutPrefix(key, "DBRAIN_SYNC_ALL_IMPORT_"); ok {
+		paths = append(paths, []string{"sync_all", "imports", strings.ToLower(strings.Trim(short, "_"))})
+	} else if short, ok := strings.CutPrefix(key, "DBRAIN_SYNC_ALL_"); ok {
+		paths = append(paths, []string{"sync_all", strings.ToLower(strings.Trim(short, "_"))})
+	}
 
 	for _, prefix := range []string{"DBRAIN_", "OPENROUTER_", "OLLAMA_", "SUMMARIZE_", "AWS_"} {
 		if short, ok := strings.CutPrefix(key, prefix); ok {

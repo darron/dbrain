@@ -59,6 +59,24 @@ The steady-state design is direct SQLite import. It should not export Apple
 Notes to files, invoke Notes exporters, or use Apple Events as the primary or
 fallback path.
 
+## Production Health Audit
+
+`dbrain audit apple-notes --json` performs read-only upstream parity without
+running the importer. It copies the Notes DB/WAL/SHM triplet into a
+dbrain-owned, context-cancelable snapshot, filters protected and deleted rows
+in SQL before projecting identity metadata, applies the normal per-row
+identity/account/folder fallbacks and exclusion/ignore-marker policy, and
+compares hashed source keys with the query-only dbrain snapshot. It does not
+read attachment files, summarize, render, import, purge, or mutate Notes.
+
+The command defaults to the deep profile and is bounded to five minutes,
+100,000 unique identities, and one local snapshot page. Its portable report
+contains only counts. Full Disk Access failure, schema ambiguity, cancellation,
+or an unproven inventory end is `unknown`; a complete inventory with missing
+local notes is `fail`. Password-protected note identities, titles, snippets,
+and attachment metadata are not retained as audit evidence. Scheduled audits,
+MCP, and the admin API cannot invoke this deep snapshot inventory.
+
 ## Validation
 
 The local Notes app exposes a scriptable interface at:
@@ -876,8 +894,10 @@ placeholders, and any Notes-provided attachment-derived text when present:
 The file-content path should be conservative and read-only. It should not block
 the body importer or local note summaries:
 
-- Resolve attachment files from the Notes database/container without writing to
-  the Notes store.
+- Resolve attachment files through a root-confined handle for the directory
+  containing the selected Notes database. Absolute paths are accepted only
+  when they resolve beneath that container; traversal and symlink escapes are
+  classified as `outside_notes_container` without reading the target.
 - Copy or stream attachment bytes into dbrain-controlled temp/state paths before
   extraction when needed.
 - Extract text/PDF attachments locally inside the `dbrain` binary when the

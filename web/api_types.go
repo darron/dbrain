@@ -3,12 +3,65 @@ package web
 import (
 	"time"
 
+	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/researchtrace"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 )
+
+type AuditHistoryResponse struct {
+	Profile audit.Profile       `json:"profile"`
+	History []AuditHistoryEntry `json:"history"`
+}
+
+type AuditHistoryEntry struct {
+	AuditID     string           `json:"audit_id"`
+	Profile     audit.Profile    `json:"profile"`
+	Status      audit.Status     `json:"status"`
+	Confidence  audit.Confidence `json:"confidence"`
+	StartedAt   time.Time        `json:"started_at"`
+	CompletedAt time.Time        `json:"completed_at"`
+	Summary     audit.Summary    `json:"summary"`
+	Freshness   audit.Freshness  `json:"freshness"`
+}
+
+type AuditRunState string
+
+const (
+	AuditRunRunning   AuditRunState = "running"
+	AuditRunCompleted AuditRunState = "completed"
+	AuditRunFailed    AuditRunState = "failed"
+)
+
+const (
+	AuditRunErrorFailed  = "audit_run_failed"
+	AuditRunErrorPersist = "audit_report_persist_failed"
+)
+
+type AuditRunStatusResponse struct {
+	AuditID     string           `json:"audit_id"`
+	Profile     audit.Profile    `json:"profile"`
+	State       AuditRunState    `json:"state"`
+	StatusPath  string           `json:"status_path"`
+	StartedAt   time.Time        `json:"started_at,omitempty"`
+	CompletedAt time.Time        `json:"completed_at,omitempty"`
+	ErrorCode   string           `json:"error_code,omitempty"`
+	Report      *audit.Report    `json:"report,omitempty"`
+	Freshness   *audit.Freshness `json:"freshness,omitempty"`
+}
+
+type AuditRunConflictResponse struct {
+	Error         string        `json:"error"`
+	ActiveAuditID string        `json:"active_audit_id"`
+	ActiveProfile audit.Profile `json:"active_profile"`
+}
+
+type AuditRunRateLimitResponse struct {
+	Error             string `json:"error"`
+	RetryAfterSeconds int64  `json:"retry_after_seconds"`
+}
 
 type AppInfo struct {
 	Name    string         `json:"name"`
@@ -27,9 +80,20 @@ type WebVersionInfo struct {
 type BootstrapResponse struct {
 	App            AppInfo                  `json:"app"`
 	Auth           AuthInfo                 `json:"auth"`
-	Backlog        store.BacklogStats       `json:"backlog"`
+	Backlog        BacklogResponse          `json:"backlog"`
 	Activity       store.ActivityStats      `json:"activity"`
 	SourceActivity store.SourceActivityFeed `json:"source_activity"`
+}
+
+const SourceBacklogScopeDescription = "X hydration, link discovery, source extraction, and source summary only; this is not whole-system health."
+
+type BacklogResponse struct {
+	store.BacklogStats
+	ScopeDescription string `json:"scope_description"`
+}
+
+func newBacklogResponse(backlog store.BacklogStats) BacklogResponse {
+	return BacklogResponse{BacklogStats: backlog, ScopeDescription: SourceBacklogScopeDescription}
 }
 
 type AuthInfo struct {

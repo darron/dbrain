@@ -1,52 +1,67 @@
 package researcheval
 
-import "github.com/darron/dbrain/internal/brainresearch"
+import (
+	"github.com/darron/dbrain/internal/brainresearch"
+	"github.com/darron/dbrain/internal/semanticconfig"
+)
 
 const ProposalSchemaVersion = "research_eval_proposal.v1"
 
 type Case struct {
-	Name                       string                          `json:"name"`
-	Question                   string                          `json:"question"`
-	RawQuestion                string                          `json:"raw_question,omitempty"`
-	Limit                      int                             `json:"limit,omitempty"`
-	MaxCharsPerDoc             int                             `json:"max_chars_per_doc,omitempty"`
-	SourceTypes                []string                        `json:"source_types,omitempty"`
-	IncludeRelated             bool                            `json:"include_related,omitempty"`
-	RelatedLimit               int                             `json:"related_limit,omitempty"`
-	SeedLimit                  int                             `json:"seed_limit,omitempty"`
-	IncludeTopicBrief          *bool                           `json:"include_topic_brief,omitempty"`
-	DisablePlanner             bool                            `json:"disable_planner,omitempty"`
-	UseSemantic                bool                            `json:"use_semantic,omitempty"`
-	DisableSemantic            bool                            `json:"disable_semantic,omitempty"`
-	PlannerModel               string                          `json:"planner_model,omitempty"`
-	PlannerTimeoutMS           int64                           `json:"planner_timeout_ms,omitempty"`
-	PlannerBinary              string                          `json:"planner_binary,omitempty"`
-	SynthesisModel             string                          `json:"synthesis_model,omitempty"`
-	ContinuityAnchors          []brainresearch.ProtectedAnchor `json:"continuity_anchors,omitempty"`
-	RunWithRunner              bool                            `json:"run_with_runner,omitempty"`
-	StopAfterJudge             bool                            `json:"stop_after_judge,omitempty"`
-	MinEvidence                int                             `json:"min_evidence,omitempty"`
-	ExpectSourceKeys           []string                        `json:"expect_source_keys,omitempty"`
-	ExpectAnySourceKeys        []string                        `json:"expect_any_source_keys,omitempty"`
-	ExpectTopSourceKeys        []string                        `json:"expect_top_source_keys,omitempty"`
-	ForbidSourceKeys           []string                        `json:"forbid_source_keys,omitempty"`
-	ExpectPlanner              string                          `json:"expect_planner,omitempty"`
-	ExpectSemanticStatus       string                          `json:"expect_semantic_status,omitempty"`
-	ExpectQueryFamily          string                          `json:"expect_query_family,omitempty"`
-	ExpectQueryTerms           []string                        `json:"expect_query_terms,omitempty"`
-	ExpectQueryVariants        []string                        `json:"expect_query_variants,omitempty"`
-	ForbidQueryVariants        []string                        `json:"forbid_query_variants,omitempty"`
-	ExpectConcepts             []string                        `json:"expect_concepts,omitempty"`
-	ForbidConcepts             []string                        `json:"forbid_concepts,omitempty"`
-	ExpectPlannerErrorContains string                          `json:"expect_planner_error_contains,omitempty"`
-	MinRetrievalSignals        int                             `json:"min_retrieval_signals,omitempty"`
-	ExpectJudgeVerdict         string                          `json:"expect_judge_verdict,omitempty"`
-	ForbidRetryAction          string                          `json:"forbid_retry_action,omitempty"`
-	ExpectAnswerStatus         string                          `json:"expect_answer_status,omitempty"`
-	ExpectCitationSourceKeys   []string                        `json:"expect_citation_source_keys,omitempty"`
-	ForbidCitationSourceKeys   []string                        `json:"forbid_citation_source_keys,omitempty"`
-	ExpectAnswerText           []string                        `json:"expect_answer_text,omitempty"`
-	MaxLatencyMS               int64                           `json:"max_latency_ms,omitempty"`
+	Name                              string                          `json:"name"`
+	Question                          string                          `json:"question"`
+	RawQuestion                       string                          `json:"raw_question,omitempty"`
+	Limit                             int                             `json:"limit,omitempty"`
+	MaxCharsPerDoc                    int                             `json:"max_chars_per_doc,omitempty"`
+	SourceTypes                       []string                        `json:"source_types,omitempty"`
+	IncludeRelated                    bool                            `json:"include_related,omitempty"`
+	RelatedLimit                      int                             `json:"related_limit,omitempty"`
+	SeedLimit                         int                             `json:"seed_limit,omitempty"`
+	IncludeTopicBrief                 *bool                           `json:"include_topic_brief,omitempty"`
+	DisablePlanner                    bool                            `json:"disable_planner,omitempty"`
+	UseSemantic                       bool                            `json:"use_semantic,omitempty"`
+	DisableSemantic                   bool                            `json:"disable_semantic,omitempty"`
+	EffectiveSemanticMode             semanticconfig.Mode             `json:"effective_semantic_mode,omitempty"`
+	PlannerModel                      string                          `json:"planner_model,omitempty"`
+	PlannerTimeoutMS                  int64                           `json:"planner_timeout_ms,omitempty"`
+	PlannerBinary                     string                          `json:"planner_binary,omitempty"`
+	SynthesisModel                    string                          `json:"synthesis_model,omitempty"`
+	ContinuityAnchors                 []brainresearch.ProtectedAnchor `json:"continuity_anchors,omitempty"`
+	RunWithRunner                     bool                            `json:"run_with_runner,omitempty"`
+	StopAfterJudge                    bool                            `json:"stop_after_judge,omitempty"`
+	MinEvidence                       int                             `json:"min_evidence,omitempty"`
+	ExpectSourceKeys                  []string                        `json:"expect_source_keys,omitempty"`
+	ExpectAnySourceKeys               []string                        `json:"expect_any_source_keys,omitempty"`
+	ExpectTopSourceKeys               []string                        `json:"expect_top_source_keys,omitempty"`
+	ForbidSourceKeys                  []string                        `json:"forbid_source_keys,omitempty"`
+	ExpectPlanner                     string                          `json:"expect_planner,omitempty"`
+	ExpectSemanticStatus              string                          `json:"expect_semantic_status,omitempty"`
+	ExpectSemanticMode                semanticconfig.Mode             `json:"expect_semantic_mode,omitempty"`
+	ExpectQueryFamily                 string                          `json:"expect_query_family,omitempty"`
+	ExpectQueryTerms                  []string                        `json:"expect_query_terms,omitempty"`
+	ExpectQueryVariants               []string                        `json:"expect_query_variants,omitempty"`
+	ForbidQueryVariants               []string                        `json:"forbid_query_variants,omitempty"`
+	ExpectConcepts                    []string                        `json:"expect_concepts,omitempty"`
+	ForbidConcepts                    []string                        `json:"forbid_concepts,omitempty"`
+	ExpectRequiredConcepts            []string                        `json:"expect_required_concepts,omitempty"`
+	ForbidRequiredConcepts            []string                        `json:"forbid_required_concepts,omitempty"`
+	ExpectPlannerErrorContains        string                          `json:"expect_planner_error_contains,omitempty"`
+	MinRetrievalSignals               int                             `json:"min_retrieval_signals,omitempty"`
+	ExpectJudgeVerdict                string                          `json:"expect_judge_verdict,omitempty"`
+	ForbidRetryAction                 string                          `json:"forbid_retry_action,omitempty"`
+	ExpectAnswerStatus                string                          `json:"expect_answer_status,omitempty"`
+	ExpectCitationSourceKeys          []string                        `json:"expect_citation_source_keys,omitempty"`
+	ForbidCitationSourceKeys          []string                        `json:"forbid_citation_source_keys,omitempty"`
+	ExpectRelevanceExcludedSourceKeys []string                        `json:"expect_relevance_excluded_source_keys,omitempty"`
+	ForbidRelevanceExcludedSourceKeys []string                        `json:"forbid_relevance_excluded_source_keys,omitempty"`
+	ExpectPromptAdmittedSourceKeys    []string                        `json:"expect_prompt_admitted_source_keys,omitempty"`
+	ForbidPromptAdmittedSourceKeys    []string                        `json:"forbid_prompt_admitted_source_keys,omitempty"`
+	ExpectBudgetDroppedSourceKeys     []string                        `json:"expect_budget_dropped_source_keys,omitempty"`
+	ForbidBudgetDroppedSourceKeys     []string                        `json:"forbid_budget_dropped_source_keys,omitempty"`
+	ExpectAnswerCitedSourceKeys       []string                        `json:"expect_answer_cited_source_keys,omitempty"`
+	ForbidAnswerCitedSourceKeys       []string                        `json:"forbid_answer_cited_source_keys,omitempty"`
+	ExpectAnswerText                  []string                        `json:"expect_answer_text,omitempty"`
+	MaxLatencyMS                      int64                           `json:"max_latency_ms,omitempty"`
 }
 
 type Options struct {
@@ -62,28 +77,32 @@ type Report struct {
 }
 
 type CaseResult struct {
-	Name                 string            `json:"name"`
-	Question             string            `json:"question"`
-	Passed               bool              `json:"passed"`
-	DurationMS           int64             `json:"duration_ms"`
-	EvidenceCount        int               `json:"evidence_count"`
-	RetrievalSignalCount int               `json:"retrieval_signal_count"`
-	SourceKeys           []string          `json:"source_keys"`
-	Planner              string            `json:"planner,omitempty"`
-	PlannerModel         string            `json:"planner_model,omitempty"`
-	PlannerError         string            `json:"planner_error,omitempty"`
-	RetrievalLanes       map[string]string `json:"retrieval_lanes,omitempty"`
-	QueryFamily          string            `json:"query_family,omitempty"`
-	QueryTerms           []string          `json:"query_terms,omitempty"`
-	QueryVariants        []string          `json:"query_variants,omitempty"`
-	Concepts             []string          `json:"concepts,omitempty"`
-	TopEvidence          []EvidenceSummary `json:"top_evidence,omitempty"`
-	StopReason           string            `json:"stop_reason,omitempty"`
-	JudgeVerdict         string            `json:"judge_verdict,omitempty"`
-	RetryAction          string            `json:"retry_action,omitempty"`
-	AnswerStatus         string            `json:"answer_status,omitempty"`
-	CitationSourceKeys   []string          `json:"citation_source_keys,omitempty"`
-	Failures             []string          `json:"failures,omitempty"`
+	Name                   string                          `json:"name"`
+	Question               string                          `json:"question"`
+	Passed                 bool                            `json:"passed"`
+	DurationMS             int64                           `json:"duration_ms"`
+	EvidenceCount          int                             `json:"evidence_count"`
+	RetrievalSignalCount   int                             `json:"retrieval_signal_count"`
+	SourceKeys             []string                        `json:"source_keys"`
+	Planner                string                          `json:"planner,omitempty"`
+	PlannerModel           string                          `json:"planner_model,omitempty"`
+	PlannerError           string                          `json:"planner_error,omitempty"`
+	RetrievalLanes         map[string]string               `json:"retrieval_lanes,omitempty"`
+	SemanticMode           semanticconfig.Mode             `json:"semantic_mode"`
+	ShadowComparison       *brainresearch.ShadowComparison `json:"shadow_comparison,omitempty"`
+	QueryFamily            string                          `json:"query_family,omitempty"`
+	QueryTerms             []string                        `json:"query_terms,omitempty"`
+	QueryVariants          []string                        `json:"query_variants,omitempty"`
+	Concepts               []string                        `json:"concepts,omitempty"`
+	TopEvidence            []EvidenceSummary               `json:"top_evidence,omitempty"`
+	StopReason             string                          `json:"stop_reason,omitempty"`
+	JudgeVerdict           string                          `json:"judge_verdict,omitempty"`
+	RetryAction            string                          `json:"retry_action,omitempty"`
+	AnswerStatus           string                          `json:"answer_status,omitempty"`
+	CitationSourceKeys     []string                        `json:"citation_source_keys,omitempty"`
+	CitationSourceKeysMode string                          `json:"citation_source_keys_mode,omitempty"`
+	EvidenceFlow           brainresearch.EvidenceFlow      `json:"evidence_flow"`
+	Failures               []string                        `json:"failures,omitempty"`
 }
 
 type EvidenceSummary struct {

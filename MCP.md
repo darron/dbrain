@@ -16,10 +16,11 @@ remote agents.
 
 The server provides:
 
-- **Tools**: `search`, `get`, `get many`, `ask`, `entity map`, `related`,
-  `stats items`, `stats sources`, `stats activity`, `stats backlog`,
-  `whats new`, `topic map`, `topic brief`, `research pack`,
-  `dbrain_okf_search`, and `dbrain_okf_get`.
+- **Tools**: `dbrain_audit`, `dbrain_search`, `dbrain_get`, `dbrain_get_many`,
+  `dbrain_research_pack`, `dbrain_related`, `dbrain_entity_map`,
+  `dbrain_topic_map`, `dbrain_topic_brief`, `dbrain_whats_new`,
+  `dbrain_stats_items`, `dbrain_stats_sources`, `dbrain_stats_activity`,
+  `dbrain_stats_backlog`, `dbrain_okf_search`, and `dbrain_okf_get`.
 - **Resources**: `dbrain://mcp/overview`, `dbrain://stats/activity`,
   `dbrain://stats/backlog`, `dbrain://stats/items`, and
   `dbrain://stats/sources`.
@@ -48,19 +49,45 @@ flag weak or conflicting evidence plainly. They should not criticize the corpus
 for not being unbiased or inject external balance, alternate viewpoints, or
 model prior knowledge unless the user explicitly asks for that.
 
-`ask` defaults to retrieval-only in the MCP surface so agent clients do not
-silently spend model usage unless they explicitly request answer synthesis. The
-tool list includes `outputSchema` metadata so MCP clients can reason about the
-structured payloads without learning them from examples.
+The MCP surface is read-only and retrieval-oriented. It does not expose the old
+`dbrain_ask` synthesis tool; agents should use `dbrain_research_pack` for broad
+questions, then inspect cited evidence with `dbrain_get_many` or `dbrain_get`.
+The tool list includes `outputSchema` metadata so MCP clients can reason about
+the structured payloads without learning them from examples.
 
 Evidence excerpts are query-aware. When a match appears deep in a raw source
-extract, item OCR text, or media transcript stored as article text, the
-retrieved evidence window is centered near the match instead of blindly
-returning the start of the raw document. Item-level derived summaries are also
-surfaced as summaries in retrieval evidence, while raw OCR, transcript, and text
-remain available through `dbrain_get`.
+extract, item OCR text, or media transcript, the retrieved evidence window is
+centered near the match instead of blindly returning the start of the raw
+document. Item-level derived summaries are also surfaced as summaries in
+retrieval evidence, while raw OCR, transcript, and text remain available through
+`dbrain_get`.
 
 ## Core Tools
+
+### `dbrain_audit`
+
+Use `dbrain_audit` for production-health claims. It accepts only
+`profile: "fast"|"standard"`; omitted profile defaults to `fast`.
+
+- `fast` runs the complete local fast registry under a fixed ten-second
+  deadline. Concurrent fast calls share one process-wide run.
+- `standard` reads the newest persisted exact-profile standard report and
+  never starts an audit or network request.
+- Both profiles return `{"report":...,"freshness":...}`. A missing standard
+  report returns `report: null` with `freshness.status: "unknown"` and
+  `reason: "not_found"`.
+
+The tool does not accept deep scans, category filters, time windows, paths,
+URLs, endpoints, source identifiers, archive keys, or download limits. Output
+is the stable privacy-validated `dbrain.audit.v1` report plus freshness and is
+capped at 256 KiB. Continue using `dbrain_stats_*` for exploratory counts, not
+as a substitute for whole-system health.
+
+Release acceptance is intentionally broader than the MCP authority. Use the
+repo-local [`dbrain-production-audit`](skills/dbrain-production-audit) skill
+with the installed CLI for content-free pre/post comparison, expected-commit
+verification, archive restore validation, media inventory, and bounded upstream
+parity. MCP cannot run those deep checks and must not infer them from stats.
 
 ### `dbrain_research_pack`
 
@@ -79,8 +106,8 @@ evidence plus:
 
 The `coverage.recall_note` field warns when returned evidence is only a capped
 working set relative to the larger matching corpus. That lets an agent start
-from one read-only call instead of manually orchestrating `ask`, `search`,
-`topic brief`, and follow-up note fetches.
+from one read-only call instead of manually orchestrating `dbrain_search`,
+`dbrain_topic_brief`, and follow-up note fetches.
 
 `topic`, `include_topic_brief`, `include_related`, and `max_chars_per_doc`
 control how much context the pack returns. Each evidence row's `retrieval`
@@ -91,6 +118,46 @@ matches on rarer query terms.
 Source documents are searched as their own candidate stream, so
 `source_types=["web"]` or `["youtube"]` can return direct `src:...` evidence
 even when item hits would otherwise fill the candidate window.
+
+#### Semantic retrieval contract
+
+The configured semantic mode defaults to `off`. MCP `use_semantic=true`
+force-enables effective `on`; `disable_semantic=true` force-enables effective
+`off`; passing both is a tool/client error. These booleans are transport
+overrides and do not mutate configuration. Effective `shadow` or `on` requires
+a non-empty local Ollama embedding model and positive dimensions.
+
+- `off` is lexical-only.
+- `shadow` runs semantic exact search but keeps visible evidence, ordering, and
+  synthesis lexical-identical. `query_plan.shadow_comparison` contains only
+  bounded source/chunk identifiers, ranks, counts, status/reason, and
+  added/removed/reordered references—never excerpts or other content.
+  If the runner performs its one bounded retry, the retry attempt's diagnostic
+  is preserved separately as `query_plan.retry_shadow_comparison` rather than
+  replacing the initial comparison.
+- `on` returns RRF-fused evidence while retaining protected evidence and its
+  chunk/content provenance.
+
+The only vector backend in this foundation is SQLite-authoritative exact scan.
+Semantic candidate depth defaults to 50. Exact scans are capped at 25,000
+current ready embeddings for the configured profile by default, counted before
+request filters. A larger ready profile set reports `too_large`, and validly
+configured provider/search failures report their status/reason; both fail open
+to lexical evidence. ANN, other providers, background sync, and default-on are
+deferred.
+
+Inspect `query_plan.semantic_mode`, `query_plan.retrieval_lanes`, and (only in
+shadow mode) `query_plan.shadow_comparison`. Each evidence row may expose
+`evidence_role`, `chunk`, `content_sections`, `retrieval.fused_score`, and
+lexical/semantic lane provenance including status, reason, rank, raw distance
+or score, RRF contribution, profile, backend, and generation. Exact-tag
+retrieval is a separate lane; `exact_tag_evidence` is representative, not
+exhaustive.
+
+Direct `dbrain_research_pack` calls are read-only and trace-free even in shadow
+mode: they do not create `data/research-runs`. The
+`dbrain://research/{query}` resource retains its documented parameters and has
+no additional semantic URI parameters.
 
 ### `dbrain_get`
 
@@ -202,6 +269,9 @@ before deduping.
 - **Pipeline monitoring and review**: `dbrain_whats_new` for a reviewable
   cursor feed of recent local evidence changes, plus `dbrain_stats_activity`,
   `dbrain_stats_backlog`, and optionally `dbrain_stats_sources`.
+- **Production health**: `dbrain_audit` with the default fast profile for a
+  bounded current local check, or `profile: "standard"` for the newest
+  persisted exact-profile standard report.
 
 ## Eval
 
@@ -246,10 +316,12 @@ without custom MCP code when they write into the shared data model:
 - Link items to sources through source-link records so MCP graph expansion can
   move from a post/bookmark/episode to the referenced article, repository,
   paper, or transcript source.
-- Store media-derived text in the existing item enrichment fields where
-  possible: image text in `ocr_text`, short-form video/audio transcripts in
-  `article_text` with `article_title = "X Media Transcript"` until a generic
-  transcript field exists, and derived item summaries in `summary_text`.
+- Store media-derived text in the current item enrichment fields where possible:
+  image text in `ocr_text`, short-form video/audio transcripts in the
+  `x_media_transcript` enrichment role, and derived item summaries in
+  `summary_text`. Legacy X transcript rows may still mirror text through
+  `article_text` with `article_title = "X Media Transcript"`, but new importer
+  code should target the enrichment roles rather than the compatibility mirror.
 - Keep source-specific metadata in raw JSON or source-specific columns, but make
   the durable searchable evidence available through the common text, summary,
   tag, and link fields.
@@ -301,6 +373,11 @@ Then configure remote MCP clients with the Tailscale HTTPS URL plus `/mcp`.
 Use Tailscale Serve, not Funnel, unless you intentionally want a public
 internet endpoint.
 
+Production or remote clients must use an explicit HTTPS Streamable HTTP MCP
+endpoint. Require bearer authentication whenever the endpoint is not confined
+to an otherwise trusted private boundary; never treat a repo/dev stdio command,
+localhost URL, or path as production configuration truth.
+
 The built-in tailnet option is usually simpler when you want `dbrain` itself to
 own the tailnet node:
 
@@ -317,7 +394,7 @@ dbrain serve mcp --transport tsnet --tsnet-hostname dbrain
 ```
 
 Add `--tsnet-funnel` only when you intentionally want Tailscale Funnel public
-exposure:
+exposure. Enable `mcp.auth.enabled=true` and create a bearer token first:
 
 ```sh
 dbrain serve mcp --transport tsnet --tsnet-funnel
@@ -352,6 +429,12 @@ Security defaults:
   `--allow-origin`.
 - Optional bearer auth can be enabled with `mcp.auth.enabled=true` or
   `DBRAIN_MCP_AUTH_ENABLED=true`.
+- `dbrain_audit` is always available on local stdio. HTTP and tsnet advertise
+  and dispatch it only when dbrain bearer auth is required and configured;
+  private/tailnet reachability alone does not grant the capability.
+- Funnel refuses to start an MCP surface unless bearer auth is enabled.
+- JSON-RPC batches are limited to 16 requests; larger batches are rejected
+  before any member is dispatched on HTTP or stdio.
 
 Create an MCP bearer token with:
 
@@ -363,7 +446,8 @@ The raw token is shown once; SQLite stores only the token hash and fingerprint.
 Authenticated HTTP clients must send `Authorization: Bearer <token>`. When
 bearer auth is disabled, HTTP and tsnet MCP startup logs a warning because
 Tailscale Funnel or another public proxy would make the read-only brain content
-publicly reachable.
+publicly reachable. Those auth-disabled transports also omit `dbrain_audit`
+from `tools/list` and reject direct calls to it.
 
 Do not configure both stdio and HTTP transports for the same agent unless you
 want duplicate dbrain tools. It is fine to run one long-lived HTTP daemon for
@@ -490,8 +574,12 @@ fronted by Tailscale Serve.
 ## Skill
 
 This repo includes a Codex skill for agents at `skills/dbrain-mcp/SKILL.md`.
-To install it locally for Codex, copy the `skills/dbrain-mcp` directory into
-your Codex skills directory, for example `~/.codex/skills/dbrain-mcp`.
+To refresh the installed Codex copy from the repo, run:
+
+```sh
+mkdir -p ~/.codex/skills/dbrain-mcp
+cp -R skills/dbrain-mcp/. ~/.codex/skills/dbrain-mcp/
+```
 
 The skill includes the recommended Codex MCP `~/.codex/config.toml` stanza. Use
 absolute paths for both the binary and `--root`, then restart Codex so the

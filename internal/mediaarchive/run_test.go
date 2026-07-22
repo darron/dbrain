@@ -113,6 +113,89 @@ func TestRunDefersPruneWhenSameLocalPathStillNeedsCoverage(t *testing.T) {
 	}
 }
 
+func TestPruneLocalPathRejectsTraversalAndSymlinkEscape(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		localPath func(t *testing.T, cfg config.Config) (string, string)
+	}{
+		{
+			name: "traversal",
+			localPath: func(t *testing.T, cfg config.Config) (string, string) {
+				t.Helper()
+				outside := filepath.Join(filepath.Dir(cfg.VaultDir), "outside-traversal.jpg")
+				rel, err := filepath.Rel(cfg.VaultDir, outside)
+				if err != nil {
+					t.Fatalf("relative traversal path: %v", err)
+				}
+				return filepath.ToSlash(rel), outside
+			},
+		},
+		{
+			name: "escaping parent symlink",
+			localPath: func(t *testing.T, cfg config.Config) (string, string) {
+				t.Helper()
+				outsideDir := filepath.Join(filepath.Dir(cfg.VaultDir), "outside-symlink")
+				if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+					t.Fatalf("mkdir outside: %v", err)
+				}
+				if err := os.Symlink(outsideDir, filepath.Join(cfg.VaultDir, "escape")); err != nil {
+					t.Fatalf("symlink outside dir: %v", err)
+				}
+				return "escape/outside-symlink.jpg", filepath.Join(outsideDir, "outside-symlink.jpg")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatalf("EnsureDirs: %v", err)
+			}
+			st, err := store.Open(cfg.DBPath)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = st.Close() }()
+
+			localPath, outside := tc.localPath(t, cfg)
+			_, assetID, _, _ := setupArchivedPhotoItemWithSharedPath(t, cfg, st, "x:prune-escape", "https://pbs.twimg.com/media/prune-escape.jpg", localPath, true)
+			if _, err := st.SaveMediaArchive(t.Context(), assetID, model.MediaArchiveResult{
+				Provider:   "s3",
+				Bucket:     "dbrain",
+				Key:        localPath,
+				Status:     model.MediaArchiveStatusArchived,
+				ArchivedAt: time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("SaveMediaArchive: %v", err)
+			}
+
+			pruned, _, err := pruneLocalPathIfSafe(t.Context(), cfg, st, localPath, nil)
+			if err == nil {
+				t.Error("expected escaping local path to be rejected")
+			}
+			if pruned {
+				t.Error("escaping local path reported pruned")
+			}
+			data, readErr := os.ReadFile(outside)
+			if readErr != nil {
+				t.Fatalf("outside sentinel was deleted: %v", readErr)
+			}
+			if string(data) != "photo-bytes" {
+				t.Fatalf("outside sentinel changed to %q", data)
+			}
+			assets, err := st.ListMediaAssetsByLocalPath(t.Context(), localPath)
+			if err != nil {
+				t.Fatalf("ListMediaAssetsByLocalPath: %v", err)
+			}
+			if len(assets) != 1 || !assets[0].LocalPrunedAt.IsZero() {
+				t.Fatalf("escaping local path was marked pruned: %+v", assets)
+			}
+		})
+	}
+}
+
 func TestRunPrunesWithoutPublicBaseURL(t *testing.T) {
 	t.Parallel()
 

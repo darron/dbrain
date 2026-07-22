@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func defaultInt(value, fallback int) int {
@@ -37,28 +39,16 @@ func readNote(path string) (string, error) {
 }
 
 func readVaultNote(vaultDir string, notePath string) (string, error) {
-	fullPath, err := resolveVaultNotePath(vaultDir, notePath)
+	root, err := vaultfs.Open(vaultDir)
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(fullPath)
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(notePath)
 	if err != nil {
 		return "", noteReadError(notePath, err)
 	}
 	return string(data), nil
-}
-
-func resolveVaultNotePath(vaultDir string, notePath string) (string, error) {
-	notePath = strings.TrimSpace(notePath)
-	if notePath == "" {
-		return "", fmt.Errorf("note path is empty")
-	}
-	fullPath := filepath.Clean(filepath.Join(vaultDir, filepath.FromSlash(notePath)))
-	vaultRoot := filepath.Clean(vaultDir)
-	if fullPath != vaultRoot && !strings.HasPrefix(fullPath, vaultRoot+string(os.PathSeparator)) {
-		return "", fmt.Errorf("note path escapes vault: %s", notePath)
-	}
-	return fullPath, nil
 }
 
 func noteReadError(notePath string, err error) error {

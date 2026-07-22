@@ -67,7 +67,8 @@ func TestResearchEvalCommandRunsAndPrintsPlannerMetadata(t *testing.T) {
 		"planner=deterministic",
 		"retrieval_lanes:",
 		"query_terms:",
-		"citation_source_keys:",
+		"citation_source_keys (prompt_admitted):",
+		"prompt_admitted_source_keys:",
 		"top_retrieval_signals:",
 		"x:eval-command-alpha",
 	} {

@@ -6,44 +6,61 @@ import (
 )
 
 type Options struct {
-	Browser          string
-	Profile          string
-	Limit            int
-	WatchLater       bool
-	Liked            bool
-	Summarize        bool
-	Force            bool
-	Transcriber      string
-	Model            string
-	CLI              string
-	Length           string
-	Timeout          time.Duration
-	Logger           *slog.Logger
-	YTDLPBinary      string
-	WhisperBinary    string
-	WhisperModelPath string
-	MacWhisperBinary string
-	SummarizeBinary  string
+	Browser               string
+	Profile               string
+	Limit                 int
+	WatchLater            bool
+	Liked                 bool
+	Summarize             bool
+	Force                 bool
+	Transcriber           string
+	Model                 string
+	CLI                   string
+	Length                string
+	Timeout               time.Duration
+	Logger                *slog.Logger
+	YTDLPBinary           string
+	WhisperBinary         string
+	WhisperModelPath      string
+	WhisperVADPath        string
+	TranscriptionLanguage string
+	MacWhisperBinary      string
+	SummarizeBinary       string
 }
 
 type Stats struct {
-	FeedsProcessed    int `json:"feeds_processed"`
-	ItemsProcessed    int `json:"items_processed"`
-	ItemsCreated      int `json:"items_created"`
-	ItemsDeleted      int `json:"items_deleted"`
-	ItemsUpdated      int `json:"items_updated"`
-	ItemsUnchanged    int `json:"items_unchanged"`
-	ItemsRendered     int `json:"items_rendered"`
-	ItemsSkipped      int `json:"items_skipped"`
-	SourcesCreated    int `json:"sources_created"`
-	LinksCreated      int `json:"links_created"`
-	SourcesQueued     int `json:"sources_queued"`
-	SourcesDeleted    int `json:"sources_deleted"`
-	SourcesExtracted  int `json:"sources_extracted"`
-	SourcesSummarized int `json:"sources_summarized"`
-	SourcesRendered   int `json:"sources_rendered"`
-	SourcesUnchanged  int `json:"sources_unchanged"`
-	Errors            int `json:"errors"`
+	FeedsProcessed    int       `json:"feeds_processed"`
+	ItemsProcessed    int       `json:"items_processed"`
+	ItemsCreated      int       `json:"items_created"`
+	ItemsDeleted      int       `json:"items_deleted"`
+	ItemsUpdated      int       `json:"items_updated"`
+	ItemsUnchanged    int       `json:"items_unchanged"`
+	ItemsRendered     int       `json:"items_rendered"`
+	ItemsSkipped      int       `json:"items_skipped"`
+	SourcesCreated    int       `json:"sources_created"`
+	LinksCreated      int       `json:"links_created"`
+	SourcesQueued     int       `json:"sources_queued"`
+	SourcesDeleted    int       `json:"sources_deleted"`
+	SourcesExtracted  int       `json:"sources_extracted"`
+	SourcesSummarized int       `json:"sources_summarized"`
+	SourcesRendered   int       `json:"sources_rendered"`
+	SourcesUnchanged  int       `json:"sources_unchanged"`
+	Errors            int       `json:"errors"`
+	WatchLater        FeedStats `json:"watch_later"`
+	Liked             FeedStats `json:"liked"`
+}
+
+// FeedStats preserves per-family poll/arrival counts so health metrics never
+// infer liked versus watch-later activity from one combined stage total.
+type FeedStats struct {
+	FeedsProcessed int `json:"feeds_processed"`
+	ItemsProcessed int `json:"items_processed"`
+	ItemsCreated   int `json:"items_created"`
+	ItemsUpdated   int `json:"items_updated"`
+	ItemsUnchanged int `json:"items_unchanged"`
+	ItemsSkipped   int `json:"items_skipped"`
+	LinksCreated   int `json:"links_created"`
+	Errors         int `json:"errors"`
 }
 
 type feed struct {

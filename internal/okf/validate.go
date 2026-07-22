@@ -1,14 +1,15 @@
 package okf
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
+	"github.com/darron/dbrain/internal/vaultfs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,81 +22,16 @@ func ValidateBundle(root string) (ValidationResult, error) {
 	if err != nil {
 		return ValidationResult{}, fmt.Errorf("resolve bundle path: %w", err)
 	}
-	result := ValidationResult{Bundle: absRoot, Conformant: true}
-	manifest, _ := readManifest(absRoot)
-	result.OmittedByFilterLinks = len(manifest.OmittedLinks)
-	omitted := map[string]struct{}{}
-	for _, link := range manifest.OmittedLinks {
-		key := path.Clean(link.FromPath) + "->" + path.Clean(link.TargetPath)
-		omitted[key] = struct{}{}
+	confined, err := vaultfs.Open(absRoot)
+	if err != nil {
+		return ValidationResult{}, fmt.Errorf("open bundle root: %w", err)
 	}
-
-	files, err := markdownFiles(absRoot)
+	defer func() { _ = confined.Close() }()
+	_, result, err := inspectBundleDetailed(context.Background(), confined)
 	if err != nil {
 		return ValidationResult{}, err
 	}
-	existing := map[string]struct{}{}
-	for _, rel := range files {
-		existing[rel] = struct{}{}
-	}
-
-	for _, rel := range files {
-		full := filepath.Join(absRoot, filepath.FromSlash(rel))
-		data, err := os.ReadFile(full)
-		if err != nil {
-			addValidationError(&result, rel, fmt.Sprintf("read: %v", err))
-			continue
-		}
-		base := path.Base(rel)
-		if base == "index.md" || base == "log.md" {
-			if hasFrontmatter(data) {
-				addValidationError(&result, rel, "reserved index/log file must not contain frontmatter")
-			}
-			if base == "index.md" {
-				result.Indexes++
-			}
-			continue
-		}
-		result.Concepts++
-		meta, _, err := parseMarkdownDocument(data)
-		if err != nil {
-			addValidationError(&result, rel, err.Error())
-			continue
-		}
-		doc := ValidationDocument{Path: rel}
-		if value, ok := meta["type"].(string); ok {
-			doc.Type = strings.TrimSpace(value)
-		}
-		if value, ok := meta["title"].(string); ok {
-			doc.Title = strings.TrimSpace(value)
-		}
-		if doc.Type == "" {
-			doc.Error = "missing required frontmatter type"
-			addValidationError(&result, rel, doc.Error)
-		}
-		result.Documents = append(result.Documents, doc)
-
-		linkText := stripValidationSkippedRanges(string(data))
-		for _, dest := range markdownDestinations(linkText) {
-			if isExternalDestination(dest) {
-				continue
-			}
-			target := resolveLinkTarget(rel, dest)
-			if target == "" || !strings.HasSuffix(target, ".md") {
-				continue
-			}
-			if _, ok := existing[target]; ok {
-				continue
-			}
-			key := path.Clean(rel) + "->" + path.Clean(target)
-			if _, ok := omitted[key]; ok {
-				continue
-			}
-			result.BrokenInternalLinks++
-			addValidationError(&result, rel, "broken internal link: "+dest)
-		}
-	}
-	result.Conformant = len(result.Errors) == 0
+	result.Bundle = absRoot
 	return result, nil
 }
 
@@ -115,32 +51,6 @@ func stripValidationSkippedRanges(text string) string {
 		}
 		text = afterStart[end+len(validationSkipEnd):]
 	}
-}
-
-func markdownFiles(root string) ([]string, error) {
-	var files []string
-	err := filepath.WalkDir(root, func(full string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if filepath.Ext(entry.Name()) != ".md" {
-			return nil
-		}
-		rel, err := filepath.Rel(root, full)
-		if err != nil {
-			return err
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walk bundle: %w", err)
-	}
-	sort.Strings(files)
-	return files, nil
 }
 
 func hasFrontmatter(data []byte) bool {

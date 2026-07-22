@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mcpserver"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/schedulerstate"
+	"github.com/darron/dbrain/web"
 )
 
 const (
@@ -39,6 +41,20 @@ type Options struct {
 	Verbose            bool
 	OnReady            func()
 	SchedulerStatus    func() schedulerstate.SyncAllStatus
+	mcpDependencies    mcpserver.ServerDependencies
+	webAudit           web.AuditHandlerDependencies
+}
+
+func SetWebAuditDependencies(opts *Options, dependencies web.AuditHandlerDependencies) {
+	if opts != nil {
+		opts.webAudit = dependencies
+	}
+}
+
+func SetMCPDependencies(opts *Options, dependencies mcpserver.ServerDependencies) {
+	if opts != nil {
+		opts.mcpDependencies = dependencies
+	}
 }
 
 func OptionsFromRuntime(cfg config.Config) (Options, error) {
@@ -110,7 +126,26 @@ func (o *Options) Validate() error {
 		return err
 	}
 	o.MCPPath = cleaned
+	if err := ValidateSurfacePaths(o.Web, o.MCP, cleaned); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ValidateSurfacePaths(webEnabled, mcpEnabled bool, mcpPath string) error {
+	if !webEnabled || !mcpEnabled {
+		return nil
+	}
+	for _, reserved := range []string{"/api/audit", "/share"} {
+		if routeNamespacesOverlap(mcpPath, reserved) {
+			return fmt.Errorf("mcp path %q overlaps reserved web namespace %q", mcpPath, reserved)
+		}
+	}
+	return nil
+}
+
+func routeNamespacesOverlap(left, right string) bool {
+	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
 }
 
 func ValidateMCPPath(value string) (string, error) {

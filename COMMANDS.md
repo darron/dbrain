@@ -11,37 +11,61 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain auth mcp token add <name>`
 - `dbrain auth mcp token list`
 - `dbrain auth mcp token revoke <id-or-name-or-fingerprint>`
+- `dbrain categorize analyze`
 - `dbrain categorize batch`
 - `dbrain categorize item`
 - `dbrain categorize repair`
 - `dbrain categorize source`
 - `dbrain categorize sources`
+- `dbrain categorize vocab`
+- `dbrain completion <shell>`
 - `dbrain config env`
 - `dbrain config paths`
+- `dbrain doctor full-disk-access`
 - `dbrain entity generate <query>`
 - `dbrain entity index`
 - `dbrain entity map [query]`
 - `dbrain eval mcp`
+- `dbrain eval research`
+- `dbrain eval research diff`
+- `dbrain eval research propose`
 - `dbrain extract links`
 - `dbrain extract sources`
 - `dbrain feed add <url>`
 - `dbrain feed check [feed-key-or-url]`
+- `dbrain feed disable <feed-key-or-url>`
+- `dbrain feed enable <feed-key-or-url>`
 - `dbrain feed list`
+- `dbrain feed refresh <feed-key-or-url>`
 - `dbrain feed status <feed-key-or-url>`
 - `dbrain get <source-key-or-id>`
 - `dbrain hydrate x`
 - `dbrain import apple-notes`
+- `dbrain import apple-notes probe`
+- `dbrain import apple-notes snapshot --dir <path>`
 - `dbrain import github stars`
 - `dbrain import safari-tabs`
+- `dbrain import safari-tabs devices`
 - `dbrain import x-bookmarks`
 - `dbrain import youtube`
+- `dbrain install`
+- `dbrain launchd install`
+- `dbrain launchd plist`
+- `dbrain launchd restart`
+- `dbrain launchd uninstall`
 - `dbrain link add <url>`
 - `dbrain ocr x-photos`
+- `dbrain okf export`
+- `dbrain okf validate <dir>`
 - `dbrain repair fts`
 - `dbrain repair notes`
+- `dbrain repair pruned-media`
 - `dbrain repair sources`
 - `dbrain research <question>`
 - `dbrain search <query>`
+- `dbrain semantic status`
+- `dbrain semantic chunk`
+- `dbrain semantic embed`
 - `dbrain serve mcp`
 - `dbrain serve remote`
 - `dbrain serve web`
@@ -79,20 +103,29 @@ global flags, and the environment/config lookup footer. The root help currently
 looks like:
 
 ```text
+Local-first second-brain tooling for importing, enriching, searching, and serving a personal research corpus.
+
 Usage:
   dbrain [flags]
   dbrain [command]
 
 Available Commands:
   archive     Manage archived media and other durable storage tiers
+  audit       Inspect production health without modifying the target
+  auth        Manage authentication approvals and tokens
   categorize  Categorize items or linked sources with an LLM
+  completion  Generate the autocompletion script for the specified shell
   config      Show active configuration and storage paths
+  doctor      Diagnose local dbrain runtime issues
   entity      Derive and render entities from the local brain
   eval        Run local retrieval quality checks
   extract     Extract and summarize linked sources
+  feed        Manage RSS, Atom, and JSON Feed subscriptions
   get         Load an item or source note
+  help        Help about any command
   hydrate     Hydrate canonical source data
   import      Import source data into the brain
+  install     Run first-time local dbrain setup
   launchd     Install or print a macOS launchd service for dbrain
   link        Add and manage manually submitted links
   okf         Export and inspect Open Knowledge Format bundles
@@ -100,15 +133,28 @@ Available Commands:
   repair      Repair derived local artifacts
   research    Research the local brain with evidence and local synthesis
   search      Search items and sources
+  semantic    Build and inspect semantic retrieval state
   serve       Serve local interfaces
   sqlite      Manage the local SQLite database
   stats       Show database counts and import progress
   sync        Run multi-stage refresh flows
   topic       Build and write topic maps from the local brain
   transcribe  Transcribe downloaded local media
+  tsnet       Inspect or reset built-in Tailscale state
   version     Print build and version information
   whats-new   Show newly imported, enriched, blocked, or failed local evidence
   worker      Run long-lived background-style worker loops
+
+Flags:
+      --caffeinate           Force keep-awake behavior while the command is running
+      --config-file string   Config file path override (wins over --root, DBRAIN_CONFIG_FILE, and DBRAIN_ROOT)
+      --debug                Enable structured debug logging to stderr (default true)
+  -h, --help                 help for dbrain
+      --no-caffeinate        Disable automatic keep-awake behavior for this command
+      --no-debug             Disable structured debug logging to stderr
+      --root string          Brain root directory override (defaults to DBRAIN_ROOT, then ~/.config/dbrain and ~/.local/share/dbrain)
+
+Use "dbrain [command] --help" for more information about a command.
 
 Environment:
   --config-file wins over --root, DBRAIN_CONFIG_FILE, and DBRAIN_ROOT.
@@ -120,7 +166,8 @@ Environment:
 ### `dbrain config paths`
 
 Prints the active config, categories, data, database, vault, media, temp, cache,
-and log paths. Use `--json` for automation.
+and log paths without creating directories, running startup preflight, or
+cleaning legacy files. Use `--json` for automation.
 
 ```sh
 dbrain config paths
@@ -130,11 +177,195 @@ dbrain config paths
 
 Prints the supported environment variables and matching `config.yaml` keys. Use
 `--json` for automation. This command is the authoritative source for the table
-in this README.
+in `README.md`.
 
 ```sh
 dbrain config env
 dbrain config env --markdown
+```
+
+### `dbrain audit`
+
+Runs a bounded, read-only health audit against the resolved target. `audit all`
+emits the closed 55-check registry; category commands limit the scope without
+changing check semantics. When `--expect-commit` is set on a category or source
+command, `boundary.runtime` is added explicitly so the commit assertion cannot
+be silently filtered out. A 7-or-more-character hexadecimal commit prefix is
+accepted, though release workflows should use the full artifact commit.
+
+```sh
+dbrain audit all --profile standard --json
+dbrain audit imports --since 7d
+dbrain audit pipeline --json
+dbrain audit durability --expect-commit <sha> --json
+dbrain audit all --profile deep --json
+dbrain audit apple-notes --json
+dbrain audit safari-tabs --json
+dbrain audit x-bookmarks --json
+dbrain audit github-stars --json
+dbrain audit youtube-liked --json
+dbrain audit youtube-watch-later --json
+dbrain audit feeds --json
+```
+
+Standard is the default profile; fast omits expensive integrity and remote
+checks. Deep is an explicit CLI-only profile that validates the newest remote
+SQLite archive in a private temporary directory and performs complete,
+paginated reconciliation of the configured `media/` archive inventory. It
+never replaces the active database and is not exposed through the web UI or
+MCP. Exit codes are 0 pass, 1 warn, 2 fail, and 3
+unknown/bootstrap failure. A produced JSON report is written before a non-zero
+health exit. `--include-identifiers` selects a local-only wrapper with bounded
+row IDs, source keys, and cleanup paths; the shared `dbrain.audit.v1` report
+never contains paths, object keys, corpus content, titles, URLs, or secrets.
+
+Deep imports reconcile the configured Apple Notes, Safari Tabs, X Bookmarks,
+GitHub Stars, YouTube Liked, YouTube Watch Later, and subscribed-feed
+inventories against the query-only local snapshot. Inventories run
+sequentially with a five-minute ceiling per source and fixed maxima of 100,000
+unique identities and 10,000 pages. The report exposes counts only. It fails
+when a complete upstream inventory contains identities missing locally and is
+unknown when credentials, snapshot access, schema parsing, pagination, or
+completion cannot be proven.
+
+The seven source-specific commands default to deep and reject an explicitly
+selected fast or standard profile. Each command forces only its named parity
+check, including when normal scheduled import for that source is disabled; in
+that case the poll check remains skipped with `feature_disabled`. Source
+commands do not expose or resolve archive byte controls. They never import,
+delete, repair, retry, restore, prune, close tabs, modify Notes, or write feed
+state. Apple Notes and Safari Tabs copy their SQLite DB/WAL/SHM inputs into
+interruptible dbrain-owned snapshots. X and GitHub use fixed upstream origins,
+YouTube uses fixed playlist URLs with a bounded proxy-free `yt-dlp` process,
+and feeds are restricted by the existing safe-network policy, including exact
+configured private origins. Deep parity cannot be invoked through scheduled
+audits, MCP, or the admin API.
+
+The audit resolver follows the normal target precedence but creates no
+directories, applies no migrations, runs no startup repair/preflight, and
+opens SQLite in query-only mode with one consistent snapshot.
+
+Deep defaults to 20 GiB compressed archive, 100 GiB decompressed database, and
+120 GiB aggregate temporary-space ceilings. `audit.max_archive_bytes`,
+`audit.max_database_bytes`, and `audit.max_temp_bytes` (or the matching
+`DBRAIN_AUDIT_MAX_*` variables) may only lower those defaults. The deep-only
+`--max-archive-bytes`, `--max-database-bytes`, and `--max-temp-bytes` flags may
+explicitly raise them for one run; passing those flags with fast or standard
+is a usage error. Remote inventory is also bounded to 1,000,000 objects and
+10,000 pages, with a two-hour whole-run deadline and cleanup on every exit.
+
+Per-class timeouts can be lowered with `audit.timeouts.bootstrap`,
+`local_query`, `metrics_or_manifest`, `sqlite_or_okf_integrity`,
+`remote_metadata`, and `remote_request`, or their
+`DBRAIN_AUDIT_TIMEOUT_*` equivalents. Built-in ceilings are respectively 10s,
+5s fast/30s standard, 10s, 2m, 2m per check, and 30s per request/page. Invalid
+or non-positive durations fail bootstrap; larger values are clamped.
+
+`serve remote` can own continuous read-only audit scheduling when
+`audit.enabled: true`. A fast profile runs after each actual scheduled sync
+result, after its process lock and status settle; a standard profile runs every
+`audit.standard_interval` (6h by default). The profiles share one non-overlap
+guard, deep is never scheduled, and audit failure does not change the sync
+result. Reports rotate daily under `<log_dir>/audit/reports` with private
+permissions, 90-day/256-MiB retention, and exact-profile history.
+
+Transition alerts are optional. Configure `audit.alert.webhook_url` and, when
+needed, a typed `bearer_token_ref`. Public webhooks require HTTPS; private,
+loopback, and link-local delivery requires `allow_private_origin: true` and is
+confined to that exact origin. Redirects and environment proxies are disabled.
+No webhook is required for reports, freshness, metrics, or later admin and MCP
+visibility.
+
+### `dbrain install`
+
+Runs first-time local setup. By default, it uses the existing XDG split layout:
+config in `~/.config/dbrain` and data, database, vault, logs, cache, temp, and
+OKF output in `~/.local/share/dbrain`. Use `--base-path <dir>` for a
+single-directory install where the current user has write permission.
+If you pass global `--config-file <path>` instead, the installer writes the
+config and categories next to that file while data, logs, cache, temp files,
+and the vault keep the normal XDG data layout. Use `--base-path` when you want
+everything colocated under one directory.
+
+Before running install, the recommended Homebrew setup is `brew install
+summarize ollama whisper-cpp` plus `brew install --cask google-chrome`. The
+installer detects local helpers and runtimes including `summarize`, whisper.cpp
+(`whisper-cli`), MacWhisper (`mw` and the macOS app), Ollama, LM Studio, oMLX, `tesseract`,
+`ffprobe`, `yt-dlp`, 1Password CLI, and macOS `security`. Local model endpoints
+are checked separately from command presence so the generated config can
+reflect tools that are installed but not currently serving models. When tool
+detection runs and `summarize` is absent, install reports the exact
+`brew install summarize` repair command before the first sync can fail. When X
+is selected without a ready whisper.cpp or MacWhisper backend, install reports
+both the preferred `brew install whisper-cpp` repair and the optional
+MacWhisper compatibility path.
+
+When `whisper-cli` is detected and either configured model file is absent,
+interactive install offers the pinned, checksum-verified Whisper base and
+Silero VAD downloads with yes selected. `--yes` accepts that default. Model
+downloads use the same terminal byte-progress UI as SQLite archive transfers,
+and Ollama pulls/creates stream their native command output.
+
+Interactive install begins with an explicit source checklist for X bookmarks,
+GitHub stars, YouTube Watch Later, liked YouTube videos, subscribed feeds,
+Apple Notes, and Safari tabs. All choices begin unchecked on a fresh install.
+The resulting positive selections are written under `sync_all.imports` and are
+shared by manual and scheduled `sync all` runs. Selecting X enables its whole
+family of bookmark import, hydration, media transcription, and photo OCR;
+leaving X unchecked prevents all four stages. Re-running install without
+`--force` merges these managed selections into the existing YAML while
+preserving unrelated config. When X or either YouTube list is selected, install
+also asks for the shared cookie browser and optional profile written to
+`sync_all.browser` and `sync_all.profile`.
+
+When the Ollama CLI is detected, plain `dbrain install` uses the local dbrain
+Ollama profile by default: it writes the embedded Modelfile, pulls the public
+base model if needed, creates `dbrain:2026042701`, and writes
+`ollama/dbrain:2026042701` to `summary.model` and `categorize.model`. If
+Ollama is not available, served local model endpoints are fallback defaults,
+with LM Studio used only after Ollama/oMLX options. If no local OCR model/tool
+is selected and no OpenRouter key is configured, generated installs skip X
+photo OCR for configured `sync all` runs instead of failing on the hosted OCR
+default.
+
+For local model setup, `--local-model-profile dbrain` writes the local Ollama
+dbrain wrapper tag `ollama/dbrain:2026042701` to `summary.model` and
+`categorize.model`, materializes the embedded dbrain Modelfile under the config
+directory, pulls `qwen3.6:35b-a3b-nvfp4` when needed, and creates the local
+`dbrain:2026042701` tag. `--local-model-profile dbrain-omlx` writes the tested
+oMLX equivalent
+`omlx/Qwen3.6-35B-A3B-MLX-4bit`, and `--local-model-profile small-ollama`
+writes and pulls `ollama/gemma4:12b-mlx` for lower-memory installs. The oMLX
+profile expects the selected oMLX server to already expose that model.
+
+Tailscale/tsnet transport setup and GitHub web login setup are intentionally
+separate. Tailscale options write `tsnet.*`; GitHub login writes `auth.*`.
+On macOS, prompted third-party secrets are stored in Keychain and referenced as
+`keychain://dbrain/...` instead of being written directly to YAML. The generated
+web auth session key is stored in Keychain when available; otherwise it is
+generated into the `0600` config file and reported as a warning.
+If Keychain is disabled or unavailable, prompted third-party secrets such as
+GitHub tokens, OpenRouter keys, Tailscale auth keys, and GitHub OAuth client
+secrets are skipped rather than written to config. Re-running install with
+`--force` and GitHub login can rotate the generated session key and log out
+existing web sessions unless an existing `dbrain/auth-session-key` Keychain
+entry is already present. Existing known `dbrain` Keychain secrets are reused
+when the matching prompt field is left blank.
+
+```sh
+dbrain install
+dbrain install --yes
+dbrain install --base-path ~/dbrain --yes
+dbrain install --yes --enable-github-stars --enable-feeds
+dbrain install --yes --enable-youtube-watch-later --enable-youtube-liked
+dbrain install --yes --enable-apple-notes --enable-safari-tabs --safari-tabs-device phone --enable-scheduler
+dbrain install --yes --enable-tailscale --tsnet-hostname dbrain
+dbrain install --yes --enable-github-login --auth-base-url https://dbrain.example.ts.net --github-client-id Iv1.example
+dbrain install --yes --enable-scheduler --install-launchd
+dbrain install --yes --local-model-profile dbrain
+dbrain install --yes --local-model-profile dbrain-omlx
+dbrain install --yes --local-model-profile small-ollama
+dbrain install --yes --summary-model ollama/dbrain:2026042701 --categorize-model ollama/dbrain:2026042701
 ```
 
 ### `dbrain import x-bookmarks`
@@ -165,6 +396,7 @@ limited runs skip unchanged-current notes and advance through the backlog.
 
 ```sh
 dbrain import apple-notes probe
+dbrain import apple-notes snapshot --dir /tmp/dbrain-notes-snapshot
 dbrain import apple-notes --dry-run --show-titles
 dbrain import apple-notes --limit 25
 dbrain import apple-notes
@@ -174,6 +406,10 @@ dbrain import apple-notes --exclude-folder Private
 dbrain import apple-notes --exclude-folder Private --forget-excluded
 dbrain import apple-notes --skip-attachment-ocr
 ```
+
+`import apple-notes probe` checks database access and schema shape without
+decoding note bodies. `import apple-notes snapshot --dir <path>` copies the
+Notes DB/WAL/SHM triplet into a dbrain-owned directory for local debugging.
 
 ### `dbrain import safari-tabs`
 
@@ -190,10 +426,10 @@ Safari can make newly synced tabs appear in a follow-up import within seconds.
 
 ```sh
 dbrain import safari-tabs devices
-dbrain import safari-tabs --device dfone --dry-run --show-titles
-dbrain import safari-tabs --device dfone
-dbrain import safari-tabs --device dfone --older-than 168h
-dbrain import safari-tabs --device dfone --limit 100
+dbrain import safari-tabs --device phone --dry-run --show-titles
+dbrain import safari-tabs --device phone
+dbrain import safari-tabs --device phone --older-than 168h
+dbrain import safari-tabs --device phone --limit 100
 ```
 
 ### `dbrain sync all`
@@ -216,14 +452,23 @@ when unsure whether a selected oMLX model is vision-capable.
 `--categorize-limit` is applied separately to items and sources, so
 `--categorize-limit 25` can process up to 25 item rows and 25 source rows.
 
+The durable `sync_all.imports` map controls which source importers both manual
+and scheduled runs may contact. Existing configs without this map retain the
+legacy defaults: X, GitHub stars, both YouTube lists, and feeds are enabled;
+Apple Notes and Safari tabs continue to follow their existing `*.enabled`
+settings. Environment variables named `DBRAIN_SYNC_ALL_IMPORT_*` override the
+map, and explicit CLI flags remain one-run overrides. Scheduler-specific
+`skip_*` settings are applied afterward as scheduled-run-only restrictions.
+
 X hydration uses `--x-limit`. X media transcription and X photo OCR can be
 bounded independently with `--x-media-limit` and `--x-photo-ocr-limit`; either
 limit falls back to `--x-limit` when left at 0. In the default configuration
 this combines the requirements of X bookmark import, X hydration, X media
 transcription, X photo OCR, link/source enrichment, YouTube import, and
 categorization. A practical local setup usually includes a supported
-Chrome/Chromium profile with valid cookies plus Ollama or an OpenRouter key,
-`mw`, `ffprobe`, `summarize`, and `yt-dlp`. It supports `--skip-*` flags when
+Chrome/Chromium profile with valid cookies plus a configured model backend such
+as Ollama, LM Studio, oMLX, or OpenRouter, along with `mw`, `ffprobe`,
+`summarize`, and `yt-dlp`. It supports `--skip-*` flags when
 you only want part of the pipeline. Apple Notes is not run by default; enable it
 with `--apple-notes` or
 `DBRAIN_APPLE_NOTES_ENABLED=true`. Safari tabs are also disabled by default;
@@ -236,7 +481,7 @@ the stage or `--feed-limit` to cap checks in one run.
 ```sh
 dbrain sync all --length short --timeout 5m
 dbrain sync all --apple-notes --length short --timeout 5m
-dbrain sync all --safari-tabs --safari-tabs-device dfone --length short --timeout 5m
+dbrain sync all --safari-tabs --safari-tabs-device phone --length short --timeout 5m
 dbrain sync all --skip-categorize --length short --timeout 5m
 dbrain sync all --okf-export --length short --timeout 5m
 dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m
@@ -308,6 +553,9 @@ default. For local feed development, pass `--allow-private-network` to
 `feeds.allow_private_network: true` in `config.yaml` /
 `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK=true`. The plural
 `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS` is also accepted for compatibility.
+This escape hatch applies to the explicitly configured feed fetch. Linked
+article/source and media URLs discovered from feed content still pass the
+public-destination policy, including redirect and DNS checks.
 
 `feed enable` clears previous feed health diagnostics and makes the feed
 eligible for an immediate check. `feed disable` stops future checks without
@@ -519,6 +767,34 @@ publicly callable without auth. Use
 `--open-full-disk-access=false` to report the failure without opening System
 Settings.
 
+### Scheduled SQLite archives
+
+`dbrain serve remote` can run the existing online SQLite snapshot/archive path
+as a separate daily scheduler. It is disabled by default and uses the same
+S3-compatible configuration as `dbrain sqlite archive`:
+
+```yaml
+scheduler:
+  sqlite_archive:
+    enabled: true
+    interval: 24h
+    run_on_start: true
+```
+
+The scheduler is independent from scheduled sync and health audits. It alone
+receives upload capability; audit remains read-only. Scheduled and manual
+archives plus active restores share a cross-process lease, so only one of those
+operations can run at a time. Cancellation of `serve remote` cancels and waits
+for an in-flight scheduled archive. A private local last-attempt marker is
+written before snapshotting so a restart loop cannot create or retry multiple
+archives within one interval. When `run_on_start` is false, the first attempt
+waits one full configured interval after `serve remote` becomes ready even if
+an older persisted marker is already overdue. Metrics distinguish startup from
+interval runs
+and report only attempt/start/completed, failed, lock-skip, overlap-skip, or
+interval-skip timing and byte/count aggregates; object keys, local paths,
+credentials, and provider error bodies are excluded.
+
 ### Scheduled `sync all`
 
 When `dbrain serve remote` is kept alive through launchd, it can also run
@@ -654,7 +930,9 @@ dbrain transcribe x-media --limit 50
 Extracts text from downloaded X photos. Hosted OCR defaults to the configured
 OpenRouter/Gemini model, with local fallback support where configured.
 You do not need Ollama, LM Studio, oMLX, or any configured local backend for the
-default OpenRouter/Gemini OCR path.
+default OpenRouter/Gemini OCR path. Fresh installs that do not configure
+OpenRouter or a local OCR tool skip X photo OCR for configured `sync all` runs
+until an OCR model or OpenRouter key is provided.
 
 ```sh
 dbrain ocr x-photos --limit 50
@@ -980,6 +1258,22 @@ dbrain eval mcp --write-example evals/local/mcp.json
 dbrain eval mcp --file evals/local/mcp.json
 ```
 
+### `dbrain eval research`
+
+No external tools required unless the cases exercise model-backed synthesis.
+Runs regression cases against the full research/chat harness. Use
+`--write-example <path>` to create a starter file, `--file <path>` to run a
+case set, and `--json` for structured output. The `propose` subcommand can
+draft candidate cases from saved transcripts or research traces, and `diff`
+compares a saved trace against a fresh pack build.
+
+```sh
+dbrain eval research --write-example evals/local/research.json
+dbrain eval research --file evals/local/research.json
+dbrain eval research propose --from-trace data/research-runs/<run-id> --output evals/local/research.proposed.json
+dbrain eval research diff --trace data/research-runs/<run-id>
+```
+
 ### `dbrain version`
 
 No external tools required. Prints build metadata including commit, build time,
@@ -1010,6 +1304,17 @@ Synthesis requires `--model` or a configured `DBRAIN_SUMMARY_MODEL` /
 `SUMMARIZE_MODEL`; it will not silently let the external summarizer choose a
 hosted fallback.
 
+Semantic retrieval defaults to configured mode `off`. `--semantic` force-enables
+effective `on`; `--no-semantic` force-enables effective `off`; passing both is
+an error. Effective `shadow` or `on` requires a configured local Ollama model
+and positive dimensions. `shadow` computes bounded, content-free comparisons
+but preserves lexical evidence/order/synthesis exactly. `on` RRF-fuses lexical
+and semantic candidates while preserving protected evidence and provenance.
+Provider/search failures, or more than the configured exact-scan cap (default
+25,000 current ready embeddings for the configured profile), fail the semantic
+lane open to lexical evidence with an explicit status and reason. The cap is
+counted before request filters are applied.
+
 ```sh
 dbrain research "What validates Kubernetes manifests?"
 dbrain research "Show me GitHub repos about vector databases" --source-type github
@@ -1019,7 +1324,36 @@ dbrain research "What do I know about local models?" --model ollama/qwen3.6:35b
 dbrain research "Calgary father killed two kids" --retrieval-only
 dbrain research "K8s Helm alternatives" --planner-model ollama/qwen3.6:35b --retrieval-only
 dbrain research "K8s Helm alternatives" --no-planner --retrieval-only
+dbrain research "K8s Helm alternatives" --semantic --retrieval-only --json
 ```
+
+### `dbrain semantic`
+
+The foundation exposes exactly three semantic operational commands. It uses
+deterministic SQLite retrieval chunks, local Ollama embeddings, and an
+SQLite-authoritative exact scan; no ANN index or ANN lifecycle command exists.
+
+```sh
+dbrain semantic status
+dbrain semantic status --json
+dbrain semantic chunk --limit 100 --after-source-key src:example
+dbrain semantic embed --limit 100 --batch-size 16
+```
+
+`status` is read-only and diagnoses configuration/readiness. `chunk` creates,
+updates, and deletes deterministic derived chunks in source-key pages. `embed`
+generates missing embeddings for the configured model/dimension profile. There
+is no implicit migration between chunker profiles: after a chunker version
+change, run `semantic chunk` to replace derived chunks, then `semantic embed`
+to build embeddings for the new profile before comparing retrieval quality.
+There is no standalone semantic purge command. The current deletion integration
+is item-only: Apple Notes `--forget-excluded` calls the explicit item
+indexed-content purge, which synchronously deletes that item's retrieval chunks,
+embeddings, and stale affected generation metadata. This does not claim that
+every delete path or future parent kind has the same integration.
+
+ANN generation files do not exist in this foundation; ANN lifecycle, provider
+expansion, background sync, and default-on behavior are deferred.
 
 ### `dbrain search`
 
@@ -1037,6 +1371,17 @@ ID, with DB-first evidence sections used by MCP and CLI research flows.
 
 ```sh
 dbrain get x:2045912259210485815
+```
+
+### `dbrain categorize analyze`
+
+No external tools required. Reads existing item/source tags and reports token
+frequency so you can decide what belongs in `categories.yaml`. Use `--draft`
+when you want a starter YAML shape instead of the plain frequency report.
+
+```sh
+dbrain categorize analyze --min-count 3
+dbrain categorize analyze --draft
 ```
 
 ### `dbrain categorize item`
@@ -1103,9 +1448,11 @@ dbrain categorize sources --force --limit 100 --json
 
 Analyzes existing item/source `user_tags`, sends the highest-frequency unmapped
 tokens to a local Ollama model, and asks for conservative `categories.yaml`
-cleanup suggestions. The default is review-only; pass `--apply` to merge safe
-suggestions into `categories.yaml`, and `--repair` to immediately rewrite
-existing item/source tags with the updated vocabulary.
+cleanup suggestions. Unlike the main summary/research/categorization paths,
+this vocabulary cleanup helper is currently Ollama-only. The default is
+review-only; pass `--apply` to merge safe suggestions into `categories.yaml`,
+and `--repair` to immediately rewrite existing item/source tags with the updated
+vocabulary.
 
 The command intentionally keeps a hard safety filter around LLM output. It
 accepts boring lexical cleanup such as plural/singular variants and near-typos,
@@ -1135,6 +1482,30 @@ which is useful if antivirus or sync tooling removed files from `vault/`.
 ```sh
 dbrain repair notes
 dbrain repair notes --missing-only=false --sources
+```
+
+### `dbrain repair pruned-media`
+
+Finds archived media that was pruned locally but is now needed by pending OCR
+or X media transcription work. The command is a read-only dry-run by default:
+it opens the existing database without migrations, lists candidate counts, and
+performs no network, database, or media writes. Pass `--apply` explicitly to
+re-download matching media through the normal media-download persistence path.
+
+With neither category flag, both OCR and transcription candidates are
+selected. Use `--ocr` or `--transcripts` to limit the category. `--limit`
+defaults to 5,000 and is capped at 5,000 independently for each selected
+category; `--timeout` defaults to 45 seconds per media download. `--json`
+emits the same bounded aggregate counters as JSON.
+
+The repair command restores media only. Existing OCR and transcription workers
+perform enrichment afterward; `sync all` does not run this repair
+automatically.
+
+```sh
+dbrain repair pruned-media
+dbrain repair pruned-media --ocr --limit 500 --json
+dbrain repair pruned-media --apply --timeout 45s
 ```
 
 ### `dbrain repair sources`

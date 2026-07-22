@@ -162,14 +162,34 @@ func TestItemEnrichmentMirrorPreservesRawRoles(t *testing.T) {
 	); err != nil {
 		t.Fatalf("save transcript text fixture: %v", err)
 	}
-	if err := st.SaveXMediaTranscriptionState(ctx, upsert.ItemID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+	if err := st.SaveXMediaTranscription(ctx, upsert.ItemID, XMediaTranscriptionState{
+		Status:      model.XMediaTranscriptStatusOK,
+		RawJSON:     `[{"backend":"whisper.cpp","model":"ggml-base.en","language":"en","vad_enabled":true}]`,
+		Model:       "ggml-base.en",
+		Tool:        "whisper.cpp",
+		ToolVersion: "xmediatranscribe-v1",
+		InputHash:   "sha256:transcript-input",
+		CompletedAt: now,
+	}); err != nil {
 		t.Fatalf("save transcript state: %v", err)
+	}
+	oldUpdatedAt := now.Add(-24 * time.Hour).Format(time.RFC3339)
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE item_enrichments
+		SET updated_at = ?
+		WHERE item_id = ? AND role = ?`,
+		oldUpdatedAt,
+		upsert.ItemID,
+		model.ItemEnrichmentRoleXMediaTranscript,
+	); err != nil {
+		t.Fatalf("set stable transcript enrichment timestamp: %v", err)
 	}
 
 	assertItemEnrichmentText(t, st, upsert.ItemID, model.ItemEnrichmentRoleSummary, "derived summary text")
 	assertItemEnrichmentText(t, st, upsert.ItemID, model.ItemEnrichmentRoleOCR, "raw OCR text")
 	assertItemEnrichmentText(t, st, upsert.ItemID, model.ItemEnrichmentRoleXMediaTranscript, "raw transcript text")
 	assertItemEnrichmentStatus(t, st, upsert.ItemID, model.ItemEnrichmentRoleXMediaTranscript, model.XMediaTranscriptStatusOK)
+	assertTranscriptProvenance(t, st, upsert.ItemID, oldUpdatedAt)
 
 	if _, err := st.UpsertItem(ctx, model.Item{
 		SourceKey:    "x:test-enrichment-mirror",
@@ -187,6 +207,7 @@ func TestItemEnrichmentMirrorPreservesRawRoles(t *testing.T) {
 	}
 	assertItemEnrichmentText(t, st, upsert.ItemID, model.ItemEnrichmentRoleXMediaTranscript, "raw transcript text")
 	assertItemEnrichmentStatus(t, st, upsert.ItemID, model.ItemEnrichmentRoleXMediaTranscript, model.XMediaTranscriptStatusOK)
+	assertTranscriptProvenance(t, st, upsert.ItemID, oldUpdatedAt)
 
 	if err := st.InvalidateItemSummary(ctx, upsert.ItemID); err != nil {
 		t.Fatalf("invalidate item summary: %v", err)
@@ -196,6 +217,24 @@ func TestItemEnrichmentMirrorPreservesRawRoles(t *testing.T) {
 	}
 	assertItemEnrichmentText(t, st, upsert.ItemID, model.ItemEnrichmentRoleOCR, "raw OCR text")
 	assertItemEnrichmentText(t, st, upsert.ItemID, model.ItemEnrichmentRoleXMediaTranscript, "raw transcript text")
+}
+
+func assertTranscriptProvenance(t *testing.T, st *Store, itemID int64, wantUpdatedAt string) {
+	t.Helper()
+
+	enrichment, err := st.GetItemEnrichment(t.Context(), itemID, model.ItemEnrichmentRoleXMediaTranscript)
+	if err != nil {
+		t.Fatalf("load transcript enrichment provenance: %v", err)
+	}
+	if enrichment.RawJSON != `[{"backend":"whisper.cpp","model":"ggml-base.en","language":"en","vad_enabled":true}]` ||
+		enrichment.Model != "ggml-base.en" || enrichment.Tool != "whisper.cpp" ||
+		enrichment.ToolVersion != "xmediatranscribe-v1" || enrichment.InputHash != "sha256:transcript-input" ||
+		!enrichment.CompletedAt.Equal(time.Date(2026, 5, 5, 18, 0, 0, 0, time.UTC)) {
+		t.Fatalf("transcript enrichment provenance was not preserved: %+v", enrichment)
+	}
+	if enrichment.UpdatedAt.Format(time.RFC3339) != wantUpdatedAt {
+		t.Fatalf("semantic no-op advanced updated_at to %s, want %s", enrichment.UpdatedAt.Format(time.RFC3339), wantUpdatedAt)
+	}
 }
 
 func TestGetItemByIDPrefersItemEnrichmentMirror(t *testing.T) {

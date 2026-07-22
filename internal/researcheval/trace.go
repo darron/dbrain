@@ -117,6 +117,10 @@ func OptionsFromTrace(trace researchtrace.ResearchTrace) brainresearch.Options {
 	opts.PlannerModel = plan.PlannerModel
 	opts.UseModelPlanner = plan.PlannerModel != "" || plan.Planner == "model_assisted"
 	opts.DisablePlanner = plan.Planner == "deterministic" && plan.PlannerModel == ""
+	if plan.SemanticMode != "" {
+		opts.EffectiveSemanticMode = plan.SemanticMode
+		return opts
+	}
 	for _, lane := range plan.RetrievalLanes {
 		if strings.EqualFold(lane.Name, "semantic") {
 			opts.UseSemantic = strings.EqualFold(lane.Status, "used")

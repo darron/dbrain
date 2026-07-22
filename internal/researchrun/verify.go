@@ -2,23 +2,40 @@ package researchrun
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/brainresearch"
 )
 
-var answerSourceKeyPattern = regexp.MustCompile(`(?i)\b(?:src|x|apple-note|feed-entry|gh-star|github_star|yt|youtube|safari-tab|manual|item):[A-Za-z0-9][A-Za-z0-9._~:/@?&=+%#-]*`)
-
 func VerifyCitations(pack brainresearch.Pack, result brainresearch.SynthesisResult) VerificationResult {
 	allowed := map[string]struct{}{}
 	addEvidenceKeys(allowed, pack.Evidence)
 	addEvidenceKeys(allowed, pack.ExactTagEvidence)
+	return verifyCitations(allowed, result)
+}
 
+// VerifyPreparedCitations verifies against the exact evidence admitted to the
+// synthesis prompt, rather than the wider retrieval pack. This rejects citations
+// to rows removed by relevance selection or evidence-budget truncation.
+func VerifyPreparedCitations(prepared brainresearch.PreparedSynthesis, result brainresearch.SynthesisResult) VerificationResult {
+	allowed := map[string]struct{}{}
+	for _, citation := range prepared.Citations {
+		if key := strings.TrimSpace(citation.SourceKey); key != "" {
+			allowed[key] = struct{}{}
+		}
+	}
+	return verifyCitations(allowed, result)
+}
+
+func verifyCitations(allowed map[string]struct{}, result brainresearch.SynthesisResult) VerificationResult {
 	verification := VerificationResult{Passed: true}
 	hasEvidence := len(allowed) > 0
 	answer := strings.TrimSpace(result.Answer)
+	if answerDiscussesUnrelatedCandidates(result.Question, answer) {
+		verification.Passed = false
+		verification.Errors = append(verification.Errors, "answer discusses unrelated research-pack candidates")
+	}
 	if !hasEvidence && (answer != "" || result.AnswerStatus != "no_evidence") {
 		verification.Passed = false
 		verification.Errors = append(verification.Errors, "no-evidence research pack produced a normal synthesis answer")
@@ -36,12 +53,14 @@ func VerifyCitations(pack brainresearch.Pack, result brainresearch.SynthesisResu
 			verification.Errors = append(verification.Errors, sourceKeyMissingError("citation source_key", key, allowed))
 		}
 	}
-	answerKeys := answerSourceKeys(answer)
+	answerKeys := brainresearch.AnswerSourceKeys(answer)
 	if hasEvidence && answer != "" && result.AnswerStatus != "no_evidence" && len(answerKeys) == 0 {
 		verification.Passed = false
 		verification.Errors = append(verification.Errors, "answer contains no source-key citations")
 	}
+	answerKeySet := map[string]struct{}{}
 	for _, key := range answerKeys {
+		answerKeySet[key] = struct{}{}
 		if _, ok := allowed[key]; !ok {
 			verification.Passed = false
 			verification.Errors = append(verification.Errors, sourceKeyMissingError("answer citation", key, allowed))
@@ -51,7 +70,60 @@ func VerifyCitations(pack brainresearch.Pack, result brainresearch.SynthesisResu
 			verification.Warnings = append(verification.Warnings, fmt.Sprintf("answer cites %s but citation metadata does not include it", key))
 		}
 	}
+	for key := range citationKeys {
+		if _, ok := answerKeySet[key]; !ok {
+			verification.Passed = false
+			verification.Errors = append(verification.Errors, fmt.Sprintf("citation metadata includes %s but the answer does not cite it", key))
+		}
+	}
 	return verification
+}
+
+func answerDiscussesUnrelatedCandidates(question string, answer string) bool {
+	question = strings.ToLower(strings.Join(strings.Fields(question), " "))
+	if discussesEvidenceRelevance(question) {
+		return false
+	}
+	for _, line := range strings.Split(answer, "\n") {
+		line = strings.ToLower(strings.Trim(strings.TrimSpace(line), "#*_` "))
+		if relevanceInventoryHeading(line) {
+			return true
+		}
+	}
+	normalized := strings.ToLower(strings.Join(strings.Fields(answer), " "))
+	return strings.Contains(normalized, "provided corpus also contains unrelated") ||
+		strings.Contains(normalized, "research pack also contains unrelated") ||
+		strings.Contains(normalized, "remaining results do not pertain") ||
+		((strings.Contains(normalized, "corpus contains") || strings.Contains(normalized, "corpus includes") ||
+			strings.Contains(normalized, "research pack contains") || strings.Contains(normalized, "research pack includes")) &&
+			discussesEvidenceRelevance(normalized))
+}
+
+func discussesEvidenceRelevance(text string) bool {
+	relevanceTerms := []string{"unrelated", "irrelevant", "off-topic", "off topic"}
+	evidenceTerms := []string{"source", "evidence", "candidate", "result", "corpus", "research pack"}
+	return containsAny(text, relevanceTerms) && containsAny(text, evidenceTerms)
+}
+
+func relevanceInventoryHeading(line string) bool {
+	if !discussesEvidenceRelevance(line) || len(strings.Fields(line)) > 12 {
+		return false
+	}
+	for _, prefix := range []string{"note on ", "unrelated ", "irrelevant ", "off-topic ", "off topic ", "other ", "remaining "} {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAny(text string, candidates []string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(text, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func addEvidenceKeys(dst map[string]struct{}, rows []ask.Evidence) {
@@ -60,27 +132,6 @@ func addEvidenceKeys(dst map[string]struct{}, rows []ask.Evidence) {
 			dst[key] = struct{}{}
 		}
 	}
-}
-
-func answerSourceKeys(answer string) []string {
-	matches := answerSourceKeyPattern.FindAllString(answer, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	keys := make([]string, 0, len(matches))
-	for _, match := range matches {
-		key := strings.TrimSpace(match)
-		if key == "" {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		keys = append(keys, key)
-	}
-	return keys
 }
 
 func sourceKeyMissingError(label string, candidate string, allowed map[string]struct{}) string {

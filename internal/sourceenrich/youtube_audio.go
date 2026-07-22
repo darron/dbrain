@@ -61,12 +61,10 @@ func MaybeTranscribeYouTubeAudioFallback(ctx context.Context, cfg config.Config,
 }
 
 func transcribeYouTubeAudioFallback(ctx context.Context, cfg config.Config, source model.SourceDocument, extract model.ExtractResult, opts Options) (model.ExtractResult, error) {
-	if strings.TrimSpace(opts.WhisperModelPath) == "" {
-		opts.WhisperModelPath = defaultWhisperModelPath()
+	if err := validateYouTubeSubprocessURL(firstNonEmpty(source.CanonicalURL, source.NormalizedURL)); err != nil {
+		return model.ExtractResult{}, err
 	}
-	if strings.TrimSpace(opts.MacWhisperBinary) == "" {
-		opts.MacWhisperBinary = "mw"
-	}
+	opts = defaultOptions(cfg, opts)
 
 	timeout := opts.Timeout
 	if timeout < 10*time.Minute {
@@ -103,10 +101,12 @@ func transcribeYouTubeAudioFallback(ctx context.Context, cfg config.Config, sour
 		return model.ExtractResult{}, err
 	}
 
-	transcript, provider, err := transcribeAudioFile(commandCtx, audioPath, opts)
+	result, err := transcribeAudioFile(commandCtx, audioPath, opts)
 	if err != nil {
 		return model.ExtractResult{}, err
 	}
+	transcript := result.Text
+	provider := result.Backend
 
 	title := strings.TrimSpace(extract.Title)
 	if title == "" || title == "- YouTube" {
@@ -131,21 +131,31 @@ func transcribeYouTubeAudioFallback(ctx context.Context, cfg config.Config, sour
 			"transcriptSource":      provider,
 			"transcriptionProvider": provider,
 			"transcriptCharacters":  len(transcript),
+			"transcriptionModel":    result.Model,
+			"transcriptionLanguage": result.Language,
+			"transcriptionVAD":      result.VADEnabled,
+			"noSpeech":              result.NoSpeech,
 		},
 	})
 	if err != nil {
 		return model.ExtractResult{}, fmt.Errorf("marshal whisper transcript json: %w", err)
 	}
 
+	status := model.SourceExtractStatusOK
+	content := "Transcript:\n" + transcript
+	if result.NoSpeech {
+		status = model.SourceExtractStatusEmpty
+		content = ""
+	}
 	return model.ExtractResult{
 		CanonicalURL: source.CanonicalURL,
 		FinalURL:     source.CanonicalURL,
 		Title:        title,
 		Description:  description,
 		SiteName:     siteName,
-		Content:      "Transcript:\n" + transcript,
+		Content:      content,
 		RawJSON:      string(rawJSONBytes),
-		Status:       model.SourceExtractStatusOK,
+		Status:       status,
 		FetchedAt:    time.Now().UTC(),
 		Tool:         provider,
 		ToolVersion:  "",
@@ -168,14 +178,6 @@ func firstDownloadedAudio(dir string) (string, error) {
 		return filepath.Join(dir, name), nil
 	}
 	return "", fmt.Errorf("downloaded audio not found")
-}
-
-func defaultWhisperModelPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".summarize", "cache", "whisper-cpp", "models", "ggml-base.bin")
 }
 
 func cookiesFromBrowserArg(browser, profile string) string {

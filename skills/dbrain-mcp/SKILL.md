@@ -47,6 +47,11 @@ Use absolute paths so the MCP server starts correctly from any agent working dir
 For remote agents that support Streamable HTTP MCP, prefer the built-in
 Tailscale transport when the user has enabled it:
 
+Production or remote MCP must use an explicit HTTPS Streamable HTTP endpoint;
+the repo-local stdio launch recipe and paths are not production configuration
+truth. Require bearer authentication whenever the endpoint is not confined to
+an otherwise trusted private boundary.
+
 ```bash
 dbrain --no-caffeinate --no-debug --root "$(pwd)" serve remote --web --mcp
 ```
@@ -73,6 +78,11 @@ token value; do not put raw bearer tokens in shared config files.
 For any HTTP, tsnet, remote, Funnel, or reverse-proxied MCP endpoint that is not
 strictly private, enable MCP bearer auth before exposing it. Stdio MCP does not
 use bearer auth.
+
+`dbrain_audit` is always available over local stdio. HTTP and tsnet expose that
+health capability only when dbrain bearer auth is required and configured;
+tailnet reachability by itself is insufficient. Auth-disabled HTTP/tsnet omits
+the tool from discovery and rejects direct calls.
 
 ```bash
 dbrain --root "$(pwd)" auth mcp token add agent-name
@@ -145,12 +155,21 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 ## Default Workflow
 
 1. For broad research questions and direct Q&A, call `dbrain_research_pack` first. It returns retrieve-only evidence, the text/tag query plan, model-assisted query planner metadata when available, retrieval-lane status, exact tag coverage, representative `exact_tag_evidence` examples, corpus match counts, per-evidence retrieval score signals, sanitized media refs for media-backed item evidence, suggested next tools, and may include a topic brief. Model-assisted planning is enabled by default when dbrain has a configured model; pass `disable_planner=true` only when deterministic planning is specifically needed.
+   Semantic quick reference: configured mode defaults to `off`; `off` is lexical-only. `use_semantic=true` forces effective `on`, `disable_semantic=true` forces effective `off`, and passing both is a tool error. `shadow` runs semantic retrieval but preserves visible evidence/order/synthesis exactly; `on` returns RRF-fused evidence. Effective `shadow`/`on` requires a local Ollama embedding model and positive dimensions. Direct MCP pack calls are always read-only and trace-free, including shadow, and never create `data/research-runs`.
 2. For keyword or tag exploration, call `dbrain_search`, then inspect promising results with `dbrain_get_many` using `content_mode="evidence"` and the same `query` when there are multiple source keys, or `dbrain_get` for one source key.
 3. For graph expansion, call `dbrain_related` on strong evidence items or sources.
 4. For entity or topic browsing, use `dbrain_entity_map`, `dbrain_topic_map`, or `dbrain_topic_brief`.
 5. For generated Open Knowledge Format bundle inspection, use `dbrain_okf_search` and `dbrain_okf_get`. These read the last exported OKF bundle from the configured OKF directory; they do not export, validate, or read live SQLite directly.
 6. For recent activity or handoff review, use `dbrain_whats_new` with exactly one of `since` or `cursor`. For questions like "what's new?", "what changed recently?", "what should I pay attention to?", or "what are the most important things from the last couple of days?", pass `view: "entities"` so the server returns compact item/source groups with preferred summaries/excerpts, collapsed event kinds, tags, actionability, importance, and compact event refs. Treat grouped `summary` as a compact review excerpt, not full raw evidence; fetch details with `dbrain_get_many` or `dbrain_get` before quoting or relying on exact source text. Use the default `view: "events"` only when debugging raw pipeline chronology. Use `since` values such as `24h`, `2d`, or an RFC3339 timestamp for the first page, then preserve and pass `next_cursor` for follow-up pages only while `truncated` is true; `next_cursor` is still returned on the final page for high-watermark bookkeeping. Pagination and `limit` are event-based, so if you merge multiple `view: "entities"` pages, de-duplicate by `entity_key` and prefer the row with a stronger summary, higher importance, or later `latest_event_at`. Use `types` to focus the feed: `imports`, `enrichments`, `failures`, or `all`. Blocked rows are review events surfaced through the failure/status fields rather than a separate `types` filter.
-7. For operational status, use `dbrain_stats_activity`, `dbrain_stats_backlog`, `dbrain_stats_items`, or `dbrain_stats_sources`.
+7. For authoritative production-health claims, call `dbrain_audit`. Omit
+   `profile` (or use `fast`) for a complete bounded local check under the fixed
+   ten-second deadline. Use `profile: "standard"` only to read the newest
+   persisted exact-profile standard report; it never starts network work. A
+   missing/stale report is unknown according to the returned `freshness`
+   envelope. Never try to pass deep, categories, time windows, paths, URLs,
+   identifiers, endpoints, archive keys, or limits; the MCP schema intentionally
+   exposes none of them. Use `dbrain_stats_activity`, `dbrain_stats_backlog`,
+   `dbrain_stats_items`, or `dbrain_stats_sources` only for exploratory counts.
 
 ## Research Practice
 
@@ -162,9 +181,10 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 - Treat inline media evidence as a two-part signal. `dbrain_search` results, `dbrain_research_pack` evidence rows, `exact_tag_evidence`, and item `dbrain_get` payloads may include a `media` array with sanitized refs: `media_asset_id`, `media_type` (`photo`, `video`, `animated_gif`, `audio`), `ordinal`, `expanded_url`, `remote_url`, `archive_url`, `download_status`, `archive_status`, `width`, and `height`. The media ref tells you what attached media exists and how it can be displayed; the claim-bearing evidence is still the `snippet`/`excerpt` and the detailed `ocr_text` or `x_media_transcript` sections.
 - For media-heavy questions, do not discard results just because the title or summary is generic. Search snippets and research excerpts can now come from OCR or media transcripts; inspect those match windows, then fetch the item with `content_mode="evidence"` and the same `query` to read the relevant `ocr_text` or `x_media_transcript` context. Cite the item's external URL and say whether the support came from OCR, transcript, or only attached media metadata.
 - Do not treat a bare media ref as proof of what the image/video/audio contains. Photos need OCR or visual inspection; video/audio claims need transcript evidence. If `media` is present but no `ocr_text`, `x_media_transcript`, or visual inspection supports the claim, say that the saved item has attached media but the content is not yet evidenced by text.
-- Read each evidence row's `retrieval` block when judging relevance. The score is heuristic, but the lane and signals explain whether a result came from lexical search, exact user tags, entities, graph-related evidence, or a future semantic lane. `matched_terms` and `missing_terms` show whether a row covers all query terms or only broad tags. Excerpts are query-windowed when possible, so a raw extract excerpt should usually start near the term match instead of at site boilerplate.
-- Inspect `query_plan.retrieval_lanes`. Today SQLite lexical search is the baseline and the semantic lane reports `disabled` until a validated local embedding lane exists. Do not assume semantic retrieval ran unless the lane status says `used`.
-- Inspect `evidence_role`, `chunk`, and `content_sections` when present. `derived_summary` means the row is supported by summaries or metadata; `raw_extract_window`, `raw_item_window`, `raw_ocr`, or `raw_transcript` means dbrain found a query-windowed raw evidence section. Prefer raw/source sections for precise claims, especially when summaries are broad.
+- Read each evidence row's `retrieval` block when judging relevance. The score is heuristic, but `lanes` records lexical, semantic, exact-tag, entity, and graph provenance. For fused rows inspect `fused_score` plus lane rank, raw distance/score, RRF contribution, profile, backend, and generation. `matched_terms` and `missing_terms` show whether a row covers all query terms or only broad tags.
+- Inspect `query_plan.semantic_mode`, `query_plan.retrieval_lanes`, and shadow-only `query_plan.shadow_comparison`. After a bounded retry, `query_plan.retry_shadow_comparison` independently labels that retry attempt's diagnostic. The foundation uses SQLite-authoritative exact vector scan with candidate depth 50 and a default cap of 25,000 current ready embeddings for the configured profile, counted before request filters. `too_large` and validly configured provider/search failures fail open to lexical evidence with explicit status/reason. Different-language recall depends on the configured embedding model and must be established by lexical-versus-semantic evals for that model. ANN, other providers, background sync, and default-on are not available. Do not assume semantic retrieval ran unless the lane status says `used`.
+- A `shadow_comparison` is bounded and content-free. Inspect `status`, optional `reason`, full `lexical_count` / `hybrid_count`, capped ranked `lexical` / `hybrid` sides, and `added` / `removed` / `reordered` arrays. Every ranked reference contains `source_key`, optional `chunk_id`, and `rank`; it never contains excerpts.
+- Inspect `evidence_role`, `chunk`, and `content_sections` when present. `derived_summary` means the row is supported by summaries or metadata. Raw evidence can appear as `raw_extract_window`, `raw_item_window`, `raw_ocr`, or `raw_transcript` on windowed evidence, and as `raw`, `ocr`, or `transcript` on selected semantic chunks. Preserve these fields when semantic fusion selects a chunk, and prefer raw/source sections for precise claims.
 - Source documents are first-class evidence. If a question asks for web, YouTube, or linked-source material, use `source_types` and expect direct `src:...` results rather than only item backlinks.
 - When inspecting a `src:...` source, use the source's own `user_tags` as source-centric categorization and read its `backlinks` rows too. Backlinks carry the saved item's `user_tags`, which often explain why the collector saved that source and may differ from the source's own tags.
 - Use `user_tags` as retrieval hints. Item and source tags can match searches, disambiguate broad topics, and indicate the user's own categorization, but they do not replace source text. When `exact_tag_evidence` is present, treat it as representative examples for the matching tag lane, not as a complete list.
@@ -172,6 +192,7 @@ stdio while remote agents use the tailnet Streamable HTTP endpoint.
 - Prefer `dbrain_research_pack` over several primitive searches. Inspect `query_plan.planner`, `query_plan.query_variants`, and `query_plan.concepts` to understand what the harness tried. Its suggested `dbrain_get` / `dbrain_get_many` next-step arguments include the query when available; preserve it unless you intentionally want un-windowed leading sections. If the pack is weak, then run narrow follow-up searches or `dbrain_related` using the pack's suggested next tools.
 - Use `dbrain_okf_search` and `dbrain_okf_get` only when the user asks to inspect generated OKF Markdown, bundle paths, exported concepts, or exchange-format output. Prefer DB-first tools for normal research because OKF can be stale until `dbrain okf export` or `sync all --okf-export` runs. `dbrain_okf_get` accepts an OKF path, `dbrain_concept_id`, or source key; pass `include_markdown=true` only when the rendered Markdown matters.
 - Do not mutate dbrain state unless the user explicitly asks. The MCP server is intended to be read-only.
+- MCP exposes no semantic mutation or purge tool. The current deletion integration outside MCP is item-only: Apple Notes `--forget-excluded` synchronously deletes that item's derived retrieval chunks and embeddings and stale affected retrieval generations through the explicit indexed-content purge. Do not generalize this to every delete path or future parent kind.
 
 ## Fallback
 

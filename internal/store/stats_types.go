@@ -36,13 +36,18 @@ type BacklogStats struct {
 }
 
 type PipelineStageRow struct {
-	Kind           string  `json:"kind"`
-	Total          int     `json:"total"`
-	Current        int     `json:"current"`
-	Pending        int     `json:"pending"`
-	Blocked        int     `json:"blocked"`
-	Failed         int     `json:"failed"`
-	PercentCurrent float64 `json:"percent_current"`
+	Kind               string    `json:"kind"`
+	Total              int       `json:"total"`
+	Current            int       `json:"current"`
+	Pending            int       `json:"pending"`
+	Blocked            int       `json:"blocked"`
+	Terminal           int       `json:"terminal"`
+	Failed             int       `json:"failed"`
+	Unknown            int       `json:"unknown"`
+	PartitionValid     bool      `json:"partition_valid"`
+	PercentCurrent     float64   `json:"percent_current"`
+	OldestPendingAt    time.Time `json:"-"`
+	OldestPendingKnown bool      `json:"-"`
 }
 
 type PipelineStats struct {
@@ -54,6 +59,7 @@ type PipelineStats struct {
 	Summary              []PipelineStageRow `json:"summary"`
 	Transcription        []PipelineStageRow `json:"transcription"`
 	OCR                  []PipelineStageRow `json:"ocr"`
+	MediaArchive         []PipelineStageRow `json:"media_archive"`
 }
 
 type SourceActivityEvent struct {

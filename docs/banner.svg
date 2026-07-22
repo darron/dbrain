@@ -1,56 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1584" height="672" viewBox="0 0 1584 672" role="img" aria-labelledby="title desc">
-  <title id="title">dbrain local evidence engine architecture</title>
-  <desc id="desc">Diagram showing import-only capture sources, local SQLite vault and media authority, enrichment workers, optional model and archive lanes, and user-facing CLI, web, MCP, OKF, and Tailscale surfaces.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720" role="img" aria-labelledby="title desc">
+  <title id="title">dbrain local-first evidence system</title>
+  <desc id="desc">Architecture diagram showing import-only sources flowing into local SQLite, vault Markdown, media, search, tags, backlinks, and OKF export; enrichment workers and local or hosted models operate over the local store; CLI, web, MCP, Tailscale, launchd, and archive surfaces use the same evidence.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#111111"/>
-      <stop offset="0.52" stop-color="#15171a"/>
+    <linearGradient id="pageBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#121315"/>
+      <stop offset="0.48" stop-color="#18191d"/>
+      <stop offset="1" stop-color="#101419"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#24272c"/>
+      <stop offset="1" stop-color="#171a1f"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#19242a"/>
+      <stop offset="0.5" stop-color="#14191e"/>
       <stop offset="1" stop-color="#101316"/>
     </linearGradient>
-    <radialGradient id="coreGlow" cx="50%" cy="47%" r="58%">
-      <stop offset="0" stop-color="#1ee7c8" stop-opacity="0.32"/>
-      <stop offset="0.52" stop-color="#4fa3ff" stop-opacity="0.12"/>
-      <stop offset="1" stop-color="#111316" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="coreFill" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#20252a"/>
-      <stop offset="0.55" stop-color="#171a1f"/>
-      <stop offset="1" stop-color="#101214"/>
-    </linearGradient>
-    <linearGradient id="panelFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#202329" stop-opacity="0.98"/>
-      <stop offset="1" stop-color="#16191e" stop-opacity="0.98"/>
-    </linearGradient>
-    <linearGradient id="amberFill" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#f7c948" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#fb923c" stop-opacity="0.08"/>
-    </linearGradient>
-    <linearGradient id="cyanFill" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#22d3ee" stop-opacity="0.26"/>
-      <stop offset="1" stop-color="#0ea5e9" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#0284c7" stop-opacity="0.09"/>
     </linearGradient>
-    <linearGradient id="greenFill" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#86efac" stop-opacity="0.24"/>
       <stop offset="1" stop-color="#10b981" stop-opacity="0.08"/>
     </linearGradient>
-    <linearGradient id="roseFill" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#fda4af" stop-opacity="0.22"/>
-      <stop offset="1" stop-color="#f43f5e" stop-opacity="0.07"/>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fde047" stop-opacity="0.27"/>
+      <stop offset="1" stop-color="#f97316" stop-opacity="0.08"/>
     </linearGradient>
-    <filter id="softShadow" x="-20%" y="-25%" width="140%" height="155%">
-      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity="0.34"/>
+    <linearGradient id="rose" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fda4af" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#e11d48" stop-opacity="0.08"/>
+    </linearGradient>
+    <filter id="shadow" x="-12%" y="-18%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.34"/>
     </filter>
-    <filter id="quietGlow" x="-30%" y="-30%" width="160%" height="160%">
-      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#22d3ee" flood-opacity="0.25"/>
+    <filter id="softGlow" x="-35%" y="-35%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#22d3ee" flood-opacity="0.25"/>
     </filter>
-    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
-      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#f6f1e6" stroke-width="0.55" opacity="0.035"/>
-      <circle cx="0" cy="0" r="1" fill="#f6f1e6" opacity="0.055"/>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#e7edf7" stroke-width="0.5" opacity="0.035"/>
+      <circle cx="0" cy="0" r="1.1" fill="#e7edf7" opacity="0.055"/>
     </pattern>
-    <marker id="arrowCyan" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#5eead4"/>
     </marker>
-    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#facc15"/>
     </marker>
     <style>
@@ -58,225 +53,236 @@
         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         letter-spacing: 0;
       }
-      .kicker {
+      .eyebrow {
         fill: #facc15;
-        font-size: 18px;
-        font-weight: 800;
+        font-size: 17px;
+        font-weight: 820;
         text-transform: uppercase;
       }
       .title {
-        fill: #f8f4ea;
+        fill: #f8fafc;
         font-size: 52px;
         font-weight: 850;
       }
       .subtitle {
-        fill: #b7c4d6;
-        font-size: 22px;
-        font-weight: 520;
+        fill: #b8c5d6;
+        font-size: 21px;
+        font-weight: 540;
       }
       .section {
-        fill: #f8f4ea;
-        font-size: 19px;
+        fill: #f8fafc;
+        font-size: 21px;
         font-weight: 820;
       }
       .label {
-        fill: #e7edf7;
-        font-size: 17px;
+        fill: #eef4ff;
+        font-size: 16px;
         font-weight: 760;
       }
       .small {
-        fill: #aab8c9;
+        fill: #b7c4d6;
         font-size: 13.5px;
-        font-weight: 540;
+        font-weight: 560;
       }
       .tiny {
-        fill: #98a7ba;
+        fill: #9daabd;
         font-size: 12px;
         font-weight: 560;
       }
       .coreTitle {
         fill: #f9fafb;
-        font-size: 25px;
+        font-size: 27px;
         font-weight: 850;
       }
       .coreText {
-        fill: #ced9e8;
+        fill: #d5e1ef;
         font-size: 15px;
-        font-weight: 580;
+        font-weight: 610;
       }
-      .stroke {
-        stroke: #8b9bb0;
-        stroke-width: 1;
-        opacity: 0.38;
+      .muted {
+        fill: #94a3b8;
+        font-size: 12.5px;
+        font-weight: 560;
       }
-      .nodeLine {
-        stroke: #5eead4;
-        stroke-width: 1.4;
-        stroke-opacity: 0.38;
-        fill: none;
-      }
-      .arrow {
-        stroke-width: 2.1;
+      .line {
+        stroke-width: 2.2;
         stroke-linecap: round;
         stroke-linejoin: round;
         fill: none;
       }
+      .hairline {
+        stroke: #66758a;
+        stroke-width: 1;
+        stroke-opacity: 0.42;
+      }
     </style>
   </defs>
 
-  <rect width="1584" height="672" fill="url(#bg)"/>
-  <rect width="1584" height="672" fill="url(#grid)"/>
-  <ellipse cx="792" cy="344" rx="452" ry="292" fill="url(#coreGlow)"/>
+  <rect width="1600" height="720" fill="url(#pageBg)"/>
+  <rect width="1600" height="720" fill="url(#grid)"/>
+  <ellipse cx="800" cy="368" rx="540" ry="292" fill="#22d3ee" opacity="0.035"/>
+  <ellipse cx="800" cy="365" rx="348" ry="186" fill="#86efac" opacity="0.03"/>
 
-  <text x="58" y="66" class="kicker">local-first second brain</text>
-  <text x="58" y="118" class="title">dbrain</text>
-  <text x="58" y="153" class="subtitle">Local evidence. Model-assisted research.</text>
+  <text x="52" y="56" class="eyebrow">local-first second brain</text>
+  <text x="52" y="111" class="title">dbrain</text>
+  <text x="52" y="146" class="subtitle">Local evidence. Model-assisted research.</text>
 
-  <g transform="translate(58 205)" filter="url(#softShadow)">
-    <rect x="0" y="0" width="328" height="360" rx="20" fill="url(#panelFill)" stroke="#65758a" stroke-opacity="0.42"/>
-    <text x="24" y="39" class="section">Import-only capture</text>
-    <text x="24" y="65" class="small">Upstream state stays upstream.</text>
+  <g transform="translate(48 178)" filter="url(#shadow)">
+    <rect width="360" height="432" rx="18" fill="url(#panel)" stroke="#65758a" stroke-opacity="0.46"/>
+    <text x="24" y="38" class="section">Import-only sources</text>
+    <text x="24" y="64" class="small">Upstream apps are read, never owned.</text>
 
     <g transform="translate(24 91)">
-      <rect width="124" height="46" rx="12" fill="url(#amberFill)" stroke="#facc15" stroke-opacity="0.42"/>
-      <text x="15" y="21" class="label">X bookmarks</text>
-      <text x="15" y="38" class="tiny">quotes + media</text>
+      <rect width="148" height="50" rx="12" fill="url(#amber)" stroke="#facc15" stroke-opacity="0.46"/>
+      <text x="15" y="22" class="label">X bookmarks</text>
+      <text x="15" y="39" class="tiny">quotes, links, media</text>
     </g>
-    <g transform="translate(166 91)">
-      <rect width="138" height="46" rx="12" fill="url(#cyanFill)" stroke="#22d3ee" stroke-opacity="0.42"/>
-      <text x="15" y="21" class="label">Apple Notes</text>
-      <text x="15" y="38" class="tiny">SQLite snapshots</text>
+    <g transform="translate(188 91)">
+      <rect width="148" height="50" rx="12" fill="url(#blue)" stroke="#22d3ee" stroke-opacity="0.44"/>
+      <text x="15" y="22" class="label">Apple Notes</text>
+      <text x="15" y="39" class="tiny">snapshot SQLite</text>
     </g>
-    <g transform="translate(24 153)">
-      <rect width="124" height="46" rx="12" fill="url(#cyanFill)" stroke="#22d3ee" stroke-opacity="0.34"/>
-      <text x="15" y="21" class="label">Safari tabs</text>
-      <text x="15" y="38" class="tiny">CloudTabs copy</text>
+    <g transform="translate(24 157)">
+      <rect width="148" height="50" rx="12" fill="url(#blue)" stroke="#22d3ee" stroke-opacity="0.36"/>
+      <text x="15" y="22" class="label">Safari tabs</text>
+      <text x="15" y="39" class="tiny">device-scoped tabs</text>
     </g>
-    <g transform="translate(166 153)">
-      <rect width="138" height="46" rx="12" fill="url(#greenFill)" stroke="#86efac" stroke-opacity="0.36"/>
-      <text x="15" y="21" class="label">GitHub stars</text>
-      <text x="15" y="38" class="tiny">repo evidence</text>
+    <g transform="translate(188 157)">
+      <rect width="148" height="50" rx="12" fill="url(#green)" stroke="#86efac" stroke-opacity="0.38"/>
+      <text x="15" y="22" class="label">GitHub stars</text>
+      <text x="15" y="39" class="tiny">repos + READMEs</text>
     </g>
-    <g transform="translate(24 215)">
-      <rect width="124" height="46" rx="12" fill="url(#roseFill)" stroke="#fda4af" stroke-opacity="0.32"/>
-      <text x="15" y="21" class="label">YouTube</text>
-      <text x="15" y="38" class="tiny">liked + watch later</text>
+    <g transform="translate(24 223)">
+      <rect width="148" height="50" rx="12" fill="url(#rose)" stroke="#fda4af" stroke-opacity="0.34"/>
+      <text x="15" y="22" class="label">YouTube</text>
+      <text x="15" y="39" class="tiny">liked + watch later</text>
     </g>
-    <g transform="translate(166 215)">
-      <rect width="138" height="46" rx="12" fill="url(#greenFill)" stroke="#86efac" stroke-opacity="0.32"/>
-      <text x="15" y="21" class="label">Feeds + links</text>
-      <text x="15" y="38" class="tiny">manual URLs</text>
+    <g transform="translate(188 223)">
+      <rect width="148" height="50" rx="12" fill="url(#green)" stroke="#86efac" stroke-opacity="0.34"/>
+      <text x="15" y="22" class="label">RSS / Atom</text>
+      <text x="15" y="39" class="tiny">feeds + JSON Feed</text>
     </g>
-    <g transform="translate(24 287)">
-      <path d="M0 14 C74 44 154 44 280 14" stroke="#facc15" stroke-width="1.5" stroke-opacity="0.32" fill="none"/>
-      <text x="0" y="55" class="tiny">Append-only by default. Raw evidence is preserved.</text>
+    <g transform="translate(24 289)">
+      <rect width="148" height="50" rx="12" fill="url(#amber)" stroke="#facc15" stroke-opacity="0.32"/>
+      <text x="15" y="22" class="label">Browser save</text>
+      <text x="15" y="39" class="tiny">Chrome + Safari</text>
+    </g>
+    <g transform="translate(188 289)">
+      <rect width="148" height="50" rx="12" fill="url(#blue)" stroke="#22d3ee" stroke-opacity="0.34"/>
+      <text x="15" y="22" class="label">Manual URLs</text>
+      <text x="15" y="39" class="tiny">link add + enrich</text>
+    </g>
+
+    <path d="M24 373 H336" class="hairline"/>
+    <text x="24" y="398" class="tiny">Append-only by default. Raw extracts, OCR,</text>
+    <text x="24" y="416" class="tiny">transcripts, and source JSON stay available.</text>
+  </g>
+
+  <path class="line" d="M408 392 C434 392 438 392 456 392" stroke="#5eead4" stroke-opacity="0.78" marker-end="url(#arrowCyan)"/>
+
+  <g transform="translate(456 94)" filter="url(#shadow)">
+    <rect width="688" height="118" rx="18" fill="url(#panel)" stroke="#65758a" stroke-opacity="0.38"/>
+    <text x="24" y="37" class="section">Enrichment and model lanes</text>
+    <text x="24" y="65" class="small">Hydrate X, discover links, extract sources, summarize, OCR, transcribe, categorize, index topics and entities.</text>
+    <text x="24" y="92" class="small">Backends: Ollama, LM Studio, oMLX, OpenRouter, OpenAI-compatible aliases, MacWhisper, yt-dlp, tesseract.</text>
+  </g>
+
+  <path class="line" d="M800 212 C800 232 800 246 800 263" stroke="#facc15" stroke-opacity="0.68" marker-end="url(#arrowAmber)"/>
+
+  <g transform="translate(456 260)" filter="url(#shadow)">
+    <rect width="688" height="272" rx="22" fill="url(#core)" stroke="#5eead4" stroke-opacity="0.48" filter="url(#softGlow)"/>
+    <text x="344" y="43" text-anchor="middle" class="coreTitle">Local authority</text>
+    <text x="344" y="71" text-anchor="middle" class="coreText">SQLite is the working truth. Markdown is the human surface.</text>
+
+    <g transform="translate(40 104)">
+      <rect width="184" height="58" rx="13" fill="#172027" stroke="#5eead4" stroke-opacity="0.42"/>
+      <text x="18" y="24" class="label">brain.db</text>
+      <text x="18" y="43" class="tiny">items, sources, failures</text>
+    </g>
+    <g transform="translate(252 104)">
+      <rect width="184" height="58" rx="13" fill="#191f20" stroke="#facc15" stroke-opacity="0.4"/>
+      <text x="18" y="24" class="label">Vault notes</text>
+      <text x="18" y="43" class="tiny">rendered Markdown</text>
+    </g>
+    <g transform="translate(464 104)">
+      <rect width="184" height="58" rx="13" fill="#17221c" stroke="#86efac" stroke-opacity="0.38"/>
+      <text x="18" y="24" class="label">Media store</text>
+      <text x="18" y="43" class="tiny">content-addressed files</text>
+    </g>
+    <g transform="translate(40 184)">
+      <rect width="184" height="58" rx="13" fill="#191d23" stroke="#fda4af" stroke-opacity="0.34"/>
+      <text x="18" y="24" class="label">Search fabric</text>
+      <text x="18" y="43" class="tiny">FTS, excerpts, windows</text>
+    </g>
+    <g transform="translate(252 184)">
+      <rect width="184" height="58" rx="13" fill="#171f25" stroke="#22d3ee" stroke-opacity="0.38"/>
+      <text x="18" y="24" class="label">Evidence graph</text>
+      <text x="18" y="43" class="tiny">backlinks, quotes, tags</text>
+    </g>
+    <g transform="translate(464 184)">
+      <rect width="184" height="58" rx="13" fill="#191f20" stroke="#facc15" stroke-opacity="0.34"/>
+      <text x="18" y="24" class="label">OKF snapshot</text>
+      <text x="18" y="43" class="tiny">private export bundle</text>
     </g>
   </g>
 
-  <g transform="translate(479 72)">
-    <rect x="0" y="0" width="315" height="118" rx="20" fill="url(#panelFill)" stroke="#65758a" stroke-opacity="0.35"/>
-    <text x="24" y="38" class="section">Enrichment workers</text>
-    <text x="24" y="67" class="small">link discovery, source extraction, summaries</text>
-    <text x="24" y="92" class="small">OCR, transcripts, categories, topics, entities</text>
+  <path class="line" d="M1144 392 C1168 392 1172 392 1192 392" stroke="#5eead4" stroke-opacity="0.78" marker-end="url(#arrowCyan)"/>
+
+  <g transform="translate(1192 178)" filter="url(#shadow)">
+    <rect width="360" height="432" rx="18" fill="url(#panel)" stroke="#65758a" stroke-opacity="0.46"/>
+    <text x="24" y="38" class="section">Use and operate</text>
+    <text x="24" y="64" class="small">Every surface reads the same local evidence.</text>
+
+    <g transform="translate(24 91)">
+      <rect width="148" height="50" rx="12" fill="url(#blue)" stroke="#22d3ee" stroke-opacity="0.42"/>
+      <text x="15" y="22" class="label">Web + Chat</text>
+      <text x="15" y="39" class="tiny">research harness</text>
+    </g>
+    <g transform="translate(188 91)">
+      <rect width="148" height="50" rx="12" fill="url(#green)" stroke="#86efac" stroke-opacity="0.36"/>
+      <text x="15" y="22" class="label">CLI + tasks</text>
+      <text x="15" y="39" class="tiny">sync, stats, repair</text>
+    </g>
+    <g transform="translate(24 157)">
+      <rect width="148" height="50" rx="12" fill="url(#amber)" stroke="#facc15" stroke-opacity="0.36"/>
+      <text x="15" y="22" class="label">MCP</text>
+      <text x="15" y="39" class="tiny">read-only tools</text>
+    </g>
+    <g transform="translate(188 157)">
+      <rect width="148" height="50" rx="12" fill="url(#rose)" stroke="#fda4af" stroke-opacity="0.34"/>
+      <text x="15" y="22" class="label">What changed</text>
+      <text x="15" y="39" class="tiny">whats-new review</text>
+    </g>
+    <g transform="translate(24 223)">
+      <rect width="148" height="50" rx="12" fill="url(#green)" stroke="#86efac" stroke-opacity="0.34"/>
+      <text x="15" y="22" class="label">Tailscale</text>
+      <text x="15" y="39" class="tiny">web/MCP remote</text>
+    </g>
+    <g transform="translate(188 223)">
+      <rect width="148" height="50" rx="12" fill="url(#blue)" stroke="#22d3ee" stroke-opacity="0.34"/>
+      <text x="15" y="22" class="label">Launchd</text>
+      <text x="15" y="39" class="tiny">scheduled sync all</text>
+    </g>
+    <g transform="translate(24 289)">
+      <rect width="148" height="50" rx="12" fill="url(#amber)" stroke="#facc15" stroke-opacity="0.32"/>
+      <text x="15" y="22" class="label">Archive</text>
+      <text x="15" y="39" class="tiny">S3/R2 + restore</text>
+    </g>
+    <g transform="translate(188 289)">
+      <rect width="148" height="50" rx="12" fill="url(#rose)" stroke="#fda4af" stroke-opacity="0.32"/>
+      <text x="15" y="22" class="label">Auth gates</text>
+      <text x="15" y="39" class="tiny">GitHub + MCP tokens</text>
+    </g>
+
+    <path d="M24 373 H336" class="hairline"/>
+    <text x="24" y="398" class="tiny">Web is a trusted read/write admin surface.</text>
+    <text x="24" y="416" class="tiny">MCP and OKF inspection remain read-only.</text>
   </g>
 
-  <g transform="translate(817 72)">
-    <rect x="0" y="0" width="304" height="118" rx="20" fill="url(#panelFill)" stroke="#65758a" stroke-opacity="0.35"/>
-    <text x="24" y="38" class="section">Model backends</text>
-    <text x="24" y="67" class="small">local: Ollama, LM Studio, oMLX</text>
-    <text x="24" y="92" class="small">hosted: OpenRouter / compatible APIs</text>
-  </g>
-
-  <g transform="translate(447 210)" filter="url(#softShadow)">
-    <circle cx="339" cy="146" r="183" fill="none" stroke="#f8f4ea" stroke-opacity="0.13" stroke-width="1.2"/>
-    <circle cx="339" cy="146" r="128" fill="none" stroke="#5eead4" stroke-opacity="0.18" stroke-width="1.2"/>
-    <circle cx="339" cy="146" r="78" fill="none" stroke="#facc15" stroke-opacity="0.18" stroke-width="1.2"/>
-
-    <path class="nodeLine" d="M189 70 C260 92 272 118 339 146"/>
-    <path class="nodeLine" d="M488 82 C418 99 410 121 339 146"/>
-    <path class="nodeLine" d="M198 242 C257 211 286 181 339 146"/>
-    <path class="nodeLine" d="M489 230 C433 202 400 177 339 146"/>
-    <path class="nodeLine" d="M339 20 C338 74 338 105 339 146"/>
-    <path class="nodeLine" d="M339 274 C340 224 340 190 339 146"/>
-
-    <circle cx="339" cy="146" r="96" fill="url(#coreFill)" stroke="#5eead4" stroke-width="1.4" stroke-opacity="0.75" filter="url(#quietGlow)"/>
-    <text x="339" y="120" text-anchor="middle" class="coreTitle">Local authority</text>
-    <text x="339" y="151" text-anchor="middle" class="coreText">brain.db SQLite</text>
-    <text x="339" y="175" text-anchor="middle" class="coreText">vault Markdown</text>
-    <text x="339" y="199" text-anchor="middle" class="coreText">content-addressed media</text>
-
-    <g transform="translate(107 35)">
-      <rect width="164" height="44" rx="12" fill="#172027" stroke="#5eead4" stroke-opacity="0.38"/>
-      <text x="18" y="21" class="label">Raw evidence</text>
-      <text x="18" y="37" class="tiny">items, sources, JSON</text>
-    </g>
-    <g transform="translate(405 43)">
-      <rect width="162" height="44" rx="12" fill="#191f20" stroke="#facc15" stroke-opacity="0.38"/>
-      <text x="18" y="21" class="label">Derived state</text>
-      <text x="18" y="37" class="tiny">summaries + tags</text>
-    </g>
-    <g transform="translate(103 224)">
-      <rect width="172" height="44" rx="12" fill="#191d23" stroke="#fda4af" stroke-opacity="0.34"/>
-      <text x="18" y="21" class="label">Search indexes</text>
-      <text x="18" y="37" class="tiny">FTS, tags, windows</text>
-    </g>
-    <g transform="translate(405 213)">
-      <rect width="163" height="44" rx="12" fill="#17221c" stroke="#86efac" stroke-opacity="0.34"/>
-      <text x="18" y="21" class="label">Relationships</text>
-      <text x="18" y="37" class="tiny">quotes, links, topics</text>
-    </g>
-  </g>
-
-  <path class="arrow" d="M391 385 C435 385 434 356 487 356" stroke="#5eead4" stroke-opacity="0.75" marker-end="url(#arrowCyan)"/>
-  <path class="arrow" d="M591 197 C634 209 661 220 682 249" stroke="#facc15" stroke-opacity="0.62" marker-end="url(#arrowAmber)"/>
-  <path class="arrow" d="M975 197 C936 211 913 226 897 254" stroke="#facc15" stroke-opacity="0.62" marker-end="url(#arrowAmber)"/>
-
-  <g transform="translate(1196 152)" filter="url(#softShadow)">
-    <rect x="0" y="0" width="330" height="414" rx="20" fill="url(#panelFill)" stroke="#65758a" stroke-opacity="0.42"/>
-    <text x="24" y="39" class="section">Use your corpus</text>
-    <text x="24" y="65" class="small">Different surfaces, same local evidence.</text>
-
-    <g transform="translate(24 93)">
-      <rect width="132" height="54" rx="12" fill="url(#cyanFill)" stroke="#22d3ee" stroke-opacity="0.38"/>
-      <text x="16" y="24" class="label">Web + Chat</text>
-      <text x="16" y="42" class="tiny">research timeline</text>
-    </g>
-    <g transform="translate(174 93)">
-      <rect width="132" height="54" rx="12" fill="url(#greenFill)" stroke="#86efac" stroke-opacity="0.34"/>
-      <text x="16" y="24" class="label">CLI</text>
-      <text x="16" y="42" class="tiny">sync, stats, get</text>
-    </g>
-    <g transform="translate(24 165)">
-      <rect width="132" height="54" rx="12" fill="url(#amberFill)" stroke="#facc15" stroke-opacity="0.36"/>
-      <text x="16" y="24" class="label">MCP</text>
-      <text x="16" y="42" class="tiny">read-only tools</text>
-    </g>
-    <g transform="translate(174 165)">
-      <rect width="132" height="54" rx="12" fill="url(#roseFill)" stroke="#fda4af" stroke-opacity="0.32"/>
-      <text x="16" y="24" class="label">OKF export</text>
-      <text x="16" y="42" class="tiny">portable bundle</text>
-    </g>
-    <g transform="translate(24 237)">
-      <rect width="132" height="54" rx="12" fill="url(#greenFill)" stroke="#86efac" stroke-opacity="0.32"/>
-      <text x="16" y="24" class="label">Vault notes</text>
-      <text x="16" y="42" class="tiny">Obsidian-ready</text>
-    </g>
-    <g transform="translate(174 237)">
-      <rect width="132" height="54" rx="12" fill="url(#cyanFill)" stroke="#22d3ee" stroke-opacity="0.34"/>
-      <text x="16" y="24" class="label">Tailscale</text>
-      <text x="16" y="42" class="tiny">remote web/MCP</text>
-    </g>
-    <g transform="translate(24 329)">
-      <path d="M0 0 H282" stroke="#65758a" stroke-opacity="0.4"/>
-      <text x="0" y="34" class="tiny">Web is a trusted admin surface. MCP is read-only.</text>
-    </g>
-  </g>
-
-  <path class="arrow" d="M1072 356 C1118 356 1138 352 1182 344" stroke="#5eead4" stroke-opacity="0.75" marker-end="url(#arrowCyan)"/>
-
-  <g transform="translate(477 585)">
-    <rect x="0" y="0" width="622" height="46" rx="23" fill="#14181d" stroke="#65758a" stroke-opacity="0.34"/>
-    <circle cx="31" cy="23" r="7" fill="#86efac"/>
-    <text x="50" y="28" class="small">Optional durability lanes: S3/R2 media archive, SQLite snapshots, public/private media URLs after local coverage is terminal.</text>
+  <g transform="translate(456 568)">
+    <rect width="688" height="72" rx="24" fill="#14181d" stroke="#65758a" stroke-opacity="0.36"/>
+    <circle cx="34" cy="36" r="8" fill="#86efac"/>
+    <text x="56" y="30" class="small">Local-first contract: the database, vault, and media remain authoritative working state.</text>
+    <text x="56" y="51" class="tiny">Remote services are import, inference, access, or durability lanes, not the primary source of truth.</text>
   </g>
 </svg>

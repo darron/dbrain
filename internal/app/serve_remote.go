@@ -1,12 +1,26 @@
 package app
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/darron/dbrain/internal/audit"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mcpserver"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/remote"
+	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/sqlitearchive"
+	"github.com/darron/dbrain/web"
 )
 
 func newServeRemoteCommand(root *rootOptions) *cobra.Command {
@@ -61,16 +75,35 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 				controlURL:         controlURL,
 				verbose:            verbose,
 			})
-			schedulerOpts, err := schedulerSyncConfigFromRuntime(cfg.RootDir)
+			webAuditEnabled := false
+			if opts.Web {
+				webAuditEnabled, err = web.AuditAPIEnabled(cmd.Context(), cfg)
+				if err != nil {
+					return fmt.Errorf("resolve web audit authentication: %w", err)
+				}
+			}
+			mcpAuditEnabled := opts.MCP && mcpserver.AuthEnabled(cfg)
+			schedulers, err := buildRemoteSchedulersWithMetaAndAuditRuntime(cmd.Context(), cfg, auditMetaForInvocation(root), cmd.ErrOrStderr(), webAuditEnabled)
 			if err != nil {
 				return err
 			}
-			scheduler := newSyncScheduler(cfg, schedulerOpts, cmd.ErrOrStderr())
-			opts.SchedulerStatus = scheduler.Status
-			opts.OnReady = func() {
-				scheduler.Start(cmd.Context())
+			if webAuditEnabled {
+				remote.SetWebAuditDependencies(&opts, schedulers.webAuditDependencies(cmd.Context()))
 			}
-			defer scheduler.Stop()
+			if mcpAuditEnabled {
+				auditDependencies, auditErr := resolveMCPAuditServerDependenciesWithReports(cmd.Context(), cfg, auditMetaForInvocation(root), schedulers.auditReports)
+				if auditErr != nil {
+					return fmt.Errorf("configure MCP audit: %w", auditErr)
+				}
+				remote.SetMCPDependencies(&opts, auditDependencies)
+			}
+			opts.SchedulerStatus = schedulers.syncAll.Status
+			opts.OnReady = func() {
+				schedulers.audit.Start(cmd.Context())
+				schedulers.syncAll.Start(cmd.Context())
+				schedulers.sqliteArchive.Start(cmd.Context())
+			}
+			defer schedulers.Stop()
 			return remote.Serve(cmd.Context(), cfg, opts, cmd.ErrOrStderr())
 		},
 	}
@@ -92,6 +125,142 @@ surfaces public through Tailscale Funnel when tailnet policy permits it.`,
 	cmd.Flags().BoolVar(&verbose, "tsnet-verbose", false, "Enable verbose tsnet backend logs")
 
 	return cmd
+}
+
+type remoteSchedulers struct {
+	syncAll          *syncScheduler
+	sqliteArchive    *sqliteArchiveScheduler
+	audit            *auditScheduler
+	auditReports     *audit.ReportStore
+	auditRunner      func(context.Context, audit.Profile, time.Duration) (audit.Report, error)
+	auditSince       time.Duration
+	syncInterval     time.Duration
+	standardInterval time.Duration
+}
+
+func buildRemoteSchedulers(ctx context.Context, cfg config.Config, logOut io.Writer) (remoteSchedulers, error) {
+	return buildRemoteSchedulersWithMeta(ctx, cfg, auditConfigMeta{Layout: "xdg", Source: "default"}, logOut)
+}
+
+func buildRemoteSchedulersWithMeta(ctx context.Context, cfg config.Config, meta auditConfigMeta, logOut io.Writer) (remoteSchedulers, error) {
+	return buildRemoteSchedulersWithMetaAndAuditRuntime(ctx, cfg, meta, logOut, false)
+}
+
+func buildRemoteSchedulersWithMetaAndAuditRuntime(ctx context.Context, cfg config.Config, meta auditConfigMeta, logOut io.Writer, includeAuditRuntime bool) (remoteSchedulers, error) {
+	configSnapshot, err := runtimeenv.LoadConfigSnapshot(ctx, cfg.ConfigPath, auditConfigMaxBytes)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return remoteSchedulers{}, fmt.Errorf("read bounded scheduler config: %w", err)
+		}
+		configSnapshot = map[string]any{}
+	}
+	dotenvSnapshot, err := runtimeenv.LoadDotEnvSnapshot(ctx, cfg.RootDir, auditConfigMaxBytes)
+	if err != nil {
+		return remoteSchedulers{}, fmt.Errorf("read bounded scheduler dotenv: %w", err)
+	}
+	cleanupSnapshot := runtimeenv.RegisterConfigSnapshot(cfg.RootDir, configSnapshot, dotenvSnapshot)
+	defer cleanupSnapshot()
+
+	syncOpts, err := schedulerSyncConfigFromRuntime(cfg.RootDir)
+	if err != nil {
+		return remoteSchedulers{}, err
+	}
+	archiveOpts, err := schedulerSQLiteArchiveConfigFromRuntime(cfg.RootDir)
+	if err != nil {
+		return remoteSchedulers{}, err
+	}
+	auditOpts, err := schedulerAuditConfigFromRuntime(cfg.RootDir)
+	if err != nil {
+		return remoteSchedulers{}, err
+	}
+	var writer sqlitearchive.ObjectWriter
+	if archiveOpts.Enabled {
+		writer, err = buildScheduledSQLiteArchiveWriter(ctx, cfg.RootDir)
+		if err != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled SQLite archive: %w", err)
+		}
+	}
+	schedulers := remoteSchedulers{
+		syncAll:          newSyncScheduler(cfg, syncOpts, logOut),
+		sqliteArchive:    newSQLiteArchiveScheduler(cfg, archiveOpts, writer, logOut),
+		audit:            newAuditScheduler(auditOpts, nil, nil, nil, logOut),
+		auditSince:       auditOpts.Since,
+		syncInterval:     syncOpts.Interval,
+		standardInterval: auditOpts.StandardInterval,
+	}
+	if auditOpts.Enabled || includeAuditRuntime {
+		features, resolveErr := resolveAuditFeatures(cfg, meta)
+		if resolveErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit features: %w", resolveErr)
+		}
+		runner, resolveErr := newScheduledAuditRunner(ctx, cfg, features)
+		if resolveErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit runner: %w", resolveErr)
+		}
+		reportStore, storeErr := audit.NewReportStore(cfg.LogDir)
+		if storeErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit report store: %w", storeErr)
+		}
+		schedulers.auditRunner = runner
+		schedulers.auditReports = reportStore
+	}
+	if auditOpts.Enabled {
+		webhook, webhookErr := audit.NewWebhook(audit.WebhookConfig{URL: auditOpts.Alert.WebhookURL, BearerTokenRef: auditOpts.Alert.BearerTokenRef, AllowPrivateOrigin: auditOpts.Alert.AllowPrivateOrigin, AdminOrigin: auditOpts.Alert.AdminOrigin})
+		if webhookErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit webhook: %w", webhookErr)
+		}
+		schedulers.audit = newAuditScheduler(auditOpts, schedulers.auditRunner, schedulers.auditReports, webhook, logOut)
+		metricsConfig, metricsErr := metrics.ResolveConfig(cfg.RootDir, cfg.LogDir)
+		if metricsErr != nil {
+			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit metrics: %w", metricsErr)
+		}
+		schedulers.audit.emitCompleted = scheduledAuditMetricEmitter(metricsConfig)
+		schedulers.syncAll.postRun = schedulers.audit.AfterSync
+	}
+	return schedulers, nil
+}
+
+func (s remoteSchedulers) webAuditDependencies(ctx context.Context) web.AuditHandlerDependencies {
+	if s.auditReports == nil || s.auditRunner == nil {
+		return web.AuditHandlerDependencies{}
+	}
+	runs := web.NewAuditRunCoordinator(ctx, web.AuditRunCoordinatorOptions{
+		Runner: func(runCtx context.Context, profile audit.Profile) (audit.Report, error) {
+			return s.auditRunner(runCtx, profile, s.auditSince)
+		},
+		Reports:          s.auditReports,
+		SyncInterval:     s.syncInterval,
+		StandardInterval: s.standardInterval,
+	})
+	return web.AuditHandlerDependencies{Reports: s.auditReports, Runs: runs, SyncInterval: s.syncInterval, StandardInterval: s.standardInterval}
+}
+
+func (s remoteSchedulers) Stop() {
+	if s.syncAll != nil {
+		s.syncAll.Stop()
+	}
+	if s.audit != nil {
+		s.audit.Stop()
+	}
+	if s.sqliteArchive != nil {
+		s.sqliteArchive.Stop()
+	}
+}
+
+func auditMetaForInvocation(root *rootOptions) auditConfigMeta {
+	if root != nil && strings.TrimSpace(root.configFile) != "" {
+		return auditConfigMeta{Layout: "explicit_config", Source: "flag"}
+	}
+	if root != nil && strings.TrimSpace(root.root) != "" {
+		return auditConfigMeta{Layout: "explicit_root", Source: "flag"}
+	}
+	if strings.TrimSpace(os.Getenv(configFileEnvVar)) != "" {
+		return auditConfigMeta{Layout: "explicit_config", Source: "environment"}
+	}
+	if strings.TrimSpace(os.Getenv(rootEnvVar)) != "" {
+		return auditConfigMeta{Layout: "explicit_root", Source: "environment"}
+	}
+	return auditConfigMeta{Layout: "xdg", Source: "default"}
 }
 
 type serveRemoteFlags struct {

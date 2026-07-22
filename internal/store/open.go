@@ -1,9 +1,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -11,8 +13,22 @@ import (
 const driverName = "sqlite"
 
 type Store struct {
-	db     *sql.DB
-	hasFTS bool
+	db         *sql.DB
+	read       sqlQueryer
+	hasFTS     bool
+	auditBegin func(context.Context, *sql.Conn) error
+}
+
+type sqlQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *Store) queryer() sqlQueryer {
+	if s.read != nil {
+		return s.read
+	}
+	return s.db
 }
 
 // OpenOptions configures writable store startup behavior.
@@ -69,6 +85,15 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 // It intentionally skips schema creation/migrations so startup cannot block
 // behind a long-running writer before the MCP initialize response is sent.
 func OpenReadOnly(path string) (*Store, error) {
+	return OpenReadOnlyContext(context.Background(), path)
+}
+
+// OpenReadOnlyContext opens an existing query-only store and bounds all
+// bootstrap probes with the caller's context.
+func OpenReadOnlyContext(ctx context.Context, path string) (*Store, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open(driverName, readOnlyDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
@@ -77,7 +102,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	db.SetMaxIdleConns(1)
 
 	st := &Store{db: db}
-	if err := st.initReadOnly(path); err != nil {
+	if err := st.initReadOnly(ctx, path); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -89,6 +114,13 @@ func readOnlyDSN(path string) string {
 	uri := url.URL{Scheme: "file", Path: path}
 	query := uri.Query()
 	query.Set("mode", "ro")
+	// Descriptor-backed immutable candidates are complete private snapshots.
+	// immutable avoids SQLite trying to discover journal siblings beside the
+	// descriptor pseudo-path. Ordinary active database paths must not use it,
+	// because their WAL may contain authoritative state.
+	if strings.HasPrefix(path, "/dev/fd/") || strings.HasPrefix(path, "/proc/self/fd/") {
+		query.Set("immutable", "1")
+	}
 	uri.RawQuery = query.Encode()
 	return uri.String()
 }

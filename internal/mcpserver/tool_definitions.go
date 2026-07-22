@@ -5,6 +5,13 @@ import "github.com/darron/dbrain/internal/store"
 func toolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
+			"name":         "dbrain_audit",
+			"description":  "Read authoritative production-health evidence. fast runs the bounded full local profile; standard reads the newest persisted exact-profile report without network work.",
+			"inputSchema":  auditInputSchema(),
+			"outputSchema": auditOutputSchema(),
+			"annotations":  map[string]bool{"readOnlyHint": true, "idempotentHint": false},
+		},
+		{
 			"name":        "dbrain_search",
 			"description": "Search the local brain across items and linked sources.",
 			"inputSchema": map[string]interface{}{
@@ -99,7 +106,7 @@ func toolDefinitions() []map[string]interface{} {
 					"planner_model":       map[string]interface{}{"type": "string", "description": "Optional model for query planning; empty uses the configured summary model."},
 					"use_model_planner":   map[string]interface{}{"type": "boolean", "description": "Use the configured model for bounded query planning before retrieval. Defaults to true unless disable_planner is set.", "default": true},
 					"disable_planner":     map[string]interface{}{"type": "boolean", "description": "Disable model-assisted query planning and use deterministic planning only.", "default": false},
-					"use_semantic":        map[string]interface{}{"type": "boolean", "description": "Request optional semantic retrieval when a local lane is configured. Currently reports disabled until a validated local embedding lane is added.", "default": false},
+					"use_semantic":        map[string]interface{}{"type": "boolean", "description": "Force semantic retrieval on when a validated local embedding lane is configured.", "default": false},
 					"disable_semantic":    map[string]interface{}{"type": "boolean", "description": "Disable optional semantic retrieval for deterministic lexical debugging.", "default": false},
 				},
 				"required": []string{"question"},

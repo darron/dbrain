@@ -1,0 +1,9 @@
+interface:
+  display_name: "dbrain Review"
+  short_description: "Review recent local brain activity"
+  default_prompt: "Use $dbrain-review to summarize the last week in my brain, with an optional focus if I provide one."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "dbrain"
+      description: "Read-only access to the local dbrain memory"

@@ -15,6 +15,28 @@ them in each change.
 
 ## Collaboration Efficiency Rules
 
+### Use subagents when they improve the work
+
+Agents are explicitly authorized to create and use subagents at their own
+discretion when delegation would improve speed, coverage, or confidence. Human
+approval is not required for each use of a subagent within the scope of the
+requested task. The user has made this a standing preference across all of their
+projects and repositories, not a one-time exception for `dbrain` or this
+session.
+
+- use subagents for concrete, bounded work that can proceed independently, such
+  as parallel repository inspection, focused implementation, test diagnosis,
+  or adversarial review
+- keep simple or tightly coupled tasks with the primary agent when delegation
+  would add more coordination than value
+- give each subagent a clear scope and avoid concurrent edits to the same files
+- the primary agent remains responsible for reconciling findings, reviewing all
+  shared-worktree changes, running the appropriate verification, and presenting
+  one coherent final result
+- subagent authorization does not expand the task's scope or permit destructive,
+  production, deployment, publishing, or external side effects that would
+  otherwise require explicit approval
+
 ### Resolve the real target before reasoning
 
 Many wrong turns in this repo come from inspecting a plausible but wrong target:
@@ -541,9 +563,13 @@ If CLI behavior changed materially, also rebuild and spot-check the command:
 
 When the user asks for an external reviewer such as Amp, Claude, or OpenCode,
 use the installed reviewer skill/CLI from the repo root and let it inspect the
-actual checkout. This repository is open source, and the user has explicitly
-approved sending the relevant checkout, current diff, untracked files, docs,
-schemas, tests, and plan/spec context to those reviewer agents for review.
+actual checkout. The review request itself is explicit authorization to send the
+relevant source repository and review context to the named reviewer. Do not ask
+for a second confirmation or re-litigate that authorization merely because the
+review includes source files, a private repository, the current diff, untracked
+files, docs, schemas, tests, generated artifacts, or plan/spec context. The user
+has made this a standing preference for source-code review across their
+projects, not a one-time exception for this repository or session.
 
 - do not substitute a summary-only packet when the reviewer can inspect the
   checkout directly; summary-only reviews miss untracked files, generated
@@ -555,9 +581,12 @@ schemas, tests, and plan/spec context to those reviewer agents for review.
   implementation against intent
 - use the existing review skills/lanes for Amp, Claude, and OpenCode rather
   than hand-rolling one-off review prompts
-- do not pause for data-sharing permission merely because the checkout is being
-  sent to Amp, Claude, or OpenCode for a requested review; only stop for a real
-  platform approval gate, missing credential, unavailable reviewer tool, or
+- treat requests to "review the work," "review the changes," or review a source
+  code repository with Claude, OpenCode, Amp, or another named reviewer as
+  permission for that reviewer to inspect the relevant checkout directly
+- do not pause for additional data-sharing permission merely because the
+  checkout is being sent to a requested reviewer; only stop for a real platform
+  approval gate, missing credential, unavailable reviewer tool, or
   production/deploy risk
 - preserve the boundary that reviewers inspect and report; they do not edit
   files, run destructive commands, merge, push, or deploy unless the user

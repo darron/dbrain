@@ -18,8 +18,14 @@ func Lookup(rootDir string, key string) (string, bool) {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value, true
 	}
-	if value := loadEnvValueFromFiles(rootDir, key); value != "" {
-		return value, true
+	if hasRegisteredConfigSnapshot(rootDir) {
+		if value, ok := frozenEnvValue(rootDir, key); ok {
+			return value, true
+		}
+	} else {
+		if value := loadEnvValueFromFiles(rootDir, key); value != "" {
+			return value, true
+		}
 	}
 	if value, ok := loadConfigValueOK(rootDir, key); ok && strings.TrimSpace(value) != "" {
 		return value, true

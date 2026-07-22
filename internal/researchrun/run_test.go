@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -16,8 +19,90 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/researchtrace"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/store"
 )
+
+func TestRunnerShadowKeepsJudgeRetryAndPreparedSynthesisLexical(t *testing.T) {
+	cfg, st := newRunnerStore(t)
+	seedRunnerLinkedEvidence(t, st)
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	configYAML := "research:\n  semantic:\n    mode: shadow\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
+	if err := os.WriteFile(cfg.ConfigPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	traceDisabled := false
+	build := func(mode semanticconfig.Mode) brainresearch.Pack {
+		r := newRunner(context.Background(), cfg, st, Options{Question: "Alpha Runner", Limit: 4, DisablePlanner: true, EffectiveSemanticMode: mode, TraceEnabled: &traceDisabled})
+		defer r.cancel()
+		pack, err := r.buildPack(false, "Alpha Runner", "initial")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pack
+	}
+	off, shadow := build(semanticconfig.ModeOff), build(semanticconfig.ModeShadow)
+	if !reflect.DeepEqual(off.Evidence, shadow.Evidence) || shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadow.QueryPlan.ShadowComparison == nil {
+		t.Fatalf("off/shadow packs diverged: off=%#v shadow=%#v", off.QueryPlan, shadow.QueryPlan)
+	}
+	offJudge := Judge(off, JudgeOptions{AllowRetry: true, FocusQuestion: off.Question})
+	shadowJudge := Judge(shadow, JudgeOptions{AllowRetry: true, FocusQuestion: shadow.Question})
+	if !reflect.DeepEqual(offJudge, shadowJudge) || focusedRetryQuestion(off, offJudge, off.Question) != focusedRetryQuestion(shadow, shadowJudge, shadow.Question) {
+		t.Fatalf("judge/retry changed: off=%#v shadow=%#v", offJudge, shadowJudge)
+	}
+	offPrepared, err := brainresearch.PrepareSynthesis(cfg, brainresearch.SynthesisOptions{Pack: off, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowPrepared, err := brainresearch.PrepareSynthesis(cfg, brainresearch.SynthesisOptions{Pack: shadow, Model: "cli/test/research"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offPrepared.Input != shadowPrepared.Input || !reflect.DeepEqual(offPrepared.Citations, shadowPrepared.Citations) {
+		t.Fatalf("prepared synthesis changed between off and shadow")
+	}
+}
+
+func TestRunShadowRetryMatchesOffAndRecordedTraceKeepsComparisonDiagnostic(t *testing.T) {
+	cfg, st := newRunnerStore(t)
+	seedRunnerLinkedEvidence(t, st)
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	if err := os.WriteFile(cfg.ConfigPath, []byte("research:\n  semantic:\n    mode: off\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: "+embed.URL+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	traceOff, traceShadow := false, true
+	base := Options{Question: "Alpha Runner", Limit: 4, DisablePlanner: true, StopAfterJudge: true, MinEvidenceForEnough: 10}
+	offOpts := base
+	offOpts.EffectiveSemanticMode, offOpts.TraceEnabled = semanticconfig.ModeOff, &traceOff
+	off, err := Run(context.Background(), cfg, st, offOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowOpts := base
+	shadowOpts.EffectiveSemanticMode, shadowOpts.TraceEnabled, shadowOpts.Surface = semanticconfig.ModeShadow, &traceShadow, "research_runner_shadow_test"
+	shadow, err := Run(context.Background(), cfg, st, shadowOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !off.Retried || !shadow.Retried || !reflect.DeepEqual(off.Pack.Evidence, shadow.Pack.Evidence) || !reflect.DeepEqual(off.Judge, shadow.Judge) || shadow.Pack.QueryPlan.ShadowComparison == nil {
+		t.Fatalf("retry diverged: off=%#v shadow=%#v", off, shadow)
+	}
+	loaded, _, err := researchtrace.Load(cfg, shadow.TracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Pack == nil || loaded.Pack.QueryPlan.SemanticMode != semanticconfig.ModeShadow || loaded.Pack.QueryPlan.ShadowComparison == nil || !reflect.DeepEqual(loaded.Pack.Evidence, off.Pack.Evidence) {
+		t.Fatalf("recorded shadow trace=%#v", loaded.Pack)
+	}
+}
 
 func TestJudgeVerdictsAndRetryActions(t *testing.T) {
 	t.Parallel()
@@ -632,6 +717,18 @@ func TestVerifyCitationsRejectsKeysOutsideFinalPack(t *testing.T) {
 		t.Fatalf("expected citation metadata mismatch warning: %+v", verification)
 	}
 
+	verification = VerifyCitations(pack, brainresearch.SynthesisResult{
+		Answer:       "Allowed answer citation [x:allowed].",
+		AnswerStatus: "ok",
+		Citations: []brainresearch.Citation{
+			{SourceKey: "x:allowed"},
+			{SourceKey: "x:unused"},
+		},
+	})
+	if verification.Passed || !strings.Contains(strings.Join(verification.Errors, "\n"), "answer does not cite it") {
+		t.Fatalf("expected unused citation metadata failure: %+v", verification)
+	}
+
 	feedEntryPack := brainresearch.Pack{
 		Evidence: []ask.Evidence{{SourceKey: "feed-entry:abc123def456"}},
 	}
@@ -642,6 +739,70 @@ func TestVerifyCitationsRejectsKeysOutsideFinalPack(t *testing.T) {
 	})
 	if !verification.Passed {
 		t.Fatalf("expected feed-entry source-key citation to verify: %+v", verification)
+	}
+
+	verification = VerifyCitations(pack, brainresearch.SynthesisResult{
+		Question:     "What is J-space?",
+		Answer:       "Useful answer [x:allowed].\n\n**Note on Unrelated Sources**\nOther candidates were unrelated.",
+		AnswerStatus: "ok",
+		Citations:    []brainresearch.Citation{{SourceKey: "x:allowed"}},
+	})
+	if verification.Passed || !strings.Contains(strings.Join(verification.Errors, "\n"), "unrelated research-pack candidates") {
+		t.Fatalf("expected unrelated-source inventory rejection: %+v", verification)
+	}
+
+	for _, answer := range []string{
+		"Useful answer [x:allowed].\n\n## Off-topic results\nOther candidates discuss advertising.",
+		"Useful answer [x:allowed].\n\n**Irrelevant evidence**\nThe rest concerns Cursor.",
+		"Useful answer [x:allowed]. The remaining results do not pertain to the question.",
+	} {
+		verification = VerifyCitations(pack, brainresearch.SynthesisResult{
+			Question:     "What is J-space?",
+			Answer:       answer,
+			AnswerStatus: "ok",
+			Citations:    []brainresearch.Citation{{SourceKey: "x:allowed"}},
+		})
+		if verification.Passed {
+			t.Fatalf("expected paraphrased unrelated-source inventory rejection for %q", answer)
+		}
+	}
+
+	verification = VerifyCitations(pack, brainresearch.SynthesisResult{
+		Question:     "Which results are irrelevant to J-space?",
+		Answer:       "The unrelated source is [x:allowed].",
+		AnswerStatus: "ok",
+		Citations:    []brainresearch.Citation{{SourceKey: "x:allowed"}},
+	})
+	if !verification.Passed {
+		t.Fatalf("expected explicit relevance-analysis question to permit relevance discussion: %+v", verification)
+	}
+
+	verification = VerifyCitations(pack, brainresearch.SynthesisResult{
+		Question:     "What is J-space?",
+		Answer:       "The source describes copying an unrelated sentence into J-space [x:allowed].",
+		AnswerStatus: "ok",
+		Citations:    []brainresearch.Citation{{SourceKey: "x:allowed"}},
+	})
+	if !verification.Passed {
+		t.Fatalf("expected ordinary use of unrelated to remain valid: %+v", verification)
+	}
+}
+
+func TestVerifyPreparedCitationsRejectsEvidenceExcludedFromSynthesis(t *testing.T) {
+	t.Parallel()
+
+	prepared := brainresearch.PreparedSynthesis{
+		Citations: []brainresearch.Citation{{SourceKey: "x:admitted"}},
+		Status:    "ok",
+	}
+	verification := VerifyPreparedCitations(prepared, brainresearch.SynthesisResult{
+		Question:     "What is J-space?",
+		Answer:       "Answer cites a retrieved but excluded row [x:excluded].",
+		AnswerStatus: "ok",
+		Citations:    []brainresearch.Citation{{SourceKey: "x:excluded"}},
+	})
+	if verification.Passed || !strings.Contains(strings.Join(verification.Errors, "\n"), "not present in final evidence pack") {
+		t.Fatalf("expected excluded synthesis evidence to fail verification: %+v", verification)
 	}
 }
 

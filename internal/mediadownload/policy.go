@@ -1,14 +1,13 @@
 package mediadownload
 
 import (
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func shouldDownload(ref model.ItemMediaRef, cfg config.Config, force bool) bool {
@@ -29,8 +28,12 @@ func shouldDownload(ref model.ItemMediaRef, cfg config.Config, force bool) bool 
 		if !ref.LocalPrunedAt.IsZero() && strings.TrimSpace(ref.ArchiveStatus) == model.MediaArchiveStatusArchived {
 			return false
 		}
-		fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(ref.LocalPath))
-		_, err := os.Stat(fullPath)
+		root, err := vaultfs.Open(cfg.VaultDir)
+		if err != nil {
+			return true
+		}
+		defer func() { _ = root.Close() }()
+		_, err = root.Stat(ref.LocalPath)
 		return err != nil
 	default:
 		return false

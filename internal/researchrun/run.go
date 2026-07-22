@@ -11,6 +11,7 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/researchtrace"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -23,6 +24,9 @@ const (
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Question) == "" {
 		return Result{}, fmt.Errorf("question is required")
+	}
+	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, opts.UseSemantic, opts.DisableSemantic); err != nil {
+		return Result{}, err
 	}
 	r := newRunner(ctx, cfg, st, opts)
 	defer r.cancel()
@@ -91,8 +95,19 @@ func (r *runner) run() (Result, error) {
 	if !r.enter("inspection", "inspecting top evidence") {
 		return r.finish()
 	}
+	inspectionCtx, cancelInspection := r.stageContext()
+	pack, inspection := brainresearch.InspectPack(inspectionCtx, r.cfg, r.st, pack, brainresearch.InspectionOptions{
+		Limit:    r.opts.InspectionLimit,
+		MaxChars: r.opts.InspectionMaxChars,
+	})
+	cancelInspection()
+	r.setPack(pack)
 	r.emit("inspection", "done", "top evidence inspected", map[string]interface{}{
-		"source_keys": sourceKeys(firstN(pack.Evidence, 3)),
+		"source_keys":    inspection.InspectedSourceKeys,
+		"original_order": inspection.OriginalOrder,
+		"final_order":    inspection.FinalOrder,
+		"reordered":      inspection.Reordered,
+		"errors":         inspection.Errors,
 	})
 
 	if !r.enter("judge", "judging evidence coverage") {
@@ -122,7 +137,21 @@ func (r *runner) run() (Result, error) {
 			r.emit("retry", "error", retryErr.Error(), nil)
 		} else {
 			pack = retryPack
+			r.result.Retried = true
+			retryInspectionCtx, cancelRetryInspection := r.stageContext()
+			pack, retryInspection := brainresearch.InspectPack(retryInspectionCtx, r.cfg, r.st, pack, brainresearch.InspectionOptions{
+				Limit:    r.opts.InspectionLimit,
+				MaxChars: r.opts.InspectionMaxChars,
+			})
+			cancelRetryInspection()
 			r.setPack(pack)
+			r.emit("retry_inspection", "done", "merged retry evidence inspected", map[string]interface{}{
+				"source_keys":    retryInspection.InspectedSourceKeys,
+				"original_order": retryInspection.OriginalOrder,
+				"final_order":    retryInspection.FinalOrder,
+				"reordered":      retryInspection.Reordered,
+				"errors":         retryInspection.Errors,
+			})
 			judge = Judge(pack, JudgeOptions{
 				MinEvidenceForEnough: r.opts.MinEvidenceForEnough,
 				FocusQuestion:        r.synthesisQuestion(),
@@ -180,6 +209,7 @@ func (r *runner) run() (Result, error) {
 		"citation_count":  len(prepared.Citations),
 		"input_chars":     len(prepared.Input),
 		"evidence_budget": prepared.Truncation.EvidenceBudgetChars,
+		"relevance":       prepared.Relevance,
 	})
 
 	if !r.enter("synthesis", "running synthesis") {
@@ -209,7 +239,7 @@ func (r *runner) run() (Result, error) {
 	}
 	verification := mergeVerificationResults(
 		GuardAnchoredAnswer(pack, prepared, synthesis),
-		VerifyCitations(pack, synthesis),
+		VerifyPreparedCitations(prepared, synthesis),
 	)
 	r.result.Verification = verification
 	r.result.Warnings = appendUniqueStrings(r.result.Warnings, verification.Warnings...)
@@ -258,26 +288,27 @@ func (r *runner) buildPack(includeRelated bool, question string, attempt string)
 	ctx, cancel := r.stageContext()
 	defer cancel()
 	return brainresearch.Build(ctx, r.cfg, r.st, brainresearch.Options{
-		Question:          question,
-		RawQuestion:       r.rawQuestion(),
-		Topic:             r.opts.Topic,
-		Limit:             r.opts.Limit,
-		SourceTypes:       r.opts.SourceTypes,
-		IncludeRelated:    includeRelated,
-		RelatedLimit:      r.opts.RelatedLimit,
-		SeedLimit:         r.opts.SeedLimit,
-		IncludeTopic:      r.opts.IncludeTopic,
-		MaxCharsPerDoc:    r.opts.MaxCharsPerDoc,
-		PlannerModel:      r.opts.PlannerModel,
-		PlannerTimeout:    r.opts.PlannerTimeout,
-		PlannerBinary:     r.opts.PlannerBinary,
-		UseModelPlanner:   r.opts.UseModelPlanner,
-		DisablePlanner:    r.opts.DisablePlanner,
-		UseSemantic:       r.opts.UseSemantic,
-		DisableSemantic:   r.opts.DisableSemantic,
-		ContinuityAnchors: r.continuityAnchors(),
-		Attempt:           attempt,
-		Observer:          r.recorder,
+		Question:              question,
+		RawQuestion:           r.rawQuestion(),
+		Topic:                 r.opts.Topic,
+		Limit:                 r.opts.Limit,
+		SourceTypes:           r.opts.SourceTypes,
+		IncludeRelated:        includeRelated,
+		RelatedLimit:          r.opts.RelatedLimit,
+		SeedLimit:             r.opts.SeedLimit,
+		IncludeTopic:          r.opts.IncludeTopic,
+		MaxCharsPerDoc:        r.opts.MaxCharsPerDoc,
+		PlannerModel:          r.opts.PlannerModel,
+		PlannerTimeout:        r.opts.PlannerTimeout,
+		PlannerBinary:         r.opts.PlannerBinary,
+		UseModelPlanner:       r.opts.UseModelPlanner,
+		DisablePlanner:        r.opts.DisablePlanner,
+		UseSemantic:           r.opts.UseSemantic,
+		DisableSemantic:       r.opts.DisableSemantic,
+		EffectiveSemanticMode: r.opts.EffectiveSemanticMode,
+		ContinuityAnchors:     r.continuityAnchors(),
+		Attempt:               attempt,
+		Observer:              r.recorder,
 	})
 }
 
@@ -530,13 +561,6 @@ func sourceKeys(rows []ask.Evidence) []string {
 		}
 	}
 	return keys
-}
-
-func firstN(rows []ask.Evidence, n int) []ask.Evidence {
-	if len(rows) <= n {
-		return rows
-	}
-	return rows[:n]
 }
 
 func appendUniqueStrings(base []string, values ...string) []string {

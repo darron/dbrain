@@ -27,6 +27,11 @@ func newTranscribeXMediaCommand(root *rootOptions) *cobra.Command {
 	var timeout time.Duration
 	var mwBinary string
 	var mwModel string
+	var transcriber string
+	var language string
+	var whisperBinary string
+	var whisperModel string
+	var whisperVADModel string
 	var summarize bool
 	var summaryModel string
 	var summaryCLI string
@@ -36,7 +41,7 @@ func newTranscribeXMediaCommand(root *rootOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "x-media",
-		Short: "Transcribe downloaded X video media with MacWhisper",
+		Short: "Transcribe downloaded X video media with whisper.cpp or MacWhisper",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig(root.root, root.configFile)
@@ -59,6 +64,11 @@ func newTranscribeXMediaCommand(root *rootOptions) *cobra.Command {
 				Timeout:          timeout,
 				MacWhisperBinary: mwBinary,
 				MacWhisperModel:  mwModel,
+				Transcriber:      transcriber,
+				Language:         language,
+				WhisperBinary:    whisperBinary,
+				WhisperModelPath: whisperModel,
+				WhisperVADPath:   whisperVADModel,
 				Summarize:        summarize,
 				SummaryModel:     summaryModel,
 				SummaryCLI:       summaryCLI,
@@ -93,9 +103,14 @@ func newTranscribeXMediaCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 25, "Maximum X items to inspect for downloaded video media")
 	cmd.Flags().BoolVar(&force, "force", false, "Retranscribe items even if they already have X media transcript text")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of concurrent X media transcript summaries to run")
-	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Per-media timeout for ffprobe and MacWhisper")
+	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Per-media timeout for ffprobe and speech transcription")
+	cmd.Flags().StringVar(&transcriber, "transcriber", "", "Transcription backend: auto, whisper.cpp, or macwhisper[:model]")
+	cmd.Flags().StringVar(&language, "language", "", "Spoken language code, or auto for detection")
+	cmd.Flags().StringVar(&whisperBinary, "whisper-binary", "", "whisper.cpp CLI binary (default whisper-cli)")
+	cmd.Flags().StringVar(&whisperModel, "whisper-model", "", "whisper.cpp GGML model path")
+	cmd.Flags().StringVar(&whisperVADModel, "whisper-vad-model", "", "Optional whisper.cpp Silero VAD model path")
 	cmd.Flags().StringVar(&mwBinary, "mw-binary", "mw", "MacWhisper CLI binary")
-	cmd.Flags().StringVar(&mwModel, "model", "", "Optional MacWhisper model override")
+	cmd.Flags().StringVar(&mwModel, "model", "", "Optional MacWhisper model override (compatibility flag)")
 	cmd.Flags().BoolVar(&summarize, "summarize", true, "Summarize completed X media transcripts after transcription")
 	cmd.Flags().StringVar(&summaryModel, "summary-model", "", "Optional model override for X media transcript summaries")
 	cmd.Flags().StringVar(&summaryCLI, "summary-cli", defaultCLIProvider, "Summarize CLI provider for X media transcript summaries")

@@ -2,18 +2,21 @@ package mediaarchive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"mime"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 type S3Uploader struct {
@@ -29,8 +32,19 @@ func NewS3Uploader(opts Options) (*S3Uploader, error) {
 }
 
 func NewS3Client(opts Options) (*s3.Client, error) {
+	origin, err := safehttp.CanonicalOriginEndpoint(opts.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("validate archive endpoint: %w", err)
+	}
+	httpClient := safehttp.NewClient(safehttp.Policy{
+		AllowedOrigins:        []string{origin},
+		AllowedPrivateOrigins: []string{origin},
+		ConnectTimeout:        opts.ConnectTimeout, TLSHandshakeTimeout: opts.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: opts.ResponseHeaderTimeout,
+	})
 	cfg := aws.Config{
-		Region: strings.TrimSpace(opts.Region),
+		Region:     strings.TrimSpace(opts.Region),
+		HTTPClient: httpClient,
 		Credentials: aws.NewCredentialsCache(
 			credentials.NewStaticCredentialsProvider(
 				strings.TrimSpace(opts.AccessKeyID),
@@ -41,9 +55,50 @@ func NewS3Client(opts Options) (*s3.Client, error) {
 	}
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = opts.PathStyle
-		o.BaseEndpoint = aws.String(strings.TrimSpace(opts.Endpoint))
+		o.BaseEndpoint = aws.String(origin)
 	})
 	return client, nil
+}
+
+type ObjectMetadata struct {
+	Exists    bool
+	SizeBytes int64
+}
+
+type headObjectClient interface {
+	HeadObject(context.Context, *s3.HeadObjectInput, ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+}
+
+type S3Inspector struct {
+	bucket string
+	client headObjectClient
+}
+
+func NewS3Inspector(opts Options) (*S3Inspector, error) {
+	if strings.TrimSpace(opts.Bucket) == "" {
+		return nil, fmt.Errorf("archive bucket is required")
+	}
+	client, err := NewS3Client(opts)
+	if err != nil {
+		return nil, err
+	}
+	return newS3Inspector(opts.Bucket, client), nil
+}
+
+func newS3Inspector(bucket string, client headObjectClient) *S3Inspector {
+	return &S3Inspector{bucket: strings.TrimSpace(bucket), client: client}
+}
+
+func (i *S3Inspector) HeadObject(ctx context.Context, key string) (ObjectMetadata, error) {
+	output, err := i.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(i.bucket), Key: aws.String(strings.TrimSpace(key))})
+	if err != nil {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "404") {
+			return ObjectMetadata{}, nil
+		}
+		return ObjectMetadata{}, fmt.Errorf("head archive object: %w", err)
+	}
+	return ObjectMetadata{Exists: true, SizeBytes: aws.ToInt64(output.ContentLength)}, nil
 }
 
 func (u *S3Uploader) Upload(ctx context.Context, cfg config.Config, asset model.MediaAsset, opts Options) (model.MediaArchiveResult, bool, error) {
@@ -55,10 +110,14 @@ func (u *S3Uploader) Upload(ctx context.Context, cfg config.Config, asset model.
 		return result, false, nil
 	}
 
-	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(asset.LocalPath))
-	file, err := os.Open(fullPath)
+	root, err := vaultfs.Open(cfg.VaultDir)
 	if err != nil {
-		return model.MediaArchiveResult{}, false, fmt.Errorf("open local media %s: %w", fullPath, err)
+		return model.MediaArchiveResult{}, false, err
+	}
+	defer func() { _ = root.Close() }()
+	file, err := root.Open(asset.LocalPath)
+	if err != nil {
+		return model.MediaArchiveResult{}, false, fmt.Errorf("open local media %q: %w", asset.LocalPath, err)
 	}
 	defer func() {
 		_ = file.Close()
@@ -66,7 +125,7 @@ func (u *S3Uploader) Upload(ctx context.Context, cfg config.Config, asset model.
 
 	info, err := file.Stat()
 	if err != nil {
-		return model.MediaArchiveResult{}, false, fmt.Errorf("stat local media %s: %w", fullPath, err)
+		return model.MediaArchiveResult{}, false, fmt.Errorf("stat local media %q: %w", asset.LocalPath, err)
 	}
 
 	contentType := strings.TrimSpace(asset.MIMEType)

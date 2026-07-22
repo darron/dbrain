@@ -12,19 +12,27 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/feedimport"
+	installer "github.com/darron/dbrain/internal/install"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
+	"github.com/darron/dbrain/internal/prunedmediarepair"
 	"github.com/darron/dbrain/internal/remote"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
+	"github.com/darron/dbrain/internal/semanticbuild"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
@@ -33,6 +41,185 @@ import (
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
 )
+
+func TestResearchCommandConfiguredSemanticModesAndOverrides(t *testing.T) {
+	var calls atomic.Int64
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	run := func(mode string, flags ...string) (brainresearch.Pack, int) {
+		root := t.TempDir()
+		cfg, err := config.Load(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+		yaml := "research:\n  semantic:\n    mode: " + mode + "\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
+		if err := os.WriteFile(cfg.ConfigPath, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := calls.Load()
+		args := []string{"research", "agent memory", "--retrieval-only", "--no-trace", "--no-planner", "--json"}
+		args = append(args, flags...)
+		output := runRootCommand(t, root, args...)
+		var pack brainresearch.Pack
+		if err := json.Unmarshal([]byte(output), &pack); err != nil {
+			t.Fatalf("decode pack: %v\n%s", err, output)
+		}
+		return pack, int(calls.Load() - before)
+	}
+	off, offCalls := run("off")
+	shadow, shadowCalls := run("shadow")
+	on, onCalls := run("on")
+	forcedOn, forcedOnCalls := run("off", "--semantic")
+	forcedOff, forcedOffCalls := run("shadow", "--no-semantic")
+	if off.QueryPlan.SemanticMode != semanticconfig.ModeOff || offCalls != 0 || shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadowCalls != 1 || shadow.QueryPlan.ShadowComparison == nil || on.QueryPlan.SemanticMode != semanticconfig.ModeOn || onCalls != 1 || forcedOn.QueryPlan.SemanticMode != semanticconfig.ModeOn || forcedOnCalls != 1 || forcedOff.QueryPlan.SemanticMode != semanticconfig.ModeOff || forcedOffCalls != 0 {
+		t.Fatalf("modes/calls off=%s/%d shadow=%s/%d on=%s/%d forcedOn=%s/%d forcedOff=%s/%d", off.QueryPlan.SemanticMode, offCalls, shadow.QueryPlan.SemanticMode, shadowCalls, on.QueryPlan.SemanticMode, onCalls, forcedOn.QueryPlan.SemanticMode, forcedOnCalls, forcedOff.QueryPlan.SemanticMode, forcedOffCalls)
+	}
+	root := t.TempDir()
+	_, _, err := runRootCommandErr(t, root, "research", "q", "--semantic", "--no-semantic")
+	if err == nil || !strings.Contains(err.Error(), "--semantic and --no-semantic") {
+		t.Fatalf("conflict err=%v", err)
+	}
+}
+
+func TestRepairPrunedMediaCommandDryRunUsesReadOnlyStore(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+	before := listRepairPrunedMediaDirectories(t, root)
+
+	called := 0
+	cmd := newRepairPrunedMediaCommandWithRun(&rootOptions{root: root, noCaffeinate: true, noDebug: true}, func(ctx context.Context, _ config.Config, st *store.Store, opts prunedmediarepair.Options) (prunedmediarepair.Stats, error) {
+		called++
+		if opts.Apply {
+			t.Fatalf("expected dry-run options, got %+v", opts)
+		}
+		if err := st.SaveXMediaTranscriptionState(ctx, 1, model.XMediaTranscriptStatusError, "must fail", time.Now()); err == nil {
+			t.Fatal("dry-run store unexpectedly allowed a write")
+		}
+		return prunedmediarepair.Stats{Apply: false}, nil
+	})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected coordinator call, got %d", called)
+	}
+	var stats prunedmediarepair.Stats
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("unmarshal output %q: %v", stdout.String(), err)
+	}
+	if stats.Apply {
+		t.Fatalf("expected apply=false, got %+v", stats)
+	}
+	after := listRepairPrunedMediaDirectories(t, root)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("dry-run mutated filesystem paths: before=%v after=%v", before, after)
+	}
+}
+
+func TestRepairPrunedMediaCommandApplyDefaultsAndCategorySelection(t *testing.T) {
+	root := t.TempDir()
+	var got []prunedmediarepair.Options
+	run := func(_ context.Context, _ config.Config, _ *store.Store, opts prunedmediarepair.Options) (prunedmediarepair.Stats, error) {
+		got = append(got, opts)
+		return prunedmediarepair.Stats{Apply: opts.Apply}, nil
+	}
+
+	for _, args := range [][]string{{"--apply", "--json"}, {"--apply", "--ocr", "--json"}, {"--apply", "--transcripts", "--json"}} {
+		cmd := newRepairPrunedMediaCommandWithRun(&rootOptions{root: root, noCaffeinate: true, noDebug: true}, run)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(args)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("ExecuteContext %v: %v", args, err)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected three coordinator calls, got %d", len(got))
+	}
+	if !got[0].Apply || !got[0].OCR || !got[0].Transcripts || got[0].Limit != 5000 || got[0].Timeout != 45*time.Second {
+		t.Fatalf("unexpected defaults: %+v", got[0])
+	}
+	if !got[1].OCR || got[1].Transcripts {
+		t.Fatalf("--ocr selected wrong categories: %+v", got[1])
+	}
+	if got[2].OCR || !got[2].Transcripts {
+		t.Fatalf("--transcripts selected wrong categories: %+v", got[2])
+	}
+}
+
+func TestRepairPrunedMediaCommandValidatesBounds(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"zero limit", []string{"--limit", "0"}, "limit must be positive"},
+		{"over limit", []string{"--limit", "5001"}, "limit must not exceed 5000"},
+		{"zero timeout", []string{"--timeout", "0s"}, "timeout must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRepairPrunedMediaCommandWithRun(&rootOptions{root: t.TempDir()}, func(context.Context, config.Config, *store.Store, prunedmediarepair.Options) (prunedmediarepair.Stats, error) {
+				t.Fatal("coordinator called after invalid flags")
+				return prunedmediarepair.Stats{}, nil
+			})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(tc.args)
+			err := cmd.ExecuteContext(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func listRepairPrunedMediaDirectories(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir: %v", err)
+	}
+	return paths
+}
 
 func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	t.Parallel()
@@ -49,7 +236,7 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
+	for _, value := range []string{"auth", "import", "sync", "sqlite", "tsnet", "install", "config", "doctor", "eval", "entity", "topic", "worker", "link", "launchd", "extract", "hydrate", "transcribe", "ocr", "repair", "serve", "stats", "semantic", "research", "search", "get", "categorize", "okf", "whats-new", "version"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
@@ -58,6 +245,115 @@ func TestRootCommandHelpIncludesCoreCommands(t *testing.T) {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected help output to contain %q, got %q", value, output)
 		}
+	}
+}
+
+func TestSemanticStatusJSONHasExplicitStateAndNonNullSlices(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := runRootCommand(t, root, "semantic", "status", "--json")
+	if strings.Contains(stdout, `"problems": null`) || strings.Contains(stdout, `"next_steps": null`) {
+		t.Fatalf("semantic status emitted null slices: %s", stdout)
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if payload.Status != "not_configured" {
+		t.Fatalf("status=%q output=%s", payload.Status, stdout)
+	}
+}
+
+func TestSemanticStatusNotConfiguredDoesNotRequireDatabase(t *testing.T) {
+	root := t.TempDir()
+	stdout := runRootCommand(t, root, "semantic", "status", "--json")
+	var payload struct {
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != "not_configured" || payload.Mode != "off" {
+		t.Fatalf("payload=%+v output=%s", payload, stdout)
+	}
+}
+
+func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
+	for _, args := range [][]string{
+		{"semantic", "chunk", "--limit", "0", "--json"},
+		{"semantic", "embed", "--limit", "0", "--json"},
+		{"semantic", "embed", "--batch-size", "0", "--json"},
+	} {
+		stdout, _, err := runRootCommandErr(t, t.TempDir(), args...)
+		if err == nil {
+			t.Fatalf("%v unexpectedly succeeded", args)
+		}
+		if stdout != "" {
+			t.Fatalf("%v mixed output with error: %q", args, stdout)
+		}
+	}
+}
+
+func TestSemanticChunkHelpIncludesResumeCursor(t *testing.T) {
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"semantic", "chunk", "--help"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "--after-source-key") {
+		t.Fatalf("help=%s", stdout.String())
+	}
+}
+
+func TestSemanticChunkOutputIncludesResumeState(t *testing.T) {
+	progress := semanticbuild.ChunkProgress{
+		Progress:           semanticbuild.Progress{Stage: "chunk", Snapshots: make([]semanticbuild.Progress, 0)},
+		NextAfterSourceKey: "item:one",
+		HasMore:            true,
+	}
+	var human bytes.Buffer
+	if err := writeSemanticChunkProgress(&human, progress); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Next after source key: item:one", "Has more: true"} {
+		if !strings.Contains(human.String(), want) {
+			t.Fatalf("human output missing %q: %s", want, human.String())
+		}
+	}
+	var machine bytes.Buffer
+	if err := writeJSON(&machine, progress); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		NextAfterSourceKey string                   `json:"next_after_source_key"`
+		HasMore            bool                     `json:"has_more"`
+		Snapshots          []semanticbuild.Progress `json:"snapshots"`
+	}
+	if err := json.Unmarshal(machine.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.NextAfterSourceKey != "item:one" || !payload.HasMore || payload.Snapshots == nil {
+		t.Fatalf("JSON resume state=%+v output=%s", payload, machine.String())
 	}
 }
 
@@ -1003,6 +1299,680 @@ func TestLaunchdPlistCommandPreservesConfigFileSelector(t *testing.T) {
 	}
 }
 
+func TestInstallCommandWritesBasePathConfigAndReportsDetectedTools(t *testing.T) {
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	for _, name := range []string{"mw", "ffprobe", "yt-dlp", "tesseract", "summarize"} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", binDir)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--force",
+		"--no-keychain",
+		"--enable-x-bookmarks",
+		"--enable-github-stars",
+		"--enable-youtube-watch-later",
+		"--enable-youtube-liked",
+		"--enable-feeds",
+		"--enable-apple-notes",
+		"--enable-safari-tabs",
+		"--safari-tabs-device", "test-phone",
+		"--enable-scheduler",
+		"--enable-tailscale",
+		"--tsnet-hostname", "dbrain-test",
+		"--enable-github-login",
+		"--auth-base-url", "https://dbrain-test.example.ts.net",
+		"--github-client-id", "Iv1.test",
+		"--local-model-profile", "none",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+
+	configPath := filepath.Join(basePath, "config.yaml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	configText := string(raw)
+	for _, expected := range []string{
+		"sync_all:",
+		"x_bookmarks: true",
+		"github_stars: true",
+		"youtube_watch_later: true",
+		"youtube_liked: true",
+		"feeds: true",
+		"apple_notes:",
+		"enabled: true",
+		"safari_tabs:",
+		`device: "test-phone"`,
+		"scheduler:",
+		"tsnet:",
+		`hostname: "dbrain-test"`,
+		"auth:",
+		`base_url: "https://dbrain-test.example.ts.net"`,
+		`client_id: "Iv1.test"`,
+		`tesseract_binary: "` + filepath.Join(binDir, "tesseract") + `"`,
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected config to contain %q:\n%s", expected, configText)
+		}
+	}
+	sessionKeyLine := ""
+	for _, line := range strings.Split(configText, "\n") {
+		if strings.Contains(line, "session_key:") {
+			sessionKeyLine = line
+			break
+		}
+	}
+	if sessionKeyLine == "" || strings.Contains(sessionKeyLine, `session_key: ""`) || strings.Contains(sessionKeyLine, "keychain://") {
+		t.Fatalf("expected non-empty plaintext session_key for --no-keychain GitHub login, got %q in:\n%s", sessionKeyLine, configText)
+	}
+	for _, unexpected := range []string{`model: "ollama/`, `model: "lmstudio/`, `model: "omlx/`} {
+		if strings.Contains(configText, unexpected) {
+			t.Fatalf("unattended install should not select detected LLM model %q:\n%s", unexpected, configText)
+		}
+	}
+
+	output := stdout.String()
+	for _, expected := range []string{
+		"dbrain install complete",
+		configPath,
+		"MacWhisper CLI",
+		"Tesseract",
+		"summarize",
+		"Scheduler enabled",
+		"GitHub login enabled",
+		"Tailscale enabled",
+		"auth.session_key was written directly",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected install output to contain %q, got %q", expected, output)
+		}
+	}
+}
+
+func TestInstallCommandWritesExplicitDisabledImportPolicy(t *testing.T) {
+	clearSyncEnvForTest(t)
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--force",
+		"--no-detect",
+		"--no-keychain",
+		"--local-model-profile", "none",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(basePath, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	configText := string(raw)
+	for _, expected := range []string{
+		"x_bookmarks: false",
+		"github_stars: false",
+		"youtube_watch_later: false",
+		"youtube_liked: false",
+		"feeds: false",
+		"apple_notes: false",
+		"safari_tabs: false",
+		`browser: "chrome"`,
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected generated config to contain %q:\n%s", expected, configText)
+		}
+	}
+
+	resolved, err := resolveSyncAllFlags(basePath, syncAllFlags{watchLater: true, liked: true})
+	if err != nil {
+		t.Fatalf("resolve generated import policy: %v", err)
+	}
+	if !resolved.skipXBookmarks || !resolved.skipX || !resolved.skipXMedia || !resolved.skipXPhotoOCR || !resolved.skipGitHub || !resolved.skipYouTube || !resolved.skipFeeds {
+		t.Fatalf("fresh disabled policy did not suppress import stages: %+v", resolved)
+	}
+	if resolved.appleNotes || resolved.safariTabs || resolved.watchLater || resolved.liked {
+		t.Fatalf("fresh disabled policy unexpectedly enabled an importer: %+v", resolved)
+	}
+	if output := stdout.String(); !strings.Contains(output, "No import sources were selected") || !strings.Contains(output, "X bookmarks") || !strings.Contains(output, "disabled") {
+		t.Fatalf("install summary did not explain disabled imports: %q", output)
+	}
+}
+
+func TestInstallCommandReinstallPreservesImportSelectionsAndBrowser(t *testing.T) {
+	clearSyncEnvForTest(t)
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	runInstall := func(args ...string) {
+		t.Helper()
+		cmd := NewRootCommand()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(append([]string{
+			"--no-debug",
+			"install",
+			"--yes",
+			"--base-path", basePath,
+			"--no-detect",
+			"--no-keychain",
+			"--local-model-profile", "none",
+		}, args...))
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("install command: %v", err)
+		}
+	}
+
+	runInstall(
+		"--force",
+		"--enable-x-bookmarks",
+		"--enable-youtube-watch-later",
+		"--enable-feeds",
+		"--enable-apple-notes",
+		"--enable-safari-tabs",
+		"--safari-tabs-device", "phone",
+		"--enable-scheduler",
+		"--browser", "firefox",
+		"--profile", "research",
+	)
+	runInstall(
+		"--enable-github-stars",
+	)
+
+	raw, err := os.ReadFile(filepath.Join(basePath, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	configText := string(raw)
+	for _, expected := range []string{
+		"x_bookmarks: true",
+		"github_stars: true",
+		"youtube_watch_later: true",
+		"youtube_liked: false",
+		"feeds: true",
+		"apple_notes: true",
+		"safari_tabs: true",
+		`device: "phone"`,
+		`browser: "firefox"`,
+		`profile: "research"`,
+	} {
+		if !strings.Contains(configText, expected) {
+			t.Fatalf("expected reinstall to preserve/write %q:\n%s", expected, configText)
+		}
+	}
+	schedulerConfig, err := schedulerSyncConfigFromRuntime(basePath)
+	if err != nil {
+		t.Fatalf("read scheduler config: %v", err)
+	}
+	if !schedulerConfig.Enabled {
+		t.Fatal("expected reinstall to preserve scheduler.sync_all.enabled")
+	}
+}
+
+func TestNormalizeInstallPromptErrorTreatsAbortAsCleanExit(t *testing.T) {
+	if err := normalizeInstallPromptError(huh.ErrUserAborted); err != nil {
+		t.Fatalf("user abort should be a clean exit, got %v", err)
+	}
+	other := errors.New("other prompt failure")
+	if err := normalizeInstallPromptError(other); !errors.Is(err, other) {
+		t.Fatalf("unexpected prompt error normalization: %v", err)
+	}
+}
+
+func TestDefaultInstallSelectionsUsesDetectedLocalModelDefaults(t *testing.T) {
+	tools := []installer.Tool{
+		{ID: installer.ToolOllama, Name: "Ollama CLI", Available: true, Path: "/opt/homebrew/bin/ollama"},
+		{ID: installer.ToolOllamaAPI, Name: "Ollama API", Available: true, Models: []string{"qwen-test:latest"}},
+		{ID: installer.ToolLMStudioAPI, Name: "LM Studio API", Available: true, Models: []string{"qwen/lmstudio-test"}},
+		{ID: installer.ToolTesseract, Name: "Tesseract", Available: true, Path: "/opt/homebrew/bin/tesseract"},
+	}
+
+	selections := defaultInstallSelections(installFlags{}, tools)
+	if selections.SummaryModel != installDbrainOllamaModel || selections.CategorizeModel != selections.SummaryModel {
+		t.Fatalf("detected Ollama CLI should select dbrain model by default: %#v", selections)
+	}
+	if selections.OCRModel != "tesseract" {
+		t.Fatalf("detected tesseract should set OCR model, got %#v", selections)
+	}
+	if selections.SkipXPhotoOCR || selections.SkipCategorize {
+		t.Fatalf("local defaults should keep OCR/categorization enabled, got %#v", selections)
+	}
+}
+
+func TestWhisperModelDownloadFreshInstallDefaults(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	selections := installer.Selections{
+		WhisperModelPath:    filepath.Join(dir, "ggml-base.bin"),
+		WhisperVADModelPath: filepath.Join(dir, "ggml-silero-v6.2.0.bin"),
+	}
+	tools := []installer.Tool{{ID: installer.ToolWhisperCPP, Available: true}}
+
+	if !shouldOfferWhisperModelDownload(tools, selections) {
+		t.Fatal("fresh install with whisper-cli should offer missing models")
+	}
+	if !defaultWhisperModelDownload(false, true, true) {
+		t.Fatal("--yes should accept the missing whisper model default")
+	}
+	if defaultWhisperModelDownload(false, false, true) {
+		t.Fatal("interactive install should wait for the user's confirmation")
+	}
+
+	for _, path := range []string{selections.WhisperModelPath, selections.WhisperVADModelPath} {
+		if err := os.WriteFile(path, []byte("cached"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if shouldOfferWhisperModelDownload(tools, selections) {
+		t.Fatal("existing regular model files should suppress the offer")
+	}
+	if shouldOfferWhisperModelDownload(nil, installer.Selections{}) {
+		t.Fatal("missing whisper-cli should suppress automatic model setup")
+	}
+}
+
+func TestInstallWhisperDownloadUsesCLIProgressOutput(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	ui := newCLIProgressUI(&output)
+	path := "/cache/whisper-cpp/ggml-base.bin"
+	handleInstallDownloadProgress(ui, installer.DownloadProgress{Kind: installer.DownloadProgressStart, Path: path, Total: 1024})
+	handleInstallDownloadProgress(ui, installer.DownloadProgress{Kind: installer.DownloadProgressUpdate, Path: path, Current: 1024, Total: 1024})
+	handleInstallDownloadProgress(ui, installer.DownloadProgress{Kind: installer.DownloadProgressDone, Path: path, Current: 1024, Total: 1024})
+
+	for _, want := range []string{"Downloading whisper.cpp model ggml-base.bin", "1.0 KiB/1.0 KiB", "Downloaded whisper.cpp model ggml-base.bin"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing %q in progress output:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestDefaultInstallSelectionsSkipsHostedStagesWithoutModelsOrOpenRouter(t *testing.T) {
+	t.Setenv("DBRAIN_OPENROUTER_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+
+	selections := defaultInstallSelections(installFlags{}, nil)
+	if !selections.SkipXPhotoOCR || !selections.SkipCategorize {
+		t.Fatalf("expected hosted-only stages to be skipped without local models or OpenRouter key, got %#v", selections)
+	}
+}
+
+func TestDefaultInstallSelectionsUsesLocalModelProfileWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	selections := defaultInstallSelections(installFlags{localModelProfile: installModelProfileSmallOllama}, nil)
+	if selections.SummaryModel != installSmallOllamaModel || selections.CategorizeModel != installSmallOllamaModel {
+		t.Fatalf("small profile selections = %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{localModelProfile: installModelProfileDbrain}, nil)
+	if selections.SummaryModel != installDbrainOllamaModel || selections.CategorizeModel != installDbrainOllamaModel {
+		t.Fatalf("dbrain profile selections = %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{localModelProfile: installModelProfileDbrainOllama}, nil)
+	if selections.SummaryModel != installDbrainOllamaModel || selections.CategorizeModel != installDbrainOllamaModel {
+		t.Fatalf("dbrain Ollama profile selections = %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{localModelProfile: installModelProfileDbrainOMLX}, nil)
+	if selections.SummaryModel != installDbrainOMLXModel || selections.CategorizeModel != installDbrainOMLXModel {
+		t.Fatalf("dbrain oMLX profile selections = %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{
+		localModelProfile: installModelProfileDbrain,
+		summaryModel:      "ollama/custom:latest",
+	}, nil)
+	if selections.SummaryModel != "ollama/custom:latest" || selections.CategorizeModel != "ollama/custom:latest" {
+		t.Fatalf("explicit summary model should win over profile, got %#v", selections)
+	}
+
+	selections = defaultInstallSelections(installFlags{localModelProfile: installModelProfileNone}, []installer.Tool{{
+		ID:        installer.ToolOllamaAPI,
+		Name:      "Ollama API",
+		Available: true,
+		Models:    []string{"qwen-test:latest"},
+	}})
+	if selections.SummaryModel != "" || selections.CategorizeModel != "" || !selections.SkipCategorize {
+		t.Fatalf("none profile should opt out of detected model defaults, got %#v", selections)
+	}
+}
+
+func TestSuggestedInstallModelPrefersDbrainProfilesThenSmallOllama(t *testing.T) {
+	t.Parallel()
+
+	if got := suggestedInstallModel([]installer.Tool{{
+		ID:        installer.ToolOllamaAPI,
+		Name:      "Ollama API",
+		Available: true,
+		Models:    []string{installSmallOllamaAPIModel, installDbrainOllamaAPIModel},
+	}}); got != installDbrainOllamaModel {
+		t.Fatalf("suggested dbrain model = %q, want %q", got, installDbrainOllamaModel)
+	}
+
+	if got := suggestedInstallModel([]installer.Tool{
+		{
+			ID:        installer.ToolOllamaAPI,
+			Name:      "Ollama API",
+			Available: true,
+			Models:    []string{installSmallOllamaAPIModel},
+		},
+		{
+			ID:        installer.ToolOMLXAPI,
+			Name:      "oMLX API",
+			Available: true,
+			Models:    []string{installDbrainOMLXAPIModel},
+		},
+	}); got != installSmallOllamaModel {
+		t.Fatalf("suggested Ollama model should beat oMLX when both are available, got %q", got)
+	}
+
+	if got := suggestedInstallModel([]installer.Tool{{
+		ID:        installer.ToolOllamaAPI,
+		Name:      "Ollama API",
+		Available: true,
+		Models:    []string{installSmallOllamaAPIModel},
+	}}); got != installSmallOllamaModel {
+		t.Fatalf("suggested small model = %q, want %q", got, installSmallOllamaModel)
+	}
+
+	if got := suggestedInstallModel([]installer.Tool{
+		{
+			ID:        installer.ToolOllamaAPI,
+			Name:      "Ollama API",
+			Available: true,
+			Models:    []string{"unrelated:latest"},
+		},
+		{
+			ID:        installer.ToolLMStudioAPI,
+			Name:      "LM Studio API",
+			Available: true,
+			Models:    []string{"qwen/test"},
+		},
+	}); got != "ollama/unrelated:latest" {
+		t.Fatalf("Ollama should beat LM Studio fallback, got %q", got)
+	}
+
+	if got := suggestedInstallModel([]installer.Tool{
+		{
+			ID:        installer.ToolOllamaAPI,
+			Name:      "Ollama API",
+			Available: true,
+			Models:    []string{"qwen-test:latest"},
+		},
+		{
+			ID:        installer.ToolOMLXAPI,
+			Name:      "oMLX API",
+			Available: true,
+			Models:    []string{installDbrainOMLXAPIModel},
+		},
+	}); got != "ollama/qwen-test:latest" {
+		t.Fatalf("generic Ollama should beat exact oMLX fallback, got %q", got)
+	}
+}
+
+func TestInstallOllamaModelSetupsFollowSelectedProfile(t *testing.T) {
+	t.Parallel()
+
+	dbrainSelections := installer.Selections{
+		SummaryModel:    installDbrainOllamaModel,
+		CategorizeModel: installDbrainOllamaModel,
+	}
+	setups := installOllamaModelSetups(installFlags{localModelProfile: installModelProfileDbrain}, dbrainSelections)
+	if len(setups) != 1 {
+		t.Fatalf("dbrain setup count = %d, want 1", len(setups))
+	}
+	if setups[0].Model != installDbrainOllamaAPIModel || setups[0].PullModel != installDbrainOllamaBase || setups[0].ModelfileName != installDbrainModelfileName || len(setups[0].Modelfile) == 0 {
+		t.Fatalf("unexpected dbrain setup: %#v", setups[0])
+	}
+
+	setups = installOllamaModelSetups(installFlags{}, dbrainSelections)
+	if len(setups) != 1 || setups[0].Model != installDbrainOllamaAPIModel || setups[0].PullModel != installDbrainOllamaBase || len(setups[0].Modelfile) == 0 {
+		t.Fatalf("default dbrain selection should request dbrain setup: %#v", setups)
+	}
+
+	smallSelections := installer.Selections{SummaryModel: installSmallOllamaModel}
+	setups = installOllamaModelSetups(installFlags{localModelProfile: installModelProfileSmallOllama}, smallSelections)
+	if len(setups) != 1 || setups[0].Model != installSmallOllamaAPIModel || setups[0].PullModel != installSmallOllamaAPIModel || len(setups[0].Modelfile) != 0 {
+		t.Fatalf("unexpected small setup: %#v", setups)
+	}
+
+	customSelections := installer.Selections{SummaryModel: "ollama/custom:latest", CategorizeModel: "ollama/custom:latest"}
+	if setups := installOllamaModelSetups(installFlags{localModelProfile: installModelProfileDbrain, summaryModel: "ollama/custom:latest"}, customSelections); len(setups) != 0 {
+		t.Fatalf("explicit custom model should not request dbrain setup: %#v", setups)
+	}
+}
+
+func TestValidateInstallModelProfileRejectsUnknownProfile(t *testing.T) {
+	t.Parallel()
+
+	if err := validateInstallModelProfile("bogus"); err == nil || !strings.Contains(err.Error(), "unknown local model profile") {
+		t.Fatalf("expected unknown profile error, got %v", err)
+	}
+}
+
+func TestInstallCommandDryRunSkipsFilesAndLaunchd(t *testing.T) {
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "")
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--dry-run",
+		"--no-detect",
+		"--enable-scheduler",
+		"--install-launchd",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install dry-run command: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(basePath, "config.yaml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run unexpectedly created config, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", defaultLaunchdLabel+".plist")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run unexpectedly created launchd plist, err=%v", err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "Dry run skipped launchd") {
+		t.Fatalf("expected dry-run launchd warning, got %q", output)
+	}
+}
+
+func TestInstallCommandWarnsWhenLaunchdRequestedWithoutScheduler(t *testing.T) {
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+
+	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--force",
+		"--no-detect",
+		"--install-launchd",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "Launchd installation was skipped because scheduler.sync_all is not enabled.") {
+		t.Fatalf("expected launchd scheduler warning, got %q", output)
+	}
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", defaultLaunchdLabel+".plist")
+	if _, err := os.Stat(plistPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("launchd plist should not be written when scheduler is disabled, err=%v", err)
+	}
+}
+
+func TestInstallCommandConfigFileUsesXDGDataLayout(t *testing.T) {
+	home := t.TempDir()
+	xdgData := filepath.Join(home, ".local", "share")
+	xdgConfig := filepath.Join(home, ".config")
+	configDir := filepath.Join(t.TempDir(), "custom-config")
+	configPath := filepath.Join(configDir, "brain.yaml")
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	t.Setenv("XDG_DATA_HOME", xdgData)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--config-file", configPath,
+		"--no-debug",
+		"install",
+		"--yes",
+		"--force",
+		"--no-detect",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+	for _, path := range []string{
+		configPath,
+		filepath.Join(configDir, "categories.yaml"),
+		filepath.Join(xdgData, "dbrain"),
+		filepath.Join(xdgData, "dbrain", "vault", "items"),
+		filepath.Join(xdgData, "dbrain", "logs"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected install path %s to exist: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "data")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config-file install should keep data under XDG_DATA_HOME, err=%v", err)
+	}
+	if output := stdout.String(); !strings.Contains(output, configPath) {
+		t.Fatalf("expected output to mention config path %s, got %q", configPath, output)
+	}
+}
+
+func TestInstallCommandWritesLaunchdPlistWhenSchedulerEnabled(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("dbrain install --install-launchd is macOS-only")
+	}
+
+	home := t.TempDir()
+	basePath := filepath.Join(t.TempDir(), "brain")
+	t.Setenv("HOME", home)
+	t.Setenv("DBRAIN_ROOT", "")
+	t.Setenv("DBRAIN_CONFIG_FILE", "")
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--no-debug",
+		"install",
+		"--yes",
+		"--base-path", basePath,
+		"--force",
+		"--no-detect",
+		"--enable-scheduler",
+		"--install-launchd",
+		"--bin", "/bin/echo",
+	})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("install command: %v", err)
+	}
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", defaultLaunchdLabel+".plist")
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read plist: %v", err)
+	}
+	plist := string(data)
+	for _, expected := range []string{
+		"<string>/bin/echo</string>",
+		"<string>--root</string>",
+		"<string>" + basePath + "</string>",
+		filepath.Join(basePath, "logs", "launchd.out.log"),
+	} {
+		if !strings.Contains(plist, expected) {
+			t.Fatalf("expected plist to contain %q, got %s", expected, plist)
+		}
+	}
+}
+
+func TestPrintInstallResultUsesNonLaunchdSchedulerHintOffDarwin(t *testing.T) {
+	var stdout bytes.Buffer
+	printInstallResult(&stdout, installer.Result{}, installer.Selections{EnableScheduler: true}, "linux")
+
+	output := stdout.String()
+	if strings.Contains(output, "launchd") {
+		t.Fatalf("non-darwin scheduler hint should not mention launchd, got %q", output)
+	}
+	if !strings.Contains(output, "Configure your OS service manager") {
+		t.Fatalf("expected non-darwin service manager hint, got %q", output)
+	}
+}
+
 func TestImportAppleNotesSummarizeDefaultsEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -1134,6 +2104,33 @@ func TestConfigPathsCommandJSON(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestConfigPathsCommandDoesNotMutateTarget(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	legacy := filepath.Join(root, "dbrain-summary-preserve.md")
+	if err := os.WriteFile(legacy, []byte("preserve"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--root", root, "--no-debug", "config", "paths", "--json"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("config paths mutated legacy file: %v", err)
+	}
+	if _, err := os.Stat(cfg.DataDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config paths created data directory: %v", err)
 	}
 }
 
@@ -1285,7 +2282,19 @@ func TestConfigEnvCommandMarkdownOutput(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, value := range []string{"| Environment variable(s) | config.yaml key | Default | Purpose |", "`DBRAIN_ROOT`", "`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`", "`DBRAIN_TSNET_MCP_PATH`", "`DBRAIN_TSNET_FUNNEL`"} {
+	for _, value := range []string{
+		"| Environment variable(s) | config.yaml key | Default | Purpose |",
+		"`DBRAIN_ROOT`",
+		"`DBRAIN_OPENROUTER_API_KEY / OPENROUTER_API_KEY`",
+		"`DBRAIN_RESEARCH_SEMANTIC_MODE`", "`research.semantic.mode`",
+		"`DBRAIN_RESEARCH_SEMANTIC_PROVIDER`", "`research.semantic.provider`",
+		"`DBRAIN_RESEARCH_SEMANTIC_MODEL`", "`research.semantic.model`",
+		"`DBRAIN_RESEARCH_SEMANTIC_DIMENSIONS`", "`research.semantic.dimensions`",
+		"`DBRAIN_RESEARCH_SEMANTIC_INDEX_BACKEND`", "`research.semantic.index_backend`",
+		"`DBRAIN_RESEARCH_SEMANTIC_CANDIDATE_DEPTH`", "`research.semantic.candidate_depth`",
+		"`DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS`", "`research.semantic.exact_fallback_max_chunks`",
+		"`DBRAIN_TSNET_MCP_PATH`", "`DBRAIN_TSNET_FUNNEL`",
+	} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected markdown config env output to contain %q, got %q", value, output)
 		}
@@ -1932,6 +2941,63 @@ func TestTSNetStateStatusIncludesIdleScheduler(t *testing.T) {
 	}
 }
 
+func TestTSNetStateStatusReportsSanitizedSchedulerAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	for _, statusCode := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		statusCode := statusCode
+		t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
+			t.Parallel()
+			const secretBody = `credential=super-secret-token endpoint=https://private.example/api/scheduler/sync-all`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(statusCode)
+				_, _ = io.WriteString(w, secretBody)
+			}))
+			defer server.Close()
+
+			stateDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(`state`), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			status, err := tsnetStateStatusWithDeps(context.Background(), remote.Options{
+				Web: true, Hostname: "dbrain", StateDir: stateDir, Listen: ":443", TLS: true,
+			}, tsnetStatusDeps{
+				acquireStateLock: func(string) (io.Closer, error) {
+					return nil, fmt.Errorf("%w: test", remote.ErrAlreadyLocked)
+				},
+				probeEndpoint: func(_ context.Context, rawURL string, _ string) tsnetEndpointProbe {
+					return tsnetEndpointProbe{Reachable: true, StatusCode: http.StatusOK, EffectiveURL: rawURL, CertHealth: "ok"}
+				},
+				fetchScheduler: func(ctx context.Context, _ string, _ string) (schedulerstate.SyncAllStatus, error) {
+					return fetchTSNetSchedulerStatus(ctx, server.URL, "")
+				},
+				lookupIPs: func(context.Context, string) []string { return nil },
+				readCertState: func(string, bool) tsnetCertState {
+					return tsnetCertState{Health: "ok", Domains: []string{"dbrain.tailnet.ts.net"}}
+				},
+			})
+			if err != nil {
+				t.Fatalf("tsnetStateStatusWithDeps: %v", err)
+			}
+			if status.SyncAll != nil {
+				t.Fatalf("SyncAll = %#v, want nil on authentication failure", status.SyncAll)
+			}
+			if status.SyncAllError == nil || status.SyncAllError.Code != "scheduler_auth_failed" || status.SyncAllError.StatusCode != statusCode {
+				t.Fatalf("unexpected scheduler diagnostic: %#v", status.SyncAllError)
+			}
+			payload, err := json.Marshal(status)
+			if err != nil {
+				t.Fatalf("marshal status: %v", err)
+			}
+			for _, forbidden := range []string{"super-secret-token", "private.example", server.URL, secretBody} {
+				if strings.Contains(string(payload), forbidden) {
+					t.Fatalf("scheduler diagnostic leaked %q: %s", forbidden, payload)
+				}
+			}
+		})
+	}
+}
+
 func TestWriteTSNetStatusRendersTables(t *testing.T) {
 	t.Parallel()
 
@@ -1981,6 +3047,28 @@ func TestWriteTSNetStatusRendersTables(t *testing.T) {
 		"interval",
 		"Current elapsed",
 	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected output to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestWriteTSNetStatusRendersSanitizedSchedulerDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	err := writeTSNetStatus(&out, tsnetStateInfo{
+		Hostname: "dbrain-dev",
+		SyncAllError: &tsnetSchedulerStatusDiagnostic{
+			Code:       "scheduler_auth_failed",
+			StatusCode: http.StatusUnauthorized,
+		},
+	})
+	if err != nil {
+		t.Fatalf("writeTSNetStatus: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"Scheduled Sync All", "scheduler_auth_failed", "401"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected output to contain %q, got:\n%s", want, got)
 		}
@@ -2682,10 +3770,12 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 		"DBRAIN_APPLE_NOTES_TESSERACT_BINARY=/opt/bin/tesseract",
 		"DBRAIN_SAFARI_TABS_ENABLED=true",
 		"DBRAIN_SAFARI_TABS_DB_PATH=/tmp/cloudtabs.db",
-		"DBRAIN_SAFARI_TABS_DEVICE=dfone",
+		"DBRAIN_SAFARI_TABS_DEVICE=phone",
 		"DBRAIN_SAFARI_TABS_LIMIT=8",
 		"DBRAIN_SAFARI_TABS_OLDER_THAN=2h",
 		"DBRAIN_OKF_EXPORT_ENABLED=true",
+		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR=true",
+		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE=true",
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatalf("write .env: %v", err)
@@ -2700,6 +3790,9 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 	}
 	if !resolved.okfExport {
 		t.Fatalf("expected OKF export enabled from env")
+	}
+	if !resolved.skipXPhotoOCR || !resolved.skipCategorize {
+		t.Fatalf("expected scheduler skip flags to apply to sync defaults, got x_photo_ocr=%v categorize=%v", resolved.skipXPhotoOCR, resolved.skipCategorize)
 	}
 	if resolved.appleNotesDBPath != "/tmp/notes.sqlite" {
 		t.Fatalf("appleNotesDBPath = %q", resolved.appleNotesDBPath)
@@ -2716,7 +3809,7 @@ func TestResolveSyncAllFlagsUsesRootEnvForUnsetValues(t *testing.T) {
 	if resolved.appleNotesAttachmentMaxBytes != 12345 || resolved.appleNotesTesseractBinary != "/opt/bin/tesseract" {
 		t.Fatalf("unexpected Apple Notes attachment settings: max=%d tesseract=%q", resolved.appleNotesAttachmentMaxBytes, resolved.appleNotesTesseractBinary)
 	}
-	if resolved.safariTabsDBPath != "/tmp/cloudtabs.db" || resolved.safariTabsDevice != "dfone" || resolved.safariTabsLimit != 8 || resolved.safariTabsOlderThan != 2*time.Hour {
+	if resolved.safariTabsDBPath != "/tmp/cloudtabs.db" || resolved.safariTabsDevice != "phone" || resolved.safariTabsLimit != 8 || resolved.safariTabsOlderThan != 2*time.Hour {
 		t.Fatalf("unexpected Safari tabs settings: db=%q device=%q limit=%d older=%s", resolved.safariTabsDBPath, resolved.safariTabsDevice, resolved.safariTabsLimit, resolved.safariTabsOlderThan)
 	}
 }
@@ -2808,6 +3901,17 @@ func clearSyncEnvForTest(t *testing.T) {
 		"DBRAIN_SAFARI_TABS_OLDER_THAN",
 		"DBRAIN_OKF_EXPORT_ENABLED",
 		"DBRAIN_SYNC_OKF_EXPORT",
+		"DBRAIN_SYNC_ALL_IMPORT_X_BOOKMARKS",
+		"DBRAIN_SYNC_ALL_IMPORT_GITHUB_STARS",
+		"DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_WATCH_LATER",
+		"DBRAIN_SYNC_ALL_IMPORT_YOUTUBE_LIKED",
+		"DBRAIN_SYNC_ALL_IMPORT_FEEDS",
+		"DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES",
+		"DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS",
+		"DBRAIN_SYNC_ALL_BROWSER",
+		"DBRAIN_SYNC_ALL_PROFILE",
+		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR",
+		"DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE",
 	} {
 		t.Setenv(key, "")
 	}
@@ -3232,7 +4336,7 @@ func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
 		Duration:    time.Minute,
 		SafariTabs: &syncjob.SafariTabsStage{
 			Stats: safaritabs.Stats{
-				DeviceName:    "dfone",
+				DeviceName:    "phone",
 				TabsImported:  498,
 				TabsCreated:   1,
 				TabsUpdated:   2,
@@ -3250,7 +4354,7 @@ func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
 	}
 
 	output := dst.String()
-	for _, value := range []string{"Sync Summary", "Safari Tabs", "created=1 updated=2", "unchanged=495 rendered=498 skipped=2 links=492 device=dfone", "1"} {
+	for _, value := range []string{"Sync Summary", "Safari Tabs", "created=1 updated=2", "unchanged=495 rendered=498 skipped=2 links=492 device=phone", "1"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}

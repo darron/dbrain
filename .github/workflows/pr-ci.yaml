@@ -29,23 +29,23 @@ jobs:
           cache: true
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/ui/package-lock.json
 
       - name: Install Task
-        uses: go-task/setup-task@v2
+        uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa # v2.1.0
         with:
-          version: 3.x
+          version: 3.52.0
 
       - name: Install web dependencies
         run: npm ci
         working-directory: web/ui
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 
       - name: Run fmt
         run: task fmt

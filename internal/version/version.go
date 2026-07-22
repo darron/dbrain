@@ -10,8 +10,10 @@ import (
 // ReleaseVersion and BuildPlatform are injected by release/build commands
 // because Go build info does not include them.
 var (
-	ReleaseVersion = "unknown"
-	BuildPlatform  = "unknown"
+	ReleaseVersion        = "unknown"
+	BuildPlatform         = "unknown"
+	SecurityBaselineID    = "v0.6.0-security-pass"
+	SecurityBaselineEpoch = 1
 
 	// GitVersion is kept as a deprecated fallback for older build scripts that
 	// used this misleading name for release/tag metadata.
@@ -20,16 +22,18 @@ var (
 
 // Details describes build and version metadata embedded in the binary.
 type Details struct {
-	Commit         string            `json:"commit"`
-	Short          string            `json:"short"`
-	BuildTime      string            `json:"build_time"`
-	GitStatus      string            `json:"git_status"`
-	GoVersion      string            `json:"go_version"`
-	ReleaseVersion string            `json:"release_version"`
-	BuildPlatform  string            `json:"build_platform"`
-	ModulePath     string            `json:"module_path,omitempty"`
-	ModuleVersion  string            `json:"module_version,omitempty"`
-	BuildSettings  map[string]string `json:"build_settings,omitempty"`
+	Commit                string            `json:"commit"`
+	Short                 string            `json:"short"`
+	BuildTime             string            `json:"build_time"`
+	GitStatus             string            `json:"git_status"`
+	GoVersion             string            `json:"go_version"`
+	ReleaseVersion        string            `json:"release_version"`
+	BuildPlatform         string            `json:"build_platform"`
+	SecurityBaselineID    string            `json:"security_baseline"`
+	SecurityBaselineEpoch int               `json:"security_baseline_epoch"`
+	ModulePath            string            `json:"module_path,omitempty"`
+	ModuleVersion         string            `json:"module_version,omitempty"`
+	BuildSettings         map[string]string `json:"build_settings,omitempty"`
 }
 
 // Current returns build metadata for the running binary.
@@ -86,13 +90,15 @@ func startupLineFromDetails(details Details) string {
 func Info() map[string]interface{} {
 	current := Current()
 	info := map[string]interface{}{
-		"commit":          current.Commit,
-		"short":           current.Short,
-		"build_time":      current.BuildTime,
-		"git_status":      current.GitStatus,
-		"go_version":      current.GoVersion,
-		"release_version": current.ReleaseVersion,
-		"build_platform":  current.BuildPlatform,
+		"commit":                  current.Commit,
+		"short":                   current.Short,
+		"build_time":              current.BuildTime,
+		"git_status":              current.GitStatus,
+		"go_version":              current.GoVersion,
+		"release_version":         current.ReleaseVersion,
+		"build_platform":          current.BuildPlatform,
+		"security_baseline":       current.SecurityBaselineID,
+		"security_baseline_epoch": current.SecurityBaselineEpoch,
 	}
 	if strings.TrimSpace(current.ModulePath) != "" {
 		info["module_path"] = current.ModulePath
@@ -108,13 +114,15 @@ func Info() map[string]interface{} {
 
 func detailsFromBuildInfo(buildInfo *debug.BuildInfo, ok bool, releaseVersion string, buildPlatform string) Details {
 	details := Details{
-		Commit:         "unknown",
-		Short:          "unknown",
-		BuildTime:      "unknown",
-		GitStatus:      "unknown",
-		GoVersion:      "unknown",
-		ReleaseVersion: defaultValue(releaseVersion),
-		BuildPlatform:  defaultValue(buildPlatform),
+		Commit:                "unknown",
+		Short:                 "unknown",
+		BuildTime:             "unknown",
+		GitStatus:             "unknown",
+		GoVersion:             "unknown",
+		ReleaseVersion:        defaultValue(releaseVersion),
+		BuildPlatform:         defaultValue(buildPlatform),
+		SecurityBaselineID:    SecurityBaselineID,
+		SecurityBaselineEpoch: SecurityBaselineEpoch,
 	}
 	if !ok || buildInfo == nil {
 		return details
@@ -147,6 +155,19 @@ func detailsFromBuildInfo(buildInfo *debug.BuildInfo, ok bool, releaseVersion st
 	}
 	details.GitStatus = gitStatus(settings["vcs.modified"])
 	return details
+}
+
+// ClassifySecurityBaseline validates a literal ID/epoch pair against the
+// compiled ordered registry. Labels are never compared lexically.
+func ClassifySecurityBaseline(id string, epoch int) string {
+	switch {
+	case id == "pre-v0.6.0" && epoch == 0:
+		return "legacy"
+	case id == "v0.6.0-security-pass" && epoch == 1:
+		return "current"
+	default:
+		return "unknown"
+	}
 }
 
 func releaseVersion() string {

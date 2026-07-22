@@ -8,8 +8,11 @@
 web/ui/node_modules/
 .DS_Store
 /.omo/
+/.codegraph
 /.superpowers/
+/.worktrees/
 /tmp/
+/cache/
 /okf/
 evals/local/*.json
 !evals/local/.gitkeep

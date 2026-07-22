@@ -12,9 +12,13 @@ import (
 )
 
 func toItem(viewerLogin string, record starRecord, now time.Time) (model.Item, error) {
+	sourceKey, err := githubStarSourceKey(viewerLogin, record.Repo.FullName)
+	if err != nil {
+		return model.Item{}, err
+	}
 	starredAt := normalizeTimestamp(record.StarredAt)
-	externalID := record.Repo.FullName
-	noteID := itemNoteID(record.Repo.FullName)
+	externalID := strings.TrimSpace(record.Repo.FullName)
+	noteID := itemNoteID(externalID)
 	links := make([]string, 0, 1)
 	if value := strings.TrimSpace(record.Repo.Homepage); value != "" {
 		links = append(links, value)
@@ -29,7 +33,7 @@ func toItem(viewerLogin string, record starRecord, now time.Time) (model.Item, e
 	}
 
 	item := model.Item{
-		SourceKey:       "gh-star:" + viewerLogin + ":" + strings.ToLower(record.Repo.FullName),
+		SourceKey:       sourceKey,
 		SourceType:      "github_star",
 		ExternalID:      externalID,
 		CanonicalURL:    strings.TrimSpace(record.Repo.HTMLURL),
@@ -57,4 +61,14 @@ func toItem(viewerLogin string, record starRecord, now time.Time) (model.Item, e
 	}
 	item.ContentHash = itemhash.Compute(item)
 	return item, nil
+}
+
+func githubStarSourceKey(viewerLogin, repoFullName string) (string, error) {
+	viewerLogin = strings.TrimSpace(viewerLogin)
+	repoFullName = strings.TrimSpace(repoFullName)
+	parts := strings.Split(repoFullName, "/")
+	if viewerLogin == "" || len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", fmt.Errorf("invalid github star identity")
+	}
+	return "gh-star:" + viewerLogin + ":" + strings.ToLower(strings.TrimSpace(parts[0])+"/"+strings.TrimSpace(parts[1])), nil
 }

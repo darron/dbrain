@@ -7,15 +7,29 @@ import (
 	"time"
 )
 
-func resolveSyncAllFlags(rootDir string, flags syncAllFlags) (syncAllFlags, error) {
+func resolveSyncAllFlags(rootDir string, flags syncAllFlags, overrides ...syncAllFlagOverrides) (syncAllFlags, error) {
+	explicit := syncAllFlagOverrides{}
+	if len(overrides) > 0 {
+		explicit = overrides[0]
+	}
+	flags = applySyncAllImportPolicy(flags, syncAllImportPolicyFromRuntime(rootDir), explicit)
+	if !explicit.browser && strings.TrimSpace(flags.browser) == "" {
+		flags.browser = firstNonEmptyEnv(rootDir, "DBRAIN_SYNC_ALL_BROWSER")
+	}
+	if !explicit.profile && strings.TrimSpace(flags.profile) == "" {
+		flags.profile = firstNonEmptyEnv(rootDir, "DBRAIN_SYNC_ALL_PROFILE")
+	}
 	if !flags.archiveMedia {
 		flags.archiveMedia = firstEnvBool(rootDir, "DBRAIN_AUTO_ARCHIVE_MEDIA", "DBRAIN_ARCHIVE_AUTO")
 	}
 	if !flags.okfExport {
 		flags.okfExport = firstEnvBool(rootDir, "DBRAIN_OKF_EXPORT_ENABLED", "DBRAIN_SYNC_OKF_EXPORT")
 	}
-	if !flags.appleNotes {
-		flags.appleNotes = firstEnvBool(rootDir, "DBRAIN_APPLE_NOTES_ENABLED")
+	if !explicit.skipXPhotoOCR && !flags.skipXPhotoOCR {
+		flags.skipXPhotoOCR = firstEnvBool(rootDir, "DBRAIN_SCHEDULER_SYNC_ALL_SKIP_X_PHOTO_OCR")
+	}
+	if !explicit.skipCategorize && !flags.skipCategorize {
+		flags.skipCategorize = firstEnvBool(rootDir, "DBRAIN_SCHEDULER_SYNC_ALL_SKIP_CATEGORIZE")
 	}
 	if strings.TrimSpace(flags.appleNotesDBPath) == "" {
 		flags.appleNotesDBPath = firstNonEmptyEnv(rootDir, "DBRAIN_APPLE_NOTES_DB_PATH")
@@ -64,9 +78,6 @@ func resolveSyncAllFlags(rootDir string, flags syncAllFlags) (syncAllFlags, erro
 	}
 	if strings.TrimSpace(flags.appleNotesTesseractBinary) == "" {
 		flags.appleNotesTesseractBinary = firstNonEmptyEnv(rootDir, "DBRAIN_APPLE_NOTES_TESSERACT_BINARY")
-	}
-	if !flags.safariTabs {
-		flags.safariTabs = firstEnvBool(rootDir, "DBRAIN_SAFARI_TABS_ENABLED")
 	}
 	if strings.TrimSpace(flags.safariTabsDBPath) == "" {
 		flags.safariTabsDBPath = firstNonEmptyEnv(rootDir, "DBRAIN_SAFARI_TABS_DB_PATH")

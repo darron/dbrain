@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRemoteHandlerDispatchesMCPBeforeWebSPA(t *testing.T) {
@@ -70,15 +71,18 @@ func TestRemoteHandlerOriginGuard(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name   string
-		method string
-		origin string
-		status int
+		name           string
+		method         string
+		origin         string
+		forwardedHost  string
+		forwardedProto string
+		status         int
 	}{
 		{name: "get ignores origin", method: http.MethodGet, origin: "https://evil.test", status: http.StatusOK},
 		{name: "post no origin", method: http.MethodPost, origin: "", status: http.StatusOK},
 		{name: "post same origin", method: http.MethodPost, origin: "https://dbrain.example.ts.net", status: http.StatusOK},
 		{name: "post mismatch", method: http.MethodPost, origin: "https://evil.test", status: http.StatusForbidden},
+		{name: "post does not trust forwarded origin", method: http.MethodPost, origin: "https://public.example", forwardedHost: "public.example", forwardedProto: "https", status: http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -86,6 +90,12 @@ func TestRemoteHandlerOriginGuard(t *testing.T) {
 			req.TLS = &tls.ConnectionState{}
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
+			}
+			if tc.forwardedHost != "" {
+				req.Header.Set("X-Forwarded-Host", tc.forwardedHost)
+			}
+			if tc.forwardedProto != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.forwardedProto)
 			}
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
@@ -171,5 +181,24 @@ func TestRemoteHandlerRequiresEnabledHandlers(t *testing.T) {
 	}
 	if _, err := NewHandler(HandlerOptions{MCP: true, MCPPath: "/mcp"}); err == nil {
 		t.Fatalf("expected missing MCP handler error")
+	}
+}
+
+func TestRemoteHandlerRejectsMCPPathsOverlappingWebAuditAndShare(t *testing.T) {
+	t.Parallel()
+	webHandler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	mcpHandler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	for _, mcpPath := range []string{"/api", "/api/audit", "/api/audit/latest", "/share", "/share/mcp"} {
+		t.Run(mcpPath, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewHandler(HandlerOptions{Web: true, MCP: true, MCPPath: mcpPath, WebHandler: webHandler, MCPHandler: mcpHandler})
+			if err == nil || !strings.Contains(err.Error(), "reserved web namespace") {
+				t.Fatalf("NewHandler MCPPath=%q error=%v, want reserved namespace rejection", mcpPath, err)
+			}
+			opts := Options{Web: true, MCP: true, MCPPath: mcpPath, Hostname: "test", StateDir: t.TempDir(), Listen: ":443", TLS: true, StartupTimeout: time.Second}
+			if err := opts.Validate(); err == nil || !strings.Contains(err.Error(), "reserved web namespace") {
+				t.Fatalf("Options.Validate MCPPath=%q error=%v, want reserved namespace rejection", mcpPath, err)
+			}
+		})
 	}
 }

@@ -14,6 +14,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate final release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "stable releases require an exact vX.Y.Z tag; got ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -26,23 +37,23 @@ jobs:
           cache: true
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/ui/package-lock.json
 
       - name: Install Task
-        uses: go-task/setup-task@v2
+        uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa # v2.1.0
         with:
-          version: 3.x
+          version: 3.52.0
 
       - name: Install web dependencies
         run: npm ci
         working-directory: web/ui
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 
       - name: Build embedded web UI
         run: task web-build
@@ -93,16 +104,16 @@ jobs:
           cache: true
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/ui/package-lock.json
 
       - name: Install Task
-        uses: go-task/setup-task@v2
+        uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa # v2.1.0
         with:
-          version: 3.x
+          version: 3.52.0
 
       - name: Install web dependencies
         run: npm ci
@@ -205,6 +216,10 @@ jobs:
     name: Update Homebrew tap
     runs-on: ubuntu-latest
     needs: publish
+    concurrency:
+      group: dbrain-homebrew-tap-update
+      cancel-in-progress: false
+      queue: max
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       TAP_REPOSITORY: darron/homebrew-tap
@@ -263,6 +278,12 @@ jobs:
           ruby <<'RUBY'
           formula_path = File.join("homebrew-tap", ENV.fetch("TAP_FORMULA_PATH"))
           text = File.read(formula_path)
+          stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'
+          unless text.match?(/^\s*conflicts_with\s+"dbrain-test"(?:,.*)?$/)
+            platform = text.match(/^  if OS\.mac\?\n/)
+            abort("stable formula is missing its platform anchor") unless platform
+            text = text.sub(platform[0], "#{stableConflict}\n\n#{platform[0]}")
+          end
           version = ENV.fetch("VERSION")
           version_tag = ENV.fetch("VERSION_TAG")
           release_base = ENV.fetch("RELEASE_BASE")

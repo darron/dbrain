@@ -5,6 +5,7 @@ import (
 
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/researchtrace"
+	"github.com/darron/dbrain/internal/semanticconfig"
 )
 
 const (
@@ -85,42 +86,45 @@ type ProgressEvent struct {
 }
 
 type Options struct {
-	Question             string
-	RawQuestion          string
-	SynthesisQuestion    string
-	Topic                string
-	Limit                int
-	SourceTypes          []string
-	RelatedLimit         int
-	SeedLimit            int
-	IncludeTopic         *bool
-	MaxCharsPerDoc       int
-	PlannerModel         string
-	PlannerTimeout       time.Duration
-	PlannerBinary        string
-	UseModelPlanner      bool
-	DisablePlanner       bool
-	UseSemantic          bool
-	DisableSemantic      bool
-	Model                string
-	CLI                  string
-	Binary               string
-	MaxEvidenceChars     int
-	SynthesisTimeout     time.Duration
-	EnableAnswerReview   bool
-	AnswerReviewModel    string
-	AnswerReviewBinary   string
-	AnswerReviewTimeout  time.Duration
-	RunnerTimeout        time.Duration
-	StageTimeout         time.Duration
-	MaxSteps             int
-	StopAfterJudge       bool
-	MinEvidenceForEnough int
-	TraceEnabled         *bool
-	Surface              string
-	ChatContinuity       *researchtrace.ChatContinuity
-	KeepAllTraces        bool
-	Progress             func(ProgressEvent)
+	Question              string
+	RawQuestion           string
+	SynthesisQuestion     string
+	Topic                 string
+	Limit                 int
+	SourceTypes           []string
+	RelatedLimit          int
+	SeedLimit             int
+	IncludeTopic          *bool
+	MaxCharsPerDoc        int
+	InspectionLimit       int
+	InspectionMaxChars    int
+	PlannerModel          string
+	PlannerTimeout        time.Duration
+	PlannerBinary         string
+	UseModelPlanner       bool
+	DisablePlanner        bool
+	UseSemantic           bool
+	DisableSemantic       bool
+	EffectiveSemanticMode semanticconfig.Mode
+	Model                 string
+	CLI                   string
+	Binary                string
+	MaxEvidenceChars      int
+	SynthesisTimeout      time.Duration
+	EnableAnswerReview    bool
+	AnswerReviewModel     string
+	AnswerReviewBinary    string
+	AnswerReviewTimeout   time.Duration
+	RunnerTimeout         time.Duration
+	StageTimeout          time.Duration
+	MaxSteps              int
+	StopAfterJudge        bool
+	MinEvidenceForEnough  int
+	TraceEnabled          *bool
+	Surface               string
+	ChatContinuity        *researchtrace.ChatContinuity
+	KeepAllTraces         bool
+	Progress              func(ProgressEvent)
 }
 
 type Result struct {
@@ -133,4 +137,5 @@ type Result struct {
 	TracePath         string                           `json:"trace_path,omitempty"`
 	StopReason        string                           `json:"stop_reason"`
 	Warnings          []string                         `json:"warnings,omitempty"`
+	Retried           bool                             `json:"retried,omitempty"`
 }

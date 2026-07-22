@@ -67,6 +67,11 @@ tasks:
     cmds:
       - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test ./...
 
+  test-release-automation:
+    desc: Run deterministic release and workflow automation tests
+    cmds:
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test ./internal/releaseautomation ./cmd/devtools/homebrew_test_release
+
   test-feeds:
     desc: Run feed ingestion related tests
     cmds:

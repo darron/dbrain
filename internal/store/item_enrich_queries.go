@@ -60,26 +60,14 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 		limit = 100
 	}
 
-	ocrStatus := itemOCRStatusExpr()
-
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
 		WHERE ` + xItemSourceTypeWhere + `
 			AND external_id != ''
-			AND EXISTS (
-				SELECT 1
-				FROM item_media_links l
-				JOIN media_assets a ON a.id = l.media_asset_id
-				WHERE l.item_id = items.id
-					AND a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
-					AND a.local_path != ''
-					AND a.local_pruned_at = ''
-					AND a.media_type = 'photo'
-			)`
+			AND ` + xPhotoOCRRunnableMediaExistsWhere
 	if !force {
-		query += `
-			AND (` + ocrStatus + ` = '' OR ` + ocrStatus + ` = '` + model.ItemOCRStatusError + `')`
+		query += ` AND ` + xPhotoOCRPendingWhere()
 	}
 	query += `
 		ORDER BY last_seen_at DESC, id DESC

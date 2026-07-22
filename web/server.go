@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/httpsecurity"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
@@ -41,28 +42,46 @@ const (
 var embeddedUI embed.FS
 
 type server struct {
-	cfg             config.Config
-	store           *store.Store
-	archive         archiveProxy
-	proxyBase       string
-	staticFS        fs.FS
-	static          http.Handler
-	indexHTML       []byte
-	toolVersion     string
-	schedulerStatus func() schedulerstate.SyncAllStatus
-	fullDiskPath    string
-	auth            *authManager
+	cfg                   config.Config
+	store                 *store.Store
+	archive               archiveProxy
+	proxyBase             string
+	staticFS              fs.FS
+	static                http.Handler
+	indexHTML             []byte
+	toolVersion           string
+	schedulerStatus       func() schedulerstate.SyncAllStatus
+	fullDiskPath          string
+	auth                  *authManager
+	auditReports          AuditReportReader
+	auditRuns             *AuditRunCoordinator
+	auditSyncInterval     time.Duration
+	auditStandardInterval time.Duration
+	auditNow              func() time.Time
 }
 
 type ServeOptions struct {
 	StoreOpenOptions store.OpenOptions
+	HandlerOptions   HandlerOptions
+}
+
+type AuditHandlerDependencies struct {
+	Reports          AuditReportReader
+	Runs             *AuditRunCoordinator
+	SyncInterval     time.Duration
+	StandardInterval time.Duration
 }
 
 type HandlerOptions struct {
-	SchedulerStatus    func() schedulerstate.SyncAllStatus
-	FullDiskAccessPath string
-	Context            context.Context
-	LogOutput          io.Writer
+	SchedulerStatus       func() schedulerstate.SyncAllStatus
+	FullDiskAccessPath    string
+	Context               context.Context
+	LogOutput             io.Writer
+	AuditReports          AuditReportReader
+	AuditRuns             *AuditRunCoordinator
+	AuditSyncInterval     time.Duration
+	AuditStandardInterval time.Duration
+	AuditNow              func() time.Time
 }
 
 func Serve(ctx context.Context, cfg config.Config, addr string) error {
@@ -82,10 +101,12 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 		_ = st.Close()
 	}()
 
-	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{
-		Context:   ctx,
-		LogOutput: os.Stderr,
-	})
+	handlerOptions := opts.HandlerOptions
+	handlerOptions.Context = ctx
+	if handlerOptions.LogOutput == nil {
+		handlerOptions.LogOutput = os.Stderr
+	}
+	handler, err := NewHandlerWithOptions(cfg, st, handlerOptions)
 	if err != nil {
 		return err
 	}
@@ -128,7 +149,12 @@ func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
 }
 
 func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptions) (http.Handler, error) {
-	archive, err := newArchiveProxy(cfg)
+	startupCtx := opts.Context
+	if startupCtx == nil {
+		startupCtx = context.Background()
+	}
+
+	archive, err := newArchiveProxy(startupCtx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("configure archive proxy: %w", err)
 	}
@@ -140,10 +166,6 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 	indexHTML, err := fs.ReadFile(staticFS, "index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded ui index: %w", err)
-	}
-	startupCtx := opts.Context
-	if startupCtx == nil {
-		startupCtx = context.Background()
 	}
 	authCfg, err := loadAuthConfig(startupCtx, cfg)
 	if err != nil {
@@ -159,20 +181,25 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 	writeAuthStartupStatus(opts.LogOutput, authCfg)
 
 	s := &server{
-		cfg:             cfg,
-		store:           st,
-		archive:         archive,
-		proxyBase:       mediaProxyBaseURL(cfg),
-		staticFS:        staticFS,
-		static:          http.FileServerFS(staticFS),
-		indexHTML:       indexHTML,
-		toolVersion:     summarizecli.Version(context.Background(), ""),
-		schedulerStatus: opts.SchedulerStatus,
-		fullDiskPath:    opts.FullDiskAccessPath,
-		auth:            authManager,
+		cfg:                   cfg,
+		store:                 st,
+		archive:               archive,
+		proxyBase:             mediaProxyBaseURL(cfg),
+		staticFS:              staticFS,
+		static:                http.FileServerFS(staticFS),
+		indexHTML:             indexHTML,
+		toolVersion:           summarizecli.Version(context.Background(), ""),
+		schedulerStatus:       opts.SchedulerStatus,
+		fullDiskPath:          opts.FullDiskAccessPath,
+		auth:                  authManager,
+		auditReports:          opts.AuditReports,
+		auditRuns:             opts.AuditRuns,
+		auditSyncInterval:     opts.AuditSyncInterval,
+		auditStandardInterval: opts.AuditStandardInterval,
+		auditNow:              opts.AuditNow,
 	}
 
-	return s.newMux(), nil
+	return httpsecurity.OriginGuard(s.newMux()), nil
 }
 
 func writeAuthStartupStatus(out io.Writer, authCfg authConfig) {
@@ -192,6 +219,14 @@ func writeAuthStartupStatus(out io.Writer, authCfg authConfig) {
 
 func (s *server) newMux() http.Handler {
 	appMux := http.NewServeMux()
+	appMux.HandleFunc("/api/audit", http.NotFound)
+	appMux.HandleFunc("/api/audit/", http.NotFound)
+	if s.auth != nil {
+		appMux.HandleFunc("/api/audit/latest", s.handleAuditLatest)
+		appMux.HandleFunc("/api/audit/history", s.handleAuditHistory)
+		appMux.HandleFunc("/api/audit/run", s.handleAuditRun)
+		appMux.HandleFunc("/api/audit/runs/", s.handleAuditRunStatus)
+	}
 	appMux.HandleFunc("/api/bootstrap", s.handleBootstrap)
 	appMux.HandleFunc("/api/search", s.handleSearch)
 	appMux.HandleFunc("/api/get", s.handleGet)

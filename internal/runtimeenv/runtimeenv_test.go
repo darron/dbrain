@@ -121,7 +121,7 @@ func TestSafariTabsConfigNamespaceMapping(t *testing.T) {
 safari_tabs:
   enabled: true
   db_path: /tmp/CloudTabs.db
-  device: dfone
+  device: phone
   limit: 500
   older_than: 168h
 `)
@@ -132,7 +132,7 @@ safari_tabs:
 	if got := FirstNonEmpty(root, "DBRAIN_SAFARI_TABS_DB_PATH"); got != "/tmp/CloudTabs.db" {
 		t.Fatalf("FirstNonEmpty DB path = %q", got)
 	}
-	if got := FirstNonEmpty(root, "DBRAIN_SAFARI_TABS_DEVICE"); got != "dfone" {
+	if got := FirstNonEmpty(root, "DBRAIN_SAFARI_TABS_DEVICE"); got != "phone" {
 		t.Fatalf("FirstNonEmpty device = %q", got)
 	}
 	if got := FirstNonEmpty(root, "DBRAIN_SAFARI_TABS_LIMIT"); got != "500" {

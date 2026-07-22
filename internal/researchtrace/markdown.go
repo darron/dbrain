@@ -30,6 +30,13 @@ func renderMarkdown(trace ResearchTrace) string {
 	if trace.Pack != nil {
 		b.WriteString("\n## Research Pack\n\n")
 		writeMDLine(&b, "Mode", trace.Pack.Mode)
+		writeMDLine(&b, "Semantic mode", string(trace.Pack.QueryPlan.SemanticMode))
+		if comparison := trace.Pack.QueryPlan.ShadowComparison; comparison != nil {
+			writeMDLine(&b, "Shadow status", string(comparison.Status))
+			writeMDLine(&b, "Shadow reason", string(comparison.Reason))
+			writeMDLine(&b, "Shadow counts", fmt.Sprintf("lexical=%d hybrid=%d", comparison.LexicalCount, comparison.HybridCount))
+			writeMDLine(&b, "Shadow rank deltas", fmt.Sprintf("added=%d removed=%d reordered=%d", len(comparison.Added), len(comparison.Removed), len(comparison.Reordered)))
+		}
 		writeMDLine(&b, "Planner", trace.Pack.QueryPlan.Planner)
 		writeMDLine(&b, "Planner model", trace.Pack.QueryPlan.PlannerModel)
 		writeMDLine(&b, "Planner error", trace.Pack.QueryPlan.PlannerError)
@@ -45,6 +52,24 @@ func renderMarkdown(trace ResearchTrace) string {
 				b.WriteString("\n")
 			}
 		}
+	}
+
+	if trace.EvidenceFlow != nil {
+		b.WriteString("\n## Evidence Flow\n\n")
+		writeMDLine(&b, "Schema", trace.EvidenceFlow.SchemaVersion)
+		writeMDLine(&b, "Inspection status", trace.EvidenceFlow.InspectionStatus)
+		writeMDLine(&b, "Preparation status", trace.EvidenceFlow.PreparationStatus)
+		writeMDLine(&b, "Synthesis status", trace.EvidenceFlow.SynthesisStatus)
+		writeMDLine(&b, "Retried", fmt.Sprintf("%t", trace.EvidenceFlow.Retried))
+		writeMDList(&b, "Retrieved", trace.EvidenceFlow.RetrievedSourceKeys)
+		writeMDList(&b, "Relevance admitted", trace.EvidenceFlow.RelevanceAdmittedSourceKeys)
+		writeMDList(&b, "Relevance excluded", trace.EvidenceFlow.RelevanceExcludedSourceKeys)
+		writeMDList(&b, "Prompt admitted", trace.EvidenceFlow.PromptAdmittedSourceKeys)
+		writeMDList(&b, "Budget dropped", trace.EvidenceFlow.BudgetDroppedSourceKeys)
+		writeMDList(&b, "Partially trimmed", trace.EvidenceFlow.PartiallyTrimmedSourceKeys)
+		writeMDList(&b, "Answer cited", trace.EvidenceFlow.AnswerCitedSourceKeys)
+		writeMDList(&b, "Invalid answer citations", trace.EvidenceFlow.InvalidAnswerCitationSourceKeys)
+		writeMDList(&b, "Invariant errors", trace.EvidenceFlow.InvariantErrors)
 	}
 
 	if trace.Synthesis != nil {

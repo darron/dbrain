@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	stdhtml "html"
 	"html/template"
 	"net"
 	"net/http"
@@ -11,13 +12,17 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/renderer/html"
+	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
+	nethtml "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 const (
@@ -32,14 +37,18 @@ var (
 	shareMarkdownURLCodeSpanPattern    = regexp.MustCompile("`(\\[[^\\]\\n]{1,240}\\]\\(https?://[^\\s)]+\\))`")
 	shareBracketedURLPattern           = regexp.MustCompile(`\[(https?://[^\s<>"'\]]+)\]`)
 	shareAngledURLPattern              = regexp.MustCompile(`<((?:https?://)[^\s<>"']+)>`)
-	shareURLPattern                    = regexp.MustCompile("https?://[^\\s<>\"'`]+")
+	shareURLPattern                    = regexp.MustCompile("(?i)https?://[^\\s<>\"'`]+")
+	shareURLSchemePattern              = regexp.MustCompile(`(?i)https?://`)
+	shareBrowserSchemeSlashPattern     = regexp.MustCompile(`(?i)\b(https?):/+`)
+	shareBrowserSchemeNoSlashPattern   = regexp.MustCompile(`(?i)\b(https?):([^/\s])`)
+	shareEncodedSchemePattern          = regexp.MustCompile(`(?i)\b(https?)(?:\\:|&(?:#0*58|#x0*3a|colon);)//`)
 	shareURLTrailingBacktickPattern    = regexp.MustCompile("(https?://[^\\s<>\"'`]+)`+")
 	shareMarkdownHeadingPattern        = regexp.MustCompile(`(?m)^\s{0,3}#{1,6}\s+`)
 	shareMarkdownListMarkerPattern     = regexp.MustCompile(`(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)`)
 	shareMarkdownBlockquotePattern     = regexp.MustCompile(`(?m)^\s*>\s?`)
 	shareMarkdownFencePattern          = regexp.MustCompile("(?m)^\\s*```[A-Za-z0-9_-]*\\s*$")
 	shareSnippetLeadingBoilerplate     = regexp.MustCompile(`(?i)^(?:what it is|what this is)\b[:.\s-]*`)
-	shareSourceKeyPattern              = regexp.MustCompile(`\b(?:src:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|apple-note:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+|gh-star:[A-Za-z0-9_:/.-]*[A-Za-z0-9_-]|x:[A-Za-z0-9_-]+|youtube:[A-Za-z0-9_-]+|item:[A-Za-z0-9_-]+)\b`)
+	shareSourceKeyPattern              = regexp.MustCompile(`(?i)\b(?:src|x|apple-note|feed-entry|gh-star|github_star|yt|youtube|safari-tab|manual|item):[A-Za-z0-9][A-Za-z0-9._~:/@?&=+%#-]*`)
 	shareInternalFieldPattern          = regexp.MustCompile(`(?im)^\s*(?:[-*]\s*)?(?:source[_ ]?key|lookup|item[_ ]?id|source[_ ]?id|note[_ ]?path|db[_ ]?key|filesystem[_ ]?path)\s*[:=].*$`)
 	shareLocalPathPattern              = regexp.MustCompile(`(?:/Users|/private|/var|/tmp|/Volumes)/[^\s)\]]+`)
 	shareAbsoluteProtectedRoutePattern = regexp.MustCompile("(?i)https?://[^\\s<>\"'`]+/(?:api|media|auth|login|logout)(?:[/?#][^\\s)\\]`]*)?")
@@ -144,9 +153,9 @@ func (s *server) handlePublicShare(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = publicShareTemplate.Execute(w, publicShareTemplateData{
 		Title:           fallbackShareTitle(share.Title),
-		Summary:         share.Summary,
-		Categories:      share.Categories,
-		ContentHTML:     renderPublicShareMarkdown(share.SanitizedContent),
+		Summary:         publicShareSnippet(share.Summary, 320),
+		Categories:      publicShareCategories(share.Categories),
+		ContentHTML:     renderPublicShareMarkdown(sanitizeSharedChatContent(share.SanitizedContent, nil)),
 		OriginalSources: publicShareOriginalSources(share.OriginalURLs, share.MetadataJSON),
 		CreatedAt:       share.CreatedAt.Format("2006-01-02 15:04 MST"),
 		Version:         webVersionInfo(),
@@ -245,6 +254,15 @@ type publicShareOriginalSource struct {
 func collectOriginalURLs(turn ChatTranscriptTurn) []string {
 	seen := map[string]struct{}{}
 	var urls []string
+	answerCited := sourceKeysInShareText(turn.Answer)
+	shouldIncludeEvidence := func(sourceKey string) bool {
+		sourceKey = strings.TrimSpace(sourceKey)
+		if sourceKey == "" {
+			return false
+		}
+		_, ok := answerCited[sourceKey]
+		return ok
+	}
 	add := func(rawURL string) {
 		cleanURL, ok := publicExternalURL(rawURL)
 		if !ok {
@@ -257,13 +275,19 @@ func collectOriginalURLs(turn ChatTranscriptTurn) []string {
 		urls = append(urls, cleanURL)
 	}
 	for _, evidence := range turn.ResearchPack.Evidence {
-		add(evidence.URL)
+		if shouldIncludeEvidence(evidence.SourceKey) {
+			add(evidence.URL)
+		}
 	}
 	for _, evidence := range turn.ResearchPack.ExactTagEvidence {
-		add(evidence.URL)
+		if shouldIncludeEvidence(evidence.SourceKey) {
+			add(evidence.URL)
+		}
 	}
 	for _, citation := range turn.Citations {
-		add(citation.URL)
+		if shouldIncludeEvidence(citation.SourceKey) {
+			add(citation.URL)
+		}
 	}
 	sort.Strings(urls)
 	return urls
@@ -415,6 +439,7 @@ func mergeShareURLs(groups ...[]string) []string {
 func sanitizeSharedChatContent(answer string, sourceURLs map[string]string) string {
 	text := strings.ReplaceAll(answer, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
+	text = normalizePublicShareURLSyntax(text)
 	text = shareMarkdownLinkPattern.ReplaceAllStringFunc(text, func(match string) string {
 		parts := shareMarkdownLinkPattern.FindStringSubmatch(match)
 		if len(parts) != 3 {
@@ -446,8 +471,20 @@ func sanitizeSharedChatContent(answer string, sourceURLs map[string]string) stri
 		}
 		return "source"
 	})
+	text = sanitizePublicShareTextURLs(text)
+	// Reference-style Markdown can resolve a URL from a definition on another
+	// line into a rendered attribute (for example, an image src). Inspect the
+	// complete document before the line-oriented cleanup below so those hidden
+	// cross-line destinations cannot survive persistence.
+	if rendererCreatesUnsafePublicURL(text) {
+		return "[redacted URL]"
+	}
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
+		if rendererCreatesUnsafePublicURL(line) {
+			lines[i] = "[redacted URL]"
+			continue
+		}
 		lines[i] = strings.TrimRight(shareWhitespacePattern.ReplaceAllString(line, " "), " ")
 	}
 	text = strings.TrimSpace(strings.Join(lines, "\n"))
@@ -455,6 +492,93 @@ func sanitizeSharedChatContent(answer string, sourceURLs map[string]string) stri
 		text = strings.ReplaceAll(text, "\n\n\n", "\n\n")
 	}
 	return text
+}
+
+func sanitizePublicShareTextURLs(text string) string {
+	return shareURLPattern.ReplaceAllStringFunc(text, func(rawURL string) string {
+		cleanURL, ok := publicExternalURL(rawURL)
+		if !ok {
+			return "[redacted URL]" + publicURLTrailingPunctuation(rawURL)
+		}
+		return cleanURL + publicURLTrailingPunctuation(rawURL)
+	})
+}
+
+func normalizePublicShareURLSyntax(text string) string {
+	return shareEncodedSchemePattern.ReplaceAllString(text, "$1://")
+}
+
+func rendererCreatesUnsafePublicURL(markdown string) bool {
+	var rendered bytes.Buffer
+	if err := publicShareMarkdown.Convert([]byte(markdown), &rendered); err != nil {
+		return strings.Contains(strings.ToLower(markdown), "http")
+	}
+	contextNode := &nethtml.Node{Type: nethtml.ElementNode, Data: "div", DataAtom: atom.Div}
+	nodes, err := nethtml.ParseFragment(strings.NewReader(rendered.String()), contextNode)
+	if err != nil {
+		return strings.Contains(strings.ToLower(markdown), "http")
+	}
+	var visible strings.Builder
+	unsafeAttribute := false
+	var collect func(*nethtml.Node)
+	collect = func(node *nethtml.Node) {
+		if node.Type == nethtml.TextNode {
+			visible.WriteString(node.Data)
+		}
+		if node.Type == nethtml.ElementNode {
+			for _, attr := range node.Attr {
+				if unsafeRenderedPublicShareURLAttribute(attr.Val) {
+					unsafeAttribute = true
+				}
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			collect(child)
+		}
+	}
+	for _, node := range nodes {
+		collect(node)
+	}
+	if unsafeAttribute {
+		return true
+	}
+	for _, rawURL := range renderedPublicShareURLCandidates(visible.String()) {
+		if unsafePublicShareURL(rawURL) {
+			return true
+		}
+	}
+	return false
+}
+
+func unsafePublicShareURL(rawURL string) bool {
+	if _, ok := publicExternalURL(rawURL); !ok {
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.User != nil || parsed.Fragment != "" {
+		return true
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return true
+	}
+	for key := range query {
+		if sensitivePublicShareQueryKey(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func publicShareCategories(categories []string) []string {
+	cleaned := make([]string, 0, len(categories))
+	for _, category := range categories {
+		category = publicShareSnippet(category, 80)
+		if category != "" {
+			cleaned = append(cleaned, category)
+		}
+	}
+	return cleaned
 }
 
 func summarizeSharedContent(content string) string {
@@ -486,10 +610,12 @@ func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvo
 	scores := map[string]rankedCategory{}
 	sequence := 0
 	answerCited := sourceKeysInShareText(turn.Answer)
-	citationKeys := sourceKeysFromShareCitations(turn)
 	primaryEvidence := map[string]struct{}{}
 
 	addTag := func(raw string, weight int) {
+		if weight <= 0 {
+			return
+		}
 		for _, token := range vocab.ApplyToTokens([]string{raw}) {
 			if !usefulShareCategory(token) {
 				continue
@@ -508,18 +634,15 @@ func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvo
 			addTag(token, weight)
 		}
 	}
-	evidenceWeight := func(sourceKey string, base int) int {
+	evidenceWeight := func(sourceKey string) int {
 		sourceKey = strings.TrimSpace(sourceKey)
 		if sourceKey == "" {
-			return base
+			return 0
 		}
 		if _, ok := answerCited[sourceKey]; ok {
 			return 100
 		}
-		if _, ok := citationKeys[sourceKey]; ok {
-			return 60
-		}
-		return base
+		return 0
 	}
 
 	for _, evidence := range turn.ResearchPack.Evidence {
@@ -527,24 +650,14 @@ func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvo
 		if key != "" {
 			primaryEvidence[key] = struct{}{}
 		}
-		addCSV(evidence.UserTags, evidenceWeight(key, 25))
+		addCSV(evidence.UserTags, evidenceWeight(key))
 	}
 	for _, evidence := range turn.ResearchPack.ExactTagEvidence {
 		key := strings.TrimSpace(evidence.SourceKey)
 		if _, ok := primaryEvidence[key]; ok {
 			continue
 		}
-		addCSV(evidence.UserTags, evidenceWeight(key, 18))
-	}
-	for _, bucket := range turn.ResearchPack.Coverage.TopUserTags {
-		weight := bucket.Count * 8
-		if weight <= 0 {
-			weight = 8
-		}
-		if weight > 32 {
-			weight = 32
-		}
-		addTag(bucket.Key, weight)
+		addCSV(evidence.UserTags, evidenceWeight(key))
 	}
 	if len(scores) == 0 {
 		for _, tag := range turn.ResearchPack.QueryPlan.TagQueries {
@@ -581,19 +694,8 @@ func categorizeSharedContent(_ string, turn ChatTranscriptTurn, vocab categoryvo
 
 func sourceKeysInShareText(text string) map[string]struct{} {
 	keys := map[string]struct{}{}
-	for _, key := range shareSourceKeyPattern.FindAllString(text, -1) {
+	for _, key := range brainresearch.AnswerSourceKeys(text) {
 		key = strings.TrimSpace(key)
-		if key != "" {
-			keys[key] = struct{}{}
-		}
-	}
-	return keys
-}
-
-func sourceKeysFromShareCitations(turn ChatTranscriptTurn) map[string]struct{} {
-	keys := map[string]struct{}{}
-	for _, citation := range turn.Citations {
-		key := strings.TrimSpace(citation.SourceKey)
 		if key != "" {
 			keys[key] = struct{}{}
 		}
@@ -647,7 +749,16 @@ func shareTitle(question string, summary string) string {
 	return title
 }
 
+const (
+	maxPublicShareNestedURLDepth      = 4
+	maxPublicShareComponentDecodePass = 8
+)
+
 func publicExternalURL(raw string) (string, bool) {
+	return publicExternalURLDepth(raw, 0)
+}
+
+func publicExternalURLDepth(raw string, depth int) (string, bool) {
 	raw = strings.TrimSpace(strings.TrimRight(raw, "`.,);]:"))
 	raw = trimPublicURLMarkdownJoin(raw)
 	if raw == "" {
@@ -658,6 +769,9 @@ func publicExternalURL(raw string) (string, bool) {
 		return "", false
 	}
 	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		return "", false
+	}
+	if u.User != nil {
 		return "", false
 	}
 	if protectedShareRoutePath(u.EscapedPath()) {
@@ -674,9 +788,138 @@ func publicExternalURL(raw string) (string, bool) {
 	}
 	u.Path = strings.TrimRight(u.Path, "`.,);]:")
 	u.RawPath = ""
-	u.RawQuery = trimPublicURLComponentRight(u.RawQuery)
+	query, ok := sanitizePublicShareQuery(trimPublicURLComponentRight(u.RawQuery), depth)
+	if !ok {
+		return "", false
+	}
+	u.RawQuery = query
 	u.Fragment = ""
 	return u.String(), true
+}
+
+func sanitizePublicShareQuery(rawQuery string, depth int) (string, bool) {
+	if rawQuery == "" {
+		return "", true
+	}
+	query, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "", false
+	}
+	for key, values := range query {
+		if sensitivePublicShareQueryKey(key) {
+			query.Del(key)
+			continue
+		}
+		for _, value := range values {
+			if publicShareQueryValueContainsSensitiveData(value, depth) {
+				query.Del(key)
+				break
+			}
+		}
+	}
+	return query.Encode(), true
+}
+
+func sensitivePublicShareQueryKey(key string) bool {
+	decoded, complete := decodePublicShareQueryComponent(key)
+	if !complete {
+		return true
+	}
+	key = decoded
+	key = strings.ToLower(strings.TrimSpace(key))
+	components := strings.FieldsFunc(key, func(r rune) bool {
+		return r == '[' || r == ']' || r == '.'
+	})
+	for _, component := range components {
+		component = strings.TrimSpace(component)
+		if strings.HasPrefix(component, "x-amz-") || sensitivePublicShareQueryKeyComponent(component) {
+			return true
+		}
+	}
+	return false
+}
+
+func sensitivePublicShareQueryKeyComponent(key string) bool {
+	switch key {
+	case "token", "key", "signature", "access_token", "api_key", "apikey", "secret", "sig":
+		return true
+	default:
+		return false
+	}
+}
+
+func publicShareQueryValueContainsSensitiveData(value string, depth int) bool {
+	decoded, complete := decodePublicShareQueryComponent(value)
+	if !complete {
+		return true
+	}
+	value = decoded
+	candidates := renderedPublicShareURLCandidates(normalizePublicShareURLSyntax(value))
+	if len(candidates) > 0 && depth >= maxPublicShareNestedURLDepth {
+		return true
+	}
+	for _, candidate := range candidates {
+		cleanURL, ok := publicExternalURLDepth(candidate, depth+1)
+		if !ok || cleanURL != candidate {
+			return true
+		}
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return strings.ContainsAny(value, "?=&")
+	}
+	if parsed.Fragment != "" {
+		return true
+	}
+	if parsed.RawQuery != "" && publicShareQueryContainsSensitiveData(parsed.RawQuery, depth+1) {
+		return true
+	}
+	if parsed.RawQuery == "" && strings.Contains(value, "=") && publicShareQueryContainsSensitiveData(value, depth+1) {
+		return true
+	}
+	return false
+}
+
+func publicShareQueryContainsSensitiveData(rawQuery string, depth int) bool {
+	if depth > maxPublicShareNestedURLDepth {
+		return true
+	}
+	query, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return true
+	}
+	for key, values := range query {
+		if sensitivePublicShareQueryKey(key) {
+			return true
+		}
+		for _, value := range values {
+			if publicShareQueryValueContainsSensitiveData(value, depth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func decodePublicShareQueryComponent(value string) (string, bool) {
+	decodeOnce := func(input string) (string, bool) {
+		decoded := stdhtml.UnescapeString(input)
+		decoded, err := url.QueryUnescape(decoded)
+		return decoded, err == nil
+	}
+
+	for range maxPublicShareComponentDecodePass {
+		decoded, ok := decodeOnce(value)
+		if !ok {
+			return "", false
+		}
+		if decoded == value {
+			return value, true
+		}
+		value = decoded
+	}
+	decoded, ok := decodeOnce(value)
+	return value, ok && decoded == value
 }
 
 func trimPublicURLMarkdownJoin(raw string) string {
@@ -753,16 +996,16 @@ func chatShareResponse(share store.PublicChatShare) ChatShareResponse {
 		Slug:         share.Slug,
 		URL:          "/share/" + share.Slug,
 		Title:        fallbackShareTitle(share.Title),
-		Summary:      share.Summary,
-		Categories:   share.Categories,
-		OriginalURLs: share.OriginalURLs,
+		Summary:      publicShareSnippet(share.Summary, 320),
+		Categories:   publicShareCategories(share.Categories),
+		OriginalURLs: mergeShareURLs(share.OriginalURLs),
 		CreatedAt:    formatShareTime(share.CreatedAt),
 		UpdatedAt:    formatShareTime(share.UpdatedAt),
 	}
 }
 
 func fallbackShareTitle(title string) string {
-	title = strings.TrimSpace(title)
+	title = strings.Join(strings.Fields(sanitizeSharedChatContent(title, nil)), " ")
 	if title == "" {
 		return "Shared dbrain answer"
 	}
@@ -792,8 +1035,8 @@ var publicShareMarkdown = goldmark.New(
 	),
 	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 	goldmark.WithRendererOptions(
-		html.WithHardWraps(),
-		html.WithXHTML(),
+		goldmarkhtml.WithHardWraps(),
+		goldmarkhtml.WithXHTML(),
 	),
 )
 
@@ -803,7 +1046,142 @@ func renderPublicShareMarkdown(markdown string) template.HTML {
 	if err := publicShareMarkdown.Convert([]byte(markdown), &buf); err != nil {
 		return template.HTML(template.HTMLEscapeString(markdown))
 	}
-	return template.HTML(buf.String())
+	sanitized, err := sanitizeRenderedPublicShareHTML(buf.String())
+	if err != nil {
+		return template.HTML(template.HTMLEscapeString(markdown))
+	}
+	return template.HTML(sanitized)
+}
+
+func sanitizeRenderedPublicShareHTML(rendered string) (string, error) {
+	contextNode := &nethtml.Node{Type: nethtml.ElementNode, Data: "div", DataAtom: atom.Div}
+	nodes, err := nethtml.ParseFragment(strings.NewReader(rendered), contextNode)
+	if err != nil {
+		return "", err
+	}
+	for _, node := range nodes {
+		sanitizeRenderedPublicShareNode(node)
+	}
+	var out bytes.Buffer
+	for _, node := range nodes {
+		if err := nethtml.Render(&out, node); err != nil {
+			return "", err
+		}
+	}
+	return out.String(), nil
+}
+
+func sanitizeRenderedPublicShareNode(node *nethtml.Node) {
+	if node.Type == nethtml.TextNode {
+		node.Data = sanitizeRenderedPublicShareText(node.Data)
+	}
+	if node.Type == nethtml.ElementNode {
+		attrs := node.Attr[:0]
+		for _, attr := range node.Attr {
+			cleanURL, ok := sanitizeRenderedPublicShareURLAttribute(attr.Val)
+			if ok {
+				attr.Val = cleanURL
+				attrs = append(attrs, attr)
+			}
+		}
+		node.Attr = attrs
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		sanitizeRenderedPublicShareNode(child)
+	}
+}
+
+func sanitizeRenderedPublicShareText(value string) string {
+	value = normalizePublicShareURLSyntax(value)
+	for _, rawURL := range renderedPublicShareURLCandidates(value) {
+		if unsafePublicShareURL(rawURL) {
+			return "[redacted URL]"
+		}
+	}
+	return sanitizePublicShareTextURLs(value)
+}
+
+func sanitizeRenderedPublicShareURLAttribute(value string) (string, bool) {
+	value = normalizePublicShareURLSyntax(strings.TrimSpace(value))
+	if strings.HasPrefix(value, "//") {
+		return "", false
+	}
+	if unsafeRenderedPublicShareURLAttribute(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func unsafeRenderedPublicShareURLAttribute(value string) bool {
+	value = normalizePublicShareURLSyntax(strings.TrimSpace(value))
+	if strings.HasPrefix(value, "//") {
+		return true
+	}
+	for _, rawURL := range renderedPublicShareURLCandidates(value) {
+		if unsafePublicShareURL(rawURL) {
+			return true
+		}
+	}
+	return false
+}
+
+func renderedPublicShareURLCandidates(value string) []string {
+	value = normalizePublicShareBrowserURLSyntax(value)
+	starts := shareURLSchemePattern.FindAllStringIndex(value, -1)
+	candidates := make([]string, 0, len(starts)+1)
+	for i, start := range starts {
+		end := len(value)
+		if i+1 < len(starts) {
+			end = starts[i+1][0]
+		}
+		end = renderedPublicShareURLCandidateEnd(value, start[0], end)
+		if start[0] < end {
+			candidates = append(candidates, value[start[0]:end])
+		}
+	}
+
+	for searchFrom := 0; searchFrom < len(value); {
+		relativeStart := strings.Index(value[searchFrom:], "//")
+		if relativeStart < 0 {
+			break
+		}
+		start := searchFrom + relativeStart
+		searchFrom = start + 2
+		if start > 0 && value[start-1] == ':' {
+			continue
+		}
+		end := renderedPublicShareURLCandidateEnd(value, start, len(value))
+		candidate := "https:" + value[start:end]
+		parsed, err := url.Parse(candidate)
+		if err == nil && parsed.Hostname() != "" {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+func normalizePublicShareBrowserURLSyntax(value string) string {
+	value = normalizePublicShareURLSyntax(value)
+	value = strings.Map(func(r rune) rune {
+		switch r {
+		case '\t', '\n', '\r':
+			return -1
+		default:
+			return r
+		}
+	}, value)
+	value = strings.ReplaceAll(value, `\`, "/")
+	value = shareBrowserSchemeSlashPattern.ReplaceAllString(value, "$1://")
+	return shareBrowserSchemeNoSlashPattern.ReplaceAllString(value, "$1://$2")
+}
+
+func renderedPublicShareURLCandidateEnd(value string, start int, end int) int {
+	for offset, r := range value[start:end] {
+		if unicode.IsSpace(r) || r == '<' || r == '>' || r == '"' || r == '\'' || r == '`' {
+			return start + offset
+		}
+	}
+	return end
 }
 
 func linkPublicShareURLs(markdown string) string {
@@ -847,6 +1225,10 @@ func linkBarePublicShareURLs(markdown string) string {
 func publicShareMarkdownURLLink(raw string) string {
 	cleanURL, ok := publicExternalURL(raw)
 	if !ok {
+		candidate := strings.ToLower(strings.TrimSpace(raw))
+		if strings.HasPrefix(candidate, "http://") || strings.HasPrefix(candidate, "https://") {
+			return "[redacted URL]" + publicURLTrailingPunctuation(raw)
+		}
 		return raw
 	}
 	return "[" + publicShareURLHost(cleanURL) + "](" + cleanURL + ")" + publicURLTrailingPunctuation(raw)

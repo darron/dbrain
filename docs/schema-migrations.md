@@ -27,6 +27,11 @@ Read-only store opens use `store.OpenReadOnly`, which:
 - verifies the expected existing tables are present
 - intentionally skips schema creation and migrations
 
+`dbrain audit` additionally holds one read-only transaction with
+`PRAGMA query_only = ON` for its database-backed checks. It never upgrades an
+older schema: schema and migration incompatibility are findings in the report,
+not triggers for repair.
+
 Current migration history:
 
 | Version | Name                             | Purpose |

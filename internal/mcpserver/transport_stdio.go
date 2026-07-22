@@ -15,7 +15,7 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
-func Serve(ctx context.Context, cfg config.Config, in io.Reader, out io.Writer) error {
+func Serve(ctx context.Context, cfg config.Config, in io.Reader, out io.Writer, dependencies ...ServerDependencies) error {
 	start := time.Now()
 	logMCPServer("starting", "db_path", cfg.DBPath, "pid", fmt.Sprintf("%d", os.Getpid()))
 	st, err := store.OpenReadOnly(cfg.DBPath)
@@ -28,7 +28,7 @@ func Serve(ctx context.Context, cfg config.Config, in io.Reader, out io.Writer) 
 		_ = st.Close()
 	}()
 
-	server := New(cfg, st)
+	server := NewWithDependencies(cfg, st, firstServerDependencies(dependencies))
 	logMCPServer("ready")
 	if err := server.Serve(ctx, in, out); err != nil {
 		logMCPServer("exiting", "duration", time.Since(start).String(), "error", err.Error())
@@ -47,6 +47,7 @@ func logMCPServer(event string, fields ...string) {
 }
 
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
+	transportServer := s.withTransportCapabilities(transportCapabilities{audit: true})
 	reader := bufio.NewReader(in)
 	writer := bufio.NewWriter(out)
 
@@ -61,7 +62,7 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			return err
 		}
 
-		response, ok := s.processPayload(ctx, payload)
+		response, ok := transportServer.processPayload(ctx, payload)
 		if !ok {
 			continue
 		}

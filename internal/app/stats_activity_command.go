@@ -22,7 +22,7 @@ func newStatsActivityCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenReadOnly(cfg.DBPath)
 			if err != nil {
 				return err
 			}

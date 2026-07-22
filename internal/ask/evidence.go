@@ -9,6 +9,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 func buildEvidence(ctx context.Context, cfg config.Config, st *store.Store, result model.SearchResult, maxChars int, terms []string) (evidenceCandidate, bool, error) {
@@ -78,7 +79,7 @@ func evidenceFromItem(cfg config.Config, item model.Item, result model.SearchRes
 			Kind:            "item",
 			Title:           item.Title,
 			URL:             item.CanonicalURL,
-			NotePath:        filepath.Join(cfg.VaultDir, filepath.FromSlash(item.NotePath)),
+			NotePath:        safeEvidenceNotePath(cfg.VaultDir, item.NotePath),
 			Summary:         trimTo(item.SummaryText, maxChars),
 			Excerpt:         excerpt,
 			Author:          author,
@@ -120,7 +121,7 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 			Kind:            "source",
 			Title:           title,
 			URL:             source.CanonicalURL,
-			NotePath:        filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath)),
+			NotePath:        safeEvidenceNotePath(cfg.VaultDir, source.NotePath),
 			Summary:         trimTo(source.SummaryText, maxChars),
 			Excerpt:         excerpt,
 			SourceType:      source.SourceType,
@@ -142,6 +143,18 @@ func evidenceFromSource(cfg config.Config, source model.SourceDocument, result m
 			excerpt,
 		),
 	}
+}
+
+func safeEvidenceNotePath(vaultDir string, notePath string) string {
+	root, err := vaultfs.Open(vaultDir)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = root.Close() }()
+	if _, err := root.Stat(notePath); err != nil {
+		return ""
+	}
+	return filepath.Join(vaultDir, filepath.FromSlash(notePath))
 }
 
 func sourceEvidenceTitle(source model.SourceDocument, result model.SearchResult) string {

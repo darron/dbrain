@@ -187,6 +187,91 @@ func TestResolveTargetNormalizesOpenRouterAPIBaseURLIdempotently(t *testing.T) {
 	}
 }
 
+func TestResolveBaseURLPreservesPrecedenceAndOllamaNormalization(t *testing.T) {
+	root := t.TempDir()
+	writeProviderConfig(t, root, `
+ollama:
+  base_url: http://yaml-ollama.lan:11434/api
+`)
+	if err := os.WriteFile(filepath.Join(root, ".envrc"), []byte("DBRAIN_OLLAMA_BASE_URL=http://dotenv-ollama.lan:11434/api\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		opts BaseURLResolveOptions
+		want string
+	}{
+		{
+			name: "explicit override",
+			opts: BaseURLResolveOptions{RootDir: root, Provider: ProviderOllama, Override: "http://override-ollama.lan:11434/v1"},
+			want: "http://override-ollama.lan:11434",
+		},
+		{
+			name: "supplied environment",
+			opts: BaseURLResolveOptions{RootDir: root, Provider: ProviderOllama, Env: map[string]string{"DBRAIN_OLLAMA_BASE_URL": "http://map-ollama.lan:11434/api"}},
+			want: "http://map-ollama.lan:11434",
+		},
+		{
+			name: "runtime dotenv",
+			opts: BaseURLResolveOptions{RootDir: root, Provider: ProviderOllama},
+			want: "http://dotenv-ollama.lan:11434",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveBaseURL(tt.opts)
+			if err != nil {
+				t.Fatalf("ResolveBaseURL: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ResolveBaseURL = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveBaseURLUsesAliasYAMLAndNeverResolvesSecrets(t *testing.T) {
+	root := t.TempDir()
+	writeProviderConfig(t, root, `
+llm_backends:
+  localai:
+    base_url: http://localai.lan:8080/v1
+    api_key: op://missing/vault/key
+    local: true
+`)
+	got, err := ResolveBaseURL(BaseURLResolveOptions{RootDir: root, Provider: "localai"})
+	if err != nil {
+		t.Fatalf("ResolveBaseURL must not resolve secrets: %v", err)
+	}
+	if got != "http://localai.lan:8080/v1" {
+		t.Fatalf("ResolveBaseURL = %q", got)
+	}
+}
+
+func TestResolveTargetRetainsSharedOllamaBaseURLBehavior(t *testing.T) {
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	root := t.TempDir()
+	writeProviderConfig(t, root, `
+ollama:
+  base_url: http://yaml-ollama.lan:11434/api
+`)
+	target, err := ResolveTarget(context.Background(), ResolveOptions{
+		RootDir: root,
+		Model:   "ollama/exact-model",
+		Task:    TaskSummary,
+	})
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.BaseURL != "http://yaml-ollama.lan:11434" {
+		t.Fatalf("BaseURL = %q", target.BaseURL)
+	}
+}
+
 func writeProviderConfig(t *testing.T, root string, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(content), 0o600); err != nil {

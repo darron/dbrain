@@ -1,6 +1,9 @@
 package brainresearch
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 func mergeQueryConcepts(base []QueryConcept, extra []QueryConcept) []QueryConcept {
 	out := make([]QueryConcept, 0, len(base)+len(extra))
@@ -32,10 +35,29 @@ func mergeQueryConcepts(base []QueryConcept, extra []QueryConcept) []QueryConcep
 		index[concept.Key] = len(out)
 		out = append(out, concept)
 	}
+	out = applyConceptRolePolicy(out)
+	sort.SliceStable(out, func(i, j int) bool {
+		return conceptPriority(out[i]) < conceptPriority(out[j])
+	})
 	if len(out) > maxPlannerConcepts {
 		out = trimConceptsPreservingAnchors(out, maxPlannerConcepts)
 	}
-	return applyConceptRolePolicy(out)
+	return out
+}
+
+func conceptPriority(c QueryConcept) int {
+	switch {
+	case c.Role == conceptRoleAnchor:
+		return 0
+	case c.Role == conceptRoleContent && c.Required:
+		return 1
+	case c.Role == conceptRoleContent:
+		return 2
+	case c.Role == conceptRoleIntent:
+		return 3
+	default:
+		return 4
+	}
 }
 
 func mergeQueryConcept(current QueryConcept, next QueryConcept) QueryConcept {
@@ -147,20 +169,29 @@ func plannerConceptSearchTerms(concept QueryConcept) []string {
 func mergeQueryVariants(base []QueryVariant, extra []QueryVariant) []QueryVariant {
 	out := make([]QueryVariant, 0, len(base)+len(extra))
 	seen := map[string]struct{}{}
-	for _, variant := range append(base, extra...) {
-		query := sanitizePlannerQuery(variant.Query)
+	add := func(variant QueryVariant, sanitize bool) {
+		query := strings.TrimSpace(strings.Join(strings.Fields(variant.Query), " "))
+		if sanitize {
+			query = sanitizePlannerQuery(query)
+		}
 		if query == "" {
-			continue
+			return
 		}
 		key := strings.ToLower(query)
 		if _, exists := seen[key]; exists {
-			continue
+			return
 		}
 		seen[key] = struct{}{}
 		out = append(out, QueryVariant{
 			Query:  query,
 			Reason: sanitizePlannerReason(variant.Reason),
 		})
+	}
+	for _, variant := range base {
+		add(variant, false)
+	}
+	for _, variant := range extra {
+		add(variant, true)
 	}
 	return limitQueryVariants(out)
 }

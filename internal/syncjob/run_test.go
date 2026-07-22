@@ -17,6 +17,7 @@ import (
 	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/feedimport"
+	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/mediaarchive"
@@ -30,7 +31,82 @@ import (
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
 	"github.com/darron/dbrain/internal/xphotoocr"
+	"github.com/darron/dbrain/internal/youtubeimport"
 )
+
+func TestEmitSyncImportMetricsEmitsAllSevenContentFreeFamilies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "sync_imports", Command: "sync all", Invocation: "scheduler:interval", Sink: sink}
+	stats := Stats{
+		AppleNotes: &AppleNotesStage{Duration: time.Second, Stats: applenotes.Stats{NotesCreated: 1}},
+		SafariTabs: &SafariTabsStage{Duration: time.Second, Stats: safaritabs.Stats{TabsCreated: 1}},
+		XBookmarks: &XBookmarksStage{Duration: time.Second, Stats: xapi.BookmarkStats{Created: 1}},
+		GitHub:     &GitHubStage{Duration: time.Second, Stats: githubimport.Stats{ItemsCreated: 1}},
+		YouTube:    &YouTubeStage{Duration: time.Second, Stats: youtubeimport.Stats{WatchLater: youtubeimport.FeedStats{ItemsCreated: 1}, Liked: youtubeimport.FeedStats{ItemsUpdated: 1}}},
+		Feeds:      &FeedsStage{Duration: time.Second, Stats: feedimport.Stats{ItemsCreated: 1}},
+	}
+	emitSyncImportMetrics(run, stats, nil)
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := readSyncMetricEvents(t, path)
+	if len(events) != 7 {
+		t.Fatalf("events = %d, want 7", len(events))
+	}
+	want := []string{"apple_notes", "safari_tabs", "x_bookmarks", "github_stars", "youtube_watch_later", "youtube_liked", "feeds"}
+	for i, event := range events {
+		if event["event"] != "sync.import.completed" || event["source"] != want[i] {
+			t.Fatalf("event[%d] = %#v", i, event)
+		}
+		raw, _ := json.Marshal(event)
+		for _, forbidden := range []string{"title", "url", "source_key", "path", "token", "error"} {
+			if strings.Contains(strings.ToLower(string(raw)), forbidden) {
+				t.Fatalf("event leaked forbidden field %q: %s", forbidden, raw)
+			}
+		}
+	}
+}
+
+func TestEmitSyncImportMetricRecordsFailureWithoutStageStats(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "failed_import", Command: "sync all", Sink: sink}
+	opts := newStageOptions(Options{GitHubEnabled: true})
+	emitSyncImportStageMetric(run, opts, syncStageGitHub, Stats{}, errors.New("failed before stats"))
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := readSyncMetricEvents(t, path)
+	if len(events) != 1 || events[0]["source"] != "github_stars" || events[0]["status"] != "error" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestEmitYouTubeImportMetricsOnlyForSelectedFeedsWithPerFeedStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "youtube_import", Command: "sync all", Sink: sink}
+	opts := newStageOptions(Options{YouTubeEnabled: true, WatchLater: true, Liked: false})
+	stats := Stats{YouTube: &YouTubeStage{Duration: time.Second, Stats: youtubeimport.Stats{WatchLater: youtubeimport.FeedStats{Errors: 1}, Liked: youtubeimport.FeedStats{ItemsCreated: 5}}}}
+	emitSyncImportStageMetric(run, opts, syncStageYouTube, stats, nil)
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := readSyncMetricEvents(t, path)
+	if len(events) != 1 || events[0]["source"] != "youtube_watch_later" || events[0]["status"] != "error" {
+		t.Fatalf("events = %#v", events)
+	}
+}
 
 func TestRunEmitsMetricsRunAndStageEvents(t *testing.T) {
 	cfg, st := testSyncStore(t)
@@ -1020,7 +1096,7 @@ func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
 		if opts.DryRun {
 			t.Fatal("expected sync Safari Tabs import to write by default")
 		}
-		if opts.DBPath != "/tmp/CloudTabs.db" || opts.Device != "dfone" {
+		if opts.DBPath != "/tmp/CloudTabs.db" || opts.Device != "phone" {
 			t.Fatalf("unexpected Safari Tabs source options: %+v", opts)
 		}
 		if opts.Limit != 25 || opts.OlderThan != 7*24*time.Hour {
@@ -1034,11 +1110,11 @@ func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
 			Phase:     "imported",
 			Index:     1,
 			Total:     2,
-			SourceKey: "safari-tab:dfone:test",
+			SourceKey: "safari-tab:phone:test",
 			Status:    "created",
 			Rendered:  true,
 		})
-		return safaritabs.Stats{DeviceName: "dfone", TabsSeen: 2, TabsMatched: 1, TabsImported: 1, TabsCreated: 1, TabsRendered: 1, LinksFound: 1}, nil
+		return safaritabs.Stats{DeviceName: "phone", TabsSeen: 2, TabsMatched: 1, TabsImported: 1, TabsCreated: 1, TabsRendered: 1, LinksFound: 1}, nil
 	}
 	runLinkExtract = func(_ context.Context, _ config.Config, _ *store.Store, _ linkextract.Options) (linkextract.Stats, error) {
 		calls = append(calls, "links")
@@ -1049,7 +1125,7 @@ func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
 	stats, err := Run(context.Background(), cfg, st, Options{
 		SafariTabsEnabled:   true,
 		SafariTabsDBPath:    "/tmp/CloudTabs.db",
-		SafariTabsDevice:    "dfone",
+		SafariTabsDevice:    "phone",
 		SafariTabsLimit:     25,
 		SafariTabsOlderThan: 7 * 24 * time.Hour,
 		LinksEnabled:        true,
@@ -1065,7 +1141,7 @@ func TestRunExecutesSafariTabsBeforeLinkExtractionWhenEnabled(t *testing.T) {
 		t.Fatalf("expected Safari Tabs stage stats, got %+v", stats.SafariTabs)
 	}
 	output := progress.String()
-	for _, value := range []string{"==> import safari-tabs", "Safari tabs loaded: candidates=2", "Safari Tab 1/2 imported source=safari-tab:dfone:test status=created rendered=true", "Safari Tabs import complete: device=dfone seen=2 matched=1 created=1 updated=0 unchanged=0 rendered=1 skipped=0 links=1 errors=0", "==> extract links"} {
+	for _, value := range []string{"==> import safari-tabs", "Safari tabs loaded: candidates=2", "Safari Tab 1/2 imported source=safari-tab:phone:test status=created rendered=true", "Safari Tabs import complete: device=phone seen=2 matched=1 created=1 updated=0 unchanged=0 rendered=1 skipped=0 links=1 errors=0", "==> extract links"} {
 		if !bytes.Contains([]byte(output), []byte(value)) {
 			t.Fatalf("expected progress output to contain %q, got %q", value, output)
 		}

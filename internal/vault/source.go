@@ -1,8 +1,6 @@
 package vault
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -21,24 +19,11 @@ func SourceNoteRelativePath(sourceType, slug string) string {
 }
 
 func WriteSource(cfg config.Config, source model.SourceDocument, backlinks []model.SourceBacklink) error {
-	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(source.NotePath))
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		return fmt.Errorf("create source note dir: %w", err)
-	}
-
 	body, err := RenderSource(source, backlinks)
 	if err != nil {
 		return err
 	}
-
-	existing, err := os.ReadFile(fullPath)
-	if err == nil && string(existing) == body {
-		return nil
-	}
-	if err := os.WriteFile(fullPath, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("write source note: %w", err)
-	}
-	return nil
+	return writeRenderedNote(cfg, source.NotePath, body, "source note")
 }
 
 func RenderSource(source model.SourceDocument, backlinks []model.SourceBacklink) (string, error) {

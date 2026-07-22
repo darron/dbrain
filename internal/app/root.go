@@ -101,7 +101,7 @@ func NewRootCommand() *cobra.Command {
 		Short: "Repair derived local artifacts",
 		RunE:  helpCommand,
 	}
-	repairCmd.AddCommand(newRepairNotesCommand(opts), newRepairFTSCommand(opts), newRepairSourcesCommand(opts))
+	repairCmd.AddCommand(newRepairNotesCommand(opts), newRepairFTSCommand(opts), newRepairSourcesCommand(opts), newRepairPrunedMediaCommand(opts))
 
 	serveCmd := &cobra.Command{
 		Use:   "serve",
@@ -111,9 +111,11 @@ func NewRootCommand() *cobra.Command {
 	serveCmd.AddCommand(newServeMCPCommand(opts), newServeRemoteCommand(opts), newServeWebCommand(opts))
 
 	rootCmd.AddCommand(
+		newAuditCommand(opts),
 		newArchiveCommand(opts),
 		newAuthCommand(opts),
 		newConfigCommand(opts),
+		newInstallCommand(opts),
 		newDoctorCommand(opts),
 		newSQLiteCommand(opts),
 		newTSNetCommand(opts),
@@ -133,6 +135,7 @@ func NewRootCommand() *cobra.Command {
 		serveCmd,
 		newOCRCommand(opts),
 		newStatsCommand(opts),
+		newSemanticCommand(opts),
 		newResearchCommand(opts),
 		newSearchCommand(opts),
 		newGetCommand(opts),

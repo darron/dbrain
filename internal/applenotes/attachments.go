@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,6 +35,18 @@ func enrichAttachmentFiles(ctx context.Context, cfg config.Config, docs []NoteDo
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
+	if strings.TrimSpace(sourceDBPath) == "" {
+		return nil, fmt.Errorf("source database path is required for Apple Notes attachment containment")
+	}
+	sourceContainer := filepath.Dir(filepath.Clean(sourceDBPath))
+	sourceRoot, err := os.OpenRoot(sourceContainer)
+	if err != nil {
+		return nil, fmt.Errorf("open Apple Notes attachment container %s: %w", sourceContainer, err)
+	}
+	defer func() {
+		_ = sourceRoot.Close()
+	}()
+	rootEscapeErr := attachmentRootEscapeError(sourceRoot)
 
 	tempDir, err := cfg.MkdirTemp("apple-notes-attachments-*")
 	if err != nil {
@@ -69,7 +82,7 @@ func enrichAttachmentFiles(ctx context.Context, cfg config.Config, docs []NoteDo
 				Status:      "extracting",
 				Attachments: attachmentIdx + 1,
 			})
-			enrichAttachmentFile(ctx, tempDir, sourceDBPath, maxBytes, timeout, tesseractBinary, opts.SkipAttachmentOCR, &docs[docIdx].Attachments[attachmentIdx])
+			enrichAttachmentFile(ctx, tempDir, sourceContainer, sourceRoot, rootEscapeErr, maxBytes, timeout, tesseractBinary, opts.SkipAttachmentOCR, &docs[docIdx].Attachments[attachmentIdx])
 			attachment := docs[docIdx].Attachments[attachmentIdx]
 			status := attachment.ExtractStatus
 			if status == "" {
@@ -122,22 +135,24 @@ func enrichSingleDocumentAttachments(ctx context.Context, cfg config.Config, doc
 	return docs[0], nil
 }
 
-func enrichAttachmentFile(ctx context.Context, tempDir, sourceDBPath string, maxBytes int64, timeout time.Duration, tesseractBinary string, skipOCR bool, attachment *Attachment) {
+func enrichAttachmentFile(ctx context.Context, tempDir, sourceContainer string, sourceRoot *os.Root, rootEscapeErr error, maxBytes int64, timeout time.Duration, tesseractBinary string, skipOCR bool, attachment *Attachment) {
 	if attachment == nil || strings.TrimSpace(attachment.FilePath) == "" {
 		return
 	}
-	sourcePath, ok := resolveAttachmentSourcePath(attachment.FilePath, sourceDBPath)
+	sourcePath, ok := resolveAttachmentSourcePath(attachment.FilePath, sourceContainer)
 	if !ok {
-		blockAttachment(attachment, "file_unresolved", fmt.Errorf("cannot resolve attachment path %q", attachment.FilePath))
+		blockAttachment(attachment, "outside_notes_container", fmt.Errorf("cannot resolve attachment path %q within Notes container", attachment.FilePath))
 		return
 	}
-	localPath, cleanup, err := copyAttachmentFile(sourcePath, tempDir, attachment.FileName, maxBytes)
+	localPath, cleanup, err := copyAttachmentFile(sourceRoot, rootEscapeErr, sourcePath, tempDir, attachment.FileName, maxBytes)
 	if cleanup != nil {
 		defer cleanup()
 	}
 	if err != nil {
 		reason := "extract_failed"
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, errAttachmentOutsideNotesContainer) {
+			reason = "outside_notes_container"
+		} else if errors.Is(err, os.ErrNotExist) {
 			reason = "file_missing"
 		} else if errors.Is(err, errAttachmentTooLarge) {
 			reason = "too_large"

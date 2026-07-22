@@ -60,6 +60,21 @@ func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Write
 	return serveWithDeps(ctx, cfg, opts, logOut, defaultRemoteDeps())
 }
 
+func validateFunnelSurfaceAuth(ctx context.Context, cfg config.Config, opts Options) error {
+	if !opts.Funnel {
+		return nil
+	}
+	if opts.Web {
+		if err := web.RequirePublicAuthConfig(ctx, cfg); err != nil {
+			return err
+		}
+	}
+	if opts.MCP && !mcpserver.AuthEnabled(cfg) {
+		return fmt.Errorf("mcp bearer auth must be enabled for Tailscale Funnel; set mcp.auth.enabled=true, or disable --tsnet-funnel or --mcp")
+	}
+	return nil
+}
+
 func defaultRemoteDeps() remoteDeps {
 	return remoteDeps{
 		prepareStateDir: PrepareStateDir,
@@ -79,10 +94,8 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	if err := opts.Validate(); err != nil {
 		return err
 	}
-	if opts.Funnel && opts.Web {
-		if err := web.ValidatePublicAuthConfig(ctx, cfg); err != nil {
-			return err
-		}
+	if err := validateFunnelSurfaceAuth(ctx, cfg, opts); err != nil {
+		return err
 	}
 	startuplog.WriteVersion(logOut)
 

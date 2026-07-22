@@ -24,10 +24,26 @@ func newServeWebCommand(root *rootOptions) *cobra.Command {
 			}
 			startuplog.WriteVersion(cmd.ErrOrStderr())
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Web UI: http://%s\n", addr)
+			handlerOptions := web.HandlerOptions{}
+			auditEnabled, err := web.AuditAPIEnabled(cmd.Context(), cfg)
+			if err != nil {
+				return fmt.Errorf("resolve web audit authentication: %w", err)
+			}
+			if auditEnabled {
+				dependencies, auditErr := buildWebAuditHandlerDependencies(cmd.Context(), cfg, auditMetaForInvocation(root))
+				if auditErr != nil {
+					return auditErr
+				}
+				handlerOptions.AuditReports = dependencies.Reports
+				handlerOptions.AuditRuns = dependencies.Runs
+				handlerOptions.AuditSyncInterval = dependencies.SyncInterval
+				handlerOptions.AuditStandardInterval = dependencies.StandardInterval
+			}
 			return web.ServeWithOptions(cmd.Context(), cfg, addr, web.ServeOptions{
 				StoreOpenOptions: store.OpenOptions{
 					MigrationReporter: startuplog.MigrationReporter(cmd.ErrOrStderr()),
 				},
+				HandlerOptions: handlerOptions,
 			})
 		},
 	}

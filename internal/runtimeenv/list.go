@@ -18,8 +18,14 @@ func LookupList(rootDir string, key string) []string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return splitList(value)
 	}
-	if value := loadEnvValueFromFiles(rootDir, key); value != "" {
-		return splitList(value)
+	if hasRegisteredConfigSnapshot(rootDir) {
+		if value, ok := frozenEnvValue(rootDir, key); ok {
+			return splitList(value)
+		}
+	} else {
+		if value := loadEnvValueFromFiles(rootDir, key); value != "" {
+			return splitList(value)
+		}
 	}
 	values, ok := loadConfigList(rootDir, key)
 	if !ok {

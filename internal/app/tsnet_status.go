@@ -13,29 +13,30 @@ import (
 )
 
 type tsnetStateInfo struct {
-	Hostname     string                        `json:"hostname"`
-	StateDir     string                        `json:"state_dir"`
-	Exists       bool                          `json:"exists"`
-	Locked       bool                          `json:"locked"`
-	Running      bool                          `json:"running"`
-	Reachable    bool                          `json:"reachable"`
-	WebReachable bool                          `json:"web_reachable"`
-	MCPReachable bool                          `json:"mcp_reachable"`
-	TailnetIPs   []string                      `json:"tailnet_ips,omitempty"`
-	WebURL       string                        `json:"web_url,omitempty"`
-	MCPURL       string                        `json:"mcp_url,omitempty"`
-	TLS          bool                          `json:"tls"`
-	Funnel       bool                          `json:"funnel"`
-	ControlURL   string                        `json:"control_url"`
-	State        string                        `json:"state"`
-	CertHealth   string                        `json:"cert_health"`
-	NeedsLogin   bool                          `json:"needs_login"`
-	LockPath     string                        `json:"lock_path"`
-	WebError     string                        `json:"web_error,omitempty"`
-	MCPError     string                        `json:"mcp_error,omitempty"`
-	CertError    string                        `json:"cert_error,omitempty"`
-	Warning      string                        `json:"warning,omitempty"`
-	SyncAll      *schedulerstate.SyncAllStatus `json:"sync_all,omitempty"`
+	Hostname     string                          `json:"hostname"`
+	StateDir     string                          `json:"state_dir"`
+	Exists       bool                            `json:"exists"`
+	Locked       bool                            `json:"locked"`
+	Running      bool                            `json:"running"`
+	Reachable    bool                            `json:"reachable"`
+	WebReachable bool                            `json:"web_reachable"`
+	MCPReachable bool                            `json:"mcp_reachable"`
+	TailnetIPs   []string                        `json:"tailnet_ips,omitempty"`
+	WebURL       string                          `json:"web_url,omitempty"`
+	MCPURL       string                          `json:"mcp_url,omitempty"`
+	TLS          bool                            `json:"tls"`
+	Funnel       bool                            `json:"funnel"`
+	ControlURL   string                          `json:"control_url"`
+	State        string                          `json:"state"`
+	CertHealth   string                          `json:"cert_health"`
+	NeedsLogin   bool                            `json:"needs_login"`
+	LockPath     string                          `json:"lock_path"`
+	WebError     string                          `json:"web_error,omitempty"`
+	MCPError     string                          `json:"mcp_error,omitempty"`
+	CertError    string                          `json:"cert_error,omitempty"`
+	Warning      string                          `json:"warning,omitempty"`
+	SyncAll      *schedulerstate.SyncAllStatus   `json:"sync_all,omitempty"`
+	SyncAllError *tsnetSchedulerStatusDiagnostic `json:"sync_all_error,omitempty"`
 }
 
 func tsnetStateStatus(ctx context.Context, opts remote.Options) (tsnetStateInfo, error) {

@@ -58,6 +58,9 @@ func TestRunImportsYouTubeSignalsAndSummarizesCanonicalSource(t *testing.T) {
 	if stats.ItemsProcessed != 1 || stats.ItemsCreated != 1 {
 		t.Fatalf("unexpected item stats: %+v", stats)
 	}
+	if stats.WatchLater.ItemsProcessed != 1 || stats.WatchLater.ItemsCreated != 1 || stats.Liked.ItemsProcessed != 0 {
+		t.Fatalf("separate feed stats were not preserved: watch_later=%+v liked=%+v", stats.WatchLater, stats.Liked)
+	}
 	if stats.SourcesCreated != 1 || stats.LinksCreated != 1 {
 		t.Fatalf("unexpected source link stats: %+v", stats)
 	}
@@ -131,6 +134,9 @@ func TestRunImportsYouTubeSignalsAndSummarizesCanonicalSource(t *testing.T) {
 
 	if secondStats.ItemsProcessed != 1 || secondStats.ItemsUnchanged != 1 {
 		t.Fatalf("expected unchanged item on second run, got %+v", secondStats)
+	}
+	if secondStats.WatchLater.ItemsUnchanged != 1 {
+		t.Fatalf("watch-later unchanged stats = %+v", secondStats.WatchLater)
 	}
 	if secondStats.ItemsUpdated != 0 || secondStats.SourcesQueued != 0 || secondStats.SourcesExtracted != 0 || secondStats.SourcesSummarized != 0 {
 		t.Fatalf("expected no second-pass source work, got %+v", secondStats)

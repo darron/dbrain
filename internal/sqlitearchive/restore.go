@@ -2,6 +2,7 @@ package sqlitearchive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,7 +36,19 @@ func Latest(ctx context.Context, opts Options) (RestorePlan, error) {
 	return RestorePlan{Object: newest}, nil
 }
 
-func Restore(ctx context.Context, cfg config.Config, plan RestorePlan, opts Options) (RestoreResult, error) {
+func Restore(ctx context.Context, cfg config.Config, plan RestorePlan, opts Options) (result RestoreResult, retErr error) {
+	lease, ownedLease, err := operationLease(cfg, opts, "restore")
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if ownedLease {
+		defer func() {
+			if err := lease.Close(); err != nil {
+				result = RestoreResult{}
+				retErr = errors.Join(retErr, fmt.Errorf("release sqlite restore operation lease: %w", err))
+			}
+		}()
+	}
 	store, err := requireStore(opts)
 	if err != nil {
 		return RestoreResult{}, err

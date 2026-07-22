@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/darron/dbrain/internal/ask"
+	"github.com/darron/dbrain/internal/researchhybrid"
+	"github.com/darron/dbrain/internal/semanticconfig"
 )
 
 type synthesisInputBuilder struct {
@@ -47,6 +49,9 @@ func (b *synthesisInputBuilder) build() string {
 	if len(b.pack.QueryPlan.RetrievalLanes) > 0 {
 		out.WriteString("\n- retrieval_lanes:")
 		for _, lane := range b.pack.QueryPlan.RetrievalLanes {
+			if b.pack.QueryPlan.SemanticMode == semanticconfig.ModeShadow && lane.Name == researchhybrid.LaneSemantic {
+				lane = researchhybrid.LaneStatuses(researchhybrid.Options{})[1]
+			}
 			out.WriteString("\n  - ")
 			out.WriteString(lane.Name)
 			if strings.TrimSpace(lane.Status) != "" {

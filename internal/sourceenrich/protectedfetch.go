@@ -36,7 +36,7 @@ func fallbackExtractForSourceError(ctx context.Context, source model.SourceDocum
 
 	var recoveryErr error
 	if isRedirectFetchError(fetchErr) {
-		extract, recovered, err := extractProtectedSource(fetchCtx, sourceURL)
+		extract, recovered, err := extractProtectedSource(fetchCtx, sourceURL, opts)
 		if recovered {
 			return extract, recovered, err
 		}
@@ -45,7 +45,7 @@ func fallbackExtractForSourceError(ctx context.Context, source model.SourceDocum
 		}
 	}
 	if isHTTPReaderFallbackCandidate(source, opts, fetchErr) {
-		extract, recovered, err := extractHTTPReadableSource(fetchCtx, sourceURL)
+		extract, recovered, err := extractHTTPReadableSource(fetchCtx, sourceURL, opts)
 		if recovered || err == nil {
 			return extract, recovered, err
 		}

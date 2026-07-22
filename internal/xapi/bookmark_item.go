@@ -13,6 +13,10 @@ import (
 )
 
 func bookmarkRecordToItem(record bookmarkRecord, now time.Time) (model.Item, error) {
+	sourceKey, err := bookmarkSourceKey(record.TweetID)
+	if err != nil {
+		return model.Item{}, err
+	}
 	publishedAt := normalizeBookmarkTimestamp(record.PostedAt)
 	savedAt := normalizeBookmarkTimestamp(record.BookmarkedAt)
 	syncedAt := normalizeBookmarkTimestamp(record.SyncedAt)
@@ -33,7 +37,7 @@ func bookmarkRecordToItem(record bookmarkRecord, now time.Time) (model.Item, err
 	notePath := vault.NoteRelativePath("x", chooseBookmarkYear(savedAt, publishedAt, syncedAt), record.TweetID)
 	title := deriveBookmarkTitle(record)
 	item := model.Item{
-		SourceKey:     "x:" + record.TweetID,
+		SourceKey:     sourceKey,
 		SourceType:    "x_bookmark",
 		ExternalID:    record.TweetID,
 		CanonicalURL:  record.URL,
@@ -62,6 +66,19 @@ func bookmarkRecordToItem(record bookmarkRecord, now time.Time) (model.Item, err
 	}
 	item.ContentHash = itemhash.Compute(item)
 	return item, nil
+}
+
+func bookmarkSourceKey(tweetID string) (string, error) {
+	tweetID = strings.TrimSpace(tweetID)
+	if tweetID == "" || len(tweetID) > 32 {
+		return "", fmt.Errorf("invalid x bookmark identity")
+	}
+	for _, char := range tweetID {
+		if char < '0' || char > '9' {
+			return "", fmt.Errorf("invalid x bookmark identity")
+		}
+	}
+	return "x:" + tweetID, nil
 }
 
 func deriveBookmarkDomains(links []string) (string, []string, []string) {

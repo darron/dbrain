@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	_ "modernc.org/sqlite"
+
+	brainstore "github.com/darron/dbrain/internal/store"
 )
 
 func snapshotSQLite(ctx context.Context, dbPath string, snapshotPath string) error {
@@ -41,6 +43,9 @@ func validateSQLite(ctx context.Context, dbPath string) error {
 	}
 	if strings.TrimSpace(strings.ToLower(result)) != "ok" {
 		return fmt.Errorf("quick_check returned %q", result)
+	}
+	if err := brainstore.ValidateRestorableDatabase(ctx, dbPath); err != nil {
+		return fmt.Errorf("validate dbrain schema identity: %w", err)
 	}
 	return nil
 }

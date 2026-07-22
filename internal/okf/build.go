@@ -65,7 +65,7 @@ func BuildBundle(snapshot store.OKFExportSnapshot, opts ExportOptions) (Bundle, 
 	})
 
 	manifest := Manifest{
-		OKFVersion: "0.1",
+		OKFVersion: OKFVersion,
 		Profile:    normalized.Profile,
 		ExportedAt: normalized.Now.UTC().Format(time.RFC3339),
 	}
@@ -232,7 +232,7 @@ func bundleMetadataDocument(opts ExportOptions) Document {
 		Title:       "dbrain OKF Bundle",
 		Description: "Metadata for a generated dbrain OKF export.",
 		Fields: []Field{
-			{Name: "okf_version", Value: "0.1"},
+			{Name: "okf_version", Value: OKFVersion},
 			{Name: "okf_profile", Value: opts.Profile},
 			{Name: "exported_at", Value: opts.Now.UTC().Format(time.RFC3339)},
 			{Name: "dbrain_version", Value: version},

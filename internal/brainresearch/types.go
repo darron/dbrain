@@ -6,7 +6,10 @@ import (
 
 	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/researchsemantic"
 	"github.com/darron/dbrain/internal/retrieval"
+	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/topics"
 )
@@ -18,32 +21,65 @@ const (
 )
 
 type Builder struct {
-	cfg config.Config
-	st  *store.Store
+	cfg                config.Config
+	st                 *store.Store
+	semanticRetriever  SemanticRetriever
+	semanticOptions    researchsemantic.Options
+	strategyRunner     func(context.Context, string, ask.Options) (ask.Response, error)
+	strategyPoolRunner func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error)
+	semanticMode       semanticconfig.Mode
+	semanticStatus     *semanticindex.Status
+	shadowComparison   *ShadowComparison
+}
+
+func (b *Builder) WithSemanticMode(mode semanticconfig.Mode) *Builder {
+	if b != nil {
+		b.semanticMode = mode
+	}
+	return b
+}
+
+type SemanticRetriever interface {
+	Retrieve(context.Context, string, researchsemantic.Options) ([]retrieval.EvidenceDocument, semanticindex.Status, error)
+}
+
+// WithSemanticRetriever returns the builder with an explicitly injected local
+// semantic lane. New and top-level Build remain lexical unless callers opt in.
+func (b *Builder) WithSemanticRetriever(retriever SemanticRetriever, opts researchsemantic.Options) *Builder {
+	if b == nil {
+		return b
+	}
+	opts.Filters.AllowedParentKeys = append([]string(nil), opts.Filters.AllowedParentKeys...)
+	opts.Filters.AllowedParentKinds = append([]string(nil), opts.Filters.AllowedParentKinds...)
+	opts.Filters.AllowedEvidenceRoles = append([]string(nil), opts.Filters.AllowedEvidenceRoles...)
+	opts.Filters.AllowedSourceTypes = append([]string(nil), opts.Filters.AllowedSourceTypes...)
+	b.semanticRetriever, b.semanticOptions = retriever, opts
+	return b
 }
 
 type Options struct {
-	Question          string
-	RawQuestion       string
-	Topic             string
-	Limit             int
-	SourceTypes       []string
-	IncludeRelated    bool
-	RelatedLimit      int
-	SeedLimit         int
-	IncludeTopic      *bool
-	MaxCharsPerDoc    int
-	PlannerModel      string
-	PlannerTimeout    time.Duration
-	PlannerBinary     string
-	UseModelPlanner   bool
-	DisablePlanner    bool
-	UseSemantic       bool
-	DisableSemantic   bool
-	ContinuityAnchors []ProtectedAnchor
-	Attempt           string
-	AnchorResolver    AnchorResolver
-	Observer          Observer
+	Question              string
+	RawQuestion           string
+	Topic                 string
+	Limit                 int
+	SourceTypes           []string
+	IncludeRelated        bool
+	RelatedLimit          int
+	SeedLimit             int
+	IncludeTopic          *bool
+	MaxCharsPerDoc        int
+	PlannerModel          string
+	PlannerTimeout        time.Duration
+	PlannerBinary         string
+	UseModelPlanner       bool
+	DisablePlanner        bool
+	UseSemantic           bool
+	DisableSemantic       bool
+	EffectiveSemanticMode semanticconfig.Mode
+	ContinuityAnchors     []ProtectedAnchor
+	Attempt               string
+	AnchorResolver        AnchorResolver
+	Observer              Observer
 }
 
 type AnchorResolver interface {
@@ -74,30 +110,52 @@ type Pack struct {
 	UsedTopicBrief   bool              `json:"used_topic_brief"`
 	Evidence         []ask.Evidence    `json:"evidence"`
 	ExactTagEvidence []ask.Evidence    `json:"exact_tag_evidence,omitempty"`
+	Inspection       *InspectionResult `json:"inspection,omitempty"`
 	TopicBrief       *TopicBrief       `json:"topic_brief,omitempty"`
 	NextSteps        []SuggestedAction `json:"next_steps,omitempty"`
 }
 
 type QueryPlan struct {
-	TextQuery         string                    `json:"text_query"`
-	QueryFamily       string                    `json:"query_family,omitempty"`
-	QueryTerms        []string                  `json:"query_terms"`
-	TagQueries        []string                  `json:"tag_queries"`
-	QueryVariants     []QueryVariant            `json:"query_variants,omitempty"`
-	Concepts          []QueryConcept            `json:"concepts,omitempty"`
-	ProtectedAnchors  []ProtectedAnchor         `json:"protected_anchors,omitempty"`
-	Planner           string                    `json:"planner,omitempty"`
-	PlannerModel      string                    `json:"planner_model,omitempty"`
-	PlannerError      string                    `json:"planner_error,omitempty"`
-	SourceTypes       []string                  `json:"source_types,omitempty"`
-	RetrievalLanes    []retrieval.RetrievalLane `json:"retrieval_lanes,omitempty"`
-	Limit             int                       `json:"limit"`
-	MaxCharsPerDoc    int                       `json:"max_chars_per_doc"`
-	IncludeRelated    bool                      `json:"include_related"`
-	RelatedLimit      int                       `json:"related_limit,omitempty"`
-	Topic             string                    `json:"topic,omitempty"`
-	TopicSource       string                    `json:"topic_source,omitempty"`
-	IncludeTopicBrief bool                      `json:"include_topic_brief"`
+	TextQuery             string                    `json:"text_query"`
+	QueryFamily           string                    `json:"query_family,omitempty"`
+	QueryTerms            []string                  `json:"query_terms"`
+	TagQueries            []string                  `json:"tag_queries"`
+	QueryVariants         []QueryVariant            `json:"query_variants,omitempty"`
+	Concepts              []QueryConcept            `json:"concepts,omitempty"`
+	ProtectedAnchors      []ProtectedAnchor         `json:"protected_anchors,omitempty"`
+	Planner               string                    `json:"planner,omitempty"`
+	PlannerModel          string                    `json:"planner_model,omitempty"`
+	PlannerError          string                    `json:"planner_error,omitempty"`
+	SourceTypes           []string                  `json:"source_types,omitempty"`
+	RetrievalLanes        []retrieval.RetrievalLane `json:"retrieval_lanes,omitempty"`
+	Limit                 int                       `json:"limit"`
+	MaxCharsPerDoc        int                       `json:"max_chars_per_doc"`
+	IncludeRelated        bool                      `json:"include_related"`
+	RelatedLimit          int                       `json:"related_limit,omitempty"`
+	Topic                 string                    `json:"topic,omitempty"`
+	TopicSource           string                    `json:"topic_source,omitempty"`
+	IncludeTopicBrief     bool                      `json:"include_topic_brief"`
+	SemanticMode          semanticconfig.Mode       `json:"semantic_mode"`
+	ShadowComparison      *ShadowComparison         `json:"shadow_comparison,omitempty"`
+	RetryShadowComparison *ShadowComparison         `json:"retry_shadow_comparison,omitempty"`
+}
+
+type ShadowRankedReference struct {
+	SourceKey string `json:"source_key"`
+	ChunkID   string `json:"chunk_id,omitempty"`
+	Rank      int    `json:"rank"`
+}
+
+type ShadowComparison struct {
+	Status       semanticindex.StatusState  `json:"status"`
+	Reason       semanticindex.StatusReason `json:"reason,omitempty"`
+	LexicalCount int                        `json:"lexical_count"`
+	HybridCount  int                        `json:"hybrid_count"`
+	Lexical      []ShadowRankedReference    `json:"lexical"`
+	Hybrid       []ShadowRankedReference    `json:"hybrid"`
+	Added        []ShadowRankedReference    `json:"added"`
+	Removed      []ShadowRankedReference    `json:"removed"`
+	Reordered    []ShadowRankedReference    `json:"reordered"`
 }
 
 type QueryVariant struct {

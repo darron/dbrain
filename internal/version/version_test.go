@@ -45,6 +45,9 @@ func TestDetailsFromBuildInfo(t *testing.T) {
 	if details.BuildPlatform != "darwin/arm64" {
 		t.Fatalf("BuildPlatform = %q", details.BuildPlatform)
 	}
+	if details.SecurityBaselineID != "v0.6.0-security-pass" || details.SecurityBaselineEpoch != 1 {
+		t.Fatalf("security baseline = %q/%d", details.SecurityBaselineID, details.SecurityBaselineEpoch)
+	}
 	if details.ModulePath != "dbrain" {
 		t.Fatalf("ModulePath = %q", details.ModulePath)
 	}
@@ -53,6 +56,26 @@ func TestDetailsFromBuildInfo(t *testing.T) {
 	}
 	if got := details.BuildSettings["vcs.modified"]; got != "true" {
 		t.Fatalf("BuildSettings[vcs.modified] = %q", got)
+	}
+}
+
+func TestSecurityBaselineRegistryRejectsUnknownAndMismatchedPairs(t *testing.T) {
+	for _, tt := range []struct {
+		name, id string
+		epoch    int
+		want     string
+	}{
+		{"legacy", "pre-v0.6.0", 0, "legacy"},
+		{"current", "v0.6.0-security-pass", 1, "current"},
+		{"mismatch", "v0.6.0-security-pass", 0, "unknown"},
+		{"unknown id", "future-label", 2, "unknown"},
+		{"unknown epoch", "v0.6.0-security-pass", 2, "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifySecurityBaseline(tt.id, tt.epoch); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

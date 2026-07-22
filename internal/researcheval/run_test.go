@@ -3,6 +3,8 @@ package researcheval
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,8 +17,37 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/researchtrace"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/store"
 )
+
+func TestOptionsFromTraceRestoresShadowWithoutForcingSemanticOn(t *testing.T) {
+	opts := OptionsFromTrace(researchtrace.ResearchTrace{Pack: &brainresearch.Pack{QueryPlan: brainresearch.QueryPlan{SemanticMode: semanticconfig.ModeShadow}}})
+	if opts.EffectiveSemanticMode != semanticconfig.ModeShadow || opts.UseSemantic || opts.DisableSemantic {
+		t.Fatalf("trace options = %#v", opts)
+	}
+}
+
+func TestRunExecutesTypedShadowEvalCase(t *testing.T) {
+	cfg, st := newResearchEvalStore(t)
+	seedResearchEvalItem(t, st, "x:typed-shadow", "Typed Shadow", "typed shadow evidence")
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	t.Setenv("DBRAIN_OLLAMA_BASE_URL", embed.URL)
+	if err := os.WriteFile(cfg.ConfigPath, []byte("research:\n  semantic:\n    mode: off\n    model: test-model\n    dimensions: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Run(context.Background(), cfg, st, Options{Cases: []Case{{Name: "typed shadow", Question: "typed shadow", DisablePlanner: true, EffectiveSemanticMode: semanticconfig.ModeShadow, ExpectSemanticMode: semanticconfig.ModeShadow}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Passed != 1 || len(report.Cases) != 1 || report.Cases[0].SemanticMode != semanticconfig.ModeShadow || report.Cases[0].ShadowComparison == nil {
+		t.Fatalf("typed shadow report=%#v", report)
+	}
+}
 
 func TestRunAssertsQueryPlanPlannerModesAndCitations(t *testing.T) {
 	t.Parallel()
@@ -68,6 +99,9 @@ func TestRunAssertsQueryPlanPlannerModesAndCitations(t *testing.T) {
 	if len(report.Cases[0].TopEvidence) == 0 || len(report.Cases[0].TopEvidence[0].Signals) == 0 {
 		t.Fatalf("expected top retrieval signals in result: %+v", report.Cases[0])
 	}
+	if report.Cases[0].CitationSourceKeysMode != "prompt_admitted" || !containsFold(report.Cases[0].EvidenceFlow.PromptAdmittedSourceKeys, "x:eval-alpha") {
+		t.Fatalf("expected explicit prompt-admitted evidence flow: %+v", report.Cases[0])
+	}
 }
 
 func TestRunFailsCitationAssertionWhenCoverageRegresses(t *testing.T) {
@@ -93,6 +127,31 @@ func TestRunFailsCitationAssertionWhenCoverageRegresses(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(report.Cases[0].Failures, "\n"), "missing expected citation source_key x:missing-citation") {
 		t.Fatalf("expected citation failure, got %+v", report.Cases[0].Failures)
+	}
+}
+
+func TestRequiredConceptAssertionsReportMissingAndForbiddenConcepts(t *testing.T) {
+	t.Parallel()
+
+	pack := brainresearch.Pack{QueryPlan: brainresearch.QueryPlan{Concepts: []brainresearch.QueryConcept{
+		{Key: "cerebras", Required: true},
+		{Key: "articles", Required: false},
+	}}}
+	result := CaseResult{}
+	checkCaseAssertions(Case{
+		ExpectRequiredConcepts: []string{"ontology"},
+		ForbidRequiredConcepts: []string{"cerebras", "articles"},
+	}, pack, nil, map[string]struct{}{}, &result)
+
+	failures := strings.Join(result.Failures, "\n")
+	if !strings.Contains(failures, "missing expected required concept ontology") {
+		t.Fatalf("expected missing required concept failure, got %#v", result.Failures)
+	}
+	if !strings.Contains(failures, "forbidden required concept present cerebras") {
+		t.Fatalf("expected forbidden required concept failure, got %#v", result.Failures)
+	}
+	if strings.Contains(failures, "articles") {
+		t.Fatalf("optional concept should not trigger required-concept assertions, got %#v", result.Failures)
 	}
 }
 
@@ -129,7 +188,7 @@ func TestTraceProposalGeneratesCasesFromSavedTrace(t *testing.T) {
 		t.Fatalf("unexpected proposal: %+v", proposal)
 	}
 	first := proposal.Cases[0]
-	if first.ExpectAnswerStatus != "ok" || !containsFold(first.ExpectCitationSourceKeys, "x:trace-alpha") {
+	if first.ExpectAnswerStatus != "ok" || !containsFold(first.ExpectCitationSourceKeys, "x:trace-alpha") || !containsFold(first.ExpectPromptAdmittedSourceKeys, "x:trace-alpha") {
 		t.Fatalf("expected answer and citation assertions from trace: %+v", first)
 	}
 	if len(first.ExpectAnswerText) != 0 {
@@ -247,7 +306,7 @@ Query plan:
 	if len(proposal.Cases[0].ExpectAnswerText) != 0 {
 		t.Fatalf("answer text should be omitted by default: %+v", proposal.Cases[0])
 	}
-	if proposal.Cases[0].ExpectAnswerStatus != "ok" || !containsFold(proposal.Cases[0].ExpectCitationSourceKeys, "x:alpha") {
+	if proposal.Cases[0].ExpectAnswerStatus != "ok" || !containsFold(proposal.Cases[0].ExpectCitationSourceKeys, "x:alpha") || !containsFold(proposal.Cases[0].ExpectPromptAdmittedSourceKeys, "x:alpha") {
 		t.Fatalf("expected conservative status/citation assertions: %+v", proposal.Cases[0])
 	}
 

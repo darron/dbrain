@@ -171,6 +171,28 @@ func TestSinkConcurrentEmitsWriteValidJSONLines(t *testing.T) {
 	}
 }
 
+func TestAuditRunCompletedEventUsesPrivacySafeAllowlist(t *testing.T) {
+	event := AuditRunCompletedEvent("standard", "fail", 1500*time.Millisecond, AuditStatusCounts{Pass: 10, Warn: 2, Fail: 1, Unknown: 3, Skipped: 4})
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantKeys := map[string]bool{"event": true, "profile": true, "status": true, "duration_ms": true, "pass_count": true, "warn_count": true, "fail_count": true, "unknown_count": true, "skipped_count": true}
+	if len(event) != len(wantKeys) {
+		t.Fatalf("event keys = %#v", event)
+	}
+	for key := range event {
+		if !wantKeys[key] {
+			t.Fatalf("unexpected audit metric key %q", key)
+		}
+	}
+	for _, forbidden := range []string{"audit_id", "check", "evidence", "identifier", "path", "url", "credential", "provider", "error", "transcript", "ocr"} {
+		if strings.Contains(strings.ToLower(string(data)), forbidden) {
+			t.Fatalf("audit metric contains %q: %s", forbidden, data)
+		}
+	}
+}
+
 func TestStrictSinkReturnsWriteFailureOnClose(t *testing.T) {
 	writeErr := errors.New("disk full")
 	sink := &jsonlSink{
@@ -184,6 +206,53 @@ func TestStrictSinkReturnsWriteFailureOnClose(t *testing.T) {
 	}
 	if err := sink.Close(); !errors.Is(err, writeErr) {
 		t.Fatalf("Close error = %v, want %v", err, writeErr)
+	}
+}
+
+func TestSQLiteArchiveEventsContainOnlyTimingStatusAndCounts(t *testing.T) {
+	events := []Event{
+		SQLiteArchiveAttemptEvent(),
+		SQLiteArchiveStartedEvent(),
+		SQLiteArchiveCompletedEvent(1500*time.Millisecond, 1024, 512),
+		SQLiteArchiveFailedEvent(2*time.Second, SQLiteArchiveFailureArchive),
+		SQLiteArchiveLockSkippedEvent(),
+		SQLiteArchiveOverlapSkippedEvent(),
+		SQLiteArchiveIntervalSkippedEvent(3 * time.Minute),
+	}
+	wantNames := []string{
+		"scheduler.sqlite_archive.attempt",
+		"scheduler.sqlite_archive.started",
+		"scheduler.sqlite_archive.completed",
+		"scheduler.sqlite_archive.failed",
+		"scheduler.sqlite_archive.lock_skipped",
+		"scheduler.sqlite_archive.overlap_skipped",
+		"scheduler.sqlite_archive.interval_skipped",
+	}
+	for i, event := range events {
+		if event["event"] != wantNames[i] {
+			t.Fatalf("event %d name = %#v, want %q", i, event["event"], wantNames[i])
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lower := strings.ToLower(string(data))
+		for _, forbidden := range []string{"key", "path", "credential", "token", "secret", "endpoint", "url", "message", "error"} {
+			if strings.Contains(lower, forbidden) {
+				t.Fatalf("event %d contains forbidden field/content %q: %s", i, forbidden, data)
+			}
+		}
+	}
+	completed := events[2]
+	if completed["duration_ms"] != int64(1500) || completed["snapshot_bytes"] != int64(1024) || completed["archive_bytes"] != int64(512) {
+		t.Fatalf("completed aggregate fields = %#v", completed)
+	}
+}
+
+func TestSQLiteArchiveFailedEventRejectsArbitraryFailureCode(t *testing.T) {
+	event := SQLiteArchiveFailedEvent(time.Second, SQLiteArchiveFailureCode("token=secret path=/tmp/db"))
+	if got := event["failure_code"]; got != string(SQLiteArchiveFailureArchive) {
+		t.Fatalf("failure_code = %#v, want closed archive_failed fallback", got)
 	}
 }
 

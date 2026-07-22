@@ -25,6 +25,13 @@ type ResolveOptions struct {
 	Overrides map[Provider]ProviderOverrides
 }
 
+type BaseURLResolveOptions struct {
+	RootDir  string
+	Env      map[string]string
+	Provider Provider
+	Override string
+}
+
 type Target struct {
 	Ref         ModelRef
 	Spec        ProviderSpec
@@ -52,13 +59,12 @@ func ResolveTarget(ctx context.Context, opts ResolveOptions) (Target, error) {
 	}
 	spec := *ref.Spec
 	override := opts.Overrides[ref.Provider]
-	baseURL := firstString(
-		override.BaseURL,
-		firstEnvMapValue(opts.Env, spec.BaseURLEnvKeys...),
-		runtimeenv.FirstNonEmpty(opts.RootDir, spec.BaseURLEnvKeys...),
-		aliasConfigValue(opts.RootDir, ref.Provider, "base_url"),
-		spec.DefaultBaseURL,
-	)
+	baseURL, err := ResolveBaseURL(BaseURLResolveOptions{
+		RootDir: opts.RootDir, Env: opts.Env, Provider: ref.Provider, Override: override.BaseURL,
+	})
+	if err != nil {
+		return Target{}, err
+	}
 	apiKey, err := resolveAPIKey(ctx, opts, ref.Provider, spec, override)
 	if err != nil {
 		return Target{}, err
@@ -66,7 +72,6 @@ func ResolveTarget(ctx context.Context, opts ResolveOptions) (Target, error) {
 	if spec.RequiresAPIKey && strings.TrimSpace(apiKey) == "" {
 		return Target{}, fmt.Errorf("%s API key is required", spec.DisplayName)
 	}
-	baseURL = normalizeBaseURL(baseURL, spec.Transport, ref.Provider)
 	headers := resolveHeaders(opts, spec, override)
 	return Target{
 		Ref:         ref,
@@ -76,6 +81,36 @@ func ResolveTarget(ctx context.Context, opts ResolveOptions) (Target, error) {
 		Headers:     headers,
 		DisplayName: ref.Original,
 	}, nil
+}
+
+// ResolveBaseURL resolves one provider endpoint without reading API keys,
+// secret references, model strings, or task-specific headers.
+func ResolveBaseURL(opts BaseURLResolveOptions) (string, error) {
+	provider := Provider(strings.ToLower(strings.TrimSpace(string(opts.Provider))))
+	if provider == "" {
+		return "", fmt.Errorf("provider is required to resolve base URL")
+	}
+
+	reg, err := RegistryForRoot(opts.RootDir)
+	if err != nil {
+		return "", err
+	}
+	spec, ok := reg.Spec(provider)
+	if !ok {
+		return "", fmt.Errorf("unsupported provider %q", provider)
+	}
+
+	baseURL := firstString(
+		opts.Override,
+		firstEnvMapValue(opts.Env, spec.BaseURLEnvKeys...),
+		runtimeenv.FirstNonEmpty(opts.RootDir, spec.BaseURLEnvKeys...),
+		aliasConfigValue(opts.RootDir, provider, "base_url"),
+		spec.DefaultBaseURL,
+	)
+	if baseURL == "" {
+		return "", fmt.Errorf("%s base URL is required", spec.DisplayName)
+	}
+	return normalizeBaseURL(baseURL, spec.Transport, provider), nil
 }
 
 func resolveAPIKey(ctx context.Context, opts ResolveOptions, provider Provider, spec ProviderSpec, override ProviderOverrides) (string, error) {

@@ -1,8 +1,11 @@
 package store
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
-func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending []CountBucket, blocked []CountBucket) []PipelineStageRow {
+func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending []CountBucket, blocked []CountBucket, terminal []CountBucket) []PipelineStageRow {
 	if len(total) == 0 {
 		return nil
 	}
@@ -10,15 +13,17 @@ func buildPipelineStageRows(total []CountBucket, current []CountBucket, pending 
 	currentByKind := countBucketMap(current)
 	pendingByKind := countBucketMap(pending)
 	blockedByKind := countBucketMap(blocked)
+	terminalByKind := countBucketMap(terminal)
 
 	rows := make([]PipelineStageRow, 0, len(total)+1)
 	for _, bucket := range total {
 		row := PipelineStageRow{
-			Kind:    bucket.Key,
-			Total:   bucket.Count,
-			Current: currentByKind[bucket.Key],
-			Pending: pendingByKind[bucket.Key],
-			Blocked: blockedByKind[bucket.Key],
+			Kind:     bucket.Key,
+			Total:    bucket.Count,
+			Current:  currentByKind[bucket.Key],
+			Pending:  pendingByKind[bucket.Key],
+			Blocked:  blockedByKind[bucket.Key],
+			Terminal: terminalByKind[bucket.Key],
 		}
 		finalizePipelineStageRow(&row)
 		rows = append(rows, row)
@@ -43,7 +48,7 @@ func appendPipelineStageRow(rows []PipelineStageRow, extra PipelineStageRow) []P
 	}
 
 	out := append([]PipelineStageRow(nil), rows...)
-	if out[0].Kind == "ALL" {
+	if out[0].Kind == PipelineKindAll {
 		detailRows := append([]PipelineStageRow(nil), out[1:]...)
 		detailRows = append(detailRows, extra)
 		sort.SliceStable(detailRows, func(i, j int) bool {
@@ -72,20 +77,42 @@ func aggregatePipelineStageRows(rows []PipelineStageRow) PipelineStageRow {
 		total.Current += row.Current
 		total.Pending += row.Pending
 		total.Blocked += row.Blocked
+		total.Terminal += row.Terminal
 		total.Failed += row.Failed
+		total.Unknown += row.Unknown
+		if row.OldestPendingKnown && (!total.OldestPendingKnown || row.OldestPendingAt.Before(total.OldestPendingAt)) {
+			total.OldestPendingAt = row.OldestPendingAt
+			total.OldestPendingKnown = true
+		}
 	}
 	finalizePipelineStageRow(&total)
 	return total
+}
+
+func setPipelineOldestPending(rows []PipelineStageRow, at time.Time, known bool) {
+	if !known || at.IsZero() {
+		return
+	}
+	for i := range rows {
+		if rows[i].Kind == pipelineKindAll || len(rows) == 1 {
+			if !rows[i].OldestPendingKnown || at.Before(rows[i].OldestPendingAt) {
+				rows[i].OldestPendingAt = at.UTC()
+				rows[i].OldestPendingKnown = true
+			}
+			return
+		}
+	}
 }
 
 func finalizePipelineStageRow(row *PipelineStageRow) {
 	if row == nil {
 		return
 	}
-	known := row.Current + row.Pending + row.Blocked + row.Failed
+	known := row.Current + row.Pending + row.Blocked + row.Terminal + row.Failed + row.Unknown
 	if row.Total > known {
-		row.Failed += row.Total - known
+		row.Unknown += row.Total - known
 	}
+	row.PartitionValid = row.Total == row.Current+row.Pending+row.Blocked+row.Terminal+row.Failed+row.Unknown
 	if row.Total > 0 {
 		row.PercentCurrent = (float64(row.Current) / float64(row.Total)) * 100
 	}

@@ -37,7 +37,65 @@ func buildQueryConceptsWithAnchors(terms []string, anchors []ProtectedAnchor) []
 		seen[concept.Key] = struct{}{}
 		concepts = append(concepts, concept)
 	}
+	for _, concept := range conceptsForKnownPhrases(terms) {
+		if _, ok := seen[concept.Key]; ok {
+			continue
+		}
+		seen[concept.Key] = struct{}{}
+		concepts = append(concepts, concept)
+	}
+	for _, concept := range conceptsForShortTokenPhrases(terms) {
+		if _, ok := seen[concept.Key]; ok {
+			continue
+		}
+		seen[concept.Key] = struct{}{}
+		concepts = append(concepts, concept)
+	}
 	return applyConceptRolePolicy(concepts)
+}
+
+func conceptsForKnownPhrases(terms []string) []QueryConcept {
+	var concepts []QueryConcept
+	for i := 0; i+1 < len(terms); i++ {
+		first := strings.ToLower(strings.TrimSpace(terms[i]))
+		second := strings.ToLower(strings.TrimSpace(terms[i+1]))
+		if first == "knowledge" && second == "base" {
+			concepts = append(concepts, QueryConcept{
+				Key:       "knowledge_base",
+				Preferred: "knowledge base",
+				Terms:     []string{"knowledge base", "knowledge-base"},
+				Required:  false,
+				Role:      conceptRoleContent,
+			})
+		}
+	}
+	return concepts
+}
+
+// conceptsForShortTokenPhrases preserves specific names such as "J space" or
+// "R language" after ordinary concept normalization drops one-letter tokens.
+// Without the phrase, the broad neighbor ("space") can dominate retrieval.
+func conceptsForShortTokenPhrases(terms []string) []QueryConcept {
+	var concepts []QueryConcept
+	for i, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if len([]rune(term)) != 1 || term == "a" || term == "i" || i+1 >= len(terms) {
+			continue
+		}
+		next := strings.ToLower(strings.TrimSpace(terms[i+1]))
+		if len([]rune(next)) < 2 {
+			continue
+		}
+		phrase := term + " " + next
+		concepts = append(concepts, QueryConcept{
+			Key:       term + "_" + next,
+			Preferred: phrase,
+			Terms:     []string{phrase, term + "-" + next, term + next},
+			Required:  true,
+			Role:      conceptRoleContent,
+		})
+	}
+	return concepts
 }
 
 func conceptsForAnchors(anchors []ProtectedAnchor) []QueryConcept {
@@ -111,8 +169,12 @@ func conceptForTerm(term string) QueryConcept {
 	case "not", "wrong", "exclude", "without", "instead", "correct", "correction":
 		return QueryConcept{Key: term, Preferred: term, Terms: []string{term}, Required: false, Role: conceptRoleContent}
 	default:
-		if len([]rune(term)) < 3 {
+		length := len([]rune(term))
+		if length < 3 {
 			return QueryConcept{}
+		}
+		if length == 3 {
+			required = false
 		}
 		return QueryConcept{Key: term, Preferred: term, Terms: conceptTermAliases(term), Required: required, Role: role}
 	}
@@ -120,7 +182,7 @@ func conceptForTerm(term string) QueryConcept {
 
 func classifyConceptRole(term string) string {
 	switch strings.ToLower(strings.TrimSpace(term)) {
-	case "synthesize", "synthesis", "summarize", "summary", "overview", "analysis", "analyze", "explain", "answer", "brief", "themes", "theme", "recap":
+	case "learn", "apply", "synthesize", "synthesis", "summarize", "summary", "overview", "analysis", "analyze", "explain", "answer", "brief", "themes", "theme", "recap":
 		return conceptRoleIntent
 	case "dbrain", "brain", "current", "question", "please", "can", "you", "come", "up", "they", "their", "theyre", "re", "there", "in", "prior", "evidence", "titles", "recent", "user", "users", "focus", "research", "favored", "should", "what", "about", "with", "from", "into", "my", "the", "are", "is", "do", "does", "did", "have", "has", "this", "that", "these", "those", "find", "notes":
 		return conceptRoleFrame
@@ -131,16 +193,23 @@ func classifyConceptRole(term string) string {
 
 func applyConceptRolePolicy(concepts []QueryConcept) []QueryConcept {
 	concepts = dedupeConceptsPreservingOrder(concepts)
-	hasStrong := hasStrongConcept(concepts)
+	hasKnowledgeBase := hasConcept(concepts, "knowledge_base")
+	hasDiscriminative := hasDiscriminativeConcept(concepts, hasKnowledgeBase)
 	out := make([]QueryConcept, 0, len(concepts))
 	for _, concept := range concepts {
 		if concept.Role == "" {
 			concept.Role = classifyConceptRole(concept.Key)
 		}
+		if hasDiscriminative && contextSensitiveFrameConcept(concept.Key) {
+			concept.Role = conceptRoleFrame
+		}
+		if hasKnowledgeBase && (concept.Key == "knowledge" || concept.Key == "base") {
+			concept.Required = false
+		}
 		if concept.Role == conceptRoleFrame {
 			concept.Required = false
 		}
-		if concept.Role == conceptRoleIntent && hasStrong {
+		if concept.Role == conceptRoleIntent && hasDiscriminative {
 			concept.Required = false
 		}
 		if concept.Role == conceptRoleAnchor {
@@ -149,6 +218,35 @@ func applyConceptRolePolicy(concepts []QueryConcept) []QueryConcept {
 		out = append(out, concept)
 	}
 	return out
+}
+
+func hasDiscriminativeConcept(concepts []QueryConcept, hasKnowledgeBase bool) bool {
+	for _, concept := range concepts {
+		role := concept.Role
+		if role == "" {
+			role = classifyConceptRole(concept.Key)
+		}
+		if role == conceptRoleAnchor {
+			return true
+		}
+		if role != conceptRoleContent || contextSensitiveFrameConcept(concept.Key) {
+			continue
+		}
+		if hasKnowledgeBase && (concept.Key == "knowledge" || concept.Key == "base") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func contextSensitiveFrameConcept(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "articles", "new", "system":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasStrongConcept(concepts []QueryConcept) bool {

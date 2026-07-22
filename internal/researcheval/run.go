@@ -59,6 +59,7 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	}
 
 	result, sourceKeys := caseResultFromPack(name, tc.Question, started, pack)
+	applyEvidenceFlow(&result, brainresearch.BuildEvidenceFlow(&pack, nil, nil, false), "")
 
 	if needsPreparedSynthesis(tc) {
 		prepared, prepErr := brainresearch.PrepareSynthesis(cfg, brainresearch.SynthesisOptions{
@@ -71,7 +72,8 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 			result.Failures = append(result.Failures, "prepare synthesis failed: "+prepErr.Error())
 		} else {
 			result.AnswerStatus = prepared.Status
-			result.CitationSourceKeys = citationSourceKeys(prepared.Citations)
+			flow := brainresearch.BuildEvidenceFlow(&pack, &prepared, nil, false)
+			applyEvidenceFlow(&result, flow, "prompt_admitted")
 			if len(tc.ExpectAnswerText) > 0 {
 				result.Failures = append(result.Failures, "expect_answer_text requires a future reviewed synthesis verifier")
 			}
@@ -96,10 +98,15 @@ func runCaseWithRunner(ctx context.Context, cfg config.Config, st *store.Store, 
 	result.RetryAction = string(runResult.Judge.RetryAction)
 	if runResult.Synthesis != nil {
 		result.AnswerStatus = runResult.Synthesis.AnswerStatus
-		result.CitationSourceKeys = citationSourceKeys(runResult.Synthesis.Citations)
+		flow := brainresearch.BuildEvidenceFlow(&runResult.Pack, runResult.PreparedSynthesis, runResult.Synthesis, runResult.Retried)
+		applyEvidenceFlow(&result, flow, "answer_cited")
 	} else if runResult.PreparedSynthesis != nil {
 		result.AnswerStatus = runResult.PreparedSynthesis.Status
-		result.CitationSourceKeys = citationSourceKeys(runResult.PreparedSynthesis.Citations)
+		flow := brainresearch.BuildEvidenceFlow(&runResult.Pack, runResult.PreparedSynthesis, nil, runResult.Retried)
+		applyEvidenceFlow(&result, flow, "prompt_admitted")
+	} else {
+		flow := brainresearch.BuildEvidenceFlow(&runResult.Pack, nil, nil, runResult.Retried)
+		applyEvidenceFlow(&result, flow, "")
 	}
 
 	checkCaseAssertions(tc, runResult.Pack, result.SourceKeys, sourceKeys, &result)
@@ -109,17 +116,19 @@ func runCaseWithRunner(ctx context.Context, cfg config.Config, st *store.Store, 
 
 func caseResultFromPack(name string, question string, started time.Time, pack brainresearch.Pack) (CaseResult, map[string]struct{}) {
 	result := CaseResult{
-		Name:           name,
-		Question:       question,
-		DurationMS:     time.Since(started).Milliseconds(),
-		Planner:        pack.QueryPlan.Planner,
-		PlannerModel:   pack.QueryPlan.PlannerModel,
-		PlannerError:   pack.QueryPlan.PlannerError,
-		RetrievalLanes: retrievalLaneStatuses(pack),
-		QueryFamily:    pack.QueryPlan.QueryFamily,
-		QueryTerms:     append([]string(nil), pack.QueryPlan.QueryTerms...),
-		QueryVariants:  queryVariantStrings(pack.QueryPlan.QueryVariants),
-		Concepts:       conceptStrings(pack.QueryPlan.Concepts),
+		Name:             name,
+		Question:         question,
+		DurationMS:       time.Since(started).Milliseconds(),
+		Planner:          pack.QueryPlan.Planner,
+		PlannerModel:     pack.QueryPlan.PlannerModel,
+		PlannerError:     pack.QueryPlan.PlannerError,
+		RetrievalLanes:   retrievalLaneStatuses(pack),
+		SemanticMode:     pack.QueryPlan.SemanticMode,
+		ShadowComparison: pack.QueryPlan.ShadowComparison,
+		QueryFamily:      pack.QueryPlan.QueryFamily,
+		QueryTerms:       append([]string(nil), pack.QueryPlan.QueryTerms...),
+		QueryVariants:    queryVariantStrings(pack.QueryPlan.QueryVariants),
+		Concepts:         conceptStrings(pack.QueryPlan.Concepts),
 	}
 
 	sourceKeys := map[string]struct{}{}
@@ -162,23 +171,24 @@ func caseResultFromPack(name string, question string, started time.Time, pack br
 func brainOptions(tc Case) brainresearch.Options {
 	timeout := time.Duration(tc.PlannerTimeoutMS) * time.Millisecond
 	return brainresearch.Options{
-		Question:          tc.Question,
-		RawQuestion:       tc.RawQuestion,
-		Limit:             tc.Limit,
-		SourceTypes:       tc.SourceTypes,
-		IncludeRelated:    tc.IncludeRelated,
-		RelatedLimit:      tc.RelatedLimit,
-		SeedLimit:         tc.SeedLimit,
-		IncludeTopic:      tc.IncludeTopicBrief,
-		MaxCharsPerDoc:    tc.MaxCharsPerDoc,
-		PlannerModel:      tc.PlannerModel,
-		PlannerTimeout:    timeout,
-		PlannerBinary:     tc.PlannerBinary,
-		UseModelPlanner:   !tc.DisablePlanner,
-		DisablePlanner:    tc.DisablePlanner,
-		UseSemantic:       tc.UseSemantic,
-		DisableSemantic:   tc.DisableSemantic,
-		ContinuityAnchors: append([]brainresearch.ProtectedAnchor(nil), tc.ContinuityAnchors...),
+		Question:              tc.Question,
+		RawQuestion:           tc.RawQuestion,
+		Limit:                 tc.Limit,
+		SourceTypes:           tc.SourceTypes,
+		IncludeRelated:        tc.IncludeRelated,
+		RelatedLimit:          tc.RelatedLimit,
+		SeedLimit:             tc.SeedLimit,
+		IncludeTopic:          tc.IncludeTopicBrief,
+		MaxCharsPerDoc:        tc.MaxCharsPerDoc,
+		PlannerModel:          tc.PlannerModel,
+		PlannerTimeout:        timeout,
+		PlannerBinary:         tc.PlannerBinary,
+		UseModelPlanner:       !tc.DisablePlanner,
+		DisablePlanner:        tc.DisablePlanner,
+		UseSemantic:           tc.UseSemantic,
+		DisableSemantic:       tc.DisableSemantic,
+		EffectiveSemanticMode: tc.EffectiveSemanticMode,
+		ContinuityAnchors:     append([]brainresearch.ProtectedAnchor(nil), tc.ContinuityAnchors...),
 	}
 }
 
@@ -186,27 +196,28 @@ func runnerOptions(tc Case) researchrun.Options {
 	timeout := time.Duration(tc.PlannerTimeoutMS) * time.Millisecond
 	traceEnabled := false
 	return researchrun.Options{
-		Question:          tc.Question,
-		RawQuestion:       tc.RawQuestion,
-		SynthesisQuestion: firstNonEmpty(tc.RawQuestion, tc.Question),
-		Limit:             tc.Limit,
-		SourceTypes:       tc.SourceTypes,
-		RelatedLimit:      tc.RelatedLimit,
-		SeedLimit:         tc.SeedLimit,
-		IncludeTopic:      tc.IncludeTopicBrief,
-		MaxCharsPerDoc:    tc.MaxCharsPerDoc,
-		PlannerModel:      tc.PlannerModel,
-		PlannerTimeout:    timeout,
-		PlannerBinary:     tc.PlannerBinary,
-		UseModelPlanner:   !tc.DisablePlanner,
-		DisablePlanner:    tc.DisablePlanner,
-		UseSemantic:       tc.UseSemantic,
-		DisableSemantic:   tc.DisableSemantic,
-		Model:             synthesisModelForCase(tc),
-		StopAfterJudge:    tc.StopAfterJudge,
-		TraceEnabled:      &traceEnabled,
-		Surface:           "research_eval",
-		ChatContinuity:    chatContinuityForCase(tc),
+		Question:              tc.Question,
+		RawQuestion:           tc.RawQuestion,
+		SynthesisQuestion:     firstNonEmpty(tc.RawQuestion, tc.Question),
+		Limit:                 tc.Limit,
+		SourceTypes:           tc.SourceTypes,
+		RelatedLimit:          tc.RelatedLimit,
+		SeedLimit:             tc.SeedLimit,
+		IncludeTopic:          tc.IncludeTopicBrief,
+		MaxCharsPerDoc:        tc.MaxCharsPerDoc,
+		PlannerModel:          tc.PlannerModel,
+		PlannerTimeout:        timeout,
+		PlannerBinary:         tc.PlannerBinary,
+		UseModelPlanner:       !tc.DisablePlanner,
+		DisablePlanner:        tc.DisablePlanner,
+		UseSemantic:           tc.UseSemantic,
+		DisableSemantic:       tc.DisableSemantic,
+		EffectiveSemanticMode: tc.EffectiveSemanticMode,
+		Model:                 synthesisModelForCase(tc),
+		StopAfterJudge:        tc.StopAfterJudge,
+		TraceEnabled:          &traceEnabled,
+		Surface:               "research_eval",
+		ChatContinuity:        chatContinuityForCase(tc),
 	}
 }
 
@@ -227,6 +238,14 @@ func needsPreparedSynthesis(tc Case) bool {
 	return strings.TrimSpace(tc.ExpectAnswerStatus) != "" ||
 		len(tc.ExpectCitationSourceKeys) > 0 ||
 		len(tc.ForbidCitationSourceKeys) > 0 ||
+		len(tc.ExpectRelevanceExcludedSourceKeys) > 0 ||
+		len(tc.ForbidRelevanceExcludedSourceKeys) > 0 ||
+		len(tc.ExpectPromptAdmittedSourceKeys) > 0 ||
+		len(tc.ForbidPromptAdmittedSourceKeys) > 0 ||
+		len(tc.ExpectBudgetDroppedSourceKeys) > 0 ||
+		len(tc.ForbidBudgetDroppedSourceKeys) > 0 ||
+		len(tc.ExpectAnswerCitedSourceKeys) > 0 ||
+		len(tc.ForbidAnswerCitedSourceKeys) > 0 ||
 		len(tc.ExpectAnswerText) > 0
 }
 
@@ -270,6 +289,9 @@ func checkCaseAssertions(tc Case, pack brainresearch.Pack, sortedSourceKeys []st
 			result.Failures = append(result.Failures, fmt.Sprintf("semantic_status=%q, want %q", status, expected))
 		}
 	}
+	if tc.ExpectSemanticMode != "" && pack.QueryPlan.SemanticMode != tc.ExpectSemanticMode {
+		result.Failures = append(result.Failures, fmt.Sprintf("semantic_mode=%q, want %q", pack.QueryPlan.SemanticMode, tc.ExpectSemanticMode))
+	}
 	if expected := strings.TrimSpace(tc.ExpectQueryFamily); expected != "" && !strings.EqualFold(expected, pack.QueryPlan.QueryFamily) {
 		result.Failures = append(result.Failures, fmt.Sprintf("query_family=%q, want %q", pack.QueryPlan.QueryFamily, expected))
 	}
@@ -303,6 +325,17 @@ func checkCaseAssertions(tc Case, pack brainresearch.Pack, sortedSourceKeys []st
 			result.Failures = append(result.Failures, "forbidden concept present "+strings.TrimSpace(concept))
 		}
 	}
+	requiredConcepts := requiredConceptStrings(pack.QueryPlan.Concepts)
+	for _, concept := range tc.ExpectRequiredConcepts {
+		if !containsFold(requiredConcepts, concept) {
+			result.Failures = append(result.Failures, "missing expected required concept "+strings.TrimSpace(concept))
+		}
+	}
+	for _, concept := range tc.ForbidRequiredConcepts {
+		if containsFold(requiredConcepts, concept) {
+			result.Failures = append(result.Failures, "forbidden required concept present "+strings.TrimSpace(concept))
+		}
+	}
 	if expected := strings.TrimSpace(tc.ExpectPlannerErrorContains); expected != "" && !strings.Contains(strings.ToLower(pack.QueryPlan.PlannerError), strings.ToLower(expected)) {
 		result.Failures = append(result.Failures, fmt.Sprintf("planner_error=%q does not contain %q", pack.QueryPlan.PlannerError, expected))
 	}
@@ -332,10 +365,61 @@ func checkCaseAssertions(tc Case, pack brainresearch.Pack, sortedSourceKeys []st
 			result.Failures = append(result.Failures, "forbidden citation source_key returned "+sourceKey)
 		}
 	}
+	checkExpectedSourceKeys("relevance-excluded", tc.ExpectRelevanceExcludedSourceKeys, result.EvidenceFlow.RelevanceExcludedSourceKeys, result)
+	checkForbiddenSourceKeys("relevance-excluded", tc.ForbidRelevanceExcludedSourceKeys, result.EvidenceFlow.RelevanceExcludedSourceKeys, result)
+	checkExpectedSourceKeys("prompt-admitted", tc.ExpectPromptAdmittedSourceKeys, result.EvidenceFlow.PromptAdmittedSourceKeys, result)
+	checkForbiddenSourceKeys("prompt-admitted", tc.ForbidPromptAdmittedSourceKeys, result.EvidenceFlow.PromptAdmittedSourceKeys, result)
+	checkExpectedSourceKeys("budget-dropped", tc.ExpectBudgetDroppedSourceKeys, result.EvidenceFlow.BudgetDroppedSourceKeys, result)
+	checkForbiddenSourceKeys("budget-dropped", tc.ForbidBudgetDroppedSourceKeys, result.EvidenceFlow.BudgetDroppedSourceKeys, result)
+	checkExpectedSourceKeys("answer-cited", tc.ExpectAnswerCitedSourceKeys, result.EvidenceFlow.AnswerCitedSourceKeys, result)
+	checkForbiddenSourceKeys("answer-cited", tc.ForbidAnswerCitedSourceKeys, result.EvidenceFlow.AnswerCitedSourceKeys, result)
+	if len(tc.ExpectAnswerCitedSourceKeys) > 0 && result.EvidenceFlow.SynthesisStatus != "ran" {
+		result.Failures = append(result.Failures, "expect_answer_cited_source_keys requires synthesis to run")
+	}
+	for _, invariantError := range result.EvidenceFlow.InvariantErrors {
+		result.Failures = append(result.Failures, "evidence_flow invariant failed: "+invariantError)
+	}
 	if tc.MaxLatencyMS > 0 && result.DurationMS > tc.MaxLatencyMS {
 		result.Failures = append(result.Failures, fmt.Sprintf("duration_ms=%d above max_latency_ms=%d", result.DurationMS, tc.MaxLatencyMS))
 	}
 	_ = sortedSourceKeys
+}
+
+func applyEvidenceFlow(result *CaseResult, flow brainresearch.EvidenceFlow, legacyMode string) {
+	result.EvidenceFlow = flow
+	result.CitationSourceKeysMode = legacyMode
+	switch legacyMode {
+	case "answer_cited":
+		result.CitationSourceKeys = append([]string(nil), flow.AnswerCitedSourceKeys...)
+	case "prompt_admitted":
+		result.CitationSourceKeys = append([]string(nil), flow.PromptAdmittedSourceKeys...)
+	}
+}
+
+func checkExpectedSourceKeys(stage string, expected []string, actual []string, result *CaseResult) {
+	set := stringSet(actual)
+	for _, key := range expected {
+		if _, ok := set[key]; !ok {
+			result.Failures = append(result.Failures, "missing expected "+stage+" source_key "+key)
+		}
+	}
+}
+
+func checkForbiddenSourceKeys(stage string, forbidden []string, actual []string, result *CaseResult) {
+	set := stringSet(actual)
+	for _, key := range forbidden {
+		if _, ok := set[key]; ok {
+			result.Failures = append(result.Failures, "forbidden "+stage+" source_key returned "+key)
+		}
+	}
+}
+
+func stringSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		out[value] = struct{}{}
+	}
+	return out
 }
 
 func conceptStrings(concepts []brainresearch.QueryConcept) []string {
@@ -350,6 +434,16 @@ func conceptStrings(concepts []brainresearch.QueryConcept) []string {
 		out = append(out, concept.Terms...)
 	}
 	return uniqueNonEmpty(out)
+}
+
+func requiredConceptStrings(concepts []brainresearch.QueryConcept) []string {
+	required := make([]brainresearch.QueryConcept, 0, len(concepts))
+	for _, concept := range concepts {
+		if concept.Required {
+			required = append(required, concept)
+		}
+	}
+	return conceptStrings(required)
 }
 
 func retrievalLaneStatuses(pack brainresearch.Pack) map[string]string {

@@ -3,9 +3,12 @@ package mediadownload
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,8 +18,135 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
+
+func TestRunForItemBlocksPrivateMediaWithoutWritingFile(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("content-type", "image/jpeg")
+		_, _ = w.Write([]byte("private bytes"))
+	}))
+	defer server.Close()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st := openTestStore(t, cfg.DBPath)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 12, 18, 0, 0, 0, time.UTC)
+	itemID := insertTestItem(t, st, "x:block-private-media", now)
+	if _, err := st.SaveXHydration(ctx, itemID, model.XHydration{
+		FullText:  "private media",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON:   `{"snapshot":{"media_objects":[{"type":"photo","url":"` + server.URL + `/image.jpg"}]}}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{})
+	if err != nil {
+		t.Fatalf("RunForItem: %v", err)
+	}
+	assertBlockedMediaResult(t, st, itemID, stats)
+	if hits != 0 {
+		t.Fatalf("private server hits = %d, want 0", hits)
+	}
+	assertNoMediaFiles(t, cfg.MediaDir)
+}
+
+func TestRunForItemBlocksRedirectFromPublicToPrivateWithoutWritingFile(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.Host == "public.test" {
+			http.Redirect(w, r, "http://private.test/media.jpg", http.StatusFound)
+			return
+		}
+		w.Header().Set("content-type", "image/jpeg")
+		_, _ = w.Write([]byte("private redirected bytes"))
+	}))
+	defer server.Close()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st := openTestStore(t, cfg.DBPath)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 12, 18, 5, 0, 0, time.UTC)
+	itemID := insertTestItem(t, st, "x:block-private-redirect-media", now)
+	if _, err := st.SaveXHydration(ctx, itemID, model.XHydration{
+		FullText:  "redirected private media",
+		Status:    "ok_graphql",
+		FetchedAt: now,
+		APIJSON:   `{"snapshot":{"media_objects":[{"type":"photo","url":"http://public.test/image.jpg"}]}}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+
+	policy := safehttp.Policy{
+		LookupNetIP: func(_ context.Context, _ string, host string) ([]netip.Addr, error) {
+			if host == "public.test" {
+				return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
+			}
+			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+		},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, server.Listener.Addr().String())
+		},
+	}
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{httpPolicy: &policy})
+	if err != nil {
+		t.Fatalf("RunForItem: %v", err)
+	}
+	assertBlockedMediaResult(t, st, itemID, stats)
+	if hits != 1 {
+		t.Fatalf("server hits = %d, want only initial public request", hits)
+	}
+	assertNoMediaFiles(t, cfg.MediaDir)
+}
+
+func assertBlockedMediaResult(t *testing.T, st *store.Store, itemID int64, stats Stats) {
+	t.Helper()
+	if stats.Blocked != 1 || stats.Errors != 0 || stats.Downloaded != 0 {
+		t.Fatalf("unexpected policy-blocked stats: %+v", stats)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 || refs[0].DownloadStatus != model.MediaDownloadStatusBlocked || refs[0].LocalPath != "" {
+		t.Fatalf("unexpected blocked media ref: %+v", refs)
+	}
+}
+
+func assertNoMediaFiles(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != root && !entry.IsDir() {
+			t.Fatalf("unexpected media file after policy rejection: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("inspect media directory: %v", err)
+	}
+}
 
 func TestRunForItemDownloadsMediaIntoVault(t *testing.T) {
 	t.Parallel()
@@ -26,6 +156,7 @@ func TestRunForItemDownloadsMediaIntoVault(t *testing.T) {
 		_, _ = w.Write([]byte("jpeg-bytes"))
 	}))
 	defer server.Close()
+	publicMediaURL := strings.Replace(server.URL, "127.0.0.1", "media.test", 1) + "/image.jpg"
 
 	cfg, err := config.Load(t.TempDir())
 	if err != nil {
@@ -45,7 +176,7 @@ func TestRunForItemDownloadsMediaIntoVault(t *testing.T) {
 		Language:  "en",
 		Status:    "ok_graphql",
 		FetchedAt: now,
-		APIJSON:   `{"snapshot":{"media_objects":[{"type":"photo","url":"` + server.URL + `/image.jpg","expanded_url":"https://x.com/example/status/123/photo/1","width":1200,"height":800}]}}`,
+		APIJSON:   `{"snapshot":{"media_objects":[{"type":"photo","url":"` + publicMediaURL + `","expanded_url":"https://x.com/example/status/123/photo/1","width":1200,"height":800}]}}`,
 	})
 	if err != nil {
 		t.Fatalf("SaveXHydration: %v", err)
@@ -54,7 +185,8 @@ func TestRunForItemDownloadsMediaIntoVault(t *testing.T) {
 		t.Fatal("expected hydration insert to change state")
 	}
 
-	stats, err := RunForItem(ctx, cfg, st, itemID, Options{})
+	policy := syntheticPublicMediaPolicy(server.Listener.Addr().String())
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{httpPolicy: &policy})
 	if err != nil {
 		t.Fatalf("RunForItem: %v", err)
 	}
@@ -78,6 +210,63 @@ func TestRunForItemDownloadsMediaIntoVault(t *testing.T) {
 	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(refs[0].LocalPath))
 	if _, err := os.Stat(fullPath); err != nil {
 		t.Fatalf("expected downloaded file at %s: %v", fullPath, err)
+	}
+}
+
+func TestRunForItemAssetAllowlistFiltersRefsAndCandidateCount(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "image/jpeg")
+		_, _ = w.Write([]byte("jpeg-" + r.URL.Path))
+	}))
+	defer server.Close()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st := openTestStore(t, cfg.DBPath)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 15, 19, 0, 0, 0, time.UTC)
+	itemID := insertTestItem(t, st, "x:allowlisted-media", now)
+	if _, err := st.SaveXHydration(ctx, itemID, model.XHydration{
+		FullText: "two photos", Status: "ok_graphql", FetchedAt: now,
+		APIJSON: `{"snapshot":{"media_objects":[` +
+			`{"type":"photo","url":"` + server.URL + `/excluded.jpg"},` +
+			`{"type":"photo","url":"` + server.URL + `/allowed.jpg"}` +
+			`]}}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, itemID)
+	if err != nil || len(refs) != 2 {
+		t.Fatalf("ListItemMediaRefs: refs=%+v err=%v", refs, err)
+	}
+	allowedID := refs[1].MediaAssetID
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{
+		Force: true, AllowedAssetIDs: []int64{allowedID}, httpPolicy: privateNetworkTestPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("RunForItem: %v", err)
+	}
+	if stats.Candidates != 1 || stats.Requested != 1 || stats.Downloaded != 1 {
+		t.Fatalf("allowlist did not bound stats/work: %+v", stats)
+	}
+	refs, err = st.ListItemMediaRefs(ctx, itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs after: %v", err)
+	}
+	for _, ref := range refs {
+		if ref.MediaAssetID == allowedID && ref.DownloadStatus != model.MediaDownloadStatusDownloaded {
+			t.Fatalf("allowed ref was not downloaded: %+v", ref)
+		}
+		if ref.MediaAssetID != allowedID && ref.DownloadStatus != model.MediaDownloadStatusPending {
+			t.Fatalf("excluded ref was modified: %+v", ref)
+		}
 	}
 }
 
@@ -121,6 +310,7 @@ func TestRunForItemLogsLargeDownloadProgress(t *testing.T) {
 		Logger:           logger,
 		ProgressBytes:    1,
 		ProgressInterval: time.Hour,
+		httpPolicy:       privateNetworkTestPolicy(),
 	})
 	if err != nil {
 		t.Fatalf("RunForItem: %v", err)
@@ -168,7 +358,7 @@ func TestRunForItemMarksGoneMedia(t *testing.T) {
 		t.Fatalf("SaveXHydration: %v", err)
 	}
 
-	stats, err := RunForItem(ctx, cfg, st, itemID, Options{})
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{httpPolicy: privateNetworkTestPolicy()})
 	if err != nil {
 		t.Fatalf("RunForItem: %v", err)
 	}
@@ -224,7 +414,7 @@ func TestRunForItemBlocksMediaAfterRepeatedErrors(t *testing.T) {
 
 	var stats Stats
 	for range model.MediaDownloadMaxConsecutiveErrors {
-		stats, err = RunForItem(ctx, cfg, st, itemID, Options{Force: true})
+		stats, err = RunForItem(ctx, cfg, st, itemID, Options{Force: true, httpPolicy: privateNetworkTestPolicy()})
 		if err != nil {
 			t.Fatalf("RunForItem: %v", err)
 		}
@@ -338,4 +528,23 @@ func insertTestItem(t *testing.T, st *store.Store, sourceKey string, now time.Ti
 		t.Fatalf("UpsertItem: %v", err)
 	}
 	return result.ItemID
+}
+
+func privateNetworkTestPolicy() *safehttp.Policy {
+	return &safehttp.Policy{AllowPrivateNetwork: true}
+}
+
+func syntheticPublicMediaPolicy(serverAddress string) safehttp.Policy {
+	return safehttp.Policy{
+		LookupNetIP: func(_ context.Context, _ string, host string) ([]netip.Addr, error) {
+			if host != "media.test" {
+				return nil, fmt.Errorf("unexpected host %q", host)
+			}
+			return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
+		},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, serverAddress)
+		},
+	}
 }

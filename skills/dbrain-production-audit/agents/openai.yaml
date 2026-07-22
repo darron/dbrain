@@ -1,0 +1,4 @@
+interface:
+  display_name: "dbrain Production Audit"
+  short_description: "Verify releases with read-only health audits"
+  default_prompt: "Use $dbrain-production-audit to verify this dbrain release before and after installation."

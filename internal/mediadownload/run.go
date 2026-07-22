@@ -3,20 +3,24 @@ package mediadownload
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
 
 type Options struct {
-	Force            bool
+	Force bool
+	// AllowedAssetIDs limits this run to the listed media asset IDs. Empty keeps
+	// the existing item-wide behavior used by normal download workflows.
+	AllowedAssetIDs  []int64
 	Timeout          time.Duration
 	ProgressInterval time.Duration
 	ProgressBytes    int64
 	Logger           *slog.Logger
+	httpPolicy       *safehttp.Policy
 }
 
 const (
@@ -50,13 +54,32 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 	if err != nil {
 		return Stats{}, err
 	}
+	if len(opts.AllowedAssetIDs) > 0 {
+		allowed := make(map[int64]struct{}, len(opts.AllowedAssetIDs))
+		for _, assetID := range opts.AllowedAssetIDs {
+			allowed[assetID] = struct{}{}
+		}
+		filtered := make([]model.ItemMediaRef, 0, len(refs))
+		for _, ref := range refs {
+			if _, ok := allowed[ref.MediaAssetID]; ok {
+				filtered = append(filtered, ref)
+			}
+		}
+		refs = filtered
+	}
 
 	stats := Stats{Candidates: len(refs)}
 	if len(refs) == 0 {
 		return stats, nil
 	}
 
-	client := &http.Client{Timeout: opts.Timeout}
+	policy := safehttp.Policy{}
+	if opts.httpPolicy != nil {
+		policy = *opts.httpPolicy
+	}
+	policy.Timeout = opts.Timeout
+	policy.AllowedPrivateOrigins = nil
+	client := safehttp.NewClient(policy)
 	for _, ref := range refs {
 		if !shouldDownload(ref, cfg, opts.Force) {
 			continue

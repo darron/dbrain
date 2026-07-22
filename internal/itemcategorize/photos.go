@@ -3,8 +3,6 @@ package itemcategorize
 import (
 	"context"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -13,6 +11,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 // loadPhotoBytes collects raw bytes for each photo associated with an item.
@@ -25,15 +24,18 @@ func loadPhotoBytes(ctx context.Context, cfg config.Config, refs []model.ItemMed
 	if !include {
 		return nil
 	}
+	root, _ := vaultfs.Open(cfg.VaultDir)
+	if root != nil {
+		defer func() { _ = root.Close() }()
+	}
 	var out [][]byte
 	for _, ref := range refs {
 		if ref.MediaType != "photo" {
 			continue
 		}
 		// 1. Try local file first.
-		if strings.TrimSpace(ref.LocalPath) != "" && ref.LocalPrunedAt.IsZero() {
-			absPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(ref.LocalPath))
-			if data, err := os.ReadFile(absPath); err == nil {
+		if root != nil && strings.TrimSpace(ref.LocalPath) != "" && ref.LocalPrunedAt.IsZero() {
+			if data, err := root.ReadFile(ref.LocalPath); err == nil {
 				out = append(out, data)
 				continue
 			}

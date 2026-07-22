@@ -41,7 +41,7 @@ func bindSyncAllFlags(cmd *cobra.Command, flags *syncAllFlags) {
 	cmd.Flags().IntVar(&flags.feedLimit, "feed-limit", 100, "Maximum subscribed feeds to check per run")
 	cmd.Flags().IntVar(&flags.sourceLimit, "source-limit", 100, "Maximum queued sources to enrich per source-worker batch")
 	cmd.Flags().IntVar(&flags.sourceConcurrency, "source-concurrency", 4, "Number of concurrent source extract/summarize jobs per batch")
-	cmd.Flags().StringVar(&flags.browser, "browser", "chrome", "Preferred browser for cookie-backed X and YouTube flows")
+	cmd.Flags().StringVar(&flags.browser, "browser", "", "Preferred browser for cookie-backed X and YouTube flows; defaults to sync_all.browser or chrome")
 	cmd.Flags().StringVar(&flags.profile, "profile", "", "Browser profile override; requires --browser")
 	cmd.Flags().BoolVar(&flags.watchLater, "watch-later", true, "Import Watch Later YouTube videos")
 	cmd.Flags().BoolVar(&flags.liked, "liked", true, "Import liked YouTube videos")

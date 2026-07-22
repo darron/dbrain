@@ -3,29 +3,37 @@ package mediaarchive
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 )
 
-const defaultProvider = "cloudflare_r2"
+const (
+	defaultProvider = "cloudflare_r2"
+	// DefaultPrefix is the fixed remote namespace produced by media archival.
+	DefaultPrefix = "media/"
+)
 
 type Options struct {
-	Limit         int
-	Force         bool
-	Upload        bool
-	PruneLocal    bool
-	Provider      string
-	Bucket        string
-	PublicBaseURL string
-	Endpoint      string
-	Region        string
-	AccessKeyID   string
-	SecretKey     string
-	SessionToken  string
-	PathStyle     bool
-	Uploader      Uploader
-	Logger        *slog.Logger
+	Limit                 int
+	Force                 bool
+	Upload                bool
+	PruneLocal            bool
+	Provider              string
+	Bucket                string
+	PublicBaseURL         string
+	Endpoint              string
+	Region                string
+	AccessKeyID           string
+	SecretKey             string
+	SessionToken          string
+	PathStyle             bool
+	ConnectTimeout        time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	Uploader              Uploader
+	Logger                *slog.Logger
 }
 
 type Stats struct {

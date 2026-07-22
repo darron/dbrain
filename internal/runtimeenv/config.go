@@ -1,7 +1,9 @@
 package runtimeenv
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,7 +13,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var registeredConfigFiles sync.Map
+var (
+	registeredConfigFiles sync.Map
+	registeredConfigMu    sync.Mutex
+)
+
+type registeredConfig struct {
+	path      string
+	snapshot  map[string]any
+	dotenv    map[string]string
+	frozen    bool
+	previous  *registeredConfig
+	temporary bool
+	removed   bool
+}
 
 func RegisterConfigFile(rootDir string, path string) {
 	rootDir = strings.TrimSpace(rootDir)
@@ -19,7 +34,153 @@ func RegisterConfigFile(rootDir string, path string) {
 	if rootDir == "" || path == "" {
 		return
 	}
-	registeredConfigFiles.Store(rootDir, path)
+	registeredConfigMu.Lock()
+	defer registeredConfigMu.Unlock()
+	registeredConfigFiles.Store(rootDir, &registeredConfig{path: path})
+}
+
+// RegisterConfigSnapshot temporarily installs already parsed dotenv and config
+// maps. While installed, runtime lookups use process environment, then the
+// frozen dotenv snapshot, then the frozen YAML snapshot without rereading files.
+func RegisterConfigSnapshot(rootDir string, snapshot map[string]any, dotenv map[string]string) func() {
+	rootDir = strings.TrimSpace(rootDir)
+	if rootDir == "" {
+		return func() {}
+	}
+	registeredConfigMu.Lock()
+	previousValue, _ := registeredConfigFiles.Load(rootDir)
+	previous, _ := previousValue.(*registeredConfig)
+	entry := &registeredConfig{
+		snapshot: snapshot, dotenv: dotenv, frozen: true,
+		previous: previous, temporary: true,
+	}
+	registeredConfigFiles.Store(rootDir, entry)
+	registeredConfigMu.Unlock()
+	return func() {
+		registeredConfigMu.Lock()
+		defer registeredConfigMu.Unlock()
+		if entry.removed {
+			return
+		}
+		entry.removed = true
+		current, ok := registeredConfigFiles.Load(rootDir)
+		if !ok || current != entry {
+			return
+		}
+		replacement := entry.previous
+		for replacement != nil && replacement.temporary && replacement.removed {
+			replacement = replacement.previous
+		}
+		if replacement == nil {
+			registeredConfigFiles.Delete(rootDir)
+			return
+		}
+		registeredConfigFiles.Store(rootDir, replacement)
+	}
+}
+
+// LoadConfigSnapshot opens one regular YAML file without following symlinks,
+// enforces a streaming byte limit, and honors cancellation during read/parse.
+func LoadConfigSnapshot(ctx context.Context, path string, maxBytes int64) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("config snapshot path is required")
+	}
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("config snapshot byte limit must be positive")
+	}
+	data, err := readBoundedRegularFile(ctx, path, maxBytes, "config snapshot")
+	if err != nil {
+		return nil, err
+	}
+	return parseConfigSnapshot(ctx, data)
+}
+
+func readBoundedRegularFile(ctx context.Context, path string, maxBytes int64, label string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	file, err := openSnapshotFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", label, err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s descriptor: %w", label, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", label)
+	}
+	if info.Size() > maxBytes {
+		return nil, fmt.Errorf("%s exceeds byte limit %d", label, maxBytes)
+	}
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	read := make(chan readResult, 1)
+	go func() {
+		data, readErr := io.ReadAll(io.LimitReader(file, maxBytes+1))
+		read <- readResult{data: data, err: readErr}
+	}()
+	var result readResult
+	select {
+	case <-ctx.Done():
+		_ = file.Close()
+		return nil, ctx.Err()
+	case result = <-read:
+	}
+	if result.err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, result.err)
+	}
+	if int64(len(result.data)) > maxBytes {
+		return nil, fmt.Errorf("%s exceeds byte limit %d", label, maxBytes)
+	}
+	return result.data, nil
+}
+
+func parseConfigSnapshot(ctx context.Context, data []byte) (map[string]any, error) {
+	parsed := make(chan struct {
+		cfg map[string]any
+		err error
+	}, 1)
+	go func() {
+		var cfg map[string]any
+		parseErr := yaml.Unmarshal(data, &cfg)
+		parsed <- struct {
+			cfg map[string]any
+			err error
+		}{cfg: cfg, err: parseErr}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case value := <-parsed:
+		if value.err != nil {
+			return nil, fmt.Errorf("parse config snapshot: %w", value.err)
+		}
+		if value.cfg == nil {
+			value.cfg = map[string]any{}
+		}
+		return value.cfg, nil
+	}
+}
+
+func frozenEnvValue(rootDir, key string) (string, bool) {
+	value, ok := registeredConfigFiles.Load(strings.TrimSpace(rootDir))
+	if !ok {
+		return "", false
+	}
+	entry, ok := value.(*registeredConfig)
+	if !ok || !entry.frozen {
+		return "", false
+	}
+	valueText := strings.TrimSpace(entry.dotenv[strings.TrimSpace(key)])
+	return valueText, valueText != ""
 }
 
 func loadConfigValueOK(rootDir string, key string) (string, bool) {
@@ -96,8 +257,11 @@ func loadConfigList(rootDir string, key string) ([]string, bool) {
 
 func loadConfigForRoot(rootDir string) (map[string]any, bool) {
 	if value, ok := registeredConfigFiles.Load(rootDir); ok {
-		if path, ok := value.(string); ok {
-			if cfg, ok := loadConfigFile(path); ok {
+		if entry, ok := value.(*registeredConfig); ok {
+			if entry.frozen {
+				return entry.snapshot, true
+			}
+			if cfg, ok := loadConfigFile(entry.path); ok {
 				return cfg, true
 			}
 		}
@@ -107,6 +271,15 @@ func loadConfigForRoot(rootDir string) (map[string]any, bool) {
 		cfg, ok = loadConfigFile(filepath.Join(rootDir, "config.yml"))
 	}
 	return cfg, ok
+}
+
+func hasRegisteredConfigSnapshot(rootDir string) bool {
+	value, ok := registeredConfigFiles.Load(strings.TrimSpace(rootDir))
+	if !ok {
+		return false
+	}
+	entry, ok := value.(*registeredConfig)
+	return ok && entry.frozen
 }
 
 func loadConfigFile(path string) (map[string]any, bool) {

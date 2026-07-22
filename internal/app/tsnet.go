@@ -106,15 +106,24 @@ func writeTSNetStatus(dst io.Writer, status tsnetStateInfo) error {
 	})); err != nil {
 		return err
 	}
-	if status.SyncAll != nil {
+	if status.SyncAll != nil || status.SyncAllError != nil {
 		if _, err := fmt.Fprintln(dst); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintln(dst, "Scheduled Sync All"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(dst, renderTSNetSchedulerTable(dst, *status.SyncAll)); err != nil {
-			return err
+		if status.SyncAll != nil {
+			if _, err := fmt.Fprintln(dst, renderTSNetSchedulerTable(dst, *status.SyncAll)); err != nil {
+				return err
+			}
+		} else {
+			if _, err := fmt.Fprintln(dst, renderTSNetTable(dst, [][]string{
+				{"Error", status.SyncAllError.Code},
+				{"HTTP status", fmt.Sprintf("%d", status.SyncAllError.StatusCode)},
+			})); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

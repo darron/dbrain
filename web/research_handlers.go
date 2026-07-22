@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/brainresearch"
+	"github.com/darron/dbrain/internal/semanticconfig"
 )
 
 func (s *server) handleResearch(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +54,10 @@ func (s *server) handleResearch(w http.ResponseWriter, r *http.Request) {
 		DisableSemantic: req.DisableSemantic,
 	})
 	if err != nil {
+		if errors.Is(err, semanticconfig.ErrConflictingOverrides) {
+			writeMessage(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(researchCtx.Err(), context.DeadlineExceeded) {
 			writeMessage(w, http.StatusGatewayTimeout, "research request timed out; try a narrower query or disable model planning")
 			return

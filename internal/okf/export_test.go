@@ -407,6 +407,7 @@ func TestValidateBundleSpecMinimumAndPathSafety(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
+	writeInspectionManifest(t, root, "2026-07-13T18:00:00Z", []ManifestConcept{{Path: "concept.md", Type: "Thing"}})
 	if err := os.WriteFile(filepath.Join(root, "concept.md"), []byte("---\ntype: Thing\n---\n# Thing\n"), 0o644); err != nil {
 		t.Fatalf("write concept: %v", err)
 	}
@@ -432,6 +433,7 @@ func TestValidateBundleSkipsMarkedEvidenceLinksOnly(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
+	writeInspectionManifest(t, root, "2026-07-13T18:00:00Z", []ManifestConcept{{Path: "concept.md", Type: "Thing"}})
 	body := "---\ntype: Thing\ntitle: Thing\ndescription: Thing\n---\n" +
 		"# Extracted Text\n\n" +
 		validationSkipBegin + "\n" +

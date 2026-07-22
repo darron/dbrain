@@ -1,6 +1,7 @@
 package xmediatranscribe
 
 import (
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,6 +19,36 @@ func normalizeOptions(cfg config.Config, opts Options) Options {
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Minute
+	}
+	if strings.TrimSpace(opts.Transcriber) == "" {
+		opts.Transcriber = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TRANSCRIPTION_BACKEND")
+	}
+	if strings.TrimSpace(opts.Transcriber) == "" {
+		opts.Transcriber = "auto"
+	}
+	if strings.TrimSpace(opts.Language) == "" {
+		opts.Language = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TRANSCRIPTION_LANGUAGE")
+	}
+	if strings.TrimSpace(opts.Language) == "" {
+		opts.Language = "auto"
+	}
+	if strings.TrimSpace(opts.WhisperBinary) == "" {
+		opts.WhisperBinary = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TRANSCRIPTION_WHISPER_BINARY")
+	}
+	if strings.TrimSpace(opts.WhisperBinary) == "" {
+		opts.WhisperBinary = "whisper-cli"
+	}
+	if strings.TrimSpace(opts.WhisperModelPath) == "" {
+		opts.WhisperModelPath = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TRANSCRIPTION_MODEL_PATH")
+	}
+	if strings.TrimSpace(opts.WhisperModelPath) == "" {
+		opts.WhisperModelPath = filepath.Join(cfg.CacheDir, "whisper-cpp", "ggml-base.bin")
+	}
+	if strings.TrimSpace(opts.WhisperVADPath) == "" {
+		opts.WhisperVADPath = runtimeenv.FirstNonEmpty(cfg.RootDir, "DBRAIN_TRANSCRIPTION_VAD_MODEL_PATH")
+	}
+	if strings.TrimSpace(opts.WhisperVADPath) == "" {
+		opts.WhisperVADPath = filepath.Join(cfg.CacheDir, "whisper-cpp", "ggml-silero-v6.2.0.bin")
 	}
 	if strings.TrimSpace(opts.MacWhisperBinary) == "" {
 		opts.MacWhisperBinary = "mw"

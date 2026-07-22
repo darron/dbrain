@@ -14,6 +14,11 @@ type Options struct {
 	Force            bool
 	Concurrency      int
 	Timeout          time.Duration
+	Transcriber      string
+	Language         string
+	WhisperBinary    string
+	WhisperModelPath string
+	WhisperVADPath   string
 	MacWhisperBinary string
 	MacWhisperModel  string
 	FFprobeBinary    string
@@ -46,6 +51,10 @@ type transcriptBlock struct {
 	ExpandedURL string
 	LocalPath   string
 	Text        string
+	Backend     string
+	Model       string
+	Language    string
+	VADEnabled  bool
 }
 
 type itemTranscriptOutcome struct {

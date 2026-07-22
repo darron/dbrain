@@ -5,6 +5,352 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Local hybrid retrieval foundation (2026-07-18)
+
+- **Opt-in semantic retrieval**: Added deterministic evidence chunks, portable
+  local Ollama embeddings, SQLite-authoritative exact vector search, RRF fusion,
+  and content-free shadow comparisons. Lexical retrieval remains the default;
+  `shadow` measures hybrid ordering without changing visible evidence, while
+  `on` returns fused evidence and fails open to lexical results when the local
+  semantic lane is unavailable or when the configured profile has more than
+  25,000 current ready embeddings (counted before request filters).
+- **Operational and transport controls**: Added `dbrain semantic status`,
+  `semantic chunk`, and `semantic embed`, plus CLI and MCP/web per-request
+  semantic overrides with conflict rejection. Direct MCP research remains
+  read-only and trace-free, including in shadow mode.
+- **Evidence provenance**: Research packs now expose effective
+  `semantic_mode`, bounded `shadow_comparison`, chunk/content-section metadata,
+  RRF scores, and full lexical/semantic retrieval-lane provenance. Exact-tag
+  evidence remains a separate representative lane.
+- **Paragraph-aware chunk profile**: Paragraph boundary selection now avoids
+  splitting immediately before the configured target. This increments the
+  deterministic retrieval chunker profile to v2; existing semantic chunks and
+  embeddings must be rebuilt with `dbrain semantic chunk` followed by
+  `dbrain semantic embed` before evaluating the new profile. Migration 15 now
+  persists projection provenance on chunks; `semantic embed` refuses stale
+  projection/chunker rows before calling the provider, and exact search rejects
+  historically mislabeled vectors.
+
+### Production health audit corrections (2026-07-15)
+
+- **False-failure corrections**: Scheduler continuity now ignores
+  boundary-incomplete metrics records with no start timestamp, and preserved
+  raw X media transcript text no longer prevents terminal outcomes such as
+  `too_short` from being classified as terminal.
+- **Sanitized remote diagnostics**: Standard media durability audits now retain
+  fixed credential-resolution, configuration, timeout, cancellation, and read
+  error codes without exposing provider errors, object keys, paths, or secrets.
+- **Explicit pruned-media repair**: Added `dbrain repair pruned-media` as a
+  read-only dry-run by default, with an explicit `--apply` path that restores
+  archived/pruned media through normal download persistence. The command is not
+  part of `sync all`; existing workers perform OCR and transcription afterward.
+- **Actionable backup configuration**: The SQLite backup-configuration warning
+  now carries a fixed privacy-safe instruction for enabling scheduled backups
+  or explicitly requiring backup audits, and human audit output prints it
+  directly below the non-passing finding.
+
+### Production health audit foundation (2026-07-13)
+
+- **Release audit skill**: Added a repo-local, content-free production release
+  workflow that freezes the installed XDG or self-contained target, requires a
+  fresh complete SQLite backup before installation, compares exact-profile
+  standard reports after a separately approved cutover, verifies the expected
+  commit, and evaluates CLI-only deep archive/media/upstream checks without
+  granting deploy, restart, retry, repair, restore, import, or config authority.
+
+- **Release audit boundary fixes**: Made `config paths` use the no-write target
+  resolver, preserved root-only selection for self-contained installations,
+  made abbreviated commit expectations match the embedded full revision, and
+  ensured filtered/source audits actually include `boundary.runtime` whenever
+  `--expect-commit` is supplied. The release skill includes a provenance-gated
+  candidate bootstrap for the first audit-capable release.
+
+- **Bounded upstream importer parity**: Added CLI-only deep reconciliation for
+  Apple Notes, Safari Tabs, X Bookmarks, GitHub Stars, YouTube Liked, YouTube
+  Watch Later, and enabled feeds, plus exact source commands for release and
+  operational checks. Inventories are read-only, content-free, sequential,
+  cancellation-aware, capped at 100,000 unique identities and 10,000 pages,
+  and fail closed on credentials, schema, cursor, device, network, or
+  completion ambiguity. Local app sources use dbrain-owned SQLite snapshots;
+  remote adapters use fixed/configured safe origins or bounded proxy-free
+  subprocesses. Source-only audits no longer resolve unrelated archive limits,
+  and deep parity remains unavailable to scheduled, MCP, and admin runners.
+
+- **Feed audit credential hardening**: Reject feed URLs containing userinfo at
+  the audit-only policy boundary before the authenticated general feed fetcher
+  can normalize or send the request.
+
+- **Production health admin view**: Replaced ambiguous activity-derived health
+  with the authenticated exact-profile standard audit presentation. The System
+  page now separates fast local refresh from authoritative standard health,
+  importer polls from arrivals, terminal pipeline outcomes from failures, and
+  media/SQLite/OKF durability checks from legacy counters; it includes bounded
+  typed finding evidence, recovery history, abortable on-demand polling, and a
+  responsive 390px-safe observability layout. Legacy `backlog.drained` remains
+  compatible but is labeled and scoped as source-processing backlog only.
+
+- **Authenticated admin audit API**: Added fail-closed latest, compact history,
+  bounded on-demand fast/standard run, and process-run status endpoints for the
+  authenticated web administration surface. The routes are absent when web
+  authentication is disabled, reject service-auth and cross-origin mutation,
+  persist immutable reports before completion, and retain only bounded,
+  sanitized in-process run state.
+
+- **Bounded MCP health**: Added `dbrain_audit` with a fixed-deadline,
+  process-singleflight local fast profile and a persisted exact-profile standard
+  read path. The privacy-validated response is capped at 256 KiB, exposes no
+  deep/category/path/URL/archive controls, uses a no-create/no-chmod report
+  reader, and is available over HTTP/tsnet only when bearer auth is required.
+  The ten-second wall-clock limit is enforced independently of runner context
+  cancellation, without starting duplicate work when a stuck runner times out.
+
+- **Scheduled health and regression alerts**: Added opt-in post-sync fast and
+  six-hour standard audits to `serve remote`, private daily report retention,
+  exact-profile freshness metadata, content-free transition state, compact
+  completion metrics, and an exact-origin no-proxy/no-redirect JSON webhook
+  with debounced escalation, repeat, configuration-resolution, and immediate
+  recovery behavior. Scheduled audit failures remain separate from sync
+  results and never receive archive-write or restore capability.
+
+- **Scheduled SQLite durability**: Added an opt-in daily `serve remote`
+  scheduler that uses the existing online SQLite snapshot/archive path,
+  runs once on startup by default, durably rate-limits attempts across service
+  restarts, serializes scheduled/manual archives and restores through one
+  crash-released cross-process lease, applies bounded preflight-failure backoff,
+  confines and durably syncs its private attempt marker, honors a full initial
+  delay when startup runs are disabled, supports cancellation during snapshot
+  compression, and emits content-free aggregate metrics without granting write
+  capability to audits.
+- **Bounded deep verification**: Added an explicit CLI-only deep audit that
+  validates the newest compressed SQLite archive in a private temporary
+  directory, performs complete bounded `media/` inventory reconciliation, and
+  cleans up without invoking the active-database restore path.
+- **Audit CLI**: Added `dbrain audit all|imports|pipeline|durability` with a
+  stable, privacy-validated 55-check JSON registry, typed health exit codes,
+  deterministic thresholds/sampling, and a no-write query-only target resolver.
+- **Operational evidence**: Bounded JSONL reading now reconstructs scheduler
+  runs, explicit lifecycle markers, seven source-family poll/arrival streams,
+  and separate YouTube liked/watch-later results without retaining raw lines.
+- **Least-authority durability**: Standard media and SQLite backup checks use
+  exact-origin, DNS/IP-validated, no-proxy S3 HEAD/LIST clients that expose no
+  upload, download, restore, or endpoint-override capability.
+- **Read-only diagnostics**: All `stats` commands now open SQLite without applying migrations, and active-database inspection reports quick-check, foreign-key, core-schema, and migration compatibility as separate claims.
+- **Truthful pipeline partitions**: Pipeline stats and workers share X transcription, photo OCR, source-repair, and media-archive predicates; terminal outcomes and invalid legacy states are reported separately from genuine failures, with explicit partition validation.
+- **Actionable pending-age audits**: Pipeline audit snapshots now carry the
+  oldest eligible timestamp for hydration, extraction, summary, transcription,
+  and OCR work, so non-empty backlogs classify against the documented 24/72-hour
+  thresholds instead of always degrading to unknown.
+- **Confined artifact inspection**: Added consistent read-transaction snapshots, metadata-only vault inspection with sanitized errors, and root-confined aggregate OKF validation that requires a readable manifest and export timestamp.
+- **Provenance and scheduler diagnostics**: Successful X media transcripts now retain deterministic input provenance, compatibility mirrors preserve authoritative enrichment metadata, migration-backed audit aggregates separate legacy gaps from regressions, and TSNet status reports sanitized scheduler authentication failures.
+- **Audit truth and bounded execution**: Production audits now consume real store
+  pipeline aggregates and closed grouped kinds, preserve partial SQLite archive
+  listing progress, apply bootstrap/local/integrity/per-page timeout classes to
+  their actual operations, and keep mixed source/category scopes truthful.
+- **Local audit diagnostics**: Identifier-enabled CLI output now includes
+  bounded real row/source identifiers for non-pass pipeline, provenance, and
+  local-media checks plus exact credential-free media and SQLite archive
+  targets; cleanup paths remain empty. OKF freshness reads only the manifest,
+  while metrics files are opened nonblocking and validated by descriptor.
+- **Audit bootstrap and timeout truth**: The actual bounded YAML and dotenv
+  snapshots, feature resolution, and SQLite `BEGIN` now run inside the
+  bootstrap deadline without shortening the later snapshot lifetime. Frozen
+  lookup preserves shell, `.envrc`, `.env`, then YAML precedence without
+  repeated reads, and overlapping same-root snapshots now clean up safely in
+  any order without restoring stale YAML or dotenv values. Per-class overrides
+  lower local, integrity, manifest, remote-check, and per-request ceilings,
+  including media whole-check limits.
+
+### Security hardening (2026-07-13)
+
+- **Authenticated feeds**: Basic-auth feed URLs are stripped of userinfo before
+  safe-HTTP validation and translated into an Authorization header that is
+  retained only across exact-origin redirects and recovered only for same-origin
+  subsequent polls after a sanitized resolved URL is stored.
+- **Local filesystem containment**: Vault note/media reads, writes, uploads,
+  OCR/transcription inputs, and cleanup now use root-confined filesystem
+  operations so persisted traversal paths and symlink parents cannot escape the
+  configured vault. Apple Notes attachment extraction is likewise confined to
+  the selected Notes database container.
+- **Restore identity**: SQLite archive restore now rejects corrupt, foreign,
+  future-version, incomplete-migration, and unknown-migration databases before
+  replacing the authoritative local database.
+- **Network and remote surfaces**: Source/media fetches share a redirect- and
+  DNS-rebinding-aware public-destination policy; Funnel startup fails closed
+  unless each selected web/MCP surface has application authentication; web
+  mutations share an Origin guard; service-auth nonces are single-use per
+  process; and JSON-RPC batches are limited to 16 requests.
+- **Safe source extraction**: Safe-fetched HTML and text are now extracted
+  in-process instead of being passed to `summarize --extract` as unsupported
+  local files; summary-mode subprocesses receive only the extracted text over
+  stdin while dbrain retains validated URL provenance.
+- **Public shares**: Anonymous share rendering rejects URL userinfo and removes
+  recognized credential-like query data from newly generated and legacy stored
+  shares, including renderer-created attributes, nested/encoded query values,
+  and browser-normalized URL forms, while preserving ordinary query parameters.
+- **Supply chain**: Release and PR workflow action selectors and tool versions
+  are immutable, with a YAML-aware regression policy covering both `.yml` and
+  `.yaml` workflow files.
+- **Review workflow**: Added the repo-owned `dbrain-security-review` skill,
+  security campaign design/remediation plans, and a sanitized evidence ledger.
+
+### Homebrew Test Release Channel (2026-07-13)
+
+- **Release testing**: Added an owner-dispatched Homebrew test channel that builds an exact commit into durable prerelease assets and one moving `dbrain-test` formula without changing stable `dbrain` distribution.
+- **Release safety**: Stable publication now accepts only exact `vX.Y.Z` tags, serializes tap updates, and tests that candidate formula generation cannot modify `Formula/dbrain.rb` or add runtime-data cleanup hooks.
+- **Tap validation**: Stable formula updates now restore the reciprocal `dbrain-test` conflict required by Homebrew audit, preventing candidate formula publication from breaking subsequent `brew test-bot` runs.
+
+### dbrain Review Skill Distribution (2026-07-11)
+
+- **Skill packaging**: Moved the `dbrain-review` skill into this repository alongside `dbrain-mcp` so the project is its authoritative source.
+- **Registry publishing**: Release tags now publish both `dbrain-mcp` and `dbrain-review` to the nono registry under the `darron` namespace.
+
+### Open-source whisper.cpp transcription (2026-07-11)
+
+- **Speech to text**: Added whisper.cpp as a fully supported backend for X media and YouTube caption fallback, with automatic backend selection, Apple Silicon/Metal-compatible Homebrew installation, optional Silero VAD, language selection, and terminal no-speech handling.
+- **Installer**: `dbrain install` now detects `whisper-cli`, writes shared transcription configuration, reports the exact Homebrew command when it is missing, and can download pinned, checksum-verified Whisper base and Silero VAD models with `--download-whisper-models`.
+- **CLI/docs**: `dbrain transcribe x-media` accepts explicit backend, model, VAD, language, and binary flags; MacWhisper remains available as a compatibility backend.
+- **Fresh-install UX**: When `whisper-cli` is detected and pinned models are missing, interactive setup now offers the verified downloads with yes selected and `--yes` accepts them automatically; Whisper transfers show byte progress and Ollama model preparation streams its native output.
+- **Setup docs**: Moved the recommended `summarize`, Ollama, whisper.cpp, and Chrome prerequisites ahead of first-time setup so clean-machine installs are detected and configured on the first run.
+
+### Research Harness Inspection And Evidence Flow (2026-07-11)
+
+- **Inspection**: The runner now performs one bounded read-only hydration pass
+  over the top primary evidence rows, reranks only that window using direct/raw
+  support, preserves tail order, and leaves original retrieval scores intact.
+- **Relevance**: Conservative required-concept intersection filtering now
+  covers safe conjunctive query families while failing open for partial,
+  compound, comparative, corrective, contradictory, chunked, media, and
+  dependency-uncertain evidence.
+- **Synthesis**: Uncited topic-brief aggregates are excluded from model context;
+  source-key evidence remains available according to relevance and budget
+  decisions.
+- **Tracing and evals**: Added `evidence_flow.v1` with explicit retrieved,
+  inspected, relevance-admitted/excluded, prompt-admitted, budget-dropped,
+  partially-trimmed, and answer-cited stages plus lifecycle invariants and
+  stage-specific eval assertions.
+- **Location**: `internal/ask/`, `internal/brainresearch/`,
+  `internal/researchrun/`, `internal/researchtrace/`, `internal/researcheval/`
+
+### Chat Harness Relevance And Citation Semantics (2026-07-11)
+
+- **Fixed**: Final synthesis citation metadata now contains only exact source
+  keys actually cited in the answer; prepared prompt evidence remains recorded
+  separately on `PreparedSynthesis` for traces and diagnostics.
+- **Shares**: Public Original URLs, source metadata, and topic tags now treat
+  answer citations as authoritative, preventing uncited prompt candidates from
+  leaking through the structured citation array.
+- **Synthesis guardrails**: Prompt v4 tells the model to ignore unrelated
+  candidates silently, and verification rejects unsolicited unrelated-source
+  inventories before a turn can be shared.
+- **Retrieval**: Required phrase concepts preserve discriminative one-letter
+  names such as `J space`, keep an exact quoted phrase lane through planner
+  merges, and restrict synthesis context to rows satisfying every required
+  concept when at least two direct matches are available. This avoids broad
+  fallback plans such as `anthropic space` over-ranking unrelated material.
+- **Regression coverage**: Added runtime-shaped tests for prepared-versus-used
+  citations, public share filtering, category filtering, short-token concepts,
+  and unrelated-source answer rejection.
+- **Location**: `internal/brainresearch/`, `internal/researchrun/`,
+  `web/chat_shares.go`, `docs/research-harness.md`
+
+### Installer Summarize Prerequisite (2026-07-11)
+
+- **Installer**: First-time setup now detects the required `summarize` CLI and
+  prints an actionable `brew install summarize` warning when it is missing; X
+  setup now gives missing MacWhisper and media tools explicit install paths.
+- **Docs**: Homebrew runtime requirements now appear before `dbrain install`,
+  including the official `summarize` formula and optional Ollama and Chrome
+  setup needed before installer detection, with MacWhisper linked prominently
+  for X media transcription.
+
+### Installer Import Selection (2026-07-09)
+
+- **Installer**: Fresh installs now present an explicit checklist for X
+  bookmarks, GitHub stars, YouTube Watch Later, liked YouTube videos, feeds,
+  Apple Notes, and Safari tabs; no importer is silently selected.
+- **Config**: Installer choices are persisted under `sync_all.imports` and are
+  shared by manual and scheduled `sync all` runs, with environment and
+  one-run CLI overrides plus backward-compatible legacy defaults.
+- **Safety**: Declining X disables bookmark import, hydration, media
+  transcription, and photo OCR together. Unselected importers no longer run
+  their preflight checks, and install reports missing configuration only for
+  selected sources.
+- **Browser config**: X and YouTube selections now collect a shared browser and
+  optional profile used by both manual and scheduled runs.
+- **Updates**: Re-running install merges managed selections into an existing
+  config instead of requiring a destructive full overwrite.
+
+### Installer Local Model Profiles (2026-07-09)
+
+- **Fixed**: Fresh installs now apply detected local model defaults before the
+  interactive/noninteractive split. When the Ollama CLI is present, plain
+  install now defaults to the dbrain Ollama profile and creates
+  `dbrain:2026042701` before writing config that references it; LM Studio is
+  only a fallback when Ollama is unavailable.
+- **Fixed**: Installs without a local OCR tool/model or OpenRouter key now write
+  configured `sync all` skips for hosted-only X photo OCR; installs with no
+  categorization model or OpenRouter key likewise skip categorization instead of
+  failing at first-run preflight.
+- **Fixed**: Re-running install now reuses existing known `dbrain` Keychain
+  secrets when prompt fields are left blank, including GitHub PATs, OpenRouter
+  keys, Tailscale auth keys for Tailscale-enabled installs, GitHub OAuth client
+  secrets, and existing web auth session keys.
+- **CLI**: Added `dbrain install --local-model-profile
+  dbrain|dbrain-ollama|dbrain-omlx|small-ollama|none` so first-run setup can
+  write curated local model defaults without requiring users to know exact
+  provider-qualified model strings.
+- **Local models**: The dbrain profile targets the local wrapper tag
+  `ollama/dbrain:2026042701`; install embeds and materializes the dbrain
+  Modelfile, pulls `qwen3.6:35b-a3b-nvfp4` when needed, and creates the local
+  wrapper tag before writing config that references it. The comparable oMLX
+  profile targets `omlx/Qwen3.6-35B-A3B-MLX-4bit`, and the smaller Ollama
+  profile writes and pulls `ollama/gemma4:12b-mlx`. Explicit `--summary-model`
+  / `--categorize-model` flags still take precedence.
+- **Docs**: Documented local wrapper creation from the embedded Modelfile so
+  installs do not depend on redistributing or pushing the large
+  Modelfile-derived artifact.
+
+### Public Chat Share Sources (2026-07-09)
+
+- **Fixed**: Public chat shares now list only cited sources and URLs present in
+  the shared answer, rather than every retrieval-pack candidate considered
+  during the chat turn.
+- **Location**: `web/chat_shares.go`
+
+### Web Archived Media Embeds (2026-07-08)
+
+- **Fixed**: The web archived-media proxy now resolves R2/S3 credential secret
+  references from config before building its client, so archived X photo/video
+  embeds render through `/media/asset/{id}` instead of failing when production
+  credentials are stored as `keychain://` or other secret refs.
+
+### First-Run Installer (2026-07-08)
+
+- **CLI**: Added `dbrain install` for first-time setup with XDG defaults or a
+  user-supplied `--base-path`, bundled config/category templates, local helper
+  detection, and noninteractive `--yes` support.
+- **Setup**: The installer can enable Apple Notes, Safari tabs, scheduled
+  `sync all`, Tailscale/tsnet transport, and GitHub web login while keeping
+  Tailscale settings under `tsnet.*` and login settings under `auth.*`.
+- **Secrets**: On macOS, prompted third-party secrets are stored as Keychain
+  refs; generated web auth session keys are created automatically when GitHub
+  login is enabled.
+- **Location**: `internal/install/`, `internal/app/install.go`
+
+### Documentation Reference Refresh (2026-07-06)
+
+- **Docs/config**: Refreshed README, COMMANDS, MCP, TAILSCALE, and config
+  sample references for the current MCP tool surface, visible CLI commands,
+  scheduled `sync all` controls, launchd-backed remote serving, and local model
+  backends including Ollama, LM Studio, oMLX, and configured OpenAI-compatible
+  aliases.
+- **Docs/roadmap**: Replaced the stale README checklist with a current public
+  roadmap that separates live product gaps, pipeline gaps, evaluation backlog,
+  and explicit non-goals.
+- **Docs/diagram**: Replaced the README banner with a current architecture
+  diagram covering import-only sources, local authority, enrichment/model lanes,
+  MCP/web/CLI/Tailscale surfaces, launchd scheduling, and archive/restore.
+
 ### Chat Harness Anchored Synthesis (2026-07-04)
 
 - **Fixed**: Web Chat and the research runner now preserve explicit
