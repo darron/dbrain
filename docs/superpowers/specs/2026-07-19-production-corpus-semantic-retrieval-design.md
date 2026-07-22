@@ -69,8 +69,8 @@ evaluation, and rollout gates in this document pass.
 `dbrain` will not:
 
 - replace SQLite with Turso or libSQL
-- add a vector service, daemon, native extension, CGO requirement, or helper
-  process
+- add a vector service, daemon, helper process, or a native/CGO requirement to
+  the default build
 - make generated model prose authoritative evidence
 - silently truncate embedding input
 - use unbounded or unlabelled partial semantic coverage in normal `on`
@@ -539,16 +539,10 @@ corruption without repeatedly rereading the whole profile after each bad row.
 
 ### Backend Selection
 
-The first implementation plan must bake off:
-
-1. a narrow repo-owned adapter around `github.com/coder/hnsw`
-2. one pure-Go disk-backed candidate if the first candidate fails resource,
-   persistence, or corruption gates
-
-No library is accepted until it passes the production-vector gates in this
+No backend is accepted until it passes the production-vector gates in this
 document. The adapter owns both the segment format and search contract so a
-library can be forked or replaced without changing SQLite evidence, embedding,
-or root-manifest schemas.
+library can be replaced without changing SQLite evidence, embedding, or
+root-manifest schemas.
 
 #### 2026-07-21 Backend Screening Record
 
@@ -577,12 +571,39 @@ mutable index blob in a separate shadow SQLite schema. It is neither a proven
 ANN accelerator nor compatible with the SQLite-authoritative immutable-segment
 contract.
 
-Backend status is consequently **unresolved**. Do not implement root manifests,
-segment publication, L0 flush, or compaction against either library. The next
-implementation proposal must specify and obtain approval for a replacement
-backend strategy—most likely a separately evaluated native optional backend or
-a separately designed parent-first accelerator—while keeping semantic retrieval
-off and lexical fail-open intact.
+#### 2026-07-22 Optional Native Backend Screening Decision
+
+The user approved a separately evaluated optional native backend. The first
+candidate is USearch (`github.com/unum-cloud/usearch/golang`) backed by its
+pinned arm64 macOS C library for development screening. This is a narrow,
+temporary candidate boundary, not acceptance of USearch for dbrain's product
+or release distribution.
+
+The screening integration must meet all of these constraints:
+
+1. SQLite remains the sole authority. USearch receives only dense segment-local
+   ordinals and float32 vectors; it neither opens nor writes `brain.db`.
+2. The candidate runs only in a content-free devtool until it clears the exact
+   recall, save/load reopen, resource, corruption, and cancellation gates.
+   It must not construct a production segment, call an embedding provider, or
+   make semantic retrieval available.
+3. The default dbrain build remains CGO-free and works without USearch. Native
+   support is isolated behind an explicit build tag and must report
+   `native_backend_unavailable` rather than degrade correctness or block lexical
+   retrieval.
+4. The test library is supplied from the upstream versioned release archive in
+   an isolated temporary directory. It is not installed globally, added to a
+   user PATH, or represented as a Homebrew dependency. Distribution is deferred
+   until the candidate passes screening.
+5. The eventual dbrain segment envelope, membership map, checksums, atomic
+   publication, provenance, and cache reclamation remain repo-owned. USearch's
+   `Save`, `Load`, or `View` files are opaque payloads inside that envelope.
+
+Backend status is **screening in progress**. Do not implement root manifests,
+segment publication, L0 flush, compaction, or normal semantic retrieval against
+USearch unless this candidate passes and a follow-up segment-lifecycle plan is
+approved. Semantic mode remains off and all unavailable paths remain lexical
+fail-open.
 
 Graph identifiers are dense unsigned integer ordinals. A separate immutable
 membership map relates each ordinal to its chunk, parent, embedding revision,
