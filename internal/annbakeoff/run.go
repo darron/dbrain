@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"runtime"
@@ -17,7 +18,6 @@ import (
 
 const (
 	SchemaVersion = "dbrain.semantic-ann-bakeoff.v1"
-	Backend       = semanticindex.BackendHNSW
 
 	StatusPassed   = "passed"
 	StatusRejected = "rejected"
@@ -25,6 +25,20 @@ const (
 	ReasonHeapLimit   = "heap_system_limit_exceeded"
 	ReasonRecallFloor = "recall_floor_not_met"
 )
+
+// Index is the narrow candidate contract used only by the content-free ANN
+// bakeoff. It deliberately contains no SQLite, segment, or serving behavior.
+type Index interface {
+	Reserve(int) error
+	Add(...semanticindex.HNSWNode) error
+	Search([]float32, int) ([]semanticindex.HNSWHit, error)
+	Export(io.Writer) error
+	Import(io.Reader) error
+	Close() error
+}
+
+// Factory creates one empty candidate index for a screening stage.
+type Factory func(Options) (Index, error)
 
 // Options bounds one deterministic candidate screening run.
 type Options struct {
@@ -42,58 +56,84 @@ type Options struct {
 
 // Report contains content-free evidence for a single backend screening run.
 type Report struct {
-	SchemaVersion string        `json:"schema_version"`
-	Backend       string        `json:"backend"`
-	Dimensions    int           `json:"dimensions"`
-	Seed          uint64        `json:"seed"`
-	RecallAt      int           `json:"recall_at"`
-	MinimumRecall float64       `json:"minimum_recall"`
-	EfSearch      int           `json:"ef_search"`
-	M             int           `json:"m"`
-	Status        string        `json:"status"`
-	Stages        []StageReport `json:"stages"`
+	SchemaVersion string         `json:"schema_version"`
+	Backend       string         `json:"backend"`
+	Dimensions    int            `json:"dimensions"`
+	Seed          uint64         `json:"seed"`
+	RecallAt      int            `json:"recall_at"`
+	MinimumRecall float64        `json:"minimum_recall"`
+	EfSearch      int            `json:"ef_search"`
+	M             int            `json:"m"`
+	Parameters    map[string]int `json:"parameters"`
+	Status        string         `json:"status"`
+	Stages        []StageReport  `json:"stages"`
 }
 
 // StageReport records one vector-count stage. Durations are nanoseconds so a
 // downstream report can derive milliseconds without losing short query times.
 type StageReport struct {
-	VectorCount      int     `json:"vector_count"`
-	EfSearch         int     `json:"ef_search"`
-	M                int     `json:"m"`
-	Status           string  `json:"status"`
-	Reason           string  `json:"reason,omitempty"`
-	CorpusBuildNanos int64   `json:"corpus_build_nanos"`
-	GraphBuildNanos  int64   `json:"graph_build_nanos"`
-	ExportNanos      int64   `json:"export_nanos"`
-	ReopenNanos      int64   `json:"reopen_nanos"`
-	ExactQueryNanos  int64   `json:"exact_query_nanos"`
-	QueryP50Nanos    int64   `json:"query_p50_nanos"`
-	QueryP95Nanos    int64   `json:"query_p95_nanos"`
-	PayloadBytes     int     `json:"payload_bytes"`
-	RecallAtK        float64 `json:"recall_at_k"`
-	ReopenRecallAtK  float64 `json:"reopen_recall_at_k"`
-	BuildHeapAlloc   uint64  `json:"build_heap_alloc_bytes"`
-	BuildHeapSys     uint64  `json:"build_heap_sys_bytes"`
-	LoadedHeapAlloc  uint64  `json:"loaded_heap_alloc_bytes"`
-	LoadedHeapSys    uint64  `json:"loaded_heap_sys_bytes"`
+	VectorCount      int            `json:"vector_count"`
+	EfSearch         int            `json:"ef_search"`
+	M                int            `json:"m"`
+	Parameters       map[string]int `json:"parameters"`
+	Status           string         `json:"status"`
+	Reason           string         `json:"reason,omitempty"`
+	CorpusBuildNanos int64          `json:"corpus_build_nanos"`
+	GraphBuildNanos  int64          `json:"graph_build_nanos"`
+	ExportNanos      int64          `json:"export_nanos"`
+	ReopenNanos      int64          `json:"reopen_nanos"`
+	ExactQueryNanos  int64          `json:"exact_query_nanos"`
+	QueryP50Nanos    int64          `json:"query_p50_nanos"`
+	QueryP95Nanos    int64          `json:"query_p95_nanos"`
+	PayloadBytes     int            `json:"payload_bytes"`
+	RecallAtK        float64        `json:"recall_at_k"`
+	ReopenRecallAtK  float64        `json:"reopen_recall_at_k"`
+	BuildHeapAlloc   uint64         `json:"build_heap_alloc_bytes"`
+	BuildHeapSys     uint64         `json:"build_heap_sys_bytes"`
+	LoadedHeapAlloc  uint64         `json:"loaded_heap_alloc_bytes"`
+	LoadedHeapSys    uint64         `json:"loaded_heap_sys_bytes"`
 }
 
 // Run builds every requested stage in order. Gate failures are reported in the
 // returned report rather than becoming opaque errors, allowing callers to save
 // the exact evidence before stopping the next stage.
 func Run(ctx context.Context, opts Options) (Report, error) {
+	return RunWith(ctx, opts, semanticindex.BackendHNSW, map[string]int{
+		"ef_search": effectiveEfSearch(opts),
+		"m":         effectiveM(opts),
+	}, func(opts Options) (Index, error) {
+		return semanticindex.NewHNSW(semanticindex.HNSWOptions{
+			Dimensions: opts.Dimensions,
+			Seed:       opts.Seed,
+			M:          effectiveM(opts),
+			EfSearch:   effectiveEfSearch(opts),
+		})
+	})
+}
+
+// RunWith evaluates one named candidate against the deterministic corpus and
+// exact oracle. Candidate errors are returned; gate failures stay in Report so
+// callers can persist the evidence before stopping.
+func RunWith(ctx context.Context, opts Options, backend string, parameters map[string]int, factory Factory) (Report, error) {
 	if err := validateOptions(opts); err != nil {
 		return Report{}, err
 	}
+	if backend == "" {
+		return Report{}, fmt.Errorf("backend is required")
+	}
+	if factory == nil {
+		return Report{}, fmt.Errorf("candidate factory is required")
+	}
 	report := Report{
 		SchemaVersion: SchemaVersion,
-		Backend:       Backend,
+		Backend:       backend,
 		Dimensions:    opts.Dimensions,
 		Seed:          opts.Seed,
 		RecallAt:      opts.RecallAt,
 		MinimumRecall: opts.MinimumRecall,
 		EfSearch:      effectiveEfSearch(opts),
 		M:             effectiveM(opts),
+		Parameters:    cloneParameters(parameters),
 		Status:        StatusPassed,
 		Stages:        make([]StageReport, 0, len(opts.Sizes)),
 	}
@@ -101,7 +141,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		stage, err := runStage(ctx, size, opts)
+		stage, err := runStage(ctx, size, opts, parameters, factory)
 		if err != nil {
 			return report, err
 		}
@@ -149,10 +189,10 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
-func runStage(ctx context.Context, size int, opts Options) (StageReport, error) {
+func runStage(ctx context.Context, size int, opts Options, parameters map[string]int, factory Factory) (StageReport, error) {
 	efSearch := effectiveEfSearch(opts)
 	m := effectiveM(opts)
-	stage := StageReport{VectorCount: size, EfSearch: efSearch, M: m, Status: StatusPassed}
+	stage := StageReport{VectorCount: size, EfSearch: efSearch, M: m, Parameters: cloneParameters(parameters), Status: StatusPassed}
 	corpusStart := time.Now()
 	corpus, err := newCorpus(size, opts.Dimensions, opts.Seed)
 	if err != nil {
@@ -161,8 +201,17 @@ func runStage(ctx context.Context, size int, opts Options) (StageReport, error) 
 	stage.CorpusBuildNanos = time.Since(corpusStart).Nanoseconds()
 
 	buildStart := time.Now()
-	index, err := semanticindex.NewHNSW(semanticindex.HNSWOptions{Dimensions: opts.Dimensions, Seed: opts.Seed, M: m, EfSearch: efSearch})
+	index, err := factory(opts)
 	if err != nil {
+		return stage, err
+	}
+	indexClosed := false
+	defer func() {
+		if !indexClosed {
+			_ = index.Close()
+		}
+	}()
+	if err := index.Reserve(size); err != nil {
 		return stage, err
 	}
 	const batchSize = 512
@@ -199,15 +248,19 @@ func runStage(ctx context.Context, size int, opts Options) (StageReport, error) 
 
 	// Reopen only the exported graph. The caller-owned segment format will add
 	// checksums and canonical membership around this opaque payload later.
-	index = nil
+	if err := index.Close(); err != nil {
+		return stage, err
+	}
+	indexClosed = true
 	runtime.GC()
 	reopenStart := time.Now()
-	reopened, err := semanticindex.NewHNSW(semanticindex.HNSWOptions{Dimensions: opts.Dimensions, Seed: opts.Seed, M: m, EfSearch: efSearch})
+	reopened, err := factory(opts)
 	if err != nil {
 		return stage, err
 	}
+	defer func() { _ = reopened.Close() }()
 	if err := reopened.Import(bytes.NewReader(payload.Bytes())); err != nil {
-		return stage, fmt.Errorf("reopen hnsw payload: %w", err)
+		return stage, fmt.Errorf("reopen candidate payload: %w", err)
 	}
 	stage.ReopenNanos = time.Since(reopenStart).Nanoseconds()
 	payload.Reset()
@@ -244,7 +297,7 @@ func runStage(ctx context.Context, size int, opts Options) (StageReport, error) 
 	return stage, nil
 }
 
-func measureSearch(ctx context.Context, index *semanticindex.HNSW, corpus corpus, queries []int, exact [][]uint64, opts Options) (float64, []time.Duration, error) {
+func measureSearch(ctx context.Context, index Index, corpus corpus, queries []int, exact [][]uint64, opts Options) (float64, []time.Duration, error) {
 	var recallTotal float64
 	samples := make([]time.Duration, 0, len(queries)*opts.WarmRepetitions)
 	for iteration := 0; iteration < opts.WarmRepetitions; iteration++ {
@@ -418,6 +471,14 @@ func effectiveM(opts Options) int {
 		return opts.M
 	}
 	return 16
+}
+
+func cloneParameters(parameters map[string]int) map[string]int {
+	copy := make(map[string]int, len(parameters))
+	for key, value := range parameters {
+		copy[key] = value
+	}
+	return copy
 }
 
 func maxInt(a, b int) int {

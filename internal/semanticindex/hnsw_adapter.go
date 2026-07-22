@@ -56,6 +56,18 @@ func NewHNSW(opts HNSWOptions) (*HNSW, error) {
 	return &HNSW{graph: graph, dimensions: opts.Dimensions}, nil
 }
 
+// Reserve is a no-op because coder/hnsw grows its graph as nodes are added.
+// It preserves the candidate-index contract used by the content-free bakeoff.
+func (h *HNSW) Reserve(int) error {
+	if h == nil || h.graph == nil {
+		return fmt.Errorf("hnsw graph is nil")
+	}
+	return nil
+}
+
+// Close is a no-op because this adapter owns only Go-managed in-memory state.
+func (h *HNSW) Close() error { return nil }
+
 func (h *HNSW) Add(nodes ...HNSWNode) error {
 	if h == nil || h.graph == nil {
 		return fmt.Errorf("hnsw graph is nil")

@@ -4,6 +4,8 @@ import (
 	"context"
 	"reflect"
 	"testing"
+
+	"github.com/darron/dbrain/internal/semanticindex"
 )
 
 func TestDeterministicCorpusAndExactOracle(t *testing.T) {
@@ -98,4 +100,43 @@ func TestRunRecordsConfiguredNeighborDegree(t *testing.T) {
 	if report.M != 32 || report.Stages[0].M != 32 {
 		t.Fatalf("report = %+v", report)
 	}
+}
+
+func TestRunWithRecordsCandidateParametersAndClosesBothIndexes(t *testing.T) {
+	var closed int
+	report, err := RunWith(context.Background(), Options{
+		Sizes:           []int{32},
+		Dimensions:      8,
+		QueryCount:      2,
+		WarmRepetitions: 1,
+		Seed:            17,
+		RecallAt:        5,
+		MinimumRecall:   0,
+	}, "native-test", map[string]int{"connectivity": 16}, func(opts Options) (Index, error) {
+		index, err := semanticindex.NewHNSW(semanticindex.HNSWOptions{Dimensions: opts.Dimensions, Seed: opts.Seed})
+		if err != nil {
+			return nil, err
+		}
+		return &trackedIndex{HNSW: index, onClose: func() { closed++ }}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Backend != "native-test" || report.Parameters["connectivity"] != 16 || closed != 2 {
+		t.Fatalf("report=%+v closed=%d", report, closed)
+	}
+}
+
+type trackedIndex struct {
+	*semanticindex.HNSW
+	onClose func()
+}
+
+func (i *trackedIndex) Reserve(int) error { return nil }
+
+func (i *trackedIndex) Close() error {
+	if i.onClose != nil {
+		i.onClose()
+	}
+	return nil
 }

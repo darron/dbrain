@@ -32,7 +32,7 @@
 - USearchOptions: Dimensions, Connectivity, ExpansionAdd, ExpansionSearch.
 - USearch implements Reserve(int) error, Add(...HNSWNode), Search([]float32, int), Export(io.Writer), Import(io.Reader), and Close().
 
-- [ ] **Step 1: Write failing tag-gated tests.**
+- [x] **Step 1: Write failing tag-gated tests.**
 
 ~~~go
 func TestUSearchAdapterSearchAndReopen(t *testing.T) {
@@ -52,7 +52,7 @@ func TestUSearchAdapterSearchAndReopen(t *testing.T) {
 
 Also cover wrong dimensions, negative options, malformed payload, and use after Close.
 
-- [ ] **Step 2: Verify RED.**
+- [x] **Step 2: Verify RED.**
 
 ~~~bash
 CGO_ENABLED=1 CGO_CFLAGS=-I/private/tmp/dbrain-usearch.4zEMyv/extracted \
@@ -63,7 +63,7 @@ go test -tags usearch ./internal/semanticindex -run TestUSearchAdapter -count=1
 
 Expected: package/build failure because the adapter does not exist.
 
-- [ ] **Step 3: Implement the smallest adapter.**
+- [x] **Step 3: Implement the smallest adapter.**
 
 Use F32/Cosine, Reserve before additions, connectivity and expansion options, SerializedLength plus SaveBuffer/LoadBuffer, and a copied byte payload. Reject nil/closed indexes and wrong dimensions; close exactly once.
 
@@ -78,7 +78,7 @@ func (u *USearch) Export(w io.Writer) error {
 }
 ~~~
 
-- [ ] **Step 4: Verify GREEN.**
+- [x] **Step 4: Verify GREEN.**
 
 Run the tagged package suite with the three variables above, then run:
 
@@ -86,7 +86,7 @@ Run the tagged package suite with the three variables above, then run:
 CGO_ENABLED=0 go test ./internal/semanticindex -count=1
 ~~~
 
-- [ ] **Step 5: Commit** the adapter, its dependency lock, and tests.
+- [x] **Step 5: Commit** the adapter, its dependency lock, and tests.
 
 ### Task 2: Candidate-Injectable Bakeoff
 
@@ -99,11 +99,11 @@ CGO_ENABLED=0 go test ./internal/semanticindex -count=1
 
 - Index has Reserve, Add, Search, Export, Import, and Close methods matching the existing HNSW ordinal/vector contract. HNSW Reserve is a no-op; USearch reserves the current stage's exact capacity before additions.
 - Factory is func(Options) (Index, error).
-- RunWith(ctx, opts, backend, factory) returns the existing Report.
+- RunWith(ctx, opts, backend, parameters, factory) returns the existing Report.
 - Run remains a wrapper for HNSW.
 - Report and StageReport add Parameters map[string]int, preserving old HNSW fields while recording native connectivity and expansion.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
 
 ~~~go
 func TestRunWithRecordsCandidateAndClosesIndexes(t *testing.T) {
@@ -118,9 +118,9 @@ func TestRunWithRecordsCandidateAndClosesIndexes(t *testing.T) {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED** with go test ./internal/annbakeoff -count=1.
+- [x] **Step 2: Verify RED** with go test ./internal/annbakeoff -count=1.
 
-- [ ] **Step 3: Refactor Run and runStage.**
+- [x] **Step 3: Refactor Run and runStage.**
 
 Pass the factory through RunWith; call Reserve(size) before additions; defer Close on the built and reopened indexes; retain corpus generator, exact oracle, gate order, report schema, and HNSW behavior.
 
@@ -130,7 +130,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 }
 ~~~
 
-- [ ] **Step 4: Verify GREEN.**
+- [x] **Step 4: Verify GREEN.**
 
 ~~~bash
 go test ./internal/annbakeoff ./cmd/devtools/semantic_ann_bakeoff -count=1
