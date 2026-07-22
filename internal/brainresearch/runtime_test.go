@@ -89,6 +89,23 @@ func TestRuntimeAdmissionEvaluatesBeforeProviderConstructionAndForceOnCannotBypa
 	if err != nil || b.semanticReadiness.State != semanticreadiness.StateReady || b.semanticRetriever == nil || providerCalls != 1 {
 		t.Fatalf("ready builder=%#v provider_calls=%d err=%v", b, providerCalls, err)
 	}
+	oldest := time.Now().UTC().Add(-time.Minute)
+	deps.readiness = func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+		return semanticreadiness.Snapshot{
+			Available: true, ProfileExists: true, ProfileProvenanceValid: true,
+			ExpectedParents: 2, CurrentParents: 1, PendingParents: 1, DirtyParents: 1,
+			ChunkableParents: 1, ParentsWithReadyChunk: 1, ChunkCount: 1, ReadyEmbeddings: 1,
+			EstimatedNotReadyChunks: 1, OldestDirtyAt: oldest,
+			GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1, LatestRevision: 1, ObservedLatestRevision: 1,
+			L0ReadyCount: 1, ObservedL0ReadyCount: 1,
+		}, nil
+	}
+	b, err = newRuntimeBuilderWithDeps(context.Background(), cfg, st, "", true, false, deps)
+	if err != nil || b.semanticReadiness.State != semanticreadiness.StateCatchingUp || b.semanticReadinessDiagnostics == nil ||
+		b.semanticReadinessDiagnostics.OmittedParentCount != 1 || b.semanticReadinessDiagnostics.EstimatedNotReadyChunks != 1 ||
+		b.semanticReadinessDiagnostics.OldestDebtAt == nil || !b.semanticReadinessDiagnostics.OldestDebtAt.Equal(oldest) {
+		t.Fatalf("catching-up builder=%#v diagnostics=%+v err=%v", b, b.semanticReadinessDiagnostics, err)
+	}
 }
 
 func TestRuntimeAdmissionPropagatesCallerCancellationBeforeProviderConstruction(t *testing.T) {
@@ -111,6 +128,31 @@ func TestRuntimeAdmissionPropagatesCallerCancellationBeforeProviderConstruction(
 	b, err := newRuntimeBuilderWithDeps(ctx, config.Config{RootDir: root}, st, "", false, false, deps)
 	if !errors.Is(err, context.Canceled) || b != nil || providerCalls != 0 {
 		t.Fatalf("builder=%#v err=%v provider_calls=%d", b, err, providerCalls)
+	}
+}
+
+func TestRuntimeAdmissionUsesShortFailOpenLatencyBudgetBeforeProviderConstruction(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	providerCalls := 0
+	deps := runtimeDeps{
+		readiness: func(ctx context.Context, _ *store.Store, _ embedding.Profile, _ int, _ time.Time) (semanticreadiness.Snapshot, error) {
+			<-ctx.Done()
+			return semanticreadiness.Snapshot{}, ctx.Err()
+		},
+		provider: func(semanticconfig.Config) (embedding.Provider, error) {
+			providerCalls++
+			return nil, errors.New("provider must not be constructed")
+		},
+	}
+	started := time.Now()
+	b, err := newRuntimeBuilderWithDeps(context.Background(), config.Config{RootDir: root}, st, "", false, false, deps)
+	if err != nil || b == nil || b.semanticReadiness.State != semanticreadiness.StateUnavailable || providerCalls != 0 {
+		t.Fatalf("builder=%#v err=%v provider_calls=%d", b, err, providerCalls)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("runtime admission took %s, want bounded fail-open latency", elapsed)
 	}
 }
 

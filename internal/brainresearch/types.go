@@ -22,16 +22,44 @@ const (
 )
 
 type Builder struct {
-	cfg                config.Config
-	st                 *store.Store
-	semanticRetriever  SemanticRetriever
-	semanticOptions    researchsemantic.Options
-	strategyRunner     func(context.Context, string, ask.Options) (ask.Response, error)
-	strategyPoolRunner func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error)
-	semanticMode       semanticconfig.Mode
-	semanticReadiness  semanticreadiness.Decision
-	semanticStatus     *semanticindex.Status
-	shadowComparison   *ShadowComparison
+	cfg                          config.Config
+	st                           *store.Store
+	semanticRetriever            SemanticRetriever
+	semanticOptions              researchsemantic.Options
+	strategyRunner               func(context.Context, string, ask.Options) (ask.Response, error)
+	strategyPoolRunner           func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error)
+	semanticMode                 semanticconfig.Mode
+	semanticReadiness            semanticreadiness.Decision
+	semanticReadinessDiagnostics *SemanticReadinessDiagnostics
+	semanticStatus               *semanticindex.Status
+	shadowComparison             *ShadowComparison
+}
+
+// SemanticReadinessDiagnostics exposes bounded, content-free catch-up debt.
+// Parent keys and source content are deliberately excluded from this value.
+type SemanticReadinessDiagnostics struct {
+	OmittedParentCount      int        `json:"omitted_parent_count"`
+	EstimatedNotReadyChunks int        `json:"estimated_not_ready_chunks"`
+	OldestDebtAt            *time.Time `json:"oldest_debt_at,omitempty"`
+}
+
+// WithSemanticReadinessDiagnostics attaches aggregate debt only while semantic
+// retrieval is admitted in catching-up mode.
+func (b *Builder) WithSemanticReadinessDiagnostics(diagnostics SemanticReadinessDiagnostics) *Builder {
+	if b == nil {
+		return b
+	}
+	b.semanticReadinessDiagnostics = nil
+	if b.semanticReadiness.State != semanticreadiness.StateCatchingUp {
+		return b
+	}
+	copy := diagnostics
+	if diagnostics.OldestDebtAt != nil {
+		oldest := *diagnostics.OldestDebtAt
+		copy.OldestDebtAt = &oldest
+	}
+	b.semanticReadinessDiagnostics = &copy
+	return b
 }
 
 func (b *Builder) WithSemanticMode(mode semanticconfig.Mode) *Builder {
@@ -121,29 +149,30 @@ type Pack struct {
 }
 
 type QueryPlan struct {
-	TextQuery             string                    `json:"text_query"`
-	QueryFamily           string                    `json:"query_family,omitempty"`
-	QueryTerms            []string                  `json:"query_terms"`
-	TagQueries            []string                  `json:"tag_queries"`
-	QueryVariants         []QueryVariant            `json:"query_variants,omitempty"`
-	Concepts              []QueryConcept            `json:"concepts,omitempty"`
-	ProtectedAnchors      []ProtectedAnchor         `json:"protected_anchors,omitempty"`
-	Planner               string                    `json:"planner,omitempty"`
-	PlannerModel          string                    `json:"planner_model,omitempty"`
-	PlannerError          string                    `json:"planner_error,omitempty"`
-	SourceTypes           []string                  `json:"source_types,omitempty"`
-	RetrievalLanes        []retrieval.RetrievalLane `json:"retrieval_lanes,omitempty"`
-	Limit                 int                       `json:"limit"`
-	MaxCharsPerDoc        int                       `json:"max_chars_per_doc"`
-	IncludeRelated        bool                      `json:"include_related"`
-	RelatedLimit          int                       `json:"related_limit,omitempty"`
-	Topic                 string                    `json:"topic,omitempty"`
-	TopicSource           string                    `json:"topic_source,omitempty"`
-	IncludeTopicBrief     bool                      `json:"include_topic_brief"`
-	SemanticMode          semanticconfig.Mode       `json:"semantic_mode"`
-	SemanticReadiness     semanticreadiness.State   `json:"semantic_readiness,omitempty"`
-	ShadowComparison      *ShadowComparison         `json:"shadow_comparison,omitempty"`
-	RetryShadowComparison *ShadowComparison         `json:"retry_shadow_comparison,omitempty"`
+	TextQuery                    string                        `json:"text_query"`
+	QueryFamily                  string                        `json:"query_family,omitempty"`
+	QueryTerms                   []string                      `json:"query_terms"`
+	TagQueries                   []string                      `json:"tag_queries"`
+	QueryVariants                []QueryVariant                `json:"query_variants,omitempty"`
+	Concepts                     []QueryConcept                `json:"concepts,omitempty"`
+	ProtectedAnchors             []ProtectedAnchor             `json:"protected_anchors,omitempty"`
+	Planner                      string                        `json:"planner,omitempty"`
+	PlannerModel                 string                        `json:"planner_model,omitempty"`
+	PlannerError                 string                        `json:"planner_error,omitempty"`
+	SourceTypes                  []string                      `json:"source_types,omitempty"`
+	RetrievalLanes               []retrieval.RetrievalLane     `json:"retrieval_lanes,omitempty"`
+	Limit                        int                           `json:"limit"`
+	MaxCharsPerDoc               int                           `json:"max_chars_per_doc"`
+	IncludeRelated               bool                          `json:"include_related"`
+	RelatedLimit                 int                           `json:"related_limit,omitempty"`
+	Topic                        string                        `json:"topic,omitempty"`
+	TopicSource                  string                        `json:"topic_source,omitempty"`
+	IncludeTopicBrief            bool                          `json:"include_topic_brief"`
+	SemanticMode                 semanticconfig.Mode           `json:"semantic_mode"`
+	SemanticReadiness            semanticreadiness.State       `json:"semantic_readiness,omitempty"`
+	SemanticReadinessDiagnostics *SemanticReadinessDiagnostics `json:"semantic_readiness_diagnostics,omitempty"`
+	ShadowComparison             *ShadowComparison             `json:"shadow_comparison,omitempty"`
+	RetryShadowComparison        *ShadowComparison             `json:"retry_shadow_comparison,omitempty"`
 }
 
 type ShadowRankedReference struct {

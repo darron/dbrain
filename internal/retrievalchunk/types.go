@@ -14,6 +14,14 @@ const (
 	V3MaximumOverlapUTF8Bytes       = 0
 	V3MinimumForwardUTF8Bytes       = 1
 	V3MaximumPlanningInputUTF8Bytes = 128 << 20
+	// Bound section metadata independently from text bytes. Empty sections
+	// still consume normalized-section and duplicate-key map entries.
+	V3MaximumPlanningSections = 4_096
+	// Exact capped readiness planning may allocate rune/anchor/window state
+	// only below this normalized-input ceiling. The allocation-free preflight
+	// still scans up to V3MaximumPlanningInputUTF8Bytes and proves ordinary
+	// oversized content over budget; sparse giant input fails closed.
+	V3MaximumExactPlanningInputUTF8Bytes = 8 << 20
 )
 
 const (

@@ -2,7 +2,6 @@ package semanticreadiness
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -55,7 +54,11 @@ type Snapshot struct {
 	Enabled       bool   `json:"enabled"`
 	Available     bool   `json:"available"`
 	PlanningError string `json:"planning_error,omitempty"`
-	ProfileID     string `json:"profile_id"`
+	// AggregateCountersCorrupt is set when an authoritative maintenance scan
+	// disproves the transactionally maintained runtime counters, or when the
+	// runtime path observes a structurally impossible counter combination.
+	AggregateCountersCorrupt bool   `json:"aggregate_counters_corrupt,omitempty"`
+	ProfileID                string `json:"profile_id"`
 
 	ProfileExists           bool      `json:"profile_exists"`
 	ProfileProvenanceValid  bool      `json:"profile_provenance_valid"`
@@ -115,7 +118,10 @@ func Evaluate(s Snapshot) Decision {
 	if s.PlanningError != "" {
 		return decision(StateUnavailable, "semantic readiness planning failed: "+s.PlanningError, false)
 	}
-	if s.ProfileExists && (!s.ProfileProvenanceValid || s.ProfilePurgeEpoch != s.GlobalPurgeEpoch || s.RevisionZeroEmbeddings > 0 || s.CorruptEmbeddings > 0 || s.LatestRevision != s.ObservedLatestRevision || s.L0ReadyCount != s.ObservedL0ReadyCount) {
+	if s.AggregateCountersCorrupt {
+		return decision(StateCorrupt, "semantic runtime aggregate counters are inconsistent", false)
+	}
+	if s.ProfileExists && (!s.ProfileProvenanceValid || s.ProfilePurgeEpoch != s.GlobalPurgeEpoch || s.RevisionZeroEmbeddings > 0 || s.CorruptEmbeddings > 0 || s.ObservedLatestRevision > s.LatestRevision || s.L0ReadyCount != s.ObservedL0ReadyCount) {
 		return decision(StateCorrupt, "semantic profile provenance, revision, or aggregate counters are inconsistent", false)
 	}
 	if s.ActiveGenerationID != "" && !s.ActiveGenerationValid {
@@ -191,7 +197,7 @@ func coverageReady(s Snapshot) bool {
 }
 
 func catchUpEligible(s Snapshot, exactCap int) bool {
-	if max(s.DirtyParents, s.PendingParents) > MaxDirtyParents || s.EstimatedNotReadyChunks > MaxNotReadyChunks || s.EstimatedNotReadyChunks < 0 {
+	if s.ChunkCount > exactCap || max(s.DirtyParents, s.PendingParents) > MaxDirtyParents || s.EstimatedNotReadyChunks > MaxNotReadyChunks || s.EstimatedNotReadyChunks < 0 {
 		return false
 	}
 	if !s.OldestDirtyAt.IsZero() && s.Now.Sub(s.OldestDirtyAt) > MaxDirtyAge {
@@ -258,15 +264,10 @@ func EstimateDirtyParentStream(ctx context.Context, limit int, next func() (Dirt
 		if remaining < 0 {
 			return limit + 1, nil
 		}
-		plan, err := retrievalchunk.PrepareStreamContext(ctx, dirty.Parent, retrievalchunk.DefaultOptions(), remaining)
+		count, err := retrievalchunk.CountOccurrencesCappedContext(ctx, dirty.Parent, retrievalchunk.DefaultOptions(), remaining)
 		if err != nil {
-			var exceeded *retrievalchunk.PreparedStreamOccurrenceLimitError
-			if errors.As(err, &exceeded) {
-				return limit + 1, nil
-			}
 			return 0, fmt.Errorf("plan dirty parent %s %s: %w", dirty.Parent.Kind, dirty.Parent.SourceKey, err)
 		}
-		count := plan.OccurrenceCount()
 		if dirty.LastCurrentChunkCount > count {
 			count = dirty.LastCurrentChunkCount
 		}

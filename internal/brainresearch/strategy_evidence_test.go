@@ -61,6 +61,30 @@ func TestCatchingUpPreservesFirstThreeDistinctLexicalParents(t *testing.T) {
 	}
 }
 
+func TestPreserveLeadingLexicalParentsUsesKindAndSourceKeyIdentity(t *testing.T) {
+	lexical := []ask.Evidence{
+		{Kind: "item", SourceKey: "shared:key", Excerpt: "item", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "shared:key"}},
+		{Kind: "source", SourceKey: "shared:key", Excerpt: "source", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "shared:key"}},
+		{Kind: "item", SourceKey: "lexical:no-chunk", Excerpt: "fallback"},
+	}
+	fused := []ask.Evidence{
+		{Kind: "item", SourceKey: "semantic:a", Excerpt: "a", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "semantic:a"}},
+		{Kind: "item", SourceKey: "semantic:b", Excerpt: "b", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "semantic:b"}},
+		{Kind: "item", SourceKey: "semantic:c", Excerpt: "c", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "semantic:c"}},
+	}
+
+	got := preserveLeadingLexicalParents(fused, lexical, 3)
+	seen := make(map[string]bool, len(got))
+	for _, row := range got {
+		seen[row.Kind+"\x00"+row.SourceKey] = true
+	}
+	for _, want := range []string{"item\x00shared:key", "source\x00shared:key", "item\x00lexical:no-chunk"} {
+		if !seen[want] {
+			t.Fatalf("missing protected lexical parent %q from %#v", want, got)
+		}
+	}
+}
+
 func TestIneligibleReadinessIsLexicalByteEquivalentAndDoesNotQuerySemantic(t *testing.T) {
 	_, st := inspectionTestStore(t)
 	lexical := []ask.Evidence{{SourceKey: "lexical:a", Excerpt: "alpha"}, {SourceKey: "lexical:b", Excerpt: "beta"}}

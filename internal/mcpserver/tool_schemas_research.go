@@ -18,27 +18,39 @@ func researchPackOutputSchema() map[string]interface{} {
 
 func researchQueryPlanSchema() map[string]interface{} {
 	return objectSchema(map[string]interface{}{
-		"text_query":              scalarSchema("string", "Text query submitted to corpus search after stopword removal."),
-		"query_terms":             arraySchema(scalarSchema("string", "Normalized query term.")),
-		"tag_queries":             arraySchema(scalarSchema("string", "Hyphenated user_tag aliases searched in addition to text search.")),
-		"query_variants":          arraySchema(researchQueryVariantSchema()),
-		"concepts":                arraySchema(researchQueryConceptSchema()),
-		"planner":                 scalarSchema("string", "Planner path used for retrieval, such as deterministic or model_assisted."),
-		"planner_model":           scalarSchema("string", "Model used for query planning when model-assisted planning ran."),
-		"planner_error":           scalarSchema("string", "Non-fatal planner error when deterministic fallback was used."),
-		"source_types":            arraySchema(scalarSchema("string", "Optional source type filters.")),
-		"retrieval_lanes":         arraySchema(retrievalLaneSchema()),
-		"limit":                   scalarSchema("integer", "Maximum evidence documents requested."),
-		"max_chars_per_doc":       scalarSchema("integer", "Maximum summary/excerpt characters per evidence document."),
-		"include_related":         scalarSchema("boolean", "Whether graph-related evidence was requested."),
-		"related_limit":           scalarSchema("integer", "Maximum related evidence documents."),
-		"topic":                   scalarSchema("string", "Topic used for the topic brief when present."),
-		"topic_source":            scalarSchema("string", "How the topic was selected: explicit, inferred, or normalized_question."),
-		"include_topic_brief":     scalarSchema("boolean", "Whether a topic brief was requested for this pack."),
-		"semantic_mode":           enumSchema("Effective semantic retrieval mode.", "off", "shadow", "on"),
-		"shadow_comparison":       shadowComparisonSchema(),
-		"retry_shadow_comparison": shadowComparisonSchema(),
+		"text_query":          scalarSchema("string", "Text query submitted to corpus search after stopword removal."),
+		"query_terms":         arraySchema(scalarSchema("string", "Normalized query term.")),
+		"tag_queries":         arraySchema(scalarSchema("string", "Hyphenated user_tag aliases searched in addition to text search.")),
+		"query_variants":      arraySchema(researchQueryVariantSchema()),
+		"concepts":            arraySchema(researchQueryConceptSchema()),
+		"planner":             scalarSchema("string", "Planner path used for retrieval, such as deterministic or model_assisted."),
+		"planner_model":       scalarSchema("string", "Model used for query planning when model-assisted planning ran."),
+		"planner_error":       scalarSchema("string", "Non-fatal planner error when deterministic fallback was used."),
+		"source_types":        arraySchema(scalarSchema("string", "Optional source type filters.")),
+		"retrieval_lanes":     arraySchema(retrievalLaneSchema()),
+		"limit":               scalarSchema("integer", "Maximum evidence documents requested."),
+		"max_chars_per_doc":   scalarSchema("integer", "Maximum summary/excerpt characters per evidence document."),
+		"include_related":     scalarSchema("boolean", "Whether graph-related evidence was requested."),
+		"related_limit":       scalarSchema("integer", "Maximum related evidence documents."),
+		"topic":               scalarSchema("string", "Topic used for the topic brief when present."),
+		"topic_source":        scalarSchema("string", "How the topic was selected: explicit, inferred, or normalized_question."),
+		"include_topic_brief": scalarSchema("boolean", "Whether a topic brief was requested for this pack."),
+		"semantic_mode":       enumSchema("Effective semantic retrieval mode.", "off", "shadow", "on"),
+		"semantic_readiness": enumSchema("Semantic retrieval admission state.",
+			"not_configured", "disabled", "needs_projection", "needs_embeddings", "retry_scheduled", "needs_index",
+			"building", "catching_up", "degraded_blocked", "stale", "corrupt", "ready", "unavailable"),
+		"semantic_readiness_diagnostics": semanticReadinessDiagnosticsSchema(),
+		"shadow_comparison":              shadowComparisonSchema(),
+		"retry_shadow_comparison":        shadowComparisonSchema(),
 	}, "text_query", "query_terms", "tag_queries", "limit", "max_chars_per_doc", "include_related", "include_topic_brief")
+}
+
+func semanticReadinessDiagnosticsSchema() map[string]interface{} {
+	return objectSchema(map[string]interface{}{
+		"omitted_parent_count":       scalarSchema("integer", "Number of pending or dirty parents omitted from the semantic lane."),
+		"estimated_not_ready_chunks": scalarSchema("integer", "Estimated total chunks not ready for semantic retrieval."),
+		"oldest_debt_at":             scalarSchema("string", "RFC3339 timestamp of the oldest projection or embedding debt when known."),
+	}, "omitted_parent_count", "estimated_not_ready_chunks")
 }
 
 func retrievalLaneSchema() map[string]interface{} {

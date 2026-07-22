@@ -3,6 +3,7 @@ package retrievalchunk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -154,12 +155,148 @@ func PrepareStreamContext(ctx context.Context, parent Parent, opts Options, maxO
 	})
 }
 
+// CountOccurrencesCappedContext returns the exact chunker-v3 occurrence count
+// when it is at most limit, and limit+1 as a stable over-budget sentinel. The
+// preflight is deliberately only a proof of overage, never an estimator: v3
+// windows are a zero-overlap partition and every untrimmed window is at most
+// MaxUTF8Bytes. Greedily covering every non-whitespace rune start with the
+// furthest possible interval of that size is a lower bound on final emitted
+// windows, regardless of natural anchors.
+// This lets readiness reject giant parents without cloning the unread tail into
+// []rune, anchor candidates, or prepared windows. Inputs not proven over budget
+// use the ordinary exact planner so all counts through limit remain identical.
+func CountOccurrencesCappedContext(ctx context.Context, parent Parent, opts Options, limit int) (int, error) {
+	if limit < 0 {
+		return 0, fmt.Errorf("retrieval occurrence limit must not be negative")
+	}
+	if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
+		return 0, err
+	}
+	over, normalizedBytes, err := occurrenceLimitPreflight(ctx, parent, limit)
+	if err != nil {
+		return 0, err
+	}
+	if over {
+		return limit + 1, nil
+	}
+	if normalizedBytes > V3MaximumExactPlanningInputUTF8Bytes {
+		return 0, fmt.Errorf("retrieval parent %s %s normalized input %d exceeds exact planning allocation ceiling %d", parent.Kind, parent.SourceKey, normalizedBytes, V3MaximumExactPlanningInputUTF8Bytes)
+	}
+	plan, err := PrepareStreamContext(ctx, parent, opts, limit)
+	if err != nil {
+		var exceeded *PreparedStreamOccurrenceLimitError
+		if errors.As(err, &exceeded) {
+			return limit + 1, nil
+		}
+		return 0, err
+	}
+	return plan.OccurrenceCount(), nil
+}
+
+func validateStreamingMetadataContext(ctx context.Context, parent Parent, opts Options, maxSections int) error {
+	if strings.TrimSpace(parent.Kind) == "" {
+		return fmt.Errorf("parent kind is required")
+	}
+	if strings.TrimSpace(parent.SourceKey) == "" {
+		return fmt.Errorf("parent source key is required")
+	}
+	if opts.TargetRunes <= 0 || opts.MaxRunes < opts.TargetRunes {
+		return fmt.Errorf("invalid chunk sizes: target=%d max=%d", opts.TargetRunes, opts.MaxRunes)
+	}
+	if opts.OverlapRunes != 0 {
+		return fmt.Errorf("retrieval chunker v3 requires zero overlap, got %d", opts.OverlapRunes)
+	}
+	if maxSections > 0 && len(parent.Sections) > maxSections {
+		return fmt.Errorf("retrieval parent %s %s section count %d exceeds planning section ceiling %d", parent.Kind, parent.SourceKey, len(parent.Sections), maxSections)
+	}
+	seen := make(map[string]struct{}, len(parent.Sections))
+	for i, section := range parent.Sections {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(section.Role) == "" {
+			return fmt.Errorf("section evidence role is required")
+		}
+		key := sectionKey(parent, section)
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("duplicate section key %q", key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+func occurrenceLimitPreflight(ctx context.Context, parent Parent, limit int) (bool, int, error) {
+	// len is a constant-time raw-byte guard. Malformed UTF-8 can expand during
+	// normalization, so the incremental normalized-byte counter below retains
+	// the authoritative ceiling for every prefix that must actually be read.
+	rawBytes := 0
+	for i, section := range parent.Sections {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return false, 0, err
+			}
+		}
+		if len(section.Text) > V3MaximumPlanningInputUTF8Bytes-rawBytes {
+			return false, 0, fmt.Errorf("retrieval parent %s %s section %d exceeds planning byte ceiling %d", parent.Kind, parent.SourceKey, i, V3MaximumPlanningInputUTF8Bytes)
+		}
+		rawBytes += len(section.Text)
+	}
+	normalizedBytes := 0
+	lowerBound := 0
+	for i, section := range parent.Sections {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return false, 0, err
+			}
+		}
+		sectionByteAt := 0
+		coveredThrough := 0
+		checkedBytes := 0
+		for _, value := range section.Text {
+			width := utf8.RuneLen(value)
+			if width < 0 || normalizedBytes > V3MaximumPlanningInputUTF8Bytes-width {
+				return false, 0, fmt.Errorf("retrieval parent %s %s section %d exceeds planning byte ceiling %d", parent.Kind, parent.SourceKey, i, V3MaximumPlanningInputUTF8Bytes)
+			}
+			normalizedBytes += width
+			checkedBytes += width
+			if checkedBytes >= 4<<10 {
+				if err := ctx.Err(); err != nil {
+					return false, 0, err
+				}
+				checkedBytes = 0
+			}
+			if !unicode.IsSpace(value) && sectionByteAt >= coveredThrough {
+				// Greedily cover the first uncovered non-whitespace rune start
+				// with the furthest possible <=1,800-byte interval. Any final
+				// zero-overlap v3 windows form another such cover, so this is a
+				// safe lower bound on emitted occurrences, not an estimate.
+				lowerBound++
+				if lowerBound > limit {
+					return true, normalizedBytes, nil
+				}
+				coveredThrough = sectionByteAt + MaxUTF8Bytes
+			}
+			sectionByteAt += width
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return false, 0, err
+	}
+	return false, normalizedBytes, nil
+}
+
 func prepareStreamWithPlanner(ctx context.Context, parent Parent, opts Options, maxOccurrences, planningByteLimit int, planSection func([]rune) ([]window, error)) (PreparedStreamPlan, error) {
 	if err := ctx.Err(); err != nil {
 		return PreparedStreamPlan{}, err
 	}
 	if planningByteLimit > 0 {
-		if err := validatePlanningInputBytes(parent, planningByteLimit); err != nil {
+		if err := validateStreamingMetadataContext(ctx, parent, opts, V3MaximumPlanningSections); err != nil {
+			return PreparedStreamPlan{}, err
+		}
+		if err := validatePlanningInputBytes(ctx, parent, planningByteLimit); err != nil {
 			return PreparedStreamPlan{}, err
 		}
 	}
@@ -211,19 +348,27 @@ func prepareStreamWithPlanner(ctx context.Context, parent Parent, opts Options, 
 	return PreparedStreamPlan{data: data}, nil
 }
 
-func validatePlanningInputBytes(parent Parent, limit int) error {
+func validatePlanningInputBytes(ctx context.Context, parent Parent, limit int) error {
 	if limit <= 0 {
 		return fmt.Errorf("retrieval planning byte ceiling must be positive")
 	}
 	total := 0
 	for i, section := range parent.Sections {
 		sectionBytes := 0
+		checkedBytes := 0
 		for _, value := range section.Text {
 			width := utf8.RuneLen(value)
 			if width < 0 || sectionBytes > limit-width {
 				return fmt.Errorf("retrieval parent %s %s section %d exceeds planning byte ceiling %d", parent.Kind, parent.SourceKey, i, limit)
 			}
 			sectionBytes += width
+			checkedBytes += width
+			if checkedBytes >= 4<<10 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				checkedBytes = 0
+			}
 		}
 		if total > limit-sectionBytes {
 			return fmt.Errorf("retrieval parent %s %s section %d exceeds planning byte ceiling %d", parent.Kind, parent.SourceKey, i, limit)

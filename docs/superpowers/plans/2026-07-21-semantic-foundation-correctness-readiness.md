@@ -35,7 +35,7 @@
   JSON with reason `projection_too_large_for_flat_retrieval`.
 - Embedding provider requests and persistence batches never exceed 5,000 rows. One persistence batch gets one monotonic profile revision and commits atomically.
 - Normal embedding work never scans the full ready profile and final progress output is constant-memory.
-- `ready` requires the approved 99.9/0.1 coverage gates and, eventually, a valid root. `catching_up` permits at most 500 dirty parents, 2,500 total not-ready occurrences across exact dirty-parent plans and current embedding debt, 30 minutes since the oldest projection or embedding debt, 10,000 L0 rows, and two percent tombstones. Exact v3 readiness planning stops at the 2,501 sentinel and fails closed on cancellation, resource failure, or the 128 MiB normalized-input planning ceiling.
+- `ready` requires the approved 99.9/0.1 coverage gates and, eventually, a valid root. `catching_up` permits at most 500 dirty parents, 2,500 total not-ready occurrences across exact dirty-parent plans and current embedding debt, 30 minutes since the oldest projection or embedding debt, 10,000 L0 rows, and two percent tombstones. Exact v3 readiness planning stops at the 2,501 sentinel. Its allocation-free, cancellation-aware preflight scans at most 128 MiB and proves dense oversized input over budget without materializing windows; exact rune/window planning is limited to 8 MiB of normalized input. Sparse input above that exact-allocation ceiling fails closed rather than allocating proportional planner state.
 - This plan does not implement ANN segments. The measured 25,000-vector exact
   cap is a hard runtime safety ceiling: configuration may lower it but cannot
   raise it. Profiles above the effective cap with otherwise complete foundation
@@ -675,7 +675,30 @@ new parents have none. Restored-corpus measurement showed the truthful one-byte
 guarantee would falsely put 14,197/34,180 parents (41.5 percent) over budget,
 while exact v3 planning puts zero over budget (p50 2, p90 18, p95 28, p99 85,
 max 2,208 occurrences). Fail closed on planner error or cancellation rather
-than inventing a non-guaranteed byte constant.
+than inventing a non-guaranteed byte constant. The planner first performs an
+allocation-free scan, capped at 128 MiB, that can return the 2,501 sentinel for
+dense oversized input. Readiness planning also rejects more than 4,096 sections
+before allocating its duplicate-key map and checks cancellation while
+validating bounded section metadata. It materializes exact rune/anchor/window
+state only for normalized input no larger than 8 MiB; sparse larger input that
+cannot be proven over budget by preflight is unavailable rather than an
+unbounded allocation.
+
+Ordinary runtime admission must not run the status command's full corpus
+joins. Migration 21 installs projection-ledger and per-profile status counters,
+then performs their authoritative backfill in the same SQLite write transaction
+while the trigger set is already active. Runtime reads those counters, the
+oldest dirty row through a required partial index, at most 500 dirty-parent
+identities through a keyset index, and at most the immutable 25,000-row exact
+cap for row/provenance validation. Missing required indexes fail admission
+closed. Ordinary request admission has a fixed 250 ms budget; timeout or any
+other readiness failure leaves the semantic lane unavailable before provider
+construction and returns the unchanged lexical path. The full
+status/maintenance snapshot remains authoritative: it scans the underlying rows
+and reports `corrupt` when either counter family drifts.
+Above the exact cap, counters are rejection signals only; they do not prove ANN
+membership or authorize search. Migration 21 exposes the transactional rebuild
+primitive; an explicit operator-facing repair command remains Task 8 scope.
 `semanticbuild.ReadStatus` delegates to `semanticreadiness.Evaluate`.
 `NewRuntimeBuilder` evaluates before constructing Ollama; force-on changes mode,
 not readiness. In this plan, only exact-eligible small corpora can become

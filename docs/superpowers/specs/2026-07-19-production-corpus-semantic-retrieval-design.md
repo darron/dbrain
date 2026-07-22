@@ -936,6 +936,16 @@ never lower than its last current chunk count. Planner cancellation, resource
 failure, or input beyond the authoritative readiness planning ceiling fails
 semantic admission closed while lexical retrieval remains available.
 
+The planner does not materialize the whole parent before it can discover the
+sentinel. An allocation-free, cancellation-aware preflight scans at most 128
+MiB of normalized UTF-8 and can prove dense oversized input over budget.
+Section metadata is independently capped at 4,096 entries before allocating
+the duplicate-key map, with cooperative cancellation checks during metadata
+validation. Exact rune, anchor, and window materialization is separately capped
+at 8 MiB. Sparse input above 8 MiB that preflight cannot prove over budget
+fails closed; the 128 MiB preflight ceiling is not an allocation budget for
+exact planning.
+
 The byte-ratio proposal was rejected with restored-corpus evidence. Chunker v3
 can guarantee only one byte of forward progress because natural boundaries may
 be dense. Dividing by that guarantee would classify 14,197 of 34,180 parents
@@ -962,6 +972,22 @@ limit disables only the semantic lane and records the exact reason. Lexical
 evidence and ordering then remain identical to semantic `off` behavior. These
 limits may become configurable only within a separately benchmarked safe
 range; the first release does not expose arbitrary overrides.
+
+Ordinary runtime admission uses transactionally maintained projection-ledger
+and per-profile embedding-status counters rather than the full status joins.
+Counter triggers are installed before an authoritative backfill in the same
+SQLite write transaction. Admission reads one immutable transaction, requires
+the dirty-age and dirty-parent keyset indexes, plans no more than 500 dirty
+parents, and validates profile/current rows only when both fit the immutable
+25,000-row exact cap. Missing required indexes, structurally impossible
+counters, cancellation, or validation failure fail closed before provider
+construction. Ordinary request admission has a fixed 250 ms budget. Exhausting
+that budget records semantic readiness as unavailable and returns the unchanged
+lexical path without constructing or calling the query embedding provider. The
+full status/maintenance path scans authoritative rows and marks the state
+`corrupt` when stored counters drift. Counts above the exact cap
+are rejection-only summaries; they are not ANN membership counters and cannot
+make a large profile searchable.
 
 All other non-disabled readiness states are ineligible for normal semantic
 retrieval.

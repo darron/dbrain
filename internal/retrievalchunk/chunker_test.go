@@ -3,7 +3,9 @@ package retrievalchunk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +62,65 @@ func TestChunkerV3GlobalAnchorsDoNotCascadeOnAllEqualInput(t *testing.T) {
 	}
 }
 
+func TestCountOccurrencesCappedContextStopsBeforeMaterializingOverBudgetTail(t *testing.T) {
+	const limit = 2_500
+	// This is deliberately much larger than the prefix needed to prove that a
+	// zero-overlap, 1,800-byte-ceiling partition contains at least limit+1
+	// nonblank windows. Capped readiness planning must not clone or plan the
+	// untouched tail.
+	text := strings.Repeat("x ", 16<<20)
+	parent := Parent{Kind: "source", SourceKey: "source:capped-tail", Sections: []Section{{Key: "body", Role: "raw", Text: text}}}
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	got, err := CountOccurrencesCappedContext(context.Background(), parent, DefaultOptions(), limit)
+	runtime.ReadMemStats(&after)
+	if err != nil || got != limit+1 {
+		t.Fatalf("count=%d err=%v", got, err)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 8<<20 {
+		t.Fatalf("capped planning allocated %d bytes for an over-budget prefix", allocated)
+	}
+}
+
+func TestCountOccurrencesCappedContextFailsClosedBeforeExactPlanningSparseGiant(t *testing.T) {
+	text := "x" + strings.Repeat(" ", 16<<20) + "x"
+	parent := Parent{Kind: "source", SourceKey: "source:sparse-giant", Sections: []Section{{Key: "body", Role: "raw", Text: text}}}
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := CountOccurrencesCappedContext(context.Background(), parent, DefaultOptions(), 2_500)
+	runtime.ReadMemStats(&after)
+	if err == nil || !strings.Contains(err.Error(), "exact planning allocation ceiling") {
+		t.Fatalf("error=%v", err)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 8<<20 {
+		t.Fatalf("sparse capped planning allocated %d bytes", allocated)
+	}
+}
+
+func TestCountOccurrencesCappedContextPreservesExactV3CountsAtAndBelowCap(t *testing.T) {
+	parents := []Parent{
+		{Kind: "source", SourceKey: "source:small", Sections: []Section{{Key: "body", Role: "raw", Text: "hello 🌍"}}},
+		{Kind: "source", SourceKey: "source:dense", Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat("Sentence.\n\n", 900)}}},
+		{Kind: "source", SourceKey: "source:multibyte", Sections: []Section{{Key: "body", Role: "raw", Text: strings.Repeat("🚀 semantic evidence ", 4_000)}}},
+	}
+	for _, parent := range parents {
+		projection, err := BuildProjection(parent, DefaultOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(projection.Occurrences) > 2_500 {
+			t.Fatalf("fixture %s has %d occurrences", parent.SourceKey, len(projection.Occurrences))
+		}
+		got, err := CountOccurrencesCappedContext(context.Background(), parent, DefaultOptions(), 2_500)
+		if err != nil || got != len(projection.Occurrences) {
+			t.Fatalf("%s count=%d err=%v want=%d", parent.SourceKey, got, err, len(projection.Occurrences))
+		}
+	}
+}
+
 func TestV3PublishedPlanningBoundsMatchDenseAndMultibyteProgress(t *testing.T) {
 	if V3ByteCeiling != MaxUTF8Bytes || V3MaximumOverlapUTF8Bytes != 0 || V3MinimumForwardUTF8Bytes != 1 {
 		t.Fatalf("v3 bounds ceiling=%d overlap=%d forward=%d", V3ByteCeiling, V3MaximumOverlapUTF8Bytes, V3MinimumForwardUTF8Bytes)
@@ -100,16 +161,35 @@ func TestPrepareStreamContextCooperativelyCancelsDuringSectionPlanning(t *testin
 	}
 }
 
+func TestCappedOccurrencePlanningBoundsSectionMetadataBeforeDuplicateMap(t *testing.T) {
+	parent := Parent{Kind: "source", SourceKey: "many-empty-sections", Sections: make([]Section, V3MaximumPlanningSections+1)}
+	if _, err := CountOccurrencesCappedContext(context.Background(), parent, DefaultOptions(), 2_500); err == nil || !strings.Contains(err.Error(), "planning section ceiling") {
+		t.Fatalf("CountOccurrencesCappedContext error=%v", err)
+	}
+}
+
+func TestCappedOccurrencePlanningCooperativelyCancelsDuringSectionMetadata(t *testing.T) {
+	sections := make([]Section, V3MaximumPlanningSections)
+	for i := range sections {
+		sections[i] = Section{Key: fmt.Sprintf("section-%04d", i), Role: "raw"}
+	}
+	ctx := &cancelAfterErrChecks{remaining: 1}
+	parent := Parent{Kind: "source", SourceKey: "cancel-metadata", Sections: sections}
+	if _, err := CountOccurrencesCappedContext(ctx, parent, DefaultOptions(), 2_500); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CountOccurrencesCappedContext error=%v after %d checks", err, ctx.checks)
+	}
+}
+
 func TestPlanningInputByteCeilingFailsClosedBeforeNormalization(t *testing.T) {
 	parent := Parent{Kind: "source", SourceKey: "oversize", Sections: []Section{{Key: "body", Role: "raw", Text: "123456789"}}}
-	if err := validatePlanningInputBytes(parent, 8); err == nil || !strings.Contains(err.Error(), "planning byte ceiling") {
+	if err := validatePlanningInputBytes(context.Background(), parent, 8); err == nil || !strings.Contains(err.Error(), "planning byte ceiling") {
 		t.Fatalf("validatePlanningInputBytes error=%v", err)
 	}
 }
 
 func TestPlanningInputByteCeilingAccountsForMalformedUTF8Expansion(t *testing.T) {
 	parent := Parent{Kind: "source", SourceKey: "malformed", Sections: []Section{{Key: "body", Role: "raw", Text: string([]byte{0xff, 0xff, 0xff})}}}
-	if err := validatePlanningInputBytes(parent, 8); err == nil || !strings.Contains(err.Error(), "planning byte ceiling") {
+	if err := validatePlanningInputBytes(context.Background(), parent, 8); err == nil || !strings.Contains(err.Error(), "planning byte ceiling") {
 		t.Fatalf("validatePlanningInputBytes malformed error=%v", err)
 	}
 }

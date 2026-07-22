@@ -95,6 +95,21 @@ var dbrainEmbeddingProfileDefinitionSchemaV19 = []schemaIdentityTable{{
 	},
 }}
 
+var dbrainRuntimeReadinessSchemaV21 = []schemaIdentityTable{{
+	name: "retrieval_embedding_profiles",
+	columns: []string{
+		"ready_embedding_count", "pending_embedding_count", "blocked_embedding_count",
+		"error_embedding_count", "corrupt_embedding_count",
+	},
+}, {
+	name: "retrieval_state",
+	columns: []string{
+		"projection_parent_count", "current_parent_count", "empty_parent_count",
+		"pending_parent_count", "blocked_parent_count", "error_parent_count",
+		"dirty_parent_count", "current_chunk_count",
+	},
+}}
+
 var compatibleSchemaMigrationNames = map[int]map[string]struct{}{
 	6: {
 		"source_summary_failure_timestamp": {},
@@ -160,6 +175,14 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		case err != nil:
 			return 0, 0, fmt.Errorf("inspect dbrain embedding profile migration: %w", err)
 		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalReadinessCountersVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainRuntimeReadinessSchemaV21...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain runtime readiness counter migration: %w", err)
+		}
 	}
 
 	missingTables, missingColumns := 0, 0
@@ -214,6 +237,21 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 			}
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return missingTables, missingColumns, fmt.Errorf("inspect embedding profile migration triggers: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalReadinessCountersVersion).Scan(&found)
+		if err == nil {
+			for name, triggers := range map[string][]retrievalConstraintTrigger{
+				"runtime embedding readiness": retrievalRuntimeReadinessCounterTriggers,
+				"runtime projection readiness": retrievalRuntimeProjectionCounterTriggers,
+			} {
+				var inspectErr error
+				missingTables, firstMissing, inspectErr = inspectCanonicalTriggers(st, name, triggers, missingTables, firstMissing)
+				if inspectErr != nil {
+					return missingTables, missingColumns, inspectErr
+				}
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return missingTables, missingColumns, fmt.Errorf("inspect runtime readiness migration triggers: %w", err)
 		}
 	}
 	return missingTables, missingColumns, firstMissing

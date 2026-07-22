@@ -749,7 +749,7 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *test
 		"retrieval_embedding_profiles": {
 			"profile_id", "latest_revision", "purge_epoch", "active_generation_id", "active_snapshot_revision", "active_indexed_count", "l0_ready_count", "active_tombstone_count", "updated_at",
 			"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
-			"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
+			"ready_embedding_count", "pending_embedding_count", "blocked_embedding_count", "error_embedding_count", "corrupt_embedding_count",
 		},
 	}
 	for table, columns := range requiredColumns {
@@ -779,12 +779,10 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *test
 							t.Fatalf("drop embedding profile trigger %s: %v", trigger.name, err)
 						}
 					}
-				}
-				if table == "retrieval_embedding_profiles" {
-					for _, trigger := range retrievalEmbeddingProfileTriggersV19 {
+					for _, trigger := range retrievalRuntimeReadinessCounterTriggers {
 						if _, err := db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
 							_ = db.Close()
-							t.Fatalf("drop embedding profile trigger %s: %v", trigger.name, err)
+							t.Fatalf("drop runtime readiness trigger %s: %v", trigger.name, err)
 						}
 					}
 				}
@@ -1318,6 +1316,11 @@ func TestEmbeddingProfileDefinitionMigrationRejectsMixedChunkProvenance(t *testi
 			t.Fatal(err)
 		}
 	}
+	for _, trigger := range retrievalRuntimeReadinessCounterTriggers {
+		if _, err := db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := db.Exec(`UPDATE retrieval_chunks SET projection_version='mixed-projection' WHERE chunk_id='migration-profile-b'`); err != nil {
 		t.Fatal(err)
 	}
@@ -1419,6 +1422,11 @@ func genuineV18DatabaseWithUnprovenReadyEmbedding(t *testing.T) (string, embeddi
 		}
 	}
 	for _, trigger := range retrievalEmbeddingProfileTriggersV19 {
+		if _, err := st.db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, trigger := range retrievalRuntimeReadinessCounterTriggers {
 		if _, err := st.db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
 			t.Fatal(err)
 		}

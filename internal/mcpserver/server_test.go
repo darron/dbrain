@@ -35,7 +35,7 @@ func TestResearchPackSchemaValidatesChunkFusionAndShadowArrays(t *testing.T) {
 	fused, distance, raw, contribution := 0.03, 0.1, 7.0, 0.02
 	pack := brainresearch.Pack{
 		SchemaVersion: brainresearch.SchemaVersion, Question: "q", Mode: "evidence_only",
-		QueryPlan: brainresearch.QueryPlan{TextQuery: "q", QueryTerms: []string{}, TagQueries: []string{}, Concepts: []brainresearch.QueryConcept{{Key: "q", Terms: []string{"q"}, Required: true, Role: "content"}}, Limit: 1, MaxCharsPerDoc: 100, SemanticMode: semanticconfig.ModeShadow, ShadowComparison: &brainresearch.ShadowComparison{
+		QueryPlan: brainresearch.QueryPlan{TextQuery: "q", QueryTerms: []string{}, TagQueries: []string{}, Concepts: []brainresearch.QueryConcept{{Key: "q", Terms: []string{"q"}, Required: true, Role: "content"}}, Limit: 1, MaxCharsPerDoc: 100, SemanticMode: semanticconfig.ModeShadow, SemanticReadiness: semanticreadiness.StateCatchingUp, SemanticReadinessDiagnostics: &brainresearch.SemanticReadinessDiagnostics{OmittedParentCount: 2, EstimatedNotReadyChunks: 3}, ShadowComparison: &brainresearch.ShadowComparison{
 			Status: semanticindex.StateSearched, Lexical: []brainresearch.ShadowRankedReference{}, Hybrid: []brainresearch.ShadowRankedReference{}, Added: []brainresearch.ShadowRankedReference{}, Removed: []brainresearch.ShadowRankedReference{}, Reordered: []brainresearch.ShadowRankedReference{},
 		}, RetryShadowComparison: &brainresearch.ShadowComparison{Status: semanticindex.StateUnavailable, Reason: semanticindex.ReasonProviderUnavailable, Lexical: []brainresearch.ShadowRankedReference{}, Hybrid: []brainresearch.ShadowRankedReference{}, Added: []brainresearch.ShadowRankedReference{}, Removed: []brainresearch.ShadowRankedReference{}, Reordered: []brainresearch.ShadowRankedReference{}}},
 		Coverage: brainresearch.Coverage{ByKind: []brainresearch.Bucket{}, BySourceType: []brainresearch.Bucket{}},
@@ -68,6 +68,45 @@ func TestResearchQueryConceptSchemaAdvertisesRole(t *testing.T) {
 	want := []interface{}{"anchor", "content", "intent", "frame"}
 	if got := role["enum"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("concept role enum = %#v, want %#v", got, want)
+	}
+}
+
+func TestResearchQueryPlanSchemaAdvertisesSemanticReadinessDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	properties, ok := researchQueryPlanSchema()["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("query plan schema properties missing: %#v", researchQueryPlanSchema())
+	}
+	readiness, ok := properties["semantic_readiness"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("semantic readiness schema missing: %#v", properties)
+	}
+	wantStates := []interface{}{
+		"not_configured", "disabled", "needs_projection", "needs_embeddings", "retry_scheduled", "needs_index",
+		"building", "catching_up", "degraded_blocked", "stale", "corrupt", "ready", "unavailable",
+	}
+	if got := readiness["enum"]; !reflect.DeepEqual(got, wantStates) {
+		t.Fatalf("semantic readiness enum = %#v, want %#v", got, wantStates)
+	}
+
+	diagnostics, ok := properties["semantic_readiness_diagnostics"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("semantic readiness diagnostics schema missing: %#v", properties)
+	}
+	diagnosticProperties, ok := diagnostics["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("semantic readiness diagnostics properties missing: %#v", diagnostics)
+	}
+	for _, key := range []string{"omitted_parent_count", "estimated_not_ready_chunks"} {
+		field, ok := diagnosticProperties[key].(map[string]interface{})
+		if !ok || field["type"] != "integer" {
+			t.Fatalf("diagnostic %s schema = %#v, want integer", key, field)
+		}
+	}
+	oldest, ok := diagnosticProperties["oldest_debt_at"].(map[string]interface{})
+	if !ok || oldest["type"] != "string" {
+		t.Fatalf("oldest_debt_at schema = %#v, want string", oldest)
 	}
 }
 

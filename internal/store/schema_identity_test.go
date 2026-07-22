@@ -24,6 +24,22 @@ func TestValidateRestorableDatabaseAcceptsCurrentSchema(t *testing.T) {
 	}
 }
 
+func TestValidateRestorableDatabaseRejectsMissingRuntimeReadinessTrigger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "current.db")
+	st := openStoreAtPath(t, path)
+	trigger := retrievalRuntimeProjectionCounterTriggers[0]
+	if _, err := st.db.Exec(`DROP TRIGGER ` + trigger.name); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err := ValidateRestorableDatabase(t.Context(), path)
+	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), trigger.name) {
+		t.Fatalf("validation after dropping v21 trigger=%v", err)
+	}
+}
+
 func TestValidateRestorableDatabasePreservesV19EmbeddingProfileIdentity(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "v19.db")
@@ -32,7 +48,7 @@ func TestValidateRestorableDatabasePreservesV19EmbeddingProfileIdentity(t *testi
 		t.Fatal(err)
 	}
 	execSchemaIdentityTestDB(t, path, `
-		DELETE FROM schema_migrations WHERE version=20;
+		DELETE FROM schema_migrations WHERE version>19;
 		PRAGMA user_version=19`)
 	if err := ValidateRestorableDatabase(t.Context(), path); err != nil {
 		t.Fatalf("validate genuine v19 embedding profile schema: %v", err)

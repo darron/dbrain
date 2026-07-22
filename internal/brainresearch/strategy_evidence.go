@@ -275,10 +275,10 @@ func preserveLeadingLexicalParents(fused, lexical []ask.Evidence, count int) []a
 		return fused
 	}
 	required := make([]ask.Evidence, 0, min(count, len(fused)))
-	requiredKeys := make(map[string]struct{}, count)
+	requiredKeys := make(map[evidenceParentIdentity]struct{}, count)
 	for _, row := range lexical {
 		key := evidenceParentKey(row)
-		if key == "" {
+		if key.sourceKey == "" {
 			continue
 		}
 		if _, exists := requiredKeys[key]; exists {
@@ -291,7 +291,7 @@ func preserveLeadingLexicalParents(fused, lexical []ask.Evidence, count int) []a
 		}
 	}
 	out := append([]ask.Evidence(nil), fused...)
-	present := make(map[string]struct{}, len(out))
+	present := make(map[evidenceParentIdentity]struct{}, len(out))
 	for _, row := range out {
 		present[evidenceParentKey(row)] = struct{}{}
 	}
@@ -318,11 +318,17 @@ func preserveLeadingLexicalParents(fused, lexical []ask.Evidence, count int) []a
 	return out
 }
 
-func evidenceParentKey(row ask.Evidence) string {
+type evidenceParentIdentity struct {
+	kind      string
+	sourceKey string
+}
+
+func evidenceParentKey(row ask.Evidence) evidenceParentIdentity {
+	key := strings.TrimSpace(row.SourceKey)
 	if row.Chunk != nil && strings.TrimSpace(row.Chunk.ParentSourceKey) != "" {
-		return strings.TrimSpace(row.Chunk.ParentSourceKey)
+		key = strings.TrimSpace(row.Chunk.ParentSourceKey)
 	}
-	return strings.TrimSpace(row.SourceKey)
+	return evidenceParentIdentity{kind: strings.TrimSpace(row.Kind), sourceKey: key}
 }
 
 func (b *Builder) setShadowComparison(lexical, hybrid []ask.Evidence, status semanticindex.Status) {

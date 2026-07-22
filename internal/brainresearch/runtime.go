@@ -21,13 +21,15 @@ type runtimeDeps struct {
 	provider  func(semanticconfig.Config) (embedding.Provider, error)
 }
 
+const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
+
 func defaultRuntimeDeps() runtimeDeps {
 	return runtimeDeps{
 		readiness: func(ctx context.Context, st *store.Store, profile embedding.Profile, exactMax int, now time.Time) (semanticreadiness.Snapshot, error) {
 			if st == nil {
 				return semanticreadiness.Snapshot{}, store.ErrRetrievalUnavailable
 			}
-			return st.SemanticReadinessSnapshotAt(ctx, profile, exactMax, now)
+			return st.SemanticRuntimeReadinessSnapshotAt(ctx, profile, exactMax, now)
 		},
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions})
@@ -76,7 +78,7 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	}
 	exactMaxChunks := semanticreadiness.EffectiveExactMaxChunks(ready.ExactFallbackMaxChunks)
 	profile := semanticbuild.Profile(embedding.Info{Provider: string(ready.Provider), Model: ready.Model, Dimensions: ready.Dimensions})
-	readinessCtx, cancelReadiness := context.WithTimeout(ctx, 30*time.Second)
+	readinessCtx, cancelReadiness := context.WithTimeout(ctx, semanticRuntimeAdmissionTimeout)
 	defer cancelReadiness()
 	snapshot, snapshotErr := deps.readiness(readinessCtx, st, profile, exactMaxChunks, time.Now().UTC())
 	if snapshotErr != nil {
@@ -96,6 +98,16 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 		snapshot.Now = time.Now().UTC()
 	}
 	b.semanticReadiness = semanticreadiness.Evaluate(snapshot)
+	var oldestDebtAt *time.Time
+	if !snapshot.OldestDirtyAt.IsZero() {
+		oldest := snapshot.OldestDirtyAt
+		oldestDebtAt = &oldest
+	}
+	b.WithSemanticReadinessDiagnostics(SemanticReadinessDiagnostics{
+		OmittedParentCount:      max(snapshot.DirtyParents, snapshot.PendingParents),
+		EstimatedNotReadyChunks: snapshot.EstimatedNotReadyChunks,
+		OldestDebtAt:            oldestDebtAt,
+	})
 	if !b.semanticReadiness.Searchable {
 		return b, nil
 	}
