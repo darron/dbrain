@@ -929,6 +929,16 @@ executor refuses the last-segment-to-exact-L0 transition because the present
 root format requires at least one segment. It does not expose a command, remove
 input/cache paths, retain rollback roots, or enable semantic serving.
 
+### Implemented Optional Native Root Loader (2026-07-22)
+
+The tag-gated native adapter can now open an immutable root only by reopening
+the root and every referenced segment through the content-addressed checksum
+validators, checking the USearch backend/dimensions, and importing each payload
+into a closeable native index. Any manifest, checksum, backend, dimension, or
+import failure rejects the complete root. This is an internal read-only loader;
+it does not select visible results, validate candidates against SQLite, rerank,
+or enable semantic serving.
+
 ### Query Lifecycle
 
 A normal semantic search:

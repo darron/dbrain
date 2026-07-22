@@ -4,8 +4,11 @@ package semanticindex
 
 import (
 	"bytes"
+	"io"
 	"reflect"
 	"testing"
+
+	"github.com/darron/dbrain/internal/semanticsegment"
 )
 
 func TestUSearchAdapterSearchAndReopenPreservesNearestOrdinals(t *testing.T) {
@@ -39,6 +42,45 @@ func TestUSearchAdapterSearchAndReopenPreservesNearestOrdinals(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertUSearchOrdinals(t, reopened, []uint64{11, 22})
+}
+
+func TestOpenUSearchRootImportsVerifiedSegments(t *testing.T) {
+	cache := t.TempDir()
+	profile := "profile"
+	index, err := NewUSearch(USearchOptions{Dimensions: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Reserve(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Add(HNSWNode{Ordinal: 0, Vector: []float32{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	var payload bytes.Buffer
+	if err := index.Export(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{DatabaseID: "db", ProfileID: profile, Backend: BackendUSearch, BackendVersion: "test", DistanceMetric: "cosine", Dimensions: 2, Members: []semanticsegment.Member{{Ordinal: 0, ChunkID: "chunk", Revision: 1, VectorHash: "hash"}}, Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 1, Segments: []semanticsegment.RootSegment{{Hash: segment.Hash, RelativePath: segment.RelativePath}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := OpenUSearchRoot(cache, "db", profile, root.Manifest.GenerationID, USearchOptions{Dimensions: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = loaded.Close() }()
+	if len(loaded.Segments) != 1 {
+		t.Fatalf("segments=%d", len(loaded.Segments))
+	}
+	assertUSearchOrdinals(t, loaded.Segments[0].Index, []uint64{0})
 }
 
 func TestUSearchAdapterRejectsInvalidState(t *testing.T) {

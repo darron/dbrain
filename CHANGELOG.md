@@ -56,6 +56,9 @@ development date for the change set.
   replacement segments and a rewrite root, and uses existing root CAS
   activation. It retains unselected segments and leaves failed publications
   unreferenced; no command, cache cleanup, or serving path is enabled.
+- **Verified optional native root loader**: Added a `usearch && cgo` internal
+  loader that reopens the immutable root/segments, verifies provenance and
+  checksums, and imports closeable native indexes. It remains non-serving.
 
 ### Optional native ANN backend screening (2026-07-22)
 
