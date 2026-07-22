@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	currentSchemaVersion                    = 21
+	currentSchemaVersion                    = 22
 	auditProvenanceMigrationVersion         = 12
 	auditProvenanceMigrationName            = "audit_provenance_v1"
 	retrievalMigrationVersion               = 13
@@ -30,6 +30,8 @@ const (
 	retrievalEmbeddingRevisionRepairName    = "retrieval_embedding_revision_provenance_repair"
 	retrievalReadinessCountersVersion       = 21
 	retrievalReadinessCountersName          = "retrieval_runtime_readiness_counters"
+	retrievalSegmentMembershipVersion       = 22
+	retrievalSegmentMembershipName          = "retrieval_segment_membership_v1"
 )
 
 type schemaMigration struct {
@@ -211,6 +213,13 @@ var schemaMigrations = []schemaMigration{
 		Name:    retrievalReadinessCountersName,
 		Run: func(s *Store) error {
 			return s.RepairRetrievalRuntimeReadinessCounters(context.Background())
+		},
+	},
+	{
+		Version: retrievalSegmentMembershipVersion,
+		Name:    retrievalSegmentMembershipName,
+		Run: func(s *Store) error {
+			return s.ensureRetrievalSegmentMembershipSchema()
 		},
 	},
 }

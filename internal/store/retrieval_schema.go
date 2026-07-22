@@ -418,6 +418,54 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 	return s.seedSemanticFoundationRetrievalParents()
 }
 
+func (s *Store) ensureRetrievalSegmentMembershipSchema() error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS retrieval_index_segments (
+			segment_hash TEXT PRIMARY KEY,
+			profile_id TEXT NOT NULL,
+			backend TEXT NOT NULL,
+			backend_version TEXT NOT NULL,
+			dimensions INTEGER NOT NULL,
+			distance_metric TEXT NOT NULL,
+			indexed_chunk_count INTEGER NOT NULL,
+			relative_cache_path TEXT NOT NULL,
+			membership_hash TEXT NOT NULL,
+			payload_hash TEXT NOT NULL,
+			manifest_hash TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_index_segments_profile
+			ON retrieval_index_segments(profile_id, segment_hash)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_index_segment_members (
+			segment_hash TEXT NOT NULL,
+			ordinal INTEGER NOT NULL,
+			chunk_id TEXT NOT NULL,
+			revision INTEGER NOT NULL,
+			vector_hash TEXT NOT NULL,
+			PRIMARY KEY(segment_hash, ordinal),
+			UNIQUE(segment_hash, chunk_id),
+			FOREIGN KEY(segment_hash) REFERENCES retrieval_index_segments(segment_hash) ON DELETE RESTRICT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_index_segment_members_chunk
+			ON retrieval_index_segment_members(chunk_id, revision)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_generation_segments (
+			generation_id TEXT NOT NULL,
+			segment_hash TEXT NOT NULL,
+			PRIMARY KEY(generation_id, segment_hash),
+			FOREIGN KEY(generation_id) REFERENCES retrieval_index_generations(generation_id) ON DELETE RESTRICT,
+			FOREIGN KEY(segment_hash) REFERENCES retrieval_index_segments(segment_hash) ON DELETE RESTRICT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_generation_segments_segment
+			ON retrieval_generation_segments(segment_hash, generation_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.Exec(statement); err != nil {
+			return fmt.Errorf("ensure retrieval segment membership schema: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Store) ensureSemanticFoundationConstraints() error {
 	var invalidSingletons int
 	if err := s.db.QueryRow(`
