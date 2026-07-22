@@ -41,6 +41,11 @@ development date for the change set.
   live/tombstone membership counts. It rejects catalog drift and has no vector
   payload reads, replacement-root activation, cache mutation, command, or
   serving behavior.
+- **Bounded compaction member stream**: Added a read-only callback stream for
+  the live rows of one or two CAS-checked active segments. It revalidates exact
+  ready/current membership, encoded vector integrity, and catalog counts before
+  yielding each vector. The current native builder still materializes its input;
+  this creates no payload, root, cache, command, or serving change.
 
 ### Optional native ANN backend screening (2026-07-22)
 

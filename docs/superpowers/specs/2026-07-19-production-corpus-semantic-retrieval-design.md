@@ -880,6 +880,24 @@ empty segment list, so a last-segment-to-L0 transition remains an explicit
 future format/activation-contract change rather than an implicit compaction
 side effect.
 
+### Implemented Active-Segment Live-Member Stream (2026-07-22)
+
+`internal/store` can now stream current live embeddings for one or two selected
+active-root segments under the snapshot's expected root, purge epoch, and
+snapshot revision. It rechecks the active completed generation, selected
+membership catalog counts, exact ready `(chunk_id, revision, vector_hash)`
+identity, current parent projection, current chunk text hash, and encoded vector
+integrity before invoking its callback. Rows arrive in stable active-segment and
+member-ordinal order and are not collected by the store.
+
+The callback is synchronous and may not re-enter the store or mutate SQLite
+while the read transaction is open. This lets a later compactor feed a streaming
+backend builder without borrowing inactive historical vectors, but it does not
+yet change the current materializing native builder, publish a replacement
+payload/root, remove input segments, clean cache paths, or enable semantic
+serving. Final activation must still use the existing root CAS because current
+state can change after this read stream closes.
+
 ### Query Lifecycle
 
 A normal semantic search:
