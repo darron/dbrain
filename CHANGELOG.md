@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Optional native ANN backend screening (2026-07-22)
+
+- **USearch candidate evidence**: Added a tag-gated, content-free USearch
+  adapter and bakeoff command for a locally supplied native library. The default
+  CGO-free build remains unchanged; the candidate neither opens SQLite nor
+  enables semantic retrieval. The 286,619-vector screen passed the exact
+  recall/reopen gate only with the recorded query-expansion parameter, so
+  segmented lifecycle and release distribution remain separately gated work.
+
 ### Production-corpus semantic readiness foundation (2026-07-21)
 
 - **Bounded projection and readiness**: Added a durable dirty-parent ledger,

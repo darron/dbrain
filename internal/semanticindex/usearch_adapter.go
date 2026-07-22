@@ -125,8 +125,12 @@ func (u *USearch) Export(w io.Writer) error {
 	if err := u.index.SaveBuffer(payload, size); err != nil {
 		return fmt.Errorf("save usearch payload: %w", err)
 	}
-	if _, err := w.Write(payload); err != nil {
+	n, err := w.Write(payload)
+	if err != nil {
 		return fmt.Errorf("write usearch payload: %w", err)
+	}
+	if n != len(payload) {
+		return fmt.Errorf("write usearch payload: %w", io.ErrShortWrite)
 	}
 	return nil
 }

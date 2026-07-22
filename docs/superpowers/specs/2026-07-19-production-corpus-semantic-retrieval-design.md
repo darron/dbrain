@@ -599,9 +599,26 @@ The screening integration must meet all of these constraints:
    publication, provenance, and cache reclamation remain repo-owned. USearch's
    `Save`, `Load`, or `View` files are opaque payloads inside that envelope.
 
-Backend status is **screening in progress**. Do not implement root manifests,
-segment publication, L0 flush, compaction, or normal semantic retrieval against
-USearch unless this candidate passes and a follow-up segment-lifecycle plan is
+The candidate screen passed on the upstream v2.26.0 arm64 macOS library using
+the content-free 768-dimensional corpus and the exact top-20 oracle. The
+qualifying parameters were connectivity 16, expansion-add 128, and
+expansion-search 256. A 1,000-vector stage had 1.00 recall@20, 25,000 had
+1.00, 100,000 had 0.995, and the 286,619-vector production-shaped stage had
+0.97 after save/load reopen. At the smaller expansion-search 128 setting, the
+same full stage reached only 0.94 and was correctly rejected; the reopen value
+matched in both runs, ruling out persistence as the cause.
+
+At the qualifying full stage, graph construction took 170.6 seconds, the
+opaque payload was 923,077,720 bytes, and sampled query latency was 1.00 ms
+p50 and 3.55 ms p95. The Go heap-system measurement was 0.89 GiB after build
+and 3.77 GiB after reopen, below the 4 GiB screen ceiling. A sampled process
+inspection observed approximately 1.75 GiB resident memory during construction,
+but a trustworthy process max-RSS capture remains a segment-lifecycle gate; Go
+heap-system counters are not OS RSS.
+
+Backend status is **candidate screen passed, lifecycle unapproved**. Do not
+implement root manifests, segment publication, L0 flush, compaction, or normal
+semantic retrieval against USearch until a follow-up segment-lifecycle plan is
 approved. Semantic mode remains off and all unavailable paths remain lexical
 fail-open.
 

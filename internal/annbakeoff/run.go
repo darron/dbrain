@@ -52,6 +52,9 @@ type Options struct {
 	MaxHeapSysBytes uint64
 	EfSearch        int
 	M               int
+	Connectivity    int
+	ExpansionAdd    int
+	ExpansionSearch int
 }
 
 // Report contains content-free evidence for a single backend screening run.
@@ -62,8 +65,8 @@ type Report struct {
 	Seed          uint64         `json:"seed"`
 	RecallAt      int            `json:"recall_at"`
 	MinimumRecall float64        `json:"minimum_recall"`
-	EfSearch      int            `json:"ef_search"`
-	M             int            `json:"m"`
+	EfSearch      int            `json:"ef_search,omitempty"`
+	M             int            `json:"m,omitempty"`
 	Parameters    map[string]int `json:"parameters"`
 	Status        string         `json:"status"`
 	Stages        []StageReport  `json:"stages"`
@@ -73,8 +76,8 @@ type Report struct {
 // downstream report can derive milliseconds without losing short query times.
 type StageReport struct {
 	VectorCount      int            `json:"vector_count"`
-	EfSearch         int            `json:"ef_search"`
-	M                int            `json:"m"`
+	EfSearch         int            `json:"ef_search,omitempty"`
+	M                int            `json:"m,omitempty"`
 	Parameters       map[string]int `json:"parameters"`
 	Status           string         `json:"status"`
 	Reason           string         `json:"reason,omitempty"`
@@ -98,7 +101,7 @@ type StageReport struct {
 // returned report rather than becoming opaque errors, allowing callers to save
 // the exact evidence before stopping the next stage.
 func Run(ctx context.Context, opts Options) (Report, error) {
-	return RunWith(ctx, opts, semanticindex.BackendHNSW, map[string]int{
+	report, err := RunWith(ctx, opts, semanticindex.BackendHNSW, map[string]int{
 		"ef_search": effectiveEfSearch(opts),
 		"m":         effectiveM(opts),
 	}, func(opts Options) (Index, error) {
@@ -109,6 +112,8 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 			EfSearch:   effectiveEfSearch(opts),
 		})
 	})
+	annotateHNSWParameters(&report, opts)
+	return report, err
 }
 
 // RunWith evaluates one named candidate against the deterministic corpus and
@@ -131,8 +136,6 @@ func RunWith(ctx context.Context, opts Options, backend string, parameters map[s
 		Seed:          opts.Seed,
 		RecallAt:      opts.RecallAt,
 		MinimumRecall: opts.MinimumRecall,
-		EfSearch:      effectiveEfSearch(opts),
-		M:             effectiveM(opts),
 		Parameters:    cloneParameters(parameters),
 		Status:        StatusPassed,
 		Stages:        make([]StageReport, 0, len(opts.Sizes)),
@@ -190,9 +193,7 @@ func validateOptions(opts Options) error {
 }
 
 func runStage(ctx context.Context, size int, opts Options, parameters map[string]int, factory Factory) (StageReport, error) {
-	efSearch := effectiveEfSearch(opts)
-	m := effectiveM(opts)
-	stage := StageReport{VectorCount: size, EfSearch: efSearch, M: m, Parameters: cloneParameters(parameters), Status: StatusPassed}
+	stage := StageReport{VectorCount: size, Parameters: cloneParameters(parameters), Status: StatusPassed}
 	corpusStart := time.Now()
 	corpus, err := newCorpus(size, opts.Dimensions, opts.Seed)
 	if err != nil {
@@ -479,6 +480,18 @@ func cloneParameters(parameters map[string]int) map[string]int {
 		copy[key] = value
 	}
 	return copy
+}
+
+func annotateHNSWParameters(report *Report, opts Options) {
+	if report == nil {
+		return
+	}
+	report.EfSearch = effectiveEfSearch(opts)
+	report.M = effectiveM(opts)
+	for index := range report.Stages {
+		report.Stages[index].EfSearch = report.EfSearch
+		report.Stages[index].M = report.M
+	}
 }
 
 func maxInt(a, b int) int {

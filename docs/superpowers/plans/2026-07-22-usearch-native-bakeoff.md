@@ -126,7 +126,19 @@ Pass the factory through RunWith; call Reserve(size) before additions; defer Clo
 
 ~~~go
 func Run(ctx context.Context, opts Options) (Report, error) {
-    return RunWith(ctx, opts, semanticindex.BackendHNSW, newHNSWFactory(opts))
+    report, err := RunWith(ctx, opts, semanticindex.BackendHNSW, map[string]int{
+        "ef_search": effectiveEfSearch(opts),
+        "m": effectiveM(opts),
+    }, func(opts Options) (Index, error) {
+        return semanticindex.NewHNSW(semanticindex.HNSWOptions{
+            Dimensions: opts.Dimensions,
+            Seed: opts.Seed,
+            M: effectiveM(opts),
+            EfSearch: effectiveEfSearch(opts),
+        })
+    })
+    annotateHNSWParameters(&report, opts)
+    return report, err
 }
 ~~~
 
@@ -137,7 +149,7 @@ go test ./internal/annbakeoff ./cmd/devtools/semantic_ann_bakeoff -count=1
 CGO_ENABLED=0 go test ./internal/annbakeoff ./cmd/devtools/semantic_ann_bakeoff -count=1
 ~~~
 
-- [ ] **Step 5: Commit** the seam and tests.
+- [x] **Step 5: Commit** the seam and tests.
 
 ### Task 3: Native Runner and Screen
 
@@ -154,7 +166,7 @@ CGO_ENABLED=0 go test ./internal/annbakeoff ./cmd/devtools/semantic_ann_bakeoff 
 - RunUSearch exists only with usearch and cgo and delegates to RunWith with backend usearch.
 - The native command requires --report and accepts --connectivity, --expansion-add, and --expansion-search.
 
-- [ ] **Step 1: Write failing tagged tests** for parameter reporting and missing --report.
+- [x] **Step 1: Write failing tagged tests** for parameter reporting and missing --report.
 
 ~~~go
 func TestRunUSearchRecordsParameters(t *testing.T) {
@@ -169,13 +181,13 @@ func TestRunUSearchRecordsParameters(t *testing.T) {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED** with the tagged command/package suite and temporary library variables.
+- [x] **Step 2: Verify RED** with the tagged command/package suite and temporary library variables.
 
-- [ ] **Step 3: Implement the runner and command.**
+- [x] **Step 3: Implement the runner and command.**
 
 Do not expose them through dbrain semantic. Reject invalid parameters. Save a 0600 atomic JSON report before returning a non-zero screening rejection.
 
-- [ ] **Step 4: Run the narrow 1,000-vector 768d screen.**
+- [x] **Step 4: Run the narrow 1,000-vector 768d screen.**
 
 ~~~bash
 CGO_ENABLED=1 CGO_CFLAGS=-I/private/tmp/dbrain-usearch.4zEMyv/extracted \
@@ -188,9 +200,9 @@ go run -tags usearch ./cmd/devtools/semantic_usearch_bakeoff \
 
 Stop on a recall, reopen, or resource failure. Only if it passes, run 25,000 then 100,000; run 286,619 only after both pass and record max RSS with /usr/bin/time -l.
 
-- [ ] **Step 5: Update CHANGELOG.md** to state that USearch is test-only, optional, and does not enable semantic retrieval.
+- [x] **Step 5: Update CHANGELOG.md** to state that USearch is test-only, optional, and does not enable semantic retrieval.
 
-- [ ] **Step 6: Final verification.**
+- [x] **Step 6: Final verification.**
 
 ~~~bash
 task fmt
@@ -212,3 +224,24 @@ git diff --check
 - The three tasks cover tag isolation, opaque payloads, exact/reopen recall, staged resource gates, and default lexical safety.
 - Segment lifecycle, cache publication, semantic runtime integration, and release packaging are intentionally out of scope.
 - The same ordinal/vector/hit contract is shared by HNSW and USearch through RunWith.
+
+## Execution Record (2026-07-22)
+
+USearch v2.26.0 was supplied only from an isolated arm64 macOS temporary
+release archive. The native adapter and command compile only with `-tags
+usearch`; the normal CGO-free build has no native-library dependency.
+
+The 1,000-vector screen reached 1.00 recall@20 after reopen; 25,000 reached
+1.00; and 100,000 reached 0.995. At 286,619 vectors, expansion-search 128 was
+rejected at 0.94. The single controlled parameter test at expansion-search 256
+reached 0.97 after reopen, with the same 923,077,720-byte payload. The
+candidate therefore passes this content-free screen only with the recorded
+connectivity 16, expansion-add 128, and expansion-search 256 configuration.
+The command wrapper did not preserve `/usr/bin/time -l` output after it
+detached, so a trustworthy process max-RSS capture remains required before
+segment-lifecycle approval; the screen records Go heap-system metrics instead.
+
+`task fmt`, `task lint`, `task test-ci`, `task build`, the explicit CGO-free
+dbrain build, and the tagged native adapter/bakeoff/devtool suites passed.
+No segment, manifest, cache, provider call, or semantic runtime behavior was
+added.

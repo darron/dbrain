@@ -71,6 +71,27 @@ func TestUSearchAdapterRejectsInvalidState(t *testing.T) {
 	}
 }
 
+func TestUSearchAdapterRejectsShortExportWrite(t *testing.T) {
+	index, err := NewUSearch(USearchOptions{Dimensions: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	if err := index.Reserve(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Add(HNSWNode{Ordinal: 1, Vector: []float32{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Export(shortWriter{}); err == nil {
+		t.Fatal("expected short export write to be rejected")
+	}
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(value []byte) (int, error) { return len(value) - 1, nil }
+
 func assertUSearchOrdinals(t *testing.T, index *USearch, want []uint64) {
 	t.Helper()
 	hits, err := index.Search([]float32{1, 0}, len(want))
