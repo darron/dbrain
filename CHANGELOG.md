@@ -36,6 +36,11 @@ development date for the change set.
   tombstone cleanup, oldest same-class pairing, capped output packing, and
   exact-L0 remainders. It exposes no vector reads, root replacement, cache
   mutation, command, or serving behavior.
+- **Active-root compaction facts**: Added a read-only SQLite snapshot for an
+  active root's immutable segment metadata, stable creation order, and exact
+  live/tombstone membership counts. It rejects catalog drift and has no vector
+  payload reads, replacement-root activation, cache mutation, command, or
+  serving behavior.
 
 ### Optional native ANN backend screening (2026-07-22)
 

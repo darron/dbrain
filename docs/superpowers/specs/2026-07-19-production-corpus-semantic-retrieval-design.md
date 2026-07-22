@@ -862,6 +862,24 @@ undersized output as exact L0, and applies the capped/remainder packing rule.
 The planner consumes only stable metadata and does not read vectors, publish a
 replacement root, remove cache files, or affect semantic serving.
 
+### Implemented Active-Root Compaction Snapshot (2026-07-22)
+
+`internal/store` can now read an active root in one read-only SQLite
+transaction as deterministic compaction facts: profile activation/CAS state,
+immutable segment catalog metadata, stable creation order, and per-segment live
+and tombstone counts. A member is live only when its exact stored
+`(chunk_id, revision, vector_hash)` still joins a ready embedding and a current
+parent projection; every other catalogued member is a tombstone. The read fails
+closed when an active generation is unavailable, a segment belongs to another
+profile, or its catalogued count disagrees with immutable membership rows.
+
+This is an orchestration input only. It does not select vectors, build a
+replacement payload, activate or remove a root segment, mutate cache files, or
+change semantic serving. In particular, the current root format forbids an
+empty segment list, so a last-segment-to-L0 transition remains an explicit
+future format/activation-contract change rather than an implicit compaction
+side effect.
+
 ### Query Lifecycle
 
 A normal semantic search:
