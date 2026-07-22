@@ -616,11 +616,18 @@ inspection observed approximately 1.75 GiB resident memory during construction,
 but a trustworthy process max-RSS capture remains a segment-lifecycle gate; Go
 heap-system counters are not OS RSS.
 
-Backend status is **candidate screen passed, lifecycle unapproved**. Do not
-implement root manifests, segment publication, L0 flush, compaction, or normal
-semantic retrieval against USearch until a follow-up segment-lifecycle plan is
-approved. Semantic mode remains off and all unavailable paths remain lexical
-fail-open.
+Backend status is **candidate screen passed; the first lifecycle foundation is
+implemented; serving remains unapproved**. The foundation owns deterministic
+content-addressed opaque payload envelopes, checksum-verified segment/root
+reopen, atomic cache publication, SQLite segment catalog/member/generation
+references, and an internal 5,000-vector revision-prefix L0 flush seam. It is
+backend-injected and does not construct USearch in the default binary.
+
+This does not authorize native serving, a semantic configuration value other
+than `exact`, a CLI flush command, compaction, cache reclamation, a full corpus
+embedding drain, release packaging, or semantic `on`. Each remains separately
+gated by the resource, freshness, recall, and operational checks below.
+Semantic mode remains off and all unavailable paths remain lexical fail-open.
 
 Graph identifiers are dense unsigned integer ordinals. A separate immutable
 membership map relates each ordinal to its chunk, parent, embedding revision,

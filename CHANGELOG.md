@@ -5,6 +5,21 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Segmented ANN lifecycle foundation (2026-07-22)
+
+- **Durable derived-cache roots**: Added content-addressed opaque segment
+  payloads, deterministic member manifests, checksum-verified reopen, and
+  atomic root publication under the configured cache directory. SQLite records
+  the segment catalog, immutable member provenance, and generation references;
+  it activates a root only after every new member still matches its ready
+  embedding revision and vector hash.
+- **Bounded L0 progression**: Added an internal, backend-injected 5,000-vector
+  revision-prefix flush seam that publishes and reopens a root before SQLite
+  activation. It preserves existing immutable segments in later roots and
+  leaves newer vectors in exact L0. No CLI command, USearch runtime dependency,
+  semantic retrieval serving, embedding backfill, or compaction is enabled by
+  this groundwork.
+
 ### Optional native ANN backend screening (2026-07-22)
 
 - **USearch candidate evidence**: Added a tag-gated, content-free USearch
