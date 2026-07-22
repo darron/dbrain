@@ -38,6 +38,49 @@ type CompleteRetrievalIndexGenerationInput struct {
 	SnapshotRevision int64
 }
 
+func (s *Store) RetrievalDatabaseID(ctx context.Context) (string, error) {
+	var databaseID string
+	if err := s.queryer().QueryRowContext(ctx, `SELECT database_id FROM retrieval_state WHERE singleton=1`).Scan(&databaseID); err != nil {
+		return "", fmt.Errorf("read retrieval database ID: %w", err)
+	}
+	if strings.TrimSpace(databaseID) == "" {
+		return "", fmt.Errorf("retrieval database ID is empty")
+	}
+	return databaseID, nil
+}
+
+func (s *Store) RetrievalIndexGenerationSegments(ctx context.Context, generationID string) ([]RetrievalIndexSegmentRow, error) {
+	generationID = strings.TrimSpace(generationID)
+	if generationID == "" {
+		return nil, fmt.Errorf("retrieval generation ID is required")
+	}
+	rows, err := s.queryer().QueryContext(ctx, `
+		SELECT segment.segment_hash,segment.profile_id,segment.backend,segment.backend_version,segment.dimensions,
+			segment.distance_metric,segment.indexed_chunk_count,segment.relative_cache_path,segment.membership_hash,
+			segment.payload_hash,segment.manifest_hash
+		FROM retrieval_generation_segments generation
+		JOIN retrieval_index_segments segment ON segment.segment_hash=generation.segment_hash
+		WHERE generation.generation_id=? ORDER BY segment.segment_hash`, generationID)
+	if err != nil {
+		return nil, fmt.Errorf("list retrieval generation segments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	segments := make([]RetrievalIndexSegmentRow, 0)
+	for rows.Next() {
+		var segment RetrievalIndexSegmentRow
+		if err := rows.Scan(&segment.SegmentHash, &segment.ProfileID, &segment.Backend, &segment.BackendVersion,
+			&segment.Dimensions, &segment.DistanceMetric, &segment.IndexedChunkCount, &segment.RelativeCachePath,
+			&segment.MembershipHash, &segment.PayloadHash, &segment.ManifestHash); err != nil {
+			return nil, fmt.Errorf("scan retrieval generation segment: %w", err)
+		}
+		segments = append(segments, segment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate retrieval generation segments: %w", err)
+	}
+	return segments, nil
+}
+
 // NextRetrievalFlushWindow returns a contiguous revision prefix of the exact
 // L0 tail. Revision order is essential: advancing past an older unindexed row
 // would make it disappear from both the root and the exact tail.
@@ -154,14 +197,34 @@ func (s *Store) CompleteRetrievalIndexGeneration(ctx context.Context, input Comp
 		return fmt.Errorf("insert retrieval generation %s: %w", input.Generation.GenerationID, err)
 	}
 	for _, segment := range input.Segments {
-		if _, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 			INSERT INTO retrieval_index_segments (
 				segment_hash,profile_id,backend,backend_version,dimensions,distance_metric,indexed_chunk_count,
 				relative_cache_path,membership_hash,payload_hash,manifest_hash,created_at
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, segment.SegmentHash, segment.ProfileID, segment.Backend,
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(segment_hash) DO NOTHING`, segment.SegmentHash, segment.ProfileID, segment.Backend,
 			segment.BackendVersion, segment.Dimensions, segment.DistanceMetric, segment.IndexedChunkCount,
-			segment.RelativeCachePath, segment.MembershipHash, segment.PayloadHash, segment.ManifestHash, now); err != nil {
+			segment.RelativeCachePath, segment.MembershipHash, segment.PayloadHash, segment.ManifestHash, now)
+		if err != nil {
 			return fmt.Errorf("insert retrieval index segment %s: %w", segment.SegmentHash, err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count retrieval index segment %s insert: %w", segment.SegmentHash, err)
+		}
+		if affected == 0 {
+			var stored RetrievalIndexSegmentRow
+			if err := tx.QueryRowContext(ctx, `
+				SELECT segment_hash,profile_id,backend,backend_version,dimensions,distance_metric,indexed_chunk_count,
+					relative_cache_path,membership_hash,payload_hash,manifest_hash
+				FROM retrieval_index_segments WHERE segment_hash=?`, segment.SegmentHash).Scan(
+				&stored.SegmentHash, &stored.ProfileID, &stored.Backend, &stored.BackendVersion, &stored.Dimensions,
+				&stored.DistanceMetric, &stored.IndexedChunkCount, &stored.RelativeCachePath, &stored.MembershipHash,
+				&stored.PayloadHash, &stored.ManifestHash); err != nil {
+				return fmt.Errorf("read existing retrieval index segment %s: %w", segment.SegmentHash, err)
+			}
+			if stored != segment {
+				return fmt.Errorf("retrieval index segment %s conflicts with immutable stored metadata", segment.SegmentHash)
+			}
 		}
 	}
 	for _, member := range input.Members {

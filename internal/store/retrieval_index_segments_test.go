@@ -102,6 +102,44 @@ func TestCompleteRetrievalIndexGenerationRejectsChangedMember(t *testing.T) {
 	}
 }
 
+func TestCompleteRetrievalIndexGenerationRetainsPriorImmutableSegment(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 3)
+	first, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSegment := testRetrievalSegment("segment-one", 2)
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: testCompletedGeneration("generation-1", 2), Segments: []RetrievalIndexSegmentRow{firstSegment},
+		Members: retrievalSegmentMembers(first.Rows, firstSegment.SegmentHash), SnapshotRevision: first.SnapshotRevision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSegment := testRetrievalSegment("segment-two", 1)
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: testCompletedGeneration("generation-2", 3), Segments: []RetrievalIndexSegmentRow{firstSegment, secondSegment},
+		Members: retrievalSegmentMembers(second.Rows, secondSegment.SegmentHash), SnapshotRevision: second.SnapshotRevision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	segments, err := st.RetrievalIndexGenerationSegments(ctx, "generation-2")
+	if err != nil || len(segments) != 2 || segments[0].SegmentHash != "segment-one" || segments[1].SegmentHash != "segment-two" {
+		t.Fatalf("segments=%+v err=%v", segments, err)
+	}
+	profile, err := st.RetrievalEmbeddingProfile(ctx, "flush-profile")
+	if err != nil || profile.ActiveGenerationID != "generation-2" || profile.ActiveIndexedCount != 3 || profile.L0ReadyCount != 0 {
+		t.Fatalf("profile=%+v err=%v", profile, err)
+	}
+}
+
 func seedReadyRetrievalEmbeddings(t *testing.T, st *Store, profileID string, count int) {
 	t.Helper()
 	ctx := context.Background()
@@ -127,4 +165,20 @@ func retrievalSegmentMembers(rows []RetrievalEmbeddingRow, segmentHash string) [
 		members = append(members, RetrievalIndexSegmentMember{SegmentHash: segmentHash, Ordinal: uint64(ordinal), ChunkID: row.ChunkID, Revision: row.Revision, VectorHash: row.VectorHash})
 	}
 	return members
+}
+
+func testCompletedGeneration(generationID string, indexed int) RetrievalIndexGenerationRow {
+	return RetrievalIndexGenerationRow{
+		GenerationID: generationID, ProfileID: "flush-profile", Backend: "usearch", BackendVersion: "2.26.0",
+		Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: indexed, SourceManifestHash: generationID + "-root",
+		BuildStatus: RetrievalGenerationCompleted,
+	}
+}
+
+func testRetrievalSegment(hash string, indexed int) RetrievalIndexSegmentRow {
+	return RetrievalIndexSegmentRow{
+		SegmentHash: hash, ProfileID: "flush-profile", Backend: "usearch", BackendVersion: "2.26.0", Dimensions: 2,
+		DistanceMetric: "cosine", IndexedChunkCount: indexed, RelativeCachePath: "semantic/db/profile/segments/" + hash,
+		MembershipHash: hash + "-members", PayloadHash: hash + "-payload", ManifestHash: hash,
+	}
 }
