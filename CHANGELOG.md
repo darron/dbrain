@@ -32,6 +32,10 @@ development date for the change set.
   next compaction slice to return an undersized live remainder to L0 safely,
   but does not yet select or build compactions, serve ANN results, or change
   production data.
+- **Deterministic compaction policy**: Added a pure, tested planner for
+  tombstone cleanup, oldest same-class pairing, capped output packing, and
+  exact-L0 remainders. It exposes no vector reads, root replacement, cache
+  mutation, command, or serving behavior.
 
 ### Optional native ANN backend screening (2026-07-22)
 

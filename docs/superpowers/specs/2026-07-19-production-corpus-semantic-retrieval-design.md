@@ -853,6 +853,15 @@ counters from membership rather than trusting stored aggregate values.
 This does not yet implement compaction selection or payload building, leases,
 cache garbage collection, ANN query serving, or production corpus mutation.
 
+### Implemented Compaction Policy (2026-07-22)
+
+`internal/semanticbuild` now has a pure deterministic planner for the accepted
+size-tier rules. It prefers the oldest segment whose tombstones exceed one
+percent, otherwise the two oldest segments in one non-capped class, classifies
+undersized output as exact L0, and applies the capped/remainder packing rule.
+The planner consumes only stable metadata and does not read vectors, publish a
+replacement root, remove cache files, or affect semantic serving.
+
 ### Query Lifecycle
 
 A normal semantic search:
