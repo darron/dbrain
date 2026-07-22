@@ -833,6 +833,26 @@ semantic retrieval becomes `needs_index` and fails open to lexical retrieval.
 It does not silently truncate L0, ignore a segment, or search a known-unsafe
 root.
 
+### Implemented Activation Foundation (2026-07-22)
+
+Migration 23 implements the prerequisite activation contract for the planned
+size-tiered compactor. L0 is now the exact set of current ready embeddings that
+have no active root membership with the same chunk ID, embedding revision, and
+vector hash; it is not inferred from `revision > active_snapshot_revision`.
+This preserves a compacted sub-5,000 live remainder as exact L0 even when its
+revision predates the root snapshot.
+
+Every new root activation carries its expected active generation ID, purge
+epoch, and active snapshot revision. SQLite checks those expectations in the
+same transaction as generation activation and profile-counter update. An
+an ordinary all-new flush advances the snapshot; a membership-L0 flush ending
+at the active snapshot uses an internal equal-snapshot rewrite. The proposed root is rejected if it contains
+duplicate usable memberships. Migration repair recomputes L0 and tombstone
+counters from membership rather than trusting stored aggregate values.
+
+This does not yet implement compaction selection or payload building, leases,
+cache garbage collection, ANN query serving, or production corpus mutation.
+
 ### Query Lifecycle
 
 A normal semantic search:

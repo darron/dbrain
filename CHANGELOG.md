@@ -24,6 +24,14 @@ development date for the change set.
   explicit database/cache/report, and rejects both configured and candidate-root
   production databases before opening them. This is an operator-only evaluation
   boundary; it does not make native ANN a runtime dependency.
+- **Membership-safe root activation**: L0 is now the exact complement of the
+  active root's immutable `(chunk_id, revision, vector_hash)` membership rather
+  than a revision tail. Root activation is compare-and-swap protected by its
+  expected prior root, purge epoch, and snapshot; migration 23 repairs existing
+  L0/tombstone counters from that authoritative membership. This enables the
+  next compaction slice to return an undersized live remainder to L0 safely,
+  but does not yet select or build compactions, serve ANN results, or change
+  production data.
 
 ### Optional native ANN backend screening (2026-07-22)
 
