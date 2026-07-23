@@ -66,7 +66,8 @@ development date for the change set.
 - **Exact L0 authority read**: Added a CAS-checked, bounded read for current
   ready embeddings absent from the active root. It rejects an oversized delta
   instead of returning a partial tail; tagged native search merges and exactly
-  reranks it with validated root candidates.
+  reranks it with validated root candidates, including a changed root member
+  that has become a newer exact-L0 row.
 - **Optional rooted runtime backend**: The normal CGO-free build now refuses an
   admitted active root rather than falling back to an unsafe whole-profile exact
   scan. A `usearch && cgo` build opens the verified cache root and uses the

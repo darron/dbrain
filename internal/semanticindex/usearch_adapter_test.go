@@ -203,6 +203,28 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 	}
 }
 
+func TestUSearchCandidateSearcherAcceptsStaleRootMemberReplacedInExactL0(t *testing.T) {
+	profile := embedding.Profile{Provider: "fake", Model: "model", Dimensions: 2, ProjectionVersion: "projection", ChunkerVersion: "chunker", Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := &USearchRoot{Root: semanticsegment.Root{Manifest: semanticsegment.RootManifest{ProfileID: profileID, GenerationID: "generation", SnapshotRevision: 4, PurgeEpoch: 2}}, Segments: []USearchRootSegment{{
+		SegmentHash: "segment",
+		Manifest: semanticsegment.Manifest{Members: []semanticsegment.Member{
+			{Ordinal: 0, ChunkID: "stale", Revision: 3, VectorHash: "old-hash"},
+			{Ordinal: 1, ChunkID: "current", Revision: 4, VectorHash: "current-hash"},
+		}},
+		Index: newUSearchRootTestIndex(t, HNSWNode{Ordinal: 0, Vector: []float32{1, 0}}, HNSWNode{Ordinal: 1, Vector: []float32{0, 1}}),
+	}}}
+	t.Cleanup(func() { _ = root.Close() })
+	st := &fakeUSearchCandidateStore{rows: []store.RetrievalEmbeddingRow{{ChunkID: "current", ProfileID: profileID, Provider: "fake", Model: "model", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: embedding.EncodeDenseF32([]float32{0, 1}), VectorHash: "current-hash", Revision: 4, ParentKind: "source", ParentSourceKey: "source:current", EvidenceRole: "raw", SourceType: "article", ProjectionVersion: "projection", ChunkerVersion: "chunker"}}, l0Rows: []store.RetrievalEmbeddingRow{{ChunkID: "stale", ProfileID: profileID, Provider: "fake", Model: "model", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), VectorHash: "new-hash", Revision: 5, ParentKind: "source", ParentSourceKey: "source:stale", EvidenceRole: "raw", SourceType: "article", ProjectionVersion: "projection", ChunkerVersion: "chunker"}}}
+	hits, status, err := NewUSearchCandidateSearcher(root, st).Search(context.Background(), []float32{1, 0}, SearchOptions{Profile: profile, Limit: 2, MaxChunks: 999})
+	if err != nil || status.State != StateSearched || !reflect.DeepEqual([]string{hits[0].ChunkID, hits[1].ChunkID}, []string{"stale", "current"}) {
+		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
+	}
+}
+
 func TestUSearchAdapterRejectsInvalidState(t *testing.T) {
 	if _, err := NewUSearch(USearchOptions{Dimensions: 0}); err == nil {
 		t.Fatal("expected zero dimensions to be rejected")
