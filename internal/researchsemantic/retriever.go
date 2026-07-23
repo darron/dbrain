@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/darron/dbrain/internal/embedding"
@@ -28,13 +29,29 @@ type Options struct {
 const DefaultQueryTimeout = 15 * time.Second
 
 type Retriever struct {
-	provider embedding.Provider
-	searcher semanticindex.Searcher
-	hydrator Hydrator
+	provider  embedding.Provider
+	searcher  semanticindex.Searcher
+	hydrator  Hydrator
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func New(provider embedding.Provider, searcher semanticindex.Searcher, hydrator Hydrator) *Retriever {
 	return &Retriever{provider: provider, searcher: searcher, hydrator: hydrator}
+}
+
+// Close releases optional native search resources. Exact searchers have no
+// close operation, so the method is safe for every retriever configuration.
+func (r *Retriever) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.closeOnce.Do(func() {
+		if closer, ok := r.searcher.(interface{ Close() error }); ok {
+			r.closeErr = closer.Close()
+		}
+	})
+	return r.closeErr
 }
 
 func (r *Retriever) Retrieve(ctx context.Context, query string, opts Options) ([]retrieval.EvidenceDocument, semanticindex.Status, error) {

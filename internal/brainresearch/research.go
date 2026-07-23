@@ -24,6 +24,7 @@ func Build(ctx context.Context, cfg config.Config, st *store.Store, opts Options
 	if err != nil {
 		return Pack{}, err
 	}
+	defer func() { _ = b.Close() }()
 	return b.Build(ctx, opts)
 }
 

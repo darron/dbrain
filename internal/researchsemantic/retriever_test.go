@@ -33,17 +33,24 @@ func (f *fakeProvider) Embed(_ context.Context, req embedding.Request) (embeddin
 }
 
 type fakeSearcher struct {
-	hits    []semanticindex.Hit
-	status  semanticindex.Status
-	err     error
-	queries [][]float32
-	options []semanticindex.SearchOptions
+	hits     []semanticindex.Hit
+	status   semanticindex.Status
+	err      error
+	queries  [][]float32
+	options  []semanticindex.SearchOptions
+	closes   int
+	closeErr error
 }
 
 func (f *fakeSearcher) Search(_ context.Context, query []float32, opts semanticindex.SearchOptions) ([]semanticindex.Hit, semanticindex.Status, error) {
 	f.queries = append(f.queries, append([]float32(nil), query...))
 	f.options = append(f.options, opts)
 	return append([]semanticindex.Hit(nil), f.hits...), f.status, f.err
+}
+
+func (f *fakeSearcher) Close() error {
+	f.closes++
+	return f.closeErr
 }
 
 type fakeHydrationStore struct {
@@ -125,6 +132,20 @@ func TestRetrieverPreservesSearchedEmptyWithoutHydration(t *testing.T) {
 	docs, status, err := New(provider, searcher, hydrator).Retrieve(context.Background(), "query", Options{Profile: testProfile(), Limit: 5, MaxChunks: 10})
 	if err != nil || status.State != semanticindex.StateSearched || docs == nil || len(docs) != 0 || len(hydrator.calls) != 0 {
 		t.Fatalf("docs=%+v status=%+v err=%v hydrate_calls=%v", docs, status, err, hydrator.calls)
+	}
+}
+
+func TestRetrieverCloseClosesSearcherOnce(t *testing.T) {
+	searcher := &fakeSearcher{}
+	retriever := New(unitProvider(), searcher, &fakeHydrationStore{})
+	if err := retriever.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := retriever.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if searcher.closes != 1 {
+		t.Fatalf("searcher closes=%d", searcher.closes)
 	}
 }
 

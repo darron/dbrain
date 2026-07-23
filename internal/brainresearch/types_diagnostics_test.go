@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/darron/dbrain/internal/researchsemantic"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 )
 
@@ -55,5 +56,16 @@ func TestQueryPlanSemanticReadinessDiagnosticsJSONIsContentFreeAndOptional(t *te
 	}
 	if strings.Contains(string(empty), "semantic_readiness_diagnostics") {
 		t.Fatalf("empty query plan retained diagnostics: %s", empty)
+	}
+}
+
+func TestBuilderCloseClosesOptionalSemanticRetrieverOnce(t *testing.T) {
+	retriever := &fakeSemanticRetriever{}
+	b := (&Builder{}).WithSemanticRetriever(retriever, researchsemantic.Options{})
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if retriever.closes != 1 {
+		t.Fatalf("retriever closes=%d", retriever.closes)
 	}
 }

@@ -23,10 +23,9 @@ type USearchCandidateStore interface {
 	ReadRetrievalExactL0(context.Context, store.RetrievalActiveRootReadRequest, int) ([]store.RetrievalEmbeddingRow, error)
 }
 
-// USearchCandidateSearcher is a tag-gated, non-wired Searcher implementation.
-// It searches immutable native segments for candidates, validates every member
-// through SQLite, and exactly reranks the surviving vectors. Constructing it
-// does not alter runtime routing or enable semantic retrieval.
+// USearchCandidateSearcher is a tag-gated Searcher implementation. It searches
+// immutable native segments for candidates, validates every member through
+// SQLite, and exactly reranks the surviving vectors.
 type USearchCandidateSearcher struct {
 	root  *USearchRoot
 	store USearchCandidateStore
@@ -34,6 +33,14 @@ type USearchCandidateSearcher struct {
 
 func NewUSearchCandidateSearcher(root *USearchRoot, st USearchCandidateStore) *USearchCandidateSearcher {
 	return &USearchCandidateSearcher{root: root, store: st}
+}
+
+// Close releases the native indexes opened for this immutable root.
+func (s *USearchCandidateSearcher) Close() error {
+	if s == nil || s.root == nil {
+		return nil
+	}
+	return s.root.Close()
 }
 
 func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, opts SearchOptions) ([]Hit, Status, error) {

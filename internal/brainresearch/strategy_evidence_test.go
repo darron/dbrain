@@ -25,6 +25,7 @@ type fakeSemanticRetriever struct {
 	err     error
 	queries []string
 	options []researchsemantic.Options
+	closes  int
 }
 
 func TestCatchingUpPreservesFirstThreeDistinctLexicalParents(t *testing.T) {
@@ -118,6 +119,11 @@ func (f *fakeSemanticRetriever) Retrieve(_ context.Context, q string, opts resea
 	f.queries = append(f.queries, q)
 	f.options = append(f.options, opts)
 	return append([]retrieval.EvidenceDocument(nil), f.rows...), f.status, f.err
+}
+
+func (f *fakeSemanticRetriever) Close() error {
+	f.closes++
+	return nil
 }
 
 func TestCanonicalSemanticQueryUsesPreferredTermsKeysAndFallbacks(t *testing.T) {

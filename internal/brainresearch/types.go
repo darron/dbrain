@@ -73,6 +73,18 @@ type SemanticRetriever interface {
 	Retrieve(context.Context, string, researchsemantic.Options) ([]retrieval.EvidenceDocument, semanticindex.Status, error)
 }
 
+// Close releases optional request-scoped semantic retrieval resources. Ordinary
+// exact retrieval has no close operation and remains unchanged.
+func (b *Builder) Close() error {
+	if b == nil {
+		return nil
+	}
+	if closer, ok := b.semanticRetriever.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // WithSemanticRetriever returns the builder with an explicitly injected local
 // semantic lane. New and top-level Build remain lexical unless callers opt in.
 func (b *Builder) WithSemanticRetriever(retriever SemanticRetriever, opts researchsemantic.Options) *Builder {
