@@ -17,8 +17,7 @@ const nativeCandidateOverfetch = 8
 // It validates immutable manifest members against the active root and returns
 // only current ready embeddings for exact reranking.
 type USearchCandidateStore interface {
-	ReadRetrievalNativeCandidates(context.Context, store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error)
-	ReadRetrievalExactL0(context.Context, store.RetrievalActiveRootReadRequest, int) ([]store.RetrievalEmbeddingRow, error)
+	BeginRetrievalNativeReadSnapshot(context.Context) (store.RetrievalNativeReadSession, error)
 }
 
 // USearchCandidateSearcher is a tag-gated Searcher implementation. It searches
@@ -81,7 +80,13 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 		return hits, status, nil
 	}
 	status.GenerationID = root.GenerationID
-	l0, err := s.store.ReadRetrievalExactL0(ctx, store.RetrievalActiveRootReadRequest{ProfileID: profileID, ExpectedActiveGenerationID: root.GenerationID, ExpectedPurgeEpoch: root.PurgeEpoch, ExpectedActiveSnapshotRevision: root.SnapshotRevision}, store.RetrievalSegmentHardLimit)
+	readSession, err := s.store.BeginRetrievalNativeReadSnapshot(ctx)
+	if err != nil {
+		status.Reason = ReasonSearchError
+		return hits, status, err
+	}
+	defer func() { _ = readSession.Close() }()
+	l0, err := readSession.ReadRetrievalExactL0(ctx, store.RetrievalActiveRootReadRequest{ProfileID: profileID, ExpectedActiveGenerationID: root.GenerationID, ExpectedPurgeEpoch: root.PurgeEpoch, ExpectedActiveSnapshotRevision: root.SnapshotRevision}, store.RetrievalSegmentHardLimit)
 	if err != nil {
 		status.Reason = ReasonSearchError
 		return hits, status, err
@@ -113,7 +118,7 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 		}
 		for start := 0; start < len(newCandidates); start += store.MaxRetrievalNativeCandidates {
 			end := min(start+store.MaxRetrievalNativeCandidates, len(newCandidates))
-			batch, err := s.store.ReadRetrievalNativeCandidates(ctx, store.RetrievalNativeCandidateRequest{ProfileID: profileID, ExpectedActiveGenerationID: root.GenerationID, ExpectedPurgeEpoch: root.PurgeEpoch, ExpectedActiveSnapshotRevision: root.SnapshotRevision, Candidates: newCandidates[start:end]})
+			batch, err := readSession.ReadRetrievalNativeCandidates(ctx, store.RetrievalNativeCandidateRequest{ProfileID: profileID, ExpectedActiveGenerationID: root.GenerationID, ExpectedPurgeEpoch: root.PurgeEpoch, ExpectedActiveSnapshotRevision: root.SnapshotRevision, Candidates: newCandidates[start:end]})
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					status.Reason = ReasonCanceled

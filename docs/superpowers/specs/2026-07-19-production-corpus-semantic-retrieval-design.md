@@ -943,8 +943,12 @@ by cosine distance. It merges the bounded exact L0 complement and applies the
 three-chunks-per-unpinned-parent semantic cap before returning results. Adaptive
 expansion now widens through the accepted 200, 500, and 2,000 global-candidate
 stages, splitting each authoritative SQLite validation read to the conservative
-190-candidate bind-safe maximum. The planned shared reader lease remains
-unimplemented.
+190-candidate bind-safe maximum. One tagged search now opens one query-only
+SQLite snapshot for its exact-L0 read and every staged native-candidate batch,
+so a successful response cannot mix those authority rows across ordinary
+database snapshots. Each authority read retains its active-root CAS check.
+This is a scoped reader snapshot, not yet the planned cross-process generation
+lease or a snapshot extending through final evidence hydration.
 
 The storage layer also has a bounded exact-L0 read. It CAS-checks the same root
 facts and returns only current ready rows with no exact active-root membership;

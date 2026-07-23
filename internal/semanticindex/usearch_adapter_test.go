@@ -201,6 +201,9 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 	if st.l0Request.ExpectedActiveGenerationID != "generation" || st.l0Request.ExpectedPurgeEpoch != 2 || st.l0Request.ExpectedActiveSnapshotRevision != 4 || st.l0Limit != store.RetrievalSegmentHardLimit {
 		t.Fatalf("L0 request=%+v limit=%d", st.l0Request, st.l0Limit)
 	}
+	if st.snapshotStarts != 1 || st.snapshotCloses != 1 {
+		t.Fatalf("snapshot starts=%d closes=%d", st.snapshotStarts, st.snapshotCloses)
+	}
 }
 
 func TestUSearchCandidateSearcherAcceptsStaleRootMemberReplacedInExactL0(t *testing.T) {
@@ -342,12 +345,34 @@ func newUSearchRootTestIndex(t *testing.T, nodes ...HNSWNode) *USearch {
 }
 
 type fakeUSearchCandidateStore struct {
-	request   store.RetrievalNativeCandidateRequest
-	l0Request store.RetrievalActiveRootReadRequest
-	l0Limit   int
-	rows      []store.RetrievalEmbeddingRow
-	l0Rows    []store.RetrievalEmbeddingRow
-	err       error
+	request        store.RetrievalNativeCandidateRequest
+	l0Request      store.RetrievalActiveRootReadRequest
+	l0Limit        int
+	rows           []store.RetrievalEmbeddingRow
+	l0Rows         []store.RetrievalEmbeddingRow
+	err            error
+	snapshotStarts int
+	snapshotCloses int
+}
+
+func (f *fakeUSearchCandidateStore) BeginRetrievalNativeReadSnapshot(context.Context) (store.RetrievalNativeReadSession, error) {
+	f.snapshotStarts++
+	return &fakeUSearchCandidateReadSession{store: f}, nil
+}
+
+type fakeUSearchCandidateReadSession struct{ store *fakeUSearchCandidateStore }
+
+func (s *fakeUSearchCandidateReadSession) Close() error {
+	s.store.snapshotCloses++
+	return nil
+}
+
+func (s *fakeUSearchCandidateReadSession) ReadRetrievalExactL0(ctx context.Context, request store.RetrievalActiveRootReadRequest, limit int) ([]store.RetrievalEmbeddingRow, error) {
+	return s.store.ReadRetrievalExactL0(ctx, request, limit)
+}
+
+func (s *fakeUSearchCandidateReadSession) ReadRetrievalNativeCandidates(ctx context.Context, request store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
+	return s.store.ReadRetrievalNativeCandidates(ctx, request)
 }
 
 func (f *fakeUSearchCandidateStore) ReadRetrievalExactL0(_ context.Context, request store.RetrievalActiveRootReadRequest, limit int) ([]store.RetrievalEmbeddingRow, error) {

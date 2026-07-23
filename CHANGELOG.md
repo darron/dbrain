@@ -86,6 +86,11 @@ development date for the change set.
   projections no longer materialize chunk text. They retain only vector and
   filter metadata; the existing hydration step remains responsible for evidence
   text.
+- **Pinned native authority session**: One tagged semantic search now holds a
+  query-only SQLite snapshot across exact-L0 and every bounded native-candidate
+  validation batch. Root CAS checks remain at each authority read; this does
+  not yet add the planned cross-process generation lease or extend the snapshot
+  through final evidence hydration.
 
 ### Optional native ANN backend screening (2026-07-22)
 

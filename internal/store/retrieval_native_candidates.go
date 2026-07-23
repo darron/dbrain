@@ -34,14 +34,7 @@ type RetrievalNativeCandidateRequest struct {
 // members that remain, so a later exact reranker can use deterministic
 // tie-breaking without trusting native result ordering.
 func (s *Store) ReadRetrievalNativeCandidates(ctx context.Context, input RetrievalNativeCandidateRequest) ([]RetrievalEmbeddingRow, error) {
-	input.ProfileID = strings.TrimSpace(input.ProfileID)
-	input.ExpectedActiveGenerationID = strings.TrimSpace(input.ExpectedActiveGenerationID)
-	input.Candidates = append([]RetrievalNativeCandidate(nil), input.Candidates...)
-	for index := range input.Candidates {
-		input.Candidates[index].SegmentHash = strings.TrimSpace(input.Candidates[index].SegmentHash)
-		input.Candidates[index].ChunkID = strings.TrimSpace(input.Candidates[index].ChunkID)
-		input.Candidates[index].VectorHash = strings.TrimSpace(input.Candidates[index].VectorHash)
-	}
+	input = normalizeRetrievalNativeCandidateRequest(input)
 	if err := validateRetrievalNativeCandidateRequest(input); err != nil {
 		return nil, err
 	}
@@ -50,10 +43,32 @@ func (s *Store) ReadRetrievalNativeCandidates(ctx context.Context, input Retriev
 		return nil, fmt.Errorf("begin retrieval native candidate read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	result, err := readRetrievalNativeCandidates(ctx, tx, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit retrieval native candidate read: %w", err)
+	}
+	return result, nil
+}
 
+func normalizeRetrievalNativeCandidateRequest(input RetrievalNativeCandidateRequest) RetrievalNativeCandidateRequest {
+	input.ProfileID = strings.TrimSpace(input.ProfileID)
+	input.ExpectedActiveGenerationID = strings.TrimSpace(input.ExpectedActiveGenerationID)
+	input.Candidates = append([]RetrievalNativeCandidate(nil), input.Candidates...)
+	for index := range input.Candidates {
+		input.Candidates[index].SegmentHash = strings.TrimSpace(input.Candidates[index].SegmentHash)
+		input.Candidates[index].ChunkID = strings.TrimSpace(input.Candidates[index].ChunkID)
+		input.Candidates[index].VectorHash = strings.TrimSpace(input.Candidates[index].VectorHash)
+	}
+	return input
+}
+
+func readRetrievalNativeCandidates(ctx context.Context, reader sqlQueryer, input RetrievalNativeCandidateRequest) ([]RetrievalEmbeddingRow, error) {
 	var activeGenerationID string
 	var purgeEpoch, snapshotRevision int64
-	if err := tx.QueryRowContext(ctx, `
+	if err := reader.QueryRowContext(ctx, `
 		SELECT active_generation_id,purge_epoch,active_snapshot_revision
 		FROM retrieval_embedding_profiles WHERE profile_id=?`, input.ProfileID,
 	).Scan(&activeGenerationID, &purgeEpoch, &snapshotRevision); err != nil {
@@ -63,7 +78,7 @@ func (s *Store) ReadRetrievalNativeCandidates(ctx context.Context, input Retriev
 		return nil, fmt.Errorf("load retrieval native candidate profile %s: %w", input.ProfileID, err)
 	}
 	var globalPurgeEpoch int64
-	if err := tx.QueryRowContext(ctx, `SELECT purge_epoch FROM retrieval_state WHERE singleton=1`).Scan(&globalPurgeEpoch); err != nil {
+	if err := reader.QueryRowContext(ctx, `SELECT purge_epoch FROM retrieval_state WHERE singleton=1`).Scan(&globalPurgeEpoch); err != nil {
 		return nil, fmt.Errorf("load retrieval native candidate purge epoch: %w", err)
 	}
 	if activeGenerationID != input.ExpectedActiveGenerationID || purgeEpoch != input.ExpectedPurgeEpoch ||
@@ -73,7 +88,7 @@ func (s *Store) ReadRetrievalNativeCandidates(ctx context.Context, input Retriev
 			input.ExpectedActiveSnapshotRevision, activeGenerationID, purgeEpoch, globalPurgeEpoch, snapshotRevision)
 	}
 	var generationProfileID string
-	if err := tx.QueryRowContext(ctx, `
+	if err := reader.QueryRowContext(ctx, `
 		SELECT profile_id FROM retrieval_index_generations
 		WHERE generation_id=? AND active=1 AND build_status=?`, activeGenerationID, RetrievalGenerationCompleted,
 	).Scan(&generationProfileID); err != nil {
@@ -93,7 +108,7 @@ func (s *Store) ReadRetrievalNativeCandidates(ctx context.Context, input Retriev
 		args = append(args, position, candidate.SegmentHash, candidate.ChunkID, candidate.Revision, candidate.VectorHash)
 	}
 	args = append(args, activeGenerationID, input.ProfileID)
-	rows, err := tx.QueryContext(ctx, `
+	rows, err := reader.QueryContext(ctx, `
 		WITH requested(position,segment_hash,chunk_id,revision,vector_hash) AS (VALUES `+strings.Join(values, ",")+`)
 		SELECT e.chunk_id,e.profile_id,e.provider,e.model,e.dimensions,e.representation,e.normalization,
 			e.vector_bytes,e.vector_hash,e.chunk_text_hash,e.revision,e.status,
@@ -140,9 +155,6 @@ func (s *Store) ReadRetrievalNativeCandidates(ctx context.Context, input Retriev
 	}
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("close retrieval native candidates: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit retrieval native candidate read: %w", err)
 	}
 	return result, nil
 }
