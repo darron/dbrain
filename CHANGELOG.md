@@ -82,6 +82,10 @@ development date for the change set.
   parent-capped candidate window through 200, 500, and 2,000 global ANN-hit
   stages. Each authoritative SQLite validation read remains bounded to 190
   candidates and retains active-root CAS checks.
+- **Content-free authority reads**: Native-candidate and exact-L0 validation
+  projections no longer materialize chunk text. They retain only vector and
+  filter metadata; the existing hydration step remains responsible for evidence
+  text.
 
 ### Optional native ANN backend screening (2026-07-22)
 

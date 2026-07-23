@@ -49,6 +49,9 @@ func TestReadRetrievalNativeCandidatesReturnsCurrentExactActiveMembersInRequestO
 	if len(got) != 2 || !reflect.DeepEqual([]string{got[0].ChunkID, got[1].ChunkID}, []string{"chunk-c", "chunk-a"}) {
 		t.Fatalf("current candidates=%+v", got)
 	}
+	if got[0].Text != "" || got[1].Text != "" {
+		t.Fatalf("native candidate read materialized text: %+v", got)
+	}
 }
 
 func TestReadRetrievalNativeCandidatesRejectsChangedActiveRoot(t *testing.T) {

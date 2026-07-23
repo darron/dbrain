@@ -32,4 +32,7 @@ func TestReadRetrievalExactL0ReturnsOnlyCurrentNonMembers(t *testing.T) {
 	if len(rows) != 1 || rows[0].ChunkID != "chunk-b" || rows[0].Revision <= 3 {
 		t.Fatalf("l0 rows=%+v", rows)
 	}
+	if rows[0].Text != "" {
+		t.Fatalf("exact L0 read materialized text: %+v", rows[0])
+	}
 }

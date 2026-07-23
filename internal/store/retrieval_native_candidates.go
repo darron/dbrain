@@ -99,7 +99,7 @@ func (s *Store) ReadRetrievalNativeCandidates(ctx context.Context, input Retriev
 			e.vector_bytes,e.vector_hash,e.chunk_text_hash,e.revision,e.status,
 			c.parent_kind,c.parent_source_key,c.evidence_role,
 			CASE WHEN c.parent_kind='source' THEN COALESCE(source.source_type,'') ELSE COALESCE(item.source_type,'') END,
-			c.section_ordinal,c.text,c.projection_version,c.chunker_version,c.chunk_text_hash
+			c.section_ordinal,c.projection_version,c.chunker_version,c.chunk_text_hash
 		FROM requested
 		JOIN retrieval_generation_segments generation
 			ON generation.generation_id=? AND generation.segment_hash=requested.segment_hash
@@ -126,7 +126,7 @@ func (s *Store) ReadRetrievalNativeCandidates(ctx context.Context, input Retriev
 		if err := rows.Scan(&row.ChunkID, &row.ProfileID, &row.Provider, &row.Model, &row.Dimensions,
 			&row.Representation, &row.Normalization, &row.VectorBytes, &row.VectorHash, &row.ChunkTextHash,
 			&row.Revision, &row.Status, &row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole,
-			&row.SourceType, &row.SectionOrdinal, &row.Text, &row.ProjectionVersion, &row.ChunkerVersion,
+			&row.SourceType, &row.SectionOrdinal, &row.ProjectionVersion, &row.ChunkerVersion,
 			&currentChunkTextHash); err != nil {
 			return nil, fmt.Errorf("scan retrieval native candidate: %w", err)
 		}

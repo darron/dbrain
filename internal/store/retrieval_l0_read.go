@@ -47,7 +47,7 @@ func (s *Store) ReadRetrievalExactL0(ctx context.Context, input RetrievalActiveR
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT e.chunk_id,e.profile_id,e.provider,e.model,e.dimensions,e.representation,e.normalization,e.vector_bytes,e.vector_hash,e.chunk_text_hash,e.revision,e.status,
-			c.parent_kind,c.parent_source_key,c.evidence_role,CASE WHEN c.parent_kind='source' THEN COALESCE(source.source_type,'') ELSE COALESCE(item.source_type,'') END,c.section_ordinal,c.text,c.projection_version,c.chunker_version,c.chunk_text_hash
+			c.parent_kind,c.parent_source_key,c.evidence_role,CASE WHEN c.parent_kind='source' THEN COALESCE(source.source_type,'') ELSE COALESCE(item.source_type,'') END,c.section_ordinal,c.projection_version,c.chunker_version,c.chunk_text_hash
 		FROM retrieval_embeddings e JOIN retrieval_chunks c ON c.chunk_id=e.chunk_id
 		JOIN retrieval_parent_projections parent ON parent.parent_kind=c.parent_kind AND parent.parent_source_key=c.parent_source_key AND parent.status='current'
 		LEFT JOIN items item ON c.parent_kind='item' AND item.source_key=c.parent_source_key LEFT JOIN sources source ON c.parent_kind='source' AND source.source_key=c.parent_source_key
@@ -61,7 +61,7 @@ func (s *Store) ReadRetrievalExactL0(ctx context.Context, input RetrievalActiveR
 	for rows.Next() {
 		var row RetrievalEmbeddingRow
 		var current string
-		if err := rows.Scan(&row.ChunkID, &row.ProfileID, &row.Provider, &row.Model, &row.Dimensions, &row.Representation, &row.Normalization, &row.VectorBytes, &row.VectorHash, &row.ChunkTextHash, &row.Revision, &row.Status, &row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.SourceType, &row.SectionOrdinal, &row.Text, &row.ProjectionVersion, &row.ChunkerVersion, &current); err != nil {
+		if err := rows.Scan(&row.ChunkID, &row.ProfileID, &row.Provider, &row.Model, &row.Dimensions, &row.Representation, &row.Normalization, &row.VectorBytes, &row.VectorHash, &row.ChunkTextHash, &row.Revision, &row.Status, &row.ParentKind, &row.ParentSourceKey, &row.EvidenceRole, &row.SourceType, &row.SectionOrdinal, &row.ProjectionVersion, &row.ChunkerVersion, &current); err != nil {
 			return nil, fmt.Errorf("scan retrieval exact L0: %w", err)
 		}
 		if len(result) == limit {
