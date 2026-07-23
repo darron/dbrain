@@ -58,21 +58,20 @@ development date for the change set.
   unreferenced; no command, cache cleanup, or serving path is enabled.
 - **Verified optional native root loader**: Added a `usearch && cgo` internal
   loader that reopens the immutable root/segments, verifies provenance and
-  checksums, and imports closeable native indexes. It remains non-serving.
+  checksums, and imports closeable native indexes.
 - **Authoritative native candidate gate**: Added a bounded, tag-gated candidate
   searcher that resolves native ordinals through immutable manifests, validates
   their root CAS facts and current ready embeddings in SQLite, then exactly
-  reranks survivors by cosine distance. It does not search L0, apply adaptive
-  expansion or parent diversity, construct the application searcher, or change
-  visible semantic retrieval.
+  reranks survivors by cosine distance.
 - **Exact L0 authority read**: Added a CAS-checked, bounded read for current
   ready embeddings absent from the active root. It rejects an oversized delta
-  instead of returning a partial tail; native/L0 merging and runtime selection
-  remain separate work.
+  instead of returning a partial tail; tagged native search merges and exactly
+  reranks it with validated root candidates.
 - **Optional rooted runtime backend**: The normal CGO-free build now refuses an
   admitted active root rather than falling back to an unsafe whole-profile exact
   scan. A `usearch && cgo` build opens the verified cache root and uses the
-  internal native-plus-L0 searcher; production activation remains gated on an
+  internal native-plus-L0 searcher; its unavailable state is explicitly reported
+  as `native_backend_unavailable`. Production activation remains gated on an
   operator-built root and evaluation.
 
 ### Optional native ANN backend screening (2026-07-22)

@@ -945,8 +945,9 @@ construct the application searcher; semantic serving remains disabled.
 
 The storage layer also has a bounded exact-L0 read. It CAS-checks the same root
 facts and returns only current ready rows with no exact active-root membership;
-it rejects an over-limit L0 rather than silently truncating it. Native/L0 merge
-and runtime backend selection remain deliberately unwired.
+it rejects an over-limit L0 rather than silently truncating it. The tagged
+searcher merges those rows with validated native candidates and exactly reranks
+the combined set; runtime selection is wired as described below.
 
 The runtime now selects exact search only when no active root exists. An active
 root requires the optional tagged backend: a default CGO-free binary reports it
