@@ -78,6 +78,10 @@ development date for the change set.
   validated candidates before applying a three-chunk cap per unpinned parent.
   Explicit parent-key filters remain protected anchors, so an intentional
   single-parent query is not artificially truncated.
+- **Bounded native expansion**: Tagged native search now widens a filtered or
+  parent-capped candidate window through 200, 500, and 2,000 global ANN-hit
+  stages. Each authoritative SQLite validation read remains bounded to 190
+  candidates and retains active-root CAS checks.
 
 ### Optional native ANN backend screening (2026-07-22)
 

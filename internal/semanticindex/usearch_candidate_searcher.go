@@ -81,104 +81,74 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 		return hits, status, nil
 	}
 	status.GenerationID = root.GenerationID
-	candidates, err := s.root.Candidates(query, nativeCandidatesPerSegment(opts.Limit))
-	if err != nil {
-		status.Reason = ReasonSearchError
-		return hits, status, err
-	}
-	if len(candidates) == 0 {
-		status.State, status.Reason = StateSearched, ReasonNone
-		return hits, status, nil
-	}
-	if len(candidates) > store.MaxRetrievalNativeCandidates {
-		candidates = candidates[:store.MaxRetrievalNativeCandidates]
-	}
-	requested := make(map[string]USearchRootCandidate, len(candidates))
-	request := store.RetrievalNativeCandidateRequest{
-		ProfileID: profileID, ExpectedActiveGenerationID: root.GenerationID,
-		ExpectedPurgeEpoch: root.PurgeEpoch, ExpectedActiveSnapshotRevision: root.SnapshotRevision,
-		Candidates: make([]store.RetrievalNativeCandidate, 0, len(candidates)),
-	}
-	for _, candidate := range candidates {
-		if _, exists := requested[candidate.Member.ChunkID]; exists {
-			status.Reason = ReasonIndexCorrupt
-			return hits, status, nil
-		}
-		requested[candidate.Member.ChunkID] = candidate
-		request.Candidates = append(request.Candidates, store.RetrievalNativeCandidate{
-			SegmentHash: candidate.SegmentHash, ChunkID: candidate.Member.ChunkID,
-			Revision: candidate.Member.Revision, VectorHash: candidate.Member.VectorHash,
-		})
-	}
-	rows, err := s.store.ReadRetrievalNativeCandidates(ctx, request)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			status.Reason = ReasonCanceled
-			return hits, status, ctxErr
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			status.Reason = ReasonCanceled
-			return hits, status, err
-		}
-		var corruption *store.RetrievalEmbeddingCorruptionError
-		if errors.As(err, &corruption) {
-			status.Reason = ReasonIndexCorrupt
-			return hits, status, nil
-		}
-		status.Reason = ReasonSearchError
-		return hits, status, err
-	}
-	validated := make(map[string]USearchRootCandidate, len(rows))
-	for _, row := range rows {
-		candidate, exists := requested[row.ChunkID]
-		if !exists || row.Revision != candidate.Member.Revision || row.VectorHash != candidate.Member.VectorHash {
-			status.Reason = ReasonIndexCorrupt
-			return hits, status, nil
-		}
-		validated[row.ChunkID] = candidate
-	}
 	l0, err := s.store.ReadRetrievalExactL0(ctx, store.RetrievalActiveRootReadRequest{ProfileID: profileID, ExpectedActiveGenerationID: root.GenerationID, ExpectedPurgeEpoch: root.PurgeEpoch, ExpectedActiveSnapshotRevision: root.SnapshotRevision}, store.RetrievalSegmentHardLimit)
 	if err != nil {
 		status.Reason = ReasonSearchError
 		return hits, status, err
 	}
-	rows = append(rows, l0...)
-	ranked := make([]Hit, 0, len(rows))
-	for _, row := range rows {
-		if err := ctx.Err(); err != nil {
-			status.Reason = ReasonCanceled
+	rows := append([]store.RetrievalEmbeddingRow(nil), l0...)
+	requested := make(map[string]USearchRootCandidate)
+	validated := make(map[string]USearchRootCandidate)
+	for _, budget := range nativeCandidateStages(opts.Limit) {
+		candidates, err := s.root.Candidates(query, nativeCandidatesPerSegment(budget, len(s.root.Segments)))
+		if err != nil {
+			status.Reason = ReasonSearchError
 			return hits, status, err
 		}
-		candidate, exists := validated[row.ChunkID]
-		if exists && (row.Revision != candidate.Member.Revision || row.VectorHash != candidate.Member.VectorHash) {
-			status.Reason = ReasonIndexCorrupt
-			return hits, status, nil
+		if len(candidates) > budget {
+			candidates = candidates[:budget]
 		}
-		if row.ProfileID != profileID || strings.TrimSpace(row.Provider) != strings.TrimSpace(opts.Profile.Provider) || strings.TrimSpace(row.Model) != strings.TrimSpace(opts.Profile.Model) ||
-			strings.TrimSpace(row.ProjectionVersion) != strings.TrimSpace(opts.Profile.ProjectionVersion) || strings.TrimSpace(row.ChunkerVersion) != strings.TrimSpace(opts.Profile.ChunkerVersion) {
-			status.Reason = ReasonProfileMismatch
-			return hits, status, nil
+		newCandidates := make([]store.RetrievalNativeCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			previous, exists := requested[candidate.Member.ChunkID]
+			if exists && (previous.SegmentHash != candidate.SegmentHash || previous.Member.Revision != candidate.Member.Revision || previous.Member.VectorHash != candidate.Member.VectorHash) {
+				status.Reason = ReasonIndexCorrupt
+				return hits, status, nil
+			}
+			if exists {
+				continue
+			}
+			requested[candidate.Member.ChunkID] = candidate
+			newCandidates = append(newCandidates, store.RetrievalNativeCandidate{SegmentHash: candidate.SegmentHash, ChunkID: candidate.Member.ChunkID, Revision: candidate.Member.Revision, VectorHash: candidate.Member.VectorHash})
 		}
-		if row.Dimensions != opts.Profile.Dimensions {
-			status.Reason = ReasonDimensionMismatch
-			return hits, status, nil
+		for start := 0; start < len(newCandidates); start += store.MaxRetrievalNativeCandidates {
+			end := min(start+store.MaxRetrievalNativeCandidates, len(newCandidates))
+			batch, err := s.store.ReadRetrievalNativeCandidates(ctx, store.RetrievalNativeCandidateRequest{ProfileID: profileID, ExpectedActiveGenerationID: root.GenerationID, ExpectedPurgeEpoch: root.PurgeEpoch, ExpectedActiveSnapshotRevision: root.SnapshotRevision, Candidates: newCandidates[start:end]})
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					status.Reason = ReasonCanceled
+					return hits, status, ctxErr
+				}
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					status.Reason = ReasonCanceled
+					return hits, status, err
+				}
+				var corruption *store.RetrievalEmbeddingCorruptionError
+				if errors.As(err, &corruption) {
+					status.Reason = ReasonIndexCorrupt
+					return hits, status, nil
+				}
+				status.Reason = ReasonSearchError
+				return hits, status, err
+			}
+			for _, row := range batch {
+				candidate, exists := requested[row.ChunkID]
+				if !exists || row.Revision != candidate.Member.Revision || row.VectorHash != candidate.Member.VectorHash {
+					status.Reason = ReasonIndexCorrupt
+					return hits, status, nil
+				}
+				validated[row.ChunkID] = candidate
+			}
+			rows = append(rows, batch...)
 		}
-		if strings.TrimSpace(row.Representation) != strings.TrimSpace(opts.Profile.Representation) || strings.TrimSpace(row.Normalization) != strings.TrimSpace(opts.Profile.Normalization) {
-			status.Reason = ReasonIndexCorrupt
-			return hits, status, nil
+		hits, status.Scanned, status.Reason, err = rankNativeRows(ctx, query, opts, filters, profileID, rows, validated)
+		if err != nil || status.Reason != ReasonNone {
+			return hits, status, err
 		}
-		vector, err := embedding.DecodeDenseF32(row.VectorBytes, row.Dimensions)
-		if err != nil || embedding.ValidateDenseF32(vector, row.Dimensions, embedding.NormalizationL2) != nil {
-			status.Reason = ReasonIndexCorrupt
-			return hits, status, nil
+		if len(hits) >= opts.Limit {
+			break
 		}
-		status.Scanned++
-		if !filters.allows(row) {
-			continue
-		}
-		ranked = append(ranked, Hit{ChunkID: row.ChunkID, Distance: cosineDistance(query, vector), ParentKind: row.ParentKind, ParentSourceKey: row.ParentSourceKey, SourceType: row.SourceType, SectionOrdinal: row.SectionOrdinal})
 	}
-	hits = parentDiverseHits(ranked, opts.Limit, filters.parentKeys)
 	for index := range hits {
 		hits[index].Rank = index + 1
 	}
@@ -186,12 +156,45 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 	return hits, status, nil
 }
 
-func nativeCandidatesPerSegment(limit int) int {
-	if limit >= store.MaxRetrievalNativeCandidates/nativeCandidateOverfetch {
-		return store.MaxRetrievalNativeCandidates
+func rankNativeRows(ctx context.Context, query []float32, opts SearchOptions, filters cleanFilterSet, profileID string, rows []store.RetrievalEmbeddingRow, validated map[string]USearchRootCandidate) ([]Hit, int, StatusReason, error) {
+	ranked := make([]Hit, 0, len(rows))
+	scanned := 0
+	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, scanned, ReasonCanceled, err
+		}
+		candidate, exists := validated[row.ChunkID]
+		if exists && (row.Revision != candidate.Member.Revision || row.VectorHash != candidate.Member.VectorHash) {
+			return nil, scanned, ReasonIndexCorrupt, nil
+		}
+		if row.ProfileID != profileID || strings.TrimSpace(row.Provider) != strings.TrimSpace(opts.Profile.Provider) || strings.TrimSpace(row.Model) != strings.TrimSpace(opts.Profile.Model) ||
+			strings.TrimSpace(row.ProjectionVersion) != strings.TrimSpace(opts.Profile.ProjectionVersion) || strings.TrimSpace(row.ChunkerVersion) != strings.TrimSpace(opts.Profile.ChunkerVersion) {
+			return nil, scanned, ReasonProfileMismatch, nil
+		}
+		if row.Dimensions != opts.Profile.Dimensions {
+			return nil, scanned, ReasonDimensionMismatch, nil
+		}
+		if strings.TrimSpace(row.Representation) != strings.TrimSpace(opts.Profile.Representation) || strings.TrimSpace(row.Normalization) != strings.TrimSpace(opts.Profile.Normalization) {
+			return nil, scanned, ReasonIndexCorrupt, nil
+		}
+		vector, err := embedding.DecodeDenseF32(row.VectorBytes, row.Dimensions)
+		if err != nil || embedding.ValidateDenseF32(vector, row.Dimensions, embedding.NormalizationL2) != nil {
+			return nil, scanned, ReasonIndexCorrupt, nil
+		}
+		scanned++
+		if !filters.allows(row) {
+			continue
+		}
+		ranked = append(ranked, Hit{ChunkID: row.ChunkID, Distance: cosineDistance(query, vector), ParentKind: row.ParentKind, ParentSourceKey: row.ParentSourceKey, SourceType: row.SourceType, SectionOrdinal: row.SectionOrdinal})
 	}
-	if candidateCount := limit * nativeCandidateOverfetch; candidateCount > 32 {
-		return candidateCount
+	return parentDiverseHits(ranked, opts.Limit, filters.parentKeys), scanned, ReasonNone, nil
+}
+
+func nativeCandidateStages(_ int) []int { return []int{200, 500, 2000} }
+
+func nativeCandidatesPerSegment(total, segments int) int {
+	if segments <= 0 {
+		return total
 	}
-	return 32
+	return (total + segments - 1) / segments
 }

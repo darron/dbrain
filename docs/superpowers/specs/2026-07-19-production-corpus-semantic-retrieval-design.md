@@ -941,7 +941,10 @@ cap a 190-row SQLite candidate read, CAS-checks the active root/purge/snapshot
 and exact member tuple, drops stale rows, and exactly reranks surviving vectors
 by cosine distance. It merges the bounded exact L0 complement and applies the
 three-chunks-per-unpinned-parent semantic cap before returning results. Adaptive
-expansion and the planned shared reader lease remain unimplemented.
+expansion now widens through the accepted 200, 500, and 2,000 global-candidate
+stages, splitting each authoritative SQLite validation read to the conservative
+190-candidate bind-safe maximum. The planned shared reader lease remains
+unimplemented.
 
 The storage layer also has a bounded exact-L0 read. It CAS-checks the same root
 facts and returns only current ready rows with no exact active-root membership;

@@ -225,6 +225,15 @@ func TestUSearchCandidateSearcherAcceptsStaleRootMemberReplacedInExactL0(t *test
 	}
 }
 
+func TestNativeCandidateStagesFollowBoundedExpansionContract(t *testing.T) {
+	if got := nativeCandidateStages(1); !reflect.DeepEqual(got, []int{200, 500, 2000}) {
+		t.Fatalf("stages=%v", got)
+	}
+	if got := nativeCandidatesPerSegment(500, 8); got != 63 {
+		t.Fatalf("per-segment candidates=%d", got)
+	}
+}
+
 func TestUSearchAdapterRejectsInvalidState(t *testing.T) {
 	if _, err := NewUSearch(USearchOptions{Dimensions: 0}); err == nil {
 		t.Fatal("expected zero dimensions to be rejected")
