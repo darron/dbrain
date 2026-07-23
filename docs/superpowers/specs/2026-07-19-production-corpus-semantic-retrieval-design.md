@@ -943,6 +943,11 @@ reranks surviving vectors by cosine distance. It does not search L0, implement
 adaptive expansion or parent diversity, acquire the planned reader lease, or
 construct the application searcher; semantic serving remains disabled.
 
+The storage layer also has a bounded exact-L0 read. It CAS-checks the same root
+facts and returns only current ready rows with no exact active-root membership;
+it rejects an over-limit L0 rather than silently truncating it. Native/L0 merge
+and runtime backend selection remain deliberately unwired.
+
 ### Query Lifecycle
 
 A normal semantic search:

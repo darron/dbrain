@@ -65,6 +65,10 @@ development date for the change set.
   reranks survivors by cosine distance. It does not search L0, apply adaptive
   expansion or parent diversity, construct the application searcher, or change
   visible semantic retrieval.
+- **Exact L0 authority read**: Added a CAS-checked, bounded read for current
+  ready embeddings absent from the active root. It rejects an oversized delta
+  instead of returning a partial tail; native/L0 merging and runtime selection
+  remain separate work.
 
 ### Optional native ANN backend screening (2026-07-22)
 
