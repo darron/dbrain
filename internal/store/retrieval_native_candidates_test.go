@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/darron/dbrain/internal/embedding"
@@ -67,5 +68,22 @@ func TestReadRetrievalNativeCandidatesRejectsChangedActiveRoot(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("changed active root candidate read succeeded")
+	}
+}
+
+func TestReadRetrievalNativeCandidatesRejectsListsAboveSQLiteBindBudget(t *testing.T) {
+	t.Parallel()
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	candidates := make([]RetrievalNativeCandidate, MaxRetrievalNativeCandidates+1)
+	for index := range candidates {
+		candidates[index] = RetrievalNativeCandidate{SegmentHash: "segment", ChunkID: "chunk-" + strings.Repeat("x", index+1), Revision: 1, VectorHash: "hash"}
+	}
+	_, err := st.ReadRetrievalNativeCandidates(context.Background(), RetrievalNativeCandidateRequest{
+		ProfileID: "profile", ExpectedActiveGenerationID: "generation", ExpectedActiveSnapshotRevision: 1,
+		Candidates: candidates,
+	})
+	if err == nil || !strings.Contains(err.Error(), "between 1 and") {
+		t.Fatalf("err=%v", err)
 	}
 }
