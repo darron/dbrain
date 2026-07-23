@@ -313,6 +313,10 @@ type fakeUSearchCandidateStore struct {
 	err     error
 }
 
+func (f *fakeUSearchCandidateStore) ReadRetrievalExactL0(context.Context, store.RetrievalActiveRootReadRequest, int) ([]store.RetrievalEmbeddingRow, error) {
+	return []store.RetrievalEmbeddingRow{}, nil
+}
+
 func (f *fakeUSearchCandidateStore) ReadRetrievalNativeCandidates(_ context.Context, request store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
 	f.request = request
 	return append([]store.RetrievalEmbeddingRow(nil), f.rows...), f.err

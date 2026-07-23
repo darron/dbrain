@@ -20,6 +20,7 @@ const nativeCandidateOverfetch = 8
 // only current ready embeddings for exact reranking.
 type USearchCandidateStore interface {
 	ReadRetrievalNativeCandidates(context.Context, store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error)
+	ReadRetrievalExactL0(context.Context, store.RetrievalActiveRootReadRequest, int) ([]store.RetrievalEmbeddingRow, error)
 }
 
 // USearchCandidateSearcher is a tag-gated, non-wired Searcher implementation.
@@ -122,6 +123,12 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 		status.Reason = ReasonSearchError
 		return hits, status, err
 	}
+	l0, err := s.store.ReadRetrievalExactL0(ctx, store.RetrievalActiveRootReadRequest{ProfileID: profileID, ExpectedActiveGenerationID: root.GenerationID, ExpectedPurgeEpoch: root.PurgeEpoch, ExpectedActiveSnapshotRevision: root.SnapshotRevision}, store.RetrievalSegmentHardLimit)
+	if err != nil {
+		status.Reason = ReasonSearchError
+		return hits, status, err
+	}
+	rows = append(rows, l0...)
 	ranked := make(candidateHeap, 0, min(opts.Limit, len(rows)))
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
@@ -129,7 +136,7 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 			return hits, status, err
 		}
 		candidate, exists := requested[row.ChunkID]
-		if !exists || row.Revision != candidate.Member.Revision || row.VectorHash != candidate.Member.VectorHash {
+		if exists && (row.Revision != candidate.Member.Revision || row.VectorHash != candidate.Member.VectorHash) {
 			status.Reason = ReasonIndexCorrupt
 			return hits, status, nil
 		}
