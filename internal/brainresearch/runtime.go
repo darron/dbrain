@@ -35,12 +35,7 @@ func defaultRuntimeDeps() runtimeDeps {
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions})
 		},
-		searcher: func(_ context.Context, st *store.Store, _ config.Config, _ embedding.Profile, snapshot semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
-			if snapshot.ActiveGenerationID != "" {
-				return nil, fmt.Errorf("optional native semantic backend is unavailable")
-			}
-			return semanticindex.NewExact(st), nil
-		},
+		searcher: runtimeSemanticSearcher,
 	}
 }
 
