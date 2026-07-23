@@ -69,6 +69,11 @@ development date for the change set.
   ready embeddings absent from the active root. It rejects an oversized delta
   instead of returning a partial tail; native/L0 merging and runtime selection
   remain separate work.
+- **Optional rooted runtime backend**: The normal CGO-free build now refuses an
+  admitted active root rather than falling back to an unsafe whole-profile exact
+  scan. A `usearch && cgo` build opens the verified cache root and uses the
+  internal native-plus-L0 searcher; production activation remains gated on an
+  operator-built root and evaluation.
 
 ### Optional native ANN backend screening (2026-07-22)
 

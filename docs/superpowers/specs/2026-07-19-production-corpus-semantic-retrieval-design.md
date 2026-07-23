@@ -948,6 +948,13 @@ facts and returns only current ready rows with no exact active-root membership;
 it rejects an over-limit L0 rather than silently truncating it. Native/L0 merge
 and runtime backend selection remain deliberately unwired.
 
+The runtime now selects exact search only when no active root exists. An active
+root requires the optional tagged backend: a default CGO-free binary reports it
+unavailable and fails open to lexical retrieval, while `usearch && cgo` opens
+the verified configured-cache root and supplies the internal native-plus-L0
+searcher. This does not itself build a root, install a native library, or
+approve production semantic activation.
+
 ### Query Lifecycle
 
 A normal semantic search:
