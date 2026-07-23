@@ -12,6 +12,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -105,6 +106,29 @@ func TestRuntimeAdmissionEvaluatesBeforeProviderConstructionAndForceOnCannotBypa
 		b.semanticReadinessDiagnostics.OmittedParentCount != 1 || b.semanticReadinessDiagnostics.EstimatedNotReadyChunks != 1 ||
 		b.semanticReadinessDiagnostics.OldestDebtAt == nil || !b.semanticReadinessDiagnostics.OldestDebtAt.Equal(oldest) {
 		t.Fatalf("catching-up builder=%#v diagnostics=%+v err=%v", b, b.semanticReadinessDiagnostics, err)
+	}
+}
+
+func TestRuntimeAdmissionFailsOpenForActiveRootWithoutNativeSearcher(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	providerCalls := 0
+	deps := runtimeDeps{
+		readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+			return semanticreadiness.Snapshot{Available: true, ProfileExists: true, ProfileProvenanceValid: true, ExpectedParents: 1, CurrentParents: 1, ChunkableParents: 1, ParentsWithReadyChunk: 1, ChunkCount: 100, ReadyEmbeddings: 100, GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1, LatestRevision: 1, ObservedLatestRevision: 1, L0ReadyCount: 1, ObservedL0ReadyCount: 1, ActiveGenerationID: "root", ActiveGenerationValid: true, ActiveIndexedCount: 99}, nil
+		},
+		provider: func(semanticconfig.Config) (embedding.Provider, error) {
+			providerCalls++
+			return nil, errors.New("provider must not be constructed")
+		},
+		searcher: func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error) {
+			return nil, errors.New("native backend unavailable")
+		},
+	}
+	b, err := newRuntimeBuilderWithDeps(context.Background(), config.Config{RootDir: root}, st, "", false, false, deps)
+	if err != nil || b.semanticRetriever != nil || providerCalls != 0 || b.semanticReadiness.State != semanticreadiness.StateUnavailable {
+		t.Fatalf("builder=%#v provider_calls=%d err=%v", b, providerCalls, err)
 	}
 }
 

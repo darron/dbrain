@@ -19,6 +19,7 @@ import (
 type runtimeDeps struct {
 	readiness func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
 	provider  func(semanticconfig.Config) (embedding.Provider, error)
+	searcher  func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error)
 }
 
 const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
@@ -34,6 +35,12 @@ func defaultRuntimeDeps() runtimeDeps {
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions})
 		},
+		searcher: func(_ context.Context, st *store.Store, _ config.Config, _ embedding.Profile, snapshot semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
+			if snapshot.ActiveGenerationID != "" {
+				return nil, fmt.Errorf("optional native semantic backend is unavailable")
+			}
+			return semanticindex.NewExact(st), nil
+		},
 	}
 }
 
@@ -46,6 +53,9 @@ func NewRuntimeBuilderContext(ctx context.Context, cfg config.Config, st *store.
 }
 
 func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool, deps runtimeDeps) (*Builder, error) {
+	if deps.searcher == nil {
+		deps.searcher = defaultRuntimeDeps().searcher
+	}
 	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, forceOn, forceOff); err != nil {
 		return nil, err
 	}
@@ -111,6 +121,11 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	if !b.semanticReadiness.Searchable {
 		return b, nil
 	}
+	searcher, err := deps.searcher(ctx, st, cfg, profile, snapshot, exactMaxChunks)
+	if err != nil {
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: "semantic searcher unavailable: " + err.Error()}
+		return b, nil
+	}
 	provider, err := deps.provider(ready)
 	if err != nil {
 		return nil, fmt.Errorf("construct semantic embedding provider: %w", err)
@@ -118,7 +133,7 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	if actual := semanticbuild.Profile(provider.Info()); actual != profile {
 		return nil, fmt.Errorf("constructed semantic provider provenance does not match admitted profile")
 	}
-	retriever := researchsemantic.New(provider, semanticindex.NewExact(st), st)
+	retriever := researchsemantic.New(provider, searcher, st)
 	return b.WithSemanticRetriever(retriever, researchsemantic.Options{
 		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: exactMaxChunks,
 		Timeout: researchsemantic.DefaultQueryTimeout,
