@@ -3,10 +3,8 @@
 package semanticindex
 
 import (
-	"container/heap"
 	"context"
 	"errors"
-	"sort"
 	"strings"
 
 	"github.com/darron/dbrain/internal/embedding"
@@ -136,7 +134,7 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 		return hits, status, err
 	}
 	rows = append(rows, l0...)
-	ranked := make(candidateHeap, 0, min(opts.Limit, len(rows)))
+	ranked := make([]Hit, 0, len(rows))
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
 			status.Reason = ReasonCanceled
@@ -169,18 +167,9 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 		if !filters.allows(row) {
 			continue
 		}
-		hit := Hit{ChunkID: row.ChunkID, Distance: cosineDistance(query, vector), SourceType: row.SourceType, SectionOrdinal: row.SectionOrdinal}
-		if ranked.Len() < opts.Limit {
-			heap.Push(&ranked, hit)
-			continue
-		}
-		if better(hit, ranked[0]) {
-			ranked[0] = hit
-			heap.Fix(&ranked, 0)
-		}
+		ranked = append(ranked, Hit{ChunkID: row.ChunkID, Distance: cosineDistance(query, vector), ParentKind: row.ParentKind, ParentSourceKey: row.ParentSourceKey, SourceType: row.SourceType, SectionOrdinal: row.SectionOrdinal})
 	}
-	hits = append(hits, ranked...)
-	sort.Slice(hits, func(i, j int) bool { return better(hits[i], hits[j]) })
+	hits = parentDiverseHits(ranked, opts.Limit, filters.parentKeys)
 	for index := range hits {
 		hits[index].Rank = index + 1
 	}

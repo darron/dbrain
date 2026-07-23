@@ -73,6 +73,10 @@ development date for the change set.
   internal native-plus-L0 searcher; its unavailable state is explicitly reported
   as `native_backend_unavailable`. Production activation remains gated on an
   operator-built root and evaluation.
+- **Semantic parent diversity**: Exact and tagged native searches now rank all
+  validated candidates before applying a three-chunk cap per unpinned parent.
+  Explicit parent-key filters remain protected anchors, so an intentional
+  single-parent query is not artificially truncated.
 
 ### Optional native ANN backend screening (2026-07-22)
 

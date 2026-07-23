@@ -935,13 +935,13 @@ The tag-gated native adapter can now open an immutable root only by reopening
 the root and every referenced segment through the content-addressed checksum
 validators, checking the USearch backend/dimensions, and importing each payload
 into a closeable native index. Any manifest, checksum, backend, dimension, or
-import failure rejects the complete root. A separate non-wired candidate gate
-now resolves native ordinals through those immutable member maps, uses
-approximate order only to cap a 190-row SQLite candidate read, CAS-checks the
-active root/purge/snapshot and exact member tuple, drops stale rows, and exactly
-reranks surviving vectors by cosine distance. It does not search L0, implement
-adaptive expansion or parent diversity, acquire the planned reader lease, or
-construct the application searcher; semantic serving remains disabled.
+import failure rejects the complete root. The candidate gate resolves native
+ordinals through those immutable member maps, uses approximate order only to
+cap a 190-row SQLite candidate read, CAS-checks the active root/purge/snapshot
+and exact member tuple, drops stale rows, and exactly reranks surviving vectors
+by cosine distance. It merges the bounded exact L0 complement and applies the
+three-chunks-per-unpinned-parent semantic cap before returning results. Adaptive
+expansion and the planned shared reader lease remain unimplemented.
 
 The storage layer also has a bounded exact-L0 read. It CAS-checks the same root
 facts and returns only current ready rows with no exact active-root membership;
