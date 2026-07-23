@@ -186,17 +186,20 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 	st := &fakeUSearchCandidateStore{rows: []store.RetrievalEmbeddingRow{
 		{ChunkID: "far", ProfileID: profileID, Provider: "fake", Model: "model", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: embedding.EncodeDenseF32([]float32{0, 1}), VectorHash: "far-hash", Revision: 4, ParentKind: "source", ParentSourceKey: "source:far", EvidenceRole: "raw", SourceType: "article", SectionOrdinal: 4, ProjectionVersion: "projection", ChunkerVersion: "chunker"},
 		{ChunkID: "near", ProfileID: profileID, Provider: "fake", Model: "model", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), VectorHash: "near-hash", Revision: 3, ParentKind: "source", ParentSourceKey: "source:near", EvidenceRole: "raw", SourceType: "article", SectionOrdinal: 2, ProjectionVersion: "projection", ChunkerVersion: "chunker"},
-	}}
+	}, l0Rows: []store.RetrievalEmbeddingRow{{ChunkID: "l0", ProfileID: profileID, Provider: "fake", Model: "model", Dimensions: 2, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2, VectorBytes: embedding.EncodeDenseF32([]float32{0.8, 0.6}), VectorHash: "l0-hash", Revision: 5, ParentKind: "source", ParentSourceKey: "source:l0", EvidenceRole: "raw", SourceType: "article", SectionOrdinal: 3, ProjectionVersion: "projection", ChunkerVersion: "chunker"}}}
 
-	hits, status, err := NewUSearchCandidateSearcher(root, st).Search(context.Background(), []float32{1, 0}, SearchOptions{Profile: profile, Limit: 2, MaxChunks: 999})
+	hits, status, err := NewUSearchCandidateSearcher(root, st).Search(context.Background(), []float32{1, 0}, SearchOptions{Profile: profile, Limit: 3, MaxChunks: 999})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != StateSearched || status.Backend != BackendUSearch || status.GenerationID != "generation" || !reflect.DeepEqual([]string{hits[0].ChunkID, hits[1].ChunkID}, []string{"near", "far"}) {
+	if status.State != StateSearched || status.Backend != BackendUSearch || status.GenerationID != "generation" || !reflect.DeepEqual([]string{hits[0].ChunkID, hits[1].ChunkID, hits[2].ChunkID}, []string{"near", "l0", "far"}) {
 		t.Fatalf("hits=%+v status=%+v", hits, status)
 	}
 	if st.request.ExpectedActiveGenerationID != "generation" || st.request.ExpectedPurgeEpoch != 2 || st.request.ExpectedActiveSnapshotRevision != 4 || len(st.request.Candidates) != 2 {
 		t.Fatalf("candidate request=%+v", st.request)
+	}
+	if st.l0Request.ExpectedActiveGenerationID != "generation" || st.l0Request.ExpectedPurgeEpoch != 2 || st.l0Request.ExpectedActiveSnapshotRevision != 4 || st.l0Limit != store.RetrievalSegmentHardLimit {
+		t.Fatalf("L0 request=%+v limit=%d", st.l0Request, st.l0Limit)
 	}
 }
 
@@ -308,13 +311,17 @@ func newUSearchRootTestIndex(t *testing.T, nodes ...HNSWNode) *USearch {
 }
 
 type fakeUSearchCandidateStore struct {
-	request store.RetrievalNativeCandidateRequest
-	rows    []store.RetrievalEmbeddingRow
-	err     error
+	request   store.RetrievalNativeCandidateRequest
+	l0Request store.RetrievalActiveRootReadRequest
+	l0Limit   int
+	rows      []store.RetrievalEmbeddingRow
+	l0Rows    []store.RetrievalEmbeddingRow
+	err       error
 }
 
-func (f *fakeUSearchCandidateStore) ReadRetrievalExactL0(context.Context, store.RetrievalActiveRootReadRequest, int) ([]store.RetrievalEmbeddingRow, error) {
-	return []store.RetrievalEmbeddingRow{}, nil
+func (f *fakeUSearchCandidateStore) ReadRetrievalExactL0(_ context.Context, request store.RetrievalActiveRootReadRequest, limit int) ([]store.RetrievalEmbeddingRow, error) {
+	f.l0Request, f.l0Limit = request, limit
+	return append([]store.RetrievalEmbeddingRow(nil), f.l0Rows...), nil
 }
 
 func (f *fakeUSearchCandidateStore) ReadRetrievalNativeCandidates(_ context.Context, request store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {

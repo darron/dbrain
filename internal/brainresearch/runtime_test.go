@@ -123,11 +123,11 @@ func TestRuntimeAdmissionFailsOpenForActiveRootWithoutNativeSearcher(t *testing.
 			return nil, errors.New("provider must not be constructed")
 		},
 		searcher: func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error) {
-			return nil, errors.New("native backend unavailable")
+			return nil, errNativeBackendUnavailable
 		},
 	}
 	b, err := newRuntimeBuilderWithDeps(context.Background(), config.Config{RootDir: root}, st, "", false, false, deps)
-	if err != nil || b.semanticRetriever != nil || providerCalls != 0 || b.semanticReadiness.State != semanticreadiness.StateUnavailable {
+	if err != nil || b.semanticRetriever != nil || providerCalls != 0 || b.semanticReadiness.State != semanticreadiness.StateUnavailable || b.semanticReadiness.Reason != "native_backend_unavailable" {
 		t.Fatalf("builder=%#v provider_calls=%d err=%v", b, providerCalls, err)
 	}
 }

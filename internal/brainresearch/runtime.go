@@ -24,6 +24,8 @@ type runtimeDeps struct {
 
 const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
 
+var errNativeBackendUnavailable = errors.New("native_backend_unavailable")
+
 func defaultRuntimeDeps() runtimeDeps {
 	return runtimeDeps{
 		readiness: func(ctx context.Context, st *store.Store, profile embedding.Profile, exactMax int, now time.Time) (semanticreadiness.Snapshot, error) {
@@ -118,7 +120,11 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	}
 	searcher, err := deps.searcher(ctx, st, cfg, profile, snapshot, exactMaxChunks)
 	if err != nil {
-		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: "semantic searcher unavailable: " + err.Error()}
+		reason := "semantic searcher unavailable: " + err.Error()
+		if errors.Is(err, errNativeBackendUnavailable) {
+			reason = errNativeBackendUnavailable.Error()
+		}
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: reason}
 		return b, nil
 	}
 	provider, err := deps.provider(ready)

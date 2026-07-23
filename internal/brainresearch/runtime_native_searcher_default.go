@@ -4,7 +4,6 @@ package brainresearch
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/embedding"
@@ -15,7 +14,7 @@ import (
 
 func runtimeSemanticSearcher(_ context.Context, st *store.Store, _ config.Config, _ embedding.Profile, snapshot semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
 	if snapshot.ActiveGenerationID != "" {
-		return nil, fmt.Errorf("optional native semantic backend is unavailable")
+		return nil, errNativeBackendUnavailable
 	}
 	return semanticindex.NewExact(st), nil
 }
