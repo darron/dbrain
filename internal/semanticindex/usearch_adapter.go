@@ -96,13 +96,13 @@ func (u *USearch) Search(query []float32, limit int) ([]HNSWHit, error) {
 	if limit <= 0 {
 		return []HNSWHit{}, nil
 	}
-	keys, _, err := u.index.Search(query, uint(limit))
+	keys, distances, err := u.index.Search(query, uint(limit))
 	if err != nil {
 		return nil, fmt.Errorf("search usearch: %w", err)
 	}
 	hits := make([]HNSWHit, 0, len(keys))
-	for _, key := range keys {
-		hits = append(hits, HNSWHit{Ordinal: uint64(key)})
+	for index, key := range keys {
+		hits = append(hits, HNSWHit{Ordinal: uint64(key), Distance: distances[index]})
 	}
 	return hits, nil
 }

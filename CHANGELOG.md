@@ -59,6 +59,12 @@ development date for the change set.
 - **Verified optional native root loader**: Added a `usearch && cgo` internal
   loader that reopens the immutable root/segments, verifies provenance and
   checksums, and imports closeable native indexes. It remains non-serving.
+- **Authoritative native candidate gate**: Added a bounded, tag-gated candidate
+  searcher that resolves native ordinals through immutable manifests, validates
+  their root CAS facts and current ready embeddings in SQLite, then exactly
+  reranks survivors by cosine distance. It does not search L0, apply adaptive
+  expansion or parent diversity, construct the application searcher, or change
+  visible semantic retrieval.
 
 ### Optional native ANN backend screening (2026-07-22)
 

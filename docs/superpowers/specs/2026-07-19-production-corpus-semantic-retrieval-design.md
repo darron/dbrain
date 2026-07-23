@@ -935,9 +935,13 @@ The tag-gated native adapter can now open an immutable root only by reopening
 the root and every referenced segment through the content-addressed checksum
 validators, checking the USearch backend/dimensions, and importing each payload
 into a closeable native index. Any manifest, checksum, backend, dimension, or
-import failure rejects the complete root. This is an internal read-only loader;
-it does not select visible results, validate candidates against SQLite, rerank,
-or enable semantic serving.
+import failure rejects the complete root. A separate non-wired candidate gate
+now resolves native ordinals through those immutable member maps, uses
+approximate order only to cap a 190-row SQLite candidate read, CAS-checks the
+active root/purge/snapshot and exact member tuple, drops stale rows, and exactly
+reranks surviving vectors by cosine distance. It does not search L0, implement
+adaptive expansion or parent diversity, acquire the planned reader lease, or
+construct the application searcher; semantic serving remains disabled.
 
 ### Query Lifecycle
 

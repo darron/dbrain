@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/darron/dbrain/internal/semanticsegment"
 )
@@ -20,8 +21,19 @@ type USearchRoot struct {
 }
 
 type USearchRootSegment struct {
-	Manifest semanticsegment.Manifest
-	Index    *USearch
+	SegmentHash string
+	Manifest    semanticsegment.Manifest
+	Index       *USearch
+}
+
+// USearchRootCandidate resolves one approximate native ordinal through the
+// immutable member manifest. It is only a candidate identity: callers must
+// still validate it against current SQLite state and exactly rerank the vector
+// before returning evidence.
+type USearchRootCandidate struct {
+	SegmentHash         string
+	Member              semanticsegment.Member
+	ApproximateDistance float32
 }
 
 func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, options USearchOptions) (*USearchRoot, error) {
@@ -51,9 +63,52 @@ func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, optio
 			_ = index.Close()
 			return fail(fmt.Errorf("import usearch root segment %s: %w", reference.Hash, err))
 		}
-		loaded.Segments = append(loaded.Segments, USearchRootSegment{Manifest: segment.Manifest, Index: index})
+		loaded.Segments = append(loaded.Segments, USearchRootSegment{SegmentHash: reference.Hash, Manifest: segment.Manifest, Index: index})
 	}
 	return loaded, nil
+}
+
+// Candidates searches each verified segment independently and converts every
+// native ordinal into its immutable member provenance. The per-segment limit
+// deliberately overfetches before later SQLite validation and exact reranking;
+// native ordering is never exposed as semantic evidence ordering.
+func (r *USearchRoot) Candidates(query []float32, limitPerSegment int) ([]USearchRootCandidate, error) {
+	if r == nil {
+		return nil, fmt.Errorf("usearch root is nil")
+	}
+	if limitPerSegment <= 0 {
+		return []USearchRootCandidate{}, nil
+	}
+	candidates := make([]USearchRootCandidate, 0, len(r.Segments)*limitPerSegment)
+	for _, segment := range r.Segments {
+		if segment.SegmentHash == "" {
+			return nil, fmt.Errorf("usearch root segment hash is empty")
+		}
+		hits, err := segment.Index.Search(query, limitPerSegment)
+		if err != nil {
+			return nil, fmt.Errorf("search usearch root segment %s: %w", segment.SegmentHash, err)
+		}
+		for _, hit := range hits {
+			if hit.Ordinal >= uint64(len(segment.Manifest.Members)) {
+				return nil, fmt.Errorf("usearch root segment %s ordinal %d is outside immutable manifest", segment.SegmentHash, hit.Ordinal)
+			}
+			member := segment.Manifest.Members[hit.Ordinal]
+			if member.Ordinal != hit.Ordinal {
+				return nil, fmt.Errorf("usearch root segment %s ordinal %d does not match immutable manifest", segment.SegmentHash, hit.Ordinal)
+			}
+			candidates = append(candidates, USearchRootCandidate{SegmentHash: segment.SegmentHash, Member: member, ApproximateDistance: hit.Distance})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].ApproximateDistance != candidates[j].ApproximateDistance {
+			return candidates[i].ApproximateDistance < candidates[j].ApproximateDistance
+		}
+		if candidates[i].SegmentHash != candidates[j].SegmentHash {
+			return candidates[i].SegmentHash < candidates[j].SegmentHash
+		}
+		return candidates[i].Member.Ordinal < candidates[j].Member.Ordinal
+	})
+	return candidates, nil
 }
 
 func (r *USearchRoot) Close() error {

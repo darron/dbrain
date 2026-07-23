@@ -28,7 +28,8 @@ type HNSWNode struct {
 // HNSWHit is an approximate graph candidate. Callers must exactly rerank and
 // validate it against authoritative SQLite state before it becomes evidence.
 type HNSWHit struct {
-	Ordinal uint64
+	Ordinal  uint64
+	Distance float32
 }
 
 // HNSW is the narrow backend adapter used by the segmented-index bakeoff.
