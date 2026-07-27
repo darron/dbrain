@@ -84,6 +84,75 @@ func TestFlushStopsAtFiveThousandAndReportsExactL0Tail(t *testing.T) {
 	}
 }
 
+func TestFlushAcceptsRowsSharingAtomicBatchRevision(t *testing.T) {
+	t.Parallel()
+	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := flushRows(profileID, store.RetrievalSegmentTarget)
+	for index := range rows {
+		rows[index].Revision = 1
+	}
+	st := &flushFakeStore{databaseID: "db-1", window: store.RetrievalFlushWindow{
+		Profile:          store.RetrievalEmbeddingProfileRow{ProfileID: profileID, L0ReadyCount: store.RetrievalSegmentTarget},
+		Rows:             rows,
+		SnapshotRevision: 1,
+	}}
+	result, err := Flush(context.Background(), st, flushPayloadBuilder{}, FlushOptions{
+		Profile: profile, Backend: "usearch", BackendVersion: "2.26.0", DistanceMetric: "cosine", CacheDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Indexed != store.RetrievalSegmentTarget || result.SnapshotRevision != 1 || st.completeCalls != 1 {
+		t.Fatalf("result=%+v complete_calls=%d", result, st.completeCalls)
+	}
+}
+
+func TestFlushRejectsZeroRevisionBeforePublishing(t *testing.T) {
+	t.Parallel()
+	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := flushRows(profileID, store.RetrievalSegmentTarget)
+	for index := range rows {
+		rows[index].Revision = 0
+	}
+	window := store.RetrievalFlushWindow{
+		Profile: store.RetrievalEmbeddingProfileRow{ProfileID: profileID, L0ReadyCount: store.RetrievalSegmentTarget},
+		Rows:    rows,
+	}
+	if err := validateFlushWindow(profileID, profile.Dimensions, window, store.RetrievalSegmentTarget); err == nil {
+		t.Fatal("validateFlushWindow accepted zero member revisions")
+	}
+}
+
+func TestFlushRejectsDescendingBatchRevisions(t *testing.T) {
+	t.Parallel()
+	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := flushRows(profileID, store.RetrievalSegmentTarget)
+	for index := range rows {
+		rows[index].Revision = 2
+	}
+	rows[1].Revision = 1
+	window := store.RetrievalFlushWindow{
+		Profile:          store.RetrievalEmbeddingProfileRow{ProfileID: profileID, L0ReadyCount: store.RetrievalSegmentTarget},
+		Rows:             rows,
+		SnapshotRevision: 2,
+	}
+	if err := validateFlushWindow(profileID, profile.Dimensions, window, store.RetrievalSegmentTarget); err == nil {
+		t.Fatal("validateFlushWindow accepted descending member revisions")
+	}
+}
+
 func TestFlushRewritesRootForMembershipL0AtActiveSnapshot(t *testing.T) {
 	t.Parallel()
 	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})

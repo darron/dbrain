@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -50,5 +51,34 @@ func TestRefusesProductionDatabaseDiscoversCandidateRoot(t *testing.T) {
 	}
 	if !refused {
 		t.Fatalf("candidate %s was not recognized as its root's configured database", candidate)
+	}
+}
+
+func TestWriteReportPreservesEvaluationIdentityAndStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	want := flushReport{
+		Database:  "/evaluation/brain.db",
+		Cache:     "/evaluation/cache",
+		ProfileID: "profile-id",
+		Status:    "completed",
+	}
+	if err := writeReport(path, want); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Database  string `json:"database"`
+		Cache     string `json:"cache"`
+		ProfileID string `json:"profile_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Database != want.Database || got.Cache != want.Cache || got.ProfileID != want.ProfileID || got.Status != want.Status {
+		t.Fatalf("report identity/status = %+v", got)
 	}
 }

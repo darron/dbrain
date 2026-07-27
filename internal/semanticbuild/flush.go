@@ -145,7 +145,9 @@ func validateFlushWindow(profileID string, dimensions int, window store.Retrieva
 	}
 	previous := int64(0)
 	for _, row := range window.Rows {
-		if row.ProfileID != profileID || row.Dimensions != dimensions || row.Revision <= previous || strings.TrimSpace(row.VectorHash) == "" {
+		// One atomic embedding batch intentionally shares one revision across
+		// all changed rows, so the ordered flush prefix is nondecreasing.
+		if row.ProfileID != profileID || row.Dimensions != dimensions || row.Revision <= 0 || row.Revision < previous || strings.TrimSpace(row.VectorHash) == "" {
 			return fmt.Errorf("semantic flush window has invalid member provenance")
 		}
 		previous = row.Revision

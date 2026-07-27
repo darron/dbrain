@@ -100,6 +100,10 @@ development date for the change set.
   gate and gives each race-enabled package a 20-minute timeout. The expanded
   SQLite store suite was still actively migrating independent test databases
   when Go's 10-minute default expired on Linux.
+- **Restored-corpus flush repair**: Real batched embeddings now pass the
+  5,000-vector lifecycle flush when multiple members share one atomic batch
+  revision. The evaluator report also preserves its database, cache, profile,
+  and completion status fields instead of silently omitting them.
 
 ### Optional native ANN backend screening (2026-07-22)
 

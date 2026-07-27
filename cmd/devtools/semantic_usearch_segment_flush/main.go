@@ -35,11 +35,14 @@ type flushStore interface {
 }
 
 type flushReport struct {
-	Database, Cache, ProfileID, Status string                     `json:"database" json:"cache" json:"profile_id" json:"status"`
-	ReadyVectors                       int                        `json:"ready_vectors"`
-	RequiredVectors                    int                        `json:"required_vectors"`
-	Result                             *semanticbuild.FlushResult `json:"result,omitempty"`
-	GeneratedAt                        time.Time                  `json:"generated_at"`
+	Database        string                     `json:"database"`
+	Cache           string                     `json:"cache"`
+	ProfileID       string                     `json:"profile_id"`
+	Status          string                     `json:"status"`
+	ReadyVectors    int                        `json:"ready_vectors"`
+	RequiredVectors int                        `json:"required_vectors"`
+	Result          *semanticbuild.FlushResult `json:"result,omitempty"`
+	GeneratedAt     time.Time                  `json:"generated_at"`
 }
 
 type flushDeps struct {
