@@ -1,4 +1,4 @@
-package semanticindex
+package annbakeoff
 
 import (
 	"bytes"

@@ -1,4 +1,4 @@
-package semanticindex
+package annbakeoff
 
 import (
 	"fmt"
@@ -6,9 +6,13 @@ import (
 	"math/rand"
 
 	"github.com/coder/hnsw"
+	"github.com/darron/dbrain/internal/semanticindex"
 )
 
 const BackendHNSW = "hnsw"
+
+type HNSWNode = semanticindex.HNSWNode
+type HNSWHit = semanticindex.HNSWHit
 
 // HNSWOptions configure one in-memory HNSW graph. Segment persistence and
 // publication remain the caller's responsibility.
@@ -17,19 +21,6 @@ type HNSWOptions struct {
 	Seed       uint64
 	M          int
 	EfSearch   int
-}
-
-// HNSWNode identifies one graph vector by its dense, segment-local ordinal.
-type HNSWNode struct {
-	Ordinal uint64
-	Vector  []float32
-}
-
-// HNSWHit is an approximate graph candidate. Callers must exactly rerank and
-// validate it against authoritative SQLite state before it becomes evidence.
-type HNSWHit struct {
-	Ordinal  uint64
-	Distance float32
 }
 
 // HNSW is the narrow backend adapter used by the segmented-index bakeoff.

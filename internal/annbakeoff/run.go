@@ -101,11 +101,11 @@ type StageReport struct {
 // returned report rather than becoming opaque errors, allowing callers to save
 // the exact evidence before stopping the next stage.
 func Run(ctx context.Context, opts Options) (Report, error) {
-	report, err := RunWith(ctx, opts, semanticindex.BackendHNSW, map[string]int{
+	report, err := RunWith(ctx, opts, BackendHNSW, map[string]int{
 		"ef_search": effectiveEfSearch(opts),
 		"m":         effectiveM(opts),
 	}, func(opts Options) (Index, error) {
-		return semanticindex.NewHNSW(semanticindex.HNSWOptions{
+		return NewHNSW(HNSWOptions{
 			Dimensions: opts.Dimensions,
 			Seed:       opts.Seed,
 			M:          effectiveM(opts),

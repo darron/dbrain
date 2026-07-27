@@ -82,7 +82,12 @@ func TestRetrievalNativeReadSnapshotRetainsOneConsistentView(t *testing.T) {
 		t.Fatalf("snapshot L0 changed after writer update: %+v", stableL0)
 	}
 
-	freshL0, err := reader.ReadRetrievalExactL0(ctx, request, RetrievalSegmentHardLimit)
+	freshReader, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("open fresh read-only view: %v", err)
+	}
+	defer func() { _ = freshReader.Close() }()
+	freshL0, err := freshReader.ReadRetrievalExactL0(ctx, request, RetrievalSegmentHardLimit)
 	if err != nil {
 		t.Fatal(err)
 	}

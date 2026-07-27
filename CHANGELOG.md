@@ -91,6 +91,15 @@ development date for the change set.
   validation batch. Root CAS checks remain at each authority read; this does
   not yet add the planned cross-process generation lease or extend the snapshot
   through final evidence hydration.
+- **CGO-free release isolation**: Moved the rejected `coder/hnsw` screening
+  adapter out of the production semantic-index package so Windows, Linux, and
+  Darwin release binaries remain CGO-free and do not compile an evaluation-only
+  graph dependency. The optional `usearch && cgo` evaluator and runtime packages
+  retain their separately tagged native build.
+- **CI race-suite budget**: The PR workflow now runs the clean `task test-ci`
+  gate and gives each race-enabled package a 20-minute timeout. The expanded
+  SQLite store suite was still actively migrating independent test databases
+  when Go's 10-minute default expired on Linux.
 
 ### Optional native ANN backend screening (2026-07-22)
 

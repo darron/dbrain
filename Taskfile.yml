@@ -45,7 +45,7 @@ tasks:
   test:
     desc: Run the Go test suite with the current shell environment
     cmds:
-      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test -cover -race ./...
+      - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go test -cover -race -timeout=20m ./...
 
   test-ci:
     desc: Run the standard Go test gate with a clean CI-like environment
@@ -60,7 +60,7 @@ tasks:
         SHELL="${SHELL:-/bin/sh}"
         GOCACHE={{.GOCACHE}}
         GOMODCACHE={{.GOMODCACHE}}
-        go test -cover -race ./...
+        go test -cover -race -timeout=20m ./...
 
   test-go:
     desc: Run the Go test suite without race or coverage

@@ -4,8 +4,6 @@ import (
 	"context"
 	"reflect"
 	"testing"
-
-	"github.com/darron/dbrain/internal/semanticindex"
 )
 
 func TestDeterministicCorpusAndExactOracle(t *testing.T) {
@@ -113,7 +111,7 @@ func TestRunWithRecordsCandidateParametersAndClosesBothIndexes(t *testing.T) {
 		RecallAt:        5,
 		MinimumRecall:   0,
 	}, "native-test", map[string]int{"connectivity": 16}, func(opts Options) (Index, error) {
-		index, err := semanticindex.NewHNSW(semanticindex.HNSWOptions{Dimensions: opts.Dimensions, Seed: opts.Seed})
+		index, err := NewHNSW(HNSWOptions{Dimensions: opts.Dimensions, Seed: opts.Seed})
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +126,7 @@ func TestRunWithRecordsCandidateParametersAndClosesBothIndexes(t *testing.T) {
 }
 
 type trackedIndex struct {
-	*semanticindex.HNSW
+	*HNSW
 	onClose func()
 }
 
