@@ -13,7 +13,7 @@ Create a concise briefing from recent dbrain evidence. Default to the last 7 day
 
 - **Interval:** Accept relative durations such as `24h`, `3d`, `7d`, `14d`, `last week`, `today`, or explicit RFC3339 timestamps. If absent, use `7d`.
 - **Focus:** Accept any user-provided topic, entity, beat, or source family. Examples: `AI`, `politics`, `Canada`, `Alberta separatism`, `agent infrastructure`, `security`, `energy`, `anything surprising`.
-- **Format:** If absent, produce a reviewable Markdown briefing with headlines, short summaries, implications, source keys, and external links.
+- **Format:** If absent, produce a reviewable Markdown briefing with headlines, short summaries, implications, and real external links.
 
 ## Required Tooling
 
@@ -51,8 +51,9 @@ If MCP tools are unavailable, follow the fallback in `dbrain-mcp`; do not silent
      - a concise headline
      - a 1-3 sentence summary
      - an implication or upcoming event/date when present in the evidence
-     - external links from canonical URLs, plus source keys such as `[x:...]`, `[src:...]`, or `[gh-star:...]`
+     - external links from canonical URLs only
    - Prefer linking the source title or publisher name. Do not link local note paths unless there is no external URL and the user needs the local artifact.
+   - Source keys such as `[src:...]`, `[x:...]`, or `[gh-star:...]` are internal lookup handles for `dbrain_get`/`dbrain_get_many` — never print them in the briefing. Resolve every citation to the entity's real URL (the `url` field from `dbrain_whats_new`/`dbrain_get_many`). If an entity truly has no external URL, cite the publisher/title in plain text instead of emitting a key.
 
 ## Output Defaults
 
@@ -66,16 +67,16 @@ Confidence: <high/moderate/low> for corpus themes; <confidence note for conteste
 
 **<Topic>**
 
-- **<Headline>.** <Summary and implication.> Sources: [<title or site>](<external-url>). Keys: [src:...], [x:...].
+- **<Headline>.** <Summary and implication.> Sources: [<title or site>](<external-url>), [<title or site>](<external-url>).
 ```
 
-For a short executive digest, use 1-2 paragraphs with inline source keys and links. For a reviewable version, use sectioned bullets.
+For a short executive digest, use 1-2 paragraphs with inline links. For a reviewable version, use sectioned bullets.
 
 ## Quality Rules
 
 - Answer from saved dbrain evidence, not general model memory.
-- Include external URLs when present in MCP payloads.
-- Preserve exact dates, bill numbers, source keys, and names.
+- Cite with real external URLs from the MCP payloads; never emit internal source keys (`[src:...]`, `[x:...]`) in output.
+- Preserve exact dates, bill numbers, and names.
 - Flag blocked, empty, or extract-failed sources instead of treating them as confirmed facts.
 - Do not overstate X posts, OCR, transcripts, or opinion pieces as verified external reality.
 - If the user asks for upcoming implications, report only upcoming dates/events present in the evidence or clearly mark analysis as inference.
