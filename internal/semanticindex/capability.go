@@ -105,14 +105,30 @@ func isCapabilitySlashPath(value string) bool {
 	if !strings.HasPrefix(value, "/") || len(value) < 2 {
 		return false
 	}
-	return !isCapabilityWhitespace(value[1]) && !strings.ContainsRune(".,;:()[]{}'\"", rune(value[1]))
+	return !isCapabilityWhitespace(value[1])
 }
 
 func isCapabilityRootedWindowsPath(value string) bool {
 	if !strings.HasPrefix(value, `\`) || len(value) < 3 || isCapabilityWhitespace(value[1]) {
 		return false
 	}
+	if isCapabilityEscapeSequence(value) {
+		return false
+	}
 	return strings.IndexByte(value[1:], '\\') > 0
+}
+
+func isCapabilityEscapeSequence(value string) bool {
+	escapes := strings.Split(value[1:], `\`)
+	if len(escapes) < 2 {
+		return false
+	}
+	for _, escape := range escapes {
+		if len(escape) != 1 || !strings.ContainsRune("abfnrtv0", rune(escape[0])) {
+			return false
+		}
+	}
+	return true
 }
 
 func isCapabilityPathBoundary(reason string, index int) bool {
@@ -156,11 +172,8 @@ func isCapabilityPathTerminator(reason string, start, index int) bool {
 }
 
 func isCapabilityDriveColon(reason string, start, index int) bool {
-	if index+1 >= len(reason) || (reason[index+1] != '/' && reason[index+1] != '\\') {
+	if index <= start || index+1 >= len(reason) || (reason[index+1] != '/' && reason[index+1] != '\\') {
 		return false
 	}
-	if index == start+1 {
-		return true
-	}
-	return strings.HasPrefix(reason[start:], `\??\`) && index == start+5
+	return (reason[index-1] >= 'A' && reason[index-1] <= 'Z') || (reason[index-1] >= 'a' && reason[index-1] <= 'z')
 }
