@@ -85,21 +85,27 @@ type Snapshot struct {
 	CorruptEmbeddings      int `json:"corrupt_embeddings"`
 	RevisionZeroEmbeddings int `json:"revision_zero_embeddings"`
 
-	GlobalPurgeEpoch       int64     `json:"global_purge_epoch"`
-	ProfilePurgeEpoch      int64     `json:"profile_purge_epoch"`
-	LatestRevision         int64     `json:"latest_revision"`
-	ObservedLatestRevision int64     `json:"observed_latest_revision"`
-	L0ReadyCount           int       `json:"l0_ready_count"`
-	ObservedL0ReadyCount   int       `json:"observed_l0_ready_count"`
-	ActiveIndexedCount     int       `json:"active_indexed_count"`
-	ActiveTombstones       int       `json:"active_tombstones"`
-	ActiveGenerationID     string    `json:"active_generation_id"`
-	ActiveGenerationValid  bool      `json:"active_generation_valid"`
-	BuildingGenerations    int       `json:"building_generations"`
-	StaleGenerations       int       `json:"stale_generations"`
-	ErrorGenerations       int       `json:"error_generations"`
-	ExactMaxChunks         int       `json:"exact_max_chunks"`
-	Now                    time.Time `json:"-"`
+	GlobalPurgeEpoch               int64     `json:"global_purge_epoch"`
+	ProfilePurgeEpoch              int64     `json:"profile_purge_epoch"`
+	LatestRevision                 int64     `json:"latest_revision"`
+	ObservedLatestRevision         int64     `json:"observed_latest_revision"`
+	L0ReadyCount                   int       `json:"l0_ready_count"`
+	ObservedL0ReadyCount           int       `json:"observed_l0_ready_count"`
+	ActiveIndexedCount             int       `json:"active_indexed_count"`
+	ActiveTombstones               int       `json:"active_tombstones"`
+	ActiveGenerationID             string    `json:"active_generation_id"`
+	ActiveGenerationValid          bool      `json:"active_generation_valid"`
+	ActiveSnapshotRevision         int64     `json:"active_snapshot_revision"`
+	ActiveGenerationBackend        string    `json:"active_generation_backend,omitempty"`
+	ActiveGenerationBackendVersion string    `json:"active_generation_backend_version,omitempty"`
+	ActiveGenerationDistanceMetric string    `json:"active_generation_distance_metric,omitempty"`
+	ActiveGenerationDimensions     int       `json:"active_generation_dimensions,omitempty"`
+	ActiveGenerationProblem        string    `json:"active_generation_problem,omitempty"`
+	BuildingGenerations            int       `json:"building_generations"`
+	StaleGenerations               int       `json:"stale_generations"`
+	ErrorGenerations               int       `json:"error_generations"`
+	ExactMaxChunks                 int       `json:"exact_max_chunks"`
+	Now                            time.Time `json:"-"`
 }
 
 func Evaluate(s Snapshot) Decision {
@@ -125,7 +131,11 @@ func Evaluate(s Snapshot) Decision {
 		return decision(StateCorrupt, "semantic profile provenance, revision, or aggregate counters are inconsistent", false)
 	}
 	if s.ActiveGenerationID != "" && !s.ActiveGenerationValid {
-		return decision(StateCorrupt, "active semantic generation provenance is unproven", false)
+		reason := "active semantic generation provenance is unproven"
+		if s.ActiveGenerationProblem != "" {
+			reason += ": " + s.ActiveGenerationProblem
+		}
+		return decision(StateCorrupt, reason, false)
 	}
 	if s.ErrorGenerations > 0 {
 		return decision(StateCorrupt, "semantic index generation failed and requires explicit repair", false)

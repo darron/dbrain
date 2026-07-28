@@ -135,6 +135,17 @@ func TestReadinessUsesIntegerRatiosAtLargeCounts(t *testing.T) {
 	}
 }
 
+func TestEvaluateReportsBoundedActiveGenerationProblem(t *testing.T) {
+	snapshot := readySnapshot(time.Now())
+	snapshot.ActiveGenerationID = "root"
+	snapshot.ActiveGenerationProblem = "active generation segment provenance does not match"
+	decision := Evaluate(snapshot)
+	const want = "active semantic generation provenance is unproven: active generation segment provenance does not match"
+	if decision.State != StateCorrupt || decision.Searchable || decision.Reason != want {
+		t.Fatalf("Evaluate()=%+v want corrupt reason %q", decision, want)
+	}
+}
+
 func TestEmbeddingDebtUsesSameCatchUpBudget(t *testing.T) {
 	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
 	base := readySnapshot(now)

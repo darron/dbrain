@@ -84,7 +84,6 @@ func (s *Store) SemanticRuntimeReadinessSnapshotAt(ctx context.Context, profile 
 	}
 
 	var stored embedding.Profile
-	var activeSnapshotRevision int64
 	var readyCount, pendingCount, blockedCount, errorCount, corruptCount int
 	err = tx.QueryRowContext(ctx, `
 		SELECT latest_revision,purge_epoch,active_generation_id,active_snapshot_revision,
@@ -92,7 +91,7 @@ func (s *Store) SemanticRuntimeReadinessSnapshotAt(ctx context.Context, profile 
 			provider,model,dimensions,projection_version,chunker_version,representation,normalization,
 			ready_embedding_count,pending_embedding_count,blocked_embedding_count,error_embedding_count,corrupt_embedding_count
 		FROM retrieval_embedding_profiles WHERE profile_id=?`, profileID).Scan(
-		&snapshot.LatestRevision, &snapshot.ProfilePurgeEpoch, &snapshot.ActiveGenerationID, &activeSnapshotRevision,
+		&snapshot.LatestRevision, &snapshot.ProfilePurgeEpoch, &snapshot.ActiveGenerationID, &snapshot.ActiveSnapshotRevision,
 		&snapshot.ActiveIndexedCount, &snapshot.L0ReadyCount, &snapshot.ActiveTombstones,
 		&stored.Provider, &stored.Model, &stored.Dimensions, &stored.ProjectionVersion,
 		&stored.ChunkerVersion, &stored.Representation, &stored.Normalization,
@@ -111,7 +110,7 @@ func (s *Store) SemanticRuntimeReadinessSnapshotAt(ctx context.Context, profile 
 	if snapshot.ProfileExists {
 		totalProfileRows := readyCount + pendingCount + blockedCount + errorCount
 		if snapshot.BlockedParents == 0 && snapshot.ErrorParents == 0 && snapshot.ChunkCount <= exactMaxChunks && totalProfileRows <= exactMaxChunks {
-			if err := validateExactSmallRuntimeProfile(ctx, tx, profileID, profile, activeSnapshotRevision, readyCount, pendingCount, blockedCount, errorCount, corruptCount, &snapshot); err != nil {
+			if err := validateExactSmallRuntimeProfile(ctx, tx, profileID, profile, snapshot.ActiveSnapshotRevision, readyCount, pendingCount, blockedCount, errorCount, corruptCount, &snapshot); err != nil {
 				return semanticreadiness.Snapshot{}, err
 			}
 		} else {
@@ -143,7 +142,13 @@ func (s *Store) SemanticRuntimeReadinessSnapshotAt(ctx context.Context, profile 
 	); err != nil {
 		return semanticreadiness.Snapshot{}, fmt.Errorf("inspect semantic runtime generation presence: %w", err)
 	}
-	snapshot.ActiveGenerationValid = snapshot.ActiveGenerationID == ""
+	if snapshot.ProfileExists {
+		if err := proveActiveSemanticGenerationMetadata(ctx, tx, profile, &snapshot); err != nil {
+			return semanticreadiness.Snapshot{}, err
+		}
+	} else {
+		snapshot.ActiveGenerationValid = snapshot.ActiveGenerationID == ""
+	}
 	if err := tx.Commit(); err != nil {
 		return semanticreadiness.Snapshot{}, fmt.Errorf("commit semantic runtime readiness snapshot: %w", err)
 	}

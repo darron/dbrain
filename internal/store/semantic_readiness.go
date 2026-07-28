@@ -422,7 +422,7 @@ func (s *Store) SemanticReadinessSnapshotAt(ctx context.Context, profile embeddi
 			ready_embedding_count,pending_embedding_count,blocked_embedding_count,error_embedding_count,corrupt_embedding_count
 		FROM retrieval_embedding_profiles WHERE profile_id=?`, profileID).Scan(
 		&snapshot.LatestRevision, &snapshot.ProfilePurgeEpoch, &snapshot.ActiveGenerationID,
-		new(int64), &snapshot.ActiveIndexedCount, &snapshot.L0ReadyCount, &snapshot.ActiveTombstones,
+		&snapshot.ActiveSnapshotRevision, &snapshot.ActiveIndexedCount, &snapshot.L0ReadyCount, &snapshot.ActiveTombstones,
 		&stored.Provider, &stored.Model, &stored.Dimensions, &stored.ProjectionVersion,
 		&stored.ChunkerVersion, &stored.Representation, &stored.Normalization,
 		&storedReadyCount, &storedPendingCount, &storedBlockedCount, &storedErrorCount, &storedCorruptCount,
@@ -449,12 +449,8 @@ func (s *Store) SemanticReadinessSnapshotAt(ctx context.Context, profile embeddi
 		}
 		snapshot.ProfileProvenanceValid = mismatched == 0
 	}
-	var activeSnapshotRevision int64
 	if snapshot.ProfileExists {
 		var observedReadyCount, observedPendingCount, observedBlockedCount, observedErrorCount, observedCorruptCount int
-		if err := tx.QueryRowContext(ctx, `SELECT active_snapshot_revision FROM retrieval_embedding_profiles WHERE profile_id=?`, profileID).Scan(&activeSnapshotRevision); err != nil {
-			return semanticreadiness.Snapshot{}, fmt.Errorf("read semantic readiness profile watermark: %w", err)
-		}
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COALESCE(MAX(revision),0),
 				COALESCE(SUM(status='ready' AND revision<=0),0),
@@ -463,7 +459,7 @@ func (s *Store) SemanticReadinessSnapshotAt(ctx context.Context, profile embeddi
 				COALESCE(SUM(status='blocked'),0),COALESCE(SUM(status='error'),0),
 				COALESCE(SUM(status='blocked' AND last_error LIKE 'corrupt:%'),0)
 			FROM retrieval_embeddings WHERE profile_id=?`,
-			snapshot.ActiveGenerationID, activeSnapshotRevision, profileID).Scan(
+			snapshot.ActiveGenerationID, snapshot.ActiveSnapshotRevision, profileID).Scan(
 			&snapshot.ObservedLatestRevision, &snapshot.RevisionZeroEmbeddings, &snapshot.ObservedL0ReadyCount,
 			&observedReadyCount, &observedPendingCount, &observedBlockedCount, &observedErrorCount, &observedCorruptCount,
 		); err != nil {
@@ -484,11 +480,13 @@ func (s *Store) SemanticReadinessSnapshotAt(ctx context.Context, profile embeddi
 	); err != nil {
 		return semanticreadiness.Snapshot{}, fmt.Errorf("count semantic readiness generations: %w", err)
 	}
-	// This foundation schema cannot persist the source revision, purge epoch,
-	// membership hash, or segment manifest needed to prove an active ANN root.
-	// A claimed active row therefore remains fail-closed until the segmented
-	// index lifecycle lands.
-	snapshot.ActiveGenerationValid = snapshot.ActiveGenerationID == ""
+	if snapshot.ProfileExists {
+		if err := proveActiveSemanticGenerationMetadata(ctx, tx, profile, &snapshot); err != nil {
+			return semanticreadiness.Snapshot{}, err
+		}
+	} else {
+		snapshot.ActiveGenerationValid = snapshot.ActiveGenerationID == ""
+	}
 	if err := tx.Commit(); err != nil {
 		return semanticreadiness.Snapshot{}, fmt.Errorf("commit semantic readiness read snapshot: %w", err)
 	}
