@@ -314,9 +314,6 @@ func (s *Store) UpdateSemanticRefreshRun(ctx context.Context, in SemanticRefresh
 	}
 	defer func() { _ = tx.Rollback() }()
 	hooks, _ := ctx.Value(semanticRefreshRunUpdateTestHooksKey{}).(semanticRefreshRunUpdateTestHooks)
-	if hooks.BeforeWrite != nil {
-		hooks.BeforeWrite()
-	}
 	var run SemanticRefreshRun
 	err = scanSemanticRefreshRun(tx.QueryRowContext(ctx, `UPDATE semantic_refresh_runs SET embedding_revision=?,stage=?,checkpoint=?,projected_parents=?,embedded_chunks=?,flushed_vectors=?,compacted_vectors=?,verified_vectors=?,successor_runs=?,current_generation_id=?,state=?,error_code=?,error_text=?,readiness_state=?,version=version+1,updated_at=?,last_progress_at=? WHERE run_id=? AND version=? AND state IN ('running','failed','cancelled') RETURNING `+semanticRefreshRunColumns, in.EmbeddingRevision, in.Stage, in.Checkpoint, in.Counters.ProjectedParents, in.Counters.EmbeddedChunks, in.Counters.FlushedVectors, in.Counters.CompactedVectors, in.Counters.VerifiedVectors, in.Counters.SuccessorRuns, in.CurrentGenerationID, in.State, in.ErrorCode, in.ErrorText, in.ReadinessState, now, now, in.RunID, in.ExpectedVersion), &run)
 	if err != nil {
@@ -340,7 +337,7 @@ func (s *Store) UpdateSemanticRefreshRun(ctx context.Context, in SemanticRefresh
 type semanticRefreshRunUpdateTestHooksKey struct{}
 
 type semanticRefreshRunUpdateTestHooks struct {
-	BeforeWrite, AfterWrite, AfterCommit func()
+	AfterWrite, AfterCommit func()
 }
 
 func (s *Store) TouchSemanticRefreshRunProgress(ctx context.Context, runID string, at time.Time) error {

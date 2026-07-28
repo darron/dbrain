@@ -10,36 +10,38 @@ import (
 )
 
 const (
-	currentSchemaVersion                      = 26
-	auditProvenanceMigrationVersion           = 12
-	auditProvenanceMigrationName              = "audit_provenance_v1"
-	retrievalMigrationVersion                 = 13
-	retrievalTriggerRepairVersion             = 14
-	retrievalTriggerRepairName                = "retrieval_profile_invariant_triggers_repair"
-	retrievalChunkProvenanceVersion           = 15
-	retrievalChunkProvenanceName              = "retrieval_chunk_projection_provenance"
-	semanticFoundationMigrationVersion        = 16
-	semanticFoundationMigrationName           = "retrieval_semantic_foundation_v2"
-	semanticProjectionDirtyMigrationVersion   = 17
-	semanticProjectionDirtyMigrationName      = "retrieval_projection_dirty_triggers"
-	semanticProjectionDirtyRepairVersion      = 18
-	semanticProjectionDirtyRepairName         = "retrieval_projection_dirty_trigger_provenance_repair"
-	retrievalEmbeddingProfileVersion          = 19
-	retrievalEmbeddingProfileName             = "retrieval_embedding_profile_definitions"
-	retrievalEmbeddingRevisionRepairVersion   = 20
-	retrievalEmbeddingRevisionRepairName      = "retrieval_embedding_revision_provenance_repair"
-	retrievalReadinessCountersVersion         = 21
-	retrievalReadinessCountersName            = "retrieval_runtime_readiness_counters"
-	retrievalSegmentMembershipVersion         = 22
-	retrievalSegmentMembershipName            = "retrieval_segment_membership_v1"
-	retrievalMembershipL0ActivationVersion    = 23
-	retrievalMembershipL0ActivationName       = "retrieval_membership_l0_activation_v1"
-	retrievalOccurrenceChunkIndexVersion      = 24
-	retrievalOccurrenceChunkIndexName         = "retrieval_occurrence_chunk_cleanup_index"
-	semanticRefreshRunsMigrationVersion       = 25
-	semanticRefreshRunsMigrationName          = "semantic_refresh_runs_v1"
-	semanticRefreshRunsRepairMigrationVersion = 26
-	semanticRefreshRunsRepairMigrationName    = "semantic_refresh_runs_v2_byte_limits"
+	currentSchemaVersion                       = 27
+	auditProvenanceMigrationVersion            = 12
+	auditProvenanceMigrationName               = "audit_provenance_v1"
+	retrievalMigrationVersion                  = 13
+	retrievalTriggerRepairVersion              = 14
+	retrievalTriggerRepairName                 = "retrieval_profile_invariant_triggers_repair"
+	retrievalChunkProvenanceVersion            = 15
+	retrievalChunkProvenanceName               = "retrieval_chunk_projection_provenance"
+	semanticFoundationMigrationVersion         = 16
+	semanticFoundationMigrationName            = "retrieval_semantic_foundation_v2"
+	semanticProjectionDirtyMigrationVersion    = 17
+	semanticProjectionDirtyMigrationName       = "retrieval_projection_dirty_triggers"
+	semanticProjectionDirtyRepairVersion       = 18
+	semanticProjectionDirtyRepairName          = "retrieval_projection_dirty_trigger_provenance_repair"
+	retrievalEmbeddingProfileVersion           = 19
+	retrievalEmbeddingProfileName              = "retrieval_embedding_profile_definitions"
+	retrievalEmbeddingRevisionRepairVersion    = 20
+	retrievalEmbeddingRevisionRepairName       = "retrieval_embedding_revision_provenance_repair"
+	retrievalReadinessCountersVersion          = 21
+	retrievalReadinessCountersName             = "retrieval_runtime_readiness_counters"
+	retrievalSegmentMembershipVersion          = 22
+	retrievalSegmentMembershipName             = "retrieval_segment_membership_v1"
+	retrievalMembershipL0ActivationVersion     = 23
+	retrievalMembershipL0ActivationName        = "retrieval_membership_l0_activation_v1"
+	retrievalOccurrenceChunkIndexVersion       = 24
+	retrievalOccurrenceChunkIndexName          = "retrieval_occurrence_chunk_cleanup_index"
+	semanticRefreshRunsMigrationVersion        = 25
+	semanticRefreshRunsMigrationName           = "semantic_refresh_runs_v1"
+	semanticRefreshRunsRepairMigrationVersion  = 26
+	semanticRefreshRunsRepairMigrationName     = "semantic_refresh_runs_v2_byte_limits"
+	semanticRefreshRunsArchiveMigrationVersion = 27
+	semanticRefreshRunsArchiveMigrationName    = "semantic_refresh_runs_v25_compatibility_archive"
 )
 
 type schemaMigration struct {
@@ -261,6 +263,16 @@ var schemaMigrations = []schemaMigration{
 		Version: semanticRefreshRunsRepairMigrationVersion,
 		Name:    semanticRefreshRunsRepairMigrationName,
 		Run:     func(s *Store) error { return s.repairSemanticRefreshRunSchemaV26() },
+	},
+	{
+		Version: semanticRefreshRunsArchiveMigrationVersion,
+		Name:    semanticRefreshRunsArchiveMigrationName,
+		Run: func(s *Store) error {
+			if _, err := s.db.Exec(semanticRefreshRunsV25CompatibilityArchiveCreateTableSQL); err != nil {
+				return fmt.Errorf("ensure semantic refresh run v25 compatibility archive: %w", err)
+			}
+			return nil
+		},
 	},
 }
 

@@ -117,6 +117,127 @@ func TestSemanticRefreshRunsMigrationUpgradesV24DatabaseIdempotently(t *testing.
 	}
 }
 
+func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	run := startSemanticRefreshRunForTest(t, st, "prior-head-run", "profile-a", 3, 41)
+	updated, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{
+		RunID:             run.RunID,
+		ExpectedVersion:   run.Version,
+		Stage:             SemanticRefreshFlush,
+		State:             SemanticRefreshRunRunning,
+		Checkpoint:        "flush:41",
+		Counters:          SemanticRefreshCounters{ProjectedParents: 7, EmbeddedChunks: 11, FlushedVectors: 5},
+		EmbeddingRevision: 13,
+		Now:               semanticRefreshTestNow().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		DROP TABLE semantic_refresh_runs_v25_compatibility_archive;
+		DELETE FROM schema_migrations WHERE version > 26;
+		PRAGMA user_version = 26;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	var stamped, minimum, maximum int
+	if err := db.QueryRow(`SELECT COUNT(*), MIN(version), MAX(version) FROM schema_migrations`).Scan(&stamped, &minimum, &maximum); err != nil {
+		t.Fatal(err)
+	}
+	if stamped != 26 || minimum != 1 || maximum != 26 {
+		t.Fatalf("prior-head migration ledger count=%d range=%d..%d", stamped, minimum, maximum)
+	}
+	var archiveCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='semantic_refresh_runs_v25_compatibility_archive'`).Scan(&archiveCount); err != nil || archiveCount != 0 {
+		t.Fatalf("prior-head archive count=%d err=%v", archiveCount, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var events []MigrationEvent
+	st, err = OpenWithOptions(path, OpenOptions{MigrationReporter: func(event MigrationEvent) {
+		events = append(events, event)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 ||
+		events[0].Phase != MigrationStarted ||
+		events[1].Phase != MigrationApplied ||
+		events[0].Version != semanticRefreshRunsArchiveMigrationVersion ||
+		events[1].Version != semanticRefreshRunsArchiveMigrationVersion ||
+		events[0].Name != semanticRefreshRunsArchiveMigrationName ||
+		events[1].Name != semanticRefreshRunsArchiveMigrationName {
+		t.Fatalf("v27 migration events=%+v", events)
+	}
+	got, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
+	if err != nil || got == nil {
+		t.Fatalf("preserved run=%+v err=%v", got, err)
+	}
+	if got.RunID != updated.RunID || got.Version != updated.Version || got.Stage != updated.Stage ||
+		got.Checkpoint != updated.Checkpoint || got.EmbeddingRevision != updated.EmbeddingRevision ||
+		got.Counters != updated.Counters || got.State != updated.State {
+		t.Fatalf("preserved run=%+v want=%+v", got, updated)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='semantic_refresh_runs_v25_compatibility_archive'`).Scan(&archiveCount); err != nil || archiveCount != 1 {
+		t.Fatalf("created archive count=%d err=%v", archiveCount, err)
+	}
+	var migrationCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=? AND name=?`, semanticRefreshRunsArchiveMigrationVersion, semanticRefreshRunsArchiveMigrationName).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("v27 migration count=%d err=%v", migrationCount, err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events = nil
+	st, err = OpenWithOptions(path, OpenOptions{MigrationReporter: func(event MigrationEvent) {
+		events = append(events, event)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if len(events) != 0 {
+		t.Fatalf("idempotent reopen migration events=%+v", events)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsArchiveMigrationVersion).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("idempotent v27 migration count=%d err=%v", migrationCount, err)
+	}
+}
+
+func TestSemanticRefreshRunsArchiveSchemaIdentityRequiresArchiveAtV27(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE semantic_refresh_runs_v25_compatibility_archive`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = ValidateRestorableDatabase(t.Context(), path)
+	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), "semantic_refresh_runs_v25_compatibility_archive") {
+		t.Fatalf("schema identity after dropping v27 archive=%v", err)
+	}
+}
+
 func TestMembershipL0ActivationMigrationRepairsCounters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
 	st := openStoreAtPath(t, path)

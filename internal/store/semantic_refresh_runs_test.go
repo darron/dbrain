@@ -93,26 +93,31 @@ func TestSemanticRefreshRunUpdateReturnsOwnCASWithQueuedWriter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	callerWrote := make(chan struct{})
-	competitorReady := make(chan struct{})
+	releaseCallerCommit := make(chan struct{})
+	callerCommitted := make(chan struct{})
 	competitorDone := make(chan struct{})
-	wait := func(ch <-chan struct{}) {
+	waitForHook := func(ch <-chan struct{}) {
 		select {
 		case <-ch:
 		case <-ctx.Done():
 		}
 	}
+	waitForTest := func(ch <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
 	callerCtx := context.WithValue(ctx, semanticRefreshRunUpdateTestHooksKey{}, semanticRefreshRunUpdateTestHooks{
 		AfterWrite: func() {
 			close(callerWrote)
-			wait(competitorReady)
+			waitForHook(releaseCallerCommit)
 		},
 		AfterCommit: func() {
-			wait(competitorDone)
-		},
-	})
-	competitorCtx := context.WithValue(ctx, semanticRefreshRunUpdateTestHooksKey{}, semanticRefreshRunUpdateTestHooks{
-		BeforeWrite: func() {
-			close(competitorReady)
+			close(callerCommitted)
+			waitForHook(competitorDone)
 		},
 	})
 
@@ -130,36 +135,46 @@ func TestSemanticRefreshRunUpdateReturnsOwnCASWithQueuedWriter(t *testing.T) {
 		})
 		callerResult <- updateResult{run: got, err: err}
 	}()
-	wait(callerWrote)
+	waitForTest(callerWrote)
 	if err := ctx.Err(); err != nil {
 		t.Fatal(err)
 	}
-	competitorResult := make(chan updateResult, 1)
-	go func() {
-		got, err := competingStore.UpdateSemanticRefreshRun(competitorCtx, SemanticRefreshRunUpdate{
-			RunID: run.RunID, ExpectedVersion: run.Version + 1, EmbeddingRevision: 10,
-			Stage: SemanticRefreshCompaction, State: SemanticRefreshRunRunning, Checkpoint: "competitor-compaction-10",
-			Counters: SemanticRefreshCounters{ProjectedParents: 5, EmbeddedChunks: 6, FlushedVectors: 7, CompactedVectors: 8},
-			Now:      semanticRefreshTestNow().Add(2 * time.Minute),
-		})
-		competitorResult <- updateResult{run: got, err: err}
-		close(competitorDone)
-	}()
+	if _, err := competingStore.db.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		t.Fatal(err)
+	}
+	competitorInput := SemanticRefreshRunUpdate{
+		RunID: run.RunID, ExpectedVersion: run.Version + 1, EmbeddingRevision: 10,
+		Stage: SemanticRefreshCompaction, State: SemanticRefreshRunRunning, Checkpoint: "competitor-compaction-10",
+		Counters: SemanticRefreshCounters{ProjectedParents: 5, EmbeddedChunks: 6, FlushedVectors: 7, CompactedVectors: 8},
+		Now:      semanticRefreshTestNow().Add(2 * time.Minute),
+	}
+	_, err = competingStore.UpdateSemanticRefreshRun(ctx, competitorInput)
+	requireSQLiteBusy(t, err)
+
+	close(releaseCallerCommit)
+	waitForTest(callerCommitted)
+	if _, err := competingStore.db.ExecContext(ctx, `PRAGMA busy_timeout = 60000`); err != nil {
+		t.Fatal(err)
+	}
+	competitorRun, err := competingStore.UpdateSemanticRefreshRun(ctx, competitorInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(competitorDone)
 
 	caller := <-callerResult
-	competitor := <-competitorResult
-	if caller.err != nil || competitor.err != nil {
-		t.Fatalf("caller err=%v competitor err=%v", caller.err, competitor.err)
+	if caller.err != nil {
+		t.Fatalf("caller err=%v", caller.err)
 	}
 	if caller.run.Version != run.Version+1 || caller.run.Stage != SemanticRefreshFlush || caller.run.Checkpoint != "caller-flush-9" || caller.run.Counters.FlushedVectors != 4 {
 		t.Fatalf("caller returned competitor or stale snapshot: %+v", caller.run)
 	}
-	if competitor.run.Version != run.Version+2 || competitor.run.Stage != SemanticRefreshCompaction || competitor.run.Checkpoint != "competitor-compaction-10" || competitor.run.Counters.CompactedVectors != 8 {
-		t.Fatalf("competitor snapshot=%+v", competitor.run)
+	if competitorRun.Version != run.Version+2 || competitorRun.Stage != SemanticRefreshCompaction || competitorRun.Checkpoint != "competitor-compaction-10" || competitorRun.Counters.CompactedVectors != 8 {
+		t.Fatalf("competitor snapshot=%+v", competitorRun)
 	}
 	stored, err := callerStore.LatestSemanticRefreshRun(t.Context(), "profile-a")
-	if err != nil || stored == nil || stored.Version != competitor.run.Version || stored.Checkpoint != competitor.run.Checkpoint || stored.Counters != competitor.run.Counters {
-		t.Fatalf("stored=%+v competitor=%+v err=%v", stored, competitor.run, err)
+	if err != nil || stored == nil || stored.Version != competitorRun.Version || stored.Checkpoint != competitorRun.Checkpoint || stored.Counters != competitorRun.Counters {
+		t.Fatalf("stored=%+v competitor=%+v err=%v", stored, competitorRun, err)
 	}
 }
 
@@ -368,7 +383,11 @@ func TestSemanticRefreshRunsMigrationV26RepairsGenuineV25Database(t *testing.T) 
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsRepairMigrationVersion).Scan(&before); err != nil || before != 1 {
 		t.Fatalf("v26 before read count=%d err=%v", before, err)
 	}
-	if len(events) != 2 || events[0].Version != semanticRefreshRunsRepairMigrationVersion {
+	if len(events) != 4 ||
+		events[0].Phase != MigrationStarted || events[0].Version != semanticRefreshRunsRepairMigrationVersion ||
+		events[1].Phase != MigrationApplied || events[1].Version != semanticRefreshRunsRepairMigrationVersion ||
+		events[2].Phase != MigrationStarted || events[2].Version != semanticRefreshRunsArchiveMigrationVersion ||
+		events[3].Phase != MigrationApplied || events[3].Version != semanticRefreshRunsArchiveMigrationVersion {
 		t.Fatalf("migration events=%+v", events)
 	}
 	var createdText string
