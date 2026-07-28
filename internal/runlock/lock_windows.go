@@ -23,7 +23,7 @@ type fileAttributeTagInfo struct {
 	ReparseTag     uint32
 }
 
-func acquireFileLock(path string, metadata string) (fileLock, error) {
+func tryAcquireFileLock(path string, mode Mode) (fileLock, error) {
 	parent, err := openWindowsLockParent(filepath.Dir(path))
 	if err != nil {
 		return nil, err
@@ -36,29 +36,16 @@ func acquireFileLock(path string, metadata string) (fileLock, error) {
 	}
 	lock := &windowsFileLock{file: file}
 	handle := windows.Handle(file.Fd())
-	if err := windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &lock.overlapped); err != nil {
+	flags := uint32(windows.LOCKFILE_FAIL_IMMEDIATELY)
+	if mode == Exclusive {
+		flags |= windows.LOCKFILE_EXCLUSIVE_LOCK
+	}
+	if err := windows.LockFileEx(handle, flags, 0, 1, 0, &lock.overlapped); err != nil {
 		_ = file.Close()
 		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) || errors.Is(err, windows.ERROR_IO_PENDING) {
 			return nil, fmt.Errorf("%w: %s", ErrAlreadyLocked, path)
 		}
 		return nil, fmt.Errorf("lock file %s: %w", path, err)
-	}
-	if err := file.Truncate(0); err != nil {
-		_ = windows.UnlockFileEx(handle, 0, 1, 0, &lock.overlapped)
-		_ = file.Close()
-		return nil, fmt.Errorf("truncate lock file %s: %w", path, err)
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		_ = windows.UnlockFileEx(handle, 0, 1, 0, &lock.overlapped)
-		_ = file.Close()
-		return nil, fmt.Errorf("seek lock file %s: %w", path, err)
-	}
-	if metadata != "" {
-		if _, err := file.WriteString(metadata); err != nil {
-			_ = windows.UnlockFileEx(handle, 0, 1, 0, &lock.overlapped)
-			_ = file.Close()
-			return nil, fmt.Errorf("write lock file %s: %w", path, err)
-		}
 	}
 	return lock, nil
 }
@@ -174,7 +161,7 @@ func openWindowsLockFileAt(parent windows.Handle, name string, path string) (*os
 	)
 	err = windows.NtCreateFile(
 		&handle,
-		windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.SYNCHRONIZE,
+		windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE|windows.SYNCHRONIZE,
 		attributes,
 		&iosb,
 		nil,
@@ -233,4 +220,28 @@ func (l *windowsFileLock) close() error {
 	closeErr := l.file.Close()
 	l.file = nil
 	return errors.Join(unlockErr, closeErr)
+}
+
+func (l *windowsFileLock) metadataFile() *os.File {
+	if l == nil {
+		return nil
+	}
+	return l.file
+}
+
+func removeLockedFile(lock fileLock, path string) error {
+	windowsLock, ok := lock.(*windowsFileLock)
+	if !ok || windowsLock.file == nil {
+		return fmt.Errorf("remove lock file %s: invalid Windows lock handle", path)
+	}
+	deleteFile := byte(1)
+	if err := windows.SetFileInformationByHandle(
+		windows.Handle(windowsLock.file.Fd()),
+		windows.FileDispositionInfo,
+		&deleteFile,
+		1,
+	); err != nil {
+		return fmt.Errorf("remove lock file %s: %w", path, err)
+	}
+	return nil
 }
