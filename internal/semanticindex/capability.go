@@ -193,11 +193,11 @@ func capabilityEscapeComponentEnd(value string, start int) (int, bool) {
 	character := value[start+1]
 	switch character {
 	case 'x':
-		return capabilityBoundedEscapeEnd(value, start, 2, false)
+		return capabilityBoundedEscapeEnd(value, start, 2)
 	case 'u':
-		return capabilityBoundedEscapeEnd(value, start, 4, false)
+		return capabilityUnicodeEscapeEnd(value, start, 4, false)
 	case 'U':
-		return capabilityBoundedEscapeEnd(value, start, 8, true)
+		return capabilityUnicodeEscapeEnd(value, start, 8, true)
 	default:
 		if character >= '0' && character <= '7' {
 			end := start + 2
@@ -210,7 +210,7 @@ func capabilityEscapeComponentEnd(value string, start int) (int, bool) {
 	}
 }
 
-func capabilityBoundedEscapeEnd(value string, start, maximum int, exact bool) (int, bool) {
+func capabilityBoundedEscapeEnd(value string, start, maximum int) (int, bool) {
 	payloadStart := start + 2
 	end := payloadStart
 	for end < len(value) && end-payloadStart < maximum {
@@ -220,10 +220,36 @@ func capabilityBoundedEscapeEnd(value string, start, maximum int, exact bool) (i
 		}
 		end++
 	}
-	if exact {
-		return end, end-payloadStart == maximum
-	}
 	return end, end > payloadStart
+}
+
+func capabilityUnicodeEscapeEnd(value string, start, maximum int, long bool) (int, bool) {
+	end, ok := capabilityBoundedEscapeEnd(value, start, maximum)
+	if !ok {
+		return end, false
+	}
+	payload := value[start+2 : end]
+	if isCapabilityHexPayload(payload) {
+		return end, true
+	}
+	return end, long && capabilityLeadingHexCount(payload) >= 4
+}
+
+func isCapabilityHexPayload(payload string) bool {
+	return payload != "" && capabilityLeadingHexCount(payload) == len(payload)
+}
+
+func capabilityLeadingHexCount(payload string) int {
+	for index := range payload {
+		if !isCapabilityHex(payload[index]) {
+			return index
+		}
+	}
+	return len(payload)
+}
+
+func isCapabilityHex(character byte) bool {
+	return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')
 }
 
 func isCapabilityEscapeSequence(value string) bool {
