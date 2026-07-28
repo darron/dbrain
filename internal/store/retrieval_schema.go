@@ -245,7 +245,7 @@ func (s *Store) ensureRetrievalTables() error {
 			return fmt.Errorf("ensure retrieval schema: %w", err)
 		}
 	}
-	return nil
+	return ensureSemanticRefreshRunSchema(s.db)
 }
 
 func (s *Store) ensureSemanticFoundationRetrievalSchema() error {

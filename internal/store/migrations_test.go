@@ -61,6 +61,62 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSemanticRefreshRunsMigrationUpgradesV24DatabaseIdempotently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`DELETE FROM schema_migrations WHERE version > 24; PRAGMA user_version=24; DROP INDEX IF EXISTS idx_semantic_refresh_runs_one_resumable; DROP INDEX IF EXISTS idx_semantic_refresh_runs_latest; DROP TABLE IF EXISTS semantic_refresh_runs`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st = openStoreAtPath(t, path)
+	ctx := context.Background()
+	run, resumed, err := st.StartOrResumeSemanticRefreshRun(ctx, StartSemanticRefreshRunInput{RunID: "migration-run", ProfileID: "profile-a", PurgeEpoch: 1, ProjectionWatermark: 2, Now: semanticRefreshTestNow()})
+	if err != nil || resumed || run.RunID != "migration-run" {
+		t.Fatalf("run=%+v resumed=%v err=%v", run, resumed, err)
+	}
+	var count int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=? AND name=?`, semanticRefreshRunsMigrationVersion, semanticRefreshRunsMigrationName).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("migration count=%d err=%v", count, err)
+	}
+	for _, name := range []string{"idx_semantic_refresh_runs_one_resumable", "idx_semantic_refresh_runs_latest"} {
+		var found string
+		if err := st.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&found); err != nil || found != name {
+			t.Fatalf("index %s found=%q err=%v", name, found, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st = openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsMigrationVersion).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("second migration count=%d err=%v", count, err)
+	}
+	got, err := st.LatestSemanticRefreshRun(ctx, "profile-a")
+	if err != nil || got == nil || got.RunID != run.RunID {
+		t.Fatalf("persisted run=%+v err=%v", got, err)
+	}
+	columns, err := st.tableColumns("semantic_refresh_runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range dbrainSemanticRefreshRunSchemaV25[0].columns {
+		if !columns[column] {
+			t.Errorf("missing column %s", column)
+		}
+	}
+}
+
 func TestMembershipL0ActivationMigrationRepairsCounters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
 	st := openStoreAtPath(t, path)
