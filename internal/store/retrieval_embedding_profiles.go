@@ -131,7 +131,7 @@ func (s *Store) RetrievalEmbeddingProfile(ctx context.Context, profileID string)
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return RetrievalEmbeddingProfileRow{}, fmt.Errorf("retrieval embedding profile %s: %w", profileID, sql.ErrNoRows)
+			return RetrievalEmbeddingProfileRow{}, fmt.Errorf("%w: %s", ErrRetrievalEmbeddingProfileNotFound, profileID)
 		}
 		return RetrievalEmbeddingProfileRow{}, fmt.Errorf("read retrieval embedding profile %s: %w", profileID, err)
 	}
