@@ -50,6 +50,16 @@ type ChunkOptions struct {
 	commandDeadline time.Time
 }
 
+// ProjectionBatchOptions selects one bounded projection page from an immutable
+// caller-owned work watermark. It deliberately cannot allocate a watermark:
+// refresh runs allocate successor watermarks after their pinned work is idle.
+type ProjectionBatchOptions struct {
+	Watermark int64
+	Limit     int
+	Progress  func(ChunkProgress) error
+	Now       func() time.Time
+}
+
 type ChunkStore interface {
 	ProjectionWorkRevision(context.Context) (int64, error)
 	ListDirtyRetrievalParents(context.Context, int64, int) ([]store.RetrievalParentWork, error)
@@ -108,8 +118,12 @@ func runChunkWithLimits(ctx context.Context, st ChunkStore, opts ChunkOptions, l
 
 func runChunkUntilIdle(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options) (ChunkProgress, error) {
 	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
-	if opts.MaxDuration < 0 {
-		return progress, fmt.Errorf("semantic chunk max duration must not be negative")
+	if err := validateChunkOptions(opts); err != nil {
+		return progress, err
+	}
+	watermark, err := st.ProjectionWorkRevision(ctx)
+	if err != nil {
+		return progress, err
 	}
 	now := opts.Now
 	if now == nil {
@@ -130,17 +144,14 @@ func runChunkUntilIdle(ctx context.Context, st ChunkStore, opts ChunkOptions, li
 			return progress, nil
 		}
 		base := progress
-		pageOpts := opts
-		pageOpts.UntilIdle = false
-		pageOpts.MaxDuration = 0
-		pageOpts.commandDeadline = deadline
+		pageOpts := ProjectionBatchOptions{Watermark: watermark, Limit: opts.Limit, Now: opts.Now}
 		pageOpts.Progress = func(page ChunkProgress) error {
 			if opts.Progress == nil {
 				return nil
 			}
 			return opts.Progress(mergeChunkProgress(base, page))
 		}
-		page, err := runChunkWithLimitsAndPlanner(ctx, st, pageOpts, limits, chunkOpts, retrievalchunk.PrepareStreamCommandSessionContext)
+		page, err := runProjectionBatchWithLimitsAndPlanner(ctx, st, pageOpts, limits, chunkOpts, retrievalchunk.PrepareStreamCommandSessionContext, deadline)
 		progress = mergeChunkProgress(progress, page)
 		if err != nil {
 			finalizeChunkAggregate(&progress)
@@ -166,6 +177,12 @@ func runChunkUntilIdle(ctx context.Context, st ChunkStore, opts ChunkOptions, li
 		// A nonempty page can finish without HasMore even if new work arrived
 		// after its watermark. Probe once more and stop only on an empty page.
 	}
+}
+
+// RunProjectionBatch performs exactly one page of projection work at the
+// caller-supplied watermark. It never reads or advances ProjectionWorkRevision.
+func RunProjectionBatch(ctx context.Context, st ChunkStore, opts ProjectionBatchOptions) (ChunkProgress, error) {
+	return runProjectionBatchWithLimitsAndPlanner(ctx, st, opts, defaultChunkExecutionLimits, retrievalchunk.DefaultOptions(), retrievalchunk.PrepareStreamCommandSessionContext, time.Time{})
 }
 
 func mergeChunkProgress(total, page ChunkProgress) ChunkProgress {
@@ -205,11 +222,50 @@ type chunkPlanPreparer func(context.Context, retrievalchunk.Parent, retrievalchu
 
 func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer) (ChunkProgress, error) {
 	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
-	if opts.Limit <= 0 {
-		return progress, fmt.Errorf("semantic chunk limit must be positive")
+	if err := validateChunkOptions(opts); err != nil {
+		return progress, err
 	}
+	watermark, err := st.ProjectionWorkRevision(ctx)
+	if err != nil {
+		return progress, err
+	}
+	deadline := opts.commandDeadline
+	if deadline.IsZero() && opts.MaxDuration > 0 {
+		now := opts.Now
+		if now == nil {
+			now = time.Now
+		}
+		deadline = now().Add(opts.MaxDuration)
+	}
+	return runProjectionBatchWithLimitsAndPlanner(ctx, st, ProjectionBatchOptions{Watermark: watermark, Limit: opts.Limit, Progress: opts.Progress, Now: opts.Now}, limits, chunkOpts, prepare, deadline)
+}
+
+func validateChunkOptions(opts ChunkOptions) error {
 	if opts.MaxDuration < 0 {
-		return progress, fmt.Errorf("semantic chunk max duration must not be negative")
+		return fmt.Errorf("semantic chunk max duration must not be negative")
+	}
+	if opts.Limit <= 0 {
+		return fmt.Errorf("semantic projection batch limit must be positive")
+	}
+	if opts.Limit > 5_000 {
+		return fmt.Errorf("semantic projection batch limit must not exceed 5000")
+	}
+	if strings.TrimSpace(opts.AfterSourceKey) != "" {
+		return fmt.Errorf("semantic chunk --after-source-key is no longer supported; rerun without it because the durable dirty queue resumes automatically")
+	}
+	return nil
+}
+
+func runProjectionBatchWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ProjectionBatchOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer, deadline time.Time) (ChunkProgress, error) {
+	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
+	if opts.Watermark < 0 {
+		return progress, fmt.Errorf("semantic projection watermark must not be negative")
+	}
+	if opts.Limit <= 0 {
+		return progress, fmt.Errorf("semantic projection batch limit must be positive")
+	}
+	if opts.Limit > 5_000 {
+		return progress, fmt.Errorf("semantic projection batch limit must not exceed 5000")
 	}
 	if limits.StageBatchBytes <= 0 {
 		limits.StageBatchBytes = 4 << 20
@@ -223,14 +279,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 	if limits.GiantThreshold <= 0 || limits.StageBatchSize <= 0 || limits.HardChunkLimit <= limits.GiantThreshold {
 		return progress, fmt.Errorf("invalid semantic giant projection limits")
 	}
-	if strings.TrimSpace(opts.AfterSourceKey) != "" {
-		return progress, fmt.Errorf("semantic chunk --after-source-key is no longer supported; rerun without it because the durable dirty queue resumes automatically")
-	}
-	watermark, err := st.ProjectionWorkRevision(ctx)
-	if err != nil {
-		return progress, err
-	}
-	work, err := st.ListDirtyRetrievalParents(ctx, watermark, opts.Limit+1)
+	work, err := st.ListDirtyRetrievalParents(ctx, opts.Watermark, opts.Limit+1)
 	if err != nil {
 		return progress, err
 	}
@@ -243,10 +292,6 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 	now := opts.Now
 	if now == nil {
 		now = time.Now
-	}
-	deadline := opts.commandDeadline
-	if deadline.IsZero() && opts.MaxDuration > 0 {
-		deadline = now().Add(opts.MaxDuration)
 	}
 	for _, selectedWork := range selected {
 		if progress.Scanned > 0 && deadlineReached(deadline, now) {
