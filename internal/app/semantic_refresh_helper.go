@@ -22,6 +22,7 @@ const semanticRefreshCapabilityReasonLimit = 256
 type semanticRefreshDeps struct {
 	resolve         func(string) (semanticconfig.Config, error)
 	capability      func() semanticindex.Capability
+	withTimeout     func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	openWritable    func(string) (*store.Store, error)
 	provider        func(semanticconfig.Config) (embedding.Provider, error)
 	nativeLifecycle func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error)
@@ -32,6 +33,7 @@ func defaultSemanticRefreshDeps() semanticRefreshDeps {
 	return semanticRefreshDeps{
 		resolve:      semanticconfig.Resolve,
 		capability:   semanticindex.RuntimeCapability,
+		withTimeout:  context.WithTimeout,
 		openWritable: store.Open,
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{
@@ -273,6 +275,9 @@ func completeSemanticRefreshDeps(deps semanticRefreshDeps) semanticRefreshDeps {
 	}
 	if deps.capability == nil {
 		deps.capability = defaults.capability
+	}
+	if deps.withTimeout == nil {
+		deps.withTimeout = defaults.withTimeout
 	}
 	if deps.openWritable == nil {
 		deps.openWritable = defaults.openWritable

@@ -32,7 +32,11 @@ func newSemanticRefreshCommand(root *rootOptions, deps semanticRefreshDeps) *cob
 			ctx := cmd.Context()
 			cancel := func() {}
 			if maxDuration > 0 {
-				ctx, cancel = context.WithTimeout(ctx, maxDuration)
+				timeout := deps.withTimeout
+				if timeout == nil {
+					timeout = context.WithTimeout
+				}
+				ctx, cancel = timeout(ctx, maxDuration)
 			}
 			defer cancel()
 

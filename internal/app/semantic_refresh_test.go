@@ -366,6 +366,16 @@ func testSemanticRefreshCommandInterruption(
 	}
 	entered := make(chan struct{})
 	deps := semanticRefreshCommandDeps(t, semanticconfig.ModeOn)
+	var timeoutDuration time.Duration
+	var timeoutCancel context.CancelFunc
+	if !cancelAfterEnter {
+		deps.withTimeout = func(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+			timeoutDuration = duration
+			timeoutCtx, cancel := context.WithCancel(parent)
+			timeoutCancel = cancel
+			return timeoutCtx, cancel
+		}
+	}
 	deps.runRefresh = func(
 		ctx context.Context,
 		ledger semanticrefresh.RunLedger,
@@ -401,6 +411,11 @@ func testSemanticRefreshCommandInterruption(
 	case <-entered:
 		if cancelAfterEnter {
 			cancel()
+		} else {
+			if timeoutDuration != 2*time.Second {
+				t.Fatalf("timeout duration=%s want 2s", timeoutDuration)
+			}
+			timeoutCancel()
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("refresh runner did not enter a stage")
