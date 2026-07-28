@@ -2,6 +2,7 @@ package semanticrefresh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -32,6 +33,12 @@ type wallProgressTicker struct {
 func (t wallProgressTicker) Chan() <-chan time.Time { return t.ticker.C }
 func (t wallProgressTicker) Stop()                  { t.ticker.Stop() }
 
+type progressDispatch struct {
+	run    store.SemanticRefreshRun
+	debt   Debt
+	result chan error
+}
+
 // ProgressEmitter serializes durable heartbeats and checkpoint callbacks for
 // one running refresh run. Callers must pass only rows returned by a completed
 // ledger update to Publish.
@@ -44,16 +51,19 @@ type ProgressEmitter struct {
 	workCtx context.Context
 	cancel  context.CancelFunc
 	done    chan struct{}
+	wake    chan struct{}
 
-	serialMu sync.Mutex
-	run      store.SemanticRefreshRun
-	debt     Debt
-	stopped  bool
+	stateMu        sync.Mutex
+	run            store.SemanticRefreshRun
+	debt           Debt
+	queue          []progressDispatch
+	callbackActive bool
+	stopped        bool
+	tickerStopOnce sync.Once
 
 	errorMu       sync.Mutex
 	firstError    error
 	errorReturned bool
-	stopOnce      sync.Once
 }
 
 // StartProgressEmitter durably emits the initial running snapshot before it
@@ -102,10 +112,12 @@ func startProgressEmitter(
 		workCtx:  workCtx,
 		cancel:   cancel,
 		done:     make(chan struct{}),
+		wake:     make(chan struct{}, 1),
 		run:      run,
 		debt:     debt,
 	}
-	if err := emitter.emitLocked(run, debt, true); err != nil {
+	if err := emitter.dispatch(run, debt); err != nil {
+		emitter.recordError(err)
 		close(emitter.done)
 		return nil, emitter.takeError()
 	}
@@ -115,7 +127,7 @@ func startProgressEmitter(
 		close(emitter.done)
 		return nil, emitter.takeError()
 	}
-	go emitter.heartbeat()
+	go emitter.runDispatcher()
 	return emitter, nil
 }
 
@@ -128,8 +140,10 @@ func (e *ProgressEmitter) Context() context.Context {
 	return e.workCtx
 }
 
-// Publish emits a checkpoint row only after the caller has durably persisted
-// it. Heartbeats after this call reuse that exact snapshot.
+// Publish queues a checkpoint row only after the caller has durably persisted
+// it. Heartbeats after this call reuse that exact snapshot. A Publish invoked
+// while a callback is active is accepted asynchronously so callback-to-Publish
+// reentrancy can unwind before the queued callback is dispatched.
 func (e *ProgressEmitter) Publish(run store.SemanticRefreshRun, debt Debt) error {
 	if e == nil {
 		return fmt.Errorf("semantic refresh progress emitter is required")
@@ -137,76 +151,110 @@ func (e *ProgressEmitter) Publish(run store.SemanticRefreshRun, debt Debt) error
 	if run.State != store.SemanticRefreshRunRunning {
 		return fmt.Errorf("semantic refresh progress requires a running run")
 	}
-	if err := e.emitLocked(run, debt, true); err != nil {
-		if progressErr := e.takeError(); progressErr != nil {
-			return progressErr
-		}
-		return err
+
+	request := progressDispatch{
+		run:    run,
+		debt:   debt,
+		result: make(chan error, 1),
 	}
-	return nil
+	e.stateMu.Lock()
+	if e.stopped {
+		e.stateMu.Unlock()
+		return context.Canceled
+	}
+	reentrant := e.callbackActive
+	e.run, e.debt = run, debt
+	e.queue = append(e.queue, request)
+	e.stateMu.Unlock()
+	e.signal()
+	if reentrant {
+		return nil
+	}
+
+	err := <-request.result
+	if err == nil {
+		return nil
+	}
+	if progressErr := e.takeError(); progressErr != nil {
+		return progressErr
+	}
+	return err
 }
 
-// Stop prevents new ticks, cancels derived work, joins the heartbeat goroutine,
-// and returns an asynchronous ledger or callback error at most once.
+// Stop prevents new ticks and checkpoint events and cancels derived work.
+// Outside an active callback it joins the dispatcher before returning. A Stop
+// observed while a callback is active requests stop and returns without joining
+// so callback-to-Stop reentrancy cannot self-join; a later Stop is idempotent
+// and joins after that callback unwinds.
 func (e *ProgressEmitter) Stop() error {
 	if e == nil {
 		return nil
 	}
-	e.stopOnce.Do(func() {
-		if e.ticker != nil {
-			e.ticker.Stop()
-		}
-		e.serialMu.Lock()
+	e.stateMu.Lock()
+	callbackActive := e.callbackActive
+	if !e.stopped {
 		e.stopped = true
 		e.cancel()
-		e.serialMu.Unlock()
+	}
+	e.stateMu.Unlock()
+	e.stopTicker()
+	e.signal()
+	if !callbackActive {
 		<-e.done
-	})
+	}
 	return e.takeError()
 }
 
-func (e *ProgressEmitter) heartbeat() {
+func (e *ProgressEmitter) runDispatcher() {
 	defer close(e.done)
+	defer e.stopTicker()
+	defer e.failQueued(context.Canceled)
 	for {
-		select {
-		case <-e.workCtx.Done():
-			return
-		case <-e.ticker.Chan():
-			e.serialMu.Lock()
-			if e.stopped {
-				e.serialMu.Unlock()
+		if request, ok := e.nextQueued(); ok {
+			if err := e.dispatch(request.run, request.debt); err != nil {
+				e.handleDispatchError(err)
+				request.result <- err
 				return
 			}
-			run, debt := e.run, e.debt
-			err := e.emitWhileLocked(run, debt)
-			e.serialMu.Unlock()
-			if err != nil {
+			request.result <- nil
+			continue
+		}
+		if e.isStopped() {
+			return
+		}
+
+		select {
+		case <-e.workCtx.Done():
+			e.requestStop()
+		case <-e.wake:
+		case <-e.ticker.Chan():
+			// A checkpoint accepted concurrently with this tick wins. This
+			// prevents a heartbeat from claiming the newer snapshot before its
+			// checkpoint progress unit is dispatched.
+			if request, ok := e.nextQueued(); ok {
+				if err := e.dispatch(request.run, request.debt); err != nil {
+					e.handleDispatchError(err)
+					request.result <- err
+					return
+				}
+				request.result <- nil
+				continue
+			}
+			run, debt, stopped := e.snapshot()
+			if stopped {
+				return
+			}
+			if err := e.dispatch(run, debt); err != nil {
+				e.handleDispatchError(err)
 				return
 			}
 		}
 	}
 }
 
-func (e *ProgressEmitter) emitLocked(
-	run store.SemanticRefreshRun,
-	debt Debt,
-	updateSnapshot bool,
-) error {
-	e.serialMu.Lock()
-	defer e.serialMu.Unlock()
-	if e.stopped {
-		return context.Canceled
-	}
-	if updateSnapshot {
-		e.run, e.debt = run, debt
-	}
-	return e.emitWhileLocked(run, debt)
-}
-
-func (e *ProgressEmitter) emitWhileLocked(run store.SemanticRefreshRun, debt Debt) error {
+func (e *ProgressEmitter) dispatch(run store.SemanticRefreshRun, debt Debt) error {
 	at := e.now().UTC()
 	if err := e.ledger.TouchSemanticRefreshRunProgress(e.workCtx, run.RunID, at); err != nil {
-		e.recordError(err)
 		return err
 	}
 	if e.callback == nil {
@@ -225,11 +273,80 @@ func (e *ProgressEmitter) emitWhileLocked(run store.SemanticRefreshRun, debt Deb
 		Debt:      debt,
 		At:        at,
 	}
-	if err := e.callback(progress); err != nil {
-		e.recordError(err)
-		return err
+	e.stateMu.Lock()
+	e.callbackActive = true
+	e.stateMu.Unlock()
+	err := e.callback(progress)
+	e.stateMu.Lock()
+	e.callbackActive = false
+	e.stateMu.Unlock()
+	e.signal()
+	return err
+}
+
+func (e *ProgressEmitter) nextQueued() (progressDispatch, bool) {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if e.stopped || len(e.queue) == 0 {
+		return progressDispatch{}, false
 	}
-	return nil
+	request := e.queue[0]
+	e.queue = e.queue[1:]
+	return request, true
+}
+
+func (e *ProgressEmitter) snapshot() (store.SemanticRefreshRun, Debt, bool) {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	return e.run, e.debt, e.stopped
+}
+
+func (e *ProgressEmitter) isStopped() bool {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	return e.stopped
+}
+
+func (e *ProgressEmitter) requestStop() {
+	e.stateMu.Lock()
+	e.stopped = true
+	e.stateMu.Unlock()
+	e.cancel()
+	e.stopTicker()
+	e.signal()
+}
+
+func (e *ProgressEmitter) failQueued(err error) {
+	e.stateMu.Lock()
+	queue := e.queue
+	e.queue = nil
+	e.stateMu.Unlock()
+	for _, request := range queue {
+		request.result <- err
+	}
+}
+
+func (e *ProgressEmitter) signal() {
+	select {
+	case e.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (e *ProgressEmitter) stopTicker() {
+	e.tickerStopOnce.Do(func() {
+		if e.ticker != nil {
+			e.ticker.Stop()
+		}
+	})
+}
+
+func (e *ProgressEmitter) handleDispatchError(err error) {
+	if errors.Is(err, context.Canceled) && e.workCtx.Err() != nil {
+		e.requestStop()
+		return
+	}
+	e.recordError(err)
 }
 
 func (e *ProgressEmitter) recordError(err error) {
@@ -239,9 +356,9 @@ func (e *ProgressEmitter) recordError(err error) {
 	e.errorMu.Lock()
 	if e.firstError == nil {
 		e.firstError = err
-		e.cancel()
 	}
 	e.errorMu.Unlock()
+	e.requestStop()
 }
 
 func (e *ProgressEmitter) takeError() error {

@@ -58,6 +58,25 @@ type progressTouch struct {
 	at    time.Time
 }
 
+type blockingCancellationLedger struct {
+	calls   atomic.Int64
+	started chan struct{}
+	release chan struct{}
+}
+
+func (l *blockingCancellationLedger) TouchSemanticRefreshRunProgress(
+	ctx context.Context,
+	_ string,
+	_ time.Time,
+) error {
+	if l.calls.Add(1) == 2 {
+		close(l.started)
+		<-l.release
+		return ctx.Err()
+	}
+	return nil
+}
+
 func (l *recordingProgressLedger) TouchSemanticRefreshRunProgress(
 	_ context.Context,
 	runID string,
@@ -292,6 +311,94 @@ func TestProgressEmitterRunningOnlyLedgerFailureCancelsWorkAndReturnsErrorOnce(t
 	}
 }
 
+func TestProgressEmitterCallbackCanPublishNextPersistedCheckpoint(t *testing.T) {
+	t0 := time.Date(2026, 7, 28, 13, 0, 0, 0, time.UTC)
+	clock := &fakeProgressClock{now: t0}
+	ticker := newFakeProgressTicker()
+	ledger := &recordingProgressLedger{}
+	events := make(chan Progress, 3)
+	publishReturned := make(chan error, 1)
+	var emitter *ProgressEmitter
+	var callbacks atomic.Int64
+	persisted := persistedProgressRun("run-1", "profile-1", "persisted-from-callback", 2)
+
+	var err error
+	emitter, err = startProgressEmitter(context.Background(), ledger, persistedProgressRun("run-1", "profile-1", "initial", 1), Debt{}, func(progress Progress) error {
+		events <- progress
+		if callbacks.Add(1) == 2 {
+			publishReturned <- emitter.Publish(persisted, Debt{PendingEmbeddings: 4})
+		}
+		return nil
+	}, progressEmitterOptions{
+		now:       clock.Now,
+		newTicker: func(time.Duration) progressTicker { return ticker },
+	})
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+	_ = receiveProgress(t, events)
+
+	clock.Set(t0.Add(ProgressInterval))
+	ticker.ticks <- clock.Now()
+	heartbeat := receiveProgress(t, events)
+	if heartbeat.Checkpoint != "initial" {
+		t.Fatalf("heartbeat checkpoint = %q, want initial", heartbeat.Checkpoint)
+	}
+	if err := receiveError(t, publishReturned); err != nil {
+		t.Fatalf("reentrant Publish: %v", err)
+	}
+	checkpoint := receiveProgress(t, events)
+	if checkpoint.Checkpoint != "persisted-from-callback" || checkpoint.Counters.ProjectedParents != 2 {
+		t.Fatalf("reentrant checkpoint progress = %+v", checkpoint)
+	}
+	if touches := ledger.Touches(); len(touches) != 3 {
+		t.Fatalf("durable touches = %d, want immediate, heartbeat, and reentrant checkpoint", len(touches))
+	}
+	if err := emitter.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestProgressEmitterCallbackCanRequestStopWithoutSelfJoin(t *testing.T) {
+	t0 := time.Date(2026, 7, 28, 14, 0, 0, 0, time.UTC)
+	clock := &fakeProgressClock{now: t0}
+	ticker := newFakeProgressTicker()
+	stopReturned := make(chan error, 1)
+	callbackReturned := make(chan struct{})
+	var emitter *ProgressEmitter
+	var callbacks atomic.Int64
+
+	var err error
+	emitter, err = startProgressEmitter(context.Background(), &recordingProgressLedger{}, persistedProgressRun("run-1", "profile-1", "initial", 0), Debt{}, func(Progress) error {
+		if callbacks.Add(1) == 2 {
+			stopReturned <- emitter.Stop()
+			close(callbackReturned)
+		}
+		return nil
+	}, progressEmitterOptions{
+		now:       clock.Now,
+		newTicker: func(time.Duration) progressTicker { return ticker },
+	})
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+
+	clock.Set(t0.Add(ProgressInterval))
+	ticker.ticks <- clock.Now()
+	if err := receiveError(t, stopReturned); err != nil {
+		t.Fatalf("reentrant Stop: %v", err)
+	}
+	receiveSignal(t, callbackReturned, "callback return after reentrant Stop")
+	receiveSignal(t, emitter.done, "dispatcher exit after reentrant Stop")
+	if err := emitter.Stop(); err != nil {
+		t.Fatalf("joining Stop: %v", err)
+	}
+	ticker.ticks <- clock.Now()
+	if callbacks.Load() != 2 {
+		t.Fatalf("callbacks after reentrant Stop = %d, want 2", callbacks.Load())
+	}
+}
+
 func TestProgressEmitterStopPreventsLaterTicksAndJoinsGoroutine(t *testing.T) {
 	ticker := newFakeProgressTicker()
 	var calls atomic.Int64
@@ -318,6 +425,36 @@ func TestProgressEmitterStopPreventsLaterTicksAndJoinsGoroutine(t *testing.T) {
 	if err := emitter.Publish(persistedProgressRun("run-1", "profile-1", "late", 1), Debt{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Publish after Stop error = %v, want context cancellation", err)
 	}
+}
+
+func TestProgressEmitterExternalStopJoinsInFlightDurableTouchWithoutReportingCancellation(t *testing.T) {
+	ticker := newFakeProgressTicker()
+	ledger := &blockingCancellationLedger{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	emitter, err := startProgressEmitter(context.Background(), ledger, persistedProgressRun("run-1", "profile-1", "projection", 0), Debt{}, nil, progressEmitterOptions{
+		now:       time.Now,
+		newTicker: func(time.Duration) progressTicker { return ticker },
+	})
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+
+	ticker.ticks <- time.Now()
+	receiveSignal(t, ledger.started, "in-flight durable heartbeat touch")
+	stopped := make(chan error, 1)
+	go func() { stopped <- emitter.Stop() }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("external Stop returned before durable touch unwound: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(ledger.release)
+	if err := receiveError(t, stopped); err != nil {
+		t.Fatalf("external Stop reported its own cancellation: %v", err)
+	}
+	receiveSignal(t, emitter.done, "dispatcher join")
 }
 
 func persistedProgressRun(runID, profileID, checkpoint string, projected int64) store.SemanticRefreshRun {

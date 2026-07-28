@@ -2,7 +2,6 @@ package semanticrefresh
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -24,6 +23,7 @@ const (
 )
 
 const (
+	errorGeneric         = "semantic_refresh_failed"
 	errorCodeLimit       = 64
 	errorCheckpointLimit = 256
 	errorMessageLimit    = 512
@@ -46,7 +46,7 @@ func (e *RefreshError) Error() string {
 	if e == nil {
 		return ""
 	}
-	return boundedDiagnostic(e.Message, errorMessageLimit)
+	return safeRefreshErrorCode(e.Code)
 }
 
 func (e *RefreshError) Unwrap() error {
@@ -60,6 +60,7 @@ func (e *RefreshError) MarshalJSON() ([]byte, error) {
 	if e == nil {
 		return []byte("null"), nil
 	}
+	code := safeRefreshErrorCode(e.Code)
 	return json.Marshal(struct {
 		Code       string                     `json:"code"`
 		Stage      store.SemanticRefreshStage `json:"stage,omitempty"`
@@ -69,13 +70,13 @@ func (e *RefreshError) MarshalJSON() ([]byte, error) {
 		Debt       Debt                       `json:"remaining_debt"`
 		Message    string                     `json:"message"`
 	}{
-		Code:       boundedDiagnostic(e.Code, errorCodeLimit),
-		Stage:      e.Stage,
-		RunID:      boundedDiagnostic(e.RunID, errorRunIDLimit),
-		Checkpoint: boundedDiagnostic(e.Checkpoint, errorCheckpointLimit),
-		Readiness:  boundedDiagnostic(e.Readiness, errorReadinessLimit),
+		Code:       code,
+		Stage:      safeRefreshStage(e.Stage),
+		RunID:      boundedProtocolField(e.RunID, errorRunIDLimit),
+		Checkpoint: boundedProtocolField(e.Checkpoint, errorCheckpointLimit),
+		Readiness:  boundedProtocolField(e.Readiness, errorReadinessLimit),
 		Debt:       e.Debt,
-		Message:    boundedDiagnostic(e.Message, errorMessageLimit),
+		Message:    code,
 	})
 }
 
@@ -86,31 +87,55 @@ func NewError(
 	debt Debt,
 	cause error,
 ) *RefreshError {
-	message := code
-	if cause != nil {
-		message = cause.Error()
-	}
+	code = safeRefreshErrorCode(code)
 	return &RefreshError{
-		Code:       boundedDiagnostic(code, errorCodeLimit),
-		Stage:      run.Stage,
-		RunID:      boundedDiagnostic(run.RunID, errorRunIDLimit),
-		Checkpoint: boundedDiagnostic(run.Checkpoint, errorCheckpointLimit),
-		Readiness:  boundedDiagnostic(readiness, errorReadinessLimit),
+		Code:       code,
+		Stage:      safeRefreshStage(run.Stage),
+		RunID:      boundedProtocolField(run.RunID, errorRunIDLimit),
+		Checkpoint: boundedProtocolField(run.Checkpoint, errorCheckpointLimit),
+		Readiness:  boundedProtocolField(readiness, errorReadinessLimit),
 		Debt:       debt,
-		Message:    boundedDiagnostic(message, errorMessageLimit),
+		Message:    code,
 		cause:      cause,
 	}
 }
 
-var diagnosticPathPattern = regexp.MustCompile(
-	`(?i)(?:file://|[a-z]:[\\/]|\\\\|/(?:[^\s/,;:()[\]{}]+[/\\]?)+)[^\s,;]*`,
-)
+func safeRefreshErrorCode(code string) string {
+	switch code {
+	case ErrorBackendBroken,
+		ErrorRunConflict,
+		ErrorProjection,
+		ErrorEmbedding,
+		ErrorEmbeddingCircuit,
+		ErrorFlush,
+		ErrorCompaction,
+		ErrorVerify,
+		ErrorNativeRoot,
+		ErrorReadiness,
+		ErrorCancelled:
+		return code
+	default:
+		return errorGeneric
+	}
+}
+
+func safeRefreshStage(stage store.SemanticRefreshStage) store.SemanticRefreshStage {
+	switch stage {
+	case store.SemanticRefreshProjection,
+		store.SemanticRefreshEmbedding,
+		store.SemanticRefreshFlush,
+		store.SemanticRefreshCompaction,
+		store.SemanticRefreshVerify,
+		store.SemanticRefreshReadiness:
+		return stage
+	default:
+		return ""
+	}
+}
 
 func boundedDiagnostic(value string, limit int) string {
 	value = strings.ToValidUTF8(value, "\uFFFD")
 	value = strings.Join(strings.Fields(value), " ")
-	value = redactDiagnosticPayload(value)
-	value = diagnosticPathPattern.ReplaceAllString(value, "[path]")
 	if len(value) <= limit {
 		return value
 	}
@@ -121,30 +146,19 @@ func boundedDiagnostic(value string, limit int) string {
 	return value[:end]
 }
 
-func redactDiagnosticPayload(value string) string {
-	lower := strings.ToLower(value)
-	for _, marker := range []string{
-		"provider response body",
-		"provider response",
-		"response body",
-		"response payload",
-		"source text",
-		"vector payload",
-	} {
-		start := strings.Index(lower, marker)
-		if start < 0 {
-			continue
-		}
-		end := start + len(marker)
-		for end < len(value) && value[end] == ' ' {
-			end++
-		}
-		if end < len(value) && (value[end] == ':' || value[end] == '=') {
-			prefix := strings.TrimSpace(value[:start])
-			if prefix != "" {
-				prefix += " "
-			}
-			return prefix + marker + "=[redacted]"
+func boundedProtocolField(value string, limit int) string {
+	value = boundedDiagnostic(value, limit)
+	if value == "" {
+		return ""
+	}
+	for _, character := range value {
+		switch {
+		case character >= 'a' && character <= 'z':
+		case character >= 'A' && character <= 'Z':
+		case character >= '0' && character <= '9':
+		case strings.ContainsRune("._:=+-", character):
+		default:
+			return ""
 		}
 	}
 	return value

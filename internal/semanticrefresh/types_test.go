@@ -101,7 +101,7 @@ func TestRefreshErrorBoundsNormalizeAndUnwrap(t *testing.T) {
 }
 
 func TestRefreshErrorJSONExposesOnlyBoundedFields(t *testing.T) {
-	cause := errors.New(`open /Users/alice/private/corpus.db: provider response body={"vector":[1,2,3],"source":"private corpus text"}`)
+	cause := errors.New(`{"upstream":{"embedding":[0.125,0.25,0.5],"text":"private corpus sentence","file":"/Users/alice/private/corpus.db"}}`)
 	refreshErr := NewError(ErrorNativeRoot, store.SemanticRefreshRun{
 		RunID:      "run-1",
 		Stage:      store.SemanticRefreshVerify,
@@ -113,7 +113,7 @@ func TestRefreshErrorJSONExposesOnlyBoundedFields(t *testing.T) {
 		t.Fatalf("marshal RefreshError: %v", err)
 	}
 	text := string(encoded)
-	for _, secret := range []string{"/Users/alice", "corpus.db", `"vector"`, "private corpus text"} {
+	for _, secret := range []string{"/Users/alice", "corpus.db", `"embedding"`, "0.125", "private corpus sentence"} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("error JSON leaked %q: %s", secret, text)
 		}
@@ -136,22 +136,61 @@ func TestRefreshErrorJSONExposesOnlyBoundedFields(t *testing.T) {
 	}
 }
 
+func TestRefreshErrorMessageUsesOnlyStableCodeNotCause(t *testing.T) {
+	cause := errors.New(`HTTP 500 {"data":[0.1,0.2,0.3],"content":"unlabeled private source","path":"/private/corpus/index.bin"}`)
+	refreshErr := NewError(
+		ErrorEmbedding,
+		store.SemanticRefreshRun{Stage: store.SemanticRefreshEmbedding},
+		"",
+		Debt{},
+		cause,
+	)
+	if got, want := refreshErr.Message, ErrorEmbedding; got != want {
+		t.Fatalf("Message = %q, want fixed safe message %q", got, want)
+	}
+	if got, want := refreshErr.Error(), ErrorEmbedding; got != want {
+		t.Fatalf("Error() = %q, want fixed safe message %q", got, want)
+	}
+	if !errors.Is(refreshErr, cause) {
+		t.Fatal("raw cause is not available through Unwrap")
+	}
+	encoded, err := json.Marshal(refreshErr)
+	if err != nil {
+		t.Fatalf("marshal RefreshError: %v", err)
+	}
+	for _, secret := range []string{"HTTP 500", "0.1", "unlabeled private source", "/private/corpus"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("error JSON leaked cause fragment %q: %s", secret, encoded)
+		}
+	}
+}
+
 func TestRefreshErrorMarshalBoundsExportedFieldsAtOutputBoundary(t *testing.T) {
 	refreshErr := &RefreshError{
-		Code:       strings.Repeat("é", 40),
-		Checkpoint: strings.Repeat("界", 100),
-		Readiness:  strings.Repeat("é", 40),
-		Message:    `open /private/corpus.db: provider response body={"source":"private corpus text"}` + strings.Repeat("界", 200),
+		Code:       `{"private_code":"corpus-secret"}`,
+		Stage:      store.SemanticRefreshStage(`verify-{"vector":[1,2,3]}`),
+		Checkpoint: `{"vectors":[9,8,7],"source":"checkpoint private text"}`,
+		Readiness:  `provider raw body /private/readiness/corpus`,
+		Message:    `{"vectors":[1,2,3],"source":"private corpus text","path":"/private/corpus.db"}` + strings.Repeat("界", 200),
 	}
 	encoded, err := json.Marshal(refreshErr)
 	if err != nil {
 		t.Fatalf("marshal RefreshError: %v", err)
 	}
 	var fields struct {
-		Code, Checkpoint, Readiness, Message string
+		Code, Stage, Checkpoint, Readiness, Message string
 	}
 	if err := json.Unmarshal(encoded, &fields); err != nil {
 		t.Fatalf("unmarshal RefreshError: %v", err)
+	}
+	if fields.Stage != "" {
+		t.Fatalf("mutated stage serialized as %q, want omitted", fields.Stage)
+	}
+	if got, want := fields.Code, "semantic_refresh_failed"; got != want {
+		t.Fatalf("mutated code serialized as %q, want %q", got, want)
+	}
+	if got, want := fields.Message, "semantic_refresh_failed"; got != want {
+		t.Fatalf("mutated message serialized as %q, want %q", got, want)
 	}
 	for name, field := range map[string]struct {
 		value string
@@ -166,7 +205,14 @@ func TestRefreshErrorMarshalBoundsExportedFieldsAtOutputBoundary(t *testing.T) {
 			t.Fatalf("%s = %q (%d bytes), want valid UTF-8 within %d bytes", name, field.value, len(field.value), field.limit)
 		}
 	}
-	for _, secret := range []string{"/private/corpus.db", "private corpus text"} {
+	for _, secret := range []string{
+		"/private/corpus.db",
+		"/private/readiness",
+		"private corpus text",
+		"checkpoint private text",
+		"corpus-secret",
+		`"vector"`,
+	} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("error JSON leaked %q: %s", secret, encoded)
 		}
