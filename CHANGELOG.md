@@ -16,11 +16,17 @@ development date for the change set.
   command while retaining SQLite validation and exact reranking. Admission
   binds the cache root to the canonical descriptor reconstructed from SQLite,
   rejects active catalogs above a 1,024-segment hard safety ceiling, and fails
-  closed before payload access when the root or segment set differs.
+  closed before payload access when the root or segment set differs. Each
+  native payload must contain exactly the manifest's member count.
+- **Truthful native status**: A tagged `semantic status` opens and closes the
+  runtime-equivalent native root before reporting it searchable. Missing or
+  corrupt artifacts produce a stable path-free unavailable reason, while
+  caller cancellation remains an error.
 - **Cancellation-aware native loading**: Segment payloads are opened and read
   once with checksum verification, cancellation checks between stages, and
   cleanup of partially opened native indexes. The native load call itself
-  remains non-preemptible.
+  remains non-preemptible. Candidate traversal checks cancellation around each
+  native search and never leaks prior-stage partial hits after cancellation.
 - **Safe unsupported behavior**: Normal CGO-free builds carry no USearch
   dependency, report `native_backend_unsupported`, and preserve ordinary
   lexical retrieval. Native capability diagnostics redact local filesystem

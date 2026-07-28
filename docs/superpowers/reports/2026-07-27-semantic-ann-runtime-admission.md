@@ -27,7 +27,7 @@ acceptance, or production activation.
   `/Users/darron/src/dbrain/.worktrees/semantic-ann-automatic-sync`
 - Branch: `codex/semantic-ann-automatic-sync`
 - Tested implementation SHA:
-  `522e81d282533becb7272f5ecebbb1dfa65af569`
+  `5d81f268417487538bec125af202075e70e1f23a`
 - Copied database:
   `/private/tmp/dbrain-pr100-corpus.Co0jrU/xdg-data/dbrain/brain.db`
 - Copied config:
@@ -51,7 +51,7 @@ Before corpus status or research claims, the tagged branch binary resolved:
 ```
 
 It did not resolve the production XDG database or the repository database.
-No production command, activation, deployment, push, or merge occurred.
+No production command, activation, deployment, or merge occurred.
 
 ## Standard Untagged Gates
 
@@ -105,7 +105,7 @@ There was no USearch dependency.
 The exact required command was:
 
 ```sh
-env GOCACHE=/private/tmp/dbrain-final2-usearch-gocache \
+env GOCACHE=/private/tmp/dbrain-final4-usearch-gocache \
   CGO_ENABLED=1 \
   CGO_CFLAGS="-I/private/tmp/dbrain-usearch-v2.26.0-codex/extracted" \
   CGO_LDFLAGS="-L/private/tmp/dbrain-usearch-v2.26.0-codex/extracted -lusearch_c" \
@@ -125,7 +125,7 @@ command was rerun outside the listener restriction on the final frozen code
 and exited zero. The slowest package was:
 
 ```text
-ok github.com/darron/dbrain/internal/store 317.953s
+ok github.com/darron/dbrain/internal/store 309.713s
 ```
 
 Both runs emitted the existing non-fatal warning:
@@ -137,13 +137,13 @@ ld: warning: ignoring duplicate libraries: '-lusearch_c'
 ## Tagged Development Binary
 
 The tagged macOS arm64 development binary was freshly rebuilt with the same
-native flags and `GOCACHE=/private/tmp/dbrain-final2-usearch-gocache`.
+native flags and `GOCACHE=/private/tmp/dbrain-final4-usearch-gocache`.
 The build exited zero and emitted the known duplicate-library warning. It also
 reported a non-fatal sandbox denial while trying to persist a Go module stat
 cache:
 
 ```text
-go: writing stat cache: open /Users/darron/go/pkg/mod/cache/download/github.com/darron/dbrain/@v/v0.7.2-0.20260728004433-2d7ba53ce405.info408143200.tmp: operation not permitted
+go: writing stat cache: open /Users/darron/go/pkg/mod/cache/download/github.com/darron/dbrain/@v/v0.7.2-0.20260728004433-2d7ba53ce405.info144840075.tmp: operation not permitted
 ```
 
 `file` confirmed:
@@ -402,9 +402,23 @@ after the native load. The native `LoadBuffer` call itself is not preemptible.
 The existing 250 ms timeout remains the SQLite readiness-proof budget; it is
 not a promise that all native segment imports finish within 250 ms.
 
+The final follow-up review also required and verified that:
+
+- status opens and closes the same fully validated native root as normal
+  runtime before reporting it searchable, maps artifact failures to a stable
+  path-free reason, and propagates caller cancellation instead of exiting
+  successfully;
+- each imported native segment contains exactly the manifest's member count,
+  so an independently checksummed short or extra-vector payload is rejected;
+- candidate expansion checks caller cancellation before and after each
+  non-preemptible native search and between segments, and never returns partial
+  hits after cancellation in a later native or SQLite expansion stage; and
+- provider construction and provenance failures close an already opened
+  native searcher exactly once while preserving the primary error.
+
 After those corrections, the final standard gates, complete uncached tagged
 race gate, tagged status/query, untagged fallback status/query, and database
-byte-stability check all passed at `522e81d282533becb7272f5ecebbb1dfa65af569`.
+byte-stability check all passed at `5d81f268417487538bec125af202075e70e1f23a`.
 
 ## Residual Scope
 

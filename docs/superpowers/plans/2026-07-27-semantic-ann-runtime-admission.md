@@ -19,7 +19,11 @@
 - A normal CGO-free build must compile and report `unsupported`; it must not acquire a native library dependency.
 - A tagged build must report `supported_ready` only after a tiny native create/add/search/close probe succeeds.
 - An active generation is admitted only when its SQLite generation metadata, root manifest, segment manifests, and payloads all agree on database, profile, generation, snapshot, purge epoch, backend, backend version, metric, dimensions, membership, and checksums.
-- Runtime admission remains bounded by `semanticRuntimeAdmissionTimeout` (`250ms`). Do not scan all generation members during ordinary admission.
+- The SQLite readiness proof remains bounded by
+  `semanticRuntimeAdmissionTimeout` (`250ms`). Subsequent native root/payload
+  loading uses the caller context, checks cancellation between stages, and
+  cannot preempt the native `LoadBuffer` call. Do not scan all generation
+  members during ordinary admission.
 - An unsupported or broken native backend is a semantic fail-open condition for query commands: semantic is unavailable, the embedding provider is not constructed, and lexical retrieval remains usable.
 - The final automatic-sync error behavior belongs to stacked PR 3. Do not make ordinary query commands fail hard in this PR.
 - Add a changelog entry because backend reporting and normal runtime behavior are user-visible.
@@ -1176,7 +1180,8 @@ This first stacked PR is complete only when all of the following are true:
 - a normal untagged build reports `unsupported` and never tries to load USearch;
 - a tagged macOS arm64 build reports `supported_ready` only after its native probe passes;
 - both readiness readers admit the same valid active-generation metadata and reject the same corrupt metadata;
-- ordinary runtime admission stays within the existing 250ms readiness budget;
+- the SQLite readiness proof stays within the existing 250ms budget, while
+  subsequent native loading remains caller-cancellable between stages;
 - root opening proves SQLite watermark, root manifest, segment provenance, and payload integrity;
 - normal `dbrain research --semantic --retrieval-only` uses backend `usearch` on the representative 290,535-vector corpus;
 - an unsupported build against that same corpus reports semantic unavailable while lexical retrieval remains usable;
