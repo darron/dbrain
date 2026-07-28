@@ -66,7 +66,7 @@ func ReadStatus(
 
 func statusFromDecision(result Status, snapshot semanticreadiness.Snapshot, capability semanticindex.Capability) Status {
 	decision := semanticreadiness.Evaluate(snapshot)
-	if snapshot.ActiveGenerationID != "" {
+	if decision.Searchable && snapshot.ActiveGenerationID != "" {
 		if ok, reason := capability.Admit(snapshot.ActiveGenerationBackend, snapshot.ActiveGenerationBackendVersion); !ok {
 			decision = semanticreadiness.Decision{
 				State:      semanticreadiness.StateUnavailable,

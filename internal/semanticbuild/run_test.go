@@ -1135,11 +1135,18 @@ func TestReadStatusCapabilityAdmission(t *testing.T) {
 	active.ActiveGenerationDistanceMetric = "cosine"
 	active.ActiveGenerationDimensions = 2
 	active.ActiveIndexedCount = 1
+	corrupt := active
+	corrupt.ActiveGenerationValid = false
+	disabled := active
+	needsIndex := active
+	needsIndex.L0ReadyCount = semanticreadiness.CatchUpL0Limit + 1
+	needsIndex.ObservedL0ReadyCount = semanticreadiness.CatchUpL0Limit + 1
 
 	tests := []struct {
 		name       string
 		snapshot   semanticreadiness.Snapshot
 		capability semanticindex.Capability
+		enabled    bool
 		wantState  semanticreadiness.State
 		wantReason string
 		searchable bool
@@ -1147,32 +1154,54 @@ func TestReadStatusCapabilityAdmission(t *testing.T) {
 		{
 			name: "exact small remains ready without native support", snapshot: exact,
 			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			enabled:    true,
 			wantState:  semanticreadiness.StateReady, searchable: true,
 		},
 		{
 			name: "matching native backend is admitted", snapshot: active,
 			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion},
+			enabled:    true,
 			wantState:  semanticreadiness.StateReady, searchable: true,
+		},
+		{
+			name: "corrupt active generation keeps readiness repair state", snapshot: corrupt,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			enabled:    true,
+			wantState:  semanticreadiness.StateCorrupt, wantReason: "active semantic generation provenance is unproven",
+		},
+		{
+			name: "disabled mode keeps readiness repair state despite old active generation", snapshot: disabled,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			wantState:  semanticreadiness.StateDisabled, wantReason: "semantic retrieval mode is off",
+		},
+		{
+			name: "needs index active generation keeps readiness repair state", snapshot: needsIndex,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			enabled:    true,
+			wantState:  semanticreadiness.StateNeedsIndex, wantReason: "active semantic generation exceeds the L0 or tombstone safety limit",
 		},
 		{
 			name: "unsupported native backend is unavailable", snapshot: active,
 			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			enabled:    true,
 			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_unsupported",
 		},
 		{
 			name: "broken native backend is unavailable", snapshot: active,
 			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedBroken, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion, Reason: "load /private/tmp/libusearch.dylib failed"},
+			enabled:    true,
 			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_broken: load [path] failed",
 		},
 		{
 			name: "native provenance mismatch is unavailable", snapshot: active,
 			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: "2.25.0"},
+			enabled:    true,
 			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_provenance_mismatch",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ReadStatus(context.Background(), fakeStatusStore{status: tc.snapshot}, profile, true, true, 25_000, tc.capability, now)
+			got, err := ReadStatus(context.Background(), fakeStatusStore{status: tc.snapshot}, profile, true, tc.enabled, 25_000, tc.capability, now)
 			if err != nil {
 				t.Fatal(err)
 			}
