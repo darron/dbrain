@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -73,6 +74,27 @@ func TestSemanticRefreshRunCASRejectsStaleWriter(t *testing.T) {
 	}
 	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshFlush, State: SemanticRefreshRunRunning, Now: semanticRefreshTestNow().Add(2 * time.Minute)}); !errors.Is(err, ErrSemanticRefreshRunStale) {
 		t.Fatalf("stale update err=%v", err)
+	}
+}
+
+func TestSemanticRefreshRunUpdateReturnsCommittedCASSnapshot(t *testing.T) {
+	st := openTestStore(t)
+	run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
+	returned, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{
+		RunID: run.RunID, ExpectedVersion: run.Version, EmbeddingRevision: 9,
+		Stage: SemanticRefreshFlush, State: SemanticRefreshRunRunning, Checkpoint: "flush-9",
+		Counters: SemanticRefreshCounters{ProjectedParents: 2, EmbeddedChunks: 3, FlushedVectors: 4},
+		Now:      semanticRefreshTestNow().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if returned.Version != run.Version+1 || returned.EmbeddingRevision != 9 || returned.Stage != SemanticRefreshFlush || returned.Checkpoint != "flush-9" || returned.Counters.FlushedVectors != 4 {
+		t.Fatalf("returned CAS snapshot=%+v", returned)
+	}
+	stored, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
+	if err != nil || stored == nil || stored.Version != returned.Version || stored.Checkpoint != returned.Checkpoint || stored.Counters != returned.Counters {
+		t.Fatalf("stored=%+v returned=%+v err=%v", stored, returned, err)
 	}
 }
 
@@ -204,5 +226,93 @@ func TestSemanticRefreshRunTouchRejectsMissingRun(t *testing.T) {
 	st := openTestStore(t)
 	if err := st.TouchSemanticRefreshRunProgress(t.Context(), "missing", semanticRefreshTestNow()); !errors.Is(err, ErrSemanticRefreshRunStale) {
 		t.Fatalf("missing touch err=%v", err)
+	}
+}
+
+func TestSemanticRefreshRunTouchRejectsTerminalRowsAndCannotReorderLatest(t *testing.T) {
+	st := openTestStore(t)
+	old := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
+	completed, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: old.RunID, ExpectedVersion: old.Version, Stage: SemanticRefreshReadiness, State: SemanticRefreshRunCompleted, Now: semanticRefreshTestNow()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{RunID: "run-b", ProfileID: "profile-b", PurgeEpoch: 1, ProjectionWatermark: 12, Now: semanticRefreshTestNow().Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{RunID: "run-c", ProfileID: "profile-c", PurgeEpoch: 1, ProjectionWatermark: 13, Now: semanticRefreshTestNow().Add(2 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, runID := range []string{completed.RunID, "run-b"} {
+		if err := st.TouchSemanticRefreshRunProgress(t.Context(), runID, semanticRefreshTestNow().Add(2*time.Minute)); !errors.Is(err, ErrSemanticRefreshRunStale) {
+			t.Fatalf("touch %s err=%v", runID, err)
+		}
+	}
+	latest, err := st.LatestSemanticRefreshRun(t.Context(), "")
+	if err != nil || latest == nil || latest.RunID != "run-c" {
+		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+}
+
+func TestSemanticRefreshRunsMigrationV26RepairsGenuineV25Database(t *testing.T) {
+	path := t.TempDir() + "/brain.db"
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE semantic_refresh_runs`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureSemanticRefreshRunSchemaV25(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO semantic_refresh_runs (` + semanticRefreshRunColumns + `) VALUES ('old-run','profile-a',1,2,3,'embedding','checkpoint',4,5,6,7,8,9,'generation','failed','code','text','not_ready',4,'2026-07-28T12:00:00Z','2026-07-28T12:00:00.1Z','2026-07-28T12:00:00.01Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version>25`); err != nil {
+		t.Fatal(err)
+	}
+	var removed int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsRepairMigrationVersion).Scan(&removed); err != nil || removed != 0 {
+		t.Fatalf("v26 removal count=%d err=%v", removed, err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version=25`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var events []MigrationEvent
+	st, err = OpenWithOptions(path, OpenOptions{MigrationReporter: func(event MigrationEvent) { events = append(events, event) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	var before int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsRepairMigrationVersion).Scan(&before); err != nil || before != 1 {
+		t.Fatalf("v26 before read count=%d err=%v", before, err)
+	}
+	if len(events) != 2 || events[0].Version != semanticRefreshRunsRepairMigrationVersion {
+		t.Fatalf("migration events=%+v", events)
+	}
+	var createdText string
+	if err := st.db.QueryRow(`SELECT created_at FROM semantic_refresh_runs WHERE run_id='old-run'`).Scan(&createdText); err != nil || createdText != "2026-07-28T12:00:00.000000000Z" {
+		t.Fatalf("normalized created_at=%q err=%v", createdText, err)
+	}
+	run, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
+	if err != nil || run == nil || run.RunID != "old-run" || run.Version != 4 || run.Counters.SuccessorRuns != 9 || run.UpdatedAt.Nanosecond() != 100000000 {
+		t.Fatalf("run=%+v err=%v", run, err)
+	}
+	var count int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=? AND name=?`, semanticRefreshRunsRepairMigrationVersion, semanticRefreshRunsRepairMigrationName).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("v26 count=%d err=%v", count, err)
+	}
+	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunFailed, Checkpoint: strings.Repeat("é", 129), Now: semanticRefreshTestNow()}); err == nil {
+		t.Fatal("expected repaired byte constraint")
 	}
 }
