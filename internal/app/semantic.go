@@ -13,6 +13,7 @@ import (
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -28,6 +29,7 @@ type semanticDeps struct {
 	openWritable      func(string) (*store.Store, error)
 	resolve           func(string) (semanticconfig.Config, error)
 	resolveDiagnostic func(string) (semanticconfig.Config, error)
+	capability        func() semanticindex.Capability
 	provider          func(semanticconfig.Config) (embedding.Provider, error)
 }
 
@@ -42,6 +44,7 @@ func defaultSemanticDeps() semanticDeps {
 		openWritable:      store.Open,
 		resolve:           semanticconfig.Resolve,
 		resolveDiagnostic: semanticconfig.ResolveDiagnostic,
+		capability:        semanticindex.RuntimeCapability,
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{
 				BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions,
@@ -55,6 +58,9 @@ func newSemanticCommand(root *rootOptions) *cobra.Command {
 }
 
 func newSemanticCommandWithDeps(root *rootOptions, deps semanticDeps) *cobra.Command {
+	if deps.capability == nil {
+		deps.capability = semanticindex.RuntimeCapability
+	}
 	cmd := &cobra.Command{Use: "semantic", Short: "Build and inspect semantic retrieval state", RunE: helpCommand}
 	cmd.AddCommand(
 		newSemanticStatusCommand(root, deps),
@@ -129,9 +135,10 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			if err != nil {
 				return err
 			}
+			capability := deps.capability()
 			configured := strings.TrimSpace(semantic.Model) != "" && semantic.Dimensions > 0
 			if !configured {
-				status, err := semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, time.Now().UTC())
+				status, err := semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
 				if err != nil {
 					return err
 				}
@@ -147,7 +154,7 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			}
 			st, err := deps.openReadOnly(cfg.DBPath)
 			if err != nil {
-				status, statusErr := semanticbuild.ReadStatus(cmd.Context(), nil, profile, configured, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, time.Now().UTC())
+				status, statusErr := semanticbuild.ReadStatus(cmd.Context(), nil, profile, configured, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
 				if statusErr != nil {
 					return statusErr
 				}
@@ -157,7 +164,7 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 				return outputSemanticStatus(cmd, status, jsonOut)
 			}
 			defer func() { _ = st.Close() }()
-			status, err := semanticbuild.ReadStatus(cmd.Context(), st, profile, configured, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, time.Now().UTC())
+			status, err := semanticbuild.ReadStatus(cmd.Context(), st, profile, configured, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
 			if err != nil {
 				return err
 			}

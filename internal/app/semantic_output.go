@@ -3,8 +3,10 @@ package app
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/darron/dbrain/internal/semanticbuild"
+	"github.com/darron/dbrain/internal/semanticindex"
 )
 
 func writeSemanticStatus(dst io.Writer, status semanticbuild.Status) error {
@@ -12,6 +14,9 @@ func writeSemanticStatus(dst io.Writer, status semanticbuild.Status) error {
 		return err
 	}
 	if _, err := fmt.Fprintf(dst, "Mode: %s\nProfile: %s\n", status.Mode, status.ProfileID); err != nil {
+		return err
+	}
+	if err := writeSemanticBackendCapability(dst, status.BackendCapability); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(dst, "Searchable: %t\n", status.Searchable); err != nil {
@@ -34,6 +39,34 @@ func writeSemanticStatus(dst io.Writer, status semanticbuild.Status) error {
 		return err
 	}
 	return nil
+}
+
+func writeSemanticBackendCapability(dst io.Writer, capability semanticindex.Capability) error {
+	if _, err := fmt.Fprintf(dst, "Backend: state=%s", capability.State); err != nil {
+		return err
+	}
+	if capability.Backend != "" {
+		if _, err := fmt.Fprintf(dst, " backend=%s", capability.Backend); err != nil {
+			return err
+		}
+	}
+	if capability.Version != "" {
+		if _, err := fmt.Fprintf(dst, " version=%s", capability.Version); err != nil {
+			return err
+		}
+	}
+	if capability.State == semanticindex.CapabilitySupportedBroken {
+		_, reason := capability.Admit(capability.Backend, capability.Version)
+		reason = strings.TrimPrefix(reason, "native_backend_broken")
+		reason = strings.TrimSpace(strings.TrimPrefix(reason, ":"))
+		if reason != "" {
+			if _, err := fmt.Fprintf(dst, " reason=%s", reason); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := fmt.Fprintln(dst)
+	return err
 }
 
 func writeSemanticProgressSnapshot(dst io.Writer, progress semanticbuild.Progress) error {

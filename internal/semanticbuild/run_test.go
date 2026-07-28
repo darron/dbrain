@@ -1076,7 +1076,7 @@ func TestStatusClampsConfiguredExactCapToSafetyCeiling(t *testing.T) {
 	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
 	got, err := ReadStatus(context.Background(), fakeStatusStore{
 		err: store.ErrRetrievalUnavailable, observedCap: &observedCap,
-	}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, true, 300_000, now)
+	}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, true, 300_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1086,7 +1086,7 @@ func TestStatusClampsConfiguredExactCapToSafetyCeiling(t *testing.T) {
 }
 
 func TestStatusPriorityKeepsConfiguredOffModeDisabled(t *testing.T) {
-	got, err := ReadStatus(context.Background(), fakeStatusStore{err: store.ErrRetrievalUnavailable}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, false, 25_000, time.Now())
+	got, err := ReadStatus(context.Background(), fakeStatusStore{err: store.ErrRetrievalUnavailable}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, false, 25_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, time.Now())
 	if err != nil {
 		t.Fatalf("ReadStatus: %v", err)
 	}
@@ -1106,12 +1106,105 @@ func TestReadinessStatusDelegatesToPureEvaluator(t *testing.T) {
 		L0ReadyCount: 1, ObservedL0ReadyCount: 1,
 	}
 	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
-	got, err := ReadStatus(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, now)
+	got, err := ReadStatus(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Status != string(semanticreadiness.StateCatchingUp) || !got.Searchable || got.Reason == "" || got.Store.EstimatedNotReadyChunks != 1 {
 		t.Fatalf("status=%+v", got)
+	}
+}
+
+func TestReadStatusCapabilityAdmission(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	exact := semanticreadiness.Snapshot{
+		Available: true, ProfileExists: true, ProfileProvenanceValid: true,
+		ExpectedParents: 1, CurrentParents: 1, ChunkableParents: 1, ParentsWithReadyChunk: 1,
+		ChunkCount: 1, ReadyEmbeddings: 1,
+		GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1,
+		LatestRevision: 1, ObservedLatestRevision: 1,
+		L0ReadyCount: 1, ObservedL0ReadyCount: 1,
+	}
+	active := exact
+	active.ActiveGenerationID = "root"
+	active.ActiveGenerationValid = true
+	active.ActiveSnapshotRevision = 1
+	active.ActiveGenerationBackend = semanticindex.BackendUSearch
+	active.ActiveGenerationBackendVersion = semanticindex.USearchVersion
+	active.ActiveGenerationDistanceMetric = "cosine"
+	active.ActiveGenerationDimensions = 2
+	active.ActiveIndexedCount = 1
+
+	tests := []struct {
+		name       string
+		snapshot   semanticreadiness.Snapshot
+		capability semanticindex.Capability
+		wantState  semanticreadiness.State
+		wantReason string
+		searchable bool
+	}{
+		{
+			name: "exact small remains ready without native support", snapshot: exact,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			wantState:  semanticreadiness.StateReady, searchable: true,
+		},
+		{
+			name: "matching native backend is admitted", snapshot: active,
+			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion},
+			wantState:  semanticreadiness.StateReady, searchable: true,
+		},
+		{
+			name: "unsupported native backend is unavailable", snapshot: active,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_unsupported",
+		},
+		{
+			name: "broken native backend is unavailable", snapshot: active,
+			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedBroken, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion, Reason: "load /private/tmp/libusearch.dylib failed"},
+			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_broken: load [path] failed",
+		},
+		{
+			name: "native provenance mismatch is unavailable", snapshot: active,
+			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: "2.25.0"},
+			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_provenance_mismatch",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ReadStatus(context.Background(), fakeStatusStore{status: tc.snapshot}, profile, true, true, 25_000, tc.capability, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != string(tc.wantState) || got.Searchable != tc.searchable {
+				t.Fatalf("status=%+v want_state=%s searchable=%t", got, tc.wantState, tc.searchable)
+			}
+			if tc.wantReason != "" && got.Reason != tc.wantReason {
+				t.Fatalf("reason=%q want=%q", got.Reason, tc.wantReason)
+			}
+			if got.BackendCapability != tc.capability {
+				t.Fatalf("backend_capability=%+v want=%+v", got.BackendCapability, tc.capability)
+			}
+			payload, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(payload), `"backend_capability":`) || strings.Contains(string(payload), `"problems":null`) || strings.Contains(string(payload), `"next_steps":null`) {
+				t.Fatalf("status JSON=%s", payload)
+			}
+		})
+	}
+
+	unconfigured, err := ReadStatus(context.Background(), nil, embedding.Profile{}, false, false, 25_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(unconfigured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"backend_capability":{"state":"unsupported"}`) || strings.Contains(string(payload), `"problems":null`) || strings.Contains(string(payload), `"next_steps":null`) {
+		t.Fatalf("unconfigured status JSON=%s", payload)
 	}
 }
 

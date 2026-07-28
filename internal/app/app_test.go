@@ -35,6 +35,7 @@ import (
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
@@ -371,13 +372,57 @@ func TestSemanticStatusJSONHasExplicitStateAndNonNullSlices(t *testing.T) {
 		t.Fatalf("semantic status emitted null slices: %s", stdout)
 	}
 	var payload struct {
-		Status string `json:"status"`
+		Status            string                   `json:"status"`
+		BackendCapability semanticindex.Capability `json:"backend_capability"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("decode %q: %v", stdout, err)
 	}
 	if payload.Status != "not_configured" {
 		t.Fatalf("status=%q output=%s", payload.Status, stdout)
+	}
+	if payload.BackendCapability.State == "" {
+		t.Fatalf("backend_capability=%+v output=%s", payload.BackendCapability, stdout)
+	}
+}
+
+func TestSemanticStatusBackendCapabilityOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		capability semanticindex.Capability
+		want       string
+	}{
+		{
+			name: "supported ready",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+			},
+			want: "Backend: state=supported_ready backend=usearch version=2.26.0\n",
+		},
+		{
+			name:       "unsupported",
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			want:       "Backend: state=unsupported\n",
+		},
+		{
+			name: "broken reason is sanitized once",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedBroken, Backend: semanticindex.BackendUSearch,
+				Version: semanticindex.USearchVersion, Reason: "load /private/tmp/libusearch.dylib failed",
+			},
+			want: "Backend: state=supported_broken backend=usearch version=2.26.0 reason=load [path] failed\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := writeSemanticStatus(&output, semanticbuild.Status{BackendCapability: tc.capability}); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(output.String(), "Backend:") != 1 || !strings.Contains(output.String(), tc.want) {
+				t.Fatalf("output=%q want line %q", output.String(), tc.want)
+			}
+		})
 	}
 }
 

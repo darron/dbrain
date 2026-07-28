@@ -17,9 +17,10 @@ import (
 )
 
 type runtimeDeps struct {
-	readiness func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
-	provider  func(semanticconfig.Config) (embedding.Provider, error)
-	searcher  func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error)
+	readiness  func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
+	capability func() semanticindex.Capability
+	provider   func(semanticconfig.Config) (embedding.Provider, error)
+	searcher   func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error)
 }
 
 const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
@@ -34,6 +35,7 @@ func defaultRuntimeDeps() runtimeDeps {
 			}
 			return st.SemanticRuntimeReadinessSnapshotAt(ctx, profile, exactMax, now)
 		},
+		capability: semanticindex.RuntimeCapability,
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions})
 		},
@@ -52,6 +54,9 @@ func NewRuntimeBuilderContext(ctx context.Context, cfg config.Config, st *store.
 func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool, deps runtimeDeps) (*Builder, error) {
 	if deps.searcher == nil {
 		deps.searcher = defaultRuntimeDeps().searcher
+	}
+	if deps.capability == nil {
+		deps.capability = semanticindex.RuntimeCapability
 	}
 	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, forceOn, forceOff); err != nil {
 		return nil, err
@@ -117,6 +122,16 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	})
 	if !b.semanticReadiness.Searchable {
 		return b, nil
+	}
+	if snapshot.ActiveGenerationID != "" {
+		if ok, reason := deps.capability().Admit(snapshot.ActiveGenerationBackend, snapshot.ActiveGenerationBackendVersion); !ok {
+			b.semanticReadiness = semanticreadiness.Decision{
+				State:      semanticreadiness.StateUnavailable,
+				Reason:     reason,
+				Searchable: false,
+			}
+			return b, nil
+		}
 	}
 	searcher, err := deps.searcher(ctx, st, cfg, profile, snapshot, exactMaxChunks)
 	if err != nil {
