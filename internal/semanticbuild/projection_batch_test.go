@@ -171,10 +171,10 @@ func TestChunkLargeLimitStopsBeforeSecondBatchAtDeadline(t *testing.T) {
 		if nowCalls <= 5_000 {
 			return base
 		}
-		return base.Add(2 * time.Second)
+		return base.Add(2 * time.Hour)
 	}
 
-	progress, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 5_001, MaxDuration: time.Second, Now: now})
+	progress, err := RunChunk(context.Background(), st, ChunkOptions{Limit: 5_001, MaxDuration: time.Hour, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
