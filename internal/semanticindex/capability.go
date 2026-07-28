@@ -95,6 +95,9 @@ func capabilityPathEnd(reason string, index int) (int, bool) {
 
 func isCapabilityPathStart(reason string, index int) bool {
 	value := reason[index:]
+	if strings.HasPrefix(value, `\`) && isCapabilityInvalidEscapeDiagnostic(reason, index) {
+		return false
+	}
 	if isCapabilitySlashPath(value) || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `\??\`) || strings.HasPrefix(value, `\Device\`) || isCapabilityRootedWindowsPath(value) || strings.HasPrefix(value, "file://") {
 		return true
 	}
@@ -124,7 +127,15 @@ func isCapabilityRootedWindowsPath(value string) bool {
 	if isCapabilityEscapeSequence(value) {
 		return false
 	}
-	return strings.IndexByte(value[1:], '\\') > 0
+	return strings.IndexAny(value[1:], `\\/`) > 0
+}
+
+func isCapabilityInvalidEscapeDiagnostic(reason string, index int) bool {
+	prefix := reason[:index]
+	if len(prefix) > 0 && (prefix[len(prefix)-1] == '\'' || prefix[len(prefix)-1] == '"') {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return strings.HasSuffix(prefix, "invalid escape ") || strings.HasSuffix(prefix, "invalid escapes ")
 }
 
 func isCapabilityEscapeSequence(value string) bool {

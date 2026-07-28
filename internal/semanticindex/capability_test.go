@@ -38,6 +38,7 @@ func TestCapabilityAdmit(t *testing.T) {
 		{"broken non-ASCII POSIX path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load /用户/private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
 		{"broken rooted NT device path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \Device\HarddiskVolume3\Users\alice\private\libusearch_c.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
 		{"broken rooted Windows path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \Users\alice\private\libusearch_c.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken mixed-separator rooted Windows path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \Users/alice/private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
 		{"broken NT namespace path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \??\C:\private\libusearch_c.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
 		{"broken UNC path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file=\\server\share\index diagnostic=ABI-mismatch`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file=[path] diagnostic=ABI-mismatch"},
 		{"broken bare UNC path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \\server\share\index diagnostic=permission-denied`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] diagnostic=permission-denied"},
@@ -48,6 +49,9 @@ func TestCapabilityAdmit(t *testing.T) {
 		{"safe escaped sequence before period is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \n\t.`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \n\t.`},
 		{"safe escaped sequence before semicolon is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \n\t; continuing`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \n\t; continuing`},
 		{"safe quoted escaped sequence is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes "\n\t"`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes "\n\t"`},
+		{"safe invalid escape sequence is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \q\z; continuing`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \q\z; continuing`},
+		{"safe invalid escape codes are preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \x20\u1234`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \x20\u1234`},
+		{"safe invalid escapes in sentence are preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \q and \z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \q and \z`},
 		{"backend mismatch", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, "other", USearchVersion, false, "native_backend_provenance_mismatch"},
 		{"version mismatch", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, BackendUSearch, "other", false, "native_backend_provenance_mismatch"},
 	}
