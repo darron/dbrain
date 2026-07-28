@@ -356,6 +356,68 @@ func TestRunnerResumesExactImmutableAndCheckpointState(t *testing.T) {
 	}
 }
 
+func TestRunnerClearsUnsafeGenerationFromResumedRunBeforeUse(t *testing.T) {
+	for name, unsafeGeneration := range map[string]string{
+		"path_like": "/Users/alice/private/semantic-index",
+		"oversized": strings.Repeat("g", generationIDLimit+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ledger := newRunnerLedger()
+			resumed := store.SemanticRefreshRun{
+				RunID:               firstRunnerRunID,
+				ProfileID:           "profile-a",
+				PurgeEpoch:          7,
+				ProjectionWatermark: 91,
+				EmbeddingRevision:   13,
+				Stage:               store.SemanticRefreshFlush,
+				Checkpoint:          "flush:segment-4",
+				Counters:            store.SemanticRefreshCounters{FlushedVectors: 8},
+				CurrentGenerationID: unsafeGeneration,
+				State:               store.SemanticRefreshRunFailed,
+				ReadinessState:      "building",
+				Version:             8,
+			}
+			ledger.resume = &resumed
+			var progressSnapshots []string
+			request := runnerRequest(func() (string, error) { return secondRunnerRunID, nil })
+			request.Progress = func(progress Progress) error {
+				progressSnapshots = append(progressSnapshots, fmt.Sprintf("%+v", progress))
+				return nil
+			}
+			executor := &runnerExecutor{steps: []runnerExecuteStep{{}}}
+
+			result, err := Run(t.Context(), ledger, executor, request)
+			_ = assertRefreshError(t, err, ErrorFlush, nil)
+
+			executed := executor.snapshotRuns()
+			if len(executed) != 1 || executed[0].CurrentGenerationID != "" {
+				t.Fatalf("executor received unsafe resumed generation: %+v", executed)
+			}
+			if len(progressSnapshots) == 0 {
+				t.Fatal("resume emitted no observable progress")
+			}
+			for _, progress := range progressSnapshots {
+				if strings.Contains(progress, unsafeGeneration) {
+					t.Fatalf("progress exposed unsafe resumed generation: %q", progress)
+				}
+			}
+			updates := ledger.snapshotUpdates()
+			if len(updates) != 1 || updates[0].CurrentGenerationID != "" {
+				t.Fatalf("terminal updates retained unsafe resumed generation: %+v", updates)
+			}
+			if result.Run == nil || result.Run.CurrentGenerationID != "" ||
+				strings.Contains(fmt.Sprintf("%+v", result.Run), unsafeGeneration) {
+				t.Fatalf("result exposed unsafe resumed generation: %+v", result)
+			}
+			durable := ledger.snapshot(resumed.RunID)
+			if durable.State != store.SemanticRefreshRunFailed ||
+				durable.CurrentGenerationID != "" {
+				t.Fatalf("terminal row did not clear unsafe resumed generation: %+v", durable)
+			}
+		})
+	}
+}
+
 func TestRunnerPersistsPartialOutcomeBeforeBoundedFailure(t *testing.T) {
 	ledger := newRunnerLedger()
 	stageErr := errors.New(`provider failed with private path /Users/alice/corpus.db and vector [0.1,0.2]`)

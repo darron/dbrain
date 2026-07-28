@@ -65,6 +65,7 @@ func Run(
 	if err != nil {
 		return result, NewError(ErrorRunConflict, store.SemanticRefreshRun{}, "", Debt{}, err)
 	}
+	run = normalizeLoadedRunGeneration(run)
 
 	debt := Debt{}
 	for {
@@ -398,6 +399,7 @@ func startSuccessor(
 		return store.SemanticRefreshRun{}, Debt{},
 			NewError(ErrorRunConflict, completed, completed.ReadinessState, debt, err)
 	}
+	successor = normalizeLoadedRunGeneration(successor)
 	if resumed ||
 		successor.RunID != runID ||
 		successor.ProfileID != completed.ProfileID ||
@@ -617,6 +619,13 @@ func validGenerationID(generationID string) bool {
 	}
 	return len(generationID) <= generationIDLimit &&
 		boundedProtocolField(generationID, generationIDLimit) == generationID
+}
+
+func normalizeLoadedRunGeneration(run store.SemanticRefreshRun) store.SemanticRefreshRun {
+	if !validGenerationID(run.CurrentGenerationID) {
+		run.CurrentGenerationID = ""
+	}
+	return run
 }
 
 func refreshErrorCode(stage store.SemanticRefreshStage, cause error) string {
