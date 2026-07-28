@@ -105,7 +105,16 @@ func isCapabilitySlashPath(value string) bool {
 	if !strings.HasPrefix(value, "/") || len(value) < 2 {
 		return false
 	}
-	return !isCapabilityWhitespace(value[1])
+	character := value[1]
+	if isCapabilityWhitespace(character) {
+		return false
+	}
+	switch character {
+	case ',', ';', ':', '(', ')', '[', ']', '{', '}', '\'', '"':
+		return false
+	default:
+		return true
+	}
 }
 
 func isCapabilityRootedWindowsPath(value string) bool {
@@ -119,16 +128,27 @@ func isCapabilityRootedWindowsPath(value string) bool {
 }
 
 func isCapabilityEscapeSequence(value string) bool {
-	escapes := strings.Split(value[1:], `\`)
-	if len(escapes) < 2 {
-		return false
-	}
-	for _, escape := range escapes {
-		if len(escape) != 1 || !strings.ContainsRune("abfnrtv0", rune(escape[0])) {
+	for index := 0; index+1 < len(value) && value[index] == '\\'; index += 2 {
+		if !strings.ContainsRune("abfnrtv0", rune(value[index+1])) {
 			return false
 		}
+		if index+2 == len(value) {
+			return true
+		}
+		if value[index+2] != '\\' {
+			return isCapabilityWhitespace(value[index+2]) || isCapabilityEscapeDelimiter(value[index+2])
+		}
 	}
-	return true
+	return false
+}
+
+func isCapabilityEscapeDelimiter(character byte) bool {
+	switch character {
+	case '.', ',', ';', ':', '(', ')', '[', ']', '{', '}', '\'', '"':
+		return true
+	default:
+		return false
+	}
 }
 
 func isCapabilityPathBoundary(reason string, index int) bool {
