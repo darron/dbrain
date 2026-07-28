@@ -3,11 +3,15 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,12 +19,404 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/embedding"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 )
+
+func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 28, 19, 0, 0, 0, time.UTC)
+	sourceCalls := 0
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(
+		ctx context.Context,
+		_ config.Config,
+		st *store.Store,
+		_ syncjob.Options,
+	) (syncjob.Stats, error) {
+		sourceCalls++
+		if sourceCalls == 1 {
+			seedSyncSemanticBackfillItem(
+				t,
+				ctx,
+				st,
+				syncSemanticDistinctFlushText(store.RetrievalSegmentTarget),
+				now,
+			)
+		}
+		stats := syncSemanticTestStats()
+		if sourceCalls > 1 {
+			stats = syncjob.Stats{
+				StartedAt:   stats.StartedAt,
+				CompletedAt: stats.CompletedAt,
+				Duration:    stats.Duration,
+			}
+		}
+		return stats, nil
+	}
+
+	provider := newSyncSemanticResumeProvider()
+	native := &syncSemanticResumeNative{}
+	var progressMu sync.Mutex
+	progressByRun := make(map[int][]semanticrefresh.Progress)
+	refreshCalls := 0
+	deps := semanticRefreshDeps{
+		resolve: func(root string) (semanticconfig.Config, error) {
+			if root != cfg.RootDir {
+				t.Fatalf("semantic root=%q want=%q", root, cfg.RootDir)
+			}
+			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
+		},
+		capability: semanticRefreshReadyCapability,
+		openWritable: func(path string) (*store.Store, error) {
+			if path != cfg.DBPath {
+				t.Fatalf("semantic DB=%q want=%q", path, cfg.DBPath)
+			}
+			return store.Open(path)
+		},
+		provider: func(semanticconfig.Config) (embedding.Provider, error) {
+			return provider, nil
+		},
+		nativeLifecycle: func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error) {
+			return native, nil
+		},
+		runRefresh: func(
+			ctx context.Context,
+			ledger semanticrefresh.RunLedger,
+			executor semanticrefresh.StageExecutor,
+			request semanticrefresh.Request,
+		) (semanticrefresh.Result, error) {
+			refreshCalls++
+			execution := refreshCalls
+			runCtx := ctx
+			cancel := func() {}
+			if execution == 1 {
+				runCtx, cancel = context.WithCancel(ctx)
+			}
+			defer cancel()
+			downstreamProgress := request.Progress
+			request.Now = func() time.Time { return now }
+			request.Progress = func(progress semanticrefresh.Progress) error {
+				progressMu.Lock()
+				progressByRun[execution] = append(progressByRun[execution], progress)
+				progressMu.Unlock()
+				if downstreamProgress != nil {
+					if err := downstreamProgress(progress); err != nil {
+						return err
+					}
+				}
+				if execution == 1 &&
+					progress.Counters.ProjectedParents > 0 &&
+					progress.Counters.EmbeddedChunks > 0 {
+					cancel()
+				}
+				return nil
+			}
+			return semanticrefresh.Run(runCtx, ledger, executor, request)
+		},
+	}
+
+	firstCommand := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+	var firstOutput bytes.Buffer
+	firstCommand.SetOut(&firstOutput)
+	firstCommand.SetErr(io.Discard)
+	firstCommand.SilenceUsage = true
+	firstCommand.SetArgs(syncSemanticTestArgs(true))
+	err = firstCommand.ExecuteContext(t.Context())
+	var firstExit *ExitError
+	if !errors.As(err, &firstExit) || firstExit.Code != 1 || !firstExit.Silent {
+		t.Fatalf("first ExecuteContext error=%#v want silent exit 1", err)
+	}
+	var cancelled *semanticrefresh.RefreshError
+	if !errors.As(err, &cancelled) || cancelled.Code != semanticrefresh.ErrorCancelled {
+		t.Fatalf("first refresh error=%#v want %q", cancelled, semanticrefresh.ErrorCancelled)
+	}
+	firstDocument := decodeOneSyncJSONDocument(t, firstOutput.Bytes())
+	if _, exists := firstDocument["semantic"]; exists {
+		t.Fatal("cancelled initial backfill emitted successful semantic result")
+	}
+
+	profileID, err := semanticbuild.Profile(provider.Info()).ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstStore, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRun, err := firstStore.LatestSemanticRefreshRun(t.Context(), profileID)
+	if err != nil {
+		_ = firstStore.Close()
+		t.Fatal(err)
+	}
+	firstProfile, err := firstStore.RetrievalEmbeddingProfile(t.Context(), profileID)
+	if err != nil {
+		_ = firstStore.Close()
+		t.Fatal(err)
+	}
+	if err := firstStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	firstProviderCalls, firstProviderTexts, firstDuplicateTexts := provider.snapshot()
+	if firstRun == nil ||
+		firstRun.State != store.SemanticRefreshRunCancelled ||
+		firstRun.Stage != store.SemanticRefreshEmbedding ||
+		firstRun.Counters.ProjectedParents != 1 ||
+		firstRun.Counters.EmbeddedChunks <= 0 {
+		t.Fatalf("cancelled durable run=%+v", firstRun)
+	}
+	if firstProviderCalls <= 0 ||
+		firstProviderTexts != int(firstRun.Counters.EmbeddedChunks) ||
+		firstDuplicateTexts != 0 ||
+		firstProfile.L0ReadyCount != firstProviderTexts ||
+		firstProfile.ActiveIndexedCount != 0 {
+		t.Fatalf(
+			"first committed work: provider_calls=%d provider_texts=%d duplicate_texts=%d profile=%+v run=%+v",
+			firstProviderCalls,
+			firstProviderTexts,
+			firstDuplicateTexts,
+			firstProfile,
+			firstRun,
+		)
+	}
+	if builds, verifies := native.snapshot(); builds != 0 || verifies != 0 {
+		t.Fatalf("native work before flush: builds=%d verifies=%d", builds, verifies)
+	}
+
+	secondCommand := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+	var secondOutput bytes.Buffer
+	secondCommand.SetOut(&secondOutput)
+	secondCommand.SetErr(io.Discard)
+	secondCommand.SilenceUsage = true
+	secondCommand.SetArgs(syncSemanticTestArgs(true))
+	if err := secondCommand.ExecuteContext(t.Context()); err != nil {
+		diagnosticStore, openErr := store.Open(cfg.DBPath)
+		if openErr != nil {
+			t.Fatalf("second ExecuteContext: %v output=%s diagnostic_open=%v", err, secondOutput.String(), openErr)
+		}
+		snapshot, snapshotErr := diagnosticStore.SemanticReadinessSnapshotAt(
+			t.Context(),
+			semanticbuild.Profile(provider.Info()),
+			semanticreadiness.DefaultExactMaxChunks,
+			now,
+		)
+		_ = diagnosticStore.Close()
+		t.Fatalf(
+			"second ExecuteContext: %v output=%s snapshot=%+v decision=%+v snapshot_err=%v",
+			err,
+			secondOutput.String(),
+			snapshot,
+			semanticreadiness.Evaluate(snapshot),
+			snapshotErr,
+		)
+	}
+	secondDocument := decodeOneSyncJSONDocument(t, secondOutput.Bytes())
+	var completed semanticRefreshResultOutput
+	if err := json.Unmarshal(secondDocument["semantic"], &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Outcome != semanticrefresh.OutcomeCompleted ||
+		completed.Run == nil ||
+		completed.Run.State != store.SemanticRefreshRunCompleted ||
+		completed.Run.Stage != store.SemanticRefreshReadiness ||
+		completed.Run.ReadinessState != "ready" {
+		t.Fatalf("final supported-enabled result=%+v want completed ready", completed)
+	}
+	if completed.Run.RunID != firstRun.RunID {
+		t.Fatalf("final run ID=%q want resumed %q", completed.Run.RunID, firstRun.RunID)
+	}
+	if completed.Run.Counters.ProjectedParents != firstRun.Counters.ProjectedParents {
+		t.Fatalf(
+			"projection counter repeated: first=%d final=%d",
+			firstRun.Counters.ProjectedParents,
+			completed.Run.Counters.ProjectedParents,
+		)
+	}
+	finalProviderCalls, finalProviderTexts, finalDuplicateTexts := provider.snapshot()
+	if finalProviderCalls <= firstProviderCalls ||
+		finalProviderTexts <= firstProviderTexts ||
+		finalDuplicateTexts != 0 ||
+		finalProviderTexts != int(completed.Run.Counters.EmbeddedChunks) {
+		t.Fatalf(
+			"resumed provider work: first=%d/%d final=%d/%d duplicate_texts=%d counters=%+v",
+			firstProviderCalls,
+			firstProviderTexts,
+			finalProviderCalls,
+			finalProviderTexts,
+			finalDuplicateTexts,
+			completed.Run.Counters,
+		)
+	}
+	if builds, verifies := native.snapshot(); builds != 1 || verifies != 1 {
+		t.Fatalf("native lifecycle builds=%d verifies=%d want physical flush and root proof once", builds, verifies)
+	}
+
+	finalStore, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = finalStore.Close() }()
+	finalProfile, err := finalStore.RetrievalEmbeddingProfile(t.Context(), profileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalProfile.ActiveIndexedCount != store.RetrievalSegmentTarget ||
+		finalProfile.ActiveIndexedCount+finalProfile.L0ReadyCount != finalProviderTexts {
+		t.Fatalf(
+			"final index units=%+v provider_texts=%d",
+			finalProfile,
+			finalProviderTexts,
+		)
+	}
+	runtimeSnapshot, err := finalStore.SemanticRuntimeReadinessSnapshotAt(
+		t.Context(),
+		semanticbuild.Profile(provider.Info()),
+		semanticreadiness.DefaultExactMaxChunks,
+		now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeSnapshot.Configured = true
+	runtimeSnapshot.Enabled = true
+	if decision := semanticreadiness.Evaluate(runtimeSnapshot); decision.State != semanticreadiness.StateReady {
+		t.Fatalf("final runtime readiness=%+v snapshot=%+v", decision, runtimeSnapshot)
+	}
+
+	progressMu.Lock()
+	firstProgress := append([]semanticrefresh.Progress(nil), progressByRun[1]...)
+	secondProgress := append([]semanticrefresh.Progress(nil), progressByRun[2]...)
+	progressMu.Unlock()
+	if !syncSemanticProgressIncludes(firstProgress, store.SemanticRefreshProjection) ||
+		!syncSemanticProgressIncludes(firstProgress, store.SemanticRefreshEmbedding) {
+		t.Fatalf("first progress stages=%v want projection and embedding", syncSemanticProgressStages(firstProgress))
+	}
+	if syncSemanticProgressIncludes(secondProgress, store.SemanticRefreshProjection) {
+		t.Fatalf("resumed progress repeated projection: %v", syncSemanticProgressStages(secondProgress))
+	}
+	for _, stage := range []store.SemanticRefreshStage{
+		store.SemanticRefreshEmbedding,
+		store.SemanticRefreshFlush,
+		store.SemanticRefreshVerify,
+		store.SemanticRefreshReadiness,
+	} {
+		if !syncSemanticProgressIncludes(secondProgress, stage) {
+			t.Fatalf("resumed progress stages=%v missing %s", syncSemanticProgressStages(secondProgress), stage)
+		}
+	}
+	if sourceCalls != 2 || refreshCalls != 2 {
+		t.Fatalf("source calls=%d refresh calls=%d want two real command executions", sourceCalls, refreshCalls)
+	}
+}
+
+func TestSyncFamilySemanticAdmissionSkipsWritableDependencies(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       semanticconfig.Mode
+		capability semanticindex.Capability
+		wantSkip   string
+		wantCode   string
+	}{
+		{
+			name:       "mode off",
+			mode:       semanticconfig.ModeOff,
+			capability: semanticRefreshReadyCapability(),
+			wantSkip:   "semantic_mode_off",
+		},
+		{
+			name:       "unsupported build",
+			mode:       semanticconfig.ModeOn,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			wantSkip:   "native_backend_unsupported",
+		},
+		{
+			name: "supported broken",
+			mode: semanticconfig.ModeOn,
+			capability: semanticindex.Capability{
+				State:   semanticindex.CapabilitySupportedBroken,
+				Backend: semanticindex.BackendUSearch,
+				Version: semanticindex.USearchVersion,
+				Reason:  "deterministic load failure",
+			},
+			wantCode: semanticrefresh.ErrorBackendBroken,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			oldRunSyncAll := runSyncAll
+			t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+			runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+				return syncSemanticTestStats(), nil
+			}
+			writableCalls := make(map[string]int)
+			deps := semanticRefreshDeps{
+				resolve: func(string) (semanticconfig.Config, error) {
+					return semanticRefreshTestConfig(test.mode), nil
+				},
+				capability: func() semanticindex.Capability {
+					return test.capability
+				},
+				openWritable: func(string) (*store.Store, error) {
+					writableCalls["store"]++
+					return nil, errors.New("unexpected writable store")
+				},
+				provider: func(semanticconfig.Config) (embedding.Provider, error) {
+					writableCalls["provider"]++
+					return nil, errors.New("unexpected provider")
+				},
+				nativeLifecycle: func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error) {
+					writableCalls["native"]++
+					return nil, errors.New("unexpected native")
+				},
+				runRefresh: func(context.Context, semanticrefresh.RunLedger, semanticrefresh.StageExecutor, semanticrefresh.Request) (semanticrefresh.Result, error) {
+					writableCalls["runner"]++
+					return semanticrefresh.Result{}, errors.New("unexpected runner")
+				},
+			}
+			cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceUsage = true
+			cmd.SetArgs(syncSemanticTestArgs(true))
+			err := cmd.ExecuteContext(t.Context())
+			if len(writableCalls) != 0 {
+				t.Fatalf("admission constructed writable dependencies: %v", writableCalls)
+			}
+			if test.wantCode != "" {
+				var refreshErr *semanticrefresh.RefreshError
+				if !errors.As(err, &refreshErr) || refreshErr.Code != test.wantCode {
+					t.Fatalf("error=%v want typed code %q", err, test.wantCode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			document := decodeOneSyncJSONDocument(t, stdout.Bytes())
+			var result semanticRefreshResultOutput
+			if err := json.Unmarshal(document["semantic"], &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Outcome != semanticrefresh.OutcomeSkipped ||
+				result.SkipReason != test.wantSkip {
+				t.Fatalf("semantic result=%+v want skip %q", result, test.wantSkip)
+			}
+		})
+	}
+}
 
 func TestSyncFamilySourceFailureSkipsSemanticAdmission(t *testing.T) {
 	root := t.TempDir()
@@ -867,4 +1263,192 @@ func syncSemanticTestArgs(jsonOut bool) []string {
 		args = append(args, "--json")
 	}
 	return args
+}
+
+func seedSyncSemanticBackfillItem(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	text string,
+	now time.Time,
+) {
+	t.Helper()
+	digest := sha256.Sum256([]byte(text))
+	_, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "sync-semantic:initial-backfill",
+		SourceType:   "sync_semantic_test",
+		ExternalID:   "initial-backfill",
+		CanonicalURL: "https://example.test/initial-backfill",
+		Title:        "Initial semantic backfill",
+		Text:         text,
+		ContentHash:  hex.EncodeToString(digest[:]),
+		NotePath:     "items/initial-backfill.md",
+		RawJSON:      "{}",
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func syncSemanticDistinctFlushText(windows int) string {
+	var text strings.Builder
+	text.Grow(windows*1_800 + 1)
+	padding := strings.Repeat("x", 1_792)
+	for index := 0; index < windows; index++ {
+		_, _ = fmt.Fprintf(&text, "%08x", index)
+		text.WriteString(padding)
+	}
+	text.WriteByte('z')
+	return text.String()
+}
+
+func syncSemanticProgressIncludes(
+	progress []semanticrefresh.Progress,
+	stage store.SemanticRefreshStage,
+) bool {
+	for _, update := range progress {
+		if update.Stage == stage {
+			return true
+		}
+	}
+	return false
+}
+
+func syncSemanticProgressStages(progress []semanticrefresh.Progress) []store.SemanticRefreshStage {
+	stages := make([]store.SemanticRefreshStage, 0, len(progress))
+	for _, update := range progress {
+		stages = append(stages, update.Stage)
+	}
+	return stages
+}
+
+type syncSemanticResumeProvider struct {
+	mu    sync.Mutex
+	info  embedding.Info
+	calls int
+	texts int
+	seen  map[string]int
+}
+
+func newSyncSemanticResumeProvider() *syncSemanticResumeProvider {
+	return &syncSemanticResumeProvider{
+		info: semanticRefreshTestInfo(),
+		seen: make(map[string]int),
+	}
+}
+
+func (p *syncSemanticResumeProvider) Info() embedding.Info {
+	return p.info
+}
+
+func (p *syncSemanticResumeProvider) Embed(
+	_ context.Context,
+	request embedding.Request,
+) (embedding.Response, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	p.texts += len(request.Texts)
+	vectors := make([][]float32, len(request.Texts))
+	for index, text := range request.Texts {
+		p.seen[text]++
+		vectors[index] = []float32{0.6, 0.8}
+	}
+	return embedding.Response{
+		Vectors:    vectors,
+		Provider:   p.info.Provider,
+		Model:      p.info.Model,
+		Dimensions: p.info.Dimensions,
+	}, nil
+}
+
+func (p *syncSemanticResumeProvider) snapshot() (calls int, texts int, duplicates int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, count := range p.seen {
+		if count > 1 {
+			duplicates += count - 1
+		}
+	}
+	return p.calls, p.texts, duplicates
+}
+
+type syncSemanticResumeNative struct {
+	mu       sync.Mutex
+	builds   int
+	verifies int
+}
+
+func (n *syncSemanticResumeNative) Build(
+	_ context.Context,
+	rows []store.RetrievalEmbeddingRow,
+) (func(io.Writer) error, error) {
+	if len(rows) != store.RetrievalSegmentTarget {
+		return nil, fmt.Errorf("native build rows=%d", len(rows))
+	}
+	n.mu.Lock()
+	n.builds++
+	n.mu.Unlock()
+	return syncSemanticNativePayload, nil
+}
+
+func (n *syncSemanticResumeNative) Begin(
+	_ context.Context,
+	expected int,
+) (semanticbuild.StreamingSegmentPayloadSession, error) {
+	return &syncSemanticResumeNativeSession{owner: n, expected: expected}, nil
+}
+
+func (n *syncSemanticResumeNative) VerifyRoot(
+	context.Context,
+	semanticrefresh.RootExpectation,
+) error {
+	n.mu.Lock()
+	n.verifies++
+	n.mu.Unlock()
+	return nil
+}
+
+func (n *syncSemanticResumeNative) snapshot() (builds int, verifies int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.builds, n.verifies
+}
+
+type syncSemanticResumeNativeSession struct {
+	owner    *syncSemanticResumeNative
+	expected int
+	added    int
+}
+
+func (s *syncSemanticResumeNativeSession) Add(
+	context.Context,
+	store.RetrievalEmbeddingRow,
+) error {
+	s.added++
+	return nil
+}
+
+func (s *syncSemanticResumeNativeSession) Finish(
+	context.Context,
+) (func(io.Writer) error, error) {
+	if s.added != s.expected || s.added != store.RetrievalSegmentTarget {
+		return nil, fmt.Errorf("native session rows=%d expected=%d", s.added, s.expected)
+	}
+	s.owner.mu.Lock()
+	s.owner.builds++
+	s.owner.mu.Unlock()
+	return syncSemanticNativePayload, nil
+}
+
+func (*syncSemanticResumeNativeSession) Close() error {
+	return nil
+}
+
+func syncSemanticNativePayload(writer io.Writer) error {
+	_, err := io.WriteString(writer, "deterministic-sync-semantic-native-payload")
+	return err
 }
