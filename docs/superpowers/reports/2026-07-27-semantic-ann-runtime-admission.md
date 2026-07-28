@@ -27,7 +27,7 @@ acceptance, or production activation.
   `/Users/darron/src/dbrain/.worktrees/semantic-ann-automatic-sync`
 - Branch: `codex/semantic-ann-automatic-sync`
 - Tested implementation SHA:
-  `9c5c68155fb976c72ef0aa9a342974bff9cbb019`
+  `522e81d282533becb7272f5ecebbb1dfa65af569`
 - Copied database:
   `/private/tmp/dbrain-pr100-corpus.Co0jrU/xdg-data/dbrain/brain.db`
 - Copied config:
@@ -105,7 +105,7 @@ There was no USearch dependency.
 The exact required command was:
 
 ```sh
-env GOCACHE=/private/tmp/dbrain-task6-usearch-gocache \
+env GOCACHE=/private/tmp/dbrain-final2-usearch-gocache \
   CGO_ENABLED=1 \
   CGO_CFLAGS="-I/private/tmp/dbrain-usearch-v2.26.0-codex/extracted" \
   CGO_LDFLAGS="-L/private/tmp/dbrain-usearch-v2.26.0-codex/extracted -lusearch_c" \
@@ -121,11 +121,11 @@ httptest: failed to listen on a port: listen tcp6 [::1]:0: bind: operation not p
 ```
 
 No package was filtered and no test was weakened. The identical complete
-command was rerun outside the listener restriction and exited zero. The slowest
-package was:
+command was rerun outside the listener restriction on the final frozen code
+and exited zero. The slowest package was:
 
 ```text
-ok github.com/darron/dbrain/internal/store 307.487s
+ok github.com/darron/dbrain/internal/store 317.953s
 ```
 
 Both runs emitted the existing non-fatal warning:
@@ -137,7 +137,7 @@ ld: warning: ignoring duplicate libraries: '-lusearch_c'
 ## Tagged Development Binary
 
 The tagged macOS arm64 development binary was freshly rebuilt with the same
-native flags and `GOCACHE=/private/tmp/dbrain-task6-usearch-gocache`.
+native flags and `GOCACHE=/private/tmp/dbrain-final2-usearch-gocache`.
 The build exited zero and emitted the known duplicate-library warning. It also
 reported a non-fatal sandbox denial while trying to persist a Go module stat
 cache:
@@ -163,7 +163,7 @@ arm64 packaging remains later stacked work.
 
 ## Tagged Representative-Corpus Status
 
-The tagged status command exited zero in 5.73 seconds and reported:
+The final tagged status command exited zero and reported:
 
 ```text
 status: ready
@@ -183,6 +183,7 @@ active_generation_backend: usearch
 active_generation_backend_version: 2.26.0
 active_generation_distance_metric: cosine
 active_generation_dimensions: 768
+active_generation_root_descriptor_sha256: 97eff245e02ceff7dfd45e0bcb980336e64ca89f81546e4215cc6cdf3fa3639d
 chunk_count: 290535
 ready_embeddings: 290535
 pending_embeddings: 0
@@ -221,8 +222,10 @@ Its timing wrapper then exited one after printing `58.67 real`, with:
 time: sysctl kern.clockrate: Operation not permitted
 ```
 
-The identical command was rerun outside the localhost and `sysctl`
-restriction. It exited zero and reported:
+The final frozen-code command was run directly outside the localhost
+restriction, with `DYLD_LIBRARY_PATH` supplied to the tagged binary rather than
+through the SIP-protected `/usr/bin/time` wrapper. It exited zero in
+approximately 48 seconds and reported:
 
 ```text
 semantic lane: used
@@ -233,8 +236,9 @@ semantic_readiness: ready
 evidence_count: 8
 ```
 
-There was no exact-only or lexical-only fallback in the accepted run. Resource
-output was:
+There was no exact-only or lexical-only fallback in the accepted run. The
+earlier accepted resource-characterization run on this same copied corpus
+reported:
 
 ```text
 60.10 real
@@ -245,13 +249,13 @@ output was:
 0 swaps
 ```
 
-This proves the real normal tagged CLI reached the evaluated segmented USearch
-generation. It does not prove automatic post-sync maintenance.
+This proves the final real normal tagged CLI reached the evaluated segmented
+USearch generation. It does not prove automatic post-sync maintenance.
 
 ## Untagged Copied-Corpus Behavior
 
 The untagged status command used the same copied XDG roots without
-`DYLD_LIBRARY_PATH`. It exited zero in 5.88 seconds and reported:
+`DYLD_LIBRARY_PATH`. It exited zero and reported:
 
 ```text
 status: unavailable
@@ -262,8 +266,8 @@ backend_capability.state: unsupported
 
 The binary has no USearch dependency, so this path made no native load attempt.
 
-The untagged retrieval-only research command omitted `--semantic`, exited zero
-in 17.77 seconds, and reported:
+The untagged retrieval-only research command omitted `--semantic`, exited zero,
+and reported:
 
 ```text
 lexical lane: used
@@ -371,6 +375,36 @@ fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb
 The database checksum, size, mtime, inode, and both previously changed header
 counters remained identical. The read-only bookkeeping sidecars were captured
 and preserved without deletion or alteration.
+
+## Final Adversarial Review Corrections
+
+The final whole-branch review found and closed three admission-boundary gaps
+before the frozen-code gates and corpus rerun:
+
+- readiness status precedence now preserves `corrupt`, `disabled`, and
+  `needs_index` instead of masking those states with native capability;
+- capability diagnostics redact embedded POSIX, file-URI, Windows, NT, UNC,
+  mixed-separator, and Unicode filesystem paths while preserving explicit
+  non-path diagnostics; and
+- SQLite now reconstructs the canonical active-root descriptor from the
+  authoritative database/profile/generation/revision/purge and sorted segment
+  catalog, and the native loader compares that proven hash before opening any
+  segment payload.
+
+The SQLite catalog proof has a 1,024-segment hard metadata safety ceiling and
+uses the generation-segment primary-key order without a temporary sort. The
+representative 58-segment root is inside that ceiling. This ceiling is a
+fail-closed resource guard, not the later measured ready-fanout policy.
+
+Native root opening is cancellation-aware before filesystem work, during the
+single streamed payload read, between segments, and immediately before and
+after the native load. The native `LoadBuffer` call itself is not preemptible.
+The existing 250 ms timeout remains the SQLite readiness-proof budget; it is
+not a promise that all native segment imports finish within 250 ms.
+
+After those corrections, the final standard gates, complete uncached tagged
+race gate, tagged status/query, untagged fallback status/query, and database
+byte-stability check all passed at `522e81d282533becb7272f5ecebbb1dfa65af569`.
 
 ## Residual Scope
 

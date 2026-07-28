@@ -473,12 +473,16 @@ PR—is the user-useful release.
 As of 2026-07-28, only stacked PR 1, **Runtime admission and capability**, is
 implemented and representative-corpus admitted on
 `codex/semantic-ann-automatic-sync`. The verified implementation at
-`9c5c68155fb976c72ef0aa9a342974bff9cbb019`:
+`522e81d282533becb7272f5ecebbb1dfa65af569`:
 
 - reports one explicit native-backend capability decision through both
   `semantic status` and normal research admission;
 - admits a provenance-valid segmented USearch `2.26.0` generation in the
   tagged macOS arm64 development build;
+- binds the native root to the canonical descriptor reconstructed from the
+  authoritative SQLite generation and bounded active-segment catalog;
+- loads segment payloads once with checksum verification, cancellation checks,
+  and cleanup of partially opened native indexes;
 - preserves unsupported CGO-free operation and lexical retrieval without a
   USearch dependency; and
 - opens the normal research store read-only, preserving the representative

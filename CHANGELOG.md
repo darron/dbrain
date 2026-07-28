@@ -13,10 +13,19 @@ development date for the change set.
   available.
 - **Proven segmented serving**: A `usearch`-tagged runtime can admit and search
   a fully proven segmented USearch generation through the normal research
-  command while retaining SQLite validation and exact reranking.
+  command while retaining SQLite validation and exact reranking. Admission
+  binds the cache root to the canonical descriptor reconstructed from SQLite,
+  rejects active catalogs above a 1,024-segment hard safety ceiling, and fails
+  closed before payload access when the root or segment set differs.
+- **Cancellation-aware native loading**: Segment payloads are opened and read
+  once with checksum verification, cancellation checks between stages, and
+  cleanup of partially opened native indexes. The native load call itself
+  remains non-preemptible.
 - **Safe unsupported behavior**: Normal CGO-free builds carry no USearch
   dependency, report `native_backend_unsupported`, and preserve ordinary
-  lexical retrieval.
+  lexical retrieval. Native capability diagnostics redact local filesystem
+  paths without masking readiness states such as `corrupt`, `disabled`, or
+  `needs_index`.
 - **Runtime-admission boundary**: This stack does not yet add automatic
   semantic refresh after sync. Resumable refresh, universal synchronous sync
   integration, cross-process locking, static Homebrew packaging, and installed
