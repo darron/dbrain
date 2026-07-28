@@ -95,7 +95,7 @@ func capabilityPathEnd(reason string, index int) (int, bool) {
 
 func isCapabilityPathStart(reason string, index int) bool {
 	value := reason[index:]
-	if isCapabilitySlashPath(value) || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `\??\`) || strings.HasPrefix(value, `\Device\`) || strings.HasPrefix(value, "file://") {
+	if isCapabilitySlashPath(value) || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `\??\`) || strings.HasPrefix(value, `\Device\`) || isCapabilityRootedWindowsPath(value) || strings.HasPrefix(value, "file://") {
 		return true
 	}
 	return len(value) >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
@@ -106,6 +106,13 @@ func isCapabilitySlashPath(value string) bool {
 		return false
 	}
 	return !isCapabilityWhitespace(value[1]) && !strings.ContainsRune(".,;:()[]{}'\"", rune(value[1]))
+}
+
+func isCapabilityRootedWindowsPath(value string) bool {
+	if !strings.HasPrefix(value, `\`) || len(value) < 3 || isCapabilityWhitespace(value[1]) {
+		return false
+	}
+	return strings.IndexByte(value[1:], '\\') > 0
 }
 
 func isCapabilityPathBoundary(reason string, index int) bool {
