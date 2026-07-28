@@ -61,40 +61,108 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestProjectionStagingPurgeEpochMigrationRepairsExistingStampedDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+func TestProjectionStagingPurgeEpochMigrationDiscardsLegacyRowsAndAllowsRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		stagedEpoch  int64
+		currentEpoch int64
+		dropColumn   bool
+		keepV28Stamp bool
+	}{
+		{name: "pre-v28 epoch zero", stagedEpoch: 0, currentEpoch: 0, dropColumn: true},
+		{name: "pre-v28 nonzero epoch", stagedEpoch: 5, currentEpoch: 5, dropColumn: true},
+		{name: "stamped v28 missing column", stagedEpoch: 5, currentEpoch: 5, dropColumn: true, keepV28Stamp: true},
+		{name: "stamped v28 mismatched epoch", stagedEpoch: 0, currentEpoch: 5, keepV28Stamp: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "brain.db")
+			st := openStoreAtPath(t, path)
+			ctx := context.Background()
+			seedRetrievalSource(t, st, "source:migration-epoch")
+			if _, err := st.db.Exec(`UPDATE retrieval_state SET purge_epoch=? WHERE singleton=1`, tc.stagedEpoch); err != nil {
+				t.Fatal(err)
+			}
+			work, projection := projectionWorkForEpochTest(t, st, "source:migration-epoch")
+			row := task5StageRowForOccurrence(t, projection, projection.Occurrences[0])
+			cp, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+				ParentKind: work.Parent.Kind, ParentSourceKey: work.Parent.SourceKey,
+				DirtyRevision: work.DirtyRevision, ProjectionHash: projection.ParentHash,
+				ExpectedPurgeEpoch: tc.stagedEpoch,
+				Cursor:             retrievalchunk.Cursor{SectionKey: row.Occurrence.SectionKey, NextBoundary: row.Occurrence.EndChar},
+				Rows:               []RetrievalProjectionStageRow{row},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Close(); err != nil {
+				t.Fatal(err)
+			}
 
-	db, err := sql.Open(driverName, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`
-		ALTER TABLE retrieval_projection_staging DROP COLUMN expected_purge_epoch;
-		PRAGMA user_version=28`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+			db, err := sql.Open(driverName, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE retrieval_state SET purge_epoch=? WHERE singleton=1`, tc.currentEpoch); err != nil {
+				_ = db.Close()
+				t.Fatal(err)
+			}
+			if tc.dropColumn {
+				if _, err := db.Exec(`ALTER TABLE retrieval_projection_staging DROP COLUMN expected_purge_epoch`); err != nil {
+					_ = db.Close()
+					t.Fatal(err)
+				}
+			}
+			if !tc.keepV28Stamp {
+				if _, err := db.Exec(`
+					DELETE FROM schema_migrations WHERE version=28;
+					PRAGMA user_version=27`); err != nil {
+					_ = db.Close()
+					t.Fatal(err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
 
-	st = openStoreAtPath(t, path)
-	defer func() { _ = st.Close() }()
-	assertDatabaseTableColumn(t, st.db, "retrieval_projection_staging", "expected_purge_epoch")
+			st = openStoreAtPath(t, path)
+			defer func() { _ = st.Close() }()
+			assertDatabaseTableColumn(t, st.db, "retrieval_projection_staging", "expected_purge_epoch")
+			var staged int
+			if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_projection_staging`).Scan(&staged); err != nil {
+				t.Fatal(err)
+			}
+			if staged != 0 {
+				t.Fatalf("legacy staging rows=%d want 0", staged)
+			}
+			if _, ok, err := st.LoadRetrievalProjectionStaging(ctx, work.Parent, work.DirtyRevision); err != nil || ok {
+				t.Fatalf("load discarded staging ok=%v err=%v", ok, err)
+			}
 
-	var migrationCount int
-	if err := st.db.QueryRow(`
-		SELECT COUNT(*) FROM schema_migrations
-		WHERE version=28 AND name='retrieval_projection_staging_expected_purge_epoch'`,
-	).Scan(&migrationCount); err != nil {
-		t.Fatal(err)
-	}
-	if migrationCount != 1 {
-		t.Fatalf("migration 28 count=%d want 1", migrationCount)
+			next, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+				WorkID: cp.WorkID, ParentKind: work.Parent.Kind, ParentSourceKey: work.Parent.SourceKey,
+				DirtyRevision: work.DirtyRevision, ProjectionHash: projection.ParentHash,
+				ExpectedPurgeEpoch: tc.currentEpoch,
+				Cursor:             retrievalchunk.Cursor{SectionKey: row.Occurrence.SectionKey, NextBoundary: row.Occurrence.EndChar},
+				Rows:               []RetrievalProjectionStageRow{row},
+			})
+			if err != nil {
+				t.Fatalf("stage after migration repair: %v", err)
+			}
+			if next.ExpectedPurgeEpoch != tc.currentEpoch {
+				t.Fatalf("new staging epoch=%d want %d", next.ExpectedPurgeEpoch, tc.currentEpoch)
+			}
+
+			var migrationCount int
+			if err := st.db.QueryRow(`
+				SELECT COUNT(*) FROM schema_migrations
+				WHERE version=28 AND name='retrieval_projection_staging_expected_purge_epoch'`,
+			).Scan(&migrationCount); err != nil {
+				t.Fatal(err)
+			}
+			if migrationCount != 1 {
+				t.Fatalf("migration 28 count=%d want 1", migrationCount)
+			}
+		})
 	}
 }
 

@@ -15,7 +15,9 @@ development date for the change set.
 - **Purge-epoch-fenced projection commits**: Both ordinary and giant projection
   commits carry the refresh run's pinned purge epoch. Giant staging persists
   that epoch in every durable row and rejects stale resume or promotion after a
-  purge; migration 28 adds and repairs the durable epoch column.
+  purge. Migration 28 adds and repairs the durable epoch column, automatically
+  discarding unverifiable legacy or epoch-mismatched derived staging so refresh
+  can rebuild it without manual cleanup.
 
 ### Automatic semantic refresh after sync (2026-07-28)
 
