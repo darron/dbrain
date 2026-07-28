@@ -189,6 +189,121 @@ func TestAcquireContextCancellationLeavesNoIntent(t *testing.T) {
 	}
 }
 
+func TestAcquireContextWriterSequenceRecoversFromEmptyCoordinator(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	coordinator, err := acquireCoordinator(context.Background(), path)
+	if err != nil {
+		t.Fatalf("acquire coordinator: %v", err)
+	}
+	if err := replaceFileLockMetadata(coordinator.file, ""); err != nil {
+		_ = coordinator.close()
+		t.Fatalf("empty coordinator metadata: %v", err)
+	}
+	if err := coordinator.close(); err != nil {
+		t.Fatalf("close coordinator: %v", err)
+	}
+
+	const liveSequence = uint64(7)
+	liveTicketPath := writerTicketPath(path, liveSequence)
+	liveTicket, err := acquireHeldFileContext(context.Background(), liveTicketPath, Exclusive)
+	if err != nil {
+		t.Fatalf("acquire live writer ticket: %v", err)
+	}
+	defer func() {
+		coordinator, acquireErr := acquireCoordinator(context.Background(), path)
+		if acquireErr == nil {
+			_ = removeLockedFile(liveTicket.file, liveTicketPath)
+			_ = coordinator.close()
+		}
+		_ = liveTicket.close()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		lock, acquireErr := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+		if lock != nil {
+			_ = lock.Close()
+		}
+		result <- acquireErr
+	}()
+
+	nextTicketPath := writerTicketPath(path, liveSequence+1)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(nextTicketPath); statErr == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_, statErr := os.Stat(nextTicketPath)
+	cancel()
+	acquireErr := <-result
+	if statErr != nil {
+		t.Fatalf("next writer ticket was not sequenced after live ticket: %v", statErr)
+	}
+	if !errors.Is(acquireErr, context.Canceled) {
+		t.Fatalf("cancelled writer error = %v, want context canceled", acquireErr)
+	}
+}
+
+func TestAcquireContextCancellationDoesNotWaitForCoordinatorCleanup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	holder, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("AcquireContext shared holder: %v", err)
+	}
+	defer func() { _ = holder.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		lock, acquireErr := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+		if lock != nil {
+			_ = lock.Close()
+		}
+		result <- acquireErr
+	}()
+	waitForWriterIntentCount(t, path, 1)
+
+	coordinator, err := acquireCoordinator(context.Background(), path)
+	if err != nil {
+		cancel()
+		t.Fatalf("acquire coordinator: %v", err)
+	}
+	cancel()
+
+	var (
+		acquireErr error
+		prompt     bool
+	)
+	select {
+	case acquireErr = <-result:
+		prompt = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	if err := coordinator.close(); err != nil {
+		t.Fatalf("close coordinator: %v", err)
+	}
+	if !prompt {
+		<-result
+		t.Fatal("cancelled writer waited for indefinitely held coordinator cleanup")
+	}
+	if !errors.Is(acquireErr, context.Canceled) {
+		t.Fatalf("cancelled writer error = %v, want context canceled", acquireErr)
+	}
+
+	readerCtx, readerCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readerCancel()
+	reader, err := AcquireContext(readerCtx, path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("reader did not clean released stale intent: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Close reader: %v", err)
+	}
+}
+
 func TestAcquireContextWritersAreFIFOAndReadersDoNotBarge(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "semantic.lock")
 	holder, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})

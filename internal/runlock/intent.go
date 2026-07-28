@@ -10,9 +10,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
-const writerTicketDigits = 20
+const (
+	writerTicketDigits = 20
+	intentCleanupGrace = 25 * time.Millisecond
+)
 
 type writerIntent struct {
 	lockPath   string
@@ -97,7 +101,7 @@ func acquireExclusiveContext(ctx context.Context, path string, metadata string) 
 	}
 	defer func() {
 		if resultErr != nil {
-			resultErr = errors.Join(resultErr, intent.close())
+			resultErr = errors.Join(resultErr, intent.closeAfterAcquireFailure())
 		}
 	}()
 
@@ -161,7 +165,8 @@ func createWriterIntent(ctx context.Context, path string, metadata string) (*wri
 	}
 	defer func() { _ = coordinator.close() }()
 
-	if _, err := cleanWriterIntents(path, ""); err != nil {
+	liveIntents, err := cleanWriterIntents(path, "")
+	if err != nil {
 		return nil, err
 	}
 	rawSequence, err := readFileLockMetadata(coordinator.file)
@@ -170,9 +175,13 @@ func createWriterIntent(ctx context.Context, path string, metadata string) (*wri
 	}
 	var sequence uint64
 	if strings.TrimSpace(rawSequence) != "" {
-		sequence, err = strconv.ParseUint(strings.TrimSpace(rawSequence), 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("parse writer coordinator %s: %w", coordinator.path, err)
+		if parsed, parseErr := strconv.ParseUint(strings.TrimSpace(rawSequence), 10, 64); parseErr == nil {
+			sequence = parsed
+		}
+	}
+	for _, intent := range liveIntents {
+		if intent.sequence > sequence {
+			sequence = intent.sequence
 		}
 	}
 	if sequence == math.MaxUint64 {
@@ -204,17 +213,37 @@ func (i *writerIntent) close() error {
 	if i == nil || i.ticket == nil {
 		return nil
 	}
-	coordinator, err := acquireCoordinator(context.Background(), i.lockPath)
+	releaseErr := i.releaseTicket()
+	return errors.Join(releaseErr, i.cleanupReleasedTicket(context.Background()))
+}
+
+func (i *writerIntent) closeAfterAcquireFailure() error {
+	if i == nil || i.ticket == nil {
+		return nil
+	}
+	releaseErr := i.releaseTicket()
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), intentCleanupGrace)
+	defer cancel()
+	cleanupErr := i.cleanupReleasedTicket(cleanupCtx)
+	if errors.Is(cleanupErr, context.DeadlineExceeded) || errors.Is(cleanupErr, context.Canceled) {
+		cleanupErr = nil
+	}
+	return errors.Join(releaseErr, cleanupErr)
+}
+
+func (i *writerIntent) releaseTicket() error {
+	ticketErr := i.ticket.close()
+	i.ticket = nil
+	return ticketErr
+}
+
+func (i *writerIntent) cleanupReleasedTicket(ctx context.Context) error {
+	coordinator, err := acquireCoordinator(ctx, i.lockPath)
 	if err != nil {
 		return err
 	}
-	removeErr := removeLockedFile(i.ticket.file, i.ticketPath)
-	ticketErr := i.ticket.close()
-	i.ticket = nil
-	if errors.Is(removeErr, os.ErrNotExist) {
-		removeErr = nil
-	}
-	return errors.Join(ticketErr, removeErr, coordinator.close())
+	_, cleanupErr := cleanWriterIntents(i.lockPath, "")
+	return errors.Join(cleanupErr, coordinator.close())
 }
 
 func acquireCoordinator(ctx context.Context, path string) (*heldFile, error) {
