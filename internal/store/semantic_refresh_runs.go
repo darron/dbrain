@@ -67,8 +67,10 @@ var ErrSemanticRefreshRunStale = errors.New("semantic refresh run changed")
 
 const semanticRefreshRunColumns = `run_id,profile_id,purge_epoch,projection_watermark,embedding_revision,stage,checkpoint,projected_parents,embedded_chunks,flushed_vectors,compacted_vectors,verified_vectors,successor_runs,current_generation_id,state,error_code,error_text,readiness_state,version,created_at,updated_at,last_progress_at`
 
+const semanticRefreshTimestampLayout = "2006-01-02T15:04:05.000000000Z"
+
 func ensureSemanticRefreshRunSchema(db *sql.DB) error {
-	for _, q := range []string{`CREATE TABLE IF NOT EXISTS semantic_refresh_runs (run_id TEXT PRIMARY KEY,profile_id TEXT NOT NULL,purge_epoch INTEGER NOT NULL,projection_watermark INTEGER NOT NULL,embedding_revision INTEGER NOT NULL DEFAULT 0,stage TEXT NOT NULL,checkpoint TEXT NOT NULL DEFAULT '',projected_parents INTEGER NOT NULL DEFAULT 0,embedded_chunks INTEGER NOT NULL DEFAULT 0,flushed_vectors INTEGER NOT NULL DEFAULT 0,compacted_vectors INTEGER NOT NULL DEFAULT 0,verified_vectors INTEGER NOT NULL DEFAULT 0,successor_runs INTEGER NOT NULL DEFAULT 0,current_generation_id TEXT NOT NULL DEFAULT '',state TEXT NOT NULL,error_code TEXT NOT NULL DEFAULT '',error_text TEXT NOT NULL DEFAULT '',readiness_state TEXT NOT NULL DEFAULT '',version INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_progress_at TEXT NOT NULL,CHECK(length(run_id) BETWEEN 1 AND 64),CHECK(length(profile_id) BETWEEN 1 AND 192),CHECK(purge_epoch >= 0),CHECK(projection_watermark >= 0),CHECK(embedding_revision >= 0),CHECK(stage IN ('projection','embedding','flush','compaction','verify','readiness')),CHECK(length(checkpoint) <= 256),CHECK(projected_parents >= 0 AND embedded_chunks >= 0),CHECK(flushed_vectors >= 0 AND compacted_vectors >= 0 AND verified_vectors >= 0),CHECK(successor_runs >= 0),CHECK(state IN ('running','failed','cancelled','completed','superseded')),CHECK(length(error_code) <= 64),CHECK(length(error_text) <= 512),CHECK(length(readiness_state) <= 64),CHECK(version > 0))`, `CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_refresh_runs_one_resumable ON semantic_refresh_runs(profile_id) WHERE state IN ('running','failed','cancelled')`, `CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_latest ON semantic_refresh_runs(updated_at DESC,run_id DESC)`} {
+	for _, q := range []string{`CREATE TABLE IF NOT EXISTS semantic_refresh_runs (run_id TEXT PRIMARY KEY,profile_id TEXT NOT NULL,purge_epoch INTEGER NOT NULL,projection_watermark INTEGER NOT NULL,embedding_revision INTEGER NOT NULL DEFAULT 0,stage TEXT NOT NULL,checkpoint TEXT NOT NULL DEFAULT '',projected_parents INTEGER NOT NULL DEFAULT 0,embedded_chunks INTEGER NOT NULL DEFAULT 0,flushed_vectors INTEGER NOT NULL DEFAULT 0,compacted_vectors INTEGER NOT NULL DEFAULT 0,verified_vectors INTEGER NOT NULL DEFAULT 0,successor_runs INTEGER NOT NULL DEFAULT 0,current_generation_id TEXT NOT NULL DEFAULT '',state TEXT NOT NULL,error_code TEXT NOT NULL DEFAULT '',error_text TEXT NOT NULL DEFAULT '',readiness_state TEXT NOT NULL DEFAULT '',version INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_progress_at TEXT NOT NULL,CHECK(length(CAST(run_id AS BLOB)) BETWEEN 1 AND 64),CHECK(length(CAST(profile_id AS BLOB)) BETWEEN 1 AND 192),CHECK(purge_epoch >= 0),CHECK(projection_watermark >= 0),CHECK(embedding_revision >= 0),CHECK(stage IN ('projection','embedding','flush','compaction','verify','readiness')),CHECK(length(CAST(checkpoint AS BLOB)) <= 256),CHECK(projected_parents >= 0 AND embedded_chunks >= 0),CHECK(flushed_vectors >= 0 AND compacted_vectors >= 0 AND verified_vectors >= 0),CHECK(successor_runs >= 0),CHECK(state IN ('running','failed','cancelled','completed','superseded')),CHECK(length(CAST(error_code AS BLOB)) <= 64),CHECK(length(CAST(error_text AS BLOB)) <= 512),CHECK(length(CAST(readiness_state AS BLOB)) <= 64),CHECK(version > 0))`, `CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_refresh_runs_one_resumable ON semantic_refresh_runs(profile_id) WHERE state IN ('running','failed','cancelled')`, `CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_latest ON semantic_refresh_runs(updated_at DESC,run_id DESC)`} {
 		if _, err := db.Exec(q); err != nil {
 			return fmt.Errorf("ensure semantic refresh run schema: %w", err)
 		}
@@ -80,7 +82,7 @@ func semanticRefreshNow(now time.Time) (time.Time, string) {
 		now = time.Now()
 	}
 	now = now.UTC()
-	return now, now.Format(time.RFC3339Nano)
+	return now, now.Format(semanticRefreshTimestampLayout)
 }
 func (s *Store) StartOrResumeSemanticRefreshRun(ctx context.Context, in StartSemanticRefreshRunInput) (SemanticRefreshRun, bool, error) {
 	in.RunID, in.ProfileID = strings.TrimSpace(in.RunID), strings.TrimSpace(in.ProfileID)
@@ -93,10 +95,10 @@ func (s *Store) StartOrResumeSemanticRefreshRun(ctx context.Context, in StartSem
 		return SemanticRefreshRun{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err = tx.ExecContext(ctx, `UPDATE semantic_refresh_runs SET state='superseded',updated_at=?,last_progress_at=? WHERE profile_id<>? AND state IN ('running','failed','cancelled')`, now, now, in.ProfileID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE semantic_refresh_runs SET state='superseded',version=version+1,updated_at=?,last_progress_at=? WHERE profile_id<>? AND state IN ('running','failed','cancelled')`, now, now, in.ProfileID); err != nil {
 		return SemanticRefreshRun{}, false, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE semantic_refresh_runs SET state='superseded',updated_at=?,last_progress_at=? WHERE profile_id=? AND purge_epoch<>? AND state IN ('running','failed','cancelled')`, now, now, in.ProfileID, in.PurgeEpoch); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE semantic_refresh_runs SET state='superseded',version=version+1,updated_at=?,last_progress_at=? WHERE profile_id=? AND purge_epoch<>? AND state IN ('running','failed','cancelled')`, now, now, in.ProfileID, in.PurgeEpoch); err != nil {
 		return SemanticRefreshRun{}, false, err
 	}
 	var run SemanticRefreshRun
@@ -130,27 +132,45 @@ func (s *Store) StartOrResumeSemanticRefreshRun(ctx context.Context, in StartSem
 }
 func (s *Store) UpdateSemanticRefreshRun(ctx context.Context, in SemanticRefreshRunUpdate) (SemanticRefreshRun, error) {
 	_, now := semanticRefreshNow(in.Now)
-	result, err := s.db.ExecContext(ctx, `UPDATE semantic_refresh_runs SET embedding_revision=?,stage=?,checkpoint=?,projected_parents=?,embedded_chunks=?,flushed_vectors=?,compacted_vectors=?,verified_vectors=?,successor_runs=?,current_generation_id=?,state=?,error_code=?,error_text=?,readiness_state=?,version=version+1,updated_at=?,last_progress_at=? WHERE run_id=? AND version=?`, in.EmbeddingRevision, in.Stage, in.Checkpoint, in.Counters.ProjectedParents, in.Counters.EmbeddedChunks, in.Counters.FlushedVectors, in.Counters.CompactedVectors, in.Counters.VerifiedVectors, in.Counters.SuccessorRuns, in.CurrentGenerationID, in.State, in.ErrorCode, in.ErrorText, in.ReadinessState, now, now, in.RunID, in.ExpectedVersion)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SemanticRefreshRun{}, fmt.Errorf("begin semantic refresh run update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE semantic_refresh_runs SET embedding_revision=?,stage=?,checkpoint=?,projected_parents=?,embedded_chunks=?,flushed_vectors=?,compacted_vectors=?,verified_vectors=?,successor_runs=?,current_generation_id=?,state=?,error_code=?,error_text=?,readiness_state=?,version=version+1,updated_at=?,last_progress_at=? WHERE run_id=? AND version=? AND state IN ('running','failed','cancelled')`, in.EmbeddingRevision, in.Stage, in.Checkpoint, in.Counters.ProjectedParents, in.Counters.EmbeddedChunks, in.Counters.FlushedVectors, in.Counters.CompactedVectors, in.Counters.VerifiedVectors, in.Counters.SuccessorRuns, in.CurrentGenerationID, in.State, in.ErrorCode, in.ErrorText, in.ReadinessState, now, now, in.RunID, in.ExpectedVersion)
 	if err != nil {
 		return SemanticRefreshRun{}, fmt.Errorf("update semantic refresh run: %w", err)
 	}
 	n, err := result.RowsAffected()
 	if err != nil {
-		return SemanticRefreshRun{}, err
+		return SemanticRefreshRun{}, fmt.Errorf("count semantic refresh run update: %w", err)
 	}
 	if n != 1 {
 		return SemanticRefreshRun{}, ErrSemanticRefreshRunStale
 	}
 	var run SemanticRefreshRun
-	if err := scanSemanticRefreshRun(s.db.QueryRowContext(ctx, `SELECT `+semanticRefreshRunColumns+` FROM semantic_refresh_runs WHERE run_id=?`, in.RunID), &run); err != nil {
-		return SemanticRefreshRun{}, err
+	if err := scanSemanticRefreshRun(tx.QueryRowContext(ctx, `SELECT `+semanticRefreshRunColumns+` FROM semantic_refresh_runs WHERE run_id=?`, in.RunID), &run); err != nil {
+		return SemanticRefreshRun{}, fmt.Errorf("read updated semantic refresh run: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return SemanticRefreshRun{}, fmt.Errorf("commit semantic refresh run update: %w", err)
 	}
 	return run, nil
 }
 func (s *Store) TouchSemanticRefreshRunProgress(ctx context.Context, runID string, at time.Time) error {
 	_, now := semanticRefreshNow(at)
-	_, err := s.db.ExecContext(ctx, `UPDATE semantic_refresh_runs SET updated_at=?,last_progress_at=? WHERE run_id=?`, now, now, runID)
-	return err
+	result, err := s.db.ExecContext(ctx, `UPDATE semantic_refresh_runs SET updated_at=?,last_progress_at=? WHERE run_id=?`, now, now, runID)
+	if err != nil {
+		return fmt.Errorf("touch semantic refresh run progress: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count semantic refresh run heartbeat: %w", err)
+	}
+	if n != 1 {
+		return ErrSemanticRefreshRunStale
+	}
+	return nil
 }
 func (s *Store) LatestSemanticRefreshRun(ctx context.Context, profileID string) (*SemanticRefreshRun, error) {
 	q, args := `SELECT `+semanticRefreshRunColumns+` FROM semantic_refresh_runs`, []any{}
@@ -178,6 +198,17 @@ func scanSemanticRefreshRun(row semanticRefreshRunScanner, run *SemanticRefreshR
 	if err != nil {
 		return err
 	}
-	run.CreatedAt, run.UpdatedAt, run.LastProgressAt = parseStoredTime(created), parseStoredTime(updated), parseStoredTime(progressed)
+	run.CreatedAt, err = time.Parse(semanticRefreshTimestampLayout, created)
+	if err != nil {
+		return fmt.Errorf("parse semantic refresh run created_at: %w", err)
+	}
+	run.UpdatedAt, err = time.Parse(semanticRefreshTimestampLayout, updated)
+	if err != nil {
+		return fmt.Errorf("parse semantic refresh run updated_at: %w", err)
+	}
+	run.LastProgressAt, err = time.Parse(semanticRefreshTimestampLayout, progressed)
+	if err != nil {
+		return fmt.Errorf("parse semantic refresh run last_progress_at: %w", err)
+	}
 	return nil
 }

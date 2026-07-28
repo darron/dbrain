@@ -76,6 +76,35 @@ func TestSemanticRefreshRunCASRejectsStaleWriter(t *testing.T) {
 	}
 }
 
+func TestSemanticRefreshRunCASRejectsTerminalRows(t *testing.T) {
+	for _, state := range []SemanticRefreshRunState{SemanticRefreshRunCompleted, SemanticRefreshRunSuperseded} {
+		t.Run(string(state), func(t *testing.T) {
+			st := openTestStore(t)
+			run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
+			expectedVersion := run.Version
+			if state == SemanticRefreshRunSuperseded {
+				if _, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{RunID: "run-b", ProfileID: "profile-b", PurgeEpoch: 1, ProjectionWatermark: 12, Now: semanticRefreshTestNow().Add(time.Minute)}); err != nil {
+					t.Fatal(err)
+				}
+				terminal, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
+				if err != nil || terminal == nil {
+					t.Fatalf("read superseded run=%+v err=%v", terminal, err)
+				}
+				expectedVersion = terminal.Version
+			} else {
+				terminal, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshReadiness, State: state, Now: semanticRefreshTestNow().Add(time.Minute)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				expectedVersion = terminal.Version
+			}
+			if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: expectedVersion, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunRunning, Now: semanticRefreshTestNow().Add(2 * time.Minute)}); !errors.Is(err, ErrSemanticRefreshRunStale) {
+				t.Fatalf("terminal revival err=%v", err)
+			}
+		})
+	}
+}
+
 func TestSemanticRefreshRunFailedAndCancelledStatesResume(t *testing.T) {
 	for _, state := range []SemanticRefreshRunState{SemanticRefreshRunFailed, SemanticRefreshRunCancelled} {
 		t.Run(string(state), func(t *testing.T) {
@@ -105,6 +134,18 @@ func TestSemanticRefreshRunBoundsCheckpointAndDiagnostics(t *testing.T) {
 	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunRunning, Counters: SemanticRefreshCounters{EmbeddedChunks: -1}, Now: semanticRefreshTestNow()}); err == nil {
 		t.Fatal("expected counter bound violation")
 	}
+	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunRunning, Checkpoint: strings.Repeat("é", 129), Now: semanticRefreshTestNow()}); err == nil {
+		t.Fatal("expected UTF-8 checkpoint byte bound violation")
+	}
+	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunRunning, ErrorText: strings.Repeat("é", 257), Now: semanticRefreshTestNow()}); err == nil {
+		t.Fatal("expected UTF-8 error text byte bound violation")
+	}
+	if _, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{RunID: strings.Repeat("é", 33), ProfileID: "profile-b", Now: semanticRefreshTestNow()}); err == nil {
+		t.Fatal("expected UTF-8 run ID byte bound violation")
+	}
+	if _, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{RunID: "run-profile-multibyte", ProfileID: strings.Repeat("é", 97), Now: semanticRefreshTestNow()}); err == nil {
+		t.Fatal("expected UTF-8 profile byte bound violation")
+	}
 }
 
 func TestLatestSemanticRefreshRunFiltersProfileOrReturnsDatabaseLatest(t *testing.T) {
@@ -121,6 +162,33 @@ func TestLatestSemanticRefreshRunFiltersProfileOrReturnsDatabaseLatest(t *testin
 	}
 }
 
+func TestLatestSemanticRefreshRunOrdersFixedWidthTimestampsWithinSecond(t *testing.T) {
+	st := openTestStore(t)
+	first := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
+	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: first.RunID, ExpectedVersion: first.Version, Stage: SemanticRefreshReadiness, State: SemanticRefreshRunCompleted, Now: semanticRefreshTestNow()}); err != nil {
+		t.Fatal(err)
+	}
+	_, resumed, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{RunID: "run-b", ProfileID: "profile-b", PurgeEpoch: 1, ProjectionWatermark: 12, Now: semanticRefreshTestNow().Add(100 * time.Millisecond)})
+	if err != nil || resumed {
+		t.Fatalf("start later run resumed=%v err=%v", resumed, err)
+	}
+	got, err := st.LatestSemanticRefreshRun(t.Context(), "")
+	if err != nil || got == nil || got.RunID != "run-b" {
+		t.Fatalf("latest=%+v err=%v", got, err)
+	}
+}
+
+func TestSemanticRefreshRunRejectsCorruptStoredTimestamp(t *testing.T) {
+	st := openTestStore(t)
+	run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
+	if _, err := st.db.Exec(`UPDATE semantic_refresh_runs SET updated_at='not-a-time' WHERE run_id=?`, run.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a"); err == nil {
+		t.Fatal("expected corrupt timestamp error")
+	}
+}
+
 func TestSemanticRefreshRunTouchDoesNotInvalidateCAS(t *testing.T) {
 	st := openTestStore(t)
 	run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
@@ -129,5 +197,12 @@ func TestSemanticRefreshRunTouchDoesNotInvalidateCAS(t *testing.T) {
 	}
 	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunRunning, Now: semanticRefreshTestNow().Add(2 * time.Minute)}); err != nil {
 		t.Fatalf("CAS after touch: %v", err)
+	}
+}
+
+func TestSemanticRefreshRunTouchRejectsMissingRun(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.TouchSemanticRefreshRunProgress(t.Context(), "missing", semanticRefreshTestNow()); !errors.Is(err, ErrSemanticRefreshRunStale) {
+		t.Fatalf("missing touch err=%v", err)
 	}
 }
