@@ -37,8 +37,9 @@ func TestSemanticReadinessActiveGenerationMetadata(t *testing.T) {
 
 func TestSemanticRuntimeReadinessActiveGenerationMetadataCorruptionFailsClosed(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(*testing.T, *Store, string, string, int)
+		name        string
+		mutate      func(*testing.T, *Store, string, string, int)
+		wantProblem string
 	}{
 		{
 			name: "generation profile differs",
@@ -53,9 +54,10 @@ func TestSemanticRuntimeReadinessActiveGenerationMetadataCorruptionFailsClosed(t
 			},
 		},
 		{
-			name: "generation not completed",
+			name:        "generation not completed",
+			wantProblem: "active generation row is not completed",
 			mutate: func(t *testing.T, st *Store, generationID, _ string, _ int) {
-				execSemanticGenerationCorruption(t, st, `UPDATE retrieval_index_generations SET active=0,build_status='stale' WHERE generation_id=?`, generationID)
+				corruptActiveSemanticGenerationStatus(t, st, generationID)
 			},
 		},
 		{
@@ -192,6 +194,9 @@ func TestSemanticRuntimeReadinessActiveGenerationMetadataCorruptionFailsClosed(t
 					if snapshot.ActiveGenerationProblem == "" {
 						t.Fatalf("metadata corruption has no bounded diagnosis: snapshot=%+v", snapshot)
 					}
+					if tc.wantProblem != "" && snapshot.ActiveGenerationProblem != tc.wantProblem {
+						t.Fatalf("active generation problem=%q want=%q", snapshot.ActiveGenerationProblem, tc.wantProblem)
+					}
 				})
 			}
 		})
@@ -266,6 +271,24 @@ func execSemanticGenerationCorruption(t *testing.T, st *Store, query string, arg
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(query, args...); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func corruptActiveSemanticGenerationStatus(t *testing.T, st *Store, generationID string) {
+	t.Helper()
+	tx, err := st.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DROP TRIGGER trg_retrieval_generations_completed_active_update`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE retrieval_index_generations SET build_status='stale' WHERE generation_id=?`, generationID); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
