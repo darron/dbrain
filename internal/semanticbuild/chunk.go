@@ -144,7 +144,7 @@ func runChunkUntilIdle(ctx context.Context, st ChunkStore, opts ChunkOptions, li
 			return progress, nil
 		}
 		base := progress
-		pageOpts := ProjectionBatchOptions{Watermark: watermark, Limit: opts.Limit, Now: opts.Now}
+		pageOpts := ProjectionBatchOptions{Watermark: watermark, Limit: min(opts.Limit, 5_000), Now: opts.Now}
 		pageOpts.Progress = func(page ChunkProgress) error {
 			if opts.Progress == nil {
 				return nil
@@ -237,7 +237,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 		}
 		deadline = now().Add(opts.MaxDuration)
 	}
-	return runProjectionBatchWithLimitsAndPlanner(ctx, st, ProjectionBatchOptions{Watermark: watermark, Limit: opts.Limit, Progress: opts.Progress, Now: opts.Now}, limits, chunkOpts, prepare, deadline)
+	return runChunkAtWatermarkWithLimitsAndPlanner(ctx, st, opts, watermark, limits, chunkOpts, prepare, deadline)
 }
 
 func validateChunkOptions(opts ChunkOptions) error {
@@ -247,13 +247,40 @@ func validateChunkOptions(opts ChunkOptions) error {
 	if opts.Limit <= 0 {
 		return fmt.Errorf("semantic projection batch limit must be positive")
 	}
-	if opts.Limit > 5_000 {
-		return fmt.Errorf("semantic projection batch limit must not exceed 5000")
-	}
 	if strings.TrimSpace(opts.AfterSourceKey) != "" {
 		return fmt.Errorf("semantic chunk --after-source-key is no longer supported; rerun without it because the durable dirty queue resumes automatically")
 	}
 	return nil
+}
+
+func runChunkAtWatermarkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ChunkOptions, watermark int64, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer, deadline time.Time) (ChunkProgress, error) {
+	if opts.Limit <= 5_000 {
+		return runProjectionBatchWithLimitsAndPlanner(ctx, st, ProjectionBatchOptions{Watermark: watermark, Limit: opts.Limit, Progress: opts.Progress, Now: opts.Now}, limits, chunkOpts, prepare, deadline)
+	}
+
+	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
+	remainingLimit := opts.Limit
+	for remainingLimit > 0 {
+		pageLimit := min(remainingLimit, 5_000)
+		base := progress
+		pageOpts := ProjectionBatchOptions{Watermark: watermark, Limit: pageLimit, Now: opts.Now}
+		pageOpts.Progress = func(page ChunkProgress) error {
+			if opts.Progress == nil {
+				return nil
+			}
+			return opts.Progress(mergeChunkProgress(base, page))
+		}
+		page, err := runProjectionBatchWithLimitsAndPlanner(ctx, st, pageOpts, limits, chunkOpts, prepare, deadline)
+		progress = mergeChunkProgress(progress, page)
+		if err != nil {
+			return progress, err
+		}
+		if page.Checkpoint != nil || page.Interrupted || page.Scanned == 0 || !page.HasMore {
+			return progress, nil
+		}
+		remainingLimit -= page.Scanned
+	}
+	return progress, nil
 }
 
 func runProjectionBatchWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ProjectionBatchOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer, deadline time.Time) (ChunkProgress, error) {
