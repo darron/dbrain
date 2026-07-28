@@ -265,6 +265,7 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 	index := newUSearchRootTestIndex(t,
 		HNSWNode{Ordinal: 0, Vector: []float32{1, 0}},
 		HNSWNode{Ordinal: 1, Vector: []float32{0, 1}},
+		HNSWNode{Ordinal: 2, Vector: []float32{0.6, 0.8}},
 	)
 	root := &USearchRoot{
 		Root: semanticsegment.Root{Manifest: semanticsegment.RootManifest{ProfileID: profileID, GenerationID: "generation", SnapshotRevision: 4, PurgeEpoch: 2}},
@@ -273,6 +274,7 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 			Manifest: semanticsegment.Manifest{Members: []semanticsegment.Member{
 				{Ordinal: 0, ChunkID: "near", Revision: 3, VectorHash: "near-hash"},
 				{Ordinal: 1, ChunkID: "far", Revision: 4, VectorHash: "far-hash"},
+				{Ordinal: 2, ChunkID: "deleted", Revision: 4, VectorHash: "deleted-hash"},
 			}},
 			Index: index,
 		}},
@@ -290,7 +292,12 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 	if status.State != StateSearched || status.Backend != BackendUSearch || status.GenerationID != "generation" || !reflect.DeepEqual([]string{hits[0].ChunkID, hits[1].ChunkID, hits[2].ChunkID}, []string{"near", "l0", "far"}) {
 		t.Fatalf("hits=%+v status=%+v", hits, status)
 	}
-	if st.request.ExpectedActiveGenerationID != "generation" || st.request.ExpectedPurgeEpoch != 2 || st.request.ExpectedActiveSnapshotRevision != 4 || len(st.request.Candidates) != 2 {
+	for _, hit := range hits {
+		if hit.ChunkID == "deleted" {
+			t.Fatalf("stale/deleted SQLite candidate survived exact validation: hits=%+v", hits)
+		}
+	}
+	if st.request.ExpectedActiveGenerationID != "generation" || st.request.ExpectedPurgeEpoch != 2 || st.request.ExpectedActiveSnapshotRevision != 4 || len(st.request.Candidates) != 3 {
 		t.Fatalf("candidate request=%+v", st.request)
 	}
 	if st.l0Request.ExpectedActiveGenerationID != "generation" || st.l0Request.ExpectedPurgeEpoch != 2 || st.l0Request.ExpectedActiveSnapshotRevision != 4 || st.l0Limit != store.RetrievalSegmentHardLimit {
