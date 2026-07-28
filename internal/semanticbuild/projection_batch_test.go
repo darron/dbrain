@@ -206,7 +206,7 @@ type redirtyOnApplyStore struct {
 }
 
 func (s *redirtyOnApplyStore) ListDirtyRetrievalParents(_ context.Context, watermark int64, _ int) ([]store.RetrievalParentWork, error) {
-	if watermark < s.revision || s.fakeStore.applied[s.parent.Kind+":"+s.parent.SourceKey] {
+	if watermark < s.revision || s.applied[s.parent.Kind+":"+s.parent.SourceKey] {
 		return nil, nil
 	}
 	return []store.RetrievalParentWork{{Parent: s.parent, DirtyRevision: s.revision}}, nil

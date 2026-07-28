@@ -183,7 +183,7 @@ func TestSemanticRefreshRunCASRejectsTerminalRows(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			st := openTestStore(t)
 			run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
-			expectedVersion := run.Version
+			var expectedVersion int64
 			if state == SemanticRefreshRunSuperseded {
 				if _, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{RunID: "run-b", ProfileID: "profile-b", PurgeEpoch: 1, ProjectionWatermark: 12, Now: semanticRefreshTestNow().Add(time.Minute)}); err != nil {
 					t.Fatal(err)
