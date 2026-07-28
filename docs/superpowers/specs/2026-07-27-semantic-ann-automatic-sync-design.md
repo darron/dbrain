@@ -473,7 +473,7 @@ PR—is the user-useful release.
 As of 2026-07-28, only stacked PR 1, **Runtime admission and capability**, is
 implemented and representative-corpus admitted on
 `codex/semantic-ann-automatic-sync`. The verified implementation at
-`5d81f268417487538bec125af202075e70e1f23a`:
+`67e690fe0d335174f1824ffaee994585122d46a6`:
 
 - reports one explicit native-backend capability decision through both
   `semantic status` and normal research admission;
@@ -486,6 +486,8 @@ implemented and representative-corpus admitted on
 - validates runtime-equivalent native artifacts before status reports them
   searchable, rejects native vector/member cardinality drift, and returns no
   partial semantic hits after cancellation;
+- keeps native-root failures path-free in research output and traces while
+  propagating caller cancellation and deadlines as errors;
 - preserves unsupported CGO-free operation and lexical retrieval without a
   USearch dependency; and
 - opens the normal research store read-only, preserving the representative

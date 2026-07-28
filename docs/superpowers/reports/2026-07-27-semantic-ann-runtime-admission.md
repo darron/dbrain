@@ -27,7 +27,7 @@ acceptance, or production activation.
   `/Users/darron/src/dbrain/.worktrees/semantic-ann-automatic-sync`
 - Branch: `codex/semantic-ann-automatic-sync`
 - Tested implementation SHA:
-  `5d81f268417487538bec125af202075e70e1f23a`
+  `67e690fe0d335174f1824ffaee994585122d46a6`
 - Copied database:
   `/private/tmp/dbrain-pr100-corpus.Co0jrU/xdg-data/dbrain/brain.db`
 - Copied config:
@@ -105,7 +105,7 @@ There was no USearch dependency.
 The exact required command was:
 
 ```sh
-env GOCACHE=/private/tmp/dbrain-final4-usearch-gocache \
+env GOCACHE=/private/tmp/dbrain-final5-usearch-gocache \
   CGO_ENABLED=1 \
   CGO_CFLAGS="-I/private/tmp/dbrain-usearch-v2.26.0-codex/extracted" \
   CGO_LDFLAGS="-L/private/tmp/dbrain-usearch-v2.26.0-codex/extracted -lusearch_c" \
@@ -125,7 +125,7 @@ command was rerun outside the listener restriction on the final frozen code
 and exited zero. The slowest package was:
 
 ```text
-ok github.com/darron/dbrain/internal/store 309.713s
+ok github.com/darron/dbrain/internal/store 315.339s
 ```
 
 Both runs emitted the existing non-fatal warning:
@@ -137,13 +137,13 @@ ld: warning: ignoring duplicate libraries: '-lusearch_c'
 ## Tagged Development Binary
 
 The tagged macOS arm64 development binary was freshly rebuilt with the same
-native flags and `GOCACHE=/private/tmp/dbrain-final4-usearch-gocache`.
+native flags and `GOCACHE=/private/tmp/dbrain-final5-usearch-gocache`.
 The build exited zero and emitted the known duplicate-library warning. It also
 reported a non-fatal sandbox denial while trying to persist a Go module stat
 cache:
 
 ```text
-go: writing stat cache: open /Users/darron/go/pkg/mod/cache/download/github.com/darron/dbrain/@v/v0.7.2-0.20260728004433-2d7ba53ce405.info144840075.tmp: operation not permitted
+go: writing stat cache: open /Users/darron/go/pkg/mod/cache/download/github.com/darron/dbrain/@v/v0.7.2-0.20260728004433-2d7ba53ce405.info443022718.tmp: operation not permitted
 ```
 
 `file` confirmed:
@@ -415,10 +415,14 @@ The final follow-up review also required and verified that:
   hits after cancellation in a later native or SQLite expansion stage; and
 - provider construction and provenance failures close an already opened
   native searcher exactly once while preserving the primary error.
+- native-root failures exposed through normal research and saved traces use the
+  stable `native_root_artifacts_unavailable` reason instead of serializing
+  filesystem paths, while caller cancellation and deadlines remain errors
+  rather than successful lexical fallbacks.
 
 After those corrections, the final standard gates, complete uncached tagged
 race gate, tagged status/query, untagged fallback status/query, and database
-byte-stability check all passed at `5d81f268417487538bec125af202075e70e1f23a`.
+byte-stability check all passed at `67e690fe0d335174f1824ffaee994585122d46a6`.
 
 ## Residual Scope
 

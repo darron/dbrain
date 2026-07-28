@@ -27,11 +27,13 @@ development date for the change set.
   cleanup of partially opened native indexes. The native load call itself
   remains non-preemptible. Candidate traversal checks cancellation around each
   native search and never leaks prior-stage partial hits after cancellation.
+  Caller cancellation during native-root admission remains an error.
 - **Safe unsupported behavior**: Normal CGO-free builds carry no USearch
   dependency, report `native_backend_unsupported`, and preserve ordinary
   lexical retrieval. Native capability diagnostics redact local filesystem
   paths without masking readiness states such as `corrupt`, `disabled`, or
-  `needs_index`.
+  `needs_index`; native-root failures in research output and traces use a
+  stable path-free reason.
 - **Runtime-admission boundary**: This stack does not yet add automatic
   semantic refresh after sync. Resumable refresh, universal synchronous sync
   integration, cross-process locking, static Homebrew packaging, and installed
