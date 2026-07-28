@@ -633,6 +633,130 @@ func TestUSearchCandidateSearcherCancellationDuringFirstNativeSegmentStopsTraver
 	}
 }
 
+func TestUSearchCandidateSearcherLaterNativeCancellationDropsPriorStageHits(t *testing.T) {
+	profile, root, firstRow := newUSearchLaterExpansionFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	nativeSearchCalls := 0
+	root.searchSegment = func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+		nativeSearchCalls++
+		if nativeSearchCalls == 1 {
+			return []HNSWHit{{Ordinal: 0}}, nil
+		}
+		cancel()
+		return nil, context.Canceled
+	}
+	st := &fakeUSearchCandidateStore{rows: []store.RetrievalEmbeddingRow{firstRow}}
+
+	hits, status, err := NewUSearchCandidateSearcher(root, st).Search(ctx, []float32{1, 0}, SearchOptions{
+		Profile: profile, Limit: 2, MaxChunks: 999,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("search error=%v want context cancellation", err)
+	}
+	if len(hits) != 0 || status.Reason != ReasonCanceled {
+		t.Fatalf("hits=%+v status=%+v want canceled with no prior-stage hits", hits, status)
+	}
+	if nativeSearchCalls != 2 || st.candidateReads != 1 {
+		t.Fatalf("native searches=%d candidate reads=%d want validated first stage then canceled expansion", nativeSearchCalls, st.candidateReads)
+	}
+}
+
+func TestUSearchCandidateSearcherLaterSQLiteCancellationDropsPriorStageHits(t *testing.T) {
+	profile, root, firstRow := newUSearchLaterExpansionFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	nativeSearchCalls := 0
+	root.searchSegment = func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+		nativeSearchCalls++
+		if nativeSearchCalls == 1 {
+			return []HNSWHit{{Ordinal: 0}}, nil
+		}
+		return []HNSWHit{{Ordinal: 0}, {Ordinal: 1}}, nil
+	}
+	st := &fakeUSearchCandidateStore{
+		readCandidates: func(_ context.Context, read int, _ store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
+			if read == 1 {
+				return []store.RetrievalEmbeddingRow{firstRow}, nil
+			}
+			cancel()
+			return nil, context.Canceled
+		},
+	}
+
+	hits, status, err := NewUSearchCandidateSearcher(root, st).Search(ctx, []float32{1, 0}, SearchOptions{
+		Profile: profile, Limit: 2, MaxChunks: 999,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("search error=%v want context cancellation", err)
+	}
+	if len(hits) != 0 || status.Reason != ReasonCanceled {
+		t.Fatalf("hits=%+v status=%+v want canceled with no prior-stage hits", hits, status)
+	}
+	if nativeSearchCalls != 2 || st.candidateReads != 2 {
+		t.Fatalf("native searches=%d candidate reads=%d want validated first stage then canceled SQLite expansion", nativeSearchCalls, st.candidateReads)
+	}
+}
+
+func TestUSearchCandidateSearcherLaterNonCancellationErrorsPreserveExistingPartialHitSemantics(t *testing.T) {
+	nativeFailure := errors.New("native expansion failed")
+	sqliteFailure := errors.New("SQLite expansion failed")
+	for _, tc := range []struct {
+		name      string
+		configure func(*USearchRoot, *fakeUSearchCandidateStore)
+		wantError error
+	}{
+		{
+			name: "native expansion",
+			configure: func(root *USearchRoot, _ *fakeUSearchCandidateStore) {
+				calls := 0
+				root.searchSegment = func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+					calls++
+					if calls == 1 {
+						return []HNSWHit{{Ordinal: 0}}, nil
+					}
+					return nil, nativeFailure
+				}
+			},
+			wantError: nativeFailure,
+		},
+		{
+			name: "SQLite expansion",
+			configure: func(root *USearchRoot, st *fakeUSearchCandidateStore) {
+				calls := 0
+				root.searchSegment = func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+					calls++
+					if calls == 1 {
+						return []HNSWHit{{Ordinal: 0}}, nil
+					}
+					return []HNSWHit{{Ordinal: 0}, {Ordinal: 1}}, nil
+				}
+				st.readCandidates = func(_ context.Context, read int, _ store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
+					if read == 1 {
+						return append([]store.RetrievalEmbeddingRow(nil), st.rows...), nil
+					}
+					return nil, sqliteFailure
+				}
+			},
+			wantError: sqliteFailure,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, root, firstRow := newUSearchLaterExpansionFixture(t)
+			st := &fakeUSearchCandidateStore{rows: []store.RetrievalEmbeddingRow{firstRow}}
+			tc.configure(root, st)
+
+			hits, status, err := NewUSearchCandidateSearcher(root, st).Search(context.Background(), []float32{1, 0}, SearchOptions{
+				Profile: profile, Limit: 2, MaxChunks: 999,
+			})
+			if !errors.Is(err, tc.wantError) {
+				t.Fatalf("search error=%v want=%v", err, tc.wantError)
+			}
+			if len(hits) != 1 || hits[0].ChunkID != "first" || status.Reason != ReasonSearchError {
+				t.Fatalf("hits=%+v status=%+v want existing prior-stage partial-hit error semantics", hits, status)
+			}
+		})
+	}
+}
+
 func TestUSearchCandidateSearcherAcceptsStaleRootMemberReplacedInExactL0(t *testing.T) {
 	profile := embedding.Profile{Provider: "fake", Model: "model", Dimensions: 2, ProjectionVersion: "projection", ChunkerVersion: "chunker", Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
 	profileID, err := profile.ID()
@@ -892,6 +1016,7 @@ type fakeUSearchCandidateStore struct {
 	rows           []store.RetrievalEmbeddingRow
 	l0Rows         []store.RetrievalEmbeddingRow
 	err            error
+	readCandidates func(context.Context, int, store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error)
 	candidateReads int
 	snapshotStarts int
 	snapshotCloses int
@@ -922,8 +1047,45 @@ func (f *fakeUSearchCandidateStore) ReadRetrievalExactL0(_ context.Context, requ
 	return append([]store.RetrievalEmbeddingRow(nil), f.l0Rows...), nil
 }
 
-func (f *fakeUSearchCandidateStore) ReadRetrievalNativeCandidates(_ context.Context, request store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
+func (f *fakeUSearchCandidateStore) ReadRetrievalNativeCandidates(ctx context.Context, request store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
 	f.candidateReads++
 	f.request = request
+	if f.readCandidates != nil {
+		return f.readCandidates(ctx, f.candidateReads, request)
+	}
 	return append([]store.RetrievalEmbeddingRow(nil), f.rows...), f.err
+}
+
+func newUSearchLaterExpansionFixture(t *testing.T) (embedding.Profile, *USearchRoot, store.RetrievalEmbeddingRow) {
+	t.Helper()
+	profile := embedding.Profile{
+		Provider: "fake", Model: "model", Dimensions: 2,
+		ProjectionVersion: "projection", ChunkerVersion: "chunker",
+		Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2,
+	}
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := &USearchRoot{
+		Root: semanticsegment.Root{Manifest: semanticsegment.RootManifest{
+			ProfileID: profileID, GenerationID: "generation", SnapshotRevision: 4, PurgeEpoch: 2,
+		}},
+		Segments: []USearchRootSegment{{
+			SegmentHash: "segment",
+			Manifest: semanticsegment.Manifest{Members: []semanticsegment.Member{
+				{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"},
+				{Ordinal: 1, ChunkID: "second", Revision: 1, VectorHash: "second-hash"},
+			}},
+		}},
+	}
+	firstRow := store.RetrievalEmbeddingRow{
+		ChunkID: "first", ProfileID: profileID,
+		Provider: "fake", Model: "model", Dimensions: 2,
+		Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2,
+		VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), VectorHash: "first-hash", Revision: 1,
+		ParentKind: "source", ParentSourceKey: "source:first", EvidenceRole: "raw",
+		SourceType: "article", ProjectionVersion: "projection", ChunkerVersion: "chunker",
+	}
+	return profile, root, firstRow
 }
