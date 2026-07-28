@@ -10,14 +10,24 @@ development date for the change set.
 - **Database-scoped semantic leases**: Refresh projection, embedding, flush,
   compaction, verification, and readiness units now run under crash-released
   cross-process maintenance leases. Generation publication additionally takes
-  the exclusive generation lease, preventing overlapping sync/manual refresh
-  processes from publishing incompatible ANN state.
+  the exclusive generation lease for the full flush or compaction unit,
+  excluding admitted queries while immutable roots are built, published, and
+  activated. Exclusive maintenance is what serializes competing refresh
+  processes.
 - **Purge-epoch-fenced projection commits**: Both ordinary and giant projection
   commits carry the refresh run's pinned purge epoch. Giant staging persists
   that epoch in every durable row and rejects stale resume or promotion after a
   purge. Migration 28 adds and repairs the durable epoch column, automatically
   discarding unverifiable legacy or epoch-mismatched derived staging so refresh
   can rebuild it without manual cleanup.
+- **Authoritative-write and query leases**: Corpus transactions that can dirty
+  retrieval projection now hold shared maintenance for their full
+  commit/rollback lifetime. Semantic queries hold shared generation while
+  admitting a native root and again after query embedding through SQLite
+  validation, L0 merge, hydration, and evidence construction. Writer-intent
+  ordering prevents later readers or source writers from barging ahead of
+  queued refresh/activation, while process exit releases held leases and leaves
+  no live writer intent.
 
 ### Automatic semantic refresh after sync (2026-07-28)
 
