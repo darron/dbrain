@@ -80,6 +80,12 @@ func ReadStatusWithNativeValidation(
 	result = statusFromDecision(result, snapshot, capability)
 	if result.Searchable && snapshot.ActiveGenerationID != "" && validateNativeRoot != nil {
 		if err := validateNativeRoot(ctx, snapshot); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return result, ctxErr
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return result, err
+			}
 			result.Status = string(semanticreadiness.StateUnavailable)
 			result.Reason = "native_root_artifacts_unavailable"
 			result.Searchable = false

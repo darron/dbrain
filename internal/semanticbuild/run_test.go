@@ -1292,6 +1292,40 @@ func TestReadStatusNativeArtifactValidation(t *testing.T) {
 			t.Fatalf("called=%t status=%+v", called, got)
 		}
 	})
+
+	for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run("validator interruption propagates: "+want.Error(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			got, err := ReadStatusWithNativeValidation(ctx, fakeStatusStore{status: snapshot}, profile, true, true, 25_000, capability, now, func(context.Context, semanticreadiness.Snapshot) error {
+				if errors.Is(want, context.Canceled) {
+					cancel()
+				}
+				return want
+			})
+			if !errors.Is(err, want) {
+				t.Fatalf("error=%v want %v", err, want)
+			}
+			if got.Status == string(semanticreadiness.StateUnavailable) || got.Reason == "native_root_artifacts_unavailable" || !got.Searchable || len(got.Problems) != 0 {
+				t.Fatalf("interrupted status=%+v want no artifact downgrade", got)
+			}
+		})
+	}
+
+	t.Run("canceled context takes precedence over artifact validation error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		got, err := ReadStatusWithNativeValidation(ctx, fakeStatusStore{status: snapshot}, profile, true, true, 25_000, capability, now, func(context.Context, semanticreadiness.Snapshot) error {
+			cancel()
+			return errors.New("open /private/cache/root.json: no such file")
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v want context cancellation", err)
+		}
+		if got.Status == string(semanticreadiness.StateUnavailable) || got.Reason == "native_root_artifacts_unavailable" || !got.Searchable || len(got.Problems) != 0 {
+			t.Fatalf("interrupted status=%+v want no artifact downgrade", got)
+		}
+	})
 }
 
 func TestBoundedProgressJSONUsesOnlyLatestSnapshot(t *testing.T) {
