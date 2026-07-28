@@ -374,7 +374,14 @@ func (s *Store) TouchSemanticRefreshRunProgress(ctx context.Context, runID strin
 	if err != nil {
 		return err
 	}
-	result, err := db.ExecContext(ctx, `UPDATE semantic_refresh_runs SET updated_at=?,last_progress_at=? WHERE run_id=? AND state='running'`, now, now, runID)
+	result, err := db.ExecContext(ctx, `
+		UPDATE semantic_refresh_runs
+		SET
+			updated_at=CASE WHEN updated_at<? THEN ? ELSE updated_at END,
+			last_progress_at=CASE WHEN last_progress_at IS NULL OR last_progress_at<? THEN ? ELSE last_progress_at END
+		WHERE run_id=? AND state='running'`,
+		now, now, now, now, runID,
+	)
 	if err != nil {
 		return fmt.Errorf("touch semantic refresh run progress: %w", err)
 	}

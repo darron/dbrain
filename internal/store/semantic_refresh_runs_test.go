@@ -415,6 +415,42 @@ func TestSemanticRefreshRunTouchDoesNotInvalidateCAS(t *testing.T) {
 	}
 }
 
+func TestSemanticRefreshRunTouchInitializesLegacyNullProgressTimestamp(t *testing.T) {
+	db, err := sql.Open(driverName, filepath.Join(t.TempDir(), "brain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &Store{db: db}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := db.Exec(`
+		CREATE TABLE semantic_refresh_runs (
+			run_id TEXT PRIMARY KEY,
+			state TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			last_progress_at TEXT
+		);
+		INSERT INTO semantic_refresh_runs(run_id,state,updated_at,last_progress_at)
+		VALUES ('run-a','running','2026-07-28T12:00:00.000000000Z',NULL)`); err != nil {
+		t.Fatal(err)
+	}
+
+	touchedAt := semanticRefreshTestNow().Add(time.Minute)
+	if err := st.TouchSemanticRefreshRunProgress(t.Context(), "run-a", touchedAt); err != nil {
+		t.Fatal(err)
+	}
+	var updatedAt string
+	var lastProgressAt sql.NullString
+	if err := db.QueryRow(
+		`SELECT updated_at,last_progress_at FROM semantic_refresh_runs WHERE run_id='run-a'`,
+	).Scan(&updatedAt, &lastProgressAt); err != nil {
+		t.Fatal(err)
+	}
+	want := touchedAt.UTC().Format(semanticRefreshTimestampLayout)
+	if updatedAt != want || !lastProgressAt.Valid || lastProgressAt.String != want {
+		t.Fatalf("legacy touch timestamps updated=%q progress=%+v, want %q", updatedAt, lastProgressAt, want)
+	}
+}
+
 func TestSemanticRefreshRunTouchDoesNotWaitForMainStoreConnection(t *testing.T) {
 	st := openTestStore(t)
 	run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
@@ -447,10 +483,88 @@ func TestSemanticRefreshRunTouchDoesNotWaitForMainStoreConnection(t *testing.T) 
 	}
 }
 
+func TestSemanticRefreshRunDelayedTouchCannotRegressCheckpointTimestamps(t *testing.T) {
+	st := openTestStore(t)
+	t0 := semanticRefreshTestNow()
+	t1 := t0.Add(time.Minute)
+	t2 := t0.Add(2 * time.Minute)
+	run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
+
+	progressDB, err := st.semanticProgressDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := progressDB.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback() }()
+	var count int
+	if err := blocker.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM semantic_refresh_runs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+
+	waitCount := progressDB.Stats().WaitCount
+	touched := make(chan error, 1)
+	go func() {
+		touched <- st.TouchSemanticRefreshRunProgress(t.Context(), run.RunID, t1)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for progressDB.Stats().WaitCount == waitCount {
+		if time.Now().After(deadline) {
+			t.Fatal("older heartbeat did not queue behind occupied progress connection")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	checkpoint, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{
+		RunID:           run.RunID,
+		ExpectedVersion: run.Version,
+		Stage:           SemanticRefreshEmbedding,
+		State:           SemanticRefreshRunRunning,
+		Checkpoint:      "embedding:committed",
+		Now:             t2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !checkpoint.UpdatedAt.Equal(t2) || !checkpoint.LastProgressAt.Equal(t2) {
+		t.Fatalf("checkpoint timestamps updated=%s progress=%s, want %s", checkpoint.UpdatedAt, checkpoint.LastProgressAt, t2)
+	}
+
+	if err := blocker.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiveSemanticRefreshTouchResult(t, touched); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.LatestSemanticRefreshRun(t.Context(), run.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil {
+		t.Fatal("updated run is missing")
+	}
+	if !stored.UpdatedAt.Equal(t2) || !stored.LastProgressAt.Equal(t2) {
+		t.Fatalf("delayed heartbeat regressed timestamps updated=%s progress=%s, want %s", stored.UpdatedAt, stored.LastProgressAt, t2)
+	}
+}
+
 func TestSemanticRefreshRunTouchRejectsMissingRun(t *testing.T) {
 	st := openTestStore(t)
 	if err := st.TouchSemanticRefreshRunProgress(t.Context(), "missing", semanticRefreshTestNow()); !errors.Is(err, ErrSemanticRefreshRunStale) {
 		t.Fatalf("missing touch err=%v", err)
+	}
+}
+
+func receiveSemanticRefreshTouchResult(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for semantic refresh touch")
+		return nil
 	}
 }
 
