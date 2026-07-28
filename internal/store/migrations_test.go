@@ -670,8 +670,8 @@ func TestRetrievalOccurrenceChunkIndexRepairsExistingCurrentSchemaDatabase(t *te
 	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read repaired user version: %v", err)
 	}
-	if userVersion != retrievalOccurrenceChunkIndexVersion {
-		t.Fatalf("repaired user version = %d, want %d", userVersion, retrievalOccurrenceChunkIndexVersion)
+	if userVersion != currentSchemaVersion {
+		t.Fatalf("repaired user version = %d, want current schema %d", userVersion, currentSchemaVersion)
 	}
 	assertSQLiteObject(t, st.db, "index", "idx_retrieval_chunk_occurrences_chunk")
 	var queryPlan string
