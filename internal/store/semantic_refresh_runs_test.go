@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func semanticRefreshTestNow() time.Time { return time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC) }
@@ -77,24 +79,87 @@ func TestSemanticRefreshRunCASRejectsStaleWriter(t *testing.T) {
 	}
 }
 
-func TestSemanticRefreshRunUpdateReturnsCommittedCASSnapshot(t *testing.T) {
-	st := openTestStore(t)
-	run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
-	returned, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{
-		RunID: run.RunID, ExpectedVersion: run.Version, EmbeddingRevision: 9,
-		Stage: SemanticRefreshFlush, State: SemanticRefreshRunRunning, Checkpoint: "flush-9",
-		Counters: SemanticRefreshCounters{ProjectedParents: 2, EmbeddedChunks: 3, FlushedVectors: 4},
-		Now:      semanticRefreshTestNow().Add(time.Minute),
-	})
+func TestSemanticRefreshRunUpdateReturnsOwnCASWithQueuedWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	callerStore := openStoreAtPath(t, path)
+	t.Cleanup(func() { _ = callerStore.Close() })
+	competingStore, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if returned.Version != run.Version+1 || returned.EmbeddingRevision != 9 || returned.Stage != SemanticRefreshFlush || returned.Checkpoint != "flush-9" || returned.Counters.FlushedVectors != 4 {
-		t.Fatalf("returned CAS snapshot=%+v", returned)
+	t.Cleanup(func() { _ = competingStore.Close() })
+	run := startSemanticRefreshRunForTest(t, callerStore, "run-a", "profile-a", 1, 11)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	callerWrote := make(chan struct{})
+	competitorReady := make(chan struct{})
+	competitorDone := make(chan struct{})
+	wait := func(ch <-chan struct{}) {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+		}
 	}
-	stored, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
-	if err != nil || stored == nil || stored.Version != returned.Version || stored.Checkpoint != returned.Checkpoint || stored.Counters != returned.Counters {
-		t.Fatalf("stored=%+v returned=%+v err=%v", stored, returned, err)
+	callerCtx := context.WithValue(ctx, semanticRefreshRunUpdateTestHooksKey{}, semanticRefreshRunUpdateTestHooks{
+		AfterWrite: func() {
+			close(callerWrote)
+			wait(competitorReady)
+		},
+		AfterCommit: func() {
+			wait(competitorDone)
+		},
+	})
+	competitorCtx := context.WithValue(ctx, semanticRefreshRunUpdateTestHooksKey{}, semanticRefreshRunUpdateTestHooks{
+		BeforeWrite: func() {
+			close(competitorReady)
+		},
+	})
+
+	type updateResult struct {
+		run SemanticRefreshRun
+		err error
+	}
+	callerResult := make(chan updateResult, 1)
+	go func() {
+		got, err := callerStore.UpdateSemanticRefreshRun(callerCtx, SemanticRefreshRunUpdate{
+			RunID: run.RunID, ExpectedVersion: run.Version, EmbeddingRevision: 9,
+			Stage: SemanticRefreshFlush, State: SemanticRefreshRunRunning, Checkpoint: "caller-flush-9",
+			Counters: SemanticRefreshCounters{ProjectedParents: 2, EmbeddedChunks: 3, FlushedVectors: 4},
+			Now:      semanticRefreshTestNow().Add(time.Minute),
+		})
+		callerResult <- updateResult{run: got, err: err}
+	}()
+	wait(callerWrote)
+	if err := ctx.Err(); err != nil {
+		t.Fatal(err)
+	}
+	competitorResult := make(chan updateResult, 1)
+	go func() {
+		got, err := competingStore.UpdateSemanticRefreshRun(competitorCtx, SemanticRefreshRunUpdate{
+			RunID: run.RunID, ExpectedVersion: run.Version + 1, EmbeddingRevision: 10,
+			Stage: SemanticRefreshCompaction, State: SemanticRefreshRunRunning, Checkpoint: "competitor-compaction-10",
+			Counters: SemanticRefreshCounters{ProjectedParents: 5, EmbeddedChunks: 6, FlushedVectors: 7, CompactedVectors: 8},
+			Now:      semanticRefreshTestNow().Add(2 * time.Minute),
+		})
+		competitorResult <- updateResult{run: got, err: err}
+		close(competitorDone)
+	}()
+
+	caller := <-callerResult
+	competitor := <-competitorResult
+	if caller.err != nil || competitor.err != nil {
+		t.Fatalf("caller err=%v competitor err=%v", caller.err, competitor.err)
+	}
+	if caller.run.Version != run.Version+1 || caller.run.Stage != SemanticRefreshFlush || caller.run.Checkpoint != "caller-flush-9" || caller.run.Counters.FlushedVectors != 4 {
+		t.Fatalf("caller returned competitor or stale snapshot: %+v", caller.run)
+	}
+	if competitor.run.Version != run.Version+2 || competitor.run.Stage != SemanticRefreshCompaction || competitor.run.Checkpoint != "competitor-compaction-10" || competitor.run.Counters.CompactedVectors != 8 {
+		t.Fatalf("competitor snapshot=%+v", competitor.run)
+	}
+	stored, err := callerStore.LatestSemanticRefreshRun(t.Context(), "profile-a")
+	if err != nil || stored == nil || stored.Version != competitor.run.Version || stored.Checkpoint != competitor.run.Checkpoint || stored.Counters != competitor.run.Counters {
+		t.Fatalf("stored=%+v competitor=%+v err=%v", stored, competitor.run, err)
 	}
 }
 
@@ -161,6 +226,12 @@ func TestSemanticRefreshRunBoundsCheckpointAndDiagnostics(t *testing.T) {
 	}
 	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunRunning, ErrorText: strings.Repeat("é", 257), Now: semanticRefreshTestNow()}); err == nil {
 		t.Fatal("expected UTF-8 error text byte bound violation")
+	}
+	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunRunning, ErrorCode: strings.Repeat("é", 33), Now: semanticRefreshTestNow()}); err == nil {
+		t.Fatal("expected UTF-8 error code byte bound violation")
+	}
+	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunRunning, ReadinessState: strings.Repeat("é", 33), Now: semanticRefreshTestNow()}); err == nil {
+		t.Fatal("expected UTF-8 readiness state byte bound violation")
 	}
 	if _, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{RunID: strings.Repeat("é", 33), ProfileID: "profile-b", Now: semanticRefreshTestNow()}); err == nil {
 		t.Fatal("expected UTF-8 run ID byte bound violation")
@@ -314,5 +385,168 @@ func TestSemanticRefreshRunsMigrationV26RepairsGenuineV25Database(t *testing.T) 
 	}
 	if _, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{RunID: run.RunID, ExpectedVersion: run.Version, Stage: SemanticRefreshEmbedding, State: SemanticRefreshRunFailed, Checkpoint: strings.Repeat("é", 129), Now: semanticRefreshTestNow()}); err == nil {
 		t.Fatal("expected repaired byte constraint")
+	}
+}
+
+func TestSemanticRefreshRunsMigrationV26ArchivesV25ByteOverflows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE semantic_refresh_runs`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureSemanticRefreshRunSchemaV25(db); err != nil {
+		t.Fatal(err)
+	}
+
+	oversizedRunID := strings.Repeat("界", 22)
+	oversizedProfileID := strings.Repeat("界", 65)
+	oversizedCheckpoint := strings.Repeat("界", 86)
+	oversizedErrorCode := strings.Repeat("界", 22)
+	oversizedErrorText := strings.Repeat("界", 171)
+	oversizedReadiness := strings.Repeat("界", 22)
+	insertV25 := func(values ...any) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO semantic_refresh_runs (`+semanticRefreshRunColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, values...); err != nil {
+			t.Fatalf("insert genuine v25 row: %v", err)
+		}
+	}
+	insertV25(
+		oversizedRunID, "profile-run-overflow", 1, 2, 3, "embedding", "checkpoint",
+		4, 5, 6, 7, 8, 9, "generation-run", "failed", "code", "text", "not_ready", 10,
+		"2026-07-28T12:00:00Z", "2026-07-28T12:00:00.1Z", "2026-07-28T12:00:00.01Z",
+	)
+	insertV25(
+		"profile-overflow-run", oversizedProfileID, 11, 12, 13, "flush", "checkpoint",
+		14, 15, 16, 17, 18, 19, "generation-profile", "completed", "code", "text", "ready", 20,
+		"2026-07-28T12:01:00Z", "2026-07-28T12:01:00.1Z", "2026-07-28T12:01:00.01Z",
+	)
+	insertV25(
+		"diagnostic-overflow-run", "profile-diagnostic-overflow", 21, 22, 23, "readiness", oversizedCheckpoint,
+		24, 25, 26, 27, 28, 29, "generation-diagnostic", "completed", oversizedErrorCode, oversizedErrorText, oversizedReadiness, 30,
+		"2026-07-28T12:02:00Z", "2026-07-28T12:02:00.1Z", "2026-07-28T12:02:00.01Z",
+	)
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version>25`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version=25`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("upgrade genuine v25 overflow database: %v", err)
+	}
+	var activeCount, archivedCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM semantic_refresh_runs`).Scan(&activeCount); err != nil || activeCount != 1 {
+		t.Fatalf("active count=%d err=%v", activeCount, err)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM semantic_refresh_runs_v25_compatibility_archive`).Scan(&archivedCount); err != nil || archivedCount != 3 {
+		t.Fatalf("archive count=%d err=%v", archivedCount, err)
+	}
+
+	var action, reason, fields, archivedProfile string
+	var archivedSuccessors int64
+	if err := st.db.QueryRow(`
+		SELECT compatibility_action,compatibility_reason,compatibility_fields,profile_id,successor_runs
+		FROM semantic_refresh_runs_v25_compatibility_archive WHERE run_id=?`, oversizedRunID).
+		Scan(&action, &reason, &fields, &archivedProfile, &archivedSuccessors); err != nil {
+		t.Fatal(err)
+	}
+	if action != "quarantined" || reason != "immutable_identifier_byte_limit" || fields != "run_id" || archivedProfile != "profile-run-overflow" || archivedSuccessors != 9 {
+		t.Fatalf("run-id archive action=%q reason=%q fields=%q profile=%q successors=%d", action, reason, fields, archivedProfile, archivedSuccessors)
+	}
+	var archivedProfileID string
+	if err := st.db.QueryRow(`
+		SELECT compatibility_action,compatibility_reason,compatibility_fields,profile_id
+		FROM semantic_refresh_runs_v25_compatibility_archive WHERE run_id='profile-overflow-run'`).
+		Scan(&action, &reason, &fields, &archivedProfileID); err != nil {
+		t.Fatal(err)
+	}
+	if action != "quarantined" || reason != "immutable_identifier_byte_limit" || fields != "profile_id" || archivedProfileID != oversizedProfileID {
+		t.Fatalf("profile archive action=%q reason=%q fields=%q profile preserved=%v", action, reason, fields, archivedProfileID == oversizedProfileID)
+	}
+	var archivedCheckpoint, archivedErrorCode, archivedErrorText, archivedReadiness, archivedUpdated string
+	if err := st.db.QueryRow(`
+		SELECT compatibility_action,compatibility_reason,compatibility_fields,
+		       checkpoint,error_code,error_text,readiness_state,updated_at
+		FROM semantic_refresh_runs_v25_compatibility_archive WHERE run_id='diagnostic-overflow-run'`).
+		Scan(&action, &reason, &fields, &archivedCheckpoint, &archivedErrorCode, &archivedErrorText, &archivedReadiness, &archivedUpdated); err != nil {
+		t.Fatal(err)
+	}
+	if action != "truncated" || reason != "mutable_field_byte_limit" || fields != "checkpoint,error_code,error_text,readiness_state" {
+		t.Fatalf("diagnostic archive action=%q reason=%q fields=%q", action, reason, fields)
+	}
+	if _, err := st.db.Exec(`UPDATE semantic_refresh_runs_v25_compatibility_archive SET compatibility_action='unknown' WHERE run_id='diagnostic-overflow-run'`); err == nil {
+		t.Fatal("expected bounded compatibility action constraint")
+	}
+	if _, err := st.db.Exec(`UPDATE semantic_refresh_runs_v25_compatibility_archive SET compatibility_reason=? WHERE run_id='diagnostic-overflow-run'`, strings.Repeat("x", 65)); err == nil {
+		t.Fatal("expected bounded compatibility reason constraint")
+	}
+	if archivedCheckpoint != oversizedCheckpoint || archivedErrorCode != oversizedErrorCode || archivedErrorText != oversizedErrorText || archivedReadiness != oversizedReadiness || archivedUpdated != "2026-07-28T12:02:00.1Z" {
+		t.Fatal("diagnostic archive did not preserve full v25 row")
+	}
+
+	active, err := st.LatestSemanticRefreshRun(t.Context(), "profile-diagnostic-overflow")
+	if err != nil || active == nil {
+		t.Fatalf("active diagnostic row=%+v err=%v", active, err)
+	}
+	if active.Checkpoint != strings.Repeat("界", 85) || active.ErrorCode != strings.Repeat("界", 21) || active.ErrorText != strings.Repeat("界", 170) || active.ReadinessState != strings.Repeat("界", 21) {
+		t.Fatalf("active truncation checkpoint_bytes=%d code_bytes=%d text_bytes=%d readiness_bytes=%d", len(active.Checkpoint), len(active.ErrorCode), len(active.ErrorText), len(active.ReadinessState))
+	}
+	if active.Counters != (SemanticRefreshCounters{ProjectedParents: 24, EmbeddedChunks: 25, FlushedVectors: 26, CompactedVectors: 27, VerifiedVectors: 28, SuccessorRuns: 29}) ||
+		active.CurrentGenerationID != "generation-diagnostic" || active.Version != 30 ||
+		active.CreatedAt.Nanosecond() != 0 || active.UpdatedAt.Nanosecond() != 100000000 || active.LastProgressAt.Nanosecond() != 10000000 {
+		t.Fatalf("active row lost counters/version/time: %+v", active)
+	}
+	if !utf8.ValidString(active.Checkpoint) || !utf8.ValidString(active.ErrorCode) || !utf8.ValidString(active.ErrorText) || !utf8.ValidString(active.ReadinessState) {
+		t.Fatal("active truncation produced invalid UTF-8")
+	}
+	for _, runID := range []string{oversizedRunID, "profile-overflow-run"} {
+		var count int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM semantic_refresh_runs WHERE run_id=?`, runID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("quarantined run %q active count=%d err=%v", runID, count, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version=?`, semanticRefreshRunsRepairMigrationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version=25`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("idempotent migration replay: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM semantic_refresh_runs_v25_compatibility_archive`).Scan(&archivedCount); err != nil || archivedCount != 3 {
+		t.Fatalf("archive after replay count=%d err=%v", archivedCount, err)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM semantic_refresh_runs`).Scan(&activeCount); err != nil || activeCount != 1 {
+		t.Fatalf("active after replay count=%d err=%v", activeCount, err)
+	}
+	var migrationCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=? AND name=?`, semanticRefreshRunsRepairMigrationVersion, semanticRefreshRunsRepairMigrationName).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("v26 migration after replay count=%d err=%v", migrationCount, err)
 	}
 }

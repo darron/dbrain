@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type SemanticRefreshRunState string
@@ -73,6 +74,8 @@ const semanticRefreshRunsV25CreateTableSQL = `CREATE TABLE IF NOT EXISTS semanti
 
 const semanticRefreshRunsV26CreateTableSQL = `CREATE TABLE IF NOT EXISTS semantic_refresh_runs (run_id TEXT PRIMARY KEY,profile_id TEXT NOT NULL,purge_epoch INTEGER NOT NULL,projection_watermark INTEGER NOT NULL,embedding_revision INTEGER NOT NULL DEFAULT 0,stage TEXT NOT NULL,checkpoint TEXT NOT NULL DEFAULT '',projected_parents INTEGER NOT NULL DEFAULT 0,embedded_chunks INTEGER NOT NULL DEFAULT 0,flushed_vectors INTEGER NOT NULL DEFAULT 0,compacted_vectors INTEGER NOT NULL DEFAULT 0,verified_vectors INTEGER NOT NULL DEFAULT 0,successor_runs INTEGER NOT NULL DEFAULT 0,current_generation_id TEXT NOT NULL DEFAULT '',state TEXT NOT NULL,error_code TEXT NOT NULL DEFAULT '',error_text TEXT NOT NULL DEFAULT '',readiness_state TEXT NOT NULL DEFAULT '',version INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_progress_at TEXT NOT NULL,CHECK(length(CAST(run_id AS BLOB)) BETWEEN 1 AND 64),CHECK(length(CAST(profile_id AS BLOB)) BETWEEN 1 AND 192),CHECK(purge_epoch >= 0),CHECK(projection_watermark >= 0),CHECK(embedding_revision >= 0),CHECK(stage IN ('projection','embedding','flush','compaction','verify','readiness')),CHECK(length(CAST(checkpoint AS BLOB)) <= 256),CHECK(projected_parents >= 0 AND embedded_chunks >= 0),CHECK(flushed_vectors >= 0 AND compacted_vectors >= 0 AND verified_vectors >= 0),CHECK(successor_runs >= 0),CHECK(state IN ('running','failed','cancelled','completed','superseded')),CHECK(length(CAST(error_code AS BLOB)) <= 64),CHECK(length(CAST(error_text AS BLOB)) <= 512),CHECK(length(CAST(readiness_state AS BLOB)) <= 64),CHECK(version > 0))`
 
+const semanticRefreshRunsV25CompatibilityArchiveCreateTableSQL = `CREATE TABLE IF NOT EXISTS semantic_refresh_runs_v25_compatibility_archive (run_id TEXT PRIMARY KEY,profile_id TEXT NOT NULL,purge_epoch INTEGER NOT NULL,projection_watermark INTEGER NOT NULL,embedding_revision INTEGER NOT NULL,stage TEXT NOT NULL,checkpoint TEXT NOT NULL,projected_parents INTEGER NOT NULL,embedded_chunks INTEGER NOT NULL,flushed_vectors INTEGER NOT NULL,compacted_vectors INTEGER NOT NULL,verified_vectors INTEGER NOT NULL,successor_runs INTEGER NOT NULL,current_generation_id TEXT NOT NULL,state TEXT NOT NULL,error_code TEXT NOT NULL,error_text TEXT NOT NULL,readiness_state TEXT NOT NULL,version INTEGER NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_progress_at TEXT NOT NULL,compatibility_action TEXT NOT NULL CHECK(compatibility_action IN ('quarantined','truncated')),compatibility_reason TEXT NOT NULL CHECK(compatibility_reason IN ('immutable_identifier_byte_limit','mutable_field_byte_limit')) CHECK(length(CAST(compatibility_reason AS BLOB)) BETWEEN 1 AND 64),compatibility_fields TEXT NOT NULL CHECK(length(CAST(compatibility_fields AS BLOB)) BETWEEN 1 AND 128))`
+
 var semanticRefreshRunIndexStatements = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_refresh_runs_one_resumable ON semantic_refresh_runs(profile_id) WHERE state IN ('running','failed','cancelled')`,
 	`CREATE INDEX IF NOT EXISTS idx_semantic_refresh_runs_latest ON semantic_refresh_runs(updated_at DESC,run_id DESC)`,
@@ -98,6 +101,11 @@ func ensureSemanticRefreshRunSchemaWithDefinition(db *sql.DB, tableStatement str
 type semanticRefreshRunMigrationRow struct {
 	SemanticRefreshRun
 	createdAt, updatedAt, lastProgressAt string
+}
+
+type semanticRefreshRunCompatibility struct {
+	action, reason, fields string
+	quarantine             bool
 }
 
 func (s *Store) repairSemanticRefreshRunSchemaV26() error {
@@ -126,18 +134,6 @@ func (s *Store) repairSemanticRefreshRunSchemaV26() error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate semantic refresh runs for v26 repair: %w", err)
 	}
-	for i := range stored {
-		row := &stored[i]
-		if row.createdAt, err = normalizeSemanticRefreshTimestamp(row.createdAt); err != nil {
-			return fmt.Errorf("normalize semantic refresh run %s created_at: %w", row.RunID, err)
-		}
-		if row.updatedAt, err = normalizeSemanticRefreshTimestamp(row.updatedAt); err != nil {
-			return fmt.Errorf("normalize semantic refresh run %s updated_at: %w", row.RunID, err)
-		}
-		if row.lastProgressAt, err = normalizeSemanticRefreshTimestamp(row.lastProgressAt); err != nil {
-			return fmt.Errorf("normalize semantic refresh run %s last_progress_at: %w", row.RunID, err)
-		}
-	}
 	for _, index := range []string{"idx_semantic_refresh_runs_one_resumable", "idx_semantic_refresh_runs_latest"} {
 		if _, err := tx.Exec(`DROP INDEX IF EXISTS ` + index); err != nil {
 			return fmt.Errorf("drop semantic refresh run v25 index: %w", err)
@@ -149,7 +145,32 @@ func (s *Store) repairSemanticRefreshRunSchemaV26() error {
 	if _, err := tx.Exec(semanticRefreshRunsV26CreateTableSQL); err != nil {
 		return fmt.Errorf("create semantic refresh run v26 table: %w", err)
 	}
+	if _, err := tx.Exec(semanticRefreshRunsV25CompatibilityArchiveCreateTableSQL); err != nil {
+		return fmt.Errorf("create semantic refresh run v25 compatibility archive: %w", err)
+	}
 	for _, row := range stored {
+		compatibility := semanticRefreshRunV25Compatibility(row)
+		if compatibility.action != "" {
+			if _, err := tx.Exec(`INSERT INTO semantic_refresh_runs_v25_compatibility_archive (`+semanticRefreshRunColumns+`,compatibility_action,compatibility_reason,compatibility_fields) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id) DO NOTHING`, row.RunID, row.ProfileID, row.PurgeEpoch, row.ProjectionWatermark, row.EmbeddingRevision, row.Stage, row.Checkpoint, row.Counters.ProjectedParents, row.Counters.EmbeddedChunks, row.Counters.FlushedVectors, row.Counters.CompactedVectors, row.Counters.VerifiedVectors, row.Counters.SuccessorRuns, row.CurrentGenerationID, row.State, row.ErrorCode, row.ErrorText, row.ReadinessState, row.Version, row.createdAt, row.updatedAt, row.lastProgressAt, compatibility.action, compatibility.reason, compatibility.fields); err != nil {
+				return fmt.Errorf("archive semantic refresh run %s for v26 compatibility: %w", row.RunID, err)
+			}
+		}
+		if compatibility.quarantine {
+			continue
+		}
+		if row.createdAt, err = normalizeSemanticRefreshTimestamp(row.createdAt); err != nil {
+			return fmt.Errorf("normalize semantic refresh run %s created_at: %w", row.RunID, err)
+		}
+		if row.updatedAt, err = normalizeSemanticRefreshTimestamp(row.updatedAt); err != nil {
+			return fmt.Errorf("normalize semantic refresh run %s updated_at: %w", row.RunID, err)
+		}
+		if row.lastProgressAt, err = normalizeSemanticRefreshTimestamp(row.lastProgressAt); err != nil {
+			return fmt.Errorf("normalize semantic refresh run %s last_progress_at: %w", row.RunID, err)
+		}
+		row.Checkpoint = truncateSemanticRefreshRunUTF8(row.Checkpoint, 256)
+		row.ErrorCode = truncateSemanticRefreshRunUTF8(row.ErrorCode, 64)
+		row.ErrorText = truncateSemanticRefreshRunUTF8(row.ErrorText, 512)
+		row.ReadinessState = truncateSemanticRefreshRunUTF8(row.ReadinessState, 64)
 		if _, err := tx.Exec(`INSERT INTO semantic_refresh_runs (`+semanticRefreshRunColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, row.RunID, row.ProfileID, row.PurgeEpoch, row.ProjectionWatermark, row.EmbeddingRevision, row.Stage, row.Checkpoint, row.Counters.ProjectedParents, row.Counters.EmbeddedChunks, row.Counters.FlushedVectors, row.Counters.CompactedVectors, row.Counters.VerifiedVectors, row.Counters.SuccessorRuns, row.CurrentGenerationID, row.State, row.ErrorCode, row.ErrorText, row.ReadinessState, row.Version, row.createdAt, row.updatedAt, row.lastProgressAt); err != nil {
 			return fmt.Errorf("copy semantic refresh run %s to v26: %w", row.RunID, err)
 		}
@@ -166,6 +187,63 @@ func (s *Store) repairSemanticRefreshRunSchemaV26() error {
 		return fmt.Errorf("commit semantic refresh run v26 repair: %w", err)
 	}
 	return nil
+}
+
+func semanticRefreshRunV25Compatibility(row semanticRefreshRunMigrationRow) semanticRefreshRunCompatibility {
+	// V25 constrained Unicode character counts, while V26 constrains UTF-8 bytes.
+	// Immutable overflows cannot be rewritten collision-free, so preserve and
+	// quarantine those rows. Mutable overflows retain an active byte-safe prefix,
+	// with this archive preserving the exact V25 values for diagnosis or recovery.
+	var immutable, mutable []string
+	if len(row.RunID) > 64 {
+		immutable = append(immutable, "run_id")
+	}
+	if len(row.ProfileID) > 192 {
+		immutable = append(immutable, "profile_id")
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+		limit int
+	}{
+		{name: "checkpoint", value: row.Checkpoint, limit: 256},
+		{name: "error_code", value: row.ErrorCode, limit: 64},
+		{name: "error_text", value: row.ErrorText, limit: 512},
+		{name: "readiness_state", value: row.ReadinessState, limit: 64},
+	} {
+		if len(field.value) > field.limit {
+			mutable = append(mutable, field.name)
+		}
+	}
+	fields := append(append([]string(nil), immutable...), mutable...)
+	if len(fields) == 0 {
+		return semanticRefreshRunCompatibility{}
+	}
+	if len(immutable) > 0 {
+		return semanticRefreshRunCompatibility{
+			action:     "quarantined",
+			reason:     "immutable_identifier_byte_limit",
+			fields:     strings.Join(fields, ","),
+			quarantine: true,
+		}
+	}
+	return semanticRefreshRunCompatibility{
+		action: "truncated",
+		reason: "mutable_field_byte_limit",
+		fields: strings.Join(fields, ","),
+	}
+}
+
+func truncateSemanticRefreshRunUTF8(value string, limit int) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if len(value) <= limit {
+		return value
+	}
+	end := limit
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end]
 }
 
 func normalizeSemanticRefreshTimestamp(value string) (string, error) {
@@ -235,26 +313,36 @@ func (s *Store) UpdateSemanticRefreshRun(ctx context.Context, in SemanticRefresh
 		return SemanticRefreshRun{}, fmt.Errorf("begin semantic refresh run update: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `UPDATE semantic_refresh_runs SET embedding_revision=?,stage=?,checkpoint=?,projected_parents=?,embedded_chunks=?,flushed_vectors=?,compacted_vectors=?,verified_vectors=?,successor_runs=?,current_generation_id=?,state=?,error_code=?,error_text=?,readiness_state=?,version=version+1,updated_at=?,last_progress_at=? WHERE run_id=? AND version=? AND state IN ('running','failed','cancelled')`, in.EmbeddingRevision, in.Stage, in.Checkpoint, in.Counters.ProjectedParents, in.Counters.EmbeddedChunks, in.Counters.FlushedVectors, in.Counters.CompactedVectors, in.Counters.VerifiedVectors, in.Counters.SuccessorRuns, in.CurrentGenerationID, in.State, in.ErrorCode, in.ErrorText, in.ReadinessState, now, now, in.RunID, in.ExpectedVersion)
-	if err != nil {
-		return SemanticRefreshRun{}, fmt.Errorf("update semantic refresh run: %w", err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return SemanticRefreshRun{}, fmt.Errorf("count semantic refresh run update: %w", err)
-	}
-	if n != 1 {
-		return SemanticRefreshRun{}, ErrSemanticRefreshRunStale
+	hooks, _ := ctx.Value(semanticRefreshRunUpdateTestHooksKey{}).(semanticRefreshRunUpdateTestHooks)
+	if hooks.BeforeWrite != nil {
+		hooks.BeforeWrite()
 	}
 	var run SemanticRefreshRun
-	if err := scanSemanticRefreshRun(tx.QueryRowContext(ctx, `SELECT `+semanticRefreshRunColumns+` FROM semantic_refresh_runs WHERE run_id=?`, in.RunID), &run); err != nil {
-		return SemanticRefreshRun{}, fmt.Errorf("read updated semantic refresh run: %w", err)
+	err = scanSemanticRefreshRun(tx.QueryRowContext(ctx, `UPDATE semantic_refresh_runs SET embedding_revision=?,stage=?,checkpoint=?,projected_parents=?,embedded_chunks=?,flushed_vectors=?,compacted_vectors=?,verified_vectors=?,successor_runs=?,current_generation_id=?,state=?,error_code=?,error_text=?,readiness_state=?,version=version+1,updated_at=?,last_progress_at=? WHERE run_id=? AND version=? AND state IN ('running','failed','cancelled') RETURNING `+semanticRefreshRunColumns, in.EmbeddingRevision, in.Stage, in.Checkpoint, in.Counters.ProjectedParents, in.Counters.EmbeddedChunks, in.Counters.FlushedVectors, in.Counters.CompactedVectors, in.Counters.VerifiedVectors, in.Counters.SuccessorRuns, in.CurrentGenerationID, in.State, in.ErrorCode, in.ErrorText, in.ReadinessState, now, now, in.RunID, in.ExpectedVersion), &run)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SemanticRefreshRun{}, ErrSemanticRefreshRunStale
+		}
+		return SemanticRefreshRun{}, fmt.Errorf("update semantic refresh run: %w", err)
+	}
+	if hooks.AfterWrite != nil {
+		hooks.AfterWrite()
 	}
 	if err := tx.Commit(); err != nil {
 		return SemanticRefreshRun{}, fmt.Errorf("commit semantic refresh run update: %w", err)
 	}
+	if hooks.AfterCommit != nil {
+		hooks.AfterCommit()
+	}
 	return run, nil
 }
+
+type semanticRefreshRunUpdateTestHooksKey struct{}
+
+type semanticRefreshRunUpdateTestHooks struct {
+	BeforeWrite, AfterWrite, AfterCommit func()
+}
+
 func (s *Store) TouchSemanticRefreshRunProgress(ctx context.Context, runID string, at time.Time) error {
 	_, now := semanticRefreshNow(at)
 	result, err := s.db.ExecContext(ctx, `UPDATE semantic_refresh_runs SET updated_at=?,last_progress_at=? WHERE run_id=? AND state='running'`, now, now, runID)
