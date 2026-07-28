@@ -415,6 +415,33 @@ func TestSemanticRefreshRunTouchDoesNotInvalidateCAS(t *testing.T) {
 	}
 }
 
+func TestSemanticRefreshRunStageLeaseBlocksAndCancelsTouch(t *testing.T) {
+	st := openTestStore(t)
+	run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
+	release, err := st.AcquireSemanticRefreshStage(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := st.TouchSemanticRefreshRunProgress(
+		cancelled,
+		run.RunID,
+		semanticRefreshTestNow().Add(time.Minute),
+	); !errors.Is(err, context.Canceled) {
+		t.Fatalf("blocked touch error=%v, want context cancellation", err)
+	}
+	release()
+	if err := st.TouchSemanticRefreshRunProgress(
+		t.Context(),
+		run.RunID,
+		semanticRefreshTestNow().Add(2*time.Minute),
+	); err != nil {
+		t.Fatalf("touch after stage lease release: %v", err)
+	}
+}
+
 func TestSemanticRefreshRunTouchInitializesLegacyNullProgressTimestamp(t *testing.T) {
 	db, err := sql.Open(driverName, filepath.Join(t.TempDir(), "brain.db"))
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -368,7 +369,33 @@ type semanticRefreshRunUpdateTestHooks struct {
 	AfterWrite, AfterCommit func()
 }
 
+func (s *Store) AcquireSemanticRefreshStage(ctx context.Context) (func(), error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("semantic refresh stage context is required")
+	}
+	s.semanticStageOnce.Do(func() {
+		s.semanticStageGate = make(chan struct{}, 1)
+		s.semanticStageGate <- struct{}{}
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.semanticStageGate:
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.semanticStageGate <- struct{}{}
+		})
+	}, nil
+}
+
 func (s *Store) TouchSemanticRefreshRunProgress(ctx context.Context, runID string, at time.Time) error {
+	release, err := s.AcquireSemanticRefreshStage(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	_, now := semanticRefreshNow(at)
 	db, err := s.semanticProgressDB()
 	if err != nil {

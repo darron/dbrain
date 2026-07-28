@@ -22,9 +22,14 @@ type Store struct {
 	progressOnce sync.Once
 	progressDB   *sql.DB
 	progressErr  error
-	read         sqlQueryer
-	hasFTS       bool
-	auditBegin   func(context.Context, *sql.Conn) error
+	// A semantic stage holds this lease across its read/write work and durable
+	// checkpoint so the independent heartbeat writer cannot invalidate a
+	// SQLite read snapshot.
+	semanticStageOnce sync.Once
+	semanticStageGate chan struct{}
+	read              sqlQueryer
+	hasFTS            bool
+	auditBegin        func(context.Context, *sql.Conn) error
 	// Test-only observation seam for expensive authoritative projection checks.
 	retrievalProjectionFullValidation   func()
 	retrievalProjectionPlanHashObserved func(int)

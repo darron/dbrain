@@ -33,11 +33,76 @@ type runnerLedger struct {
 	startHook    func(context.Context, store.StartSemanticRefreshRunInput, int)
 }
 
+type stageLeaseRunnerLedger struct {
+	*runnerLedger
+
+	leaseMu      sync.Mutex
+	lease        chan struct{}
+	leaseActive  bool
+	acquisitions int
+	gateTouches  bool
+}
+
 func newRunnerLedger() *runnerLedger {
 	return &runnerLedger{
 		runs:         make(map[string]store.SemanticRefreshRun),
 		updateErrors: make(map[int]error),
 	}
+}
+
+func newStageLeaseRunnerLedger() *stageLeaseRunnerLedger {
+	ledger := &stageLeaseRunnerLedger{
+		runnerLedger: newRunnerLedger(),
+		lease:        make(chan struct{}, 1),
+		gateTouches:  true,
+	}
+	ledger.lease <- struct{}{}
+	return ledger
+}
+
+func (l *stageLeaseRunnerLedger) AcquireSemanticRefreshStage(
+	ctx context.Context,
+) (func(), error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-l.lease:
+	}
+	l.leaseMu.Lock()
+	l.leaseActive = true
+	l.acquisitions++
+	l.leaseMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.leaseMu.Lock()
+			l.leaseActive = false
+			l.leaseMu.Unlock()
+			l.lease <- struct{}{}
+		})
+	}, nil
+}
+
+func (l *stageLeaseRunnerLedger) TouchSemanticRefreshRunProgress(
+	ctx context.Context,
+	runID string,
+	at time.Time,
+) error {
+	if !l.gateTouches {
+		return l.runnerLedger.TouchSemanticRefreshRunProgress(ctx, runID, at)
+	}
+	release, err := l.AcquireSemanticRefreshStage(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return l.runnerLedger.TouchSemanticRefreshRunProgress(ctx, runID, at)
+}
+
+func (l *stageLeaseRunnerLedger) stageLeaseSnapshot() (bool, int) {
+	l.leaseMu.Lock()
+	defer l.leaseMu.Unlock()
+	return l.leaseActive, l.acquisitions
 }
 
 func (l *runnerLedger) StartOrResumeSemanticRefreshRun(
@@ -202,6 +267,79 @@ func (e *runnerExecutor) snapshotRuns() []store.SemanticRefreshRun {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append([]store.SemanticRefreshRun(nil), e.runs...)
+}
+
+func TestRunnerHoldsOptionalStageLeaseAcrossExecuteAndCheckpoint(t *testing.T) {
+	ledger := newStageLeaseRunnerLedger()
+	ledger.updateHook = func(_ context.Context, in store.SemanticRefreshRunUpdate, _ int) {
+		active, _ := ledger.stageLeaseSnapshot()
+		if in.State == store.SemanticRefreshRunRunning && !active {
+			t.Fatal("checkpoint update ran outside semantic refresh stage lease")
+		}
+		if in.State == store.SemanticRefreshRunCompleted && active {
+			t.Fatal("terminal update ran inside semantic refresh stage lease")
+		}
+	}
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{
+		outcome: StageOutcome{
+			NextStage:  store.SemanticRefreshReadiness,
+			Checkpoint: "readiness:ready",
+			Readiness:  "ready",
+			Complete:   true,
+		},
+		check: func(_ context.Context, _ store.SemanticRefreshRun) {
+			if active, _ := ledger.stageLeaseSnapshot(); !active {
+				t.Fatal("executor ran outside semantic refresh stage lease")
+			}
+		},
+	}}}
+
+	result, err := Run(
+		t.Context(),
+		ledger,
+		executor,
+		runnerRequest(func() (string, error) { return firstRunnerRunID, nil }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Run == nil || result.Run.State != store.SemanticRefreshRunCompleted {
+		t.Fatalf("result=%+v, want completed run", result)
+	}
+	if active, acquisitions := ledger.stageLeaseSnapshot(); active || acquisitions < 2 {
+		t.Fatalf("stage lease active=%t acquisitions=%d, want false and at least 2", active, acquisitions)
+	}
+}
+
+func TestRunnerStageLeaseAcquisitionIsContextCancellable(t *testing.T) {
+	ledger := newStageLeaseRunnerLedger()
+	ledger.gateTouches = false
+	release, err := ledger.AcquireSemanticRefreshStage(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	request := runnerRequest(func() (string, error) { return firstRunnerRunID, nil })
+	request.Progress = func(Progress) error {
+		cancel()
+		return nil
+	}
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{outcome: StageOutcome{
+		NextStage:  store.SemanticRefreshReadiness,
+		Checkpoint: "should-not-run",
+		Complete:   true,
+	}}}}
+
+	result, err := Run(ctx, ledger, executor, request)
+	_ = assertRefreshError(t, err, ErrorCancelled, context.Canceled)
+	if runs := executor.snapshotRuns(); len(runs) != 0 {
+		t.Fatalf("executor calls=%d, want 0 while cancelled stage acquisition was blocked", len(runs))
+	}
+	if result.Run == nil || result.Run.State != store.SemanticRefreshRunCancelled {
+		t.Fatalf("result=%+v, want cancelled run", result)
+	}
 }
 
 func TestRunnerStartsAtProjectionPersistsBeforeNextExecuteAndCompletes(t *testing.T) {

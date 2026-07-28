@@ -26,6 +26,10 @@ type RunLedger interface {
 	TouchSemanticRefreshRunProgress(context.Context, string, time.Time) error
 }
 
+type semanticRefreshStageLeaser interface {
+	AcquireSemanticRefreshStage(context.Context) (func(), error)
+}
+
 // Run executes one bounded semantic refresh stage at a time and durably
 // checkpoints every stage boundary before advancing.
 func Run(
@@ -138,6 +142,35 @@ func runOneLedgerRun(
 ) (Result, *int64, store.SemanticRefreshRun, Debt, error) {
 	for {
 		executedStage := run.Stage
+		releaseStage, acquireErr := acquireSemanticRefreshStage(emitter.Context(), ledger)
+		if acquireErr != nil {
+			stopErr := stopProgressEmitter(emitter)
+			if ctx.Err() != nil {
+				result, terminalErr := persistCancelled(
+					ctx,
+					ledger,
+					request,
+					baseResult,
+					run,
+					executedStage,
+					debt,
+					errors.Join(ctx.Err(), acquireErr, stopErr),
+				)
+				return result, nil, store.SemanticRefreshRun{}, Debt{}, terminalErr
+			}
+			cause := firstMeaningfulError(stopErr, acquireErr)
+			result, terminalErr := persistTerminalFailure(
+				ctx,
+				ledger,
+				request,
+				baseResult,
+				run,
+				executedStage,
+				debt,
+				cause,
+			)
+			return result, nil, store.SemanticRefreshRun{}, Debt{}, terminalErr
+		}
 		outcome, executeErr := executor.Execute(emitter.Context(), run)
 		var generationErr error
 		outcome, generationErr = sanitizeStageOutcomeGeneration(run, outcome)
@@ -155,6 +188,7 @@ func runOneLedgerRun(
 				outcomeUpdate(request, run, outcome, store.SemanticRefreshRunRunning, "", ""),
 			)
 			if updateErr != nil {
+				releaseStage()
 				stopErr := stopProgressEmitter(emitter)
 				if ctx.Err() != nil {
 					result, terminalErr := persistCancelled(
@@ -175,6 +209,7 @@ func runOneLedgerRun(
 			run = persisted
 			debt = outcome.Debt
 		}
+		releaseStage()
 
 		var publishErr error
 		if ctx.Err() == nil && !stageOutcomeIsZero(outcome) {
@@ -344,6 +379,17 @@ func runOneLedgerRun(
 		}
 		return completedResult, outcome.SuccessorWatermark, successor, successorDebt, nil
 	}
+}
+
+func acquireSemanticRefreshStage(
+	ctx context.Context,
+	ledger RunLedger,
+) (func(), error) {
+	leaser, ok := ledger.(semanticRefreshStageLeaser)
+	if !ok {
+		return func() {}, nil
+	}
+	return leaser.AcquireSemanticRefreshStage(ctx)
 }
 
 func startSuccessor(
