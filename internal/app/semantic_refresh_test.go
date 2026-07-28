@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -185,7 +187,7 @@ func TestSemanticRefreshCommandCompletionAndProgressOutput(t *testing.T) {
 				ProjectedParents: 2,
 				EmbeddedChunks:   3,
 			},
-			Debt: semanticrefresh.Debt{PendingEmbeddings: 4, L0Ready: 5},
+			Debt: semanticrefresh.Debt{PendingEmbeddings: 4, Indexed: 45, L0Ready: 5},
 			At:   time.Date(2026, 7, 28, 18, 0, 0, 0, time.UTC),
 		}
 		if err := request.Progress(progress); err != nil {
@@ -213,7 +215,7 @@ func TestSemanticRefreshCommandCompletionAndProgressOutput(t *testing.T) {
 			"compacted_vectors=4000",
 			"verified_vectors=7000",
 			"successor_runs=1",
-			"indexed=7000",
+			"indexed=123",
 			"l0=6",
 			"tombstones=7",
 			"segments=8",
@@ -224,7 +226,8 @@ func TestSemanticRefreshCommandCompletionAndProgressOutput(t *testing.T) {
 		}
 		if !strings.Contains(stderr, "Semantic refresh progress:") ||
 			!strings.Contains(stderr, "run=run-progress") ||
-			!strings.Contains(stderr, "pending_embeddings=4") {
+			!strings.Contains(stderr, "pending_embeddings=4") ||
+			!strings.Contains(stderr, "indexed=45") {
 			t.Fatalf("stderr=%q", stderr)
 		}
 	})
@@ -234,12 +237,43 @@ func TestSemanticRefreshCommandCompletionAndProgressOutput(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var result semanticrefresh.Result
+		var result map[string]json.RawMessage
 		decodeOneJSONDocument(t, stdout, &result)
-		if result.Outcome != semanticrefresh.OutcomeCompleted ||
-			result.Run == nil ||
-			result.Run.RunID != "run-complete" {
-			t.Fatalf("result=%+v output=%s", result, stdout)
+		requireExactJSONKeys(t, result, "outcome", "capability", "run", "remaining_debt")
+		var run map[string]json.RawMessage
+		if err := json.Unmarshal(result["run"], &run); err != nil {
+			t.Fatalf("decode run: %v; output=%s", err, stdout)
+		}
+		requireExactJSONKeys(t, run,
+			"run_id", "profile_id", "purge_epoch", "projection_watermark",
+			"embedding_revision", "stage", "checkpoint", "counters",
+			"current_generation_id", "state", "error_code", "readiness_state",
+			"created_at", "updated_at", "last_progress_at",
+		)
+		var timestamps struct {
+			CreatedAt      string `json:"created_at"`
+			UpdatedAt      string `json:"updated_at"`
+			LastProgressAt string `json:"last_progress_at"`
+		}
+		if err := json.Unmarshal(result["run"], &timestamps); err != nil {
+			t.Fatal(err)
+		}
+		if timestamps.CreatedAt != "2026-07-28T18:00:00.123Z" ||
+			timestamps.UpdatedAt != "2026-07-28T18:01:00.456Z" ||
+			timestamps.LastProgressAt != "2026-07-28T18:02:00.789Z" {
+			t.Fatalf("timestamps=%+v output=%s", timestamps, stdout)
+		}
+		var debt semanticrefresh.Debt
+		if err := json.Unmarshal(result["remaining_debt"], &debt); err != nil {
+			t.Fatal(err)
+		}
+		if debt.Indexed != 123 {
+			t.Fatalf("remaining debt=%+v output=%s", debt, stdout)
+		}
+		for _, forbidden := range []string{"RunID", "ErrorText", "Version", "stored provider secret"} {
+			if strings.Contains(stdout, forbidden) {
+				t.Fatalf("JSON completion exposed %q: %s", forbidden, stdout)
+			}
 		}
 		if strings.Contains(stdout, "Semantic refresh progress:") {
 			t.Fatalf("stdout mixed progress with JSON: %q", stdout)
@@ -265,7 +299,7 @@ func TestSemanticRefreshCommandJSONErrorIsBoundedSilentAndSingleDocument(t *test
 			Checkpoint:     "embedding:revision=9",
 			ReadinessState: "needs_embeddings",
 		}
-		debt := semanticrefresh.Debt{PendingEmbeddings: 9, DueRetries: 2, L0Ready: 10}
+		debt := semanticrefresh.Debt{PendingEmbeddings: 9, DueRetries: 2, Indexed: 11, L0Ready: 10}
 		result := semanticrefresh.Result{
 			Capability: request.Capability,
 			Run:        &run,
@@ -291,7 +325,8 @@ func TestSemanticRefreshCommandJSONErrorIsBoundedSilentAndSingleDocument(t *test
 		payload.Stage != store.SemanticRefreshEmbedding ||
 		payload.Checkpoint != "embedding:revision=9" ||
 		payload.Readiness != "needs_embeddings" ||
-		payload.Debt.PendingEmbeddings != 9 {
+		payload.Debt.PendingEmbeddings != 9 ||
+		payload.Debt.Indexed != 11 {
 		t.Fatalf("payload=%+v output=%s", payload, stdout)
 	}
 	if stderr != "" {
@@ -436,12 +471,43 @@ func TestSemanticStatusCommandUnconfiguredShowsDatabaseLatestRun(t *testing.T) {
 	}
 
 	stdout := runRootCommand(t, root, "semantic", "status", "--json")
-	var status semanticbuild.Status
+	var status map[string]json.RawMessage
 	decodeOneJSONDocument(t, stdout, &status)
-	if status.LatestRun == nil ||
-		status.LatestRun.RunID != started.RunID ||
-		status.LatestRun.ProfileID != started.ProfileID {
-		t.Fatalf("latest run=%+v want database latest %+v; output=%s", status.LatestRun, started, stdout)
+	requireExactJSONKeys(t, status,
+		"status", "reason", "searchable", "mode", "profile_id",
+		"backend_capability", "store", "latest_run", "problems", "next_steps",
+	)
+	var latest map[string]json.RawMessage
+	if err := json.Unmarshal(status["latest_run"], &latest); err != nil {
+		t.Fatalf("decode latest run: %v; output=%s", err, stdout)
+	}
+	requireExactJSONKeys(t, latest,
+		"run_id", "profile_id", "purge_epoch", "projection_watermark",
+		"embedding_revision", "stage", "checkpoint", "counters",
+		"current_generation_id", "state", "error_code", "readiness_state",
+		"created_at", "updated_at", "last_progress_at",
+	)
+	var latestRun struct {
+		RunID      string `json:"run_id"`
+		ProfileID  string `json:"profile_id"`
+		CreatedAt  string `json:"created_at"`
+		UpdatedAt  string `json:"updated_at"`
+		ProgressAt string `json:"last_progress_at"`
+	}
+	if err := json.Unmarshal(status["latest_run"], &latestRun); err != nil {
+		t.Fatal(err)
+	}
+	if latestRun.RunID != started.RunID ||
+		latestRun.ProfileID != started.ProfileID ||
+		latestRun.CreatedAt != "2026-07-28T18:00:00Z" ||
+		latestRun.UpdatedAt != "2026-07-28T18:00:00Z" ||
+		latestRun.ProgressAt != "2026-07-28T18:00:00Z" {
+		t.Fatalf("latest run=%+v want database latest %+v; output=%s", latestRun, started, stdout)
+	}
+	for _, forbidden := range []string{"RunID", "ErrorText", "Version"} {
+		if strings.Contains(stdout, forbidden) {
+			t.Fatalf("semantic status exposed %q: %s", forbidden, stdout)
+		}
 	}
 }
 
@@ -479,6 +545,85 @@ func TestSemanticStatusCommandUnconfiguredIgnoresPreRefreshSchema(t *testing.T) 
 	decodeOneJSONDocument(t, stdout, &status)
 	if status.Status != "not_configured" || status.LatestRun != nil {
 		t.Fatalf("status=%+v output=%s", status, stdout)
+	}
+}
+
+func TestSemanticStatusCommandUnconfiguredPropagatesExistingDatabaseOpenFailure(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "brain.db")
+	if err := os.WriteFile(dbPath, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	openErr := errors.New("database open failed")
+	cmd := newSemanticStatusCommand(&rootOptions{root: root}, semanticDeps{
+		loadReadConfig: func(context.Context, string, string) (config.Config, error) {
+			return config.Config{RootDir: root, ConfigPath: filepath.Join(root, "config.yaml"), DBPath: dbPath}, nil
+		},
+		resolveDiagnostic: func(string) (semanticconfig.Config, error) {
+			return semanticconfig.Config{Mode: semanticconfig.ModeOff}, nil
+		},
+		capability: func() semanticindex.Capability {
+			return semanticindex.Capability{State: semanticindex.CapabilityUnsupported}
+		},
+		openReadOnly: func(string) (*store.Store, error) {
+			return nil, openErr
+		},
+	})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--json"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, openErr) {
+		t.Fatalf("semantic status error=%v, want %v", err, openErr)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("semantic status wrote output on open failure: %q", stdout.String())
+	}
+}
+
+func TestSemanticStatusCommandUnconfiguredPropagatesMalformedCurrentLedger(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), store.StartSemanticRefreshRunInput{
+		RunID:     "run-malformed-ledger",
+		ProfileID: "profile-malformed-ledger",
+		Now:       time.Date(2026, 7, 28, 18, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Clean(cfg.DBPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE semantic_refresh_runs SET updated_at='not-a-time' WHERE run_id=?`, run.RunID); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := runRootCommandErr(t, root, "semantic", "status", "--json")
+	if err == nil {
+		t.Fatalf("semantic status unexpectedly suppressed malformed ledger: stdout=%q stderr=%q", stdout, stderr)
+	}
+	if strings.Contains(stdout, `"status":"not_configured"`) {
+		t.Fatalf("semantic status emitted a clean status for malformed ledger: %q", stdout)
 	}
 }
 
@@ -579,10 +724,20 @@ func completedSemanticRefreshResult(profileID string) semanticrefresh.Result {
 		Run: &store.SemanticRefreshRun{
 			RunID:               "run-complete",
 			ProfileID:           profileID,
+			PurgeEpoch:          4,
+			ProjectionWatermark: 5,
+			EmbeddingRevision:   6,
+			Checkpoint:          "readiness:complete",
 			CurrentGenerationID: "generation-complete",
 			State:               store.SemanticRefreshRunCompleted,
 			Stage:               store.SemanticRefreshReadiness,
+			ErrorCode:           "",
+			ErrorText:           "stored provider secret",
 			ReadinessState:      "ready",
+			Version:             99,
+			CreatedAt:           time.Date(2026, 7, 28, 18, 0, 0, 123_000_000, time.UTC),
+			UpdatedAt:           time.Date(2026, 7, 28, 18, 1, 0, 456_000_000, time.UTC),
+			LastProgressAt:      time.Date(2026, 7, 28, 18, 2, 0, 789_000_000, time.UTC),
 			Counters: store.SemanticRefreshCounters{
 				ProjectedParents: 2,
 				EmbeddedChunks:   3,
@@ -599,6 +754,7 @@ func completedSemanticRefreshResult(profileID string) semanticrefresh.Result {
 			ScheduledRetries:  4,
 			BlockedEmbeddings: 5,
 			FailedEmbeddings:  6,
+			Indexed:           123,
 			L0Ready:           6,
 			Tombstones:        7,
 			Segments:          8,
@@ -634,4 +790,25 @@ func decodeOneJSONDocument(t *testing.T, value string, target any) {
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		t.Fatalf("JSON has trailing document/data %q: %v", value, err)
 	}
+}
+
+func requireExactJSONKeys(t *testing.T, value map[string]json.RawMessage, keys ...string) {
+	t.Helper()
+	if len(value) != len(keys) {
+		t.Fatalf("JSON keys=%v, want exactly %v", sortedJSONKeys(value), keys)
+	}
+	for _, key := range keys {
+		if _, ok := value[key]; !ok {
+			t.Fatalf("JSON keys=%v missing %q", sortedJSONKeys(value), key)
+		}
+	}
+}
+
+func sortedJSONKeys(value map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(value))
+	for key := range value {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }

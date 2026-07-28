@@ -927,6 +927,7 @@ func TestPipelineReadinessFailureReturnsBoundedAggregateDebt(t *testing.T) {
 		snapshot.ScheduledRetries = 7
 		snapshot.BlockedEmbeddings = 8
 		snapshot.ErrorEmbeddings = 9
+		snapshot.ActiveIndexedCount = 12
 		snapshot.L0ReadyCount = 10
 		snapshot.ActiveTombstones = 11
 		snapshot.BuildingGenerations = 2
@@ -949,6 +950,7 @@ func TestPipelineReadinessFailureReturnsBoundedAggregateDebt(t *testing.T) {
 		ScheduledRetries:  7,
 		BlockedEmbeddings: 8,
 		FailedEmbeddings:  9,
+		Indexed:           12,
 		L0Ready:           10,
 		Tombstones:        11,
 		Segments:          9,

@@ -608,6 +608,7 @@ func pipelineDebt(snapshot semanticreadiness.Snapshot) Debt {
 		ScheduledRetries:  nonnegativeCount(snapshot.ScheduledRetries),
 		BlockedEmbeddings: nonnegativeCount(snapshot.BlockedEmbeddings),
 		FailedEmbeddings:  nonnegativeCount(snapshot.ErrorEmbeddings),
+		Indexed:           nonnegativeCount(snapshot.ActiveIndexedCount),
 		L0Ready:           nonnegativeCount(snapshot.L0ReadyCount),
 		Tombstones:        nonnegativeCount(snapshot.ActiveTombstones),
 		Segments: saturatingCountSum(

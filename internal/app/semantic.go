@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -147,6 +149,12 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			if !configured {
 				st, openErr := deps.openReadOnly(cfg.DBPath)
 				if openErr != nil {
+					if _, statErr := os.Stat(cfg.DBPath); !errors.Is(statErr, os.ErrNotExist) {
+						if statErr != nil {
+							return errors.Join(openErr, statErr)
+						}
+						return openErr
+					}
 					status, err := semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
 					if err != nil {
 						return err
@@ -157,13 +165,7 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 				defer func() { _ = st.Close() }()
 				status, err := semanticbuild.ReadStatus(cmd.Context(), st, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
 				if err != nil {
-					if ctxErr := cmd.Context().Err(); ctxErr != nil {
-						return ctxErr
-					}
-					status, err = semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
-					if err != nil {
-						return err
-					}
+					return err
 				}
 				status.Mode = string(semantic.Mode)
 				return outputSemanticStatus(cmd, status, jsonOut)
@@ -207,7 +209,7 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 
 func outputSemanticStatus(cmd *cobra.Command, status semanticbuild.Status, jsonOut bool) error {
 	if jsonOut {
-		return writeJSON(cmd.OutOrStdout(), status)
+		return writeJSON(cmd.OutOrStdout(), newSemanticStatusOutput(status))
 	}
 	return writeSemanticStatus(cmd.OutOrStdout(), status)
 }

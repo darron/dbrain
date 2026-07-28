@@ -25,6 +25,7 @@ type Debt struct {
 	ScheduledRetries  int `json:"scheduled_retries"`
 	BlockedEmbeddings int `json:"blocked_embeddings"`
 	FailedEmbeddings  int `json:"failed_embeddings"`
+	Indexed           int `json:"indexed"`
 	L0Ready           int `json:"l0_ready"`
 	Tombstones        int `json:"tombstones"`
 	Segments          int `json:"segments"`

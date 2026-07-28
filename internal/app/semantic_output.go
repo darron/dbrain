@@ -8,9 +8,101 @@ import (
 
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
 )
+
+type semanticRefreshRunOutput struct {
+	RunID               string                        `json:"run_id"`
+	ProfileID           string                        `json:"profile_id"`
+	PurgeEpoch          int64                         `json:"purge_epoch"`
+	ProjectionWatermark int64                         `json:"projection_watermark"`
+	EmbeddingRevision   int64                         `json:"embedding_revision"`
+	Stage               store.SemanticRefreshStage    `json:"stage"`
+	Checkpoint          string                        `json:"checkpoint"`
+	Counters            store.SemanticRefreshCounters `json:"counters"`
+	CurrentGenerationID string                        `json:"current_generation_id"`
+	State               store.SemanticRefreshRunState `json:"state"`
+	ErrorCode           string                        `json:"error_code"`
+	ReadinessState      string                        `json:"readiness_state"`
+	CreatedAt           string                        `json:"created_at"`
+	UpdatedAt           string                        `json:"updated_at"`
+	LastProgressAt      string                        `json:"last_progress_at"`
+}
+
+type semanticRefreshResultOutput struct {
+	Outcome    semanticrefresh.Outcome   `json:"outcome"`
+	SkipReason string                    `json:"skip_reason,omitempty"`
+	Capability semanticindex.Capability  `json:"capability"`
+	Run        *semanticRefreshRunOutput `json:"run,omitempty"`
+	Debt       semanticrefresh.Debt      `json:"remaining_debt"`
+}
+
+type semanticStatusOutput struct {
+	Status            string                     `json:"status"`
+	Reason            string                     `json:"reason"`
+	Searchable        bool                       `json:"searchable"`
+	Mode              string                     `json:"mode"`
+	ProfileID         string                     `json:"profile_id"`
+	BackendCapability semanticindex.Capability   `json:"backend_capability"`
+	Store             semanticreadiness.Snapshot `json:"store"`
+	LatestRun         *semanticRefreshRunOutput  `json:"latest_run"`
+	Problems          []string                   `json:"problems"`
+	Next              []string                   `json:"next_steps"`
+}
+
+func newSemanticRefreshRunOutput(run *store.SemanticRefreshRun) *semanticRefreshRunOutput {
+	if run == nil {
+		return nil
+	}
+	return &semanticRefreshRunOutput{
+		RunID:               safeSemanticRefreshOutputField(run.RunID, 64),
+		ProfileID:           safeSemanticRefreshOutputField(run.ProfileID, 192),
+		PurgeEpoch:          run.PurgeEpoch,
+		ProjectionWatermark: run.ProjectionWatermark,
+		EmbeddingRevision:   run.EmbeddingRevision,
+		Stage:               run.Stage,
+		Checkpoint:          safeSemanticRefreshOutputField(run.Checkpoint, 256),
+		Counters:            run.Counters,
+		CurrentGenerationID: safeSemanticRefreshOutputField(run.CurrentGenerationID, 64),
+		State:               run.State,
+		ErrorCode:           safeSemanticRefreshOutputField(run.ErrorCode, 64),
+		ReadinessState:      safeSemanticRefreshOutputField(run.ReadinessState, 64),
+		CreatedAt:           semanticRefreshTimestamp(run.CreatedAt),
+		UpdatedAt:           semanticRefreshTimestamp(run.UpdatedAt),
+		LastProgressAt:      semanticRefreshTimestamp(run.LastProgressAt),
+	}
+}
+
+func newSemanticRefreshResultOutput(result semanticrefresh.Result) semanticRefreshResultOutput {
+	return semanticRefreshResultOutput{
+		Outcome:    result.Outcome,
+		SkipReason: safeSemanticRefreshOutputField(result.SkipReason, 64),
+		Capability: result.Capability,
+		Run:        newSemanticRefreshRunOutput(result.Run),
+		Debt:       result.Debt,
+	}
+}
+
+func newSemanticStatusOutput(status semanticbuild.Status) semanticStatusOutput {
+	return semanticStatusOutput{
+		Status:            status.Status,
+		Reason:            status.Reason,
+		Searchable:        status.Searchable,
+		Mode:              status.Mode,
+		ProfileID:         status.ProfileID,
+		BackendCapability: status.BackendCapability,
+		Store:             status.Store,
+		LatestRun:         newSemanticRefreshRunOutput(status.LatestRun),
+		Problems:          append([]string{}, status.Problems...),
+		Next:              append([]string{}, status.Next...),
+	}
+}
+
+func semanticRefreshTimestamp(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
 
 func writeSemanticStatus(dst io.Writer, status semanticbuild.Status) error {
 	if _, err := fmt.Fprintf(dst, "Status: %s\n", status.Status); err != nil {
@@ -79,7 +171,7 @@ func writeSemanticRefreshStatus(dst io.Writer, run *store.SemanticRefreshRun) er
 func writeSemanticRefreshProgress(dst io.Writer, progress semanticrefresh.Progress) error {
 	_, err := fmt.Fprintf(
 		dst,
-		"Semantic refresh progress: run=%s profile=%s stage=%s checkpoint=%s readiness=%s projected_parents=%d embedded_chunks=%d flushed_vectors=%d compacted_vectors=%d verified_vectors=%d successor_runs=%d dirty_parents=%d pending_embeddings=%d due_retries=%d scheduled_retries=%d blocked_embeddings=%d failed_embeddings=%d l0=%d tombstones=%d segments=%d at=%s\n",
+		"Semantic refresh progress: run=%s profile=%s stage=%s checkpoint=%s readiness=%s projected_parents=%d embedded_chunks=%d flushed_vectors=%d compacted_vectors=%d verified_vectors=%d successor_runs=%d dirty_parents=%d pending_embeddings=%d due_retries=%d scheduled_retries=%d blocked_embeddings=%d failed_embeddings=%d indexed=%d l0=%d tombstones=%d segments=%d at=%s\n",
 		safeSemanticRefreshOutputField(progress.RunID, 64),
 		safeSemanticRefreshOutputField(progress.ProfileID, 192),
 		progress.Stage,
@@ -97,6 +189,7 @@ func writeSemanticRefreshProgress(dst io.Writer, progress semanticrefresh.Progre
 		progress.Debt.ScheduledRetries,
 		progress.Debt.BlockedEmbeddings,
 		progress.Debt.FailedEmbeddings,
+		progress.Debt.Indexed,
 		progress.Debt.L0Ready,
 		progress.Debt.Tombstones,
 		progress.Debt.Segments,
@@ -164,7 +257,7 @@ func writeSemanticRefreshResult(
 		result.Debt.ScheduledRetries,
 		result.Debt.BlockedEmbeddings,
 		result.Debt.FailedEmbeddings,
-		run.Counters.VerifiedVectors,
+		result.Debt.Indexed,
 		result.Debt.L0Ready,
 		result.Debt.Tombstones,
 		result.Debt.Segments,
@@ -182,7 +275,7 @@ func writeSemanticRefreshError(
 	}
 	_, err := fmt.Fprintf(
 		dst,
-		"Semantic refresh failed: code=%s run=%s stage=%s checkpoint=%s readiness=%s dirty_parents=%d pending_embeddings=%d due_retries=%d scheduled_retries=%d blocked_embeddings=%d failed_embeddings=%d l0=%d tombstones=%d segments=%d elapsed=%s\n",
+		"Semantic refresh failed: code=%s run=%s stage=%s checkpoint=%s readiness=%s dirty_parents=%d pending_embeddings=%d due_retries=%d scheduled_retries=%d blocked_embeddings=%d failed_embeddings=%d indexed=%d l0=%d tombstones=%d segments=%d elapsed=%s\n",
 		safeSemanticRefreshOutputField(refreshErr.Code, 64),
 		safeSemanticRefreshOutputField(refreshErr.RunID, 64),
 		refreshErr.Stage,
@@ -194,28 +287,13 @@ func writeSemanticRefreshError(
 		refreshErr.Debt.ScheduledRetries,
 		refreshErr.Debt.BlockedEmbeddings,
 		refreshErr.Debt.FailedEmbeddings,
+		refreshErr.Debt.Indexed,
 		refreshErr.Debt.L0Ready,
 		refreshErr.Debt.Tombstones,
 		refreshErr.Debt.Segments,
 		semanticRefreshElapsed(elapsed),
 	)
 	return err
-}
-
-func boundedSemanticRefreshResult(result semanticrefresh.Result) semanticrefresh.Result {
-	if result.Run == nil {
-		return result
-	}
-	run := *result.Run
-	run.RunID = safeSemanticRefreshOutputField(run.RunID, 64)
-	run.ProfileID = safeSemanticRefreshOutputField(run.ProfileID, 192)
-	run.Checkpoint = safeSemanticRefreshOutputField(run.Checkpoint, 256)
-	run.CurrentGenerationID = safeSemanticRefreshOutputField(run.CurrentGenerationID, 64)
-	run.ErrorCode = safeSemanticRefreshOutputField(run.ErrorCode, 64)
-	run.ErrorText = ""
-	run.ReadinessState = safeSemanticRefreshOutputField(run.ReadinessState, 64)
-	result.Run = &run
-	return result
 }
 
 func safeSemanticRefreshOutputField(value string, limit int) string {

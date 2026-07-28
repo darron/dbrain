@@ -226,13 +226,13 @@ func TestResultJSONUsesBoundedAggregateDebt(t *testing.T) {
 		Capability: semanticindex.Capability{
 			State: semanticindex.CapabilityUnsupported,
 		},
-		Debt: Debt{DirtyParents: 4, L0Ready: 2},
+		Debt: Debt{DirtyParents: 4, Indexed: 3, L0Ready: 2},
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		t.Fatalf("marshal Result: %v", err)
 	}
-	const want = `{"outcome":"skipped","skip_reason":"semantic_mode_off","capability":{"state":"unsupported"},"remaining_debt":{"dirty_parents":4,"pending_embeddings":0,"due_retries":0,"scheduled_retries":0,"blocked_embeddings":0,"failed_embeddings":0,"l0_ready":2,"tombstones":0,"segments":0}}`
+	const want = `{"outcome":"skipped","skip_reason":"semantic_mode_off","capability":{"state":"unsupported"},"remaining_debt":{"dirty_parents":4,"pending_embeddings":0,"due_retries":0,"scheduled_retries":0,"blocked_embeddings":0,"failed_embeddings":0,"indexed":3,"l0_ready":2,"tombstones":0,"segments":0}}`
 	if string(encoded) != want {
 		t.Fatalf("Result JSON = %s, want %s", encoded, want)
 	}

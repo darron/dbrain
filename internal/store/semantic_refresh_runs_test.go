@@ -361,6 +361,46 @@ func TestSemanticRefreshRunRejectsCorruptStoredTimestamp(t *testing.T) {
 	}
 	if _, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a"); err == nil {
 		t.Fatal("expected corrupt timestamp error")
+	} else if errors.Is(err, ErrRetrievalUnavailable) {
+		t.Fatalf("corrupt timestamp was misclassified as unavailable: %v", err)
+	}
+}
+
+func TestLatestSemanticRefreshRunClassifiesOnlyAbsentLegacyLedgerAsUnavailable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE items (id INTEGER PRIMARY KEY, source_key TEXT NOT NULL);
+		PRAGMA user_version = 12`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	st, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("open legacy database read-only: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if _, err := st.LatestSemanticRefreshRun(t.Context(), ""); !errors.Is(err, ErrRetrievalUnavailable) {
+		t.Fatalf("legacy ledger error=%v, want ErrRetrievalUnavailable", err)
+	}
+}
+
+func TestLatestSemanticRefreshRunDoesNotMisclassifyDatabaseFailure(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LatestSemanticRefreshRun(t.Context(), ""); err == nil {
+		t.Fatal("closed database query unexpectedly succeeded")
+	} else if errors.Is(err, ErrRetrievalUnavailable) {
+		t.Fatalf("closed database failure was misclassified as unavailable: %v", err)
 	}
 }
 

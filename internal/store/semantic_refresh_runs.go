@@ -384,6 +384,13 @@ func (s *Store) TouchSemanticRefreshRunProgress(ctx context.Context, runID strin
 	return nil
 }
 func (s *Store) LatestSemanticRefreshRun(ctx context.Context, profileID string) (*SemanticRefreshRun, error) {
+	available, err := s.tableExistsContext(ctx, "semantic_refresh_runs")
+	if err != nil {
+		return nil, fmt.Errorf("check semantic refresh run ledger: %w", err)
+	}
+	if !available {
+		return nil, fmt.Errorf("semantic refresh run ledger: %w", ErrRetrievalUnavailable)
+	}
 	q, args := `SELECT `+semanticRefreshRunColumns+` FROM semantic_refresh_runs`, []any{}
 	if profileID = strings.TrimSpace(profileID); profileID != "" {
 		q += ` WHERE profile_id=?`
@@ -391,7 +398,7 @@ func (s *Store) LatestSemanticRefreshRun(ctx context.Context, profileID string) 
 	}
 	q += ` ORDER BY updated_at DESC,run_id DESC LIMIT 1`
 	var run SemanticRefreshRun
-	err := scanSemanticRefreshRun(s.db.QueryRowContext(ctx, q, args...), &run)
+	err = scanSemanticRefreshRun(s.db.QueryRowContext(ctx, q, args...), &run)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

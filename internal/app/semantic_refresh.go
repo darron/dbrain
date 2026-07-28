@@ -64,9 +64,8 @@ func newSemanticRefreshCommand(root *rootOptions, deps semanticRefreshDeps) *cob
 				}
 			}
 
-			result = boundedSemanticRefreshResult(result)
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), result)
+				return writeJSON(cmd.OutOrStdout(), newSemanticRefreshResultOutput(result))
 			}
 			return writeSemanticRefreshResult(cmd.OutOrStdout(), result, elapsed)
 		},
