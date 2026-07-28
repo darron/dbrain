@@ -1138,7 +1138,7 @@ the measured 25,000-vector exact ceiling; larger complete profiles report
 `dbrain_research_pack` calls never write research traces. See
 [MCP.md](MCP.md#semantic-retrieval-contract) for overrides and response fields.
 
-### Manual semantic refresh
+### Semantic refresh after sync
 
 The derived semantic state can be inspected and refreshed manually:
 
@@ -1150,19 +1150,32 @@ dbrain semantic refresh --json
 ```
 
 `semantic refresh` uses the configured embedding profile and does not change
-`research.semantic.mode`. With mode `off`, or in a build whose native backend is
-unsupported, it reports a successful bounded skip. A supported-but-broken
-backend returns a typed error. With a supported backend and enabled `shadow` or
-`on` mode, it runs the composed maintenance flow until readiness is `ready` or
-returns a typed failure. Cancellation and failure preserve the durable run, and
-a later `semantic refresh` invocation resumes it automatically.
+`research.semantic.mode`. It remains a diagnostic and recovery command, not a
+required routine step. Every successful `dbrain sync all` and scheduled sync
+now invokes this same refresh path synchronously after its source store and
+metrics have closed. That includes an unchanged source run: it can resume a
+durable semantic run left by cancellation or failure. The initial successful
+sync after enabling `shadow` or `on` performs the same full backfill path.
 
-This is a manual/emergency operator path only: this stacked PR does not invoke
-refresh from `sync`, queries never perform maintenance, and it adds no
-cross-process maintenance lock. Normal untagged/CGO-free artifacts remain
-unsupported for refresh until the later distribution stack; this does not change
-the `research.semantic.index_backend` configuration or claim Homebrew native
-support. It does not activate a production database or cache.
+Mode `off` and a build whose native backend is unsupported report an explicit,
+successful semantic skip; they do not open a writable semantic store or create
+provider/native dependencies. A supported-but-broken backend, cancellation, or
+any supported enabled refresh failure returns a typed non-zero error after the
+committed source summary. A supported enabled success returns only when the
+refresh ends `ready`. Human output streams bounded refresh progress and then a
+completion, skip, or error line. `sync all --json` emits exactly one flattened
+sync document, with either a `semantic` result or `semantic_error` object.
+
+The existing coarse `sync-all.lock` spans the whole source-plus-semantic sync
+operation. This is not the later database-scoped cross-process semantic
+maintenance/generation lock. Queries never trigger maintenance. Normal
+untagged/CGO-free artifacts remain unsupported for refresh until the later
+distribution stack; this does not change the
+`research.semantic.index_backend` configuration, claim Homebrew native support,
+or activate a production database or cache.
+
+See [Semantic retrieval](docs/semantic-retrieval.md) for the operational
+contract and [MCP.md](MCP.md) for agent-facing retrieval behavior.
 
 See [MCP.md](MCP.md) for the full agent workflow, tool contract, eval setup,
 client configuration, importer contract, logging behavior, and skill setup.

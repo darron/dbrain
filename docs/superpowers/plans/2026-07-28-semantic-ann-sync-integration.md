@@ -4,7 +4,15 @@
 
 **Goal:** Make every successful `dbrain sync` execution automatically run the durable semantic refresh path, while preserving explicit non-error skips for mode `off` and unsupported builds and returning a typed non-zero error for every supported enabled refresh failure.
 
-**Stack boundary:** This PR is stacked on `codex/semantic-ann-resumable-refresh` at `ed4152e91d31a0bc3b868fdeaade61c3c3b30bd9`. It adds universal synchronous sync integration only. Cross-process semantic locks, release/Homebrew native packaging, and installed production-corpus activation remain in later stacked PRs.
+**Stack boundary:** This PR is stacked on `codex/semantic-ann-resumable-refresh`.
+It adds universal synchronous sync integration only. Cross-process semantic
+locks, release/Homebrew native packaging, and installed production-corpus
+activation remain in later stacked PRs.
+
+**Execution status (2026-07-28):** Tasks 1–3 implement and test the central CLI
+hook, scheduled-sync hook, and real initial-backfill/cancellation-resume
+composition. Task 4 documents the resulting automatic-sync contract. Tasks 5
+and later-stack acceptance remain pending.
 
 **Runtime boundaries:**
 

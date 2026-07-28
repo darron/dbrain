@@ -5,14 +5,28 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Automatic semantic refresh after sync (2026-07-28)
+
+- **Automatic semantic maintenance**: Successful CLI `sync all` and scheduled
+  sync runs now synchronously run the durable semantic refresh path when
+  `research.semantic.mode` is `shadow` or `on`. The ordinary source store and
+  metrics are closed before refresh begins; unchanged source runs also resume
+  prior semantic work. Mode `off` and unsupported builds report explicit
+  successful skips, while a supported-but-broken backend, cancellation, or any
+  refresh failure makes the sync fail with the typed semantic error. CLI JSON
+  emits one flattened sync document with either `semantic` or `semantic_error`.
+  The coarse existing `sync-all.lock` covers the combined source-plus-semantic
+  operation. Cross-process semantic maintenance locks, release/Homebrew native
+  packaging, and installed-corpus acceptance remain later stacked work.
+
 ### Resumable semantic refresh (2026-07-28)
 
 - **Resumable semantic refresh**: Added a migration-backed per-profile refresh
   ledger, fixed-watermark projection and revision-checkpointed embedding batches,
   bounded provider retry, L0/compaction/verification/readiness orchestration,
   serialized progress, typed failures, `semantic refresh`, and latest-run
-  status. Automatic post-sync refresh, cross-process locks, release packaging,
-  and installed-corpus activation remain in later stacked PRs.
+  status. Cross-process semantic locks, release packaging, and installed-corpus
+  activation remain in later stacked PRs.
 - **Non-blocking refresh progress**: Five-second visible progress now continues
   while a semantic compaction transaction temporarily blocks the durable
   heartbeat write. A dedicated one-connection heartbeat handle keeps that wait
@@ -48,10 +62,10 @@ development date for the change set.
   paths without masking readiness states such as `corrupt`, `disabled`, or
   `needs_index`; native-root failures in research output and traces use a
   stable path-free reason.
-- **Runtime-admission boundary**: This stack does not yet add automatic
-  post-sync integration. Universal synchronous post-sync integration,
-  cross-process locking, release/Homebrew native packaging, and installed-corpus
-  acceptance and activation remain later stacked work.
+- **Runtime-admission boundary**: Universal synchronous post-sync integration
+  is now supplied by the following stacked work. Cross-process locking,
+  release/Homebrew native packaging, and installed-corpus acceptance and
+  activation remain later stacked work.
 
 ### Segmented ANN lifecycle foundation (2026-07-22)
 

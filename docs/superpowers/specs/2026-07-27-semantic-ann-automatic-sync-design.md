@@ -470,10 +470,18 @@ PR—is the user-useful release.
 
 ## Implementation Status
 
-As of 2026-07-28, only stacked PR 1, **Runtime admission and capability**, is
-implemented and representative-corpus admitted on
-`codex/semantic-ann-automatic-sync`. The verified implementation at
-`67e690fe0d335174f1824ffaee994585122d46a6`:
+As of 2026-07-28, stacked PRs 1–3 are implemented in the working stack:
+
+1. **Runtime admission and capability** is representative-corpus admitted on
+   `codex/semantic-ann-automatic-sync`.
+2. **Resumable refresh** adds the durable run/checkpoint orchestration used by
+   both the manual diagnostic command and sync admission.
+3. **Universal sync integration** runs refresh synchronously after every
+   successful CLI `sync all` and scheduled sync, including unchanged source
+   runs, and proves initial backfill plus cancellation/resume composition
+   against one isolated SQLite database.
+
+The verified runtime-admission implementation:
 
 - reports one explicit native-backend capability decision through both
   `semantic status` and normal research admission;
@@ -493,11 +501,20 @@ implemented and representative-corpus admitted on
 - opens the normal research store read-only, preserving the representative
   database bytes during runtime admission.
 
-This is not completion of the automatic-sync design. Stacked PRs 2–6 remain
-pending, including resumable refresh orchestration, universal synchronous
-post-sync integration, cross-process locks, static Homebrew distribution, and
-installed full-corpus acceptance. No production root was built or activated by
-this runtime-admission work.
+The completed sync contract is deliberately strict: source failure skips
+semantic admission; mode `off` and unsupported builds make an explicit
+successful skip; a supported-but-broken backend, cancellation, or any enabled
+refresh failure returns the typed semantic error. Source stores and source
+metrics close before refresh opens its writable store. CLI JSON emits one
+flattened source document with exactly one `semantic` or `semantic_error`
+member. The pre-existing coarse `sync-all.lock` spans the source-plus-semantic
+operation; it is not the database-scoped maintenance/generation locking planned
+below. Progress is streamed in bounded refresh updates.
+
+This is not completion of the automatic-sync design. Stacked PRs 4–6 remain
+pending: cross-process locks, static macOS arm64/Homebrew native distribution
+with explicit unsupported-target behavior, and installed full-corpus acceptance.
+No production root was built or activated by this work.
 
 ## Production Rollout And Rollback
 
