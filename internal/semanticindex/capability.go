@@ -46,7 +46,7 @@ func (c Capability) Admit(backend, version string) (bool, string) {
 }
 
 func sanitizeCapabilityReason(reason string) string {
-	fields := strings.Fields(reason)
+	fields := capabilityDiagnosticFields(reason)
 	for index, field := range fields {
 		if key, value, ok := strings.Cut(field, "="); ok {
 			if redacted, ok := redactCapabilityPath(value); ok {
@@ -60,15 +60,52 @@ func sanitizeCapabilityReason(reason string) string {
 }
 
 func redactCapabilityPath(value string) (string, bool) {
-	if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') && value[len(value)-1] == value[0] {
-		if isCapabilityPath(value[1 : len(value)-1]) {
+	if len(value) >= 1 && (value[0] == '\'' || value[0] == '"') {
+		if len(value) >= 2 && value[len(value)-1] == value[0] && isCapabilityPath(value[1:len(value)-1]) {
 			return value[:1] + "[path]" + value[len(value)-1:], true
+		}
+		if isCapabilityPath(value[1:]) {
+			return "[path]", true
 		}
 	}
 	if isCapabilityPath(value) {
 		return "[path]", true
 	}
 	return "", false
+}
+
+func capabilityDiagnosticFields(reason string) []string {
+	var fields []string
+	for index := 0; index < len(reason); {
+		for index < len(reason) && (reason[index] == ' ' || reason[index] == '\t' || reason[index] == '\n' || reason[index] == '\r') {
+			index++
+		}
+		start := index
+		var quote byte
+		for index < len(reason) {
+			character := reason[index]
+			if quote != 0 {
+				index++
+				if character == quote {
+					quote = 0
+				}
+				continue
+			}
+			if character == '\'' || character == '"' {
+				quote = character
+				index++
+				continue
+			}
+			if character == ' ' || character == '\t' || character == '\n' || character == '\r' {
+				break
+			}
+			index++
+		}
+		if start < index {
+			fields = append(fields, reason[start:index])
+		}
+	}
+	return fields
 }
 
 func isCapabilityPath(value string) bool {
