@@ -26,6 +26,7 @@ type runtimeDeps struct {
 const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
 
 var errNativeBackendUnavailable = errors.New("native_backend_unavailable")
+var errNativeRootArtifactsUnavailable = errors.New("native_root_artifacts_unavailable")
 
 func defaultRuntimeDeps() runtimeDeps {
 	return runtimeDeps{
@@ -138,6 +139,8 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 		reason := "semantic searcher unavailable: " + err.Error()
 		if errors.Is(err, errNativeBackendUnavailable) {
 			reason = errNativeBackendUnavailable.Error()
+		} else if errors.Is(err, errNativeRootArtifactsUnavailable) {
+			reason = errNativeRootArtifactsUnavailable.Error()
 		}
 		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: reason}
 		return b, nil

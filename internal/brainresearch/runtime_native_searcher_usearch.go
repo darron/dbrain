@@ -44,7 +44,7 @@ func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Co
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("open native semantic root: %w", err)
+		return nil, fmt.Errorf("%w: open native semantic root: %w", errNativeRootArtifactsUnavailable, err)
 	}
 	return semanticindex.NewUSearchCandidateSearcher(root, st), nil
 }

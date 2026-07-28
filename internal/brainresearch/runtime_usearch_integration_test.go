@@ -4,16 +4,20 @@ package brainresearch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/darron/dbrain/internal/ask"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/semanticbuild"
+	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/semanticsegment"
@@ -38,6 +42,69 @@ func TestRuntimeSemanticSearcherRejectsPostReadinessCancellationBeforeRootWork(t
 	)
 	if searcher != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("searcher=%#v error=%v want context cancellation", searcher, err)
+	}
+}
+
+func TestRuntimeMissingNativeRootUsesPathFreeReasonInResearchJSON(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	missingCache := filepath.Join(root, "private-native-cache")
+	writeRuntimeSemanticConfig(t, root, "shadow", "embed-model", 2)
+	st, err := store.Open(filepath.Join(root, "brain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	profile := semanticbuild.Profile(embedding.Info{Provider: "ollama", Model: "embed-model", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := runtimeReadySnapshot(true)
+	snapshot.ProfileID = profileID
+	snapshot.ActiveGenerationRootDescriptorSHA256 = strings.Repeat("a", 64)
+	deps := defaultRuntimeDeps()
+	deps.readiness = func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+		return snapshot, nil
+	}
+	deps.capability = func() semanticindex.Capability {
+		return semanticindex.Capability{
+			State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+		}
+	}
+	deps.provider = func(semanticconfig.Config) (embedding.Provider, error) {
+		return nil, errors.New("provider must not be constructed")
+	}
+
+	builder, err := newRuntimeBuilderWithDeps(ctx, config.Config{RootDir: root, CacheDir: missingCache}, st, "", false, false, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builder.semanticReadiness.Reason != "native_root_artifacts_unavailable" {
+		t.Fatalf("runtime readiness reason=%q", builder.semanticReadiness.Reason)
+	}
+	builder.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+		return ask.Response{}, ask.Response{}, nil
+	}
+	pack, err := builder.Build(ctx, Options{Question: "path leak check", Limit: 1, DisablePlanner: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pack.QueryPlan.ShadowComparison == nil || pack.QueryPlan.ShadowComparison.Reason != "native_root_artifacts_unavailable" {
+		t.Fatalf("shadow comparison=%+v", pack.QueryPlan.ShadowComparison)
+	}
+	encoded, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{missingCache, semanticsegment.RootFileName} {
+		if strings.Contains(builder.semanticReadiness.Reason, leaked) ||
+			strings.Contains(string(pack.QueryPlan.ShadowComparison.Reason), leaked) ||
+			strings.Contains(string(encoded), leaked) {
+			t.Fatalf("runtime research output leaked %q: readiness=%q comparison=%+v json=%s",
+				leaked, builder.semanticReadiness.Reason, pack.QueryPlan.ShadowComparison, encoded)
+		}
 	}
 }
 
