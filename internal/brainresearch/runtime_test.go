@@ -14,6 +14,7 @@ import (
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -141,6 +142,42 @@ func TestRuntimeAdmissionExactSmallSkipsNativeCapability(t *testing.T) {
 	if err != nil || b.semanticRetriever == nil || b.semanticReadiness.State != semanticreadiness.StateReady || !b.semanticReadiness.Searchable ||
 		capabilityCalls != 0 || searcherCalls != 1 || providerCalls != 1 {
 		t.Fatalf("builder=%#v capability_calls=%d searcher_calls=%d provider_calls=%d err=%v", b, capabilityCalls, searcherCalls, providerCalls, err)
+	}
+}
+
+func TestRuntimeGenerationLeaseAcquirerUsesLocalTimeoutWhileCallerRemainsLive(t *testing.T) {
+	cfg, st := inspectionTestStore(t)
+	databaseID, err := st.RetrievalDatabaseID(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := semanticlock.NewScope(cfg.CacheDir, databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := scope.AcquireMaintenanceExclusive(t.Context(), "owner=activation\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = maintenance.Close() }()
+	generation, err := maintenance.AcquireGenerationExclusive(t.Context(), "owner=activation\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = generation.Close() }()
+
+	acquire, err := runtimeGenerationLeaseAcquirer(t.Context(), st, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerCtx, cancelCaller := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancelCaller()
+	lease, err := acquire(callerCtx)
+	if lease != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lease=%#v err=%v want local deadline", lease, err)
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("local acquisition timeout canceled caller: %v", callerCtx.Err())
 	}
 }
 

@@ -28,16 +28,32 @@ type Options struct {
 
 const DefaultQueryTimeout = 15 * time.Second
 
+const ReasonGenerationBusy semanticindex.StatusReason = "generation_busy"
+
+type GenerationLease interface {
+	Close() error
+}
+
+type GenerationLeaseAcquirer func(context.Context) (GenerationLease, error)
+
 type Retriever struct {
-	provider  embedding.Provider
-	searcher  semanticindex.Searcher
-	hydrator  Hydrator
-	closeOnce sync.Once
-	closeErr  error
+	provider               embedding.Provider
+	searcher               semanticindex.Searcher
+	hydrator               Hydrator
+	acquireGenerationLease GenerationLeaseAcquirer
+	closeOnce              sync.Once
+	closeErr               error
 }
 
 func New(provider embedding.Provider, searcher semanticindex.Searcher, hydrator Hydrator) *Retriever {
-	return &Retriever{provider: provider, searcher: searcher, hydrator: hydrator}
+	return NewWithGenerationLease(provider, searcher, hydrator, nil)
+}
+
+func NewWithGenerationLease(provider embedding.Provider, searcher semanticindex.Searcher, hydrator Hydrator, acquire GenerationLeaseAcquirer) *Retriever {
+	return &Retriever{
+		provider: provider, searcher: searcher, hydrator: hydrator,
+		acquireGenerationLease: acquire,
+	}
 }
 
 // Close releases optional native search resources. Exact searchers have no
@@ -104,6 +120,62 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, opts Options) ([
 		unavailable.Reason = semanticindex.ReasonQueryEmbeddingFailed
 		return empty, unavailable, nil
 	}
+	return r.retrieveAdmitted(ctx, queryVector, opts, info, profileID, unavailable)
+}
+
+func (r *Retriever) retrieveAdmitted(
+	ctx context.Context,
+	queryVector []float32,
+	opts Options,
+	info embedding.Info,
+	profileID string,
+	unavailable semanticindex.Status,
+) ([]retrieval.EvidenceDocument, semanticindex.Status, error) {
+	empty := make([]retrieval.EvidenceDocument, 0)
+	var lease GenerationLease
+	if r.acquireGenerationLease != nil {
+		acquired, err := r.acquireGenerationLease(ctx)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				unavailable.Reason = semanticindex.ReasonCanceled
+				return empty, unavailable, ctxErr
+			}
+			if errors.Is(err, context.Canceled) {
+				unavailable.Reason = semanticindex.ReasonCanceled
+				return empty, unavailable, err
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				unavailable.Reason = ReasonGenerationBusy
+				return empty, unavailable, nil
+			}
+			unavailable.Reason = semanticindex.ReasonSearchError
+			return empty, unavailable, fmt.Errorf("acquire semantic generation lease: %w", err)
+		}
+		if acquired == nil {
+			unavailable.Reason = semanticindex.ReasonSearchError
+			return empty, unavailable, errors.New("acquire semantic generation lease returned nil lease")
+		}
+		lease = acquired
+	}
+
+	docs, status, retrieveErr := r.searchAndHydrate(ctx, queryVector, opts, info, profileID)
+	if lease != nil {
+		if releaseErr := lease.Close(); releaseErr != nil {
+			unavailable.Reason = semanticindex.ReasonSearchError
+			return empty, unavailable, errors.Join(retrieveErr, fmt.Errorf("release semantic generation lease: %w", releaseErr))
+		}
+	}
+	return docs, status, retrieveErr
+}
+
+func (r *Retriever) searchAndHydrate(
+	ctx context.Context,
+	queryVector []float32,
+	opts Options,
+	info embedding.Info,
+	profileID string,
+) ([]retrieval.EvidenceDocument, semanticindex.Status, error) {
+	empty := make([]retrieval.EvidenceDocument, 0)
 	hits, status, searchErr := r.searcher.Search(ctx, queryVector, semanticindex.SearchOptions{
 		Profile: opts.Profile, Limit: opts.Limit, MaxChunks: opts.MaxChunks, Filters: opts.Filters,
 	})
@@ -141,6 +213,11 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, opts Options) ([
 	}
 	docs := make([]retrieval.EvidenceDocument, 0, len(rows))
 	for _, hit := range hits {
+		if err := ctx.Err(); err != nil {
+			status.State = semanticindex.StateUnavailable
+			status.Reason = semanticindex.ReasonCanceled
+			return empty, status, err
+		}
 		row, ok := byID[hit.ChunkID]
 		if !ok {
 			continue

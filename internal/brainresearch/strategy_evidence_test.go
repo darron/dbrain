@@ -468,6 +468,51 @@ func TestOnModeReportsFailOpenSemanticLaneOutcome(t *testing.T) {
 	}
 }
 
+func TestOnModeGenerationBusyPreservesSemanticOffLexicalEvidenceExactly(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	legacy := []ask.Evidence{
+		{SourceKey: "legacy:one", Excerpt: "first lexical result"},
+		{SourceKey: "legacy:two", Excerpt: "second lexical result"},
+	}
+	build := func(mode semanticconfig.Mode) Pack {
+		b := New(config.Config{}, st).
+			WithSemanticMode(mode).
+			WithSemanticRetriever(
+				&fakeSemanticRetriever{status: semanticindex.Status{
+					State:  semanticindex.StateUnavailable,
+					Reason: researchsemantic.ReasonGenerationBusy,
+				}},
+				researchsemantic.Options{},
+			)
+		b.strategyRunner = func(context.Context, string, ask.Options) (ask.Response, error) {
+			return ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}, nil
+		}
+		b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+			response := ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}
+			return response, response, nil
+		}
+		pack, err := b.Build(context.Background(), Options{Question: "one", DisablePlanner: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pack
+	}
+	off := build(semanticconfig.ModeOff)
+	busy := build(semanticconfig.ModeOn)
+	if !reflect.DeepEqual(busy.Evidence, off.Evidence) {
+		t.Fatalf("generation-busy evidence changed: off=%#v busy=%#v", off.Evidence, busy.Evidence)
+	}
+	var lane retrieval.RetrievalLane
+	for _, candidate := range busy.QueryPlan.RetrievalLanes {
+		if candidate.Name == researchhybrid.LaneSemantic {
+			lane = candidate
+		}
+	}
+	if lane.Status != researchhybrid.StatusDisabled || lane.Reason != string(researchsemantic.ReasonGenerationBusy) {
+		t.Fatalf("semantic lane=%#v", lane)
+	}
+}
+
 func TestShadowModeReportsTruthfulLaneWithoutChangingLexicalEvidence(t *testing.T) {
 	_, st := inspectionTestStore(t)
 	legacy := []ask.Evidence{{SourceKey: "legacy:one", Excerpt: "lexical evidence"}}

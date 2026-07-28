@@ -12,6 +12,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -27,6 +28,7 @@ const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
 
 var errNativeBackendUnavailable = errors.New("native_backend_unavailable")
 var errNativeRootArtifactsUnavailable = errors.New("native_root_artifacts_unavailable")
+var errSemanticGenerationBusy = errors.New("generation_busy")
 
 func defaultRuntimeDeps() runtimeDeps {
 	return runtimeDeps{
@@ -147,6 +149,8 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 			reason = errNativeBackendUnavailable.Error()
 		} else if errors.Is(err, errNativeRootArtifactsUnavailable) {
 			reason = errNativeRootArtifactsUnavailable.Error()
+		} else if errors.Is(err, errSemanticGenerationBusy) {
+			reason = errSemanticGenerationBusy.Error()
 		}
 		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: reason}
 		return b, nil
@@ -160,11 +164,47 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 		closeRuntimeSemanticSearcher(searcher)
 		return nil, fmt.Errorf("constructed semantic provider provenance does not match admitted profile")
 	}
-	retriever := researchsemantic.New(provider, searcher, st)
+	acquireGeneration, err := runtimeGenerationLeaseAcquirer(ctx, st, cfg)
+	if err != nil {
+		closeRuntimeSemanticSearcher(searcher)
+		return nil, err
+	}
+	retriever := researchsemantic.NewWithGenerationLease(provider, searcher, st, acquireGeneration)
 	return b.WithSemanticRetriever(retriever, researchsemantic.Options{
 		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: exactMaxChunks,
 		Timeout: researchsemantic.DefaultQueryTimeout,
 	}), nil
+}
+
+func runtimeGenerationLeaseAcquirer(ctx context.Context, st *store.Store, cfg config.Config) (researchsemantic.GenerationLeaseAcquirer, error) {
+	if st == nil {
+		return nil, errors.New("semantic generation lease requires a retrieval store")
+	}
+	databaseID, err := st.RetrievalDatabaseID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read semantic generation lease database ID: %w", err)
+	}
+	cacheDir := cfg.CacheDir
+	if cacheDir == "" {
+		resolved, err := config.Load(cfg.RootDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve semantic generation lease cache: %w", err)
+		}
+		cacheDir = resolved.CacheDir
+	}
+	scope, err := semanticlock.NewScope(cacheDir, databaseID)
+	if err != nil {
+		return nil, fmt.Errorf("construct semantic generation lease scope: %w", err)
+	}
+	return func(queryCtx context.Context) (researchsemantic.GenerationLease, error) {
+		acquireCtx, cancelAcquire := context.WithTimeout(queryCtx, semanticRuntimeAdmissionTimeout)
+		defer cancelAcquire()
+		lease, err := scope.AcquireGenerationShared(acquireCtx, "owner=research-query\noperation=semantic-retrieval\n")
+		if err != nil {
+			return nil, err
+		}
+		return lease, nil
+	}, nil
 }
 
 func closeRuntimeSemanticSearcher(searcher semanticindex.Searcher) {
