@@ -12,6 +12,7 @@ import (
 )
 
 const cancellationCheckpointTimeout = 2 * time.Second
+const generationIDLimit = 64
 
 type RunLedger interface {
 	StartOrResumeSemanticRefreshRun(
@@ -137,6 +138,14 @@ func runOneLedgerRun(
 	for {
 		executedStage := run.Stage
 		outcome, executeErr := executor.Execute(emitter.Context(), run)
+		var generationErr error
+		outcome, generationErr = sanitizeStageOutcomeGeneration(run, outcome)
+		if executeErr == nil {
+			executeErr = generationErr
+		}
+		if stageOutcomeIsZero(outcome) && executeErr == nil {
+			executeErr = fmt.Errorf("semantic refresh executor returned no outcome")
+		}
 
 		if !stageOutcomeIsZero(outcome) {
 			persisted, updateErr := updateRunDurably(
@@ -216,6 +225,10 @@ func runOneLedgerRun(
 		if publishErr != nil || executeErr != nil || emitter.Context().Err() != nil {
 			stopErr := stopProgressEmitter(emitter)
 			cause := firstMeaningfulError(stopErr, publishErr, executeErr, emitter.Context().Err())
+			var executorRefreshErr *RefreshError
+			if errors.As(executeErr, &executorRefreshErr) {
+				cause = executorRefreshErr
+			}
 			if errors.Is(cause, store.ErrSemanticRefreshRunStale) {
 				return failureResult(baseResult, run, debt), nil, store.SemanticRefreshRun{}, Debt{},
 					NewError(ErrorRunConflict, errorRun(run, executedStage), run.ReadinessState, debt, cause)
@@ -289,6 +302,16 @@ func runOneLedgerRun(
 			return failureResult(baseResult, run, debt), nil, store.SemanticRefreshRun{}, Debt{},
 				NewError(ErrorRunConflict, run, run.ReadinessState, debt, updateErr)
 		}
+		if ctx.Err() != nil {
+			return failureResult(baseResult, completed, debt), nil, store.SemanticRefreshRun{}, Debt{},
+				NewError(
+					ErrorCancelled,
+					errorRun(completed, executedStage),
+					completed.ReadinessState,
+					debt,
+					ctx.Err(),
+				)
+		}
 		completedResult := completedRunResult(baseResult, completed, debt)
 		if outcome.SuccessorWatermark == nil {
 			return completedResult, nil, store.SemanticRefreshRun{}, Debt{}, nil
@@ -303,7 +326,20 @@ func runOneLedgerRun(
 			*outcome.SuccessorWatermark,
 		)
 		if successorErr != nil {
-			return completedResult, nil, store.SemanticRefreshRun{}, Debt{}, successorErr
+			return failureResult(baseResult, completed, debt), nil, store.SemanticRefreshRun{}, Debt{}, successorErr
+		}
+		if ctx.Err() != nil {
+			result, terminalErr := persistCancelled(
+				ctx,
+				ledger,
+				request,
+				baseResult,
+				successor,
+				store.SemanticRefreshProjection,
+				successorDebt,
+				ctx.Err(),
+			)
+			return result, nil, store.SemanticRefreshRun{}, Debt{}, terminalErr
 		}
 		return completedResult, outcome.SuccessorWatermark, successor, successorDebt, nil
 	}
@@ -317,10 +353,31 @@ func startSuccessor(
 	debt Debt,
 	watermark int64,
 ) (store.SemanticRefreshRun, Debt, error) {
+	if ctx.Err() != nil {
+		return store.SemanticRefreshRun{}, Debt{},
+			NewError(ErrorCancelled, completed, completed.ReadinessState, debt, ctx.Err())
+	}
 	runID, err := nextRunID(request.NewRunIDFunc)
 	if err != nil {
 		return store.SemanticRefreshRun{}, Debt{},
 			NewError(ErrorBackendBroken, completed, completed.ReadinessState, debt, err)
+	}
+	if ctx.Err() != nil {
+		return store.SemanticRefreshRun{}, Debt{},
+			NewError(ErrorCancelled, completed, completed.ReadinessState, debt, ctx.Err())
+	}
+	if completed.Counters.SuccessorRuns == 1<<63-1 {
+		return store.SemanticRefreshRun{}, Debt{},
+			NewError(
+				ErrorRunConflict,
+				completed,
+				completed.ReadinessState,
+				debt,
+				fmt.Errorf("semantic successor count overflow"),
+			)
+	}
+	successorCounters := store.SemanticRefreshCounters{
+		SuccessorRuns: completed.Counters.SuccessorRuns + 1,
 	}
 	successor, resumed, err := ledger.StartOrResumeSemanticRefreshRun(
 		ctx,
@@ -329,10 +386,15 @@ func startSuccessor(
 			ProfileID:           completed.ProfileID,
 			PurgeEpoch:          completed.PurgeEpoch,
 			ProjectionWatermark: watermark,
+			InitialCounters:     successorCounters,
 			Now:                 request.Now(),
 		},
 	)
 	if err != nil {
+		if ctx.Err() != nil {
+			return store.SemanticRefreshRun{}, Debt{},
+				NewError(ErrorCancelled, completed, completed.ReadinessState, debt, ctx.Err())
+		}
 		return store.SemanticRefreshRun{}, Debt{},
 			NewError(ErrorRunConflict, completed, completed.ReadinessState, debt, err)
 	}
@@ -341,7 +403,8 @@ func startSuccessor(
 		successor.ProfileID != completed.ProfileID ||
 		successor.PurgeEpoch != completed.PurgeEpoch ||
 		successor.ProjectionWatermark != watermark ||
-		successor.Stage != store.SemanticRefreshProjection {
+		successor.Stage != store.SemanticRefreshProjection ||
+		successor.Counters != successorCounters {
 		return store.SemanticRefreshRun{}, Debt{},
 			NewError(
 				ErrorRunConflict,
@@ -350,22 +413,6 @@ func startSuccessor(
 				debt,
 				fmt.Errorf("semantic successor run collided with existing state"),
 			)
-	}
-
-	successorCounters := store.SemanticRefreshCounters{
-		SuccessorRuns: completed.Counters.SuccessorRuns + 1,
-	}
-	successor, err = ledger.UpdateSemanticRefreshRun(ctx, store.SemanticRefreshRunUpdate{
-		RunID:           successor.RunID,
-		ExpectedVersion: successor.Version,
-		Stage:           store.SemanticRefreshProjection,
-		State:           store.SemanticRefreshRunRunning,
-		Counters:        successorCounters,
-		Now:             request.Now(),
-	})
-	if err != nil {
-		return store.SemanticRefreshRun{}, Debt{},
-			NewError(ErrorRunConflict, successor, "", debt, err)
 	}
 	return successor, debt, nil
 }
@@ -432,6 +479,18 @@ func persistTerminalCode(
 				debt,
 				err,
 			)
+	}
+	var executorRefreshErr *RefreshError
+	if errors.As(cause, &executorRefreshErr) {
+		preservedCause := executorRefreshErr.cause
+		*executorRefreshErr = *NewError(
+			code,
+			errorRun(failed, executedStage),
+			failed.ReadinessState,
+			debt,
+			preservedCause,
+		)
+		return failureResult(baseResult, failed, debt), executorRefreshErr
 	}
 	return failureResult(baseResult, failed, debt),
 		NewError(code, errorRun(failed, executedStage), failed.ReadinessState, debt, cause)
@@ -538,6 +597,28 @@ func stageOutcomeIsZero(outcome StageOutcome) bool {
 	return outcome == (StageOutcome{})
 }
 
+func sanitizeStageOutcomeGeneration(
+	run store.SemanticRefreshRun,
+	outcome StageOutcome,
+) (StageOutcome, error) {
+	if validGenerationID(outcome.CurrentGenerationID) {
+		return outcome, nil
+	}
+	outcome.CurrentGenerationID = ""
+	if validGenerationID(run.CurrentGenerationID) {
+		outcome.CurrentGenerationID = run.CurrentGenerationID
+	}
+	return outcome, fmt.Errorf("semantic refresh generation ID is invalid")
+}
+
+func validGenerationID(generationID string) bool {
+	if generationID == "" {
+		return true
+	}
+	return len(generationID) <= generationIDLimit &&
+		boundedProtocolField(generationID, generationIDLimit) == generationID
+}
+
 func refreshErrorCode(stage store.SemanticRefreshStage, cause error) string {
 	var refreshErr *RefreshError
 	if errors.As(cause, &refreshErr) {
@@ -611,6 +692,8 @@ func failureResult(
 	run store.SemanticRefreshRun,
 	debt Debt,
 ) Result {
+	base.Outcome = ""
+	base.SkipReason = ""
 	base.Run = &run
 	base.Debt = debt
 	return base

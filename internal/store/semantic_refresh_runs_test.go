@@ -38,6 +38,73 @@ func TestSemanticRefreshRunResumePreservesImmutableWatermark(t *testing.T) {
 	}
 }
 
+func TestSemanticRefreshRunInitialCountersAreInsertedAtomicallyAndIgnoredOnResume(t *testing.T) {
+	st := openTestStore(t)
+	initial := SemanticRefreshCounters{SuccessorRuns: 7}
+	run, resumed, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{
+		RunID:               "run-initial-counters",
+		ProfileID:           "profile-initial-counters",
+		PurgeEpoch:          3,
+		ProjectionWatermark: 41,
+		InitialCounters:     initial,
+		Now:                 semanticRefreshTestNow(),
+	})
+	if err != nil || resumed {
+		t.Fatalf("start err=%v resumed=%v", err, resumed)
+	}
+	if run.Counters != initial || run.Version != 1 || run.State != SemanticRefreshRunRunning {
+		t.Fatalf("atomically inserted run=%+v, want initial counters at version 1", run)
+	}
+
+	persisted := SemanticRefreshCounters{ProjectedParents: 9, SuccessorRuns: 8}
+	failed, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{
+		RunID:           run.RunID,
+		ExpectedVersion: run.Version,
+		Stage:           SemanticRefreshEmbedding,
+		State:           SemanticRefreshRunFailed,
+		Counters:        persisted,
+		Now:             semanticRefreshTestNow().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, didResume, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{
+		RunID:               "ignored-run-id",
+		ProfileID:           run.ProfileID,
+		PurgeEpoch:          run.PurgeEpoch,
+		ProjectionWatermark: 999,
+		InitialCounters:     SemanticRefreshCounters{SuccessorRuns: -999},
+		Now:                 semanticRefreshTestNow().Add(2 * time.Minute),
+	})
+	if err != nil || !didResume {
+		t.Fatalf("resume err=%v resumed=%v", err, didResume)
+	}
+	if got.RunID != run.RunID || got.ProjectionWatermark != run.ProjectionWatermark ||
+		got.Counters != persisted || got.Version != failed.Version+1 {
+		t.Fatalf("resumed run=%+v, want persisted counters and immutable state", got)
+	}
+}
+
+func TestSemanticRefreshRunRejectsNegativeInitialCountersBeforeInsert(t *testing.T) {
+	st := openTestStore(t)
+	_, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), StartSemanticRefreshRunInput{
+		RunID:           "negative-initial-counters",
+		ProfileID:       "profile-negative-initial-counters",
+		InitialCounters: SemanticRefreshCounters{SuccessorRuns: -1},
+		Now:             semanticRefreshTestNow(),
+	})
+	if err == nil {
+		t.Fatal("negative initial counters unexpectedly accepted")
+	}
+	var count int
+	if queryErr := st.db.QueryRow(
+		`SELECT COUNT(*) FROM semantic_refresh_runs WHERE run_id=?`,
+		"negative-initial-counters",
+	).Scan(&count); queryErr != nil || count != 0 {
+		t.Fatalf("invalid run count=%d err=%v", count, queryErr)
+	}
+}
+
 func TestSemanticRefreshRunProfileChangeSupersedesOldRun(t *testing.T) {
 	st := openTestStore(t)
 	old := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 1)

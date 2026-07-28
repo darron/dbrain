@@ -52,6 +52,7 @@ type SemanticRefreshRun struct {
 type StartSemanticRefreshRunInput struct {
 	RunID, ProfileID                string
 	PurgeEpoch, ProjectionWatermark int64
+	InitialCounters                 SemanticRefreshCounters
 	Now                             time.Time
 }
 type SemanticRefreshRunUpdate struct {
@@ -294,7 +295,24 @@ func (s *Store) StartOrResumeSemanticRefreshRun(ctx context.Context, in StartSem
 	if !errors.Is(err, sql.ErrNoRows) {
 		return SemanticRefreshRun{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO semantic_refresh_runs (`+semanticRefreshRunColumns+`) VALUES (?,?,?,?,0,'projection','',0,0,0,0,0,0,'','running','','','',1,?,?,?)`, in.RunID, in.ProfileID, in.PurgeEpoch, in.ProjectionWatermark, now, now, now)
+	if !validSemanticRefreshCounters(in.InitialCounters) {
+		return SemanticRefreshRun{}, false, fmt.Errorf("invalid semantic refresh run input")
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO semantic_refresh_runs (`+semanticRefreshRunColumns+`) VALUES (?,?,?,?,0,'projection','',?,?,?,?,?,?,'','running','','','',1,?,?,?)`,
+		in.RunID,
+		in.ProfileID,
+		in.PurgeEpoch,
+		in.ProjectionWatermark,
+		in.InitialCounters.ProjectedParents,
+		in.InitialCounters.EmbeddedChunks,
+		in.InitialCounters.FlushedVectors,
+		in.InitialCounters.CompactedVectors,
+		in.InitialCounters.VerifiedVectors,
+		in.InitialCounters.SuccessorRuns,
+		now,
+		now,
+		now,
+	)
 	if err != nil {
 		return SemanticRefreshRun{}, false, err
 	}
@@ -306,6 +324,16 @@ func (s *Store) StartOrResumeSemanticRefreshRun(ctx context.Context, in StartSem
 	}
 	return run, false, nil
 }
+
+func validSemanticRefreshCounters(counters SemanticRefreshCounters) bool {
+	return counters.ProjectedParents >= 0 &&
+		counters.EmbeddedChunks >= 0 &&
+		counters.FlushedVectors >= 0 &&
+		counters.CompactedVectors >= 0 &&
+		counters.VerifiedVectors >= 0 &&
+		counters.SuccessorRuns >= 0
+}
+
 func (s *Store) UpdateSemanticRefreshRun(ctx context.Context, in SemanticRefreshRunUpdate) (SemanticRefreshRun, error) {
 	_, now := semanticRefreshNow(in.Now)
 	tx, err := s.db.BeginTx(ctx, nil)

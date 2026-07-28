@@ -30,6 +30,7 @@ type runnerLedger struct {
 	events       []string
 	updateErrors map[int]error
 	updateHook   func(context.Context, store.SemanticRefreshRunUpdate, int)
+	startHook    func(context.Context, store.StartSemanticRefreshRunInput, int)
 }
 
 func newRunnerLedger() *runnerLedger {
@@ -40,12 +41,13 @@ func newRunnerLedger() *runnerLedger {
 }
 
 func (l *runnerLedger) StartOrResumeSemanticRefreshRun(
-	_ context.Context,
+	ctx context.Context,
 	in store.StartSemanticRefreshRunInput,
 ) (store.SemanticRefreshRun, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.starts = append(l.starts, in)
+	call := len(l.starts)
 	l.events = append(l.events, "start:"+in.RunID)
 	if l.resume != nil {
 		run := *l.resume
@@ -55,6 +57,9 @@ func (l *runnerLedger) StartOrResumeSemanticRefreshRun(
 		run.ErrorText = ""
 		run.Version++
 		l.runs[run.RunID] = run
+		if l.startHook != nil {
+			l.startHook(ctx, in, call)
+		}
 		return run, true, nil
 	}
 	run := store.SemanticRefreshRun{
@@ -64,12 +69,16 @@ func (l *runnerLedger) StartOrResumeSemanticRefreshRun(
 		ProjectionWatermark: in.ProjectionWatermark,
 		Stage:               store.SemanticRefreshProjection,
 		State:               store.SemanticRefreshRunRunning,
+		Counters:            in.InitialCounters,
 		Version:             1,
 		CreatedAt:           in.Now.UTC(),
 		UpdatedAt:           in.Now.UTC(),
 		LastProgressAt:      in.Now.UTC(),
 	}
 	l.runs[run.RunID] = run
+	if l.startHook != nil {
+		l.startHook(ctx, in, call)
+	}
 	return run, false, nil
 }
 
@@ -413,10 +422,201 @@ func TestRunnerPersistsPartialOutcomeBeforeBoundedFailure(t *testing.T) {
 	}
 }
 
+func TestRunnerEmptySuccessfulOutcomeFailsOnceWithoutHotLoop(t *testing.T) {
+	ledger := newRunnerLedger()
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{}}}
+
+	result, err := Run(
+		t.Context(),
+		ledger,
+		executor,
+		runnerRequest(func() (string, error) { return firstRunnerRunID, nil }),
+	)
+	_ = assertRefreshError(t, err, ErrorProjection, nil)
+	if calls := len(executor.snapshotRuns()); calls != 1 {
+		t.Fatalf("executor calls = %d, want one bounded attempt", calls)
+	}
+	updates := ledger.snapshotUpdates()
+	if len(updates) != 1 || updates[0].State != store.SemanticRefreshRunFailed {
+		t.Fatalf("empty outcome updates = %+v, want one terminal failed checkpoint", updates)
+	}
+	if result.Run == nil || result.Run.State != store.SemanticRefreshRunFailed ||
+		result.Outcome == OutcomeCompleted {
+		t.Fatalf("empty outcome result = %+v, want non-success failed row", result)
+	}
+}
+
+func TestRunnerPreservesExecutorRefreshErrorPointerOverProgressFailure(t *testing.T) {
+	ledger := newRunnerLedger()
+	rawCause := errors.New("embedding circuit raw cause")
+	typed := NewError(
+		ErrorEmbeddingCircuit,
+		store.SemanticRefreshRun{
+			RunID:      "stale-run",
+			Stage:      store.SemanticRefreshEmbedding,
+			Checkpoint: "stale-checkpoint",
+		},
+		"stale",
+		Debt{PendingEmbeddings: 99},
+		rawCause,
+	)
+	progressErr := errors.New("progress sink also failed")
+	callbacks := 0
+	request := runnerRequest(func() (string, error) { return firstRunnerRunID, nil })
+	request.Progress = func(Progress) error {
+		callbacks++
+		if callbacks == 2 {
+			return progressErr
+		}
+		return nil
+	}
+	outcome := StageOutcome{
+		NextStage:           store.SemanticRefreshEmbedding,
+		Checkpoint:          "projection:typed-error",
+		EmbeddingRevision:   12,
+		Counters:            store.SemanticRefreshCounters{ProjectedParents: 4},
+		CurrentGenerationID: "semantic-root-v1:00112233445566778899aabbccddeeff",
+		Readiness:           "building",
+		Debt:                Debt{PendingEmbeddings: 4},
+	}
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{outcome: outcome, err: typed}}}
+
+	result, err := Run(t.Context(), ledger, executor, request)
+	if err != typed {
+		t.Fatalf("returned error pointer = %p (%v), want executor pointer %p", err, err, typed)
+	}
+	if typed.Code != ErrorEmbeddingCircuit ||
+		typed.Stage != store.SemanticRefreshProjection ||
+		typed.RunID != firstRunnerRunID ||
+		typed.Checkpoint != outcome.Checkpoint ||
+		typed.Readiness != outcome.Readiness ||
+		typed.Debt != outcome.Debt {
+		t.Fatalf("executor typed error not refreshed from persisted state: %+v", typed)
+	}
+	if !errors.Is(typed, rawCause) {
+		t.Fatal("executor typed error lost its raw cause")
+	}
+	if errors.Is(typed, progressErr) {
+		t.Fatal("simultaneous progress failure replaced executor typed cause")
+	}
+	if result.Run == nil || result.Run.State != store.SemanticRefreshRunFailed ||
+		result.Run.ErrorCode != ErrorEmbeddingCircuit {
+		t.Fatalf("typed executor failure result = %+v", result)
+	}
+}
+
+func TestRunnerTypedExecutorErrorStillLosesToCheckpointCASFailure(t *testing.T) {
+	ledger := newRunnerLedger()
+	updateErr := errors.New("checkpoint CAS failed")
+	ledger.updateErrors[1] = updateErr
+	typed := NewError(
+		ErrorEmbeddingCircuit,
+		store.SemanticRefreshRun{Stage: store.SemanticRefreshEmbedding},
+		"",
+		Debt{},
+		errors.New("provider circuit"),
+	)
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{
+		outcome: StageOutcome{NextStage: store.SemanticRefreshEmbedding, Checkpoint: "projection:cas"},
+		err:     typed,
+	}}}
+
+	_, err := Run(
+		t.Context(),
+		ledger,
+		executor,
+		runnerRequest(func() (string, error) { return firstRunnerRunID, nil }),
+	)
+	if err == typed {
+		t.Fatal("typed executor error escaped despite failed checkpoint CAS")
+	}
+	_ = assertRefreshError(t, err, ErrorRunConflict, updateErr)
+}
+
+func TestRunnerValidatesGenerationIDBeforeLedgerUpdate(t *testing.T) {
+	valid := "semantic-root-v1:00112233445566778899aabbccddeeff"
+	t.Run("actual root ID is accepted", func(t *testing.T) {
+		ledger := newRunnerLedger()
+		executor := &runnerExecutor{steps: []runnerExecuteStep{{
+			outcome: StageOutcome{
+				NextStage:           store.SemanticRefreshReadiness,
+				Checkpoint:          "ready",
+				CurrentGenerationID: valid,
+				Readiness:           "ready",
+				Complete:            true,
+			},
+		}}}
+		result, err := Run(
+			t.Context(),
+			ledger,
+			executor,
+			runnerRequest(func() (string, error) { return firstRunnerRunID, nil }),
+		)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if result.Run == nil || result.Run.CurrentGenerationID != valid {
+			t.Fatalf("valid generation result = %+v", result)
+		}
+	})
+
+	for _, invalid := range []string{
+		"/Users/alice/private/corpus.db",
+		strings.Repeat("a", 65),
+		strings.Repeat("界", 30),
+	} {
+		t.Run(fmt.Sprintf("reject_%d_bytes", len(invalid)), func(t *testing.T) {
+			ledger := newRunnerLedger()
+			outcome := StageOutcome{
+				NextStage:           store.SemanticRefreshVerify,
+				Checkpoint:          "flush:committed",
+				EmbeddingRevision:   17,
+				Counters:            store.SemanticRefreshCounters{FlushedVectors: 8},
+				CurrentGenerationID: invalid,
+				Readiness:           "building",
+				Debt:                Debt{Segments: 2},
+				Complete:            true,
+			}
+			executor := &runnerExecutor{steps: []runnerExecuteStep{{outcome: outcome}}}
+
+			result, err := Run(
+				t.Context(),
+				ledger,
+				executor,
+				runnerRequest(func() (string, error) { return firstRunnerRunID, nil }),
+			)
+			_ = assertRefreshError(t, err, ErrorProjection, nil)
+			if result.Run == nil || result.Run.State != store.SemanticRefreshRunFailed ||
+				result.Run.Checkpoint != outcome.Checkpoint ||
+				result.Run.EmbeddingRevision != outcome.EmbeddingRevision ||
+				result.Run.Counters != outcome.Counters ||
+				result.Debt != outcome.Debt {
+				t.Fatalf("invalid generation did not preserve safe committed outcome fields: %+v", result)
+			}
+			for _, update := range ledger.snapshotUpdates() {
+				if update.CurrentGenerationID == invalid ||
+					len(update.CurrentGenerationID) > errorRunIDLimit ||
+					strings.Contains(update.CurrentGenerationID, "/") {
+					t.Fatalf("invalid generation reached ledger: %+v", update)
+				}
+			}
+			if calls := len(executor.snapshotRuns()); calls != 1 {
+				t.Fatalf("executor calls = %d, want one", calls)
+			}
+		})
+	}
+}
+
 func TestRunnerTerminalUpdateFailureWinsOverExecutorFailure(t *testing.T) {
 	ledger := newRunnerLedger()
 	updateErr := errors.New("terminal checkpoint unavailable")
-	executeErr := errors.New("projection provider failed")
+	executeErr := NewError(
+		ErrorEmbeddingCircuit,
+		store.SemanticRefreshRun{Stage: store.SemanticRefreshEmbedding},
+		"",
+		Debt{},
+		errors.New("projection provider failed"),
+	)
 	ledger.updateErrors[1] = updateErr
 	executor := &runnerExecutor{steps: []runnerExecuteStep{{err: executeErr}}}
 
@@ -427,8 +627,8 @@ func TestRunnerTerminalUpdateFailureWinsOverExecutorFailure(t *testing.T) {
 		runnerRequest(func() (string, error) { return firstRunnerRunID, nil }),
 	)
 	_ = assertRefreshError(t, err, ErrorRunConflict, updateErr)
-	if errors.Is(err, executeErr) {
-		t.Fatalf("terminal update failure did not take precedence: %v", err)
+	if err == executeErr || errors.Is(err, executeErr) {
+		t.Fatalf("terminal update failure did not take precedence over typed executor error: %v", err)
 	}
 	if result.Outcome == OutcomeCompleted {
 		t.Fatalf("terminal update failure returned false completion: %+v", result)
@@ -680,14 +880,166 @@ func TestRunnerSuccessorCompletesOldCarriesCountAndContinuesAtProjection(t *test
 	if len(starts) != 2 ||
 		starts[0].ProjectionWatermark != 10 ||
 		starts[1].ProjectionWatermark != successorWatermark ||
-		starts[1].RunID != secondRunnerRunID {
+		starts[1].RunID != secondRunnerRunID ||
+		starts[1].InitialCounters != (store.SemanticRefreshCounters{SuccessorRuns: 3}) {
 		t.Fatalf("successor starts = %+v", starts)
+	}
+	updates := ledger.snapshotUpdates()
+	if len(updates) != 4 {
+		t.Fatalf("updates = %d, want old checkpoint/completion and successor checkpoint/completion with no initialization CAS", len(updates))
 	}
 	old := ledger.snapshot(firstRunnerRunID)
 	if old.State != store.SemanticRefreshRunCompleted ||
 		old.ProjectionWatermark != 10 ||
 		old.Counters.SuccessorRuns != 2 {
 		t.Fatalf("old run = %+v, want completed immutable watermark", old)
+	}
+}
+
+func TestRunnerCancellationAfterCompletedCASReturnsNonSuccess(t *testing.T) {
+	ledger := newRunnerLedger()
+	parent, cancel := context.WithCancel(context.Background())
+	ledger.updateHook = func(_ context.Context, update store.SemanticRefreshRunUpdate, _ int) {
+		if update.State == store.SemanticRefreshRunCompleted {
+			cancel()
+		}
+	}
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{
+		outcome: StageOutcome{
+			NextStage:  store.SemanticRefreshReadiness,
+			Checkpoint: "ready",
+			Readiness:  "ready",
+			Complete:   true,
+		},
+	}}}
+
+	result, err := Run(
+		parent,
+		ledger,
+		executor,
+		runnerRequest(func() (string, error) { return firstRunnerRunID, nil }),
+	)
+	_ = assertRefreshError(t, err, ErrorCancelled, context.Canceled)
+	if result.Outcome == OutcomeCompleted || result.Run == nil ||
+		result.Run.State != store.SemanticRefreshRunCompleted {
+		t.Fatalf("completion-linearized cancellation result = %+v, want non-success with durable completed row", result)
+	}
+	updates := ledger.snapshotUpdates()
+	if len(updates) != 2 || updates[1].State != store.SemanticRefreshRunCompleted {
+		t.Fatalf("completion-linearized updates = %+v, want no impossible cancelled rewrite", updates)
+	}
+}
+
+func TestRunnerCancellationAfterOldCompletionStartsNoSuccessor(t *testing.T) {
+	ledger := newRunnerLedger()
+	parent, cancel := context.WithCancel(context.Background())
+	ledger.updateHook = func(_ context.Context, update store.SemanticRefreshRunUpdate, _ int) {
+		if update.RunID == firstRunnerRunID &&
+			update.State == store.SemanticRefreshRunCompleted {
+			cancel()
+		}
+	}
+	successorWatermark := int64(11)
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{
+		outcome: StageOutcome{
+			NextStage:          store.SemanticRefreshReadiness,
+			Checkpoint:         "ready",
+			Counters:           store.SemanticRefreshCounters{SuccessorRuns: 4},
+			Readiness:          "ready",
+			Complete:           true,
+			SuccessorWatermark: &successorWatermark,
+		},
+	}}}
+	ids := []string{firstRunnerRunID, secondRunnerRunID}
+	request := runnerRequest(func() (string, error) {
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
+	})
+
+	result, err := Run(parent, ledger, executor, request)
+	_ = assertRefreshError(t, err, ErrorCancelled, context.Canceled)
+	if result.Outcome == OutcomeCompleted || result.Run == nil ||
+		result.Run.State != store.SemanticRefreshRunCompleted {
+		t.Fatalf("pre-successor cancellation result = %+v", result)
+	}
+	if starts := ledger.snapshotStarts(); len(starts) != 1 {
+		t.Fatalf("starts = %+v, want no successor after cancellation", starts)
+	}
+}
+
+func TestRunnerCancellationAfterAtomicSuccessorStartPausesSuccessorOnce(t *testing.T) {
+	ledger := newRunnerLedger()
+	parent, cancel := context.WithCancel(context.Background())
+	var cancelledContextErr error
+	var cancelledDeadline time.Time
+	ledger.startHook = func(_ context.Context, _ store.StartSemanticRefreshRunInput, call int) {
+		if call == 2 {
+			cancel()
+		}
+	}
+	ledger.updateHook = func(ctx context.Context, update store.SemanticRefreshRunUpdate, _ int) {
+		if update.RunID == secondRunnerRunID &&
+			update.State == store.SemanticRefreshRunCancelled {
+			cancelledContextErr = ctx.Err()
+			cancelledDeadline, _ = ctx.Deadline()
+		}
+	}
+	successorWatermark := int64(11)
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{
+		outcome: StageOutcome{
+			NextStage:          store.SemanticRefreshReadiness,
+			Checkpoint:         "ready",
+			Counters:           store.SemanticRefreshCounters{SuccessorRuns: 4},
+			Readiness:          "ready",
+			Complete:           true,
+			SuccessorWatermark: &successorWatermark,
+		},
+	}}}
+	ids := []string{firstRunnerRunID, secondRunnerRunID}
+	request := runnerRequest(func() (string, error) {
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
+	})
+	before := time.Now()
+
+	result, err := Run(parent, ledger, executor, request)
+	_ = assertRefreshError(t, err, ErrorCancelled, context.Canceled)
+	if result.Outcome == OutcomeCompleted || result.Run == nil ||
+		result.Run.RunID != secondRunnerRunID ||
+		result.Run.State != store.SemanticRefreshRunCancelled ||
+		result.Run.Counters.SuccessorRuns != 5 {
+		t.Fatalf("post-successor-start cancellation result = %+v", result)
+	}
+	if cancelledContextErr != nil {
+		t.Fatalf("successor cancellation checkpoint inherited cancellation: %v", cancelledContextErr)
+	}
+	if cancelledDeadline.IsZero() ||
+		cancelledDeadline.Before(before.Add(1500*time.Millisecond)) ||
+		cancelledDeadline.After(time.Now().Add(2100*time.Millisecond)) {
+		t.Fatalf("successor cancellation deadline = %v, want hard two-second bound", cancelledDeadline)
+	}
+	if calls := len(executor.snapshotRuns()); calls != 1 {
+		t.Fatalf("executor calls = %d, want no successor execution after cancellation", calls)
+	}
+	starts := ledger.snapshotStarts()
+	if len(starts) != 2 ||
+		starts[1].InitialCounters != (store.SemanticRefreshCounters{SuccessorRuns: 5}) {
+		t.Fatalf("successor starts = %+v", starts)
+	}
+	updates := ledger.snapshotUpdates()
+	successorUpdates := 0
+	for _, update := range updates {
+		if update.RunID == secondRunnerRunID {
+			successorUpdates++
+			if update.State != store.SemanticRefreshRunCancelled {
+				t.Fatalf("unexpected post-start successor update: %+v", update)
+			}
+		}
+	}
+	if successorUpdates != 1 {
+		t.Fatalf("successor updates = %d, want exactly one cancelled checkpoint", successorUpdates)
 	}
 }
 
