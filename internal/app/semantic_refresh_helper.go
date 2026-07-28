@@ -13,6 +13,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -150,6 +151,26 @@ func runConfiguredSemanticRefresh(
 	if err := ctx.Err(); err != nil {
 		return cancelledConfiguredSemanticRefresh(result, err)
 	}
+	databaseID, err := st.RetrievalDatabaseID(ctx)
+	if err != nil {
+		return configuredSemanticRefreshError(
+			ctx,
+			result,
+			semanticrefresh.ErrorLockUnavailable,
+			"",
+			err,
+		)
+	}
+	lockScope, err := semanticlock.NewScope(cfg.CacheDir, databaseID)
+	if err != nil {
+		return configuredSemanticRefreshError(
+			ctx,
+			result,
+			semanticrefresh.ErrorLockUnavailable,
+			"",
+			err,
+		)
+	}
 
 	provider, err := deps.provider(semanticCfg)
 	if err != nil {
@@ -234,6 +255,16 @@ func runConfiguredSemanticRefresh(
 			ctx,
 			result,
 			semanticrefresh.ErrorBackendBroken,
+			"",
+			err,
+		)
+	}
+	executor, err = semanticrefresh.NewLockedPipeline(executor, lockScope)
+	if err != nil {
+		return configuredSemanticRefreshError(
+			ctx,
+			result,
+			semanticrefresh.ErrorLockUnavailable,
 			"",
 			err,
 		)

@@ -80,6 +80,127 @@ func TestTask5StagedBytesCountUTF8Bytes(t *testing.T) {
 	}
 }
 
+func TestProjectionStagingPromoteAndBlockRejectChangedPurgeEpoch(t *testing.T) {
+	t.Run("stage", func(t *testing.T) {
+		st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+		defer func() { _ = st.Close() }()
+		ctx := context.Background()
+		seedRetrievalSource(t, st, "source:epoch-stage")
+		work, projection := projectionWorkForEpochTest(t, st, "source:epoch-stage")
+		row := task5StageRowForOccurrence(t, projection, projection.Occurrences[0])
+
+		_, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+			ParentKind: work.Parent.Kind, ParentSourceKey: work.Parent.SourceKey,
+			DirtyRevision: work.DirtyRevision, ProjectionHash: projection.ParentHash,
+			ExpectedPurgeEpoch: 1,
+			Cursor:             retrievalchunk.Cursor{SectionKey: row.Occurrence.SectionKey, NextBoundary: row.Occurrence.EndChar},
+			Rows:               []RetrievalProjectionStageRow{row},
+		})
+		if !errors.Is(err, ErrRetrievalPurgeEpochChanged) {
+			t.Fatalf("stage err=%v want ErrRetrievalPurgeEpochChanged", err)
+		}
+		var staged int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_projection_staging WHERE parent_source_key=?`, work.Parent.SourceKey).Scan(&staged); err != nil {
+			t.Fatal(err)
+		}
+		if staged != 0 {
+			t.Fatalf("stage committed %d rows after purge epoch changed", staged)
+		}
+	})
+
+	t.Run("promote", func(t *testing.T) {
+		st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+		defer func() { _ = st.Close() }()
+		ctx := context.Background()
+		seedRetrievalSource(t, st, "source:epoch-promote")
+		work, projection := projectionWorkForEpochTest(t, st, "source:epoch-promote")
+		rows := make([]RetrievalProjectionStageRow, 0, len(projection.Occurrences))
+		for _, occurrence := range projection.Occurrences {
+			rows = append(rows, task5StageRowForOccurrence(t, projection, occurrence))
+		}
+		cp, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+			ParentKind: work.Parent.Kind, ParentSourceKey: work.Parent.SourceKey,
+			DirtyRevision: work.DirtyRevision, ProjectionHash: projection.ParentHash,
+			ExpectedPurgeEpoch: 0,
+			Rows:               rows,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.db.Exec(`UPDATE retrieval_state SET purge_epoch=1 WHERE singleton=1`); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = st.PromoteRetrievalProjectionStaging(ctx, cp)
+		if !errors.Is(err, ErrRetrievalPurgeEpochChanged) {
+			t.Fatalf("promote err=%v want ErrRetrievalPurgeEpochChanged", err)
+		}
+		var live int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_chunks WHERE parent_source_key=?`, work.Parent.SourceKey).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		if live != 0 {
+			t.Fatalf("promotion committed %d live chunks after purge epoch changed", live)
+		}
+	})
+
+	t.Run("block", func(t *testing.T) {
+		st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+		defer func() { _ = st.Close() }()
+		ctx := context.Background()
+		seedRetrievalSource(t, st, "source:epoch-block")
+		work, projection := projectionWorkForEpochTest(t, st, "source:epoch-block")
+		if _, err := st.db.Exec(`UPDATE retrieval_state SET purge_epoch=1 WHERE singleton=1`); err != nil {
+			t.Fatal(err)
+		}
+
+		err := st.BlockRetrievalProjectionTooLarge(
+			ctx,
+			work.Parent,
+			work.DirtyRevision,
+			projection.ParentHash,
+			0,
+		)
+		if !errors.Is(err, ErrRetrievalPurgeEpochChanged) {
+			t.Fatalf("block err=%v want ErrRetrievalPurgeEpochChanged", err)
+		}
+		var status string
+		if err := st.db.QueryRow(`
+			SELECT status FROM retrieval_parent_projections
+			WHERE parent_kind=? AND parent_source_key=?`,
+			work.Parent.Kind, work.Parent.SourceKey).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status == string(RetrievalProjectionBlocked) {
+			t.Fatal("projection was blocked after purge epoch changed")
+		}
+	})
+}
+
+func projectionWorkForEpochTest(
+	t *testing.T,
+	st *Store,
+	sourceKey string,
+) (RetrievalParentWork, retrievalchunk.Projection) {
+	t.Helper()
+	work, err := st.ListDirtyRetrievalParents(
+		context.Background(),
+		projectionRevisionForTest(t, st),
+		1,
+	)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("work=%+v err=%v", work, err)
+	}
+	if work[0].Parent.SourceKey != sourceKey {
+		t.Fatalf("source key=%q want=%q", work[0].Parent.SourceKey, sourceKey)
+	}
+	projection, err := retrievalchunk.BuildProjection(work[0].Parent, retrievalchunk.DefaultOptions())
+	if err != nil || len(projection.Occurrences) == 0 {
+		t.Fatalf("projection=%+v err=%v", projection, err)
+	}
+	return work[0], projection
+}
+
 func TestTask5StoreStagingFullyValidatesOncePerLifecycleBoundary(t *testing.T) {
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()

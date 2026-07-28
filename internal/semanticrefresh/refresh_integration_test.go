@@ -18,6 +18,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -273,11 +274,12 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 	epoch := refreshPurgeEpoch(t, st)
 	provider := newRefreshProvider("flush-v1")
 	native := &refreshNative{verifyFailures: 1}
+	cacheDir := t.TempDir()
 	executor, err := NewPipeline(st, PipelineOptions{
 		Profile:         provider.profile(),
 		Provider:        provider,
 		Native:          native,
-		CacheDir:        t.TempDir(),
+		CacheDir:        cacheDir,
 		ExactMaxChunks:  semanticreadiness.DefaultExactMaxChunks,
 		ProjectionBatch: 1,
 		EmbeddingBatch:  semanticbuild.MaxEmbeddingBatchSize,
@@ -287,6 +289,7 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 	if err != nil {
 		t.Fatal(err)
 	}
+	executor = lockRefreshIntegrationPipeline(t, st, cacheDir, executor)
 	ids := &refreshRunIDSequence{}
 	request := refreshIntegrationRequest(
 		provider.profile(),
@@ -461,11 +464,12 @@ func newRefreshIntegrationPipelineWithClock(
 	embeddingBatch int,
 ) StageExecutor {
 	t.Helper()
+	cacheDir := t.TempDir()
 	executor, err := NewPipeline(st, PipelineOptions{
 		Profile:         provider.profile(),
 		Provider:        provider,
 		Native:          &pipelineTestNative{},
-		CacheDir:        t.TempDir(),
+		CacheDir:        cacheDir,
 		ExactMaxChunks:  semanticreadiness.DefaultExactMaxChunks,
 		ProjectionBatch: projectionBatch,
 		EmbeddingBatch:  embeddingBatch,
@@ -475,7 +479,29 @@ func newRefreshIntegrationPipelineWithClock(
 	if err != nil {
 		t.Fatal(err)
 	}
-	return executor
+	return lockRefreshIntegrationPipeline(t, st, cacheDir, executor)
+}
+
+func lockRefreshIntegrationPipeline(
+	t *testing.T,
+	st *store.Store,
+	cacheDir string,
+	executor StageExecutor,
+) StageExecutor {
+	t.Helper()
+	databaseID, err := st.RetrievalDatabaseID(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := semanticlock.NewScope(cacheDir, databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := NewLockedPipeline(executor, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return locked
 }
 
 func refreshIntegrationRequest(

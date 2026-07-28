@@ -59,19 +59,26 @@ func TestProjectionBatchResumesStagedGiantAtSameWatermark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := &fakeStore{parents: []retrievalchunk.Parent{parent}, staging: map[string]store.RetrievalProjectionCheckpoint{
+	st := &fakeStore{purgeEpoch: 7, parents: []retrievalchunk.Parent{parent}, staging: map[string]store.RetrievalProjectionCheckpoint{
 		"source:giant": {WorkID: "persisted-staging", DirtyRevision: 7, ParentKind: "source", ParentSourceKey: "giant", ProjectionHash: hash, StagedChunks: 3},
 	}}
 	st.listDirty = func(context.Context, int64, int) ([]store.RetrievalParentWork, error) {
 		return []store.RetrievalParentWork{{Parent: parent, DirtyRevision: 7}}, nil
 	}
 
-	progress, err := RunProjectionBatch(context.Background(), st, ProjectionBatchOptions{Watermark: 7, Limit: 1})
+	progress, err := RunProjectionBatch(context.Background(), st, ProjectionBatchOptions{
+		Watermark:          7,
+		ExpectedPurgeEpoch: 7,
+		Limit:              1,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(st.stageCalls) != 0 || len(st.promotions) != 1 || progress.Generated != 1 {
 		t.Fatalf("progress=%+v stage_calls=%d promotions=%d; want promotion of persisted staging without rebuilding it", progress, len(st.stageCalls), len(st.promotions))
+	}
+	if st.promotions[0].ExpectedPurgeEpoch != 7 {
+		t.Fatalf("promotion purge epoch=%d want=7", st.promotions[0].ExpectedPurgeEpoch)
 	}
 }
 
@@ -236,6 +243,10 @@ func (s *failOnProjectionBatchStore) ProjectionWorkRevision(context.Context) (in
 	s.fail("ProjectionWorkRevision")
 	return 0, nil
 }
+func (s *failOnProjectionBatchStore) RetrievalPurgeEpoch(context.Context) (int64, error) {
+	s.fail("RetrievalPurgeEpoch")
+	return 0, nil
+}
 func (s *failOnProjectionBatchStore) ListDirtyRetrievalParents(context.Context, int64, int) ([]store.RetrievalParentWork, error) {
 	s.fail("ListDirtyRetrievalParents")
 	return nil, nil
@@ -256,7 +267,7 @@ func (s *failOnProjectionBatchStore) PromoteRetrievalProjectionStaging(context.C
 	s.fail("PromoteRetrievalProjectionStaging")
 	return store.ChunkReplaceResult{}, nil
 }
-func (s *failOnProjectionBatchStore) BlockRetrievalProjectionTooLarge(context.Context, retrievalchunk.Parent, int64, string) error {
+func (s *failOnProjectionBatchStore) BlockRetrievalProjectionTooLarge(context.Context, retrievalchunk.Parent, int64, string, int64) error {
 	s.fail("BlockRetrievalProjectionTooLarge")
 	return nil
 }

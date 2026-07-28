@@ -2283,7 +2283,7 @@ func TestProjectionTooLargeIsTerminalBlockedAndRemovesSearchableChunks(t *testin
 	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "source:too-large", projection.Chunks); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BlockRetrievalProjectionTooLarge(ctx, work[0].Parent, work[0].DirtyRevision, projection.ParentHash); err != nil {
+	if err := st.BlockRetrievalProjectionTooLarge(ctx, work[0].Parent, work[0].DirtyRevision, projection.ParentHash, 0); err != nil {
 		t.Fatal(err)
 	}
 	var status, reason string
