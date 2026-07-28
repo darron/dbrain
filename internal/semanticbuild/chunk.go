@@ -398,7 +398,6 @@ func runProjectionBatchWithLimitsAndPlanner(ctx context.Context, st ChunkStore, 
 			return progress, err
 		}
 		if staged {
-			checkpoint.ExpectedPurgeEpoch = opts.ExpectedPurgeEpoch
 			if checkpoint.ProjectionHash != projectionHash {
 				progress.Failed++
 				return progress, fmt.Errorf("loaded retrieval projection checkpoint hash does not match parent")
@@ -487,7 +486,7 @@ func runProjectionBatchWithLimitsAndPlanner(ctx context.Context, st ChunkStore, 
 			}
 			result, err := st.ApplyRetrievalProjection(ctx, store.ApplyRetrievalProjectionInput{
 				ParentKind: parent.Kind, ParentSourceKey: parent.SourceKey,
-				DirtyRevision: selectedWork.DirtyRevision, Projection: projection,
+				DirtyRevision: selectedWork.DirtyRevision, ExpectedPurgeEpoch: opts.ExpectedPurgeEpoch, Projection: projection,
 				Status: status, Reason: reason,
 			})
 			if err != nil {

@@ -741,6 +741,43 @@ func TestApplyRetrievalProjectionAtomicallyReplacesOccurrencesAndOnlyObsoleteEmb
 	}
 }
 
+func TestApplyRetrievalProjectionRejectsChangedPurgeEpoch(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:apply-purge-epoch")
+	work := oneDirtyProjectionWork(t, st)
+	projection, err := retrievalchunk.BuildProjection(work.Parent, retrievalchunk.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_state SET purge_epoch=1 WHERE singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = st.ApplyRetrievalProjection(ctx, ApplyRetrievalProjectionInput{
+		ParentKind: work.Parent.Kind, ParentSourceKey: work.Parent.SourceKey,
+		DirtyRevision: work.DirtyRevision, ExpectedPurgeEpoch: 0,
+		Projection: projection, Status: RetrievalProjectionCurrent,
+	})
+	if !errors.Is(err, ErrRetrievalPurgeEpochChanged) {
+		t.Fatalf("apply err=%v want ErrRetrievalPurgeEpochChanged", err)
+	}
+	var chunks, projectedRevision int
+	if err := st.db.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM retrieval_chunks WHERE parent_source_key=?),
+			(SELECT projected_revision FROM retrieval_parent_projections
+			 WHERE parent_kind=? AND parent_source_key=?)`,
+		work.Parent.SourceKey, work.Parent.Kind, work.Parent.SourceKey,
+	).Scan(&chunks, &projectedRevision); err != nil {
+		t.Fatal(err)
+	}
+	if chunks != 0 || projectedRevision != 0 {
+		t.Fatalf("stale apply committed chunks=%d projected_revision=%d", chunks, projectedRevision)
+	}
+}
+
 func TestApplyRetrievalProjectionRollsBackChunksOccurrencesAndState(t *testing.T) {
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()

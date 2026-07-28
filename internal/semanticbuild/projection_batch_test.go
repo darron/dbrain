@@ -34,6 +34,28 @@ func TestProjectionBatchProcessesOnlyPinnedWatermark(t *testing.T) {
 	}
 }
 
+func TestProjectionBatchCarriesPinnedPurgeEpochToSmallApply(t *testing.T) {
+	st := &fakeStore{
+		purgeEpoch: 7,
+		parents: []retrievalchunk.Parent{{
+			Kind: "item", SourceKey: "epoch-pinned", ContentHash: "one",
+			Sections: []retrievalchunk.Section{{Role: "raw", Text: "one"}},
+		}},
+	}
+
+	_, err := RunProjectionBatch(context.Background(), st, ProjectionBatchOptions{
+		Watermark:          1,
+		ExpectedPurgeEpoch: 7,
+		Limit:              1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.applyInputs) != 1 || st.applyInputs[0].ExpectedPurgeEpoch != 7 {
+		t.Fatalf("apply inputs=%+v want one input pinned to purge epoch 7", st.applyInputs)
+	}
+}
+
 func TestProjectionBatchHasMoreExcludesAboveWatermark(t *testing.T) {
 	st := &fakeStore{parents: []retrievalchunk.Parent{
 		{Kind: "item", SourceKey: "one", ContentHash: "one", Sections: []retrievalchunk.Section{{Role: "raw", Text: "one"}}},
@@ -60,7 +82,7 @@ func TestProjectionBatchResumesStagedGiantAtSameWatermark(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := &fakeStore{purgeEpoch: 7, parents: []retrievalchunk.Parent{parent}, staging: map[string]store.RetrievalProjectionCheckpoint{
-		"source:giant": {WorkID: "persisted-staging", DirtyRevision: 7, ParentKind: "source", ParentSourceKey: "giant", ProjectionHash: hash, StagedChunks: 3},
+		"source:giant": {WorkID: "persisted-staging", DirtyRevision: 7, ExpectedPurgeEpoch: 7, ParentKind: "source", ParentSourceKey: "giant", ProjectionHash: hash, StagedChunks: 3},
 	}}
 	st.listDirty = func(context.Context, int64, int) ([]store.RetrievalParentWork, error) {
 		return []store.RetrievalParentWork{{Parent: parent, DirtyRevision: 7}}, nil

@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Cross-process semantic refresh safety (2026-07-28)
+
+- **Database-scoped semantic leases**: Refresh projection, embedding, flush,
+  compaction, verification, and readiness units now run under crash-released
+  cross-process maintenance leases. Generation publication additionally takes
+  the exclusive generation lease, preventing overlapping sync/manual refresh
+  processes from publishing incompatible ANN state.
+- **Purge-epoch-fenced projection commits**: Both ordinary and giant projection
+  commits carry the refresh run's pinned purge epoch. Giant staging persists
+  that epoch in every durable row and rejects stale resume or promotion after a
+  purge; migration 28 adds and repairs the durable epoch column.
+
 ### Automatic semantic refresh after sync (2026-07-28)
 
 - **Automatic semantic maintenance**: Successful CLI `sync all` and scheduled
@@ -16,8 +28,8 @@ development date for the change set.
   refresh failure makes the sync fail with the typed semantic error. CLI JSON
   emits one flattened sync document with either `semantic` or `semantic_error`.
   The coarse existing `sync-all.lock` covers the combined source-plus-semantic
-  operation. Cross-process semantic maintenance locks, release/Homebrew native
-  packaging, and installed-corpus acceptance remain later stacked work.
+  operation. Release/Homebrew native packaging and installed-corpus acceptance
+  remain later stacked work.
 
 ### Resumable semantic refresh (2026-07-28)
 
@@ -25,8 +37,8 @@ development date for the change set.
   ledger, fixed-watermark projection and revision-checkpointed embedding batches,
   bounded provider retry, L0/compaction/verification/readiness orchestration,
   serialized progress, typed failures, `semantic refresh`, and latest-run
-  status. Cross-process semantic locks, release packaging, and installed-corpus
-  activation remain in later stacked PRs.
+  status. Release packaging and installed-corpus activation remain in later
+  stacked PRs.
 - **Non-blocking refresh progress**: Five-second visible progress now continues
   while a semantic compaction transaction temporarily blocks the durable
   heartbeat write. A dedicated one-connection heartbeat handle keeps that wait
@@ -63,8 +75,8 @@ development date for the change set.
   `needs_index`; native-root failures in research output and traces use a
   stable path-free reason.
 - **Runtime-admission boundary**: Universal synchronous post-sync integration
-  is now supplied by the following stacked work. Cross-process locking,
-  release/Homebrew native packaging, and installed-corpus acceptance and
+  and cross-process locking are supplied by the following stacked work.
+  Release/Homebrew native packaging and installed-corpus acceptance and
   activation remain later stacked work.
 
 ### Segmented ANN lifecycle foundation (2026-07-22)

@@ -287,6 +287,7 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 		`CREATE TABLE IF NOT EXISTS retrieval_projection_staging (
 			work_id TEXT NOT NULL,
 			dirty_revision INTEGER NOT NULL,
+			expected_purge_epoch INTEGER NOT NULL DEFAULT 0,
 			parent_kind TEXT NOT NULL,
 			parent_source_key TEXT NOT NULL,
 			projection_hash TEXT NOT NULL DEFAULT '',
@@ -367,6 +368,7 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 	if err := s.ensureColumns("retrieval_projection_staging", []columnDefinition{
 		{Name: "work_id", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "dirty_revision", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "expected_purge_epoch", Definition: "INTEGER NOT NULL DEFAULT 0"},
 		{Name: "parent_kind", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "parent_source_key", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "projection_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
@@ -416,6 +418,15 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 		}
 	}
 	return s.seedSemanticFoundationRetrievalParents()
+}
+
+func (s *Store) ensureRetrievalProjectionStagingPurgeEpoch() error {
+	if err := s.ensureColumns("retrieval_projection_staging", []columnDefinition{
+		{Name: "expected_purge_epoch", Definition: "INTEGER NOT NULL DEFAULT 0"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval projection staging purge epoch: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ensureRetrievalSegmentMembershipSchema() error {

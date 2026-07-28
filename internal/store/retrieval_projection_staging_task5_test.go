@@ -177,6 +177,57 @@ func TestProjectionStagingPromoteAndBlockRejectChangedPurgeEpoch(t *testing.T) {
 	})
 }
 
+func TestProjectionStagingPersistsOriginalPurgeEpochAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:epoch-resume")
+	work, projection := projectionWorkForEpochTest(t, st, "source:epoch-resume")
+	row := task5StageRowForOccurrence(t, projection, projection.Occurrences[0])
+
+	cp, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+		ParentKind: work.Parent.Kind, ParentSourceKey: work.Parent.SourceKey,
+		DirtyRevision: work.DirtyRevision, ProjectionHash: projection.ParentHash,
+		ExpectedPurgeEpoch: 0,
+		Cursor:             retrievalchunk.Cursor{SectionKey: row.Occurrence.SectionKey, NextBoundary: row.Occurrence.EndChar},
+		Rows:               []RetrievalProjectionStageRow{row},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	loaded, ok, err := st.LoadRetrievalProjectionStaging(ctx, work.Parent, work.DirtyRevision)
+	if err != nil || !ok {
+		t.Fatalf("load persisted checkpoint ok=%v err=%v", ok, err)
+	}
+	if loaded.ExpectedPurgeEpoch != cp.ExpectedPurgeEpoch {
+		t.Fatalf("loaded purge epoch=%d want original %d", loaded.ExpectedPurgeEpoch, cp.ExpectedPurgeEpoch)
+	}
+	var minimum, maximum int64
+	if err := st.db.QueryRow(`
+		SELECT MIN(expected_purge_epoch), MAX(expected_purge_epoch)
+		FROM retrieval_projection_staging
+		WHERE work_id=?`, cp.WorkID).Scan(&minimum, &maximum); err != nil {
+		t.Fatal(err)
+	}
+	if minimum != cp.ExpectedPurgeEpoch || maximum != cp.ExpectedPurgeEpoch {
+		t.Fatalf("durable staging epochs min=%d max=%d want=%d", minimum, maximum, cp.ExpectedPurgeEpoch)
+	}
+
+	if _, err := st.db.Exec(`UPDATE retrieval_state SET purge_epoch=1 WHERE singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = st.LoadRetrievalProjectionStaging(ctx, work.Parent, work.DirtyRevision)
+	if !errors.Is(err, ErrRetrievalPurgeEpochChanged) {
+		t.Fatalf("load after purge err=%v want ErrRetrievalPurgeEpochChanged", err)
+	}
+}
+
 func projectionWorkForEpochTest(
 	t *testing.T,
 	st *Store,

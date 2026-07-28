@@ -663,11 +663,13 @@ func TestSemanticRefreshRunsMigrationV26RepairsGenuineV25Database(t *testing.T) 
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsRepairMigrationVersion).Scan(&before); err != nil || before != 1 {
 		t.Fatalf("v26 before read count=%d err=%v", before, err)
 	}
-	if len(events) != 4 ||
+	if len(events) != 6 ||
 		events[0].Phase != MigrationStarted || events[0].Version != semanticRefreshRunsRepairMigrationVersion ||
 		events[1].Phase != MigrationApplied || events[1].Version != semanticRefreshRunsRepairMigrationVersion ||
 		events[2].Phase != MigrationStarted || events[2].Version != semanticRefreshRunsArchiveMigrationVersion ||
-		events[3].Phase != MigrationApplied || events[3].Version != semanticRefreshRunsArchiveMigrationVersion {
+		events[3].Phase != MigrationApplied || events[3].Version != semanticRefreshRunsArchiveMigrationVersion ||
+		events[4].Phase != MigrationStarted || events[4].Version != retrievalProjectionStagingEpochVersion ||
+		events[5].Phase != MigrationApplied || events[5].Version != retrievalProjectionStagingEpochVersion {
 		t.Fatalf("migration events=%+v", events)
 	}
 	var createdText string

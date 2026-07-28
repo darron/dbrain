@@ -101,6 +101,9 @@ func (f *fakeStore) LoadRetrievalProjectionStaging(_ context.Context, parent ret
 	if !ok || cp.DirtyRevision != revision {
 		return store.RetrievalProjectionCheckpoint{}, false, nil
 	}
+	if cp.ExpectedPurgeEpoch != f.purgeEpoch {
+		return store.RetrievalProjectionCheckpoint{}, false, store.ErrRetrievalPurgeEpochChanged
+	}
 	return cp, true, nil
 }
 

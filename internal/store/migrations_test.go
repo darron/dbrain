@@ -61,6 +61,43 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestProjectionStagingPurgeEpochMigrationRepairsExistingStampedDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		ALTER TABLE retrieval_projection_staging DROP COLUMN expected_purge_epoch;
+		PRAGMA user_version=28`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	assertDatabaseTableColumn(t, st.db, "retrieval_projection_staging", "expected_purge_epoch")
+
+	var migrationCount int
+	if err := st.db.QueryRow(`
+		SELECT COUNT(*) FROM schema_migrations
+		WHERE version=28 AND name='retrieval_projection_staging_expected_purge_epoch'`,
+	).Scan(&migrationCount); err != nil {
+		t.Fatal(err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("migration 28 count=%d want 1", migrationCount)
+	}
+}
+
 func TestSemanticRefreshRunsMigrationUpgradesV24DatabaseIdempotently(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
 	st := openStoreAtPath(t, path)
@@ -171,14 +208,20 @@ func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotent
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 ||
+	if len(events) != 4 ||
 		events[0].Phase != MigrationStarted ||
 		events[1].Phase != MigrationApplied ||
 		events[0].Version != semanticRefreshRunsArchiveMigrationVersion ||
 		events[1].Version != semanticRefreshRunsArchiveMigrationVersion ||
 		events[0].Name != semanticRefreshRunsArchiveMigrationName ||
-		events[1].Name != semanticRefreshRunsArchiveMigrationName {
-		t.Fatalf("v27 migration events=%+v", events)
+		events[1].Name != semanticRefreshRunsArchiveMigrationName ||
+		events[2].Phase != MigrationStarted ||
+		events[3].Phase != MigrationApplied ||
+		events[2].Version != retrievalProjectionStagingEpochVersion ||
+		events[3].Version != retrievalProjectionStagingEpochVersion ||
+		events[2].Name != retrievalProjectionStagingEpochName ||
+		events[3].Name != retrievalProjectionStagingEpochName {
+		t.Fatalf("v27-v28 migration events=%+v", events)
 	}
 	got, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
 	if err != nil || got == nil {
