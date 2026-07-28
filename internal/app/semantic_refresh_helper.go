@@ -27,6 +27,7 @@ type semanticRefreshDeps struct {
 	provider        func(semanticconfig.Config) (embedding.Provider, error)
 	nativeLifecycle func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error)
 	runRefresh      func(context.Context, semanticrefresh.RunLedger, semanticrefresh.StageExecutor, semanticrefresh.Request) (semanticrefresh.Result, error)
+	embeddingBatch  int
 }
 
 func defaultSemanticRefreshDeps() semanticRefreshDeps {
@@ -226,6 +227,7 @@ func runConfiguredSemanticRefresh(
 		Native:         native,
 		CacheDir:       cfg.CacheDir,
 		ExactMaxChunks: semanticCfg.ExactFallbackMaxChunks,
+		EmbeddingBatch: deps.embeddingBatch,
 	})
 	if err != nil {
 		return configuredSemanticRefreshError(

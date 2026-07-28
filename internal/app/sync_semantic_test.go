@@ -91,6 +91,7 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 		nativeLifecycle: func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error) {
 			return native, nil
 		},
+		embeddingBatch: semanticbuild.MaxEmbeddingBatchSize,
 		runRefresh: func(
 			ctx context.Context,
 			ledger semanticrefresh.RunLedger,
