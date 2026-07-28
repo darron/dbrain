@@ -48,13 +48,27 @@ func (c Capability) Admit(backend, version string) (bool, string) {
 func sanitizeCapabilityReason(reason string) string {
 	fields := strings.Fields(reason)
 	for index, field := range fields {
-		if key, value, ok := strings.Cut(field, "="); ok && isCapabilityPath(value) {
-			fields[index] = key + "=[path]"
-		} else if isCapabilityPath(field) {
-			fields[index] = "[path]"
+		if key, value, ok := strings.Cut(field, "="); ok {
+			if redacted, ok := redactCapabilityPath(value); ok {
+				fields[index] = key + "=" + redacted
+			}
+		} else if redacted, ok := redactCapabilityPath(field); ok {
+			fields[index] = redacted
 		}
 	}
 	return strings.Join(fields, " ")
+}
+
+func redactCapabilityPath(value string) (string, bool) {
+	if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') && value[len(value)-1] == value[0] {
+		if isCapabilityPath(value[1 : len(value)-1]) {
+			return value[:1] + "[path]" + value[len(value)-1:], true
+		}
+	}
+	if isCapabilityPath(value) {
+		return "[path]", true
+	}
+	return "", false
 }
 
 func isCapabilityPath(value string) bool {
