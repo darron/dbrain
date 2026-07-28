@@ -14,7 +14,11 @@
   `/Users/darron/src/dbrain/.worktrees/semantic-ann-resumable-refresh` on
   `codex/semantic-ann-resumable-refresh`.
 - Build on the accepted stacked PR 1 code at the current branch head; do not modify PR #100 or rewrite stacked history.
-- Recheck `internal/store/migrations.go`, `main`, and recent local semantic branches before implementation. If version `25` is still unused, allocate `25` as `semanticRefreshRunsMigrationVersion` with name `semantic_refresh_runs_v1`; if another branch has claimed `25`, use the next unused version instead of reusing it.
+- Migration `25` is allocated as `semantic_refresh_runs_v1`. Because that
+  schema was exercised before byte-bound and compatibility hardening, append-only
+  repairs are allocated as `26` (`semantic_refresh_runs_v2_byte_limits`) and
+  `27` (`semantic_refresh_runs_v25_compatibility_archive`). Do not reuse or edit
+  those historical meanings.
 - SQLite remains authoritative. Refresh-run rows and every ANN cache artifact are derived, resumable state; they never become authoritative evidence.
 - `research.semantic.mode` remains the only activation control. Do not add a maintenance toggle.
 - `off` must not open the writable store, construct an embedding provider, or construct a native builder.
@@ -110,6 +114,18 @@
 
 - Consumes: existing `retrieval_state.purge_epoch`, monotonic `projection_work_revision`, SQLite transactions, and migration validation.
 - Produces: `SemanticRefreshRun`, `StartSemanticRefreshRunInput`, `SemanticRefreshRunUpdate`, `StartOrResumeSemanticRefreshRun`, `UpdateSemanticRefreshRun`, `TouchSemanticRefreshRunProgress`, `LatestSemanticRefreshRun`, and `ErrSemanticRefreshRunStale`.
+
+**Implemented migration compatibility note:** Migration `25` retains its
+original character-count schema. Migration `26` transactionally rebuilds the
+active ledger with UTF-8 byte bounds and fixed-width timestamps. V25 rows with
+oversized immutable identifiers are quarantined into
+`semantic_refresh_runs_v25_compatibility_archive`; rows with valid identifiers
+but oversized mutable diagnostics/checkpoints remain active with UTF-8-safe
+prefix truncation while the archive preserves all original columns. Migration
+`27` idempotently ensures that archive for databases that had already stamped
+the earlier form of migration `26`. Heartbeats are running-only, terminal rows
+cannot be revived, and versioned updates use `UPDATE ... RETURNING` inside one
+transaction.
 
 - [ ] **Step 1: Recheck migration ownership and write the failing migration test**
 
