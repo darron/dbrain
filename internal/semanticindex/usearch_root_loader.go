@@ -19,8 +19,9 @@ import (
 // is intentionally not a serving searcher; callers still need authoritative
 // SQLite validation and exact reranking before exposing candidates.
 type USearchRoot struct {
-	Root     semanticsegment.Root
-	Segments []USearchRootSegment
+	Root          semanticsegment.Root
+	Segments      []USearchRootSegment
+	searchSegment func(*USearch, []float32, int) ([]HNSWHit, error)
 }
 
 type USearchRootSegment struct {
@@ -132,7 +133,7 @@ func openUSearchRoot(
 		if err != nil {
 			return fail(err)
 		}
-		if err := loadVerifiedUSearchPayload(ctx, index, payload); err != nil {
+		if err := loadVerifiedUSearchPayload(ctx, index, payload, len(segment.Manifest.Members)); err != nil {
 			_ = index.Close()
 			return fail(fmt.Errorf("import usearch root segment %s: %w", reference.Hash, err))
 		}
@@ -168,7 +169,7 @@ func readVerifiedUSearchPayload(ctx context.Context, reader io.Reader, expectedS
 // loadVerifiedUSearchPayload cannot preempt USearch's native LoadBuffer call.
 // It rejects cancellation immediately before entering C and immediately after
 // the call returns.
-func loadVerifiedUSearchPayload(ctx context.Context, index *USearch, payload []byte) error {
+func loadVerifiedUSearchPayload(ctx context.Context, index *USearch, payload []byte, expectedMembers int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -192,6 +193,13 @@ func loadVerifiedUSearchPayload(ctx context.Context, index *USearch, payload []b
 	if int(dimensions) != index.dimensions {
 		return fmt.Errorf("usearch imported dimensions %d want %d", dimensions, index.dimensions)
 	}
+	nativeVectors, err := index.index.Len()
+	if err != nil {
+		return fmt.Errorf("read imported usearch vector count: %w", err)
+	}
+	if nativeVectors != uint(expectedMembers) {
+		return fmt.Errorf("usearch imported native vector count %d want manifest members %d", nativeVectors, expectedMembers)
+	}
 	return nil
 }
 
@@ -214,20 +222,40 @@ func (r *contextReader) Read(buffer []byte) (int, error) {
 // Candidates searches each verified segment independently and converts every
 // native ordinal into its immutable member provenance. The per-segment limit
 // deliberately overfetches before later SQLite validation and exact reranking;
-// native ordering is never exposed as semantic evidence ordering.
-func (r *USearchRoot) Candidates(query []float32, limitPerSegment int) ([]USearchRootCandidate, error) {
+// native ordering is never exposed as semantic evidence ordering. Native
+// Search is non-preemptible, so cancellation is checked immediately before and
+// after every call and between segments.
+func (r *USearchRoot) Candidates(ctx context.Context, query []float32, limitPerSegment int) ([]USearchRootCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if r == nil {
 		return nil, fmt.Errorf("usearch root is nil")
 	}
 	if limitPerSegment <= 0 {
 		return []USearchRootCandidate{}, nil
 	}
+	searchSegment := r.searchSegment
+	if searchSegment == nil {
+		searchSegment = func(index *USearch, query []float32, limit int) ([]HNSWHit, error) {
+			return index.Search(query, limit)
+		}
+	}
 	candidates := make([]USearchRootCandidate, 0, len(r.Segments)*limitPerSegment)
 	for _, segment := range r.Segments {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if segment.SegmentHash == "" {
 			return nil, fmt.Errorf("usearch root segment hash is empty")
 		}
-		hits, err := segment.Index.Search(query, limitPerSegment)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		hits, err := searchSegment(segment.Index, query, limitPerSegment)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		if err != nil {
 			return nil, fmt.Errorf("search usearch root segment %s: %w", segment.SegmentHash, err)
 		}
@@ -240,6 +268,9 @@ func (r *USearchRoot) Candidates(query []float32, limitPerSegment int) ([]USearc
 				return nil, fmt.Errorf("usearch root segment %s ordinal %d does not match immutable manifest", segment.SegmentHash, hit.Ordinal)
 			}
 			candidates = append(candidates, USearchRootCandidate{SegmentHash: segment.SegmentHash, Member: member, ApproximateDistance: hit.Distance})
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {

@@ -144,9 +144,11 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	}
 	provider, err := deps.provider(ready)
 	if err != nil {
+		closeRuntimeSemanticSearcher(searcher)
 		return nil, fmt.Errorf("construct semantic embedding provider: %w", err)
 	}
 	if actual := semanticbuild.Profile(provider.Info()); actual != profile {
+		closeRuntimeSemanticSearcher(searcher)
 		return nil, fmt.Errorf("constructed semantic provider provenance does not match admitted profile")
 	}
 	retriever := researchsemantic.New(provider, searcher, st)
@@ -154,4 +156,10 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: exactMaxChunks,
 		Timeout: researchsemantic.DefaultQueryTimeout,
 	}), nil
+}
+
+func closeRuntimeSemanticSearcher(searcher semanticindex.Searcher) {
+	if closer, ok := searcher.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,6 +227,64 @@ func TestRuntimeAdmissionCapability(t *testing.T) {
 	}
 }
 
+func TestRuntimeBuilderClosesConstructedSearcherWhenProviderAdmissionFails(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	providerFailure := errors.New("provider construction failed")
+	closeFailure := errors.New("searcher close failed")
+
+	for _, tc := range []struct {
+		name         string
+		provider     func(semanticconfig.Config) (embedding.Provider, error)
+		wantError    string
+		wantSentinel error
+	}{
+		{
+			name: "provider construction error",
+			provider: func(semanticconfig.Config) (embedding.Provider, error) {
+				return nil, providerFailure
+			},
+			wantError:    "construct semantic embedding provider: provider construction failed",
+			wantSentinel: providerFailure,
+		},
+		{
+			name: "provider provenance mismatch",
+			provider: func(semanticconfig.Config) (embedding.Provider, error) {
+				return &runtimeProvider{info: embedding.Info{Provider: "ollama", Model: "wrong-model", Dimensions: 2}}, nil
+			},
+			wantError: "constructed semantic provider provenance does not match admitted profile",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			searcher := &closeableRuntimeSearcher{closeErr: closeFailure}
+			deps := runtimeDeps{
+				readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+					return runtimeReadySnapshot(false), nil
+				},
+				searcher: func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error) {
+					return searcher, nil
+				},
+				provider: tc.provider,
+			}
+
+			builder, err := newRuntimeBuilderWithDeps(context.Background(), config.Config{RootDir: root}, st, "", false, false, deps)
+			if builder != nil || err == nil || err.Error() != tc.wantError {
+				t.Fatalf("builder=%#v error=%v want %q", builder, err, tc.wantError)
+			}
+			if tc.wantSentinel != nil && !errors.Is(err, tc.wantSentinel) {
+				t.Fatalf("error=%v does not preserve provider failure", err)
+			}
+			if errors.Is(err, closeFailure) || strings.Contains(err.Error(), closeFailure.Error()) {
+				t.Fatalf("close error replaced primary error: %v", err)
+			}
+			if searcher.closeCalls != 1 {
+				t.Fatalf("searcher close calls=%d want=1", searcher.closeCalls)
+			}
+		})
+	}
+}
+
 func runtimeReadySnapshot(active bool) semanticreadiness.Snapshot {
 	snapshot := semanticreadiness.Snapshot{
 		Available: true, ProfileExists: true, ProfileProvenanceValid: true,
@@ -379,6 +438,20 @@ type runtimeProvider struct{ info embedding.Info }
 func (p *runtimeProvider) Info() embedding.Info { return p.info }
 func (p *runtimeProvider) Embed(context.Context, embedding.Request) (embedding.Response, error) {
 	return embedding.Response{}, errors.New("unexpected runtime query")
+}
+
+type closeableRuntimeSearcher struct {
+	closeCalls int
+	closeErr   error
+}
+
+func (*closeableRuntimeSearcher) Search(context.Context, []float32, semanticindex.SearchOptions) ([]semanticindex.Hit, semanticindex.Status, error) {
+	return nil, semanticindex.Status{}, errors.New("unexpected runtime search")
+}
+
+func (s *closeableRuntimeSearcher) Close() error {
+	s.closeCalls++
+	return s.closeErr
 }
 
 func TestNewRuntimeBuilderForceOffSkipsMalformedUnusedSemanticConfig(t *testing.T) {
