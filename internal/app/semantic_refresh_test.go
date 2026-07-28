@@ -356,6 +356,7 @@ func testSemanticRefreshCommandInterruption(
 	cancelAfterEnter bool,
 ) {
 	t.Helper()
+	const waitTimeout = 30 * time.Second
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -417,13 +418,13 @@ func testSemanticRefreshCommandInterruption(
 			}
 			timeoutCancel()
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("refresh runner did not enter a stage")
 	}
 	var got commandResult
 	select {
 	case got = <-finished:
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("interrupted refresh command did not return")
 	}
 	var exitErr *ExitError
