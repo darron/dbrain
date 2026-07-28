@@ -451,6 +451,63 @@ func TestSemanticFoundationMigrationRepairsExistingMetadataIdempotently(t *testi
 	}
 }
 
+func TestRetrievalOccurrenceChunkIndexRepairsExistingCurrentSchemaDatabase(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close current-schema store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open current-schema database: %v", err)
+	}
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_retrieval_chunk_occurrences_chunk`); err != nil {
+		_ = db.Close()
+		t.Fatalf("remove occurrence chunk index: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, retrievalOccurrenceChunkIndexVersion); err != nil {
+		_ = db.Close()
+		t.Fatalf("restore pre-index migration metadata: %v", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, retrievalMembershipL0ActivationVersion)); err != nil {
+		_ = db.Close()
+		t.Fatalf("restore pre-index user version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database without occurrence chunk index: %v", err)
+	}
+
+	st = openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	var migrationName string
+	if err := st.db.QueryRow(`SELECT name FROM schema_migrations WHERE version = ?`, retrievalOccurrenceChunkIndexVersion).Scan(&migrationName); err != nil {
+		t.Fatalf("read occurrence chunk index migration: %v", err)
+	}
+	if migrationName != retrievalOccurrenceChunkIndexName {
+		t.Fatalf("occurrence chunk index migration name = %q, want %q", migrationName, retrievalOccurrenceChunkIndexName)
+	}
+	var userVersion int
+	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
+		t.Fatalf("read repaired user version: %v", err)
+	}
+	if userVersion != retrievalOccurrenceChunkIndexVersion {
+		t.Fatalf("repaired user version = %d, want %d", userVersion, retrievalOccurrenceChunkIndexVersion)
+	}
+	assertSQLiteObject(t, st.db, "index", "idx_retrieval_chunk_occurrences_chunk")
+	var queryPlan string
+	if err := st.db.QueryRow(`
+		EXPLAIN QUERY PLAN
+		DELETE FROM retrieval_chunk_occurrences WHERE chunk_id = 'missing'`).Scan(new(int), new(int), new(int), &queryPlan); err != nil {
+		t.Fatalf("explain occurrence cleanup: %v", err)
+	}
+	if !strings.Contains(queryPlan, "idx_retrieval_chunk_occurrences_chunk") {
+		t.Fatalf("occurrence cleanup query plan = %q, want chunk index", queryPlan)
+	}
+}
+
 func TestSemanticFoundationMigrationRepairsEveryPartialFoundationTableAndDatabaseID(t *testing.T) {
 	t.Parallel()
 

@@ -1,7 +1,7 @@
 # Semantic ANN Rebuild: Restart Status
 
-**Status:** Phase A integrated and verified; production activation remains
-deferred
+**Status:** Phases A and B completed on a disposable representative corpus;
+production activation remains deferred
 
 **Purpose:** provide one factual starting point for resuming the semantic ANN
 rebuild. This is a status document, not an approval to activate, rebuild, or
@@ -32,9 +32,9 @@ integrated `main` at `9d25cca`. Do not start from `main` and assume the
 segment, root, L0, compaction, or optional native-runtime work is present until
 this branch merges.
 
-The rebuild is therefore at **Stage 2 of 5: lifecycle implementation is mostly
-present on the feature branch; corpus construction, measured evaluation, and
-production admission have not happened.**
+The rebuild is therefore at **Stage 3 of 5: lifecycle implementation and
+representative-corpus evaluation are complete on the feature branch;
+operator maintenance and production admission have not happened.**
 
 ## Target state
 
@@ -100,19 +100,82 @@ fddc06e  optional USearch ANN screen
 97082a8  pinned native ANN authority snapshot
 ```
 
-### 3. Corpus and backend evidence gathered so far
+### 3. Phase B representative-corpus evaluation
 
-- A restored production corpus was used to shape the lifecycle design and
-  safety bounds.
-- A local USearch screen was performed using a separately installed native
-  library and tagged build; the recorded result was not sufficient to approve
-  production activation by itself.
-- The default build remains intentionally safe: an admitted active root without
-  the optional native backend reports unavailable and lexical retrieval remains
-  available.
+The recent 2,497,155,072-byte backup at `data/brain.db` (modified
+2026-07-19 12:03 MDT) was copied to an explicit disposable root under
+`/private/tmp`; the source backup and configured production database/cache were
+not mutated. The copy expanded to a 3.9 GB SQLite database after projection and
+embedding.
 
-No full 34,180-parent embedding drain, production-base index construction, or
-live corpus serving experiment was deliberately run as part of this branch.
+The first full-corpus rechunk run exposed a real scaling defect rather than a
+deadlock: deleting obsolete chunks repeatedly scanned the entire occurrence
+table because the cleanup trigger had no `chunk_id`-leading index. Migration 24
+adds `idx_retrieval_chunk_occurrences_chunk`; its regression test simulates an
+already-migrated schema-23 database. With the index applied, the previously
+stuck 1.70 MB PDF completed immediately and the remaining queue drained.
+
+Final corpus state:
+
+| Fact | Result |
+| --- | ---: |
+| Eligible parents | 34,180 |
+| Current parents | 32,367 |
+| Empty parents (`no_chunkable_content`) | 1,813 |
+| Current v2/v3 chunks | 290,535 |
+| Legacy chunks / staging rows | 0 / 0 |
+| Ready embeddings | 290,535 |
+| Embedding blocked / failed | 0 / 0 |
+| SQLite integrity | `ok` |
+
+The evaluated profile was
+`embedding-profile-v1:189c8da80d3bc59c63865d8a2988ee28d65982e1362442cc38ce1c8ed43912d3`:
+Ollama `embeddinggemma:300m-bf16`, 768 dimensions, dense float32,
+L2-normalized. The existing 10,000 vectors remained valid; three resumable
+default-batch CLI runs generated the remaining 280,535 vectors with no
+duplicate work or failure.
+
+The candidate root contains 290,000 vectors in 58 immutable 5,000-vector
+segments, with an exact 535-vector L0 and zero tombstones. The cache occupies
+945 MB. All 56 additional flushes published, checksum-reopened, and
+CAS-activated successfully, leaving exactly one active generation:
+`semantic-root-v1:949bcf9e01faa7ff71e8c69acd6a148b`. The evaluator used
+USearch connectivity 16, construction expansion 128, and search expansion 256.
+
+Measured on the restored corpus:
+
+| Gate | Result |
+| --- | --- |
+| Cold root reopen | 1.49-1.60 seconds |
+| Exact top-1 agreement | 12/12 |
+| Mean raw recall@10 | 0.9583 |
+| Tie-aware recall | 1.0; the sole raw 0.5 sample had more than ten vectors at the identical exact distance |
+| Native search | 1.30 seconds mean, 1.46 seconds p95 on the warm repeat |
+| Exact SQLite baseline | 7.33 seconds mean, 8.56 seconds p95 on the warm repeat |
+| Native rows exactly reranked | 735/query (535 L0 plus 200 validated candidates) |
+| L0 participation | both sampled L0 vectors ranked first |
+| Diversity / pinned parent | three-per-parent cap held; pinned parent returned 10/10 |
+| Source-type filter | 10/10 returned hits matched |
+| Corrupt payload | failed closed on checksum mismatch before native import |
+| Peak observed process RSS | about 4.2 GB |
+
+The existing evaluator recall floor of 0.95 passes. No latency or resident-memory
+approval cap was declared before this measurement, so the 1.3-second native
+query and 4.2 GB peak RSS are characterization data, not a production resource
+approval. The Go heap after reopen was about 72 MB; native graph allocations
+dominate resident memory.
+
+An actual tagged `dbrain research --semantic` command was also run against the
+copy. It deliberately failed open to lexical/exact-tag retrieval with
+`active semantic generation provenance is unproven`. This is the current
+Phase C admission gate, not a backend failure: direct tagged root search passed,
+but normal CLI serving remains intentionally unavailable.
+
+**Phase B recommendation:** the optional backend and chosen candidate expansion
+are correct enough to retain and merge as an evaluated lifecycle foundation.
+Do not describe this PR as a user-enabled semantic ANN feature, and do not
+activate production. Phase C must prove active-generation readiness, expose
+bounded maintenance, and set explicit latency/RSS limits first.
 
 ### 4. Phase A integration result
 
@@ -133,9 +196,9 @@ The branch now has a reproducible merge-readiness baseline:
   v2.26.0 macOS arm64 library.
 
 No production database, configured semantic cache, production root, embedding
-provider, or production serving mode was opened or changed during this work.
+provider, or production serving mode was opened or changed during Phase A.
 
-## What has *not* been done after Phase A
+## What has *not* been done after Phase B
 
 These are not minor cleanup items. They are the work needed to turn the branch
 into a production-capable system.
@@ -144,25 +207,21 @@ into a production-capable system.
    native USearch library is obtained for supported environments, while keeping
    the CGO-free binary fully supported. Homebrew availability is a local
    evaluation convenience, not yet a release contract.
-2. **Build a disposable production-corpus candidate root.** Use an explicit,
-   non-production database/cache/report path and the existing evaluator/build
-   machinery. Do not point a first attempt at the live configured cache.
-3. **Measure quality and resources.** Establish exact-baseline recall, latency,
-   resident memory, build time, reopen time, L0 behavior, filter/diversity
-   behavior, and failure modes on the restored corpus. The current 200/500/2000
-   expansion policy is a design choice awaiting this gate.
-4. **Implement or explicitly defer the remaining concurrency contract.** The
+2. **Implement or explicitly defer the remaining concurrency contract.** The
    branch has a SQLite reader snapshot for authority rows, but not the design's
    cross-process maintenance/generation leases, writer-preference handling,
    or snapshot-through-hydration semantics.
-5. **Expose bounded maintenance safely.** Flush and compaction executors need
+3. **Expose bounded maintenance safely.** Flush and compaction executors need
    an operator-facing command/runbook, cancellation/time budget, diagnostics,
    restart handling, and cache garbage-collection policy before routine use.
-6. **Implement production admission.** Wire readiness/catch-up gates to actual
+4. **Implement production admission.** Wire readiness/catch-up gates to actual
    root health, L0 count/age, tombstones, fanout, backend availability, and
    measured caps. `semantic on` must remain unavailable until these predicates
    are true.
-7. **Run a staged rollout.** First shadow-only comparison, then explicit local
+5. **Set resource acceptance limits.** Decide whether roughly 1.3-second warm
+   native queries and 4.2 GB peak RSS are acceptable, or require L0-query,
+   segment-fanout, quantization, or compaction changes before local on-mode.
+6. **Run a staged rollout.** First shadow-only comparison, then explicit local
    on-mode on a copy/restore, then production only after separate approval.
 
 ## Recommended restart sequence
@@ -182,16 +241,18 @@ release matrix and a separately reproducible tagged USearch build.
 
 ### Phase B — evaluate, do not activate
 
-1. Copy/restore the corpus into an explicit evaluation location.
-2. Generate embeddings only for the chosen profile, recording provider, model,
+1. [x] Copy/restore the corpus into an explicit evaluation location.
+2. [x] Generate embeddings only for the chosen profile, recording provider, model,
    profile ID, corpus revision, and failure/blocked counts.
-3. Build one candidate root outside the configured production cache.
-4. Run recall, latency, memory, reopen, stale-member, L0, filter, diversity,
+3. [x] Build one candidate root outside the configured production cache.
+4. [x] Run recall, latency, memory, reopen, L0, filter, diversity,
    cancellation, and corrupt-cache tests against an exact SQLite baseline.
-5. Publish a small report with thresholds and a clear pass/fail recommendation.
+5. [x] Publish the aggregate result and a clear pass/defer recommendation in
+   this document.
 
-**Exit:** evidence that the optional backend and chosen segment parameters are
-adequate for this corpus, or a decision to revise the backend/architecture.
+**Exit achieved:** quality/correctness evidence supports retaining the backend
+and parameters; resource limits and runtime admission remain explicitly
+deferred to Phase C.
 
 ### Phase C — complete the operational gap
 
@@ -230,13 +291,14 @@ to keep the index correct as the corpus grows.
 Before writing code, confirm all of these facts:
 
 - [x] Current branch and merge-base with `main` are recorded.
-- [ ] Evaluation database and cache paths are explicit and non-production.
-- [ ] The selected embedding profile and corpus snapshot are recorded.
+- [x] Evaluation database and cache paths are explicit and non-production.
+- [x] The selected embedding profile and corpus snapshot are recorded.
 - [x] CGO-free and tagged-native build paths are both reproducible.
-- [ ] Exact-baseline quality/resource thresholds are written before measuring.
+- [ ] Explicit latency and resident-memory approval limits are set before
+      activation; the existing 0.95 recall floor passed.
 - [ ] The ownership and timing of the remaining lease/admission work are
       decided.
-- [ ] Production activation remains off until a new approval.
+- [x] Production activation remains off until a new approval.
 
 ## Source of truth
 

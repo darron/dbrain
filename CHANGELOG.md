@@ -19,6 +19,10 @@ development date for the change set.
   leaves newer vectors in exact L0. No CLI command, USearch runtime dependency,
   semantic retrieval serving, embedding backfill, or compaction is enabled by
   this groundwork.
+- **Full-corpus rechunk cleanup performance**: Migration 24 adds the missing
+  occurrence `chunk_id` index used by the retrieval-chunk cleanup trigger,
+  preventing large parent replacements from repeatedly scanning the entire
+  occurrence table.
 - **Controlled native evaluation**: Added a USearch-tagged segment payload
   builder and explicit restored-corpus evaluator. It requires `--apply`, an
   explicit database/cache/report, and rejects both configured and candidate-root

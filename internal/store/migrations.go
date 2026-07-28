@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	currentSchemaVersion                    = 23
+	currentSchemaVersion                    = 24
 	auditProvenanceMigrationVersion         = 12
 	auditProvenanceMigrationName            = "audit_provenance_v1"
 	retrievalMigrationVersion               = 13
@@ -34,6 +34,8 @@ const (
 	retrievalSegmentMembershipName          = "retrieval_segment_membership_v1"
 	retrievalMembershipL0ActivationVersion  = 23
 	retrievalMembershipL0ActivationName     = "retrieval_membership_l0_activation_v1"
+	retrievalOccurrenceChunkIndexVersion    = 24
+	retrievalOccurrenceChunkIndexName       = "retrieval_occurrence_chunk_cleanup_index"
 )
 
 type schemaMigration struct {
@@ -229,6 +231,19 @@ var schemaMigrations = []schemaMigration{
 		Name:    retrievalMembershipL0ActivationName,
 		Run: func(s *Store) error {
 			return s.repairRetrievalMembershipL0Activation()
+		},
+	},
+	{
+		Version: retrievalOccurrenceChunkIndexVersion,
+		Name:    retrievalOccurrenceChunkIndexName,
+		Run: func(s *Store) error {
+			_, err := s.db.Exec(`
+				CREATE INDEX IF NOT EXISTS idx_retrieval_chunk_occurrences_chunk
+				ON retrieval_chunk_occurrences(chunk_id)`)
+			if err != nil {
+				return fmt.Errorf("ensure retrieval occurrence chunk cleanup index: %w", err)
+			}
+			return nil
 		},
 	},
 }
