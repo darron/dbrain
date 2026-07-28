@@ -13,6 +13,11 @@ development date for the change set.
   serialized progress, typed failures, `semantic refresh`, and latest-run
   status. Automatic post-sync refresh, cross-process locks, release packaging,
   and installed-corpus activation remain in later stacked PRs.
+- **Non-blocking refresh progress**: Five-second visible progress now continues
+  while a semantic compaction transaction temporarily blocks the durable
+  heartbeat write. A dedicated one-connection heartbeat handle keeps that wait
+  out of the main SQLite pool; durable timestamps coalesce to the newest pending
+  value, while checkpoint callbacks still expose only committed state.
 
 ### Semantic ANN runtime admission (2026-07-28)
 

@@ -46,9 +46,14 @@ type progressDispatch struct {
 	result chan error
 }
 
-// ProgressEmitter serializes durable heartbeats and checkpoint callbacks for
-// one running refresh run. Callers must pass only rows returned by a completed
-// ledger update to Publish.
+type progressTouchRequest struct {
+	runID string
+	at    time.Time
+}
+
+// ProgressEmitter serializes visible callbacks and coalesces durable heartbeat
+// writes for one running refresh run. Callers must pass only rows returned by a
+// completed ledger update to Publish.
 type ProgressEmitter struct {
 	ledger    ProgressLedger
 	callback  ProgressCallback
@@ -56,10 +61,12 @@ type ProgressEmitter struct {
 	ticker    progressTicker
 	testHooks progressEmitterTestHooks
 
-	workCtx context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	wake    chan struct{}
+	workCtx   context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+	wake      chan struct{}
+	touchWake chan struct{}
+	workers   sync.WaitGroup
 
 	stateMu        sync.Mutex
 	run            store.SemanticRefreshRun
@@ -68,6 +75,9 @@ type ProgressEmitter struct {
 	callbackActive bool
 	stopped        bool
 	tickerStopOnce sync.Once
+
+	touchMu      sync.Mutex
+	pendingTouch *progressTouchRequest
 
 	errorMu       sync.Mutex
 	firstError    error
@@ -122,10 +132,11 @@ func startProgressEmitter(
 		cancel:    cancel,
 		done:      make(chan struct{}),
 		wake:      make(chan struct{}, 1),
+		touchWake: make(chan struct{}, 1),
 		run:       run,
 		debt:      debt,
 	}
-	if err := emitter.dispatch(run, debt); err != nil {
+	if err := emitter.dispatchInitial(run, debt); err != nil {
 		emitter.recordError(err)
 		close(emitter.done)
 		return nil, emitter.takeError()
@@ -136,7 +147,13 @@ func startProgressEmitter(
 		close(emitter.done)
 		return nil, emitter.takeError()
 	}
+	emitter.workers.Add(2)
+	go emitter.runTouchWorker()
 	go emitter.runDispatcher()
+	go func() {
+		emitter.workers.Wait()
+		close(emitter.done)
+	}()
 	return emitter, nil
 }
 
@@ -221,12 +238,12 @@ func (e *ProgressEmitter) Stop() error {
 }
 
 func (e *ProgressEmitter) runDispatcher() {
-	defer close(e.done)
+	defer e.workers.Done()
 	defer e.stopTicker()
 	defer e.failQueued(context.Canceled)
 	for {
 		if request, ok := e.nextQueued(); ok {
-			if err := e.dispatch(request.run, request.debt); err != nil {
+			if err := e.dispatchVisible(request.run, request.debt); err != nil {
 				e.handleDispatchError(err)
 				request.result <- err
 				return
@@ -247,7 +264,7 @@ func (e *ProgressEmitter) runDispatcher() {
 			if stopped {
 				return
 			}
-			if err := e.dispatch(request.run, request.debt); err != nil {
+			if err := e.dispatchVisible(request.run, request.debt); err != nil {
 				e.handleDispatchError(err)
 				if queued {
 					request.result <- err
@@ -261,11 +278,50 @@ func (e *ProgressEmitter) runDispatcher() {
 	}
 }
 
-func (e *ProgressEmitter) dispatch(run store.SemanticRefreshRun, debt Debt) error {
+func (e *ProgressEmitter) runTouchWorker() {
+	defer e.workers.Done()
+	for {
+		if request, ok := e.nextPendingTouch(); ok {
+			err := e.ledger.TouchSemanticRefreshRunProgress(
+				e.workCtx,
+				request.runID,
+				request.at,
+			)
+			if err != nil {
+				if !errors.Is(err, context.Canceled) || e.workCtx.Err() == nil {
+					e.recordError(err)
+				}
+				return
+			}
+			continue
+		}
+
+		select {
+		case <-e.workCtx.Done():
+			return
+		case <-e.touchWake:
+		}
+	}
+}
+
+func (e *ProgressEmitter) dispatchInitial(run store.SemanticRefreshRun, debt Debt) error {
 	at := e.now().UTC()
 	if err := e.ledger.TouchSemanticRefreshRunProgress(e.workCtx, run.RunID, at); err != nil {
 		return err
 	}
+	return e.invokeCallback(run, debt, at)
+}
+
+func (e *ProgressEmitter) dispatchVisible(run store.SemanticRefreshRun, debt Debt) error {
+	at := e.now().UTC()
+	// The visible heartbeat must not wait behind a SQLite writer. The durable
+	// last_progress_at value may therefore lag while a compaction or other
+	// write lease blocks the coalescing touch worker.
+	e.queueTouch(run.RunID, at)
+	return e.invokeCallback(run, debt, at)
+}
+
+func (e *ProgressEmitter) invokeCallback(run store.SemanticRefreshRun, debt Debt, at time.Time) error {
 	if e.callback == nil {
 		return nil
 	}
@@ -291,6 +347,26 @@ func (e *ProgressEmitter) dispatch(run store.SemanticRefreshRun, debt Debt) erro
 	e.stateMu.Unlock()
 	e.signal()
 	return err
+}
+
+func (e *ProgressEmitter) queueTouch(runID string, at time.Time) {
+	e.touchMu.Lock()
+	if e.pendingTouch == nil || e.pendingTouch.at.Before(at) {
+		e.pendingTouch = &progressTouchRequest{runID: runID, at: at}
+	}
+	e.touchMu.Unlock()
+	e.signalTouch()
+}
+
+func (e *ProgressEmitter) nextPendingTouch() (progressTouchRequest, bool) {
+	e.touchMu.Lock()
+	defer e.touchMu.Unlock()
+	if e.pendingTouch == nil {
+		return progressTouchRequest{}, false
+	}
+	request := *e.pendingTouch
+	e.pendingTouch = nil
+	return request, true
 }
 
 func (e *ProgressEmitter) nextQueued() (progressDispatch, bool) {
@@ -334,6 +410,7 @@ func (e *ProgressEmitter) requestStop() {
 	e.cancel()
 	e.stopTicker()
 	e.signal()
+	e.signalTouch()
 }
 
 func (e *ProgressEmitter) failQueued(err error) {
@@ -349,6 +426,13 @@ func (e *ProgressEmitter) failQueued(err error) {
 func (e *ProgressEmitter) signal() {
 	select {
 	case e.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (e *ProgressEmitter) signalTouch() {
+	select {
+	case e.touchWake <- struct{}{}:
 	default:
 	}
 }

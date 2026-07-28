@@ -370,7 +370,11 @@ type semanticRefreshRunUpdateTestHooks struct {
 
 func (s *Store) TouchSemanticRefreshRunProgress(ctx context.Context, runID string, at time.Time) error {
 	_, now := semanticRefreshNow(at)
-	result, err := s.db.ExecContext(ctx, `UPDATE semantic_refresh_runs SET updated_at=?,last_progress_at=? WHERE run_id=? AND state='running'`, now, now, runID)
+	db, err := s.semanticProgressDB()
+	if err != nil {
+		return err
+	}
+	result, err := db.ExecContext(ctx, `UPDATE semantic_refresh_runs SET updated_at=?,last_progress_at=? WHERE run_id=? AND state='running'`, now, now, runID)
 	if err != nil {
 		return fmt.Errorf("touch semantic refresh run progress: %w", err)
 	}

@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -13,10 +15,16 @@ import (
 const driverName = "sqlite"
 
 type Store struct {
-	db         *sql.DB
-	read       sqlQueryer
-	hasFTS     bool
-	auditBegin func(context.Context, *sql.Conn) error
+	db *sql.DB
+	// Semantic refresh heartbeats use a lazy one-connection pool so a blocked
+	// heartbeat cannot consume the main pool's only connection.
+	progressPath string
+	progressOnce sync.Once
+	progressDB   *sql.DB
+	progressErr  error
+	read         sqlQueryer
+	hasFTS       bool
+	auditBegin   func(context.Context, *sql.Conn) error
 	// Test-only observation seam for expensive authoritative projection checks.
 	retrievalProjectionFullValidation   func()
 	retrievalProjectionPlanHashObserved func(int)
@@ -80,8 +88,41 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if path != ":memory:" {
+		st.progressPath = path
+	}
 
 	return st, nil
+}
+
+func openProgressDB(path string) (*sql.DB, error) {
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite progress db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	for _, stmt := range []string{
+		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA foreign_keys = ON;",
+		"PRAGMA busy_timeout = 60000;",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("apply progress pragma %q: %w", stmt, err)
+		}
+	}
+	return db, nil
+}
+
+func (s *Store) semanticProgressDB() (*sql.DB, error) {
+	if s.progressPath == "" {
+		return s.db, nil
+	}
+	s.progressOnce.Do(func() {
+		s.progressDB, s.progressErr = openProgressDB(s.progressPath)
+	})
+	return s.progressDB, s.progressErr
 }
 
 // OpenReadOnly opens an existing store for read-only consumers such as MCP.
@@ -129,10 +170,17 @@ func readOnlyDSN(path string) string {
 }
 
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	return s.db.Close()
+	var progressErr, dbErr error
+	if s.progressDB != nil {
+		progressErr = s.progressDB.Close()
+	}
+	if s.db != nil {
+		dbErr = s.db.Close()
+	}
+	return errors.Join(progressErr, dbErr)
 }
 
 func (s *Store) HasFTS() bool {

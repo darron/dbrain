@@ -415,6 +415,38 @@ func TestSemanticRefreshRunTouchDoesNotInvalidateCAS(t *testing.T) {
 	}
 }
 
+func TestSemanticRefreshRunTouchDoesNotWaitForMainStoreConnection(t *testing.T) {
+	st := openTestStore(t)
+	run := startSemanticRefreshRunForTest(t, st, "run-a", "profile-a", 1, 11)
+
+	tx, err := st.db.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var count int
+	if err := tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM semantic_refresh_runs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+
+	touched := make(chan error, 1)
+	go func() {
+		touched <- st.TouchSemanticRefreshRunProgress(
+			t.Context(),
+			run.RunID,
+			semanticRefreshTestNow().Add(time.Minute),
+		)
+	}()
+	select {
+	case err := <-touched:
+		if err != nil {
+			t.Fatalf("touch while main store connection is occupied: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("touch waited for the main store's only connection")
+	}
+}
+
 func TestSemanticRefreshRunTouchRejectsMissingRun(t *testing.T) {
 	st := openTestStore(t)
 	if err := st.TouchSemanticRefreshRunProgress(t.Context(), "missing", semanticRefreshTestNow()); !errors.Is(err, ErrSemanticRefreshRunStale) {

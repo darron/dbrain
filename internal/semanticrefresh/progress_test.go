@@ -64,6 +64,64 @@ type blockingCancellationLedger struct {
 	release chan struct{}
 }
 
+type coalescingProgressLedger struct {
+	mu sync.Mutex
+
+	touches []progressTouch
+	active  int
+	max     int
+
+	secondStarted chan struct{}
+	thirdFinished chan struct{}
+	releaseSecond chan struct{}
+	secondErr     error
+}
+
+func newCoalescingProgressLedger() *coalescingProgressLedger {
+	return &coalescingProgressLedger{
+		secondStarted: make(chan struct{}),
+		thirdFinished: make(chan struct{}),
+		releaseSecond: make(chan struct{}),
+	}
+}
+
+func (l *coalescingProgressLedger) TouchSemanticRefreshRunProgress(
+	_ context.Context,
+	runID string,
+	at time.Time,
+) error {
+	l.mu.Lock()
+	l.active++
+	if l.active > l.max {
+		l.max = l.active
+	}
+	l.touches = append(l.touches, progressTouch{runID: runID, at: at})
+	call := len(l.touches)
+	l.mu.Unlock()
+
+	if call == 2 {
+		close(l.secondStarted)
+		<-l.releaseSecond
+	}
+
+	l.mu.Lock()
+	l.active--
+	l.mu.Unlock()
+	if call == 2 && l.secondErr != nil {
+		return l.secondErr
+	}
+	if call == 3 {
+		close(l.thirdFinished)
+	}
+	return nil
+}
+
+func (l *coalescingProgressLedger) Snapshot() ([]progressTouch, int, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]progressTouch(nil), l.touches...), l.active, l.max
+}
+
 func (l *blockingCancellationLedger) TouchSemanticRefreshRunProgress(
 	ctx context.Context,
 	_ string,
@@ -97,7 +155,111 @@ func (l *recordingProgressLedger) Touches() []progressTouch {
 	return append([]progressTouch(nil), l.touches...)
 }
 
-func TestProgressEmitterWritesImmediateAndFiveSecondHeartbeatsDurableFirst(t *testing.T) {
+func TestProgressEmitterHeartbeatsContinueWhileDurableTouchBlockedAndCoalesce(t *testing.T) {
+	t0 := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	t1 := t0.Add(ProgressInterval)
+	t2 := t1.Add(ProgressInterval)
+	t3 := t2.Add(ProgressInterval)
+	clock := &fakeProgressClock{now: t0}
+	ticker := newFakeProgressTicker()
+	ledger := newCoalescingProgressLedger()
+	events := make(chan Progress, 4)
+
+	emitter, err := startProgressEmitter(context.Background(), ledger, persistedProgressRun("run-1", "profile-1", "projection:start", 1), Debt{}, func(progress Progress) error {
+		events <- progress
+		return nil
+	}, progressEmitterOptions{
+		now:       clock.Now,
+		newTicker: func(time.Duration) progressTicker { return ticker },
+	})
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+	t.Cleanup(func() { _ = emitter.Stop() })
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(ledger.releaseSecond) }) })
+
+	if initial := receiveProgress(t, events); !initial.At.Equal(t0) {
+		t.Fatalf("initial progress time = %s, want %s", initial.At, t0)
+	}
+
+	clock.Set(t1)
+	ticker.ticks <- t1
+	receiveSignal(t, ledger.secondStarted, "blocked second durable touch")
+	if progress := receiveProgress(t, events); !progress.At.Equal(t1) {
+		t.Fatalf("heartbeat progress time = %s, want %s", progress.At, t1)
+	}
+
+	clock.Set(t2)
+	ticker.ticks <- t2
+	if progress := receiveProgress(t, events); !progress.At.Equal(t2) {
+		t.Fatalf("heartbeat progress time = %s, want %s", progress.At, t2)
+	}
+	clock.Set(t3)
+	ticker.ticks <- t3
+	if progress := receiveProgress(t, events); !progress.At.Equal(t3) {
+		t.Fatalf("heartbeat progress time = %s, want %s", progress.At, t3)
+	}
+	if touches, active, maximum := ledger.Snapshot(); len(touches) != 2 || active != 1 || maximum != 1 {
+		t.Fatalf("blocked durable touches = %+v active=%d maximum=%d, want two calls with one in flight", touches, active, maximum)
+	}
+
+	releaseOnce.Do(func() { close(ledger.releaseSecond) })
+	receiveSignal(t, ledger.thirdFinished, "coalesced durable touch")
+	touches, active, maximum := ledger.Snapshot()
+	if len(touches) != 3 {
+		t.Fatalf("durable touches = %+v, want initial, blocked, and coalesced newest", touches)
+	}
+	if !touches[0].at.Equal(t0) || !touches[1].at.Equal(t1) || !touches[2].at.Equal(t3) {
+		t.Fatalf("durable touch times = %+v, want %s, %s, %s", touches, t0, t1, t3)
+	}
+	if active != 0 || maximum != 1 {
+		t.Fatalf("durable touch concurrency active=%d maximum=%d, want 0 and 1", active, maximum)
+	}
+}
+
+func TestProgressEmitterAsynchronousTouchFailureCancelsAndReturnsErrorOnce(t *testing.T) {
+	wantErr := errors.New("durable heartbeat failed")
+	t0 := time.Date(2026, 7, 28, 9, 30, 0, 0, time.UTC)
+	clock := &fakeProgressClock{now: t0}
+	ticker := newFakeProgressTicker()
+	ledger := newCoalescingProgressLedger()
+	ledger.secondErr = wantErr
+	events := make(chan Progress, 2)
+
+	emitter, err := startProgressEmitter(context.Background(), ledger, persistedProgressRun("run-1", "profile-1", "projection:start", 1), Debt{}, func(progress Progress) error {
+		events <- progress
+		return nil
+	}, progressEmitterOptions{
+		now:       clock.Now,
+		newTicker: func(time.Duration) progressTicker { return ticker },
+	})
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(ledger.releaseSecond) }) })
+	_ = receiveProgress(t, events)
+
+	t1 := t0.Add(ProgressInterval)
+	clock.Set(t1)
+	ticker.ticks <- t1
+	receiveSignal(t, ledger.secondStarted, "blocked failing durable touch")
+	if heartbeat := receiveProgress(t, events); !heartbeat.At.Equal(t1) {
+		t.Fatalf("heartbeat progress = %+v, want time %s", heartbeat, t1)
+	}
+
+	releaseOnce.Do(func() { close(ledger.releaseSecond) })
+	receiveSignal(t, emitter.Context().Done(), "touch failure cancellation")
+	if err := emitter.Stop(); !errors.Is(err, wantErr) {
+		t.Fatalf("first Stop error = %v, want %v", err, wantErr)
+	}
+	if err := emitter.Stop(); err != nil {
+		t.Fatalf("second Stop error = %v, want nil", err)
+	}
+}
+
+func TestProgressEmitterWritesInitialProgressDurableFirstAndSchedulesFiveSecondHeartbeats(t *testing.T) {
 	t0 := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
 	t1 := t0.Add(ProgressInterval)
 	clock := &fakeProgressClock{now: t0}
@@ -105,12 +267,15 @@ func TestProgressEmitterWritesImmediateAndFiveSecondHeartbeatsDurableFirst(t *te
 	ledger := &recordingProgressLedger{}
 	var interval time.Duration
 	events := make(chan Progress, 2)
+	var callbacks atomic.Int64
 	run := persistedProgressRun("run-1", "profile-1", "projection:start", 1)
 
 	emitter, err := startProgressEmitter(context.Background(), ledger, run, Debt{DirtyParents: 2}, func(progress Progress) error {
-		touches := ledger.Touches()
-		if len(touches) == 0 || !touches[len(touches)-1].at.Equal(progress.At) {
-			t.Errorf("callback observed progress before durable touch: touches=%v progress=%+v", touches, progress)
+		if callbacks.Add(1) == 1 {
+			touches := ledger.Touches()
+			if len(touches) != 1 || !touches[0].at.Equal(progress.At) {
+				t.Errorf("initial callback observed progress before durable touch: touches=%v progress=%+v", touches, progress)
+			}
 		}
 		events <- progress
 		return nil
@@ -140,7 +305,7 @@ func TestProgressEmitterWritesImmediateAndFiveSecondHeartbeatsDurableFirst(t *te
 	if !heartbeat.At.Equal(t1) || heartbeat.Checkpoint != "projection:start" {
 		t.Fatalf("heartbeat progress = %+v", heartbeat)
 	}
-	touches := ledger.Touches()
+	touches := waitForTouchCount(t, ledger, 2)
 	if len(touches) != 2 || touches[0].runID != "run-1" || !touches[1].at.Equal(t1) {
 		t.Fatalf("durable touches = %+v", touches)
 	}
@@ -408,8 +573,8 @@ func TestProgressEmitterRunningOnlyLedgerFailureCancelsWorkAndReturnsErrorOnce(t
 	if err := emitter.Stop(); !errors.Is(err, store.ErrSemanticRefreshRunStale) {
 		t.Fatalf("first Stop error = %v, want stale-run error", err)
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("callbacks = %d, want only immediate callback after failed durable heartbeat", calls.Load())
+	if calls.Load() != 2 {
+		t.Fatalf("callbacks = %d, want immediate and non-blocking heartbeat callbacks", calls.Load())
 	}
 	if err := emitter.Stop(); err != nil {
 		t.Fatalf("second Stop error = %v, want nil", err)
@@ -456,8 +621,8 @@ func TestProgressEmitterCallbackCanPublishNextPersistedCheckpoint(t *testing.T) 
 	if checkpoint.Checkpoint != "persisted-from-callback" || checkpoint.Counters.ProjectedParents != 2 {
 		t.Fatalf("reentrant checkpoint progress = %+v", checkpoint)
 	}
-	if touches := ledger.Touches(); len(touches) != 3 {
-		t.Fatalf("durable touches = %d, want immediate, heartbeat, and reentrant checkpoint", len(touches))
+	if touches := waitForTouchCount(t, ledger, 2); len(touches) < 2 {
+		t.Fatalf("durable touches = %d, want initial plus a coalesced later heartbeat", len(touches))
 	}
 	if err := emitter.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -603,5 +768,20 @@ func receiveSignal(t *testing.T, signal <-chan struct{}, name string) {
 	case <-signal:
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitForTouchCount(t *testing.T, ledger *recordingProgressLedger, count int) []progressTouch {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		touches := ledger.Touches()
+		if len(touches) >= count {
+			return touches
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d durable touches; got %+v", count, touches)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
