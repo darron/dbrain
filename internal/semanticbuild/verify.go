@@ -72,8 +72,6 @@ func RunVerify(ctx context.Context, st VerifyStore, opts VerifyOptions) (VerifyP
 		if err := ctx.Err(); err != nil {
 			return progress, err
 		}
-		progress.Scanned++
-		progress.Resume = row.ChunkID
 		if err := validateVerificationRow(profileID, opts.Profile, state.LatestRevision, row); err != nil {
 			return progress, err
 		}
@@ -91,6 +89,8 @@ func RunVerify(ctx context.Context, st VerifyStore, opts VerifyOptions) (VerifyP
 		} else {
 			progress.Current++
 		}
+		progress.Scanned++
+		progress.Resume = row.ChunkID
 	}
 	progress.HasMore = len(rows) == opts.Limit
 	if len(rows) > 0 {

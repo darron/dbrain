@@ -228,7 +228,7 @@ func (p *pipeline) executeEmbedding(
 		if result.GenerationID != "" {
 			outcome.CurrentGenerationID = result.GenerationID
 		}
-		if result.SnapshotRevision >= 0 {
+		if result.SnapshotRevision > 0 {
 			outcome.EmbeddingRevision = result.SnapshotRevision
 			outcome.Checkpoint = embeddingCheckpoint(result.SnapshotRevision)
 		}
@@ -245,7 +245,7 @@ func (p *pipeline) executeEmbedding(
 	})
 	if result.Revision < 0 {
 		err = errors.Join(err, fmt.Errorf("semantic embedding returned a negative revision"))
-	} else {
+	} else if result.Revision > 0 {
 		outcome.EmbeddingRevision = result.Revision
 		outcome.Checkpoint = embeddingCheckpoint(result.Revision)
 	}
@@ -259,7 +259,7 @@ func (p *pipeline) executeEmbedding(
 	}
 	if !result.HasMore && err == nil {
 		outcome.NextStage = store.SemanticRefreshFlush
-		outcome.Checkpoint = flushCheckpoint(result.Revision)
+		outcome.Checkpoint = flushCheckpoint(outcome.EmbeddingRevision)
 	}
 	if err != nil {
 		code := ErrorEmbedding
@@ -299,7 +299,7 @@ func (p *pipeline) executeFlush(
 	if result.GenerationID != "" {
 		outcome.CurrentGenerationID = result.GenerationID
 	}
-	if result.SnapshotRevision >= 0 {
+	if result.SnapshotRevision > 0 {
 		outcome.EmbeddingRevision = result.SnapshotRevision
 		outcome.Checkpoint = flushCheckpoint(result.SnapshotRevision)
 	}
@@ -505,11 +505,10 @@ func (p *pipeline) executeReadiness(
 
 	// An active generation is eligible for readiness evaluation only when the
 	// immediately preceding verify stage proved that exact immutable root.
-	if snapshot.ActiveGenerationID != "" &&
-		snapshot.ActiveGenerationID != run.CurrentGenerationID {
-		outcome.NextStage = store.SemanticRefreshVerify
+	if snapshot.ActiveGenerationID != run.CurrentGenerationID {
+		outcome.NextStage = store.SemanticRefreshCompaction
 		outcome.CurrentGenerationID = ""
-		outcome.Checkpoint = verifyCheckpoint("")
+		outcome.Checkpoint = compactionCheckpoint("")
 		outcome.Readiness = ""
 		return outcome, nil
 	}
@@ -569,16 +568,19 @@ func nextPipelineOutcome(
 }
 
 func applyFlushCount(outcome *StageOutcome, result semanticbuild.FlushResult) error {
-	if result.Indexed < 0 || result.Indexed > store.RetrievalSegmentTarget {
+	if result.Indexed < 0 || result.Flushed < 0 {
 		return fmt.Errorf("semantic flush returned an invalid indexed count")
 	}
-	if result.Indexed == 0 {
+	if result.Flushed == 0 {
 		return nil
 	}
-	if result.GenerationID == "" || result.SnapshotRevision <= 0 {
+	if result.Flushed != store.RetrievalSegmentTarget ||
+		result.Indexed < result.Flushed ||
+		result.GenerationID == "" ||
+		result.SnapshotRevision <= 0 {
 		return fmt.Errorf("semantic flush result is missing generation provenance")
 	}
-	return addPipelineCounter(&outcome.Counters.FlushedVectors, result.Indexed)
+	return addPipelineCounter(&outcome.Counters.FlushedVectors, result.Flushed)
 }
 
 func addPipelineCounter(counter *int64, delta int) error {

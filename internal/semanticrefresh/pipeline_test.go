@@ -145,7 +145,7 @@ func TestPipelineEmbeddingPreflushHonorsHardL0Headroom(t *testing.T) {
 			name:           "would exceed hard limit",
 			selected:       501,
 			wantOps:        []string{"flush", "provider"},
-			wantFlushed:    4_321,
+			wantFlushed:    store.RetrievalSegmentTarget,
 			wantGeneration: "semantic-root-v1:preflush",
 		},
 		{
@@ -166,7 +166,8 @@ func TestPipelineEmbeddingPreflushHonorsHardL0Headroom(t *testing.T) {
 				operations = append(operations, "flush")
 				return semanticbuild.FlushResult{
 					GenerationID:     "semantic-root-v1:preflush",
-					Indexed:          4_321,
+					Indexed:          3 * store.RetrievalSegmentTarget,
+					Flushed:          store.RetrievalSegmentTarget,
 					SnapshotRevision: 88,
 				}, nil
 			}
@@ -193,6 +194,49 @@ func TestPipelineEmbeddingPreflushHonorsHardL0Headroom(t *testing.T) {
 				t.Fatalf("outcome=%+v", outcome)
 			}
 		})
+	}
+}
+
+func TestPipelineEmbeddingPreservesCommittedPreflushWhenEmbedReturnsZeroAfterError(t *testing.T) {
+	h := newPipelineHarness(t)
+	h.pipeline.options.EmbeddingBatch = 501
+	afterCommitErr := errors.New("post-commit interruption")
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{
+			ProfileID:    h.profileID,
+			L0ReadyCount: 9_500,
+		}, nil
+	}
+	h.pipeline.runFlush = func(context.Context, semanticbuild.FlushStore, semanticbuild.SegmentPayloadBuilder, semanticbuild.FlushOptions) (semanticbuild.FlushResult, error) {
+		return semanticbuild.FlushResult{
+			GenerationID:     "semantic-root-v1:committed-preflush",
+			Indexed:          2 * store.RetrievalSegmentTarget,
+			Flushed:          store.RetrievalSegmentTarget,
+			SnapshotRevision: 88,
+		}, afterCommitErr
+	}
+	h.pipeline.runEmbed = func(ctx context.Context, _ semanticbuild.EmbedStore, _ embedding.Provider, opts semanticbuild.EmbedBatchOptions) (semanticbuild.EmbedBatchResult, error) {
+		if err := opts.BeforeProvider(ctx, 501); !errors.Is(err, afterCommitErr) {
+			t.Fatalf("before provider err=%v", err)
+		}
+		return semanticbuild.EmbedBatchResult{}, afterCommitErr
+	}
+
+	run := pipelineRun(store.SemanticRefreshEmbedding, 1)
+	run.EmbeddingRevision = 41
+	run.Checkpoint = embeddingCheckpoint(41)
+	outcome, err := h.pipeline.Execute(t.Context(), run)
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) ||
+		refreshErr.Code != ErrorEmbedding ||
+		!errors.Is(err, afterCommitErr) {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if outcome.Counters.FlushedVectors != store.RetrievalSegmentTarget ||
+		outcome.CurrentGenerationID != "semantic-root-v1:committed-preflush" ||
+		outcome.EmbeddingRevision != 88 ||
+		outcome.Checkpoint != embeddingCheckpoint(88) {
+		t.Fatalf("committed preflush was not preserved: outcome=%+v", outcome)
 	}
 }
 
@@ -224,7 +268,7 @@ func TestPipelineEmbeddingPreflushFailurePreventsProvider(t *testing.T) {
 	}
 }
 
-func TestPipelineFlushRepeatsAboveTargetAndCountsActualIndexed(t *testing.T) {
+func TestPipelineFlushRepeatsAboveTargetAndCountsCommittedDelta(t *testing.T) {
 	h := newPipelineHarness(t)
 	var l0Reads, flushCalls int
 	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
@@ -242,7 +286,8 @@ func TestPipelineFlushRepeatsAboveTargetAndCountsActualIndexed(t *testing.T) {
 		}
 		return semanticbuild.FlushResult{
 			GenerationID:     "semantic-root-v1:flush",
-			Indexed:          4_987,
+			Indexed:          3 * store.RetrievalSegmentTarget,
+			Flushed:          store.RetrievalSegmentTarget,
 			SnapshotRevision: 61,
 		}, nil
 	}
@@ -250,7 +295,7 @@ func TestPipelineFlushRepeatsAboveTargetAndCountsActualIndexed(t *testing.T) {
 	run := pipelineRun(store.SemanticRefreshFlush, 1)
 	outcome := h.execute(t, run)
 	if outcome.NextStage != store.SemanticRefreshFlush ||
-		outcome.Counters.FlushedVectors != 4_987 ||
+		outcome.Counters.FlushedVectors != store.RetrievalSegmentTarget ||
 		outcome.EmbeddingRevision != 61 ||
 		outcome.CurrentGenerationID != "semantic-root-v1:flush" {
 		t.Fatalf("flush outcome=%+v", outcome)
@@ -349,6 +394,36 @@ func TestPipelineVerifyUsesBoundedCursorPagesWithoutCounterRepair(t *testing.T) 
 	if outcome.NextStage != store.SemanticRefreshReadiness ||
 		outcome.Counters.VerifiedVectors != 5_007 {
 		t.Fatalf("final verify outcome=%+v", outcome)
+	}
+}
+
+func TestPipelineVerifyPersistsOnlyLastSuccessfullyValidatedCursorOnError(t *testing.T) {
+	h := newPipelineHarness(t)
+	verifyErr := errors.New("chunk-b validation failed")
+	h.pipeline.runVerify = func(_ context.Context, _ semanticbuild.VerifyStore, opts semanticbuild.VerifyOptions) (semanticbuild.VerifyProgress, error) {
+		if opts.Resume != "" {
+			t.Fatalf("unexpected resume=%q", opts.Resume)
+		}
+		return semanticbuild.VerifyProgress{
+			Progress: semanticbuild.Progress{Scanned: 1, Current: 1},
+			Resume:   "chunk-a",
+		}, verifyErr
+	}
+
+	outcome, err := h.pipeline.Execute(
+		t.Context(),
+		pipelineRun(store.SemanticRefreshVerify, 1),
+	)
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) ||
+		refreshErr.Code != ErrorVerify ||
+		!errors.Is(err, verifyErr) {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if outcome.NextStage != store.SemanticRefreshVerify ||
+		outcome.Checkpoint != verifyCheckpoint("chunk-a") ||
+		outcome.Counters.VerifiedVectors != 1 {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 }
 
@@ -536,25 +611,134 @@ func TestPipelineReadinessReturnsHigherWatermarkSuccessorBeforeCurrentDebtFailur
 	}
 }
 
-func TestPipelineReadinessReverifiesAnActiveGenerationNotProvenByTheRun(t *testing.T) {
+func TestPipelineReadinessRoutesChangedRootThroughCompactionBeforeNativeProof(t *testing.T) {
 	h := newPipelineHarness(t)
+	var snapshotCalls, compactionCalls, verifyCalls int
 	h.store.readiness = func(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+		snapshotCalls++
 		snapshot := pipelineReadySnapshot(h.profileID)
-		snapshot.ActiveGenerationID = "semantic-root-v1:concurrent"
+		if snapshotCalls == 1 {
+			snapshot.ActiveGenerationID = "semantic-root-v1:concurrent"
+			snapshot.ActiveSnapshotRevision = 47
+			snapshot.ActiveGenerationRootDescriptorSHA256 = "root-hash-concurrent"
+			return snapshot, nil
+		}
+		snapshot.ActiveGenerationID = "semantic-root-v1:compacted"
+		snapshot.ActiveSnapshotRevision = 48
 		snapshot.ActiveGenerationValid = true
-		snapshot.ActiveGenerationRootDescriptorSHA256 = "root-hash"
+		snapshot.ActiveGenerationRootDescriptorSHA256 = "root-hash-compacted"
 		return snapshot, nil
 	}
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{
+			ProfileID:              h.profileID,
+			ActiveGenerationID:     "semantic-root-v1:compacted",
+			ActiveSnapshotRevision: 48,
+			PurgeEpoch:             1,
+		}, nil
+	}
+	h.pipeline.runCompact = func(context.Context, semanticbuild.CompactionStore, semanticbuild.StreamingSegmentPayloadBuilder, semanticbuild.CompactionOptions) (semanticbuild.CompactionResult, error) {
+		compactionCalls++
+		if compactionCalls == 1 {
+			return semanticbuild.CompactionResult{
+				Plan: semanticbuild.SegmentCompactionPlan{
+					Kind: semanticbuild.SegmentCompactionPair,
+					Inputs: []semanticbuild.SegmentCompactionInput{
+						{SegmentHash: "a", LiveCount: 5_000},
+						{SegmentHash: "b", LiveCount: 5_000},
+					},
+				},
+				GenerationID:        "semantic-root-v1:compacted",
+				Indexed:             10_000,
+				StreamedLiveMembers: 10_000,
+			}, nil
+		}
+		return semanticbuild.CompactionResult{
+			Plan: semanticbuild.SegmentCompactionPlan{
+				Kind:    semanticbuild.SegmentCompactionNone,
+				Inputs:  []semanticbuild.SegmentCompactionInput{},
+				Outputs: []semanticbuild.SegmentCompactionOutput{},
+			},
+		}, nil
+	}
+	h.pipeline.runVerify = func(context.Context, semanticbuild.VerifyStore, semanticbuild.VerifyOptions) (semanticbuild.VerifyProgress, error) {
+		verifyCalls++
+		return semanticbuild.VerifyProgress{}, nil
+	}
+	h.store.workRevision = func(context.Context) (int64, error) { return 1, nil }
+
+	run := pipelineRun(store.SemanticRefreshReadiness, 1)
+	run.CurrentGenerationID = "semantic-root-v1:previously-proven"
+	run.Checkpoint = readinessCheckpoint(string(semanticreadiness.StateReady))
+	outcome, err := h.pipeline.Execute(t.Context(), run)
+	if err != nil ||
+		outcome.NextStage != store.SemanticRefreshCompaction ||
+		outcome.Complete ||
+		outcome.CurrentGenerationID != "" ||
+		outcome.Checkpoint != compactionCheckpoint("") ||
+		outcome.Readiness != "" ||
+		compactionCalls != 0 ||
+		verifyCalls != 0 ||
+		len(h.native.expectations) != 0 {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+
+	run = applyPipelineOutcome(run, outcome)
+	outcome = h.execute(t, run)
+	if outcome.NextStage != store.SemanticRefreshCompaction ||
+		outcome.CurrentGenerationID != "semantic-root-v1:compacted" ||
+		compactionCalls != 1 ||
+		len(h.native.expectations) != 0 {
+		t.Fatalf("replacement compaction outcome=%+v calls=%d native=%v", outcome, compactionCalls, h.native.expectations)
+	}
+
+	run = applyPipelineOutcome(run, outcome)
+	outcome = h.execute(t, run)
+	if outcome.NextStage != store.SemanticRefreshVerify ||
+		compactionCalls != 2 ||
+		len(h.native.expectations) != 0 {
+		t.Fatalf("idle compaction outcome=%+v calls=%d native=%v", outcome, compactionCalls, h.native.expectations)
+	}
+
+	run = applyPipelineOutcome(run, outcome)
+	outcome = h.execute(t, run)
+	if outcome.NextStage != store.SemanticRefreshReadiness ||
+		verifyCalls != 1 ||
+		len(h.native.expectations) != 1 ||
+		h.native.expectations[0].GenerationID != "semantic-root-v1:compacted" {
+		t.Fatalf("verify outcome=%+v calls=%d native=%v", outcome, verifyCalls, h.native.expectations)
+	}
+
+	run = applyPipelineOutcome(run, outcome)
+	outcome = h.execute(t, run)
+	if !outcome.Complete ||
+		outcome.NextStage != store.SemanticRefreshReadiness ||
+		compactionCalls != 2 ||
+		verifyCalls != 1 ||
+		len(h.native.expectations) != 1 {
+		t.Fatalf("readiness outcome=%+v compaction=%d verify=%d native=%v", outcome, compactionCalls, verifyCalls, h.native.expectations)
+	}
+}
+
+func TestPipelineReadinessRoutesRemovedRootThroughCompaction(t *testing.T) {
+	h := newPipelineHarness(t)
+	h.store.readiness = func(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+		return pipelineReadySnapshot(h.profileID), nil
+	}
 	h.store.workRevision = func(context.Context) (int64, error) {
-		t.Fatal("projection revision read before the concurrent active root was reverified")
+		t.Fatal("projection revision read before removed root returned to compaction")
 		return 0, nil
 	}
 
-	outcome, err := h.pipeline.Execute(t.Context(), pipelineRun(store.SemanticRefreshReadiness, 1))
+	run := pipelineRun(store.SemanticRefreshReadiness, 1)
+	run.CurrentGenerationID = "semantic-root-v1:removed"
+	run.Checkpoint = readinessCheckpoint(string(semanticreadiness.StateReady))
+	outcome, err := h.pipeline.Execute(t.Context(), run)
 	if err != nil ||
-		outcome.NextStage != store.SemanticRefreshVerify ||
+		outcome.NextStage != store.SemanticRefreshCompaction ||
 		outcome.Complete ||
 		outcome.CurrentGenerationID != "" ||
+		outcome.Checkpoint != compactionCheckpoint("") ||
 		outcome.Readiness != "" {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}

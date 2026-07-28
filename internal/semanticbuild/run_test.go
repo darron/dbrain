@@ -891,6 +891,128 @@ func TestSemanticVerifyPagesAndQuarantinesCorruption(t *testing.T) {
 	}
 }
 
+func TestSemanticVerifyReturnsLastSuccessfulCursorWhenRowValidationFails(t *testing.T) {
+	valid := embedding.EncodeDenseF32([]float32{0.6, 0.8})
+	profile := Profile(embedding.Info{
+		Provider: "fake", Model: "m", Dimensions: 2,
+	})
+	profileID, _ := profile.ID()
+	row := func(id string, revision int64) store.RetrievalVectorRow {
+		return store.RetrievalVectorRow{
+			ChunkID: id, ProfileID: profileID,
+			Provider: "fake", Model: "m", Dimensions: 2,
+			ProjectionVersion: retrievalchunk.ProjectionVersion,
+			ChunkerVersion:    retrievalchunk.Version,
+			Representation:    embedding.RepresentationDenseF32,
+			Normalization:     embedding.NormalizationL2,
+			VectorBytes:       valid, VectorHash: vectorHash(valid),
+			ChunkTextHash: "hash-" + id, CurrentChunkTextHash: "hash-" + id,
+			Revision: revision,
+		}
+	}
+	st := &fakeStore{
+		verification: store.RetrievalEmbeddingVerificationState{
+			ProfileID: profileID, Profile: profile,
+			LatestRevision: 3, PurgeEpoch: 4, GlobalPurgeEpoch: 4,
+		},
+		vectorRows: []store.RetrievalVectorRow{
+			row("a", 1),
+			row("b", 2),
+			row("c", 3),
+		},
+	}
+	st.vectorRows[1].ChunkerVersion = "invalid"
+
+	first, err := RunVerify(
+		t.Context(),
+		st,
+		VerifyOptions{Profile: profile, Limit: 3},
+	)
+	if err == nil {
+		t.Fatal("invalid row unexpectedly verified")
+	}
+	if first.Scanned != 1 || first.Current != 1 || first.Resume != "a" {
+		t.Fatalf("failed-page progress=%+v", first)
+	}
+
+	st.vectorRows[1].ChunkerVersion = retrievalchunk.Version
+	resumed, err := RunVerify(
+		t.Context(),
+		st,
+		VerifyOptions{Profile: profile, Limit: 3, Resume: first.Resume},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Scanned != 2 || resumed.Current != 2 || resumed.Resume != "c" {
+		t.Fatalf("resumed progress=%+v", resumed)
+	}
+}
+
+func TestSemanticVerifyReturnsLastSuccessfulCursorWhenQuarantineCommitFails(t *testing.T) {
+	valid := embedding.EncodeDenseF32([]float32{0.6, 0.8})
+	profile := Profile(embedding.Info{
+		Provider: "fake", Model: "m", Dimensions: 2,
+	})
+	profileID, _ := profile.ID()
+	validRow := func(id string, revision int64) store.RetrievalVectorRow {
+		return store.RetrievalVectorRow{
+			ChunkID: id, ProfileID: profileID,
+			Provider: "fake", Model: "m", Dimensions: 2,
+			ProjectionVersion: retrievalchunk.ProjectionVersion,
+			ChunkerVersion:    retrievalchunk.Version,
+			Representation:    embedding.RepresentationDenseF32,
+			Normalization:     embedding.NormalizationL2,
+			VectorBytes:       valid, VectorHash: vectorHash(valid),
+			ChunkTextHash: "hash-" + id, CurrentChunkTextHash: "hash-" + id,
+			Revision: revision,
+		}
+	}
+	corrupt := validRow("b", 2)
+	corrupt.VectorBytes = []byte{0}
+	corrupt.VectorHash = "invalid"
+	blockErr := errors.New("quarantine commit failed")
+	st := &fakeStore{
+		verification: store.RetrievalEmbeddingVerificationState{
+			ProfileID: profileID, Profile: profile,
+			LatestRevision: 3, PurgeEpoch: 4, GlobalPurgeEpoch: 4,
+		},
+		vectorRows: []store.RetrievalVectorRow{
+			validRow("a", 1),
+			corrupt,
+			validRow("c", 3),
+		},
+		blockErrs: []error{blockErr},
+	}
+
+	first, err := RunVerify(
+		t.Context(),
+		st,
+		VerifyOptions{Profile: profile, Limit: 3},
+	)
+	if !errors.Is(err, blockErr) {
+		t.Fatalf("first err=%v", err)
+	}
+	if first.Scanned != 1 || first.Current != 1 || first.Resume != "a" {
+		t.Fatalf("failed-page progress=%+v", first)
+	}
+
+	resumed, err := RunVerify(
+		t.Context(),
+		st,
+		VerifyOptions{Profile: profile, Limit: 3, Resume: first.Resume},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Scanned != 2 ||
+		resumed.Current != 1 ||
+		resumed.Quarantined != 1 ||
+		resumed.Resume != "c" {
+		t.Fatalf("resumed progress=%+v", resumed)
+	}
+}
+
 func TestSemanticVerifyRepairsReadinessCountersOnlyWhenExplicitlyRequested(t *testing.T) {
 	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
 	profileID, _ := profile.ID()

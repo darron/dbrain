@@ -254,18 +254,19 @@ func TestRefreshIntegrationDifferentProfileSupersedesResumableRun(t *testing.T) 
 
 func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrFlush(t *testing.T) {
 	if testing.Short() {
-		t.Skip("large real-store flush integration")
+		t.Skip("large real-store two-flush integration")
 	}
 	st := openRefreshIntegrationStore(t)
 	now := time.Date(2026, 7, 28, 18, 0, 0, 0, time.UTC)
 	// ASCII windows are independently bounded by the 1,800-byte v3 ceiling.
-	// This produces exactly 5,001 distinct windows: one real 5,000-member
-	// segment plus a one-vector exact L0 tail.
+	// This produces just over 10,000 distinct chunks. The third embedding batch
+	// must first flush 5,000 rows to preserve hard L0 headroom; the ordinary
+	// flush stage then commits the second 5,000-row segment.
 	seedRefreshItem(
 		t,
 		st,
 		"flush-resume",
-		refreshDistinctFlushText(),
+		refreshDistinctFlushText(2*store.RetrievalSegmentTarget),
 		now,
 	)
 	watermark := refreshWorkRevision(t, st)
@@ -298,25 +299,45 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 	failed, err := Run(t.Context(), st, executor, request)
 	_ = assertRefreshIntegrationError(t, err, ErrorNativeRoot)
 	providerCalls, providerTexts := provider.snapshot()
-	wantFlushed := int64(
-		(providerTexts - 1) / store.RetrievalSegmentTarget *
-			store.RetrievalSegmentTarget,
-	)
+	wantFlushed := int64(2 * store.RetrievalSegmentTarget)
 	wantBuilds := int(wantFlushed) / store.RetrievalSegmentTarget
 	if failed.Run == nil ||
 		failed.Run.State != store.SemanticRefreshRunFailed ||
-		providerTexts <= store.RetrievalSegmentTarget ||
+		providerTexts <= 2*store.RetrievalSegmentTarget ||
+		providerTexts > 3*store.RetrievalSegmentTarget ||
+		failed.Run.Counters.EmbeddedChunks != int64(providerTexts) ||
 		failed.Run.Counters.FlushedVectors != wantFlushed ||
 		failed.Run.CurrentGenerationID == "" {
-		t.Fatalf("failed result=%+v", failed)
+		t.Fatalf(
+			"failed run=%+v provider_calls=%d provider_texts=%d want_flushed=%d",
+			failed.Run,
+			providerCalls,
+			providerTexts,
+			wantFlushed,
+		)
 	}
 	failedRunID := failed.Run.RunID
 	failedGeneration := failed.Run.CurrentGenerationID
-	if providerCalls < 2 {
+	failedRevision := failed.Run.EmbeddingRevision
+	if providerCalls != 3 {
 		t.Fatalf("provider calls=%d texts=%d", providerCalls, providerTexts)
 	}
 	if builds, verifies := native.snapshot(); builds != wantBuilds || verifies != 1 {
 		t.Fatalf("native builds=%d verifies=%d", builds, verifies)
+	}
+	profileID, profileErr := provider.profile().ID()
+	if profileErr != nil {
+		t.Fatal(profileErr)
+	}
+	profileRow, profileErr := st.RetrievalEmbeddingProfile(t.Context(), profileID)
+	if profileErr != nil {
+		t.Fatal(profileErr)
+	}
+	if profileRow.ActiveGenerationID != failedGeneration ||
+		profileRow.ActiveSnapshotRevision != failedRevision ||
+		profileRow.ActiveIndexedCount != int(wantFlushed) ||
+		profileRow.L0ReadyCount != providerTexts-int(wantFlushed) {
+		t.Fatalf("activated two-flush profile=%+v failed_run=%+v", profileRow, failed.Run)
 	}
 
 	completed, err := Run(t.Context(), st, executor, request)
@@ -327,6 +348,7 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 		completed.Run.RunID != failedRunID ||
 		completed.Run.State != store.SemanticRefreshRunCompleted ||
 		completed.Run.CurrentGenerationID != failedGeneration ||
+		completed.Run.EmbeddingRevision != failedRevision ||
 		completed.Run.Counters.FlushedVectors != wantFlushed {
 		t.Fatalf("completed result=%+v", completed)
 	}
@@ -339,11 +361,11 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 	}
 }
 
-func refreshDistinctFlushText() string {
+func refreshDistinctFlushText(windows int) string {
 	var text strings.Builder
-	text.Grow(store.RetrievalSegmentTarget*1_800 + 1)
+	text.Grow(windows*1_800 + 1)
 	padding := strings.Repeat("x", 1_792)
-	for index := 0; index < store.RetrievalSegmentTarget; index++ {
+	for index := 0; index < windows; index++ {
 		_, _ = fmt.Fprintf(&text, "%08x", index)
 		text.WriteString(padding)
 	}
