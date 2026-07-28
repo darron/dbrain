@@ -44,9 +44,9 @@ development date for the change set.
   `needs_index`; native-root failures in research output and traces use a
   stable path-free reason.
 - **Runtime-admission boundary**: This stack does not yet add automatic
-  semantic refresh after sync. Resumable refresh, universal synchronous sync
-  integration, cross-process locking, static Homebrew packaging, and installed
-  full-corpus acceptance remain later stacked work.
+  post-sync integration. Universal synchronous post-sync integration,
+  cross-process locking, release/Homebrew native packaging, and installed-corpus
+  acceptance and activation remain later stacked work.
 
 ### Segmented ANN lifecycle foundation (2026-07-22)
 
