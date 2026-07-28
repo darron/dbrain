@@ -1248,6 +1248,8 @@ type fakeStatusStore struct {
 	status      semanticreadiness.Snapshot
 	err         error
 	observedCap *int
+	latest      *store.SemanticRefreshRun
+	latestErr   error
 }
 
 func (f fakeStatusStore) SemanticReadinessSnapshotAt(_ context.Context, _ embedding.Profile, exactCap int, _ time.Time) (semanticreadiness.Snapshot, error) {
@@ -1255,6 +1257,10 @@ func (f fakeStatusStore) SemanticReadinessSnapshotAt(_ context.Context, _ embedd
 		*f.observedCap = exactCap
 	}
 	return f.status, f.err
+}
+
+func (f fakeStatusStore) LatestSemanticRefreshRun(context.Context, string) (*store.SemanticRefreshRun, error) {
+	return f.latest, f.latestErr
 }
 
 func TestStatusClampsConfiguredExactCapToSafetyCeiling(t *testing.T) {

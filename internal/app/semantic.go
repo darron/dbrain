@@ -62,9 +62,15 @@ func newSemanticCommandWithDeps(root *rootOptions, deps semanticDeps) *cobra.Com
 	if deps.capability == nil {
 		deps.capability = semanticindex.RuntimeCapability
 	}
+	refreshDeps := defaultSemanticRefreshDeps()
+	refreshDeps.resolve = deps.resolve
+	refreshDeps.capability = deps.capability
+	refreshDeps.openWritable = deps.openWritable
+	refreshDeps.provider = deps.provider
 	cmd := &cobra.Command{Use: "semantic", Short: "Build and inspect semantic retrieval state", RunE: helpCommand}
 	cmd.AddCommand(
 		newSemanticStatusCommand(root, deps),
+		newSemanticRefreshCommand(root, refreshDeps),
 		newSemanticChunkCommand(root, deps),
 		newSemanticEmbedCommand(root, deps),
 		newSemanticVerifyCommand(root, deps),
@@ -139,9 +145,25 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			capability := deps.capability()
 			configured := strings.TrimSpace(semantic.Model) != "" && semantic.Dimensions > 0
 			if !configured {
-				status, err := semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
+				st, openErr := deps.openReadOnly(cfg.DBPath)
+				if openErr != nil {
+					status, err := semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
+					if err != nil {
+						return err
+					}
+					status.Mode = string(semantic.Mode)
+					return outputSemanticStatus(cmd, status, jsonOut)
+				}
+				defer func() { _ = st.Close() }()
+				status, err := semanticbuild.ReadStatus(cmd.Context(), st, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
 				if err != nil {
-					return err
+					if ctxErr := cmd.Context().Err(); ctxErr != nil {
+						return ctxErr
+					}
+					status, err = semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
+					if err != nil {
+						return err
+					}
 				}
 				status.Mode = string(semantic.Mode)
 				return outputSemanticStatus(cmd, status, jsonOut)
