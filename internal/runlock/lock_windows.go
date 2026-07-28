@@ -211,6 +211,10 @@ func windowsNTPath(path string) string {
 	return "\\??\\" + path
 }
 
+func normalizeLockPath(path string) string {
+	return filepath.Clean(path)
+}
+
 func (l *windowsFileLock) close() error {
 	if l == nil || l.file == nil {
 		return nil

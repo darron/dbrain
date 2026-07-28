@@ -49,7 +49,7 @@ func acquireSharedContext(ctx context.Context, path string) (*Lock, error) {
 			continue
 		}
 
-		local, ok := gateFor(path).tryAcquire(Shared)
+		local, ok := tryAcquireProcessGate(path, Shared)
 		if !ok {
 			_ = coordinator.close()
 			if err := waitForRetry(ctx); err != nil {
@@ -123,7 +123,7 @@ func acquireExclusiveContext(ctx context.Context, path string, metadata string) 
 			continue
 		}
 
-		local, ok := gateFor(path).tryAcquire(Exclusive)
+		local, ok := tryAcquireProcessGate(path, Exclusive)
 		if !ok {
 			_ = coordinator.close()
 			if err := waitForRetry(ctx); err != nil {

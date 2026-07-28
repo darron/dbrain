@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -21,7 +22,11 @@ type Lock struct {
 }
 
 func Acquire(path string, metadata string) (*Lock, error) {
-	local, ok := gateFor(path).tryAcquire(Exclusive)
+	path, err := canonicalLockPath(path)
+	if err != nil {
+		return nil, err
+	}
+	local, ok := tryAcquireProcessGate(path, Exclusive)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrAlreadyLocked, path)
 	}
@@ -48,10 +53,14 @@ func AcquireContext(ctx context.Context, path string, options AcquireOptions) (*
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if options.Mode == Shared {
-		return acquireSharedContext(ctx, path)
+	canonicalPath, err := canonicalLockPath(path)
+	if err != nil {
+		return nil, err
 	}
-	return acquireExclusiveContext(ctx, path, options.Metadata)
+	if options.Mode == Shared {
+		return acquireSharedContext(ctx, canonicalPath)
+	}
+	return acquireExclusiveContext(ctx, canonicalPath, options.Metadata)
 }
 
 func (l *Lock) Close() error {
@@ -102,7 +111,7 @@ type heldFile struct {
 }
 
 func acquireHeldFileContext(ctx context.Context, path string, mode Mode) (*heldFile, error) {
-	local, err := gateFor(path).acquire(ctx, mode)
+	local, err := acquireProcessGate(ctx, path, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -182,4 +191,12 @@ func waitForRetry(ctx context.Context) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func canonicalLockPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve run lock path %s: %w", path, err)
+	}
+	return normalizeLockPath(absolute), nil
 }

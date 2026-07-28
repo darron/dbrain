@@ -5,7 +5,26 @@ import (
 	"sync"
 )
 
-var processGates sync.Map
+var processGates = localGateRegistry{
+	entries: make(map[string]*localGateEntry),
+}
+
+type localGateRegistry struct {
+	mu      sync.Mutex
+	entries map[string]*localGateEntry
+}
+
+type localGateEntry struct {
+	gate localGate
+	refs int
+}
+
+type localGateReference struct {
+	registry *localGateRegistry
+	path     string
+	entry    *localGateEntry
+	once     sync.Once
+}
 
 type localGate struct {
 	mu            sync.Mutex
@@ -21,14 +40,58 @@ type localWaiter struct {
 }
 
 type localLease struct {
-	gate *localGate
-	mode Mode
-	once sync.Once
+	gate      *localGate
+	mode      Mode
+	reference *localGateReference
+	once      sync.Once
 }
 
-func gateFor(path string) *localGate {
-	gate, _ := processGates.LoadOrStore(path, &localGate{})
-	return gate.(*localGate)
+func tryAcquireProcessGate(path string, mode Mode) (*localLease, bool) {
+	reference := processGates.reference(path)
+	lease, ok := reference.entry.gate.tryAcquire(mode)
+	if !ok {
+		reference.release()
+		return nil, false
+	}
+	lease.reference = reference
+	return lease, true
+}
+
+func acquireProcessGate(ctx context.Context, path string, mode Mode) (*localLease, error) {
+	reference := processGates.reference(path)
+	lease, err := reference.entry.gate.acquire(ctx, mode)
+	if err != nil {
+		reference.release()
+		return nil, err
+	}
+	lease.reference = reference
+	return lease, nil
+}
+
+func (r *localGateRegistry) reference(path string) *localGateReference {
+	r.mu.Lock()
+	entry := r.entries[path]
+	if entry == nil {
+		entry = &localGateEntry{}
+		r.entries[path] = entry
+	}
+	entry.refs++
+	r.mu.Unlock()
+	return &localGateReference{registry: r, path: path, entry: entry}
+}
+
+func (r *localGateReference) release() {
+	if r == nil || r.registry == nil || r.entry == nil {
+		return
+	}
+	r.once.Do(func() {
+		r.registry.mu.Lock()
+		r.entry.refs--
+		if r.entry.refs == 0 && r.registry.entries[r.path] == r.entry {
+			delete(r.registry.entries, r.path)
+		}
+		r.registry.mu.Unlock()
+	})
 }
 
 func (g *localGate) tryAcquire(mode Mode) (*localLease, bool) {
@@ -124,5 +187,6 @@ func (l *localLease) release() {
 		l.gate.markReleased(l.mode)
 		l.gate.grantWaiters()
 		l.gate.mu.Unlock()
+		l.reference.release()
 	})
 }

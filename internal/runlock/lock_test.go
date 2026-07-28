@@ -3,6 +3,7 @@ package runlock
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,6 +35,31 @@ func TestAcquireRejectsConcurrentHolder(t *testing.T) {
 	}
 	if !errors.Is(err, ErrAlreadyLocked) {
 		t.Fatalf("expected ErrAlreadyLocked, got %v", err)
+	}
+}
+
+func TestAcquireCanonicalizesPath(t *testing.T) {
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "subdir"), 0o755); err != nil {
+		t.Fatalf("create alias subdirectory: %v", err)
+	}
+	path := filepath.Join(base, "subdir") + string(filepath.Separator) + ".." +
+		string(filepath.Separator) + "sync-all.lock"
+	lock, err := Acquire(path, "owner=test\n")
+	if err != nil {
+		t.Fatalf("Acquire aliased path: %v", err)
+	}
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		_ = lock.Close()
+		t.Fatalf("resolve test temp directory: %v", err)
+	}
+	if want := filepath.Join(canonicalBase, "sync-all.lock"); lock.Path() != want {
+		_ = lock.Close()
+		t.Fatalf("Lock.Path() = %q, want canonical %q", lock.Path(), want)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("Close aliased lock: %v", err)
 	}
 }
 
@@ -110,6 +136,33 @@ func TestAcquireContextSharedHoldersCoexist(t *testing.T) {
 	}
 	if err := second.Close(); err != nil {
 		t.Fatalf("Close second shared: %v", err)
+	}
+}
+
+func TestAcquireContextCanonicalizesPathBeforeWriterIntent(t *testing.T) {
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "subdir"), 0o755); err != nil {
+		t.Fatalf("create alias subdirectory: %v", err)
+	}
+	path := filepath.Join(base, "subdir") + string(filepath.Separator) + ".." +
+		string(filepath.Separator) + "semantic.lock"
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	lock, err := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+	if err != nil {
+		t.Fatalf("AcquireContext aliased path: %v", err)
+	}
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		_ = lock.Close()
+		t.Fatalf("resolve test temp directory: %v", err)
+	}
+	if want := filepath.Join(canonicalBase, "semantic.lock"); lock.Path() != want {
+		_ = lock.Close()
+		t.Fatalf("Lock.Path() = %q, want canonical %q", lock.Path(), want)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("Close aliased lock: %v", err)
 	}
 }
 
@@ -403,6 +456,80 @@ func TestAcquireContextWaiterAcquiresAfterSameProcessClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("waiter did not acquire after same-process close")
 	}
+}
+
+func TestProcessGateRegistryReturnsToBaseline(t *testing.T) {
+	baseline := currentProcessGateCount()
+	base := t.TempDir()
+	for index := 0; index < 200; index++ {
+		path := filepath.Join(base, fmt.Sprintf("semantic-%03d.lock", index))
+		lock, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Exclusive})
+		if err != nil {
+			t.Fatalf("AcquireContext iteration %d: %v", index, err)
+		}
+		if err := lock.Close(); err != nil {
+			t.Fatalf("Close iteration %d: %v", index, err)
+		}
+	}
+	if got := currentProcessGateCount(); got != baseline {
+		t.Fatalf("process gate count = %d, want baseline %d", got, baseline)
+	}
+}
+
+func TestProcessGateRemovalAndReacquisitionIsRaceSafe(t *testing.T) {
+	baseline := currentProcessGateCount()
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	for iteration := 0; iteration < 100; iteration++ {
+		first, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+		if err != nil {
+			t.Fatalf("AcquireContext first reader iteration %d: %v", iteration, err)
+		}
+		second, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+		if err != nil {
+			_ = first.Close()
+			t.Fatalf("AcquireContext second reader iteration %d: %v", iteration, err)
+		}
+
+		start := make(chan struct{})
+		closeResults := make(chan error, 2)
+		for _, lock := range []*Lock{first, second} {
+			go func(lock *Lock) {
+				<-start
+				closeResults <- lock.Close()
+			}(lock)
+		}
+		writerResult := make(chan lockAcquisition, 1)
+		go func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			lock, acquireErr := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+			writerResult <- lockAcquisition{lock: lock, err: acquireErr}
+		}()
+		close(start)
+
+		for closeIndex := 0; closeIndex < 2; closeIndex++ {
+			if err := <-closeResults; err != nil {
+				t.Fatalf("Close reader iteration %d: %v", iteration, err)
+			}
+		}
+		writer := <-writerResult
+		if writer.err != nil {
+			t.Fatalf("AcquireContext writer iteration %d: %v", iteration, writer.err)
+		}
+		if err := writer.lock.Close(); err != nil {
+			t.Fatalf("Close writer iteration %d: %v", iteration, err)
+		}
+	}
+	if got := currentProcessGateCount(); got != baseline {
+		t.Fatalf("process gate count after races = %d, want baseline %d", got, baseline)
+	}
+}
+
+func currentProcessGateCount() int {
+	processGates.mu.Lock()
+	defer processGates.mu.Unlock()
+	return len(processGates.entries)
 }
 
 func TestAcquireContextRejectsSymlinkedLeaf(t *testing.T) {
