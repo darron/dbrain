@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -55,11 +57,12 @@ func TestOpenUSearchRootImportsVerifiedSegments(t *testing.T) {
 	cache := t.TempDir()
 	profile := "profile"
 	fixture := publishUSearchRootFixture(t, cache, profile, usearchRootFixtureOptions{})
-	loaded, err := OpenUSearchRoot(cache, "db", profile, fixture.root.Manifest.GenerationID, USearchRootExpectations{
+	loaded, err := OpenUSearchRoot(context.Background(), cache, "db", profile, fixture.root.Manifest.GenerationID, USearchRootExpectations{
 		Index:            USearchOptions{Dimensions: 2},
 		SnapshotRevision: 7,
 		PurgeEpoch:       3,
 		BackendVersion:   USearchVersion,
+		DescriptorSHA256: fixture.root.Manifest.DescriptorSHA256,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +72,187 @@ func TestOpenUSearchRootImportsVerifiedSegments(t *testing.T) {
 		t.Fatalf("segments=%d", len(loaded.Segments))
 	}
 	assertUSearchOrdinals(t, loaded.Segments[0].Index, []uint64{0})
+}
+
+func TestOpenUSearchRootReadsEachPayloadOnce(t *testing.T) {
+	cache := t.TempDir()
+	fixture := publishUSearchRootFixture(t, cache, "profile", usearchRootFixtureOptions{})
+	payloadOpens := 0
+	loaded, err := openUSearchRoot(context.Background(), cache, "db", "profile", fixture.root.Manifest.GenerationID, USearchRootExpectations{
+		Index:            USearchOptions{Dimensions: 2},
+		SnapshotRevision: 7,
+		PurgeEpoch:       3,
+		BackendVersion:   USearchVersion,
+		DescriptorSHA256: fixture.root.Manifest.DescriptorSHA256,
+	}, func(path string) (io.ReadCloser, error) {
+		payloadOpens++
+		return os.Open(path)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.Close() })
+	if payloadOpens != 1 {
+		t.Fatalf("payload opens=%d want=1", payloadOpens)
+	}
+}
+
+func TestOpenUSearchRootRejectsCanceledContextBeforeFilesystemWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	loaded, err := OpenUSearchRoot(ctx, filepath.Join(t.TempDir(), "missing"), "db", "profile", "root", USearchRootExpectations{})
+	if loaded != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("loaded=%#v error=%v want context cancellation", loaded, err)
+	}
+}
+
+func TestReadVerifiedUSearchPayloadStopsDuringStreamedRead(t *testing.T) {
+	cache := t.TempDir()
+	fixture := publishUSearchRootFixture(t, cache, "profile", usearchRootFixtureOptions{})
+	payloadPath := filepath.Join(cache, filepath.FromSlash(fixture.segment.RelativePath), semanticsegment.PayloadFileName)
+	payload, err := os.ReadFile(payloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &cancelAfterFirstChunkReader{payload: payload, cancel: cancel}
+
+	_, err = readVerifiedUSearchPayload(ctx, reader, fixture.segment.Manifest.PayloadSHA256)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("read payload error=%v want context cancellation", err)
+	}
+}
+
+func TestOpenUSearchRootCancellationBetweenSegmentsClosesLoadedIndexes(t *testing.T) {
+	cache := t.TempDir()
+	profile := "profile"
+	first := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{1, 0}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"}})
+	second := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{0, 1}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "second", Revision: 2, VectorHash: "second-hash"}})
+	segments := []semanticsegment.RootSegment{
+		{Hash: first.Hash, RelativePath: first.RelativePath},
+		{Hash: second.Hash, RelativePath: second.RelativePath},
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Hash < segments[j].Hash })
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+		DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 2,
+		Segments: segments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	openCalls := 0
+	openPayload := func(path string) (io.ReadCloser, error) {
+		openCalls++
+		if openCalls == 2 {
+			cancel()
+			return nil, ctx.Err()
+		}
+		return os.Open(path)
+	}
+
+	loaded, err := openUSearchRoot(ctx, cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+		Index: USearchOptions{Dimensions: 2}, SnapshotRevision: 2,
+		BackendVersion: USearchVersion, DescriptorSHA256: root.Manifest.DescriptorSHA256,
+	}, openPayload)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("open root error=%v want context cancellation", err)
+	}
+	if openCalls != 2 || loaded == nil || len(loaded.Segments) != 1 || loaded.Segments[0].Index != nil {
+		t.Fatalf("open_calls=%d loaded=%#v want one cleaned-up index", openCalls, loaded)
+	}
+}
+
+func TestOpenUSearchRootLaterPayloadErrorClosesLoadedIndexes(t *testing.T) {
+	cache := t.TempDir()
+	profile := "profile"
+	first := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{1, 0}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"}})
+	second := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{0, 1}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "second", Revision: 2, VectorHash: "second-hash"}})
+	segments := []semanticsegment.RootSegment{
+		{Hash: first.Hash, RelativePath: first.RelativePath},
+		{Hash: second.Hash, RelativePath: second.RelativePath},
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Hash < segments[j].Hash })
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+		DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 2,
+		Segments: segments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(cache, filepath.FromSlash(segments[1].RelativePath), semanticsegment.PayloadFileName),
+		[]byte("tampered"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := openUSearchRoot(context.Background(), cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+		Index: USearchOptions{Dimensions: 2}, SnapshotRevision: 2,
+		BackendVersion: USearchVersion, DescriptorSHA256: root.Manifest.DescriptorSHA256,
+	}, func(path string) (io.ReadCloser, error) {
+		return os.Open(path)
+	})
+	if err == nil || !strings.Contains(err.Error(), "payload checksum mismatch") {
+		t.Fatalf("open root error=%v want payload checksum mismatch", err)
+	}
+	if loaded == nil || len(loaded.Segments) != 1 || loaded.Segments[0].Index != nil {
+		t.Fatalf("loaded=%#v want one cleaned-up index", loaded)
+	}
+}
+
+func TestOpenUSearchRootRejectsChecksumValidSubsetBeforePayloadImport(t *testing.T) {
+	cache := t.TempDir()
+	profile := "profile"
+	first := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{1, 0}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"}})
+	second := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{0, 1}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "second", Revision: 2, VectorHash: "second-hash"}})
+	segments := []semanticsegment.RootSegment{
+		{Hash: first.Hash, RelativePath: first.RelativePath},
+		{Hash: second.Hash, RelativePath: second.RelativePath},
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Hash < segments[j].Hash })
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+		DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 2,
+		Segments: segments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewriteUSearchRootManifest(t, cache, root, func(manifest *semanticsegment.RootManifest) {
+		manifest.Segments = append([]semanticsegment.RootSegment(nil), manifest.Segments[:1]...)
+		hash, err := semanticsegment.RootDescriptorSHA256(semanticsegment.RootInput{
+			DatabaseID: manifest.DatabaseID, ProfileID: manifest.ProfileID, GenerationID: manifest.GenerationID,
+			SnapshotRevision: manifest.SnapshotRevision, PurgeEpoch: manifest.PurgeEpoch, Segments: manifest.Segments,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest.DescriptorSHA256 = hash
+	})
+	payloadOpens := 0
+	loaded, err := openUSearchRoot(context.Background(), cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+		Index: USearchOptions{Dimensions: 2}, SnapshotRevision: 2,
+		BackendVersion: USearchVersion, DescriptorSHA256: root.Manifest.DescriptorSHA256,
+	}, func(path string) (io.ReadCloser, error) {
+		payloadOpens++
+		return os.Open(path)
+	})
+	if loaded != nil || err == nil || !strings.Contains(err.Error(), "descriptor hash mismatch") || payloadOpens != 0 {
+		t.Fatalf("loaded=%#v error=%v payload_opens=%d", loaded, err, payloadOpens)
+	}
 }
 
 func TestOpenUSearchRootRejectsMismatchedProvenance(t *testing.T) {
@@ -162,11 +346,12 @@ func TestOpenUSearchRootRejectsMismatchedProvenance(t *testing.T) {
 				tc.mutate(&options, &expect)
 			}
 			fixture := publishUSearchRootFixture(t, cache, "profile", options)
+			expect.DescriptorSHA256 = fixture.root.Manifest.DescriptorSHA256
 			if tc.tamper != nil {
 				tc.tamper(t, cache, fixture)
 			}
 
-			loaded, err := OpenUSearchRoot(cache, "db", "profile", fixture.root.Manifest.GenerationID, expect)
+			loaded, err := OpenUSearchRoot(context.Background(), cache, "db", "profile", fixture.root.Manifest.GenerationID, expect)
 			if loaded != nil {
 				_ = loaded.Close()
 			}
@@ -191,11 +376,12 @@ func TestUSearchRootCandidatesResolveImmutableMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := OpenUSearchRoot(cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+	loaded, err := OpenUSearchRoot(context.Background(), cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
 		Index:            USearchOptions{Dimensions: 2},
 		SnapshotRevision: 4,
 		PurgeEpoch:       0,
 		BackendVersion:   USearchVersion,
+		DescriptorSHA256: root.Manifest.DescriptorSHA256,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -502,6 +688,45 @@ func rewriteUSearchSegmentManifest(t *testing.T, cache string, segment semantics
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func rewriteUSearchRootManifest(t *testing.T, cache string, root semanticsegment.Root, mutate func(*semanticsegment.RootManifest)) {
+	t.Helper()
+	path := filepath.Join(cache, filepath.FromSlash(root.RelativePath), semanticsegment.RootFileName)
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest semanticsegment.RootManifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&manifest)
+	contents, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type cancelAfterFirstChunkReader struct {
+	payload []byte
+	cancel  context.CancelFunc
+	read    bool
+}
+
+func (r *cancelAfterFirstChunkReader) Read(buffer []byte) (int, error) {
+	if r.read {
+		return 0, io.EOF
+	}
+	r.read = true
+	count := min(len(buffer), min(len(r.payload), 64))
+	copy(buffer, r.payload[:count])
+	r.payload = r.payload[count:]
+	r.cancel()
+	return count, nil
 }
 
 func newUSearchRootTestIndex(t *testing.T, nodes ...HNSWNode) *USearch {

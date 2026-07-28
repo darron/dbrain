@@ -1,6 +1,7 @@
 package semanticsegment
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -86,6 +87,28 @@ func PublishSegment(cacheDir string, input SegmentInput) (Segment, error) {
 }
 
 func OpenSegment(cacheDir, databaseID, profileID, hash string) (Segment, error) {
+	segment, err := OpenSegmentManifest(context.Background(), cacheDir, databaseID, profileID, hash)
+	if err != nil {
+		return Segment{}, err
+	}
+	directory := filepath.Join(cacheDir, filepath.FromSlash(segment.RelativePath))
+	payload, err := os.ReadFile(filepath.Join(directory, PayloadFileName))
+	if err != nil {
+		return Segment{}, fmt.Errorf("read semantic segment payload: %w", err)
+	}
+	if sha256Hex(payload) != segment.Manifest.PayloadSHA256 {
+		return Segment{}, fmt.Errorf("semantic segment %s payload checksum mismatch", hash)
+	}
+	return segment, nil
+}
+
+// OpenSegmentManifest validates one immutable segment descriptor without
+// reading its opaque payload. Payload consumers remain responsible for
+// verifying PayloadSHA256 while reading the payload exactly once.
+func OpenSegmentManifest(ctx context.Context, cacheDir, databaseID, profileID, hash string) (Segment, error) {
+	if err := ctx.Err(); err != nil {
+		return Segment{}, err
+	}
 	if err := validatePathPart("database ID", databaseID); err != nil {
 		return Segment{}, err
 	}
@@ -95,10 +118,16 @@ func OpenSegment(cacheDir, databaseID, profileID, hash string) (Segment, error) 
 	if err := validatePathPart("segment hash", hash); err != nil {
 		return Segment{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Segment{}, err
+	}
 	directory := filepath.Join(cacheDir, filepath.FromSlash(segmentRelativePath(databaseID, profileID, hash)))
 	manifestBytes, err := os.ReadFile(filepath.Join(directory, ManifestFileName))
 	if err != nil {
 		return Segment{}, fmt.Errorf("read semantic segment manifest: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return Segment{}, err
 	}
 	var manifest Manifest
 	if err := decodeStrictJSON(manifestBytes, &manifest); err != nil {
@@ -107,12 +136,8 @@ func OpenSegment(cacheDir, databaseID, profileID, hash string) (Segment, error) 
 	if err := validateManifest(manifest, databaseID, profileID, hash); err != nil {
 		return Segment{}, err
 	}
-	payload, err := os.ReadFile(filepath.Join(directory, PayloadFileName))
-	if err != nil {
-		return Segment{}, fmt.Errorf("read semantic segment payload: %w", err)
-	}
-	if sha256Hex(payload) != manifest.PayloadSHA256 {
-		return Segment{}, fmt.Errorf("semantic segment %s payload checksum mismatch", hash)
+	if err := ctx.Err(); err != nil {
+		return Segment{}, err
 	}
 	return Segment{Hash: hash, RelativePath: segmentRelativePath(databaseID, profileID, hash), Manifest: manifest}, nil
 }
@@ -140,16 +165,13 @@ func PublishRoot(cacheDir string, input RootInput) (Root, error) {
 			_ = os.RemoveAll(temporary)
 		}
 	}()
-	descriptor := rootDescriptor{SchemaVersion: SchemaVersion, DatabaseID: input.DatabaseID, ProfileID: input.ProfileID,
-		GenerationID: input.GenerationID, SnapshotRevision: input.SnapshotRevision, PurgeEpoch: input.PurgeEpoch,
-		Segments: append([]RootSegment(nil), input.Segments...)}
-	descriptorBytes, err := canonicalJSON(descriptor)
+	descriptorHash, err := RootDescriptorSHA256(input)
 	if err != nil {
 		return Root{}, err
 	}
 	manifest := RootManifest{SchemaVersion: SchemaVersion, DatabaseID: input.DatabaseID, ProfileID: input.ProfileID,
 		GenerationID: input.GenerationID, SnapshotRevision: input.SnapshotRevision, PurgeEpoch: input.PurgeEpoch,
-		Segments: append([]RootSegment(nil), input.Segments...), DescriptorSHA256: sha256Hex(descriptorBytes)}
+		Segments: append([]RootSegment(nil), input.Segments...), DescriptorSHA256: descriptorHash}
 	manifestBytes, err := canonicalJSON(manifest)
 	if err != nil {
 		return Root{}, err
@@ -177,13 +199,37 @@ func PublishRoot(cacheDir string, input RootInput) (Root, error) {
 }
 
 func OpenRoot(cacheDir, databaseID, profileID, generationID string) (Root, error) {
+	root, err := OpenRootManifest(context.Background(), cacheDir, databaseID, profileID, generationID)
+	if err != nil {
+		return Root{}, err
+	}
+	for _, segment := range root.Manifest.Segments {
+		if _, err := OpenSegment(cacheDir, databaseID, profileID, segment.Hash); err != nil {
+			return Root{}, fmt.Errorf("open semantic root segment %s: %w", segment.Hash, err)
+		}
+	}
+	return root, nil
+}
+
+// OpenRootManifest validates one immutable root descriptor without opening its
+// referenced segment manifests or payloads.
+func OpenRootManifest(ctx context.Context, cacheDir, databaseID, profileID, generationID string) (Root, error) {
+	if err := ctx.Err(); err != nil {
+		return Root{}, err
+	}
 	if err := validateRootInput(RootInput{DatabaseID: databaseID, ProfileID: profileID, GenerationID: generationID, SnapshotRevision: 1, Segments: []RootSegment{{Hash: "placeholder", RelativePath: segmentRelativePath(databaseID, profileID, "placeholder")}}}); err != nil {
+		return Root{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return Root{}, err
 	}
 	directory := filepath.Join(cacheDir, filepath.FromSlash(rootRelativePath(databaseID, profileID, generationID)))
 	bytes, err := os.ReadFile(filepath.Join(directory, RootFileName))
 	if err != nil {
 		return Root{}, fmt.Errorf("read semantic root manifest: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return Root{}, err
 	}
 	var manifest RootManifest
 	if err := decodeStrictJSON(bytes, &manifest); err != nil {
@@ -192,10 +238,8 @@ func OpenRoot(cacheDir, databaseID, profileID, generationID string) (Root, error
 	if err := validateRootManifest(manifest, databaseID, profileID, generationID); err != nil {
 		return Root{}, err
 	}
-	for _, segment := range manifest.Segments {
-		if _, err := OpenSegment(cacheDir, databaseID, profileID, segment.Hash); err != nil {
-			return Root{}, fmt.Errorf("open semantic root segment %s: %w", segment.Hash, err)
-		}
+	if err := ctx.Err(); err != nil {
+		return Root{}, err
 	}
 	return Root{RelativePath: rootRelativePath(databaseID, profileID, generationID), Manifest: manifest}, nil
 }
@@ -239,14 +283,11 @@ func validateRootManifest(manifest RootManifest, databaseID, profileID, generati
 	if err := validateRootInput(input); err != nil {
 		return err
 	}
-	descriptor := rootDescriptor{SchemaVersion: manifest.SchemaVersion, DatabaseID: manifest.DatabaseID, ProfileID: manifest.ProfileID,
-		GenerationID: manifest.GenerationID, SnapshotRevision: manifest.SnapshotRevision, PurgeEpoch: manifest.PurgeEpoch,
-		Segments: manifest.Segments}
-	bytes, err := canonicalJSON(descriptor)
+	hash, err := RootDescriptorSHA256(input)
 	if err != nil {
 		return err
 	}
-	if sha256Hex(bytes) != manifest.DescriptorSHA256 {
+	if hash != manifest.DescriptorSHA256 {
 		return fmt.Errorf("semantic root %s descriptor checksum mismatch", generationID)
 	}
 	return nil

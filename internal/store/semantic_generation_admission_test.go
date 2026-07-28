@@ -2,16 +2,22 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/semanticreadiness"
+	"github.com/darron/dbrain/internal/semanticsegment"
 )
 
 func TestSemanticReadinessActiveGenerationMetadata(t *testing.T) {
 	st, profile, generationID, _, snapshotRevision := seedCompletedSemanticGeneration(t)
 	defer func() { _ = st.Close() }()
+	var sourceManifestHash string
+	if err := st.db.QueryRow(`SELECT source_manifest_hash FROM retrieval_index_generations WHERE generation_id=?`, generationID).Scan(&sourceManifestHash); err != nil {
+		t.Fatal(err)
+	}
 
 	for name, read := range semanticGenerationReadinessReaders(st) {
 		t.Run(name, func(t *testing.T) {
@@ -25,7 +31,8 @@ func TestSemanticReadinessActiveGenerationMetadata(t *testing.T) {
 				snapshot.ActiveGenerationBackendVersion != "2.26.0" ||
 				snapshot.ActiveGenerationDistanceMetric != "cosine" ||
 				snapshot.ActiveGenerationDimensions != profile.Dimensions ||
-				snapshot.ActiveSnapshotRevision != snapshotRevision {
+				snapshot.ActiveSnapshotRevision != snapshotRevision ||
+				snapshot.ActiveGenerationRootDescriptorSHA256 != sourceManifestHash {
 				t.Fatalf("active generation metadata was not admitted: snapshot=%+v", snapshot)
 			}
 			if snapshot.ActiveGenerationProblem != "" {
@@ -118,6 +125,32 @@ func TestSemanticRuntimeReadinessActiveGenerationMetadataCorruptionFailsClosed(t
 			name: "generation source manifest is empty",
 			mutate: func(t *testing.T, st *Store, generationID, _ string, _ int) {
 				execSemanticGenerationCorruption(t, st, `UPDATE retrieval_index_generations SET source_manifest_hash='' WHERE generation_id=?`, generationID)
+			},
+		},
+		{
+			name:        "generation source manifest is nonempty but incorrect",
+			wantProblem: "active generation root descriptor hash does not match SQLite segment catalog",
+			mutate: func(t *testing.T, st *Store, generationID, _ string, _ int) {
+				execSemanticGenerationCorruption(t, st, `UPDATE retrieval_index_generations SET source_manifest_hash=? WHERE generation_id=?`, fmt.Sprintf("%064d", 1), generationID)
+			},
+		},
+		{
+			name:        "generation segment set differs from root hash",
+			wantProblem: "active generation root descriptor hash does not match SQLite segment catalog",
+			mutate: func(t *testing.T, st *Store, generationID, segmentHash string, _ int) {
+				const replacementHash = "segment-replacement"
+				execSemanticGenerationCorruption(t, st, `
+					INSERT INTO retrieval_index_segments (
+						segment_hash,profile_id,backend,backend_version,dimensions,distance_metric,indexed_chunk_count,
+						relative_cache_path,membership_hash,payload_hash,manifest_hash,created_at
+					)
+					SELECT ?,profile_id,backend,backend_version,dimensions,distance_metric,indexed_chunk_count,
+						REPLACE(relative_cache_path, ?, ?),membership_hash,payload_hash,manifest_hash,created_at
+					FROM retrieval_index_segments WHERE segment_hash=?`,
+					replacementHash, segmentHash, replacementHash, segmentHash)
+				execSemanticGenerationCorruption(t, st,
+					`UPDATE retrieval_generation_segments SET segment_hash=? WHERE generation_id=?`,
+					replacementHash, generationID)
 			},
 		},
 		{
@@ -238,18 +271,33 @@ func seedCompletedSemanticGeneration(t *testing.T) (*Store, embedding.Profile, s
 	const generationID = "generation-ready"
 	const segmentHash = "segment-ready"
 	indexed := len(window.Rows)
+	databaseID, err := st.RetrievalDatabaseID(ctx)
+	if err != nil {
+		_ = st.Close()
+		t.Fatal(err)
+	}
+	segmentRelativePath := fmt.Sprintf("semantic/%s/%s/segments/%s", databaseID, profileID, segmentHash)
+	rootDescriptorHash, err := semanticsegment.RootDescriptorSHA256(semanticsegment.RootInput{
+		DatabaseID: databaseID, ProfileID: profileID, GenerationID: generationID,
+		SnapshotRevision: window.SnapshotRevision, PurgeEpoch: window.Profile.PurgeEpoch,
+		Segments: []semanticsegment.RootSegment{{Hash: segmentHash, RelativePath: segmentRelativePath}},
+	})
+	if err != nil {
+		_ = st.Close()
+		t.Fatal(err)
+	}
 	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
 		Generation: RetrievalIndexGenerationRow{
 			GenerationID: generationID, ProfileID: profileID, Backend: "usearch", BackendVersion: "2.26.0",
 			Dimensions: profile.Dimensions, DistanceMetric: "cosine", IndexedChunkCount: indexed,
-			SourceManifestHash: "generation-manifest", BuildStatus: RetrievalGenerationCompleted,
-			RelativeCachePath: "semantic/test/generations/generation-ready",
+			SourceManifestHash: rootDescriptorHash, BuildStatus: RetrievalGenerationCompleted,
+			RelativeCachePath: fmt.Sprintf("semantic/%s/%s/generations/%s", databaseID, profileID, generationID),
 			BuildStartedAt:    time.Now().UTC(), BuildCompletedAt: time.Now().UTC(),
 		},
 		Segments: []RetrievalIndexSegmentRow{{
 			SegmentHash: segmentHash, ProfileID: profileID, Backend: "usearch", BackendVersion: "2.26.0",
 			Dimensions: profile.Dimensions, DistanceMetric: "cosine", IndexedChunkCount: indexed,
-			RelativeCachePath: "semantic/test/segments/segment-ready", MembershipHash: "members-ready",
+			RelativeCachePath: segmentRelativePath, MembershipHash: "members-ready",
 			PayloadHash: "payload-ready", ManifestHash: "manifest-ready",
 		}},
 		Members: retrievalSegmentMembers(window.Rows, segmentHash), SnapshotRevision: window.SnapshotRevision,

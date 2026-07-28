@@ -14,6 +14,9 @@ import (
 )
 
 func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Config, profile embedding.Profile, snapshot semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if snapshot.ActiveGenerationID == "" {
 		return semanticindex.NewExact(st), nil
 	}
@@ -22,6 +25,7 @@ func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Co
 		return nil, err
 	}
 	root, err := semanticindex.OpenUSearchRoot(
+		ctx,
 		cfg.CacheDir,
 		databaseID,
 		snapshot.ProfileID,
@@ -36,6 +40,7 @@ func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Co
 			SnapshotRevision: snapshot.ActiveSnapshotRevision,
 			PurgeEpoch:       snapshot.ProfilePurgeEpoch,
 			BackendVersion:   snapshot.ActiveGenerationBackendVersion,
+			DescriptorSHA256: snapshot.ActiveGenerationRootDescriptorSHA256,
 		},
 	)
 	if err != nil {

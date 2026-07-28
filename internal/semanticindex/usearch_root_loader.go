@@ -3,8 +3,11 @@
 package semanticindex
 
 import (
-	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,6 +34,7 @@ type USearchRootExpectations struct {
 	SnapshotRevision int64
 	PurgeEpoch       int64
 	BackendVersion   string
+	DescriptorSHA256 string
 }
 
 // USearchRootCandidate resolves one approximate native ordinal through the
@@ -43,10 +47,37 @@ type USearchRootCandidate struct {
 	ApproximateDistance float32
 }
 
-func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, expect USearchRootExpectations) (*USearchRoot, error) {
-	root, err := semanticsegment.OpenRoot(cacheDir, databaseID, profileID, generationID)
+func OpenUSearchRoot(ctx context.Context, cacheDir, databaseID, profileID, generationID string, expect USearchRootExpectations) (*USearchRoot, error) {
+	loaded, err := openUSearchRoot(ctx, cacheDir, databaseID, profileID, generationID, expect, func(path string) (io.ReadCloser, error) {
+		return os.Open(path)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return loaded, nil
+}
+
+func openUSearchRoot(
+	ctx context.Context,
+	cacheDir, databaseID, profileID, generationID string,
+	expect USearchRootExpectations,
+	openPayload func(string) (io.ReadCloser, error),
+) (*USearchRoot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if openPayload == nil {
+		return nil, fmt.Errorf("usearch payload opener is nil")
+	}
+	root, err := semanticsegment.OpenRootManifest(ctx, cacheDir, databaseID, profileID, generationID)
 	if err != nil {
 		return nil, fmt.Errorf("open usearch root: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if root.Manifest.DescriptorSHA256 != expect.DescriptorSHA256 {
+		return nil, fmt.Errorf("usearch root descriptor hash mismatch: cache=%q expected=%q", root.Manifest.DescriptorSHA256, expect.DescriptorSHA256)
 	}
 	if root.Manifest.SnapshotRevision != expect.SnapshotRevision {
 		return nil, fmt.Errorf("usearch root snapshot revision mismatch: cache=%d expected=%d", root.Manifest.SnapshotRevision, expect.SnapshotRevision)
@@ -55,11 +86,17 @@ func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, expec
 		return nil, fmt.Errorf("usearch root purge epoch mismatch: cache=%d expected=%d", root.Manifest.PurgeEpoch, expect.PurgeEpoch)
 	}
 	loaded := &USearchRoot{Root: root, Segments: make([]USearchRootSegment, 0, len(root.Manifest.Segments))}
-	fail := func(err error) (*USearchRoot, error) { _ = loaded.Close(); return nil, err }
+	fail := func(err error) (*USearchRoot, error) { _ = loaded.Close(); return loaded, err }
 	for _, reference := range root.Manifest.Segments {
-		segment, err := semanticsegment.OpenSegment(cacheDir, databaseID, profileID, reference.Hash)
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		segment, err := semanticsegment.OpenSegmentManifest(ctx, cacheDir, databaseID, profileID, reference.Hash)
 		if err != nil {
 			return fail(fmt.Errorf("open usearch root segment %s: %w", reference.Hash, err))
+		}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
 		}
 		if segment.Manifest.Backend != BackendUSearch {
 			return fail(fmt.Errorf("usearch root segment %s backend mismatch: cache=%q expected=%q", reference.Hash, segment.Manifest.Backend, BackendUSearch))
@@ -73,21 +110,105 @@ func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, expec
 		if segment.Manifest.Dimensions != expect.Index.Dimensions {
 			return fail(fmt.Errorf("usearch root segment %s dimensions mismatch: cache=%d expected=%d", reference.Hash, segment.Manifest.Dimensions, expect.Index.Dimensions))
 		}
-		payload, err := os.ReadFile(filepath.Join(cacheDir, filepath.FromSlash(reference.RelativePath), semanticsegment.PayloadFileName))
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		payloadFile, err := openPayload(filepath.Join(cacheDir, filepath.FromSlash(reference.RelativePath), semanticsegment.PayloadFileName))
 		if err != nil {
-			return fail(fmt.Errorf("read usearch root payload %s: %w", reference.Hash, err))
+			return fail(fmt.Errorf("open usearch root payload %s: %w", reference.Hash, err))
+		}
+		payload, readErr := readVerifiedUSearchPayload(ctx, payloadFile, segment.Manifest.PayloadSHA256)
+		closeErr := payloadFile.Close()
+		if readErr != nil {
+			return fail(fmt.Errorf("read usearch root payload %s: %w", reference.Hash, readErr))
+		}
+		if closeErr != nil {
+			return fail(fmt.Errorf("close usearch root payload %s: %w", reference.Hash, closeErr))
+		}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
 		}
 		index, err := NewUSearch(expect.Index)
 		if err != nil {
 			return fail(err)
 		}
-		if err := index.Import(bytes.NewReader(payload)); err != nil {
+		if err := loadVerifiedUSearchPayload(ctx, index, payload); err != nil {
 			_ = index.Close()
 			return fail(fmt.Errorf("import usearch root segment %s: %w", reference.Hash, err))
 		}
 		loaded.Segments = append(loaded.Segments, USearchRootSegment{SegmentHash: reference.Hash, Manifest: segment.Manifest, Index: index})
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 	return loaded, nil
+}
+
+func readVerifiedUSearchPayload(ctx context.Context, reader io.Reader, expectedSHA256 string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	hash := sha256.New()
+	payload, err := io.ReadAll(io.TeeReader(&contextReader{ctx: ctx, reader: reader}, hash))
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != expectedSHA256 {
+		return nil, fmt.Errorf("payload checksum mismatch")
+	}
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("usearch payload is empty")
+	}
+	return payload, nil
+}
+
+// loadVerifiedUSearchPayload cannot preempt USearch's native LoadBuffer call.
+// It rejects cancellation immediately before entering C and immediately after
+// the call returns.
+func loadVerifiedUSearchPayload(ctx context.Context, index *USearch, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := index.available(); err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return fmt.Errorf("usearch payload is empty")
+	}
+	loadErr := index.index.LoadBuffer(payload, uint(len(payload)))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if loadErr != nil {
+		return fmt.Errorf("load usearch payload: %w", loadErr)
+	}
+	dimensions, err := index.index.Dimensions()
+	if err != nil {
+		return fmt.Errorf("read imported usearch dimensions: %w", err)
+	}
+	if int(dimensions) != index.dimensions {
+		return fmt.Errorf("usearch imported dimensions %d want %d", dimensions, index.dimensions)
+	}
+	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	count, err := r.reader.Read(buffer)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return count, ctxErr
+	}
+	return count, err
 }
 
 // Candidates searches each verified segment independently and converts every

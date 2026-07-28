@@ -4,6 +4,7 @@ package brainresearch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -18,6 +19,27 @@ import (
 	"github.com/darron/dbrain/internal/semanticsegment"
 	"github.com/darron/dbrain/internal/store"
 )
+
+func TestRuntimeSemanticSearcherRejectsPostReadinessCancellationBeforeRootWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	snapshot := semanticreadiness.Snapshot{
+		ActiveGenerationID:                   "root",
+		ProfileID:                            "profile",
+		ActiveSnapshotRevision:               1,
+		ProfilePurgeEpoch:                    0,
+		ActiveGenerationBackendVersion:       semanticindex.USearchVersion,
+		ActiveGenerationRootDescriptorSHA256: "unused-after-cancellation",
+	}
+
+	searcher, err := runtimeSemanticSearcher(
+		ctx, nil, config.Config{CacheDir: filepath.Join(t.TempDir(), "missing")},
+		embedding.Profile{Dimensions: 2}, snapshot, semanticreadiness.DefaultExactMaxChunks,
+	)
+	if searcher != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("searcher=%#v error=%v want context cancellation", searcher, err)
+	}
+}
 
 func TestRuntimeUSearchIntegration(t *testing.T) {
 	ctx := context.Background()
@@ -194,7 +216,8 @@ func TestRuntimeUSearchIntegration(t *testing.T) {
 		snapshot.ActiveGenerationBackend != semanticindex.BackendUSearch ||
 		snapshot.ActiveGenerationBackendVersion != semanticindex.USearchVersion ||
 		snapshot.ActiveGenerationDistanceMetric != "cosine" ||
-		snapshot.ActiveGenerationDimensions != profile.Dimensions {
+		snapshot.ActiveGenerationDimensions != profile.Dimensions ||
+		snapshot.ActiveGenerationRootDescriptorSHA256 != publishedRoot.Manifest.DescriptorSHA256 {
 		t.Fatalf("invalid active generation provenance: %+v", snapshot)
 	}
 	if ok, reason := semanticindex.RuntimeCapability().Admit(

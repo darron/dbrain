@@ -9,6 +9,7 @@ import (
 
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/semanticreadiness"
+	"github.com/darron/dbrain/internal/semanticsegment"
 )
 
 const activeSemanticGenerationMetadataQuery = `
@@ -41,6 +42,13 @@ const activeSemanticGenerationSegmentsQuery = `
 	WHERE g.generation_id = ?
 	GROUP BY g.generation_id`
 
+const activeSemanticGenerationSegmentCatalogQuery = `
+	SELECT s.segment_hash,s.relative_cache_path
+	FROM retrieval_generation_segments gs
+	JOIN retrieval_index_segments s ON s.segment_hash=gs.segment_hash
+	WHERE gs.generation_id=?
+	ORDER BY s.segment_hash`
+
 func proveActiveSemanticGenerationMetadata(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -53,6 +61,7 @@ func proveActiveSemanticGenerationMetadata(
 	snapshot.ActiveGenerationBackendVersion = ""
 	snapshot.ActiveGenerationDistanceMetric = ""
 	snapshot.ActiveGenerationDimensions = 0
+	snapshot.ActiveGenerationRootDescriptorSHA256 = ""
 	if snapshot.ActiveGenerationID == "" {
 		snapshot.ActiveGenerationValid = true
 		return nil
@@ -117,6 +126,43 @@ func proveActiveSemanticGenerationMetadata(
 		return fail("active generation segment count does not match")
 	}
 
+	var databaseID string
+	if err := tx.QueryRowContext(ctx, `SELECT database_id FROM retrieval_state WHERE singleton=1`).Scan(&databaseID); err != nil {
+		return fmt.Errorf("read active semantic generation database ID: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, activeSemanticGenerationSegmentCatalogQuery, snapshot.ActiveGenerationID)
+	if err != nil {
+		return fmt.Errorf("read active semantic generation segment catalog: %w", err)
+	}
+	segments := make([]semanticsegment.RootSegment, 0, segmentCount)
+	for rows.Next() {
+		var segment semanticsegment.RootSegment
+		if err := rows.Scan(&segment.Hash, &segment.RelativePath); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan active semantic generation segment catalog: %w", err)
+		}
+		segments = append(segments, segment)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate active semantic generation segment catalog: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close active semantic generation segment catalog: %w", err)
+	}
+	expectedRootHash, err := semanticsegment.RootDescriptorSHA256(semanticsegment.RootInput{
+		DatabaseID: databaseID, ProfileID: snapshot.ProfileID, GenerationID: snapshot.ActiveGenerationID,
+		SnapshotRevision: snapshot.ActiveSnapshotRevision, PurgeEpoch: snapshot.ProfilePurgeEpoch,
+		Segments: segments,
+	})
+	if err != nil {
+		return fail("active generation root descriptor cannot be reconstructed")
+	}
+	if sourceManifestHash != expectedRootHash {
+		return fail("active generation root descriptor hash does not match SQLite segment catalog")
+	}
+
+	snapshot.ActiveGenerationRootDescriptorSHA256 = expectedRootHash
 	snapshot.ActiveGenerationValid = true
 	return nil
 }
