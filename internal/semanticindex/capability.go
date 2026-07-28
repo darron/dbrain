@@ -95,10 +95,17 @@ func capabilityPathEnd(reason string, index int) (int, bool) {
 
 func isCapabilityPathStart(reason string, index int) bool {
 	value := reason[index:]
-	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `\??\`) || strings.HasPrefix(value, "file://") {
+	if isCapabilitySlashPath(value) || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `\??\`) || strings.HasPrefix(value, `\Device\`) || strings.HasPrefix(value, "file://") {
 		return true
 	}
 	return len(value) >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
+}
+
+func isCapabilitySlashPath(value string) bool {
+	if !strings.HasPrefix(value, "/") || len(value) < 2 {
+		return false
+	}
+	return !isCapabilityWhitespace(value[1]) && !strings.ContainsRune(".,;:()[]{}'\"", rune(value[1]))
 }
 
 func isCapabilityPathBoundary(reason string, index int) bool {
@@ -129,11 +136,24 @@ func isCapabilityPathTerminator(reason string, start, index int) bool {
 	case ',', ';', '(', ')', '[', ']', '{', '}', '\'', '"':
 		return true
 	case ':':
-		if index == start+1 && start+2 < len(reason) && (reason[start+2] == '/' || reason[start+2] == '\\') {
+		if strings.HasPrefix(reason[start:], "file://") && index == start+4 {
+			return false
+		}
+		if isCapabilityDriveColon(reason, start, index) {
 			return false
 		}
 		return true
 	default:
 		return false
 	}
+}
+
+func isCapabilityDriveColon(reason string, start, index int) bool {
+	if index+1 >= len(reason) || (reason[index+1] != '/' && reason[index+1] != '\\') {
+		return false
+	}
+	if index == start+1 {
+		return true
+	}
+	return strings.HasPrefix(reason[start:], `\??\`) && index == start+5
 }
