@@ -330,6 +330,66 @@ func TestRuntimeAdmissionPropagatesCallerCancellationBeforeProviderConstruction(
 	}
 }
 
+func TestRuntimeAdmissionPropagatesSearcherCancellationBeforeArtifactFailOpen(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	for _, tc := range []struct {
+		name        string
+		searchError func(context.Context, context.CancelFunc) error
+		want        error
+	}{
+		{
+			name: "caller cancellation after readiness",
+			searchError: func(ctx context.Context, cancel context.CancelFunc) error {
+				cancel()
+				return fmt.Errorf("%w: native root open: %w", errNativeRootArtifactsUnavailable, ctx.Err())
+			},
+			want: context.Canceled,
+		},
+		{
+			name: "explicit wrapped deadline",
+			searchError: func(context.Context, context.CancelFunc) error {
+				return fmt.Errorf("%w: native root open: %w", errNativeRootArtifactsUnavailable, context.DeadlineExceeded)
+			},
+			want: context.DeadlineExceeded,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			readinessCalls, searcherCalls, providerCalls := 0, 0, 0
+			deps := runtimeDeps{
+				readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+					readinessCalls++
+					return runtimeReadySnapshot(true), nil
+				},
+				capability: func() semanticindex.Capability {
+					return semanticindex.Capability{
+						State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+					}
+				},
+				searcher: func(searchCtx context.Context, _ *store.Store, _ config.Config, _ embedding.Profile, _ semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
+					searcherCalls++
+					return nil, tc.searchError(searchCtx, cancel)
+				},
+				provider: func(semanticconfig.Config) (embedding.Provider, error) {
+					providerCalls++
+					return nil, errors.New("provider must not be constructed")
+				},
+			}
+
+			builder, err := newRuntimeBuilderWithDeps(ctx, config.Config{RootDir: root}, st, "", false, false, deps)
+			if builder != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("builder=%#v error=%v want=%v", builder, err, tc.want)
+			}
+			if readinessCalls != 1 || searcherCalls != 1 || providerCalls != 0 {
+				t.Fatalf("readiness=%d searcher=%d provider=%d", readinessCalls, searcherCalls, providerCalls)
+			}
+		})
+	}
+}
+
 func TestRuntimeAdmissionUsesShortFailOpenLatencyBudgetBeforeProviderConstruction(t *testing.T) {
 	root := t.TempDir()
 	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)

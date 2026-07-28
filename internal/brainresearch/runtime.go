@@ -136,6 +136,12 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	}
 	searcher, err := deps.searcher(ctx, st, cfg, profile, snapshot, exactMaxChunks)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		reason := "semantic searcher unavailable: " + err.Error()
 		if errors.Is(err, errNativeBackendUnavailable) {
 			reason = errNativeBackendUnavailable.Error()
