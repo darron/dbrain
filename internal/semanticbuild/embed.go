@@ -32,6 +32,7 @@ type EmbedOptions struct {
 	Now           func() time.Time
 	Clock         func() time.Time
 	Progress      func(Progress) error
+	sleep         func(context.Context, time.Duration) error
 }
 
 type EmbedBatchOptions struct {
@@ -42,35 +43,20 @@ type EmbedBatchOptions struct {
 	Now                 func() time.Time
 	Sleep               func(context.Context, time.Duration) error
 	BeforeProvider      func(context.Context, int) error
-
-	// The remaining fields bind the existing manual command to this same batch
-	// implementation without changing its public Limit/BatchSize semantics.
-	afterChunkID                string
-	pageLimit                   int
-	skipHasMore                 bool
-	skipIdleRevision            bool
-	persistRetryableImmediately bool
-	consecutiveFailures         *int
-	afterPhysicalBatch          func(Progress) error
 }
 
 type EmbedBatchResult struct {
 	Progress
 	Revision int64 `json:"revision"`
 	HasMore  bool  `json:"has_more"`
-
-	lastChunkID string
 }
 
 type EmbedStore interface {
 	ListChunksNeedingEmbeddingForProfileAt(context.Context, embedding.Profile, string, int, time.Time) ([]store.RetrievalChunkRow, error)
 	CountChunksNeedingEmbeddingForProfileAt(context.Context, embedding.Profile, time.Time) (int, error)
 	RetrievalPurgeEpoch(context.Context) (int64, error)
-	PutRetrievalEmbeddingBatch(context.Context, store.PutRetrievalEmbeddingBatchInput) (int64, error)
-}
-
-type retrievalEmbeddingProfileReader interface {
 	RetrievalEmbeddingProfile(context.Context, string) (store.RetrievalEmbeddingProfileRow, error)
+	PutRetrievalEmbeddingBatch(context.Context, store.PutRetrievalEmbeddingBatchInput) (int64, error)
 }
 
 type embedBatchExecution struct {
@@ -102,77 +88,43 @@ func RunEmbedBatch(ctx context.Context, st EmbedStore, provider embedding.Provid
 		return result, err
 	}
 
-	pageLimit := opts.pageLimit
-	if pageLimit <= 0 {
-		pageLimit = opts.BatchSize
-	}
-	candidates, err := listEmbedCandidates(ctx, st, execution.profile, opts.afterChunkID, pageLimit, execution.now)
+	candidates, err := listEmbedCandidates(ctx, st, execution.profile, "", opts.BatchSize, execution.now)
 	if err != nil {
 		return result, err
 	}
 	if len(candidates) == 0 {
-		if opts.skipIdleRevision {
-			return result, nil
-		}
 		revision, err := currentEmbedRevision(ctx, st, execution.profileID)
 		result.Revision = revision
 		return result, err
 	}
-	result.lastChunkID = candidates[len(candidates)-1].ChunkID
 
-	failures := opts.consecutiveFailures
-	if failures == nil {
-		failures = new(int)
-	}
+	failures := new(int)
 	attempts := make(map[string]int, len(candidates))
 	for _, candidate := range candidates {
 		attempts[candidate.ChunkID] = candidate.AttemptCount
 	}
-
-	var processingErr error
-	for start := 0; start < len(candidates); start += opts.BatchSize {
-		if err := ctx.Err(); err != nil {
+	if opts.BeforeProvider != nil {
+		if err := opts.BeforeProvider(ctx, len(candidates)); err != nil {
 			return result, err
 		}
-		end := min(start+opts.BatchSize, len(candidates))
-		batch := candidates[start:end]
-		if start == 0 && opts.BeforeProvider != nil {
-			if err := opts.BeforeProvider(ctx, len(batch)); err != nil {
-				return result, err
-			}
-		}
-		physical := Progress{Stage: "embed", Snapshots: make([]Progress, 0)}
-		revision, err := processEmbedBatch(
-			ctx, st, provider, execution, batch, attempts, &physical, failures,
-			!opts.persistRetryableImmediately,
-		)
-		mergeEmbedProgress(&result.Progress, physical)
-		result.Revision = revision
-		if opts.afterPhysicalBatch != nil && physical.Scanned > 0 {
-			if callbackErr := opts.afterPhysicalBatch(physical); callbackErr != nil {
-				return result, callbackErr
-			}
-		}
-		if err != nil {
-			processingErr = err
-			break
-		}
 	}
+	result.Revision, err = processEmbedBatch(
+		ctx, st, provider, execution, candidates, attempts, &result.Progress, failures,
+	)
+	processingErr := err
 	if processingErr != nil && !errors.Is(processingErr, ErrEmbedCircuitOpen) {
 		return result, processingErr
 	}
-	if !opts.skipHasMore {
-		remaining, err := listEmbedCandidates(ctx, st, execution.profile, "", 1, execution.now)
-		if err != nil {
-			if processingErr != nil {
-				return result, errors.Join(processingErr, err)
-			}
-			return result, err
+	remaining, err := listEmbedCandidates(ctx, st, execution.profile, "", 1, execution.now)
+	if err != nil {
+		if processingErr != nil {
+			return result, errors.Join(processingErr, err)
 		}
-		result.HasMore = len(remaining) > 0
-		if result.HasMore {
-			result.Remaining = 1
-		}
+		return result, err
+	}
+	result.HasMore = len(remaining) > 0
+	if result.HasMore {
+		result.Remaining = 1
 	}
 	return result, processingErr
 }
@@ -253,11 +205,7 @@ func listEmbedCandidates(ctx context.Context, st EmbedStore, profile embedding.P
 }
 
 func currentEmbedRevision(ctx context.Context, st EmbedStore, profileID string) (int64, error) {
-	reader, ok := st.(retrievalEmbeddingProfileReader)
-	if !ok {
-		return 0, fmt.Errorf("semantic embed store cannot read the current embedding profile revision")
-	}
-	profile, err := reader.RetrievalEmbeddingProfile(ctx, profileID)
+	profile, err := st.RetrievalEmbeddingProfile(ctx, profileID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, store.ErrRetrievalEmbeddingProfileNotFound) {
 			return 0, nil
@@ -322,9 +270,7 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 	if cooldown <= 0 {
 		cooldown = defaultRetryCooldown
 	}
-	batchSize := min(opts.BatchSize, MaxEmbeddingBatchSize)
-	consecutiveRetryableFailures := 0
-	afterChunkID := ""
+	remainingLimit := opts.Limit
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -333,24 +279,20 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 		if embedOwnDeadlineReached(ctx, workCtx, cooperativeDeadline, clock) {
 			return finishEmbedInterrupted(progress), nil
 		}
+		batchSize := min(opts.BatchSize, remainingLimit, MaxEmbeddingBatchSize)
 		batchResult, err := RunEmbedBatch(workCtx, st, provider, EmbedBatchOptions{
-			BatchSize:                   batchSize,
-			RetryCooldown:               cooldown,
-			Now:                         func() time.Time { return now },
-			afterChunkID:                afterChunkID,
-			pageLimit:                   opts.Limit,
-			skipHasMore:                 true,
-			skipIdleRevision:            true,
-			persistRetryableImmediately: true,
-			consecutiveFailures:         &consecutiveRetryableFailures,
-			afterPhysicalBatch: func(physical Progress) error {
-				mergeEmbedProgress(&progress, physical)
-				progress.Remaining = max(total-progress.Scanned, 0)
-				return recordEmbedSnapshot(&progress, opts.Progress)
-			},
+			BatchSize:     batchSize,
+			RetryCooldown: cooldown,
+			Now:           func() time.Time { return now },
+			Sleep:         opts.sleep,
 		})
-		if batchResult.lastChunkID != "" {
-			afterChunkID = batchResult.lastChunkID
+		mergeEmbedProgress(&progress, batchResult.Progress)
+		progress.Remaining = max(total-progress.Scanned, 0)
+		remainingLimit -= batchResult.Scanned
+		if batchResult.Scanned > 0 {
+			if snapshotErr := recordEmbedSnapshot(&progress, opts.Progress); snapshotErr != nil {
+				return progress, snapshotErr
+			}
 		}
 		if err != nil {
 			if embedCommandContextInterrupted(ctx, workCtx, opts.MaxDuration, err) {
@@ -358,21 +300,17 @@ func RunEmbed(ctx context.Context, st EmbedStore, provider embedding.Provider, o
 			}
 			return progress, err
 		}
-		if batchResult.lastChunkID == "" {
-			if opts.UntilIdle && afterChunkID != "" {
-				// Re-probe from the start after reaching the keyset tail. Rows
-				// completed by this invocation are no longer eligible, while this
-				// catches concurrently-added work whose ID sorts before the tail.
-				afterChunkID = ""
-				continue
-			}
+		if !opts.UntilIdle && remainingLimit == 0 {
+			finalizeEmbedProgress(&progress)
+			return progress, nil
+		}
+		if !batchResult.HasMore {
 			progress.Remaining = 0
 			finalizeEmbedProgress(&progress)
 			return progress, nil
 		}
-		if !opts.UntilIdle {
-			finalizeEmbedProgress(&progress)
-			return progress, nil
+		if opts.UntilIdle {
+			remainingLimit = opts.Limit
 		}
 	}
 }
@@ -386,7 +324,6 @@ func processEmbedBatch(
 	attempts map[string]int,
 	progress *Progress,
 	consecutiveRetryableFailures *int,
-	retrySameBatch bool,
 ) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -421,14 +358,14 @@ func processEmbedBatch(
 			middle := len(batch) / 2
 			revision, err := processEmbedBatch(
 				ctx, st, provider, execution, batch[:middle], attempts, progress,
-				consecutiveRetryableFailures, retrySameBatch,
+				consecutiveRetryableFailures,
 			)
 			if err != nil {
 				return revision, err
 			}
 			nextRevision, err := processEmbedBatch(
 				ctx, st, provider, execution, batch[middle:], attempts, progress,
-				consecutiveRetryableFailures, retrySameBatch,
+				consecutiveRetryableFailures,
 			)
 			if nextRevision > 0 {
 				revision = nextRevision
@@ -437,7 +374,7 @@ func processEmbedBatch(
 		}
 		if embedding.IsRetryable(embedErr) {
 			*consecutiveRetryableFailures++
-			if retrySameBatch && *consecutiveRetryableFailures < MaxConsecutiveProviderFailures {
+			if *consecutiveRetryableFailures < MaxConsecutiveProviderFailures {
 				delay := embedRetryDelay(execution.initialBackoff, execution.maxBackoff, *consecutiveRetryableFailures)
 				if err := execution.sleep(ctx, delay); err != nil {
 					return 0, err
