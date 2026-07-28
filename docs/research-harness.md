@@ -1312,17 +1312,35 @@ lexical evidence with explicit status/reason before provider construction. Exact
 evidence remains separate and representative. Direct MCP pack calls remain
 read-only and trace-free, including in shadow mode.
 
-Operational state is limited to `dbrain semantic status`, `semantic chunk`,
-`semantic embed`, and bounded `semantic verify`. Chunk and embed support
-durable `--until-idle` processing with graceful `--max-duration` interruption;
-counter rebuilding is an explicit verify repair and never occurs on research
-requests. The current deletion integration is item-only: Apple Notes
+Use `dbrain semantic refresh` as the composed manual/emergency maintenance path;
+it uses the configured profile without changing `research.semantic.mode`, fixes
+one projection watermark for a run, and resumes a cancelled or failed run on a
+later invocation. Writes above that watermark are left for a successor run, so
+the completed run has a stable boundary. `dbrain semantic status` reports the
+latest selected-profile run (or the database-latest run when disabled or
+unconfigured) as `latest_run`. Its public JSON has stable snake_case fields:
+`run_id`, `profile_id`, `purge_epoch`, `projection_watermark`,
+`embedding_revision`, `stage`, `checkpoint`, `counters`,
+`current_generation_id`, `state`, `error_code`, `readiness_state`,
+`created_at`, `updated_at`, and `last_progress_at`; stored error text is not
+published. Typed refresh errors use stable bounded `code`, `stage`, `run_id`,
+`checkpoint`, `readiness`, `remaining_debt`, and `message` fields.
+
+`semantic chunk`, `semantic embed`, and bounded `semantic verify` remain
+diagnostic commands rather than the normal operator sequence. Chunk and embed
+support durable `--until-idle` processing with graceful `--max-duration`
+interruption; counter rebuilding remains an explicit verify repair. Queries,
+research, MCP, and web paths never trigger maintenance. The current deletion
+integration is item-only: Apple Notes
 `--forget-excluded` synchronously removes that item's derived chunks/embeddings
 and stale affected retrieval generations through the explicit indexed-content
 purge. Other delete paths and future parent kinds are not covered by this claim.
-There is no ANN index or ANN file lifecycle in this foundation;
-ANN, provider expansion, background sync, and default-on remain deferred until
-reviewed lexical-versus-hybrid evals justify them.
+This stacked PR does not invoke refresh from sync, add cross-process locks,
+package native support for releases/Homebrew, or activate an installed or
+production corpus. Normal untagged/CGO-free artifacts therefore remain
+unsupported for refresh until the later distribution stack. Provider expansion,
+background sync, and default-on remain deferred until reviewed
+lexical-versus-hybrid evals justify them.
 
 ### Phase 8: Make The UI And Skill Reflect The Runner
 
@@ -1528,8 +1546,15 @@ Current semantic foundation:
 - CLI `--semantic` / `--no-semantic` and MCP/web `use_semantic` /
   `disable_semantic` force effective on/off; enabling and disabling together is
   rejected. Direct MCP pack builds remain trace-free.
-- ANN lifecycle, additional providers, background sync, and default-on behavior
-  remain evaluation-gated and deferred.
+- The separate manual `semantic refresh` path uses the configured profile and
+  preserves mode. Mode `off` and unsupported builds are successful skips;
+  supported-but-broken backends and supported enabled runs return typed errors
+  on failure. Runs use a fixed watermark, resume after cancellation/failure,
+  and create successor work for later writes. It is not called by sync or any
+  query path, has no cross-process lock, does not package native support, and
+  does not activate production.
+- Additional providers, automatic/background sync, distribution, and default-on
+  behavior remain evaluation-gated and deferred.
 
 Remaining questions:
 

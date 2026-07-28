@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Resumable semantic refresh (2026-07-28)
+
+- **Resumable semantic refresh**: Added a migration-backed per-profile refresh
+  ledger, fixed-watermark projection and revision-checkpointed embedding batches,
+  bounded provider retry, L0/compaction/verification/readiness orchestration,
+  serialized progress, typed failures, `semantic refresh`, and latest-run
+  status. Automatic post-sync refresh, cross-process locks, release packaging,
+  and installed-corpus activation remain in later stacked PRs.
+
 ### Semantic ANN runtime admission (2026-07-28)
 
 - **Explicit native capability**: `dbrain semantic status` now reports whether

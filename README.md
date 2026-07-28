@@ -1138,6 +1138,32 @@ the measured 25,000-vector exact ceiling; larger complete profiles report
 `dbrain_research_pack` calls never write research traces. See
 [MCP.md](MCP.md#semantic-retrieval-contract) for overrides and response fields.
 
+### Manual semantic refresh
+
+The derived semantic state can be inspected and refreshed manually:
+
+```sh
+dbrain semantic status
+dbrain semantic refresh
+dbrain semantic refresh --max-duration 30m
+dbrain semantic refresh --json
+```
+
+`semantic refresh` uses the configured embedding profile and does not change
+`research.semantic.mode`. With mode `off`, or in a build whose native backend is
+unsupported, it reports a successful bounded skip. A supported-but-broken
+backend returns a typed error. With a supported backend and enabled `shadow` or
+`on` mode, it runs the composed maintenance flow until readiness is `ready` or
+returns a typed failure. Cancellation and failure preserve the durable run, and
+a later `semantic refresh` invocation resumes it automatically.
+
+This is a manual/emergency operator path only: this stacked PR does not invoke
+refresh from `sync`, queries never perform maintenance, and it adds no
+cross-process maintenance lock. Normal untagged/CGO-free artifacts remain
+unsupported for refresh until the later distribution stack; this does not change
+the `research.semantic.index_backend` configuration or claim Homebrew native
+support. It does not activate a production database or cache.
+
 See [MCP.md](MCP.md) for the full agent workflow, tool contract, eval setup,
 client configuration, importer contract, logging behavior, and skill setup.
 
