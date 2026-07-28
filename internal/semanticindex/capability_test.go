@@ -57,6 +57,12 @@ func TestCapabilityAdmit(t *testing.T) {
 		{"safe invalid escapes in sentence are preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \q and \z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \q and \z`},
 		{"safe invalid escapes after colon are preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes: \q\z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes: \q\z`},
 		{"safe invalid escape sequence diagnostic is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape sequence \q\z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape sequence \q\z`},
+		{"safe short hexadecimal invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \x2`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \x2`},
+		{"safe malformed hexadecimal invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \xZZ`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \xZZ`},
+		{"safe short unicode invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape sequence \u12`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape sequence \u12`},
+		{"safe malformed long unicode invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape sequence \U0000ZZZZ`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape sequence \U0000ZZZZ`},
+		{"safe uppercase invalid escape diagnostic is preserved", Capability{State: CapabilitySupportedBroken, Reason: `Invalid escape \q\z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: Invalid escape \q\z`},
+		{"safe invalid escape before question mark is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \q?`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \q?`},
 		{"backend mismatch", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, "other", USearchVersion, false, "native_backend_provenance_mismatch"},
 		{"version mismatch", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, BackendUSearch, "other", false, "native_backend_provenance_mismatch"},
 	}

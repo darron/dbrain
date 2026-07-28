@@ -172,6 +172,7 @@ func isCapabilityInvalidEscapeToken(reason string, index int) bool {
 }
 
 func hasCapabilityInvalidEscapeContext(prefix string) bool {
+	prefix = strings.ToLower(prefix)
 	for _, marker := range []string{
 		"invalid escape ", "invalid escapes ",
 		"invalid escape:", "invalid escapes:",
@@ -192,11 +193,11 @@ func capabilityEscapeComponentEnd(value string, start int) (int, bool) {
 	character := value[start+1]
 	switch character {
 	case 'x':
-		return capabilityHexEscapeEnd(value, start, 2)
+		return capabilityBoundedEscapeEnd(value, start, 2, false)
 	case 'u':
-		return capabilityHexEscapeEnd(value, start, 4)
+		return capabilityBoundedEscapeEnd(value, start, 4, false)
 	case 'U':
-		return capabilityHexEscapeEnd(value, start, 8)
+		return capabilityBoundedEscapeEnd(value, start, 8, true)
 	default:
 		if character >= '0' && character <= '7' {
 			end := start + 2
@@ -209,21 +210,20 @@ func capabilityEscapeComponentEnd(value string, start int) (int, bool) {
 	}
 }
 
-func capabilityHexEscapeEnd(value string, start, digits int) (int, bool) {
-	end := start + 2 + digits
-	if end > len(value) {
-		return 0, false
-	}
-	for index := start + 2; index < end; index++ {
-		if !isCapabilityHex(value[index]) {
-			return 0, false
+func capabilityBoundedEscapeEnd(value string, start, maximum int, exact bool) (int, bool) {
+	payloadStart := start + 2
+	end := payloadStart
+	for end < len(value) && end-payloadStart < maximum {
+		character := value[end]
+		if character == '\\' || character == '/' || isCapabilityWhitespace(character) || isCapabilityEscapeDelimiter(character) {
+			break
 		}
+		end++
 	}
-	return end, true
-}
-
-func isCapabilityHex(character byte) bool {
-	return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')
+	if exact {
+		return end, end-payloadStart == maximum
+	}
+	return end, end > payloadStart
 }
 
 func isCapabilityEscapeSequence(value string) bool {
@@ -243,7 +243,7 @@ func isCapabilityEscapeSequence(value string) bool {
 
 func isCapabilityEscapeDelimiter(character byte) bool {
 	switch character {
-	case '.', ',', ';', ':', '(', ')', '[', ']', '{', '}', '\'', '"':
+	case '.', ',', ';', ':', '?', '(', ')', '[', ']', '{', '}', '\'', '"':
 		return true
 	default:
 		return false
