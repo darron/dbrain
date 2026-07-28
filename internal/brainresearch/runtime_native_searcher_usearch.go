@@ -21,7 +21,23 @@ func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Co
 	if err != nil {
 		return nil, err
 	}
-	root, err := semanticindex.OpenUSearchRoot(cfg.CacheDir, databaseID, snapshot.ProfileID, snapshot.ActiveGenerationID, semanticindex.USearchOptions{Dimensions: profile.Dimensions, Connectivity: 16, ExpansionAdd: 128, ExpansionSearch: 256})
+	root, err := semanticindex.OpenUSearchRoot(
+		cfg.CacheDir,
+		databaseID,
+		snapshot.ProfileID,
+		snapshot.ActiveGenerationID,
+		semanticindex.USearchRootExpectations{
+			Index: semanticindex.USearchOptions{
+				Dimensions:      profile.Dimensions,
+				Connectivity:    16,
+				ExpansionAdd:    128,
+				ExpansionSearch: 256,
+			},
+			SnapshotRevision: snapshot.ActiveSnapshotRevision,
+			PurgeEpoch:       snapshot.ProfilePurgeEpoch,
+			BackendVersion:   snapshot.ActiveGenerationBackendVersion,
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("open native semantic root: %w", err)
 	}

@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/darron/dbrain/internal/embedding"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -137,7 +137,9 @@ func validateVerificationState(profileID string, profile embedding.Profile, stat
 	if !state.GenerationActive || state.GenerationStatus != store.RetrievalGenerationCompleted {
 		return fmt.Errorf("semantic verify profile %s active generation %s is not active and completed", profileID, state.ActiveGenerationID)
 	}
-	if state.GenerationBackend != "exact" || strings.TrimSpace(state.GenerationBackendVersion) == "" || state.GenerationDistanceMetric != "cosine" {
+	if state.GenerationBackend != semanticindex.BackendUSearch ||
+		state.GenerationBackendVersion != semanticindex.USearchVersion ||
+		state.GenerationDistanceMetric != "cosine" {
 		return fmt.Errorf("semantic verify profile %s active generation %s has unsupported backend provenance %q/%q/%q", profileID, state.ActiveGenerationID, state.GenerationBackend, state.GenerationBackendVersion, state.GenerationDistanceMetric)
 	}
 	if state.GenerationDimensions != profile.Dimensions {

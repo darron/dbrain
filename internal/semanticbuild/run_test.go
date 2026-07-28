@@ -12,6 +12,7 @@ import (
 
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/retrievalchunk"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -897,11 +898,11 @@ func TestSemanticVerifyRejectsProfileRootAndRevisionProvenance(t *testing.T) {
 		state.ActiveSnapshotRevision = 2
 		state.ActiveIndexedCount = 2
 		state.ActiveTombstoneCount = 1
-		state.GenerationBackend = "exact"
-		state.GenerationBackendVersion = "v1"
+		state.GenerationBackend = semanticindex.BackendUSearch
+		state.GenerationBackendVersion = semanticindex.USearchVersion
 		state.GenerationStatus = store.RetrievalGenerationCompleted
 		state.GenerationActive = true
-		state.GenerationDimensions = 2
+		state.GenerationDimensions = profile.Dimensions
 		state.GenerationDistanceMetric = "cosine"
 		state.GenerationIndexedChunkCount = 2
 	}
@@ -941,6 +942,83 @@ func TestSemanticVerifyRejectsProfileRootAndRevisionProvenance(t *testing.T) {
 				t.Fatal("invalid verification provenance accepted")
 			}
 		})
+	}
+}
+
+func TestValidateVerificationStateAcceptsPinnedUSearchGeneration(t *testing.T) {
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := validUSearchVerificationState(profileID, profile)
+
+	if err := validateVerificationState(profileID, profile, state); err != nil {
+		t.Fatalf("valid pinned USearch generation rejected: %v", err)
+	}
+}
+
+func TestValidateVerificationStateRejectsUnsupportedGenerationProvenance(t *testing.T) {
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*store.RetrievalEmbeddingVerificationState)
+	}{
+		{"exact backend", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationBackend = "exact"
+		}},
+		{"unknown backend", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationBackend = "unknown"
+		}},
+		{"wrong USearch version", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationBackendVersion = "2.25.0"
+		}},
+		{"non-cosine metric", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationDistanceMetric = "dot"
+		}},
+		{"wrong dimensions", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationDimensions = profile.Dimensions + 1
+		}},
+		{"inactive generation", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationActive = false
+		}},
+		{"non-completed generation", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationStatus = store.RetrievalGenerationBuilding
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := validUSearchVerificationState(profileID, profile)
+			tc.mutate(&state)
+
+			if err := validateVerificationState(profileID, profile, state); err == nil {
+				t.Fatal("unsupported active generation provenance accepted")
+			}
+		})
+	}
+}
+
+func validUSearchVerificationState(profileID string, profile embedding.Profile) store.RetrievalEmbeddingVerificationState {
+	return store.RetrievalEmbeddingVerificationState{
+		ProfileID:                   profileID,
+		Profile:                     profile,
+		LatestRevision:              2,
+		PurgeEpoch:                  1,
+		GlobalPurgeEpoch:            1,
+		ActiveGenerationID:          "root",
+		ActiveSnapshotRevision:      2,
+		ActiveIndexedCount:          2,
+		ActiveTombstoneCount:        1,
+		GenerationBackend:           semanticindex.BackendUSearch,
+		GenerationBackendVersion:    semanticindex.USearchVersion,
+		GenerationDistanceMetric:    "cosine",
+		GenerationDimensions:        profile.Dimensions,
+		GenerationIndexedChunkCount: 2,
+		GenerationStatus:            store.RetrievalGenerationCompleted,
+		GenerationActive:            true,
 	}
 }
 

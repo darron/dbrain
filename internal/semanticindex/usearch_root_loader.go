@@ -26,6 +26,13 @@ type USearchRootSegment struct {
 	Index       *USearch
 }
 
+type USearchRootExpectations struct {
+	Index            USearchOptions
+	SnapshotRevision int64
+	PurgeEpoch       int64
+	BackendVersion   string
+}
+
 // USearchRootCandidate resolves one approximate native ordinal through the
 // immutable member manifest. It is only a candidate identity: callers must
 // still validate it against current SQLite state and exactly rerank the vector
@@ -36,10 +43,16 @@ type USearchRootCandidate struct {
 	ApproximateDistance float32
 }
 
-func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, options USearchOptions) (*USearchRoot, error) {
+func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, expect USearchRootExpectations) (*USearchRoot, error) {
 	root, err := semanticsegment.OpenRoot(cacheDir, databaseID, profileID, generationID)
 	if err != nil {
 		return nil, fmt.Errorf("open usearch root: %w", err)
+	}
+	if root.Manifest.SnapshotRevision != expect.SnapshotRevision {
+		return nil, fmt.Errorf("usearch root snapshot revision mismatch: cache=%d expected=%d", root.Manifest.SnapshotRevision, expect.SnapshotRevision)
+	}
+	if root.Manifest.PurgeEpoch != expect.PurgeEpoch {
+		return nil, fmt.Errorf("usearch root purge epoch mismatch: cache=%d expected=%d", root.Manifest.PurgeEpoch, expect.PurgeEpoch)
 	}
 	loaded := &USearchRoot{Root: root, Segments: make([]USearchRootSegment, 0, len(root.Manifest.Segments))}
 	fail := func(err error) (*USearchRoot, error) { _ = loaded.Close(); return nil, err }
@@ -48,14 +61,23 @@ func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, optio
 		if err != nil {
 			return fail(fmt.Errorf("open usearch root segment %s: %w", reference.Hash, err))
 		}
-		if segment.Manifest.Backend != BackendUSearch || segment.Manifest.Dimensions != options.Dimensions {
-			return fail(fmt.Errorf("usearch root segment %s backend/dimensions mismatch", reference.Hash))
+		if segment.Manifest.Backend != BackendUSearch {
+			return fail(fmt.Errorf("usearch root segment %s backend mismatch: cache=%q expected=%q", reference.Hash, segment.Manifest.Backend, BackendUSearch))
+		}
+		if segment.Manifest.BackendVersion != expect.BackendVersion {
+			return fail(fmt.Errorf("usearch root segment %s backend version mismatch: cache=%q expected=%q", reference.Hash, segment.Manifest.BackendVersion, expect.BackendVersion))
+		}
+		if segment.Manifest.DistanceMetric != "cosine" {
+			return fail(fmt.Errorf("usearch root segment %s distance metric mismatch: cache=%q expected=%q", reference.Hash, segment.Manifest.DistanceMetric, "cosine"))
+		}
+		if segment.Manifest.Dimensions != expect.Index.Dimensions {
+			return fail(fmt.Errorf("usearch root segment %s dimensions mismatch: cache=%d expected=%d", reference.Hash, segment.Manifest.Dimensions, expect.Index.Dimensions))
 		}
 		payload, err := os.ReadFile(filepath.Join(cacheDir, filepath.FromSlash(reference.RelativePath), semanticsegment.PayloadFileName))
 		if err != nil {
 			return fail(fmt.Errorf("read usearch root payload %s: %w", reference.Hash, err))
 		}
-		index, err := NewUSearch(options)
+		index, err := NewUSearch(expect.Index)
 		if err != nil {
 			return fail(err)
 		}

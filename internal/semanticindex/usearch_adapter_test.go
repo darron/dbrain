@@ -5,7 +5,10 @@ package semanticindex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -51,32 +54,13 @@ func TestUSearchAdapterSearchAndReopenPreservesNearestOrdinals(t *testing.T) {
 func TestOpenUSearchRootImportsVerifiedSegments(t *testing.T) {
 	cache := t.TempDir()
 	profile := "profile"
-	index, err := NewUSearch(USearchOptions{Dimensions: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := index.Reserve(1); err != nil {
-		t.Fatal(err)
-	}
-	if err := index.Add(HNSWNode{Ordinal: 0, Vector: []float32{1, 0}}); err != nil {
-		t.Fatal(err)
-	}
-	var payload bytes.Buffer
-	if err := index.Export(&payload); err != nil {
-		t.Fatal(err)
-	}
-	if err := index.Close(); err != nil {
-		t.Fatal(err)
-	}
-	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{DatabaseID: "db", ProfileID: profile, Backend: BackendUSearch, BackendVersion: "test", DistanceMetric: "cosine", Dimensions: 2, Members: []semanticsegment.Member{{Ordinal: 0, ChunkID: "chunk", Revision: 1, VectorHash: "hash"}}, Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 1, Segments: []semanticsegment.RootSegment{{Hash: segment.Hash, RelativePath: segment.RelativePath}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := OpenUSearchRoot(cache, "db", profile, root.Manifest.GenerationID, USearchOptions{Dimensions: 2})
+	fixture := publishUSearchRootFixture(t, cache, profile, usearchRootFixtureOptions{})
+	loaded, err := OpenUSearchRoot(cache, "db", profile, fixture.root.Manifest.GenerationID, USearchRootExpectations{
+		Index:            USearchOptions{Dimensions: 2},
+		SnapshotRevision: 7,
+		PurgeEpoch:       3,
+		BackendVersion:   USearchVersion,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +69,112 @@ func TestOpenUSearchRootImportsVerifiedSegments(t *testing.T) {
 		t.Fatalf("segments=%d", len(loaded.Segments))
 	}
 	assertUSearchOrdinals(t, loaded.Segments[0].Index, []uint64{0})
+}
+
+func TestOpenUSearchRootRejectsMismatchedProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*usearchRootFixtureOptions, *USearchRootExpectations)
+		tamper func(*testing.T, string, usearchRootFixture)
+		want   string
+	}{
+		{
+			name: "root snapshot revision",
+			mutate: func(_ *usearchRootFixtureOptions, expect *USearchRootExpectations) {
+				expect.SnapshotRevision++
+			},
+			want: "snapshot revision mismatch",
+		},
+		{
+			name: "root purge epoch",
+			mutate: func(_ *usearchRootFixtureOptions, expect *USearchRootExpectations) {
+				expect.PurgeEpoch++
+			},
+			want: "purge epoch mismatch",
+		},
+		{
+			name: "segment backend",
+			mutate: func(options *usearchRootFixtureOptions, _ *USearchRootExpectations) {
+				options.backend = "exact"
+			},
+			want: "backend mismatch",
+		},
+		{
+			name: "segment backend version",
+			mutate: func(options *usearchRootFixtureOptions, _ *USearchRootExpectations) {
+				options.backendVersion = "2.25.0"
+			},
+			want: "backend version mismatch",
+		},
+		{
+			name: "segment metric",
+			mutate: func(options *usearchRootFixtureOptions, _ *USearchRootExpectations) {
+				options.distanceMetric = "dot"
+			},
+			want: "distance metric mismatch",
+		},
+		{
+			name: "segment dimensions",
+			mutate: func(options *usearchRootFixtureOptions, _ *USearchRootExpectations) {
+				options.dimensions = 3
+			},
+			want: "dimensions mismatch",
+		},
+		{
+			name: "membership checksum",
+			tamper: func(t *testing.T, cache string, fixture usearchRootFixture) {
+				rewriteUSearchSegmentManifest(t, cache, fixture.segment, func(manifest *semanticsegment.Manifest) {
+					manifest.Members[0].ChunkID = "tampered"
+				})
+			},
+			want: "membership checksum mismatch",
+		},
+		{
+			name: "payload checksum",
+			tamper: func(t *testing.T, cache string, fixture usearchRootFixture) {
+				path := filepath.Join(cache, filepath.FromSlash(fixture.segment.RelativePath), semanticsegment.PayloadFileName)
+				if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "payload checksum mismatch",
+		},
+		{
+			name: "descriptor checksum",
+			tamper: func(t *testing.T, cache string, fixture usearchRootFixture) {
+				rewriteUSearchSegmentManifest(t, cache, fixture.segment, func(manifest *semanticsegment.Manifest) {
+					manifest.DescriptorSHA256 = strings.Repeat("0", 64)
+				})
+			},
+			want: "descriptor checksum mismatch",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			options := usearchRootFixtureOptions{}
+			expect := USearchRootExpectations{
+				Index:            USearchOptions{Dimensions: 2},
+				SnapshotRevision: 7,
+				PurgeEpoch:       3,
+				BackendVersion:   USearchVersion,
+			}
+			if tc.mutate != nil {
+				tc.mutate(&options, &expect)
+			}
+			fixture := publishUSearchRootFixture(t, cache, "profile", options)
+			if tc.tamper != nil {
+				tc.tamper(t, cache, fixture)
+			}
+
+			loaded, err := OpenUSearchRoot(cache, "db", "profile", fixture.root.Manifest.GenerationID, expect)
+			if loaded != nil {
+				_ = loaded.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("OpenUSearchRoot error = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestUSearchRootCandidatesResolveImmutableMembers(t *testing.T) {
@@ -101,7 +191,12 @@ func TestUSearchRootCandidatesResolveImmutableMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := OpenUSearchRoot(cache, "db", profile, root.Manifest.GenerationID, USearchOptions{Dimensions: 2})
+	loaded, err := OpenUSearchRoot(cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+		Index:            USearchOptions{Dimensions: 2},
+		SnapshotRevision: 4,
+		PurgeEpoch:       0,
+		BackendVersion:   USearchVersion,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,11 +415,86 @@ func publishUSearchTestSegment(t *testing.T, cache, profile string, nodes []HNSW
 	if err := index.Export(&payload); err != nil {
 		t.Fatal(err)
 	}
-	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{DatabaseID: "db", ProfileID: profile, Backend: BackendUSearch, BackendVersion: "test", DistanceMetric: "cosine", Dimensions: 2, Members: members, Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err }})
+	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{DatabaseID: "db", ProfileID: profile, Backend: BackendUSearch, BackendVersion: USearchVersion, DistanceMetric: "cosine", Dimensions: 2, Members: members, Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return segment
+}
+
+type usearchRootFixtureOptions struct {
+	backend        string
+	backendVersion string
+	distanceMetric string
+	dimensions     int
+}
+
+type usearchRootFixture struct {
+	root    semanticsegment.Root
+	segment semanticsegment.Segment
+}
+
+func publishUSearchRootFixture(t *testing.T, cache, profile string, options usearchRootFixtureOptions) usearchRootFixture {
+	t.Helper()
+	if options.backend == "" {
+		options.backend = BackendUSearch
+	}
+	if options.backendVersion == "" {
+		options.backendVersion = USearchVersion
+	}
+	if options.distanceMetric == "" {
+		options.distanceMetric = "cosine"
+	}
+	if options.dimensions == 0 {
+		options.dimensions = 2
+	}
+	index := newUSearchRootTestIndex(t, HNSWNode{Ordinal: 0, Vector: []float32{1, 0}})
+	var payload bytes.Buffer
+	if err := index.Export(&payload); err != nil {
+		_ = index.Close()
+		t.Fatal(err)
+	}
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{
+		DatabaseID: "db", ProfileID: profile, Backend: options.backend, BackendVersion: options.backendVersion,
+		DistanceMetric: options.distanceMetric, Dimensions: options.dimensions,
+		Members: []semanticsegment.Member{{Ordinal: 0, ChunkID: "chunk", Revision: 1, VectorHash: "hash"}},
+		Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+		DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 7, PurgeEpoch: 3,
+		Segments: []semanticsegment.RootSegment{{Hash: segment.Hash, RelativePath: segment.RelativePath}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return usearchRootFixture{root: root, segment: segment}
+}
+
+func rewriteUSearchSegmentManifest(t *testing.T, cache string, segment semanticsegment.Segment, mutate func(*semanticsegment.Manifest)) {
+	t.Helper()
+	path := filepath.Join(cache, filepath.FromSlash(segment.RelativePath), semanticsegment.ManifestFileName)
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest semanticsegment.Manifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&manifest)
+	contents, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newUSearchRootTestIndex(t *testing.T, nodes ...HNSWNode) *USearch {
