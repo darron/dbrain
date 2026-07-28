@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -56,6 +55,7 @@ func (e *AcquireError) Unwrap() error {
 
 type Scope struct {
 	databaseID      string
+	cacheRoot       string
 	lockRoot        string
 	maintenancePath string
 	generationPath  string
@@ -78,6 +78,7 @@ func NewScope(cacheDir string, databaseID string) (*Scope, error) {
 	lockRoot := filepath.Join(filepath.Clean(absoluteCache), "semantic", databaseID, "locks")
 	return &Scope{
 		databaseID:      databaseID,
+		cacheRoot:       filepath.Clean(absoluteCache),
 		lockRoot:        lockRoot,
 		maintenancePath: filepath.Join(lockRoot, "maintenance.lock"),
 		generationPath:  filepath.Join(lockRoot, "generation.lock"),
@@ -114,8 +115,8 @@ func (s *Scope) acquire(ctx context.Context, family Family, mode Mode, metadata 
 	if err := ctx.Err(); err != nil {
 		return nil, acquireError(family, mode, s.path(family), err)
 	}
-	if err := os.MkdirAll(s.lockRoot, 0o755); err != nil {
-		return nil, acquireError(family, mode, s.path(family), fmt.Errorf("create semantic lock root: %w", err))
+	if err := ensureLockRoot(s.cacheRoot, s.databaseID); err != nil {
+		return nil, acquireError(family, mode, s.path(family), fmt.Errorf("prepare semantic lock root: %w", err))
 	}
 	runMode := runlock.Shared
 	if mode == ModeExclusive {
@@ -148,32 +149,32 @@ func (s *Scope) path(family Family) string {
 }
 
 type Lease struct {
-	mu      sync.Mutex
-	lock    *runlock.Lock
-	path    string
-	family  Family
-	mode    Mode
-	onClose func()
+	closeOnce sync.Once
+	closeErr  error
+	lock      leaseCloser
+	path      string
+	family    Family
+	mode      Mode
+	onClose   func()
+}
+
+type leaseCloser interface {
+	Close() error
 }
 
 func (l *Lease) Close() error {
 	if l == nil {
 		return nil
 	}
-	l.mu.Lock()
-	lock := l.lock
-	l.lock = nil
-	onClose := l.onClose
-	l.onClose = nil
-	l.mu.Unlock()
-	if lock == nil {
-		return nil
-	}
-	err := lock.Close()
-	if onClose != nil {
-		onClose()
-	}
-	return err
+	l.closeOnce.Do(func() {
+		if l.lock != nil {
+			l.closeErr = l.lock.Close()
+		}
+		if l.onClose != nil {
+			l.onClose()
+		}
+	})
+	return l.closeErr
 }
 
 func (l *Lease) Path() string {
@@ -198,10 +199,12 @@ func (l *Lease) Mode() Mode {
 }
 
 type ExclusiveMaintenanceLease struct {
-	mu       sync.Mutex
-	scope    *Scope
-	lease    *Lease
-	children map[*Lease]struct{}
+	mu        sync.Mutex
+	closeOnce sync.Once
+	closeErr  error
+	scope     *Scope
+	lease     *Lease
+	children  map[*Lease]struct{}
 }
 
 func (l *ExclusiveMaintenanceLease) AcquireGenerationExclusive(ctx context.Context, metadata string) (*Lease, error) {
@@ -234,24 +237,27 @@ func (l *ExclusiveMaintenanceLease) Close() error {
 	if l == nil {
 		return nil
 	}
-	l.mu.Lock()
-	maintenance := l.lease
-	l.lease = nil
-	children := make([]*Lease, 0, len(l.children))
-	for child := range l.children {
-		children = append(children, child)
-	}
-	l.children = nil
-	l.mu.Unlock()
-	if maintenance == nil {
-		return nil
-	}
-	var errs []error
-	for _, child := range children {
-		errs = append(errs, child.Close())
-	}
-	errs = append(errs, maintenance.Close())
-	return errors.Join(errs...)
+	l.closeOnce.Do(func() {
+		l.mu.Lock()
+		maintenance := l.lease
+		l.lease = nil
+		children := make([]*Lease, 0, len(l.children))
+		for child := range l.children {
+			children = append(children, child)
+		}
+		l.children = nil
+		l.mu.Unlock()
+
+		var errs []error
+		for _, child := range children {
+			errs = append(errs, child.Close())
+		}
+		if maintenance != nil {
+			errs = append(errs, maintenance.Close())
+		}
+		l.closeErr = errors.Join(errs...)
+	})
+	return l.closeErr
 }
 
 func (l *ExclusiveMaintenanceLease) Path() string {
