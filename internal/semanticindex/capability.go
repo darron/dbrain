@@ -48,10 +48,19 @@ func (c Capability) Admit(backend, version string) (bool, string) {
 func sanitizeCapabilityReason(reason string) string {
 	fields := strings.Fields(reason)
 	for index, field := range fields {
-		candidate := strings.Trim(field, ".,;:()[]{}")
-		if strings.HasPrefix(candidate, "/") || strings.HasPrefix(candidate, "~/") || strings.Contains(candidate, ":/") || strings.Contains(candidate, `:\`) {
+		if key, value, ok := strings.Cut(field, "="); ok && isCapabilityPath(value) {
+			fields[index] = key + "=[path]"
+		} else if isCapabilityPath(field) {
 			fields[index] = "[path]"
 		}
 	}
 	return strings.Join(fields, " ")
+}
+
+func isCapabilityPath(value string) bool {
+	value = strings.Trim(value, ".,;:()[]{}")
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `\??\`) || strings.HasPrefix(value, "file://") {
+		return true
+	}
+	return len(value) >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
 }

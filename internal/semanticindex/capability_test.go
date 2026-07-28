@@ -15,6 +15,10 @@ func TestCapabilityAdmit(t *testing.T) {
 		{"unsupported", Capability{State: CapabilityUnsupported}, BackendUSearch, USearchVersion, false, "native_backend_unsupported"},
 		{"broken", Capability{State: CapabilitySupportedBroken, Backend: BackendUSearch, Version: USearchVersion, Reason: "probe failed"}, BackendUSearch, USearchVersion, false, "native_backend_broken: probe failed"},
 		{"broken path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load C:\private\tmp failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken keyed absolute path is redacted", Capability{State: CapabilitySupportedBroken, Reason: "open key=/absolute/path diagnostic=ABI-mismatch"}, BackendUSearch, USearchVersion, false, "native_backend_broken: open key=[path] diagnostic=ABI-mismatch"},
+		{"broken file path is redacted", Capability{State: CapabilitySupportedBroken, Reason: "load file=/tmp/usearch/index diagnostic=permission-denied"}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file=[path] diagnostic=permission-denied"},
+		{"broken UNC path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file=\\server\share\index diagnostic=ABI-mismatch`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file=[path] diagnostic=ABI-mismatch"},
+		{"broken bare UNC path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \\server\share\index diagnostic=permission-denied`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] diagnostic=permission-denied"},
 		{"backend mismatch", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, "other", USearchVersion, false, "native_backend_provenance_mismatch"},
 		{"version mismatch", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, BackendUSearch, "other", false, "native_backend_provenance_mismatch"},
 	}
