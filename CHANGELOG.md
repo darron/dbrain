@@ -5,6 +5,23 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Semantic ANN runtime admission (2026-07-28)
+
+- **Explicit native capability**: `dbrain semantic status` now reports whether
+  the binary's native ANN backend is unsupported, supported and ready, or
+  supported but broken, including the admitted backend and version when
+  available.
+- **Proven segmented serving**: A `usearch`-tagged runtime can admit and search
+  a fully proven segmented USearch generation through the normal research
+  command while retaining SQLite validation and exact reranking.
+- **Safe unsupported behavior**: Normal CGO-free builds carry no USearch
+  dependency, report `native_backend_unsupported`, and preserve ordinary
+  lexical retrieval.
+- **Runtime-admission boundary**: This stack does not yet add automatic
+  semantic refresh after sync. Resumable refresh, universal synchronous sync
+  integration, cross-process locking, static Homebrew packaging, and installed
+  full-corpus acceptance remain later stacked work.
+
 ### Segmented ANN lifecycle foundation (2026-07-22)
 
 - **Durable derived-cache roots**: Added content-addressed opaque segment

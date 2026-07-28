@@ -468,6 +468,28 @@ Each intermediate PR remains explicit-off by default and fails open to lexical
 retrieval when its slice is incomplete. The complete stack—not an intermediate
 PR—is the user-useful release.
 
+## Implementation Status
+
+As of 2026-07-28, only stacked PR 1, **Runtime admission and capability**, is
+implemented and representative-corpus admitted on
+`codex/semantic-ann-automatic-sync`. The verified implementation at
+`9c5c68155fb976c72ef0aa9a342974bff9cbb019`:
+
+- reports one explicit native-backend capability decision through both
+  `semantic status` and normal research admission;
+- admits a provenance-valid segmented USearch `2.26.0` generation in the
+  tagged macOS arm64 development build;
+- preserves unsupported CGO-free operation and lexical retrieval without a
+  USearch dependency; and
+- opens the normal research store read-only, preserving the representative
+  database bytes during runtime admission.
+
+This is not completion of the automatic-sync design. Stacked PRs 2–6 remain
+pending, including resumable refresh orchestration, universal synchronous
+post-sync integration, cross-process locks, static Homebrew distribution, and
+installed full-corpus acceptance. No production root was built or activated by
+this runtime-admission work.
+
 ## Production Rollout And Rollback
 
 Merging the stack does not activate production.
