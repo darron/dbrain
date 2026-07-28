@@ -621,6 +621,7 @@ type Result struct {
 
 type RootExpectation struct {
 	CacheDir, DatabaseID, ProfileID, GenerationID string
+	DescriptorSHA256                              string
 	SnapshotRevision, PurgeEpoch                   int64
 	Dimensions                                    int
 	BackendVersion                                string
@@ -1012,8 +1013,13 @@ return corruption rather than rewrite counters and claim success.
 After the final vector page:
 
 1. load the profile row;
-2. if it has an active generation, load database ID and call `Native.VerifyRoot` with exact profile, generation, snapshot, purge epoch, dimensions, and USearch version;
-3. advance to readiness only after native open/import/close succeeds.
+2. if it has an active generation, load one authoritative readiness snapshot
+   and require the same active generation plus its SQLite-proven root
+   descriptor hash;
+3. load database ID and call `Native.VerifyRoot` with exact profile,
+   generation, root descriptor hash, snapshot, purge epoch, dimensions, and
+   USearch version;
+4. advance to readiness only after native open/import/close succeeds.
 
 At readiness:
 
@@ -1170,6 +1176,7 @@ Construct the existing builder with configured dimensions. `VerifyRoot` must cal
 
 ```go
 root, err := semanticindex.OpenUSearchRoot(
+	ctx,
 	expect.CacheDir,
 	expect.DatabaseID,
 	expect.ProfileID,
@@ -1184,6 +1191,7 @@ root, err := semanticindex.OpenUSearchRoot(
 		SnapshotRevision: expect.SnapshotRevision,
 		PurgeEpoch:       expect.PurgeEpoch,
 		BackendVersion:   expect.BackendVersion,
+		DescriptorSHA256: expect.DescriptorSHA256,
 	},
 )
 if err != nil {
