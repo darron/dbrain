@@ -14,6 +14,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -164,7 +165,13 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 				return outputSemanticStatus(cmd, status, jsonOut)
 			}
 			defer func() { _ = st.Close() }()
-			status, err := semanticbuild.ReadStatus(cmd.Context(), st, profile, configured, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
+			status, err := semanticbuild.ReadStatusWithNativeValidation(cmd.Context(), st, profile, configured, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC(), func(ctx context.Context, snapshot semanticreadiness.Snapshot) error {
+				databaseID, err := st.RetrievalDatabaseID(ctx)
+				if err != nil {
+					return err
+				}
+				return semanticindex.ValidateUSearchRuntimeRoot(ctx, cfg.CacheDir, databaseID, snapshot.ProfileID, snapshot.ActiveGenerationID, profile.Dimensions, snapshot.ActiveSnapshotRevision, snapshot.ProfilePurgeEpoch, snapshot.ActiveGenerationBackendVersion, snapshot.ActiveGenerationRootDescriptorSHA256)
+			})
 			if err != nil {
 				return err
 			}

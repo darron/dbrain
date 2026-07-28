@@ -1237,6 +1237,63 @@ func TestReadStatusCapabilityAdmission(t *testing.T) {
 	}
 }
 
+func TestReadStatusNativeArtifactValidation(t *testing.T) {
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	snapshot := semanticreadiness.Snapshot{
+		Available: true, ProfileExists: true, ProfileProvenanceValid: true,
+		ExpectedParents: 1, CurrentParents: 1, ChunkableParents: 1, ParentsWithReadyChunk: 1,
+		ChunkCount: 1, ReadyEmbeddings: 1,
+		GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1,
+		LatestRevision: 1, ObservedLatestRevision: 1,
+		L0ReadyCount: 1, ObservedL0ReadyCount: 1,
+		ActiveGenerationID: "root", ActiveGenerationValid: true, ActiveSnapshotRevision: 1,
+		ActiveGenerationBackend: semanticindex.BackendUSearch, ActiveGenerationBackendVersion: semanticindex.USearchVersion,
+		ActiveGenerationDistanceMetric: "cosine", ActiveGenerationDimensions: 2, ActiveIndexedCount: 1,
+	}
+	capability := semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion}
+
+	for _, tc := range []struct {
+		name       string
+		validate   func(context.Context, semanticreadiness.Snapshot) error
+		searchable bool
+		wantStatus semanticreadiness.State
+		wantReason string
+	}{
+		{name: "healthy native artifact remains ready", validate: func(context.Context, semanticreadiness.Snapshot) error { return nil }, searchable: true, wantStatus: semanticreadiness.StateReady},
+		{name: "damaged native artifact is unavailable", validate: func(context.Context, semanticreadiness.Snapshot) error {
+			return errors.New("open /private/cache/root.json: no such file")
+		}, searchable: false, wantStatus: semanticreadiness.StateUnavailable, wantReason: "native_root_artifacts_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ReadStatusWithNativeValidation(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, capability, now, tc.validate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != string(tc.wantStatus) || got.Searchable != tc.searchable || (tc.wantReason != "" && got.Reason != tc.wantReason) {
+				t.Fatalf("status=%+v", got)
+			}
+			if strings.Contains(strings.Join(got.Problems, " "), "/private/cache") {
+				t.Fatalf("status leaked artifact path: %+v", got)
+			}
+		})
+	}
+
+	t.Run("unsupported native backend does not validate artifacts", func(t *testing.T) {
+		called := false
+		got, err := ReadStatusWithNativeValidation(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, now, func(context.Context, semanticreadiness.Snapshot) error {
+			called = true
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if called || got.Searchable || got.Reason != "native_backend_unsupported" {
+			t.Fatalf("called=%t status=%+v", called, got)
+		}
+	})
+}
+
 func TestBoundedProgressJSONUsesOnlyLatestSnapshot(t *testing.T) {
 	last := Progress{Stage: "embed", Scanned: 8}
 	payload, err := json.Marshal(Progress{Stage: "embed", Interrupted: true, Quarantined: 2, SnapshotCount: 9, SnapshotsTruncated: true, LastSnapshot: &last, Snapshots: []Progress{last}})

@@ -37,6 +37,22 @@ func ReadStatus(
 	capability semanticindex.Capability,
 	now time.Time,
 ) (Status, error) {
+	return ReadStatusWithNativeValidation(ctx, st, profile, configured, enabled, exactMaxChunks, capability, now, nil)
+}
+
+// ReadStatusWithNativeValidation reports status after optionally checking that
+// an admitted native root can be opened by the runtime.
+func ReadStatusWithNativeValidation(
+	ctx context.Context,
+	st StatusStore,
+	profile embedding.Profile,
+	configured bool,
+	enabled bool,
+	exactMaxChunks int,
+	capability semanticindex.Capability,
+	now time.Time,
+	validateNativeRoot func(context.Context, semanticreadiness.Snapshot) error,
+) (Status, error) {
 	result := Status{BackendCapability: capability, Problems: make([]string, 0), Next: make([]string, 0)}
 	exactMaxChunks = semanticreadiness.EffectiveExactMaxChunks(exactMaxChunks)
 	if configured {
@@ -61,7 +77,16 @@ func ReadStatus(
 			return result, err
 		}
 	}
-	return statusFromDecision(result, snapshot, capability), nil
+	result = statusFromDecision(result, snapshot, capability)
+	if result.Searchable && snapshot.ActiveGenerationID != "" && validateNativeRoot != nil {
+		if err := validateNativeRoot(ctx, snapshot); err != nil {
+			result.Status = string(semanticreadiness.StateUnavailable)
+			result.Reason = "native_root_artifacts_unavailable"
+			result.Searchable = false
+			result.Problems = append(result.Problems, "native root artifacts failed validation")
+		}
+	}
+	return result, nil
 }
 
 func statusFromDecision(result Status, snapshot semanticreadiness.Snapshot, capability semanticindex.Capability) Status {
