@@ -485,7 +485,14 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 	if err := logScheduledSyncStats(logOut, stats); err != nil {
 		return err
 	}
-	result, err := runConfiguredSemanticRefresh(ctx, cfg, deps, nil)
+	result, err := runConfiguredSemanticRefresh(
+		ctx,
+		cfg,
+		deps,
+		func(progress semanticrefresh.Progress) error {
+			return writeSemanticRefreshProgress(logOut, progress)
+		},
+	)
 	if err != nil {
 		return err
 	}

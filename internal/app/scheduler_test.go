@@ -442,6 +442,112 @@ func TestRunScheduledSyncAllUnsupportedSemanticRefreshLogsOneExplicitSkip(t *tes
 	}
 }
 
+func TestRunScheduledSyncAllStreamsBoundedPeriodicSemanticProgress(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncjob.Stats{}, nil
+	}
+	firstAt := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	deps := successfulSyncSemanticDeps(func(
+		_ context.Context,
+		_ semanticrefresh.RunLedger,
+		_ semanticrefresh.StageExecutor,
+		request semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		if request.Progress == nil {
+			t.Fatal("scheduled semantic refresh omitted progress callback")
+		}
+		for _, progress := range []semanticrefresh.Progress{
+			{
+				RunID:      "run-progress",
+				ProfileID:  "profile-progress",
+				Stage:      store.SemanticRefreshEmbedding,
+				Checkpoint: "embedding:batch-1",
+				Readiness:  "not_ready",
+				Counters: store.SemanticRefreshCounters{
+					ProjectedParents: 2,
+					EmbeddedChunks:   3,
+				},
+				Debt: semanticrefresh.Debt{
+					DirtyParents:      5,
+					PendingEmbeddings: 8,
+				},
+				At: firstAt,
+			},
+			{
+				RunID:      strings.Repeat("r", 65),
+				ProfileID:  strings.Repeat("p", 193),
+				Stage:      store.SemanticRefreshEmbedding,
+				Checkpoint: "unsafe\ncheckpoint",
+				Readiness:  "not_ready",
+				Counters: store.SemanticRefreshCounters{
+					ProjectedParents: 2,
+					EmbeddedChunks:   3,
+				},
+				Debt: semanticrefresh.Debt{
+					DirtyParents:      5,
+					PendingEmbeddings: 8,
+				},
+				At: firstAt.Add(semanticrefresh.ProgressInterval),
+			},
+		} {
+			if err := request.Progress(progress); err != nil {
+				t.Fatalf("scheduled progress callback: %v", err)
+			}
+		}
+		return completedSyncSemanticResult(), nil
+	})
+
+	var out bytes.Buffer
+	if err := runScheduledSyncAllUnlockedWithSemanticDeps(
+		t.Context(),
+		cfg,
+		scheduledSyncSemanticTestFlags(),
+		&out,
+		deps,
+	); err != nil {
+		t.Fatalf("scheduled sync: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	progressLines := make([]string, 0, 2)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Semantic refresh progress:") {
+			progressLines = append(progressLines, line)
+		}
+	}
+	if len(progressLines) != 2 {
+		t.Fatalf("semantic progress lines = %d, want initial plus five-second heartbeat:\n%s", len(progressLines), out.String())
+	}
+	for _, line := range progressLines {
+		if len(line) > 1024 {
+			t.Fatalf("semantic progress line exceeded fixed bound: bytes=%d", len(line))
+		}
+	}
+	for _, want := range []string{
+		"run=run-progress profile=profile-progress stage=embedding checkpoint=embedding:batch-1",
+		"at=2026-07-28T12:00:00Z",
+		"run= profile= stage=embedding checkpoint=",
+		"at=2026-07-28T12:00:05Z",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("semantic progress omitted %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "unsafe") || strings.Contains(out.String(), strings.Repeat("r", 65)) {
+		t.Fatalf("semantic progress leaked unbounded or unsafe fields:\n%s", out.String())
+	}
+}
+
 func TestRunScheduledSyncAllSemanticFailuresPreserveStableTypedCodes(t *testing.T) {
 	tests := []struct {
 		name     string
