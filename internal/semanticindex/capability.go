@@ -91,7 +91,7 @@ func capabilityDiagnosticFields(reason string) []string {
 				}
 				continue
 			}
-			if character == '\'' || character == '"' {
+			if (character == '\'' || character == '"') && (index == start || reason[index-1] == '=') {
 				quote = character
 				index++
 				continue
