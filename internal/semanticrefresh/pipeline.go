@@ -225,6 +225,12 @@ func (p *pipeline) executeEmbedding(
 			p.options.Native,
 			p.flushOptions(),
 		)
+		if err != nil {
+			return err
+		}
+		if err := applyFlushCount(&outcome, result); err != nil {
+			return err
+		}
 		if result.GenerationID != "" {
 			outcome.CurrentGenerationID = result.GenerationID
 		}
@@ -232,10 +238,7 @@ func (p *pipeline) executeEmbedding(
 			outcome.EmbeddingRevision = result.SnapshotRevision
 			outcome.Checkpoint = embeddingCheckpoint(result.SnapshotRevision)
 		}
-		if countErr := applyFlushCount(&outcome, result); countErr != nil {
-			err = errors.Join(err, countErr)
-		}
-		return err
+		return nil
 	}
 	result, err := p.runEmbed(ctx, p.store, p.options.Provider, semanticbuild.EmbedBatchOptions{
 		BatchSize:      p.options.EmbeddingBatch,
@@ -296,18 +299,18 @@ func (p *pipeline) executeFlush(
 		return outcome, nil
 	}
 	result, err := p.runFlush(ctx, p.store, p.options.Native, p.flushOptions())
+	if err != nil {
+		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
+	}
+	if err := applyFlushCount(&outcome, result); err != nil {
+		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
+	}
 	if result.GenerationID != "" {
 		outcome.CurrentGenerationID = result.GenerationID
 	}
 	if result.SnapshotRevision > 0 {
 		outcome.EmbeddingRevision = result.SnapshotRevision
 		outcome.Checkpoint = flushCheckpoint(result.SnapshotRevision)
-	}
-	if countErr := applyFlushCount(&outcome, result); countErr != nil {
-		err = errors.Join(err, countErr)
-	}
-	if err != nil {
-		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
 	}
 	return outcome, nil
 }
@@ -568,17 +571,20 @@ func nextPipelineOutcome(
 }
 
 func applyFlushCount(outcome *StageOutcome, result semanticbuild.FlushResult) error {
-	if result.Indexed < 0 || result.Flushed < 0 {
-		return fmt.Errorf("semantic flush returned an invalid indexed count")
+	if result.Flushed != store.RetrievalSegmentTarget {
+		return fmt.Errorf(
+			"semantic flush committed delta must equal %d",
+			store.RetrievalSegmentTarget,
+		)
 	}
-	if result.Flushed == 0 {
-		return nil
+	if result.Indexed < result.Flushed {
+		return fmt.Errorf("semantic flush total membership is below its committed delta")
 	}
-	if result.Flushed != store.RetrievalSegmentTarget ||
-		result.Indexed < result.Flushed ||
-		result.GenerationID == "" ||
-		result.SnapshotRevision <= 0 {
-		return fmt.Errorf("semantic flush result is missing generation provenance")
+	if result.GenerationID == "" || !validGenerationID(result.GenerationID) {
+		return fmt.Errorf("semantic flush generation ID is invalid")
+	}
+	if result.SnapshotRevision <= 0 {
+		return fmt.Errorf("semantic flush snapshot revision must be positive")
 	}
 	return addPipelineCounter(&outcome.Counters.FlushedVectors, result.Flushed)
 }

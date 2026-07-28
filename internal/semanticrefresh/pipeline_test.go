@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -200,7 +201,7 @@ func TestPipelineEmbeddingPreflushHonorsHardL0Headroom(t *testing.T) {
 func TestPipelineEmbeddingPreservesCommittedPreflushWhenEmbedReturnsZeroAfterError(t *testing.T) {
 	h := newPipelineHarness(t)
 	h.pipeline.options.EmbeddingBatch = 501
-	afterCommitErr := errors.New("post-commit interruption")
+	providerErr := errors.New("provider failed after committed preflush")
 	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
 		return store.RetrievalEmbeddingProfileRow{
 			ProfileID:    h.profileID,
@@ -213,13 +214,13 @@ func TestPipelineEmbeddingPreservesCommittedPreflushWhenEmbedReturnsZeroAfterErr
 			Indexed:          2 * store.RetrievalSegmentTarget,
 			Flushed:          store.RetrievalSegmentTarget,
 			SnapshotRevision: 88,
-		}, afterCommitErr
+		}, nil
 	}
 	h.pipeline.runEmbed = func(ctx context.Context, _ semanticbuild.EmbedStore, _ embedding.Provider, opts semanticbuild.EmbedBatchOptions) (semanticbuild.EmbedBatchResult, error) {
-		if err := opts.BeforeProvider(ctx, 501); !errors.Is(err, afterCommitErr) {
+		if err := opts.BeforeProvider(ctx, 501); err != nil {
 			t.Fatalf("before provider err=%v", err)
 		}
-		return semanticbuild.EmbedBatchResult{}, afterCommitErr
+		return semanticbuild.EmbedBatchResult{}, providerErr
 	}
 
 	run := pipelineRun(store.SemanticRefreshEmbedding, 1)
@@ -229,7 +230,7 @@ func TestPipelineEmbeddingPreservesCommittedPreflushWhenEmbedReturnsZeroAfterErr
 	var refreshErr *RefreshError
 	if !errors.As(err, &refreshErr) ||
 		refreshErr.Code != ErrorEmbedding ||
-		!errors.Is(err, afterCommitErr) {
+		!errors.Is(err, providerErr) {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
 	if outcome.Counters.FlushedVectors != store.RetrievalSegmentTarget ||
@@ -237,6 +238,49 @@ func TestPipelineEmbeddingPreservesCommittedPreflushWhenEmbedReturnsZeroAfterErr
 		outcome.EmbeddingRevision != 88 ||
 		outcome.Checkpoint != embeddingCheckpoint(88) {
 		t.Fatalf("committed preflush was not preserved: outcome=%+v", outcome)
+	}
+}
+
+func TestPipelineEmbeddingRejectsZeroSuccessfulPreflushBeforeProvider(t *testing.T) {
+	h := newPipelineHarness(t)
+	h.pipeline.options.EmbeddingBatch = 501
+	var providerCalled bool
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{
+			ProfileID:    h.profileID,
+			L0ReadyCount: 9_500,
+		}, nil
+	}
+	h.pipeline.runFlush = func(context.Context, semanticbuild.FlushStore, semanticbuild.SegmentPayloadBuilder, semanticbuild.FlushOptions) (semanticbuild.FlushResult, error) {
+		return semanticbuild.FlushResult{}, nil
+	}
+	h.pipeline.runEmbed = func(ctx context.Context, _ semanticbuild.EmbedStore, _ embedding.Provider, opts semanticbuild.EmbedBatchOptions) (semanticbuild.EmbedBatchResult, error) {
+		if err := opts.BeforeProvider(ctx, 501); err != nil {
+			return semanticbuild.EmbedBatchResult{}, err
+		}
+		providerCalled = true
+		return semanticbuild.EmbedBatchResult{}, nil
+	}
+
+	run := pipelineRun(store.SemanticRefreshEmbedding, 1)
+	run.EmbeddingRevision = 41
+	run.Checkpoint = embeddingCheckpoint(41)
+	run.Counters.FlushedVectors = 7
+	run.CurrentGenerationID = "semantic-root-v1:previous"
+	outcome, err := h.pipeline.Execute(t.Context(), run)
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorEmbedding {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if providerCalled {
+		t.Fatal("provider called after an invalid nil-error preflush result")
+	}
+	if outcome.NextStage != store.SemanticRefreshEmbedding ||
+		outcome.Checkpoint != embeddingCheckpoint(41) ||
+		outcome.EmbeddingRevision != 41 ||
+		outcome.Counters.FlushedVectors != 7 ||
+		outcome.CurrentGenerationID != "semantic-root-v1:previous" {
+		t.Fatalf("invalid preflush changed prior outcome: %+v", outcome)
 	}
 }
 
@@ -258,13 +302,25 @@ func TestPipelineEmbeddingPreflushFailurePreventsProvider(t *testing.T) {
 		return semanticbuild.EmbedBatchResult{}, nil
 	}
 
-	outcome, err := h.pipeline.Execute(t.Context(), pipelineRun(store.SemanticRefreshEmbedding, 1))
+	run := pipelineRun(store.SemanticRefreshEmbedding, 1)
+	run.EmbeddingRevision = 41
+	run.Checkpoint = embeddingCheckpoint(41)
+	run.Counters.FlushedVectors = 7
+	run.CurrentGenerationID = "semantic-root-v1:previous"
+	outcome, err := h.pipeline.Execute(t.Context(), run)
 	var refreshErr *RefreshError
 	if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorEmbedding || !errors.Is(err, flushErr) {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
 	if providerCalled {
 		t.Fatal("provider called after headroom preflush failure")
+	}
+	if outcome.NextStage != store.SemanticRefreshEmbedding ||
+		outcome.Checkpoint != embeddingCheckpoint(41) ||
+		outcome.EmbeddingRevision != 41 ||
+		outcome.Counters.FlushedVectors != 7 ||
+		outcome.CurrentGenerationID != "semantic-root-v1:previous" {
+		t.Fatalf("failed preflush changed prior outcome: %+v", outcome)
 	}
 }
 
@@ -304,6 +360,123 @@ func TestPipelineFlushRepeatsAboveTargetAndCountsCommittedDelta(t *testing.T) {
 	outcome = h.execute(t, run)
 	if outcome.NextStage != store.SemanticRefreshCompaction || flushCalls != 1 {
 		t.Fatalf("idle flush outcome=%+v calls=%d", outcome, flushCalls)
+	}
+}
+
+func TestPipelineFlushRejectsInvalidNilErrorPhysicalResults(t *testing.T) {
+	valid := semanticbuild.FlushResult{
+		GenerationID:     "semantic-root-v1:valid",
+		Indexed:          2 * store.RetrievalSegmentTarget,
+		Flushed:          store.RetrievalSegmentTarget,
+		SnapshotRevision: 88,
+	}
+	tests := []struct {
+		name         string
+		result       semanticbuild.FlushResult
+		flushedStart int64
+	}{
+		{name: "zero result", result: semanticbuild.FlushResult{}},
+		{name: "partial committed delta", result: func() semanticbuild.FlushResult {
+			result := valid
+			result.Flushed = store.RetrievalSegmentTarget - 1
+			return result
+		}()},
+		{name: "negative committed delta", result: func() semanticbuild.FlushResult {
+			result := valid
+			result.Flushed = -1
+			return result
+		}()},
+		{name: "total membership below committed delta", result: func() semanticbuild.FlushResult {
+			result := valid
+			result.Indexed = store.RetrievalSegmentTarget - 1
+			return result
+		}()},
+		{name: "missing generation", result: func() semanticbuild.FlushResult {
+			result := valid
+			result.GenerationID = ""
+			return result
+		}()},
+		{name: "unsafe generation", result: func() semanticbuild.FlushResult {
+			result := valid
+			result.GenerationID = "unsafe/generation"
+			return result
+		}()},
+		{name: "zero snapshot revision", result: func() semanticbuild.FlushResult {
+			result := valid
+			result.SnapshotRevision = 0
+			return result
+		}()},
+		{
+			name:         "counter overflow",
+			result:       valid,
+			flushedStart: math.MaxInt64 - store.RetrievalSegmentTarget + 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPipelineHarness(t)
+			h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+				return store.RetrievalEmbeddingProfileRow{
+					ProfileID:    h.profileID,
+					L0ReadyCount: store.RetrievalSegmentTarget + 1,
+				}, nil
+			}
+			h.pipeline.runFlush = func(context.Context, semanticbuild.FlushStore, semanticbuild.SegmentPayloadBuilder, semanticbuild.FlushOptions) (semanticbuild.FlushResult, error) {
+				return tc.result, nil
+			}
+			run := pipelineRun(store.SemanticRefreshFlush, 1)
+			run.EmbeddingRevision = 41
+			run.Checkpoint = flushCheckpoint(41)
+			run.Counters.FlushedVectors = tc.flushedStart
+			run.CurrentGenerationID = "semantic-root-v1:previous"
+
+			outcome, err := h.pipeline.Execute(t.Context(), run)
+			var refreshErr *RefreshError
+			if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorFlush {
+				t.Fatalf("outcome=%+v err=%v", outcome, err)
+			}
+			if outcome.NextStage != store.SemanticRefreshFlush ||
+				outcome.Checkpoint != flushCheckpoint(41) ||
+				outcome.EmbeddingRevision != 41 ||
+				outcome.Counters.FlushedVectors != tc.flushedStart ||
+				outcome.CurrentGenerationID != "semantic-root-v1:previous" {
+				t.Fatalf("invalid physical flush changed prior outcome: %+v", outcome)
+			}
+		})
+	}
+}
+
+func TestPipelineFlushPreservesPriorOutcomeWhenPhysicalFlushFails(t *testing.T) {
+	h := newPipelineHarness(t)
+	flushErr := errors.New("physical flush failed")
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{
+			ProfileID:    h.profileID,
+			L0ReadyCount: store.RetrievalSegmentTarget + 1,
+		}, nil
+	}
+	h.pipeline.runFlush = func(context.Context, semanticbuild.FlushStore, semanticbuild.SegmentPayloadBuilder, semanticbuild.FlushOptions) (semanticbuild.FlushResult, error) {
+		return semanticbuild.FlushResult{}, flushErr
+	}
+	run := pipelineRun(store.SemanticRefreshFlush, 1)
+	run.EmbeddingRevision = 41
+	run.Checkpoint = flushCheckpoint(41)
+	run.Counters.FlushedVectors = 7
+	run.CurrentGenerationID = "semantic-root-v1:previous"
+
+	outcome, err := h.pipeline.Execute(t.Context(), run)
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) ||
+		refreshErr.Code != ErrorFlush ||
+		!errors.Is(err, flushErr) {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if outcome.NextStage != store.SemanticRefreshFlush ||
+		outcome.Checkpoint != flushCheckpoint(41) ||
+		outcome.EmbeddingRevision != 41 ||
+		outcome.Counters.FlushedVectors != 7 ||
+		outcome.CurrentGenerationID != "semantic-root-v1:previous" {
+		t.Fatalf("failed physical flush changed prior outcome: %+v", outcome)
 	}
 }
 
