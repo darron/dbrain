@@ -95,7 +95,7 @@ func capabilityPathEnd(reason string, index int) (int, bool) {
 
 func isCapabilityPathStart(reason string, index int) bool {
 	value := reason[index:]
-	if strings.HasPrefix(value, `\`) && isCapabilityInvalidEscapeDiagnostic(reason, index) {
+	if strings.HasPrefix(value, `\`) && isCapabilityInvalidEscapeToken(reason, index) {
 		return false
 	}
 	if isCapabilitySlashPath(value) || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `\??\`) || strings.HasPrefix(value, `\Device\`) || isCapabilityRootedWindowsPath(value) || strings.HasPrefix(value, "file://") {
@@ -127,15 +127,103 @@ func isCapabilityRootedWindowsPath(value string) bool {
 	if isCapabilityEscapeSequence(value) {
 		return false
 	}
-	return strings.IndexAny(value[1:], `\\/`) > 0
+	if strings.IndexAny(value[1:], `\\/`) > 0 {
+		return true
+	}
+	for end := 1; end < len(value); end++ {
+		if isCapabilityRootedWindowsTerminator(value[end]) {
+			return end > 2
+		}
+	}
+	return len(value) > 2
 }
 
-func isCapabilityInvalidEscapeDiagnostic(reason string, index int) bool {
-	prefix := reason[:index]
-	if len(prefix) > 0 && (prefix[len(prefix)-1] == '\'' || prefix[len(prefix)-1] == '"') {
-		prefix = prefix[:len(prefix)-1]
+func isCapabilityRootedWindowsTerminator(character byte) bool {
+	if isCapabilityWhitespace(character) {
+		return true
 	}
-	return strings.HasSuffix(prefix, "invalid escape ") || strings.HasSuffix(prefix, "invalid escapes ")
+	switch character {
+	case ',', ';', ':', '(', ')', '[', ']', '{', '}', '\'', '"':
+		return true
+	default:
+		return false
+	}
+}
+
+func isCapabilityInvalidEscapeToken(reason string, index int) bool {
+	if !hasCapabilityInvalidEscapeContext(reason[:index]) {
+		return false
+	}
+	for position := index; position < len(reason) && reason[position] == '\\'; {
+		next, ok := capabilityEscapeComponentEnd(reason, position)
+		if !ok {
+			return false
+		}
+		if next == len(reason) {
+			return true
+		}
+		if reason[next] == '\\' {
+			position = next
+			continue
+		}
+		return isCapabilityWhitespace(reason[next]) || isCapabilityEscapeDelimiter(reason[next])
+	}
+	return false
+}
+
+func hasCapabilityInvalidEscapeContext(prefix string) bool {
+	for _, marker := range []string{
+		"invalid escape ", "invalid escapes ",
+		"invalid escape:", "invalid escapes:",
+		"invalid escape sequence ", "invalid escape sequences ",
+		"invalid escape sequence:", "invalid escape sequences:",
+	} {
+		if strings.LastIndex(prefix, marker) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func capabilityEscapeComponentEnd(value string, start int) (int, bool) {
+	if start+1 >= len(value) || value[start] != '\\' {
+		return 0, false
+	}
+	character := value[start+1]
+	switch character {
+	case 'x':
+		return capabilityHexEscapeEnd(value, start, 2)
+	case 'u':
+		return capabilityHexEscapeEnd(value, start, 4)
+	case 'U':
+		return capabilityHexEscapeEnd(value, start, 8)
+	default:
+		if character >= '0' && character <= '7' {
+			end := start + 2
+			for end < len(value) && end < start+4 && value[end] >= '0' && value[end] <= '7' {
+				end++
+			}
+			return end, true
+		}
+		return start + 2, true
+	}
+}
+
+func capabilityHexEscapeEnd(value string, start, digits int) (int, bool) {
+	end := start + 2 + digits
+	if end > len(value) {
+		return 0, false
+	}
+	for index := start + 2; index < end; index++ {
+		if !isCapabilityHex(value[index]) {
+			return 0, false
+		}
+	}
+	return end, true
+}
+
+func isCapabilityHex(character byte) bool {
+	return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')
 }
 
 func isCapabilityEscapeSequence(value string) bool {
