@@ -260,10 +260,20 @@ func runChunkAtWatermarkWithLimitsAndPlanner(ctx context.Context, st ChunkStore,
 
 	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
 	remainingLimit := opts.Limit
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	for remainingLimit > 0 {
+		if progress.Scanned > 0 && deadlineReached(deadline, now) {
+			progress.Interrupted = true
+			progress.HasMore = true
+			finalizeChunkAggregate(&progress)
+			return progress, nil
+		}
 		pageLimit := min(remainingLimit, 5_000)
 		base := progress
-		pageOpts := ProjectionBatchOptions{Watermark: watermark, Limit: pageLimit, Now: opts.Now}
+		pageOpts := ProjectionBatchOptions{Watermark: watermark, Limit: pageLimit, Now: now}
 		pageOpts.Progress = func(page ChunkProgress) error {
 			if opts.Progress == nil {
 				return nil
