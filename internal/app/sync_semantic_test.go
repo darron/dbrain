@@ -116,9 +116,7 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 						return err
 					}
 				}
-				if execution == 1 &&
-					progress.Counters.ProjectedParents > 0 &&
-					progress.Counters.EmbeddedChunks > 0 {
+				if execution == 1 && progress.Counters.FlushedVectors > 0 {
 					cancel()
 				}
 				return nil
@@ -165,33 +163,48 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 		_ = firstStore.Close()
 		t.Fatal(err)
 	}
+	firstSegments, err := firstStore.RetrievalIndexGenerationSegments(
+		t.Context(),
+		firstProfile.ActiveGenerationID,
+	)
+	if err != nil {
+		_ = firstStore.Close()
+		t.Fatal(err)
+	}
 	if err := firstStore.Close(); err != nil {
 		t.Fatal(err)
 	}
 	firstProviderCalls, firstProviderTexts, firstDuplicateTexts := provider.snapshot()
 	if firstRun == nil ||
 		firstRun.State != store.SemanticRefreshRunCancelled ||
-		firstRun.Stage != store.SemanticRefreshEmbedding ||
+		firstRun.Stage != store.SemanticRefreshFlush ||
 		firstRun.Counters.ProjectedParents != 1 ||
-		firstRun.Counters.EmbeddedChunks <= 0 {
+		firstRun.Counters.EmbeddedChunks <= 0 ||
+		firstRun.Counters.FlushedVectors != int64(store.RetrievalSegmentTarget) {
 		t.Fatalf("cancelled durable run=%+v", firstRun)
 	}
 	if firstProviderCalls <= 0 ||
 		firstProviderTexts != int(firstRun.Counters.EmbeddedChunks) ||
+		firstProviderTexts != store.RetrievalSegmentTarget+2 ||
 		firstDuplicateTexts != 0 ||
-		firstProfile.L0ReadyCount != firstProviderTexts ||
-		firstProfile.ActiveIndexedCount != 0 {
+		firstProfile.ActiveGenerationID == "" ||
+		firstProfile.ActiveGenerationID != firstRun.CurrentGenerationID ||
+		firstProfile.ActiveIndexedCount != store.RetrievalSegmentTarget ||
+		firstProfile.L0ReadyCount != 2 ||
+		len(firstSegments) != 1 ||
+		firstSegments[0].IndexedChunkCount != store.RetrievalSegmentTarget {
 		t.Fatalf(
-			"first committed work: provider_calls=%d provider_texts=%d duplicate_texts=%d profile=%+v run=%+v",
+			"first committed work: provider_calls=%d provider_texts=%d duplicate_texts=%d profile=%+v segments=%+v run=%+v",
 			firstProviderCalls,
 			firstProviderTexts,
 			firstDuplicateTexts,
 			firstProfile,
+			firstSegments,
 			firstRun,
 		)
 	}
-	if builds, verifies := native.snapshot(); builds != 0 || verifies != 0 {
-		t.Fatalf("native work before flush: builds=%d verifies=%d", builds, verifies)
+	if builds, verifies := native.snapshot(); builds != 1 || verifies != 0 {
+		t.Fatalf("native work at cancelled flush: builds=%d verifies=%d", builds, verifies)
 	}
 
 	secondCommand := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
@@ -243,9 +256,14 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 			completed.Run.Counters.ProjectedParents,
 		)
 	}
+	if completed.Run.Counters.EmbeddedChunks != firstRun.Counters.EmbeddedChunks ||
+		completed.Run.Counters.FlushedVectors != firstRun.Counters.FlushedVectors ||
+		completed.Run.CurrentGenerationID != firstRun.CurrentGenerationID {
+		t.Fatalf("resumed run repeated committed work: first=%+v final=%+v", firstRun, completed.Run)
+	}
 	finalProviderCalls, finalProviderTexts, finalDuplicateTexts := provider.snapshot()
-	if finalProviderCalls <= firstProviderCalls ||
-		finalProviderTexts <= firstProviderTexts ||
+	if finalProviderCalls != firstProviderCalls ||
+		finalProviderTexts != firstProviderTexts ||
 		finalDuplicateTexts != 0 ||
 		finalProviderTexts != int(completed.Run.Counters.EmbeddedChunks) {
 		t.Fatalf(
@@ -272,6 +290,8 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	if finalProfile.ActiveIndexedCount != store.RetrievalSegmentTarget ||
+		finalProfile.L0ReadyCount != 2 ||
+		finalProfile.ActiveGenerationID != firstProfile.ActiveGenerationID ||
 		finalProfile.ActiveIndexedCount+finalProfile.L0ReadyCount != finalProviderTexts {
 		t.Fatalf(
 			"final index units=%+v provider_texts=%d",
@@ -299,15 +319,15 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 	secondProgress := append([]semanticrefresh.Progress(nil), progressByRun[2]...)
 	progressMu.Unlock()
 	if !syncSemanticProgressIncludes(firstProgress, store.SemanticRefreshProjection) ||
-		!syncSemanticProgressIncludes(firstProgress, store.SemanticRefreshEmbedding) {
-		t.Fatalf("first progress stages=%v want projection and embedding", syncSemanticProgressStages(firstProgress))
+		!syncSemanticProgressIncludes(firstProgress, store.SemanticRefreshEmbedding) ||
+		!syncSemanticProgressIncludes(firstProgress, store.SemanticRefreshFlush) {
+		t.Fatalf("first progress stages=%v want projection, embedding, and flush", syncSemanticProgressStages(firstProgress))
 	}
-	if syncSemanticProgressIncludes(secondProgress, store.SemanticRefreshProjection) {
-		t.Fatalf("resumed progress repeated projection: %v", syncSemanticProgressStages(secondProgress))
+	if syncSemanticProgressIncludes(secondProgress, store.SemanticRefreshProjection) ||
+		syncSemanticProgressIncludes(secondProgress, store.SemanticRefreshEmbedding) {
+		t.Fatalf("resumed progress repeated projection or embedding: %v", syncSemanticProgressStages(secondProgress))
 	}
 	for _, stage := range []store.SemanticRefreshStage{
-		store.SemanticRefreshEmbedding,
-		store.SemanticRefreshFlush,
 		store.SemanticRefreshVerify,
 		store.SemanticRefreshReadiness,
 	} {
