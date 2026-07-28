@@ -46,72 +46,94 @@ func (c Capability) Admit(backend, version string) (bool, string) {
 }
 
 func sanitizeCapabilityReason(reason string) string {
-	fields := capabilityDiagnosticFields(reason)
-	for index, field := range fields {
-		if key, value, ok := strings.Cut(field, "="); ok {
-			if redacted, ok := redactCapabilityPath(value); ok {
-				fields[index] = key + "=" + redacted
-			}
-		} else if redacted, ok := redactCapabilityPath(field); ok {
-			fields[index] = redacted
-		}
-	}
-	return strings.Join(fields, " ")
-}
-
-func redactCapabilityPath(value string) (string, bool) {
-	if len(value) >= 1 && (value[0] == '\'' || value[0] == '"') {
-		if len(value) >= 2 && value[len(value)-1] == value[0] && isCapabilityPath(value[1:len(value)-1]) {
-			return value[:1] + "[path]" + value[len(value)-1:], true
-		}
-		if isCapabilityPath(value[1:]) {
-			return "[path]", true
-		}
-	}
-	if isCapabilityPath(value) {
-		return "[path]", true
-	}
-	return "", false
-}
-
-func capabilityDiagnosticFields(reason string) []string {
-	var fields []string
+	var sanitized strings.Builder
+	sanitized.Grow(len(reason))
 	for index := 0; index < len(reason); {
-		for index < len(reason) && (reason[index] == ' ' || reason[index] == '\t' || reason[index] == '\n' || reason[index] == '\r') {
-			index++
-		}
-		start := index
-		var quote byte
-		for index < len(reason) {
-			character := reason[index]
-			if quote != 0 {
-				index++
-				if character == quote {
-					quote = 0
-				}
+		if (reason[index] == '\'' || reason[index] == '"') && index+1 < len(reason) {
+			if end, ok := capabilityPathEnd(reason, index+1); ok && end == len(reason) {
+				sanitized.WriteString("[path]")
+				index = end
 				continue
 			}
-			if (character == '\'' || character == '"') && (index == start || reason[index-1] == '=') {
-				quote = character
-				index++
-				continue
-			}
-			if character == ' ' || character == '\t' || character == '\n' || character == '\r' {
-				break
-			}
-			index++
 		}
-		if start < index {
-			fields = append(fields, reason[start:index])
+		if end, ok := capabilityPathEnd(reason, index); ok {
+			sanitized.WriteString("[path]")
+			index = end
+			continue
 		}
+		sanitized.WriteByte(reason[index])
+		index++
 	}
-	return fields
+	return sanitized.String()
 }
 
-func isCapabilityPath(value string) bool {
-	value = strings.Trim(value, ".,;:()[]{}")
+func capabilityPathEnd(reason string, index int) (int, bool) {
+	if !isCapabilityPathStart(reason, index) || !isCapabilityPathBoundary(reason, index) {
+		return 0, false
+	}
+
+	if quote := capabilityPathQuote(reason, index); quote != 0 {
+		for end := index; end < len(reason); end++ {
+			if reason[end] == quote {
+				return end, true
+			}
+		}
+		return len(reason), true
+	}
+
+	allowSpaces := index > 0 && reason[index-1] == '('
+	for end := index; end < len(reason); end++ {
+		if !allowSpaces && isCapabilityWhitespace(reason[end]) {
+			return end, true
+		}
+		if isCapabilityPathTerminator(reason, index, end) {
+			return end, true
+		}
+	}
+	return len(reason), true
+}
+
+func isCapabilityPathStart(reason string, index int) bool {
+	value := reason[index:]
 	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `\??\`) || strings.HasPrefix(value, "file://") {
 		return true
 	}
 	return len(value) >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
+}
+
+func isCapabilityPathBoundary(reason string, index int) bool {
+	if index == 0 {
+		return true
+	}
+	switch reason[index-1] {
+	case ' ', '\t', '\n', '\r', '=', '\'', '"', '(', '[', '{':
+		return true
+	default:
+		return false
+	}
+}
+
+func capabilityPathQuote(reason string, index int) byte {
+	if index > 0 && (reason[index-1] == '\'' || reason[index-1] == '"') {
+		return reason[index-1]
+	}
+	return 0
+}
+
+func isCapabilityWhitespace(character byte) bool {
+	return character == ' ' || character == '\t' || character == '\n' || character == '\r'
+}
+
+func isCapabilityPathTerminator(reason string, start, index int) bool {
+	switch reason[index] {
+	case ',', ';', '(', ')', '[', ']', '{', '}', '\'', '"':
+		return true
+	case ':':
+		if index == start+1 && start+2 < len(reason) && (reason[start+2] == '/' || reason[start+2] == '\\') {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
 }
