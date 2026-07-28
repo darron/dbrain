@@ -12,6 +12,12 @@ import (
 	"github.com/darron/dbrain/internal/semanticsegment"
 )
 
+// activeSemanticGenerationSegmentCatalogCeiling is a hard admission safety
+// bound on derived root metadata. It is intentionally much larger than the
+// representative 58-segment root and is not the later measured ready-fanout
+// policy.
+const activeSemanticGenerationSegmentCatalogCeiling = 1024
+
 const activeSemanticGenerationMetadataQuery = `
 	SELECT profile_id,active,build_status,backend,backend_version,dimensions,distance_metric,
 		indexed_chunk_count,source_manifest_hash,relative_cache_path
@@ -47,7 +53,7 @@ const activeSemanticGenerationSegmentCatalogQuery = `
 	FROM retrieval_generation_segments gs
 	JOIN retrieval_index_segments s ON s.segment_hash=gs.segment_hash
 	WHERE gs.generation_id=?
-	ORDER BY s.segment_hash`
+	ORDER BY gs.segment_hash`
 
 func proveActiveSemanticGenerationMetadata(
 	ctx context.Context,
@@ -120,6 +126,8 @@ func proveActiveSemanticGenerationMetadata(
 	switch {
 	case segmentCount == 0:
 		return fail("active generation has no segments")
+	case segmentCount > activeSemanticGenerationSegmentCatalogCeiling:
+		return fail("active generation segment catalog exceeds hard safety ceiling")
 	case segmentMismatches != 0:
 		return fail("active generation segment provenance does not match")
 	case segmentIndexedCount != indexedChunkCount:

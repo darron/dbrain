@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +41,76 @@ func TestSemanticReadinessActiveGenerationMetadata(t *testing.T) {
 				t.Fatalf("valid active generation has problem %q", snapshot.ActiveGenerationProblem)
 			}
 		})
+	}
+}
+
+func TestSemanticReadinessActiveGenerationSegmentCatalogSafetyCeiling(t *testing.T) {
+	tests := []struct {
+		name      string
+		segments  int
+		wantValid bool
+	}{
+		{name: "representative 58 segment root", segments: 58, wantValid: true},
+		{name: "hard safety ceiling", segments: activeSemanticGenerationSegmentCatalogCeiling, wantValid: true},
+		{name: "above hard safety ceiling", segments: activeSemanticGenerationSegmentCatalogCeiling + 1, wantValid: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st, profile, generationID, segmentHash, _ := seedCompletedSemanticGeneration(t)
+			defer func() { _ = st.Close() }()
+			sourceManifestHash := expandActiveSemanticGenerationSegments(t, st, profile, generationID, segmentHash, tc.segments)
+
+			for name, read := range semanticGenerationReadinessReaders(st) {
+				t.Run(name, func(t *testing.T) {
+					snapshot, err := read(context.Background(), profile)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if snapshot.ActiveGenerationValid != tc.wantValid {
+						t.Fatalf("active generation valid=%t want=%t snapshot=%+v", snapshot.ActiveGenerationValid, tc.wantValid, snapshot)
+					}
+					if tc.wantValid {
+						if snapshot.ActiveGenerationRootDescriptorSHA256 != sourceManifestHash {
+							t.Fatalf("root descriptor hash=%q want=%q", snapshot.ActiveGenerationRootDescriptorSHA256, sourceManifestHash)
+						}
+						return
+					}
+					if snapshot.ActiveGenerationRootDescriptorSHA256 != "" {
+						t.Fatalf("over-ceiling generation returned root descriptor hash %q", snapshot.ActiveGenerationRootDescriptorSHA256)
+					}
+					if snapshot.ActiveGenerationProblem != "active generation segment catalog exceeds hard safety ceiling" {
+						t.Fatalf("active generation problem=%q", snapshot.ActiveGenerationProblem)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestSemanticGenerationSegmentCatalogQueryAvoidsTemporarySort(t *testing.T) {
+	st, _, generationID, _, _ := seedCompletedSemanticGeneration(t)
+	defer func() { _ = st.Close() }()
+
+	rows, err := st.db.Query(`EXPLAIN QUERY PLAN `+activeSemanticGenerationSegmentCatalogQuery, generationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var details []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	plan := strings.Join(details, "\n")
+	if strings.Contains(plan, "USE TEMP B-TREE") {
+		t.Fatalf("active segment catalog query uses a temporary sort:\n%s", plan)
 	}
 }
 
@@ -234,6 +306,93 @@ func TestSemanticRuntimeReadinessActiveGenerationMetadataCorruptionFailsClosed(t
 			}
 		})
 	}
+}
+
+func expandActiveSemanticGenerationSegments(
+	t *testing.T,
+	st *Store,
+	profile embedding.Profile,
+	generationID, originalSegmentHash string,
+	segmentCount int,
+) string {
+	t.Helper()
+	if segmentCount < 1 {
+		t.Fatalf("segment count=%d want positive", segmentCount)
+	}
+	ctx := context.Background()
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	databaseID, err := st.RetrievalDatabaseID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshotRevision, purgeEpoch int64
+	if err := st.db.QueryRow(`
+		SELECT active_snapshot_revision,purge_epoch
+		FROM retrieval_embedding_profiles WHERE profile_id=?`, profileID).Scan(&snapshotRevision, &purgeEpoch); err != nil {
+		t.Fatal(err)
+	}
+	var originalRelativePath string
+	if err := st.db.QueryRow(`
+		SELECT relative_cache_path FROM retrieval_index_segments WHERE segment_hash=?`,
+		originalSegmentHash,
+	).Scan(&originalRelativePath); err != nil {
+		t.Fatal(err)
+	}
+	segments := []semanticsegment.RootSegment{{Hash: originalSegmentHash, RelativePath: originalRelativePath}}
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for index := 1; index < segmentCount; index++ {
+		segmentHash := fmt.Sprintf("segment-%04d", index)
+		relativePath := fmt.Sprintf("semantic/%s/%s/segments/%s", databaseID, profileID, segmentHash)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO retrieval_index_segments (
+				segment_hash,profile_id,backend,backend_version,dimensions,distance_metric,indexed_chunk_count,
+				relative_cache_path,membership_hash,payload_hash,manifest_hash,created_at
+			)
+			SELECT ?,profile_id,backend,backend_version,dimensions,distance_metric,1,
+				?,membership_hash,payload_hash,manifest_hash,created_at
+			FROM retrieval_index_segments WHERE segment_hash=?`,
+			segmentHash, relativePath, originalSegmentHash,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO retrieval_generation_segments (generation_id,segment_hash) VALUES (?,?)`,
+			generationID, segmentHash,
+		); err != nil {
+			t.Fatal(err)
+		}
+		segments = append(segments, semanticsegment.RootSegment{Hash: segmentHash, RelativePath: relativePath})
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Hash < segments[j].Hash })
+	sourceManifestHash, err := semanticsegment.RootDescriptorSHA256(semanticsegment.RootInput{
+		DatabaseID: databaseID, ProfileID: profileID, GenerationID: generationID,
+		SnapshotRevision: snapshotRevision, PurgeEpoch: purgeEpoch, Segments: segments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE retrieval_index_generations
+		SET indexed_chunk_count=?,source_manifest_hash=?
+		WHERE generation_id=?`, segmentCount, sourceManifestHash, generationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE retrieval_embedding_profiles SET active_indexed_count=?
+		WHERE profile_id=?`, segmentCount, profileID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return sourceManifestHash
 }
 
 type semanticGenerationReadinessReader func(context.Context, embedding.Profile) (semanticreadiness.Snapshot, error)
