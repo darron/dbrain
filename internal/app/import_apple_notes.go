@@ -90,7 +90,7 @@ func newImportAppleNotesCommand(root *rootOptions) *cobra.Command {
 
 			var st *store.Store
 			if !dryRun {
-				st, err = store.Open(cfg.DBPath)
+				st, err = store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 				if err != nil {
 					return err
 				}

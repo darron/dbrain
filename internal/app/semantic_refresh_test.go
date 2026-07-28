@@ -709,7 +709,7 @@ func semanticRefreshCommandDeps(t *testing.T, mode semanticconfig.Mode) semantic
 			return semanticRefreshTestConfig(mode), nil
 		},
 		capability: semanticRefreshReadyCapability,
-		openWritable: func(path string) (*store.Store, error) {
+		openWritable: func(path string, _ string) (*store.Store, error) {
 			return store.Open(path)
 		},
 		provider: func(semanticconfig.Config) (embedding.Provider, error) {

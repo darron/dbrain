@@ -40,7 +40,7 @@ func newAuthGitHubApproveCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -80,7 +80,7 @@ func newAuthGitHubListCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -130,7 +130,7 @@ func newAuthGitHubRemoveCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -191,7 +191,7 @@ func newAuthMCPTokenAddCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -227,7 +227,7 @@ func newAuthMCPTokenListCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -278,7 +278,7 @@ func newAuthMCPTokenRevokeCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}

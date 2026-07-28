@@ -103,7 +103,7 @@ func TestConfiguredSemanticRefreshAdmission(t *testing.T) {
 					calls = append(calls, "capability")
 					return test.capability
 				},
-				openWritable: func(path string) (*store.Store, error) {
+				openWritable: func(path string, _ string) (*store.Store, error) {
 					calls = append(calls, "open:"+path)
 					return store.Open(path)
 				},
@@ -210,7 +210,7 @@ func TestConfiguredSemanticRefreshCapturesStoreStateAndClosesAfterRun(t *testing
 			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 		},
 		capability: semanticRefreshReadyCapability,
-		openWritable: func(path string) (*store.Store, error) {
+		openWritable: func(path string, _ string) (*store.Store, error) {
 			var err error
 			opened, err = store.Open(path)
 			if err != nil {
@@ -313,7 +313,7 @@ func TestConfiguredSemanticRefreshWrapsEveryExecutorUnitWithDatabaseLocks(t *tes
 			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 		},
 		capability:   semanticRefreshReadyCapability,
-		openWritable: store.Open,
+		openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
 		provider: func(semanticconfig.Config) (embedding.Provider, error) {
 			return &semanticRefreshTestProvider{info: semanticRefreshTestInfo()}, nil
 		},
@@ -379,7 +379,7 @@ func TestConfiguredSemanticRefreshLockScopeFailureIsTyped(t *testing.T) {
 			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 		},
 		capability:   semanticRefreshReadyCapability,
-		openWritable: store.Open,
+		openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
 		provider: func(semanticconfig.Config) (embedding.Provider, error) {
 			return &semanticRefreshTestProvider{info: semanticRefreshTestInfo()}, nil
 		},
@@ -430,7 +430,7 @@ func TestConfiguredSemanticRefreshSetupErrorsAreTyped(t *testing.T) {
 					calls = append(calls, "capability")
 					return semanticRefreshReadyCapability()
 				},
-				openWritable: func(path string) (*store.Store, error) {
+				openWritable: func(path string, _ string) (*store.Store, error) {
 					calls = append(calls, "open")
 					if test.failAt == "open" {
 						return nil, test.cause
@@ -497,7 +497,7 @@ func TestConfiguredSemanticRefreshCancellationAlwaysReturnsTypedError(t *testing
 				return semanticRefreshTestConfig(semanticconfig.ModeOff), nil
 			},
 			capability: semanticRefreshReadyCapability,
-			openWritable: func(string) (*store.Store, error) {
+			openWritable: func(string, string) (*store.Store, error) {
 				sideEffects++
 				return nil, errors.New("unexpected open")
 			},
@@ -534,7 +534,7 @@ func TestConfiguredSemanticRefreshCancellationAlwaysReturnsTypedError(t *testing
 				return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 			},
 			capability:   semanticRefreshReadyCapability,
-			openWritable: store.Open,
+			openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
 			provider: func(semanticconfig.Config) (embedding.Provider, error) {
 				return &semanticRefreshTestProvider{info: semanticRefreshTestInfo()}, nil
 			},
@@ -579,7 +579,7 @@ func TestConfiguredSemanticRefreshProfileChangeUsesLedgerSupersession(t *testing
 			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 		},
 		capability:   semanticRefreshReadyCapability,
-		openWritable: store.Open,
+		openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
 		provider: func(semanticconfig.Config) (embedding.Provider, error) {
 			return &semanticRefreshTestProvider{info: semanticRefreshTestInfo()}, nil
 		},

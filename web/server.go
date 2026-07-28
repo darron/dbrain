@@ -93,7 +93,7 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 		addr = defaultAddr
 	}
 
-	st, err := store.OpenWithOptions(cfg.DBPath, opts.StoreOpenOptions)
+	st, err := store.OpenWithSemanticCacheOptions(cfg.DBPath, cfg.CacheDir, opts.StoreOpenOptions)
 	if err != nil {
 		return err
 	}

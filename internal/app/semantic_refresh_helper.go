@@ -24,7 +24,7 @@ type semanticRefreshDeps struct {
 	resolve         func(string) (semanticconfig.Config, error)
 	capability      func() semanticindex.Capability
 	withTimeout     func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	openWritable    func(string) (*store.Store, error)
+	openWritable    func(string, string) (*store.Store, error)
 	provider        func(semanticconfig.Config) (embedding.Provider, error)
 	nativeLifecycle func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error)
 	runRefresh      func(context.Context, semanticrefresh.RunLedger, semanticrefresh.StageExecutor, semanticrefresh.Request) (semanticrefresh.Result, error)
@@ -36,7 +36,7 @@ func defaultSemanticRefreshDeps() semanticRefreshDeps {
 		resolve:      semanticconfig.Resolve,
 		capability:   semanticindex.RuntimeCapability,
 		withTimeout:  context.WithTimeout,
-		openWritable: store.Open,
+		openWritable: store.OpenWithSemanticCache,
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{
 				BaseURL:    cfg.OllamaBaseURL,
@@ -128,7 +128,7 @@ func runConfiguredSemanticRefresh(
 		return cancelledConfiguredSemanticRefresh(result, err)
 	}
 
-	st, err := deps.openWritable(cfg.DBPath)
+	st, err := deps.openWritable(cfg.DBPath, cfg.CacheDir)
 	if err != nil {
 		return configuredSemanticRefreshError(
 			ctx,

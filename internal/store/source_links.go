@@ -75,24 +75,13 @@ func (s *Store) UpsertSourceLink(ctx context.Context, itemID int64, candidate mo
 
 func (s *Store) UpsertSource(ctx context.Context, candidate model.SourceCandidate) (model.SourceUpsertResult, error) {
 	return withBusyRetry(ctx, func() (model.SourceUpsertResult, error) {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return model.SourceUpsertResult{}, fmt.Errorf("begin source tx: %w", err)
-		}
-		defer func() {
+		return withAuthoritativeWriteTx(ctx, s, "upsert-source", func(ctx context.Context, tx authoritativeWriteTx) (model.SourceUpsertResult, error) {
+			sourceID, sourceCreated, err := upsertSourceCandidate(ctx, tx, candidate)
 			if err != nil {
-				_ = tx.Rollback()
+				return model.SourceUpsertResult{}, err
 			}
-		}()
-
-		sourceID, sourceCreated, err := upsertSourceCandidate(ctx, tx, candidate)
-		if err != nil {
-			return model.SourceUpsertResult{}, err
-		}
-		if commitErr := tx.Commit(); commitErr != nil {
-			return model.SourceUpsertResult{}, fmt.Errorf("commit source: %w", commitErr)
-		}
-		return model.SourceUpsertResult{SourceID: sourceID, SourceCreated: sourceCreated}, nil
+			return model.SourceUpsertResult{SourceID: sourceID, SourceCreated: sourceCreated}, nil
+		})
 	})
 }
 
@@ -148,45 +137,33 @@ func (s *Store) ListLinkedItemsBySourceType(ctx context.Context, sourceID int64,
 }
 
 func (s *Store) upsertSourceLink(ctx context.Context, itemID int64, candidate model.SourceCandidate) (model.SourceLinkUpsertResult, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return model.SourceLinkUpsertResult{}, fmt.Errorf("begin source link tx: %w", err)
-	}
-	defer func() {
+	return withAuthoritativeWriteTx(ctx, s, "upsert-source-link", func(ctx context.Context, tx authoritativeWriteTx) (result model.SourceLinkUpsertResult, err error) {
+		sourceID, sourceCreated, err := upsertSourceCandidate(ctx, tx, candidate)
 		if err != nil {
-			_ = tx.Rollback()
+			return model.SourceLinkUpsertResult{}, err
 		}
-	}()
 
-	sourceID, sourceCreated, err := upsertSourceCandidate(ctx, tx, candidate)
-	if err != nil {
-		return model.SourceLinkUpsertResult{}, err
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	linkResult, execErr := tx.ExecContext(ctx, `
+		now := time.Now().UTC().Format(time.RFC3339)
+		linkResult, execErr := tx.ExecContext(ctx, `
 		INSERT OR IGNORE INTO item_source_links (item_id, source_id, original_url, created_at)
 		VALUES (?, ?, ?, ?)`,
-		itemID,
-		sourceID,
-		candidate.OriginalURL,
-		now,
-	)
-	if execErr != nil {
-		err = fmt.Errorf("link item %d to source %d: %w", itemID, sourceID, execErr)
-		return model.SourceLinkUpsertResult{}, err
-	}
-	rowsAffected, _ := linkResult.RowsAffected()
+			itemID,
+			sourceID,
+			candidate.OriginalURL,
+			now,
+		)
+		if execErr != nil {
+			err = fmt.Errorf("link item %d to source %d: %w", itemID, sourceID, execErr)
+			return model.SourceLinkUpsertResult{}, err
+		}
+		rowsAffected, _ := linkResult.RowsAffected()
 
-	if commitErr := tx.Commit(); commitErr != nil {
-		return model.SourceLinkUpsertResult{}, fmt.Errorf("commit source link: %w", commitErr)
-	}
-
-	return model.SourceLinkUpsertResult{
-		SourceID:      sourceID,
-		SourceCreated: sourceCreated,
-		LinkCreated:   rowsAffected > 0,
-	}, nil
+		return model.SourceLinkUpsertResult{
+			SourceID:      sourceID,
+			SourceCreated: sourceCreated,
+			LinkCreated:   rowsAffected > 0,
+		}, nil
+	})
 }
 
 func upsertSourceCandidate(ctx context.Context, tx *sql.Tx, candidate model.SourceCandidate) (int64, bool, error) {

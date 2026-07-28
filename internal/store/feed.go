@@ -479,113 +479,96 @@ func (s *Store) ApplyFeedEntry(ctx context.Context, entry FeedEntry) (FeedEntryA
 }
 
 func (s *Store) applyFeedEntry(ctx context.Context, entry FeedEntry) (FeedEntryApplyResult, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return FeedEntryApplyResult{}, fmt.Errorf("begin feed entry tx: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	match, err := resolveFeedEntryMatchTx(ctx, tx, entry)
-	if err != nil {
-		return FeedEntryApplyResult{}, err
-	}
-	if match.ItemSourceKey != "" {
-		entry.Item.SourceKey = match.ItemSourceKey
-	}
-
-	itemResult, err := s.upsertItemTx(ctx, tx, entry.Item)
-	if err != nil {
-		return FeedEntryApplyResult{}, err
-	}
-
-	var sourceID int64
-	var sourceCreated bool
-	var linkCreated bool
-	if entry.SourceCandidate != nil {
-		sourceID, sourceCreated, err = upsertSourceCandidate(ctx, tx, *entry.SourceCandidate)
+	return withAuthoritativeWriteTx(ctx, s, "apply-feed-entry", func(ctx context.Context, tx authoritativeWriteTx) (FeedEntryApplyResult, error) {
+		match, err := resolveFeedEntryMatchTx(ctx, tx, entry)
 		if err != nil {
 			return FeedEntryApplyResult{}, err
 		}
-		linkCreated, err = insertItemSourceLinkTx(ctx, tx, itemResult.ItemID, sourceID, entry.SourceCandidate.OriginalURL)
+		if match.ItemSourceKey != "" {
+			entry.Item.SourceKey = match.ItemSourceKey
+		}
+
+		itemResult, err := s.upsertItemTx(ctx, tx, entry.Item)
 		if err != nil {
 			return FeedEntryApplyResult{}, err
 		}
-	}
 
-	now := entry.ObservedAt
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	nowText := now.UTC().Format(time.RFC3339)
+		var sourceID int64
+		var sourceCreated bool
+		var linkCreated bool
+		if entry.SourceCandidate != nil {
+			sourceID, sourceCreated, err = upsertSourceCandidate(ctx, tx, *entry.SourceCandidate)
+			if err != nil {
+				return FeedEntryApplyResult{}, err
+			}
+			linkCreated, err = insertItemSourceLinkTx(ctx, tx, itemResult.ItemID, sourceID, entry.SourceCandidate.OriginalURL)
+			if err != nil {
+				return FeedEntryApplyResult{}, err
+			}
+		}
 
-	switch match.ID {
-	case 0:
-		result, execErr := tx.ExecContext(ctx, `
+		now := entry.ObservedAt
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		nowText := now.UTC().Format(time.RFC3339)
+
+		switch match.ID {
+		case 0:
+			result, execErr := tx.ExecContext(ctx, `
 			INSERT INTO feed_entries (
 				feed_id, entry_key, identity_key, guid, guid_is_permalink, link, normalized_link, title, author,
 				published_at, entry_updated_at, summary_html, summary_text, content_html, content_markdown, content_text,
 				enclosures_json, extensions_json, raw_json, content_hash, version, item_id, source_id,
 				first_seen_at, last_seen_at, last_changed_at, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			entry.FeedID, entry.EntryKey, entry.IdentityKey, entry.GUID, boolInt(entry.GUIDIsPermalink), entry.Link, entry.NormalizedLink, entry.Title, entry.Author,
-			entry.PublishedAt, entry.EntryUpdatedAt, entry.SummaryHTML, entry.SummaryText, entry.ContentHTML, entry.ContentMarkdown, entry.ContentText,
-			defaultJSON(entry.EnclosuresJSON, "[]"), defaultJSON(entry.ExtensionsJSON, "{}"), entry.RawJSON, entry.ContentHash, 1, itemResult.ItemID, sourceID,
-			nowText, nowText, nowText, nowText, nowText,
-		)
-		if execErr != nil {
-			return FeedEntryApplyResult{}, fmt.Errorf("insert feed entry %s: %w", entry.EntryKey, execErr)
+				entry.FeedID, entry.EntryKey, entry.IdentityKey, entry.GUID, boolInt(entry.GUIDIsPermalink), entry.Link, entry.NormalizedLink, entry.Title, entry.Author,
+				entry.PublishedAt, entry.EntryUpdatedAt, entry.SummaryHTML, entry.SummaryText, entry.ContentHTML, entry.ContentMarkdown, entry.ContentText,
+				defaultJSON(entry.EnclosuresJSON, "[]"), defaultJSON(entry.ExtensionsJSON, "{}"), entry.RawJSON, entry.ContentHash, 1, itemResult.ItemID, sourceID,
+				nowText, nowText, nowText, nowText, nowText,
+			)
+			if execErr != nil {
+				return FeedEntryApplyResult{}, fmt.Errorf("insert feed entry %s: %w", entry.EntryKey, execErr)
+			}
+			id, execErr := result.LastInsertId()
+			if execErr != nil {
+				return FeedEntryApplyResult{}, fmt.Errorf("last insert feed entry %s: %w", entry.EntryKey, execErr)
+			}
+			return FeedEntryApplyResult{FeedEntryID: id, ItemID: itemResult.ItemID, SourceID: sourceID, Created: true, Version: 1, SourceLinked: linkCreated, SourceCreated: sourceCreated}, nil
+		default:
 		}
-		id, execErr := result.LastInsertId()
-		if execErr != nil {
-			return FeedEntryApplyResult{}, fmt.Errorf("last insert feed entry %s: %w", entry.EntryKey, execErr)
-		}
-		if err := tx.Commit(); err != nil {
-			return FeedEntryApplyResult{}, fmt.Errorf("commit feed entry insert: %w", err)
-		}
-		return FeedEntryApplyResult{FeedEntryID: id, ItemID: itemResult.ItemID, SourceID: sourceID, Created: true, Version: 1, SourceLinked: linkCreated, SourceCreated: sourceCreated}, nil
-	default:
-	}
 
-	if match.ContentHash == entry.ContentHash {
-		if _, execErr := tx.ExecContext(ctx, `
+		if match.ContentHash == entry.ContentHash {
+			if _, execErr := tx.ExecContext(ctx, `
 			UPDATE feed_entries
 			SET guid = ?, guid_is_permalink = ?, link = ?, normalized_link = ?, raw_json = ?, item_id = ?, source_id = ?, last_seen_at = ?, updated_at = ?
 			WHERE id = ?`,
-			entry.GUID, boolInt(entry.GUIDIsPermalink), entry.Link, entry.NormalizedLink, entry.RawJSON, itemResult.ItemID, sourceID, nowText, nowText, match.ID); execErr != nil {
-			return FeedEntryApplyResult{}, fmt.Errorf("touch feed entry %s: %w", entry.EntryKey, execErr)
+				entry.GUID, boolInt(entry.GUIDIsPermalink), entry.Link, entry.NormalizedLink, entry.RawJSON, itemResult.ItemID, sourceID, nowText, nowText, match.ID); execErr != nil {
+				return FeedEntryApplyResult{}, fmt.Errorf("touch feed entry %s: %w", entry.EntryKey, execErr)
+			}
+			return FeedEntryApplyResult{FeedEntryID: match.ID, ItemID: itemResult.ItemID, SourceID: sourceID, Unchanged: true, Version: match.Version, SourceLinked: linkCreated, SourceCreated: sourceCreated, IdentityConflict: match.IdentityConflict}, nil
 		}
-		if err := tx.Commit(); err != nil {
-			return FeedEntryApplyResult{}, fmt.Errorf("commit unchanged feed entry: %w", err)
-		}
-		return FeedEntryApplyResult{FeedEntryID: match.ID, ItemID: itemResult.ItemID, SourceID: sourceID, Unchanged: true, Version: match.Version, SourceLinked: linkCreated, SourceCreated: sourceCreated, IdentityConflict: match.IdentityConflict}, nil
-	}
 
-	if err := appendFeedEntryVersionTx(ctx, tx, match.ID, match.Version, nowText); err != nil {
-		return FeedEntryApplyResult{}, err
-	}
-	nextVersion := match.Version + 1
-	if _, execErr := tx.ExecContext(ctx, `
+		if err := appendFeedEntryVersionTx(ctx, tx, match.ID, match.Version, nowText); err != nil {
+			return FeedEntryApplyResult{}, err
+		}
+		nextVersion := match.Version + 1
+		if _, execErr := tx.ExecContext(ctx, `
 		UPDATE feed_entries
 		SET guid = ?, guid_is_permalink = ?, link = ?, normalized_link = ?, title = ?, author = ?,
 			published_at = ?, entry_updated_at = ?, summary_html = ?, summary_text = ?, content_html = ?, content_markdown = ?, content_text = ?,
 			enclosures_json = ?, extensions_json = ?, raw_json = ?, content_hash = ?, version = ?, item_id = ?, source_id = ?,
 			last_seen_at = ?, last_changed_at = ?, updated_at = ?
 		WHERE id = ?`,
-		entry.GUID, boolInt(entry.GUIDIsPermalink), entry.Link, entry.NormalizedLink, entry.Title, entry.Author,
-		entry.PublishedAt, entry.EntryUpdatedAt, entry.SummaryHTML, entry.SummaryText, entry.ContentHTML, entry.ContentMarkdown, entry.ContentText,
-		defaultJSON(entry.EnclosuresJSON, "[]"), defaultJSON(entry.ExtensionsJSON, "{}"), entry.RawJSON, entry.ContentHash, nextVersion, itemResult.ItemID, sourceID,
-		nowText, nowText, nowText, match.ID,
-	); execErr != nil {
-		return FeedEntryApplyResult{}, fmt.Errorf("update feed entry %s: %w", entry.EntryKey, execErr)
-	}
-	if err := tx.Commit(); err != nil {
-		return FeedEntryApplyResult{}, fmt.Errorf("commit feed entry update: %w", err)
-	}
-	return FeedEntryApplyResult{FeedEntryID: match.ID, ItemID: itemResult.ItemID, SourceID: sourceID, Updated: true, Version: nextVersion, SourceLinked: linkCreated, SourceCreated: sourceCreated, IdentityConflict: match.IdentityConflict}, nil
+			entry.GUID, boolInt(entry.GUIDIsPermalink), entry.Link, entry.NormalizedLink, entry.Title, entry.Author,
+			entry.PublishedAt, entry.EntryUpdatedAt, entry.SummaryHTML, entry.SummaryText, entry.ContentHTML, entry.ContentMarkdown, entry.ContentText,
+			defaultJSON(entry.EnclosuresJSON, "[]"), defaultJSON(entry.ExtensionsJSON, "{}"), entry.RawJSON, entry.ContentHash, nextVersion, itemResult.ItemID, sourceID,
+			nowText, nowText, nowText, match.ID,
+		); execErr != nil {
+			return FeedEntryApplyResult{}, fmt.Errorf("update feed entry %s: %w", entry.EntryKey, execErr)
+		}
+		return FeedEntryApplyResult{FeedEntryID: match.ID, ItemID: itemResult.ItemID, SourceID: sourceID, Updated: true, Version: nextVersion, SourceLinked: linkCreated, SourceCreated: sourceCreated, IdentityConflict: match.IdentityConflict}, nil
+	})
 }
 
 type feedEntryMatch struct {
