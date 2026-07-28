@@ -10,8 +10,6 @@ import (
 	usearch "github.com/unum-cloud/usearch/golang"
 )
 
-const BackendUSearch = "usearch"
-
 // USearchOptions configure one in-memory USearch graph. The caller owns the
 // enclosing segment format and all payload persistence.
 type USearchOptions struct {
