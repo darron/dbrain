@@ -256,6 +256,79 @@ func TestProgressEmitterHeartbeatsUseLastPublishedCheckpoint(t *testing.T) {
 	}
 }
 
+func TestProgressEmitterTickCannotClaimNewSnapshotBeforeQueuedCheckpoint(t *testing.T) {
+	t0 := time.Date(2026, 7, 28, 12, 30, 0, 0, time.UTC)
+	clock := &fakeProgressClock{now: t0}
+	ticker := newFakeProgressTicker()
+	events := make(chan Progress, 4)
+	publishStarted := make(chan struct{})
+	publishEnqueued := make(chan struct{})
+	publishDone := make(chan error, 1)
+	var emitter *ProgressEmitter
+	persisted := persistedProgressRun("run-1", "profile-1", "checkpoint-2", 2)
+
+	var err error
+	emitter, err = startProgressEmitter(context.Background(), &recordingProgressLedger{}, persistedProgressRun("run-1", "profile-1", "checkpoint-1", 1), Debt{}, func(progress Progress) error {
+		events <- progress
+		return nil
+	}, progressEmitterOptions{
+		now:       clock.Now,
+		newTicker: func(time.Duration) progressTicker { return ticker },
+		testHooks: progressEmitterTestHooks{
+			afterTickQueueCheck: func() {
+				// The old implementation invoked this hook with stateMu
+				// unlocked between nextQueued and snapshot. The corrected
+				// implementation invokes it while the atomic tick selection
+				// holds stateMu.
+				stateWasUnlocked := emitter.stateMu.TryLock()
+				if stateWasUnlocked {
+					emitter.stateMu.Unlock()
+				}
+				go func() {
+					close(publishStarted)
+					publishDone <- emitter.Publish(persisted, Debt{PendingEmbeddings: 2})
+				}()
+				<-publishStarted
+				if stateWasUnlocked {
+					<-publishEnqueued
+				}
+			},
+			afterPublishEnqueue: func() {
+				close(publishEnqueued)
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+	initial := receiveProgress(t, events)
+	if initial.Checkpoint != "checkpoint-1" {
+		t.Fatalf("initial checkpoint = %q, want checkpoint-1", initial.Checkpoint)
+	}
+
+	clock.Set(t0.Add(ProgressInterval))
+	ticker.ticks <- clock.Now()
+	heartbeat := receiveProgress(t, events)
+	checkpoint := receiveProgress(t, events)
+	if err := receiveError(t, publishDone); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if heartbeat.Checkpoint != "checkpoint-1" {
+		t.Fatalf("first tick callback checkpoint = %q, want old checkpoint-1", heartbeat.Checkpoint)
+	}
+	if checkpoint.Checkpoint != "checkpoint-2" {
+		t.Fatalf("queued checkpoint callback = %q, want checkpoint-2", checkpoint.Checkpoint)
+	}
+	select {
+	case duplicate := <-events:
+		t.Fatalf("duplicate callback before another tick: %+v", duplicate)
+	default:
+	}
+	if err := emitter.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
 func TestProgressEmitterCallbackFailureCancelsWorkAndReturnsErrorOnce(t *testing.T) {
 	wantErr := errors.New("progress output closed")
 	ticker := newFakeProgressTicker()

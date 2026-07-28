@@ -24,6 +24,12 @@ type progressTicker interface {
 type progressEmitterOptions struct {
 	now       func() time.Time
 	newTicker func(time.Duration) progressTicker
+	testHooks progressEmitterTestHooks
+}
+
+type progressEmitterTestHooks struct {
+	afterTickQueueCheck func()
+	afterPublishEnqueue func()
 }
 
 type wallProgressTicker struct {
@@ -43,10 +49,11 @@ type progressDispatch struct {
 // one running refresh run. Callers must pass only rows returned by a completed
 // ledger update to Publish.
 type ProgressEmitter struct {
-	ledger   ProgressLedger
-	callback ProgressCallback
-	now      func() time.Time
-	ticker   progressTicker
+	ledger    ProgressLedger
+	callback  ProgressCallback
+	now       func() time.Time
+	ticker    progressTicker
+	testHooks progressEmitterTestHooks
 
 	workCtx context.Context
 	cancel  context.CancelFunc
@@ -106,15 +113,16 @@ func startProgressEmitter(
 
 	workCtx, cancel := context.WithCancel(ctx)
 	emitter := &ProgressEmitter{
-		ledger:   ledger,
-		callback: callback,
-		now:      options.now,
-		workCtx:  workCtx,
-		cancel:   cancel,
-		done:     make(chan struct{}),
-		wake:     make(chan struct{}, 1),
-		run:      run,
-		debt:     debt,
+		ledger:    ledger,
+		callback:  callback,
+		now:       options.now,
+		testHooks: options.testHooks,
+		workCtx:   workCtx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		wake:      make(chan struct{}, 1),
+		run:       run,
+		debt:      debt,
 	}
 	if err := emitter.dispatch(run, debt); err != nil {
 		emitter.recordError(err)
@@ -166,6 +174,9 @@ func (e *ProgressEmitter) Publish(run store.SemanticRefreshRun, debt Debt) error
 	e.run, e.debt = run, debt
 	e.queue = append(e.queue, request)
 	e.stateMu.Unlock()
+	if e.testHooks.afterPublishEnqueue != nil {
+		e.testHooks.afterPublishEnqueue()
+	}
 	e.signal()
 	if reentrant {
 		return nil
@@ -228,25 +239,19 @@ func (e *ProgressEmitter) runDispatcher() {
 			e.requestStop()
 		case <-e.wake:
 		case <-e.ticker.Chan():
-			// A checkpoint accepted concurrently with this tick wins. This
-			// prevents a heartbeat from claiming the newer snapshot before its
-			// checkpoint progress unit is dispatched.
-			if request, ok := e.nextQueued(); ok {
-				if err := e.dispatch(request.run, request.debt); err != nil {
-					e.handleDispatchError(err)
-					request.result <- err
-					return
-				}
-				request.result <- nil
-				continue
-			}
-			run, debt, stopped := e.snapshot()
+			request, queued, stopped := e.nextTickDispatch()
 			if stopped {
 				return
 			}
-			if err := e.dispatch(run, debt); err != nil {
+			if err := e.dispatch(request.run, request.debt); err != nil {
 				e.handleDispatchError(err)
+				if queued {
+					request.result <- err
+				}
 				return
+			}
+			if queued {
+				request.result <- nil
 			}
 		}
 	}
@@ -295,10 +300,21 @@ func (e *ProgressEmitter) nextQueued() (progressDispatch, bool) {
 	return request, true
 }
 
-func (e *ProgressEmitter) snapshot() (store.SemanticRefreshRun, Debt, bool) {
+func (e *ProgressEmitter) nextTickDispatch() (progressDispatch, bool, bool) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
-	return e.run, e.debt, e.stopped
+	if e.stopped {
+		return progressDispatch{}, false, true
+	}
+	if len(e.queue) > 0 {
+		request := e.queue[0]
+		e.queue = e.queue[1:]
+		return request, true, false
+	}
+	if e.testHooks.afterTickQueueCheck != nil {
+		e.testHooks.afterTickQueueCheck()
+	}
+	return progressDispatch{run: e.run, debt: e.debt}, false, false
 }
 
 func (e *ProgressEmitter) isStopped() bool {
