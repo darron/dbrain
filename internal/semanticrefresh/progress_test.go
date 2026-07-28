@@ -260,10 +260,14 @@ func TestProgressEmitterTickCannotClaimNewSnapshotBeforeQueuedCheckpoint(t *test
 	t0 := time.Date(2026, 7, 28, 12, 30, 0, 0, time.UTC)
 	clock := &fakeProgressClock{now: t0}
 	ticker := newFakeProgressTicker()
-	events := make(chan Progress, 4)
-	publishStarted := make(chan struct{})
+	events := make(chan Progress, 5)
+	publishReachedLock := make(chan struct{})
+	allowPublishLock := make(chan struct{})
+	publishAttemptingLock := make(chan struct{})
 	publishEnqueued := make(chan struct{})
+	selectionHeldLock := make(chan bool, 1)
 	publishDone := make(chan error, 1)
+	var interleaveOnce sync.Once
 	var emitter *ProgressEmitter
 	persisted := persistedProgressRun("run-1", "profile-1", "checkpoint-2", 2)
 
@@ -275,23 +279,38 @@ func TestProgressEmitterTickCannotClaimNewSnapshotBeforeQueuedCheckpoint(t *test
 		now:       clock.Now,
 		newTicker: func(time.Duration) progressTicker { return ticker },
 		testHooks: progressEmitterTestHooks{
+			beforePublishLock: func() {
+				close(publishReachedLock)
+				<-allowPublishLock
+				// Publish calls stateMu.Lock immediately after this hook
+				// returns. This signal lets the heartbeat selector release
+				// the hook only after proving it owns stateMu.
+				close(publishAttemptingLock)
+			},
 			afterTickQueueCheck: func() {
-				// The old implementation invoked this hook with stateMu
-				// unlocked between nextQueued and snapshot. The corrected
-				// implementation invokes it while the atomic tick selection
-				// holds stateMu.
-				stateWasUnlocked := emitter.stateMu.TryLock()
-				if stateWasUnlocked {
-					emitter.stateMu.Unlock()
-				}
-				go func() {
-					close(publishStarted)
-					publishDone <- emitter.Publish(persisted, Debt{PendingEmbeddings: 2})
-				}()
-				<-publishStarted
-				if stateWasUnlocked {
-					<-publishEnqueued
-				}
+				interleaveOnce.Do(func() {
+					go func() {
+						publishDone <- emitter.Publish(persisted, Debt{PendingEmbeddings: 2})
+					}()
+					<-publishReachedLock
+
+					// Publish is paused before its lock attempt, so a failed
+					// TryLock proves heartbeat selection itself still owns
+					// stateMu across queue inspection and snapshot capture.
+					stateWasUnlocked := emitter.stateMu.TryLock()
+					if stateWasUnlocked {
+						emitter.stateMu.Unlock()
+					}
+					selectionHeldLock <- !stateWasUnlocked
+
+					close(allowPublishLock)
+					<-publishAttemptingLock
+					if stateWasUnlocked {
+						// Make the split-lock implementation deterministically
+						// expose checkpoint-2 in its following snapshot read.
+						<-publishEnqueued
+					}
+				})
 			},
 			afterPublishEnqueue: func() {
 				close(publishEnqueued)
@@ -301,6 +320,7 @@ func TestProgressEmitterTickCannotClaimNewSnapshotBeforeQueuedCheckpoint(t *test
 	if err != nil {
 		t.Fatalf("startProgressEmitter: %v", err)
 	}
+	t.Cleanup(func() { _ = emitter.Stop() })
 	initial := receiveProgress(t, events)
 	if initial.Checkpoint != "checkpoint-1" {
 		t.Fatalf("initial checkpoint = %q, want checkpoint-1", initial.Checkpoint)
@@ -310,6 +330,9 @@ func TestProgressEmitterTickCannotClaimNewSnapshotBeforeQueuedCheckpoint(t *test
 	ticker.ticks <- clock.Now()
 	heartbeat := receiveProgress(t, events)
 	checkpoint := receiveProgress(t, events)
+	if held := <-selectionHeldLock; !held {
+		t.Fatal("heartbeat selection released stateMu between queue inspection and snapshot capture")
+	}
 	if err := receiveError(t, publishDone); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -324,8 +347,17 @@ func TestProgressEmitterTickCannotClaimNewSnapshotBeforeQueuedCheckpoint(t *test
 		t.Fatalf("duplicate callback before another tick: %+v", duplicate)
 	default:
 	}
-	if err := emitter.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
+
+	clock.Set(t0.Add(2 * ProgressInterval))
+	ticker.ticks <- clock.Now()
+	nextHeartbeat := receiveProgress(t, events)
+	if nextHeartbeat.Checkpoint != "checkpoint-2" {
+		t.Fatalf("next heartbeat checkpoint = %q, want checkpoint-2", nextHeartbeat.Checkpoint)
+	}
+	select {
+	case duplicate := <-events:
+		t.Fatalf("duplicate checkpoint callback after next heartbeat: %+v", duplicate)
+	default:
 	}
 }
 

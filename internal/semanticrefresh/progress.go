@@ -28,6 +28,7 @@ type progressEmitterOptions struct {
 }
 
 type progressEmitterTestHooks struct {
+	beforePublishLock   func()
 	afterTickQueueCheck func()
 	afterPublishEnqueue func()
 }
@@ -164,6 +165,9 @@ func (e *ProgressEmitter) Publish(run store.SemanticRefreshRun, debt Debt) error
 		run:    run,
 		debt:   debt,
 		result: make(chan error, 1),
+	}
+	if e.testHooks.beforePublishLock != nil {
+		e.testHooks.beforePublishLock()
 	}
 	e.stateMu.Lock()
 	if e.stopped {
