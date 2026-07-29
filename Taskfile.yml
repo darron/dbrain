@@ -3,6 +3,13 @@ version: "3"
 vars:
   GOCACHE: "/tmp/go-build"
   GOMODCACHE: "{{.ROOT_DIR}}/.gomodcache"
+  USEARCH_VERSION: "2.26.0"
+  USEARCH_COMMIT: "cc23bbaf21ef52313c5a495adbc40cbd733cdcfb"
+  USEARCH_SOURCE_URL: "https://proxy.golang.org/github.com/unum-cloud/usearch/@v/v2.26.0+incompatible.zip"
+  USEARCH_SOURCE_SHA256: "54f280b044757a391a6905b0850ad96789b6b2ce7c20ec9511b3b4628e27b0bd"
+  USEARCH_MACOS_DEPLOYMENT_TARGET: "12.0"
+  USEARCH_BUILD_ROOT: "/private/tmp/dbrain-usearch-v2.26.0-darwin-arm64"
+  USEARCH_STAGE_DIR: "{{.USEARCH_BUILD_ROOT}}/stage"
   RELEASE_VERSION:
     sh: |
       if [ -n "${DBRAIN_RELEASE_VERSION:-}" ]; then
@@ -21,6 +28,142 @@ tasks:
     cmds:
       - mkdir -p bin
       - GOCACHE={{.GOCACHE}} GOMODCACHE={{.GOMODCACHE}} go build -buildvcs=true -ldflags "-X github.com/darron/dbrain/internal/version.ReleaseVersion={{.RELEASE_VERSION}} -X github.com/darron/dbrain/internal/version.BuildPlatform={{.BUILD_PLATFORM}}" -o ./bin/dbrain ./cmd/dbrain
+
+  usearch-static-darwin-arm64:
+    desc: Build and stage the pinned static USearch C library for Darwin arm64
+    cmds:
+      - |
+        set -eu
+        if [ "$(go env GOOS)" != "darwin" ] || [ "$(go env GOARCH)" != "arm64" ]; then
+          echo "usearch-static-darwin-arm64 requires a Darwin arm64 host" >&2
+          exit 1
+        fi
+        for tool in cmake curl shasum unzip; do
+          if ! command -v "${tool}" >/dev/null 2>&1; then
+            echo "missing required tool: ${tool}" >&2
+            exit 1
+          fi
+        done
+
+        archive_dir="{{.USEARCH_BUILD_ROOT}}/download"
+        source_root="{{.USEARCH_BUILD_ROOT}}/source"
+        source_dir="${source_root}/github.com/unum-cloud/usearch@v{{.USEARCH_VERSION}}+incompatible"
+        build_dir="{{.USEARCH_BUILD_ROOT}}/build"
+        stage_dir="{{.USEARCH_STAGE_DIR}}"
+        archive="${archive_dir}/usearch-v{{.USEARCH_VERSION}}.zip"
+        archive_tmp="${archive}.tmp"
+        mkdir -p "${archive_dir}" "${source_root}" "${build_dir}" "${stage_dir}/include" "${stage_dir}/lib"
+
+        curl --fail --location --silent --show-error "{{.USEARCH_SOURCE_URL}}" --output "${archive_tmp}"
+        actual_sha="$(shasum -a 256 "${archive_tmp}" | awk '{print $1}')"
+        if [ "${actual_sha}" != "{{.USEARCH_SOURCE_SHA256}}" ]; then
+          echo "USearch source checksum mismatch: got ${actual_sha}, want {{.USEARCH_SOURCE_SHA256}}" >&2
+          exit 1
+        fi
+        mv "${archive_tmp}" "${archive}"
+        unzip -q -o "${archive}" -d "${source_root}"
+        if [ ! -f "${source_dir}/CMakeLists.txt" ] || [ ! -f "${source_dir}/c/usearch.h" ]; then
+          echo "verified USearch archive has an unexpected layout" >&2
+          exit 1
+        fi
+
+        MACOSX_DEPLOYMENT_TARGET={{.USEARCH_MACOS_DEPLOYMENT_TARGET}} cmake \
+          -S "${source_dir}" \
+          -B "${build_dir}" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_OSX_ARCHITECTURES=arm64 \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET={{.USEARCH_MACOS_DEPLOYMENT_TARGET}} \
+          -DUSEARCH_BUILD_LIB_C=ON \
+          -DUSEARCH_BUILD_TEST_CPP=OFF \
+          -DUSEARCH_BUILD_BENCH_CPP=OFF \
+          -DUSEARCH_BUILD_TEST_C=OFF \
+          -DUSEARCH_USE_OPENMP=OFF \
+          -DUSEARCH_USE_NUMKONG=OFF \
+          -DUSEARCH_USE_JEMALLOC=OFF
+        cmake --build "${build_dir}" --config Release --target usearch_static_c --parallel 2
+        cp "${build_dir}/libusearch_static_c.a" "${stage_dir}/lib/libusearch_c.a"
+        cp "${source_dir}/c/usearch.h" "${stage_dir}/include/usearch.h"
+
+  test-usearch-darwin-arm64:
+    desc: Run the full race-enabled suite with the native USearch backend
+    deps: [usearch-static-darwin-arm64]
+    cmds:
+      - >
+        MACOSX_DEPLOYMENT_TARGET={{.USEARCH_MACOS_DEPLOYMENT_TARGET}}
+        CGO_ENABLED=1
+        GOOS=darwin
+        GOARCH=arm64
+        CGO_CFLAGS="-I{{.USEARCH_STAGE_DIR}}/include"
+        CGO_LDFLAGS="-L{{.USEARCH_STAGE_DIR}}/lib"
+        GOCACHE={{.GOCACHE}}
+        GOMODCACHE={{.GOMODCACHE}}
+        go test -count=1 -race -tags usearch -timeout=20m ./...
+
+  build-usearch-darwin-arm64:
+    desc: Build the tagged native Darwin arm64 dbrain binary
+    deps: [usearch-static-darwin-arm64]
+    cmds:
+      - mkdir -p bin
+      - >
+        MACOSX_DEPLOYMENT_TARGET={{.USEARCH_MACOS_DEPLOYMENT_TARGET}}
+        CGO_ENABLED=1
+        GOOS=darwin
+        GOARCH=arm64
+        CGO_CFLAGS="-I{{.USEARCH_STAGE_DIR}}/include"
+        CGO_LDFLAGS="-L{{.USEARCH_STAGE_DIR}}/lib"
+        GOCACHE={{.GOCACHE}}
+        GOMODCACHE={{.GOMODCACHE}}
+        go build -tags usearch -buildvcs=true
+        -ldflags "-X github.com/darron/dbrain/internal/version.ReleaseVersion={{.RELEASE_VERSION}} -X github.com/darron/dbrain/internal/version.BuildPlatform=darwin/arm64"
+        -o ./bin/dbrain ./cmd/dbrain
+
+  verify-usearch-darwin-arm64:
+    desc: Verify native architecture, linkage, deployment target, and semantic capability
+    deps: [build-usearch-darwin-arm64]
+    cmds:
+      - |
+        set -eu
+        binary="./bin/dbrain"
+        file "${binary}" | grep -Fq "Mach-O 64-bit executable arm64"
+        test "$(lipo -archs "${binary}")" = "arm64"
+
+        metadata="$(go version -m "${binary}")"
+        printf '%s\n' "${metadata}"
+        printf '%s\n' "${metadata}" | grep -Fq "CGO_ENABLED=1"
+        printf '%s\n' "${metadata}" | grep -Fq "GOOS=darwin"
+        printf '%s\n' "${metadata}" | grep -Fq "GOARCH=arm64"
+        printf '%s\n' "${metadata}" | grep -Fq -- "-tags=usearch"
+
+        expected_minos="minos {{.USEARCH_MACOS_DEPLOYMENT_TARGET}}"
+        otool -l "${binary}" | grep -A 5 "LC_BUILD_VERSION" | grep -Fq "${expected_minos}"
+
+        dependencies="$(otool -L "${binary}" | tail -n +2 | awk '{print $1}')"
+        printf '%s\n' "${dependencies}"
+        if printf '%s\n' "${dependencies}" | grep -Fqi "libusearch"; then
+          echo "native artifact must not depend on an external USearch dylib" >&2
+          exit 1
+        fi
+        unexpected=0
+        for dependency in ${dependencies}; do
+          case "${dependency}" in
+            /usr/lib/libresolv.9.dylib|/usr/lib/libc++.1.dylib|/usr/lib/libSystem.B.dylib|/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation|/System/Library/Frameworks/Security.framework/Versions/A/Security)
+              ;;
+            *)
+              echo "unexpected native dependency: ${dependency}" >&2
+              unexpected=1
+              ;;
+          esac
+        done
+        test "${unexpected}" -eq 0
+
+        status_root="/private/tmp/dbrain-usearch-native-verification"
+        mkdir -p "${status_root}"
+        status="$("${binary}" --root "${status_root}" --no-debug semantic status --json)"
+        printf '%s\n' "${status}"
+        compact_status="$(printf '%s' "${status}" | tr -d '[:space:]')"
+        printf '%s\n' "${compact_status}" | grep -Fq '"state":"supported_ready"'
+        printf '%s\n' "${compact_status}" | grep -Fq '"backend":"usearch"'
+        printf '%s\n' "${compact_status}" | grep -Fq '"version":"{{.USEARCH_VERSION}}"'
 
   fmt:
     desc: Format Go source files

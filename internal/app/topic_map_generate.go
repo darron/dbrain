@@ -28,7 +28,7 @@ func newTopicMapCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -74,7 +74,7 @@ func newTopicGenerateCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}

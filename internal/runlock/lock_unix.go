@@ -16,7 +16,7 @@ type unixFileLock struct {
 	file *os.File
 }
 
-func acquireFileLock(path string, metadata string) (fileLock, error) {
+func tryAcquireFileLock(path string, mode Mode) (fileLock, error) {
 	parentFD, err := openLockParentNoFollow(filepath.Dir(path))
 	if err != nil {
 		return nil, err
@@ -31,29 +31,16 @@ func acquireFileLock(path string, metadata string) (fileLock, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("open lock file descriptor %s", path)
 	}
-	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	operation := unix.LOCK_EX | unix.LOCK_NB
+	if mode == Shared {
+		operation = unix.LOCK_SH | unix.LOCK_NB
+	}
+	if err := unix.Flock(int(file.Fd()), operation); err != nil {
 		_ = file.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
 			return nil, fmt.Errorf("%w: %s", ErrAlreadyLocked, path)
 		}
 		return nil, fmt.Errorf("lock file %s: %w", path, err)
-	}
-	if err := file.Truncate(0); err != nil {
-		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-		_ = file.Close()
-		return nil, fmt.Errorf("truncate lock file %s: %w", path, err)
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-		_ = file.Close()
-		return nil, fmt.Errorf("seek lock file %s: %w", path, err)
-	}
-	if metadata != "" {
-		if _, err := file.WriteString(metadata); err != nil {
-			_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-			_ = file.Close()
-			return nil, fmt.Errorf("write lock file %s: %w", path, err)
-		}
 	}
 	return &unixFileLock{file: file}, nil
 }
@@ -113,4 +100,23 @@ func (l *unixFileLock) close() error {
 	closeErr := l.file.Close()
 	l.file = nil
 	return errors.Join(err, closeErr)
+}
+
+func (l *unixFileLock) metadataFile() *os.File {
+	if l == nil {
+		return nil
+	}
+	return l.file
+}
+
+func removeLockedFile(_ fileLock, path string) error {
+	parentFD, err := openLockParentNoFollow(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(parentFD) }()
+	if err := unix.Unlinkat(parentFD, filepath.Base(path), 0); err != nil {
+		return fmt.Errorf("remove lock file %s: %w", path, err)
+	}
+	return nil
 }

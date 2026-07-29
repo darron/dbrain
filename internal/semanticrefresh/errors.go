@@ -19,6 +19,7 @@ const (
 	ErrorVerify           = "semantic_verify_failed"
 	ErrorNativeRoot       = "semantic_native_root_failed"
 	ErrorReadiness        = "semantic_readiness_not_ready"
+	ErrorLockUnavailable  = "semantic_lock_unavailable"
 	ErrorCancelled        = "semantic_refresh_cancelled"
 )
 
@@ -112,6 +113,7 @@ func safeRefreshErrorCode(code string) string {
 		ErrorVerify,
 		ErrorNativeRoot,
 		ErrorReadiness,
+		ErrorLockUnavailable,
 		ErrorCancelled:
 		return code
 	default:

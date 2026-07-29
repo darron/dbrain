@@ -168,9 +168,10 @@ func (p *pipeline) executeProjection(
 	outcome := nextPipelineOutcome(run, store.SemanticRefreshProjection)
 	outcome.Checkpoint = projectionCheckpoint(run.ProjectionWatermark)
 	page, err := p.runProjection(ctx, p.store, semanticbuild.ProjectionBatchOptions{
-		Watermark: run.ProjectionWatermark,
-		Limit:     p.options.ProjectionBatch,
-		Now:       p.options.Now,
+		Watermark:          run.ProjectionWatermark,
+		ExpectedPurgeEpoch: run.PurgeEpoch,
+		Limit:              p.options.ProjectionBatch,
+		Now:                p.options.Now,
 	})
 	if page.Current < 0 || page.Generated < 0 {
 		err = errors.Join(err, fmt.Errorf("semantic projection returned a negative committed count"))
@@ -219,11 +220,20 @@ func (p *pipeline) executeEmbedding(
 		if profile.L0ReadyCount <= store.RetrievalSegmentHardLimit-selected {
 			return nil
 		}
-		result, err := p.runFlush(
+		var result semanticbuild.FlushResult
+		err = withRefreshGenerationExclusive(
 			ctx,
-			p.store,
-			p.options.Native,
-			p.flushOptions(),
+			refreshLockMetadata(run, "embedding_l0_generation"),
+			func(ctx context.Context) error {
+				var flushErr error
+				result, flushErr = p.runFlush(
+					ctx,
+					p.store,
+					p.options.Native,
+					p.flushOptions(),
+				)
+				return flushErr
+			},
 		)
 		if err != nil {
 			return err
@@ -643,6 +653,10 @@ func pipelineStageError(
 	outcome StageOutcome,
 	cause error,
 ) *RefreshError {
+	var lockFailure semanticLockFailure
+	if errors.As(cause, &lockFailure) {
+		code = ErrorLockUnavailable
+	}
 	errorState := run
 	errorState.Checkpoint = boundedProtocolField(outcome.Checkpoint, errorCheckpointLimit)
 	errorState.ReadinessState = boundedProtocolField(outcome.Readiness, errorReadinessLimit)

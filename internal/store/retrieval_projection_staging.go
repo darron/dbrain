@@ -51,14 +51,15 @@ type RetrievalProjectionStageRow struct {
 }
 
 type StageRetrievalProjectionInput struct {
-	WorkID          string
-	DirtyRevision   int64
-	ParentKind      string
-	ParentSourceKey string
-	ProjectionHash  string
-	Cursor          retrievalchunk.Cursor
-	Rows            []RetrievalProjectionStageRow
-	PreparedPlan    []byte
+	WorkID             string
+	DirtyRevision      int64
+	ExpectedPurgeEpoch int64
+	ParentKind         string
+	ParentSourceKey    string
+	ProjectionHash     string
+	Cursor             retrievalchunk.Cursor
+	Rows               []RetrievalProjectionStageRow
+	PreparedPlan       []byte
 	// PreparedPlanDigest is computed once by the prepared command session.
 	// Supplying it lets later durable batches validate immutable plan identity
 	// without reading or hashing the full plan BLOB again.
@@ -66,17 +67,18 @@ type StageRetrievalProjectionInput struct {
 }
 
 type RetrievalProjectionCheckpoint struct {
-	WorkID            string `json:"work_id"`
-	DirtyRevision     int64  `json:"dirty_revision"`
-	ParentKind        string `json:"parent_kind"`
-	ParentSourceKey   string `json:"parent_source_key"`
-	ProjectionHash    string `json:"projection_hash"`
-	SectionKey        string `json:"section_key"`
-	NextBoundary      int    `json:"next_boundary"`
-	StagedChunks      int    `json:"staged_chunks"`
-	StagedOccurrences int    `json:"staged_occurrences"`
-	StagedBytes       int64  `json:"staged_bytes"`
-	PreparedPlan      string `json:"-"`
+	WorkID             string `json:"work_id"`
+	DirtyRevision      int64  `json:"dirty_revision"`
+	ExpectedPurgeEpoch int64  `json:"expected_purge_epoch"`
+	ParentKind         string `json:"parent_kind"`
+	ParentSourceKey    string `json:"parent_source_key"`
+	ProjectionHash     string `json:"projection_hash"`
+	SectionKey         string `json:"section_key"`
+	NextBoundary       int    `json:"next_boundary"`
+	StagedChunks       int    `json:"staged_chunks"`
+	StagedOccurrences  int    `json:"staged_occurrences"`
+	StagedBytes        int64  `json:"staged_bytes"`
+	PreparedPlan       string `json:"-"`
 }
 
 func (s *Store) LoadRetrievalProjectionStaging(ctx context.Context, parent retrievalchunk.Parent, dirtyRevision int64) (RetrievalProjectionCheckpoint, bool, error) {
@@ -91,11 +93,11 @@ func (s *Store) LoadRetrievalProjectionStaging(ctx context.Context, parent retri
 	var workID, projectionHash string
 	cp := RetrievalProjectionCheckpoint{DirtyRevision: dirtyRevision, ParentKind: parent.Kind, ParentSourceKey: parent.SourceKey}
 	err = tx.QueryRowContext(ctx, `
-		SELECT work_id, projection_hash, section_key, next_boundary
+		SELECT work_id, projection_hash, section_key, next_boundary, expected_purge_epoch
 		FROM retrieval_projection_staging
 		WHERE parent_kind=? AND parent_source_key=? AND dirty_revision=? AND chunk_id=''
 		ORDER BY updated_at DESC LIMIT 1`, parent.Kind, parent.SourceKey, dirtyRevision).
-		Scan(&workID, &projectionHash, &cp.SectionKey, &cp.NextBoundary)
+		Scan(&workID, &projectionHash, &cp.SectionKey, &cp.NextBoundary, &cp.ExpectedPurgeEpoch)
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_projection_staging WHERE parent_kind=? AND parent_source_key=?`, parent.Kind, parent.SourceKey); err != nil {
 			return RetrievalProjectionCheckpoint{}, false, fmt.Errorf("discard orphaned retrieval projection staging: %w", err)
@@ -107,6 +109,12 @@ func (s *Store) LoadRetrievalProjectionStaging(ctx context.Context, parent retri
 	}
 	if err != nil {
 		return RetrievalProjectionCheckpoint{}, false, fmt.Errorf("load retrieval projection checkpoint: %w", err)
+	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, cp.ExpectedPurgeEpoch); err != nil {
+		return RetrievalProjectionCheckpoint{}, false, err
+	}
+	if err := validateRetrievalProjectionStagingPurgeEpochTx(ctx, tx, workID, dirtyRevision, cp.ExpectedPurgeEpoch); err != nil {
+		return RetrievalProjectionCheckpoint{}, false, err
 	}
 	currentParent, err := s.validateRetrievalProjectionStagingWorkTx(ctx, tx, parent.Kind, parent.SourceKey, dirtyRevision, projectionHash)
 	if err != nil {
@@ -159,6 +167,9 @@ func (s *Store) StageRetrievalProjectionBatch(ctx context.Context, input StageRe
 	if input.ParentSourceKey == "" || input.DirtyRevision <= 0 || input.ProjectionHash == "" {
 		return RetrievalProjectionCheckpoint{}, fmt.Errorf("retrieval projection staging requires parent, dirty revision, and projection hash")
 	}
+	if input.ExpectedPurgeEpoch < 0 {
+		return RetrievalProjectionCheckpoint{}, fmt.Errorf("retrieval projection staging expected purge epoch must not be negative")
+	}
 	wantWorkID := retrievalProjectionWorkID(input.ParentKind, input.ParentSourceKey, input.DirtyRevision, input.ProjectionHash)
 	if input.WorkID == "" {
 		input.WorkID = wantWorkID
@@ -181,17 +192,34 @@ func (s *Store) StageRetrievalProjectionBatch(ctx context.Context, input StageRe
 	if err := reserveRetrievalProjectionApplyTx(ctx, tx); err != nil {
 		return RetrievalProjectionCheckpoint{}, err
 	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, input.ExpectedPurgeEpoch); err != nil {
+		return RetrievalProjectionCheckpoint{}, err
+	}
 	var storedPlan []byte
 	var storedKind, storedSourceKey, storedProjectionHash, storedPlanHash string
+	var storedPurgeEpoch int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT parent_kind, parent_source_key, projection_hash, occurrence_json
+		SELECT parent_kind, parent_source_key, projection_hash, occurrence_json, expected_purge_epoch
 		FROM retrieval_projection_staging
 		WHERE work_id=? AND dirty_revision=? AND chunk_id=?`, input.WorkID, input.DirtyRevision, retrievalProjectionPlanRowID).
-		Scan(&storedKind, &storedSourceKey, &storedProjectionHash, &storedPlanHash)
+		Scan(&storedKind, &storedSourceKey, &storedProjectionHash, &storedPlanHash, &storedPurgeEpoch)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return RetrievalProjectionCheckpoint{}, fmt.Errorf("load stored retrieval prepared stream plan: %w", err)
 	}
 	hasStoredPlan := err == nil
+	if hasStoredPlan {
+		if storedPurgeEpoch != input.ExpectedPurgeEpoch {
+			return RetrievalProjectionCheckpoint{}, fmt.Errorf(
+				"%w: staged work is at epoch %d, expected %d",
+				ErrRetrievalPurgeEpochChanged,
+				storedPurgeEpoch,
+				input.ExpectedPurgeEpoch,
+			)
+		}
+		if err := validateRetrievalProjectionStagingPurgeEpochTx(ctx, tx, input.WorkID, input.DirtyRevision, storedPurgeEpoch); err != nil {
+			return RetrievalProjectionCheckpoint{}, err
+		}
+	}
 	if !hasStoredPlan {
 		var existingRows int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM retrieval_projection_staging WHERE work_id=? AND dirty_revision=?`, input.WorkID, input.DirtyRevision).Scan(&existingRows); err != nil {
@@ -276,10 +304,10 @@ func (s *Store) StageRetrievalProjectionBatch(ctx context.Context, input StageRe
 	if !hasStoredPlan {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO retrieval_projection_staging (
-				work_id, dirty_revision, parent_kind, parent_source_key, projection_hash,
+				work_id, dirty_revision, expected_purge_epoch, parent_kind, parent_source_key, projection_hash,
 				section_key, next_boundary, chunk_id, chunk_json, occurrence_json, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, '', -1, ?, ?, ?, ?, ?)`,
-			input.WorkID, input.DirtyRevision, input.ParentKind, input.ParentSourceKey, input.ProjectionHash,
+			) VALUES (?, ?, ?, ?, ?, ?, '', -1, ?, ?, ?, ?, ?)`,
+			input.WorkID, input.DirtyRevision, input.ExpectedPurgeEpoch, input.ParentKind, input.ParentSourceKey, input.ProjectionHash,
 			retrievalProjectionPlanRowID, input.PreparedPlan, input.PreparedPlanDigest, now, now); err != nil {
 			return RetrievalProjectionCheckpoint{}, fmt.Errorf("write retrieval prepared stream plan: %w", err)
 		}
@@ -295,27 +323,27 @@ func (s *Store) StageRetrievalProjectionBatch(ctx context.Context, input StageRe
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO retrieval_projection_staging (
-				work_id, dirty_revision, parent_kind, parent_source_key, projection_hash,
+				work_id, dirty_revision, expected_purge_epoch, parent_kind, parent_source_key, projection_hash,
 				section_key, next_boundary, chunk_id, chunk_json, occurrence_json, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(work_id, dirty_revision, section_key, next_boundary, chunk_id) DO UPDATE SET
 				chunk_json=excluded.chunk_json, occurrence_json=excluded.occurrence_json, updated_at=excluded.updated_at`,
-			input.WorkID, input.DirtyRevision, input.ParentKind, input.ParentSourceKey, input.ProjectionHash,
+			input.WorkID, input.DirtyRevision, input.ExpectedPurgeEpoch, input.ParentKind, input.ParentSourceKey, input.ProjectionHash,
 			row.Occurrence.SectionKey, row.Occurrence.EndChar, row.Chunk.ID, string(chunkJSON), string(occurrenceJSON), now, now); err != nil {
 			return RetrievalProjectionCheckpoint{}, fmt.Errorf("write staged retrieval chunk %s: %w", row.Chunk.ID, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO retrieval_projection_staging (
-			work_id, dirty_revision, parent_kind, parent_source_key, projection_hash,
+			work_id, dirty_revision, expected_purge_epoch, parent_kind, parent_source_key, projection_hash,
 			section_key, next_boundary, chunk_id, chunk_json, occurrence_json, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?)`,
-		input.WorkID, input.DirtyRevision, input.ParentKind, input.ParentSourceKey, input.ProjectionHash,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?)`,
+		input.WorkID, input.DirtyRevision, input.ExpectedPurgeEpoch, input.ParentKind, input.ParentSourceKey, input.ProjectionHash,
 		input.Cursor.SectionKey, input.Cursor.NextBoundary, now, now); err != nil {
 		return RetrievalProjectionCheckpoint{}, fmt.Errorf("write retrieval projection checkpoint: %w", err)
 	}
 	cp := RetrievalProjectionCheckpoint{
-		WorkID: input.WorkID, DirtyRevision: input.DirtyRevision, ParentKind: input.ParentKind,
+		WorkID: input.WorkID, DirtyRevision: input.DirtyRevision, ExpectedPurgeEpoch: input.ExpectedPurgeEpoch, ParentKind: input.ParentKind,
 		ParentSourceKey: input.ParentSourceKey, ProjectionHash: input.ProjectionHash,
 		SectionKey: input.Cursor.SectionKey, NextBoundary: input.Cursor.NextBoundary,
 		PreparedPlan: string(input.PreparedPlan),
@@ -327,6 +355,9 @@ func (s *Store) StageRetrievalProjectionBatch(ctx context.Context, input StageRe
 		FROM retrieval_projection_staging
 		WHERE work_id=? AND dirty_revision=? AND chunk_id!='' AND chunk_id!=?`, input.WorkID, input.DirtyRevision, retrievalProjectionPlanRowID).Scan(&cp.StagedChunks, &cp.StagedOccurrences, &cp.StagedBytes); err != nil {
 		return RetrievalProjectionCheckpoint{}, fmt.Errorf("count staged retrieval chunks: %w", err)
+	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, input.ExpectedPurgeEpoch); err != nil {
+		return RetrievalProjectionCheckpoint{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return RetrievalProjectionCheckpoint{}, fmt.Errorf("commit retrieval projection staging batch: %w", err)
@@ -342,6 +373,9 @@ func (s *Store) promoteRetrievalProjectionStagingWithByteLimit(ctx context.Conte
 	if checkpoint.WorkID == "" || checkpoint.DirtyRevision <= 0 || checkpoint.ProjectionHash == "" {
 		return ChunkReplaceResult{}, fmt.Errorf("complete retrieval projection staging checkpoint is required")
 	}
+	if checkpoint.ExpectedPurgeEpoch < 0 {
+		return ChunkReplaceResult{}, fmt.Errorf("retrieval projection promotion expected purge epoch must not be negative")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ChunkReplaceResult{}, fmt.Errorf("begin retrieval projection staging promotion: %w", err)
@@ -350,23 +384,38 @@ func (s *Store) promoteRetrievalProjectionStagingWithByteLimit(ctx context.Conte
 	if err := reserveRetrievalProjectionApplyTx(ctx, tx); err != nil {
 		return ChunkReplaceResult{}, err
 	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, checkpoint.ExpectedPurgeEpoch); err != nil {
+		return ChunkReplaceResult{}, err
+	}
 	parent, err := s.validateRetrievalProjectionStagingWorkTx(ctx, tx, checkpoint.ParentKind, checkpoint.ParentSourceKey, checkpoint.DirtyRevision, checkpoint.ProjectionHash)
 	if err != nil {
 		return ChunkReplaceResult{}, err
 	}
 	var stagedSection string
 	var stagedBoundary int
+	var stagedPurgeEpoch int64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT section_key, next_boundary
+		SELECT section_key, next_boundary, expected_purge_epoch
 		FROM retrieval_projection_staging
 		WHERE work_id=? AND dirty_revision=? AND parent_kind=? AND parent_source_key=?
-			AND projection_hash=? AND chunk_id=''`,
+				AND projection_hash=? AND chunk_id=''`,
 		checkpoint.WorkID, checkpoint.DirtyRevision, checkpoint.ParentKind,
-		checkpoint.ParentSourceKey, checkpoint.ProjectionHash).Scan(&stagedSection, &stagedBoundary); err != nil {
+		checkpoint.ParentSourceKey, checkpoint.ProjectionHash).Scan(&stagedSection, &stagedBoundary, &stagedPurgeEpoch); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ChunkReplaceResult{}, fmt.Errorf("retrieval projection staging work %s has no checkpoint", checkpoint.WorkID)
 		}
 		return ChunkReplaceResult{}, fmt.Errorf("load retrieval projection promotion checkpoint: %w", err)
+	}
+	if stagedPurgeEpoch != checkpoint.ExpectedPurgeEpoch {
+		return ChunkReplaceResult{}, fmt.Errorf(
+			"%w: staged work is at epoch %d, checkpoint expects %d",
+			ErrRetrievalPurgeEpochChanged,
+			stagedPurgeEpoch,
+			checkpoint.ExpectedPurgeEpoch,
+		)
+	}
+	if err := validateRetrievalProjectionStagingPurgeEpochTx(ctx, tx, checkpoint.WorkID, checkpoint.DirtyRevision, stagedPurgeEpoch); err != nil {
+		return ChunkReplaceResult{}, err
 	}
 	if stagedSection != "" || stagedBoundary != 0 || checkpoint.SectionKey != "" || checkpoint.NextBoundary != 0 {
 		return ChunkReplaceResult{}, fmt.Errorf("retrieval projection staging work %s is incomplete", checkpoint.WorkID)
@@ -463,6 +512,9 @@ func (s *Store) promoteRetrievalProjectionStagingWithByteLimit(ctx context.Conte
 	if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_projection_staging WHERE work_id=? AND dirty_revision=?`, checkpoint.WorkID, checkpoint.DirtyRevision); err != nil {
 		return ChunkReplaceResult{}, fmt.Errorf("remove promoted retrieval projection staging: %w", err)
 	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, checkpoint.ExpectedPurgeEpoch); err != nil {
+		return ChunkReplaceResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ChunkReplaceResult{}, fmt.Errorf("commit retrieval projection staging promotion: %w", err)
 	}
@@ -511,13 +563,25 @@ func buildBoundedAuthoritativeProjection(ctx context.Context, parent retrievalch
 	return projection, nil
 }
 
-func (s *Store) BlockRetrievalProjectionTooLarge(ctx context.Context, parent retrievalchunk.Parent, dirtyRevision int64, projectionHash string) error {
+func (s *Store) BlockRetrievalProjectionTooLarge(
+	ctx context.Context,
+	parent retrievalchunk.Parent,
+	dirtyRevision int64,
+	projectionHash string,
+	expectedPurgeEpoch int64,
+) error {
+	if expectedPurgeEpoch < 0 {
+		return fmt.Errorf("oversized retrieval projection expected purge epoch must not be negative")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin oversized retrieval projection block: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := reserveRetrievalProjectionApplyTx(ctx, tx); err != nil {
+		return err
+	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, expectedPurgeEpoch); err != nil {
 		return err
 	}
 	if _, err := s.validateRetrievalProjectionStagingWorkTx(ctx, tx, parent.Kind, parent.SourceKey, dirtyRevision, projectionHash); err != nil {
@@ -546,8 +610,68 @@ func (s *Store) BlockRetrievalProjectionTooLarge(ctx context.Context, parent ret
 	if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_projection_staging WHERE parent_kind=? AND parent_source_key=?`, parent.Kind, parent.SourceKey); err != nil {
 		return fmt.Errorf("discard oversized retrieval projection staging: %w", err)
 	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, expectedPurgeEpoch); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit oversized retrieval projection block: %w", err)
+	}
+	return nil
+}
+
+func validateRetrievalProjectionPurgeEpochTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	expected int64,
+) error {
+	var current int64
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT purge_epoch FROM retrieval_state WHERE singleton=1`,
+	).Scan(&current); err != nil {
+		return fmt.Errorf("read retrieval projection purge epoch: %w", err)
+	}
+	if current != expected {
+		return fmt.Errorf(
+			"%w: database is at epoch %d, expected %d",
+			ErrRetrievalPurgeEpochChanged,
+			current,
+			expected,
+		)
+	}
+	return nil
+}
+
+func validateRetrievalProjectionStagingPurgeEpochTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	workID string,
+	dirtyRevision int64,
+	expected int64,
+) error {
+	var rows, distinctEpochs int
+	var minimum, maximum sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*), COUNT(DISTINCT expected_purge_epoch),
+			MIN(expected_purge_epoch), MAX(expected_purge_epoch)
+		FROM retrieval_projection_staging
+		WHERE work_id=? AND dirty_revision=?`,
+		workID,
+		dirtyRevision,
+	).Scan(&rows, &distinctEpochs, &minimum, &maximum); err != nil {
+		return fmt.Errorf("inspect durable retrieval projection staging purge epoch: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("retrieval projection staging work %s has no durable rows", workID)
+	}
+	if distinctEpochs != 1 || !minimum.Valid || !maximum.Valid || minimum.Int64 != expected || maximum.Int64 != expected {
+		return fmt.Errorf(
+			"%w: staged work has inconsistent epoch range [%d,%d], expected %d",
+			ErrRetrievalPurgeEpochChanged,
+			minimum.Int64,
+			maximum.Int64,
+			expected,
+		)
 	}
 	return nil
 }

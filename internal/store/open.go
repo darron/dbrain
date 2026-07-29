@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 	"sync"
 
+	"github.com/darron/dbrain/internal/semanticlock"
 	_ "modernc.org/sqlite"
 )
 
@@ -30,6 +32,12 @@ type Store struct {
 	read              sqlQueryer
 	hasFTS            bool
 	auditBegin        func(context.Context, *sql.Conn) error
+	// Authoritative item, source, and projected-enrichment transactions use a
+	// database-scoped shared maintenance lease when configured by a production
+	// writable constructor.
+	authoritativeWriteContextKey *authoritativeWriteContextKey
+	authoritativeWriteAcquire    func(context.Context, string) (io.Closer, error)
+	semanticLockScope            *semanticlock.Scope
 	// Test-only observation seam for expensive authoritative projection checks.
 	retrievalProjectionFullValidation   func()
 	retrievalProjectionPlanHashObserved func(int)
@@ -50,6 +58,7 @@ func (s *Store) queryer() sqlQueryer {
 // OpenOptions configures writable store startup behavior.
 type OpenOptions struct {
 	MigrationReporter MigrationReporter
+	SemanticCacheDir  string
 }
 
 // MigrationReporter receives migration lifecycle events during writable startup.
@@ -80,6 +89,18 @@ func Open(path string) (*Store, error) {
 	return OpenWithOptions(path, OpenOptions{})
 }
 
+func OpenWithSemanticCache(path string, cacheDir string) (*Store, error) {
+	return OpenWithSemanticCacheOptions(path, cacheDir, OpenOptions{})
+}
+
+func OpenWithSemanticCacheOptions(path string, cacheDir string, opts OpenOptions) (*Store, error) {
+	if strings.TrimSpace(cacheDir) == "" {
+		return nil, errors.New("semantic cache directory is empty")
+	}
+	opts.SemanticCacheDir = cacheDir
+	return OpenWithOptions(path, opts)
+}
+
 func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	db, err := sql.Open(driverName, path)
 	if err != nil {
@@ -88,10 +109,29 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	st := &Store{db: db}
+	st := &Store{
+		db:                           db,
+		authoritativeWriteContextKey: &authoritativeWriteContextKey{},
+	}
 	if err := st.init(opts); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if strings.TrimSpace(opts.SemanticCacheDir) != "" {
+		databaseID, err := st.RetrievalDatabaseID(context.Background())
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("read semantic database ID for writable store: %w", err)
+		}
+		scope, err := semanticlock.NewScope(opts.SemanticCacheDir, databaseID)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("configure authoritative semantic write scope: %w", err)
+		}
+		st.authoritativeWriteAcquire = func(ctx context.Context, metadata string) (io.Closer, error) {
+			return scope.AcquireMaintenanceShared(ctx, metadata)
+		}
+		st.semanticLockScope = scope
 	}
 	if path != ":memory:" {
 		st.progressPath = path

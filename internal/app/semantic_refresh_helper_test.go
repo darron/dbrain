@@ -20,6 +20,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/semanticsegment"
 	"github.com/darron/dbrain/internal/store"
@@ -102,7 +103,7 @@ func TestConfiguredSemanticRefreshAdmission(t *testing.T) {
 					calls = append(calls, "capability")
 					return test.capability
 				},
-				openWritable: func(path string) (*store.Store, error) {
+				openWritable: func(path string, _ string) (*store.Store, error) {
 					calls = append(calls, "open:"+path)
 					return store.Open(path)
 				},
@@ -209,7 +210,7 @@ func TestConfiguredSemanticRefreshCapturesStoreStateAndClosesAfterRun(t *testing
 			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 		},
 		capability: semanticRefreshReadyCapability,
-		openWritable: func(path string) (*store.Store, error) {
+		openWritable: func(path string, _ string) (*store.Store, error) {
 			var err error
 			opened, err = store.Open(path)
 			if err != nil {
@@ -304,6 +305,98 @@ func TestConfiguredSemanticRefreshCapturesStoreStateAndClosesAfterRun(t *testing
 	}
 }
 
+func TestConfiguredSemanticRefreshWrapsEveryExecutorUnitWithDatabaseLocks(t *testing.T) {
+	dbPath := t.TempDir() + "/brain.db"
+	cacheDir := t.TempDir()
+	deps := semanticRefreshDeps{
+		resolve: func(string) (semanticconfig.Config, error) {
+			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
+		},
+		capability:   semanticRefreshReadyCapability,
+		openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
+		provider: func(semanticconfig.Config) (embedding.Provider, error) {
+			return &semanticRefreshTestProvider{info: semanticRefreshTestInfo()}, nil
+		},
+		nativeLifecycle: func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error) {
+			return &semanticRefreshTestNative{}, nil
+		},
+		runRefresh: func(
+			_ context.Context,
+			ledger semanticrefresh.RunLedger,
+			executor semanticrefresh.StageExecutor,
+			_ semanticrefresh.Request,
+		) (semanticrefresh.Result, error) {
+			st, ok := ledger.(*store.Store)
+			if !ok {
+				t.Fatalf("ledger type=%T want *store.Store", ledger)
+			}
+			databaseID, err := st.RetrievalDatabaseID(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope, err := semanticlock.NewScope(cacheDir, databaseID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			holder, err := scope.AcquireMaintenanceShared(t.Context(), "test holder")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = holder.Close() }()
+
+			waitCtx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+			defer cancel()
+			_, err = executor.Execute(waitCtx, store.SemanticRefreshRun{
+				RunID:   "lock-probe",
+				Stage:   store.SemanticRefreshProjection,
+				State:   store.SemanticRefreshRunRunning,
+				Version: 1,
+			})
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("executor err=%v want maintenance wait deadline", err)
+			}
+			return semanticrefresh.Result{Outcome: semanticrefresh.OutcomeCompleted}, nil
+		},
+	}
+
+	result, err := runConfiguredSemanticRefresh(t.Context(), config.Config{
+		DBPath:   dbPath,
+		CacheDir: cacheDir,
+	}, deps, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != semanticrefresh.OutcomeCompleted {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestConfiguredSemanticRefreshLockScopeFailureIsTyped(t *testing.T) {
+	result, err := runConfiguredSemanticRefresh(t.Context(), config.Config{
+		DBPath: t.TempDir() + "/brain.db",
+	}, semanticRefreshDeps{
+		resolve: func(string) (semanticconfig.Config, error) {
+			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
+		},
+		capability:   semanticRefreshReadyCapability,
+		openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
+		provider: func(semanticconfig.Config) (embedding.Provider, error) {
+			return &semanticRefreshTestProvider{info: semanticRefreshTestInfo()}, nil
+		},
+		nativeLifecycle: func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error) {
+			return &semanticRefreshTestNative{}, nil
+		},
+		runRefresh: func(context.Context, semanticrefresh.RunLedger, semanticrefresh.StageExecutor, semanticrefresh.Request) (semanticrefresh.Result, error) {
+			t.Fatal("runner called without a valid semantic lock scope")
+			return semanticrefresh.Result{}, nil
+		},
+	}, nil)
+	refreshErr := requireSemanticRefreshHelperError(t, err, semanticrefresh.ErrorLockUnavailable)
+	if refreshErr.Stage != "" || result.Outcome != "" {
+		t.Fatalf("refresh error=%+v result=%+v", refreshErr, result)
+	}
+}
+
 func TestConfiguredSemanticRefreshSetupErrorsAreTyped(t *testing.T) {
 	resolveErr := errors.New("invalid semantic config /Users/alice/private/config.yaml")
 	openErr := errors.New("open /Users/alice/private/brain.db")
@@ -337,7 +430,7 @@ func TestConfiguredSemanticRefreshSetupErrorsAreTyped(t *testing.T) {
 					calls = append(calls, "capability")
 					return semanticRefreshReadyCapability()
 				},
-				openWritable: func(path string) (*store.Store, error) {
+				openWritable: func(path string, _ string) (*store.Store, error) {
 					calls = append(calls, "open")
 					if test.failAt == "open" {
 						return nil, test.cause
@@ -404,7 +497,7 @@ func TestConfiguredSemanticRefreshCancellationAlwaysReturnsTypedError(t *testing
 				return semanticRefreshTestConfig(semanticconfig.ModeOff), nil
 			},
 			capability: semanticRefreshReadyCapability,
-			openWritable: func(string) (*store.Store, error) {
+			openWritable: func(string, string) (*store.Store, error) {
 				sideEffects++
 				return nil, errors.New("unexpected open")
 			},
@@ -441,7 +534,7 @@ func TestConfiguredSemanticRefreshCancellationAlwaysReturnsTypedError(t *testing
 				return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 			},
 			capability:   semanticRefreshReadyCapability,
-			openWritable: store.Open,
+			openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
 			provider: func(semanticconfig.Config) (embedding.Provider, error) {
 				return &semanticRefreshTestProvider{info: semanticRefreshTestInfo()}, nil
 			},
@@ -486,7 +579,7 @@ func TestConfiguredSemanticRefreshProfileChangeUsesLedgerSupersession(t *testing
 			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 		},
 		capability:   semanticRefreshReadyCapability,
-		openWritable: store.Open,
+		openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
 		provider: func(semanticconfig.Config) (embedding.Provider, error) {
 			return &semanticRefreshTestProvider{info: semanticRefreshTestInfo()}, nil
 		},

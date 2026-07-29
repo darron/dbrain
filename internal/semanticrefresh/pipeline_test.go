@@ -22,8 +22,8 @@ func TestPipelinePinsProjectionAndAdvancesThroughExactStageOrder(t *testing.T) {
 	var projectionCalls int
 	h.pipeline.runProjection = func(_ context.Context, _ semanticbuild.ChunkStore, opts semanticbuild.ProjectionBatchOptions) (semanticbuild.ChunkProgress, error) {
 		projectionCalls++
-		if opts.Watermark != 73 || opts.Limit != DefaultProjectionBatch {
-			t.Fatalf("projection opts=%+v, want pinned watermark 73 and default limit %d", opts, DefaultProjectionBatch)
+		if opts.Watermark != 73 || opts.ExpectedPurgeEpoch != 1 || opts.Limit != DefaultProjectionBatch {
+			t.Fatalf("projection opts=%+v, want pinned watermark 73, purge epoch 1, and default limit %d", opts, DefaultProjectionBatch)
 		}
 		if projectionCalls == 1 {
 			return semanticbuild.ChunkProgress{
@@ -198,6 +198,30 @@ func TestPipelineEmbeddingPreflushHonorsHardL0Headroom(t *testing.T) {
 	}
 }
 
+func TestPipelineEmbeddingEmergencyFlushRequiresGenerationUnderMaintenance(t *testing.T) {
+	h := newPipelineHarness(t)
+	h.pipeline.options.EmbeddingBatch = 501
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{
+			ProfileID:    h.profileID,
+			L0ReadyCount: 9_500,
+		}, nil
+	}
+	h.pipeline.runFlush = func(context.Context, semanticbuild.FlushStore, semanticbuild.SegmentPayloadBuilder, semanticbuild.FlushOptions) (semanticbuild.FlushResult, error) {
+		t.Fatal("emergency flush ran without the maintenance-owned generation lease")
+		return semanticbuild.FlushResult{}, nil
+	}
+	h.pipeline.runEmbed = func(ctx context.Context, _ semanticbuild.EmbedStore, _ embedding.Provider, opts semanticbuild.EmbedBatchOptions) (semanticbuild.EmbedBatchResult, error) {
+		return semanticbuild.EmbedBatchResult{}, opts.BeforeProvider(ctx, 501)
+	}
+
+	_, err := h.pipeline.Execute(t.Context(), pipelineRun(store.SemanticRefreshEmbedding, 1))
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorLockUnavailable {
+		t.Fatalf("err=%v want %s", err, ErrorLockUnavailable)
+	}
+}
+
 func TestPipelineEmbeddingPreservesCommittedPreflushWhenEmbedReturnsZeroAfterError(t *testing.T) {
 	h := newPipelineHarness(t)
 	h.pipeline.options.EmbeddingBatch = 501
@@ -226,7 +250,7 @@ func TestPipelineEmbeddingPreservesCommittedPreflushWhenEmbedReturnsZeroAfterErr
 	run := pipelineRun(store.SemanticRefreshEmbedding, 1)
 	run.EmbeddingRevision = 41
 	run.Checkpoint = embeddingCheckpoint(41)
-	outcome, err := h.pipeline.Execute(t.Context(), run)
+	outcome, err := h.executeWithMaintenance(t, run)
 	var refreshErr *RefreshError
 	if !errors.As(err, &refreshErr) ||
 		refreshErr.Code != ErrorEmbedding ||
@@ -267,7 +291,7 @@ func TestPipelineEmbeddingRejectsZeroSuccessfulPreflushBeforeProvider(t *testing
 	run.Checkpoint = embeddingCheckpoint(41)
 	run.Counters.FlushedVectors = 7
 	run.CurrentGenerationID = "semantic-root-v1:previous"
-	outcome, err := h.pipeline.Execute(t.Context(), run)
+	outcome, err := h.executeWithMaintenance(t, run)
 	var refreshErr *RefreshError
 	if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorEmbedding {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
@@ -307,7 +331,7 @@ func TestPipelineEmbeddingPreflushFailurePreventsProvider(t *testing.T) {
 	run.Checkpoint = embeddingCheckpoint(41)
 	run.Counters.FlushedVectors = 7
 	run.CurrentGenerationID = "semantic-root-v1:previous"
-	outcome, err := h.pipeline.Execute(t.Context(), run)
+	outcome, err := h.executeWithMaintenance(t, run)
 	var refreshErr *RefreshError
 	if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorEmbedding || !errors.Is(err, flushErr) {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
@@ -1025,11 +1049,30 @@ func newPipelineHarness(t *testing.T) pipelineHarness {
 
 func (h pipelineHarness) execute(t *testing.T, run store.SemanticRefreshRun) StageOutcome {
 	t.Helper()
-	outcome, err := h.pipeline.Execute(t.Context(), run)
+	outcome, err := h.executeWithMaintenance(t, run)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return outcome
+}
+
+func (h pipelineHarness) executeWithMaintenance(
+	t *testing.T,
+	run store.SemanticRefreshRun,
+) (StageOutcome, error) {
+	t.Helper()
+	locks := &recordingRefreshLocks{}
+	maintenance, err := locks.acquireMaintenanceExclusive(t.Context(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := maintenance.Close(); err != nil {
+			t.Errorf("close test maintenance lease: %v", err)
+		}
+	}()
+	ctx := context.WithValue(t.Context(), refreshMaintenanceLeaseContextKey{}, maintenance)
+	return h.pipeline.Execute(ctx, run)
 }
 
 func pipelineRun(stage store.SemanticRefreshStage, watermark int64) store.SemanticRefreshRun {

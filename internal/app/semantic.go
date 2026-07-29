@@ -29,7 +29,7 @@ type semanticDeps struct {
 	loadReadConfig    func(context.Context, string, string) (config.Config, error)
 	loadWriteConfig   func(string, ...string) (config.Config, error)
 	openReadOnly      func(string) (*store.Store, error)
-	openWritable      func(string) (*store.Store, error)
+	openWritable      func(string, string) (*store.Store, error)
 	resolve           func(string) (semanticconfig.Config, error)
 	resolveDiagnostic func(string) (semanticconfig.Config, error)
 	capability        func() semanticindex.Capability
@@ -44,7 +44,7 @@ func defaultSemanticDeps() semanticDeps {
 		},
 		loadWriteConfig:   loadConfig,
 		openReadOnly:      store.OpenReadOnly,
-		openWritable:      store.Open,
+		openWritable:      store.OpenWithSemanticCache,
 		resolve:           semanticconfig.Resolve,
 		resolveDiagnostic: semanticconfig.ResolveDiagnostic,
 		capability:        semanticindex.RuntimeCapability,
@@ -107,7 +107,7 @@ func newSemanticVerifyCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			if err != nil {
 				return err
 			}
-			st, err := deps.openWritable(cfg.DBPath)
+			st, err := deps.openWritable(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -233,7 +233,7 @@ func newSemanticChunkCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 			if err != nil {
 				return err
 			}
-			st, err := deps.openWritable(cfg.DBPath)
+			st, err := deps.openWritable(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -297,7 +297,7 @@ func newSemanticEmbedCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 			if err != nil {
 				return err
 			}
-			st, err := deps.openWritable(cfg.DBPath)
+			st, err := deps.openWritable(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
