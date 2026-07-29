@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -245,7 +246,7 @@ func (s *Store) ensureRetrievalTables() error {
 			return fmt.Errorf("ensure retrieval schema: %w", err)
 		}
 	}
-	return nil
+	return ensureSemanticRefreshRunSchema(s.db)
 }
 
 func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
@@ -416,6 +417,64 @@ func (s *Store) ensureSemanticFoundationRetrievalSchema() error {
 		}
 	}
 	return s.seedSemanticFoundationRetrievalParents()
+}
+
+func (s *Store) ensureRetrievalProjectionStagingPurgeEpoch() error {
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin retrieval projection staging purge epoch repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var columnCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM pragma_table_info('retrieval_projection_staging')
+		WHERE name='expected_purge_epoch'`,
+	).Scan(&columnCount); err != nil {
+		return fmt.Errorf("inspect retrieval projection staging purge epoch column: %w", err)
+	}
+	columnExisted := columnCount == 1
+	if err := ensureColumnsTxContext(ctx, tx, "retrieval_projection_staging", []columnDefinition{
+		{Name: "expected_purge_epoch", Definition: "INTEGER NOT NULL DEFAULT 0"},
+	}); err != nil {
+		return fmt.Errorf("repair retrieval projection staging purge epoch: %w", err)
+	}
+
+	if !columnExisted {
+		// Rows written before v28 have no durable purge-epoch provenance. The
+		// default zero added above is a schema backfill, not evidence that the
+		// work was selected at epoch zero, so discard every legacy row.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_projection_staging`); err != nil {
+			return fmt.Errorf("discard legacy retrieval projection staging: %w", err)
+		}
+	} else {
+		var currentEpoch int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT purge_epoch FROM retrieval_state WHERE singleton=1`,
+		).Scan(&currentEpoch); err != nil {
+			return fmt.Errorf("read retrieval purge epoch for staging repair: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM retrieval_projection_staging
+			WHERE work_id IN (
+				SELECT work_id
+				FROM retrieval_projection_staging
+				GROUP BY work_id, dirty_revision
+				HAVING MIN(expected_purge_epoch) != ?
+					OR MAX(expected_purge_epoch) != ?
+			)`,
+			currentEpoch,
+			currentEpoch,
+		); err != nil {
+			return fmt.Errorf("discard mismatched retrieval projection staging: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit retrieval projection staging purge epoch repair: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ensureRetrievalSegmentMembershipSchema() error {

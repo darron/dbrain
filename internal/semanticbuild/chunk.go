@@ -50,14 +50,26 @@ type ChunkOptions struct {
 	commandDeadline time.Time
 }
 
+// ProjectionBatchOptions selects one bounded projection page from an immutable
+// caller-owned work watermark. It deliberately cannot allocate a watermark:
+// refresh runs allocate successor watermarks after their pinned work is idle.
+type ProjectionBatchOptions struct {
+	Watermark          int64
+	ExpectedPurgeEpoch int64
+	Limit              int
+	Progress           func(ChunkProgress) error
+	Now                func() time.Time
+}
+
 type ChunkStore interface {
 	ProjectionWorkRevision(context.Context) (int64, error)
+	RetrievalPurgeEpoch(context.Context) (int64, error)
 	ListDirtyRetrievalParents(context.Context, int64, int) ([]store.RetrievalParentWork, error)
 	ApplyRetrievalProjection(context.Context, store.ApplyRetrievalProjectionInput) (store.ChunkReplaceResult, error)
 	LoadRetrievalProjectionStaging(context.Context, retrievalchunk.Parent, int64) (store.RetrievalProjectionCheckpoint, bool, error)
 	StageRetrievalProjectionBatch(context.Context, store.StageRetrievalProjectionInput) (store.RetrievalProjectionCheckpoint, error)
 	PromoteRetrievalProjectionStaging(context.Context, store.RetrievalProjectionCheckpoint) (store.ChunkReplaceResult, error)
-	BlockRetrievalProjectionTooLarge(context.Context, retrievalchunk.Parent, int64, string) error
+	BlockRetrievalProjectionTooLarge(context.Context, retrievalchunk.Parent, int64, string, int64) error
 }
 
 type chunkExecutionLimits struct {
@@ -108,8 +120,16 @@ func runChunkWithLimits(ctx context.Context, st ChunkStore, opts ChunkOptions, l
 
 func runChunkUntilIdle(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options) (ChunkProgress, error) {
 	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
-	if opts.MaxDuration < 0 {
-		return progress, fmt.Errorf("semantic chunk max duration must not be negative")
+	if err := validateChunkOptions(opts); err != nil {
+		return progress, err
+	}
+	watermark, err := st.ProjectionWorkRevision(ctx)
+	if err != nil {
+		return progress, err
+	}
+	purgeEpoch, err := st.RetrievalPurgeEpoch(ctx)
+	if err != nil {
+		return progress, err
 	}
 	now := opts.Now
 	if now == nil {
@@ -130,17 +150,19 @@ func runChunkUntilIdle(ctx context.Context, st ChunkStore, opts ChunkOptions, li
 			return progress, nil
 		}
 		base := progress
-		pageOpts := opts
-		pageOpts.UntilIdle = false
-		pageOpts.MaxDuration = 0
-		pageOpts.commandDeadline = deadline
+		pageOpts := ProjectionBatchOptions{
+			Watermark:          watermark,
+			ExpectedPurgeEpoch: purgeEpoch,
+			Limit:              min(opts.Limit, 5_000),
+			Now:                opts.Now,
+		}
 		pageOpts.Progress = func(page ChunkProgress) error {
 			if opts.Progress == nil {
 				return nil
 			}
 			return opts.Progress(mergeChunkProgress(base, page))
 		}
-		page, err := runChunkWithLimitsAndPlanner(ctx, st, pageOpts, limits, chunkOpts, retrievalchunk.PrepareStreamCommandSessionContext)
+		page, err := runProjectionBatchWithLimitsAndPlanner(ctx, st, pageOpts, limits, chunkOpts, retrievalchunk.PrepareStreamCommandSessionContext, deadline)
 		progress = mergeChunkProgress(progress, page)
 		if err != nil {
 			finalizeChunkAggregate(&progress)
@@ -166,6 +188,12 @@ func runChunkUntilIdle(ctx context.Context, st ChunkStore, opts ChunkOptions, li
 		// A nonempty page can finish without HasMore even if new work arrived
 		// after its watermark. Probe once more and stop only on an empty page.
 	}
+}
+
+// RunProjectionBatch performs exactly one page of projection work at the
+// caller-supplied watermark. It never reads or advances ProjectionWorkRevision.
+func RunProjectionBatch(ctx context.Context, st ChunkStore, opts ProjectionBatchOptions) (ChunkProgress, error) {
+	return runProjectionBatchWithLimitsAndPlanner(ctx, st, opts, defaultChunkExecutionLimits, retrievalchunk.DefaultOptions(), retrievalchunk.PrepareStreamCommandSessionContext, time.Time{})
 }
 
 func mergeChunkProgress(total, page ChunkProgress) ChunkProgress {
@@ -205,11 +233,115 @@ type chunkPlanPreparer func(context.Context, retrievalchunk.Parent, retrievalchu
 
 func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ChunkOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer) (ChunkProgress, error) {
 	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
-	if opts.Limit <= 0 {
-		return progress, fmt.Errorf("semantic chunk limit must be positive")
+	if err := validateChunkOptions(opts); err != nil {
+		return progress, err
 	}
+	watermark, err := st.ProjectionWorkRevision(ctx)
+	if err != nil {
+		return progress, err
+	}
+	purgeEpoch, err := st.RetrievalPurgeEpoch(ctx)
+	if err != nil {
+		return progress, err
+	}
+	deadline := opts.commandDeadline
+	if deadline.IsZero() && opts.MaxDuration > 0 {
+		now := opts.Now
+		if now == nil {
+			now = time.Now
+		}
+		deadline = now().Add(opts.MaxDuration)
+	}
+	return runChunkAtWatermarkWithLimitsAndPlanner(
+		ctx,
+		st,
+		opts,
+		watermark,
+		purgeEpoch,
+		limits,
+		chunkOpts,
+		prepare,
+		deadline,
+	)
+}
+
+func validateChunkOptions(opts ChunkOptions) error {
 	if opts.MaxDuration < 0 {
-		return progress, fmt.Errorf("semantic chunk max duration must not be negative")
+		return fmt.Errorf("semantic chunk max duration must not be negative")
+	}
+	if opts.Limit <= 0 {
+		return fmt.Errorf("semantic projection batch limit must be positive")
+	}
+	if strings.TrimSpace(opts.AfterSourceKey) != "" {
+		return fmt.Errorf("semantic chunk --after-source-key is no longer supported; rerun without it because the durable dirty queue resumes automatically")
+	}
+	return nil
+}
+
+func runChunkAtWatermarkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ChunkOptions, watermark, purgeEpoch int64, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer, deadline time.Time) (ChunkProgress, error) {
+	if opts.Limit <= 5_000 {
+		return runProjectionBatchWithLimitsAndPlanner(ctx, st, ProjectionBatchOptions{
+			Watermark:          watermark,
+			ExpectedPurgeEpoch: purgeEpoch,
+			Limit:              opts.Limit,
+			Progress:           opts.Progress,
+			Now:                opts.Now,
+		}, limits, chunkOpts, prepare, deadline)
+	}
+
+	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
+	remainingLimit := opts.Limit
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	for remainingLimit > 0 {
+		if progress.Scanned > 0 && deadlineReached(deadline, now) {
+			progress.Interrupted = true
+			progress.HasMore = true
+			finalizeChunkAggregate(&progress)
+			return progress, nil
+		}
+		pageLimit := min(remainingLimit, 5_000)
+		base := progress
+		pageOpts := ProjectionBatchOptions{
+			Watermark:          watermark,
+			ExpectedPurgeEpoch: purgeEpoch,
+			Limit:              pageLimit,
+			Now:                now,
+		}
+		pageOpts.Progress = func(page ChunkProgress) error {
+			if opts.Progress == nil {
+				return nil
+			}
+			return opts.Progress(mergeChunkProgress(base, page))
+		}
+		page, err := runProjectionBatchWithLimitsAndPlanner(ctx, st, pageOpts, limits, chunkOpts, prepare, deadline)
+		progress = mergeChunkProgress(progress, page)
+		if err != nil {
+			return progress, err
+		}
+		if page.Checkpoint != nil || page.Interrupted || page.Scanned == 0 || !page.HasMore {
+			return progress, nil
+		}
+		remainingLimit -= page.Scanned
+	}
+	return progress, nil
+}
+
+func runProjectionBatchWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts ProjectionBatchOptions, limits chunkExecutionLimits, chunkOpts retrievalchunk.Options, prepare chunkPlanPreparer, deadline time.Time) (ChunkProgress, error) {
+	progress := ChunkProgress{Progress: Progress{Stage: "chunk", Snapshots: make([]Progress, 0)}}
+	if opts.Watermark < 0 {
+		return progress, fmt.Errorf("semantic projection watermark must not be negative")
+	}
+	if opts.ExpectedPurgeEpoch < 0 {
+		return progress, fmt.Errorf("semantic projection expected purge epoch must not be negative")
+	}
+	if opts.Limit <= 0 {
+		return progress, fmt.Errorf("semantic projection batch limit must be positive")
+	}
+	if opts.Limit > 5_000 {
+		return progress, fmt.Errorf("semantic projection batch limit must not exceed 5000")
 	}
 	if limits.StageBatchBytes <= 0 {
 		limits.StageBatchBytes = 4 << 20
@@ -223,14 +355,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 	if limits.GiantThreshold <= 0 || limits.StageBatchSize <= 0 || limits.HardChunkLimit <= limits.GiantThreshold {
 		return progress, fmt.Errorf("invalid semantic giant projection limits")
 	}
-	if strings.TrimSpace(opts.AfterSourceKey) != "" {
-		return progress, fmt.Errorf("semantic chunk --after-source-key is no longer supported; rerun without it because the durable dirty queue resumes automatically")
-	}
-	watermark, err := st.ProjectionWorkRevision(ctx)
-	if err != nil {
-		return progress, err
-	}
-	work, err := st.ListDirtyRetrievalParents(ctx, watermark, opts.Limit+1)
+	work, err := st.ListDirtyRetrievalParents(ctx, opts.Watermark, opts.Limit+1)
 	if err != nil {
 		return progress, err
 	}
@@ -243,10 +368,6 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 	now := opts.Now
 	if now == nil {
 		now = time.Now
-	}
-	deadline := opts.commandDeadline
-	if deadline.IsZero() && opts.MaxDuration > 0 {
-		deadline = now().Add(opts.MaxDuration)
 	}
 	for _, selectedWork := range selected {
 		if progress.Scanned > 0 && deadlineReached(deadline, now) {
@@ -312,7 +433,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 		if err != nil {
 			var occurrenceLimit *retrievalchunk.PreparedStreamOccurrenceLimitError
 			if errors.As(err, &occurrenceLimit) {
-				if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, selectedWork.DirtyRevision, projectionHash); err != nil {
+				if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, selectedWork.DirtyRevision, projectionHash, opts.ExpectedPurgeEpoch); err != nil {
 					progress.Failed++
 					return progress, err
 				}
@@ -365,7 +486,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 			}
 			result, err := st.ApplyRetrievalProjection(ctx, store.ApplyRetrievalProjectionInput{
 				ParentKind: parent.Kind, ParentSourceKey: parent.SourceKey,
-				DirtyRevision: selectedWork.DirtyRevision, Projection: projection,
+				DirtyRevision: selectedWork.DirtyRevision, ExpectedPurgeEpoch: opts.ExpectedPurgeEpoch, Projection: projection,
 				Status: status, Reason: reason,
 			})
 			if err != nil {
@@ -398,14 +519,15 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 		checkpoint, err = st.StageRetrievalProjectionBatch(ctx, store.StageRetrievalProjectionInput{
 			DirtyRevision: selectedWork.DirtyRevision, ParentKind: parent.Kind,
 			ParentSourceKey: parent.SourceKey, ProjectionHash: projectionHash,
-			Cursor: cursor, Rows: rows, PreparedPlan: encodedPlan, PreparedPlanDigest: planDigest,
+			ExpectedPurgeEpoch: opts.ExpectedPurgeEpoch,
+			Cursor:             cursor, Rows: rows, PreparedPlan: encodedPlan, PreparedPlanDigest: planDigest,
 		})
 		if err != nil {
 			progress.Failed++
 			return progress, err
 		}
 		if checkpointExceedsProjectionLimits(checkpoint, limits) {
-			if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, selectedWork.DirtyRevision, projectionHash); err != nil {
+			if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, selectedWork.DirtyRevision, projectionHash, opts.ExpectedPurgeEpoch); err != nil {
 				progress.Failed++
 				return progress, err
 			}
@@ -448,7 +570,7 @@ func runChunkWithLimitsAndPlanner(ctx context.Context, st ChunkStore, opts Chunk
 
 func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalchunk.Parent, dirtyRevision int64, checkpoint store.RetrievalProjectionCheckpoint, preparedSession *retrievalchunk.PreparedStreamSession, chunkOpts retrievalchunk.Options, limits chunkExecutionLimits, deadline time.Time, now func() time.Time, progress *ChunkProgress, callback func(ChunkProgress) error) (store.ChunkReplaceResult, bool, error) {
 	if checkpointExceedsProjectionLimits(checkpoint, limits) {
-		if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); err != nil {
+		if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash, checkpoint.ExpectedPurgeEpoch); err != nil {
 			return store.ChunkReplaceResult{}, false, err
 		}
 		progress.Checkpoint = nil
@@ -479,7 +601,7 @@ func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalc
 	if err != nil {
 		var occurrenceLimit *retrievalchunk.PreparedStreamOccurrenceLimitError
 		if errors.As(err, &occurrenceLimit) {
-			if blockErr := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); blockErr != nil {
+			if blockErr := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash, checkpoint.ExpectedPurgeEpoch); blockErr != nil {
 				return store.ChunkReplaceResult{}, false, blockErr
 			}
 			progress.Checkpoint = nil
@@ -494,7 +616,7 @@ func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalc
 			result, err := st.PromoteRetrievalProjectionStaging(ctx, checkpoint)
 			var tooLarge *store.RetrievalProjectionTooLargeError
 			if errors.As(err, &tooLarge) {
-				if blockErr := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); blockErr != nil {
+				if blockErr := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash, checkpoint.ExpectedPurgeEpoch); blockErr != nil {
 					return store.ChunkReplaceResult{}, false, blockErr
 				}
 				progress.Checkpoint = nil
@@ -529,14 +651,15 @@ func resumeGiantProjection(ctx context.Context, st ChunkStore, parent retrievalc
 		checkpoint, err = st.StageRetrievalProjectionBatch(ctx, store.StageRetrievalProjectionInput{
 			WorkID: checkpoint.WorkID, DirtyRevision: dirtyRevision, ParentKind: parent.Kind,
 			ParentSourceKey: parent.SourceKey, ProjectionHash: checkpoint.ProjectionHash,
-			Cursor: cursor, Rows: rows, PreparedPlanDigest: planDigest,
+			ExpectedPurgeEpoch: checkpoint.ExpectedPurgeEpoch,
+			Cursor:             cursor, Rows: rows, PreparedPlanDigest: planDigest,
 		})
 		if err != nil {
 			return store.ChunkReplaceResult{}, false, err
 		}
 		progress.Checkpoint = &checkpoint
 		if checkpointExceedsProjectionLimits(checkpoint, limits) {
-			if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash); err != nil {
+			if err := st.BlockRetrievalProjectionTooLarge(ctx, parent, dirtyRevision, checkpoint.ProjectionHash, checkpoint.ExpectedPurgeEpoch); err != nil {
 				return store.ChunkReplaceResult{}, false, err
 			}
 			progress.Checkpoint = nil

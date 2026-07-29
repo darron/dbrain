@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,9 @@ import (
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/metrics"
+	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 )
@@ -272,6 +276,493 @@ metrics:
 	}
 }
 
+func TestRunScheduledSyncAllSourceErrorClosesStoreAndSkipsSemanticRefresh(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	sourceErr := errors.New("source sync failed")
+	var sourceStore *store.Store
+	runSyncAll = func(_ context.Context, _ config.Config, st *store.Store, _ syncjob.Options) (syncjob.Stats, error) {
+		sourceStore = st
+		return syncjob.Stats{}, sourceErr
+	}
+	admissions := 0
+	deps := semanticRefreshDeps{
+		resolve: func(string) (semanticconfig.Config, error) {
+			admissions++
+			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
+		},
+	}
+
+	err = runScheduledSyncAllUnlockedWithSemanticDeps(
+		t.Context(),
+		cfg,
+		scheduledSyncSemanticTestFlags(),
+		io.Discard,
+		deps,
+	)
+	if !errors.Is(err, sourceErr) {
+		t.Fatalf("scheduled sync error = %v, want source error", err)
+	}
+	if admissions != 0 {
+		t.Fatalf("semantic admissions = %d, want 0", admissions)
+	}
+	if sourceStore == nil {
+		t.Fatal("source sync did not receive a store")
+	}
+	if _, probeErr := sourceStore.RetrievalPurgeEpoch(t.Context()); probeErr == nil {
+		t.Fatal("source store remained open after source failure")
+	}
+}
+
+func TestRunScheduledSyncAllUnchangedSuccessClosesSourceThenRefreshes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+metrics:
+  enabled: true
+  path: scheduled-semantic-metrics.jsonl
+  strict: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	var sourceStore *store.Store
+	var sourceMetrics metrics.RunContext
+	runSyncAll = func(_ context.Context, _ config.Config, st *store.Store, options syncjob.Options) (syncjob.Stats, error) {
+		sourceStore = st
+		sourceMetrics = options.Metrics
+		now := time.Unix(1_000, 0).UTC()
+		return syncjob.Stats{StartedAt: now, CompletedAt: now}, nil
+	}
+	refreshes := 0
+	deps := successfulSyncSemanticDeps(func(
+		context.Context,
+		semanticrefresh.RunLedger,
+		semanticrefresh.StageExecutor,
+		semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		refreshes++
+		return completedSyncSemanticResult(), nil
+	})
+	resolve := deps.resolve
+	deps.resolve = func(rootDir string) (semanticconfig.Config, error) {
+		if sourceStore == nil {
+			t.Fatal("semantic admission ran before source store opened")
+		}
+		if _, probeErr := sourceStore.RetrievalPurgeEpoch(t.Context()); probeErr == nil {
+			t.Fatal("semantic admission observed source store still open")
+		}
+		if !sourceMetrics.Enabled() {
+			t.Fatal("source sync did not receive the enabled metrics sink")
+		}
+		if emitErr := sourceMetrics.Emit(metrics.Event{"event": "test.after_source_cleanup"}); emitErr == nil {
+			t.Fatal("semantic admission observed source metrics sink still open")
+		}
+		return resolve(rootDir)
+	}
+
+	var out bytes.Buffer
+	if err := runScheduledSyncAllUnlockedWithSemanticDeps(
+		t.Context(),
+		cfg,
+		scheduledSyncSemanticTestFlags(),
+		&out,
+		deps,
+	); err != nil {
+		t.Fatalf("scheduled sync: %v", err)
+	}
+	if refreshes != 1 {
+		t.Fatalf("semantic refreshes = %d, want 1", refreshes)
+	}
+	if count := strings.Count(out.String(), "scheduler semantic refresh:"); count != 1 {
+		t.Fatalf("semantic terminal log lines = %d, want 1:\n%s", count, out.String())
+	}
+	if !strings.Contains(out.String(), "scheduler semantic refresh: completed") {
+		t.Fatalf("semantic completion was not logged explicitly:\n%s", out.String())
+	}
+}
+
+func TestRunScheduledSyncAllUnsupportedSemanticRefreshLogsOneExplicitSkip(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncjob.Stats{}, nil
+	}
+	deps := semanticRefreshDeps{
+		resolve: func(string) (semanticconfig.Config, error) {
+			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
+		},
+		capability: func() semanticindex.Capability {
+			return semanticindex.Capability{State: semanticindex.CapabilityUnsupported}
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runScheduledSyncAllUnlockedWithSemanticDeps(
+		t.Context(),
+		cfg,
+		scheduledSyncSemanticTestFlags(),
+		&out,
+		deps,
+	); err != nil {
+		t.Fatalf("scheduled sync: %v", err)
+	}
+	want := "scheduler semantic refresh: skipped reason=native_backend_unsupported capability=unsupported backend= version=\n"
+	if count := strings.Count(out.String(), "scheduler semantic refresh:"); count != 1 {
+		t.Fatalf("semantic terminal log lines = %d, want 1:\n%s", count, out.String())
+	}
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("semantic skip log = %q, want line %q", out.String(), want)
+	}
+}
+
+func TestRunScheduledSyncAllStreamsBoundedPeriodicSemanticProgress(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncjob.Stats{}, nil
+	}
+	firstAt := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	deps := successfulSyncSemanticDeps(func(
+		_ context.Context,
+		_ semanticrefresh.RunLedger,
+		_ semanticrefresh.StageExecutor,
+		request semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		if request.Progress == nil {
+			t.Fatal("scheduled semantic refresh omitted progress callback")
+		}
+		for _, progress := range []semanticrefresh.Progress{
+			{
+				RunID:      "run-progress",
+				ProfileID:  "profile-progress",
+				Stage:      store.SemanticRefreshEmbedding,
+				Checkpoint: "embedding:batch-1",
+				Readiness:  "not_ready",
+				Counters: store.SemanticRefreshCounters{
+					ProjectedParents: 2,
+					EmbeddedChunks:   3,
+				},
+				Debt: semanticrefresh.Debt{
+					DirtyParents:      5,
+					PendingEmbeddings: 8,
+				},
+				At: firstAt,
+			},
+			{
+				RunID:      strings.Repeat("r", 65),
+				ProfileID:  strings.Repeat("p", 193),
+				Stage:      store.SemanticRefreshEmbedding,
+				Checkpoint: "unsafe\ncheckpoint",
+				Readiness:  "not_ready",
+				Counters: store.SemanticRefreshCounters{
+					ProjectedParents: 2,
+					EmbeddedChunks:   3,
+				},
+				Debt: semanticrefresh.Debt{
+					DirtyParents:      5,
+					PendingEmbeddings: 8,
+				},
+				At: firstAt.Add(semanticrefresh.ProgressInterval),
+			},
+		} {
+			if err := request.Progress(progress); err != nil {
+				t.Fatalf("scheduled progress callback: %v", err)
+			}
+		}
+		return completedSyncSemanticResult(), nil
+	})
+
+	var out bytes.Buffer
+	if err := runScheduledSyncAllUnlockedWithSemanticDeps(
+		t.Context(),
+		cfg,
+		scheduledSyncSemanticTestFlags(),
+		&out,
+		deps,
+	); err != nil {
+		t.Fatalf("scheduled sync: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	progressLines := make([]string, 0, 2)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Semantic refresh progress:") {
+			progressLines = append(progressLines, line)
+		}
+	}
+	if len(progressLines) != 2 {
+		t.Fatalf("semantic progress lines = %d, want initial plus five-second heartbeat:\n%s", len(progressLines), out.String())
+	}
+	for _, line := range progressLines {
+		if len(line) > 1024 {
+			t.Fatalf("semantic progress line exceeded fixed bound: bytes=%d", len(line))
+		}
+	}
+	for _, want := range []string{
+		"run=run-progress profile=profile-progress stage=embedding checkpoint=embedding:batch-1",
+		"at=2026-07-28T12:00:00Z",
+		"run= profile= stage=embedding checkpoint=",
+		"at=2026-07-28T12:00:05Z",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("semantic progress omitted %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "unsafe") || strings.Contains(out.String(), strings.Repeat("r", 65)) {
+		t.Fatalf("semantic progress leaked unbounded or unsafe fields:\n%s", out.String())
+	}
+}
+
+func TestRunScheduledSyncAllSemanticFailuresPreserveStableTypedCodes(t *testing.T) {
+	tests := []struct {
+		name     string
+		context  func() context.Context
+		deps     func(*testing.T) semanticRefreshDeps
+		wantCode string
+	}{
+		{
+			name:    "supported broken",
+			context: context.Background,
+			deps: func(*testing.T) semanticRefreshDeps {
+				return semanticRefreshDeps{
+					resolve: func(string) (semanticconfig.Config, error) {
+						return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
+					},
+					capability: func() semanticindex.Capability {
+						return semanticindex.Capability{
+							State:   semanticindex.CapabilitySupportedBroken,
+							Backend: semanticindex.BackendUSearch,
+							Version: semanticindex.USearchVersion,
+							Reason:  "private native failure",
+						}
+					},
+				}
+			},
+			wantCode: semanticrefresh.ErrorBackendBroken,
+		},
+		{
+			name:    "stage failure",
+			context: context.Background,
+			deps: func(t *testing.T) semanticRefreshDeps {
+				run := store.SemanticRefreshRun{
+					RunID:      "run-scheduled",
+					Stage:      store.SemanticRefreshFlush,
+					Checkpoint: "flush:segment",
+				}
+				refreshErr := semanticrefresh.NewError(
+					semanticrefresh.ErrorFlush,
+					run,
+					"not_ready",
+					semanticrefresh.Debt{},
+					errors.New("private flush failure"),
+				)
+				return successfulSyncSemanticDeps(func(
+					context.Context,
+					semanticrefresh.RunLedger,
+					semanticrefresh.StageExecutor,
+					semanticrefresh.Request,
+				) (semanticrefresh.Result, error) {
+					return semanticrefresh.Result{Run: &run}, refreshErr
+				})
+			},
+			wantCode: semanticrefresh.ErrorFlush,
+		},
+		{
+			name: "cancelled",
+			context: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			deps: func(*testing.T) semanticRefreshDeps {
+				return successfulSyncSemanticDeps(func(
+					context.Context,
+					semanticrefresh.RunLedger,
+					semanticrefresh.StageExecutor,
+					semanticrefresh.Request,
+				) (semanticrefresh.Result, error) {
+					return completedSyncSemanticResult(), nil
+				})
+			},
+			wantCode: semanticrefresh.ErrorCancelled,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg, err := config.Load(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			oldRunSyncAll := runSyncAll
+			t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+			runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+				return syncjob.Stats{}, nil
+			}
+
+			err = runScheduledSyncAllUnlockedWithSemanticDeps(
+				test.context(),
+				cfg,
+				scheduledSyncSemanticTestFlags(),
+				io.Discard,
+				test.deps(t),
+			)
+			var refreshErr *semanticrefresh.RefreshError
+			if !errors.As(err, &refreshErr) {
+				t.Fatalf("scheduled sync error = %T %v, want typed RefreshError", err, err)
+			}
+			if refreshErr.Code != test.wantCode || err.Error() != test.wantCode {
+				t.Fatalf("scheduled refresh code = %q error=%q, want %q", refreshErr.Code, err, test.wantCode)
+			}
+		})
+	}
+}
+
+func TestSyncSchedulerSemanticFailureSetsErrorStatusAndReleasesLock(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncjob.Stats{}, nil
+	}
+	run := store.SemanticRefreshRun{RunID: "run-status", Stage: store.SemanticRefreshVerify}
+	refreshErr := semanticrefresh.NewError(
+		semanticrefresh.ErrorVerify,
+		run,
+		"not_ready",
+		semanticrefresh.Debt{},
+		errors.New("private verification failure"),
+	)
+	deps := successfulSyncSemanticDeps(func(
+		context.Context,
+		semanticrefresh.RunLedger,
+		semanticrefresh.StageExecutor,
+		semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		probe, lockErr := acquireSyncAllLock(cfg, "semantic-lock-probe")
+		if lockErr == nil {
+			_ = probe.Close()
+			t.Fatal("scheduler coarse lock was released during semantic refresh")
+		}
+		if !isSyncAllAlreadyRunning(lockErr) {
+			t.Fatalf("semantic lock probe error = %v", lockErr)
+		}
+		return semanticrefresh.Result{Run: &run}, refreshErr
+	})
+	var out bytes.Buffer
+	s := newSyncScheduler(cfg, schedulerSyncConfig{
+		Enabled:  true,
+		Interval: time.Hour,
+		Flags:    scheduledSyncSemanticTestFlags(),
+	}, &out)
+	s.runSync = func(ctx context.Context, cfg config.Config, flags syncAllFlags, logOut io.Writer) error {
+		return runScheduledSyncAllUnlockedWithSemanticDeps(ctx, cfg, flags, logOut, deps)
+	}
+
+	if actual := s.run(t.Context(), "semantic-failure"); !actual {
+		t.Fatal("semantic failure was not recorded as an actual scheduler run")
+	}
+	status := s.Status()
+	if status.Running || status.LastStatus != "error" || status.LastError != semanticrefresh.ErrorVerify {
+		t.Fatalf("scheduler status after semantic failure = %#v", status)
+	}
+	if !strings.Contains(out.String(), "scheduler sync all failed:") ||
+		!strings.Contains(out.String(), "error="+semanticrefresh.ErrorVerify) {
+		t.Fatalf("scheduler semantic failure log omitted stable code:\n%s", out.String())
+	}
+	lock, err := acquireSyncAllLock(cfg, "post-semantic-failure")
+	if err != nil {
+		t.Fatalf("scheduler coarse lock remained held after semantic failure: %v", err)
+	}
+	_ = lock.Close()
+}
+
+func TestSyncSchedulerPostRunAuditFollowsSemanticFailureSettlement(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	refreshErr := semanticrefresh.NewError(
+		semanticrefresh.ErrorEmbedding,
+		store.SemanticRefreshRun{RunID: "run-audit", Stage: store.SemanticRefreshEmbedding},
+		"not_ready",
+		semanticrefresh.Debt{},
+		errors.New("private embedding failure"),
+	)
+	s := newSyncScheduler(cfg, schedulerSyncConfig{Enabled: true, Interval: time.Hour}, io.Discard)
+	s.runSync = func(context.Context, config.Config, syncAllFlags, io.Writer) error {
+		return refreshErr
+	}
+	audits := 0
+	s.postRun = func(context.Context) {
+		audits++
+		status := s.Status()
+		if status.Running || status.LastStatus != "error" || status.LastError != semanticrefresh.ErrorEmbedding {
+			t.Errorf("audit observed unsettled scheduler status: %#v", status)
+		}
+		lock, lockErr := acquireSyncAllLock(cfg, "post-run-audit")
+		if lockErr != nil {
+			t.Errorf("audit observed unsettled scheduler lock: %v", lockErr)
+			return
+		}
+		_ = lock.Close()
+	}
+
+	s.runAndPost(t.Context(), "semantic-failure")
+	if audits != 1 {
+		t.Fatalf("post-run audits = %d, want 1", audits)
+	}
+}
+
 func TestSyncSchedulerStatusTracksRuns(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -381,5 +872,23 @@ func TestSyncSchedulerPrefixesLogLinesWithTimestamps(t *testing.T) {
 	want := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}) scheduler sync all skipped:`)
 	if !want.MatchString(got) {
 		t.Fatalf("expected scheduler log line to start with timestamp, got %q", got)
+	}
+}
+
+func scheduledSyncSemanticTestFlags() syncAllFlags {
+	return syncAllFlags{
+		skipXBookmarks: true,
+		skipX:          true,
+		skipXMedia:     true,
+		skipXPhotoOCR:  true,
+		skipLinks:      true,
+		skipGitHub:     true,
+		skipYouTube:    true,
+		skipAppleNotes: true,
+		skipSafariTabs: true,
+		skipFeeds:      true,
+		skipSources:    true,
+		skipCategorize: true,
+		skipOKFExport:  true,
 	}
 }

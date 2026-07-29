@@ -133,6 +133,65 @@ func TestSemanticRuntimeGenerationPresenceUsesRequiredBoundedIndex(t *testing.T)
 	}
 }
 
+func TestSemanticRuntimeReadinessGenerationMetadataPlansStayBounded(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	profileID, err := readinessTestProfile().ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := []struct {
+		name        string
+		query       string
+		wantIndexes []string
+	}{
+		{
+			name:        "generation row",
+			query:       "EXPLAIN QUERY PLAN " + activeSemanticGenerationMetadataQuery,
+			wantIndexes: []string{"sqlite_autoindex_retrieval_index_generations_1"},
+		},
+		{
+			name:  "generation segment aggregate",
+			query: "EXPLAIN QUERY PLAN " + activeSemanticGenerationSegmentsQuery,
+			wantIndexes: []string{
+				"sqlite_autoindex_retrieval_index_generations_1",
+				"sqlite_autoindex_retrieval_generation_segments_1",
+				"sqlite_autoindex_retrieval_index_segments_1",
+			},
+		},
+	}
+	for _, tc := range queries {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := st.db.Query(tc.query, profileID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = rows.Close() }()
+			var details []string
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				details = append(details, detail)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(details, "\n")
+			for _, index := range tc.wantIndexes {
+				if !strings.Contains(joined, index) {
+					t.Fatalf("generation metadata query did not use %s:\n%s", index, joined)
+				}
+			}
+			if strings.Contains(joined, "retrieval_index_segment_members") || strings.Contains(joined, "USE TEMP B-TREE") {
+				t.Fatalf("generation metadata query violated bounded no-member/no-sort contract:\n%s", joined)
+			}
+		})
+	}
+}
+
 func TestSemanticRuntimeDirtyObservationPlansStayIndexedAndSortFree(t *testing.T) {
 	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()

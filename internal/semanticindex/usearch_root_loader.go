@@ -3,8 +3,11 @@
 package semanticindex
 
 import (
-	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,14 +19,23 @@ import (
 // is intentionally not a serving searcher; callers still need authoritative
 // SQLite validation and exact reranking before exposing candidates.
 type USearchRoot struct {
-	Root     semanticsegment.Root
-	Segments []USearchRootSegment
+	Root          semanticsegment.Root
+	Segments      []USearchRootSegment
+	searchSegment func(*USearch, []float32, int) ([]HNSWHit, error)
 }
 
 type USearchRootSegment struct {
 	SegmentHash string
 	Manifest    semanticsegment.Manifest
 	Index       *USearch
+}
+
+type USearchRootExpectations struct {
+	Index            USearchOptions
+	SnapshotRevision int64
+	PurgeEpoch       int64
+	BackendVersion   string
+	DescriptorSHA256 string
 }
 
 // USearchRootCandidate resolves one approximate native ordinal through the
@@ -36,55 +48,214 @@ type USearchRootCandidate struct {
 	ApproximateDistance float32
 }
 
-func OpenUSearchRoot(cacheDir, databaseID, profileID, generationID string, options USearchOptions) (*USearchRoot, error) {
-	root, err := semanticsegment.OpenRoot(cacheDir, databaseID, profileID, generationID)
+func OpenUSearchRoot(ctx context.Context, cacheDir, databaseID, profileID, generationID string, expect USearchRootExpectations) (*USearchRoot, error) {
+	loaded, err := openUSearchRoot(ctx, cacheDir, databaseID, profileID, generationID, expect, func(path string) (io.ReadCloser, error) {
+		return os.Open(path)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return loaded, nil
+}
+
+func openUSearchRoot(
+	ctx context.Context,
+	cacheDir, databaseID, profileID, generationID string,
+	expect USearchRootExpectations,
+	openPayload func(string) (io.ReadCloser, error),
+) (*USearchRoot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if openPayload == nil {
+		return nil, fmt.Errorf("usearch payload opener is nil")
+	}
+	root, err := semanticsegment.OpenRootManifest(ctx, cacheDir, databaseID, profileID, generationID)
 	if err != nil {
 		return nil, fmt.Errorf("open usearch root: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if root.Manifest.DescriptorSHA256 != expect.DescriptorSHA256 {
+		return nil, fmt.Errorf("usearch root descriptor hash mismatch: cache=%q expected=%q", root.Manifest.DescriptorSHA256, expect.DescriptorSHA256)
+	}
+	if root.Manifest.SnapshotRevision != expect.SnapshotRevision {
+		return nil, fmt.Errorf("usearch root snapshot revision mismatch: cache=%d expected=%d", root.Manifest.SnapshotRevision, expect.SnapshotRevision)
+	}
+	if root.Manifest.PurgeEpoch != expect.PurgeEpoch {
+		return nil, fmt.Errorf("usearch root purge epoch mismatch: cache=%d expected=%d", root.Manifest.PurgeEpoch, expect.PurgeEpoch)
+	}
 	loaded := &USearchRoot{Root: root, Segments: make([]USearchRootSegment, 0, len(root.Manifest.Segments))}
-	fail := func(err error) (*USearchRoot, error) { _ = loaded.Close(); return nil, err }
+	fail := func(err error) (*USearchRoot, error) { _ = loaded.Close(); return loaded, err }
 	for _, reference := range root.Manifest.Segments {
-		segment, err := semanticsegment.OpenSegment(cacheDir, databaseID, profileID, reference.Hash)
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		segment, err := semanticsegment.OpenSegmentManifest(ctx, cacheDir, databaseID, profileID, reference.Hash)
 		if err != nil {
 			return fail(fmt.Errorf("open usearch root segment %s: %w", reference.Hash, err))
 		}
-		if segment.Manifest.Backend != BackendUSearch || segment.Manifest.Dimensions != options.Dimensions {
-			return fail(fmt.Errorf("usearch root segment %s backend/dimensions mismatch", reference.Hash))
+		if err := ctx.Err(); err != nil {
+			return fail(err)
 		}
-		payload, err := os.ReadFile(filepath.Join(cacheDir, filepath.FromSlash(reference.RelativePath), semanticsegment.PayloadFileName))
+		if segment.Manifest.Backend != BackendUSearch {
+			return fail(fmt.Errorf("usearch root segment %s backend mismatch: cache=%q expected=%q", reference.Hash, segment.Manifest.Backend, BackendUSearch))
+		}
+		if segment.Manifest.BackendVersion != expect.BackendVersion {
+			return fail(fmt.Errorf("usearch root segment %s backend version mismatch: cache=%q expected=%q", reference.Hash, segment.Manifest.BackendVersion, expect.BackendVersion))
+		}
+		if segment.Manifest.DistanceMetric != "cosine" {
+			return fail(fmt.Errorf("usearch root segment %s distance metric mismatch: cache=%q expected=%q", reference.Hash, segment.Manifest.DistanceMetric, "cosine"))
+		}
+		if segment.Manifest.Dimensions != expect.Index.Dimensions {
+			return fail(fmt.Errorf("usearch root segment %s dimensions mismatch: cache=%d expected=%d", reference.Hash, segment.Manifest.Dimensions, expect.Index.Dimensions))
+		}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		payloadFile, err := openPayload(filepath.Join(cacheDir, filepath.FromSlash(reference.RelativePath), semanticsegment.PayloadFileName))
 		if err != nil {
-			return fail(fmt.Errorf("read usearch root payload %s: %w", reference.Hash, err))
+			return fail(fmt.Errorf("open usearch root payload %s: %w", reference.Hash, err))
 		}
-		index, err := NewUSearch(options)
+		payload, readErr := readVerifiedUSearchPayload(ctx, payloadFile, segment.Manifest.PayloadSHA256)
+		closeErr := payloadFile.Close()
+		if readErr != nil {
+			return fail(fmt.Errorf("read usearch root payload %s: %w", reference.Hash, readErr))
+		}
+		if closeErr != nil {
+			return fail(fmt.Errorf("close usearch root payload %s: %w", reference.Hash, closeErr))
+		}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		index, err := NewUSearch(expect.Index)
 		if err != nil {
 			return fail(err)
 		}
-		if err := index.Import(bytes.NewReader(payload)); err != nil {
+		if err := loadVerifiedUSearchPayload(ctx, index, payload, len(segment.Manifest.Members)); err != nil {
 			_ = index.Close()
 			return fail(fmt.Errorf("import usearch root segment %s: %w", reference.Hash, err))
 		}
 		loaded.Segments = append(loaded.Segments, USearchRootSegment{SegmentHash: reference.Hash, Manifest: segment.Manifest, Index: index})
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 	return loaded, nil
+}
+
+func readVerifiedUSearchPayload(ctx context.Context, reader io.Reader, expectedSHA256 string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	hash := sha256.New()
+	payload, err := io.ReadAll(io.TeeReader(&contextReader{ctx: ctx, reader: reader}, hash))
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != expectedSHA256 {
+		return nil, fmt.Errorf("payload checksum mismatch")
+	}
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("usearch payload is empty")
+	}
+	return payload, nil
+}
+
+// loadVerifiedUSearchPayload cannot preempt USearch's native LoadBuffer call.
+// It rejects cancellation immediately before entering C and immediately after
+// the call returns.
+func loadVerifiedUSearchPayload(ctx context.Context, index *USearch, payload []byte, expectedMembers int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := index.available(); err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return fmt.Errorf("usearch payload is empty")
+	}
+	loadErr := index.index.LoadBuffer(payload, uint(len(payload)))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if loadErr != nil {
+		return fmt.Errorf("load usearch payload: %w", loadErr)
+	}
+	dimensions, err := index.index.Dimensions()
+	if err != nil {
+		return fmt.Errorf("read imported usearch dimensions: %w", err)
+	}
+	if int(dimensions) != index.dimensions {
+		return fmt.Errorf("usearch imported dimensions %d want %d", dimensions, index.dimensions)
+	}
+	nativeVectors, err := index.index.Len()
+	if err != nil {
+		return fmt.Errorf("read imported usearch vector count: %w", err)
+	}
+	if nativeVectors != uint(expectedMembers) {
+		return fmt.Errorf("usearch imported native vector count %d want manifest members %d", nativeVectors, expectedMembers)
+	}
+	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	count, err := r.reader.Read(buffer)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return count, ctxErr
+	}
+	return count, err
 }
 
 // Candidates searches each verified segment independently and converts every
 // native ordinal into its immutable member provenance. The per-segment limit
 // deliberately overfetches before later SQLite validation and exact reranking;
-// native ordering is never exposed as semantic evidence ordering.
-func (r *USearchRoot) Candidates(query []float32, limitPerSegment int) ([]USearchRootCandidate, error) {
+// native ordering is never exposed as semantic evidence ordering. Native
+// Search is non-preemptible, so cancellation is checked immediately before and
+// after every call and between segments.
+func (r *USearchRoot) Candidates(ctx context.Context, query []float32, limitPerSegment int) ([]USearchRootCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if r == nil {
 		return nil, fmt.Errorf("usearch root is nil")
 	}
 	if limitPerSegment <= 0 {
 		return []USearchRootCandidate{}, nil
 	}
+	searchSegment := r.searchSegment
+	if searchSegment == nil {
+		searchSegment = func(index *USearch, query []float32, limit int) ([]HNSWHit, error) {
+			return index.Search(query, limit)
+		}
+	}
 	candidates := make([]USearchRootCandidate, 0, len(r.Segments)*limitPerSegment)
 	for _, segment := range r.Segments {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if segment.SegmentHash == "" {
 			return nil, fmt.Errorf("usearch root segment hash is empty")
 		}
-		hits, err := segment.Index.Search(query, limitPerSegment)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		hits, err := searchSegment(segment.Index, query, limitPerSegment)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		if err != nil {
 			return nil, fmt.Errorf("search usearch root segment %s: %w", segment.SegmentHash, err)
 		}
@@ -97,6 +268,9 @@ func (r *USearchRoot) Candidates(query []float32, limitPerSegment int) ([]USearc
 				return nil, fmt.Errorf("usearch root segment %s ordinal %d does not match immutable manifest", segment.SegmentHash, hit.Ordinal)
 			}
 			candidates = append(candidates, USearchRootCandidate{SegmentHash: segment.SegmentHash, Member: member, ApproximateDistance: hit.Distance})
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {

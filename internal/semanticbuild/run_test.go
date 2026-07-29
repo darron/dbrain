@@ -12,6 +12,7 @@ import (
 
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/retrievalchunk"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -45,6 +46,7 @@ type fakeStore struct {
 	blockedGiant     []string
 	candidateTimes   []time.Time
 	candidateAfters  []string
+	candidateLimits  []int
 	listDirty        func(context.Context, int64, int) ([]store.RetrievalParentWork, error)
 	repairCalls      int
 	repairErr        error
@@ -99,10 +101,16 @@ func (f *fakeStore) LoadRetrievalProjectionStaging(_ context.Context, parent ret
 	if !ok || cp.DirtyRevision != revision {
 		return store.RetrievalProjectionCheckpoint{}, false, nil
 	}
+	if cp.ExpectedPurgeEpoch != f.purgeEpoch {
+		return store.RetrievalProjectionCheckpoint{}, false, store.ErrRetrievalPurgeEpochChanged
+	}
 	return cp, true, nil
 }
 
 func (f *fakeStore) StageRetrievalProjectionBatch(_ context.Context, input store.StageRetrievalProjectionInput) (store.RetrievalProjectionCheckpoint, error) {
+	if input.ExpectedPurgeEpoch != f.purgeEpoch {
+		return store.RetrievalProjectionCheckpoint{}, store.ErrRetrievalPurgeEpochChanged
+	}
 	f.stageCalls = append(f.stageCalls, input)
 	if f.staging == nil {
 		f.staging = make(map[string]store.RetrievalProjectionCheckpoint)
@@ -118,12 +126,15 @@ func (f *fakeStore) StageRetrievalProjectionBatch(_ context.Context, input store
 		}
 	}
 	chunks := len(seen)
-	cp := store.RetrievalProjectionCheckpoint{WorkID: workID, DirtyRevision: input.DirtyRevision, ParentKind: input.ParentKind, ParentSourceKey: input.ParentSourceKey, ProjectionHash: input.ProjectionHash, SectionKey: input.Cursor.SectionKey, NextBoundary: input.Cursor.NextBoundary, StagedChunks: chunks}
+	cp := store.RetrievalProjectionCheckpoint{WorkID: workID, DirtyRevision: input.DirtyRevision, ExpectedPurgeEpoch: input.ExpectedPurgeEpoch, ParentKind: input.ParentKind, ParentSourceKey: input.ParentSourceKey, ProjectionHash: input.ProjectionHash, SectionKey: input.Cursor.SectionKey, NextBoundary: input.Cursor.NextBoundary, StagedChunks: chunks}
 	f.staging[input.ParentKind+":"+input.ParentSourceKey] = cp
 	return cp, nil
 }
 
 func (f *fakeStore) PromoteRetrievalProjectionStaging(_ context.Context, checkpoint store.RetrievalProjectionCheckpoint) (store.ChunkReplaceResult, error) {
+	if checkpoint.ExpectedPurgeEpoch != f.purgeEpoch {
+		return store.ChunkReplaceResult{}, store.ErrRetrievalPurgeEpochChanged
+	}
 	f.promotions = append(f.promotions, checkpoint)
 	delete(f.staging, checkpoint.ParentKind+":"+checkpoint.ParentSourceKey)
 	if f.applied == nil {
@@ -133,7 +144,10 @@ func (f *fakeStore) PromoteRetrievalProjectionStaging(_ context.Context, checkpo
 	return store.ChunkReplaceResult{Created: checkpoint.StagedChunks}, nil
 }
 
-func (f *fakeStore) BlockRetrievalProjectionTooLarge(_ context.Context, parent retrievalchunk.Parent, revision int64, projectionHash string) error {
+func (f *fakeStore) BlockRetrievalProjectionTooLarge(_ context.Context, parent retrievalchunk.Parent, revision int64, projectionHash string, expectedPurgeEpoch int64) error {
+	if expectedPurgeEpoch != f.purgeEpoch {
+		return store.ErrRetrievalPurgeEpochChanged
+	}
 	f.blockedGiant = append(f.blockedGiant, parent.Kind+":"+parent.SourceKey)
 	delete(f.staging, parent.Kind+":"+parent.SourceKey)
 	if f.applied == nil {
@@ -146,6 +160,7 @@ func (f *fakeStore) ListChunksNeedingEmbeddingForProfileAt(_ context.Context, pr
 	f.operations = append(f.operations, "candidates")
 	f.candidateTimes = append(f.candidateTimes, now)
 	f.candidateAfters = append(f.candidateAfters, after)
+	f.candidateLimits = append(f.candidateLimits, limit)
 	f.candidateProfile = profile
 	if f.candidateErr != nil {
 		return nil, f.candidateErr
@@ -170,6 +185,9 @@ func (f *fakeStore) ListChunksNeedingEmbeddingForProfileAt(_ context.Context, pr
 	return result, nil
 }
 func (f *fakeStore) RetrievalPurgeEpoch(context.Context) (int64, error) { return f.purgeEpoch, nil }
+func (f *fakeStore) RetrievalEmbeddingProfile(_ context.Context, profileID string) (store.RetrievalEmbeddingProfileRow, error) {
+	return store.RetrievalEmbeddingProfileRow{}, fmt.Errorf("profile %s: %w", profileID, store.ErrRetrievalEmbeddingProfileNotFound)
+}
 func (f *fakeStore) PutRetrievalEmbeddingBatch(_ context.Context, input store.PutRetrievalEmbeddingBatchInput) (int64, error) {
 	f.operations = append(f.operations, "batch")
 	rows := append([]store.RetrievalEmbeddingRow(nil), input.Rows...)
@@ -596,8 +614,11 @@ func TestEmbedBatchesInOrderWritesL2VectorsAndProvenance(t *testing.T) {
 	if snapshots[0].Scanned != 2 || snapshots[0].Remaining != 3 || snapshots[1].Scanned != 3 || snapshots[1].Remaining != 2 {
 		t.Fatalf("snapshots=%+v", snapshots)
 	}
-	if want := []string{"count", "candidates", "batch", "batch"}; !reflect.DeepEqual(st.operations, want) {
+	if want := []string{"count", "candidates", "batch", "candidates", "candidates", "batch", "candidates"}; !reflect.DeepEqual(st.operations, want) {
 		t.Fatalf("normal embed operations=%v want=%v; it must not scan ready vectors", st.operations, want)
+	}
+	if want := []int{2, 1, 1, 1}; !reflect.DeepEqual(st.candidateLimits, want) {
+		t.Fatalf("candidate limits=%v want=%v", st.candidateLimits, want)
 	}
 	profile := Profile(provider.Info())
 	profileID, _ := profile.ID()
@@ -612,7 +633,7 @@ func TestEmbedBatchesInOrderWritesL2VectorsAndProvenance(t *testing.T) {
 	}
 }
 
-func TestEmbedUntilIdlePreservesCircuitBreakerAcrossPagesAndFreezesEligibilityTime(t *testing.T) {
+func TestEmbedUntilIdleRetriesSameBatchAndFreezesEligibilityTime(t *testing.T) {
 	chunks := make([]store.RetrievalChunkRow, 5)
 	for i := range chunks {
 		chunks[i] = store.RetrievalChunkRow{ChunkID: fmt.Sprintf("chunk-%d", i), ChunkTextHash: fmt.Sprintf("hash-%d", i), Text: "text"}
@@ -621,8 +642,13 @@ func TestEmbedUntilIdlePreservesCircuitBreakerAcrossPagesAndFreezesEligibilityTi
 	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}, err: embedding.RetryableError(errors.New("down"))}
 	eligibility := time.Date(2026, 7, 21, 15, 0, 0, 0, time.UTC)
 	nowCalls := 0
+	var sleeps []time.Duration
 	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{
 		Limit: 2, BatchSize: 1, UntilIdle: true,
+		sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
 		Now: func() time.Time {
 			nowCalls++
 			return eligibility.Add(time.Duration(nowCalls) * time.Hour)
@@ -631,13 +657,21 @@ func TestEmbedUntilIdlePreservesCircuitBreakerAcrossPagesAndFreezesEligibilityTi
 	if !errors.Is(err, ErrEmbedCircuitOpen) {
 		t.Fatalf("err=%v", err)
 	}
-	if len(provider.requests) != 3 || len(st.writes) != 3 || progress.Scanned != 3 || progress.Remaining != 2 {
+	if len(provider.requests) != 3 || len(st.writes) != 1 || progress.Scanned != 1 || progress.Remaining != 4 {
 		t.Fatalf("progress=%+v requests=%d writes=%d", progress, len(provider.requests), len(st.writes))
+	}
+	if !reflect.DeepEqual(sleeps, []time.Duration{time.Second, 2 * time.Second}) {
+		t.Fatalf("sleeps=%v", sleeps)
+	}
+	for _, req := range provider.requests {
+		if !reflect.DeepEqual(req.Texts, []string{"text"}) {
+			t.Fatalf("retried different texts: requests=%+v", provider.requests)
+		}
 	}
 	if nowCalls != 1 || len(st.candidateTimes) != 2 {
 		t.Fatalf("now calls=%d candidate times=%v", nowCalls, st.candidateTimes)
 	}
-	if !reflect.DeepEqual(st.candidateAfters, []string{"", "chunk-1"}) {
+	if !reflect.DeepEqual(st.candidateAfters, []string{"", ""}) {
 		t.Fatalf("candidate cursors=%v", st.candidateAfters)
 	}
 	for _, got := range st.candidateTimes {
@@ -661,8 +695,13 @@ func TestEmbedUntilIdleProcessesAllPagesWithBoundedProgress(t *testing.T) {
 	if progress.Scanned != 5 || progress.Generated != 5 || progress.Remaining != 0 || len(st.writes) != 5 {
 		t.Fatalf("progress=%+v writes=%d", progress, len(st.writes))
 	}
-	if !reflect.DeepEqual(st.candidateAfters, []string{"", "chunk-1", "chunk-3", "chunk-4", ""}) {
-		t.Fatalf("candidate cursors=%v", st.candidateAfters)
+	if len(st.candidateAfters) != 10 {
+		t.Fatalf("candidate probes=%d cursors=%v", len(st.candidateAfters), st.candidateAfters)
+	}
+	for _, after := range st.candidateAfters {
+		if after != "" {
+			t.Fatalf("manual batch used an unbounded page cursor: cursors=%v", st.candidateAfters)
+		}
 	}
 	if len(progress.Snapshots) != 1 || progress.LastSnapshot == nil || progress.LastSnapshot.Scanned != 5 || progress.SnapshotCount != 5 {
 		t.Fatalf("progress snapshots=%+v", progress)
@@ -741,13 +780,36 @@ func TestEmbedRejectsStaleChunkProvenanceBeforeProviderCall(t *testing.T) {
 func TestEmbedClassifiesRetryBlockedFatalAndCancellation(t *testing.T) {
 	base := store.RetrievalChunkRow{ChunkID: "a", ChunkTextHash: "ha", Text: "alpha", AttemptCount: 4}
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	t.Run("retry", func(t *testing.T) {
+		st := &fakeStore{chunks: []store.RetrievalChunkRow{base}}
+		provider := &fakeProvider{
+			info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2},
+			err:  embedding.RetryableError(errors.New("down")),
+		}
+		var sleeps []time.Duration
+		_, err := RunEmbed(context.Background(), st, provider, EmbedOptions{
+			Limit: 1, BatchSize: 1, Now: func() time.Time { return now },
+			sleep: func(_ context.Context, delay time.Duration) error {
+				sleeps = append(sleeps, delay)
+				return nil
+			},
+		})
+		if !errors.Is(err, ErrEmbedCircuitOpen) || len(st.writes) != 1 {
+			t.Fatalf("retry err=%v writes=%+v", err, st.writes)
+		}
+		if got := st.writes[0]; got.Status != store.RetrievalEmbeddingError || got.AttemptCount != 7 || !got.NextAttemptAt.After(now) {
+			t.Fatalf("retry row=%+v", got)
+		}
+		if !reflect.DeepEqual(sleeps, []time.Duration{time.Second, 2 * time.Second}) {
+			t.Fatalf("sleeps=%v", sleeps)
+		}
+	})
 	for _, tc := range []struct {
 		name  string
 		err   error
 		want  store.RetrievalEmbeddingStatus
 		fatal bool
 	}{
-		{"retry", embedding.RetryableError(errors.New("down")), store.RetrievalEmbeddingError, false},
 		{"blocked", embedding.BlockedError(errors.New("too long")), store.RetrievalEmbeddingBlocked, false},
 		{"fatal", embedding.FatalConfigError(errors.New("bad config")), "", true},
 	} {
@@ -763,9 +825,6 @@ func TestEmbedClassifiesRetryBlockedFatalAndCancellation(t *testing.T) {
 			}
 			if err != nil || len(st.writes) != 1 || st.writes[0].Status != tc.want || st.writes[0].AttemptCount != 5 {
 				t.Fatalf("err=%v writes=%+v", err, st.writes)
-			}
-			if tc.want == store.RetrievalEmbeddingError && !st.writes[0].NextAttemptAt.After(now) {
-				t.Fatalf("retry time=%s", st.writes[0].NextAttemptAt)
 			}
 			if tc.want == store.RetrievalEmbeddingBlocked && !st.writes[0].NextAttemptAt.IsZero() {
 				t.Fatalf("blocked scheduled=%s", st.writes[0].NextAttemptAt)
@@ -844,6 +903,128 @@ func TestSemanticVerifyPagesAndQuarantinesCorruption(t *testing.T) {
 	}
 }
 
+func TestSemanticVerifyReturnsLastSuccessfulCursorWhenRowValidationFails(t *testing.T) {
+	valid := embedding.EncodeDenseF32([]float32{0.6, 0.8})
+	profile := Profile(embedding.Info{
+		Provider: "fake", Model: "m", Dimensions: 2,
+	})
+	profileID, _ := profile.ID()
+	row := func(id string, revision int64) store.RetrievalVectorRow {
+		return store.RetrievalVectorRow{
+			ChunkID: id, ProfileID: profileID,
+			Provider: "fake", Model: "m", Dimensions: 2,
+			ProjectionVersion: retrievalchunk.ProjectionVersion,
+			ChunkerVersion:    retrievalchunk.Version,
+			Representation:    embedding.RepresentationDenseF32,
+			Normalization:     embedding.NormalizationL2,
+			VectorBytes:       valid, VectorHash: vectorHash(valid),
+			ChunkTextHash: "hash-" + id, CurrentChunkTextHash: "hash-" + id,
+			Revision: revision,
+		}
+	}
+	st := &fakeStore{
+		verification: store.RetrievalEmbeddingVerificationState{
+			ProfileID: profileID, Profile: profile,
+			LatestRevision: 3, PurgeEpoch: 4, GlobalPurgeEpoch: 4,
+		},
+		vectorRows: []store.RetrievalVectorRow{
+			row("a", 1),
+			row("b", 2),
+			row("c", 3),
+		},
+	}
+	st.vectorRows[1].ChunkerVersion = "invalid"
+
+	first, err := RunVerify(
+		t.Context(),
+		st,
+		VerifyOptions{Profile: profile, Limit: 3},
+	)
+	if err == nil {
+		t.Fatal("invalid row unexpectedly verified")
+	}
+	if first.Scanned != 1 || first.Current != 1 || first.Resume != "a" {
+		t.Fatalf("failed-page progress=%+v", first)
+	}
+
+	st.vectorRows[1].ChunkerVersion = retrievalchunk.Version
+	resumed, err := RunVerify(
+		t.Context(),
+		st,
+		VerifyOptions{Profile: profile, Limit: 3, Resume: first.Resume},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Scanned != 2 || resumed.Current != 2 || resumed.Resume != "c" {
+		t.Fatalf("resumed progress=%+v", resumed)
+	}
+}
+
+func TestSemanticVerifyReturnsLastSuccessfulCursorWhenQuarantineCommitFails(t *testing.T) {
+	valid := embedding.EncodeDenseF32([]float32{0.6, 0.8})
+	profile := Profile(embedding.Info{
+		Provider: "fake", Model: "m", Dimensions: 2,
+	})
+	profileID, _ := profile.ID()
+	validRow := func(id string, revision int64) store.RetrievalVectorRow {
+		return store.RetrievalVectorRow{
+			ChunkID: id, ProfileID: profileID,
+			Provider: "fake", Model: "m", Dimensions: 2,
+			ProjectionVersion: retrievalchunk.ProjectionVersion,
+			ChunkerVersion:    retrievalchunk.Version,
+			Representation:    embedding.RepresentationDenseF32,
+			Normalization:     embedding.NormalizationL2,
+			VectorBytes:       valid, VectorHash: vectorHash(valid),
+			ChunkTextHash: "hash-" + id, CurrentChunkTextHash: "hash-" + id,
+			Revision: revision,
+		}
+	}
+	corrupt := validRow("b", 2)
+	corrupt.VectorBytes = []byte{0}
+	corrupt.VectorHash = "invalid"
+	blockErr := errors.New("quarantine commit failed")
+	st := &fakeStore{
+		verification: store.RetrievalEmbeddingVerificationState{
+			ProfileID: profileID, Profile: profile,
+			LatestRevision: 3, PurgeEpoch: 4, GlobalPurgeEpoch: 4,
+		},
+		vectorRows: []store.RetrievalVectorRow{
+			validRow("a", 1),
+			corrupt,
+			validRow("c", 3),
+		},
+		blockErrs: []error{blockErr},
+	}
+
+	first, err := RunVerify(
+		t.Context(),
+		st,
+		VerifyOptions{Profile: profile, Limit: 3},
+	)
+	if !errors.Is(err, blockErr) {
+		t.Fatalf("first err=%v", err)
+	}
+	if first.Scanned != 1 || first.Current != 1 || first.Resume != "a" {
+		t.Fatalf("failed-page progress=%+v", first)
+	}
+
+	resumed, err := RunVerify(
+		t.Context(),
+		st,
+		VerifyOptions{Profile: profile, Limit: 3, Resume: first.Resume},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Scanned != 2 ||
+		resumed.Current != 1 ||
+		resumed.Quarantined != 1 ||
+		resumed.Resume != "c" {
+		t.Fatalf("resumed progress=%+v", resumed)
+	}
+}
+
 func TestSemanticVerifyRepairsReadinessCountersOnlyWhenExplicitlyRequested(t *testing.T) {
 	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
 	profileID, _ := profile.ID()
@@ -897,11 +1078,11 @@ func TestSemanticVerifyRejectsProfileRootAndRevisionProvenance(t *testing.T) {
 		state.ActiveSnapshotRevision = 2
 		state.ActiveIndexedCount = 2
 		state.ActiveTombstoneCount = 1
-		state.GenerationBackend = "exact"
-		state.GenerationBackendVersion = "v1"
+		state.GenerationBackend = semanticindex.BackendUSearch
+		state.GenerationBackendVersion = semanticindex.USearchVersion
 		state.GenerationStatus = store.RetrievalGenerationCompleted
 		state.GenerationActive = true
-		state.GenerationDimensions = 2
+		state.GenerationDimensions = profile.Dimensions
 		state.GenerationDistanceMetric = "cosine"
 		state.GenerationIndexedChunkCount = 2
 	}
@@ -944,6 +1125,83 @@ func TestSemanticVerifyRejectsProfileRootAndRevisionProvenance(t *testing.T) {
 	}
 }
 
+func TestValidateVerificationStateAcceptsPinnedUSearchGeneration(t *testing.T) {
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := validUSearchVerificationState(profileID, profile)
+
+	if err := validateVerificationState(profileID, profile, state); err != nil {
+		t.Fatalf("valid pinned USearch generation rejected: %v", err)
+	}
+}
+
+func TestValidateVerificationStateRejectsUnsupportedGenerationProvenance(t *testing.T) {
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*store.RetrievalEmbeddingVerificationState)
+	}{
+		{"exact backend", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationBackend = "exact"
+		}},
+		{"unknown backend", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationBackend = "unknown"
+		}},
+		{"wrong USearch version", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationBackendVersion = "2.25.0"
+		}},
+		{"non-cosine metric", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationDistanceMetric = "dot"
+		}},
+		{"wrong dimensions", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationDimensions = profile.Dimensions + 1
+		}},
+		{"inactive generation", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationActive = false
+		}},
+		{"non-completed generation", func(state *store.RetrievalEmbeddingVerificationState) {
+			state.GenerationStatus = store.RetrievalGenerationBuilding
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := validUSearchVerificationState(profileID, profile)
+			tc.mutate(&state)
+
+			if err := validateVerificationState(profileID, profile, state); err == nil {
+				t.Fatal("unsupported active generation provenance accepted")
+			}
+		})
+	}
+}
+
+func validUSearchVerificationState(profileID string, profile embedding.Profile) store.RetrievalEmbeddingVerificationState {
+	return store.RetrievalEmbeddingVerificationState{
+		ProfileID:                   profileID,
+		Profile:                     profile,
+		LatestRevision:              2,
+		PurgeEpoch:                  1,
+		GlobalPurgeEpoch:            1,
+		ActiveGenerationID:          "root",
+		ActiveSnapshotRevision:      2,
+		ActiveIndexedCount:          2,
+		ActiveTombstoneCount:        1,
+		GenerationBackend:           semanticindex.BackendUSearch,
+		GenerationBackendVersion:    semanticindex.USearchVersion,
+		GenerationDistanceMetric:    "cosine",
+		GenerationDimensions:        profile.Dimensions,
+		GenerationIndexedChunkCount: 2,
+		GenerationStatus:            store.RetrievalGenerationCompleted,
+		GenerationActive:            true,
+	}
+}
+
 func TestEmbedCircuitBreakerPreservesUnattemptedRows(t *testing.T) {
 	chunks := make([]store.RetrievalChunkRow, 5)
 	for i := range chunks {
@@ -951,13 +1209,28 @@ func TestEmbedCircuitBreakerPreservesUnattemptedRows(t *testing.T) {
 	}
 	st := &fakeStore{chunks: chunks}
 	provider := &fakeProvider{info: embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}, err: embedding.RetryableError(errors.New("down"))}
-	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{Limit: 5, BatchSize: 1})
-	if !errors.Is(err, ErrEmbedCircuitOpen) || len(provider.requests) != 3 || len(st.writes) != 3 || progress.Scanned != 3 || progress.Remaining != 2 {
+	var sleeps []time.Duration
+	progress, err := RunEmbed(context.Background(), st, provider, EmbedOptions{
+		Limit: 5, BatchSize: 1,
+		sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+	})
+	if !errors.Is(err, ErrEmbedCircuitOpen) || len(provider.requests) != 3 || len(st.writes) != 1 || progress.Scanned != 1 || progress.Remaining != 4 {
 		t.Fatalf("progress=%+v err=%v requests=%d writes=%d", progress, err, len(provider.requests), len(st.writes))
+	}
+	if !reflect.DeepEqual(sleeps, []time.Duration{time.Second, 2 * time.Second}) {
+		t.Fatalf("sleeps=%v", sleeps)
+	}
+	for _, req := range provider.requests {
+		if !reflect.DeepEqual(req.Texts, []string{"text"}) {
+			t.Fatalf("circuit retried different candidate: requests=%+v", provider.requests)
+		}
 	}
 }
 
-func TestEmbedCapsProviderAndPersistenceBatches(t *testing.T) {
+func TestEmbedManualLimitFiveThousandOneUsesTwoBoundedBatchCalls(t *testing.T) {
 	chunks := make([]store.RetrievalChunkRow, 5001)
 	for i := range chunks {
 		chunks[i] = store.RetrievalChunkRow{ChunkID: fmt.Sprintf("chunk-%05d", i), ChunkTextHash: fmt.Sprintf("hash-%d", i), Text: "text"}
@@ -970,6 +1243,9 @@ func TestEmbedCapsProviderAndPersistenceBatches(t *testing.T) {
 	}
 	if progress.Generated != len(chunks) || len(provider.requests) != 2 || len(provider.requests[0].Texts) != 5000 || len(provider.requests[1].Texts) != 1 || len(st.writeBatches) != 2 || len(st.writeBatches[0]) != 5000 {
 		t.Fatalf("progress=%+v requests=%d batches=%d", progress, len(provider.requests), len(st.writeBatches))
+	}
+	if want := []int{5000, 1, 1, 1}; !reflect.DeepEqual(st.candidateLimits, want) {
+		t.Fatalf("candidate limits=%v want=%v; RunEmbedBatch must stay physically bounded", st.candidateLimits, want)
 	}
 }
 
@@ -984,6 +1260,8 @@ type fakeStatusStore struct {
 	status      semanticreadiness.Snapshot
 	err         error
 	observedCap *int
+	latest      *store.SemanticRefreshRun
+	latestErr   error
 }
 
 func (f fakeStatusStore) SemanticReadinessSnapshotAt(_ context.Context, _ embedding.Profile, exactCap int, _ time.Time) (semanticreadiness.Snapshot, error) {
@@ -993,12 +1271,16 @@ func (f fakeStatusStore) SemanticReadinessSnapshotAt(_ context.Context, _ embedd
 	return f.status, f.err
 }
 
+func (f fakeStatusStore) LatestSemanticRefreshRun(context.Context, string) (*store.SemanticRefreshRun, error) {
+	return f.latest, f.latestErr
+}
+
 func TestStatusClampsConfiguredExactCapToSafetyCeiling(t *testing.T) {
 	observedCap := 0
 	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
 	got, err := ReadStatus(context.Background(), fakeStatusStore{
 		err: store.ErrRetrievalUnavailable, observedCap: &observedCap,
-	}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, true, 300_000, now)
+	}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, true, 300_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1008,7 +1290,7 @@ func TestStatusClampsConfiguredExactCapToSafetyCeiling(t *testing.T) {
 }
 
 func TestStatusPriorityKeepsConfiguredOffModeDisabled(t *testing.T) {
-	got, err := ReadStatus(context.Background(), fakeStatusStore{err: store.ErrRetrievalUnavailable}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, false, 25_000, time.Now())
+	got, err := ReadStatus(context.Background(), fakeStatusStore{err: store.ErrRetrievalUnavailable}, Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2}), true, false, 25_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, time.Now())
 	if err != nil {
 		t.Fatalf("ReadStatus: %v", err)
 	}
@@ -1028,13 +1310,226 @@ func TestReadinessStatusDelegatesToPureEvaluator(t *testing.T) {
 		L0ReadyCount: 1, ObservedL0ReadyCount: 1,
 	}
 	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
-	got, err := ReadStatus(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, now)
+	got, err := ReadStatus(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Status != string(semanticreadiness.StateCatchingUp) || !got.Searchable || got.Reason == "" || got.Store.EstimatedNotReadyChunks != 1 {
 		t.Fatalf("status=%+v", got)
 	}
+}
+
+func TestReadStatusCapabilityAdmission(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	exact := semanticreadiness.Snapshot{
+		Available: true, ProfileExists: true, ProfileProvenanceValid: true,
+		ExpectedParents: 1, CurrentParents: 1, ChunkableParents: 1, ParentsWithReadyChunk: 1,
+		ChunkCount: 1, ReadyEmbeddings: 1,
+		GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1,
+		LatestRevision: 1, ObservedLatestRevision: 1,
+		L0ReadyCount: 1, ObservedL0ReadyCount: 1,
+	}
+	active := exact
+	active.ActiveGenerationID = "root"
+	active.ActiveGenerationValid = true
+	active.ActiveSnapshotRevision = 1
+	active.ActiveGenerationBackend = semanticindex.BackendUSearch
+	active.ActiveGenerationBackendVersion = semanticindex.USearchVersion
+	active.ActiveGenerationDistanceMetric = "cosine"
+	active.ActiveGenerationDimensions = 2
+	active.ActiveIndexedCount = 1
+	corrupt := active
+	corrupt.ActiveGenerationValid = false
+	disabled := active
+	needsIndex := active
+	needsIndex.L0ReadyCount = semanticreadiness.CatchUpL0Limit + 1
+	needsIndex.ObservedL0ReadyCount = semanticreadiness.CatchUpL0Limit + 1
+
+	tests := []struct {
+		name       string
+		snapshot   semanticreadiness.Snapshot
+		capability semanticindex.Capability
+		enabled    bool
+		wantState  semanticreadiness.State
+		wantReason string
+		searchable bool
+	}{
+		{
+			name: "exact small remains ready without native support", snapshot: exact,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			enabled:    true,
+			wantState:  semanticreadiness.StateReady, searchable: true,
+		},
+		{
+			name: "matching native backend is admitted", snapshot: active,
+			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion},
+			enabled:    true,
+			wantState:  semanticreadiness.StateReady, searchable: true,
+		},
+		{
+			name: "corrupt active generation keeps readiness repair state", snapshot: corrupt,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			enabled:    true,
+			wantState:  semanticreadiness.StateCorrupt, wantReason: "active semantic generation provenance is unproven",
+		},
+		{
+			name: "disabled mode keeps readiness repair state despite old active generation", snapshot: disabled,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			wantState:  semanticreadiness.StateDisabled, wantReason: "semantic retrieval mode is off",
+		},
+		{
+			name: "needs index active generation keeps readiness repair state", snapshot: needsIndex,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			enabled:    true,
+			wantState:  semanticreadiness.StateNeedsIndex, wantReason: "active semantic generation exceeds the L0 or tombstone safety limit",
+		},
+		{
+			name: "unsupported native backend is unavailable", snapshot: active,
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			enabled:    true,
+			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_unsupported",
+		},
+		{
+			name: "broken native backend is unavailable", snapshot: active,
+			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedBroken, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion, Reason: "load /private/tmp/libusearch.dylib failed"},
+			enabled:    true,
+			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_broken: load [path] failed",
+		},
+		{
+			name: "native provenance mismatch is unavailable", snapshot: active,
+			capability: semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: "2.25.0"},
+			enabled:    true,
+			wantState:  semanticreadiness.StateUnavailable, wantReason: "native_backend_provenance_mismatch",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ReadStatus(context.Background(), fakeStatusStore{status: tc.snapshot}, profile, true, tc.enabled, 25_000, tc.capability, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != string(tc.wantState) || got.Searchable != tc.searchable {
+				t.Fatalf("status=%+v want_state=%s searchable=%t", got, tc.wantState, tc.searchable)
+			}
+			if tc.wantReason != "" && got.Reason != tc.wantReason {
+				t.Fatalf("reason=%q want=%q", got.Reason, tc.wantReason)
+			}
+			if got.BackendCapability != tc.capability {
+				t.Fatalf("backend_capability=%+v want=%+v", got.BackendCapability, tc.capability)
+			}
+			payload, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(payload), `"backend_capability":`) || strings.Contains(string(payload), `"problems":null`) || strings.Contains(string(payload), `"next_steps":null`) {
+				t.Fatalf("status JSON=%s", payload)
+			}
+		})
+	}
+
+	unconfigured, err := ReadStatus(context.Background(), nil, embedding.Profile{}, false, false, 25_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(unconfigured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"backend_capability":{"state":"unsupported"}`) || strings.Contains(string(payload), `"problems":null`) || strings.Contains(string(payload), `"next_steps":null`) {
+		t.Fatalf("unconfigured status JSON=%s", payload)
+	}
+}
+
+func TestReadStatusNativeArtifactValidation(t *testing.T) {
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	profile := Profile(embedding.Info{Provider: "fake", Model: "m", Dimensions: 2})
+	snapshot := semanticreadiness.Snapshot{
+		Available: true, ProfileExists: true, ProfileProvenanceValid: true,
+		ExpectedParents: 1, CurrentParents: 1, ChunkableParents: 1, ParentsWithReadyChunk: 1,
+		ChunkCount: 1, ReadyEmbeddings: 1,
+		GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1,
+		LatestRevision: 1, ObservedLatestRevision: 1,
+		L0ReadyCount: 1, ObservedL0ReadyCount: 1,
+		ActiveGenerationID: "root", ActiveGenerationValid: true, ActiveSnapshotRevision: 1,
+		ActiveGenerationBackend: semanticindex.BackendUSearch, ActiveGenerationBackendVersion: semanticindex.USearchVersion,
+		ActiveGenerationDistanceMetric: "cosine", ActiveGenerationDimensions: 2, ActiveIndexedCount: 1,
+	}
+	capability := semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion}
+
+	for _, tc := range []struct {
+		name       string
+		validate   func(context.Context, semanticreadiness.Snapshot) error
+		searchable bool
+		wantStatus semanticreadiness.State
+		wantReason string
+	}{
+		{name: "healthy native artifact remains ready", validate: func(context.Context, semanticreadiness.Snapshot) error { return nil }, searchable: true, wantStatus: semanticreadiness.StateReady},
+		{name: "damaged native artifact is unavailable", validate: func(context.Context, semanticreadiness.Snapshot) error {
+			return errors.New("open /private/cache/root.json: no such file")
+		}, searchable: false, wantStatus: semanticreadiness.StateUnavailable, wantReason: "native_root_artifacts_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ReadStatusWithNativeValidation(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, capability, now, tc.validate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != string(tc.wantStatus) || got.Searchable != tc.searchable || (tc.wantReason != "" && got.Reason != tc.wantReason) {
+				t.Fatalf("status=%+v", got)
+			}
+			if strings.Contains(strings.Join(got.Problems, " "), "/private/cache") {
+				t.Fatalf("status leaked artifact path: %+v", got)
+			}
+		})
+	}
+
+	t.Run("unsupported native backend does not validate artifacts", func(t *testing.T) {
+		called := false
+		got, err := ReadStatusWithNativeValidation(context.Background(), fakeStatusStore{status: snapshot}, profile, true, true, 25_000, semanticindex.Capability{State: semanticindex.CapabilityUnsupported}, now, func(context.Context, semanticreadiness.Snapshot) error {
+			called = true
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if called || got.Searchable || got.Reason != "native_backend_unsupported" {
+			t.Fatalf("called=%t status=%+v", called, got)
+		}
+	})
+
+	for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run("validator interruption propagates: "+want.Error(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			got, err := ReadStatusWithNativeValidation(ctx, fakeStatusStore{status: snapshot}, profile, true, true, 25_000, capability, now, func(context.Context, semanticreadiness.Snapshot) error {
+				if errors.Is(want, context.Canceled) {
+					cancel()
+				}
+				return want
+			})
+			if !errors.Is(err, want) {
+				t.Fatalf("error=%v want %v", err, want)
+			}
+			if got.Status == string(semanticreadiness.StateUnavailable) || got.Reason == "native_root_artifacts_unavailable" || !got.Searchable || len(got.Problems) != 0 {
+				t.Fatalf("interrupted status=%+v want no artifact downgrade", got)
+			}
+		})
+	}
+
+	t.Run("canceled context takes precedence over artifact validation error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		got, err := ReadStatusWithNativeValidation(ctx, fakeStatusStore{status: snapshot}, profile, true, true, 25_000, capability, now, func(context.Context, semanticreadiness.Snapshot) error {
+			cancel()
+			return errors.New("open /private/cache/root.json: no such file")
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v want context cancellation", err)
+		}
+		if got.Status == string(semanticreadiness.StateUnavailable) || got.Reason == "native_root_artifacts_unavailable" || !got.Searchable || len(got.Problems) != 0 {
+			t.Fatalf("interrupted status=%+v want no artifact downgrade", got)
+		}
+	})
 }
 
 func TestBoundedProgressJSONUsesOnlyLatestSnapshot(t *testing.T) {

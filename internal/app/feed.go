@@ -52,7 +52,7 @@ func newFeedAddCommand(root *rootOptions) *cobra.Command {
 			if err := cfg.EnsureDirs(); err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -106,7 +106,7 @@ func newFeedListCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -160,7 +160,7 @@ func newFeedStatusCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -197,7 +197,7 @@ func newFeedCheckCommand(root *rootOptions) *cobra.Command {
 			if err := cfg.EnsureDirs(); err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -263,7 +263,7 @@ func newFeedRefreshCommand(root *rootOptions) *cobra.Command {
 			if err := cfg.EnsureDirs(); err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -343,7 +343,7 @@ func newFeedEnableCommand(root *rootOptions, enabled bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}

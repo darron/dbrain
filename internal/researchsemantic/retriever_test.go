@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -135,6 +137,219 @@ func TestRetrieverPreservesSearchedEmptyWithoutHydration(t *testing.T) {
 	}
 }
 
+func TestRetrieverPinsGenerationThroughHydrationAndWriterIntentPreventsBarging(t *testing.T) {
+	testCtx, cancelTest := context.WithCancel(t.Context())
+	defer cancelTest()
+	scope, err := semanticlock.NewScope(t.TempDir(), "database-query-pin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testProfile()
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hydrationStarted := make(chan struct{})
+	releaseHydration := make(chan struct{})
+	firstHydrator := &blockingHydrationStore{
+		started: hydrationStarted,
+		release: releaseHydration,
+		rows: []store.RetrievalChunkEvidenceRow{{
+			ChunkID: "chunk-a", ParentKind: "source", ParentSourceKey: "source:a",
+			EvidenceRole: "raw", ChunkTextHash: "hash-a", Text: "semantic evidence",
+		}},
+	}
+	leasePaths := make(chan string, 1)
+	acquire := GenerationLeaseAcquirer(func(ctx context.Context) (GenerationLease, error) {
+		acquireCtx, cancelAcquire := context.WithTimeout(ctx, 40*time.Millisecond)
+		defer cancelAcquire()
+		lease, err := scope.AcquireGenerationShared(acquireCtx, "owner=research-query\n")
+		if err == nil {
+			select {
+			case leasePaths <- lease.Path():
+			default:
+			}
+		}
+		return lease, err
+	})
+	first := NewWithGenerationLease(
+		unitProvider(),
+		&fakeSearcher{
+			hits:   []semanticindex.Hit{{ChunkID: "chunk-a", Rank: 1, Distance: 0.1}},
+			status: semanticindex.Status{State: semanticindex.StateSearched, Backend: semanticindex.BackendExact, ProfileID: profileID},
+		},
+		firstHydrator,
+		acquire,
+	)
+	firstResult := make(chan retrieveResult, 1)
+	go func() {
+		docs, status, err := first.Retrieve(testCtx, "first query", Options{Profile: profile, Limit: 1, MaxChunks: 10})
+		firstResult <- retrieveResult{docs: docs, status: status, err: err}
+	}()
+	select {
+	case <-hydrationStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first query did not reach blocked hydration")
+	}
+	var generationPath string
+	select {
+	case generationPath = <-leasePaths:
+	case <-time.After(time.Second):
+		t.Fatal("first query did not acquire generation lease")
+	}
+
+	activationAcquired := make(chan struct{})
+	releaseActivation := make(chan struct{})
+	activationErr := make(chan error, 1)
+	go func() {
+		maintenance, err := scope.AcquireMaintenanceExclusive(testCtx, "owner=activation\n")
+		if err != nil {
+			activationErr <- err
+			return
+		}
+		generation, err := maintenance.AcquireGenerationExclusive(testCtx, "owner=activation\n")
+		if err != nil {
+			activationErr <- errors.Join(err, maintenance.Close())
+			return
+		}
+		close(activationAcquired)
+		var waitErr error
+		select {
+		case <-releaseActivation:
+		case <-testCtx.Done():
+			waitErr = testCtx.Err()
+		}
+		activationErr <- errors.Join(waitErr, generation.Close(), maintenance.Close())
+	}()
+	waitForGenerationWriterIntent(t, generationPath)
+
+	laterSearcher := &fakeSearcher{}
+	laterHydrator := &fakeHydrationStore{}
+	later := NewWithGenerationLease(unitProvider(), laterSearcher, laterHydrator, acquire)
+	laterCtx, cancelLater := context.WithTimeout(t.Context(), time.Second)
+	defer cancelLater()
+	docs, status, err := later.Retrieve(laterCtx, "later query", Options{Profile: profile, Limit: 1, MaxChunks: 10})
+	if err != nil || status.State != semanticindex.StateUnavailable || status.Reason != ReasonGenerationBusy || len(docs) != 0 {
+		t.Fatalf("later docs=%+v status=%+v err=%v", docs, status, err)
+	}
+	if len(laterSearcher.queries) != 0 || len(laterHydrator.calls) != 0 {
+		t.Fatalf("later query barged: searches=%d hydrations=%d", len(laterSearcher.queries), len(laterHydrator.calls))
+	}
+	select {
+	case <-activationAcquired:
+		t.Fatal("activation acquired while first query hydration was blocked")
+	default:
+	}
+
+	close(releaseHydration)
+	select {
+	case result := <-firstResult:
+		if result.err != nil || result.status.State != semanticindex.StateSearched || len(result.docs) != 1 {
+			t.Fatalf("first result=%+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first query did not finish after hydration release")
+	}
+	select {
+	case <-activationAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("activation did not acquire after hydrated evidence construction")
+	}
+	close(releaseActivation)
+	if err := <-activationErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRetrieverGenerationLeaseReleaseFailureFailsClosed(t *testing.T) {
+	releaseErr := errors.New("release generation failed")
+	searcher := &fakeSearcher{
+		hits:   []semanticindex.Hit{{ChunkID: "chunk-a", Rank: 1}},
+		status: semanticindex.Status{State: semanticindex.StateSearched, Backend: semanticindex.BackendExact},
+	}
+	hydrator := &fakeHydrationStore{rows: []store.RetrievalChunkEvidenceRow{{
+		ChunkID: "chunk-a", ParentKind: "source", ParentSourceKey: "source:a",
+		EvidenceRole: "raw", ChunkTextHash: "hash-a", Text: "semantic evidence",
+	}}}
+	lease := &fakeGenerationLease{err: releaseErr}
+	retriever := NewWithGenerationLease(
+		unitProvider(),
+		searcher,
+		hydrator,
+		func(context.Context) (GenerationLease, error) { return lease, nil },
+	)
+	docs, status, err := retriever.Retrieve(t.Context(), "query", Options{Profile: testProfile(), Limit: 1, MaxChunks: 10})
+	if !errors.Is(err, releaseErr) || status.State != semanticindex.StateUnavailable || status.Reason != semanticindex.ReasonSearchError || len(docs) != 0 {
+		t.Fatalf("docs=%+v status=%+v err=%v", docs, status, err)
+	}
+	if lease.closes != 1 {
+		t.Fatalf("lease closes=%d want 1", lease.closes)
+	}
+}
+
+func TestRetrieverCancellationDuringHydrationReleasesGenerationLease(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	hydrationStarted := make(chan struct{})
+	hydrator := &blockingHydrationStore{
+		started: hydrationStarted,
+		release: make(chan struct{}),
+	}
+	lease := &fakeGenerationLease{}
+	retriever := NewWithGenerationLease(
+		unitProvider(),
+		&fakeSearcher{
+			hits:   []semanticindex.Hit{{ChunkID: "chunk-a", Rank: 1}},
+			status: semanticindex.Status{State: semanticindex.StateSearched, Backend: semanticindex.BackendExact},
+		},
+		hydrator,
+		func(context.Context) (GenerationLease, error) { return lease, nil },
+	)
+	result := make(chan retrieveResult, 1)
+	go func() {
+		docs, status, err := retriever.Retrieve(ctx, "query", Options{Profile: testProfile(), Limit: 1, MaxChunks: 10})
+		result <- retrieveResult{docs: docs, status: status, err: err}
+	}()
+	select {
+	case <-hydrationStarted:
+	case <-time.After(time.Second):
+		t.Fatal("query did not reach hydration")
+	}
+	cancel()
+	select {
+	case got := <-result:
+		if !errors.Is(got.err, context.Canceled) || got.status.State != semanticindex.StateUnavailable || got.status.Reason != semanticindex.ReasonCanceled || len(got.docs) != 0 {
+			t.Fatalf("result=%+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled query did not return")
+	}
+	if lease.closes != 1 {
+		t.Fatalf("lease closes=%d want 1", lease.closes)
+	}
+}
+
+func TestRetrieverCallerDeadlineDuringGenerationAcquisitionRemainsCancellation(t *testing.T) {
+	searcher := &fakeSearcher{}
+	retriever := NewWithGenerationLease(
+		unitProvider(),
+		searcher,
+		&fakeHydrationStore{},
+		func(ctx context.Context) (GenerationLease, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	)
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	docs, status, err := retriever.Retrieve(ctx, "query", Options{Profile: testProfile(), Limit: 1, MaxChunks: 10})
+	if !errors.Is(err, context.DeadlineExceeded) || status.State != semanticindex.StateUnavailable || status.Reason != semanticindex.ReasonCanceled || len(docs) != 0 {
+		t.Fatalf("docs=%+v status=%+v err=%v", docs, status, err)
+	}
+	if len(searcher.queries) != 0 {
+		t.Fatalf("search ran after caller deadline: queries=%d", len(searcher.queries))
+	}
+}
+
 func TestRetrieverCloseClosesSearcherOnce(t *testing.T) {
 	searcher := &fakeSearcher{}
 	retriever := New(unitProvider(), searcher, &fakeHydrationStore{})
@@ -147,6 +362,55 @@ func TestRetrieverCloseClosesSearcherOnce(t *testing.T) {
 	if searcher.closes != 1 {
 		t.Fatalf("searcher closes=%d", searcher.closes)
 	}
+}
+
+type retrieveResult struct {
+	docs   []retrieval.EvidenceDocument
+	status semanticindex.Status
+	err    error
+}
+
+type blockingHydrationStore struct {
+	started chan struct{}
+	release chan struct{}
+	rows    []store.RetrievalChunkEvidenceRow
+}
+
+func (b *blockingHydrationStore) HydrateRetrievalChunks(ctx context.Context, _ []string) ([]store.RetrievalChunkEvidenceRow, error) {
+	close(b.started)
+	select {
+	case <-b.release:
+		return append([]store.RetrievalChunkEvidenceRow(nil), b.rows...), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+type fakeGenerationLease struct {
+	closes int
+	err    error
+}
+
+func (l *fakeGenerationLease) Close() error {
+	l.closes++
+	return l.err
+}
+
+func waitForGenerationWriterIntent(t *testing.T, generationPath string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	pattern := generationPath + ".writer-*.intent"
+	for time.Now().Before(deadline) {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) != 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("generation writer intent did not appear at %s", pattern)
 }
 
 func TestRetrieverMapsProviderFailuresAndRejectsNonUnitQuery(t *testing.T) {

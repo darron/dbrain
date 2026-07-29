@@ -96,6 +96,24 @@ type Root struct {
 	Manifest     RootManifest
 }
 
+// RootDescriptorSHA256 returns the canonical root descriptor hash shared by
+// filesystem publication and authoritative SQLite admission.
+func RootDescriptorSHA256(input RootInput) (string, error) {
+	if err := validateRootInput(input); err != nil {
+		return "", err
+	}
+	descriptor := rootDescriptor{
+		SchemaVersion: SchemaVersion, DatabaseID: input.DatabaseID, ProfileID: input.ProfileID,
+		GenerationID: input.GenerationID, SnapshotRevision: input.SnapshotRevision, PurgeEpoch: input.PurgeEpoch,
+		Segments: append([]RootSegment(nil), input.Segments...),
+	}
+	bytes, err := canonicalJSON(descriptor)
+	if err != nil {
+		return "", err
+	}
+	return sha256Hex(bytes), nil
+}
+
 func segmentRelativePath(databaseID, profileID, hash string) string {
 	return filepath.ToSlash(filepath.Join("semantic", databaseID, profileID, "segments", hash))
 }

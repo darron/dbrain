@@ -1312,17 +1312,41 @@ lexical evidence with explicit status/reason before provider construction. Exact
 evidence remains separate and representative. Direct MCP pack calls remain
 read-only and trace-free, including in shadow mode.
 
-Operational state is limited to `dbrain semantic status`, `semantic chunk`,
-`semantic embed`, and bounded `semantic verify`. Chunk and embed support
-durable `--until-idle` processing with graceful `--max-duration` interruption;
-counter rebuilding is an explicit verify repair and never occurs on research
-requests. The current deletion integration is item-only: Apple Notes
+Use `dbrain semantic refresh` as the composed diagnostic/recovery maintenance
+path; it uses the configured profile without changing `research.semantic.mode`,
+fixes one projection watermark for a run, and resumes a cancelled or failed run
+on a later invocation. Normal successful `sync all` and scheduled sync runs
+invoke that same path synchronously after source cleanup, including unchanged
+runs, so routine operation needs no separate refresh step. Writes above that
+watermark are left for a successor run, so the completed run has a stable
+boundary. `dbrain semantic status` reports the
+latest selected-profile run (or the database-latest run when disabled or
+unconfigured) as `latest_run`. Its public JSON has stable snake_case fields:
+`run_id`, `profile_id`, `purge_epoch`, `projection_watermark`,
+`embedding_revision`, `stage`, `checkpoint`, `counters`,
+`current_generation_id`, `state`, `error_code`, `readiness_state`,
+`created_at`, `updated_at`, and `last_progress_at`; stored error text is not
+published. Typed refresh errors use stable bounded `code`, `stage`, `run_id`,
+`checkpoint`, `readiness`, `remaining_debt`, and `message` fields.
+
+`semantic chunk`, `semantic embed`, and bounded `semantic verify` remain
+diagnostic commands rather than the normal operator sequence. Chunk and embed
+support durable `--until-idle` processing with graceful `--max-duration`
+interruption; counter rebuilding remains an explicit verify repair. Queries,
+research, MCP, and web paths never trigger maintenance. The current deletion
+integration is item-only: Apple Notes
 `--forget-excluded` synchronously removes that item's derived chunks/embeddings
 and stale affected retrieval generations through the explicit indexed-content
 purge. Other delete paths and future parent kinds are not covered by this claim.
-There is no ANN index or ANN file lifecycle in this foundation;
-ANN, provider expansion, background sync, and default-on remain deferred until
-reviewed lexical-versus-hybrid evals justify them.
+Source failure skips semantic admission. Mode `off` and unsupported builds
+produce explicit successful skips; a supported-but-broken backend or any enabled
+refresh failure makes the sync fail with the typed refresh error. The existing
+coarse sync-all lock covers both source and semantic phases, but this stack does
+not add cross-process semantic maintenance/generation locks, package native
+support for releases/Homebrew, or activate an installed or production corpus.
+Normal untagged/CGO-free artifacts therefore remain unsupported for refresh
+until the later distribution stack. Provider expansion and default-on remain
+deferred until reviewed lexical-versus-hybrid evals justify them.
 
 ### Phase 8: Make The UI And Skill Reflect The Runner
 
@@ -1528,8 +1552,18 @@ Current semantic foundation:
 - CLI `--semantic` / `--no-semantic` and MCP/web `use_semantic` /
   `disable_semantic` force effective on/off; enabling and disabling together is
   rejected. Direct MCP pack builds remain trace-free.
-- ANN lifecycle, additional providers, background sync, and default-on behavior
-  remain evaluation-gated and deferred.
+- The separate `semantic refresh` command uses the configured profile and
+  preserves mode, but is now diagnostic/recovery only: successful CLI and
+  scheduled sync runs call the same refresh path after source cleanup. Mode
+  `off` and unsupported builds are explicit successful skips; a
+  supported-but-broken backend and supported enabled failures return typed sync
+  errors. Runs use a fixed watermark, resume after cancellation/failure, and
+  create successor work for later writes. Queries never call refresh. The
+  coarse sync-all lock spans source plus refresh, but there is still no
+  cross-process semantic maintenance lock, release/Homebrew packaging, or
+  production activation in this stack.
+- Additional providers, distribution, and default-on behavior remain
+  evaluation-gated and deferred.
 
 Remaining questions:
 

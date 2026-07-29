@@ -95,8 +95,16 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 	requested := make(map[string]USearchRootCandidate)
 	validated := make(map[string]USearchRootCandidate)
 	for _, budget := range nativeCandidateStages(opts.Limit) {
-		candidates, err := s.root.Candidates(query, nativeCandidatesPerSegment(budget, len(s.root.Segments)))
+		candidates, err := s.root.Candidates(ctx, query, nativeCandidatesPerSegment(budget, len(s.root.Segments)))
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				status.Reason = ReasonCanceled
+				return []Hit{}, status, ctxErr
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				status.Reason = ReasonCanceled
+				return []Hit{}, status, err
+			}
 			status.Reason = ReasonSearchError
 			return hits, status, err
 		}
@@ -122,11 +130,11 @@ func (s *USearchCandidateSearcher) Search(ctx context.Context, query []float32, 
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					status.Reason = ReasonCanceled
-					return hits, status, ctxErr
+					return []Hit{}, status, ctxErr
 				}
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					status.Reason = ReasonCanceled
-					return hits, status, err
+					return []Hit{}, status, err
 				}
 				var corruption *store.RetrievalEmbeddingCorruptionError
 				if errors.As(err, &corruption) {

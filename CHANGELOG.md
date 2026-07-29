@@ -5,6 +5,109 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Native semantic packaging for macOS arm64 (2026-07-28)
+
+- **Self-contained Homebrew native backend**: macOS arm64 release and candidate
+  archives now compile checksum-pinned USearch v2.26.0 with a macOS 12.0
+  deployment target and statically link it into the tagged CGO binary. Release
+  verification rejects an external USearch dynamic-library dependency and
+  exercises the artifact's real native capability before publication.
+- **Explicit cross-platform boundary**: Darwin amd64, Linux amd64/arm64, and
+  Windows amd64 artifacts remain CGO-free, omit the native build tag, and
+  explicitly report semantic native state as unsupported without failing sync.
+  Release archives and Homebrew formulae include the USearch Apache-2.0 license
+  and third-party notices.
+- **Installed-artifact gate**: Stable and candidate tap updates are followed by
+  a clean macOS arm64 `brew install`/`brew test` and installed-binary capability
+  check, so a release cannot pass solely because a developer checkout can find
+  a local native library.
+
+### Cross-process semantic refresh safety (2026-07-28)
+
+- **Database-scoped semantic leases**: Refresh projection, embedding, flush,
+  compaction, verification, and readiness units now run under crash-released
+  cross-process maintenance leases. Generation publication additionally takes
+  the exclusive generation lease for the full flush or compaction unit,
+  excluding admitted queries while immutable roots are built, published, and
+  activated. Exclusive maintenance is what serializes competing refresh
+  processes.
+- **Purge-epoch-fenced projection commits**: Both ordinary and giant projection
+  commits carry the refresh run's pinned purge epoch. Giant staging persists
+  that epoch in every durable row and rejects stale resume or promotion after a
+  purge. Migration 28 adds and repairs the durable epoch column, automatically
+  discarding unverifiable legacy or epoch-mismatched derived staging so refresh
+  can rebuild it without manual cleanup.
+- **Authoritative-write and query leases**: Corpus transactions that can dirty
+  retrieval projection now hold shared maintenance for their full
+  commit/rollback lifetime. Semantic queries hold shared generation while
+  admitting a native root and again after query embedding through SQLite
+  validation, L0 merge, hydration, and evidence construction. Writer-intent
+  ordering prevents later readers or source writers from barging ahead of
+  queued refresh/activation, while process exit releases held leases and leaves
+  no live writer intent.
+
+### Automatic semantic refresh after sync (2026-07-28)
+
+- **Automatic semantic maintenance**: Successful CLI `sync all` and scheduled
+  sync runs now synchronously run the durable semantic refresh path when
+  `research.semantic.mode` is `shadow` or `on`. The ordinary source store and
+  metrics are closed before refresh begins; unchanged source runs also resume
+  prior semantic work. Mode `off` and unsupported builds report explicit
+  successful skips, while a supported-but-broken backend, cancellation, or any
+  refresh failure makes the sync fail with the typed semantic error. CLI JSON
+  emits one flattened sync document with either `semantic` or `semantic_error`.
+  The coarse existing `sync-all.lock` covers the combined source-plus-semantic
+  operation. Release/Homebrew native packaging and installed-corpus acceptance
+  remain later stacked work.
+
+### Resumable semantic refresh (2026-07-28)
+
+- **Resumable semantic refresh**: Added a migration-backed per-profile refresh
+  ledger, fixed-watermark projection and revision-checkpointed embedding batches,
+  bounded provider retry, L0/compaction/verification/readiness orchestration,
+  serialized progress, typed failures, `semantic refresh`, and latest-run
+  status. Release packaging and installed-corpus activation remain in later
+  stacked PRs.
+- **Non-blocking refresh progress**: Five-second visible progress now continues
+  while a semantic compaction transaction temporarily blocks the durable
+  heartbeat write. A dedicated one-connection heartbeat handle keeps that wait
+  out of the main SQLite pool; durable timestamps coalesce to the newest pending
+  value, while checkpoint callbacks still expose only committed state.
+
+### Semantic ANN runtime admission (2026-07-28)
+
+- **Explicit native capability**: `dbrain semantic status` now reports whether
+  the binary's native ANN backend is unsupported, supported and ready, or
+  supported but broken, including the admitted backend and version when
+  available.
+- **Proven segmented serving**: A `usearch`-tagged runtime can admit and search
+  a fully proven segmented USearch generation through the normal research
+  command while retaining SQLite validation and exact reranking. Admission
+  binds the cache root to the canonical descriptor reconstructed from SQLite,
+  rejects active catalogs above a 1,024-segment hard safety ceiling, and fails
+  closed before payload access when the root or segment set differs. Each
+  native payload must contain exactly the manifest's member count.
+- **Truthful native status**: A tagged `semantic status` opens and closes the
+  runtime-equivalent native root before reporting it searchable. Missing or
+  corrupt artifacts produce a stable path-free unavailable reason, while
+  caller cancellation remains an error.
+- **Cancellation-aware native loading**: Segment payloads are opened and read
+  once with checksum verification, cancellation checks between stages, and
+  cleanup of partially opened native indexes. The native load call itself
+  remains non-preemptible. Candidate traversal checks cancellation around each
+  native search and never leaks prior-stage partial hits after cancellation.
+  Caller cancellation during native-root admission remains an error.
+- **Safe unsupported behavior**: Normal CGO-free builds carry no USearch
+  dependency, report `native_backend_unsupported`, and preserve ordinary
+  lexical retrieval. Native capability diagnostics redact local filesystem
+  paths without masking readiness states such as `corrupt`, `disabled`, or
+  `needs_index`; native-root failures in research output and traces use a
+  stable path-free reason.
+- **Runtime-admission boundary**: Universal synchronous post-sync integration
+  and cross-process locking are supplied by the following stacked work.
+  Release/Homebrew native packaging and installed-corpus acceptance and
+  activation remain later stacked work.
+
 ### Segmented ANN lifecycle foundation (2026-07-22)
 
 - **Durable derived-cache roots**: Added content-addressed opaque segment

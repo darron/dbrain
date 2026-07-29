@@ -61,6 +61,294 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestProjectionStagingPurgeEpochMigrationDiscardsLegacyRowsAndAllowsRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		stagedEpoch  int64
+		currentEpoch int64
+		dropColumn   bool
+		keepV28Stamp bool
+	}{
+		{name: "pre-v28 epoch zero", stagedEpoch: 0, currentEpoch: 0, dropColumn: true},
+		{name: "pre-v28 nonzero epoch", stagedEpoch: 5, currentEpoch: 5, dropColumn: true},
+		{name: "stamped v28 missing column", stagedEpoch: 5, currentEpoch: 5, dropColumn: true, keepV28Stamp: true},
+		{name: "stamped v28 mismatched epoch", stagedEpoch: 0, currentEpoch: 5, keepV28Stamp: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "brain.db")
+			st := openStoreAtPath(t, path)
+			ctx := context.Background()
+			seedRetrievalSource(t, st, "source:migration-epoch")
+			if _, err := st.db.Exec(`UPDATE retrieval_state SET purge_epoch=? WHERE singleton=1`, tc.stagedEpoch); err != nil {
+				t.Fatal(err)
+			}
+			work, projection := projectionWorkForEpochTest(t, st, "source:migration-epoch")
+			row := task5StageRowForOccurrence(t, projection, projection.Occurrences[0])
+			cp, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+				ParentKind: work.Parent.Kind, ParentSourceKey: work.Parent.SourceKey,
+				DirtyRevision: work.DirtyRevision, ProjectionHash: projection.ParentHash,
+				ExpectedPurgeEpoch: tc.stagedEpoch,
+				Cursor:             retrievalchunk.Cursor{SectionKey: row.Occurrence.SectionKey, NextBoundary: row.Occurrence.EndChar},
+				Rows:               []RetrievalProjectionStageRow{row},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			db, err := sql.Open(driverName, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE retrieval_state SET purge_epoch=? WHERE singleton=1`, tc.currentEpoch); err != nil {
+				_ = db.Close()
+				t.Fatal(err)
+			}
+			if tc.dropColumn {
+				if _, err := db.Exec(`ALTER TABLE retrieval_projection_staging DROP COLUMN expected_purge_epoch`); err != nil {
+					_ = db.Close()
+					t.Fatal(err)
+				}
+			}
+			if !tc.keepV28Stamp {
+				if _, err := db.Exec(`
+					DELETE FROM schema_migrations WHERE version=28;
+					PRAGMA user_version=27`); err != nil {
+					_ = db.Close()
+					t.Fatal(err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			st = openStoreAtPath(t, path)
+			defer func() { _ = st.Close() }()
+			assertDatabaseTableColumn(t, st.db, "retrieval_projection_staging", "expected_purge_epoch")
+			var staged int
+			if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_projection_staging`).Scan(&staged); err != nil {
+				t.Fatal(err)
+			}
+			if staged != 0 {
+				t.Fatalf("legacy staging rows=%d want 0", staged)
+			}
+			if _, ok, err := st.LoadRetrievalProjectionStaging(ctx, work.Parent, work.DirtyRevision); err != nil || ok {
+				t.Fatalf("load discarded staging ok=%v err=%v", ok, err)
+			}
+
+			next, err := st.StageRetrievalProjectionBatch(ctx, StageRetrievalProjectionInput{
+				WorkID: cp.WorkID, ParentKind: work.Parent.Kind, ParentSourceKey: work.Parent.SourceKey,
+				DirtyRevision: work.DirtyRevision, ProjectionHash: projection.ParentHash,
+				ExpectedPurgeEpoch: tc.currentEpoch,
+				Cursor:             retrievalchunk.Cursor{SectionKey: row.Occurrence.SectionKey, NextBoundary: row.Occurrence.EndChar},
+				Rows:               []RetrievalProjectionStageRow{row},
+			})
+			if err != nil {
+				t.Fatalf("stage after migration repair: %v", err)
+			}
+			if next.ExpectedPurgeEpoch != tc.currentEpoch {
+				t.Fatalf("new staging epoch=%d want %d", next.ExpectedPurgeEpoch, tc.currentEpoch)
+			}
+
+			var migrationCount int
+			if err := st.db.QueryRow(`
+				SELECT COUNT(*) FROM schema_migrations
+				WHERE version=28 AND name='retrieval_projection_staging_expected_purge_epoch'`,
+			).Scan(&migrationCount); err != nil {
+				t.Fatal(err)
+			}
+			if migrationCount != 1 {
+				t.Fatalf("migration 28 count=%d want 1", migrationCount)
+			}
+		})
+	}
+}
+
+func TestSemanticRefreshRunsMigrationUpgradesV24DatabaseIdempotently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`DELETE FROM schema_migrations WHERE version > 24; PRAGMA user_version=24; DROP INDEX IF EXISTS idx_semantic_refresh_runs_one_resumable; DROP INDEX IF EXISTS idx_semantic_refresh_runs_latest; DROP TABLE IF EXISTS semantic_refresh_runs`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st = openStoreAtPath(t, path)
+	ctx := context.Background()
+	run, resumed, err := st.StartOrResumeSemanticRefreshRun(ctx, StartSemanticRefreshRunInput{RunID: "migration-run", ProfileID: "profile-a", PurgeEpoch: 1, ProjectionWatermark: 2, Now: semanticRefreshTestNow()})
+	if err != nil || resumed || run.RunID != "migration-run" {
+		t.Fatalf("run=%+v resumed=%v err=%v", run, resumed, err)
+	}
+	var count int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=? AND name=?`, semanticRefreshRunsMigrationVersion, semanticRefreshRunsMigrationName).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("migration count=%d err=%v", count, err)
+	}
+	for _, name := range []string{"idx_semantic_refresh_runs_one_resumable", "idx_semantic_refresh_runs_latest"} {
+		var found string
+		if err := st.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&found); err != nil || found != name {
+			t.Fatalf("index %s found=%q err=%v", name, found, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st = openStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsMigrationVersion).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("second migration count=%d err=%v", count, err)
+	}
+	got, err := st.LatestSemanticRefreshRun(ctx, "profile-a")
+	if err != nil || got == nil || got.RunID != run.RunID {
+		t.Fatalf("persisted run=%+v err=%v", got, err)
+	}
+	columns, err := st.tableColumns("semantic_refresh_runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range dbrainSemanticRefreshRunSchemaV25[0].columns {
+		if !columns[column] {
+			t.Errorf("missing column %s", column)
+		}
+	}
+}
+
+func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	run := startSemanticRefreshRunForTest(t, st, "prior-head-run", "profile-a", 3, 41)
+	updated, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{
+		RunID:             run.RunID,
+		ExpectedVersion:   run.Version,
+		Stage:             SemanticRefreshFlush,
+		State:             SemanticRefreshRunRunning,
+		Checkpoint:        "flush:41",
+		Counters:          SemanticRefreshCounters{ProjectedParents: 7, EmbeddedChunks: 11, FlushedVectors: 5},
+		EmbeddingRevision: 13,
+		Now:               semanticRefreshTestNow().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		DROP TABLE semantic_refresh_runs_v25_compatibility_archive;
+		DELETE FROM schema_migrations WHERE version > 26;
+		PRAGMA user_version = 26;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	var stamped, minimum, maximum int
+	if err := db.QueryRow(`SELECT COUNT(*), MIN(version), MAX(version) FROM schema_migrations`).Scan(&stamped, &minimum, &maximum); err != nil {
+		t.Fatal(err)
+	}
+	if stamped != 26 || minimum != 1 || maximum != 26 {
+		t.Fatalf("prior-head migration ledger count=%d range=%d..%d", stamped, minimum, maximum)
+	}
+	var archiveCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='semantic_refresh_runs_v25_compatibility_archive'`).Scan(&archiveCount); err != nil || archiveCount != 0 {
+		t.Fatalf("prior-head archive count=%d err=%v", archiveCount, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var events []MigrationEvent
+	st, err = OpenWithOptions(path, OpenOptions{MigrationReporter: func(event MigrationEvent) {
+		events = append(events, event)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 4 ||
+		events[0].Phase != MigrationStarted ||
+		events[1].Phase != MigrationApplied ||
+		events[0].Version != semanticRefreshRunsArchiveMigrationVersion ||
+		events[1].Version != semanticRefreshRunsArchiveMigrationVersion ||
+		events[0].Name != semanticRefreshRunsArchiveMigrationName ||
+		events[1].Name != semanticRefreshRunsArchiveMigrationName ||
+		events[2].Phase != MigrationStarted ||
+		events[3].Phase != MigrationApplied ||
+		events[2].Version != retrievalProjectionStagingEpochVersion ||
+		events[3].Version != retrievalProjectionStagingEpochVersion ||
+		events[2].Name != retrievalProjectionStagingEpochName ||
+		events[3].Name != retrievalProjectionStagingEpochName {
+		t.Fatalf("v27-v28 migration events=%+v", events)
+	}
+	got, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
+	if err != nil || got == nil {
+		t.Fatalf("preserved run=%+v err=%v", got, err)
+	}
+	if got.RunID != updated.RunID || got.Version != updated.Version || got.Stage != updated.Stage ||
+		got.Checkpoint != updated.Checkpoint || got.EmbeddingRevision != updated.EmbeddingRevision ||
+		got.Counters != updated.Counters || got.State != updated.State {
+		t.Fatalf("preserved run=%+v want=%+v", got, updated)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='semantic_refresh_runs_v25_compatibility_archive'`).Scan(&archiveCount); err != nil || archiveCount != 1 {
+		t.Fatalf("created archive count=%d err=%v", archiveCount, err)
+	}
+	var migrationCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=? AND name=?`, semanticRefreshRunsArchiveMigrationVersion, semanticRefreshRunsArchiveMigrationName).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("v27 migration count=%d err=%v", migrationCount, err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events = nil
+	st, err = OpenWithOptions(path, OpenOptions{MigrationReporter: func(event MigrationEvent) {
+		events = append(events, event)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if len(events) != 0 {
+		t.Fatalf("idempotent reopen migration events=%+v", events)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsArchiveMigrationVersion).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("idempotent v27 migration count=%d err=%v", migrationCount, err)
+	}
+}
+
+func TestSemanticRefreshRunsArchiveSchemaIdentityRequiresArchiveAtV27(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE semantic_refresh_runs_v25_compatibility_archive`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = ValidateRestorableDatabase(t.Context(), path)
+	if !errors.Is(err, ErrDatabaseIncompatible) || !strings.Contains(err.Error(), "semantic_refresh_runs_v25_compatibility_archive") {
+		t.Fatalf("schema identity after dropping v27 archive=%v", err)
+	}
+}
+
 func TestMembershipL0ActivationMigrationRepairsCounters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
 	st := openStoreAtPath(t, path)
@@ -493,8 +781,8 @@ func TestRetrievalOccurrenceChunkIndexRepairsExistingCurrentSchemaDatabase(t *te
 	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read repaired user version: %v", err)
 	}
-	if userVersion != retrievalOccurrenceChunkIndexVersion {
-		t.Fatalf("repaired user version = %d, want %d", userVersion, retrievalOccurrenceChunkIndexVersion)
+	if userVersion != currentSchemaVersion {
+		t.Fatalf("repaired user version = %d, want current schema %d", userVersion, currentSchemaVersion)
 	}
 	assertSQLiteObject(t, st.db, "index", "idx_retrieval_chunk_occurrences_chunk")
 	var queryPlan string

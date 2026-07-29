@@ -5,8 +5,13 @@ package semanticindex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -51,32 +56,14 @@ func TestUSearchAdapterSearchAndReopenPreservesNearestOrdinals(t *testing.T) {
 func TestOpenUSearchRootImportsVerifiedSegments(t *testing.T) {
 	cache := t.TempDir()
 	profile := "profile"
-	index, err := NewUSearch(USearchOptions{Dimensions: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := index.Reserve(1); err != nil {
-		t.Fatal(err)
-	}
-	if err := index.Add(HNSWNode{Ordinal: 0, Vector: []float32{1, 0}}); err != nil {
-		t.Fatal(err)
-	}
-	var payload bytes.Buffer
-	if err := index.Export(&payload); err != nil {
-		t.Fatal(err)
-	}
-	if err := index.Close(); err != nil {
-		t.Fatal(err)
-	}
-	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{DatabaseID: "db", ProfileID: profile, Backend: BackendUSearch, BackendVersion: "test", DistanceMetric: "cosine", Dimensions: 2, Members: []semanticsegment.Member{{Ordinal: 0, ChunkID: "chunk", Revision: 1, VectorHash: "hash"}}, Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 1, Segments: []semanticsegment.RootSegment{{Hash: segment.Hash, RelativePath: segment.RelativePath}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := OpenUSearchRoot(cache, "db", profile, root.Manifest.GenerationID, USearchOptions{Dimensions: 2})
+	fixture := publishUSearchRootFixture(t, cache, profile, usearchRootFixtureOptions{})
+	loaded, err := OpenUSearchRoot(context.Background(), cache, "db", profile, fixture.root.Manifest.GenerationID, USearchRootExpectations{
+		Index:            USearchOptions{Dimensions: 2},
+		SnapshotRevision: 7,
+		PurgeEpoch:       3,
+		BackendVersion:   USearchVersion,
+		DescriptorSHA256: fixture.root.Manifest.DescriptorSHA256,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +72,354 @@ func TestOpenUSearchRootImportsVerifiedSegments(t *testing.T) {
 		t.Fatalf("segments=%d", len(loaded.Segments))
 	}
 	assertUSearchOrdinals(t, loaded.Segments[0].Index, []uint64{0})
+}
+
+func TestOpenUSearchRootReadsEachPayloadOnce(t *testing.T) {
+	cache := t.TempDir()
+	fixture := publishUSearchRootFixture(t, cache, "profile", usearchRootFixtureOptions{})
+	payloadOpens := 0
+	loaded, err := openUSearchRoot(context.Background(), cache, "db", "profile", fixture.root.Manifest.GenerationID, USearchRootExpectations{
+		Index:            USearchOptions{Dimensions: 2},
+		SnapshotRevision: 7,
+		PurgeEpoch:       3,
+		BackendVersion:   USearchVersion,
+		DescriptorSHA256: fixture.root.Manifest.DescriptorSHA256,
+	}, func(path string) (io.ReadCloser, error) {
+		payloadOpens++
+		return os.Open(path)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.Close() })
+	if payloadOpens != 1 {
+		t.Fatalf("payload opens=%d want=1", payloadOpens)
+	}
+}
+
+func TestOpenUSearchRootRejectsNativeVectorCountManifestCardinalityMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		nodes   []HNSWNode
+		members []semanticsegment.Member
+		want    string
+	}{
+		{
+			name:  "one native vector for two manifest members",
+			nodes: []HNSWNode{{Ordinal: 0, Vector: []float32{1, 0}}},
+			members: []semanticsegment.Member{
+				{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"},
+				{Ordinal: 1, ChunkID: "second", Revision: 1, VectorHash: "second-hash"},
+			},
+			want: "native vector count 1 want manifest members 2",
+		},
+		{
+			name: "two native vectors for one manifest member",
+			nodes: []HNSWNode{
+				{Ordinal: 0, Vector: []float32{1, 0}},
+				{Ordinal: 1, Vector: []float32{0, 1}},
+			},
+			members: []semanticsegment.Member{
+				{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"},
+			},
+			want: "native vector count 2 want manifest members 1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			segment := publishUSearchTestSegment(t, cache, "profile", tc.nodes, tc.members)
+			root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+				DatabaseID: "db", ProfileID: "profile", GenerationID: "root", SnapshotRevision: 1,
+				Segments: []semanticsegment.RootSegment{{Hash: segment.Hash, RelativePath: segment.RelativePath}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			loaded, err := openUSearchRoot(context.Background(), cache, "db", "profile", root.Manifest.GenerationID, USearchRootExpectations{
+				Index:            USearchOptions{Dimensions: 2},
+				SnapshotRevision: 1,
+				BackendVersion:   USearchVersion,
+				DescriptorSHA256: root.Manifest.DescriptorSHA256,
+			}, func(path string) (io.ReadCloser, error) {
+				return os.Open(path)
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("open root error=%v want %q", err, tc.want)
+			}
+			if loaded == nil || len(loaded.Segments) != 0 {
+				t.Fatalf("loaded=%#v want no admitted native segments", loaded)
+			}
+			if err := loaded.Close(); err != nil {
+				t.Fatalf("close rejected root: %v", err)
+			}
+		})
+	}
+}
+
+func TestOpenUSearchRootRejectsCanceledContextBeforeFilesystemWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	loaded, err := OpenUSearchRoot(ctx, filepath.Join(t.TempDir(), "missing"), "db", "profile", "root", USearchRootExpectations{})
+	if loaded != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("loaded=%#v error=%v want context cancellation", loaded, err)
+	}
+}
+
+func TestReadVerifiedUSearchPayloadStopsDuringStreamedRead(t *testing.T) {
+	cache := t.TempDir()
+	fixture := publishUSearchRootFixture(t, cache, "profile", usearchRootFixtureOptions{})
+	payloadPath := filepath.Join(cache, filepath.FromSlash(fixture.segment.RelativePath), semanticsegment.PayloadFileName)
+	payload, err := os.ReadFile(payloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &cancelAfterFirstChunkReader{payload: payload, cancel: cancel}
+
+	_, err = readVerifiedUSearchPayload(ctx, reader, fixture.segment.Manifest.PayloadSHA256)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("read payload error=%v want context cancellation", err)
+	}
+}
+
+func TestOpenUSearchRootCancellationBetweenSegmentsClosesLoadedIndexes(t *testing.T) {
+	cache := t.TempDir()
+	profile := "profile"
+	first := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{1, 0}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"}})
+	second := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{0, 1}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "second", Revision: 2, VectorHash: "second-hash"}})
+	segments := []semanticsegment.RootSegment{
+		{Hash: first.Hash, RelativePath: first.RelativePath},
+		{Hash: second.Hash, RelativePath: second.RelativePath},
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Hash < segments[j].Hash })
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+		DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 2,
+		Segments: segments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	openCalls := 0
+	openPayload := func(path string) (io.ReadCloser, error) {
+		openCalls++
+		if openCalls == 2 {
+			cancel()
+			return nil, ctx.Err()
+		}
+		return os.Open(path)
+	}
+
+	loaded, err := openUSearchRoot(ctx, cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+		Index: USearchOptions{Dimensions: 2}, SnapshotRevision: 2,
+		BackendVersion: USearchVersion, DescriptorSHA256: root.Manifest.DescriptorSHA256,
+	}, openPayload)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("open root error=%v want context cancellation", err)
+	}
+	if openCalls != 2 || loaded == nil || len(loaded.Segments) != 1 || loaded.Segments[0].Index != nil {
+		t.Fatalf("open_calls=%d loaded=%#v want one cleaned-up index", openCalls, loaded)
+	}
+}
+
+func TestOpenUSearchRootLaterPayloadErrorClosesLoadedIndexes(t *testing.T) {
+	cache := t.TempDir()
+	profile := "profile"
+	first := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{1, 0}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"}})
+	second := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{0, 1}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "second", Revision: 2, VectorHash: "second-hash"}})
+	segments := []semanticsegment.RootSegment{
+		{Hash: first.Hash, RelativePath: first.RelativePath},
+		{Hash: second.Hash, RelativePath: second.RelativePath},
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Hash < segments[j].Hash })
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+		DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 2,
+		Segments: segments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(cache, filepath.FromSlash(segments[1].RelativePath), semanticsegment.PayloadFileName),
+		[]byte("tampered"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := openUSearchRoot(context.Background(), cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+		Index: USearchOptions{Dimensions: 2}, SnapshotRevision: 2,
+		BackendVersion: USearchVersion, DescriptorSHA256: root.Manifest.DescriptorSHA256,
+	}, func(path string) (io.ReadCloser, error) {
+		return os.Open(path)
+	})
+	if err == nil || !strings.Contains(err.Error(), "payload checksum mismatch") {
+		t.Fatalf("open root error=%v want payload checksum mismatch", err)
+	}
+	if loaded == nil || len(loaded.Segments) != 1 || loaded.Segments[0].Index != nil {
+		t.Fatalf("loaded=%#v want one cleaned-up index", loaded)
+	}
+}
+
+func TestOpenUSearchRootRejectsChecksumValidSubsetBeforePayloadImport(t *testing.T) {
+	cache := t.TempDir()
+	profile := "profile"
+	first := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{1, 0}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"}})
+	second := publishUSearchTestSegment(t, cache, profile,
+		[]HNSWNode{{Ordinal: 0, Vector: []float32{0, 1}}},
+		[]semanticsegment.Member{{Ordinal: 0, ChunkID: "second", Revision: 2, VectorHash: "second-hash"}})
+	segments := []semanticsegment.RootSegment{
+		{Hash: first.Hash, RelativePath: first.RelativePath},
+		{Hash: second.Hash, RelativePath: second.RelativePath},
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Hash < segments[j].Hash })
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+		DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 2,
+		Segments: segments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewriteUSearchRootManifest(t, cache, root, func(manifest *semanticsegment.RootManifest) {
+		manifest.Segments = append([]semanticsegment.RootSegment(nil), manifest.Segments[:1]...)
+		hash, err := semanticsegment.RootDescriptorSHA256(semanticsegment.RootInput{
+			DatabaseID: manifest.DatabaseID, ProfileID: manifest.ProfileID, GenerationID: manifest.GenerationID,
+			SnapshotRevision: manifest.SnapshotRevision, PurgeEpoch: manifest.PurgeEpoch, Segments: manifest.Segments,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest.DescriptorSHA256 = hash
+	})
+	payloadOpens := 0
+	loaded, err := openUSearchRoot(context.Background(), cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+		Index: USearchOptions{Dimensions: 2}, SnapshotRevision: 2,
+		BackendVersion: USearchVersion, DescriptorSHA256: root.Manifest.DescriptorSHA256,
+	}, func(path string) (io.ReadCloser, error) {
+		payloadOpens++
+		return os.Open(path)
+	})
+	if loaded != nil || err == nil || !strings.Contains(err.Error(), "descriptor hash mismatch") || payloadOpens != 0 {
+		t.Fatalf("loaded=%#v error=%v payload_opens=%d", loaded, err, payloadOpens)
+	}
+}
+
+func TestOpenUSearchRootRejectsMismatchedProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*usearchRootFixtureOptions, *USearchRootExpectations)
+		tamper func(*testing.T, string, usearchRootFixture)
+		want   string
+	}{
+		{
+			name: "root snapshot revision",
+			mutate: func(_ *usearchRootFixtureOptions, expect *USearchRootExpectations) {
+				expect.SnapshotRevision++
+			},
+			want: "snapshot revision mismatch",
+		},
+		{
+			name: "root purge epoch",
+			mutate: func(_ *usearchRootFixtureOptions, expect *USearchRootExpectations) {
+				expect.PurgeEpoch++
+			},
+			want: "purge epoch mismatch",
+		},
+		{
+			name: "segment backend",
+			mutate: func(options *usearchRootFixtureOptions, _ *USearchRootExpectations) {
+				options.backend = "exact"
+			},
+			want: "backend mismatch",
+		},
+		{
+			name: "segment backend version",
+			mutate: func(options *usearchRootFixtureOptions, _ *USearchRootExpectations) {
+				options.backendVersion = "2.25.0"
+			},
+			want: "backend version mismatch",
+		},
+		{
+			name: "segment metric",
+			mutate: func(options *usearchRootFixtureOptions, _ *USearchRootExpectations) {
+				options.distanceMetric = "dot"
+			},
+			want: "distance metric mismatch",
+		},
+		{
+			name: "segment dimensions",
+			mutate: func(options *usearchRootFixtureOptions, _ *USearchRootExpectations) {
+				options.dimensions = 3
+			},
+			want: "dimensions mismatch",
+		},
+		{
+			name: "membership checksum",
+			tamper: func(t *testing.T, cache string, fixture usearchRootFixture) {
+				rewriteUSearchSegmentManifest(t, cache, fixture.segment, func(manifest *semanticsegment.Manifest) {
+					manifest.Members[0].ChunkID = "tampered"
+				})
+			},
+			want: "membership checksum mismatch",
+		},
+		{
+			name: "payload checksum",
+			tamper: func(t *testing.T, cache string, fixture usearchRootFixture) {
+				path := filepath.Join(cache, filepath.FromSlash(fixture.segment.RelativePath), semanticsegment.PayloadFileName)
+				if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "payload checksum mismatch",
+		},
+		{
+			name: "descriptor checksum",
+			tamper: func(t *testing.T, cache string, fixture usearchRootFixture) {
+				rewriteUSearchSegmentManifest(t, cache, fixture.segment, func(manifest *semanticsegment.Manifest) {
+					manifest.DescriptorSHA256 = strings.Repeat("0", 64)
+				})
+			},
+			want: "descriptor checksum mismatch",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			options := usearchRootFixtureOptions{}
+			expect := USearchRootExpectations{
+				Index:            USearchOptions{Dimensions: 2},
+				SnapshotRevision: 7,
+				PurgeEpoch:       3,
+				BackendVersion:   USearchVersion,
+			}
+			if tc.mutate != nil {
+				tc.mutate(&options, &expect)
+			}
+			fixture := publishUSearchRootFixture(t, cache, "profile", options)
+			expect.DescriptorSHA256 = fixture.root.Manifest.DescriptorSHA256
+			if tc.tamper != nil {
+				tc.tamper(t, cache, fixture)
+			}
+
+			loaded, err := OpenUSearchRoot(context.Background(), cache, "db", "profile", fixture.root.Manifest.GenerationID, expect)
+			if loaded != nil {
+				_ = loaded.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("OpenUSearchRoot error = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestUSearchRootCandidatesResolveImmutableMembers(t *testing.T) {
@@ -101,13 +436,19 @@ func TestUSearchRootCandidatesResolveImmutableMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := OpenUSearchRoot(cache, "db", profile, root.Manifest.GenerationID, USearchOptions{Dimensions: 2})
+	loaded, err := OpenUSearchRoot(context.Background(), cache, "db", profile, root.Manifest.GenerationID, USearchRootExpectations{
+		Index:            USearchOptions{Dimensions: 2},
+		SnapshotRevision: 4,
+		PurgeEpoch:       0,
+		BackendVersion:   USearchVersion,
+		DescriptorSHA256: root.Manifest.DescriptorSHA256,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = loaded.Close() })
 
-	candidates, err := loaded.Candidates([]float32{1, 0}, 2)
+	candidates, err := loaded.Candidates(context.Background(), []float32{1, 0}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +470,7 @@ func TestUSearchRootCandidatesGloballyOrderApproximateHitsBeforeExactRerank(t *t
 	}}
 	t.Cleanup(func() { _ = root.Close() })
 
-	candidates, err := root.Candidates([]float32{1, 0}, 1)
+	candidates, err := root.Candidates(context.Background(), []float32{1, 0}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,9 +496,30 @@ func TestUSearchRootCandidatesRejectOrdinalOutsideImmutableManifest(t *testing.T
 		Manifest:    semanticsegment.Manifest{Members: []semanticsegment.Member{{Ordinal: 0, ChunkID: "only", Revision: 1, VectorHash: "hash"}}},
 		Index:       index,
 	}}}
-	_, err = root.Candidates([]float32{1, 0}, 1)
+	_, err = root.Candidates(context.Background(), []float32{1, 0}, 1)
 	if err == nil || !strings.Contains(err.Error(), "outside immutable manifest") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestUSearchRootCandidatesChecksCancellationImmediatelyAfterNativeSearch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	root := &USearchRoot{
+		Segments: []USearchRootSegment{{
+			SegmentHash: "first",
+			Manifest: semanticsegment.Manifest{Members: []semanticsegment.Member{
+				{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"},
+			}},
+		}},
+		searchSegment: func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+			cancel()
+			return []HNSWHit{{Ordinal: 99}}, nil
+		},
+	}
+
+	candidates, err := root.Candidates(ctx, []float32{1, 0}, 1)
+	if len(candidates) != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("candidates=%+v error=%v want immediate context cancellation", candidates, err)
 	}
 }
 
@@ -170,6 +532,7 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 	index := newUSearchRootTestIndex(t,
 		HNSWNode{Ordinal: 0, Vector: []float32{1, 0}},
 		HNSWNode{Ordinal: 1, Vector: []float32{0, 1}},
+		HNSWNode{Ordinal: 2, Vector: []float32{0.6, 0.8}},
 	)
 	root := &USearchRoot{
 		Root: semanticsegment.Root{Manifest: semanticsegment.RootManifest{ProfileID: profileID, GenerationID: "generation", SnapshotRevision: 4, PurgeEpoch: 2}},
@@ -178,6 +541,7 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 			Manifest: semanticsegment.Manifest{Members: []semanticsegment.Member{
 				{Ordinal: 0, ChunkID: "near", Revision: 3, VectorHash: "near-hash"},
 				{Ordinal: 1, ChunkID: "far", Revision: 4, VectorHash: "far-hash"},
+				{Ordinal: 2, ChunkID: "deleted", Revision: 4, VectorHash: "deleted-hash"},
 			}},
 			Index: index,
 		}},
@@ -195,7 +559,12 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 	if status.State != StateSearched || status.Backend != BackendUSearch || status.GenerationID != "generation" || !reflect.DeepEqual([]string{hits[0].ChunkID, hits[1].ChunkID, hits[2].ChunkID}, []string{"near", "l0", "far"}) {
 		t.Fatalf("hits=%+v status=%+v", hits, status)
 	}
-	if st.request.ExpectedActiveGenerationID != "generation" || st.request.ExpectedPurgeEpoch != 2 || st.request.ExpectedActiveSnapshotRevision != 4 || len(st.request.Candidates) != 2 {
+	for _, hit := range hits {
+		if hit.ChunkID == "deleted" {
+			t.Fatalf("stale/deleted SQLite candidate survived exact validation: hits=%+v", hits)
+		}
+	}
+	if st.request.ExpectedActiveGenerationID != "generation" || st.request.ExpectedPurgeEpoch != 2 || st.request.ExpectedActiveSnapshotRevision != 4 || len(st.request.Candidates) != 3 {
 		t.Fatalf("candidate request=%+v", st.request)
 	}
 	if st.l0Request.ExpectedActiveGenerationID != "generation" || st.l0Request.ExpectedPurgeEpoch != 2 || st.l0Request.ExpectedActiveSnapshotRevision != 4 || st.l0Limit != store.RetrievalSegmentHardLimit {
@@ -203,6 +572,188 @@ func TestUSearchCandidateSearcherExactlyReranksCurrentValidatedCandidates(t *tes
 	}
 	if st.snapshotStarts != 1 || st.snapshotCloses != 1 {
 		t.Fatalf("snapshot starts=%d closes=%d", st.snapshotStarts, st.snapshotCloses)
+	}
+}
+
+func TestUSearchCandidateSearcherCancellationDuringFirstNativeSegmentStopsTraversalAndExpansion(t *testing.T) {
+	profile := embedding.Profile{
+		Provider: "fake", Model: "model", Dimensions: 2,
+		ProjectionVersion: "projection", ChunkerVersion: "chunker",
+		Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2,
+	}
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	nativeSearchCalls := 0
+	root := &USearchRoot{
+		Root: semanticsegment.Root{Manifest: semanticsegment.RootManifest{
+			ProfileID: profileID, GenerationID: "generation", SnapshotRevision: 4, PurgeEpoch: 2,
+		}},
+		Segments: []USearchRootSegment{
+			{
+				SegmentHash: "first",
+				Manifest: semanticsegment.Manifest{Members: []semanticsegment.Member{
+					{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"},
+				}},
+			},
+			{
+				SegmentHash: "second",
+				Manifest: semanticsegment.Manifest{Members: []semanticsegment.Member{
+					{Ordinal: 0, ChunkID: "second", Revision: 1, VectorHash: "second-hash"},
+				}},
+			},
+		},
+		searchSegment: func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+			nativeSearchCalls++
+			cancel()
+			return []HNSWHit{{Ordinal: 99}}, nil
+		},
+	}
+	st := &fakeUSearchCandidateStore{}
+
+	hits, status, err := NewUSearchCandidateSearcher(root, st).Search(ctx, []float32{1, 0}, SearchOptions{
+		Profile: profile, Limit: 1, MaxChunks: 999,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("search error=%v want context cancellation", err)
+	}
+	if len(hits) != 0 || status.Reason != ReasonCanceled {
+		t.Fatalf("hits=%+v status=%+v want canceled with no partial hits", hits, status)
+	}
+	if nativeSearchCalls != 1 {
+		t.Fatalf("native searches=%d want only the first segment and no expansion", nativeSearchCalls)
+	}
+	if st.candidateReads != 0 {
+		t.Fatalf("SQLite native candidate reads=%d want none after native cancellation", st.candidateReads)
+	}
+	if st.snapshotStarts != 1 || st.snapshotCloses != 1 {
+		t.Fatalf("snapshot starts=%d closes=%d", st.snapshotStarts, st.snapshotCloses)
+	}
+}
+
+func TestUSearchCandidateSearcherLaterNativeCancellationDropsPriorStageHits(t *testing.T) {
+	profile, root, firstRow := newUSearchLaterExpansionFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	nativeSearchCalls := 0
+	root.searchSegment = func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+		nativeSearchCalls++
+		if nativeSearchCalls == 1 {
+			return []HNSWHit{{Ordinal: 0}}, nil
+		}
+		cancel()
+		return nil, context.Canceled
+	}
+	st := &fakeUSearchCandidateStore{rows: []store.RetrievalEmbeddingRow{firstRow}}
+
+	hits, status, err := NewUSearchCandidateSearcher(root, st).Search(ctx, []float32{1, 0}, SearchOptions{
+		Profile: profile, Limit: 2, MaxChunks: 999,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("search error=%v want context cancellation", err)
+	}
+	if len(hits) != 0 || status.Reason != ReasonCanceled {
+		t.Fatalf("hits=%+v status=%+v want canceled with no prior-stage hits", hits, status)
+	}
+	if nativeSearchCalls != 2 || st.candidateReads != 1 {
+		t.Fatalf("native searches=%d candidate reads=%d want validated first stage then canceled expansion", nativeSearchCalls, st.candidateReads)
+	}
+}
+
+func TestUSearchCandidateSearcherLaterSQLiteCancellationDropsPriorStageHits(t *testing.T) {
+	profile, root, firstRow := newUSearchLaterExpansionFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	nativeSearchCalls := 0
+	root.searchSegment = func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+		nativeSearchCalls++
+		if nativeSearchCalls == 1 {
+			return []HNSWHit{{Ordinal: 0}}, nil
+		}
+		return []HNSWHit{{Ordinal: 0}, {Ordinal: 1}}, nil
+	}
+	st := &fakeUSearchCandidateStore{
+		readCandidates: func(_ context.Context, read int, _ store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
+			if read == 1 {
+				return []store.RetrievalEmbeddingRow{firstRow}, nil
+			}
+			cancel()
+			return nil, context.Canceled
+		},
+	}
+
+	hits, status, err := NewUSearchCandidateSearcher(root, st).Search(ctx, []float32{1, 0}, SearchOptions{
+		Profile: profile, Limit: 2, MaxChunks: 999,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("search error=%v want context cancellation", err)
+	}
+	if len(hits) != 0 || status.Reason != ReasonCanceled {
+		t.Fatalf("hits=%+v status=%+v want canceled with no prior-stage hits", hits, status)
+	}
+	if nativeSearchCalls != 2 || st.candidateReads != 2 {
+		t.Fatalf("native searches=%d candidate reads=%d want validated first stage then canceled SQLite expansion", nativeSearchCalls, st.candidateReads)
+	}
+}
+
+func TestUSearchCandidateSearcherLaterNonCancellationErrorsPreserveExistingPartialHitSemantics(t *testing.T) {
+	nativeFailure := errors.New("native expansion failed")
+	sqliteFailure := errors.New("SQLite expansion failed")
+	for _, tc := range []struct {
+		name      string
+		configure func(*USearchRoot, *fakeUSearchCandidateStore)
+		wantError error
+	}{
+		{
+			name: "native expansion",
+			configure: func(root *USearchRoot, _ *fakeUSearchCandidateStore) {
+				calls := 0
+				root.searchSegment = func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+					calls++
+					if calls == 1 {
+						return []HNSWHit{{Ordinal: 0}}, nil
+					}
+					return nil, nativeFailure
+				}
+			},
+			wantError: nativeFailure,
+		},
+		{
+			name: "SQLite expansion",
+			configure: func(root *USearchRoot, st *fakeUSearchCandidateStore) {
+				calls := 0
+				root.searchSegment = func(_ *USearch, _ []float32, _ int) ([]HNSWHit, error) {
+					calls++
+					if calls == 1 {
+						return []HNSWHit{{Ordinal: 0}}, nil
+					}
+					return []HNSWHit{{Ordinal: 0}, {Ordinal: 1}}, nil
+				}
+				st.readCandidates = func(_ context.Context, read int, _ store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
+					if read == 1 {
+						return append([]store.RetrievalEmbeddingRow(nil), st.rows...), nil
+					}
+					return nil, sqliteFailure
+				}
+			},
+			wantError: sqliteFailure,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, root, firstRow := newUSearchLaterExpansionFixture(t)
+			st := &fakeUSearchCandidateStore{rows: []store.RetrievalEmbeddingRow{firstRow}}
+			tc.configure(root, st)
+
+			hits, status, err := NewUSearchCandidateSearcher(root, st).Search(context.Background(), []float32{1, 0}, SearchOptions{
+				Profile: profile, Limit: 2, MaxChunks: 999,
+			})
+			if !errors.Is(err, tc.wantError) {
+				t.Fatalf("search error=%v want=%v", err, tc.wantError)
+			}
+			if len(hits) != 1 || hits[0].ChunkID != "first" || status.Reason != ReasonSearchError {
+				t.Fatalf("hits=%+v status=%+v want existing prior-stage partial-hit error semantics", hits, status)
+			}
+		})
 	}
 }
 
@@ -320,11 +871,125 @@ func publishUSearchTestSegment(t *testing.T, cache, profile string, nodes []HNSW
 	if err := index.Export(&payload); err != nil {
 		t.Fatal(err)
 	}
-	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{DatabaseID: "db", ProfileID: profile, Backend: BackendUSearch, BackendVersion: "test", DistanceMetric: "cosine", Dimensions: 2, Members: members, Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err }})
+	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{DatabaseID: "db", ProfileID: profile, Backend: BackendUSearch, BackendVersion: USearchVersion, DistanceMetric: "cosine", Dimensions: 2, Members: members, Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return segment
+}
+
+type usearchRootFixtureOptions struct {
+	backend        string
+	backendVersion string
+	distanceMetric string
+	dimensions     int
+}
+
+type usearchRootFixture struct {
+	root    semanticsegment.Root
+	segment semanticsegment.Segment
+}
+
+func publishUSearchRootFixture(t *testing.T, cache, profile string, options usearchRootFixtureOptions) usearchRootFixture {
+	t.Helper()
+	if options.backend == "" {
+		options.backend = BackendUSearch
+	}
+	if options.backendVersion == "" {
+		options.backendVersion = USearchVersion
+	}
+	if options.distanceMetric == "" {
+		options.distanceMetric = "cosine"
+	}
+	if options.dimensions == 0 {
+		options.dimensions = 2
+	}
+	index := newUSearchRootTestIndex(t, HNSWNode{Ordinal: 0, Vector: []float32{1, 0}})
+	var payload bytes.Buffer
+	if err := index.Export(&payload); err != nil {
+		_ = index.Close()
+		t.Fatal(err)
+	}
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+	segment, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{
+		DatabaseID: "db", ProfileID: profile, Backend: options.backend, BackendVersion: options.backendVersion,
+		DistanceMetric: options.distanceMetric, Dimensions: options.dimensions,
+		Members: []semanticsegment.Member{{Ordinal: 0, ChunkID: "chunk", Revision: 1, VectorHash: "hash"}},
+		Payload: func(w io.Writer) error { _, err := w.Write(payload.Bytes()); return err },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := semanticsegment.PublishRoot(cache, semanticsegment.RootInput{
+		DatabaseID: "db", ProfileID: profile, GenerationID: "root", SnapshotRevision: 7, PurgeEpoch: 3,
+		Segments: []semanticsegment.RootSegment{{Hash: segment.Hash, RelativePath: segment.RelativePath}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return usearchRootFixture{root: root, segment: segment}
+}
+
+func rewriteUSearchSegmentManifest(t *testing.T, cache string, segment semanticsegment.Segment, mutate func(*semanticsegment.Manifest)) {
+	t.Helper()
+	path := filepath.Join(cache, filepath.FromSlash(segment.RelativePath), semanticsegment.ManifestFileName)
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest semanticsegment.Manifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&manifest)
+	contents, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func rewriteUSearchRootManifest(t *testing.T, cache string, root semanticsegment.Root, mutate func(*semanticsegment.RootManifest)) {
+	t.Helper()
+	path := filepath.Join(cache, filepath.FromSlash(root.RelativePath), semanticsegment.RootFileName)
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest semanticsegment.RootManifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&manifest)
+	contents, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type cancelAfterFirstChunkReader struct {
+	payload []byte
+	cancel  context.CancelFunc
+	read    bool
+}
+
+func (r *cancelAfterFirstChunkReader) Read(buffer []byte) (int, error) {
+	if r.read {
+		return 0, io.EOF
+	}
+	r.read = true
+	count := min(len(buffer), min(len(r.payload), 64))
+	copy(buffer, r.payload[:count])
+	r.payload = r.payload[count:]
+	r.cancel()
+	return count, nil
 }
 
 func newUSearchRootTestIndex(t *testing.T, nodes ...HNSWNode) *USearch {
@@ -351,6 +1016,8 @@ type fakeUSearchCandidateStore struct {
 	rows           []store.RetrievalEmbeddingRow
 	l0Rows         []store.RetrievalEmbeddingRow
 	err            error
+	readCandidates func(context.Context, int, store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error)
+	candidateReads int
 	snapshotStarts int
 	snapshotCloses int
 }
@@ -380,7 +1047,45 @@ func (f *fakeUSearchCandidateStore) ReadRetrievalExactL0(_ context.Context, requ
 	return append([]store.RetrievalEmbeddingRow(nil), f.l0Rows...), nil
 }
 
-func (f *fakeUSearchCandidateStore) ReadRetrievalNativeCandidates(_ context.Context, request store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
+func (f *fakeUSearchCandidateStore) ReadRetrievalNativeCandidates(ctx context.Context, request store.RetrievalNativeCandidateRequest) ([]store.RetrievalEmbeddingRow, error) {
+	f.candidateReads++
 	f.request = request
+	if f.readCandidates != nil {
+		return f.readCandidates(ctx, f.candidateReads, request)
+	}
 	return append([]store.RetrievalEmbeddingRow(nil), f.rows...), f.err
+}
+
+func newUSearchLaterExpansionFixture(t *testing.T) (embedding.Profile, *USearchRoot, store.RetrievalEmbeddingRow) {
+	t.Helper()
+	profile := embedding.Profile{
+		Provider: "fake", Model: "model", Dimensions: 2,
+		ProjectionVersion: "projection", ChunkerVersion: "chunker",
+		Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2,
+	}
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := &USearchRoot{
+		Root: semanticsegment.Root{Manifest: semanticsegment.RootManifest{
+			ProfileID: profileID, GenerationID: "generation", SnapshotRevision: 4, PurgeEpoch: 2,
+		}},
+		Segments: []USearchRootSegment{{
+			SegmentHash: "segment",
+			Manifest: semanticsegment.Manifest{Members: []semanticsegment.Member{
+				{Ordinal: 0, ChunkID: "first", Revision: 1, VectorHash: "first-hash"},
+				{Ordinal: 1, ChunkID: "second", Revision: 1, VectorHash: "second-hash"},
+			}},
+		}},
+	}
+	firstRow := store.RetrievalEmbeddingRow{
+		ChunkID: "first", ProfileID: profileID,
+		Provider: "fake", Model: "model", Dimensions: 2,
+		Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2,
+		VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), VectorHash: "first-hash", Revision: 1,
+		ParentKind: "source", ParentSourceKey: "source:first", EvidenceRole: "raw",
+		SourceType: "article", ProjectionVersion: "projection", ChunkerVersion: "chunker",
+	}
+	return profile, root, firstRow
 }

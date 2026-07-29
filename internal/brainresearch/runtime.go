@@ -12,19 +12,27 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
 
 type runtimeDeps struct {
-	readiness func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
-	provider  func(semanticconfig.Config) (embedding.Provider, error)
-	searcher  func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error)
+	readiness  func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
+	capability func() semanticindex.Capability
+	provider   func(semanticconfig.Config) (embedding.Provider, error)
+	searcher   func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error)
 }
 
 const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
 
 var errNativeBackendUnavailable = errors.New("native_backend_unavailable")
+var errNativeRootArtifactsUnavailable = errors.New("native_root_artifacts_unavailable")
+var errSemanticGenerationBusy = errors.New("generation_busy")
+
+type semanticLeaseReleaseFailure interface {
+	semanticLeaseReleaseFailure()
+}
 
 func defaultRuntimeDeps() runtimeDeps {
 	return runtimeDeps{
@@ -34,6 +42,7 @@ func defaultRuntimeDeps() runtimeDeps {
 			}
 			return st.SemanticRuntimeReadinessSnapshotAt(ctx, profile, exactMax, now)
 		},
+		capability: semanticindex.RuntimeCapability,
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions})
 		},
@@ -52,6 +61,9 @@ func NewRuntimeBuilderContext(ctx context.Context, cfg config.Config, st *store.
 func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool, deps runtimeDeps) (*Builder, error) {
 	if deps.searcher == nil {
 		deps.searcher = defaultRuntimeDeps().searcher
+	}
+	if deps.capability == nil {
+		deps.capability = semanticindex.RuntimeCapability
 	}
 	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, forceOn, forceOff); err != nil {
 		return nil, err
@@ -118,25 +130,93 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	if !b.semanticReadiness.Searchable {
 		return b, nil
 	}
+	if snapshot.ActiveGenerationID != "" {
+		if ok, reason := deps.capability().Admit(snapshot.ActiveGenerationBackend, snapshot.ActiveGenerationBackendVersion); !ok {
+			b.semanticReadiness = semanticreadiness.Decision{
+				State:      semanticreadiness.StateUnavailable,
+				Reason:     reason,
+				Searchable: false,
+			}
+			return b, nil
+		}
+	}
 	searcher, err := deps.searcher(ctx, st, cfg, profile, snapshot, exactMaxChunks)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		var releaseFailure semanticLeaseReleaseFailure
+		if errors.As(err, &releaseFailure) {
+			return nil, err
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		reason := "semantic searcher unavailable: " + err.Error()
 		if errors.Is(err, errNativeBackendUnavailable) {
 			reason = errNativeBackendUnavailable.Error()
+		} else if errors.Is(err, errNativeRootArtifactsUnavailable) {
+			reason = errNativeRootArtifactsUnavailable.Error()
+		} else if errors.Is(err, errSemanticGenerationBusy) {
+			reason = errSemanticGenerationBusy.Error()
 		}
 		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: reason}
 		return b, nil
 	}
 	provider, err := deps.provider(ready)
 	if err != nil {
+		closeRuntimeSemanticSearcher(searcher)
 		return nil, fmt.Errorf("construct semantic embedding provider: %w", err)
 	}
 	if actual := semanticbuild.Profile(provider.Info()); actual != profile {
+		closeRuntimeSemanticSearcher(searcher)
 		return nil, fmt.Errorf("constructed semantic provider provenance does not match admitted profile")
 	}
-	retriever := researchsemantic.New(provider, searcher, st)
+	acquireGeneration, err := runtimeGenerationLeaseAcquirer(ctx, st, cfg)
+	if err != nil {
+		closeRuntimeSemanticSearcher(searcher)
+		return nil, err
+	}
+	retriever := researchsemantic.NewWithGenerationLease(provider, searcher, st, acquireGeneration)
 	return b.WithSemanticRetriever(retriever, researchsemantic.Options{
 		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: exactMaxChunks,
 		Timeout: researchsemantic.DefaultQueryTimeout,
 	}), nil
+}
+
+func runtimeGenerationLeaseAcquirer(ctx context.Context, st *store.Store, cfg config.Config) (researchsemantic.GenerationLeaseAcquirer, error) {
+	if st == nil {
+		return nil, errors.New("semantic generation lease requires a retrieval store")
+	}
+	databaseID, err := st.RetrievalDatabaseID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read semantic generation lease database ID: %w", err)
+	}
+	cacheDir := cfg.CacheDir
+	if cacheDir == "" {
+		resolved, err := config.Load(cfg.RootDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve semantic generation lease cache: %w", err)
+		}
+		cacheDir = resolved.CacheDir
+	}
+	scope, err := semanticlock.NewScope(cacheDir, databaseID)
+	if err != nil {
+		return nil, fmt.Errorf("construct semantic generation lease scope: %w", err)
+	}
+	return func(queryCtx context.Context) (researchsemantic.GenerationLease, error) {
+		acquireCtx, cancelAcquire := context.WithTimeout(queryCtx, semanticRuntimeAdmissionTimeout)
+		defer cancelAcquire()
+		lease, err := scope.AcquireGenerationShared(acquireCtx, "owner=research-query\noperation=semantic-retrieval\n")
+		if err != nil {
+			return nil, err
+		}
+		return lease, nil
+	}, nil
+}
+
+func closeRuntimeSemanticSearcher(searcher semanticindex.Searcher) {
+	if closer, ok := searcher.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 }

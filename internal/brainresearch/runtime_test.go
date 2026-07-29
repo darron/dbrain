@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -109,27 +111,237 @@ func TestRuntimeAdmissionEvaluatesBeforeProviderConstructionAndForceOnCannotBypa
 	}
 }
 
-func TestRuntimeAdmissionFailsOpenForActiveRootWithoutNativeSearcher(t *testing.T) {
+func TestRuntimeAdmissionExactSmallSkipsNativeCapability(t *testing.T) {
 	root := t.TempDir()
 	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
 	_, st := inspectionTestStore(t)
+	capabilityCalls := 0
 	providerCalls := 0
+	searcherCalls := 0
 	deps := runtimeDeps{
 		readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
-			return semanticreadiness.Snapshot{Available: true, ProfileExists: true, ProfileProvenanceValid: true, ExpectedParents: 1, CurrentParents: 1, ChunkableParents: 1, ParentsWithReadyChunk: 1, ChunkCount: 100, ReadyEmbeddings: 100, GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1, LatestRevision: 1, ObservedLatestRevision: 1, L0ReadyCount: 1, ObservedL0ReadyCount: 1, ActiveGenerationID: "root", ActiveGenerationValid: true, ActiveIndexedCount: 99}, nil
+			return runtimeReadySnapshot(false), nil
+		},
+		capability: func() semanticindex.Capability {
+			capabilityCalls++
+			return semanticindex.Capability{State: semanticindex.CapabilityUnsupported}
 		},
 		provider: func(semanticconfig.Config) (embedding.Provider, error) {
 			providerCalls++
-			return nil, errors.New("provider must not be constructed")
+			return &runtimeProvider{info: embedding.Info{Provider: "ollama", Model: "embed-model", Dimensions: 2}}, nil
 		},
-		searcher: func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error) {
-			return nil, errNativeBackendUnavailable
+		searcher: func(_ context.Context, st *store.Store, _ config.Config, _ embedding.Profile, snapshot semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
+			searcherCalls++
+			if snapshot.ActiveGenerationID != "" {
+				t.Fatalf("exact-small search received active generation %q", snapshot.ActiveGenerationID)
+			}
+			return semanticindex.NewExact(st), nil
 		},
 	}
 	b, err := newRuntimeBuilderWithDeps(context.Background(), config.Config{RootDir: root}, st, "", false, false, deps)
-	if err != nil || b.semanticRetriever != nil || providerCalls != 0 || b.semanticReadiness.State != semanticreadiness.StateUnavailable || b.semanticReadiness.Reason != "native_backend_unavailable" {
-		t.Fatalf("builder=%#v provider_calls=%d err=%v", b, providerCalls, err)
+	if err != nil || b.semanticRetriever == nil || b.semanticReadiness.State != semanticreadiness.StateReady || !b.semanticReadiness.Searchable ||
+		capabilityCalls != 0 || searcherCalls != 1 || providerCalls != 1 {
+		t.Fatalf("builder=%#v capability_calls=%d searcher_calls=%d provider_calls=%d err=%v", b, capabilityCalls, searcherCalls, providerCalls, err)
 	}
+}
+
+func TestRuntimeGenerationLeaseAcquirerUsesLocalTimeoutWhileCallerRemainsLive(t *testing.T) {
+	cfg, st := inspectionTestStore(t)
+	databaseID, err := st.RetrievalDatabaseID(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := semanticlock.NewScope(cfg.CacheDir, databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := scope.AcquireMaintenanceExclusive(t.Context(), "owner=activation\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = maintenance.Close() }()
+	generation, err := maintenance.AcquireGenerationExclusive(t.Context(), "owner=activation\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = generation.Close() }()
+
+	acquire, err := runtimeGenerationLeaseAcquirer(t.Context(), st, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerCtx, cancelCaller := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancelCaller()
+	lease, err := acquire(callerCtx)
+	if lease != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lease=%#v err=%v want local deadline", lease, err)
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("local acquisition timeout canceled caller: %v", callerCtx.Err())
+	}
+}
+
+func TestRuntimeAdmissionCapability(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	tests := []struct {
+		name       string
+		capability semanticindex.Capability
+		wantReason string
+		admitted   bool
+	}{
+		{
+			name:       "unsupported",
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			wantReason: "native_backend_unsupported",
+		},
+		{
+			name: "broken",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedBroken, Backend: semanticindex.BackendUSearch,
+				Version: semanticindex.USearchVersion, Reason: "load /private/tmp/libusearch.dylib failed",
+			},
+			wantReason: "native_backend_broken: load [path] failed",
+		},
+		{
+			name: "provenance mismatch",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: "2.25.0",
+			},
+			wantReason: "native_backend_provenance_mismatch",
+		},
+		{
+			name: "matching native backend",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+			},
+			admitted: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := make([]string, 0, 4)
+			deps := runtimeDeps{
+				readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+					calls = append(calls, "readiness")
+					return runtimeReadySnapshot(true), nil
+				},
+				capability: func() semanticindex.Capability {
+					calls = append(calls, "capability")
+					return tc.capability
+				},
+				searcher: func(_ context.Context, st *store.Store, _ config.Config, _ embedding.Profile, snapshot semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
+					calls = append(calls, "searcher")
+					if snapshot.ActiveGenerationBackend != semanticindex.BackendUSearch || snapshot.ActiveGenerationBackendVersion != semanticindex.USearchVersion {
+						t.Fatalf("searcher snapshot provenance=%+v", snapshot)
+					}
+					return semanticindex.NewExact(st), nil
+				},
+				provider: func(semanticconfig.Config) (embedding.Provider, error) {
+					calls = append(calls, "provider")
+					return &runtimeProvider{info: embedding.Info{Provider: "ollama", Model: "embed-model", Dimensions: 2}}, nil
+				},
+			}
+			b, err := newRuntimeBuilderWithDeps(context.Background(), config.Config{RootDir: root}, st, "", false, false, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCalls := []string{"readiness", "capability"}
+			if tc.admitted {
+				wantCalls = append(wantCalls, "searcher", "provider")
+				if b.semanticRetriever == nil || b.semanticReadiness.State != semanticreadiness.StateReady || !b.semanticReadiness.Searchable {
+					t.Fatalf("admitted builder=%#v", b)
+				}
+			} else if b.semanticRetriever != nil || b.semanticReadiness.State != semanticreadiness.StateUnavailable ||
+				b.semanticReadiness.Searchable || b.semanticReadiness.Reason != tc.wantReason {
+				t.Fatalf("rejected builder=%#v want_reason=%q", b, tc.wantReason)
+			}
+			if fmt.Sprint(calls) != fmt.Sprint(wantCalls) {
+				t.Fatalf("calls=%v want=%v", calls, wantCalls)
+			}
+		})
+	}
+}
+
+func TestRuntimeBuilderClosesConstructedSearcherWhenProviderAdmissionFails(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	providerFailure := errors.New("provider construction failed")
+	closeFailure := errors.New("searcher close failed")
+
+	for _, tc := range []struct {
+		name         string
+		provider     func(semanticconfig.Config) (embedding.Provider, error)
+		wantError    string
+		wantSentinel error
+	}{
+		{
+			name: "provider construction error",
+			provider: func(semanticconfig.Config) (embedding.Provider, error) {
+				return nil, providerFailure
+			},
+			wantError:    "construct semantic embedding provider: provider construction failed",
+			wantSentinel: providerFailure,
+		},
+		{
+			name: "provider provenance mismatch",
+			provider: func(semanticconfig.Config) (embedding.Provider, error) {
+				return &runtimeProvider{info: embedding.Info{Provider: "ollama", Model: "wrong-model", Dimensions: 2}}, nil
+			},
+			wantError: "constructed semantic provider provenance does not match admitted profile",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			searcher := &closeableRuntimeSearcher{closeErr: closeFailure}
+			deps := runtimeDeps{
+				readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+					return runtimeReadySnapshot(false), nil
+				},
+				searcher: func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error) {
+					return searcher, nil
+				},
+				provider: tc.provider,
+			}
+
+			builder, err := newRuntimeBuilderWithDeps(context.Background(), config.Config{RootDir: root}, st, "", false, false, deps)
+			if builder != nil || err == nil || err.Error() != tc.wantError {
+				t.Fatalf("builder=%#v error=%v want %q", builder, err, tc.wantError)
+			}
+			if tc.wantSentinel != nil && !errors.Is(err, tc.wantSentinel) {
+				t.Fatalf("error=%v does not preserve provider failure", err)
+			}
+			if errors.Is(err, closeFailure) || strings.Contains(err.Error(), closeFailure.Error()) {
+				t.Fatalf("close error replaced primary error: %v", err)
+			}
+			if searcher.closeCalls != 1 {
+				t.Fatalf("searcher close calls=%d want=1", searcher.closeCalls)
+			}
+		})
+	}
+}
+
+func runtimeReadySnapshot(active bool) semanticreadiness.Snapshot {
+	snapshot := semanticreadiness.Snapshot{
+		Available: true, ProfileExists: true, ProfileProvenanceValid: true,
+		ExpectedParents: 1, CurrentParents: 1, ChunkableParents: 1, ParentsWithReadyChunk: 1,
+		ChunkCount: 100, ReadyEmbeddings: 100,
+		GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1,
+		LatestRevision: 1, ObservedLatestRevision: 1,
+		L0ReadyCount: 1, ObservedL0ReadyCount: 1,
+	}
+	if active {
+		snapshot.ActiveGenerationID = "root"
+		snapshot.ActiveGenerationValid = true
+		snapshot.ActiveSnapshotRevision = 1
+		snapshot.ActiveGenerationBackend = semanticindex.BackendUSearch
+		snapshot.ActiveGenerationBackendVersion = semanticindex.USearchVersion
+		snapshot.ActiveGenerationDistanceMetric = "cosine"
+		snapshot.ActiveGenerationDimensions = 2
+		snapshot.ActiveIndexedCount = 99
+	}
+	return snapshot
 }
 
 func TestRuntimeAdmissionPropagatesCallerCancellationBeforeProviderConstruction(t *testing.T) {
@@ -152,6 +364,113 @@ func TestRuntimeAdmissionPropagatesCallerCancellationBeforeProviderConstruction(
 	b, err := newRuntimeBuilderWithDeps(ctx, config.Config{RootDir: root}, st, "", false, false, deps)
 	if !errors.Is(err, context.Canceled) || b != nil || providerCalls != 0 {
 		t.Fatalf("builder=%#v err=%v provider_calls=%d", b, err, providerCalls)
+	}
+}
+
+func TestRuntimeAdmissionPropagatesSearcherCancellationBeforeArtifactFailOpen(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	for _, tc := range []struct {
+		name        string
+		searchError func(context.Context, context.CancelFunc) error
+		want        error
+	}{
+		{
+			name: "caller cancellation after readiness",
+			searchError: func(ctx context.Context, cancel context.CancelFunc) error {
+				cancel()
+				return fmt.Errorf("%w: native root open: %w", errNativeRootArtifactsUnavailable, ctx.Err())
+			},
+			want: context.Canceled,
+		},
+		{
+			name: "explicit wrapped deadline",
+			searchError: func(context.Context, context.CancelFunc) error {
+				return fmt.Errorf("%w: native root open: %w", errNativeRootArtifactsUnavailable, context.DeadlineExceeded)
+			},
+			want: context.DeadlineExceeded,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			readinessCalls, searcherCalls, providerCalls := 0, 0, 0
+			deps := runtimeDeps{
+				readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+					readinessCalls++
+					return runtimeReadySnapshot(true), nil
+				},
+				capability: func() semanticindex.Capability {
+					return semanticindex.Capability{
+						State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+					}
+				},
+				searcher: func(searchCtx context.Context, _ *store.Store, _ config.Config, _ embedding.Profile, _ semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
+					searcherCalls++
+					return nil, tc.searchError(searchCtx, cancel)
+				},
+				provider: func(semanticconfig.Config) (embedding.Provider, error) {
+					providerCalls++
+					return nil, errors.New("provider must not be constructed")
+				},
+			}
+
+			builder, err := newRuntimeBuilderWithDeps(ctx, config.Config{RootDir: root}, st, "", false, false, deps)
+			if builder != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("builder=%#v error=%v want=%v", builder, err, tc.want)
+			}
+			if readinessCalls != 1 || searcherCalls != 1 || providerCalls != 0 {
+				t.Fatalf("readiness=%d searcher=%d provider=%d", readinessCalls, searcherCalls, providerCalls)
+			}
+		})
+	}
+}
+
+type syntheticSemanticLeaseReleaseError struct {
+	err error
+}
+
+func (e syntheticSemanticLeaseReleaseError) Error() string {
+	return "release semantic generation lease: " + e.err.Error()
+}
+
+func (e syntheticSemanticLeaseReleaseError) Unwrap() error {
+	return e.err
+}
+
+func (syntheticSemanticLeaseReleaseError) semanticLeaseReleaseFailure() {}
+
+func TestRuntimeAdmissionFailsClosedOnSemanticLeaseReleaseFailure(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	closeErr := errors.New("synthetic generation lease release failure")
+	providerCalls := 0
+	deps := runtimeDeps{
+		readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+			return runtimeReadySnapshot(true), nil
+		},
+		capability: func() semanticindex.Capability {
+			return semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+			}
+		},
+		searcher: func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error) {
+			return nil, syntheticSemanticLeaseReleaseError{err: closeErr}
+		},
+		provider: func(semanticconfig.Config) (embedding.Provider, error) {
+			providerCalls++
+			return nil, errors.New("provider must not be constructed")
+		},
+	}
+
+	builder, err := newRuntimeBuilderWithDeps(t.Context(), config.Config{RootDir: root}, st, "", false, false, deps)
+	if builder != nil || !errors.Is(err, closeErr) {
+		t.Fatalf("builder=%#v error=%v want lease release failure", builder, err)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("provider calls=%d want=0", providerCalls)
 	}
 }
 
@@ -223,9 +542,19 @@ func TestRuntimeAdmissionSkipsProviderForEveryIneligibleReadinessClass(t *testin
 				tc.edit(&snapshot)
 			}
 			providerCalls := 0
+			capabilityCalls := 0
+			searcherCalls := 0
 			deps := runtimeDeps{
 				readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
 					return snapshot, tc.err
+				},
+				capability: func() semanticindex.Capability {
+					capabilityCalls++
+					return semanticindex.Capability{State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion}
+				},
+				searcher: func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error) {
+					searcherCalls++
+					return nil, errors.New("searcher must not be constructed")
 				},
 				provider: func(semanticconfig.Config) (embedding.Provider, error) {
 					providerCalls++
@@ -233,8 +562,9 @@ func TestRuntimeAdmissionSkipsProviderForEveryIneligibleReadinessClass(t *testin
 				},
 			}
 			b, err := newRuntimeBuilderWithDeps(context.Background(), config.Config{RootDir: root}, st, "", false, false, deps)
-			if err != nil || b == nil || b.semanticReadiness.State != tc.want || b.semanticReadiness.Searchable || b.semanticRetriever != nil || providerCalls != 0 {
-				t.Fatalf("builder=%#v err=%v provider_calls=%d want_state=%s", b, err, providerCalls, tc.want)
+			if err != nil || b == nil || b.semanticReadiness.State != tc.want || b.semanticReadiness.Searchable || b.semanticRetriever != nil ||
+				capabilityCalls != 0 || searcherCalls != 0 || providerCalls != 0 {
+				t.Fatalf("builder=%#v err=%v capability_calls=%d searcher_calls=%d provider_calls=%d want_state=%s", b, err, capabilityCalls, searcherCalls, providerCalls, tc.want)
 			}
 		})
 	}
@@ -252,6 +582,20 @@ type runtimeProvider struct{ info embedding.Info }
 func (p *runtimeProvider) Info() embedding.Info { return p.info }
 func (p *runtimeProvider) Embed(context.Context, embedding.Request) (embedding.Response, error) {
 	return embedding.Response{}, errors.New("unexpected runtime query")
+}
+
+type closeableRuntimeSearcher struct {
+	closeCalls int
+	closeErr   error
+}
+
+func (*closeableRuntimeSearcher) Search(context.Context, []float32, semanticindex.SearchOptions) ([]semanticindex.Hit, semanticindex.Status, error) {
+	return nil, semanticindex.Status{}, errors.New("unexpected runtime search")
+}
+
+func (s *closeableRuntimeSearcher) Close() error {
+	s.closeCalls++
+	return s.closeErr
 }
 
 func TestNewRuntimeBuilderForceOffSkipsMalformedUnusedSemanticConfig(t *testing.T) {

@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,7 @@ import (
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
@@ -60,6 +63,13 @@ func TestResearchCommandConfiguredSemanticModesAndOverrides(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := cfg.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := store.Open(cfg.DBPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Close(); err != nil {
 			t.Fatal(err)
 		}
 		yaml := "research:\n  semantic:\n    mode: " + mode + "\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
@@ -119,6 +129,131 @@ func TestResearchCommandReadyExactProfileReachesProviderAfterAdmission(t *testin
 	}
 	if pack.QueryPlan.SemanticMode != semanticconfig.ModeOn || pack.QueryPlan.SemanticReadiness != semanticreadiness.StateReady || calls.Load() != 1 {
 		t.Fatalf("mode=%s readiness=%s calls=%d", pack.QueryPlan.SemanticMode, pack.QueryPlan.SemanticReadiness, calls.Load())
+	}
+}
+
+func TestResearchCommandRetrievalOnlyDoesNotModifyDatabase(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	func() {
+		st, err := store.Open(cfg.DBPath)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer func() {
+			if err := st.Close(); err != nil {
+				t.Fatalf("close writable store: %v", err)
+			}
+		}()
+		source, err := st.UpsertSource(context.Background(), model.SourceCandidate{
+			SourceKey:     "source:read-only-research",
+			OriginalURL:   "https://example.com/read-only-research",
+			CanonicalURL:  "https://example.com/read-only-research",
+			NormalizedURL: "https://example.com/read-only-research",
+			SourceType:    "article",
+			Domain:        "example.com",
+			NotePath:      "sources/article/read-only-research.md",
+		})
+		if err != nil {
+			t.Fatalf("upsert source: %v", err)
+		}
+		now := time.Now().UTC()
+		if _, err := st.SaveSourceExtraction(context.Background(), source.SourceID, model.ExtractResult{
+			CanonicalURL: "https://example.com/read-only-research",
+			FinalURL:     "https://example.com/read-only-research",
+			Title:        "Read-only research evidence",
+			Content:      "The readonly invariant keeps ordinary research retrieval from modifying the evidence database.",
+			Status:       "ok",
+			FetchedAt:    now,
+			Tool:         "test",
+			ToolVersion:  "1",
+		}, "read-only-research-content"); err != nil {
+			t.Fatalf("save source extraction: %v", err)
+		}
+		if _, err := st.SaveSourceSummary(context.Background(), source.SourceID, model.SummaryResult{
+			Text:          "Ordinary research retrieval preserves the evidence database.",
+			RawJSON:       `{"summary":"Ordinary research retrieval preserves the evidence database."}`,
+			Model:         "test",
+			PromptVersion: "test",
+			Status:        "ok",
+			FetchedAt:     now,
+			Tool:          "test",
+			ToolVersion:   "1",
+		}); err != nil {
+			t.Fatalf("save source summary: %v", err)
+		}
+	}()
+
+	func() {
+		fixtureDB, err := sql.Open("sqlite", cfg.DBPath)
+		if err != nil {
+			t.Fatalf("open fixture database: %v", err)
+		}
+		defer func() {
+			if err := fixtureDB.Close(); err != nil {
+				t.Fatalf("close fixture database: %v", err)
+			}
+		}()
+		var checkpointBusy, checkpointLog, checkpointed int
+		if err := fixtureDB.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&checkpointBusy, &checkpointLog, &checkpointed); err != nil {
+			t.Fatalf("checkpoint fixture database: %v", err)
+		}
+		if checkpointBusy != 0 || checkpointLog != checkpointed {
+			t.Fatalf("fixture checkpoint incomplete: busy=%d log=%d checkpointed=%d", checkpointBusy, checkpointLog, checkpointed)
+		}
+		var journalMode string
+		if err := fixtureDB.QueryRow(`PRAGMA journal_mode=DELETE`).Scan(&journalMode); err != nil {
+			t.Fatalf("set fixture journal mode: %v", err)
+		}
+		if journalMode != "delete" {
+			t.Fatalf("fixture journal mode=%q, want delete", journalMode)
+		}
+	}()
+	for _, suffix := range []string{"-wal", "-shm"} {
+		path := cfg.DBPath + suffix
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("fixture left SQLite sidecar %s: %v", path, err)
+		}
+	}
+
+	beforeBytes, err := os.ReadFile(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("read database before research: %v", err)
+	}
+	beforeHash := sha256.Sum256(beforeBytes)
+
+	output := runRootCommand(t, root,
+		"research", "readonly invariant evidence",
+		"--retrieval-only", "--no-trace", "--no-planner", "--no-semantic", "--json",
+	)
+	var pack brainresearch.Pack
+	if err := json.Unmarshal([]byte(output), &pack); err != nil {
+		t.Fatalf("decode research pack: %v\n%s", err, output)
+	}
+	if len(pack.Evidence) == 0 {
+		t.Fatalf("expected nonempty research evidence, got %+v", pack)
+	}
+
+	afterBytes, err := os.ReadFile(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("read database after research: %v", err)
+	}
+	afterHash := sha256.Sum256(afterBytes)
+	if beforeHash != afterHash {
+		t.Fatalf("research modified database bytes: before=%x after=%x", beforeHash, afterHash)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		path := cfg.DBPath + suffix
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("research left SQLite sidecar %s: %v", path, err)
+		}
 	}
 }
 
@@ -371,13 +506,57 @@ func TestSemanticStatusJSONHasExplicitStateAndNonNullSlices(t *testing.T) {
 		t.Fatalf("semantic status emitted null slices: %s", stdout)
 	}
 	var payload struct {
-		Status string `json:"status"`
+		Status            string                   `json:"status"`
+		BackendCapability semanticindex.Capability `json:"backend_capability"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("decode %q: %v", stdout, err)
 	}
 	if payload.Status != "not_configured" {
 		t.Fatalf("status=%q output=%s", payload.Status, stdout)
+	}
+	if payload.BackendCapability.State == "" {
+		t.Fatalf("backend_capability=%+v output=%s", payload.BackendCapability, stdout)
+	}
+}
+
+func TestSemanticStatusBackendCapabilityOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		capability semanticindex.Capability
+		want       string
+	}{
+		{
+			name: "supported ready",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+			},
+			want: "Backend: state=supported_ready backend=usearch version=2.26.0\n",
+		},
+		{
+			name:       "unsupported",
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			want:       "Backend: state=unsupported\n",
+		},
+		{
+			name: "broken reason is sanitized once",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedBroken, Backend: semanticindex.BackendUSearch,
+				Version: semanticindex.USearchVersion, Reason: "load /private/tmp/libusearch.dylib failed",
+			},
+			want: "Backend: state=supported_broken backend=usearch version=2.26.0 reason=load [path] failed\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := writeSemanticStatus(&output, semanticbuild.Status{BackendCapability: tc.capability}); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(output.String(), "Backend:") != 1 || !strings.Contains(output.String(), tc.want) {
+				t.Fatalf("output=%q want line %q", output.String(), tc.want)
+			}
+		})
 	}
 }
 
