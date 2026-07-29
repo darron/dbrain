@@ -41,8 +41,87 @@ func TestFlushPublishesBeforeActivatingRoot(t *testing.T) {
 	if _, err := semanticsegment.OpenRoot(st.cacheDir, "db-1", profileID, result.GenerationID); err != nil {
 		t.Fatalf("root was not published before completion: %v", err)
 	}
-	if result.Indexed != store.RetrievalSegmentTarget || result.L0Ready != 0 || result.SnapshotRevision != store.RetrievalSegmentTarget {
+	if result.Indexed != store.RetrievalSegmentTarget ||
+		result.Flushed != store.RetrievalSegmentTarget ||
+		result.L0Ready != 0 ||
+		result.SnapshotRevision != store.RetrievalSegmentTarget {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestFlushReportsCommittedDeltaSeparatelyFromTotalRootMembership(t *testing.T) {
+	t.Parallel()
+	profile := Profile(embedding.Info{
+		Provider: "fake", Model: "fake-v1", Dimensions: 2,
+	})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := t.TempDir()
+	st := &flushFakeStore{
+		databaseID: "db-1",
+		cacheDir:   cache,
+		window: store.RetrievalFlushWindow{
+			Profile: store.RetrievalEmbeddingProfileRow{
+				ProfileID:    profileID,
+				PurgeEpoch:   3,
+				L0ReadyCount: store.RetrievalSegmentTarget,
+			},
+			Rows:             flushRowsFrom(profileID, 0, store.RetrievalSegmentTarget),
+			SnapshotRevision: store.RetrievalSegmentTarget,
+		},
+	}
+	first, err := Flush(
+		t.Context(),
+		st,
+		flushPayloadBuilder{},
+		FlushOptions{
+			Profile: profile, Backend: "usearch",
+			BackendVersion: "2.26.0", DistanceMetric: "cosine",
+			CacheDir: cache,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st.existing = append(
+		[]store.RetrievalIndexSegmentRow(nil),
+		st.completed.Segments...,
+	)
+	st.window = store.RetrievalFlushWindow{
+		Profile: store.RetrievalEmbeddingProfileRow{
+			ProfileID:              profileID,
+			ActiveGenerationID:     first.GenerationID,
+			ActiveSnapshotRevision: first.SnapshotRevision,
+			PurgeEpoch:             3,
+			L0ReadyCount:           store.RetrievalSegmentTarget,
+		},
+		Rows: flushRowsFrom(
+			profileID,
+			store.RetrievalSegmentTarget,
+			store.RetrievalSegmentTarget,
+		),
+		SnapshotRevision: 2 * store.RetrievalSegmentTarget,
+	}
+	second, err := Flush(
+		t.Context(),
+		st,
+		flushPayloadBuilder{},
+		FlushOptions{
+			Profile: profile, Backend: "usearch",
+			BackendVersion: "2.26.0", DistanceMetric: "cosine",
+			CacheDir: cache,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Indexed != 2*store.RetrievalSegmentTarget ||
+		second.Flushed != store.RetrievalSegmentTarget ||
+		second.L0Ready != 0 {
+		t.Fatalf("second result=%+v", second)
 	}
 }
 
@@ -181,9 +260,14 @@ func TestFlushRewritesRootForMembershipL0AtActiveSnapshot(t *testing.T) {
 }
 
 func flushRows(profileID string, count int) []store.RetrievalEmbeddingRow {
+	return flushRowsFrom(profileID, 0, count)
+}
+
+func flushRowsFrom(profileID string, offset int, count int) []store.RetrievalEmbeddingRow {
 	rows := make([]store.RetrievalEmbeddingRow, 0, count)
 	for index := 0; index < count; index++ {
-		rows = append(rows, store.RetrievalEmbeddingRow{ChunkID: "chunk-" + string(rune(index+1)), ProfileID: profileID, Revision: int64(index + 1), VectorHash: "vector", Dimensions: 2})
+		ordinal := offset + index + 1
+		rows = append(rows, store.RetrievalEmbeddingRow{ChunkID: "chunk-" + string(rune(ordinal)), ProfileID: profileID, Revision: int64(ordinal), VectorHash: "vector", Dimensions: 2})
 	}
 	return rows
 }

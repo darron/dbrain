@@ -101,14 +101,34 @@ requiring `git diff --exit-code -- web/ui/dist` to stay clean.
 ## Homebrew Tap Automation
 
 The tag release workflow updates `darron/homebrew-tap` after the GitHub release
-assets are published when the repository secret `HOMEBREW_TAP_TOKEN` is present.
-The token must be able to write contents to `darron/homebrew-tap`.
+assets are published. `HOMEBREW_TAP_TOKEN` is required and must be able to
+write contents to `darron/homebrew-tap`; a missing token fails the release
+instead of silently leaving the tap stale.
 
 The workflow downloads the built release archives, computes the four Homebrew
 checksums for `darwin_amd64`, `darwin_arm64`, `linux_amd64`, and `linux_arm64`,
 updates `Formula/dbrain.rb`, and pushes a commit named
-`Update dbrain to <tag>`. If the secret is absent, the release still succeeds
-and the tap update is skipped.
+`Update dbrain to <tag>`. A clean macOS arm64 runner then installs the updated
+formula, runs `brew test`, checks that no external USearch dynamic library is
+required, and exercises the installed binary's native semantic capability.
+
+## Native semantic release boundary
+
+The macOS arm64 archive is the first release artifact with native semantic ANN
+support. It is built on the arm64 `macos-15` runner with CGO and the `usearch`
+build tag. USearch v2.26.0 is compiled from checksum-pinned source into a static
+archive with a macOS 12.0 deployment target. The release binary may dynamically
+link Apple's system `libc++`, but it must not depend on an external
+`libusearch_c.dylib`.
+
+The Darwin amd64, Linux amd64/arm64, and Windows amd64 archives remain
+`CGO_ENABLED=0`, carry no `usearch` build tag, and report semantic native state
+as explicitly `unsupported`. Sync still succeeds on those artifacts and records
+the `native_backend_unsupported` skip; lexical retrieval is unchanged.
+
+Every release archive contains `THIRD_PARTY_NOTICES.md` and the upstream
+USearch Apache-2.0 license as `LICENSE-USearch`. The stable and candidate
+Homebrew formulae install both files under their package share directory.
 
 ## Homebrew Test Candidates
 

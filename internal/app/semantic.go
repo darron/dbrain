@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -27,7 +29,7 @@ type semanticDeps struct {
 	loadReadConfig    func(context.Context, string, string) (config.Config, error)
 	loadWriteConfig   func(string, ...string) (config.Config, error)
 	openReadOnly      func(string) (*store.Store, error)
-	openWritable      func(string) (*store.Store, error)
+	openWritable      func(string, string) (*store.Store, error)
 	resolve           func(string) (semanticconfig.Config, error)
 	resolveDiagnostic func(string) (semanticconfig.Config, error)
 	capability        func() semanticindex.Capability
@@ -42,7 +44,7 @@ func defaultSemanticDeps() semanticDeps {
 		},
 		loadWriteConfig:   loadConfig,
 		openReadOnly:      store.OpenReadOnly,
-		openWritable:      store.Open,
+		openWritable:      store.OpenWithSemanticCache,
 		resolve:           semanticconfig.Resolve,
 		resolveDiagnostic: semanticconfig.ResolveDiagnostic,
 		capability:        semanticindex.RuntimeCapability,
@@ -62,9 +64,15 @@ func newSemanticCommandWithDeps(root *rootOptions, deps semanticDeps) *cobra.Com
 	if deps.capability == nil {
 		deps.capability = semanticindex.RuntimeCapability
 	}
+	refreshDeps := defaultSemanticRefreshDeps()
+	refreshDeps.resolve = deps.resolve
+	refreshDeps.capability = deps.capability
+	refreshDeps.openWritable = deps.openWritable
+	refreshDeps.provider = deps.provider
 	cmd := &cobra.Command{Use: "semantic", Short: "Build and inspect semantic retrieval state", RunE: helpCommand}
 	cmd.AddCommand(
 		newSemanticStatusCommand(root, deps),
+		newSemanticRefreshCommand(root, refreshDeps),
 		newSemanticChunkCommand(root, deps),
 		newSemanticEmbedCommand(root, deps),
 		newSemanticVerifyCommand(root, deps),
@@ -99,7 +107,7 @@ func newSemanticVerifyCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			if err != nil {
 				return err
 			}
-			st, err := deps.openWritable(cfg.DBPath)
+			st, err := deps.openWritable(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -139,7 +147,23 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 			capability := deps.capability()
 			configured := strings.TrimSpace(semantic.Model) != "" && semantic.Dimensions > 0
 			if !configured {
-				status, err := semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
+				st, openErr := deps.openReadOnly(cfg.DBPath)
+				if openErr != nil {
+					if _, statErr := os.Stat(cfg.DBPath); !errors.Is(statErr, os.ErrNotExist) {
+						if statErr != nil {
+							return errors.Join(openErr, statErr)
+						}
+						return openErr
+					}
+					status, err := semanticbuild.ReadStatus(cmd.Context(), nil, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
+					if err != nil {
+						return err
+					}
+					status.Mode = string(semantic.Mode)
+					return outputSemanticStatus(cmd, status, jsonOut)
+				}
+				defer func() { _ = st.Close() }()
+				status, err := semanticbuild.ReadStatus(cmd.Context(), st, embedding.Profile{}, false, semantic.Mode != semanticconfig.ModeOff, semantic.ExactFallbackMaxChunks, capability, time.Now().UTC())
 				if err != nil {
 					return err
 				}
@@ -185,7 +209,7 @@ func newSemanticStatusCommand(root *rootOptions, deps semanticDeps) *cobra.Comma
 
 func outputSemanticStatus(cmd *cobra.Command, status semanticbuild.Status, jsonOut bool) error {
 	if jsonOut {
-		return writeJSON(cmd.OutOrStdout(), status)
+		return writeJSON(cmd.OutOrStdout(), newSemanticStatusOutput(status))
 	}
 	return writeSemanticStatus(cmd.OutOrStdout(), status)
 }
@@ -209,7 +233,7 @@ func newSemanticChunkCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 			if err != nil {
 				return err
 			}
-			st, err := deps.openWritable(cfg.DBPath)
+			st, err := deps.openWritable(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -273,7 +297,7 @@ func newSemanticEmbedCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 			if err != nil {
 				return err
 			}
-			st, err := deps.openWritable(cfg.DBPath)
+			st, err := deps.openWritable(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}

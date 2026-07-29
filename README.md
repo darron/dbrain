@@ -68,10 +68,16 @@ Verify the installed binaries:
 
 ```sh
 dbrain version
+dbrain --no-debug semantic status --json
 summarize --help
 ollama --version
 whisper-cli --help
 ```
+
+The Homebrew macOS arm64 binary includes the native USearch semantic backend
+and reports `supported_ready` with backend `usearch`. Other released platforms
+remain CGO-free and report native semantic state as explicitly `unsupported`;
+ordinary sync and lexical retrieval continue to work there.
 
 Run the first-time setup wizard:
 
@@ -1137,6 +1143,46 @@ the measured 25,000-vector exact ceiling; larger complete profiles report
 `needs_index`. The cap is checked before request filters are applied. Direct
 `dbrain_research_pack` calls never write research traces. See
 [MCP.md](MCP.md#semantic-retrieval-contract) for overrides and response fields.
+
+### Semantic refresh after sync
+
+The derived semantic state can be inspected and refreshed manually:
+
+```sh
+dbrain semantic status
+dbrain semantic refresh
+dbrain semantic refresh --max-duration 30m
+dbrain semantic refresh --json
+```
+
+`semantic refresh` uses the configured embedding profile and does not change
+`research.semantic.mode`. It remains a diagnostic and recovery command, not a
+required routine step. Every successful `dbrain sync all` and scheduled sync
+now invokes this same refresh path synchronously after its source store and
+metrics have closed. That includes an unchanged source run: it can resume a
+durable semantic run left by cancellation or failure. The initial successful
+sync after enabling `shadow` or `on` performs the same full backfill path.
+
+Mode `off` and a build whose native backend is unsupported report an explicit,
+successful semantic skip; they do not open a writable semantic store or create
+provider/native dependencies. A supported-but-broken backend, cancellation, or
+any supported enabled refresh failure returns a typed non-zero error after the
+committed source summary. A supported enabled success returns only when the
+refresh ends `ready`. Human output streams bounded refresh progress and then a
+completion, skip, or error line. `sync all --json` emits exactly one flattened
+sync document, with either a `semantic` result or `semantic_error` object.
+
+The existing coarse `sync-all.lock` spans the whole source-plus-semantic sync
+operation. Database-scoped maintenance and generation leases additionally
+coordinate authoritative writes, refresh units, root activation, and admitted
+queries across processes. Queries never trigger maintenance. The Homebrew
+macOS arm64 artifact statically includes the native backend; normal
+untagged/CGO-free builds and all other release targets remain explicitly
+unsupported for semantic refresh without failing ordinary sync or lexical
+retrieval.
+
+See [Semantic retrieval](docs/semantic-retrieval.md) for the operational
+contract and [MCP.md](MCP.md) for agent-facing retrieval behavior.
 
 See [MCP.md](MCP.md) for the full agent workflow, tool contract, eval setup,
 client configuration, importer contract, logging behavior, and skill setup.

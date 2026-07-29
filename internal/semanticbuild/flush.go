@@ -34,7 +34,7 @@ type FlushOptions struct {
 
 type FlushResult struct {
 	GenerationID, SegmentHash string
-	Indexed, L0Ready          int
+	Indexed, Flushed, L0Ready int
 	SnapshotRevision          int64
 }
 
@@ -132,8 +132,12 @@ func Flush(ctx context.Context, st FlushStore, builder SegmentPayloadBuilder, op
 	if err := st.CompleteRetrievalIndexGeneration(ctx, completion); err != nil {
 		return FlushResult{}, fmt.Errorf("activate published semantic root: %w", err)
 	}
-	return FlushResult{GenerationID: generationID, SegmentHash: segment.Hash, Indexed: indexed,
-		L0Ready: max(window.Profile.L0ReadyCount-len(window.Rows), 0), SnapshotRevision: window.SnapshotRevision}, nil
+	return FlushResult{
+		GenerationID: generationID, SegmentHash: segment.Hash,
+		Indexed: indexed, Flushed: len(window.Rows),
+		L0Ready:          max(window.Profile.L0ReadyCount-len(window.Rows), 0),
+		SnapshotRevision: window.SnapshotRevision,
+	}, nil
 }
 
 func validateFlushWindow(profileID string, dimensions int, window store.RetrievalFlushWindow, limit int) error {

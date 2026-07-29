@@ -19,12 +19,14 @@ type Status struct {
 	ProfileID         string                     `json:"profile_id"`
 	BackendCapability semanticindex.Capability   `json:"backend_capability"`
 	Store             semanticreadiness.Snapshot `json:"store"`
+	LatestRun         *store.SemanticRefreshRun  `json:"latest_run"`
 	Problems          []string                   `json:"problems"`
 	Next              []string                   `json:"next_steps"`
 }
 
 type StatusStore interface {
 	SemanticReadinessSnapshotAt(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
+	LatestSemanticRefreshRun(context.Context, string) (*store.SemanticRefreshRun, error)
 }
 
 func ReadStatus(
@@ -64,7 +66,8 @@ func ReadStatusWithNativeValidation(
 	}
 	snapshot := semanticreadiness.Snapshot{Configured: configured, Enabled: enabled, ExactMaxChunks: exactMaxChunks, Now: now.UTC()}
 	if !configured {
-		return statusFromDecision(result, snapshot, capability), nil
+		result = statusFromDecision(result, snapshot, capability)
+		return statusWithLatestRun(ctx, st, result, "")
 	}
 	if st != nil {
 		storage, err := st.SemanticReadinessSnapshotAt(ctx, profile, exactMaxChunks, now)
@@ -92,7 +95,63 @@ func ReadStatusWithNativeValidation(
 			result.Problems = append(result.Problems, "native root artifacts failed validation")
 		}
 	}
+	latestProfileID := result.ProfileID
+	if !enabled {
+		latestProfileID = ""
+	}
+	if !result.Store.Available {
+		return result, nil
+	}
+	return statusWithLatestRun(ctx, st, result, latestProfileID)
+}
+
+func statusWithLatestRun(
+	ctx context.Context,
+	st StatusStore,
+	result Status,
+	profileID string,
+) (Status, error) {
+	if st == nil {
+		return result, nil
+	}
+	latest, err := st.LatestSemanticRefreshRun(ctx, profileID)
+	if err != nil {
+		if errors.Is(err, store.ErrRetrievalUnavailable) {
+			return result, nil
+		}
+		return result, err
+	}
+	if latest == nil {
+		return result, nil
+	}
+	bounded := *latest
+	bounded.RunID = boundedStatusProtocolField(bounded.RunID, 64)
+	bounded.ProfileID = boundedStatusProtocolField(bounded.ProfileID, 192)
+	bounded.Checkpoint = boundedStatusProtocolField(bounded.Checkpoint, 256)
+	bounded.CurrentGenerationID = boundedStatusProtocolField(bounded.CurrentGenerationID, 64)
+	bounded.ErrorCode = boundedStatusProtocolField(bounded.ErrorCode, 64)
+	bounded.ErrorText = ""
+	bounded.ReadinessState = boundedStatusProtocolField(bounded.ReadinessState, 64)
+	result.LatestRun = &bounded
 	return result, nil
+}
+
+func boundedStatusProtocolField(value string, limit int) string {
+	if value == "" || len(value) > limit {
+		return ""
+	}
+	for _, character := range value {
+		switch {
+		case character >= 'a' && character <= 'z':
+		case character >= 'A' && character <= 'Z':
+		case character >= '0' && character <= '9':
+		case character == '.', character == '_', character == ':',
+			character == '=', character == '+', character == '-':
+		default:
+			return ""
+		}
+	}
+	return value
 }
 
 func statusFromDecision(result Status, snapshot semanticreadiness.Snapshot, capability semanticindex.Capability) Status {

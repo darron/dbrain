@@ -18,12 +18,13 @@ type RetrievalParentWork struct {
 }
 
 type ApplyRetrievalProjectionInput struct {
-	ParentKind      string
-	ParentSourceKey string
-	DirtyRevision   int64
-	Projection      retrievalchunk.Projection
-	Status          RetrievalProjectionStatus
-	Reason          string
+	ParentKind         string
+	ParentSourceKey    string
+	DirtyRevision      int64
+	ExpectedPurgeEpoch int64
+	Projection         retrievalchunk.Projection
+	Status             RetrievalProjectionStatus
+	Reason             string
 }
 
 // RetrievalProjectionStaleWorkError reports a projection result that no longer
@@ -164,8 +165,14 @@ func (s *Store) ApplyRetrievalProjection(ctx context.Context, input ApplyRetriev
 	if err := reserveRetrievalProjectionApplyTx(ctx, tx); err != nil {
 		return ChunkReplaceResult{}, err
 	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, input.ExpectedPurgeEpoch); err != nil {
+		return ChunkReplaceResult{}, err
+	}
 	result, err := applyRetrievalProjectionReservedTx(ctx, tx, input)
 	if err != nil {
+		return ChunkReplaceResult{}, err
+	}
+	if err := validateRetrievalProjectionPurgeEpochTx(ctx, tx, input.ExpectedPurgeEpoch); err != nil {
 		return ChunkReplaceResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -183,6 +190,9 @@ func validateRetrievalProjectionApplyInput(input *ApplyRetrievalProjectionInput)
 	}
 	if input.ParentSourceKey == "" || input.DirtyRevision <= 0 {
 		return fmt.Errorf("retrieval projection parent and positive dirty revision are required")
+	}
+	if input.ExpectedPurgeEpoch < 0 {
+		return fmt.Errorf("retrieval projection expected purge epoch must not be negative")
 	}
 	if input.Status != RetrievalProjectionCurrent && input.Status != RetrievalProjectionEmpty {
 		return fmt.Errorf("only current and empty retrieval projection applies are supported, got %q", input.Status)

@@ -110,6 +110,23 @@ var dbrainRuntimeReadinessSchemaV21 = []schemaIdentityTable{{
 	},
 }}
 
+var dbrainSemanticRefreshRunSchemaV25 = []schemaIdentityTable{{
+	name:    "semantic_refresh_runs",
+	columns: []string{"run_id", "profile_id", "purge_epoch", "projection_watermark", "embedding_revision", "stage", "checkpoint", "projected_parents", "embedded_chunks", "flushed_vectors", "compacted_vectors", "verified_vectors", "successor_runs", "current_generation_id", "state", "error_code", "error_text", "readiness_state", "version", "created_at", "updated_at", "last_progress_at"},
+}}
+
+var dbrainSemanticRefreshRunArchiveSchemaV27 = []schemaIdentityTable{{
+	name: "semantic_refresh_runs_v25_compatibility_archive",
+	columns: []string{
+		"run_id", "profile_id", "purge_epoch", "projection_watermark", "embedding_revision",
+		"stage", "checkpoint", "projected_parents", "embedded_chunks", "flushed_vectors",
+		"compacted_vectors", "verified_vectors", "successor_runs", "current_generation_id",
+		"state", "error_code", "error_text", "readiness_state", "version", "created_at",
+		"updated_at", "last_progress_at", "compatibility_action", "compatibility_reason",
+		"compatibility_fields",
+	},
+}}
+
 var compatibleSchemaMigrationNames = map[int]map[string]struct{}{
 	6: {
 		"source_summary_failure_timestamp": {},
@@ -182,6 +199,22 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
 			return 0, 0, fmt.Errorf("inspect dbrain runtime readiness counter migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticRefreshRunsMigrationVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainSemanticRefreshRunSchemaV25...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic refresh run migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticRefreshRunsArchiveMigrationVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainSemanticRefreshRunArchiveSchemaV27...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic refresh run archive migration: %w", err)
 		}
 	}
 

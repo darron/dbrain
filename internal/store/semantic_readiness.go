@@ -451,15 +451,26 @@ func (s *Store) SemanticReadinessSnapshotAt(ctx context.Context, profile embeddi
 	}
 	if snapshot.ProfileExists {
 		var observedReadyCount, observedPendingCount, observedBlockedCount, observedErrorCount, observedCorruptCount int
+		// One embedding batch shares a revision, and a segment-sized flush can
+		// split that batch. Membership, not the snapshot revision, therefore
+		// distinguishes active-root rows from the exact L0 tail.
 		if err := tx.QueryRowContext(ctx, `
-			SELECT COALESCE(MAX(revision),0),
-				COALESCE(SUM(status='ready' AND revision<=0),0),
-				COALESCE(SUM(status='ready' AND (?='' OR revision>?)),0),
-				COALESCE(SUM(status='ready'),0),COALESCE(SUM(status='pending'),0),
-				COALESCE(SUM(status='blocked'),0),COALESCE(SUM(status='error'),0),
-				COALESCE(SUM(status='blocked' AND last_error LIKE 'corrupt:%'),0)
-			FROM retrieval_embeddings WHERE profile_id=?`,
-			snapshot.ActiveGenerationID, snapshot.ActiveSnapshotRevision, profileID).Scan(
+			SELECT COALESCE(MAX(e.revision),0),
+				COALESCE(SUM(e.status='ready' AND e.revision<=0),0),
+				COALESCE(SUM(e.status='ready' AND (?='' OR NOT EXISTS (
+					SELECT 1
+					FROM retrieval_generation_segments generation
+					JOIN retrieval_index_segment_members member ON member.segment_hash=generation.segment_hash
+					WHERE generation.generation_id=?
+						AND member.chunk_id=e.chunk_id
+						AND member.revision=e.revision
+						AND member.vector_hash=e.vector_hash
+				))),0),
+				COALESCE(SUM(e.status='ready'),0),COALESCE(SUM(e.status='pending'),0),
+				COALESCE(SUM(e.status='blocked'),0),COALESCE(SUM(e.status='error'),0),
+				COALESCE(SUM(e.status='blocked' AND e.last_error LIKE 'corrupt:%'),0)
+			FROM retrieval_embeddings e WHERE e.profile_id=?`,
+			snapshot.ActiveGenerationID, snapshot.ActiveGenerationID, profileID).Scan(
 			&snapshot.ObservedLatestRevision, &snapshot.RevisionZeroEmbeddings, &snapshot.ObservedL0ReadyCount,
 			&observedReadyCount, &observedPendingCount, &observedBlockedCount, &observedErrorCount, &observedCorruptCount,
 		); err != nil {

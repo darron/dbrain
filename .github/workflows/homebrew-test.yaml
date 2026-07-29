@@ -121,6 +121,9 @@ jobs:
       - name: Run tests
         run: task test-ci
 
+      - name: Verify CGO-free semantic fallback
+        run: CGO_ENABLED=0 go test ./internal/semanticindex -run '^TestRuntimeCapabilityDefault$' -count=1
+
       - name: Run build
         run: task build
 
@@ -134,7 +137,6 @@ jobs:
       matrix:
         include:
           - {goos: darwin, goarch: amd64, archive_ext: tar.gz}
-          - {goos: darwin, goarch: arm64, archive_ext: tar.gz}
           - {goos: linux, goarch: amd64, archive_ext: tar.gz}
           - {goos: linux, goarch: arm64, archive_ext: tar.gz}
           - {goos: windows, goarch: amd64, archive_ext: zip}
@@ -192,6 +194,12 @@ jobs:
           binary_name="dbrain"
 
           task build
+          test "${CGO_ENABLED}" = "0"
+          go version -m bin/dbrain | grep -F "CGO_ENABLED=0"
+          if go version -m bin/dbrain | grep -F -- "-tags=usearch"; then
+            echo "CGO-free candidate artifact unexpectedly carries the usearch build tag" >&2
+            exit 1
+          fi
           if [ "${GOOS}" = "windows" ]; then
             binary_name="dbrain.exe"
           fi
@@ -200,6 +208,7 @@ jobs:
           mkdir -p "${package_dir}"
           cp bin/dbrain "${package_dir}/${binary_name}"
           cp README.md LICENSE "${package_dir}/"
+          cp third_party/usearch/LICENSE "${package_dir}/LICENSE-USearch"
           if [ -f THIRD_PARTY_NOTICES.md ]; then
             cp THIRD_PARTY_NOTICES.md "${package_dir}/"
           fi
@@ -222,11 +231,92 @@ jobs:
           retention-days: 7
           overwrite: true
 
+  build-darwin-arm64-native:
+    name: Build candidate darwin/arm64 with native semantic ANN
+    runs-on: macos-15
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
+    needs: [prepare, verify]
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate commit
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "${CANDIDATE_SHA}")" = "commit"
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install Task
+        uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa
+        with:
+          version: 3.52.0
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web/ui
+
+      - name: Build embedded web UI
+        run: task web-build
+
+      - name: Build pinned static USearch
+        run: task usearch-static-darwin-arm64
+
+      - name: Run tagged native tests
+        run: task test-usearch-darwin-arm64
+
+      - name: Build tagged native binary
+        run: task build-usearch-darwin-arm64
+        env:
+          DBRAIN_RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+
+      - name: Verify native artifact
+        run: task verify-usearch-darwin-arm64
+
+      - name: Build native candidate archive
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          archive_base="dbrain_${RELEASE_TAG}_darwin_arm64"
+          package_dir="dist/${archive_base}"
+          mkdir -p "${package_dir}"
+          cp bin/dbrain "${package_dir}/dbrain"
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "${package_dir}/"
+          cp third_party/usearch/LICENSE "${package_dir}/LICENSE-USearch"
+          tar -C dist -czf "dist/${archive_base}.tar.gz" "${archive_base}"
+
+      - name: Upload native candidate archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-darwin-arm64
+          path: dist/dbrain_${{ needs.prepare.outputs.release_tag }}_darwin_arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
   publish:
     name: Publish immutable prerelease
     runs-on: ubuntu-latest
     if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
-    needs: [prepare, build]
+    needs: [prepare, build, build-darwin-arm64-native]
     permissions:
       contents: write
     steps:
@@ -539,3 +629,26 @@ jobs:
           dbrain launchd restart --label com.example.dbrain-dev --check-full-disk-access=false
           \`\`\`
           SUMMARY
+
+  homebrew-smoke:
+    name: Verify installed Homebrew test artifact
+    runs-on: macos-15
+    if: ${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}
+    needs: update-homebrew-tap
+    steps:
+      - name: Install and test candidate formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install darron/tap/dbrain-test
+          brew test darron/tap/dbrain-test
+          binary="$(brew --prefix dbrain-test)/bin/dbrain"
+          if otool -L "${binary}" | grep -Eiq 'libusearch[^/]*\.(dylib|so)'; then
+            echo "installed dbrain-test has an external USearch dynamic-library dependency" >&2
+            exit 1
+          fi
+          status="$("${binary}" --root "${RUNNER_TEMP}/dbrain-homebrew-test-smoke" --no-debug semantic status --json)"
+          grep -F '"state": "supported_ready"' <<<"${status}"
+          grep -F '"backend": "usearch"' <<<"${status}"
+          grep -F '"version": "2.26.0"' <<<"${status}"
