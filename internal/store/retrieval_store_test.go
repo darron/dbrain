@@ -417,7 +417,10 @@ func TestOpenReadOnlyPreSemanticFoundationDoesNotWrite(t *testing.T) {
 
 func TestPurgeItemIndexedContentDeletesRetrievalState(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st, err := OpenWithSemanticCache(filepath.Join(t.TempDir(), "brain.db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedPurgeItem(t, st, "apple-note:one")

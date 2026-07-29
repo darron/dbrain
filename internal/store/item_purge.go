@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -15,7 +16,7 @@ func (s *Store) PurgeItemIndexedContent(ctx context.Context, sourceKey string, r
 		return false, fmt.Errorf("source key is required for purge")
 	}
 	return withBusyRetry(ctx, func() (bool, error) {
-		return withAuthoritativeWriteTx(ctx, s, "purge-item-indexed-content", func(ctx context.Context, tx authoritativeWriteTx) (bool, error) {
+		return withAuthoritativeWriteTxAcquire(ctx, s, "purge-item-indexed-content", s.acquireSemanticPurgeLease, func(ctx context.Context, tx authoritativeWriteTx) (bool, error) {
 			row := tx.QueryRowContext(ctx, `SELECT id FROM items WHERE source_key = ?`, sourceKey)
 			var itemID int64
 			if err := row.Scan(&itemID); err != nil {
@@ -114,4 +115,18 @@ func (s *Store) PurgeItemIndexedContent(ctx context.Context, sourceKey string, r
 			return true, nil
 		})
 	})
+}
+
+func (s *Store) acquireSemanticPurgeLease(ctx context.Context, metadata string) (io.Closer, error) {
+	if s == nil || s.semanticLockScope == nil {
+		return nil, errors.New("semantic purge lock scope is not configured")
+	}
+	maintenance, err := s.semanticLockScope.AcquireMaintenanceExclusive(ctx, metadata+"\noperation=semantic-purge")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := maintenance.AcquireGenerationExclusive(ctx, metadata+"\noperation=semantic-purge-generation"); err != nil {
+		return nil, errors.Join(err, maintenance.Close())
+	}
+	return maintenance, nil
 }

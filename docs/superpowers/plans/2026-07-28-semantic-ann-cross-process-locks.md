@@ -227,4 +227,3 @@ to prove unsupported-native platforms remain usable.
 After task-scoped reviews are clean, run one broad final review against the
 accepted automatic-sync design and audit the diff for release/packaging scope
 creep.
-

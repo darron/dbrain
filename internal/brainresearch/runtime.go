@@ -30,6 +30,10 @@ var errNativeBackendUnavailable = errors.New("native_backend_unavailable")
 var errNativeRootArtifactsUnavailable = errors.New("native_root_artifacts_unavailable")
 var errSemanticGenerationBusy = errors.New("generation_busy")
 
+type semanticLeaseReleaseFailure interface {
+	semanticLeaseReleaseFailure()
+}
+
 func defaultRuntimeDeps() runtimeDeps {
 	return runtimeDeps{
 		readiness: func(ctx context.Context, st *store.Store, profile embedding.Profile, exactMax int, now time.Time) (semanticreadiness.Snapshot, error) {
@@ -140,6 +144,10 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
+		}
+		var releaseFailure semanticLeaseReleaseFailure
+		if errors.As(err, &releaseFailure) {
+			return nil, err
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err

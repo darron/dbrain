@@ -16,6 +16,22 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
+var closeRuntimeGenerationLease = (*semanticlock.Lease).Close
+
+type nativeSemanticLeaseReleaseError struct {
+	cause error
+}
+
+func (e nativeSemanticLeaseReleaseError) Error() string {
+	return "release native root generation lease: " + e.cause.Error()
+}
+
+func (e nativeSemanticLeaseReleaseError) Unwrap() error {
+	return e.cause
+}
+
+func (nativeSemanticLeaseReleaseError) semanticLeaseReleaseFailure() {}
+
 func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Config, profile embedding.Profile, snapshot semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -71,11 +87,14 @@ func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Co
 	)
 	if err != nil {
 		openErr := fmt.Errorf("%w: open native semantic root: %w", errNativeRootArtifactsUnavailable, err)
-		return nil, errors.Join(openErr, generation.Close())
+		if closeErr := closeRuntimeGenerationLease(generation); closeErr != nil {
+			return nil, nativeSemanticLeaseReleaseError{cause: closeErr}
+		}
+		return nil, openErr
 	}
-	if err := generation.Close(); err != nil {
+	if err := closeRuntimeGenerationLease(generation); err != nil {
 		return nil, errors.Join(
-			fmt.Errorf("release native root generation lease: %w", err),
+			nativeSemanticLeaseReleaseError{cause: err},
 			root.Close(),
 		)
 	}

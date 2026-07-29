@@ -37,6 +37,7 @@ type Store struct {
 	// writable constructor.
 	authoritativeWriteContextKey *authoritativeWriteContextKey
 	authoritativeWriteAcquire    func(context.Context, string) (io.Closer, error)
+	semanticLockScope            *semanticlock.Scope
 	// Test-only observation seam for expensive authoritative projection checks.
 	retrievalProjectionFullValidation   func()
 	retrievalProjectionPlanHashObserved func(int)
@@ -130,6 +131,7 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 		st.authoritativeWriteAcquire = func(ctx context.Context, metadata string) (io.Closer, error) {
 			return scope.AcquireMaintenanceShared(ctx, metadata)
 		}
+		st.semanticLockScope = scope
 	}
 	if path != ":memory:" {
 		st.progressPath = path

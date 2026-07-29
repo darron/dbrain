@@ -24,6 +24,20 @@ func withAuthoritativeWriteTx[T any](
 	metadata string,
 	write func(context.Context, authoritativeWriteTx) (T, error),
 ) (result T, err error) {
+	var acquire func(context.Context, string) (io.Closer, error)
+	if st != nil {
+		acquire = st.authoritativeWriteAcquire
+	}
+	return withAuthoritativeWriteTxAcquire(ctx, st, metadata, acquire, write)
+}
+
+func withAuthoritativeWriteTxAcquire[T any](
+	ctx context.Context,
+	st *Store,
+	metadata string,
+	acquire func(context.Context, string) (io.Closer, error),
+	write func(context.Context, authoritativeWriteTx) (T, error),
+) (result T, err error) {
 	if st == nil || st.db == nil {
 		return result, errors.New("authoritative write store is nil")
 	}
@@ -41,8 +55,8 @@ func withAuthoritativeWriteTx[T any](
 	}
 
 	var lease io.Closer
-	if st.authoritativeWriteAcquire != nil {
-		lease, err = st.authoritativeWriteAcquire(ctx, metadata)
+	if acquire != nil {
+		lease, err = acquire(ctx, metadata)
 		if err != nil {
 			return result, fmt.Errorf("acquire authoritative semantic write lease: %w", err)
 		}

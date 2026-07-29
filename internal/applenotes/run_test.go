@@ -396,7 +396,7 @@ func newRunFixture(t *testing.T) (config.Config, *store.Store, string) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
+	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 	if err != nil {
 		t.Fatalf("Open store: %v", err)
 	}
