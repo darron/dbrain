@@ -18,13 +18,14 @@ const finalReleaseTagPattern = `^v[0-9]+\.[0-9]+\.[0-9]+$`
 var finalReleaseTagRegexp = regexp.MustCompile(finalReleaseTagPattern)
 
 const (
-	checkoutAction     = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-	setupGoAction      = "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c"
-	setupNodeAction    = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"
-	setupTaskAction    = "go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa"
-	uploadAction       = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-	downloadAction     = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-	tapTokenExpression = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+	checkoutAction         = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+	setupGoAction          = "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c"
+	setupNodeAction        = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"
+	setupTaskAction        = "go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa"
+	uploadAction           = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+	downloadAction         = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+	tapTokenExpression     = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+	unsupportedFallbackRun = "CGO_ENABLED=0 go test ./internal/semanticindex -run '^TestRuntimeCapabilityDefault$' -count=1"
 )
 
 func readRepoFile(t *testing.T, relative string) string {
@@ -268,6 +269,90 @@ func TestStableReleaseWorkflowPolicyRejectsSecurityMutations(t *testing.T) {
 	}
 }
 
+func TestNativeReleaseWorkflowPoliciesRejectMutations(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		validate func(string) error
+		old      string
+		new      string
+	}{
+		{
+			name: "stable native job moved off arm64 macOS",
+			file: ".github/workflows/release.yaml", validate: validateStableReleaseWorkflow,
+			old: "    runs-on: macos-15\n    needs: verify\n",
+			new: "    runs-on: ubuntu-latest\n    needs: verify\n",
+		},
+		{
+			name: "stable publish ignores native lane",
+			file: ".github/workflows/release.yaml", validate: validateStableReleaseWorkflow,
+			old: "    needs: [build, build-darwin-arm64-native]\n",
+			new: "    needs: build\n",
+		},
+		{
+			name: "stable native tests lose tagged gate",
+			file: ".github/workflows/release.yaml", validate: validateStableReleaseWorkflow,
+			old: "        run: task test-usearch-darwin-arm64\n",
+			new: "        run: task test-ci\n",
+		},
+		{
+			name: "stable installed smoke loses backend proof",
+			file: ".github/workflows/release.yaml", validate: validateStableReleaseWorkflow,
+			old: `          grep -F '"backend": "usearch"' <<<"${status}"` + "\n",
+			new: "",
+		},
+		{
+			name: "stable loses unsupported fallback proof",
+			file: ".github/workflows/release.yaml", validate: validateStableReleaseWorkflow,
+			old: "        run: " + unsupportedFallbackRun + "\n",
+			new: "        run: task test-go\n",
+		},
+		{
+			name: "candidate native job moved off arm64 macOS",
+			file: ".github/workflows/homebrew-test.yaml", validate: validateHomebrewTestWorkflow,
+			old: "    runs-on: macos-15\n    if: ${{ success() && github.actor == 'darron'",
+			new: "    runs-on: ubuntu-latest\n    if: ${{ success() && github.actor == 'darron'",
+		},
+		{
+			name: "candidate publish ignores native lane",
+			file: ".github/workflows/homebrew-test.yaml", validate: validateHomebrewTestWorkflow,
+			old: "    needs: [prepare, build, build-darwin-arm64-native]\n",
+			new: "    needs: [prepare, build]\n",
+		},
+		{
+			name: "candidate native verification is skipped",
+			file: ".github/workflows/homebrew-test.yaml", validate: validateHomebrewTestWorkflow,
+			old: "        run: task verify-usearch-darwin-arm64\n",
+			new: "        run: task build-usearch-darwin-arm64\n",
+		},
+		{
+			name: "candidate installed smoke loses version proof",
+			file: ".github/workflows/homebrew-test.yaml", validate: validateHomebrewTestWorkflow,
+			old: `          grep -F '"version": "2.26.0"' <<<"${status}"` + "\n",
+			new: "",
+		},
+		{
+			name: "candidate loses unsupported fallback proof",
+			file: ".github/workflows/homebrew-test.yaml", validate: validateHomebrewTestWorkflow,
+			old: "        run: " + unsupportedFallbackRun + "\n",
+			new: "        run: task test-go\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text := readRepoFile(t, tt.file)
+			if !strings.Contains(text, tt.old) {
+				t.Fatalf("mutation anchor missing: %q", tt.old)
+			}
+			mutated := strings.Replace(text, tt.old, tt.new, 1)
+			if err := tt.validate(mutated); err == nil {
+				t.Fatal("mutated workflow unexpectedly passed native packaging policy")
+			}
+		})
+	}
+}
+
 func validateStableReleaseWorkflow(text string) error {
 	p := &workflowPolicy{}
 	var document yaml.Node
@@ -279,7 +364,7 @@ func validateStableReleaseWorkflow(text string) error {
 	}
 	root := document.Content[0]
 	jobs := mappingNode(root, "jobs")
-	p.require(exactMappingKeys(jobs, "build", "publish", "update-homebrew-tap", "verify"), "stable job set must be exact")
+	p.require(exactMappingKeys(jobs, "build", "build-darwin-arm64-native", "homebrew-smoke", "publish", "update-homebrew-tap", "verify"), "stable job set must be exact")
 	job := func(name string) *yaml.Node { return mappingNode(jobs, name) }
 
 	verifySteps := stepNodes(job("verify"))
@@ -295,16 +380,46 @@ func validateStableReleaseWorkflow(text string) error {
 		p.require(normalizeRun(scalarValue(mappingNode(guard, "run"))) == normalizeRun(exactStableTagGuardRun()), "final tag guard script must exactly match reviewed policy")
 	}
 	p.require(stepIndex(job("verify"), "Validate final release tag") < stepIndex(job("verify"), "Check out repository"), "final tag guard must precede checkout")
+	p.require(strings.TrimSpace(scalarValue(mappingNode(namedStep(job("verify"), "Run tests"), "run"))) == "task test-ci", "stable verify must use the clean CI-like test gate")
+	p.require(strings.TrimSpace(scalarValue(mappingNode(namedStep(job("verify"), "Verify CGO-free semantic fallback"), "run"))) == unsupportedFallbackRun, "stable verify must prove the explicit CGO-free semantic fallback")
 
 	p.require(exactNeeds(mappingNode(job("build"), "needs"), "verify"), "build must depend exactly on verify")
-	p.require(exactNeeds(mappingNode(job("publish"), "needs"), "build"), "publish must depend exactly on build")
+	p.require(exactNeeds(mappingNode(job("build-darwin-arm64-native"), "needs"), "verify"), "native build must depend exactly on verify")
+	p.require(exactNeeds(mappingNode(job("publish"), "needs"), "build", "build-darwin-arm64-native"), "publish must depend exactly on both build lanes")
 	p.require(exactNeeds(mappingNode(job("update-homebrew-tap"), "needs"), "publish"), "tap update must depend exactly on publish")
-	for _, name := range []string{"verify", "build", "publish", "update-homebrew-tap"} {
+	p.require(exactNeeds(mappingNode(job("homebrew-smoke"), "needs"), "update-homebrew-tap"), "Homebrew smoke must depend exactly on tap update")
+	for _, name := range []string{"verify", "build", "build-darwin-arm64-native", "publish", "update-homebrew-tap", "homebrew-smoke"} {
 		p.require(mappingNode(job(name), "if") == nil, "%s must not override default success gating with job-level if", name)
 		p.require(mappingNode(job(name), "continue-on-error") == nil, "%s must not override failure propagation with job-level continue-on-error", name)
 	}
-	for _, name := range []string{"build", "publish", "update-homebrew-tap"} {
+	for _, name := range []string{"build", "build-darwin-arm64-native", "publish", "update-homebrew-tap", "homebrew-smoke"} {
 		p.require(jobTransitivelyNeeds(jobs, name, "verify", nil), "%s must transitively depend on verify", name)
+	}
+	p.require(scalarValue(mappingNode(job("build-darwin-arm64-native"), "runs-on")) == "macos-15", "native build must use the pinned macOS arm64 runner")
+	p.require(exactStepNames(job("build-darwin-arm64-native"),
+		"Check out repository", "Set up Go", "Set up Node", "Install Task", "Install web dependencies",
+		"Build embedded web UI", "Build pinned static USearch", "Run tagged native tests",
+		"Build tagged native binary", "Verify native artifact", "Build native release archive", "Upload native archive",
+	), "native stable build steps must be exact")
+	for step, want := range map[string]string{
+		"Build pinned static USearch": "task usearch-static-darwin-arm64",
+		"Run tagged native tests":     "task test-usearch-darwin-arm64",
+		"Build tagged native binary":  "task build-usearch-darwin-arm64",
+		"Verify native artifact":      "task verify-usearch-darwin-arm64",
+	} {
+		p.require(strings.TrimSpace(scalarValue(mappingNode(namedStep(job("build-darwin-arm64-native"), step), "run"))) == want, "stable native step %q must run %q", step, want)
+	}
+	nativeArchiveRun := scalarValue(mappingNode(namedStep(job("build-darwin-arm64-native"), "Build native release archive"), "run"))
+	p.require(strings.Contains(nativeArchiveRun, `cp third_party/usearch/LICENSE "${package_dir}/LICENSE-USearch"`), "stable native archive must ship the USearch license")
+	genericArchiveRun := scalarValue(mappingNode(namedStep(job("build"), "Build release archive"), "run"))
+	for _, required := range []string{"CGO_ENABLED=0", "-tags=usearch", `cp third_party/usearch/LICENSE "${package_dir}/LICENSE-USearch"`} {
+		p.require(strings.Contains(genericArchiveRun, required), "stable generic archive proof must contain %q", required)
+	}
+	p.require(scalarValue(mappingNode(job("homebrew-smoke"), "runs-on")) == "macos-15", "stable Homebrew smoke must use macos-15")
+	p.require(exactStepNames(job("homebrew-smoke"), "Install and test stable formula"), "stable Homebrew smoke steps must be exact")
+	smokeRun := scalarValue(mappingNode(namedStep(job("homebrew-smoke"), "Install and test stable formula"), "run"))
+	for _, required := range []string{"brew install darron/tap/dbrain", "brew test darron/tap/dbrain", "otool -L", `"state": "supported_ready"`, `"backend": "usearch"`, `"version": "2.26.0"`} {
+		p.require(strings.Contains(smokeRun, required), "stable Homebrew smoke must contain %q", required)
 	}
 
 	p.require(exactScalarMap(mappingNode(job("update-homebrew-tap"), "concurrency"), map[string]string{
@@ -315,6 +430,9 @@ func validateStableReleaseWorkflow(text string) error {
 	if updateFormula != nil {
 		updateRun := normalizeRun(scalarValue(mappingNode(updateFormula, "run")))
 		p.require(strings.Contains(updateRun, exactStableConflictRepair()), "stable formula updater must maintain the reciprocal dbrain-test conflict")
+		for _, required := range []string{`license all_of: ["MIT", "Apache-2.0"]`, `pkgshare.install "THIRD_PARTY_NOTICES.md", "LICENSE-USearch"`, "semantic status --json", `"state": "supported_ready"`, `"state": "unsupported"`} {
+			p.require(strings.Contains(updateRun, required), "stable formula updater must contain %q", required)
+		}
 	}
 	if len(p.errors) == 0 {
 		return nil
@@ -610,21 +728,23 @@ func validateHomebrewTestWorkflow(text string) error {
 	}
 
 	jobs := mappingNode(root, "jobs")
-	p.require(exactMappingKeys(jobs, "build", "prepare", "publish", "update-homebrew-tap", "verify"), "job set must be exact")
+	p.require(exactMappingKeys(jobs, "build", "build-darwin-arm64-native", "homebrew-smoke", "prepare", "publish", "update-homebrew-tap", "verify"), "job set must be exact")
 	job := func(name string) *yaml.Node { return mappingNode(jobs, name) }
 	jobGuard := "${{ success() && github.actor == 'darron' && github.triggering_actor == 'darron' && github.ref == 'refs/heads/main' }}"
-	for _, name := range []string{"prepare", "verify", "build", "publish", "update-homebrew-tap"} {
+	for _, name := range []string{"prepare", "verify", "build", "build-darwin-arm64-native", "publish", "update-homebrew-tap", "homebrew-smoke"} {
 		p.require(scalarValue(mappingNode(job(name), "if")) == jobGuard, "%s job must independently enforce exact owner/rerun/ref authorization with success gating", name)
 	}
-	for _, name := range []string{"prepare", "verify", "build", "update-homebrew-tap"} {
+	for _, name := range []string{"prepare", "verify", "build", "build-darwin-arm64-native", "update-homebrew-tap", "homebrew-smoke"} {
 		p.require(mappingNode(job(name), "permissions") == nil, "%s must inherit exact root read permission", name)
 	}
 	p.require(exactScalarMap(mappingNode(job("publish"), "permissions"), map[string]string{"contents": "write"}), "publish permissions must be exactly contents: write")
 
 	p.require(exactNeeds(mappingNode(job("verify"), "needs"), "prepare"), "verify needs must be exactly prepare")
 	p.require(exactNeeds(mappingNode(job("build"), "needs"), "prepare", "verify"), "build needs must be exactly prepare and verify")
-	p.require(exactNeeds(mappingNode(job("publish"), "needs"), "prepare", "build"), "publish needs must be exactly prepare and build")
+	p.require(exactNeeds(mappingNode(job("build-darwin-arm64-native"), "needs"), "prepare", "verify"), "native build needs must be exactly prepare and verify")
+	p.require(exactNeeds(mappingNode(job("publish"), "needs"), "prepare", "build", "build-darwin-arm64-native"), "publish needs must include both build lanes")
 	p.require(exactNeeds(mappingNode(job("update-homebrew-tap"), "needs"), "prepare", "publish"), "tap needs must be exactly prepare and publish")
+	p.require(exactNeeds(mappingNode(job("homebrew-smoke"), "needs"), "update-homebrew-tap"), "Homebrew smoke must depend exactly on tap update")
 	p.require(exactScalarMap(mappingNode(job("prepare"), "outputs"), map[string]string{
 		"sha": "${{ steps.metadata.outputs.sha }}", "short_sha": "${{ steps.metadata.outputs.short_sha }}",
 		"label": "${{ steps.metadata.outputs.label }}", "slug": "${{ steps.metadata.outputs.slug }}",
@@ -673,23 +793,52 @@ func validateHomebrewTestWorkflow(text string) error {
 	assertCheckout("prepare", "Check out trusted workflow source", map[string]string{"ref": "${{ github.sha }}", "persist-credentials": "false"})
 	assertCheckout("verify", "Check out candidate source", map[string]string{"ref": "${{ needs.prepare.outputs.sha }}", "persist-credentials": "false"})
 	assertCheckout("build", "Check out candidate source", map[string]string{"ref": "${{ needs.prepare.outputs.sha }}", "persist-credentials": "false"})
+	assertCheckout("build-darwin-arm64-native", "Check out candidate source", map[string]string{"ref": "${{ needs.prepare.outputs.sha }}", "persist-credentials": "false"})
 	assertCheckout("update-homebrew-tap", "Check out trusted workflow source", map[string]string{"ref": "${{ github.sha }}", "path": "trusted-source", "persist-credentials": "false"})
 	assertCheckout("update-homebrew-tap", "Check out Homebrew tap", map[string]string{
 		"repository": "darron/homebrew-tap", "token": tapTokenExpression, "path": "homebrew-tap", "persist-credentials": "false",
 	})
-	for _, name := range []string{"verify", "build"} {
+	for _, name := range []string{"verify", "build", "build-darwin-arm64-native"} {
 		verifyCommit := namedStep(job(name), "Verify exact candidate commit")
 		p.require(exactScalarMap(mappingNode(verifyCommit, "env"), map[string]string{"CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"}), "%s exact-commit check must receive only canonical candidate SHA", name)
 		assertExactRun(p, job(name), "Verify exact candidate commit", exactCandidateCommitRun())
 	}
 	p.require(exactStepNames(job("verify"),
 		"Check out candidate source", "Verify exact candidate commit", "Set up Go", "Set up Node", "Install Task",
-		"Install web dependencies", "Install golangci-lint", "Build embedded web UI", "Run lint", "Run tests", "Run build",
+		"Install web dependencies", "Install golangci-lint", "Build embedded web UI", "Run lint", "Run tests",
+		"Verify CGO-free semantic fallback", "Run build",
 	), "verify must prove exact commit before setup or candidate execution")
+	p.require(strings.TrimSpace(scalarValue(mappingNode(namedStep(job("verify"), "Verify CGO-free semantic fallback"), "run"))) == unsupportedFallbackRun, "candidate verify must prove the explicit CGO-free semantic fallback")
 	p.require(exactStepNames(job("build"),
 		"Check out candidate source", "Verify exact candidate commit", "Set up Go", "Set up Node", "Install Task",
 		"Install web dependencies", "Build embedded web UI", "Build release archive", "Upload archive",
 	), "build must prove exact commit before setup or candidate execution")
+	p.require(exactStepNames(job("build-darwin-arm64-native"),
+		"Check out candidate source", "Verify exact candidate commit", "Set up Go", "Set up Node", "Install Task",
+		"Install web dependencies", "Build embedded web UI", "Build pinned static USearch", "Run tagged native tests",
+		"Build tagged native binary", "Verify native artifact", "Build native candidate archive", "Upload native candidate archive",
+	), "native build must prove exact commit before setup or candidate execution")
+	for step, want := range map[string]string{
+		"Build pinned static USearch": "task usearch-static-darwin-arm64",
+		"Run tagged native tests":     "task test-usearch-darwin-arm64",
+		"Build tagged native binary":  "task build-usearch-darwin-arm64",
+		"Verify native artifact":      "task verify-usearch-darwin-arm64",
+	} {
+		p.require(strings.TrimSpace(scalarValue(mappingNode(namedStep(job("build-darwin-arm64-native"), step), "run"))) == want, "candidate native step %q must run %q", step, want)
+	}
+	nativeArchiveRun := scalarValue(mappingNode(namedStep(job("build-darwin-arm64-native"), "Build native candidate archive"), "run"))
+	p.require(strings.Contains(nativeArchiveRun, `cp third_party/usearch/LICENSE "${package_dir}/LICENSE-USearch"`), "candidate native archive must ship the USearch license")
+	genericArchiveRun := scalarValue(mappingNode(namedStep(job("build"), "Build release archive"), "run"))
+	for _, required := range []string{"CGO_ENABLED=0", "-tags=usearch", `cp third_party/usearch/LICENSE "${package_dir}/LICENSE-USearch"`} {
+		p.require(strings.Contains(genericArchiveRun, required), "candidate generic archive proof must contain %q", required)
+	}
+	p.require(scalarValue(mappingNode(job("build-darwin-arm64-native"), "runs-on")) == "macos-15", "candidate native build must use macos-15")
+	p.require(scalarValue(mappingNode(job("homebrew-smoke"), "runs-on")) == "macos-15", "candidate Homebrew smoke must use macos-15")
+	p.require(exactStepNames(job("homebrew-smoke"), "Install and test candidate formula"), "candidate Homebrew smoke steps must be exact")
+	smokeRun := scalarValue(mappingNode(namedStep(job("homebrew-smoke"), "Install and test candidate formula"), "run"))
+	for _, required := range []string{"brew install darron/tap/dbrain-test", "brew test darron/tap/dbrain-test", "otool -L", `"state": "supported_ready"`, `"backend": "usearch"`, `"version": "2.26.0"`} {
+		p.require(strings.Contains(smokeRun, required), "candidate Homebrew smoke must contain %q", required)
+	}
 
 	tap := job("update-homebrew-tap")
 	p.require(exactScalarMap(mappingNode(tap, "concurrency"), map[string]string{
@@ -760,7 +909,7 @@ func validateHomebrewTestWorkflow(text string) error {
 	assertExactRun(p, tap, "Push tap update", exactPushTapRun())
 	p.require(countScalarValue(root, tapTokenExpression) == 3, "tap token expression must appear only in check, checkout input, and final push env")
 
-	for _, name := range []string{"verify", "build"} {
+	for _, name := range []string{"verify", "build", "build-darwin-arm64-native"} {
 		text := marshalNode(job(name))
 		p.require(!strings.Contains(text, "HOMEBREW_TAP_TOKEN") && !strings.Contains(text, "github.token") && !strings.Contains(text, "contents: write"), "%s received write authority", name)
 	}
@@ -791,12 +940,11 @@ func assertMatrix(p *workflowPolicy, build *yaml.Node) {
 	include := mappingNode(mappingNode(mappingNode(build, "strategy"), "matrix"), "include")
 	want := []map[string]string{
 		{"goos": "darwin", "goarch": "amd64", "archive_ext": "tar.gz"},
-		{"goos": "darwin", "goarch": "arm64", "archive_ext": "tar.gz"},
 		{"goos": "linux", "goarch": "amd64", "archive_ext": "tar.gz"},
 		{"goos": "linux", "goarch": "arm64", "archive_ext": "tar.gz"},
 		{"goos": "windows", "goarch": "amd64", "archive_ext": "zip"},
 	}
-	p.require(include != nil && include.Kind == yaml.SequenceNode && len(include.Content) == len(want), "build matrix must have exact five tuples")
+	p.require(include != nil && include.Kind == yaml.SequenceNode && len(include.Content) == len(want), "build matrix must have exact four CGO-free tuples")
 	if include == nil || include.Kind != yaml.SequenceNode || len(include.Content) != len(want) {
 		return
 	}

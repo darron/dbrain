@@ -5,6 +5,23 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Native semantic packaging for macOS arm64 (2026-07-28)
+
+- **Self-contained Homebrew native backend**: macOS arm64 release and candidate
+  archives now compile checksum-pinned USearch v2.26.0 with a macOS 12.0
+  deployment target and statically link it into the tagged CGO binary. Release
+  verification rejects an external USearch dynamic-library dependency and
+  exercises the artifact's real native capability before publication.
+- **Explicit cross-platform boundary**: Darwin amd64, Linux amd64/arm64, and
+  Windows amd64 artifacts remain CGO-free, omit the native build tag, and
+  explicitly report semantic native state as unsupported without failing sync.
+  Release archives and Homebrew formulae include the USearch Apache-2.0 license
+  and third-party notices.
+- **Installed-artifact gate**: Stable and candidate tap updates are followed by
+  a clean macOS arm64 `brew install`/`brew test` and installed-binary capability
+  check, so a release cannot pass solely because a developer checkout can find
+  a local native library.
+
 ### Cross-process semantic refresh safety (2026-07-28)
 
 - **Database-scoped semantic leases**: Refresh projection, embedding, flush,
