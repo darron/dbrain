@@ -14,6 +14,7 @@ import (
 	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -141,6 +142,42 @@ func TestRuntimeAdmissionExactSmallSkipsNativeCapability(t *testing.T) {
 	if err != nil || b.semanticRetriever == nil || b.semanticReadiness.State != semanticreadiness.StateReady || !b.semanticReadiness.Searchable ||
 		capabilityCalls != 0 || searcherCalls != 1 || providerCalls != 1 {
 		t.Fatalf("builder=%#v capability_calls=%d searcher_calls=%d provider_calls=%d err=%v", b, capabilityCalls, searcherCalls, providerCalls, err)
+	}
+}
+
+func TestRuntimeGenerationLeaseAcquirerUsesLocalTimeoutWhileCallerRemainsLive(t *testing.T) {
+	cfg, st := inspectionTestStore(t)
+	databaseID, err := st.RetrievalDatabaseID(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := semanticlock.NewScope(cfg.CacheDir, databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := scope.AcquireMaintenanceExclusive(t.Context(), "owner=activation\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = maintenance.Close() }()
+	generation, err := maintenance.AcquireGenerationExclusive(t.Context(), "owner=activation\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = generation.Close() }()
+
+	acquire, err := runtimeGenerationLeaseAcquirer(t.Context(), st, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerCtx, cancelCaller := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancelCaller()
+	lease, err := acquire(callerCtx)
+	if lease != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lease=%#v err=%v want local deadline", lease, err)
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("local acquisition timeout canceled caller: %v", callerCtx.Err())
 	}
 }
 
@@ -387,6 +424,53 @@ func TestRuntimeAdmissionPropagatesSearcherCancellationBeforeArtifactFailOpen(t 
 				t.Fatalf("readiness=%d searcher=%d provider=%d", readinessCalls, searcherCalls, providerCalls)
 			}
 		})
+	}
+}
+
+type syntheticSemanticLeaseReleaseError struct {
+	err error
+}
+
+func (e syntheticSemanticLeaseReleaseError) Error() string {
+	return "release semantic generation lease: " + e.err.Error()
+}
+
+func (e syntheticSemanticLeaseReleaseError) Unwrap() error {
+	return e.err
+}
+
+func (syntheticSemanticLeaseReleaseError) semanticLeaseReleaseFailure() {}
+
+func TestRuntimeAdmissionFailsClosedOnSemanticLeaseReleaseFailure(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	closeErr := errors.New("synthetic generation lease release failure")
+	providerCalls := 0
+	deps := runtimeDeps{
+		readiness: func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+			return runtimeReadySnapshot(true), nil
+		},
+		capability: func() semanticindex.Capability {
+			return semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+			}
+		},
+		searcher: func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error) {
+			return nil, syntheticSemanticLeaseReleaseError{err: closeErr}
+		},
+		provider: func(semanticconfig.Config) (embedding.Provider, error) {
+			providerCalls++
+			return nil, errors.New("provider must not be constructed")
+		},
+	}
+
+	builder, err := newRuntimeBuilderWithDeps(t.Context(), config.Config{RootDir: root}, st, "", false, false, deps)
+	if builder != nil || !errors.Is(err, closeErr) {
+		t.Fatalf("builder=%#v error=%v want lease release failure", builder, err)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("provider calls=%d want=0", providerCalls)
 	}
 }
 

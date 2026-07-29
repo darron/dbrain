@@ -101,10 +101,16 @@ func (f *fakeStore) LoadRetrievalProjectionStaging(_ context.Context, parent ret
 	if !ok || cp.DirtyRevision != revision {
 		return store.RetrievalProjectionCheckpoint{}, false, nil
 	}
+	if cp.ExpectedPurgeEpoch != f.purgeEpoch {
+		return store.RetrievalProjectionCheckpoint{}, false, store.ErrRetrievalPurgeEpochChanged
+	}
 	return cp, true, nil
 }
 
 func (f *fakeStore) StageRetrievalProjectionBatch(_ context.Context, input store.StageRetrievalProjectionInput) (store.RetrievalProjectionCheckpoint, error) {
+	if input.ExpectedPurgeEpoch != f.purgeEpoch {
+		return store.RetrievalProjectionCheckpoint{}, store.ErrRetrievalPurgeEpochChanged
+	}
 	f.stageCalls = append(f.stageCalls, input)
 	if f.staging == nil {
 		f.staging = make(map[string]store.RetrievalProjectionCheckpoint)
@@ -120,12 +126,15 @@ func (f *fakeStore) StageRetrievalProjectionBatch(_ context.Context, input store
 		}
 	}
 	chunks := len(seen)
-	cp := store.RetrievalProjectionCheckpoint{WorkID: workID, DirtyRevision: input.DirtyRevision, ParentKind: input.ParentKind, ParentSourceKey: input.ParentSourceKey, ProjectionHash: input.ProjectionHash, SectionKey: input.Cursor.SectionKey, NextBoundary: input.Cursor.NextBoundary, StagedChunks: chunks}
+	cp := store.RetrievalProjectionCheckpoint{WorkID: workID, DirtyRevision: input.DirtyRevision, ExpectedPurgeEpoch: input.ExpectedPurgeEpoch, ParentKind: input.ParentKind, ParentSourceKey: input.ParentSourceKey, ProjectionHash: input.ProjectionHash, SectionKey: input.Cursor.SectionKey, NextBoundary: input.Cursor.NextBoundary, StagedChunks: chunks}
 	f.staging[input.ParentKind+":"+input.ParentSourceKey] = cp
 	return cp, nil
 }
 
 func (f *fakeStore) PromoteRetrievalProjectionStaging(_ context.Context, checkpoint store.RetrievalProjectionCheckpoint) (store.ChunkReplaceResult, error) {
+	if checkpoint.ExpectedPurgeEpoch != f.purgeEpoch {
+		return store.ChunkReplaceResult{}, store.ErrRetrievalPurgeEpochChanged
+	}
 	f.promotions = append(f.promotions, checkpoint)
 	delete(f.staging, checkpoint.ParentKind+":"+checkpoint.ParentSourceKey)
 	if f.applied == nil {
@@ -135,7 +144,10 @@ func (f *fakeStore) PromoteRetrievalProjectionStaging(_ context.Context, checkpo
 	return store.ChunkReplaceResult{Created: checkpoint.StagedChunks}, nil
 }
 
-func (f *fakeStore) BlockRetrievalProjectionTooLarge(_ context.Context, parent retrievalchunk.Parent, revision int64, projectionHash string) error {
+func (f *fakeStore) BlockRetrievalProjectionTooLarge(_ context.Context, parent retrievalchunk.Parent, revision int64, projectionHash string, expectedPurgeEpoch int64) error {
+	if expectedPurgeEpoch != f.purgeEpoch {
+		return store.ErrRetrievalPurgeEpochChanged
+	}
 	f.blockedGiant = append(f.blockedGiant, parent.Kind+":"+parent.SourceKey)
 	delete(f.staging, parent.Kind+":"+parent.SourceKey)
 	if f.applied == nil {

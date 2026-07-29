@@ -470,7 +470,7 @@ PR—is the user-useful release.
 
 ## Implementation Status
 
-As of 2026-07-28, stacked PRs 1–3 are implemented in the working stack:
+As of 2026-07-28, stacked PRs 1–4 are implemented in the working stack:
 
 1. **Runtime admission and capability** is representative-corpus admitted on
    `codex/semantic-ann-automatic-sync`.
@@ -480,6 +480,10 @@ As of 2026-07-28, stacked PRs 1–3 are implemented in the working stack:
    successful CLI `sync all` and scheduled sync, including unchanged source
    runs, and proves initial backfill plus cancellation/resume composition
    against one isolated SQLite database.
+4. **Cross-process semantic safety** adds database-scoped maintenance and
+   generation lock families, FIFO exclusive intent, crash recovery, purge-epoch
+   fences, authoritative-write transaction leases, and query leases retained
+   through hydration and final evidence construction.
 
 The verified runtime-admission implementation:
 
@@ -508,13 +512,14 @@ refresh failure returns the typed semantic error. Source stores and source
 metrics close before refresh opens its writable store. CLI JSON emits one
 flattened source document with exactly one `semantic` or `semantic_error`
 member. The pre-existing coarse `sync-all.lock` spans the source-plus-semantic
-operation; it is not the database-scoped maintenance/generation locking planned
-below. Progress is streamed in bounded refresh updates.
+operation, while database-scoped maintenance/generation leases coordinate
+source transactions, refresh units, root activation, and admitted queries
+across processes. Progress is streamed in bounded refresh updates.
 
-This is not completion of the automatic-sync design. Stacked PRs 4–6 remain
-pending: cross-process locks, static macOS arm64/Homebrew native distribution
-with explicit unsupported-target behavior, and installed full-corpus acceptance.
-No production root was built or activated by this work.
+This is not completion of the automatic-sync design. Static macOS
+arm64/Homebrew native distribution with explicit unsupported-target behavior
+and installed full-corpus acceptance remain pending stacked work. No production
+root was built or activated by this work.
 
 ## Production Rollout And Rollback
 

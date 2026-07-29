@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	currentSchemaVersion                       = 27
+	currentSchemaVersion                       = 28
 	auditProvenanceMigrationVersion            = 12
 	auditProvenanceMigrationName               = "audit_provenance_v1"
 	retrievalMigrationVersion                  = 13
@@ -42,6 +42,8 @@ const (
 	semanticRefreshRunsRepairMigrationName     = "semantic_refresh_runs_v2_byte_limits"
 	semanticRefreshRunsArchiveMigrationVersion = 27
 	semanticRefreshRunsArchiveMigrationName    = "semantic_refresh_runs_v25_compatibility_archive"
+	retrievalProjectionStagingEpochVersion     = 28
+	retrievalProjectionStagingEpochName        = "retrieval_projection_staging_expected_purge_epoch"
 )
 
 type schemaMigration struct {
@@ -274,6 +276,13 @@ var schemaMigrations = []schemaMigration{
 			return nil
 		},
 	},
+	{
+		Version: retrievalProjectionStagingEpochVersion,
+		Name:    retrievalProjectionStagingEpochName,
+		Run: func(s *Store) error {
+			return s.ensureRetrievalProjectionStagingPurgeEpoch()
+		},
+	},
 }
 
 func newRetrievalDatabaseID() (string, error) {
@@ -337,6 +346,12 @@ func (s *Store) migrate(reporter MigrationReporter) error {
 			LatestVersion: currentSchemaVersion,
 			Name:          migration.Name,
 		})
+	}
+	// Repair databases whose local migration history was stamped before the
+	// schema mutation completed. Migration numbers are immutable, so reopening
+	// must make the v28 invariant true even when its metadata row already exists.
+	if err := s.ensureRetrievalProjectionStagingPurgeEpoch(); err != nil {
+		return err
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
 		return fmt.Errorf("set schema user_version: %w", err)

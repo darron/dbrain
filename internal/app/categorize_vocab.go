@@ -102,7 +102,7 @@ func runCategorizeVocab(ctx context.Context, cfg config.Config, opts categorizeV
 		return fmt.Errorf("load categories.yaml: %w", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
+	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 	if err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func runCategorizeVocab(ctx context.Context, cfg config.Config, opts categorizeV
 	_, _ = fmt.Fprintf(out, "categories.yaml updated: aliases=%d drop=%d\n", mergeStats.AliasesAdded, mergeStats.DropAdded)
 	if opts.Repair {
 		_, _ = fmt.Fprintln(out, "\nRepairing existing user_tags with updated vocabulary...")
-		_, err := runCategorizeVocabRepair(ctx, cfg.DBPath, cfg.CategoriesPath, false, out)
+		_, err := runCategorizeVocabRepair(ctx, cfg.DBPath, cfg.CacheDir, cfg.CategoriesPath, false, out)
 		return err
 	}
 	return nil

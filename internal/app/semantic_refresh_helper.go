@@ -13,6 +13,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
 )
@@ -23,7 +24,7 @@ type semanticRefreshDeps struct {
 	resolve         func(string) (semanticconfig.Config, error)
 	capability      func() semanticindex.Capability
 	withTimeout     func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	openWritable    func(string) (*store.Store, error)
+	openWritable    func(string, string) (*store.Store, error)
 	provider        func(semanticconfig.Config) (embedding.Provider, error)
 	nativeLifecycle func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error)
 	runRefresh      func(context.Context, semanticrefresh.RunLedger, semanticrefresh.StageExecutor, semanticrefresh.Request) (semanticrefresh.Result, error)
@@ -35,7 +36,7 @@ func defaultSemanticRefreshDeps() semanticRefreshDeps {
 		resolve:      semanticconfig.Resolve,
 		capability:   semanticindex.RuntimeCapability,
 		withTimeout:  context.WithTimeout,
-		openWritable: store.Open,
+		openWritable: store.OpenWithSemanticCache,
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{
 				BaseURL:    cfg.OllamaBaseURL,
@@ -127,7 +128,7 @@ func runConfiguredSemanticRefresh(
 		return cancelledConfiguredSemanticRefresh(result, err)
 	}
 
-	st, err := deps.openWritable(cfg.DBPath)
+	st, err := deps.openWritable(cfg.DBPath, cfg.CacheDir)
 	if err != nil {
 		return configuredSemanticRefreshError(
 			ctx,
@@ -149,6 +150,26 @@ func runConfiguredSemanticRefresh(
 	defer func() { _ = st.Close() }()
 	if err := ctx.Err(); err != nil {
 		return cancelledConfiguredSemanticRefresh(result, err)
+	}
+	databaseID, err := st.RetrievalDatabaseID(ctx)
+	if err != nil {
+		return configuredSemanticRefreshError(
+			ctx,
+			result,
+			semanticrefresh.ErrorLockUnavailable,
+			"",
+			err,
+		)
+	}
+	lockScope, err := semanticlock.NewScope(cfg.CacheDir, databaseID)
+	if err != nil {
+		return configuredSemanticRefreshError(
+			ctx,
+			result,
+			semanticrefresh.ErrorLockUnavailable,
+			"",
+			err,
+		)
 	}
 
 	provider, err := deps.provider(semanticCfg)
@@ -234,6 +255,16 @@ func runConfiguredSemanticRefresh(
 			ctx,
 			result,
 			semanticrefresh.ErrorBackendBroken,
+			"",
+			err,
+		)
+	}
+	executor, err = semanticrefresh.NewLockedPipeline(executor, lockScope)
+	if err != nil {
+		return configuredSemanticRefreshError(
+			ctx,
+			result,
+			semanticrefresh.ErrorLockUnavailable,
 			"",
 			err,
 		)

@@ -92,46 +92,51 @@ func (s *Store) SaveSourceExtraction(ctx context.Context, sourceID int64, result
 		firstFailedAt := ""
 		lastFailedAt := ""
 
-		if _, err := s.db.ExecContext(ctx, `
-			UPDATE sources
-			SET canonical_url = ?,
-				title = ?,
-				description = ?,
-				site_name = ?,
-				extracted_text = ?,
-				extract_json = ?,
-				extract_status = ?,
-				extract_error = ?,
-				extract_failure_kind = ?,
-				extract_failure_count = ?,
-				extract_first_failed_at = ?,
-				extract_last_failed_at = ?,
-				extracted_at = ?,
-				extract_tool = ?,
-				extract_tool_version = ?,
-				content_hash = ?,
-				updated_at = ?
-			WHERE id = ?`,
-			canonicalURL,
-			result.Title,
-			result.Description,
-			result.SiteName,
-			result.Content,
-			result.RawJSON,
-			result.Status,
-			result.Error,
-			failureKind,
-			failureCount,
-			firstFailedAt,
-			lastFailedAt,
-			fetchedAt,
-			result.Tool,
-			result.ToolVersion,
-			contentHash,
-			time.Now().UTC().Format(time.RFC3339),
-			sourceID,
-		); err != nil {
-			return false, fmt.Errorf("save source extraction %d: %w", sourceID, err)
+		if _, err := withAuthoritativeWriteTx(ctx, s, "save-source-extraction", func(ctx context.Context, tx authoritativeWriteTx) (struct{}, error) {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE sources
+				SET canonical_url = ?,
+					title = ?,
+					description = ?,
+					site_name = ?,
+					extracted_text = ?,
+					extract_json = ?,
+					extract_status = ?,
+					extract_error = ?,
+					extract_failure_kind = ?,
+					extract_failure_count = ?,
+					extract_first_failed_at = ?,
+					extract_last_failed_at = ?,
+					extracted_at = ?,
+					extract_tool = ?,
+					extract_tool_version = ?,
+					content_hash = ?,
+					updated_at = ?
+				WHERE id = ?`,
+				canonicalURL,
+				result.Title,
+				result.Description,
+				result.SiteName,
+				result.Content,
+				result.RawJSON,
+				result.Status,
+				result.Error,
+				failureKind,
+				failureCount,
+				firstFailedAt,
+				lastFailedAt,
+				fetchedAt,
+				result.Tool,
+				result.ToolVersion,
+				contentHash,
+				time.Now().UTC().Format(time.RFC3339),
+				sourceID,
+			); err != nil {
+				return struct{}{}, fmt.Errorf("save source extraction %d: %w", sourceID, err)
+			}
+			return struct{}{}, nil
+		}); err != nil {
+			return false, err
 		}
 
 		if err := s.syncSourceFTS(ctx, sourceID); err != nil {

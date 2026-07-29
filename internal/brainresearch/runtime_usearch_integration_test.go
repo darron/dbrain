@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/semanticsegment"
 	"github.com/darron/dbrain/internal/store"
@@ -42,6 +44,163 @@ func TestRuntimeSemanticSearcherRejectsPostReadinessCancellationBeforeRootWork(t
 	)
 	if searcher != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("searcher=%#v error=%v want context cancellation", searcher, err)
+	}
+}
+
+func TestRuntimeSemanticSearcherReportsGenerationBusyBeforeRootOpen(t *testing.T) {
+	root := t.TempDir()
+	cache := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "brain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	databaseID, err := st.RetrievalDatabaseID(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := semanticlock.NewScope(cache, databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := scope.AcquireMaintenanceExclusive(t.Context(), "owner=activation\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = maintenance.Close() }()
+	generation, err := maintenance.AcquireGenerationExclusive(t.Context(), "owner=activation\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = generation.Close() }()
+
+	snapshot := semanticreadiness.Snapshot{
+		ActiveGenerationID:                   "root",
+		ProfileID:                            "profile",
+		ActiveSnapshotRevision:               1,
+		ProfilePurgeEpoch:                    0,
+		ActiveGenerationBackendVersion:       semanticindex.USearchVersion,
+		ActiveGenerationRootDescriptorSHA256: strings.Repeat("a", 64),
+	}
+	searcher, err := runtimeSemanticSearcher(
+		t.Context(),
+		st,
+		config.Config{CacheDir: cache},
+		embedding.Profile{Dimensions: 2},
+		snapshot,
+		semanticreadiness.DefaultExactMaxChunks,
+	)
+	if searcher != nil || !errors.Is(err, errSemanticGenerationBusy) {
+		t.Fatalf("searcher=%#v err=%v want generation busy", searcher, err)
+	}
+}
+
+func TestRuntimeNativeRootOpenFailureFailsClosedWhenGenerationLeaseReleaseFails(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	st, err := store.Open(filepath.Join(root, "brain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	profile := semanticbuild.Profile(embedding.Info{Provider: "ollama", Model: "embed-model", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := runtimeReadySnapshot(true)
+	snapshot.ProfileID = profileID
+	snapshot.ActiveGenerationID = "missing-native-root"
+	snapshot.ActiveGenerationRootDescriptorSHA256 = strings.Repeat("a", 64)
+	closeErr := errors.New("synthetic generation lease release failure")
+	originalClose := closeRuntimeGenerationLease
+	closeRuntimeGenerationLease = func(lease *semanticlock.Lease) error {
+		return errors.Join(lease.Close(), closeErr)
+	}
+	t.Cleanup(func() { closeRuntimeGenerationLease = originalClose })
+
+	providerCalls := 0
+	deps := defaultRuntimeDeps()
+	deps.readiness = func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+		return snapshot, nil
+	}
+	deps.capability = func() semanticindex.Capability {
+		return semanticindex.Capability{
+			State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+		}
+	}
+	deps.provider = func(semanticconfig.Config) (embedding.Provider, error) {
+		providerCalls++
+		return nil, errors.New("provider must not be constructed")
+	}
+
+	builder, err := newRuntimeBuilderWithDeps(
+		t.Context(), config.Config{RootDir: root, CacheDir: cache}, st, "", false, false, deps,
+	)
+	if builder != nil || !errors.Is(err, closeErr) {
+		t.Fatalf("builder=%#v error=%v want lease release failure", builder, err)
+	}
+	if errors.Is(err, errNativeRootArtifactsUnavailable) {
+		t.Fatalf("lease release failure retained fail-open artifact classification: %v", err)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("provider calls=%d want=0", providerCalls)
+	}
+}
+
+func TestRuntimeNativeRootOpenFailureFailsOpenAfterGenerationLeaseRelease(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	st, err := store.Open(filepath.Join(root, "brain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	profile := semanticbuild.Profile(embedding.Info{Provider: "ollama", Model: "embed-model", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := runtimeReadySnapshot(true)
+	snapshot.ProfileID = profileID
+	snapshot.ActiveGenerationID = "missing-native-root"
+	snapshot.ActiveGenerationRootDescriptorSHA256 = strings.Repeat("a", 64)
+	providerCalls := 0
+	deps := defaultRuntimeDeps()
+	deps.readiness = func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+		return snapshot, nil
+	}
+	deps.capability = func() semanticindex.Capability {
+		return semanticindex.Capability{
+			State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+		}
+	}
+	deps.provider = func(semanticconfig.Config) (embedding.Provider, error) {
+		providerCalls++
+		return nil, errors.New("provider must not be constructed")
+	}
+
+	builder, err := newRuntimeBuilderWithDeps(
+		t.Context(), config.Config{RootDir: root, CacheDir: cache}, st, "", false, false, deps,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builder.semanticReadiness.Reason != errNativeRootArtifactsUnavailable.Error() {
+		t.Fatalf("runtime readiness reason=%q", builder.semanticReadiness.Reason)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("provider calls=%d want=0", providerCalls)
 	}
 }
 

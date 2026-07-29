@@ -68,10 +68,16 @@ Verify the installed binaries:
 
 ```sh
 dbrain version
+dbrain --no-debug semantic status --json
 summarize --help
 ollama --version
 whisper-cli --help
 ```
+
+The Homebrew macOS arm64 binary includes the native USearch semantic backend
+and reports `supported_ready` with backend `usearch`. Other released platforms
+remain CGO-free and report native semantic state as explicitly `unsupported`;
+ordinary sync and lexical retrieval continue to work there.
 
 Run the first-time setup wizard:
 
@@ -1167,12 +1173,13 @@ completion, skip, or error line. `sync all --json` emits exactly one flattened
 sync document, with either a `semantic` result or `semantic_error` object.
 
 The existing coarse `sync-all.lock` spans the whole source-plus-semantic sync
-operation. This is not the later database-scoped cross-process semantic
-maintenance/generation lock. Queries never trigger maintenance. Normal
-untagged/CGO-free artifacts remain unsupported for refresh until the later
-distribution stack; this does not change the
-`research.semantic.index_backend` configuration, claim Homebrew native support,
-or activate a production database or cache.
+operation. Database-scoped maintenance and generation leases additionally
+coordinate authoritative writes, refresh units, root activation, and admitted
+queries across processes. Queries never trigger maintenance. The Homebrew
+macOS arm64 artifact statically includes the native backend; normal
+untagged/CGO-free builds and all other release targets remain explicitly
+unsupported for semantic refresh without failing ordinary sync or lexical
+retrieval.
 
 See [Semantic retrieval](docs/semantic-retrieval.md) for the operational
 contract and [MCP.md](MCP.md) for agent-facing retrieval behavior.

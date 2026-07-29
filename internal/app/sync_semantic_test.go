@@ -79,7 +79,7 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
 		},
 		capability: semanticRefreshReadyCapability,
-		openWritable: func(path string) (*store.Store, error) {
+		openWritable: func(path string, _ string) (*store.Store, error) {
 			if path != cfg.DBPath {
 				t.Fatalf("semantic DB=%q want=%q", path, cfg.DBPath)
 			}
@@ -389,7 +389,7 @@ func TestSyncFamilySemanticAdmissionSkipsWritableDependencies(t *testing.T) {
 				capability: func() semanticindex.Capability {
 					return test.capability
 				},
-				openWritable: func(string) (*store.Store, error) {
+				openWritable: func(string, string) (*store.Store, error) {
 					writableCalls["store"]++
 					return nil, errors.New("unexpected writable store")
 				},
@@ -464,7 +464,7 @@ func TestSyncFamilySourceFailureSkipsSemanticAdmission(t *testing.T) {
 				semanticCalls["capability"]++
 				return semanticindex.Capability{}
 			},
-			openWritable: func(string) (*store.Store, error) {
+			openWritable: func(string, string) (*store.Store, error) {
 				semanticCalls["open"]++
 				return nil, nil
 			},
@@ -896,7 +896,7 @@ func TestSyncFamilyUnchangedSuccessClosesSourceThenRefreshesUnderLock(t *testing
 				Version: semanticindex.USearchVersion,
 			}
 		},
-		openWritable: store.Open,
+		openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
 		provider: func(semanticconfig.Config) (embedding.Provider, error) {
 			return &semanticRefreshTestProvider{info: embedding.Info{
 				Provider:   "ollama",
@@ -1170,7 +1170,7 @@ func successfulSyncSemanticDeps(
 				Version: semanticindex.USearchVersion,
 			}
 		},
-		openWritable: store.Open,
+		openWritable: func(path string, _ string) (*store.Store, error) { return store.Open(path) },
 		provider: func(semanticconfig.Config) (embedding.Provider, error) {
 			return &semanticRefreshTestProvider{info: embedding.Info{
 				Provider:   "ollama",

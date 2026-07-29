@@ -574,7 +574,7 @@ func TestRetrievalProjectionRuntimeCountersTrackEmptyBlockedDeleteAndEmbeddingCa
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := st.BlockRetrievalProjectionTooLarge(context.Background(), work[0].Parent, work[0].DirtyRevision, projectionHash); err != nil {
+		if err := st.BlockRetrievalProjectionTooLarge(context.Background(), work[0].Parent, work[0].DirtyRevision, projectionHash, 0); err != nil {
 			t.Fatal(err)
 		}
 		assertProjectionRuntimeCounters(t, st, [8]int{1, 0, 0, 0, 1, 0, 0, 0})

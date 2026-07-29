@@ -38,7 +38,7 @@ func newWhatsNewCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}

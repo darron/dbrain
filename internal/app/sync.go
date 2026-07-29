@@ -133,7 +133,7 @@ func newSyncAllCommandWithCompletion(root *rootOptions, completion *syncCommandC
 			}
 
 			startuplog.WriteVersion(progress)
-			st, err := store.OpenWithOptions(cfg.DBPath, store.OpenOptions{
+			st, err := store.OpenWithSemanticCacheOptions(cfg.DBPath, cfg.CacheDir, store.OpenOptions{
 				MigrationReporter: startuplog.MigrationReporter(progress),
 			})
 			if err != nil {
