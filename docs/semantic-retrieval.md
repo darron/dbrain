@@ -92,9 +92,12 @@ paths never start maintenance.
 ## Scope of this stack
 
 Runtime admission, resumable refresh, universal sync integration, and
-cross-process maintenance/generation locking are implemented. Static release
-and Homebrew packaging for the macOS arm64 native library, followed by
-installed-binary full-corpus acceptance, remain later stacked work.
-Untagged/CGO-free builds and other targets without the native library continue
-to report the explicit successful `native_backend_unsupported` skip while
-retaining normal sync and lexical retrieval behavior.
+cross-process maintenance/generation locking are implemented. The Homebrew
+macOS arm64 artifact statically links checksum-pinned USearch v2.26.0, targets
+macOS 12.0 or later, and proves native capability during release and clean
+Homebrew installation. It has no external USearch dynamic-library dependency;
+Apple's system `libc++` remains dynamically linked.
+
+Untagged/CGO-free builds and all other release targets remain free of the native
+library and report the explicit successful `native_backend_unsupported` skip
+while retaining normal sync and lexical retrieval behavior.
