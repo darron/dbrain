@@ -323,9 +323,6 @@ func TestRunForgetExcludedPurgesMaterializedNote(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed retrieval generation: %v", err)
 	}
-	if err := st.ActivateRetrievalIndexGeneration(ctx, "apple-note-generation"); err != nil {
-		t.Fatalf("activate retrieval generation: %v", err)
-	}
 	stats, err := Run(context.Background(), cfg, st, Options{
 		DBPath:         dbPath,
 		ExcludeFolders: []string{"Private"},
@@ -399,7 +396,7 @@ func newRunFixture(t *testing.T) (config.Config, *store.Store, string) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
+	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 	if err != nil {
 		t.Fatalf("Open store: %v", err)
 	}

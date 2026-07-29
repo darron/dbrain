@@ -1,7 +1,6 @@
 package semanticindex
 
 import (
-	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -13,8 +12,9 @@ import (
 )
 
 const (
-	maxFilterValues = 1000
-	maxFilterLength = 512
+	maxFilterValues          = 1000
+	maxFilterLength          = 512
+	maxSemanticHitsPerParent = 3
 )
 
 type ReadyStore interface {
@@ -81,8 +81,7 @@ func (e *Exact) Search(ctx context.Context, query []float32, opts SearchOptions)
 		status.Reason = ReasonTooLarge
 		return hits, status, nil
 	}
-	candidates := make(candidateHeap, 0, min(opts.Limit, len(rows)))
-	heap.Init(&candidates)
+	candidates := make([]Hit, 0, len(rows))
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
 			status.Reason = ReasonCanceled
@@ -118,18 +117,9 @@ func (e *Exact) Search(ctx context.Context, query []float32, opts SearchOptions)
 			continue
 		}
 		distance := cosineDistance(query, vector)
-		candidate := Hit{ChunkID: row.ChunkID, Distance: distance, SourceType: row.SourceType, SectionOrdinal: row.SectionOrdinal}
-		if candidates.Len() < opts.Limit {
-			heap.Push(&candidates, candidate)
-			continue
-		}
-		if better(candidate, candidates[0]) {
-			candidates[0] = candidate
-			heap.Fix(&candidates, 0)
-		}
+		candidates = append(candidates, Hit{ChunkID: row.ChunkID, Distance: distance, ParentKind: row.ParentKind, ParentSourceKey: row.ParentSourceKey, SourceType: row.SourceType, SectionOrdinal: row.SectionOrdinal})
 	}
-	hits = append(hits, candidates...)
-	sort.Slice(hits, func(i, j int) bool { return better(hits[i], hits[j]) })
+	hits = parentDiverseHits(candidates, opts.Limit, filters.parentKeys)
 	for i := range hits {
 		hits[i].Rank = i + 1
 	}
@@ -152,19 +142,38 @@ func better(a, b Hit) bool {
 	return a.ChunkID < b.ChunkID
 }
 
-type candidateHeap []Hit
-
-func (h candidateHeap) Len() int { return len(h) }
-func (h candidateHeap) Less(i, j int) bool {
-	return better(h[j], h[i])
+// parentDiverseHits preserves exact distance order while preventing one
+// unpinned parent from exhausting a semantic candidate window. Explicitly
+// allowed parent keys are protected anchors and remain uncapped.
+func parentDiverseHits(candidates []Hit, limit int, protectedParentKeys map[string]struct{}) []Hit {
+	if limit <= 0 || len(candidates) == 0 {
+		return []Hit{}
+	}
+	sorted := append([]Hit(nil), candidates...)
+	sort.Slice(sorted, func(i, j int) bool { return better(sorted[i], sorted[j]) })
+	counts := make(map[string]int, len(sorted))
+	hits := make([]Hit, 0, min(limit, len(sorted)))
+	for _, candidate := range sorted {
+		parent := semanticParentIdentity(candidate)
+		_, protected := protectedParentKeys[strings.TrimSpace(candidate.ParentSourceKey)]
+		if !protected && counts[parent] >= maxSemanticHitsPerParent {
+			continue
+		}
+		counts[parent]++
+		hits = append(hits, candidate)
+		if len(hits) == limit {
+			break
+		}
+	}
+	return hits
 }
-func (h candidateHeap) Swap(i, j int)   { h[i], h[j] = h[j], h[i] }
-func (h *candidateHeap) Push(value any) { *h = append(*h, value.(Hit)) }
-func (h *candidateHeap) Pop() any {
-	old := *h
-	value := old[len(old)-1]
-	*h = old[:len(old)-1]
-	return value
+
+func semanticParentIdentity(hit Hit) string {
+	kind, key := strings.TrimSpace(hit.ParentKind), strings.TrimSpace(hit.ParentSourceKey)
+	if key == "" {
+		key = hit.ChunkID
+	}
+	return kind + "\x00" + key
 }
 
 type cleanFilterSet struct {

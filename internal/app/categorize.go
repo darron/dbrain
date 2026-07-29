@@ -42,7 +42,7 @@ func newCategorizeItemCommand(root *rootOptions) *cobra.Command {
 			if err := preflightRequireOpenRouterForModel(cmd.Context(), cfg, model); err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}
@@ -111,7 +111,7 @@ func newCategorizeBatchCommand(root *rootOptions) *cobra.Command {
 			if err := preflightRequireOpenRouterForModel(cmd.Context(), cfg, model); err != nil {
 				return err
 			}
-			st, err := store.Open(cfg.DBPath)
+			st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			if err != nil {
 				return err
 			}

@@ -39,6 +39,23 @@ Current migration history:
 | 1       | `current_schema_baseline`        | Adopt the checked-in schema that existed when migrations were introduced. |
 | 2       | `media_download_retry_state`     | Add/backfill media download retry state for errored media assets. |
 | 3       | `item_enrichments_current_state` | Add/backfill current item enrichment state for summaries, OCR, and X media transcripts. |
+| 4       | `x_article_canonical_i_article_urls` | Backfill canonical URLs for X article references. |
+| 5       | `feed_ingestion_tables` | Add feed-ingestion state tables. |
+| 6       | `auth_user_approvals` | Add authenticated-user approval state. |
+| 7       | `mcp_bearer_tokens` | Add MCP bearer-token state. |
+| 8       | `auth_user_approvals_repair` | Repair authenticated-user approval state. |
+| 9       | `public_chat_shares` | Add private public-chat-share records. |
+| 10      | `feed_parse_error_retry_repair` | Repair retryable feed parse errors. |
+| 11      | `review_event_indexes` | Add review-event indexes. |
+| 12      | `audit_provenance_v1` | Add and backfill audit provenance for enrichments. |
+| 13      | `retrieval_hybrid_storage_v1` | Add local hybrid retrieval chunks, embeddings, and generation state. |
+| 14      | `retrieval_profile_invariant_triggers_repair` | Repair retrieval embedding profile invariant triggers. |
+| 15      | `retrieval_chunk_projection_provenance` | Persist retrieval chunk projection provenance. |
+| 16      | `retrieval_semantic_foundation_v2` | Add the v2 semantic projection ledger, occurrence and staging tables, profile aggregates, stable database identity, and revision columns. Existing v2 chunks and embeddings remain in place for explicit v3 projection/embedding replacement. |
+| 17      | `retrieval_projection_dirty_triggers` | Install and repair authoritative item, source, and enrichment triggers that atomically dirty semantic parent projections. Kept separate so databases that already recorded migration 16 upgrade safely. |
+| 18      | `retrieval_projection_dirty_trigger_provenance_repair` | Repair the migration 17 item/source dirty triggers so provenance-only `content_hash` recalculations do not dirty semantic projections. Existing projection-ledger parents receive one shared new pending revision, partial staging is cleared, and generations are made stale; authoritative evidence and derived chunks remain intact for normal reprojection. |
+| 19      | `retrieval_embedding_profile_definitions` | Persist each embedding profile's immutable provider, model, dimensions, projection, chunker, representation, and normalization definition. Backfill and validate existing rows, reject mixed provenance, replace full-profile invariant scans with primary-key profile/chunk checks, repair aggregate counters, and deactivate pre-migration generations whose complete revision/profile provenance cannot be proven. |
+| 20      | `retrieval_embedding_revision_provenance_repair` | Move legacy ready embeddings with an unproven revision or missing vector hash back to explicit `pending` work, clear their vector payload coherently, repair profile counters, and stale any affected generation. The ordinary embedding worker then regenerates a fully revisioned and hashed row. |
 
 Version 1 is the adoption baseline, not a permanent "current schema" label.
 The current schema version is the highest registered migration version.

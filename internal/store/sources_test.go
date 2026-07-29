@@ -101,6 +101,83 @@ func TestUpsertSourceQueuesManualSourceForEnrichment(t *testing.T) {
 	}
 }
 
+func TestProjectedMutationSourceDirtyingCoversInsertUpdateDeleteButNotCounters(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+	before := projectionRevisionForTest(t, st)
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (source_key,canonical_url,normalized_url,source_type,title,extracted_text,content_hash,note_path,created_at,updated_at)
+		VALUES ('source:trigger-lifecycle','https://example.com/lifecycle','https://example.com/lifecycle','web','title','body','hash','source.md',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+1 {
+		t.Fatalf("source insert revision=%d want %d", got, before+1)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET title='new title', extracted_text='new body' WHERE source_key='source:trigger-lifecycle'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+2 {
+		t.Fatalf("source projected update revision=%d want %d", got, before+2)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET extract_failure_count=extract_failure_count+1, updated_at=? WHERE source_key='source:trigger-lifecycle'`, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+2 {
+		t.Fatalf("source irrelevant update dirtied revision=%d want %d", got, before+2)
+	}
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM sources WHERE source_key='source:trigger-lifecycle'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+3 {
+		t.Fatalf("source delete revision=%d want %d", got, before+3)
+	}
+	watermark := projectionRevisionForTest(t, st)
+	work, err := st.ListDirtyRetrievalParents(ctx, watermark, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, candidate := range work {
+		if candidate.Parent.Kind == "source" && candidate.Parent.SourceKey == "source:trigger-lifecycle" && candidate.DirtyRevision == watermark {
+			found = len(candidate.Parent.Sections) == 0
+		}
+	}
+	if !found {
+		t.Fatalf("deleted source was not selected for cleanup: %+v", work)
+	}
+}
+
+func TestProjectedMutationSourceKeyMoveUsesOneRevisionForOldCleanupAndNewProjection(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.db.ExecContext(ctx, `
+		INSERT INTO sources (source_key,canonical_url,normalized_url,source_type,title,extracted_text,content_hash,note_path,created_at,updated_at)
+		VALUES ('source:key-old','https://example.com/key','https://example.com/key','web','title','body','hash','source.md',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	markProjectionCurrentForTest(t, st, "source", "source:key-old")
+	before := projectionRevisionForTest(t, st)
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET source_key='source:key-new' WHERE source_key='source:key-old'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before+1 {
+		t.Fatalf("source key move revision=%d want %d", got, before+1)
+	}
+	for _, key := range []string{"source:key-old", "source:key-new"} {
+		assertProjectionPendingAtRevision(t, st, "source", key, before+1)
+	}
+	work, err := st.ListDirtyRetrievalParents(ctx, before+1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work) != 2 || work[0].Parent.SourceKey != "source:key-new" || work[1].Parent.SourceKey != "source:key-old" ||
+		len(work[0].Parent.Sections) == 0 || len(work[1].Parent.Sections) != 0 {
+		t.Fatalf("source key move work=%+v", work)
+	}
+}
+
 func TestGetSourceExtractedTextPrefix(t *testing.T) {
 	t.Parallel()
 

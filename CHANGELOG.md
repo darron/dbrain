@@ -5,6 +5,239 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Native semantic packaging for macOS arm64 (2026-07-28)
+
+- **Self-contained Homebrew native backend**: macOS arm64 release and candidate
+  archives now compile checksum-pinned USearch v2.26.0 with a macOS 12.0
+  deployment target and statically link it into the tagged CGO binary. Release
+  verification rejects an external USearch dynamic-library dependency and
+  exercises the artifact's real native capability before publication.
+- **Explicit cross-platform boundary**: Darwin amd64, Linux amd64/arm64, and
+  Windows amd64 artifacts remain CGO-free, omit the native build tag, and
+  explicitly report semantic native state as unsupported without failing sync.
+  Release archives and Homebrew formulae include the USearch Apache-2.0 license
+  and third-party notices.
+- **Installed-artifact gate**: Stable and candidate tap updates are followed by
+  a clean macOS arm64 `brew install`/`brew test` and installed-binary capability
+  check, so a release cannot pass solely because a developer checkout can find
+  a local native library.
+
+### Cross-process semantic refresh safety (2026-07-28)
+
+- **Database-scoped semantic leases**: Refresh projection, embedding, flush,
+  compaction, verification, and readiness units now run under crash-released
+  cross-process maintenance leases. Generation publication additionally takes
+  the exclusive generation lease for the full flush or compaction unit,
+  excluding admitted queries while immutable roots are built, published, and
+  activated. Exclusive maintenance is what serializes competing refresh
+  processes.
+- **Purge-epoch-fenced projection commits**: Both ordinary and giant projection
+  commits carry the refresh run's pinned purge epoch. Giant staging persists
+  that epoch in every durable row and rejects stale resume or promotion after a
+  purge. Migration 28 adds and repairs the durable epoch column, automatically
+  discarding unverifiable legacy or epoch-mismatched derived staging so refresh
+  can rebuild it without manual cleanup.
+- **Authoritative-write and query leases**: Corpus transactions that can dirty
+  retrieval projection now hold shared maintenance for their full
+  commit/rollback lifetime. Semantic queries hold shared generation while
+  admitting a native root and again after query embedding through SQLite
+  validation, L0 merge, hydration, and evidence construction. Writer-intent
+  ordering prevents later readers or source writers from barging ahead of
+  queued refresh/activation, while process exit releases held leases and leaves
+  no live writer intent.
+
+### Automatic semantic refresh after sync (2026-07-28)
+
+- **Automatic semantic maintenance**: Successful CLI `sync all` and scheduled
+  sync runs now synchronously run the durable semantic refresh path when
+  `research.semantic.mode` is `shadow` or `on`. The ordinary source store and
+  metrics are closed before refresh begins; unchanged source runs also resume
+  prior semantic work. Mode `off` and unsupported builds report explicit
+  successful skips, while a supported-but-broken backend, cancellation, or any
+  refresh failure makes the sync fail with the typed semantic error. CLI JSON
+  emits one flattened sync document with either `semantic` or `semantic_error`.
+  The coarse existing `sync-all.lock` covers the combined source-plus-semantic
+  operation. Release/Homebrew native packaging and installed-corpus acceptance
+  remain later stacked work.
+
+### Resumable semantic refresh (2026-07-28)
+
+- **Resumable semantic refresh**: Added a migration-backed per-profile refresh
+  ledger, fixed-watermark projection and revision-checkpointed embedding batches,
+  bounded provider retry, L0/compaction/verification/readiness orchestration,
+  serialized progress, typed failures, `semantic refresh`, and latest-run
+  status. Release packaging and installed-corpus activation remain in later
+  stacked PRs.
+- **Non-blocking refresh progress**: Five-second visible progress now continues
+  while a semantic compaction transaction temporarily blocks the durable
+  heartbeat write. A dedicated one-connection heartbeat handle keeps that wait
+  out of the main SQLite pool; durable timestamps coalesce to the newest pending
+  value, while checkpoint callbacks still expose only committed state.
+
+### Semantic ANN runtime admission (2026-07-28)
+
+- **Explicit native capability**: `dbrain semantic status` now reports whether
+  the binary's native ANN backend is unsupported, supported and ready, or
+  supported but broken, including the admitted backend and version when
+  available.
+- **Proven segmented serving**: A `usearch`-tagged runtime can admit and search
+  a fully proven segmented USearch generation through the normal research
+  command while retaining SQLite validation and exact reranking. Admission
+  binds the cache root to the canonical descriptor reconstructed from SQLite,
+  rejects active catalogs above a 1,024-segment hard safety ceiling, and fails
+  closed before payload access when the root or segment set differs. Each
+  native payload must contain exactly the manifest's member count.
+- **Truthful native status**: A tagged `semantic status` opens and closes the
+  runtime-equivalent native root before reporting it searchable. Missing or
+  corrupt artifacts produce a stable path-free unavailable reason, while
+  caller cancellation remains an error.
+- **Cancellation-aware native loading**: Segment payloads are opened and read
+  once with checksum verification, cancellation checks between stages, and
+  cleanup of partially opened native indexes. The native load call itself
+  remains non-preemptible. Candidate traversal checks cancellation around each
+  native search and never leaks prior-stage partial hits after cancellation.
+  Caller cancellation during native-root admission remains an error.
+- **Safe unsupported behavior**: Normal CGO-free builds carry no USearch
+  dependency, report `native_backend_unsupported`, and preserve ordinary
+  lexical retrieval. Native capability diagnostics redact local filesystem
+  paths without masking readiness states such as `corrupt`, `disabled`, or
+  `needs_index`; native-root failures in research output and traces use a
+  stable path-free reason.
+- **Runtime-admission boundary**: Universal synchronous post-sync integration
+  and cross-process locking are supplied by the following stacked work.
+  Release/Homebrew native packaging and installed-corpus acceptance and
+  activation remain later stacked work.
+
+### Segmented ANN lifecycle foundation (2026-07-22)
+
+- **Durable derived-cache roots**: Added content-addressed opaque segment
+  payloads, deterministic member manifests, checksum-verified reopen, and
+  atomic root publication under the configured cache directory. SQLite records
+  the segment catalog, immutable member provenance, and generation references;
+  it activates a root only after every new member still matches its ready
+  embedding revision and vector hash.
+- **Bounded L0 progression**: Added an internal, backend-injected 5,000-vector
+  revision-prefix flush seam that publishes and reopens a root before SQLite
+  activation. It preserves existing immutable segments in later roots and
+  leaves newer vectors in exact L0. No CLI command, USearch runtime dependency,
+  semantic retrieval serving, embedding backfill, or compaction is enabled by
+  this groundwork.
+- **Full-corpus rechunk cleanup performance**: Migration 24 adds the missing
+  occurrence `chunk_id` index used by the retrieval-chunk cleanup trigger,
+  preventing large parent replacements from repeatedly scanning the entire
+  occurrence table.
+- **Controlled native evaluation**: Added a USearch-tagged segment payload
+  builder and explicit restored-corpus evaluator. It requires `--apply`, an
+  explicit database/cache/report, and rejects both configured and candidate-root
+  production databases before opening them. This is an operator-only evaluation
+  boundary; it does not make native ANN a runtime dependency.
+- **Membership-safe root activation**: L0 is now the exact complement of the
+  active root's immutable `(chunk_id, revision, vector_hash)` membership rather
+  than a revision tail. Root activation is compare-and-swap protected by its
+  expected prior root, purge epoch, and snapshot; migration 23 repairs existing
+  L0/tombstone counters from that authoritative membership. This enables the
+  next compaction slice to return an undersized live remainder to L0 safely,
+  but does not yet select or build compactions, serve ANN results, or change
+  production data.
+- **Deterministic compaction policy**: Added a pure, tested planner for
+  tombstone cleanup, oldest same-class pairing, capped output packing, and
+  exact-L0 remainders. It exposes no vector reads, root replacement, cache
+  mutation, command, or serving behavior.
+- **Active-root compaction facts**: Added a read-only SQLite snapshot for an
+  active root's immutable segment metadata, stable creation order, and exact
+  live/tombstone membership counts. It rejects catalog drift and has no vector
+  payload reads, replacement-root activation, cache mutation, command, or
+  serving behavior.
+- **Bounded compaction member stream**: Added a read-only callback stream for
+  the live rows of one or two CAS-checked active segments. It revalidates exact
+  ready/current membership, encoded vector integrity, and catalog counts before
+  yielding each vector. The stream itself creates no payload, root, cache,
+  command, or serving change.
+- **Incremental optional payload build**: The tag-gated USearch builder can now
+  reserve a known segment size and ingest source vectors one at a time while
+  preserving its existing flush interface. Native graph and final serialized
+  payload memory remain evaluation concerns; no compactor calls this session,
+  and no runtime behavior changes.
+- **Bounded physical compaction**: Added an internal executor that selects one
+  singleton/pair plan, streams only its current members, publishes/reopens
+  replacement segments and a rewrite root, and uses existing root CAS
+  activation. It retains unselected segments and leaves failed publications
+  unreferenced; no command, cache cleanup, or serving path is enabled.
+- **Verified optional native root loader**: Added a `usearch && cgo` internal
+  loader that reopens the immutable root/segments, verifies provenance and
+  checksums, and imports closeable native indexes.
+- **Authoritative native candidate gate**: Added a bounded, tag-gated candidate
+  searcher that resolves native ordinals through immutable manifests, validates
+  their root CAS facts and current ready embeddings in SQLite, then exactly
+  reranks survivors by cosine distance.
+- **Exact L0 authority read**: Added a CAS-checked, bounded read for current
+  ready embeddings absent from the active root. It rejects an oversized delta
+  instead of returning a partial tail; tagged native search merges and exactly
+  reranks it with validated root candidates, including a changed root member
+  that has become a newer exact-L0 row.
+- **Optional rooted runtime backend**: The normal CGO-free build now refuses an
+  admitted active root rather than falling back to an unsafe whole-profile exact
+  scan. A `usearch && cgo` build opens the verified cache root and uses the
+  internal native-plus-L0 searcher; its unavailable state is explicitly reported
+  as `native_backend_unavailable`. Production activation remains gated on an
+  operator-built root and evaluation.
+- **Semantic parent diversity**: Exact and tagged native searches now rank all
+  validated candidates before applying a three-chunk cap per unpinned parent.
+  Explicit parent-key filters remain protected anchors, so an intentional
+  single-parent query is not artificially truncated.
+- **Bounded native expansion**: Tagged native search now widens a filtered or
+  parent-capped candidate window through 200, 500, and 2,000 global ANN-hit
+  stages. Each authoritative SQLite validation read remains bounded to 190
+  candidates and retains active-root CAS checks.
+- **Content-free authority reads**: Native-candidate and exact-L0 validation
+  projections no longer materialize chunk text. They retain only vector and
+  filter metadata; the existing hydration step remains responsible for evidence
+  text.
+- **Pinned native authority session**: One tagged semantic search now holds a
+  query-only SQLite snapshot across exact-L0 and every bounded native-candidate
+  validation batch. Root CAS checks remain at each authority read; this does
+  not yet add the planned cross-process generation lease or extend the snapshot
+  through final evidence hydration.
+- **CGO-free release isolation**: Moved the rejected `coder/hnsw` screening
+  adapter out of the production semantic-index package so Windows, Linux, and
+  Darwin release binaries remain CGO-free and do not compile an evaluation-only
+  graph dependency. The optional `usearch && cgo` evaluator and runtime packages
+  retain their separately tagged native build.
+- **CI race-suite budget**: The PR workflow now runs the clean `task test-ci`
+  gate and gives each race-enabled package a 20-minute timeout. The expanded
+  SQLite store suite was still actively migrating independent test databases
+  when Go's 10-minute default expired on Linux.
+- **Restored-corpus flush repair**: Real batched embeddings now pass the
+  5,000-vector lifecycle flush when multiple members share one atomic batch
+  revision. The evaluator report also preserves its database, cache, profile,
+  and completion status fields instead of silently omitting them.
+
+### Optional native ANN backend screening (2026-07-22)
+
+- **USearch candidate evidence**: Added a tag-gated, content-free USearch
+  adapter and bakeoff command for a locally supplied native library. The default
+  CGO-free build remains unchanged; the candidate neither opens SQLite nor
+  enables semantic retrieval. The 286,619-vector screen passed the exact
+  recall/reopen gate only with the recorded query-expansion parameter, so
+  segmented lifecycle and release distribution remain separately gated work.
+
+### Production-corpus semantic readiness foundation (2026-07-21)
+
+- **Bounded projection and readiness**: Added a durable dirty-parent ledger,
+  stable content-local chunk identity, occurrence provenance, bounded giant-item
+  staging, aggregate readiness counters, and fail-closed migration/verification
+  checks designed from the restored production corpus.
+- **Scalable request admission**: Semantic readiness now uses indexed bounded
+  work, an immutable 25,000-vector exact safety ceiling, and a 250 ms admission
+  budget before provider construction. Larger complete profiles report
+  `needs_index` and preserve lexical behavior until segmented ANN ships.
+- **Resumable operators and explicit recovery**: Added durable
+  `semantic chunk`/`embed --until-idle --max-duration` processing, bounded
+  paged verification, and explicit transactional readiness-counter repair.
+  Verification reports a clean empty result before the configured profile has
+  been built. Semantic retrieval remains off by default and no request starts a
+  backfill.
+
 ### Local hybrid retrieval foundation (2026-07-18)
 
 - **Opt-in semantic retrieval**: Added deterministic evidence chunks, portable
@@ -12,8 +245,8 @@ development date for the change set.
   and content-free shadow comparisons. Lexical retrieval remains the default;
   `shadow` measures hybrid ordering without changing visible evidence, while
   `on` returns fused evidence and fails open to lexical results when the local
-  semantic lane is unavailable or when the configured profile has more than
-  25,000 current ready embeddings (counted before request filters).
+  semantic lane is unavailable or exceeds its effective exact limit, whose hard
+  ceiling is 25,000 current ready embeddings counted before request filters.
 - **Operational and transport controls**: Added `dbrain semantic status`,
   `semantic chunk`, and `semantic embed`, plus CLI and MCP/web per-request
   semantic overrides with conflict rejection. Direct MCP research remains
@@ -30,6 +263,22 @@ development date for the change set.
   persists projection provenance on chunks; `semantic embed` refuses stale
   projection/chunker rows before calling the provider, and exact search rejects
   historically mislabeled vectors.
+- **Revisioned embedding lifecycle**: Semantic embedding provider batches now
+  commit atomically under one membership revision, preserve a valid active
+  root by accounting changed rows in L0 plus tombstones, and treat
+  operationally identical re-puts as revision/counter no-ops. Bounded
+  `semantic verify` pages validate immutable profile, chunk provenance,
+  purge-epoch, revision, root backend, vector bytes, and vector hashes before
+  quarantining corrupt ready rows. Migration 19 replaces full-profile write
+  scans with primary-key profile/chunk checks and rejects mixed legacy profile
+  provenance.
+- **Fail-closed generation provenance**: Generation activation now returns a
+  typed error instead of manufacturing an index snapshot from the profile's
+  latest embedding revision. Verification also rejects impossible tombstone
+  counts and disagreement between profile and generation membership counts.
+  Migration 20 queues legacy ready rows with a non-positive revision or empty
+  vector hash for explicit re-embedding so upgraded databases cannot strand
+  unverified vectors outside the worker selector.
 
 ### Production health audit corrections (2026-07-15)
 

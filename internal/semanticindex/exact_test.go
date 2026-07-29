@@ -76,6 +76,34 @@ func TestExactSearchFiltersBeforeTopK(t *testing.T) {
 	}
 }
 
+func TestExactSearchCapsUnpinnedParentsBeforeReturningSemanticHits(t *testing.T) {
+	st := &fakeReadyStore{rows: []store.RetrievalEmbeddingRow{
+		readyRow("parent-a-1", "profile", []float32{1, 0}, "source", "parent-a", "raw"),
+		readyRow("parent-a-2", "profile", []float32{1, 0}, "source", "parent-a", "raw"),
+		readyRow("parent-a-3", "profile", []float32{1, 0}, "source", "parent-a", "raw"),
+		readyRow("parent-a-4", "profile", []float32{1, 0}, "source", "parent-a", "raw"),
+		readyRow("parent-b-1", "profile", []float32{0.8, 0.6}, "source", "parent-b", "raw"),
+	}}
+	hits, status, err := NewExact(st).Search(context.Background(), []float32{1, 0}, SearchOptions{Profile: exactTestProfile(), Limit: 4, MaxChunks: 10})
+	if err != nil || status.State != StateSearched {
+		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
+	}
+	if got := []string{hits[0].ChunkID, hits[1].ChunkID, hits[2].ChunkID, hits[3].ChunkID}; !reflect.DeepEqual(got, []string{"parent-a-1", "parent-a-2", "parent-a-3", "parent-b-1"}) {
+		t.Fatalf("parent-diverse hits=%v", got)
+	}
+}
+
+func TestExactSearchAllowsPinnedParentBeyondOrdinarySemanticCap(t *testing.T) {
+	rows := make([]store.RetrievalEmbeddingRow, 0, 4)
+	for _, id := range []string{"parent-a-1", "parent-a-2", "parent-a-3", "parent-a-4"} {
+		rows = append(rows, readyRow(id, "profile", []float32{1, 0}, "source", "parent-a", "raw"))
+	}
+	hits, status, err := NewExact(&fakeReadyStore{rows: rows}).Search(context.Background(), []float32{1, 0}, SearchOptions{Profile: exactTestProfile(), Limit: 4, MaxChunks: 10, Filters: Filters{AllowedParentKeys: []string{"parent-a"}}})
+	if err != nil || status.State != StateSearched || len(hits) != 4 {
+		t.Fatalf("hits=%+v status=%+v err=%v", hits, status, err)
+	}
+}
+
 func TestExactSearchFiltersSourceTypeBeforeTopKAndCarriesMetadata(t *testing.T) {
 	disallowed := readyRow("disallowed", "profile", []float32{1, 0}, "item", "blocked-parent", "raw")
 	disallowed.SourceType = "x_bookmark"

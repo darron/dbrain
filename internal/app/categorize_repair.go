@@ -27,7 +27,7 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 			}
 
 			if clearSourceTagsWithoutEvidence {
-				st, err := store.Open(cfg.DBPath)
+				st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 				if err != nil {
 					return err
 				}
@@ -67,7 +67,7 @@ func newCategorizeRepairCommand(root *rootOptions) *cobra.Command {
 				return nil
 			}
 
-			_, err = runCategorizeVocabRepair(cmd.Context(), cfg.DBPath, cfg.CategoriesPath, dryRun, cmd.OutOrStdout())
+			_, err = runCategorizeVocabRepair(cmd.Context(), cfg.DBPath, cfg.CacheDir, cfg.CategoriesPath, dryRun, cmd.OutOrStdout())
 			return err
 		},
 	}
@@ -84,7 +84,7 @@ type categorizeVocabRepairStats struct {
 	Unchanged int
 }
 
-func runCategorizeVocabRepair(ctx context.Context, dbPath, categoriesPath string, dryRun bool, out io.Writer) (categorizeVocabRepairStats, error) {
+func runCategorizeVocabRepair(ctx context.Context, dbPath, cacheDir, categoriesPath string, dryRun bool, out io.Writer) (categorizeVocabRepairStats, error) {
 	vocab, err := categoryvocab.Load(categoriesPath)
 	if err != nil {
 		return categorizeVocabRepairStats{}, fmt.Errorf("load categories.yaml: %w", err)
@@ -94,7 +94,7 @@ func runCategorizeVocabRepair(ctx context.Context, dbPath, categoriesPath string
 		return categorizeVocabRepairStats{}, nil
 	}
 
-	st, err := store.Open(dbPath)
+	st, err := store.OpenWithSemanticCache(dbPath, cacheDir)
 	if err != nil {
 		return categorizeVocabRepairStats{}, err
 	}

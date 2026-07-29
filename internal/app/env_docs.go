@@ -31,7 +31,7 @@ func configEnvSpecs() []envSpec {
 		{Key: "DBRAIN_RESEARCH_SEMANTIC_DIMENSIONS", ConfigPath: "research.semantic.dimensions", Default: "0", Description: "Positive embedding width sent to Ollama and enforced on every response; required when semantic mode is shadow or on."},
 		{Key: "DBRAIN_RESEARCH_SEMANTIC_INDEX_BACKEND", ConfigPath: "research.semantic.index_backend", Default: "exact", Description: "Semantic vector index backend; v1 supports exact search."},
 		{Key: "DBRAIN_RESEARCH_SEMANTIC_CANDIDATE_DEPTH", ConfigPath: "research.semantic.candidate_depth", Default: "50", Description: "Number of semantic candidates retained for later fusion."},
-		{Key: "DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS", ConfigPath: "research.semantic.exact_fallback_max_chunks", Default: "25000", Description: "Maximum active chunks eligible for bounded exact-vector fallback."},
+		{Key: "DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS", ConfigPath: "research.semantic.exact_fallback_max_chunks", Default: "25000", Description: "Requested exact-vector limit; configuration may lower but cannot raise the measured 25,000-vector runtime safety ceiling."},
 		{Key: "DBRAIN_OLLAMA_BASE_URL / OLLAMA_BASE_URL / OLLAMA_HOST", ConfigPath: "ollama.base_url", Default: "http://127.0.0.1:11434", Description: "Ollama endpoint for local model calls."},
 		{Key: "DBRAIN_OLLAMA_API_KEY / OLLAMA_API_KEY", ConfigPath: "ollama.api_key", Default: "ollama", Description: "API key label used for Ollama-compatible local calls; supports secret refs."},
 		{Key: "DBRAIN_LMSTUDIO_BASE_URL", ConfigPath: "lmstudio.base_url", Default: "http://127.0.0.1:1234/v1", Description: "LM Studio OpenAI-compatible endpoint for local model calls."},

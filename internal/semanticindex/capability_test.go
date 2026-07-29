@@ -1,0 +1,82 @@
+package semanticindex
+
+import "testing"
+
+func TestCapabilityAdmit(t *testing.T) {
+	tests := []struct {
+		name       string
+		capability Capability
+		backend    string
+		version    string
+		wantOK     bool
+		wantReason string
+	}{
+		{"ready", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, BackendUSearch, USearchVersion, true, ""},
+		{"unsupported", Capability{State: CapabilityUnsupported}, BackendUSearch, USearchVersion, false, "native_backend_unsupported"},
+		{"broken", Capability{State: CapabilitySupportedBroken, Backend: BackendUSearch, Version: USearchVersion, Reason: "probe failed"}, BackendUSearch, USearchVersion, false, "native_backend_broken: probe failed"},
+		{"broken path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load C:\private\tmp failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken keyed absolute path is redacted", Capability{State: CapabilitySupportedBroken, Reason: "open key=/absolute/path diagnostic=ABI-mismatch"}, BackendUSearch, USearchVersion, false, "native_backend_broken: open key=[path] diagnostic=ABI-mismatch"},
+		{"broken file path is redacted", Capability{State: CapabilitySupportedBroken, Reason: "load file=/tmp/usearch/index diagnostic=permission-denied"}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file=[path] diagnostic=permission-denied"},
+		{"broken quoted POSIX path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file="/tmp/usearch/index" diagnostic=permission-denied`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file=\"[path]\" diagnostic=permission-denied"},
+		{"broken quoted Windows path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file='C:\\private\\index' diagnostic=ABI-mismatch`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file='[path]' diagnostic=ABI-mismatch"},
+		{"broken quoted POSIX path with spaces is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file="/tmp/usearch data/index" diagnostic=permission-denied`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file=\"[path]\" diagnostic=permission-denied"},
+		{"broken quoted Windows path with spaces is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file='C:\\private data\\index' diagnostic=ABI-mismatch`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file='[path]' diagnostic=ABI-mismatch"},
+		{"broken unmatched quoted path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file="/tmp/usearch data/index diagnostic=permission-denied`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file=[path]"},
+		{"broken path after contraction is redacted", Capability{State: CapabilitySupportedBroken, Reason: `can't open /private/index`}, BackendUSearch, USearchVersion, false, "native_backend_broken: can't open [path]"},
+		{"broken dlopen embedded path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `dlopen(/Users/alice/private/libusearch_c.dylib, 0x0001): image not found`}, BackendUSearch, USearchVersion, false, "native_backend_broken: dlopen([path], 0x0001): image not found"},
+		{"broken open embedded path with spaces is redacted", Capability{State: CapabilitySupportedBroken, Reason: `open(/private/tmp/native library.dylib): failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: open([path]): failed"},
+		{"broken nested quotes and brackets path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `dlopen(["/Users/alice/private/lib usearch.dylib"], 0x0001): image not found`}, BackendUSearch, USearchVersion, false, "native_backend_broken: dlopen([\"[path]\"], 0x0001): image not found"},
+		{"broken path before closing punctuation is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load /Users/alice/private/libusearch_c.dylib, diagnostic=missing: image not found`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path], diagnostic=missing: image not found"},
+		{"broken file URI is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file:///Users/alice/private/lib.dylib failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken keyed file URI is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load path=file:///Users/alice/private/lib.dylib diagnostic=missing`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load path=[path] diagnostic=missing"},
+		{"broken parenthesized file URI is redacted", Capability{State: CapabilitySupportedBroken, Reason: `open(file:///Users/alice/private/lib.dylib): failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: open([path]): failed"},
+		{"broken Windows file URI is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file:///C:/Users/alice/private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken Win32 extended path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \\?\C:\Users\alice\private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken Win32 device path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \\.\C:\Users\alice\private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken hidden POSIX path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load /.hidden/private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken volume POSIX path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load /.vol/private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken non-ASCII POSIX path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load /用户/private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken rooted NT device path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \Device\HarddiskVolume3\Users\alice\private\libusearch_c.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken rooted Windows path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \Users\alice\private\libusearch_c.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken mixed-separator rooted Windows path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \Users/alice/private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken single-component rooted Windows path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \private.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken rooted Windows path in invalid escape diagnostic is redacted", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \Users\alice\private.dll`}, BackendUSearch, USearchVersion, false, "native_backend_broken: invalid escape [path]"},
+		{"broken lowercase rooted Windows path in invalid escape diagnostic is redacted", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \users`}, BackendUSearch, USearchVersion, false, "native_backend_broken: invalid escape [path]"},
+		{"broken lowercase rooted Windows file in invalid escape diagnostic is redacted", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \user`}, BackendUSearch, USearchVersion, false, "native_backend_broken: invalid escape [path]"},
+		{"broken lowercase rooted Windows path with digit in invalid escape diagnostic is redacted", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \user1`}, BackendUSearch, USearchVersion, false, "native_backend_broken: invalid escape [path]"},
+		{"broken quoted mixed-separator path in invalid escape diagnostic is redacted", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape "\Users/alice/private.dll"`}, BackendUSearch, USearchVersion, false, "native_backend_broken: invalid escape \"[path]\""},
+		{"broken NT namespace path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \??\C:\private\libusearch_c.dll failed`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] failed"},
+		{"broken UNC path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load file=\\server\share\index diagnostic=ABI-mismatch`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load file=[path] diagnostic=ABI-mismatch"},
+		{"broken bare UNC path is redacted", Capability{State: CapabilitySupportedBroken, Reason: `load \\server\share\index diagnostic=permission-denied`}, BackendUSearch, USearchVersion, false, "native_backend_broken: load [path] diagnostic=permission-denied"},
+		{"safe slash punctuation is preserved", Capability{State: CapabilitySupportedBroken, Reason: `expected cosine / inner-product`}, BackendUSearch, USearchVersion, false, "native_backend_broken: expected cosine / inner-product"},
+		{"safe slash delimiter is preserved", Capability{State: CapabilitySupportedBroken, Reason: `unexpected token /, expected name`}, BackendUSearch, USearchVersion, false, "native_backend_broken: unexpected token /, expected name"},
+		{"safe escaped text is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \n`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \n`},
+		{"safe escaped sequence is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \n\t`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \n\t`},
+		{"safe escaped sequence before period is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \n\t.`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \n\t.`},
+		{"safe escaped sequence before semicolon is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \n\t; continuing`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \n\t; continuing`},
+		{"safe quoted escaped sequence is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes "\n\t"`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes "\n\t"`},
+		{"safe invalid escape sequence is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \q\z; continuing`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \q\z; continuing`},
+		{"safe invalid escape codes are preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes \x20\u1234`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes \x20\u1234`},
+		{"safe invalid escapes in sentence are preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \q and \z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \q and \z`},
+		{"safe invalid escapes after colon are preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escapes: \q\z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escapes: \q\z`},
+		{"safe invalid escape sequence diagnostic is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape sequence \q\z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape sequence \q\z`},
+		{"safe short hexadecimal invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \x2`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \x2`},
+		{"safe malformed hexadecimal invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \xZZ`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \xZZ`},
+		{"safe short unicode invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape sequence \u12`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape sequence \u12`},
+		{"safe malformed long unicode invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape sequence \U0000ZZZZ`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape sequence \U0000ZZZZ`},
+		{"safe short long-unicode invalid escape is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape sequence \U12`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape sequence \U12`},
+		{"safe uppercase invalid escape diagnostic is preserved", Capability{State: CapabilitySupportedBroken, Reason: `Invalid escape \q\z`}, BackendUSearch, USearchVersion, false, `native_backend_broken: Invalid escape \q\z`},
+		{"safe invalid escape before question mark is preserved", Capability{State: CapabilitySupportedBroken, Reason: `invalid escape \q?`}, BackendUSearch, USearchVersion, false, `native_backend_broken: invalid escape \q?`},
+		{"backend mismatch", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, "other", USearchVersion, false, "native_backend_provenance_mismatch"},
+		{"version mismatch", Capability{State: CapabilitySupportedReady, Backend: BackendUSearch, Version: USearchVersion}, BackendUSearch, "other", false, "native_backend_provenance_mismatch"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotOK, gotReason := test.capability.Admit(test.backend, test.version)
+			if gotOK != test.wantOK || gotReason != test.wantReason {
+				t.Fatalf("Admit(%q, %q) = (%t, %q), want (%t, %q)", test.backend, test.version, gotOK, gotReason, test.wantOK, test.wantReason)
+			}
+		})
+	}
+}

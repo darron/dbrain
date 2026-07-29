@@ -16,6 +16,7 @@ import (
 	"github.com/darron/dbrain/internal/retrieval"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 )
 
 type fakeSemanticRetriever struct {
@@ -24,6 +25,87 @@ type fakeSemanticRetriever struct {
 	err     error
 	queries []string
 	options []researchsemantic.Options
+	closes  int
+}
+
+func TestCatchingUpPreservesFirstThreeDistinctLexicalParents(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	lexical := []ask.Evidence{
+		{SourceKey: "lexical:first", Excerpt: "one"},
+		{SourceKey: "lexical:second", Excerpt: "two"},
+		{SourceKey: "lexical:third", Excerpt: "three"},
+		{SourceKey: "lexical:fourth", Excerpt: "four"},
+	}
+	fake := &fakeSemanticRetriever{rows: []retrieval.EvidenceDocument{
+		chunkEvidence("semantic:a", "chunk:a"), chunkEvidence("semantic:b", "chunk:b"), chunkEvidence("semantic:c", "chunk:c"),
+	}, status: semanticindex.Status{State: semanticindex.StateSearched}}
+	b := New(config.Config{}, st).WithSemanticMode(semanticconfig.ModeOn).WithSemanticRetriever(fake, researchsemantic.Options{})
+	b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateCatchingUp, Reason: "bounded debt", Searchable: true}
+	b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+		return ask.Response{Evidence: append([]ask.Evidence(nil), lexical...)}, ask.Response{Evidence: append([]ask.Evidence(nil), lexical...)}, nil
+	}
+	got, err := b.collectStrategyEvidence(context.Background(), researchStrategy{Variants: []QueryVariant{{Query: "q"}}}, ask.QueryHints{}, Options{Question: "q"}, 3, 100, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, row := range got {
+		seen[row.SourceKey] = true
+	}
+	for _, key := range []string{"lexical:first", "lexical:second", "lexical:third"} {
+		if !seen[key] {
+			t.Fatalf("catching-up result displaced protected lexical parent %q: %#v", key, got)
+		}
+	}
+	if b.semanticStatus == nil || string(b.semanticStatus.Reason) != string(semanticreadiness.StateCatchingUp) {
+		t.Fatalf("catching-up semantic status=%+v", b.semanticStatus)
+	}
+}
+
+func TestPreserveLeadingLexicalParentsUsesKindAndSourceKeyIdentity(t *testing.T) {
+	lexical := []ask.Evidence{
+		{Kind: "item", SourceKey: "shared:key", Excerpt: "item", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "shared:key"}},
+		{Kind: "source", SourceKey: "shared:key", Excerpt: "source", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "shared:key"}},
+		{Kind: "item", SourceKey: "lexical:no-chunk", Excerpt: "fallback"},
+	}
+	fused := []ask.Evidence{
+		{Kind: "item", SourceKey: "semantic:a", Excerpt: "a", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "semantic:a"}},
+		{Kind: "item", SourceKey: "semantic:b", Excerpt: "b", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "semantic:b"}},
+		{Kind: "item", SourceKey: "semantic:c", Excerpt: "c", Chunk: &retrieval.EvidenceChunk{ParentSourceKey: "semantic:c"}},
+	}
+
+	got := preserveLeadingLexicalParents(fused, lexical, 3)
+	seen := make(map[string]bool, len(got))
+	for _, row := range got {
+		seen[row.Kind+"\x00"+row.SourceKey] = true
+	}
+	for _, want := range []string{"item\x00shared:key", "source\x00shared:key", "item\x00lexical:no-chunk"} {
+		if !seen[want] {
+			t.Fatalf("missing protected lexical parent %q from %#v", want, got)
+		}
+	}
+}
+
+func TestIneligibleReadinessIsLexicalByteEquivalentAndDoesNotQuerySemantic(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	lexical := []ask.Evidence{{SourceKey: "lexical:a", Excerpt: "alpha"}, {SourceKey: "lexical:b", Excerpt: "beta"}}
+	build := func(mode semanticconfig.Mode, decision semanticreadiness.Decision) ([]ask.Evidence, *ShadowComparison, error) {
+		b := New(config.Config{}, st).WithSemanticMode(mode)
+		b.semanticReadiness = decision
+		b.strategyRunner = func(context.Context, string, ask.Options) (ask.Response, error) {
+			return ask.Response{Evidence: append([]ask.Evidence(nil), lexical...)}, nil
+		}
+		got, err := b.collectStrategyEvidence(context.Background(), researchStrategy{Variants: []QueryVariant{{Query: "q"}}}, ask.QueryHints{}, Options{Question: "q"}, 2, 100, nil)
+		return got, b.shadowComparison, err
+	}
+	off, _, err := build(semanticconfig.ModeOff, semanticreadiness.Decision{State: semanticreadiness.StateDisabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ineligible, _, err := build(semanticconfig.ModeOn, semanticreadiness.Decision{State: semanticreadiness.StateNeedsIndex, Reason: "exact cap exceeded"})
+	if err != nil || !reflect.DeepEqual(ineligible, off) {
+		t.Fatalf("ineligible=%#v off=%#v err=%v", ineligible, off, err)
+	}
 }
 
 type blockingSemanticRetriever struct{}
@@ -37,6 +119,11 @@ func (f *fakeSemanticRetriever) Retrieve(_ context.Context, q string, opts resea
 	f.queries = append(f.queries, q)
 	f.options = append(f.options, opts)
 	return append([]retrieval.EvidenceDocument(nil), f.rows...), f.status, f.err
+}
+
+func (f *fakeSemanticRetriever) Close() error {
+	f.closes++
+	return nil
 }
 
 func TestCanonicalSemanticQueryUsesPreferredTermsKeysAndFallbacks(t *testing.T) {
@@ -378,6 +465,51 @@ func TestOnModeReportsFailOpenSemanticLaneOutcome(t *testing.T) {
 				t.Fatalf("semantic lane=%#v comparison=%#v", semantic, pack.QueryPlan.ShadowComparison)
 			}
 		})
+	}
+}
+
+func TestOnModeGenerationBusyPreservesSemanticOffLexicalEvidenceExactly(t *testing.T) {
+	_, st := inspectionTestStore(t)
+	legacy := []ask.Evidence{
+		{SourceKey: "legacy:one", Excerpt: "first lexical result"},
+		{SourceKey: "legacy:two", Excerpt: "second lexical result"},
+	}
+	build := func(mode semanticconfig.Mode) Pack {
+		b := New(config.Config{}, st).
+			WithSemanticMode(mode).
+			WithSemanticRetriever(
+				&fakeSemanticRetriever{status: semanticindex.Status{
+					State:  semanticindex.StateUnavailable,
+					Reason: researchsemantic.ReasonGenerationBusy,
+				}},
+				researchsemantic.Options{},
+			)
+		b.strategyRunner = func(context.Context, string, ask.Options) (ask.Response, error) {
+			return ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}, nil
+		}
+		b.strategyPoolRunner = func(context.Context, string, ask.Options, int) (ask.Response, ask.Response, error) {
+			response := ask.Response{Evidence: append([]ask.Evidence(nil), legacy...)}
+			return response, response, nil
+		}
+		pack, err := b.Build(context.Background(), Options{Question: "one", DisablePlanner: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pack
+	}
+	off := build(semanticconfig.ModeOff)
+	busy := build(semanticconfig.ModeOn)
+	if !reflect.DeepEqual(busy.Evidence, off.Evidence) {
+		t.Fatalf("generation-busy evidence changed: off=%#v busy=%#v", off.Evidence, busy.Evidence)
+	}
+	var lane retrieval.RetrievalLane
+	for _, candidate := range busy.QueryPlan.RetrievalLanes {
+		if candidate.Name == researchhybrid.LaneSemantic {
+			lane = candidate
+		}
+	}
+	if lane.Status != researchhybrid.StatusDisabled || lane.Reason != string(researchsemantic.ReasonGenerationBusy) {
+		t.Fatalf("semantic lane=%#v", lane)
 	}
 }
 

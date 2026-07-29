@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,70 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/retrievalchunk"
 )
+
+func loadCurrentRetrievalParent(ctx context.Context, q sqlQueryer, kind, sourceKey string) (retrievalchunk.Parent, bool, bool, error) {
+	identity := retrievalchunk.Parent{Kind: kind, SourceKey: sourceKey}
+	switch kind {
+	case "item":
+		var contentHash, title, sourceType, authorName, authorHandle, text, xPostText, ocrText string
+		var articleTitle, articleText, transcriptText, summaryText, notePath string
+		var hasAuthoritativeTranscript bool
+		err := q.QueryRowContext(ctx, `
+			SELECT content_hash, title, source_type, author_name, author_handle, text, x_post_text,
+				`+itemOCRTextExpr()+`, article_title, article_text, `+itemXMediaTranscriptTextExpr()+`,
+				EXISTS(SELECT 1 FROM item_enrichments e WHERE e.item_id=items.id AND e.role='`+model.ItemEnrichmentRoleXMediaTranscript+`'),
+				`+itemSummaryTextExpr()+`, note_path
+			FROM items WHERE source_key=?`, sourceKey).Scan(
+			&contentHash, &title, &sourceType, &authorName, &authorHandle, &text, &xPostText,
+			&ocrText, &articleTitle, &articleText, &transcriptText, &hasAuthoritativeTranscript,
+			&summaryText, &notePath,
+		)
+		if err == sql.ErrNoRows {
+			return identity, false, false, nil
+		}
+		if err != nil {
+			return retrievalchunk.Parent{}, false, false, fmt.Errorf("load current retrieval item %s: %w", sourceKey, err)
+		}
+		if strings.TrimSpace(notePath) == "" {
+			return identity, true, false, nil
+		}
+		if hasAuthoritativeTranscript && strings.TrimSpace(articleTitle) == model.XMediaTranscriptArticleTitle {
+			articleTitle = ""
+			articleText = ""
+		}
+		if strings.TrimSpace(transcriptText) != "" {
+			articleTitle = model.XMediaTranscriptArticleTitle
+			articleText = transcriptText
+		}
+		return retrievalchunk.ProjectItem(model.Item{
+			SourceKey: sourceKey, ContentHash: contentHash, Title: title, SourceType: sourceType,
+			AuthorName: authorName, AuthorHandle: authorHandle, Text: text, XPostText: xPostText,
+			OCRText: ocrText, ArticleTitle: articleTitle, ArticleText: articleText, SummaryText: summaryText,
+		}), true, true, nil
+	case "source":
+		var contentHash, title, sourceType, domain, extractedText, summaryText, notePath string
+		err := q.QueryRowContext(ctx, `
+			SELECT content_hash, title, source_type, domain, extracted_text, summary_text, note_path
+			FROM sources WHERE source_key=?`, sourceKey).Scan(
+			&contentHash, &title, &sourceType, &domain, &extractedText, &summaryText, &notePath,
+		)
+		if err == sql.ErrNoRows {
+			return identity, false, false, nil
+		}
+		if err != nil {
+			return retrievalchunk.Parent{}, false, false, fmt.Errorf("load current retrieval source %s: %w", sourceKey, err)
+		}
+		if strings.TrimSpace(notePath) == "" {
+			return identity, true, false, nil
+		}
+		return retrievalchunk.ProjectSource(model.SourceDocument{
+			SourceKey: sourceKey, ContentHash: contentHash, Title: title, SourceType: sourceType,
+			Domain: domain, ExtractedText: extractedText, SummaryText: summaryText,
+		}), true, true, nil
+	default:
+		return retrievalchunk.Parent{}, false, false, fmt.Errorf("invalid retrieval parent kind %q", kind)
+	}
+}
 
 // ListRetrievalParents pages distinct source keys and returns every item/source
 // parent for each selected key. limit is therefore a key-page size; a page can
@@ -126,7 +191,13 @@ func (s *Store) RetrievalStatusAt(ctx context.Context, profileID string, now tim
 		return RetrievalStatus{ProfileID: profileID}, ErrRetrievalUnavailable
 	}
 	status := RetrievalStatus{Available: true, ProfileID: profileID}
-	if err := s.queryer().QueryRowContext(ctx, `SELECT COUNT(*) FROM retrieval_chunks`).Scan(&status.ChunkCount); err != nil {
+	if err := s.queryer().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM retrieval_chunks chunk
+		JOIN retrieval_parent_projections parent
+			ON parent.parent_kind = chunk.parent_kind
+			AND parent.parent_source_key = chunk.parent_source_key
+			AND parent.status = 'current'`).Scan(&status.ChunkCount); err != nil {
 		return RetrievalStatus{}, fmt.Errorf("count retrieval chunks: %w", err)
 	}
 	if err := s.queryer().QueryRowContext(ctx, `
@@ -137,6 +208,10 @@ func (s *Store) RetrievalStatusAt(ctx context.Context, profileID string, now tim
 			COALESCE(SUM(CASE WHEN e.status = 'error' AND e.chunk_text_hash = c.chunk_text_hash THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN `+retrievalEmbeddingDueSQL+` THEN 1 ELSE 0 END), 0)
 		FROM retrieval_chunks c
+		JOIN retrieval_parent_projections parent
+			ON parent.parent_kind = c.parent_kind
+			AND parent.parent_source_key = c.parent_source_key
+			AND parent.status = 'current'
 		LEFT JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id AND e.profile_id = ?`, now.UTC().Format(time.RFC3339), profileID).Scan(
 		&status.ReadyEmbeddings, &status.PendingEmbeddings, &status.BlockedEmbeddings, &status.FailedEmbeddings,
 		&status.EmbeddingCandidates,

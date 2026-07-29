@@ -63,17 +63,8 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 			return false, nil
 		}
 
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return false, fmt.Errorf("begin source summary tx: %w", err)
-		}
-		defer func() {
-			if err != nil {
-				_ = tx.Rollback()
-			}
-		}()
-
-		if _, err := tx.ExecContext(ctx, `
+		changed, err = withAuthoritativeWriteTx(ctx, s, "save-source-summary", func(ctx context.Context, tx authoritativeWriteTx) (bool, error) {
+			if _, err := tx.ExecContext(ctx, `
 			UPDATE sources
 			SET summary_text = ?,
 				summary_json = ?,
@@ -87,50 +78,51 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 				summarized_at = ?,
 				updated_at = ?
 			WHERE id = ?`,
-			result.Text,
-			result.RawJSON,
-			result.Status,
-			result.Error,
-			result.Model,
-			current.ContentHash,
-			result.PromptVersion,
-			result.Tool,
-			result.ToolVersion,
-			summarizedAt,
-			time.Now().UTC().Format(time.RFC3339),
-			sourceID,
-		); err != nil {
-			return false, fmt.Errorf("update source summary %d: %w", sourceID, err)
-		}
+				result.Text,
+				result.RawJSON,
+				result.Status,
+				result.Error,
+				result.Model,
+				current.ContentHash,
+				result.PromptVersion,
+				result.Tool,
+				result.ToolVersion,
+				summarizedAt,
+				time.Now().UTC().Format(time.RFC3339),
+				sourceID,
+			); err != nil {
+				return false, fmt.Errorf("update source summary %d: %w", sourceID, err)
+			}
 
-		if _, err := tx.ExecContext(ctx, `
+			if _, err := tx.ExecContext(ctx, `
 			INSERT INTO source_summary_versions (
 				source_id, content_hash, summary_text, summary_json, summary_status, summary_error,
 				summary_model, summary_prompt_version, summary_tool, summary_tool_version, summarized_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sourceID,
-			current.ContentHash,
-			result.Text,
-			result.RawJSON,
-			result.Status,
-			result.Error,
-			result.Model,
-			result.PromptVersion,
-			result.Tool,
-			result.ToolVersion,
-			summarizedAt,
-		); err != nil {
-			return false, fmt.Errorf("insert source summary version %d: %w", sourceID, err)
-		}
-
-		if commitErr := tx.Commit(); commitErr != nil {
-			return false, fmt.Errorf("commit source summary %d: %w", sourceID, commitErr)
+				sourceID,
+				current.ContentHash,
+				result.Text,
+				result.RawJSON,
+				result.Status,
+				result.Error,
+				result.Model,
+				result.PromptVersion,
+				result.Tool,
+				result.ToolVersion,
+				summarizedAt,
+			); err != nil {
+				return false, fmt.Errorf("insert source summary version %d: %w", sourceID, err)
+			}
+			return true, nil
+		})
+		if err != nil {
+			return false, err
 		}
 
 		if err := s.syncSourceFTS(ctx, sourceID); err != nil {
 			return false, err
 		}
 
-		return true, nil
+		return changed, nil
 	})
 }

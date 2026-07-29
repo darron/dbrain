@@ -20,10 +20,11 @@ func New(cfg config.Config, st *store.Store) *Builder {
 }
 
 func Build(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Pack, error) {
-	b, err := NewRuntimeBuilder(cfg, st, opts.EffectiveSemanticMode, opts.UseSemantic, opts.DisableSemantic)
+	b, err := NewRuntimeBuilderContext(ctx, cfg, st, opts.EffectiveSemanticMode, opts.UseSemantic, opts.DisableSemantic)
 	if err != nil {
 		return Pack{}, err
 	}
+	defer func() { _ = b.Close() }()
 	return b.Build(ctx, opts)
 }
 
@@ -149,27 +150,29 @@ func (b *Builder) buildResolved(ctx context.Context, opts Options) (Pack, error)
 		Question:      question,
 		Mode:          "evidence_only",
 		QueryPlan: QueryPlan{
-			TextQuery:         hints.TextQuery,
-			QueryFamily:       strategy.Family,
-			QueryTerms:        hints.Terms,
-			TagQueries:        hints.TagQueries,
-			QueryVariants:     strategy.Variants,
-			Concepts:          strategy.Concepts,
-			ProtectedAnchors:  anchors,
-			Planner:           strategy.Planner,
-			PlannerModel:      strategy.PlannerModel,
-			PlannerError:      strategy.PlannerError,
-			SourceTypes:       opts.SourceTypes,
-			RetrievalLanes:    retrievalLanes,
-			Limit:             limit,
-			MaxCharsPerDoc:    maxChars,
-			IncludeRelated:    opts.IncludeRelated,
-			RelatedLimit:      opts.RelatedLimit,
-			Topic:             topic,
-			TopicSource:       topicSource,
-			IncludeTopicBrief: includeTopic,
-			SemanticMode:      b.semanticMode,
-			ShadowComparison:  b.shadowComparison,
+			TextQuery:                    hints.TextQuery,
+			QueryFamily:                  strategy.Family,
+			QueryTerms:                   hints.Terms,
+			TagQueries:                   hints.TagQueries,
+			QueryVariants:                strategy.Variants,
+			Concepts:                     strategy.Concepts,
+			ProtectedAnchors:             anchors,
+			Planner:                      strategy.Planner,
+			PlannerModel:                 strategy.PlannerModel,
+			PlannerError:                 strategy.PlannerError,
+			SourceTypes:                  opts.SourceTypes,
+			RetrievalLanes:               retrievalLanes,
+			Limit:                        limit,
+			MaxCharsPerDoc:               maxChars,
+			IncludeRelated:               opts.IncludeRelated,
+			RelatedLimit:                 opts.RelatedLimit,
+			Topic:                        topic,
+			TopicSource:                  topicSource,
+			IncludeTopicBrief:            includeTopic,
+			SemanticMode:                 b.semanticMode,
+			SemanticReadiness:            b.semanticReadiness.State,
+			SemanticReadinessDiagnostics: b.semanticReadinessDiagnostics,
+			ShadowComparison:             b.shadowComparison,
 		},
 		Evidence:         evidence,
 		ExactTagEvidence: exactTagEvidence,

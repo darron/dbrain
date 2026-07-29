@@ -22,7 +22,7 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 
 	var webHandler http.Handler
 	if opts.Web {
-		st, err := store.OpenWithOptions(cfg.DBPath, store.OpenOptions{
+		st, err := store.OpenWithSemanticCacheOptions(cfg.DBPath, cfg.CacheDir, store.OpenOptions{
 			MigrationReporter: startuplog.MigrationReporter(logOut),
 		})
 		if err != nil {
