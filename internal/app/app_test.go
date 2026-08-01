@@ -361,6 +361,7 @@ func TestRepairPrunedMediaCommandDryRunUsesReadOnlyStore(t *testing.T) {
 
 func TestRepairPrunedMediaCommandApplyDefaultsAndCategorySelection(t *testing.T) {
 	root := t.TempDir()
+	prepareCurrentAppTestStore(t, root)
 	var got []prunedmediarepair.Options
 	run := func(_ context.Context, _ config.Config, _ *store.Store, opts prunedmediarepair.Options) (prunedmediarepair.Stats, error) {
 		got = append(got, opts)
@@ -643,6 +644,15 @@ func TestSemanticChunkOutputUsesDurableQueueResumeState(t *testing.T) {
 	}
 }
 
+func prepareCurrentAppTestStore(t *testing.T, root string) {
+	t.Helper()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load app test config: %v", err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+}
+
 func runRootCommand(t *testing.T, root string, args ...string) string {
 	t.Helper()
 
@@ -811,6 +821,7 @@ func TestAuthMCPTokenAddCreatesDBBackedBearerToken(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
+	prepareCurrentAppTestStore(t, root)
 	stdout := runRootCommand(t, root, "auth", "mcp", "token", "add", "phone", "--json")
 	var result store.MCPBearerTokenCreateResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -837,6 +848,7 @@ func TestAuthGitHubListAndRemoveApprovedUsers(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
+	prepareCurrentAppTestStore(t, root)
 	runRootCommand(t, root, "auth", "github", "approve", "Darron")
 
 	listOut := runRootCommand(t, root, "auth", "github", "list", "--json")
@@ -874,6 +886,7 @@ func TestAuthMCPTokenListAndRevokeDoNotExposeSecret(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
+	prepareCurrentAppTestStore(t, root)
 	createOut := runRootCommand(t, root, "auth", "mcp", "token", "add", "phone", "--json")
 	var created store.MCPBearerTokenCreateResult
 	if err := json.Unmarshal([]byte(createOut), &created); err != nil {
@@ -3900,6 +3913,7 @@ metrics:
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+	prepareCurrentAppTestStore(t, root)
 
 	oldRunSyncAll := runSyncAll
 	t.Cleanup(func() {
@@ -4414,6 +4428,7 @@ func TestLinkAddQueuesManualSource(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
+	prepareCurrentAppTestStore(t, root)
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -4887,6 +4902,7 @@ func TestCaffeinateStartsByDefaultForLeafCommandWhenAvailable(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	original := startKeepAwake
 	defer func() { startKeepAwake = original }()
@@ -4927,6 +4943,7 @@ func TestNoCaffeinateDisablesAutomaticKeepAwake(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	original := startKeepAwake
 	defer func() { startKeepAwake = original }()
@@ -4964,6 +4981,7 @@ func TestCaffeinateDebugLogsEnabledByDefault(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	original := startKeepAwake
 	defer func() { startKeepAwake = original }()
@@ -4997,6 +5015,7 @@ func TestNoDebugSuppressesKeepAwakeDebugLogs(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	original := startKeepAwake
 	defer func() { startKeepAwake = original }()
@@ -5058,6 +5077,7 @@ func TestExtractSourcesCommandOutputsZeroStatsForEmptyBacklog(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
@@ -5193,6 +5213,7 @@ func TestWorkerSourcesCommandOutputsQueueDrainedForEmptyBacklog(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer

@@ -15,6 +15,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/sqlitearchive"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestSchedulerSQLiteArchiveConfigDefaults(t *testing.T) {
@@ -470,6 +471,7 @@ func TestSQLiteArchiveSchedulerSerializesWithArchiveAndRestore(t *testing.T) {
 
 func TestSQLiteArchiveSchedulerLockSkipsWhileRealArchiveRuns(t *testing.T) {
 	cfg := openSchedulerTestConfig(t)
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		t.Fatal(err)
