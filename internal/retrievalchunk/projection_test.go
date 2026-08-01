@@ -26,10 +26,10 @@ func TestProjectItemSeparatesRawOCRTranscriptAndDerivedEvidence(t *testing.T) {
 		t.Fatalf("unexpected item projection metadata: %+v", got)
 	}
 	want := []Section{
-		{Role: "raw", Heading: "An item", Text: "raw item text"},
-		{Role: "ocr", Heading: "OCR", Text: "raw OCR text"},
-		{Role: "transcript", Heading: model.XMediaTranscriptArticleTitle, Text: "raw transcript text"},
-		{Role: "summary", Heading: "Summary", Text: "derived summary text", Derived: true},
+		{Key: "item:text", Role: "raw", Heading: "An item", Text: "raw item text"},
+		{Key: "item:ocr", Role: "ocr", Heading: "OCR", Text: "raw OCR text"},
+		{Key: "item:transcript", Role: "transcript", Heading: model.XMediaTranscriptArticleTitle, Text: "raw transcript text"},
+		{Key: "item:summary", Role: "summary", Heading: "Summary", Text: "derived summary text", Derived: true},
 	}
 	assertSections(t, got.Sections, want)
 }
@@ -64,8 +64,8 @@ func TestProjectItemTreatsOrdinaryArticleTextAsRaw(t *testing.T) {
 		ArticleTitle: "Full article", ArticleText: "article body",
 	})
 	want := []Section{
-		{Role: "raw", Text: "feed text"},
-		{Role: "raw", Heading: "Full article", Text: "article body"},
+		{Key: "item:text", Role: "raw", Text: "feed text"},
+		{Key: "item:article", Role: "raw", Heading: "Full article", Text: "article body"},
 	}
 	assertSections(t, got.Sections, want)
 }
@@ -82,8 +82,8 @@ func TestProjectSourceSeparatesExtractFromDerivedSummary(t *testing.T) {
 		t.Fatalf("unexpected source projection metadata: %+v", got)
 	}
 	want := []Section{
-		{Role: "raw", Heading: "Architecture", Text: "raw source extract"},
-		{Role: "summary", Heading: "Summary", Text: "derived source summary", Derived: true},
+		{Key: "source:extract", Role: "raw", Heading: "Architecture", Text: "raw source extract"},
+		{Key: "source:summary", Role: "summary", Heading: "Summary", Text: "derived source summary", Derived: true},
 	}
 	assertSections(t, got.Sections, want)
 }

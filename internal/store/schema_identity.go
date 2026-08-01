@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode"
 )
 
 // ErrDatabaseIncompatible marks an observed dbrain schema or migration
@@ -50,6 +52,81 @@ var dbrainCoreSchema = []schemaIdentityTable{
 	},
 }
 
+var dbrainSemanticFoundationSchema = []schemaIdentityTable{
+	{
+		name: "retrieval_state",
+		columns: []string{
+			"singleton", "database_id", "projection_work_revision", "purge_epoch", "updated_at",
+		},
+	},
+	{
+		name: "retrieval_parent_projections",
+		columns: []string{
+			"parent_kind", "parent_source_key", "projection_hash", "projection_version", "chunker_version",
+			"status", "chunk_count", "reason", "dirty_at", "dirty_revision", "projected_revision", "projected_at", "updated_at",
+		},
+	},
+	{
+		name:    "retrieval_chunks",
+		columns: []string{"section_key", "heading_hash", "derived"},
+	},
+	{
+		name:    "retrieval_embeddings",
+		columns: []string{"revision", "vector_hash"},
+	},
+	{
+		name:    "retrieval_chunk_occurrences",
+		columns: []string{"parent_kind", "parent_source_key", "chunk_id", "section_key", "start_char", "end_char", "created_at", "updated_at"},
+	},
+	{
+		name:    "retrieval_projection_staging",
+		columns: []string{"work_id", "dirty_revision", "parent_kind", "parent_source_key", "projection_hash", "section_key", "next_boundary", "chunk_id", "chunk_json", "occurrence_json", "created_at", "updated_at"},
+	},
+	{
+		name:    "retrieval_embedding_profiles",
+		columns: []string{"profile_id", "latest_revision", "purge_epoch", "active_generation_id", "active_snapshot_revision", "active_indexed_count", "l0_ready_count", "active_tombstone_count", "updated_at"},
+	},
+}
+
+var dbrainEmbeddingProfileDefinitionSchemaV19 = []schemaIdentityTable{{
+	name: "retrieval_embedding_profiles",
+	columns: []string{
+		"provider", "model", "dimensions", "projection_version", "chunker_version", "representation", "normalization",
+	},
+}}
+
+var dbrainRuntimeReadinessSchemaV21 = []schemaIdentityTable{{
+	name: "retrieval_embedding_profiles",
+	columns: []string{
+		"ready_embedding_count", "pending_embedding_count", "blocked_embedding_count",
+		"error_embedding_count", "corrupt_embedding_count",
+	},
+}, {
+	name: "retrieval_state",
+	columns: []string{
+		"projection_parent_count", "current_parent_count", "empty_parent_count",
+		"pending_parent_count", "blocked_parent_count", "error_parent_count",
+		"dirty_parent_count", "current_chunk_count",
+	},
+}}
+
+var dbrainSemanticRefreshRunSchemaV25 = []schemaIdentityTable{{
+	name:    "semantic_refresh_runs",
+	columns: []string{"run_id", "profile_id", "purge_epoch", "projection_watermark", "embedding_revision", "stage", "checkpoint", "projected_parents", "embedded_chunks", "flushed_vectors", "compacted_vectors", "verified_vectors", "successor_runs", "current_generation_id", "state", "error_code", "error_text", "readiness_state", "version", "created_at", "updated_at", "last_progress_at"},
+}}
+
+var dbrainSemanticRefreshRunArchiveSchemaV27 = []schemaIdentityTable{{
+	name: "semantic_refresh_runs_v25_compatibility_archive",
+	columns: []string{
+		"run_id", "profile_id", "purge_epoch", "projection_watermark", "embedding_revision",
+		"stage", "checkpoint", "projected_parents", "embedded_chunks", "flushed_vectors",
+		"compacted_vectors", "verified_vectors", "successor_runs", "current_generation_id",
+		"state", "error_code", "error_text", "readiness_state", "version", "created_at",
+		"updated_at", "last_progress_at", "compatibility_action", "compatibility_reason",
+		"compatibility_fields",
+	},
+}}
+
 var compatibleSchemaMigrationNames = map[int]map[string]struct{}{
 	6: {
 		"source_summary_failure_timestamp": {},
@@ -73,9 +150,77 @@ func ValidateRestorableDatabase(ctx context.Context, path string) error {
 }
 
 func inspectDbrainCoreSchema(st *Store) (int, int, error) {
+	requiredSchema := dbrainCoreSchema
+	hasSemanticFoundation := false
+	var semanticProjectionDirtyTriggersForVersion []retrievalConstraintTrigger
+	hasMigrationTable, err := st.tableExists("schema_migrations")
+	if err != nil {
+		return 0, 0, fmt.Errorf("inspect dbrain migration table: %w", err)
+	}
+	if hasMigrationTable {
+		var found int
+		err := st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticFoundationMigrationVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainSemanticFoundationSchema...)
+			hasSemanticFoundation = true
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic foundation migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticProjectionDirtyMigrationVersion).Scan(&found)
+		switch {
+		case err == nil:
+			semanticProjectionDirtyTriggersForVersion = semanticProjectionDirtyTriggersV17
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic projection dirty migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticProjectionDirtyRepairVersion).Scan(&found)
+		switch {
+		case err == nil:
+			semanticProjectionDirtyTriggersForVersion = semanticProjectionDirtyTriggers
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic projection dirty repair migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalEmbeddingProfileVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainEmbeddingProfileDefinitionSchemaV19...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain embedding profile migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalReadinessCountersVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainRuntimeReadinessSchemaV21...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain runtime readiness counter migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticRefreshRunsMigrationVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainSemanticRefreshRunSchemaV25...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic refresh run migration: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, semanticRefreshRunsArchiveMigrationVersion).Scan(&found)
+		switch {
+		case err == nil:
+			requiredSchema = append(requiredSchema, dbrainSemanticRefreshRunArchiveSchemaV27...)
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("inspect dbrain semantic refresh run archive migration: %w", err)
+		}
+	}
+
 	missingTables, missingColumns := 0, 0
 	var firstMissing error
-	for _, required := range dbrainCoreSchema {
+	for _, required := range requiredSchema {
 		exists, err := st.tableExists(required.name)
 		if err != nil {
 			return missingTables, missingColumns, fmt.Errorf("inspect dbrain core schema table %s: %w", required.name, err)
@@ -100,7 +245,91 @@ func inspectDbrainCoreSchema(st *Store) (int, int, error) {
 			}
 		}
 	}
+	if hasSemanticFoundation {
+		var err error
+		missingTables, firstMissing, err = inspectCanonicalTriggers(st, "semantic foundation", semanticFoundationConstraintTriggers, missingTables, firstMissing)
+		if err != nil {
+			return missingTables, missingColumns, err
+		}
+	}
+	if len(semanticProjectionDirtyTriggersForVersion) != 0 {
+		var err error
+		missingTables, firstMissing, err = inspectCanonicalTriggers(st, "semantic projection dirty", semanticProjectionDirtyTriggersForVersion, missingTables, firstMissing)
+		if err != nil {
+			return missingTables, missingColumns, err
+		}
+	}
+	if hasMigrationTable {
+		var found int
+		err := st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalEmbeddingProfileVersion).Scan(&found)
+		if err == nil {
+			var inspectErr error
+			missingTables, firstMissing, inspectErr = inspectCanonicalTriggers(st, "embedding profile definitions", retrievalEmbeddingProfileTriggersV19, missingTables, firstMissing)
+			if inspectErr != nil {
+				return missingTables, missingColumns, inspectErr
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return missingTables, missingColumns, fmt.Errorf("inspect embedding profile migration triggers: %w", err)
+		}
+		err = st.db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1`, retrievalReadinessCountersVersion).Scan(&found)
+		if err == nil {
+			for name, triggers := range map[string][]retrievalConstraintTrigger{
+				"runtime embedding readiness":  retrievalRuntimeReadinessCounterTriggers,
+				"runtime projection readiness": retrievalRuntimeProjectionCounterTriggers,
+			} {
+				var inspectErr error
+				missingTables, firstMissing, inspectErr = inspectCanonicalTriggers(st, name, triggers, missingTables, firstMissing)
+				if inspectErr != nil {
+					return missingTables, missingColumns, inspectErr
+				}
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return missingTables, missingColumns, fmt.Errorf("inspect runtime readiness migration triggers: %w", err)
+		}
+	}
 	return missingTables, missingColumns, firstMissing
+}
+
+func inspectCanonicalTriggers(st *Store, schemaName string, requiredTriggers []retrievalConstraintTrigger, missingTables int, firstMissing error) (int, error, error) {
+	for _, required := range requiredTriggers {
+		var table, definition string
+		err := st.db.QueryRow(`SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND name = ?`, required.name).Scan(&table, &definition)
+		switch {
+		case err == nil && table == required.table && normalizeSQLiteTriggerSQL(definition) == normalizeSQLiteTriggerSQL(required.sql):
+		case err == nil:
+			missingTables++
+			if firstMissing == nil {
+				if table != required.table {
+					firstMissing = fmt.Errorf("%w: dbrain %s trigger %s belongs to %s, want %s", ErrDatabaseIncompatible, schemaName, required.name, table, required.table)
+				} else {
+					firstMissing = fmt.Errorf("%w: dbrain %s trigger %s has a non-canonical definition", ErrDatabaseIncompatible, schemaName, required.name)
+				}
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			missingTables++
+			if firstMissing == nil {
+				firstMissing = fmt.Errorf("%w: dbrain %s trigger %s is missing", ErrDatabaseIncompatible, schemaName, required.name)
+			}
+		case err != nil:
+			return missingTables, firstMissing, fmt.Errorf("inspect dbrain %s trigger %s: %w", schemaName, required.name, err)
+		}
+	}
+	return missingTables, firstMissing, nil
+}
+
+// normalizeSQLiteTriggerSQL compares the canonical trigger definitions with
+// SQLite's sqlite_master representation without treating layout or case as
+// schema identity. The definitions are static trusted SQL, so a compact token
+// form is sufficient and keeps validation independent of SQLite formatting.
+func normalizeSQLiteTriggerSQL(definition string) string {
+	var normalized strings.Builder
+	normalized.Grow(len(definition))
+	for _, r := range strings.ToLower(definition) {
+		if !unicode.IsSpace(r) {
+			normalized.WriteRune(r)
+		}
+	}
+	return normalized.String()
 }
 
 func validateAppliedSchemaMigrations(ctx context.Context, db *sql.DB, userVersion int) error {

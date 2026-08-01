@@ -1,20 +1,49 @@
 package store
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"time"
 )
 
 const (
-	currentSchemaVersion            = 15
-	auditProvenanceMigrationVersion = 12
-	auditProvenanceMigrationName    = "audit_provenance_v1"
-	retrievalMigrationVersion       = 13
-	retrievalTriggerRepairVersion   = 14
-	retrievalTriggerRepairName      = "retrieval_profile_invariant_triggers_repair"
-	retrievalChunkProvenanceVersion = 15
-	retrievalChunkProvenanceName    = "retrieval_chunk_projection_provenance"
+	currentSchemaVersion                       = 28
+	auditProvenanceMigrationVersion            = 12
+	auditProvenanceMigrationName               = "audit_provenance_v1"
+	retrievalMigrationVersion                  = 13
+	retrievalTriggerRepairVersion              = 14
+	retrievalTriggerRepairName                 = "retrieval_profile_invariant_triggers_repair"
+	retrievalChunkProvenanceVersion            = 15
+	retrievalChunkProvenanceName               = "retrieval_chunk_projection_provenance"
+	semanticFoundationMigrationVersion         = 16
+	semanticFoundationMigrationName            = "retrieval_semantic_foundation_v2"
+	semanticProjectionDirtyMigrationVersion    = 17
+	semanticProjectionDirtyMigrationName       = "retrieval_projection_dirty_triggers"
+	semanticProjectionDirtyRepairVersion       = 18
+	semanticProjectionDirtyRepairName          = "retrieval_projection_dirty_trigger_provenance_repair"
+	retrievalEmbeddingProfileVersion           = 19
+	retrievalEmbeddingProfileName              = "retrieval_embedding_profile_definitions"
+	retrievalEmbeddingRevisionRepairVersion    = 20
+	retrievalEmbeddingRevisionRepairName       = "retrieval_embedding_revision_provenance_repair"
+	retrievalReadinessCountersVersion          = 21
+	retrievalReadinessCountersName             = "retrieval_runtime_readiness_counters"
+	retrievalSegmentMembershipVersion          = 22
+	retrievalSegmentMembershipName             = "retrieval_segment_membership_v1"
+	retrievalMembershipL0ActivationVersion     = 23
+	retrievalMembershipL0ActivationName        = "retrieval_membership_l0_activation_v1"
+	retrievalOccurrenceChunkIndexVersion       = 24
+	retrievalOccurrenceChunkIndexName          = "retrieval_occurrence_chunk_cleanup_index"
+	semanticRefreshRunsMigrationVersion        = 25
+	semanticRefreshRunsMigrationName           = "semantic_refresh_runs_v1"
+	semanticRefreshRunsRepairMigrationVersion  = 26
+	semanticRefreshRunsRepairMigrationName     = "semantic_refresh_runs_v2_byte_limits"
+	semanticRefreshRunsArchiveMigrationVersion = 27
+	semanticRefreshRunsArchiveMigrationName    = "semantic_refresh_runs_v25_compatibility_archive"
+	retrievalProjectionStagingEpochVersion     = 28
+	retrievalProjectionStagingEpochName        = "retrieval_projection_staging_expected_purge_epoch"
 )
 
 type schemaMigration struct {
@@ -156,6 +185,112 @@ var schemaMigrations = []schemaMigration{
 			return s.ensureRetrievalTables()
 		},
 	},
+	{
+		Version: semanticFoundationMigrationVersion,
+		Name:    semanticFoundationMigrationName,
+		Run: func(s *Store) error {
+			return s.ensureSemanticFoundationRetrievalSchema()
+		},
+	},
+	{
+		Version: semanticProjectionDirtyMigrationVersion,
+		Name:    semanticProjectionDirtyMigrationName,
+		Run: func(s *Store) error {
+			return s.ensureSemanticProjectionDirtyTriggersV17()
+		},
+	},
+	{
+		Version: semanticProjectionDirtyRepairVersion,
+		Name:    semanticProjectionDirtyRepairName,
+		Run: func(s *Store) error {
+			return s.repairSemanticProjectionDirtyTriggerProvenance()
+		},
+	},
+	{
+		Version: retrievalEmbeddingProfileVersion,
+		Name:    retrievalEmbeddingProfileName,
+		Run: func(s *Store) error {
+			return s.ensureRetrievalEmbeddingProfileDefinitions()
+		},
+	},
+	{
+		Version: retrievalEmbeddingRevisionRepairVersion,
+		Name:    retrievalEmbeddingRevisionRepairName,
+		Run: func(s *Store) error {
+			return s.repairRetrievalEmbeddingRevisionProvenance()
+		},
+	},
+	{
+		Version: retrievalReadinessCountersVersion,
+		Name:    retrievalReadinessCountersName,
+		Run: func(s *Store) error {
+			return s.RepairRetrievalRuntimeReadinessCounters(context.Background())
+		},
+	},
+	{
+		Version: retrievalSegmentMembershipVersion,
+		Name:    retrievalSegmentMembershipName,
+		Run: func(s *Store) error {
+			return s.ensureRetrievalSegmentMembershipSchema()
+		},
+	},
+	{
+		Version: retrievalMembershipL0ActivationVersion,
+		Name:    retrievalMembershipL0ActivationName,
+		Run: func(s *Store) error {
+			return s.repairRetrievalMembershipL0Activation()
+		},
+	},
+	{
+		Version: retrievalOccurrenceChunkIndexVersion,
+		Name:    retrievalOccurrenceChunkIndexName,
+		Run: func(s *Store) error {
+			_, err := s.db.Exec(`
+				CREATE INDEX IF NOT EXISTS idx_retrieval_chunk_occurrences_chunk
+				ON retrieval_chunk_occurrences(chunk_id)`)
+			if err != nil {
+				return fmt.Errorf("ensure retrieval occurrence chunk cleanup index: %w", err)
+			}
+			return nil
+		},
+	},
+	{
+		Version: semanticRefreshRunsMigrationVersion,
+		Name:    semanticRefreshRunsMigrationName,
+		Run: func(s *Store) error {
+			return ensureSemanticRefreshRunSchemaV25(s.db)
+		},
+	},
+	{
+		Version: semanticRefreshRunsRepairMigrationVersion,
+		Name:    semanticRefreshRunsRepairMigrationName,
+		Run:     func(s *Store) error { return s.repairSemanticRefreshRunSchemaV26() },
+	},
+	{
+		Version: semanticRefreshRunsArchiveMigrationVersion,
+		Name:    semanticRefreshRunsArchiveMigrationName,
+		Run: func(s *Store) error {
+			if _, err := s.db.Exec(semanticRefreshRunsV25CompatibilityArchiveCreateTableSQL); err != nil {
+				return fmt.Errorf("ensure semantic refresh run v25 compatibility archive: %w", err)
+			}
+			return nil
+		},
+	},
+	{
+		Version: retrievalProjectionStagingEpochVersion,
+		Name:    retrievalProjectionStagingEpochName,
+		Run: func(s *Store) error {
+			return s.ensureRetrievalProjectionStagingPurgeEpoch()
+		},
+	},
+}
+
+func newRetrievalDatabaseID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate retrieval database id: %w", err)
+	}
+	return hex.EncodeToString(random[:]), nil
 }
 
 func (s *Store) migrate(reporter MigrationReporter) error {
@@ -211,6 +346,12 @@ func (s *Store) migrate(reporter MigrationReporter) error {
 			LatestVersion: currentSchemaVersion,
 			Name:          migration.Name,
 		})
+	}
+	// Repair databases whose local migration history was stamped before the
+	// schema mutation completed. Migration numbers are immutable, so reopening
+	// must make the v28 invariant true even when its metadata row already exists.
+	if err := s.ensureRetrievalProjectionStagingPurgeEpoch(); err != nil {
+		return err
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
 		return fmt.Errorf("set schema user_version: %w", err)

@@ -139,12 +139,15 @@ a non-empty local Ollama embedding model and positive dimensions.
   chunk/content provenance.
 
 The only vector backend in this foundation is SQLite-authoritative exact scan.
-Semantic candidate depth defaults to 50. Exact scans are capped at 25,000
-current ready embeddings for the configured profile by default, counted before
-request filters. A larger ready profile set reports `too_large`, and validly
-configured provider/search failures report their status/reason; both fail open
-to lexical evidence. ANN, other providers, background sync, and default-on are
-deferred.
+Semantic candidate depth defaults to 50. Exact scans have a hard measured
+ceiling of 25,000 current ready embeddings for the configured profile, counted
+before request filters; configuration may lower that ceiling but cannot raise
+it. A larger complete profile reports `needs_index`. Incomplete, corrupt,
+stale, timed-out, or otherwise unavailable semantic state reports its precise
+`semantic_readiness` state and reason, then fails open to lexical evidence
+before constructing the query embedding provider. `catching_up` responses also
+expose content-free readiness diagnostics for dirty parents and estimated debt.
+ANN, other providers, background sync, and default-on are deferred.
 
 Inspect `query_plan.semantic_mode`, `query_plan.retrieval_lanes`, and (only in
 shadow mode) `query_plan.shadow_comparison`. Each evidence row may expose

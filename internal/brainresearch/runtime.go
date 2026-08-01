@@ -1,7 +1,10 @@
 package brainresearch
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/embedding"
@@ -9,15 +12,66 @@ import (
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticlock"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
 )
 
+type runtimeDeps struct {
+	readiness  func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
+	capability func() semanticindex.Capability
+	provider   func(semanticconfig.Config) (embedding.Provider, error)
+	searcher   func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error)
+}
+
+const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
+
+var errNativeBackendUnavailable = errors.New("native_backend_unavailable")
+var errNativeRootArtifactsUnavailable = errors.New("native_root_artifacts_unavailable")
+var errSemanticGenerationBusy = errors.New("generation_busy")
+
+type semanticLeaseReleaseFailure interface {
+	semanticLeaseReleaseFailure()
+}
+
+func defaultRuntimeDeps() runtimeDeps {
+	return runtimeDeps{
+		readiness: func(ctx context.Context, st *store.Store, profile embedding.Profile, exactMax int, now time.Time) (semanticreadiness.Snapshot, error) {
+			if st == nil {
+				return semanticreadiness.Snapshot{}, store.ErrRetrievalUnavailable
+			}
+			return st.SemanticRuntimeReadinessSnapshotAt(ctx, profile, exactMax, now)
+		},
+		capability: semanticindex.RuntimeCapability,
+		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
+			return embedding.NewOllama(embedding.OllamaOptions{BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions})
+		},
+		searcher: runtimeSemanticSearcher,
+	}
+}
+
 func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool) (*Builder, error) {
+	return NewRuntimeBuilderContext(context.Background(), cfg, st, configuredOverride, forceOn, forceOff)
+}
+
+func NewRuntimeBuilderContext(ctx context.Context, cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool) (*Builder, error) {
+	return newRuntimeBuilderWithDeps(ctx, cfg, st, configuredOverride, forceOn, forceOff, defaultRuntimeDeps())
+}
+
+func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool, deps runtimeDeps) (*Builder, error) {
+	if deps.searcher == nil {
+		deps.searcher = defaultRuntimeDeps().searcher
+	}
+	if deps.capability == nil {
+		deps.capability = semanticindex.RuntimeCapability
+	}
 	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, forceOn, forceOff); err != nil {
 		return nil, err
 	}
 	if forceOff {
-		return New(cfg, st).WithSemanticMode(semanticconfig.ModeOff), nil
+		b := New(cfg, st).WithSemanticMode(semanticconfig.ModeOff)
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateDisabled, Reason: "semantic retrieval mode is off"}
+		return b, nil
 	}
 	configured, err := semanticconfig.ResolveDiagnostic(cfg.RootDir)
 	if err != nil {
@@ -33,6 +87,7 @@ func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride se
 	}
 	b := New(cfg, st).WithSemanticMode(mode)
 	if mode == semanticconfig.ModeOff {
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateDisabled, Reason: "semantic retrieval mode is off"}
 		return b, nil
 	}
 	ready := configured
@@ -40,16 +95,128 @@ func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride se
 	if err := ready.Validate(); err != nil {
 		return nil, err
 	}
-	provider, err := embedding.NewOllama(embedding.OllamaOptions{
-		BaseURL: ready.OllamaBaseURL, Model: ready.Model, Dimensions: ready.Dimensions,
+	exactMaxChunks := semanticreadiness.EffectiveExactMaxChunks(ready.ExactFallbackMaxChunks)
+	profile := semanticbuild.Profile(embedding.Info{Provider: string(ready.Provider), Model: ready.Model, Dimensions: ready.Dimensions})
+	readinessCtx, cancelReadiness := context.WithTimeout(ctx, semanticRuntimeAdmissionTimeout)
+	defer cancelReadiness()
+	snapshot, snapshotErr := deps.readiness(readinessCtx, st, profile, exactMaxChunks, time.Now().UTC())
+	if snapshotErr != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if errors.Is(snapshotErr, store.ErrRetrievalUnavailable) {
+			b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: "retrieval schema is unavailable"}
+			return b, nil
+		}
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: "semantic readiness snapshot unavailable: " + snapshotErr.Error()}
+		return b, nil
+	}
+	snapshot.Configured, snapshot.Enabled = true, true
+	snapshot.ExactMaxChunks = exactMaxChunks
+	if snapshot.Now.IsZero() {
+		snapshot.Now = time.Now().UTC()
+	}
+	b.semanticReadiness = semanticreadiness.Evaluate(snapshot)
+	var oldestDebtAt *time.Time
+	if !snapshot.OldestDirtyAt.IsZero() {
+		oldest := snapshot.OldestDirtyAt
+		oldestDebtAt = &oldest
+	}
+	b.WithSemanticReadinessDiagnostics(SemanticReadinessDiagnostics{
+		OmittedParentCount:      max(snapshot.DirtyParents, snapshot.PendingParents),
+		EstimatedNotReadyChunks: snapshot.EstimatedNotReadyChunks,
+		OldestDebtAt:            oldestDebtAt,
 	})
+	if !b.semanticReadiness.Searchable {
+		return b, nil
+	}
+	if snapshot.ActiveGenerationID != "" {
+		if ok, reason := deps.capability().Admit(snapshot.ActiveGenerationBackend, snapshot.ActiveGenerationBackendVersion); !ok {
+			b.semanticReadiness = semanticreadiness.Decision{
+				State:      semanticreadiness.StateUnavailable,
+				Reason:     reason,
+				Searchable: false,
+			}
+			return b, nil
+		}
+	}
+	searcher, err := deps.searcher(ctx, st, cfg, profile, snapshot, exactMaxChunks)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		var releaseFailure semanticLeaseReleaseFailure
+		if errors.As(err, &releaseFailure) {
+			return nil, err
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		reason := "semantic searcher unavailable: " + err.Error()
+		if errors.Is(err, errNativeBackendUnavailable) {
+			reason = errNativeBackendUnavailable.Error()
+		} else if errors.Is(err, errNativeRootArtifactsUnavailable) {
+			reason = errNativeRootArtifactsUnavailable.Error()
+		} else if errors.Is(err, errSemanticGenerationBusy) {
+			reason = errSemanticGenerationBusy.Error()
+		}
+		b.semanticReadiness = semanticreadiness.Decision{State: semanticreadiness.StateUnavailable, Reason: reason}
+		return b, nil
+	}
+	provider, err := deps.provider(ready)
+	if err != nil {
+		closeRuntimeSemanticSearcher(searcher)
 		return nil, fmt.Errorf("construct semantic embedding provider: %w", err)
 	}
-	profile := semanticbuild.Profile(provider.Info())
-	retriever := researchsemantic.New(provider, semanticindex.NewExact(st), st)
+	if actual := semanticbuild.Profile(provider.Info()); actual != profile {
+		closeRuntimeSemanticSearcher(searcher)
+		return nil, fmt.Errorf("constructed semantic provider provenance does not match admitted profile")
+	}
+	acquireGeneration, err := runtimeGenerationLeaseAcquirer(ctx, st, cfg)
+	if err != nil {
+		closeRuntimeSemanticSearcher(searcher)
+		return nil, err
+	}
+	retriever := researchsemantic.NewWithGenerationLease(provider, searcher, st, acquireGeneration)
 	return b.WithSemanticRetriever(retriever, researchsemantic.Options{
-		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: ready.ExactFallbackMaxChunks,
+		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: exactMaxChunks,
 		Timeout: researchsemantic.DefaultQueryTimeout,
 	}), nil
+}
+
+func runtimeGenerationLeaseAcquirer(ctx context.Context, st *store.Store, cfg config.Config) (researchsemantic.GenerationLeaseAcquirer, error) {
+	if st == nil {
+		return nil, errors.New("semantic generation lease requires a retrieval store")
+	}
+	databaseID, err := st.RetrievalDatabaseID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read semantic generation lease database ID: %w", err)
+	}
+	cacheDir := cfg.CacheDir
+	if cacheDir == "" {
+		resolved, err := config.Load(cfg.RootDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve semantic generation lease cache: %w", err)
+		}
+		cacheDir = resolved.CacheDir
+	}
+	scope, err := semanticlock.NewScope(cacheDir, databaseID)
+	if err != nil {
+		return nil, fmt.Errorf("construct semantic generation lease scope: %w", err)
+	}
+	return func(queryCtx context.Context) (researchsemantic.GenerationLease, error) {
+		acquireCtx, cancelAcquire := context.WithTimeout(queryCtx, semanticRuntimeAdmissionTimeout)
+		defer cancelAcquire()
+		lease, err := scope.AcquireGenerationShared(acquireCtx, "owner=research-query\noperation=semantic-retrieval\n")
+		if err != nil {
+			return nil, err
+		}
+		return lease, nil
+	}, nil
+}
+
+func closeRuntimeSemanticSearcher(searcher semanticindex.Searcher) {
+	if closer, ok := searcher.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 }

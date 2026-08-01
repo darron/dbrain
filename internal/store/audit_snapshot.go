@@ -48,13 +48,13 @@ func (s *Store) BeginAuditReadSnapshot(ctx context.Context) (*AuditReadSnapshot,
 	if err != nil {
 		return nil, fmt.Errorf("open audit snapshot connection: %w", err)
 	}
-	priorQueryOnly, err := auditQueryOnly(ctx, conn)
+	priorQueryOnly, err := snapshotQueryOnly(ctx, conn)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("read audit snapshot query-only state: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
-		restoreErr := restoreAuditQueryOnly(conn, priorQueryOnly)
+		restoreErr := restoreSnapshotQueryOnly(conn, priorQueryOnly)
 		_ = conn.Close()
 		if restoreErr != nil {
 			return nil, fmt.Errorf("set audit snapshot query-only: %w; restore query-only: %v", err, restoreErr)
@@ -63,11 +63,11 @@ func (s *Store) BeginAuditReadSnapshot(ctx context.Context) (*AuditReadSnapshot,
 	}
 	begin := s.auditBegin
 	if begin == nil {
-		begin = beginAuditReadTransaction
+		begin = beginReadSnapshotTransaction
 	}
 	err = begin(ctx, conn)
 	if err != nil {
-		restoreErr := restoreAuditQueryOnly(conn, priorQueryOnly)
+		restoreErr := restoreSnapshotQueryOnly(conn, priorQueryOnly)
 		_ = conn.Close()
 		if restoreErr != nil {
 			return nil, fmt.Errorf("begin audit read snapshot: %w; restore query-only: %v", err, restoreErr)
@@ -77,7 +77,7 @@ func (s *Store) BeginAuditReadSnapshot(ctx context.Context) (*AuditReadSnapshot,
 	return &AuditReadSnapshot{conn: conn, priorQueryOnly: priorQueryOnly}, nil
 }
 
-func beginAuditReadTransaction(ctx context.Context, conn *sql.Conn) error {
+func beginReadSnapshotTransaction(ctx context.Context, conn *sql.Conn) error {
 	_, err := conn.ExecContext(ctx, `BEGIN`)
 	return err
 }
@@ -93,7 +93,7 @@ func (s *AuditReadSnapshot) Close() error {
 	}
 	s.closed = true
 	_, rollbackErr := s.conn.ExecContext(context.Background(), `ROLLBACK`)
-	restoreErr := restoreAuditQueryOnly(s.conn, s.priorQueryOnly)
+	restoreErr := restoreSnapshotQueryOnly(s.conn, s.priorQueryOnly)
 	connErr := s.conn.Close()
 	if rollbackErr != nil {
 		return rollbackErr
@@ -104,7 +104,7 @@ func (s *AuditReadSnapshot) Close() error {
 	return connErr
 }
 
-func auditQueryOnly(ctx context.Context, conn *sql.Conn) (bool, error) {
+func snapshotQueryOnly(ctx context.Context, conn *sql.Conn) (bool, error) {
 	var state int
 	if err := conn.QueryRowContext(ctx, `PRAGMA query_only`).Scan(&state); err != nil {
 		return false, err
@@ -115,7 +115,7 @@ func auditQueryOnly(ctx context.Context, conn *sql.Conn) (bool, error) {
 	return state == 1, nil
 }
 
-func restoreAuditQueryOnly(conn *sql.Conn, enabled bool) error {
+func restoreSnapshotQueryOnly(conn *sql.Conn, enabled bool) error {
 	pragma := `PRAGMA query_only = OFF`
 	if enabled {
 		pragma = `PRAGMA query_only = ON`

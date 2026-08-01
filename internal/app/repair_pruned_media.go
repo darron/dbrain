@@ -57,7 +57,7 @@ func newRepairPrunedMediaCommandWithRun(root *rootOptions, run repairPrunedMedia
 				if err != nil {
 					return err
 				}
-				st, err = store.Open(cfg.DBPath)
+				st, err = store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 			} else {
 				cfg, _, err = loadAuditConfig(root.root, root.configFile)
 				if err != nil {

@@ -13,60 +13,50 @@ import (
 
 func (s *Store) SaveItemSummary(ctx context.Context, itemID int64, summary model.SummaryResult, inputHash string) (bool, error) {
 	return withBusyRetry(ctx, func() (bool, error) {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return false, fmt.Errorf("begin item summary tx: %w", err)
-		}
-		defer func() {
-			_ = tx.Rollback()
-		}()
-
-		row := tx.QueryRowContext(ctx, `
+		return withAuthoritativeWriteTx(ctx, s, "save-item-summary", func(ctx context.Context, tx authoritativeWriteTx) (bool, error) {
+			row := tx.QueryRowContext(ctx, `
 			SELECT summary_text, summary_json, summary_status, summary_error, summary_model,
 				summary_prompt_version, summary_tool, summary_tool_version, summary_input_hash, summarized_at
 			FROM items
 			WHERE id = ?`, itemID)
 
-		var current itemSummaryFields
-		if err := row.Scan(
-			&current.Text,
-			&current.JSON,
-			&current.Status,
-			&current.Error,
-			&current.Model,
-			&current.PromptVersion,
-			&current.Tool,
-			&current.ToolVersion,
-			&current.InputHash,
-			&current.At,
-		); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return false, fmt.Errorf("item not found for summary: %d", itemID)
+			var current itemSummaryFields
+			if err := row.Scan(
+				&current.Text,
+				&current.JSON,
+				&current.Status,
+				&current.Error,
+				&current.Model,
+				&current.PromptVersion,
+				&current.Tool,
+				&current.ToolVersion,
+				&current.InputHash,
+				&current.At,
+			); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return false, fmt.Errorf("item not found for summary: %d", itemID)
+				}
+				return false, fmt.Errorf("load current item summary %d: %w", itemID, err)
 			}
-			return false, fmt.Errorf("load current item summary %d: %w", itemID, err)
-		}
 
-		summarizedAt := formatTimeForDB(summary.FetchedAt)
-		if current == (itemSummaryFields{
-			Text:          summary.Text,
-			JSON:          summary.RawJSON,
-			Status:        summary.Status,
-			Error:         summary.Error,
-			Model:         summary.Model,
-			PromptVersion: summary.PromptVersion,
-			Tool:          summary.Tool,
-			ToolVersion:   summary.ToolVersion,
-			InputHash:     strings.TrimSpace(inputHash),
-			At:            summarizedAt,
-		}) {
-			if commitErr := tx.Commit(); commitErr != nil {
-				return false, fmt.Errorf("commit unchanged item summary: %w", commitErr)
+			summarizedAt := formatTimeForDB(summary.FetchedAt)
+			if current == (itemSummaryFields{
+				Text:          summary.Text,
+				JSON:          summary.RawJSON,
+				Status:        summary.Status,
+				Error:         summary.Error,
+				Model:         summary.Model,
+				PromptVersion: summary.PromptVersion,
+				Tool:          summary.Tool,
+				ToolVersion:   summary.ToolVersion,
+				InputHash:     strings.TrimSpace(inputHash),
+				At:            summarizedAt,
+			}) {
+				return false, nil
 			}
-			return false, nil
-		}
 
-		nowText := time.Now().UTC().Format(time.RFC3339)
-		if _, err := tx.ExecContext(ctx, `
+			nowText := time.Now().UTC().Format(time.RFC3339)
+			if _, err := tx.ExecContext(ctx, `
 			UPDATE items
 			SET summary_text = ?,
 				summary_json = ?,
@@ -80,45 +70,43 @@ func (s *Store) SaveItemSummary(ctx context.Context, itemID int64, summary model
 				summarized_at = ?,
 				updated_at = ?
 			WHERE id = ?`,
-			summary.Text,
-			summary.RawJSON,
-			summary.Status,
-			summary.Error,
-			summary.Model,
-			summary.PromptVersion,
-			summary.Tool,
-			summary.ToolVersion,
-			strings.TrimSpace(inputHash),
-			summarizedAt,
-			nowText,
-			itemID,
-		); err != nil {
-			return false, fmt.Errorf("save item summary %d: %w", itemID, err)
-		}
+				summary.Text,
+				summary.RawJSON,
+				summary.Status,
+				summary.Error,
+				summary.Model,
+				summary.PromptVersion,
+				summary.Tool,
+				summary.ToolVersion,
+				strings.TrimSpace(inputHash),
+				summarizedAt,
+				nowText,
+				itemID,
+			); err != nil {
+				return false, fmt.Errorf("save item summary %d: %w", itemID, err)
+			}
 
-		if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
-			ItemID:        itemID,
-			Role:          model.ItemEnrichmentRoleSummary,
-			Status:        summary.Status,
-			Text:          summary.Text,
-			RawJSON:       summary.RawJSON,
-			Error:         summary.Error,
-			Model:         summary.Model,
-			PromptVersion: summary.PromptVersion,
-			Tool:          summary.Tool,
-			ToolVersion:   summary.ToolVersion,
-			InputHash:     strings.TrimSpace(inputHash),
-			CompletedAt:   summary.FetchedAt,
-		}); err != nil {
-			return false, err
-		}
-		if err := s.syncItemFTSByIDTx(ctx, tx, itemID); err != nil {
-			return false, err
-		}
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("commit item summary %d: %w", itemID, err)
-		}
-		return true, nil
+			if err := s.upsertItemEnrichmentTx(ctx, tx, model.ItemEnrichment{
+				ItemID:        itemID,
+				Role:          model.ItemEnrichmentRoleSummary,
+				Status:        summary.Status,
+				Text:          summary.Text,
+				RawJSON:       summary.RawJSON,
+				Error:         summary.Error,
+				Model:         summary.Model,
+				PromptVersion: summary.PromptVersion,
+				Tool:          summary.Tool,
+				ToolVersion:   summary.ToolVersion,
+				InputHash:     strings.TrimSpace(inputHash),
+				CompletedAt:   summary.FetchedAt,
+			}); err != nil {
+				return false, err
+			}
+			if err := s.syncItemFTSByIDTx(ctx, tx, itemID); err != nil {
+				return false, err
+			}
+			return true, nil
+		})
 	})
 }
 
@@ -128,31 +116,19 @@ func (s *Store) InvalidateItemSummary(ctx context.Context, itemID int64) error {
 
 func (s *Store) clearItemSummary(ctx context.Context, itemID int64) error {
 	_, err := withBusyRetry(ctx, func() (struct{}, error) {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return struct{}{}, fmt.Errorf("begin clear item summary tx: %w", err)
-		}
-		defer func() {
-			_ = tx.Rollback()
-		}()
-
-		cleared, err := s.invalidateItemSummaryTx(ctx, tx, itemID, time.Now().UTC().Format(time.RFC3339))
-		if err != nil {
-			return struct{}{}, err
-		}
-		if !cleared {
-			if err := tx.Commit(); err != nil {
-				return struct{}{}, fmt.Errorf("commit unchanged clear item summary: %w", err)
+		return withAuthoritativeWriteTx(ctx, s, "clear-item-summary", func(ctx context.Context, tx authoritativeWriteTx) (struct{}, error) {
+			cleared, err := s.invalidateItemSummaryTx(ctx, tx, itemID, time.Now().UTC().Format(time.RFC3339))
+			if err != nil {
+				return struct{}{}, err
+			}
+			if !cleared {
+				return struct{}{}, nil
+			}
+			if err := s.syncItemFTSByIDTx(ctx, tx, itemID); err != nil {
+				return struct{}{}, err
 			}
 			return struct{}{}, nil
-		}
-		if err := s.syncItemFTSByIDTx(ctx, tx, itemID); err != nil {
-			return struct{}{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return struct{}{}, fmt.Errorf("commit clear item summary %d: %w", itemID, err)
-		}
-		return struct{}{}, nil
+		})
 	})
 	return err
 }

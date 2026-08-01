@@ -2,14 +2,48 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"strconv"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 
+	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/syncjob"
 )
+
+type syncSemanticResultOutput struct {
+	syncjob.Stats
+	Semantic semanticRefreshResultOutput `json:"semantic"`
+}
+
+type syncSemanticErrorOutput struct {
+	syncjob.Stats
+	SemanticError *semanticrefresh.RefreshError `json:"semantic_error"`
+}
+
+func writeSyncSemanticResultJSON(
+	dst io.Writer,
+	stats syncjob.Stats,
+	result semanticrefresh.Result,
+) error {
+	return writeJSON(dst, syncSemanticResultOutput{
+		Stats:    stats,
+		Semantic: newSemanticRefreshResultOutput(result),
+	})
+}
+
+func writeSyncSemanticErrorJSON(
+	dst io.Writer,
+	stats syncjob.Stats,
+	refreshErr *semanticrefresh.RefreshError,
+) error {
+	return writeJSON(dst, syncSemanticErrorOutput{
+		Stats:         stats,
+		SemanticError: refreshErr,
+	})
+}
 
 func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.Stats) error {
 	if _, err := fmt.Fprintf(dst, "\nSync Summary\n"); err != nil {

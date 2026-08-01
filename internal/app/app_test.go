@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,16 +25,20 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/feedimport"
 	installer "github.com/darron/dbrain/internal/install"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/prunedmediarepair"
 	"github.com/darron/dbrain/internal/remote"
+	"github.com/darron/dbrain/internal/retrievalchunk"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/serviceauth"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
@@ -59,6 +65,13 @@ func TestResearchCommandConfiguredSemanticModesAndOverrides(t *testing.T) {
 		if err := cfg.EnsureDirs(); err != nil {
 			t.Fatal(err)
 		}
+		st, err := store.Open(cfg.DBPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Close(); err != nil {
+			t.Fatal(err)
+		}
 		yaml := "research:\n  semantic:\n    mode: " + mode + "\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
 		if err := os.WriteFile(cfg.ConfigPath, []byte(yaml), 0o600); err != nil {
 			t.Fatal(err)
@@ -78,13 +91,236 @@ func TestResearchCommandConfiguredSemanticModesAndOverrides(t *testing.T) {
 	on, onCalls := run("on")
 	forcedOn, forcedOnCalls := run("off", "--semantic")
 	forcedOff, forcedOffCalls := run("shadow", "--no-semantic")
-	if off.QueryPlan.SemanticMode != semanticconfig.ModeOff || offCalls != 0 || shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadowCalls != 1 || shadow.QueryPlan.ShadowComparison == nil || on.QueryPlan.SemanticMode != semanticconfig.ModeOn || onCalls != 1 || forcedOn.QueryPlan.SemanticMode != semanticconfig.ModeOn || forcedOnCalls != 1 || forcedOff.QueryPlan.SemanticMode != semanticconfig.ModeOff || forcedOffCalls != 0 {
+	if off.QueryPlan.SemanticMode != semanticconfig.ModeOff || offCalls != 0 || shadow.QueryPlan.SemanticMode != semanticconfig.ModeShadow || shadowCalls != 0 || shadow.QueryPlan.SemanticReadiness != semanticreadiness.StateNeedsEmbeddings || shadow.QueryPlan.ShadowComparison == nil || on.QueryPlan.SemanticMode != semanticconfig.ModeOn || onCalls != 0 || on.QueryPlan.SemanticReadiness != semanticreadiness.StateNeedsEmbeddings || forcedOn.QueryPlan.SemanticMode != semanticconfig.ModeOn || forcedOnCalls != 0 || forcedOn.QueryPlan.SemanticReadiness != semanticreadiness.StateNeedsEmbeddings || forcedOff.QueryPlan.SemanticMode != semanticconfig.ModeOff || forcedOffCalls != 0 {
 		t.Fatalf("modes/calls off=%s/%d shadow=%s/%d on=%s/%d forcedOn=%s/%d forcedOff=%s/%d", off.QueryPlan.SemanticMode, offCalls, shadow.QueryPlan.SemanticMode, shadowCalls, on.QueryPlan.SemanticMode, onCalls, forcedOn.QueryPlan.SemanticMode, forcedOnCalls, forcedOff.QueryPlan.SemanticMode, forcedOffCalls)
 	}
 	root := t.TempDir()
 	_, _, err := runRootCommandErr(t, root, "research", "q", "--semantic", "--no-semantic")
 	if err == nil || !strings.Contains(err.Error(), "--semantic and --no-semantic") {
 		t.Fatalf("conflict err=%v", err)
+	}
+}
+
+func TestResearchCommandReadyExactProfileReachesProviderAfterAdmission(t *testing.T) {
+	var calls atomic.Int64
+	embed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-model","embeddings":[[1,0]]}`))
+	}))
+	defer embed.Close()
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "research:\n  semantic:\n    mode: on\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
+	if err := os.WriteFile(cfg.ConfigPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedReadyExactSemanticProfile(t, cfg)
+	output := runRootCommand(t, root, "research", "agent memory", "--retrieval-only", "--no-trace", "--no-planner", "--json")
+	var pack brainresearch.Pack
+	if err := json.Unmarshal([]byte(output), &pack); err != nil {
+		t.Fatalf("decode pack: %v\n%s", err, output)
+	}
+	if pack.QueryPlan.SemanticMode != semanticconfig.ModeOn || pack.QueryPlan.SemanticReadiness != semanticreadiness.StateReady || calls.Load() != 1 {
+		t.Fatalf("mode=%s readiness=%s calls=%d", pack.QueryPlan.SemanticMode, pack.QueryPlan.SemanticReadiness, calls.Load())
+	}
+}
+
+func TestResearchCommandRetrievalOnlyDoesNotModifyDatabase(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+
+	func() {
+		st, err := store.Open(cfg.DBPath)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer func() {
+			if err := st.Close(); err != nil {
+				t.Fatalf("close writable store: %v", err)
+			}
+		}()
+		source, err := st.UpsertSource(context.Background(), model.SourceCandidate{
+			SourceKey:     "source:read-only-research",
+			OriginalURL:   "https://example.com/read-only-research",
+			CanonicalURL:  "https://example.com/read-only-research",
+			NormalizedURL: "https://example.com/read-only-research",
+			SourceType:    "article",
+			Domain:        "example.com",
+			NotePath:      "sources/article/read-only-research.md",
+		})
+		if err != nil {
+			t.Fatalf("upsert source: %v", err)
+		}
+		now := time.Now().UTC()
+		if _, err := st.SaveSourceExtraction(context.Background(), source.SourceID, model.ExtractResult{
+			CanonicalURL: "https://example.com/read-only-research",
+			FinalURL:     "https://example.com/read-only-research",
+			Title:        "Read-only research evidence",
+			Content:      "The readonly invariant keeps ordinary research retrieval from modifying the evidence database.",
+			Status:       "ok",
+			FetchedAt:    now,
+			Tool:         "test",
+			ToolVersion:  "1",
+		}, "read-only-research-content"); err != nil {
+			t.Fatalf("save source extraction: %v", err)
+		}
+		if _, err := st.SaveSourceSummary(context.Background(), source.SourceID, model.SummaryResult{
+			Text:          "Ordinary research retrieval preserves the evidence database.",
+			RawJSON:       `{"summary":"Ordinary research retrieval preserves the evidence database."}`,
+			Model:         "test",
+			PromptVersion: "test",
+			Status:        "ok",
+			FetchedAt:     now,
+			Tool:          "test",
+			ToolVersion:   "1",
+		}); err != nil {
+			t.Fatalf("save source summary: %v", err)
+		}
+	}()
+
+	func() {
+		fixtureDB, err := sql.Open("sqlite", cfg.DBPath)
+		if err != nil {
+			t.Fatalf("open fixture database: %v", err)
+		}
+		defer func() {
+			if err := fixtureDB.Close(); err != nil {
+				t.Fatalf("close fixture database: %v", err)
+			}
+		}()
+		var checkpointBusy, checkpointLog, checkpointed int
+		if err := fixtureDB.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&checkpointBusy, &checkpointLog, &checkpointed); err != nil {
+			t.Fatalf("checkpoint fixture database: %v", err)
+		}
+		if checkpointBusy != 0 || checkpointLog != checkpointed {
+			t.Fatalf("fixture checkpoint incomplete: busy=%d log=%d checkpointed=%d", checkpointBusy, checkpointLog, checkpointed)
+		}
+		var journalMode string
+		if err := fixtureDB.QueryRow(`PRAGMA journal_mode=DELETE`).Scan(&journalMode); err != nil {
+			t.Fatalf("set fixture journal mode: %v", err)
+		}
+		if journalMode != "delete" {
+			t.Fatalf("fixture journal mode=%q, want delete", journalMode)
+		}
+	}()
+	for _, suffix := range []string{"-wal", "-shm"} {
+		path := cfg.DBPath + suffix
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("fixture left SQLite sidecar %s: %v", path, err)
+		}
+	}
+
+	beforeBytes, err := os.ReadFile(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("read database before research: %v", err)
+	}
+	beforeHash := sha256.Sum256(beforeBytes)
+
+	output := runRootCommand(t, root,
+		"research", "readonly invariant evidence",
+		"--retrieval-only", "--no-trace", "--no-planner", "--no-semantic", "--json",
+	)
+	var pack brainresearch.Pack
+	if err := json.Unmarshal([]byte(output), &pack); err != nil {
+		t.Fatalf("decode research pack: %v\n%s", err, output)
+	}
+	if len(pack.Evidence) == 0 {
+		t.Fatalf("expected nonempty research evidence, got %+v", pack)
+	}
+
+	afterBytes, err := os.ReadFile(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("read database after research: %v", err)
+	}
+	afterHash := sha256.Sum256(afterBytes)
+	if beforeHash != afterHash {
+		t.Fatalf("research modified database bytes: before=%x after=%x", beforeHash, afterHash)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		path := cfg.DBPath + suffix
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("research left SQLite sidecar %s: %v", path, err)
+		}
+	}
+}
+
+func seedReadyExactSemanticProfile(t *testing.T, cfg config.Config) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UTC()
+	source, err := st.UpsertSource(ctx, model.SourceCandidate{
+		OriginalURL: "https://example.com/semantic-ready", CanonicalURL: "https://example.com/semantic-ready",
+		NormalizedURL: "https://example.com/semantic-ready", SourceType: "article", Domain: "example.com", SourceKey: "source:semantic-ready",
+		NotePath: "sources/article/semantic-ready.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveSourceExtraction(ctx, source.SourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/semantic-ready", FinalURL: "https://example.com/semantic-ready",
+		Title: "Agent Memory", Content: strings.Repeat("Evidence about agent memory and retrieval readiness. ", 20), Status: "ok", FetchedAt: now, Tool: "test", ToolVersion: "1",
+	}, "semantic-ready-content"); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := st.ProjectionWorkRevision(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := st.ListDirtyRetrievalParents(ctx, revision, 10)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("projection work=%+v err=%v", work, err)
+	}
+	projection, err := retrievalchunk.BuildProjection(work[0].Parent, retrievalchunk.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Chunks) == 0 {
+		t.Fatalf("empty projection for parent=%+v", work[0].Parent)
+	}
+	if _, err := st.ApplyRetrievalProjection(ctx, store.ApplyRetrievalProjectionInput{
+		ParentKind: work[0].Parent.Kind, ParentSourceKey: work[0].Parent.SourceKey,
+		DirtyRevision: work[0].DirtyRevision, Projection: projection, Status: store.RetrievalProjectionCurrent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	profile := semanticbuild.Profile(embedding.Info{Provider: "ollama", Model: "test-model", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]store.RetrievalEmbeddingRow, 0, len(projection.Chunks))
+	for _, chunk := range projection.Chunks {
+		rows = append(rows, store.RetrievalEmbeddingRow{
+			ChunkID: chunk.ID, ProfileID: profileID, Provider: profile.Provider, Model: profile.Model,
+			Dimensions: profile.Dimensions, Representation: profile.Representation, Normalization: profile.Normalization,
+			VectorBytes: embedding.EncodeDenseF32([]float32{1, 0}), ChunkTextHash: chunk.TextHash,
+			Status: store.RetrievalEmbeddingReady, AttemptCount: 1, EmbeddedAt: now,
+		})
+	}
+	epoch, err := st.RetrievalPurgeEpoch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutRetrievalEmbeddingBatch(ctx, store.PutRetrievalEmbeddingBatchInput{Profile: profile, Rows: rows, ExpectedPurgeEpoch: epoch}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -270,13 +506,57 @@ func TestSemanticStatusJSONHasExplicitStateAndNonNullSlices(t *testing.T) {
 		t.Fatalf("semantic status emitted null slices: %s", stdout)
 	}
 	var payload struct {
-		Status string `json:"status"`
+		Status            string                   `json:"status"`
+		BackendCapability semanticindex.Capability `json:"backend_capability"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("decode %q: %v", stdout, err)
 	}
 	if payload.Status != "not_configured" {
 		t.Fatalf("status=%q output=%s", payload.Status, stdout)
+	}
+	if payload.BackendCapability.State == "" {
+		t.Fatalf("backend_capability=%+v output=%s", payload.BackendCapability, stdout)
+	}
+}
+
+func TestSemanticStatusBackendCapabilityOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		capability semanticindex.Capability
+		want       string
+	}{
+		{
+			name: "supported ready",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedReady, Backend: semanticindex.BackendUSearch, Version: semanticindex.USearchVersion,
+			},
+			want: "Backend: state=supported_ready backend=usearch version=2.26.0\n",
+		},
+		{
+			name:       "unsupported",
+			capability: semanticindex.Capability{State: semanticindex.CapabilityUnsupported},
+			want:       "Backend: state=unsupported\n",
+		},
+		{
+			name: "broken reason is sanitized once",
+			capability: semanticindex.Capability{
+				State: semanticindex.CapabilitySupportedBroken, Backend: semanticindex.BackendUSearch,
+				Version: semanticindex.USearchVersion, Reason: "load /private/tmp/libusearch.dylib failed",
+			},
+			want: "Backend: state=supported_broken backend=usearch version=2.26.0 reason=load [path] failed\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := writeSemanticStatus(&output, semanticbuild.Status{BackendCapability: tc.capability}); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(output.String(), "Backend:") != 1 || !strings.Contains(output.String(), tc.want) {
+				t.Fatalf("output=%q want line %q", output.String(), tc.want)
+			}
+		})
 	}
 }
 
@@ -298,8 +578,11 @@ func TestSemanticStatusNotConfiguredDoesNotRequireDatabase(t *testing.T) {
 func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
 	for _, args := range [][]string{
 		{"semantic", "chunk", "--limit", "0", "--json"},
+		{"semantic", "chunk", "--max-duration", "-1s", "--json"},
 		{"semantic", "embed", "--limit", "0", "--json"},
 		{"semantic", "embed", "--batch-size", "0", "--json"},
+		{"semantic", "embed", "--max-duration", "-1s", "--json"},
+		{"semantic", "verify", "--limit", "0", "--json"},
 	} {
 		stdout, _, err := runRootCommandErr(t, t.TempDir(), args...)
 		if err == nil {
@@ -311,31 +594,58 @@ func TestSemanticCommandsRejectInvalidBoundsWithoutOutput(t *testing.T) {
 	}
 }
 
-func TestSemanticChunkHelpIncludesResumeCursor(t *testing.T) {
+func TestSemanticVerifyCommandHasBoundedResumeFlags(t *testing.T) {
 	cmd := NewRootCommand()
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"semantic", "chunk", "--help"})
-	if err := cmd.ExecuteContext(context.Background()); err != nil {
+	target, _, err := cmd.Find([]string{"semantic", "verify"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "--after-source-key") {
-		t.Fatalf("help=%s", stdout.String())
+	if target.Flags().Lookup("limit") == nil || target.Flags().Lookup("resume") == nil || target.Flags().Lookup("repair-counters") == nil || target.Flags().Lookup("json") == nil {
+		t.Fatalf("verify flags=%v", target.Flags().FlagUsages())
 	}
 }
 
-func TestSemanticChunkOutputIncludesResumeState(t *testing.T) {
+func TestSemanticBuildCommandsExposeUntilIdleAndCommandDeadlineFlags(t *testing.T) {
+	cmd := NewRootCommand()
+	for _, path := range []string{"chunk", "embed"} {
+		target, _, err := cmd.Find([]string{"semantic", path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		untilIdle := target.Flags().Lookup("until-idle")
+		maxDuration := target.Flags().Lookup("max-duration")
+		if untilIdle == nil || !strings.Contains(untilIdle.Usage, "durable") || maxDuration == nil || !strings.Contains(maxDuration.Usage, "command") {
+			t.Fatalf("semantic %s flags=%s", path, target.Flags().FlagUsages())
+		}
+	}
+}
+
+func TestSemanticChunkMarksLegacyCursorDeprecated(t *testing.T) {
+	cmd := NewRootCommand()
+	target, _, err := cmd.Find([]string{"semantic", "chunk"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := target.Flags().Lookup("after-source-key")
+	if legacy == nil || !strings.Contains(legacy.Deprecated, "durable dirty queue resumes automatically") {
+		t.Fatalf("legacy cursor flag=%+v", legacy)
+	}
+	limit := target.Flags().Lookup("limit")
+	if limit == nil || !strings.Contains(limit.Usage, "dirty parents") {
+		t.Fatalf("limit flag=%+v", limit)
+	}
+}
+
+func TestSemanticChunkOutputUsesDurableQueueResumeState(t *testing.T) {
 	progress := semanticbuild.ChunkProgress{
-		Progress:           semanticbuild.Progress{Stage: "chunk", Snapshots: make([]semanticbuild.Progress, 0)},
-		NextAfterSourceKey: "item:one",
-		HasMore:            true,
+		Progress: semanticbuild.Progress{Stage: "chunk", Snapshots: make([]semanticbuild.Progress, 0)},
+		HasMore:  true,
 	}
 	var human bytes.Buffer
 	if err := writeSemanticChunkProgress(&human, progress); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Next after source key: item:one", "Has more: true"} {
+	for _, want := range []string{"Has more: true", "durable dirty queue resumes automatically"} {
 		if !strings.Contains(human.String(), want) {
 			t.Fatalf("human output missing %q: %s", want, human.String())
 		}
@@ -344,16 +654,15 @@ func TestSemanticChunkOutputIncludesResumeState(t *testing.T) {
 	if err := writeJSON(&machine, progress); err != nil {
 		t.Fatal(err)
 	}
-	var payload struct {
-		NextAfterSourceKey string                   `json:"next_after_source_key"`
-		HasMore            bool                     `json:"has_more"`
-		Snapshots          []semanticbuild.Progress `json:"snapshots"`
-	}
+	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(machine.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.NextAfterSourceKey != "item:one" || !payload.HasMore || payload.Snapshots == nil {
-		t.Fatalf("JSON resume state=%+v output=%s", payload, machine.String())
+	if _, found := payload["next_after_source_key"]; found {
+		t.Fatalf("JSON contains obsolete cursor: %s", machine.String())
+	}
+	if string(payload["has_more"]) != "true" || string(payload["snapshot_count"]) == "" {
+		t.Fatalf("JSON queue state=%+v output=%s", payload, machine.String())
 	}
 }
 

@@ -152,7 +152,7 @@ var testFormulaTemplate = template.Must(template.New("formula").Parse(`class Dbr
   desc "Local-first second-brain CLI test candidate"
   homepage "https://github.com/darron/dbrain"
   version "{{.Candidate.FormulaVersion}}"
-  license "MIT"
+  license all_of: ["MIT", "Apache-2.0"]
 
   conflicts_with "dbrain", because: "both install the dbrain binary"
 
@@ -176,12 +176,24 @@ var testFormulaTemplate = template.Must(template.New("formula").Parse(`class Dbr
 
   def install
     bin.install "dbrain"
+    pkgshare.install "THIRD_PARTY_NOTICES.md", "LICENSE-USearch"
   end
 
   test do
     output = shell_output("#{bin}/dbrain version")
     assert_match "release_version: {{.Candidate.ReleaseVersion}}", output
     assert_match "commit: {{.Candidate.SHA}}", output
+
+    status = shell_output(
+      "#{bin}/dbrain --root #{testpath}/dbrain --no-debug semantic status --json",
+    )
+    if OS.mac? && Hardware::CPU.arm?
+      assert_match '"state": "supported_ready"', status
+      assert_match '"backend": "usearch"', status
+      assert_match '"version": "2.26.0"', status
+    else
+      assert_match '"state": "unsupported"', status
+    end
   end
 end
 `))

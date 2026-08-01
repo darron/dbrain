@@ -1,12 +1,22 @@
 package runlock
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
+
+type lockAcquisition struct {
+	name string
+	lock *Lock
+	err  error
+}
 
 func TestAcquireRejectsConcurrentHolder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sync-all.lock")
@@ -25,6 +35,31 @@ func TestAcquireRejectsConcurrentHolder(t *testing.T) {
 	}
 	if !errors.Is(err, ErrAlreadyLocked) {
 		t.Fatalf("expected ErrAlreadyLocked, got %v", err)
+	}
+}
+
+func TestAcquireCanonicalizesPath(t *testing.T) {
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "subdir"), 0o755); err != nil {
+		t.Fatalf("create alias subdirectory: %v", err)
+	}
+	path := filepath.Join(base, "subdir") + string(filepath.Separator) + ".." +
+		string(filepath.Separator) + "sync-all.lock"
+	lock, err := Acquire(path, "owner=test\n")
+	if err != nil {
+		t.Fatalf("Acquire aliased path: %v", err)
+	}
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		_ = lock.Close()
+		t.Fatalf("resolve test temp directory: %v", err)
+	}
+	if want := filepath.Join(canonicalBase, "sync-all.lock"); lock.Path() != want {
+		_ = lock.Close()
+		t.Fatalf("Lock.Path() = %q, want canonical %q", lock.Path(), want)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("Close aliased lock: %v", err)
 	}
 }
 
@@ -85,4 +120,468 @@ func TestLockCloseSurfacesReleaseFailure(t *testing.T) {
 	if err := lock.Close(); !errors.Is(err, closeErr) {
 		t.Fatalf("Close error = %v, want %v", err, closeErr)
 	}
+}
+
+func TestAcquireContextSharedHoldersCoexist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	first, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("AcquireContext first shared: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+
+	second, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("AcquireContext second shared: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close second shared: %v", err)
+	}
+}
+
+func TestAcquireContextCanonicalizesPathBeforeWriterIntent(t *testing.T) {
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "subdir"), 0o755); err != nil {
+		t.Fatalf("create alias subdirectory: %v", err)
+	}
+	path := filepath.Join(base, "subdir") + string(filepath.Separator) + ".." +
+		string(filepath.Separator) + "semantic.lock"
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	lock, err := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+	if err != nil {
+		t.Fatalf("AcquireContext aliased path: %v", err)
+	}
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		_ = lock.Close()
+		t.Fatalf("resolve test temp directory: %v", err)
+	}
+	if want := filepath.Join(canonicalBase, "semantic.lock"); lock.Path() != want {
+		_ = lock.Close()
+		t.Fatalf("Lock.Path() = %q, want canonical %q", lock.Path(), want)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("Close aliased lock: %v", err)
+	}
+}
+
+func TestAcquireContextExclusiveExcludesOtherModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		holderMode Mode
+		waiterMode Mode
+	}{
+		{name: "shared blocks exclusive", holderMode: Shared, waiterMode: Exclusive},
+		{name: "exclusive blocks shared", holderMode: Exclusive, waiterMode: Shared},
+		{name: "exclusive blocks exclusive", holderMode: Exclusive, waiterMode: Exclusive},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "semantic.lock")
+			holder, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: test.holderMode})
+			if err != nil {
+				t.Fatalf("AcquireContext holder: %v", err)
+			}
+			defer func() { _ = holder.Close() }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+			defer cancel()
+			waiter, err := AcquireContext(ctx, path, AcquireOptions{Mode: test.waiterMode})
+			if waiter != nil {
+				_ = waiter.Close()
+				t.Fatal("blocked waiter unexpectedly acquired")
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("AcquireContext blocked waiter error = %v, want deadline exceeded", err)
+			}
+		})
+	}
+}
+
+func TestAcquireContextRejectsInvalidMode(t *testing.T) {
+	lock, err := AcquireContext(context.Background(), filepath.Join(t.TempDir(), "semantic.lock"), AcquireOptions{})
+	if lock != nil {
+		_ = lock.Close()
+		t.Fatal("invalid mode unexpectedly acquired")
+	}
+	if err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("invalid mode error = %v, want mode diagnostic", err)
+	}
+}
+
+func TestAcquireContextCancellationLeavesNoIntent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	holder, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("AcquireContext shared holder: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	waiter, err := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+	if waiter != nil {
+		_ = waiter.Close()
+		t.Fatal("cancelled writer unexpectedly acquired")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("AcquireContext writer error = %v, want deadline exceeded", err)
+	}
+	if err := holder.Close(); err != nil {
+		t.Fatalf("Close shared holder: %v", err)
+	}
+
+	readerCtx, readerCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readerCancel()
+	reader, err := AcquireContext(readerCtx, path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("reader blocked by cancelled writer intent: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Close reader: %v", err)
+	}
+}
+
+func TestAcquireContextWriterSequenceRecoversFromEmptyCoordinator(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	coordinator, err := acquireCoordinator(context.Background(), path)
+	if err != nil {
+		t.Fatalf("acquire coordinator: %v", err)
+	}
+	if err := replaceFileLockMetadata(coordinator.file, ""); err != nil {
+		_ = coordinator.close()
+		t.Fatalf("empty coordinator metadata: %v", err)
+	}
+	if err := coordinator.close(); err != nil {
+		t.Fatalf("close coordinator: %v", err)
+	}
+
+	const liveSequence = uint64(7)
+	liveTicketPath := writerTicketPath(path, liveSequence)
+	liveTicket, err := acquireHeldFileContext(context.Background(), liveTicketPath, Exclusive)
+	if err != nil {
+		t.Fatalf("acquire live writer ticket: %v", err)
+	}
+	defer func() {
+		coordinator, acquireErr := acquireCoordinator(context.Background(), path)
+		if acquireErr == nil {
+			_ = removeLockedFile(liveTicket.file, liveTicketPath)
+			_ = coordinator.close()
+		}
+		_ = liveTicket.close()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		lock, acquireErr := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+		if lock != nil {
+			_ = lock.Close()
+		}
+		result <- acquireErr
+	}()
+
+	nextTicketPath := writerTicketPath(path, liveSequence+1)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(nextTicketPath); statErr == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_, statErr := os.Stat(nextTicketPath)
+	cancel()
+	acquireErr := <-result
+	if statErr != nil {
+		t.Fatalf("next writer ticket was not sequenced after live ticket: %v", statErr)
+	}
+	if !errors.Is(acquireErr, context.Canceled) {
+		t.Fatalf("cancelled writer error = %v, want context canceled", acquireErr)
+	}
+}
+
+func TestAcquireContextCancellationDoesNotWaitForCoordinatorCleanup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	holder, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("AcquireContext shared holder: %v", err)
+	}
+	defer func() { _ = holder.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		lock, acquireErr := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+		if lock != nil {
+			_ = lock.Close()
+		}
+		result <- acquireErr
+	}()
+	waitForWriterIntentCount(t, path, 1)
+
+	coordinator, err := acquireCoordinator(context.Background(), path)
+	if err != nil {
+		cancel()
+		t.Fatalf("acquire coordinator: %v", err)
+	}
+	cancel()
+
+	var (
+		acquireErr error
+		prompt     bool
+	)
+	select {
+	case acquireErr = <-result:
+		prompt = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	if err := coordinator.close(); err != nil {
+		t.Fatalf("close coordinator: %v", err)
+	}
+	if !prompt {
+		<-result
+		t.Fatal("cancelled writer waited for indefinitely held coordinator cleanup")
+	}
+	if !errors.Is(acquireErr, context.Canceled) {
+		t.Fatalf("cancelled writer error = %v, want context canceled", acquireErr)
+	}
+
+	readerCtx, readerCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readerCancel()
+	reader, err := AcquireContext(readerCtx, path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("reader did not clean released stale intent: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Close reader: %v", err)
+	}
+}
+
+func TestAcquireContextWritersAreFIFOAndReadersDoNotBarge(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	holder, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+	if err != nil {
+		t.Fatalf("AcquireContext initial reader: %v", err)
+	}
+
+	results := make(chan lockAcquisition, 3)
+	start := func(name string, mode Mode) {
+		go func() {
+			lock, acquireErr := AcquireContext(context.Background(), path, AcquireOptions{
+				Mode:     mode,
+				Metadata: "owner=" + name + "\n",
+			})
+			results <- lockAcquisition{name: name, lock: lock, err: acquireErr}
+		}()
+	}
+
+	start("writer-1", Exclusive)
+	waitForWriterIntentCount(t, path, 1)
+	start("writer-2", Exclusive)
+	waitForWriterIntentCount(t, path, 2)
+	start("reader", Shared)
+
+	if err := holder.Close(); err != nil {
+		t.Fatalf("Close initial reader: %v", err)
+	}
+
+	first := receiveAcquired(t, results)
+	if first.err != nil {
+		t.Fatalf("%s acquire: %v", first.name, first.err)
+	}
+	if first.name != "writer-1" {
+		_ = first.lock.Close()
+		t.Fatalf("first acquisition = %s, want writer-1", first.name)
+	}
+	if err := first.lock.Close(); err != nil {
+		t.Fatalf("Close writer-1: %v", err)
+	}
+
+	second := receiveAcquired(t, results)
+	if second.err != nil {
+		t.Fatalf("%s acquire: %v", second.name, second.err)
+	}
+	if second.name != "writer-2" {
+		_ = second.lock.Close()
+		t.Fatalf("second acquisition = %s, want writer-2", second.name)
+	}
+	if err := second.lock.Close(); err != nil {
+		t.Fatalf("Close writer-2: %v", err)
+	}
+
+	third := receiveAcquired(t, results)
+	if third.err != nil {
+		t.Fatalf("%s acquire: %v", third.name, third.err)
+	}
+	if third.name != "reader" {
+		_ = third.lock.Close()
+		t.Fatalf("third acquisition = %s, want reader", third.name)
+	}
+	if err := third.lock.Close(); err != nil {
+		t.Fatalf("Close reader: %v", err)
+	}
+}
+
+func TestAcquireContextWaiterAcquiresAfterSameProcessClose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	holder, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Exclusive})
+	if err != nil {
+		t.Fatalf("AcquireContext exclusive holder: %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		waiter, acquireErr := AcquireContext(ctx, path, AcquireOptions{Mode: Shared})
+		if acquireErr == nil {
+			acquireErr = waiter.Close()
+		}
+		result <- acquireErr
+	}()
+
+	select {
+	case err := <-result:
+		t.Fatalf("waiter completed before holder close: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	if err := holder.Close(); err != nil {
+		t.Fatalf("Close holder: %v", err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("waiter after close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter did not acquire after same-process close")
+	}
+}
+
+func TestProcessGateRegistryReturnsToBaseline(t *testing.T) {
+	baseline := currentProcessGateCount()
+	base := t.TempDir()
+	for index := 0; index < 200; index++ {
+		path := filepath.Join(base, fmt.Sprintf("semantic-%03d.lock", index))
+		lock, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Exclusive})
+		if err != nil {
+			t.Fatalf("AcquireContext iteration %d: %v", index, err)
+		}
+		if err := lock.Close(); err != nil {
+			t.Fatalf("Close iteration %d: %v", index, err)
+		}
+	}
+	if got := currentProcessGateCount(); got != baseline {
+		t.Fatalf("process gate count = %d, want baseline %d", got, baseline)
+	}
+}
+
+func TestProcessGateRemovalAndReacquisitionIsRaceSafe(t *testing.T) {
+	baseline := currentProcessGateCount()
+	path := filepath.Join(t.TempDir(), "semantic.lock")
+	for iteration := 0; iteration < 100; iteration++ {
+		first, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+		if err != nil {
+			t.Fatalf("AcquireContext first reader iteration %d: %v", iteration, err)
+		}
+		second, err := AcquireContext(context.Background(), path, AcquireOptions{Mode: Shared})
+		if err != nil {
+			_ = first.Close()
+			t.Fatalf("AcquireContext second reader iteration %d: %v", iteration, err)
+		}
+
+		start := make(chan struct{})
+		closeResults := make(chan error, 2)
+		for _, lock := range []*Lock{first, second} {
+			go func(lock *Lock) {
+				<-start
+				closeResults <- lock.Close()
+			}(lock)
+		}
+		writerResult := make(chan lockAcquisition, 1)
+		go func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			lock, acquireErr := AcquireContext(ctx, path, AcquireOptions{Mode: Exclusive})
+			writerResult <- lockAcquisition{lock: lock, err: acquireErr}
+		}()
+		close(start)
+
+		for closeIndex := 0; closeIndex < 2; closeIndex++ {
+			if err := <-closeResults; err != nil {
+				t.Fatalf("Close reader iteration %d: %v", iteration, err)
+			}
+		}
+		writer := <-writerResult
+		if writer.err != nil {
+			t.Fatalf("AcquireContext writer iteration %d: %v", iteration, writer.err)
+		}
+		if err := writer.lock.Close(); err != nil {
+			t.Fatalf("Close writer iteration %d: %v", iteration, err)
+		}
+	}
+	if got := currentProcessGateCount(); got != baseline {
+		t.Fatalf("process gate count after races = %d, want baseline %d", got, baseline)
+	}
+}
+
+func currentProcessGateCount() int {
+	processGates.mu.Lock()
+	defer processGates.mu.Unlock()
+	return len(processGates.entries)
+}
+
+func TestAcquireContextRejectsSymlinkedLeaf(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("covered by Windows reparse-point tests")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.lock")
+	if err := os.WriteFile(outside, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "semantic.lock")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	lock, err := AcquireContext(context.Background(), link, AcquireOptions{Mode: Shared})
+	if err == nil {
+		_ = lock.Close()
+		t.Fatal("AcquireContext followed leaf symlink")
+	}
+	data, readErr := os.ReadFile(outside)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "outside\n" {
+		t.Fatalf("outside lock changed to %q", data)
+	}
+}
+
+func receiveAcquired(t *testing.T, results <-chan lockAcquisition) lockAcquisition {
+	t.Helper()
+	select {
+	case result := <-results:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for lock acquisition")
+		return lockAcquisition{}
+	}
+}
+
+func waitForWriterIntentCount(t *testing.T, path string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	pattern := path + ".writer-*.intent"
+	for time.Now().Before(deadline) {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("Glob writer intents: %v", err)
+		}
+		if len(matches) >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("writer intent count did not reach %d", want)
 }

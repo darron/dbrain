@@ -219,6 +219,82 @@ func TestItemEnrichmentMirrorPreservesRawRoles(t *testing.T) {
 	assertItemEnrichmentText(t, st, upsert.ItemID, model.ItemEnrichmentRoleXMediaTranscript, "raw transcript text")
 }
 
+func TestProjectedMutationItemEnrichmentRolesDirtyOnlyForProjectedText(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedPurgeItem(t, st, "item:enrichment-dirty")
+	var itemID int64
+	if err := st.db.QueryRow(`SELECT id FROM items WHERE source_key='item:enrichment-dirty'`).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, role := range []string{model.ItemEnrichmentRoleSummary, model.ItemEnrichmentRoleOCR, model.ItemEnrichmentRoleXMediaTranscript} {
+		markProjectionCurrentForTest(t, st, "item", "item:enrichment-dirty")
+		before := projectionRevisionForTest(t, st)
+		now := time.Now().UTC().Format(time.RFC3339)
+		if _, err := st.db.ExecContext(ctx, `INSERT INTO item_enrichments (item_id,role,status,text,created_at,updated_at) VALUES (?,?,'ok','first',?,?)`, itemID, role, now, now); err != nil {
+			t.Fatalf("insert %s: %v", role, err)
+		}
+		if got := projectionRevisionForTest(t, st); got != before+1 {
+			t.Fatalf("insert %s revision=%d want %d", role, got, before+1)
+		}
+
+		if _, err := st.db.ExecContext(ctx, `UPDATE item_enrichments SET status='error', raw_json='{"ignored":true}', updated_at=? WHERE item_id=? AND role=?`, now, itemID, role); err != nil {
+			t.Fatal(err)
+		}
+		if got := projectionRevisionForTest(t, st); got != before+1 {
+			t.Fatalf("metadata update %s dirtied revision=%d want %d", role, got, before+1)
+		}
+
+		if _, err := st.db.ExecContext(ctx, `UPDATE item_enrichments SET text='second' WHERE item_id=? AND role=?`, itemID, role); err != nil {
+			t.Fatal(err)
+		}
+		if got := projectionRevisionForTest(t, st); got != before+2 {
+			t.Fatalf("text update %s revision=%d want %d", role, got, before+2)
+		}
+		if _, err := st.db.ExecContext(ctx, `DELETE FROM item_enrichments WHERE item_id=? AND role=?`, itemID, role); err != nil {
+			t.Fatal(err)
+		}
+		if got := projectionRevisionForTest(t, st); got != before+3 {
+			t.Fatalf("delete %s revision=%d want %d", role, got, before+3)
+		}
+	}
+
+	before := projectionRevisionForTest(t, st)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO item_enrichments (item_id,role,status,text,created_at,updated_at) VALUES (?,'nonprojected','ok','ignored',?,?)`, itemID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectionRevisionForTest(t, st); got != before {
+		t.Fatalf("nonprojected role dirtied revision=%d want %d", got, before)
+	}
+}
+
+func TestProjectedMutationUpsertItemWithSummaryUsesNewestTriggeredRevision(t *testing.T) {
+	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	before := projectionRevisionForTest(t, st)
+	_, err := st.UpsertItem(ctx, model.Item{
+		SourceKey: "item:triggered-mirror", SourceType: "test", ExternalID: "triggered-mirror",
+		Title: "title", Text: "body", ContentHash: "hash", NotePath: "item.md", RawJSON: "{}",
+		SummaryText: "summary", SummaryStatus: model.ItemSummaryStatusOK,
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The authoritative item insert and authoritative summary-enrichment insert
+	// are two mutations in one transaction. Each trigger allocates once; the
+	// ledger must retain the newer revision from the enrichment write.
+	if got := projectionRevisionForTest(t, st); got != before+2 {
+		t.Fatalf("mirrored item insert revision=%d want %d", got, before+2)
+	}
+	assertProjectionPendingAtRevision(t, st, "item", "item:triggered-mirror", before+2)
+}
+
 func assertTranscriptProvenance(t *testing.T, st *Store, itemID int64, wantUpdatedAt string) {
 	t.Helper()
 

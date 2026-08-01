@@ -241,34 +241,53 @@ func TestOllamaClassifiesDeadlineAsRetryableAndPreservesContextIdentity(t *testi
 func TestOllamaOwnedTimeoutStopsAcceptedStalledResponse(t *testing.T) {
 	t.Parallel()
 
-	accepted := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		close(accepted)
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-
-	provider, err := NewOllama(OllamaOptions{BaseURL: server.URL, Model: "model", Dimensions: 2, Timeout: 25 * time.Millisecond})
+	var accepted atomic.Bool
+	provider, err := NewOllama(OllamaOptions{
+		BaseURL: "http://ollama.test",
+		Model:   "model", Dimensions: 2, Timeout: 25 * time.Millisecond,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	provider.client.Transport = ollamaRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		accepted.Store(true)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &ollamaStalledBody{ctx: request.Context()},
+			Request:    request,
+		}, nil
+	})
 	started := time.Now()
 	_, err = provider.Embed(context.Background(), Request{Texts: []string{"text"}, Purpose: PurposeQuery})
 	if !IsRetryable(err) {
 		t.Fatalf("stalled response error = %v, want retryable", err)
 	}
-	select {
-	case <-accepted:
-	default:
+	if !accepted.Load() {
 		t.Fatal("server never accepted the request")
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("owned timeout took %s", elapsed)
 	}
+}
+
+type ollamaRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f ollamaRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type ollamaStalledBody struct {
+	ctx context.Context
+}
+
+func (b *ollamaStalledBody) Read([]byte) (int, error) {
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (*ollamaStalledBody) Close() error {
+	return nil
 }
 
 func TestNewOllamaRejectsInvalidConfigurationAndEmbedRejectsInput(t *testing.T) {

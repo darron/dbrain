@@ -3,20 +3,44 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
+	"sync"
 
+	"github.com/darron/dbrain/internal/semanticlock"
 	_ "modernc.org/sqlite"
 )
 
 const driverName = "sqlite"
 
 type Store struct {
-	db         *sql.DB
-	read       sqlQueryer
-	hasFTS     bool
-	auditBegin func(context.Context, *sql.Conn) error
+	db *sql.DB
+	// Semantic refresh heartbeats use a lazy one-connection pool so a blocked
+	// heartbeat cannot consume the main pool's only connection.
+	progressPath string
+	progressOnce sync.Once
+	progressDB   *sql.DB
+	progressErr  error
+	// A semantic stage holds this lease across its read/write work and durable
+	// checkpoint so the independent heartbeat writer cannot invalidate a
+	// SQLite read snapshot.
+	semanticStageOnce sync.Once
+	semanticStageGate chan struct{}
+	read              sqlQueryer
+	hasFTS            bool
+	auditBegin        func(context.Context, *sql.Conn) error
+	// Authoritative item, source, and projected-enrichment transactions use a
+	// database-scoped shared maintenance lease when configured by a production
+	// writable constructor.
+	authoritativeWriteContextKey *authoritativeWriteContextKey
+	authoritativeWriteAcquire    func(context.Context, string) (io.Closer, error)
+	semanticLockScope            *semanticlock.Scope
+	// Test-only observation seam for expensive authoritative projection checks.
+	retrievalProjectionFullValidation   func()
+	retrievalProjectionPlanHashObserved func(int)
 }
 
 type sqlQueryer interface {
@@ -34,6 +58,7 @@ func (s *Store) queryer() sqlQueryer {
 // OpenOptions configures writable store startup behavior.
 type OpenOptions struct {
 	MigrationReporter MigrationReporter
+	SemanticCacheDir  string
 }
 
 // MigrationReporter receives migration lifecycle events during writable startup.
@@ -64,6 +89,18 @@ func Open(path string) (*Store, error) {
 	return OpenWithOptions(path, OpenOptions{})
 }
 
+func OpenWithSemanticCache(path string, cacheDir string) (*Store, error) {
+	return OpenWithSemanticCacheOptions(path, cacheDir, OpenOptions{})
+}
+
+func OpenWithSemanticCacheOptions(path string, cacheDir string, opts OpenOptions) (*Store, error) {
+	if strings.TrimSpace(cacheDir) == "" {
+		return nil, errors.New("semantic cache directory is empty")
+	}
+	opts.SemanticCacheDir = cacheDir
+	return OpenWithOptions(path, opts)
+}
+
 func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	db, err := sql.Open(driverName, path)
 	if err != nil {
@@ -72,13 +109,65 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	st := &Store{db: db}
+	st := &Store{
+		db:                           db,
+		authoritativeWriteContextKey: &authoritativeWriteContextKey{},
+	}
 	if err := st.init(opts); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	if strings.TrimSpace(opts.SemanticCacheDir) != "" {
+		databaseID, err := st.RetrievalDatabaseID(context.Background())
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("read semantic database ID for writable store: %w", err)
+		}
+		scope, err := semanticlock.NewScope(opts.SemanticCacheDir, databaseID)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("configure authoritative semantic write scope: %w", err)
+		}
+		st.authoritativeWriteAcquire = func(ctx context.Context, metadata string) (io.Closer, error) {
+			return scope.AcquireMaintenanceShared(ctx, metadata)
+		}
+		st.semanticLockScope = scope
+	}
+	if path != ":memory:" {
+		st.progressPath = path
+	}
 
 	return st, nil
+}
+
+func openProgressDB(path string) (*sql.DB, error) {
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite progress db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	for _, stmt := range []string{
+		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA foreign_keys = ON;",
+		"PRAGMA busy_timeout = 60000;",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("apply progress pragma %q: %w", stmt, err)
+		}
+	}
+	return db, nil
+}
+
+func (s *Store) semanticProgressDB() (*sql.DB, error) {
+	if s.progressPath == "" {
+		return s.db, nil
+	}
+	s.progressOnce.Do(func() {
+		s.progressDB, s.progressErr = openProgressDB(s.progressPath)
+	})
+	return s.progressDB, s.progressErr
 }
 
 // OpenReadOnly opens an existing store for read-only consumers such as MCP.
@@ -126,10 +215,17 @@ func readOnlyDSN(path string) string {
 }
 
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	return s.db.Close()
+	var progressErr, dbErr error
+	if s.progressDB != nil {
+		progressErr = s.progressDB.Close()
+	}
+	if s.db != nil {
+		dbErr = s.db.Close()
+	}
+	return errors.Join(progressErr, dbErr)
 }
 
 func (s *Store) HasFTS() bool {

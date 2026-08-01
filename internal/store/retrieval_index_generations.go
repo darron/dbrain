@@ -11,6 +11,8 @@ import (
 
 type RetrievalGenerationStatus string
 
+var ErrRetrievalGenerationMembershipUnproven = errors.New("retrieval generation membership provenance is unavailable")
+
 const (
 	RetrievalGenerationBuilding  RetrievalGenerationStatus = "building"
 	RetrievalGenerationCompleted RetrievalGenerationStatus = "completed"
@@ -45,6 +47,9 @@ func (s *Store) PutRetrievalIndexGeneration(ctx context.Context, row RetrievalIn
 	}
 	if row.Active && row.BuildStatus != RetrievalGenerationCompleted {
 		return fmt.Errorf("only completed retrieval generations can be active")
+	}
+	if row.Active {
+		return fmt.Errorf("%w: generation %s profile %s cannot be stored active without a source revision and membership manifest", ErrRetrievalGenerationMembershipUnproven, row.GenerationID, row.ProfileID)
 	}
 	if !validRetrievalGenerationStatus(row.BuildStatus) {
 		return fmt.Errorf("invalid retrieval generation status %q", row.BuildStatus)
@@ -91,7 +96,11 @@ func (s *Store) ActivateRetrievalIndexGeneration(ctx context.Context, generation
 	defer func() { _ = tx.Rollback() }()
 	var profileID string
 	var status RetrievalGenerationStatus
-	if err := tx.QueryRowContext(ctx, `SELECT profile_id, build_status FROM retrieval_index_generations WHERE generation_id = ?`, generationID).Scan(&profileID, &status); err != nil {
+	if err := tx.QueryRowContext(ctx, `
+		SELECT profile_id, build_status
+		FROM retrieval_index_generations WHERE generation_id = ?`, generationID).Scan(
+		&profileID, &status,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("retrieval generation not found: %s", generationID)
 		}
@@ -100,17 +109,7 @@ func (s *Store) ActivateRetrievalIndexGeneration(ctx context.Context, generation
 	if status != RetrievalGenerationCompleted {
 		return fmt.Errorf("retrieval generation %s is %s, not completed", generationID, status)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active = 0, activated_at = '', updated_at = ? WHERE profile_id = ? AND active = 1`, time.Now().UTC().Format(time.RFC3339), profileID); err != nil {
-		return fmt.Errorf("deactivate prior retrieval generation for profile %s: %w", profileID, err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active = 1, activated_at = ?, updated_at = ? WHERE generation_id = ?`, now, now, generationID); err != nil {
-		return fmt.Errorf("activate retrieval generation %s: %w", generationID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit retrieval generation activation: %w", err)
-	}
-	return nil
+	return fmt.Errorf("%w: generation %s profile %s has no stored source revision and membership manifest", ErrRetrievalGenerationMembershipUnproven, generationID, profileID)
 }
 
 func validRetrievalGenerationStatus(status RetrievalGenerationStatus) bool {
@@ -130,6 +129,15 @@ func markRetrievalProfileGenerationsStaleTx(ctx context.Context, tx *sql.Tx, pro
 		WHERE profile_id = ? AND build_status != ?`,
 		RetrievalGenerationStale, now, profileID, RetrievalGenerationStale); err != nil {
 		return fmt.Errorf("mark retrieval generations stale for profile %s: %w", profileID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE retrieval_embedding_profiles SET
+			active_generation_id='', active_snapshot_revision=0, active_indexed_count=0,
+			l0_ready_count=(SELECT COUNT(*) FROM retrieval_embeddings
+				WHERE profile_id=? AND status='ready'),
+			active_tombstone_count=0, updated_at=?
+		WHERE profile_id=?`, profileID, now, profileID); err != nil {
+		return fmt.Errorf("clear active retrieval profile root %s: %w", profileID, err)
 	}
 	return nil
 }

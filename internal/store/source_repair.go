@@ -76,36 +76,41 @@ func (s *Store) ResetSourceEnrichment(ctx context.Context, opts ResetSourceEnric
 		updateArgs = append(updateArgs, sourceID)
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE sources
-		SET title = '',
-			description = '',
-			site_name = '',
-			extracted_text = '',
-			extract_json = '',
-			extract_status = '',
-			extract_error = '',
-			extract_failure_kind = '',
-			extract_failure_count = 0,
-			extract_first_failed_at = '',
-			extract_last_failed_at = '',
-			extracted_at = '',
-			extract_tool = '',
-			extract_tool_version = '',
-			summary_text = '',
-			summary_json = '',
-			summary_status = '',
-			summary_error = '',
-			summary_model = '',
-			summary_content_hash = '',
-			summary_prompt_version = '',
-			summary_tool = '',
-			summary_tool_version = '',
-			summarized_at = '',
-			content_hash = '',
-			updated_at = ?
-		WHERE id IN (`+strings.Join(placeholders, ",")+`)`, updateArgs...); err != nil {
-		return stats, fmt.Errorf("reset source enrichment: %w", err)
+	if _, err := withAuthoritativeWriteTx(ctx, s, "reset-source-enrichment", func(ctx context.Context, tx authoritativeWriteTx) (struct{}, error) {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sources
+			SET title = '',
+				description = '',
+				site_name = '',
+				extracted_text = '',
+				extract_json = '',
+				extract_status = '',
+				extract_error = '',
+				extract_failure_kind = '',
+				extract_failure_count = 0,
+				extract_first_failed_at = '',
+				extract_last_failed_at = '',
+				extracted_at = '',
+				extract_tool = '',
+				extract_tool_version = '',
+				summary_text = '',
+				summary_json = '',
+				summary_status = '',
+				summary_error = '',
+				summary_model = '',
+				summary_content_hash = '',
+				summary_prompt_version = '',
+				summary_tool = '',
+				summary_tool_version = '',
+				summarized_at = '',
+				content_hash = '',
+				updated_at = ?
+			WHERE id IN (`+strings.Join(placeholders, ",")+`)`, updateArgs...); err != nil {
+			return struct{}{}, fmt.Errorf("reset source enrichment: %w", err)
+		}
+		return struct{}{}, nil
+	}); err != nil {
+		return stats, err
 	}
 
 	for _, sourceID := range sourceIDs {

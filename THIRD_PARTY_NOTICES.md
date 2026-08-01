@@ -27,6 +27,16 @@ If a source or binary release bundles third-party source files, npm packages,
 Go module source trees, or generated web assets, include the corresponding
 upstream license files from those distributions alongside this notice file.
 
+## Native Darwin arm64 Dependency
+
+The `usearch`-tagged Darwin arm64 release contains a statically linked USearch
+`v2.26.0` from upstream commit
+`cc23bbaf21ef52313c5a495adbc40cbd733cdcfb`. USearch is licensed under
+Apache-2.0; its exact upstream license is shipped as `LICENSE-USearch` in
+release archives and installed package-share notices. The repository source is
+`third_party/usearch/LICENSE`. The archive is linked into the executable as
+`libusearch_c.a`; the Apple system C++ runtime remains dynamically linked.
+
 ## Go Runtime Dependencies
 
 Generated from:

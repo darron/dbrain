@@ -69,8 +69,8 @@ evaluation, and rollout gates in this document pass.
 `dbrain` will not:
 
 - replace SQLite with Turso or libSQL
-- add a vector service, daemon, native extension, CGO requirement, or helper
-  process
+- add a vector service, daemon, helper process, or a native/CGO requirement to
+  the default build
 - make generated model prose authoritative evidence
 - silently truncate embedding input
 - use unbounded or unlabelled partial semantic coverage in normal `on`
@@ -265,6 +265,28 @@ write path. Store methods still expose named invalidation helpers for tests and
 for transitions that need stronger synchronous semantics. Triggers only mark a
 parent pending; they do not perform chunking or model work.
 
+The foundation tables and constraints belong to migration 16
+`retrieval_semantic_foundation_v2`. Authoritative dirtying triggers belong to
+append-only migration 17 `retrieval_projection_dirty_triggers`. Because the
+exercised migration 17 definitions also dirtied on raw `content_hash`,
+append-only migration 18
+`retrieval_projection_dirty_trigger_provenance_repair` installs the corrected
+canonical definitions. Schema identity validation is version-gated to the
+historical v17 definitions or corrected v18 definitions accordingly, so an
+already-recorded migration is never silently reinterpreted.
+
+Migration 18 also canonicalizes pre-release derived state that may have been
+projected under the historical parent-hash contract. When ledger parents
+exist, they all receive one shared new pending revision; partial projection
+staging is cleared and index generations become stale/inactive. Raw evidence,
+chunks, and embeddings remain preserved until ordinary projection maintenance
+replaces or reuses them, while pending-parent filtering excludes them
+immediately.
+
+Raw item/source `content_hash` remains provenance only. It is not part of the
+parent projection hash and a hash-only recalculation does not dirty semantic
+state; changes to the actual projected fields above do.
+
 A pending parent becomes immediately ineligible for semantic hydration. This
 prevents old excerpts or vectors from being returned while maintenance catches
 up.
@@ -364,17 +386,34 @@ A parent estimated to produce more than 1,000 chunks is a giant projection
 job. `retrieval_projection_staging` stores its section-local chunks in durable,
 non-searchable batches keyed by a work ID. The associated checkpoint records
 section key and next window boundary, so `max-duration` can stop and resume
-without reprocessing the parent from the beginning. Only a complete staged
-projection enters the atomic parent apply transaction above. Abandoned staging
-belongs to the derived-state cleanup and purge contracts and is never included
-by retrieval queries.
+without reprocessing the parent from the beginning. The chunker prepares each
+section's content-defined boundary plan once and stores the opaque, versioned
+seek state in a reserved metadata row. That row is not a chunk or occurrence,
+is excluded from progress JSON and staging counts, and never enters promotion
+or search. Resume validates the plan's projection/chunker versions, parent
+hash, and options before using it.
 
-The first release has a hard limit of 50,000 staged chunks for one parent. A
-larger result becomes terminal `blocked` with reason
+Only a complete staged projection enters the atomic parent apply transaction
+above. Promotion independently streams the current authoritative parent and
+requires exact canonical equality with every staged chunk and occurrence;
+caller-supplied completion state is not accepted as proof. Missing, fabricated,
+altered, or extra staged rows fail closed. The intentional cost is exactly one
+prepared boundary pass for staging plus one bounded authoritative pass at
+promotion; avoiding the second pass would require trusting mutable staged JSON
+as evidence of completeness. Abandoned staging belongs to the derived-state
+cleanup and purge contracts and is never included by retrieval queries.
+
+Staging begins when a batch reaches any of 1,000 unique chunks, 1,000
+occurrences, or 4 MiB of staged JSON. The first release hard-limits one parent
+to 50,000 unique chunks, 200,000 occurrences, and 128 MiB of staged
+chunk/occurrence JSON. Exceeding any limit becomes terminal `blocked` with reason
 `projection_too_large_for_flat_retrieval`; partial staged chunks never become
-searchable. Raising the limit or adding a hierarchical representation requires
-a new measured design. The current 26,512-chunk production outlier remains
-inside the explicit bound.
+searchable, including after restart from a previously complete checkpoint.
+Raising a limit or adding a hierarchical representation requires a new measured
+design. On the 2026-07-21 restored corpus, chunker v3's largest parent produced
+1,785 unique chunks and 1,967 occurrences; its two independent projection
+passes took 56.5 ms and 54.7 ms respectively. The synthetic 26,512-window
+regression also remains inside the explicit bounds.
 
 ## Chunker V3
 
@@ -500,16 +539,103 @@ corruption without repeatedly rereading the whole profile after each bad row.
 
 ### Backend Selection
 
-The first implementation plan must bake off:
-
-1. a narrow repo-owned adapter around `github.com/coder/hnsw`
-2. one pure-Go disk-backed candidate if the first candidate fails resource,
-   persistence, or corruption gates
-
-No library is accepted until it passes the production-vector gates in this
+No backend is accepted until it passes the production-vector gates in this
 document. The adapter owns both the segment format and search contract so a
-library can be forked or replaced without changing SQLite evidence, embedding,
-or root-manifest schemas.
+library can be replaced without changing SQLite evidence, embedding, or
+root-manifest schemas.
+
+#### 2026-07-21 Backend Screening Record
+
+`github.com/coder/hnsw` is rejected before any segment-lifecycle implementation.
+The deterministic screening harness used the same 768 float32 dimensions and
+top-20 recall target as the restored-corpus profile. At only 1,000 vectors it
+returned sampled recall@20 of 0.355 against the exact oracle, below the 0.95
+gate. Export/import reproduced the same result, so persistence did not explain
+the failure. A 64-dimensional diagnostic run also failed at 0.85; increasing
+`EfSearch` from 256 to 1,024 did not change recall, and raising `M` from 16 to
+32 reduced it to 0.56.
+
+The source explains why this is not a scale experiment worth extending: the
+library's graph search retains only `k` results and may terminate as soon as
+there is no immediate improvement. Its `EfSearch` setting therefore does not
+provide the normal wider result-beam behavior needed to tune recall. The
+adapter and devtool remain as content-free rejection evidence only; they do
+not authorize a graph payload in an immutable segment.
+
+The bounded pure-Go disk-persistence survey did not identify an acceptable
+replacement. [`habedi/hann`](https://github.com/habedi/hann) requires a C/C++
+compiler and AVX, violating the CGO-free boundary. [`viant/sqlite-vec`](https://github.com/viant/sqlite-vec)
+is CGO-free, but its public cover package documents a brute-force delegate,
+has no cover-index tests in its v0.3.0 source tree, and persists/rebuilds a
+mutable index blob in a separate shadow SQLite schema. It is neither a proven
+ANN accelerator nor compatible with the SQLite-authoritative immutable-segment
+contract.
+
+#### 2026-07-22 Optional Native Backend Screening Decision
+
+The user approved a separately evaluated optional native backend. The first
+candidate is USearch (`github.com/unum-cloud/usearch/golang`) backed by its
+pinned arm64 macOS C library for development screening. This is a narrow,
+temporary candidate boundary, not acceptance of USearch for dbrain's product
+or release distribution.
+
+The screening integration must meet all of these constraints:
+
+1. SQLite remains the sole authority. USearch receives only dense segment-local
+   ordinals and float32 vectors; it neither opens nor writes `brain.db`.
+2. The candidate runs only in a content-free devtool until it clears the exact
+   recall, save/load reopen, resource, corruption, and cancellation gates.
+   It must not construct a production segment, call an embedding provider, or
+   make semantic retrieval available.
+3. The default dbrain build remains CGO-free and works without USearch. Native
+   support is isolated behind an explicit build tag and must report
+   `native_backend_unavailable` rather than degrade correctness or block lexical
+   retrieval.
+4. The test library is supplied from the upstream versioned release archive in
+   an isolated temporary directory. It is not installed globally, added to a
+   user PATH, or represented as a Homebrew dependency. Distribution is deferred
+   until the candidate passes screening.
+5. The eventual dbrain segment envelope, membership map, checksums, atomic
+   publication, provenance, and cache reclamation remain repo-owned. USearch's
+   `Save`, `Load`, or `View` files are opaque payloads inside that envelope.
+
+The candidate screen passed on the upstream v2.26.0 arm64 macOS library using
+the content-free 768-dimensional corpus and the exact top-20 oracle. The
+qualifying parameters were connectivity 16, expansion-add 128, and
+expansion-search 256. A 1,000-vector stage had 1.00 recall@20, 25,000 had
+1.00, 100,000 had 0.995, and the 286,619-vector production-shaped stage had
+0.97 after save/load reopen. At the smaller expansion-search 128 setting, the
+same full stage reached only 0.94 and was correctly rejected; the reopen value
+matched in both runs, ruling out persistence as the cause.
+
+At the qualifying full stage, graph construction took 170.6 seconds, the
+opaque payload was 923,077,720 bytes, and sampled query latency was 1.00 ms
+p50 and 3.55 ms p95. The Go heap-system measurement was 0.89 GiB after build
+and 3.77 GiB after reopen, below the 4 GiB screen ceiling. A sampled process
+inspection observed approximately 1.75 GiB resident memory during construction,
+but a trustworthy process max-RSS capture remains a segment-lifecycle gate; Go
+heap-system counters are not OS RSS.
+
+Backend status is **candidate screen passed; the first lifecycle foundation is
+implemented; serving remains unapproved**. The foundation owns deterministic
+content-addressed opaque payload envelopes, checksum-verified segment/root
+reopen, atomic cache publication, SQLite segment catalog/member/generation
+references, and an internal 5,000-vector revision-prefix L0 flush seam. It is
+backend-injected and does not construct USearch in the default binary.
+
+This does not authorize native serving, a semantic configuration value other
+than `exact`, a CLI flush command, compaction, cache reclamation, a full corpus
+embedding drain, release packaging, or semantic `on`. Each remains separately
+gated by the resource, freshness, recall, and operational checks below.
+Semantic mode remains off and all unavailable paths remain lexical fail-open.
+
+The optional evaluator is deliberately separate from the dbrain CLI. Under
+`usearch && cgo`, it may build one opaque payload only through the internal
+5,000-vector lifecycle seam and only after explicit `--apply`. It requires an
+explicit database, cache, profile, and report path, rejects the configured
+production database before opening it, and also rejects a candidate path that
+is its own `<root>/data/brain.db` configured database. This supports controlled
+restored-corpus evidence without weakening the local-first production boundary.
 
 Graph identifiers are dense unsigned integer ordinals. A separate immutable
 membership map relates each ordinal to its chunk, parent, embedding revision,
@@ -707,6 +833,136 @@ semantic retrieval becomes `needs_index` and fails open to lexical retrieval.
 It does not silently truncate L0, ignore a segment, or search a known-unsafe
 root.
 
+### Implemented Activation Foundation (2026-07-22)
+
+Migration 23 implements the prerequisite activation contract for the planned
+size-tiered compactor. L0 is now the exact set of current ready embeddings that
+have no active root membership with the same chunk ID, embedding revision, and
+vector hash; it is not inferred from `revision > active_snapshot_revision`.
+This preserves a compacted sub-5,000 live remainder as exact L0 even when its
+revision predates the root snapshot.
+
+Every new root activation carries its expected active generation ID, purge
+epoch, and active snapshot revision. SQLite checks those expectations in the
+same transaction as generation activation and profile-counter update. An
+an ordinary all-new flush advances the snapshot; a membership-L0 flush ending
+at the active snapshot uses an internal equal-snapshot rewrite. The proposed root is rejected if it contains
+duplicate usable memberships. Migration repair recomputes L0 and tombstone
+counters from membership rather than trusting stored aggregate values.
+
+This does not yet implement compaction selection or payload building, leases,
+cache garbage collection, ANN query serving, or production corpus mutation.
+
+### Implemented Compaction Policy (2026-07-22)
+
+`internal/semanticbuild` now has a pure deterministic planner for the accepted
+size-tier rules. It prefers the oldest segment whose tombstones exceed one
+percent, otherwise the two oldest segments in one non-capped class, classifies
+undersized output as exact L0, and applies the capped/remainder packing rule.
+The planner consumes only stable metadata and does not read vectors, publish a
+replacement root, remove cache files, or affect semantic serving.
+
+### Implemented Active-Root Compaction Snapshot (2026-07-22)
+
+`internal/store` can now read an active root in one read-only SQLite
+transaction as deterministic compaction facts: profile activation/CAS state,
+immutable segment catalog metadata, stable creation order, and per-segment live
+and tombstone counts. A member is live only when its exact stored
+`(chunk_id, revision, vector_hash)` still joins a ready embedding and a current
+parent projection; every other catalogued member is a tombstone. The read fails
+closed when an active generation is unavailable, a segment belongs to another
+profile, or its catalogued count disagrees with immutable membership rows.
+
+This is an orchestration input only. It does not select vectors, build a
+replacement payload, activate or remove a root segment, mutate cache files, or
+change semantic serving. In particular, the current root format forbids an
+empty segment list, so a last-segment-to-L0 transition remains an explicit
+future format/activation-contract change rather than an implicit compaction
+side effect.
+
+### Implemented Active-Segment Live-Member Stream (2026-07-22)
+
+`internal/store` can now stream current live embeddings for one or two selected
+active-root segments under the snapshot's expected root, purge epoch, and
+snapshot revision. It rechecks the active completed generation, selected
+membership catalog counts, exact ready `(chunk_id, revision, vector_hash)`
+identity, current parent projection, current chunk text hash, and encoded vector
+integrity before invoking its callback. Rows arrive in stable active-segment and
+member-ordinal order and are not collected by the store.
+
+The callback is synchronous and may not re-enter the store or mutate SQLite
+while the read transaction is open. This lets a later compactor feed a streaming
+backend builder without borrowing inactive historical vectors, but it does not
+yet change the current materializing native builder, publish a replacement
+payload/root, remove input segments, clean cache paths, or enable semantic
+serving. Final activation must still use the existing root CAS because current
+state can change after this read stream closes.
+
+### Implemented Optional Streaming Payload Session (2026-07-22)
+
+The optional `usearch && cgo` payload builder now has a bounded session that
+reserves a known segment size and accepts vectors one at a time with dense
+ordinals. It rejects overflow, underfilled finish, corrupt vectors, cancellation,
+and use after close; finishing releases native state before returning the opaque
+payload writer. The existing 5,000-row flush API is a compatibility adapter over
+that same session, so default CGO-free builds and flush callers are unchanged.
+
+This removes the future compactor's Go source-vector slice and a second payload
+copy. It does not make USearch's in-memory graph or its final serialized payload
+buffer streaming; those peak-memory costs remain measured native-backend gates.
+No compactor invokes the session yet, and it does not publish a root, alter
+cache state, or enable semantic serving.
+
+### Implemented Bounded Physical Compaction (2026-07-22)
+
+`internal/semanticbuild.Compact` now composes the active-root snapshot, pure
+planner, CAS-checked live-member stream, and injected streaming payload builder
+into one bounded singleton/pair rewrite. It creates/reopens replacement
+segments, keeps unselected immutable segments in the new root, reopens that
+root, and activates only through the existing equal-snapshot CAS contract.
+Only replacement memberships are inserted; retained segment membership is
+reused as immutable catalog state.
+
+If the live stream differs from the selected plan or activation loses its CAS,
+the old root remains active and any completed output is unreferenced. The
+executor refuses the last-segment-to-exact-L0 transition because the present
+root format requires at least one segment. It does not expose a command, remove
+input/cache paths, retain rollback roots, or enable semantic serving.
+
+### Implemented Optional Native Root Loader (2026-07-22)
+
+The tag-gated native adapter can now open an immutable root only by reopening
+the root and every referenced segment through the content-addressed checksum
+validators, checking the USearch backend/dimensions, and importing each payload
+into a closeable native index. Any manifest, checksum, backend, dimension, or
+import failure rejects the complete root. The candidate gate resolves native
+ordinals through those immutable member maps, uses approximate order only to
+cap a 190-row SQLite candidate read, CAS-checks the active root/purge/snapshot
+and exact member tuple, drops stale rows, and exactly reranks surviving vectors
+by cosine distance. It merges the bounded exact L0 complement and applies the
+three-chunks-per-unpinned-parent semantic cap before returning results. Adaptive
+expansion now widens through the accepted 200, 500, and 2,000 global-candidate
+stages, splitting each authoritative SQLite validation read to the conservative
+190-candidate bind-safe maximum. One tagged search now opens one query-only
+SQLite snapshot for its exact-L0 read and every staged native-candidate batch,
+so a successful response cannot mix those authority rows across ordinary
+database snapshots. Each authority read retains its active-root CAS check.
+This is a scoped reader snapshot, not yet the planned cross-process generation
+lease or a snapshot extending through final evidence hydration.
+
+The storage layer also has a bounded exact-L0 read. It CAS-checks the same root
+facts and returns only current ready rows with no exact active-root membership;
+it rejects an over-limit L0 rather than silently truncating it. The tagged
+searcher merges those rows with validated native candidates and exactly reranks
+the combined set; runtime selection is wired as described below.
+
+The runtime now selects exact search only when no active root exists. An active
+root requires the optional tagged backend: a default CGO-free binary reports it
+unavailable and fails open to lexical retrieval, while `usearch && cgo` opens
+the verified configured-cache root and supplies the internal native-plus-L0
+searcher. This does not itself build a root, install a native library, or
+approve production semantic activation.
+
 ### Query Lifecycle
 
 A normal semantic search:
@@ -843,6 +1099,19 @@ Normal `on` retrieval is fully `ready` only when:
 - aggregate active tombstones are no more than one percent
 - segment fanout and resource projections remain inside measured gates
 
+Temporary foundation exception: before segmented ANN and membership manifests
+ship, a complete and provenance-valid profile with at most 25,000 current ready
+embeddings is `ready` through bounded exact search even though it has no active
+root. A complete profile above 25,000 is `needs_index` and is not searchable.
+The 25,000-vector value is a measured hard safety ceiling. Configuration may
+select a smaller exact-search cap, but a larger configured value must be clamped
+for readiness admission and query execution and cannot authorize a larger scan.
+Any claimed legacy active root is `corrupt` in this phase because the current
+schema cannot prove its source revision, purge epoch, membership hash, or
+segment manifest. This exception is removed when the segmented lifecycle can
+persist and validate those facts; it does not weaken the eventual active-root
+gate above.
+
 Failure of a full-readiness invariant enters `catching_up` only when every
 bounded catch-up invariant below holds. Otherwise it disables only the semantic
 lane and records a precise reason. Returned lexical evidence and ordering then
@@ -861,8 +1130,10 @@ lane until a human runs maintenance. `catching_up` is therefore eligible for
 normal retrieval only when all of these initial limits hold:
 
 - at most 500 dirty or unprojected parents
-- at most 2,500 estimated not-ready chunks
-- oldest dirty state no more than 30 minutes old
+- at most 2,500 total not-ready chunks, combining exact dirty-parent occurrence
+  plans with every current missing, stale, pending, retryable-error, or
+  scheduled-retry embedding row not already counted by those dirty parents
+- the oldest projection or embedding debt is no more than 30 minutes old
 - L0 no larger than 10,000 vectors
 - aggregate active tombstones no more than two percent
 - every dirty existing parent is excluded immediately from segment, L0, and
@@ -873,13 +1144,34 @@ normal retrieval only when all of these initial limits hold:
 - the active root, remaining segment memberships, profile, and purge epoch are
   otherwise valid
 
-The estimate is deterministic. For each projected section it divides UTF-8
-bytes by chunker v3's minimum guaranteed forward byte advance, rounds up, and
-adds one boundary allowance. The parent estimate is the sum of those section
-estimates and, for an existing parent, is never lower than its last current
-chunk count. The chunker publishes the byte ceiling, maximum overlap, and
-minimum forward advance as versioned constants, so the estimate is identical
-across status, admission, and maintenance selection.
+The estimate is deterministic and uses exact capped chunker-v3 occurrence
+planning. Status and admission load dirty parent evidence through the same
+immutable SQLite read transaction, run the production v3 boundary planner, and
+stop as soon as the shared 2,501 over-budget sentinel is reached. A parent's
+estimate is its exact planned occurrence count and, for an existing parent, is
+never lower than its last current chunk count. Planner cancellation, resource
+failure, or input beyond the authoritative readiness planning ceiling fails
+semantic admission closed while lexical retrieval remains available.
+
+The planner does not materialize the whole parent before it can discover the
+sentinel. An allocation-free, cancellation-aware preflight scans at most 128
+MiB of normalized UTF-8 and can prove dense oversized input over budget.
+Section metadata is independently capped at 4,096 entries before allocating
+the duplicate-key map, with cooperative cancellation checks during metadata
+validation. Exact rune, anchor, and window materialization is separately capped
+at 8 MiB. Sparse input above 8 MiB that preflight cannot prove over budget
+fails closed; the 128 MiB preflight ceiling is not an allocation budget for
+exact planning.
+
+The byte-ratio proposal was rejected with restored-corpus evidence. Chunker v3
+can guarantee only one byte of forward progress because natural boundaries may
+be dense. Dividing by that guarantee would classify 14,197 of 34,180 parents
+(41.5 percent) above the 2,500 budget, while exact v3 planning classifies zero
+current parents above it. The observed distribution was p50 1,344 bytes / 2
+occurrences, p90 15,268 / 18, p95 23,796 / 28, p99 72,325 / 85, and maximum
+1,881,497 / 2,208. Chunker v3 still publishes its 1,800-byte ceiling,
+zero-byte maximum overlap, and one-byte minimum guaranteed advance as truthful
+versioned constants; readiness does not misuse the minimum as an estimator.
 
 A single parent estimated above the 2,500-chunk catch-up budget makes normal
 semantic retrieval ineligible until it is projected and embedded; it is not
@@ -897,6 +1189,22 @@ limit disables only the semantic lane and records the exact reason. Lexical
 evidence and ordering then remain identical to semantic `off` behavior. These
 limits may become configurable only within a separately benchmarked safe
 range; the first release does not expose arbitrary overrides.
+
+Ordinary runtime admission uses transactionally maintained projection-ledger
+and per-profile embedding-status counters rather than the full status joins.
+Counter triggers are installed before an authoritative backfill in the same
+SQLite write transaction. Admission reads one immutable transaction, requires
+the dirty-age and dirty-parent keyset indexes, plans no more than 500 dirty
+parents, and validates profile/current rows only when both fit the immutable
+25,000-row exact cap. Missing required indexes, structurally impossible
+counters, cancellation, or validation failure fail closed before provider
+construction. Ordinary request admission has a fixed 250 ms budget. Exhausting
+that budget records semantic readiness as unavailable and returns the unchanged
+lexical path without constructing or calling the query embedding provider. The
+full status/maintenance path scans authoritative rows and marks the state
+`corrupt` when stored counters drift. Counts above the exact cap
+are rejection-only summaries; they are not ANN membership counters and cannot
+make a large profile searchable.
 
 All other non-disabled readiness states are ineligible for normal semantic
 retrieval.
@@ -1080,6 +1388,7 @@ dbrain semantic status
 dbrain semantic chunk --until-idle --max-duration <duration>
 dbrain semantic embed --until-idle --max-duration <duration>
 dbrain semantic verify --limit <rows> --resume
+dbrain semantic verify --repair-counters --limit <rows>
 dbrain semantic index build --full
 dbrain semantic index flush
 dbrain semantic index compact --max-duration <duration>

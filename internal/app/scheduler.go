@@ -12,6 +12,7 @@ import (
 	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/schedulerstate"
+	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 )
@@ -418,6 +419,22 @@ func runScheduledSyncAll(ctx context.Context, cfg config.Config, flags syncAllFl
 }
 
 func runScheduledSyncAllUnlocked(ctx context.Context, cfg config.Config, flags syncAllFlags, logOut io.Writer) (err error) {
+	return runScheduledSyncAllUnlockedWithSemanticDeps(
+		ctx,
+		cfg,
+		flags,
+		logOut,
+		defaultSemanticRefreshDeps(),
+	)
+}
+
+func runScheduledSyncAllUnlockedWithSemanticDeps(
+	ctx context.Context,
+	cfg config.Config,
+	flags syncAllFlags,
+	logOut io.Writer,
+	deps semanticRefreshDeps,
+) (err error) {
 	resolvedFlags, err := resolveSyncAllFlags(cfg.RootDir, flags)
 	if err != nil {
 		return err
@@ -431,12 +448,14 @@ func runScheduledSyncAllUnlocked(ctx context.Context, cfg config.Config, flags s
 			err = closeErr
 		}
 	}()
-	st, err := store.Open(cfg.DBPath)
+	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = st.Close()
+		if st != nil {
+			_ = st.Close()
+		}
 	}()
 
 	options, err := syncOptionsFromFlags(ctx, cfg, resolvedFlags, newLogger(false, logOut), logOut)
@@ -446,9 +465,39 @@ func runScheduledSyncAllUnlocked(ctx context.Context, cfg config.Config, flags s
 	options.Metrics = metricsRun
 	stats, err := runSyncAll(ctx, cfg, st, options)
 	if err != nil {
+		_ = st.Close()
+		st = nil
+		_ = closeMetrics()
+		closeMetrics = func() error { return nil }
 		return err
 	}
-	return logScheduledSyncStats(logOut, stats)
+	if err := st.Close(); err != nil {
+		st = nil
+		return err
+	}
+	st = nil
+	if err := closeMetrics(); err != nil {
+		closeMetrics = func() error { return nil }
+		return err
+	}
+	closeMetrics = func() error { return nil }
+
+	if err := logScheduledSyncStats(logOut, stats); err != nil {
+		return err
+	}
+	result, err := runConfiguredSemanticRefresh(
+		ctx,
+		cfg,
+		deps,
+		func(progress semanticrefresh.Progress) error {
+			return writeSemanticRefreshProgress(logOut, progress)
+		},
+	)
+	if err != nil {
+		return err
+	}
+	logScheduledSemanticRefreshResult(logOut, result)
+	return nil
 }
 
 func logScheduledSyncStats(logOut io.Writer, stats syncjob.Stats) error {
@@ -474,4 +523,46 @@ func logScheduledSyncStats(logOut io.Writer, stats syncjob.Stats) error {
 		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: okf bundle=%s concepts=%d errors=%d\n", stats.OKFExport.Stats.Bundle, stats.OKFExport.Stats.ConceptsWritten, len(stats.OKFExport.Stats.Errors))
 	}
 	return nil
+}
+
+func logScheduledSemanticRefreshResult(logOut io.Writer, result semanticrefresh.Result) {
+	if logOut == nil {
+		return
+	}
+	if result.Outcome == semanticrefresh.OutcomeSkipped {
+		_, _ = fmt.Fprintf(
+			logOut,
+			"scheduler semantic refresh: skipped reason=%s capability=%s backend=%s version=%s\n",
+			safeSemanticRefreshOutputField(result.SkipReason, 64),
+			safeSemanticRefreshOutputField(string(result.Capability.State), 64),
+			safeSemanticRefreshOutputField(result.Capability.Backend, 64),
+			safeSemanticRefreshOutputField(result.Capability.Version, 64),
+		)
+		return
+	}
+
+	run := result.Run
+	if run == nil {
+		_, _ = fmt.Fprintf(
+			logOut,
+			"scheduler semantic refresh: completed capability=%s backend=%s version=%s run= profile= generation= state= stage= readiness=\n",
+			safeSemanticRefreshOutputField(string(result.Capability.State), 64),
+			safeSemanticRefreshOutputField(result.Capability.Backend, 64),
+			safeSemanticRefreshOutputField(result.Capability.Version, 64),
+		)
+		return
+	}
+	_, _ = fmt.Fprintf(
+		logOut,
+		"scheduler semantic refresh: completed capability=%s backend=%s version=%s run=%s profile=%s generation=%s state=%s stage=%s readiness=%s\n",
+		safeSemanticRefreshOutputField(string(result.Capability.State), 64),
+		safeSemanticRefreshOutputField(result.Capability.Backend, 64),
+		safeSemanticRefreshOutputField(result.Capability.Version, 64),
+		safeSemanticRefreshOutputField(run.RunID, 64),
+		safeSemanticRefreshOutputField(run.ProfileID, 192),
+		safeSemanticRefreshOutputField(run.CurrentGenerationID, 64),
+		safeSemanticRefreshOutputField(string(run.State), 64),
+		safeSemanticRefreshOutputField(string(run.Stage), 64),
+		safeSemanticRefreshOutputField(run.ReadinessState, 64),
+	)
 }
