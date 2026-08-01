@@ -45,7 +45,7 @@ func TestProjectionDirtyTriggerV18RepairsGenuineV17ContentHashTriggers(t *testin
 		t.Fatalf("validate genuine v17 database before repair: %v", err)
 	}
 
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 
 	var migrationCount int
@@ -123,7 +123,7 @@ func TestProjectionDirtyTriggerV18RepairsGenuineV17ContentHashTriggers(t *testin
 
 func TestProjectionDirtyTriggerV18BackfillsParentCreatedWhileTriggersAbsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close initial store: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestProjectionDirtyTriggerV18BackfillsParentCreatedWhileTriggersAbsent(t *t
 		t.Fatalf("close migration-16 database: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	var status string
 	var dirtyRevision int64
@@ -189,7 +189,7 @@ func TestProjectionDirtyTriggerV18BackfillsParentCreatedWhileTriggersAbsent(t *t
 func projectionDirtyTriggerV17DatabaseForContentHashTest(t *testing.T) (string, int64) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := st.db.Exec(`
 		INSERT INTO sources (
@@ -248,7 +248,7 @@ func projectionDirtyTriggerV17DatabaseForContentHashTest(t *testing.T) (string, 
 }
 
 func TestRawContentHashOnlyUpdateDoesNotDirtySemanticProjection(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 

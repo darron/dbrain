@@ -9,7 +9,7 @@ import (
 )
 
 func TestRetrievalEmbeddingVerificationStateReportsMissingProfile(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 
 	_, err := st.RetrievalEmbeddingVerificationState(context.Background(), "embedding-profile-v1:missing")
@@ -19,7 +19,7 @@ func TestRetrievalEmbeddingVerificationStateReportsMissingProfile(t *testing.T) 
 }
 
 func TestRetrievalEmbeddingProfileReportsTypedMissingProfile(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 
 	_, err := st.RetrievalEmbeddingProfile(context.Background(), "embedding-profile-v1:missing")

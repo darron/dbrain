@@ -95,6 +95,14 @@ func TestPipelineUsesDefaultBatchesAndRejectsOutOfBoundsBatches(t *testing.T) {
 	if h.pipeline.options.ProjectionBatch != 100 || h.pipeline.options.EmbeddingBatch != 16 {
 		t.Fatalf("defaults projection=%d embedding=%d", h.pipeline.options.ProjectionBatch, h.pipeline.options.EmbeddingBatch)
 	}
+	if h.pipeline.effectiveSegmentTarget != store.RetrievalSegmentTarget ||
+		h.pipeline.effectiveSegmentHardLimit != store.RetrievalSegmentHardLimit {
+		t.Fatalf(
+			"default segment boundaries target=%d hard_limit=%d",
+			h.pipeline.effectiveSegmentTarget,
+			h.pipeline.effectiveSegmentHardLimit,
+		)
+	}
 
 	tests := []struct {
 		name string
@@ -114,6 +122,129 @@ func TestPipelineUsesDefaultBatchesAndRejectsOutOfBoundsBatches(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPipelineRejectsInvalidEffectiveSegmentBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     int
+		hardLimit  int
+		embedBatch int
+	}{
+		{name: "zero target", target: 0, hardLimit: 16, embedBatch: 8},
+		{name: "target above production", target: store.RetrievalSegmentTarget + 1, hardLimit: store.RetrievalSegmentHardLimit, embedBatch: 8},
+		{name: "hard limit below target", target: 8, hardLimit: 7, embedBatch: 7},
+		{name: "hard limit above production", target: 8, hardLimit: store.RetrievalSegmentHardLimit + 1, embedBatch: 8},
+		{name: "embedding batch above target", target: 8, hardLimit: 16, embedBatch: 9},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPipelineHarness(t)
+			h.pipeline.effectiveSegmentTarget = tc.target
+			h.pipeline.effectiveSegmentHardLimit = tc.hardLimit
+			h.pipeline.options.EmbeddingBatch = tc.embedBatch
+			h.pipeline.runProjection = func(context.Context, semanticbuild.ChunkStore, semanticbuild.ProjectionBatchOptions) (semanticbuild.ChunkProgress, error) {
+				t.Fatal("projection ran with invalid effective segment boundaries")
+				return semanticbuild.ChunkProgress{}, nil
+			}
+
+			if _, err := h.pipeline.Execute(t.Context(), pipelineRun(store.SemanticRefreshProjection, 1)); err == nil {
+				t.Fatal("invalid effective segment boundaries accepted")
+			}
+		})
+	}
+}
+
+func TestPipelineEffectiveSegmentBoundariesControlHeadroomFlush(t *testing.T) {
+	const (
+		target    = 8
+		hardLimit = 16
+	)
+	h := newPipelineHarness(t)
+	h.pipeline.effectiveSegmentTarget = target
+	h.pipeline.effectiveSegmentHardLimit = hardLimit
+	h.pipeline.options.EmbeddingBatch = 1
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{ProfileID: h.profileID, L0ReadyCount: hardLimit}, nil
+	}
+	var operations []string
+	h.pipeline.runFlush = func(_ context.Context, _ semanticbuild.FlushStore, _ semanticbuild.SegmentPayloadBuilder, opts semanticbuild.FlushOptions) (semanticbuild.FlushResult, error) {
+		operations = append(operations, "flush")
+		if opts.Limit != target {
+			t.Fatalf("flush limit=%d, want %d", opts.Limit, target)
+		}
+		return semanticbuild.FlushResult{
+			GenerationID:     "semantic-root-v1:scaled-preflush",
+			Indexed:          target,
+			Flushed:          target,
+			SnapshotRevision: 8,
+		}, nil
+	}
+	h.pipeline.runEmbed = func(ctx context.Context, _ semanticbuild.EmbedStore, _ embedding.Provider, opts semanticbuild.EmbedBatchOptions) (semanticbuild.EmbedBatchResult, error) {
+		if err := opts.BeforeProvider(ctx, 1); err != nil {
+			return semanticbuild.EmbedBatchResult{}, err
+		}
+		operations = append(operations, "provider")
+		return semanticbuild.EmbedBatchResult{Revision: 9}, nil
+	}
+
+	outcome := h.execute(t, pipelineRun(store.SemanticRefreshEmbedding, 1))
+	if !reflect.DeepEqual(operations, []string{"flush", "provider"}) ||
+		outcome.Counters.FlushedVectors != target ||
+		outcome.CurrentGenerationID != "semantic-root-v1:scaled-preflush" {
+		t.Fatalf("operations=%v outcome=%+v", operations, outcome)
+	}
+}
+
+func TestPipelineEffectiveSegmentTargetControlsFlushAndReadiness(t *testing.T) {
+	const target = 8
+	t.Run("flush", func(t *testing.T) {
+		h := newPipelineHarness(t)
+		h.pipeline.effectiveSegmentTarget = target
+		h.pipeline.effectiveSegmentHardLimit = 2 * target
+		h.pipeline.options.EmbeddingBatch = target
+		h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+			return store.RetrievalEmbeddingProfileRow{ProfileID: h.profileID, L0ReadyCount: target + 1}, nil
+		}
+		h.pipeline.runFlush = func(_ context.Context, _ semanticbuild.FlushStore, _ semanticbuild.SegmentPayloadBuilder, opts semanticbuild.FlushOptions) (semanticbuild.FlushResult, error) {
+			if opts.Limit != target {
+				t.Fatalf("flush limit=%d, want %d", opts.Limit, target)
+			}
+			return semanticbuild.FlushResult{
+				GenerationID:     "semantic-root-v1:scaled-flush",
+				Indexed:          target,
+				Flushed:          target,
+				SnapshotRevision: 8,
+			}, nil
+		}
+
+		outcome := h.execute(t, pipelineRun(store.SemanticRefreshFlush, 1))
+		if outcome.NextStage != store.SemanticRefreshFlush ||
+			outcome.Counters.FlushedVectors != target ||
+			outcome.CurrentGenerationID != "semantic-root-v1:scaled-flush" {
+			t.Fatalf("outcome=%+v", outcome)
+		}
+	})
+
+	t.Run("readiness", func(t *testing.T) {
+		h := newPipelineHarness(t)
+		h.pipeline.effectiveSegmentTarget = target
+		h.pipeline.effectiveSegmentHardLimit = 2 * target
+		h.pipeline.options.EmbeddingBatch = target
+		h.store.readiness = func(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error) {
+			snapshot := pipelineReadySnapshot(h.profileID)
+			snapshot.L0ReadyCount = target + 1
+			snapshot.ObservedL0ReadyCount = target + 1
+			return snapshot, nil
+		}
+		h.store.workRevision = func(context.Context) (int64, error) { return 1, nil }
+
+		outcome, err := h.pipeline.Execute(t.Context(), pipelineRun(store.SemanticRefreshReadiness, 1))
+		var refreshErr *RefreshError
+		if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorReadiness || outcome.Complete {
+			t.Fatalf("outcome=%+v err=%v", outcome, err)
+		}
+	})
 }
 
 func TestPipelinePersistsExactEmbeddingRevision(t *testing.T) {

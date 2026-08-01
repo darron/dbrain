@@ -148,7 +148,7 @@ func TestSemanticRefreshRunCASRejectsStaleWriter(t *testing.T) {
 
 func TestSemanticRefreshRunUpdateReturnsOwnCASWithQueuedWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	callerStore := openStoreAtPath(t, path)
+	callerStore := openCurrentTestStoreAtPath(t, path)
 	t.Cleanup(func() { _ = callerStore.Close() })
 	competingStore, err := Open(path)
 	if err != nil {
@@ -623,7 +623,7 @@ func TestSemanticRefreshRunTouchRejectsTerminalRowsAndCannotReorderLatest(t *tes
 
 func TestSemanticRefreshRunsMigrationV26RepairsGenuineV25Database(t *testing.T) {
 	path := t.TempDir() + "/brain.db"
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -691,7 +691,7 @@ func TestSemanticRefreshRunsMigrationV26RepairsGenuineV25Database(t *testing.T) 
 
 func TestSemanticRefreshRunsMigrationV26ArchivesV25ByteOverflows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}

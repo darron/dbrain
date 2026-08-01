@@ -14,7 +14,7 @@ func TestValidateRestorableDatabaseAcceptsCurrentSchema(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "current.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestValidateRestorableDatabaseAcceptsCurrentSchema(t *testing.T) {
 
 func TestValidateRestorableDatabaseRejectsMissingRuntimeReadinessTrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "current.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	trigger := retrievalRuntimeProjectionCounterTriggers[0]
 	if _, err := st.db.Exec(`DROP TRIGGER ` + trigger.name); err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestValidateRestorableDatabaseRejectsMissingRuntimeReadinessTrigger(t *test
 func TestValidateRestorableDatabasePreservesV19EmbeddingProfileIdentity(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "v19.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestValidateRestorableDatabaseAcceptsGenuineV16WithoutProjectionDirtyTrigge
 
 func TestValidateRestorableDatabaseRejectsV18MissingProjectionDirtyTrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "current.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestValidateRestorableDatabaseRejectsV18MissingProjectionDirtyTrigger(t *te
 
 func TestValidateRestorableDatabaseRejectsV18NonCanonicalProjectionDirtyTrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "current.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestValidateRestorableDatabaseAcceptsLegacySchemaWithoutMigrationMetadata(t
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestValidateRestorableDatabaseAcceptsHistoricalMigrationNameAlias(t *testin
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "legacy-alias.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestValidateRestorableDatabaseRejectsFutureSchemaVersion(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "future.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestValidateRestorableDatabaseRejectsUnknownMigrationName(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "mismatch.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestValidateRestorableDatabaseRejectsUnknownMigrationVersion(t *testing.T) 
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "unknown-version.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestValidateRestorableDatabaseRejectsMissingMigrationWithinUserVersion(t *t
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "missing-migration.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestValidateRestorableDatabaseRejectsPositiveUserVersionWithoutMigrationTab
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "missing-metadata.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestValidateRestorableDatabaseRejectsMigrationTableWithZeroUserVersion(t *t
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "zero-version.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}

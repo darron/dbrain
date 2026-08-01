@@ -141,7 +141,7 @@ func Flush(ctx context.Context, st FlushStore, builder SegmentPayloadBuilder, op
 }
 
 func validateFlushWindow(profileID string, dimensions int, window store.RetrievalFlushWindow, limit int) error {
-	if window.Profile.ProfileID != profileID || len(window.Rows) != store.RetrievalSegmentTarget || len(window.Rows) > limit || len(window.Rows) > store.RetrievalSegmentTarget {
+	if window.Profile.ProfileID != profileID || len(window.Rows) != limit || len(window.Rows) > store.RetrievalSegmentTarget {
 		return fmt.Errorf("semantic flush window is empty or does not match requested profile")
 	}
 	if window.SnapshotRevision < window.Profile.ActiveSnapshotRevision {

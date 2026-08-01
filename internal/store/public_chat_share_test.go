@@ -10,7 +10,7 @@ import (
 func TestPublicChatShareStableSlugAndOwnerList(t *testing.T) {
 	t.Parallel()
 
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()
@@ -79,7 +79,7 @@ func TestOpenRepairsPublicChatShareSchemaOnExistingDB(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestOpenRepairsPublicChatShareSchemaOnExistingDB(t *testing.T) {
 		t.Fatalf("close sqlite directly: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()

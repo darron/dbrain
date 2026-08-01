@@ -19,6 +19,7 @@ import (
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 var fixedAuditTime = time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
@@ -77,13 +78,7 @@ func TestMCPAuditDependenciesRunOnlyTheFullLocalFastProfile(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("initialize store: %v", err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatalf("close initialized store: %v", err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	features := audit.Features{
 		Layout: "explicit_root", ConfigSource: "flag", ConfigVerified: true,
 		Sources: map[audit.Source]bool{}, Stages: map[audit.PipelineStage]bool{},
@@ -302,13 +297,7 @@ func TestAuditCLIEmitsCompleteStandardReportBeforeHealthExit(t *testing.T) {
 	if err := os.WriteFile(cfg.ConfigPath, []byte("scheduler:\n  sync_all:\n    enabled: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	cmd := NewRootCommand()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -358,13 +347,7 @@ func TestAuditCLIDeepSyntheticNoRemoteSmoke(t *testing.T) {
 	if err := os.WriteFile(cfg.ConfigPath, []byte("scheduler:\n  sync_all:\n    enabled: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	cmd := NewRootCommand()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -514,10 +497,7 @@ func TestLocalAuditIdentifiersReadConcreteNonPassRowsFromSnapshot(t *testing.T) 
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writer, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	writer := storefixture.OpenCurrent(t, cfg.DBPath)
 	now := time.Now().UTC()
 	item, err := writer.UpsertItem(t.Context(), model.Item{
 		SourceKey: "x:local-identifier", SourceType: "x_bookmark", ExternalID: "local-identifier",
@@ -671,10 +651,7 @@ func TestAuditSnapshotAdapterUsesRealStorePipelineAggregates(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 	if _, err := st.UpsertSource(context.Background(), model.SourceCandidate{
 		SourceKey:     "src:audit-real-pipeline",
@@ -1071,10 +1048,7 @@ func TestBuildDeepAuditDependenciesBindsAllConfiguredUpstreamInventories(t *test
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 	snapshot, err := st.BeginAuditReadSnapshot(t.Context())
 	if err != nil {
@@ -1120,13 +1094,7 @@ func TestAuditYouTubeLikedCommandOverridesDisabledSourceAndEmitsExactPortableSco
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "yt-dlp"), []byte("#!/bin/sh\nprintf '%s\\n' '{\"entries\":[]}'\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1177,13 +1145,7 @@ func TestAuditSourceCommandIgnoresUnrelatedDeepArchiveLimits(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "yt-dlp"), []byte("#!/bin/sh\nprintf '%s\\n' '{\"entries\":[]}'\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1219,13 +1181,7 @@ func TestAuditFeedsCommandUsesQueryOnlySnapshotAndEmptyInventoryPasses(t *testin
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	t.Setenv("GITHUB_TOKEN", "op://must-not-resolve/feed-audit")
 	t.Setenv("DBRAIN_R2_ACCESS_KEY_ID", "op://must-not-resolve/feed-audit")
 
@@ -1265,13 +1221,7 @@ func TestAuditGitHubStarsMissingTokenEmitsPortableUnknownReport(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	t.Setenv("GITHUB_TOKEN", "")
 
 	command := NewRootCommand()

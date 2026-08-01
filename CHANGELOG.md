@@ -5,6 +5,19 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Faster current-schema test databases (2026-08-01)
+
+- **Checkpointed SQLite fixtures**: Tests that need an isolated current-schema
+  store now clone one process-local database template instead of replaying all
+  schema migrations for every temporary database. Explicit empty-database and
+  historical-schema migration tests still exercise the real migration path;
+  the clean CI gate retains race detection and coverage.
+- **Scaled semantic lifecycle coverage**: The real-SQLite two-flush recovery
+  test now injects smaller test-only segment boundaries while preserving
+  preflush ordering, activation, native verification failure, and idempotent
+  resume assertions. Production remains fixed at 5,000 vectors per segment and
+  a 10,000-vector hard L0 limit.
+
 ### Native semantic packaging for macOS arm64 (2026-07-28)
 
 - **Self-contained Homebrew native backend**: macOS arm64 release and candidate

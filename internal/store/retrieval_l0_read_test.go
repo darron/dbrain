@@ -9,7 +9,7 @@ import (
 )
 
 func TestReadRetrievalExactL0ReturnsOnlyCurrentNonMembers(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedActiveCompactionRoot(t, st)

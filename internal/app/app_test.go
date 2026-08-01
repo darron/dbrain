@@ -43,6 +43,7 @@ import (
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 	"github.com/darron/dbrain/internal/version"
 	"github.com/darron/dbrain/internal/xapi"
 	"github.com/darron/dbrain/internal/xmediatranscribe"
@@ -65,13 +66,7 @@ func TestResearchCommandConfiguredSemanticModesAndOverrides(t *testing.T) {
 		if err := cfg.EnsureDirs(); err != nil {
 			t.Fatal(err)
 		}
-		st, err := store.Open(cfg.DBPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := st.Close(); err != nil {
-			t.Fatal(err)
-		}
+		storefixture.PrepareCurrent(t, cfg.DBPath)
 		yaml := "research:\n  semantic:\n    mode: " + mode + "\n    model: test-model\n    dimensions: 2\nollama:\n  base_url: " + embed.URL + "\n"
 		if err := os.WriteFile(cfg.ConfigPath, []byte(yaml), 0o600); err != nil {
 			t.Fatal(err)
@@ -143,10 +138,7 @@ func TestResearchCommandRetrievalOnlyDoesNotModifyDatabase(t *testing.T) {
 	}
 
 	func() {
-		st, err := store.Open(cfg.DBPath)
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
+		st := storefixture.OpenCurrent(t, cfg.DBPath)
 		defer func() {
 			if err := st.Close(); err != nil {
 				t.Fatalf("close writable store: %v", err)
@@ -260,10 +252,7 @@ func TestResearchCommandRetrievalOnlyDoesNotModifyDatabase(t *testing.T) {
 func seedReadyExactSemanticProfile(t *testing.T, cfg config.Config) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 	now := time.Now().UTC()
 	source, err := st.UpsertSource(ctx, model.SourceCandidate{
@@ -333,13 +322,7 @@ func TestRepairPrunedMediaCommandDryRunUsesReadOnlyStore(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatalf("close seed store: %v", err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	before := listRepairPrunedMediaDirectories(t, root)
 
 	called := 0
@@ -493,13 +476,7 @@ func TestSemanticStatusJSONHasExplicitStateAndNonNullSlices(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	stdout := runRootCommand(t, root, "semantic", "status", "--json")
 	if strings.Contains(stdout, `"problems": null`) || strings.Contains(stdout, `"next_steps": null`) {
@@ -812,10 +789,7 @@ func seedWhatsNewCLIItem(t *testing.T, root string, sourceKey string, title stri
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 	if _, err := st.UpsertItem(context.Background(), model.Item{
 		SourceKey:    sourceKey,
@@ -850,10 +824,7 @@ func TestAuthMCPTokenAddCreatesDBBackedBearerToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 	if ok, err := st.ValidateMCPBearerToken(context.Background(), result.Token); err != nil {
 		t.Fatalf("ValidateMCPBearerToken: %v", err)
@@ -947,10 +918,7 @@ func TestAuthMCPTokenListAndRevokeDoNotExposeSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 	if ok, err := st.ValidateMCPBearerToken(context.Background(), created.Token); err != nil {
 		t.Fatalf("ValidateMCPBearerToken after revoke: %v", err)
@@ -4493,10 +4461,7 @@ func TestRepairSourcesRequiresConfirmationAndResetsDomain(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("store open: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	sourceResult, err := st.UpsertSource(context.Background(), model.SourceCandidate{
 		SourceKey:     "src:repair-canada",
 		OriginalURL:   "https://canada.ca/en/news",
@@ -5146,10 +5111,7 @@ func TestExtractSourcesCommandUsesTargetedSourceLookup(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -5261,10 +5223,7 @@ func TestTopicMapCommandJSON(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
@@ -5326,10 +5285,7 @@ func TestTopicGenerateCommandWritesNote(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
@@ -5404,10 +5360,7 @@ func TestTopicRefreshCommandUsesStoredFrontmatter(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
@@ -5548,10 +5501,7 @@ func TestEntityMapCommandJSON(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
@@ -5601,10 +5551,7 @@ func TestEntityGenerateCommandWritesNote(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
@@ -5676,10 +5623,7 @@ func TestEntityIndexCommandWritesAllEntityNotes(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
@@ -5746,10 +5690,7 @@ func TestRepairNotesCommandRebuildsMissingNotes(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -5836,10 +5777,7 @@ func TestResearchCommandOutputsResearchPack(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -5935,10 +5873,7 @@ func TestResearchCommandSynthesizesByDefault(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -6052,10 +5987,7 @@ func TestResearchCommandNoTraceSuppressesTraceWriting(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -6087,13 +6019,7 @@ func TestResearchCommandRunnerPersistsNoEvidenceTrace(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
-	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
@@ -6166,10 +6092,7 @@ func TestResearchCommandSourceTypeFilterLimitsEvidence(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -6250,10 +6173,7 @@ func TestResearchCommandIncludeRelatedAddsLinkedEvidence(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -6343,10 +6263,7 @@ func TestStatsSourcesCommandOutputsSummaryStatusCounts(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -6481,10 +6398,7 @@ func TestStatsActivityCommandOutputsRecentWrites(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -6583,10 +6497,7 @@ func TestStatsBacklogCommandOutputsPendingQueues(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -6652,10 +6563,7 @@ func TestStatsPipelineCommandJSON(t *testing.T) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	defer func() {
 		_ = st.Close()
 	}()

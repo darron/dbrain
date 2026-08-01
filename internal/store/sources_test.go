@@ -1958,15 +1958,7 @@ func TestListSourcesForCategorizeRequiresExtractedOrSummaryEvidence(t *testing.T
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 
-	path := filepath.Join(t.TempDir(), "brain.db")
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open test store: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = st.Close()
-	})
-	return st
+	return openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 }
 
 func insertTestSource(t *testing.T, st *Store, sourceKey string, canonicalURL string) int64 {

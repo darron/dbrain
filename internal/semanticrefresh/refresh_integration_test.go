@@ -255,25 +255,35 @@ func TestRefreshIntegrationDifferentProfileSupersedesResumableRun(t *testing.T) 
 
 func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrFlush(t *testing.T) {
 	if testing.Short() {
-		t.Skip("large real-store two-flush integration")
+		t.Skip("real-store two-flush integration")
 	}
+	const (
+		segmentTarget    = 8
+		segmentHardLimit = 2 * segmentTarget
+	)
 	st := openRefreshIntegrationStore(t)
 	now := time.Date(2026, 7, 28, 18, 0, 0, 0, time.UTC)
 	// ASCII windows are independently bounded by the 1,800-byte v3 ceiling.
-	// This produces just over 10,000 distinct chunks. The third embedding batch
-	// must first flush 5,000 rows to preserve hard L0 headroom; the ordinary
-	// flush stage then commits the second 5,000-row segment.
+	// This produces just over two scaled segment windows of distinct chunks. The
+	// third embedding batch must first flush one full window to preserve hard L0
+	// headroom; the ordinary flush stage then commits the second full segment.
 	seedRefreshItem(
 		t,
 		st,
 		"flush-resume",
-		refreshDistinctFlushText(2*store.RetrievalSegmentTarget),
+		refreshDistinctFlushText(2*segmentTarget),
 		now,
 	)
 	watermark := refreshWorkRevision(t, st)
 	epoch := refreshPurgeEpoch(t, st)
+	events := &refreshEventRecorder{}
 	provider := newRefreshProvider("flush-v1")
-	native := &refreshNative{verifyFailures: 1}
+	provider.events = events
+	native := &refreshNative{
+		events:            events,
+		expectedBuildRows: segmentTarget,
+		verifyFailures:    1,
+	}
 	cacheDir := t.TempDir()
 	executor, err := NewPipeline(st, PipelineOptions{
 		Profile:         provider.profile(),
@@ -282,13 +292,19 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 		CacheDir:        cacheDir,
 		ExactMaxChunks:  semanticreadiness.DefaultExactMaxChunks,
 		ProjectionBatch: 1,
-		EmbeddingBatch:  semanticbuild.MaxEmbeddingBatchSize,
+		EmbeddingBatch:  segmentTarget,
 		Now:             func() time.Time { return now },
 		Sleep:           func(context.Context, time.Duration) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	pipeline, ok := executor.(*pipeline)
+	if !ok {
+		t.Fatalf("executor type=%T, want *pipeline", executor)
+	}
+	pipeline.effectiveSegmentTarget = segmentTarget
+	pipeline.effectiveSegmentHardLimit = segmentHardLimit
 	executor = lockRefreshIntegrationPipeline(t, st, cacheDir, executor)
 	ids := &refreshRunIDSequence{}
 	request := refreshIntegrationRequest(
@@ -302,12 +318,12 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 	failed, err := Run(t.Context(), st, executor, request)
 	_ = assertRefreshIntegrationError(t, err, ErrorNativeRoot)
 	providerCalls, providerTexts := provider.snapshot()
-	wantFlushed := int64(2 * store.RetrievalSegmentTarget)
-	wantBuilds := int(wantFlushed) / store.RetrievalSegmentTarget
+	wantFlushed := int64(2 * segmentTarget)
+	wantBuilds := int(wantFlushed) / segmentTarget
 	if failed.Run == nil ||
 		failed.Run.State != store.SemanticRefreshRunFailed ||
-		providerTexts <= 2*store.RetrievalSegmentTarget ||
-		providerTexts > 3*store.RetrievalSegmentTarget ||
+		providerTexts <= 2*segmentTarget ||
+		providerTexts > 3*segmentTarget ||
 		failed.Run.Counters.EmbeddedChunks != int64(providerTexts) ||
 		failed.Run.Counters.FlushedVectors != wantFlushed ||
 		failed.Run.CurrentGenerationID == "" {
@@ -328,6 +344,14 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 	if builds, verifies := native.snapshot(); builds != wantBuilds || verifies != 1 {
 		t.Fatalf("native builds=%d verifies=%d", builds, verifies)
 	}
+	events.assert(t, []string{
+		"provider-1",
+		"provider-2",
+		"build-1",
+		"provider-3",
+		"build-2",
+		"verify-1",
+	})
 	profileID, profileErr := provider.profile().ID()
 	if profileErr != nil {
 		t.Fatal(profileErr)
@@ -360,8 +384,17 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 		t.Fatalf("provider duplicated work calls=%d texts=%d", calls, texts)
 	}
 	if builds, verifies := native.snapshot(); builds != wantBuilds || verifies != 2 {
-		t.Fatalf("native builds=%d verifies=%d, want one flush and resumed root proof", builds, verifies)
+		t.Fatalf("native builds=%d verifies=%d, want two flushes and resumed root proof", builds, verifies)
 	}
+	events.assert(t, []string{
+		"provider-1",
+		"provider-2",
+		"build-1",
+		"provider-3",
+		"build-2",
+		"verify-1",
+		"verify-2",
+	})
 }
 
 func refreshDistinctFlushText(windows int) string {
@@ -585,6 +618,7 @@ func assertRefreshPublicValuesBounded(
 type refreshProvider struct {
 	mu                sync.Mutex
 	info              embedding.Info
+	events            *refreshEventRecorder
 	calls             int
 	texts             int
 	retryableFailures int
@@ -613,6 +647,9 @@ func (p *refreshProvider) Embed(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
+	if p.events != nil {
+		p.events.record(fmt.Sprintf("provider-%d", p.calls))
+	}
 	p.texts += len(request.Texts)
 	if p.retryableFailures > 0 {
 		p.retryableFailures--
@@ -643,6 +680,31 @@ type refreshRunIDSequence struct {
 	nextID uint64
 }
 
+type refreshEventRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *refreshEventRecorder) record(event string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *refreshEventRecorder) assert(t *testing.T, want []string) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.events) != len(want) {
+		t.Fatalf("refresh events=%v, want %v", r.events, want)
+	}
+	for index := range want {
+		if r.events[index] != want[index] {
+			t.Fatalf("refresh events=%v, want %v", r.events, want)
+		}
+	}
+}
+
 func (s *refreshRunIDSequence) next() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -660,10 +722,12 @@ func (s *refreshRunIDSequence) nextMust(t *testing.T) string {
 }
 
 type refreshNative struct {
-	mu             sync.Mutex
-	builds         int
-	verifies       int
-	verifyFailures int
+	mu                sync.Mutex
+	events            *refreshEventRecorder
+	builds            int
+	verifies          int
+	expectedBuildRows int
+	verifyFailures    int
 }
 
 func (n *refreshNative) Build(
@@ -672,9 +736,16 @@ func (n *refreshNative) Build(
 ) (func(io.Writer) error, error) {
 	n.mu.Lock()
 	n.builds++
+	if n.events != nil {
+		n.events.record(fmt.Sprintf("build-%d", n.builds))
+	}
+	expectedBuildRows := n.expectedBuildRows
 	n.mu.Unlock()
-	if len(rows) != store.RetrievalSegmentTarget {
-		return nil, fmt.Errorf("native build rows=%d", len(rows))
+	if expectedBuildRows == 0 {
+		expectedBuildRows = store.RetrievalSegmentTarget
+	}
+	if len(rows) != expectedBuildRows {
+		return nil, fmt.Errorf("native build rows=%d want=%d", len(rows), expectedBuildRows)
 	}
 	return func(writer io.Writer) error {
 		_, err := io.WriteString(writer, "deterministic-native-payload")
@@ -696,6 +767,9 @@ func (n *refreshNative) VerifyRoot(
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.verifies++
+	if n.events != nil {
+		n.events.record(fmt.Sprintf("verify-%d", n.verifies))
+	}
 	if n.verifyFailures > 0 {
 		n.verifyFailures--
 		return errors.New("deterministic native root interruption")

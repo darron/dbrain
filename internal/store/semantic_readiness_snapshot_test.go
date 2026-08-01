@@ -15,7 +15,7 @@ import (
 )
 
 func TestSemanticReadinessSnapshotUsesExactDirtyPlanningAndObservedCounters(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
@@ -106,7 +106,7 @@ func TestSemanticReadinessSnapshotUsesExactDirtyPlanningAndObservedCounters(t *t
 }
 
 func TestSemanticReadinessSnapshotSeparatesDueAndScheduledRetries(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
@@ -142,7 +142,7 @@ func TestSemanticReadinessSnapshotSeparatesDueAndScheduledRetries(t *testing.T) 
 }
 
 func TestSemanticReadinessSnapshotStopsDirtyIdentityScanAfterSingleParentSentinel(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	profile := readinessTestProfile()
@@ -167,7 +167,7 @@ func TestSemanticReadinessSnapshotStopsDirtyIdentityScanAfterSingleParentSentine
 }
 
 func TestSemanticReadinessSnapshotUsesParentCountGateBeforeLoadingDirtyEvidence(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	if _, err := st.db.Exec(`
 		WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value+1 FROM n WHERE value<501)
@@ -187,7 +187,7 @@ func TestSemanticReadinessSnapshotUsesParentCountGateBeforeLoadingDirtyEvidence(
 }
 
 func TestSemanticReadinessProfileCountersTrackTransitionsIdempotenceAndCascade(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	profile := readinessTestProfile()
@@ -281,7 +281,7 @@ func TestSemanticRuntimeAdmissionRejectsExactSmallCorruptionBeforeProviderConstr
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 			defer func() { _ = st.Close() }()
 			ctx := context.Background()
 			profile := readinessTestProfile()
@@ -312,7 +312,7 @@ func TestSemanticRuntimeAdmissionRejectsExactSmallCorruptionBeforeProviderConstr
 }
 
 func TestSemanticRuntimeAdmissionAllowsHistoricalLatestRevisionAfterNewestRowDeleted(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	profile := readinessTestProfile()
@@ -480,7 +480,7 @@ func TestRetrievalRuntimeCounterRepairHonorsCanceledContextWithoutMutation(t *te
 
 func TestRetrievalProjectionRuntimeCountersTrackLifecycleRollbackAndReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:projection-counters")
 	assertProjectionRuntimeCounters(t, st, [8]int{1, 0, 0, 1, 0, 0, 1, 0})
@@ -529,7 +529,7 @@ func TestRetrievalProjectionRuntimeCountersTrackLifecycleRollbackAndReopen(t *te
 
 func TestRetrievalProjectionRuntimeCountersTrackEmptyBlockedDeleteAndEmbeddingCascade(t *testing.T) {
 	t.Run("empty and ledger delete", func(t *testing.T) {
-		st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+		st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 		defer func() { _ = st.Close() }()
 		ctx := context.Background()
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -610,7 +610,7 @@ func TestSemanticRuntimeReadinessRequiresBoundedAdmissionIndexes(t *testing.T) {
 			if tc.ready {
 				st, _, profile = seedReadySemanticReadinessStore(t, "source:required-index")
 			} else {
-				st = openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+				st = openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 				profile = readinessTestProfile()
 				seedRetrievalSource(t, st, "source:required-index")
 			}
@@ -681,7 +681,7 @@ func TestSemanticRuntimeExactSmallQueryPlansStayIndexedAndSortFree(t *testing.T)
 
 func seedReadySemanticReadinessStore(t *testing.T, sourceKey string) (*Store, retrievalchunk.Projection, embedding.Profile) {
 	t.Helper()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	ctx := context.Background()
 	profile := readinessTestProfile()
 	profileID, _ := profile.ID()

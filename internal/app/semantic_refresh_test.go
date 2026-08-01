@@ -21,6 +21,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestSemanticRefreshCommandIsRegisteredWithBoundedFlags(t *testing.T) {
@@ -468,10 +469,7 @@ func TestSemanticStatusCommandUnconfiguredShowsDatabaseLatestRun(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	started, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), store.StartSemanticRefreshRunInput{
 		RunID:               "run-earlier-profile",
 		ProfileID:           "embedding-profile-v1:" + strings.Repeat("a", 64),
@@ -607,10 +605,7 @@ func TestSemanticStatusCommandUnconfiguredPropagatesMalformedCurrentLedger(t *te
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	run, _, err := st.StartOrResumeSemanticRefreshRun(t.Context(), store.StartSemanticRefreshRunInput{
 		RunID:     "run-malformed-ledger",
 		ProfileID: "profile-malformed-ledger",

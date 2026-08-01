@@ -15,7 +15,7 @@ func TestMigrationBackfillsItemEnrichments(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	now := time.Date(2026, 5, 5, 17, 30, 0, 0, time.UTC)
 	nowText := now.Format(time.RFC3339)
 	result, err := st.db.Exec(`
@@ -92,7 +92,7 @@ func TestMigrationBackfillsItemEnrichments(t *testing.T) {
 		t.Fatalf("close sqlite directly: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -107,7 +107,7 @@ func TestItemEnrichmentMirrorPreservesRawRoles(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()
@@ -220,7 +220,7 @@ func TestItemEnrichmentMirrorPreservesRawRoles(t *testing.T) {
 }
 
 func TestProjectedMutationItemEnrichmentRolesDirtyOnlyForProjectedText(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedPurgeItem(t, st, "item:enrichment-dirty")
@@ -272,7 +272,7 @@ func TestProjectedMutationItemEnrichmentRolesDirtyOnlyForProjectedText(t *testin
 }
 
 func TestProjectedMutationUpsertItemWithSummaryUsesNewestTriggeredRevision(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -317,7 +317,7 @@ func TestGetItemByIDPrefersItemEnrichmentMirror(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()
@@ -458,7 +458,7 @@ func TestGetItemByIDFallsBackToCompatibilityColumns(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()

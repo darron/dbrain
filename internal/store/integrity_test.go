@@ -25,7 +25,7 @@ func TestInspectDatabaseReadOnlySeparatesIntegrityAndCompatibility(t *testing.T)
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestInspectDatabaseReadOnlyClassifiesMigrationCompatibility(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "brain.db")
-			st := openStoreAtPath(t, path)
+			st := openCurrentTestStoreAtPath(t, path)
 			if err := st.Close(); err != nil {
 				t.Fatalf("close store: %v", err)
 			}
@@ -163,7 +163,7 @@ func TestInspectDatabaseReadOnlyQuickCheckJSONContract(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}

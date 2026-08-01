@@ -19,7 +19,7 @@ import (
 
 func TestReplaceRetrievalChunksReusesUnchangedEmbeddings(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 
 	ctx := context.Background()
@@ -61,7 +61,7 @@ func TestReplaceRetrievalChunksReusesUnchangedEmbeddings(t *testing.T) {
 
 func TestReplaceRetrievalChunksReportsMetadataUpdateAndKeepsEmbedding(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("chunk-a", "item", "item:one", 0, "hash-a", "alpha")
@@ -91,7 +91,7 @@ func TestReplaceRetrievalChunksReportsMetadataUpdateAndKeepsEmbedding(t *testing
 }
 
 func TestListReadyEmbeddingsProjectsCurrentSourceTypeAndSectionOrdinal(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedPurgeItem(t, st, "item:projection")
@@ -131,7 +131,7 @@ func TestListReadyEmbeddingsProjectsCurrentSourceTypeAndSectionOrdinal(t *testin
 
 func TestReplaceRetrievalChunksRollsBackWholeParent(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 
@@ -171,7 +171,7 @@ func TestReplaceRetrievalChunksRollsBackWholeParent(t *testing.T) {
 
 func TestRetrievalProfilesCoexist(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 
@@ -198,7 +198,7 @@ func TestRetrievalProfilesCoexist(t *testing.T) {
 
 func TestOnlyCompletedGenerationCanActivate(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 
@@ -222,7 +222,7 @@ func TestOnlyCompletedGenerationCanActivate(t *testing.T) {
 
 func TestCompletedGenerationActivationFailsClosedWithoutMembershipProvenance(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("generation-chunk", "item", "item:generations", 0, "generation-hash", "alpha")
@@ -263,7 +263,7 @@ func TestCompletedGenerationActivationFailsClosedWithoutMembershipProvenance(t *
 
 func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("chunk-a", "item", "item:one", 0, "hash-a", "alpha")
@@ -491,7 +491,7 @@ func TestPurgeItemIndexedContentDeletesRetrievalState(t *testing.T) {
 
 func TestRetrievalProjectionPagesParentsInOneQuery(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedPurgeItem(t, st, "item:a")
 	seedPurgeItem(t, st, "item:c")
@@ -514,7 +514,7 @@ func TestRetrievalProjectionPagesParentsInOneQuery(t *testing.T) {
 
 func TestRetrievalProjectionKeyPageReturnsBothParentKindsForSharedSourceKey(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedPurgeItem(t, st, "shared:key")
 	seedPurgeItem(t, st, "later:key")
@@ -538,7 +538,7 @@ func TestRetrievalProjectionKeyPageReturnsBothParentKindsForSharedSourceKey(t *t
 
 func TestRetrievalProjectionClosesPageRowsBeforeChunkWrites(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	st.db.SetMaxOpenConns(1)
 	seedPurgeItem(t, st, "shared:key")
@@ -563,7 +563,7 @@ func TestRetrievalProjectionClosesPageRowsBeforeChunkWrites(t *testing.T) {
 }
 
 func TestDirtyRevisionAllocationIsMonotonicAndTransactional(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedPurgeItem(t, st, "item:revision")
 	ctx := context.Background()
@@ -627,7 +627,7 @@ func TestDirtyRevisionAllocationIsMonotonicAndTransactional(t *testing.T) {
 }
 
 func TestListDirtyRetrievalParentsIsDeterministicThroughWatermarkAndIncludesCleanup(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:deleted")
@@ -665,7 +665,7 @@ func TestListDirtyRetrievalParentsIsDeterministicThroughWatermarkAndIncludesClea
 }
 
 func TestApplyRetrievalProjectionAtomicallyReplacesOccurrencesAndOnlyObsoleteEmbeddings(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:apply")
@@ -745,7 +745,7 @@ func TestApplyRetrievalProjectionAtomicallyReplacesOccurrencesAndOnlyObsoleteEmb
 }
 
 func TestApplyRetrievalProjectionRejectsChangedPurgeEpoch(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:apply-purge-epoch")
@@ -782,7 +782,7 @@ func TestApplyRetrievalProjectionRejectsChangedPurgeEpoch(t *testing.T) {
 }
 
 func TestApplyRetrievalProjectionRollsBackChunksOccurrencesAndState(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:rollback")
@@ -828,7 +828,7 @@ func TestApplyRetrievalProjectionRollsBackChunksOccurrencesAndState(t *testing.T
 }
 
 func TestApplyRetrievalProjectionRejectsSameTimestampNewerDirtyRevision(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:race")
@@ -865,7 +865,7 @@ func TestApplyRetrievalProjectionRejectsSameTimestampNewerDirtyRevision(t *testi
 }
 
 func TestApplyRetrievalProjectionRejectsProjectedMutationWithNewDirtyRevision(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:hash-race")
@@ -896,7 +896,7 @@ func TestApplyRetrievalProjectionRejectsProjectedMutationWithNewDirtyRevision(t 
 func TestApplyRetrievalProjectionRejectsUnsupportedStatusWithoutDeletingValidChunks(t *testing.T) {
 	for _, status := range []RetrievalProjectionStatus{RetrievalProjectionBlocked, RetrievalProjectionError} {
 		t.Run(string(status), func(t *testing.T) {
-			st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 			defer func() { _ = st.Close() }()
 			ctx := context.Background()
 			seedRetrievalSource(t, st, "source:status")
@@ -935,7 +935,7 @@ func TestApplyRetrievalProjectionRejectsUnsupportedStatusWithoutDeletingValidChu
 }
 
 func TestApplyRetrievalProjectionRejectsMalformedEmptyPayloadWithoutDeletingValidChunks(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:malformed-empty")
@@ -984,7 +984,7 @@ func TestApplyRetrievalProjectionRejectsMalformedEmptyPayloadWithoutDeletingVali
 
 func TestApplyRetrievalProjectionDirtyWriterReservationRejectsThenReturnsStale(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	applyStore := openStoreAtPath(t, path)
+	applyStore := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = applyStore.Close() }()
 	dirtyStore, err := Open(path)
 	if err != nil {
@@ -1045,7 +1045,7 @@ func TestApplyRetrievalProjectionDirtyWriterReservationRejectsThenReturnsStale(t
 
 func TestApplyRetrievalProjectionReservationWinsThenDirtyWriterRemainsPending(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	applyStore := openStoreAtPath(t, path)
+	applyStore := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = applyStore.Close() }()
 	dirtyStore, err := Open(path)
 	if err != nil {
@@ -1134,7 +1134,7 @@ func requireSQLiteBusy(t *testing.T, err error) {
 }
 
 func TestApplyRetrievalProjectionPersistsEmptyParentTerminalState(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -1164,7 +1164,7 @@ func TestApplyRetrievalProjectionPersistsEmptyParentTerminalState(t *testing.T) 
 }
 
 func TestApplyRetrievalProjectionCleansDeletedParentAndRemovesLedger(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:deleted-cleanup")
@@ -1266,7 +1266,7 @@ func sharedProjectionChunkID(t *testing.T, left, right retrievalchunk.Projection
 
 func TestEmbeddingDuePredicateMatchesStatusAndCarriesAttemptCount(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
@@ -1311,7 +1311,7 @@ func TestEmbeddingDuePredicateMatchesStatusAndCarriesAttemptCount(t *testing.T) 
 
 func TestEmbeddingProfileCandidateSelectorRejectsStaleChunkProvenance(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
@@ -1363,7 +1363,7 @@ func TestEmbeddingProfileCandidateSelectorRejectsStaleChunkProvenance(t *testing
 
 func TestRetrievalProjectionUsesAuthoritativeItemEnrichmentMirror(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedPurgeItem(t, st, "item:mirror")
 	var itemID int64
@@ -1414,7 +1414,7 @@ func TestRetrievalProjectionUsesAuthoritativeItemEnrichmentMirror(t *testing.T) 
 
 func TestRetrievalProjectionAuthoritativeEmptyTranscriptSuppressesLegacyTranscript(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedPurgeItem(t, st, "item:empty-transcript")
 	var itemID int64
@@ -1442,7 +1442,7 @@ func TestRetrievalProjectionAuthoritativeEmptyTranscriptSuppressesLegacyTranscri
 
 func TestRetrievalProjectionEmptyTranscriptMirrorPreservesOrdinaryArticle(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedPurgeItem(t, st, "item:ordinary-article")
 	var itemID int64
@@ -1491,7 +1491,7 @@ func TestPutRetrievalEmbeddingRejectsCorruptReadyVector(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 			defer func() { _ = st.Close() }()
 			chunk := testRetrievalChunk("corrupt-chunk", "item", "item:corrupt", 0, "current-hash", "alpha")
 			if _, err := st.ReplaceRetrievalChunks(context.Background(), "item", "item:corrupt", []retrievalchunk.Chunk{chunk}); err != nil {
@@ -1515,7 +1515,7 @@ func TestPutRetrievalEmbeddingRejectsCorruptReadyVector(t *testing.T) {
 
 func TestPutRetrievalEmbeddingAllowsNonReadyRowsWithoutVectorBytes(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunks := []retrievalchunk.Chunk{
@@ -1538,7 +1538,7 @@ func TestPutRetrievalEmbeddingAllowsNonReadyRowsWithoutVectorBytes(t *testing.T)
 }
 
 func TestEmbeddingBatchUsesOneRevisionAndVectorHashes(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunks := []retrievalchunk.Chunk{
@@ -1588,7 +1588,7 @@ func TestEmbeddingBatchUsesOneRevisionAndVectorHashes(t *testing.T) {
 }
 
 func TestEmbeddingBatchPreservesActiveRootAndAccountsL0AndTombstones(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunks := []retrievalchunk.Chunk{
@@ -1633,7 +1633,7 @@ func TestEmbeddingBatchPreservesActiveRootAndAccountsL0AndTombstones(t *testing.
 }
 
 func TestEmbeddingDeletionFailsClosedOnAggregateDrift(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("drift-l0", "item", "item:drift-l0", 0, "hash", "alpha")
@@ -1658,7 +1658,7 @@ func TestEmbeddingDeletionFailsClosedOnAggregateDrift(t *testing.T) {
 }
 
 func TestEmbeddingBatchRejectsMoreThanFiveThousandRowsBeforeStorage(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1670,7 +1670,7 @@ func TestEmbeddingBatchRejectsMoreThanFiveThousandRowsBeforeStorage(t *testing.T
 }
 
 func TestEmbeddingBatchRollsBackOnHashOrEpochRace(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunks := []retrievalchunk.Chunk{
@@ -1703,7 +1703,7 @@ func TestEmbeddingBatchRollsBackOnHashOrEpochRace(t *testing.T) {
 }
 
 func TestEmbeddingBatchRollsBackEveryRowOnPersistenceFailure(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunks := []retrievalchunk.Chunk{
@@ -1749,7 +1749,7 @@ func TestEmbeddingBatchRollsBackEveryRowOnPersistenceFailure(t *testing.T) {
 }
 
 func TestListRetrievalVectorsPagesLeanRows(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunks := []retrievalchunk.Chunk{
@@ -1776,7 +1776,7 @@ func TestListRetrievalVectorsPagesLeanRows(t *testing.T) {
 
 func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("read-corrupt-chunk", "item", "item:read-corrupt", 0, "read-hash", "alpha")
@@ -1832,7 +1832,7 @@ func TestListReadyEmbeddingsRejectsCorruptStoredVector(t *testing.T) {
 
 func TestBlockCorruptRetrievalEmbeddingDoesNotBlockConcurrentlyRepairedRow(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("repaired-chunk", "item", "item:repaired", 0, "repaired-hash", "alpha")
@@ -1884,7 +1884,7 @@ func TestBlockCorruptRetrievalEmbeddingDoesNotBlockConcurrentlyRepairedRow(t *te
 }
 
 func TestListReadyEmbeddingsRejectsStoredVectorHashMismatch(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("hash-corrupt-chunk", "item", "item:hash-corrupt", 0, "hash-corrupt-text", "alpha")
@@ -1918,7 +1918,7 @@ func TestListReadyEmbeddingsRejectsStoredVectorHashMismatch(t *testing.T) {
 
 func TestListReadyEmbeddingsRejectsStoredStaleHash(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("read-stale-chunk", "item", "item:read-stale", 0, "current-hash", "alpha")
@@ -1942,7 +1942,7 @@ func TestListReadyEmbeddingsRejectsStoredStaleHash(t *testing.T) {
 
 func TestHydrateRetrievalChunksBatchesCurrentParentEvidenceAndDropsPurgedParents(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedPurgeItem(t, st, "item:hydrate")
@@ -1999,7 +1999,7 @@ func TestHydrateRetrievalChunksBatchesCurrentParentEvidenceAndDropsPurgedParents
 }
 
 func TestPendingParentIsExcludedFromEverySemanticVectorSelectorAndHydration(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:pending-selector")
@@ -2051,7 +2051,7 @@ func TestPendingParentIsExcludedFromEverySemanticVectorSelectorAndHydration(t *t
 }
 
 func TestProjectedMutationDirtiesOnceAndIrrelevantItemMutationDoesNot(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	beforeInsert := projectionRevisionForTest(t, st)
 	seedPurgeItem(t, st, "item:projected-mutation")
@@ -2085,7 +2085,7 @@ func TestProjectedMutationDirtiesOnceAndIrrelevantItemMutationDoesNot(t *testing
 }
 
 func TestMarkRetrievalParentDirtyTxAllocatesOnceAndInvalidatesLegacyGeneration(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:named-dirty")
@@ -2213,7 +2213,7 @@ func seedRetrievalSource(t *testing.T, st *Store, sourceKey string) {
 }
 
 func TestGiantProjectionStagingIsNonSearchableResumableAndPromotesOnce(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:giant-stage")
@@ -2277,7 +2277,7 @@ func TestGiantProjectionStagingIsNonSearchableResumableAndPromotesOnce(t *testin
 }
 
 func TestGiantProjectionRedirtyDiscardsStaleStaging(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:giant-redirty")
@@ -2311,7 +2311,7 @@ func TestGiantProjectionRedirtyDiscardsStaleStaging(t *testing.T) {
 }
 
 func TestProjectionTooLargeIsTerminalBlockedAndRemovesSearchableChunks(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:too-large")
@@ -2463,7 +2463,7 @@ func assertGenerationActiveForTest(t *testing.T, st *Store, generationID string)
 
 func TestListChunksNeedingEmbeddingExcludesCurrentAndIncludesChanged(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunks := []retrievalchunk.Chunk{
@@ -2495,7 +2495,7 @@ func TestListChunksNeedingEmbeddingExcludesCurrentAndIncludesChanged(t *testing.
 
 func TestRetrievalStatusEmbeddingCandidatesMatchesCurrentHashErrorSelector(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunk := testRetrievalChunk("chunk-error", "item", "item:error", 0, "hash-error", "error text")
@@ -2527,7 +2527,7 @@ func TestRetrievalStatusEmbeddingCandidatesMatchesCurrentHashErrorSelector(t *te
 
 func TestRetrievalEmbeddingProfileInvariantsRejectMixedProvenance(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	chunks := []retrievalchunk.Chunk{
