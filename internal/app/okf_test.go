@@ -12,7 +12,7 @@ import (
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
-	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestOKFExportAndValidateCommands(t *testing.T) {
@@ -26,10 +26,7 @@ func TestOKFExportAndValidateCommands(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	now := time.Date(2026, 6, 14, 18, 0, 0, 0, time.UTC)
 	itemResult, err := st.UpsertItem(context.Background(), model.Item{
 		SourceKey:    "x:cli-okf",
@@ -96,13 +93,18 @@ func TestOKFExportRejectsUnimplementedProfiles(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "--no-debug", "okf", "export", "--profile", "public", "--out", filepath.Join(root, "okf", "public")})
-	err := cmd.ExecuteContext(context.Background())
+	err = cmd.ExecuteContext(context.Background())
 	if err == nil {
 		t.Fatalf("expected non-private profile to fail")
 	}
@@ -115,13 +117,18 @@ func TestOKFExportRejectsNoSelectedConceptKinds(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	cmd := NewRootCommand()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"--root", root, "--no-caffeinate", "--no-debug", "okf", "export", "--items=false", "--sources=false", "--entities=false", "--topics=false"})
-	err := cmd.ExecuteContext(context.Background())
+	err = cmd.ExecuteContext(context.Background())
 	if err == nil {
 		t.Fatalf("expected no concept kinds selected to fail")
 	}

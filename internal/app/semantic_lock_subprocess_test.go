@@ -25,6 +25,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/semanticsegment"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestSemanticLockSubprocessProjectionStageHoldsMaintenanceThroughExecute(t *testing.T) {
@@ -219,6 +220,7 @@ func newSemanticLockSubprocessFixture(t *testing.T, cacheDir string) semanticLoc
 		cacheDir = t.TempDir()
 	}
 	dbPath := filepath.Join(t.TempDir(), "brain.db")
+	storefixture.PrepareCurrent(t, dbPath)
 	st, err := store.OpenWithSemanticCache(dbPath, cacheDir)
 	if err != nil {
 		t.Fatal(err)

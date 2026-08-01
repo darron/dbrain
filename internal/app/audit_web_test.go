@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/darron/dbrain/internal/config"
-	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestBuildLocalWebAuditDependenciesWhenSchedulerDisabled(t *testing.T) {
@@ -15,10 +15,7 @@ func TestBuildLocalWebAuditDependenciesWhenSchedulerDisabled(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}

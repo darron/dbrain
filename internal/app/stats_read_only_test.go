@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/darron/dbrain/internal/config"
-	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestStatsCommandsReadOnly(t *testing.T) {
@@ -32,13 +32,7 @@ func TestStatsCommandsReadOnly(t *testing.T) {
 			if err := cfg.EnsureDirs(); err != nil {
 				t.Fatalf("ensure dirs: %v", err)
 			}
-			st, err := store.Open(cfg.DBPath)
-			if err != nil {
-				t.Fatalf("create store: %v", err)
-			}
-			if err := st.Close(); err != nil {
-				t.Fatalf("close store: %v", err)
-			}
+			storefixture.PrepareCurrent(t, cfg.DBPath)
 
 			db, err := sql.Open("sqlite", filepath.Clean(cfg.DBPath))
 			if err != nil {

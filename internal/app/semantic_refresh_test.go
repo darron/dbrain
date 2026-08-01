@@ -366,6 +366,7 @@ func testSemanticRefreshCommandInterruption(
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	entered := make(chan struct{})
 	deps := semanticRefreshCommandDeps(t, semanticconfig.ModeOn)
 	var timeoutDuration time.Duration
@@ -780,14 +781,20 @@ func executeSemanticRefreshCommand(
 	args ...string,
 ) (string, string, error) {
 	t.Helper()
-	cmd := newSemanticRefreshCommand(&rootOptions{root: t.TempDir()}, deps)
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load semantic refresh test config: %v", err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+	cmd := newSemanticRefreshCommand(&rootOptions{root: root}, deps)
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 	cmd.SetArgs(args)
-	err := cmd.ExecuteContext(ctx)
+	err = cmd.ExecuteContext(ctx)
 	return stdout.String(), stderr.String(), err
 }
 

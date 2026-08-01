@@ -19,6 +19,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestSchedulerSyncConfigFromRuntimeReadsConfig(t *testing.T) {
@@ -117,6 +118,7 @@ func TestRunScheduledSyncAllUsesSyncOptions(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	oldRunSyncAll := runSyncAll
 	defer func() {
@@ -184,6 +186,7 @@ sync_all:
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	oldRunSyncAll := runSyncAll
 	defer func() {
@@ -230,6 +233,7 @@ metrics:
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	oldRunSyncAll := runSyncAll
 	defer func() {
@@ -285,6 +289,7 @@ func TestRunScheduledSyncAllSourceErrorClosesStoreAndSkipsSemanticRefresh(t *tes
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	oldRunSyncAll := runSyncAll
 	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
@@ -340,6 +345,7 @@ metrics:
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	oldRunSyncAll := runSyncAll
 	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
@@ -408,6 +414,7 @@ func TestRunScheduledSyncAllUnsupportedSemanticRefreshLogsOneExplicitSkip(t *tes
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	oldRunSyncAll := runSyncAll
 	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
@@ -451,6 +458,7 @@ func TestRunScheduledSyncAllStreamsBoundedPeriodicSemanticProgress(t *testing.T)
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	oldRunSyncAll := runSyncAll
 	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
@@ -632,6 +640,7 @@ func TestRunScheduledSyncAllSemanticFailuresPreserveStableTypedCodes(t *testing.
 			if err := cfg.EnsureDirs(); err != nil {
 				t.Fatal(err)
 			}
+			storefixture.PrepareCurrent(t, cfg.DBPath)
 			oldRunSyncAll := runSyncAll
 			t.Cleanup(func() { runSyncAll = oldRunSyncAll })
 			runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
@@ -665,6 +674,7 @@ func TestSyncSchedulerSemanticFailureSetsErrorStatusAndReleasesLock(t *testing.T
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 	oldRunSyncAll := runSyncAll
 	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
 	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
@@ -772,6 +782,7 @@ func TestSyncSchedulerStatusTracksRuns(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
 
 	oldRunSyncAll := runSyncAll
 	defer func() {

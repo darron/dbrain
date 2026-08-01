@@ -24,6 +24,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/semanticsegment"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestConfiguredSemanticRefreshAdmission(t *testing.T) {
@@ -94,6 +95,7 @@ func TestConfiguredSemanticRefreshAdmission(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var calls []string
 			dbPath := t.TempDir() + "/brain.db"
+			storefixture.PrepareCurrent(t, dbPath)
 			deps := semanticRefreshDeps{
 				resolve: func(root string) (semanticconfig.Config, error) {
 					calls = append(calls, "resolve:"+root)
@@ -198,6 +200,7 @@ func TestConfiguredSemanticRefreshAdmission(t *testing.T) {
 
 func TestConfiguredSemanticRefreshCapturesStoreStateAndClosesAfterRun(t *testing.T) {
 	dbPath := t.TempDir() + "/brain.db"
+	storefixture.PrepareCurrent(t, dbPath)
 	var opened *store.Store
 	var gotRequest semanticrefresh.Request
 	var progressCalled bool
@@ -307,6 +310,7 @@ func TestConfiguredSemanticRefreshCapturesStoreStateAndClosesAfterRun(t *testing
 
 func TestConfiguredSemanticRefreshWrapsEveryExecutorUnitWithDatabaseLocks(t *testing.T) {
 	dbPath := t.TempDir() + "/brain.db"
+	storefixture.PrepareCurrent(t, dbPath)
 	cacheDir := t.TempDir()
 	deps := semanticRefreshDeps{
 		resolve: func(string) (semanticconfig.Config, error) {
@@ -372,8 +376,10 @@ func TestConfiguredSemanticRefreshWrapsEveryExecutorUnitWithDatabaseLocks(t *tes
 }
 
 func TestConfiguredSemanticRefreshLockScopeFailureIsTyped(t *testing.T) {
+	dbPath := t.TempDir() + "/brain.db"
+	storefixture.PrepareCurrent(t, dbPath)
 	result, err := runConfiguredSemanticRefresh(t.Context(), config.Config{
-		DBPath: t.TempDir() + "/brain.db",
+		DBPath: dbPath,
 	}, semanticRefreshDeps{
 		resolve: func(string) (semanticconfig.Config, error) {
 			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
@@ -417,6 +423,7 @@ func TestConfiguredSemanticRefreshSetupErrorsAreTyped(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			dbPath := t.TempDir() + "/brain.db"
+			storefixture.PrepareCurrent(t, dbPath)
 			var calls []string
 			deps := semanticRefreshDeps{
 				resolve: func(string) (semanticconfig.Config, error) {
@@ -526,6 +533,7 @@ func TestConfiguredSemanticRefreshCancellationAlwaysReturnsTypedError(t *testing
 	t.Run("runner cannot convert cancellation to success", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		dbPath := t.TempDir() + "/brain.db"
+		storefixture.PrepareCurrent(t, dbPath)
 		result, err := runConfiguredSemanticRefresh(ctx, config.Config{
 			DBPath:   dbPath,
 			CacheDir: t.TempDir(),
@@ -555,6 +563,7 @@ func TestConfiguredSemanticRefreshCancellationAlwaysReturnsTypedError(t *testing
 
 func TestConfiguredSemanticRefreshProfileChangeUsesLedgerSupersession(t *testing.T) {
 	dbPath := t.TempDir() + "/brain.db"
+	storefixture.PrepareCurrent(t, dbPath)
 	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)

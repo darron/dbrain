@@ -15,6 +15,7 @@ import (
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/researcheval"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestResearchEvalCommandRunsAndPrintsPlannerMetadata(t *testing.T) {
@@ -26,10 +27,7 @@ func TestResearchEvalCommandRunsAndPrintsPlannerMetadata(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 	seedResearchEvalCommandItem(t, st)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close store: %v", err)

@@ -27,6 +27,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticrefresh"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
@@ -126,7 +127,7 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 		},
 	}
 
-	firstCommand := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+	firstCommand := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
 	var firstOutput bytes.Buffer
 	firstCommand.SetOut(&firstOutput)
 	firstCommand.SetErr(io.Discard)
@@ -208,7 +209,7 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 		t.Fatalf("native work at cancelled flush: builds=%d verifies=%d", builds, verifies)
 	}
 
-	secondCommand := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+	secondCommand := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
 	var secondOutput bytes.Buffer
 	secondCommand.SetOut(&secondOutput)
 	secondCommand.SetErr(io.Discard)
@@ -406,7 +407,7 @@ func TestSyncFamilySemanticAdmissionSkipsWritableDependencies(t *testing.T) {
 					return semanticrefresh.Result{}, errors.New("unexpected runner")
 				},
 			}
-			cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+			cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
 			var stdout bytes.Buffer
 			cmd.SetOut(&stdout)
 			cmd.SetErr(io.Discard)
@@ -453,7 +454,7 @@ func TestSyncFamilySourceFailureSkipsSemanticAdmission(t *testing.T) {
 	}
 
 	semanticCalls := map[string]int{}
-	cmd := newSyncCommandWithSemanticDeps(
+	cmd := newSyncSemanticTestCommand(t,
 		&rootOptions{root: root},
 		semanticRefreshDeps{
 			resolve: func(string) (semanticconfig.Config, error) {
@@ -515,7 +516,7 @@ func TestSyncFamilyJSONSuccessFlattensSourceStatsAndSemanticResult(t *testing.T)
 		return stats, nil
 	}
 
-	cmd := newSyncCommandWithSemanticDeps(
+	cmd := newSyncSemanticTestCommand(t,
 		&rootOptions{root: root},
 		semanticRefreshDeps{
 			resolve: func(string) (semanticconfig.Config, error) {
@@ -582,7 +583,7 @@ func TestSyncFamilyJSONFailureFlattensSourceStatsAndPreservesRefreshError(t *tes
 		return semanticrefresh.Result{Run: &run, Debt: debt}, refreshErr
 	})
 
-	cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+	cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(io.Discard)
@@ -674,7 +675,7 @@ func TestSyncFamilyHumanOutputIncludesSourceSummaryThenSemanticOutcome(t *testin
 			runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
 				return syncSemanticTestStats(), nil
 			}
-			cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, test.deps())
+			cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, test.deps())
 			var stdout bytes.Buffer
 			cmd.SetOut(&stdout)
 			cmd.SetErr(io.Discard)
@@ -734,7 +735,7 @@ func TestSyncFamilyHumanRefreshFailureShowsCommittedSourceAndBoundedError(t *tes
 		return semanticrefresh.Result{Run: &run, Debt: debt}, refreshErr
 	})
 
-	cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+	cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(io.Discard)
@@ -830,7 +831,7 @@ func TestSyncFamilySupportedBrokenAndCancellationReturnTypedNonzeroErrors(t *tes
 			runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
 				return syncSemanticTestStats(), nil
 			}
-			cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, test.deps)
+			cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, test.deps)
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
 			cmd.SilenceUsage = true
@@ -918,7 +919,7 @@ func TestSyncFamilyUnchangedSuccessClosesSourceThenRefreshesUnderLock(t *testing
 		},
 	}
 
-	cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+	cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
@@ -961,7 +962,7 @@ func TestSyncFamilyExecutionStateDoesNotLeakAcrossBareRepeatedOrFailedRuns(t *te
 		refreshes++
 		return completedSyncSemanticResult(), nil
 	})
-	cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+	cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SilenceUsage = true
@@ -1002,7 +1003,7 @@ func TestSyncFamilyRegisteredLeavesUseCentralPostHookWithoutShadowing(t *testing
 		return syncSemanticTestStats(), nil
 	}
 	refreshes := 0
-	cmd := newSyncCommandWithSemanticDeps(
+	cmd := newSyncSemanticTestCommand(t,
 		&rootOptions{root: root},
 		successfulSyncSemanticDeps(func(
 			context.Context,
@@ -1097,7 +1098,7 @@ func TestSyncFamilyCoarseLockSpansTerminalJSONOutput(t *testing.T) {
 				return test.refresh()
 			})
 			output := &syncLockObservingWriter{cfg: cfg}
-			cmd := newSyncCommandWithSemanticDeps(&rootOptions{root: root}, deps)
+			cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
 			cmd.SetOut(output)
 			cmd.SetErr(io.Discard)
 			cmd.SilenceUsage = true
@@ -1149,6 +1150,20 @@ func (w *syncLockObservingWriter) Write(data []byte) (int, error) {
 		_ = probe.Close()
 	}
 	return w.buffer.Write(data)
+}
+
+func newSyncSemanticTestCommand(
+	t *testing.T,
+	root *rootOptions,
+	deps semanticRefreshDeps,
+) *cobra.Command {
+	t.Helper()
+	cfg, err := config.Load(root.root)
+	if err != nil {
+		t.Fatalf("load sync semantic test config: %v", err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+	return newSyncCommandWithSemanticDeps(root, deps)
 }
 
 func successfulSyncSemanticDeps(
