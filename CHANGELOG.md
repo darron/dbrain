@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Stable OKF concept generation timestamps (2026-08-02)
+
+- **Data-derived `generated.at` values**: OKF 0.2 item and source concepts now
+  retain their meaningful content timestamps, while derived entity and topic
+  concepts use the newest timestamp among their referenced evidence. Hourly
+  exports no longer rewrite unchanged concept metadata with the export clock;
+  bundle-level `exported_at` continues to describe the export run itself.
+
 ### Lean durable documentation (2026-08-02)
 
 - **Current contracts over implementation mirrors**: Removed completed plans,

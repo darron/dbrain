@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/darron/dbrain/internal/topics"
 )
 
-func renderTopicDocument(topic topicDoc, opts ExportOptions, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string) (Document, []OmittedLink, error) {
+func renderTopicDocument(topic topicDoc, opts ExportOptions, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string, timestampBySourceKey map[string]string) (Document, []OmittedLink, error) {
 	doc := Document{
 		Path:        topic.Path,
 		Type:        "Topic",
@@ -17,7 +16,7 @@ func renderTopicDocument(topic topicDoc, opts ExportOptions, pathByConceptID map
 		Description: topicDescription(topic.Topic),
 		Resource:    "dbrain://" + topic.ConceptID,
 		Tags:        topicTags(topic.Topic),
-		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
+		Generated:   generatedMetadata(opts, latestEvidenceTimestamp(topicNodeSourceKeys(topic.Topic), timestampBySourceKey)),
 		Fields: []Field{
 			{Name: "dbrain_concept_id", Value: topic.ConceptID},
 			{Name: "dbrain_kind", Value: "topic"},
@@ -50,6 +49,14 @@ func renderTopicDocument(topic topicDoc, opts ExportOptions, pathByConceptID map
 	omitted := append(omittedEntities, omittedNodes...)
 	omitted = append(omitted, omittedEdges...)
 	return doc, omitted, nil
+}
+
+func topicNodeSourceKeys(topic topics.TopicMap) []string {
+	keys := make([]string, 0, len(topic.Nodes))
+	for _, node := range topic.Nodes {
+		keys = append(keys, node.SourceKey)
+	}
+	return keys
 }
 
 func topicTitle(topic topics.TopicMap) string {

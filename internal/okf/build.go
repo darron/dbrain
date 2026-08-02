@@ -73,6 +73,7 @@ func BuildBundle(snapshot store.OKFExportSnapshot, opts ExportOptions) (Bundle, 
 	conceptIDBySourceKey := map[string]string{}
 	sourceConceptByID := map[int64]string{}
 	itemConceptByID := map[int64]string{}
+	timestampBySourceKey := map[string]string{}
 
 	for _, item := range items {
 		if err := addManifestConcept(&manifest, ManifestConcept{
@@ -89,6 +90,7 @@ func BuildBundle(snapshot store.OKFExportSnapshot, opts ExportOptions) (Bundle, 
 		}
 		itemConceptByID[item.Item.ID] = item.ConceptID
 		conceptIDBySourceKey[item.Item.SourceKey] = item.ConceptID
+		timestampBySourceKey[item.Item.SourceKey] = timestampForItem(item.Item)
 	}
 	for _, source := range sources {
 		if err := addManifestConcept(&manifest, ManifestConcept{
@@ -105,6 +107,7 @@ func BuildBundle(snapshot store.OKFExportSnapshot, opts ExportOptions) (Bundle, 
 		}
 		sourceConceptByID[source.Source.ID] = source.ConceptID
 		conceptIDBySourceKey[source.Source.SourceKey] = source.ConceptID
+		timestampBySourceKey[source.Source.SourceKey] = timestampForSource(source.Source)
 	}
 	for _, entity := range entities {
 		if err := addManifestConcept(&manifest, ManifestConcept{
@@ -153,7 +156,7 @@ func BuildBundle(snapshot store.OKFExportSnapshot, opts ExportOptions) (Bundle, 
 		docs = append(docs, doc)
 	}
 	for _, entity := range entities {
-		doc, omitted, err := renderEntityDocument(entity, normalized, pathByConceptID, conceptIDBySourceKey)
+		doc, omitted, err := renderEntityDocument(entity, normalized, pathByConceptID, conceptIDBySourceKey, timestampBySourceKey)
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -161,7 +164,7 @@ func BuildBundle(snapshot store.OKFExportSnapshot, opts ExportOptions) (Bundle, 
 		docs = append(docs, doc)
 	}
 	for _, topic := range topicDocs {
-		doc, omitted, err := renderTopicDocument(topic, normalized, pathByConceptID, conceptIDBySourceKey)
+		doc, omitted, err := renderTopicDocument(topic, normalized, pathByConceptID, conceptIDBySourceKey, timestampBySourceKey)
 		if err != nil {
 			return Bundle{}, err
 		}
