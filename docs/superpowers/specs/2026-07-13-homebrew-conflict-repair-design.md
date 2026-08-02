@@ -1,5 +1,10 @@
 # Homebrew Reciprocal Conflict Repair
 
+> Superseded on 2026-08-01. Homebrew 6's per-formula trust model made the
+> reciprocal declarations break clean third-party installs. The current design
+> removes both declarations and relies on the explicit unlink/link procedure in
+> `docs/release-build.md`.
+
 ## Problem
 
 The moving `dbrain-test` formula declares `conflicts_with "dbrain"`, but the

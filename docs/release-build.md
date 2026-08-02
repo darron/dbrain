@@ -199,9 +199,12 @@ example value is literal shell text, not angle-bracket placeholder syntax.
 
 ### Install a candidate
 
-The stable and test formulae conflict because both provide the `dbrain`
-executable. They may remain installed in separate Homebrew kegs, but only one
-may be linked at a time:
+The stable and test formulae both provide the `dbrain` executable. They do not
+use cross-formula `conflicts_with` declarations because Homebrew 6 trusts only
+the fully qualified formula requested from a third-party tap; loading the
+sibling formula would make a clean public install fail its trust check. They
+may remain installed in separate Homebrew kegs, but only one may be linked at a
+time, so switch them explicitly:
 
 ```sh
 brew unlink dbrain
