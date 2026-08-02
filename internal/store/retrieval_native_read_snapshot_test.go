@@ -12,7 +12,7 @@ func TestRetrievalNativeReadSnapshotRetainsOneConsistentView(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	writer := openStoreAtPath(t, path)
+	writer := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = writer.Close() }()
 	seedActiveCompactionRoot(t, writer)
 	ctx := context.Background()

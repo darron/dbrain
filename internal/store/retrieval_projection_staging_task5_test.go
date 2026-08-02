@@ -14,7 +14,7 @@ import (
 )
 
 func TestTask5StagedBytesCountUTF8Bytes(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:task5-utf8-bytes")
@@ -82,7 +82,7 @@ func TestTask5StagedBytesCountUTF8Bytes(t *testing.T) {
 
 func TestProjectionStagingPromoteAndBlockRejectChangedPurgeEpoch(t *testing.T) {
 	t.Run("stage", func(t *testing.T) {
-		st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+		st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 		defer func() { _ = st.Close() }()
 		ctx := context.Background()
 		seedRetrievalSource(t, st, "source:epoch-stage")
@@ -109,7 +109,7 @@ func TestProjectionStagingPromoteAndBlockRejectChangedPurgeEpoch(t *testing.T) {
 	})
 
 	t.Run("promote", func(t *testing.T) {
-		st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+		st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 		defer func() { _ = st.Close() }()
 		ctx := context.Background()
 		seedRetrievalSource(t, st, "source:epoch-promote")
@@ -145,7 +145,7 @@ func TestProjectionStagingPromoteAndBlockRejectChangedPurgeEpoch(t *testing.T) {
 	})
 
 	t.Run("block", func(t *testing.T) {
-		st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+		st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 		defer func() { _ = st.Close() }()
 		ctx := context.Background()
 		seedRetrievalSource(t, st, "source:epoch-block")
@@ -179,7 +179,7 @@ func TestProjectionStagingPromoteAndBlockRejectChangedPurgeEpoch(t *testing.T) {
 
 func TestProjectionStagingPersistsOriginalPurgeEpochAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:epoch-resume")
 	work, projection := projectionWorkForEpochTest(t, st, "source:epoch-resume")
@@ -199,7 +199,7 @@ func TestProjectionStagingPersistsOriginalPurgeEpochAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	loaded, ok, err := st.LoadRetrievalProjectionStaging(ctx, work.Parent, work.DirtyRevision)
 	if err != nil || !ok {
@@ -253,7 +253,7 @@ func projectionWorkForEpochTest(
 }
 
 func TestTask5StoreStagingFullyValidatesOncePerLifecycleBoundary(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:task5-validation-lifecycle")
@@ -370,7 +370,7 @@ func TestTask5PromotionRejectsIncompleteAndFabricatedStaging(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 			defer func() { _ = st.Close() }()
 			ctx := context.Background()
 			seedRetrievalSource(t, st, "source:task5-adversarial")

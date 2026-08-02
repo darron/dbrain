@@ -56,9 +56,11 @@ type PipelineStore interface {
 }
 
 type pipeline struct {
-	store     PipelineStore
-	options   PipelineOptions
-	profileID string
+	store                     PipelineStore
+	options                   PipelineOptions
+	profileID                 string
+	effectiveSegmentTarget    int
+	effectiveSegmentHardLimit int
 
 	runProjection func(context.Context, semanticbuild.ChunkStore, semanticbuild.ProjectionBatchOptions) (semanticbuild.ChunkProgress, error)
 	runEmbed      func(context.Context, semanticbuild.EmbedStore, embedding.Provider, semanticbuild.EmbedBatchOptions) (semanticbuild.EmbedBatchResult, error)
@@ -110,14 +112,16 @@ func NewPipeline(st PipelineStore, options PipelineOptions) (StageExecutor, erro
 		options.Now = time.Now
 	}
 	return &pipeline{
-		store:         st,
-		options:       options,
-		profileID:     profileID,
-		runProjection: semanticbuild.RunProjectionBatch,
-		runEmbed:      semanticbuild.RunEmbedBatch,
-		runFlush:      semanticbuild.Flush,
-		runCompact:    semanticbuild.Compact,
-		runVerify:     semanticbuild.RunVerify,
+		store:                     st,
+		options:                   options,
+		profileID:                 profileID,
+		effectiveSegmentTarget:    store.RetrievalSegmentTarget,
+		effectiveSegmentHardLimit: store.RetrievalSegmentHardLimit,
+		runProjection:             semanticbuild.RunProjectionBatch,
+		runEmbed:                  semanticbuild.RunEmbedBatch,
+		runFlush:                  semanticbuild.Flush,
+		runCompact:                semanticbuild.Compact,
+		runVerify:                 semanticbuild.RunVerify,
 	}, nil
 }
 
@@ -126,6 +130,9 @@ func (p *pipeline) Execute(ctx context.Context, run store.SemanticRefreshRun) (S
 		return StageOutcome{}, fmt.Errorf("semantic refresh pipeline context is required")
 	}
 	if err := ctx.Err(); err != nil {
+		return StageOutcome{}, err
+	}
+	if err := p.validateEffectiveSegmentBoundaries(); err != nil {
 		return StageOutcome{}, err
 	}
 	if run.ProfileID != "" && run.ProfileID != p.profileID {
@@ -217,7 +224,7 @@ func (p *pipeline) executeEmbedding(
 		if profile.L0ReadyCount < 0 {
 			return fmt.Errorf("semantic embedding profile has a negative L0 count")
 		}
-		if profile.L0ReadyCount <= store.RetrievalSegmentHardLimit-selected {
+		if profile.L0ReadyCount <= p.effectiveSegmentHardLimit-selected {
 			return nil
 		}
 		var result semanticbuild.FlushResult
@@ -238,7 +245,7 @@ func (p *pipeline) executeEmbedding(
 		if err != nil {
 			return err
 		}
-		if err := applyFlushCount(&outcome, result); err != nil {
+		if err := applyFlushCount(&outcome, result, p.effectiveSegmentTarget); err != nil {
 			return err
 		}
 		if result.GenerationID != "" {
@@ -303,7 +310,7 @@ func (p *pipeline) executeFlush(
 		err := fmt.Errorf("semantic embedding profile has a negative L0 count")
 		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
 	}
-	if profile.L0ReadyCount <= store.RetrievalSegmentTarget {
+	if profile.L0ReadyCount <= p.effectiveSegmentTarget {
 		outcome.NextStage = store.SemanticRefreshCompaction
 		outcome.Checkpoint = compactionCheckpoint(run.CurrentGenerationID)
 		return outcome, nil
@@ -312,7 +319,7 @@ func (p *pipeline) executeFlush(
 	if err != nil {
 		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
 	}
-	if err := applyFlushCount(&outcome, result); err != nil {
+	if err := applyFlushCount(&outcome, result, p.effectiveSegmentTarget); err != nil {
 		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
 	}
 	if result.GenerationID != "" {
@@ -547,7 +554,7 @@ func (p *pipeline) executeReadiness(
 		return outcome, nil
 	}
 	if decision.State != semanticreadiness.StateReady ||
-		snapshot.L0ReadyCount > store.RetrievalSegmentTarget {
+		snapshot.L0ReadyCount > p.effectiveSegmentTarget {
 		err := fmt.Errorf("semantic readiness gates are not satisfied")
 		return outcome, pipelineStageError(ErrorReadiness, run, outcome, err)
 	}
@@ -562,8 +569,29 @@ func (p *pipeline) flushOptions() semanticbuild.FlushOptions {
 		BackendVersion: semanticindex.USearchVersion,
 		DistanceMetric: "cosine",
 		CacheDir:       p.options.CacheDir,
-		Limit:          store.RetrievalSegmentTarget,
+		Limit:          p.effectiveSegmentTarget,
 	}
+}
+
+func (p *pipeline) validateEffectiveSegmentBoundaries() error {
+	if p.effectiveSegmentTarget < 1 ||
+		p.effectiveSegmentTarget > store.RetrievalSegmentTarget {
+		return fmt.Errorf(
+			"semantic refresh effective segment target must be between 1 and %d",
+			store.RetrievalSegmentTarget,
+		)
+	}
+	if p.effectiveSegmentHardLimit < p.effectiveSegmentTarget ||
+		p.effectiveSegmentHardLimit > store.RetrievalSegmentHardLimit {
+		return fmt.Errorf(
+			"semantic refresh effective segment hard limit must be between target and %d",
+			store.RetrievalSegmentHardLimit,
+		)
+	}
+	if p.options.EmbeddingBatch > p.effectiveSegmentTarget {
+		return fmt.Errorf("semantic refresh embedding batch must not exceed effective segment target")
+	}
+	return nil
 }
 
 func nextPipelineOutcome(
@@ -580,11 +608,11 @@ func nextPipelineOutcome(
 	}
 }
 
-func applyFlushCount(outcome *StageOutcome, result semanticbuild.FlushResult) error {
-	if result.Flushed != store.RetrievalSegmentTarget {
+func applyFlushCount(outcome *StageOutcome, result semanticbuild.FlushResult, target int) error {
+	if result.Flushed != target {
 		return fmt.Errorf(
 			"semantic flush committed delta must equal %d",
-			store.RetrievalSegmentTarget,
+			target,
 		)
 	}
 	if result.Indexed < result.Flushed {

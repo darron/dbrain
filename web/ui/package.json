@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "dompurify": "^3.4.11",
+    "dompurify": "^3.4.12",
     "marked": "^18.0.2",
     "svelte": "^5.55.7"
   },

@@ -28,7 +28,7 @@ var expectedSemanticFoundationConstraintTriggerNames = []string{
 func TestOpenRecordsCurrentSchemaMigration(t *testing.T) {
 	t.Parallel()
 
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openStoreFromEmptyDatabase(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()
@@ -40,12 +40,12 @@ func TestOpenSchemaMigrationIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openStoreFromEmptyDatabase(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close first store: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -76,7 +76,7 @@ func TestProjectionStagingPurgeEpochMigrationDiscardsLegacyRowsAndAllowsRefresh(
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "brain.db")
-			st := openStoreAtPath(t, path)
+			st := openCurrentTestStoreAtPath(t, path)
 			ctx := context.Background()
 			seedRetrievalSource(t, st, "source:migration-epoch")
 			if _, err := st.db.Exec(`UPDATE retrieval_state SET purge_epoch=? WHERE singleton=1`, tc.stagedEpoch); err != nil {
@@ -124,7 +124,7 @@ func TestProjectionStagingPurgeEpochMigrationDiscardsLegacyRowsAndAllowsRefresh(
 				t.Fatal(err)
 			}
 
-			st = openStoreAtPath(t, path)
+			st = openCurrentTestStoreAtPath(t, path)
 			defer func() { _ = st.Close() }()
 			assertDatabaseTableColumn(t, st.db, "retrieval_projection_staging", "expected_purge_epoch")
 			var staged int
@@ -168,7 +168,7 @@ func TestProjectionStagingPurgeEpochMigrationDiscardsLegacyRowsAndAllowsRefresh(
 
 func TestSemanticRefreshRunsMigrationUpgradesV24DatabaseIdempotently(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestSemanticRefreshRunsMigrationUpgradesV24DatabaseIdempotently(t *testing.
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	ctx := context.Background()
 	run, resumed, err := st.StartOrResumeSemanticRefreshRun(ctx, StartSemanticRefreshRunInput{RunID: "migration-run", ProfileID: "profile-a", PurgeEpoch: 1, ProjectionWatermark: 2, Now: semanticRefreshTestNow()})
 	if err != nil || resumed || run.RunID != "migration-run" {
@@ -202,7 +202,7 @@ func TestSemanticRefreshRunsMigrationUpgradesV24DatabaseIdempotently(t *testing.
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsMigrationVersion).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("second migration count=%d err=%v", count, err)
@@ -224,7 +224,7 @@ func TestSemanticRefreshRunsMigrationUpgradesV24DatabaseIdempotently(t *testing.
 
 func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotently(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	run := startSemanticRefreshRunForTest(t, st, "prior-head-run", "profile-a", 3, 41)
 	updated, err := st.UpdateSemanticRefreshRun(t.Context(), SemanticRefreshRunUpdate{
 		RunID:             run.RunID,
@@ -329,7 +329,7 @@ func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotent
 
 func TestSemanticRefreshRunsArchiveSchemaIdentityRequiresArchiveAtV27(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestSemanticRefreshRunsArchiveSchemaIdentityRequiresArchiveAtV27(t *testing
 
 func TestMembershipL0ActivationMigrationRepairsCounters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 2)
 	first, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
@@ -386,7 +386,7 @@ func TestMembershipL0ActivationMigrationRepairsCounters(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	profile, err := st.RetrievalEmbeddingProfile(ctx, "flush-profile")
 	if err != nil {
@@ -425,11 +425,11 @@ func TestProjectionDirtyTriggerMigrationUpgradesGenuineV16DatabaseOnce(t *testin
 		t.Fatalf("close genuine v16 database: %v", err)
 	}
 
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close upgraded store: %v", err)
 	}
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 
 	var migrationCount int
@@ -486,7 +486,7 @@ func TestProjectionDirtyTriggerMigrationRepairsNonCanonicalV16Trigger(t *testing
 		t.Fatalf("close v16 database: %v", err)
 	}
 
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	var table, definition string
 	if err := st.db.QueryRow(`
@@ -504,7 +504,7 @@ func projectionDirtyTriggerV16Database(t *testing.T) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close initial store: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestSemanticFoundationMigrationCreatesV2TablesAndColumns(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 
 	for _, table := range []string{
@@ -575,7 +575,7 @@ func TestSemanticFoundationMigrationCreatesV2TablesAndColumns(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatalf("close initial store: %v", err)
 	}
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	var reopenedID string
 	if err := st.db.QueryRow(`SELECT database_id FROM retrieval_state WHERE singleton = 1`).Scan(&reopenedID); err != nil {
 		t.Fatalf("read reopened retrieval state: %v", err)
@@ -618,7 +618,7 @@ func TestSemanticFoundationMigrationSeedsEveryEligibleParentPending(t *testing.T
 		t.Fatalf("close v15 database: %v", err)
 	}
 
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	rows, err := st.db.Query(`
 		SELECT parent_kind, parent_source_key, status, dirty_revision, projected_revision
@@ -687,7 +687,7 @@ func TestSemanticFoundationMigrationRepairsExistingMetadataIdempotently(t *testi
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
-		st := openStoreAtPath(t, path)
+		st := openCurrentTestStoreAtPath(t, path)
 		if err := st.Close(); err != nil {
 			t.Fatalf("close repaired store attempt %d: %v", attempt+1, err)
 		}
@@ -743,7 +743,7 @@ func TestRetrievalOccurrenceChunkIndexRepairsExistingCurrentSchemaDatabase(t *te
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current-schema store: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestRetrievalOccurrenceChunkIndexRepairsExistingCurrentSchemaDatabase(t *te
 		t.Fatalf("close database without occurrence chunk index: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	var migrationName string
 	if err := st.db.QueryRow(`SELECT name FROM schema_migrations WHERE version = ?`, retrievalOccurrenceChunkIndexVersion).Scan(&migrationName); err != nil {
@@ -849,7 +849,7 @@ func TestSemanticFoundationMigrationRepairsEveryPartialFoundationTableAndDatabas
 				t.Fatalf("close partial foundation metadata: %v", err)
 			}
 
-			st := openStoreAtPath(t, path)
+			st := openCurrentTestStoreAtPath(t, path)
 			var databaseID string
 			if err := st.db.QueryRow(`SELECT database_id FROM retrieval_state WHERE singleton = 1`).Scan(&databaseID); err != nil {
 				_ = st.Close()
@@ -863,7 +863,7 @@ func TestSemanticFoundationMigrationRepairsEveryPartialFoundationTableAndDatabas
 				t.Fatalf("close repaired store: %v", err)
 			}
 
-			st = openStoreAtPath(t, path)
+			st = openCurrentTestStoreAtPath(t, path)
 			defer func() { _ = st.Close() }()
 			var reopenedID string
 			if err := st.db.QueryRow(`SELECT database_id FROM retrieval_state WHERE singleton = 1`).Scan(&reopenedID); err != nil {
@@ -935,7 +935,7 @@ func TestSemanticFoundationMigrationRepairsConstraintEquivalentTriggers(t *testi
 		t.Fatalf("close partial constraint schema: %v", err)
 	}
 
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	for _, trigger := range expectedSemanticFoundationConstraintTriggerNames {
 		assertSQLiteObject(t, st.db, "trigger", trigger)
@@ -995,7 +995,7 @@ func TestSemanticFoundationMigrationRepairsConstraintEquivalentTriggers(t *testi
 	if err := st.Close(); err != nil {
 		t.Fatalf("close constraint-repaired store: %v", err)
 	}
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	for _, trigger := range expectedSemanticFoundationConstraintTriggerNames {
 		assertSQLiteObject(t, st.db, "trigger", trigger)
 	}
@@ -1085,7 +1085,7 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingConstraintTriggers(t *tes
 	for _, trigger := range expectedSemanticFoundationConstraintTriggerNames {
 		t.Run(trigger, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "brain.db")
-			st := openStoreAtPath(t, path)
+			st := openCurrentTestStoreAtPath(t, path)
 			if err := st.Close(); err != nil {
 				t.Fatalf("close current database: %v", err)
 			}
@@ -1110,7 +1110,7 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingConstraintTriggers(t *tes
 
 func TestSemanticFoundationSchemaIdentityRejectsWrongConstraintTriggerBody(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current database: %v", err)
 	}
@@ -1157,7 +1157,7 @@ func TestSemanticFoundationSchemaIdentityRejectsMissingFoundationColumns(t *test
 		for _, missingColumn := range columns {
 			t.Run(table+"/"+missingColumn, func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "brain.db")
-				st := openStoreAtPath(t, path)
+				st := openCurrentTestStoreAtPath(t, path)
 				if err := st.Close(); err != nil {
 					t.Fatalf("close current database: %v", err)
 				}
@@ -1214,7 +1214,7 @@ func semanticFoundationV15Database(t *testing.T) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close initial database: %v", err)
 	}
@@ -1440,7 +1440,7 @@ func TestRetrievalChunkProvenanceMigrationRepairsV14SchemaIdempotently(t *testin
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close fresh store: %v", err)
 	}
@@ -1493,7 +1493,7 @@ func TestRetrievalChunkProvenanceMigrationRepairsV14SchemaIdempotently(t *testin
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
-		st = openStoreAtPath(t, path)
+		st = openCurrentTestStoreAtPath(t, path)
 		if err := st.Close(); err != nil {
 			t.Fatalf("close repaired store attempt %d: %v", attempt+1, err)
 		}
@@ -1614,7 +1614,7 @@ func TestMigrationRepairsProfileInvariantTriggersAfterRetrievalMigration(t *test
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close fresh store: %v", err)
 	}
@@ -1656,7 +1656,7 @@ func TestMigrationRepairsProfileInvariantTriggersAfterRetrievalMigration(t *test
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
-		st = openStoreAtPath(t, path)
+		st = openCurrentTestStoreAtPath(t, path)
 		if err := st.Close(); err != nil {
 			t.Fatalf("close repaired store attempt %d: %v", attempt+1, err)
 		}
@@ -1691,7 +1691,7 @@ func TestMigrationRepairsProfileInvariantTriggersAfterRetrievalMigration(t *test
 func TestEmbeddingProfileDefinitionMigrationRejectsMixedChunkProvenance(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	ctx := t.Context()
 	chunks := []retrievalchunk.Chunk{
 		testRetrievalChunk("migration-profile-a", "item", "item:migration-profile", 0, "hash-a", "alpha"),
@@ -1748,7 +1748,7 @@ func TestEmbeddingRevisionRepairV20UpgradesGenuineV18ReadyRow(t *testing.T) {
 	if err := ValidateRestorableDatabase(t.Context(), path); err != nil {
 		t.Fatalf("validate genuine v18 database: %v", err)
 	}
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = st.Close() }()
 	var migrationCount int
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=20 AND name='retrieval_embedding_revision_provenance_repair'`).Scan(&migrationCount); err != nil {
@@ -1803,7 +1803,7 @@ func TestEmbeddingRevisionRepairV20UpgradesGenuineV18ReadyRow(t *testing.T) {
 func genuineV18DatabaseWithUnprovenReadyEmbedding(t *testing.T) (string, embedding.Profile, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	profile := embedding.Profile{Provider: "fake", Model: "fake-v1", Dimensions: 2, ProjectionVersion: retrievalchunk.ProjectionVersion, ChunkerVersion: retrievalchunk.Version, Representation: embedding.RepresentationDenseF32, Normalization: embedding.NormalizationL2}
 	profileID, err := profile.ID()
 	if err != nil {
@@ -1871,7 +1871,7 @@ func TestMigrationRepairsAuditProvenanceStateIdempotently(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
 	result, err := st.UpsertItem(t.Context(), model.Item{
 		SourceKey:              "x:audit-provenance-migration",
@@ -1923,7 +1923,7 @@ func TestMigrationRepairsAuditProvenanceStateIdempotently(t *testing.T) {
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
-		st = openStoreAtPath(t, path)
+		st = openCurrentTestStoreAtPath(t, path)
 		if err := st.Close(); err != nil {
 			t.Fatalf("close repaired store attempt %d: %v", attempt+1, err)
 		}
@@ -2022,7 +2022,7 @@ func TestOpenSchemaMigrationRestoresFTSAvailabilityOnReopen(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if !st.HasFTS() {
 		t.Fatal("expected fresh store to have FTS enabled")
 	}
@@ -2067,7 +2067,7 @@ func TestOpenSchemaMigrationRestoresFTSAvailabilityOnReopen(t *testing.T) {
 		t.Fatalf("close first store: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -2087,7 +2087,7 @@ func TestOpenAdoptsExistingCurrentSchemaWithoutMigrationMetadata(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := st.db.Exec(`
 		INSERT INTO items (
@@ -2113,7 +2113,7 @@ func TestOpenAdoptsExistingCurrentSchemaWithoutMigrationMetadata(t *testing.T) {
 
 	clearMigrationMetadata(t, path)
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -2133,7 +2133,7 @@ func TestMigrationBackfillsExistingMediaDownloadErrors(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	now := time.Date(2026, 5, 5, 5, 14, 1, 0, time.UTC).Format(time.RFC3339)
 	if _, err := st.db.Exec(`
 		INSERT INTO media_assets (
@@ -2169,7 +2169,7 @@ func TestMigrationBackfillsExistingMediaDownloadErrors(t *testing.T) {
 		t.Fatalf("close sqlite directly: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -2194,7 +2194,7 @@ func TestMigrationBackfillsXArticleCanonicalURLs(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := st.db.Exec(`
 		INSERT INTO sources (
@@ -2229,7 +2229,7 @@ func TestMigrationBackfillsXArticleCanonicalURLs(t *testing.T) {
 		t.Fatalf("close sqlite directly: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -2265,7 +2265,7 @@ func TestOpenRepairsLegacyMediaSchemaBeforeCreatingRetryIndex(t *testing.T) {
 		t.Fatalf("close sqlite directly: %v", err)
 	}
 
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -2290,7 +2290,7 @@ func TestOpenRepairsAuthUserSchemaWhenVersionSixWasUsedByOlderMigration(t *testi
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close current store: %v", err)
 	}
@@ -2315,7 +2315,7 @@ func TestOpenRepairsAuthUserSchemaWhenVersionSixWasUsedByOlderMigration(t *testi
 		t.Fatalf("close sqlite directly: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -2334,7 +2334,7 @@ func TestMigrationRepairsBlockedParseErrorFeeds(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	ctx := t.Context()
 	result, err := st.UpsertFeed(ctx, FeedUpsert{
 		FeedKey:             "feed:parse-error",
@@ -2381,7 +2381,7 @@ func TestMigrationRepairsBlockedParseErrorFeeds(t *testing.T) {
 		t.Fatalf("close sqlite directly: %v", err)
 	}
 
-	st = openStoreAtPath(t, path)
+	st = openCurrentTestStoreAtPath(t, path)
 	defer func() {
 		_ = st.Close()
 	}()
@@ -2413,7 +2413,7 @@ func TestOpenReadOnlySkipsSchemaMigration(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	st := openStoreAtPath(t, path)
+	st := openCurrentTestStoreAtPath(t, path)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close writable store: %v", err)
 	}
@@ -2444,16 +2444,6 @@ func TestOpenReadOnlySkipsSchemaMigration(t *testing.T) {
 	if userVersion != 0 {
 		t.Fatalf("read-only open should not set user_version, got %d", userVersion)
 	}
-}
-
-func openStoreAtPath(t *testing.T, path string) *Store {
-	t.Helper()
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store %s: %v", path, err)
-	}
-	return st
 }
 
 func clearMigrationMetadata(t *testing.T, path string) {

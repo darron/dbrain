@@ -12,7 +12,7 @@ import (
 
 func TestReadRetrievalNativeCandidatesReturnsCurrentExactActiveMembersInRequestOrder(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedActiveCompactionRoot(t, st)
@@ -56,7 +56,7 @@ func TestReadRetrievalNativeCandidatesReturnsCurrentExactActiveMembersInRequestO
 
 func TestReadRetrievalNativeCandidatesRejectsChangedActiveRoot(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedActiveCompactionRoot(t, st)
@@ -76,7 +76,7 @@ func TestReadRetrievalNativeCandidatesRejectsChangedActiveRoot(t *testing.T) {
 
 func TestReadRetrievalNativeCandidatesRejectsListsAboveSQLiteBindBudget(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	candidates := make([]RetrievalNativeCandidate, MaxRetrievalNativeCandidates+1)
 	for index := range candidates {

@@ -22,7 +22,7 @@ func TestSemanticRuntimeReadinessRejectsPlausibleDirtyCounterUndercounts(t *test
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 			defer func() { _ = st.Close() }()
 			if _, err := st.db.Exec(fmt.Sprintf(`
 				WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value+1 FROM n WHERE value<%d)
@@ -64,7 +64,7 @@ func TestSemanticRuntimeReadinessRejectsPlausibleDirtyCounterUndercounts(t *test
 }
 
 func TestSemanticRuntimeReadinessRejectsImpossibleProjectionCounterRelations(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedRetrievalSource(t, st, "source:counter-relations")
 	if _, err := st.db.Exec(`UPDATE retrieval_state SET pending_parent_count=0,dirty_parent_count=0 WHERE singleton=1`); err != nil {
@@ -80,7 +80,7 @@ func TestSemanticRuntimeReadinessRejectsImpossibleProjectionCounterRelations(t *
 }
 
 func TestSemanticRuntimeGenerationPresenceUsesRequiredBoundedIndex(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	profile := readinessTestProfile()
 	profileID, _ := profile.ID()
@@ -134,7 +134,7 @@ func TestSemanticRuntimeGenerationPresenceUsesRequiredBoundedIndex(t *testing.T)
 }
 
 func TestSemanticRuntimeReadinessGenerationMetadataPlansStayBounded(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	profileID, err := readinessTestProfile().ID()
 	if err != nil {
@@ -193,7 +193,7 @@ func TestSemanticRuntimeReadinessGenerationMetadataPlansStayBounded(t *testing.T
 }
 
 func TestSemanticRuntimeDirtyObservationPlansStayIndexedAndSortFree(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	queries := []struct {
 		name      string

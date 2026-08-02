@@ -95,7 +95,7 @@ func TestPurgeItemIndexedContentWaitsForGenerationReader(t *testing.T) {
 }
 
 func TestPurgeItemIndexedContentRejectsStoreWithoutSemanticLockScope(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	t.Cleanup(func() { _ = st.Close() })
 	seedPurgeItem(t, st, "apple-note:unlocked-purge")
 

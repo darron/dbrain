@@ -13,7 +13,7 @@ import (
 func TestFeedTablesExistInCurrentSchema(t *testing.T) {
 	t.Parallel()
 
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()
@@ -33,7 +33,7 @@ func TestFeedEnableDisableKeepsRowsAndResetsHealth(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()
@@ -99,7 +99,7 @@ func TestListFeedsAndDueFeedsCloseKeyCursorBeforeLoadingRows(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()
@@ -150,7 +150,7 @@ func TestRecordFeedFetchAllowsAuditRowWithoutBodyForUnchanged200(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()
@@ -187,7 +187,7 @@ func TestApplyFeedEntryVersioningAndUniqueItem(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() {
 		_ = st.Close()
 	}()

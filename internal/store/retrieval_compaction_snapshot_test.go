@@ -12,7 +12,7 @@ import (
 
 func TestRetrievalActiveSegmentCompactionSnapshotReadsActiveRootInStableOrder(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedActiveCompactionRoot(t, st)
@@ -41,7 +41,7 @@ func TestRetrievalActiveSegmentCompactionSnapshotReadsActiveRootInStableOrder(t 
 
 func TestRetrievalActiveSegmentCompactionSnapshotCountsOnlyCurrentReadyMembership(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedActiveCompactionRoot(t, st)
@@ -72,7 +72,7 @@ func TestRetrievalActiveSegmentCompactionSnapshotCountsOnlyCurrentReadyMembershi
 
 func TestRetrievalActiveSegmentCompactionSnapshotRejectsCatalogMembershipDrift(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedActiveCompactionRoot(t, st)
 	if _, err := st.db.Exec(`UPDATE retrieval_index_segments SET indexed_chunk_count=99 WHERE segment_hash='segment-alpha'`); err != nil {
@@ -86,7 +86,7 @@ func TestRetrievalActiveSegmentCompactionSnapshotRejectsCatalogMembershipDrift(t
 
 func TestRetrievalActiveSegmentCompactionSnapshotDoesNotBorrowInactiveHistory(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 1)
 

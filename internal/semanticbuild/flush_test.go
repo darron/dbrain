@@ -163,6 +163,44 @@ func TestFlushStopsAtFiveThousandAndReportsExactL0Tail(t *testing.T) {
 	}
 }
 
+func TestFlushHonorsPositiveSmallerLimitAndRequiresFullWindow(t *testing.T) {
+	t.Parallel()
+	const limit = 8
+	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &flushFakeStore{databaseID: "db-1", window: store.RetrievalFlushWindow{
+		Profile: store.RetrievalEmbeddingProfileRow{ProfileID: profileID, L0ReadyCount: limit + 1},
+		Rows:    flushRows(profileID, limit), SnapshotRevision: limit,
+	}}
+	result, err := Flush(context.Background(), st, flushPayloadBuilder{}, FlushOptions{
+		Profile: profile, Backend: "usearch", BackendVersion: "2.26.0", DistanceMetric: "cosine", CacheDir: t.TempDir(), Limit: limit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.windowLimit != limit ||
+		len(st.completed.Members) != limit ||
+		result.Indexed != limit ||
+		result.Flushed != limit ||
+		result.L0Ready != 1 {
+		t.Fatalf("window_limit=%d members=%d result=%+v", st.windowLimit, len(st.completed.Members), result)
+	}
+
+	short := &flushFakeStore{databaseID: "db-1", window: store.RetrievalFlushWindow{
+		Profile:          store.RetrievalEmbeddingProfileRow{ProfileID: profileID, L0ReadyCount: limit},
+		Rows:             flushRows(profileID, limit-1),
+		SnapshotRevision: limit - 1,
+	}}
+	if _, err := Flush(context.Background(), short, flushPayloadBuilder{}, FlushOptions{
+		Profile: profile, Backend: "usearch", BackendVersion: "2.26.0", DistanceMetric: "cosine", CacheDir: t.TempDir(), Limit: limit,
+	}); err == nil || short.completeCalls != 0 {
+		t.Fatalf("short window err=%v complete_calls=%d", err, short.completeCalls)
+	}
+}
+
 func TestFlushAcceptsRowsSharingAtomicBatchRevision(t *testing.T) {
 	t.Parallel()
 	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})

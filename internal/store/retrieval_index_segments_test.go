@@ -13,7 +13,7 @@ import (
 
 func TestNextRetrievalFlushWindowUsesReadyRevisionPrefix(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 3)
@@ -29,7 +29,7 @@ func TestNextRetrievalFlushWindowUsesReadyRevisionPrefix(t *testing.T) {
 
 func TestCompleteRetrievalIndexGenerationActivatesProvenMemberRoot(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 3)
@@ -75,7 +75,7 @@ func TestCompleteRetrievalIndexGenerationActivatesProvenMemberRoot(t *testing.T)
 
 func TestCompleteRetrievalIndexGenerationRejectsChangedMember(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 1)
@@ -109,7 +109,7 @@ func TestCompleteRetrievalIndexGenerationRejectsChangedMember(t *testing.T) {
 
 func TestCompleteRetrievalIndexGenerationRetainsPriorImmutableSegment(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 3)
@@ -151,7 +151,7 @@ func TestCompleteRetrievalIndexGenerationRetainsPriorImmutableSegment(t *testing
 
 func TestCompleteRetrievalIndexGenerationAllowsSameSnapshotRewrite(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 2)
@@ -201,7 +201,7 @@ func TestCompleteRetrievalIndexGenerationAllowsSameSnapshotRewrite(t *testing.T)
 
 func TestCompleteRetrievalIndexGenerationRejectsChangedActiveRoot(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 2)
@@ -258,7 +258,7 @@ func TestCompleteRetrievalIndexGenerationRejectsChangedActiveRoot(t *testing.T) 
 
 func TestCompleteRetrievalIndexGenerationRejectsChangedPurgeEpoch(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 1)
@@ -286,7 +286,7 @@ func TestCompleteRetrievalIndexGenerationRejectsChangedPurgeEpoch(t *testing.T) 
 
 func TestCompleteRetrievalIndexGenerationRejectsDuplicateUsableMembership(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 1)

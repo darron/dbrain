@@ -24,6 +24,7 @@ import (
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/semanticconfig"
 	"github.com/darron/dbrain/internal/store"
+	"github.com/darron/dbrain/internal/testsupport/storefixture"
 )
 
 type fakeArchiveProxy struct {
@@ -2279,13 +2280,7 @@ func openTestStore(t *testing.T) (config.Config, *store.Store) {
 		}
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = st.Close()
-	})
+	st := storefixture.OpenCurrent(t, cfg.DBPath)
 
 	return cfg, st
 }

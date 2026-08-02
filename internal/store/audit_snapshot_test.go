@@ -14,7 +14,7 @@ func TestAuditReadSnapshotRetainsOneConsistentView(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	writer := openStoreAtPath(t, path)
+	writer := openCurrentTestStoreAtPath(t, path)
 	defer func() { _ = writer.Close() }()
 	seedAuditSnapshotItem(t, writer, "x:snapshot-one")
 
@@ -130,7 +130,7 @@ func TestAuditReadSnapshotRestoresReadOnlyQueryOnlyState(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
-	writer := openStoreAtPath(t, path)
+	writer := openCurrentTestStoreAtPath(t, path)
 	seedAuditSnapshotItem(t, writer, "x:readonly-query-only")
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)

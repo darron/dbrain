@@ -12,7 +12,7 @@ import (
 
 func TestStreamRetrievalActiveSegmentMembersStreamsSelectedRootMembersInOrder(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedActiveCompactionRoot(t, st)
 	request := activeCompactionStreamRequest(t, st, "segment-alpha", "segment-bravo")
@@ -45,7 +45,7 @@ func TestStreamRetrievalActiveSegmentMembersStreamsSelectedRootMembersInOrder(t 
 
 func TestStreamRetrievalActiveSegmentMembersOmitsStaleMembership(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedActiveCompactionRoot(t, st)
 	changed := testEmbedding("chunk-b", "flush-profile", "hash-b")
@@ -73,7 +73,7 @@ func TestStreamRetrievalActiveSegmentMembersOmitsStaleMembership(t *testing.T) {
 
 func TestStreamRetrievalActiveSegmentMembersRejectsChangedRootOrInactiveSegment(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedActiveCompactionRoot(t, st)
 	request := activeCompactionStreamRequest(t, st, "segment-alpha")
@@ -90,7 +90,7 @@ func TestStreamRetrievalActiveSegmentMembersRejectsChangedRootOrInactiveSegment(
 
 func TestStreamRetrievalActiveSegmentMembersStopsAtVisitorErrorAndCloses(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedActiveCompactionRoot(t, st)
 	want := errors.New("stop stream")
@@ -109,7 +109,7 @@ func TestStreamRetrievalActiveSegmentMembersStopsAtVisitorErrorAndCloses(t *test
 
 func TestStreamRetrievalActiveSegmentMembersRejectsCorruptCurrentEmbedding(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedActiveCompactionRoot(t, st)
 	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET vector_bytes=x'00' WHERE chunk_id='chunk-a' AND profile_id='flush-profile'`); err != nil {
@@ -128,7 +128,7 @@ func TestStreamRetrievalActiveSegmentMembersRejectsCorruptCurrentEmbedding(t *te
 
 func TestStreamRetrievalActiveSegmentMembersRejectsSelectedCatalogDrift(t *testing.T) {
 	t.Parallel()
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	seedActiveCompactionRoot(t, st)
 	if _, err := st.db.Exec(`UPDATE retrieval_index_segments SET indexed_chunk_count=99 WHERE segment_hash='segment-alpha'`); err != nil {

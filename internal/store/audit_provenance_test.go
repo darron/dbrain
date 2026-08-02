@@ -12,7 +12,7 @@ import (
 func TestAuditReadSnapshotProvenanceUsesMigrationCutoverForAllChecks(t *testing.T) {
 	t.Parallel()
 
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	cutover := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
 	if _, err := st.db.Exec(`UPDATE schema_migrations SET applied_at = ? WHERE name = 'audit_provenance_v1'`, cutover.Format(time.RFC3339)); err != nil {
@@ -107,7 +107,7 @@ func TestAuditReadSnapshotProvenanceTreatsMissingOrContradictoryCutoverAsUnknown
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 			defer func() { _ = st.Close() }()
 			tc.mutate(t, st)
 
@@ -135,7 +135,7 @@ func TestAuditReadSnapshotProvenanceTreatsMissingOrContradictoryCutoverAsUnknown
 func TestAuditReadSnapshotProvenanceReturnsMalformedMetadataReadError(t *testing.T) {
 	t.Parallel()
 
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	if _, err := st.db.Exec(`DROP TABLE schema_migrations; CREATE TABLE schema_migrations(unrelated TEXT)`); err != nil {
 		t.Fatalf("replace migration metadata with malformed table: %v", err)

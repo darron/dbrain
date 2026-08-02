@@ -11,7 +11,7 @@ import (
 )
 
 func TestProjectedMutationRollbackRestoresAuthoritativeAndRetrievalState(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedRetrievalSource(t, st, "source:rollback-dirty")
@@ -83,7 +83,7 @@ func TestProjectedMutationRollbackRestoresAuthoritativeAndRetrievalState(t *test
 }
 
 func TestProjectedEnrichmentTransitionsDirtyExactlyAffectedParentsOnce(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedPurgeItem(t, st, "item:enrichment-transition-a")
@@ -148,7 +148,7 @@ func TestProjectedEnrichmentTransitionsDirtyExactlyAffectedParentsOnce(t *testin
 }
 
 func TestProjectedMutationItemSourceKeyMoveUsesOneRevisionForOldCleanupAndNewProjection(t *testing.T) {
-	st := openStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 	seedPurgeItem(t, st, "item:key-old")
