@@ -231,6 +231,7 @@ func bundleMetadataDocument(opts ExportOptions) Document {
 		Type:        "Bundle Metadata",
 		Title:       "dbrain OKF Bundle",
 		Description: "Metadata for a generated dbrain OKF export.",
+		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
 		Fields: []Field{
 			{Name: "okf_version", Value: OKFVersion},
 			{Name: "okf_profile", Value: opts.Profile},
@@ -239,6 +240,14 @@ func bundleMetadataDocument(opts ExportOptions) Document {
 		},
 		Body: "# Bundle\n\nGenerated dbrain Open Knowledge Format bundle.\n",
 	}
+}
+
+func generatedMetadata(opts ExportOptions, at string) Generated {
+	version := strings.TrimSpace(opts.DbrainVersion)
+	if version == "" {
+		version = "unknown"
+	}
+	return Generated{By: "dbrain/" + version, At: strings.TrimSpace(at)}
 }
 
 func itemTitle(item model.Item) string {

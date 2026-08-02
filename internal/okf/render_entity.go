@@ -4,11 +4,16 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/entities"
 )
 
-func renderEntityDocument(entity entityDoc, _ ExportOptions, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string) (Document, []OmittedLink, error) {
+func renderEntityDocument(entity entityDoc, opts ExportOptions, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string) (Document, []OmittedLink, error) {
+	sources, err := entitySourceReferences(entity, pathByConceptID, conceptIDBySourceKey)
+	if err != nil {
+		return Document{}, nil, err
+	}
 	doc := Document{
 		Path:        entity.Path,
 		Type:        "Entity",
@@ -16,6 +21,8 @@ func renderEntityDocument(entity entityDoc, _ ExportOptions, pathByConceptID map
 		Description: entityDescription(entity.Entity),
 		Resource:    firstNonEmpty(entity.Entity.CanonicalURL, "dbrain://"+entity.ConceptID),
 		Tags:        entityTags(entity.Entity),
+		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
+		Sources:     sources,
 		Fields: []Field{
 			{Name: "dbrain_concept_id", Value: entity.ConceptID},
 			{Name: "dbrain_kind", Value: "entity"},
@@ -41,9 +48,39 @@ func renderEntityDocument(entity entityDoc, _ ExportOptions, pathByConceptID map
 	if err != nil {
 		return Document{}, nil, err
 	}
-	writeEntityCitations(&body, entity.Entity)
 	doc.Body = strings.TrimSpace(body.String()) + "\n"
 	return doc, append(omittedRelated, omittedRefs...), nil
+}
+
+func entitySourceReferences(entity entityDoc, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string) ([]SourceReference, error) {
+	refs := append([]entities.Reference(nil), entity.Entity.References...)
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].SourceKey == refs[j].SourceKey {
+			return refs[i].URL < refs[j].URL
+		}
+		return refs[i].SourceKey < refs[j].SourceKey
+	})
+	seen := map[string]struct{}{}
+	sources := make([]SourceReference, 0, len(refs))
+	for _, ref := range refs {
+		resource := strings.TrimSpace(ref.URL)
+		if targetPath := pathByConceptID[conceptIDBySourceKey[ref.SourceKey]]; targetPath != "" {
+			rel, err := RelativeLink(entity.Path, targetPath)
+			if err != nil {
+				return nil, err
+			}
+			resource = rel
+		}
+		if resource == "" {
+			continue
+		}
+		if _, ok := seen[resource]; ok {
+			continue
+		}
+		seen[resource] = struct{}{}
+		sources = append(sources, SourceReference{Resource: resource, Title: firstNonEmpty(ref.Title, ref.URL, ref.SourceKey)})
+	}
+	return sources, nil
 }
 
 func entityTitle(entity entities.Entity) string {
@@ -197,11 +234,4 @@ func writeRelationshipSuffix(b *strings.Builder, relationship, kind, key string)
 		b.WriteString(strings.Join(parts, "; "))
 	}
 	b.WriteString("\n")
-}
-
-func writeEntityCitations(b *strings.Builder, entity entities.Entity) {
-	if strings.TrimSpace(entity.CanonicalURL) == "" {
-		return
-	}
-	writeSection(b, "Citations", "[1] "+MarkdownLink("Canonical entity URL", entity.CanonicalURL))
 }
