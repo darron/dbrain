@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
@@ -18,7 +17,7 @@ func renderItemDocument(item itemDoc, snapshot store.OKFExportSnapshot, opts Exp
 		Description: itemDescription(item.Item),
 		Resource:    firstNonEmpty(item.Item.CanonicalURL, "dbrain://"+item.ConceptID),
 		Tags:        itemTags(item.Item),
-		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
+		Generated:   generatedMetadata(opts, timestampForItem(item.Item)),
 		Sources:     sourceReferences(item.Item.CanonicalURL, itemTitle(item.Item)),
 		Fields: []Field{
 			{Name: "dbrain_concept_id", Value: item.ConceptID},

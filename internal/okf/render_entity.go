@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/darron/dbrain/internal/entities"
 )
 
-func renderEntityDocument(entity entityDoc, opts ExportOptions, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string) (Document, []OmittedLink, error) {
+func renderEntityDocument(entity entityDoc, opts ExportOptions, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string, timestampBySourceKey map[string]string) (Document, []OmittedLink, error) {
 	sources, err := entitySourceReferences(entity, pathByConceptID, conceptIDBySourceKey)
 	if err != nil {
 		return Document{}, nil, err
@@ -21,7 +20,7 @@ func renderEntityDocument(entity entityDoc, opts ExportOptions, pathByConceptID 
 		Description: entityDescription(entity.Entity),
 		Resource:    firstNonEmpty(entity.Entity.CanonicalURL, "dbrain://"+entity.ConceptID),
 		Tags:        entityTags(entity.Entity),
-		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
+		Generated:   generatedMetadata(opts, latestEvidenceTimestamp(entityReferenceSourceKeys(entity.Entity), timestampBySourceKey)),
 		Sources:     sources,
 		Fields: []Field{
 			{Name: "dbrain_concept_id", Value: entity.ConceptID},
@@ -50,6 +49,14 @@ func renderEntityDocument(entity entityDoc, opts ExportOptions, pathByConceptID 
 	}
 	doc.Body = strings.TrimSpace(body.String()) + "\n"
 	return doc, append(omittedRelated, omittedRefs...), nil
+}
+
+func entityReferenceSourceKeys(entity entities.Entity) []string {
+	keys := make([]string, 0, len(entity.References))
+	for _, ref := range entity.References {
+		keys = append(keys, ref.SourceKey)
+	}
+	return keys
 }
 
 func entitySourceReferences(entity entityDoc, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string) ([]SourceReference, error) {

@@ -2,7 +2,6 @@ package okf
 
 import (
 	"strings"
-	"time"
 
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
@@ -16,7 +15,7 @@ func renderSourceDocument(source sourceDoc, snapshot store.OKFExportSnapshot, op
 		Description: sourceDescription(source.Source),
 		Resource:    firstNonEmpty(source.Source.CanonicalURL, "dbrain://"+source.ConceptID),
 		Tags:        sourceTags(source.Source),
-		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
+		Generated:   generatedMetadata(opts, timestampForSource(source.Source)),
 		Sources:     sourceReferences(source.Source.CanonicalURL, sourceTitle(source.Source)),
 		Fields: []Field{
 			{Name: "dbrain_concept_id", Value: source.ConceptID},

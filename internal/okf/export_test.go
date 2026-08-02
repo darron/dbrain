@@ -126,7 +126,7 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 		t.Fatalf("empty string frontmatter field leaked into OKF output:\n%s", firstBytes)
 	}
 	for _, want := range []string{
-		"generated:\n  by: dbrain/test\n  at: \"2026-06-14T18:00:00Z\"",
+		"generated:\n  by: dbrain/test\n  at: \"2026-06-01T16:00:00Z\"",
 		"sources:\n  - resource: https://x.com/example/status/204",
 		"type: Item",
 		"dbrain_concept_id: item/x%3A204",
@@ -266,14 +266,15 @@ func TestBuildBundleDerivedViewsLinkToExportedConcepts(t *testing.T) {
 		}},
 	}
 
-	bundle, err := BuildBundle(store.OKFExportSnapshot{
+	snapshot := store.OKFExportSnapshot{
 		Items:           []model.Item{item},
 		Sources:         []model.SourceDocument{source},
 		ItemSources:     map[int64][]model.ItemSourceRef{},
 		SourceBacklinks: map[int64][]model.SourceBacklink{},
 		ItemMedia:       map[int64][]model.ItemMediaRef{},
 		ItemChildren:    map[int64][]model.SourceBacklink{},
-	}, ExportOptions{
+	}
+	opts := ExportOptions{
 		Profile:         ProfilePrivate,
 		IncludeItems:    true,
 		IncludeSources:  true,
@@ -282,9 +283,30 @@ func TestBuildBundleDerivedViewsLinkToExportedConcepts(t *testing.T) {
 		Now:             now,
 		Entities:        []entities.Entity{entity},
 		Topics:          []topics.TopicMap{graph},
-	})
+	}
+	bundle, err := BuildBundle(snapshot, opts)
 	if err != nil {
 		t.Fatalf("BuildBundle: %v", err)
+	}
+	laterOpts := opts
+	laterOpts.Now = now.Add(time.Hour)
+	laterBundle, err := BuildBundle(snapshot, laterOpts)
+	if err != nil {
+		t.Fatalf("BuildBundle later: %v", err)
+	}
+	if got, want := renderStableBundleForTest(t, laterBundle), renderStableBundleForTest(t, bundle); got != want {
+		t.Fatalf("stable concept documents changed with export clock\nfirst:\n%s\nlater:\n%s", want, got)
+	}
+	wantGeneratedAt := map[string]string{
+		"Item":   "2026-06-01T10:00:00Z",
+		"Source": "2026-06-14T18:30:00Z",
+		"Entity": "2026-06-14T18:30:00Z",
+		"Topic":  "2026-06-14T18:30:00Z",
+	}
+	for _, doc := range bundle.Documents {
+		if want, ok := wantGeneratedAt[doc.Type]; ok && doc.Generated.At != want {
+			t.Fatalf("%s generated.at = %q, want %q", doc.Type, doc.Generated.At, want)
+		}
 	}
 	if bundle.Stats.EntitiesWritten != 1 || bundle.Stats.TopicsWritten != 1 || bundle.Stats.OmittedByFilterLinks != 0 {
 		t.Fatalf("unexpected derived stats: %+v", bundle.Stats)
@@ -373,6 +395,11 @@ func TestBuildBundleDerivedViewsRecordOmittedFilteredLinks(t *testing.T) {
 	}
 	if bundle.Stats.OmittedByFilterLinks == 0 {
 		t.Fatalf("expected omitted-by-filter derived links, got stats %+v", bundle.Stats)
+	}
+	for _, doc := range bundle.Documents {
+		if (doc.Type == "Entity" || doc.Type == "Topic") && doc.Generated.At != "" {
+			t.Fatalf("%s generated.at = %q without dated evidence, want empty", doc.Type, doc.Generated.At)
+		}
 	}
 	for _, link := range bundle.Manifest.OmittedLinks {
 		if strings.TrimSpace(link.TargetPath) == "" {
@@ -575,4 +602,16 @@ func renderBundleForTest(t *testing.T, bundle Bundle) string {
 		b.WriteString(rendered)
 	}
 	return b.String()
+}
+
+func renderStableBundleForTest(t *testing.T, bundle Bundle) string {
+	t.Helper()
+	stable := Bundle{Documents: make([]Document, 0, len(bundle.Documents))}
+	for _, doc := range bundle.Documents {
+		if doc.Path == "bundle.md" {
+			continue
+		}
+		stable.Documents = append(stable.Documents, doc)
+	}
+	return renderBundleForTest(t, stable)
 }

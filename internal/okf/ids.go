@@ -67,6 +67,47 @@ func itemYear(item model.Item) string {
 	return "undated"
 }
 
+func timestampForItem(item model.Item) string {
+	for _, value := range []string{item.PublishedAt, item.SavedAt} {
+		if normalized := normalizeTimestamp(value); normalized != "" {
+			return normalized
+		}
+	}
+	return ""
+}
+
+func timestampForSource(source model.SourceDocument) string {
+	return timeString(source.CreatedAt)
+}
+
+func latestEvidenceTimestamp(sourceKeys []string, timestampBySourceKey map[string]string) string {
+	var latest time.Time
+	latestValue := ""
+	fallback := ""
+	for _, sourceKey := range sourceKeys {
+		value := normalizeTimestamp(timestampBySourceKey[strings.TrimSpace(sourceKey)])
+		if value == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			if value > fallback {
+				fallback = value
+			}
+			continue
+		}
+		parsed = parsed.UTC()
+		if latestValue == "" || parsed.After(latest) {
+			latest = parsed
+			latestValue = parsed.Format(time.RFC3339)
+		}
+	}
+	if latestValue != "" {
+		return latestValue
+	}
+	return fallback
+}
+
 func timeString(value time.Time) string {
 	if value.IsZero() {
 		return ""
