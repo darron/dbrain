@@ -15,9 +15,10 @@
   import OperationsPanel from "./components/OperationsPanel.svelte";
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
-  import { addLink, compareResearchTrace, createChatShare, getAuditHistory, getAuditLatest, getAuditRun, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, startAuditRun, synthesizeResearch } from "./lib/api.js";
+  import { addLink, compareResearchTrace, createChatShare, deleteChatShare, getAuditHistory, getAuditLatest, getAuditRun, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, startAuditRun, synthesizeResearch } from "./lib/api.js";
   import { applyRunMonitoringUnknown, applyRunStatus, auditRunBlocksStart, freshnessDeadlineElapsed, freshnessRefreshDelayMs, markEnvelopeStale, overallHealth, runGenerationStableRead, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline } from "./lib/audit.js";
   import { buildChatRetrievalQuestion, buildChatTraceContinuity, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
+  import { confirmShareDeletion, createShareListGeneration, nextShareDeleteState, removeDeletedShareReferences } from "./lib/chatShares.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
   import { formatSemanticDiagnostics } from "./lib/researchDiagnostics.js";
   import { formatTime } from "./lib/time.js";
@@ -120,6 +121,8 @@
   let sharesState = "idle";
   let sharesError = "";
   let shares = [];
+  let shareDeleteStateBySlug = {};
+  const shareListGeneration = createShareListGeneration();
   let harnessState = "idle";
   let harnessError = "";
   let harnessTraces = [];
@@ -606,13 +609,16 @@
   }
 
   async function loadShares() {
+    const generation = shareListGeneration.begin();
     sharesState = "loading";
     sharesError = "";
     try {
       const response = await listChatShares();
+      if (!shareListGeneration.isCurrent(generation)) return;
       shares = Array.isArray(response?.shares) ? response.shares : [];
       sharesState = "ready";
     } catch (error) {
+      if (!shareListGeneration.isCurrent(generation)) return;
       sharesError = error.message;
       sharesState = "error";
     }
@@ -1025,6 +1031,28 @@
       await navigator.clipboard.writeText(url);
     } catch {
       // The visible link remains available when clipboard access is denied.
+    }
+  }
+
+  async function deleteListedShare(share) {
+    const slug = String(share?.slug || "").trim();
+    if (!slug || shareDeleteStateBySlug[slug]?.pending) return;
+    if (typeof window === "undefined" || !confirmShareDeletion(window.confirm.bind(window), share)) return;
+
+    shareDeleteStateBySlug = nextShareDeleteState(shareDeleteStateBySlug, slug, true);
+    try {
+      await deleteChatShare(slug);
+      shareListGeneration.invalidate();
+      const remaining = removeDeletedShareReferences(shares, chatShareByTurn, slug);
+      shares = remaining.shares;
+      chatShareByTurn = remaining.chatShareByTurn;
+      sharesState = "ready";
+      sharesError = "";
+      const nextState = { ...shareDeleteStateBySlug };
+      delete nextState[slug];
+      shareDeleteStateBySlug = nextState;
+    } catch (error) {
+      shareDeleteStateBySlug = nextShareDeleteState(shareDeleteStateBySlug, slug, false, error.message);
     }
   }
 
@@ -1534,7 +1562,7 @@
                   </div>
                 {:else}
                   <div class="share-list">
-                    {#each shares as share}
+                    {#each shares as share (share.slug)}
                       <article class="share-list-card">
                         <div class="share-list-main">
                           <a class="share-title" href={share.url} target="_blank" rel="noreferrer">{share.title || "Shared dbrain answer"}</a>
@@ -1551,7 +1579,13 @@
                         <div class="share-actions">
                           <a class="link-chip" href={share.url} target="_blank" rel="noreferrer">Open</a>
                           <button class="btn-ghost compact-action" type="button" on:click={() => copyListedShare(share)}>Copy URL</button>
+                          <button class="btn-danger compact-action" type="button" disabled={shareDeleteStateBySlug[share.slug]?.pending} on:click={() => deleteListedShare(share)}>
+                            {shareDeleteStateBySlug[share.slug]?.pending ? "Deleting…" : "Delete"}
+                          </button>
                         </div>
+                        {#if shareDeleteStateBySlug[share.slug]?.error}
+                          <p class="message error" role="alert">{shareDeleteStateBySlug[share.slug].error}</p>
+                        {/if}
                       </article>
                     {/each}
                   </div>

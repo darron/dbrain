@@ -2,6 +2,7 @@ package okf
 
 import (
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
@@ -15,7 +16,8 @@ func renderSourceDocument(source sourceDoc, snapshot store.OKFExportSnapshot, op
 		Description: sourceDescription(source.Source),
 		Resource:    firstNonEmpty(source.Source.CanonicalURL, "dbrain://"+source.ConceptID),
 		Tags:        sourceTags(source.Source),
-		Timestamp:   timestampForSource(source.Source),
+		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
+		Sources:     sourceReferences(source.Source.CanonicalURL, sourceTitle(source.Source)),
 		Fields: []Field{
 			{Name: "dbrain_concept_id", Value: source.ConceptID},
 			{Name: "dbrain_kind", Value: "source"},
@@ -39,7 +41,6 @@ func renderSourceDocument(source sourceDoc, snapshot store.OKFExportSnapshot, op
 	if err != nil {
 		return Document{}, nil, err
 	}
-	writeSourceCitations(&body, source.Source)
 	doc.Body = strings.TrimSpace(body.String()) + "\n"
 	return doc, omitted, nil
 }
@@ -120,11 +121,4 @@ func writeSourceBacklinks(b *strings.Builder, source sourceDoc, snapshot store.O
 	}
 	writeSection(b, "Referenced By", body.String())
 	return omitted, nil
-}
-
-func writeSourceCitations(b *strings.Builder, source model.SourceDocument) {
-	if strings.TrimSpace(source.CanonicalURL) == "" {
-		return
-	}
-	writeSection(b, "Citations", "[1] "+MarkdownLink("Canonical source", source.CanonicalURL))
 }

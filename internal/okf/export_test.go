@@ -126,6 +126,8 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 		t.Fatalf("empty string frontmatter field leaked into OKF output:\n%s", firstBytes)
 	}
 	for _, want := range []string{
+		"generated:\n  by: dbrain/test\n  at: \"2026-06-14T18:00:00Z\"",
+		"sources:\n  - resource: https://x.com/example/status/204",
 		"type: Item",
 		"dbrain_concept_id: item/x%3A204",
 		"summary_model: local/test",
@@ -154,6 +156,9 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 	if strings.Contains(firstBytes, "Local Path:") {
 		t.Fatalf("local path metadata leaked into OKF output:\n%s", firstBytes)
 	}
+	if strings.Contains(firstBytes, "timestamp:") || strings.Contains(firstBytes, "# Citations") {
+		t.Fatalf("legacy OKF v0.1 metadata leaked into OKF v0.2 output:\n%s", firstBytes)
+	}
 
 	root := t.TempDir()
 	if err := writeBundle(root, first); err != nil {
@@ -170,8 +175,8 @@ func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read index: %v", err)
 	}
-	if strings.HasPrefix(string(index), "---") {
-		t.Fatalf("index.md must not have frontmatter:\n%s", string(index))
+	if !strings.HasPrefix(string(index), "---\nokf_version: \"0.2\"\n---\n") {
+		t.Fatalf("root index.md must declare OKF v0.2:\n%s", string(index))
 	}
 	if !strings.Contains(string(index), `A title with \] brackets`) {
 		t.Fatalf("index did not escape link text:\n%s", string(index))
@@ -283,6 +288,19 @@ func TestBuildBundleDerivedViewsLinkToExportedConcepts(t *testing.T) {
 	}
 	if bundle.Stats.EntitiesWritten != 1 || bundle.Stats.TopicsWritten != 1 || bundle.Stats.OmittedByFilterLinks != 0 {
 		t.Fatalf("unexpected derived stats: %+v", bundle.Stats)
+	}
+	for _, doc := range bundle.Documents {
+		if doc.Type != "Entity" {
+			continue
+		}
+		if len(doc.Sources) != 2 {
+			t.Fatalf("entity sources = %+v, want its two evidence references", doc.Sources)
+		}
+		for _, ref := range doc.Sources {
+			if ref.Resource == entity.CanonicalURL || (!strings.Contains(ref.Resource, "items/") && !strings.Contains(ref.Resource, "sources/")) {
+				t.Fatalf("entity source is not an exported evidence concept: %+v", ref)
+			}
+		}
 	}
 	rendered := renderBundleForTest(t, bundle)
 	for _, want := range []string{
@@ -448,15 +466,15 @@ func TestValidateBundleSkipsMarkedEvidenceLinksOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateBundle: %v", err)
 	}
-	if result.Conformant || result.BrokenInternalLinks != 1 {
-		t.Fatalf("expected exactly one generated broken link, got %+v", result)
+	if !result.Conformant || result.BrokenInternalLinks != 1 {
+		t.Fatalf("broken links must remain diagnostic without rejecting the bundle, got %+v", result)
 	}
 	joined := strings.Join(result.Errors, "\n")
 	if strings.Contains(joined, "CONTRIBUTING.md") {
 		t.Fatalf("skipped source payload link was validated unexpectedly: %s", joined)
 	}
-	if !strings.Contains(joined, "missing.md") {
-		t.Fatalf("generated broken link was not reported: %s", joined)
+	if strings.Contains(joined, "missing.md") {
+		t.Fatalf("broken link was incorrectly promoted to a conformance error: %s", joined)
 	}
 }
 

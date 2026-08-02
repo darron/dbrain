@@ -10,6 +10,7 @@ vars:
   USEARCH_MACOS_DEPLOYMENT_TARGET: "12.0"
   USEARCH_BUILD_ROOT: "/private/tmp/dbrain-usearch-v2.26.0-darwin-arm64"
   USEARCH_STAGE_DIR: "{{.USEARCH_BUILD_ROOT}}/stage"
+  USEARCH_RACE_PACKAGES: "./cmd/devtools/semantic_usearch_bakeoff ./cmd/devtools/semantic_usearch_segment_flush ./internal/annbakeoff ./internal/app ./internal/brainresearch ./internal/semanticbuild ./internal/semanticindex"
   RELEASE_VERSION:
     sh: |
       if [ -n "${DBRAIN_RELEASE_VERSION:-}" ]; then
@@ -85,7 +86,7 @@ tasks:
         cp "${source_dir}/c/usearch.h" "${stage_dir}/include/usearch.h"
 
   test-usearch-darwin-arm64:
-    desc: Run the full race-enabled suite with the native USearch backend
+    desc: Run full tagged tests and race-test packages selected by the USearch build tag
     deps: [usearch-static-darwin-arm64]
     cmds:
       - >
@@ -97,7 +98,17 @@ tasks:
         CGO_LDFLAGS="-L{{.USEARCH_STAGE_DIR}}/lib"
         GOCACHE={{.GOCACHE}}
         GOMODCACHE={{.GOMODCACHE}}
-        go test -count=1 -race -tags usearch -timeout=20m ./...
+        go test -count=1 -tags usearch -timeout=20m ./...
+      - >
+        MACOSX_DEPLOYMENT_TARGET={{.USEARCH_MACOS_DEPLOYMENT_TARGET}}
+        CGO_ENABLED=1
+        GOOS=darwin
+        GOARCH=arm64
+        CGO_CFLAGS="-I{{.USEARCH_STAGE_DIR}}/include"
+        CGO_LDFLAGS="-L{{.USEARCH_STAGE_DIR}}/lib"
+        GOCACHE={{.GOCACHE}}
+        GOMODCACHE={{.GOMODCACHE}}
+        go test -count=1 -race -tags usearch -timeout=20m {{.USEARCH_RACE_PACKAGES}}
 
   build-usearch-darwin-arm64:
     desc: Build the tagged native Darwin arm64 dbrain binary

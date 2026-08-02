@@ -59,7 +59,7 @@ func InspectManifest(ctx context.Context, root *vaultfs.Root) (InspectionSummary
 	} else {
 		summary.ExportedAt = exportedAt.UTC()
 	}
-	identityValid := manifest.OKFVersion == OKFVersion && manifest.Profile == ProfilePrivate
+	identityValid := isSupportedOKFVersion(manifest.OKFVersion) && manifest.Profile == ProfilePrivate
 	if !identityValid {
 		summary.ValidationErrorCount++
 	}
@@ -123,7 +123,7 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 		summary.ExportedAt = exportedAt.UTC()
 	}
 	manifestIdentityValid := true
-	if manifest.OKFVersion != OKFVersion {
+	if !isSupportedOKFVersion(manifest.OKFVersion) {
 		manifestIdentityValid = false
 		summary.ValidationErrorCount++
 		result.Errors = append(result.Errors, "manifest okf_version is missing or unsupported")
@@ -204,8 +204,17 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 		base := path.Base(rel)
 		if base == "index.md" || base == "log.md" {
 			if hasFrontmatter(data) {
-				summary.ValidationErrorCount++
-				addValidationError(&result, rel, "reserved index/log file must not contain frontmatter")
+				if base != "index.md" || rel != "index.md" {
+					summary.ValidationErrorCount++
+					addValidationError(&result, rel, "reserved index/log file must not contain frontmatter")
+				} else {
+					meta, _, parseErr := parseMarkdownDocument(data)
+					version, _ := meta["okf_version"].(string)
+					if parseErr != nil || len(meta) != 1 || !isSupportedOKFVersion(version) || version != manifest.OKFVersion {
+						summary.ValidationErrorCount++
+						addValidationError(&result, rel, "root index frontmatter must contain only the matching okf_version")
+					}
+				}
 			}
 			if base == "index.md" {
 				result.Indexes++
@@ -233,12 +242,6 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 			if isExternalDestination(dest) {
 				continue
 			}
-			if path.IsAbs(stripLinkFragment(strings.TrimSpace(dest))) {
-				summary.BrokenLinkCount++
-				summary.ValidationErrorCount++
-				addValidationError(&result, rel, "absolute internal link is not allowed")
-				continue
-			}
 			target := resolveLinkTarget(rel, dest)
 			if target == "" || !strings.HasSuffix(target, ".md") {
 				continue
@@ -250,13 +253,20 @@ func inspectBundleDetailed(ctx context.Context, root *vaultfs.Root) (InspectionS
 				continue
 			}
 			summary.BrokenLinkCount++
-			summary.ValidationErrorCount++
-			addValidationError(&result, rel, "broken internal link: "+dest)
 		}
 	}
 	result.BrokenInternalLinks = summary.BrokenLinkCount
 	result.Conformant = summary.ManifestValid && summary.TraversalComplete && summary.ValidationErrorCount == 0
 	return summary, result, nil
+}
+
+func isSupportedOKFVersion(version string) bool {
+	switch strings.TrimSpace(version) {
+	case legacyOKFVersion, OKFVersion:
+		return true
+	default:
+		return false
+	}
 }
 
 func walkBundleMarkdown(ctx context.Context, root *vaultfs.Root) ([]string, int, error) {

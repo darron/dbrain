@@ -75,6 +75,44 @@ func TestPublicChatShareStableSlugAndOwnerList(t *testing.T) {
 	}
 }
 
+func TestDeletePublicChatShareByOwnerIsScopedAndIdempotent(t *testing.T) {
+	t.Parallel()
+
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() {
+		_ = st.Close()
+	}()
+
+	ctx := t.Context()
+	share, err := st.SavePublicChatShare(ctx, PublicChatShareInput{
+		OwnerProvider:    "github",
+		OwnerSubject:     "12345",
+		Summary:          "A share only its owner can delete.",
+		SanitizedContent: "Owner-scoped public share content.",
+	})
+	if err != nil {
+		t.Fatalf("SavePublicChatShare: %v", err)
+	}
+
+	if err := st.DeletePublicChatShareByOwner(ctx, share.Slug, "github", "67890"); err != nil {
+		t.Fatalf("DeletePublicChatShareByOwner foreign owner: %v", err)
+	}
+	if _, found, err := st.GetPublicChatShareBySlug(ctx, share.Slug); err != nil || !found {
+		t.Fatalf("foreign owner removed share: found=%v err=%v", found, err)
+	}
+
+	if err := st.DeletePublicChatShareByOwner(ctx, share.Slug, " GitHub ", " 12345 "); err != nil {
+		t.Fatalf("DeletePublicChatShareByOwner owner: %v", err)
+	}
+	if _, found, err := st.GetPublicChatShareBySlug(ctx, share.Slug); err != nil || found {
+		t.Fatalf("owner delete left share: found=%v err=%v", found, err)
+	}
+
+	if err := st.DeletePublicChatShareByOwner(ctx, share.Slug, "github", "12345"); err != nil {
+		t.Fatalf("DeletePublicChatShareByOwner missing share: %v", err)
+	}
+}
+
 func TestOpenRepairsPublicChatShareSchemaOnExistingDB(t *testing.T) {
 	t.Parallel()
 

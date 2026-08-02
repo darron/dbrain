@@ -15,6 +15,43 @@ development date for the change set.
   issues, pull requests, or disposable workspaces and removes them once code and
   tests carry the behavior.
 
+### Open Knowledge Format 0.2 exports (2026-08-02)
+
+- **Current OKF metadata**: New bundles declare OKF 0.2 at the root index and
+  use `generated` and `sources` frontmatter instead of the superseded v0.1
+  `timestamp` field and body citation lists. dbrain emits only provenance it
+  can substantiate and does not invent verification or attestation claims.
+- **Legacy bundle compatibility**: Inspection and validation continue to accept
+  dbrain OKF 0.1 manifests while newly generated bundles target 0.2.
+
+### Public chat share deletion (2026-08-02)
+
+- **Owner-scoped, idempotent deletion**: Added `DELETE /api/chat/shares/{slug}`
+  behind the existing local/authenticated owner boundary and shared Origin
+  guard. Missing and foreign-owner shares both return an empty `204`, avoiding
+  an existence oracle; the public `/share/{slug}` surface remains read-only.
+- **Deletion controls in Shares**: Share cards now require confirmation, show
+  pending and failure states without discarding the card, disappear after a
+  successful delete, and clear stale per-chat-turn share links for the removed
+  slug.
+
+### Faster X photo OCR candidate selection (2026-08-02)
+
+- **Item-first runnable-media lookup**: X photo OCR candidate selection now
+  resolves each item's media links before loading its photo assets, avoiding a
+  repeated scan of the global media download-retry index when the OCR backlog
+  is empty. Non-force selection also evaluates the shared pending predicate
+  only once, while force mode retains all runnable unpruned photos.
+
+### Faster native release verification (2026-08-01)
+
+- **Scoped native race coverage**: macOS arm64 release and candidate builds still
+  run the complete `usearch`-tagged test suite, then apply race instrumentation
+  only to packages whose compiled sources change under the `usearch` build tag.
+  Release policy tests keep that package list synchronized with build-constrained
+  source files, avoiding a second full-repository race run without weakening the
+  tagged compatibility gate.
+
 ### Homebrew 6 tap-trust compatibility (2026-08-01)
 
 - **Public installs no longer load an untrusted sibling formula**: Stable and
