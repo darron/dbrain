@@ -16,6 +16,23 @@ development date for the change set.
   successful delete, and clear stale per-chat-turn share links for the removed
   slug.
 
+### Faster X photo OCR candidate selection (2026-08-02)
+
+- **Item-first runnable-media lookup**: X photo OCR candidate selection now
+  resolves each item's media links before loading its photo assets, avoiding a
+  repeated scan of the global media download-retry index when the OCR backlog
+  is empty. Non-force selection also evaluates the shared pending predicate
+  only once, while force mode retains all runnable unpruned photos.
+
+### Faster native release verification (2026-08-01)
+
+- **Scoped native race coverage**: macOS arm64 release and candidate builds still
+  run the complete `usearch`-tagged test suite, then apply race instrumentation
+  only to packages whose compiled sources change under the `usearch` build tag.
+  Release policy tests keep that package list synchronized with build-constrained
+  source files, avoiding a second full-repository race run without weakening the
+  tagged compatibility gate.
+
 ### Homebrew 6 tap-trust compatibility (2026-08-01)
 
 - **Public installs no longer load an untrusted sibling formula**: Stable and

@@ -1,6 +1,11 @@
 package releaseautomation
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -69,13 +74,30 @@ func TestUSearchPackagingTaskPolicy(t *testing.T) {
 		`GOARCH=arm64`,
 		`MACOSX_DEPLOYMENT_TARGET={{.USEARCH_MACOS_DEPLOYMENT_TARGET}}`,
 		`go test`,
-		`-race`,
 		`-tags usearch`,
 		`./...`,
 	} {
 		if !strings.Contains(testTask, required) {
 			t.Errorf("test-usearch-darwin-arm64 missing %q", required)
 		}
+	}
+	if got := strings.Count(testTask, "go test"); got != 2 {
+		t.Errorf("test-usearch-darwin-arm64 go test commands=%d want full tagged and focused race commands", got)
+	}
+	if !strings.Contains(testTask, `go test -count=1 -tags usearch -timeout=20m ./...`) {
+		t.Error("test-usearch-darwin-arm64 must run the full tagged suite without race instrumentation")
+	}
+	if !strings.Contains(testTask, `go test -count=1 -race -tags usearch -timeout=20m {{.USEARCH_RACE_PACKAGES}}`) {
+		t.Error("test-usearch-darwin-arm64 must race-test the usearch-tagged package set")
+	}
+	if got := strings.Count(testTask, "-race"); got != 1 {
+		t.Errorf("test-usearch-darwin-arm64 race-enabled commands=%d want only the focused package command", got)
+	}
+
+	wantRacePackages := usearchTaggedPackagePaths(t)
+	gotRacePackages := strings.Fields(taskfileQuotedVariable(t, taskfile, "USEARCH_RACE_PACKAGES"))
+	if !reflect.DeepEqual(gotRacePackages, wantRacePackages) {
+		t.Errorf("USEARCH_RACE_PACKAGES=%v want every package selected by a usearch build constraint: %v", gotRacePackages, wantRacePackages)
 	}
 
 	buildTask := taskfileTaskSection(t, taskfile, "build-usearch-darwin-arm64")
@@ -112,6 +134,76 @@ func TestUSearchPackagingTaskPolicy(t *testing.T) {
 			t.Errorf("verify-usearch-darwin-arm64 missing %q", required)
 		}
 	}
+}
+
+func taskfileQuotedVariable(t *testing.T, taskfile, name string) string {
+	t.Helper()
+	prefix := "  " + name + ": "
+	for _, line := range strings.Split(taskfile, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+			t.Fatalf("Taskfile variable %s must be a quoted string", name)
+		}
+		return value[1 : len(value)-1]
+	}
+	t.Fatalf("Taskfile missing variable %s", name)
+	return ""
+}
+
+func usearchTaggedPackagePaths(t *testing.T) []string {
+	t.Helper()
+	_, current, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve current test file")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(current), "..", ".."))
+	packages := map[string]struct{}{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", ".gomodcache", "node_modules":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "package ") {
+				break
+			}
+			if !strings.HasPrefix(line, "//go:build ") || !strings.Contains(line, "usearch") {
+				continue
+			}
+			relative, err := filepath.Rel(root, filepath.Dir(path))
+			if err != nil {
+				return err
+			}
+			packages["./"+filepath.ToSlash(relative)] = struct{}{}
+			break
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make([]string, 0, len(packages))
+	for pkg := range packages {
+		result = append(result, pkg)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func TestUSearchDarwinLinkPolicy(t *testing.T) {
