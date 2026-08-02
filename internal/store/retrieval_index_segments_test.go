@@ -149,6 +149,125 @@ func TestCompleteRetrievalIndexGenerationRetainsPriorImmutableSegment(t *testing
 	}
 }
 
+func TestCompleteRetrievalIndexGenerationReusesStaleImmutableSegment(t *testing.T) {
+	t.Parallel()
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 2)
+
+	first, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segment := testRetrievalSegment("segment-reused", 2)
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: testCompletedGeneration("generation-1", 2), Segments: []RetrievalIndexSegmentRow{segment},
+		Members: retrievalSegmentMembers(first.Rows, segment.SegmentHash), SnapshotRevision: first.SnapshotRevision,
+		ExpectedActiveGenerationID: first.Profile.ActiveGenerationID, ExpectedPurgeEpoch: first.Profile.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: first.Profile.ActiveSnapshotRevision, ActivationMode: RetrievalGenerationAdvanceSnapshot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markRetrievalProfileGenerationsStaleTx(ctx, tx, "flush-profile"); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Rows) != 2 {
+		t.Fatalf("second flush window has %d rows, want 2", len(second.Rows))
+	}
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: testCompletedGeneration("generation-2", 2), Segments: []RetrievalIndexSegmentRow{segment},
+		Members: retrievalSegmentMembers(second.Rows, segment.SegmentHash), SnapshotRevision: second.SnapshotRevision,
+		ExpectedActiveGenerationID: second.Profile.ActiveGenerationID, ExpectedPurgeEpoch: second.Profile.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: second.Profile.ActiveSnapshotRevision, ActivationMode: RetrievalGenerationAdvanceSnapshot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	profile, err := st.RetrievalEmbeddingProfile(ctx, "flush-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.ActiveGenerationID != "generation-2" || profile.ActiveIndexedCount != 2 || profile.L0ReadyCount != 0 {
+		t.Fatalf("profile = %+v", profile)
+	}
+	var memberCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_index_segment_members WHERE segment_hash=?`, segment.SegmentHash).Scan(&memberCount); err != nil {
+		t.Fatal(err)
+	}
+	if memberCount != 2 {
+		t.Fatalf("reused segment member count = %d, want 2", memberCount)
+	}
+}
+
+func TestCompleteRetrievalIndexGenerationRejectsImmutableSegmentMembershipDrift(t *testing.T) {
+	t.Parallel()
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 2)
+
+	window, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segment := testRetrievalSegment("segment-membership-drift", 2)
+	members := retrievalSegmentMembers(window.Rows, segment.SegmentHash)
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: testCompletedGeneration("generation-1", 2), Segments: []RetrievalIndexSegmentRow{segment},
+		Members: members, SnapshotRevision: window.SnapshotRevision,
+		ExpectedActiveGenerationID: window.Profile.ActiveGenerationID, ExpectedPurgeEpoch: window.Profile.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: window.Profile.ActiveSnapshotRevision, ActivationMode: RetrievalGenerationAdvanceSnapshot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_index_segment_members SET vector_hash='corrupt' WHERE segment_hash=? AND ordinal=0`, segment.SegmentHash); err != nil {
+		t.Fatal(err)
+	}
+	active, err := st.RetrievalEmbeddingProfile(ctx, "flush-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: testCompletedGeneration("generation-2", 2), Segments: []RetrievalIndexSegmentRow{segment},
+		Members: members, SnapshotRevision: active.ActiveSnapshotRevision,
+		ExpectedActiveGenerationID: active.ActiveGenerationID, ExpectedPurgeEpoch: active.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: active.ActiveSnapshotRevision, ActivationMode: RetrievalGenerationRewriteSnapshot,
+	})
+	if err == nil || err.Error() != "retrieval index segment segment-membership-drift conflicts with immutable stored membership" {
+		t.Fatalf("err = %v, want immutable stored membership conflict", err)
+	}
+	profile, err := st.RetrievalEmbeddingProfile(ctx, "flush-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.ActiveGenerationID != "generation-1" {
+		t.Fatalf("profile = %+v", profile)
+	}
+	var generationCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM retrieval_index_generations WHERE generation_id='generation-2'`).Scan(&generationCount); err != nil {
+		t.Fatal(err)
+	}
+	if generationCount != 0 {
+		t.Fatalf("rolled-back generation count = %d, want 0", generationCount)
+	}
+}
+
 func TestCompleteRetrievalIndexGenerationAllowsSameSnapshotRewrite(t *testing.T) {
 	t.Parallel()
 	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))

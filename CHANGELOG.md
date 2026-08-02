@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Idempotent semantic segment recovery (2026-08-02)
+
+- **Stale ANN segments can be reused safely**: Semantic refresh now treats an
+  identical content-addressed segment publication as idempotent after corpus
+  changes invalidate the active generation. Stored membership is still proved
+  exactly before the segment can be attached to a new generation, preventing
+  both uniqueness failures during recovery and silent immutable-member drift.
+
 ### Stable OKF concept generation timestamps (2026-08-02)
 
 - **Data-derived `generated.at` values**: OKF 0.2 item and source concepts now
@@ -59,7 +67,6 @@ development date for the change set.
   Release policy tests keep that package list synchronized with build-constrained
   source files, avoiding a second full-repository race run without weakening the
   tagged compatibility gate.
-
 ### Homebrew 6 tap-trust compatibility (2026-08-01)
 
 - **Public installs no longer load an untrusted sibling formula**: Stable and
