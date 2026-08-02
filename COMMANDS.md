@@ -1333,13 +1333,17 @@ dbrain research "K8s Helm alternatives" --semantic --retrieval-only --json
 
 ### `dbrain semantic`
 
-The foundation exposes four semantic operational commands. It uses
-deterministic SQLite retrieval chunks, local Ollama embeddings, and an
-SQLite-authoritative exact scan; no ANN index or ANN lifecycle command exists.
+The semantic subsystem exposes five operational commands. It uses deterministic
+SQLite retrieval chunks, local Ollama embeddings, segmented native USearch roots
+on supported tagged builds, exact SQLite validation/reranking, and an exact-scan
+fallback for bounded profiles.
 
 ```sh
 dbrain semantic status
 dbrain semantic status --json
+dbrain semantic refresh
+dbrain semantic refresh --max-duration 30m
+dbrain semantic refresh --json
 dbrain semantic chunk --limit 100
 dbrain semantic chunk --until-idle --max-duration 20m
 dbrain semantic embed --limit 100 --batch-size 16
@@ -1375,8 +1379,11 @@ sections, limits exact materialization to 8 MiB, and limits allocation-free
 preflight scanning to 128 MiB. Full `status` and `verify` remain the
 authoritative maintenance surfaces for detecting aggregate drift.
 
-ANN generation files do not exist in this foundation; segmented ANN lifecycle,
-provider expansion, background sync, and default-on behavior are deferred.
+`semantic refresh` runs the durable projection, embedding, flush, compaction,
+verification, and readiness pipeline. Successful manual and scheduled `sync
+all` runs invoke it automatically when semantic mode is `shadow` or `on`; the
+command remains the explicit diagnostic and recovery surface. Other embedding
+providers and default-on behavior remain deferred.
 
 ### `dbrain search`
 
