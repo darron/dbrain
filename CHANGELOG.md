@@ -5,6 +5,16 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Lean durable documentation (2026-08-02)
+
+- **Current contracts over implementation mirrors**: Removed completed plans,
+  stale specs, and duplicate implementation narratives while retaining user and
+  operator guides, architecture and trust-boundary contracts, security evidence,
+  durable decision records, eval guidance, extension docs, and reusable skills.
+- **Anti-regrowth policy**: Repository guidance now keeps temporary plans in
+  issues, pull requests, or disposable workspaces and removes them once code and
+  tests carry the behavior.
+
 ### Homebrew 6 tap-trust compatibility (2026-08-01)
 
 - **Public installs no longer load an untrusted sibling formula**: Stable and
@@ -526,7 +536,8 @@ development date for the change set.
   citations, public share filtering, category filtering, short-token concepts,
   and unrelated-source answer rejection.
 - **Location**: `internal/brainresearch/`, `internal/researchrun/`,
-  `web/chat_shares.go`, `docs/research-harness.md`
+  `web/chat_shares.go`, `docs/research-harness.md` (removed 2026-08-02;
+  available in Git history)
 
 ### Installer Summarize Prerequisite (2026-07-11)
 
@@ -942,7 +953,8 @@ development date for the change set.
   research`, trace retention, citation verification UX, and Harness Lab
   comparison work; updated agent guidance for non-indexed diagnostic research
   traces.
-- **Location**: `docs/research-harness.md`, `AGENTS.md`
+- **Location**: `docs/research-harness.md` (removed 2026-08-02; available in
+  Git history), `AGENTS.md`
 
 ### Inline Media Evidence For Search And Chat (2026-05-20)
 
@@ -1060,7 +1072,7 @@ development date for the change set.
 - **Safety**: Feed fetch audit rows are stored separately from entry/item/source transactions, unchanged bodies skip entry processing, feed disappearance never deletes local memory, retryable failures use exponential backoff, and dead feeds require repeated terminal-looking failures over time.
 - **Identity**: Feed entry fallback identity follows the documented Markdown/text/summary/title/enclosure order, GUID/link changes reuse existing entries, and GUID/link conflicts are surfaced without merging rows.
 - **CLI**: `dbrain feed add` now stores a subscription by default; pass `--check` to import current entries immediately.
-- **Location**: `internal/feedimport/`, `internal/store/`, `internal/app/`, `internal/syncjob/`, `web/`, `README.md`, `docs/feed-ingestion.md`
+- **Location**: `internal/feedimport/`, `internal/store/`, `internal/app/`, `internal/syncjob/`, `web/`, `README.md`, `docs/feed-ingestion.md` (removed 2026-08-02; available in Git history)
 
 ### Scheduled Sync All (2026-05-08)
 
@@ -1173,8 +1185,8 @@ development date for the change set.
 - **Schema migration policy**: Added `docs/schema-migrations.md` to document SQLite migration behavior, backup/restore expectations, and the supported downgrade path.
 - **Maintenance operation audit**: Added `docs/maintenance-operations.md` to document local delete, purge, prune, restore, and reset paths, including the narrow YouTube legacy cleanup exception that can run during `sync all`.
 - **Release build notes**: Added `docs/release-build.md` to document tracked embedded web assets, when `task web-build` is required, and how to avoid stale `web/ui/dist` assets in Go releases.
-- **Cleanup tracker reset**: Updated `docs/architecture-cleanup.md` to separate actual remaining release work from completed splits, stale license-audit items, and design backlog so future work has a concrete stop condition.
-- **Location**: `docs/architecture.md`, `docs/schema-migrations.md`, `docs/maintenance-operations.md`, `docs/release-build.md`, `docs/architecture-cleanup.md`, `README.md`
+- **Cleanup tracker reset**: Updated the cleanup tracker to separate actual remaining release work from completed splits, stale license-audit items, and design backlog so future work had a concrete stop condition.
+- **Location**: `docs/architecture.md`, `docs/schema-migrations.md`, `docs/maintenance-operations.md`, `docs/release-build.md`, `docs/architecture-cleanup.md` (removed 2026-08-02; available in Git history), `README.md`
 
 ### Architecture Cleanup And Open-Source Readiness (2026-05-04)
 
@@ -1309,7 +1321,7 @@ development date for the change set.
 - **Operator UX**: Browser `GET /mcp` now returns a clear JSON-RPC POST diagnostic, repeated tsnet auth log lines are deduped while preserving the login URL, and `tsnet reset` requires a literal `reset` confirmation unless `--yes` is used.
 - **Docs and skill**: Expanded MCP docs and the dbrain MCP skill with built-in tailnet serving examples, remote Streamable HTTP client config shapes, first-run auth/state guidance, and `tsnet status` troubleshooting.
 - **Regression coverage**: Added fake tsnet orchestration tests for startup timeout, prepared state-dir use, listen mode selection, startup unwind, shutdown order, concurrent user logs, and locked status/reset behavior.
-- **Location**: `internal/remote/`, `internal/app/serve.go`, `internal/app/tsnet.go`, `config.yaml.sample`, `docs/tsnet-transport.md`, `README.md`
+- **Location**: `internal/remote/`, `internal/app/serve.go`, `internal/app/tsnet.go`, `config.yaml.sample`, `docs/tsnet-transport.md` (removed 2026-08-02; available in Git history), `TAILSCALE.md`, `README.md`
 
 ### Streamable HTTP MCP Transport (2026-04-29)
 

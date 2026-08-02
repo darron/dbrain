@@ -138,16 +138,19 @@ a non-empty local Ollama embedding model and positive dimensions.
 - `on` returns RRF-fused evidence while retaining protected evidence and its
   chunk/content provenance.
 
-The only vector backend in this foundation is SQLite-authoritative exact scan.
-Semantic candidate depth defaults to 50. Exact scans have a hard measured
-ceiling of 25,000 current ready embeddings for the configured profile, counted
-before request filters; configuration may lower that ceiling but cannot raise
-it. A larger complete profile reports `needs_index`. Incomplete, corrupt,
-stale, timed-out, or otherwise unavailable semantic state reports its precise
-`semantic_readiness` state and reason, then fails open to lexical evidence
-before constructing the query embedding provider. `catching_up` responses also
-expose content-free readiness diagnostics for dirty parents and estimated debt.
-ANN, other providers, background sync, and default-on are deferred.
+On supported tagged builds, semantic refresh builds and atomically activates a
+segmented native USearch root. Queries use native candidates, validate them
+against current SQLite state, exactly rerank surviving vectors, and merge the
+exact L0 remainder. SQLite-authoritative exact scan remains the fallback for a
+ready profile at or below the measured 25,000-vector ceiling; configuration may
+lower that ceiling but cannot raise it. Semantic candidate depth defaults to
+50. Incomplete, corrupt, stale, timed-out, or otherwise unavailable semantic
+state reports its precise `semantic_readiness` state and reason, then fails open
+to lexical evidence before constructing the query embedding provider.
+`catching_up` responses also expose content-free readiness diagnostics for dirty
+parents and estimated debt. Successful manual and scheduled `sync all` runs
+maintain enabled semantic state automatically. Other embedding providers and
+default-on behavior remain deferred.
 
 Inspect `query_plan.semantic_mode`, `query_plan.retrieval_lanes`, and (only in
 shadow mode) `query_plan.shadow_comparison`. Each evidence row may expose

@@ -7,8 +7,7 @@ apps and web services, stores that evidence in local SQLite, renders local
 Markdown notes for human review, and exposes retrieval/research surfaces over
 CLI, web, and MCP.
 
-This document describes the current architecture. For the cleanup audit history,
-see `docs/architecture-cleanup.md`.
+This document describes the current architecture.
 
 ## Core Principles
 
@@ -234,13 +233,13 @@ Operational expectations:
 - `README.md`: user-facing setup, safety model, command reference, and license.
 - `docs/schema-migrations.md`: schema migration, backup, restore, and downgrade
   policy.
-- `docs/research-harness.md`: current research/chat harness behavior,
-  limitations, and improvement roadmap.
 - `docs/maintenance-operations.md`: local delete, purge, prune, restore, and
   reset operation audit.
 - `docs/release-build.md`: release build checklist and embedded web asset
   policy.
 - `docs/web-route-capabilities.md`: current web route capability matrix.
-- `docs/tsnet-transport.md`: remote/tsnet serving model.
-- `docs/open-source-license-review.md`: dependency-license audit notes.
-- `docs/architecture-cleanup.md`: cleanup audit history and remaining backlog.
+- `TAILSCALE.md`: remote and built-in tsnet serving model.
+- `docs/open-source-transcriber-bakeoff.md`: durable transcriber selection
+  evidence and decision record.
+- `docs/security-reviews/2026-07-12-full-4269f53.md`: dated security evidence,
+  remediations, refutations, and residual risks.

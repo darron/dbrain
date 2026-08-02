@@ -145,6 +145,15 @@ Verification should prove the thing that changed, not merely consume time.
 - treat external reviewer output as claims to verify against the checkout, not
   as facts to apply blindly
 
+### Keep persistent documentation lean
+
+Track documentation for user or operator instructions, current architecture
+and trust-boundary contracts, durable decisions or glossaries, and reusable
+skills. Implementation plans and specs are temporary handoff artifacts that
+belong in an issue, PR, or disposable workspace; remove them once code and tests
+carry the behavior. Do not recreate `docs/superpowers/` or retain completed
+implementation mirrors in the repository.
+
 ## Core Product Rules
 
 ### Keep local-first imports import-only
@@ -248,8 +257,9 @@ When item-level summary/OCR is added:
 
 ## Apple Notes Rules
 
-Apple Notes is planned as a direct SQLite, materialized, import-only source.
-Do not reopen settled architecture without updating the planning doc first.
+Apple Notes is implemented as a direct SQLite, materialized, import-only
+source. Do not reopen this settled architecture without an explicitly accepted
+issue or PR decision and a matching update to these durable rules.
 
 ### Direct SQLite only
 

@@ -21,12 +21,8 @@ Format export, and local query over the imported corpus.
   [browser/safari-extension/README.md](browser/safari-extension/README.md):
   browser extensions for saving the active tab URL to dbrain.
 - [docs/architecture.md](docs/architecture.md): package and data-flow architecture.
-- [docs/research-harness.md](docs/research-harness.md): current research/chat
-  harness behavior, limitations, and improvement roadmap.
 - [Agent Skills](#agent-skills): installable corpus skills, repo-local release
   audit/review workflows, and model bakeoff guidance.
-- [docs/open-knowledge-format-plan.md](docs/open-knowledge-format-plan.md):
-  OKF export design, profile scope, validation rules, and implementation notes.
 - [docs/schema-migrations.md](docs/schema-migrations.md): SQLite schema and
   migration guidance.
 - [docs/web-route-capabilities.md](docs/web-route-capabilities.md): web route
@@ -594,7 +590,7 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_RESEARCH_SEMANTIC_PROVIDER` | `research.semantic.provider` | `ollama` | Embedding provider; the foundation supports local Ollama only. |
 | `DBRAIN_RESEARCH_SEMANTIC_MODEL` | `research.semantic.model` | `` | Exact Ollama embedding model; required for effective `shadow` or `on`. |
 | `DBRAIN_RESEARCH_SEMANTIC_DIMENSIONS` | `research.semantic.dimensions` | `0` | Positive embedding width; required for effective `shadow` or `on`. |
-| `DBRAIN_RESEARCH_SEMANTIC_INDEX_BACKEND` | `research.semantic.index_backend` | `exact` | SQLite-authoritative exact vector search; ANN is not available. |
+| `DBRAIN_RESEARCH_SEMANTIC_INDEX_BACKEND` | `research.semantic.index_backend` | `exact` | Exact final scoring with automatic native USearch candidate admission when an active root is available; SQLite exact scan remains the bounded fallback. |
 | `DBRAIN_RESEARCH_SEMANTIC_CANDIDATE_DEPTH` | `research.semantic.candidate_depth` | `50` | Semantic candidates retained for fusion. |
 | `DBRAIN_RESEARCH_SEMANTIC_EXACT_FALLBACK_MAX_CHUNKS` | `research.semantic.exact_fallback_max_chunks` | `25000` | Requested exact-vector limit. Configuration may lower the measured 25,000-vector safety ceiling but cannot raise it; larger current profiles report `needs_index` and remain lexical. |
 | `DBRAIN_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | `ollama.base_url` | `http://127.0.0.1:11434` | Ollama endpoint for local model calls. |
@@ -1293,10 +1289,10 @@ backlog and explicit non-goals.
 
 ### Evaluation backlog
 
-- Evaluate the opt-in exact-scan semantic foundation against lexical-only
-  baselines before considering default-on behavior, other providers, background
-  sync, or an ANN lifecycle. Graphiti, SurrealDB, and STORM-style systems remain
-  research inputs, not default dependencies.
+- Evaluate the opt-in native-plus-exact semantic path against lexical-only
+  baselines before considering default-on behavior or other providers. Graphiti,
+  SurrealDB, and STORM-style systems remain research inputs, not default
+  dependencies.
 - Evaluate better local vision/OCR models only against saved image/video
   failures. Moondream, macOS OCR helpers, hosted OCR, oMLX, and other local
   runners are candidates, not automatic dependencies.
