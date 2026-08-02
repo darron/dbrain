@@ -203,7 +203,7 @@ tasks:
         SHELL="${SHELL:-/bin/sh}"
         GOCACHE={{.GOCACHE}}
         GOMODCACHE={{.GOMODCACHE}}
-        go test -cover -race -timeout=20m ./...
+        go test -cover -race -timeout=20m ${TEST_PACKAGES:-./...}
 
   test-go:
     desc: Run the Go test suite without race or coverage
