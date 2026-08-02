@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  checks:
-    name: fmt, web, lint, test
+  quality:
+    name: fmt, web, lint
     runs-on: ubuntu-latest
 
     steps:
@@ -62,5 +62,74 @@ jobs:
       - name: Run lint
         run: task lint
 
+  tests:
+    name: test (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - app
+          - store
+          - research
+          - enrichment
+          - remaining
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Task
+        uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa # v2.1.0
+        with:
+          version: 3.52.0
+
       - name: Run tests
-        run: task test-ci
+        env:
+          TEST_SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          case "$TEST_SHARD" in
+            app)
+              packages="./internal/app"
+              ;;
+            store)
+              packages="./internal/store"
+              ;;
+            research)
+              packages="./internal/brainresearch ./internal/mcpserver"
+              ;;
+            enrichment)
+              packages="./internal/researchrun ./internal/retrievalchunk ./internal/sourceenrich ./internal/sqlitearchive ./internal/syncjob"
+              ;;
+            remaining)
+              packages="$(go list ./... | grep -Ev '/internal/(app|brainresearch|mcpserver|researchrun|retrievalchunk|sourceenrich|sqlitearchive|store|syncjob)$' | tr '\n' ' ')"
+              ;;
+            *)
+              echo "unknown test shard: $TEST_SHARD" >&2
+              exit 1
+              ;;
+          esac
+          TEST_PACKAGES="$packages" task test-ci
+
+  gate:
+    name: fmt, web, lint, test
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - quality
+      - tests
+    steps:
+      - name: Require all CI jobs
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.tests.result }}
+        run: |
+          test "$QUALITY_RESULT" = "success"
+          test "$TEST_RESULT" = "success"
