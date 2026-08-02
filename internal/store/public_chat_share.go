@@ -207,6 +207,25 @@ func (s *Store) ListPublicChatSharesByOwner(ctx context.Context, ownerProvider s
 	return shares, nil
 }
 
+func (s *Store) DeletePublicChatShareByOwner(ctx context.Context, slug string, ownerProvider string, ownerSubject string) error {
+	slug = strings.TrimSpace(slug)
+	ownerProvider = normalizeOwnerProvider(ownerProvider)
+	ownerSubject = strings.TrimSpace(ownerSubject)
+	if ownerProvider == "" || ownerSubject == "" {
+		return fmt.Errorf("share owner is required")
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM public_chat_shares
+		WHERE slug = ? AND owner_provider = ? AND owner_subject = ?`,
+		slug,
+		ownerProvider,
+		ownerSubject,
+	); err != nil {
+		return fmt.Errorf("delete public chat share: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) publicChatShareSalt(ctx context.Context) ([]byte, error) {
 	var encoded string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM public_share_config WHERE key = ?`, publicChatShareSaltKey).Scan(&encoded)
