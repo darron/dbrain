@@ -5,6 +5,17 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Public chat share deletion (2026-08-02)
+
+- **Owner-scoped, idempotent deletion**: Added `DELETE /api/chat/shares/{slug}`
+  behind the existing local/authenticated owner boundary and shared Origin
+  guard. Missing and foreign-owner shares both return an empty `204`, avoiding
+  an existence oracle; the public `/share/{slug}` surface remains read-only.
+- **Deletion controls in Shares**: Share cards now require confirmation, show
+  pending and failure states without discarding the card, disappear after a
+  successful delete, and clear stale per-chat-turn share links for the removed
+  slug.
+
 ### Faster X photo OCR candidate selection (2026-08-02)
 
 - **Item-first runnable-media lookup**: X photo OCR candidate selection now

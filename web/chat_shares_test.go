@@ -153,6 +153,80 @@ func TestChatShareCreateListAndPublicPageRedactsInternals(t *testing.T) {
 	}
 }
 
+func TestChatShareDeleteRemovesLocalOwnersShareAndIsIdempotent(t *testing.T) {
+	cfg, st := openTestStore(t)
+	share, err := st.SavePublicChatShare(t.Context(), store.PublicChatShareInput{
+		OwnerProvider:    localShareOwnerProvider,
+		OwnerSubject:     localShareOwnerSubject,
+		Summary:          "A local share that can be deleted.",
+		SanitizedContent: "Local public share content.",
+	})
+	if err != nil {
+		t.Fatalf("SavePublicChatShare: %v", err)
+	}
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	crossOrigin := httptest.NewRecorder()
+	crossOriginReq := httptest.NewRequest(http.MethodDelete, "/api/chat/shares/"+share.Slug, nil)
+	crossOriginReq.Header.Set("Origin", "https://evil.example")
+	handler.ServeHTTP(crossOrigin, crossOriginReq)
+	if crossOrigin.Code != http.StatusForbidden {
+		t.Fatalf("expected cross-origin delete 403, got %d: %s", crossOrigin.Code, crossOrigin.Body.String())
+	}
+	if _, found, err := st.GetPublicChatShareBySlug(t.Context(), share.Slug); err != nil || !found {
+		t.Fatalf("cross-origin request removed share: found=%v err=%v", found, err)
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		deleted := httptest.NewRecorder()
+		handler.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/chat/shares/"+share.Slug, nil))
+		if deleted.Code != http.StatusNoContent || deleted.Body.Len() != 0 {
+			t.Fatalf("delete attempt %d = %d body=%q, want 204 with empty body", attempt, deleted.Code, deleted.Body.String())
+		}
+	}
+
+	public := httptest.NewRecorder()
+	handler.ServeHTTP(public, httptest.NewRequest(http.MethodGet, "/share/"+share.Slug, nil))
+	if public.Code != http.StatusNotFound {
+		t.Fatalf("deleted public share = %d, want 404", public.Code)
+	}
+}
+
+func TestChatShareDeleteDoesNotRevealForeignOrMissingShares(t *testing.T) {
+	cfg, st := openTestStore(t)
+	foreign, err := st.SavePublicChatShare(t.Context(), store.PublicChatShareInput{
+		OwnerProvider:    "github",
+		OwnerSubject:     "12345",
+		Summary:          "A share owned by someone else.",
+		SanitizedContent: "Foreign public share content.",
+	})
+	if err != nil {
+		t.Fatalf("SavePublicChatShare: %v", err)
+	}
+	handler, err := NewHandler(cfg, st)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	paths := []string{
+		"/api/chat/shares/" + foreign.Slug,
+		"/api/chat/shares/0123456789abcdef",
+	}
+	for _, path := range paths {
+		deleted := httptest.NewRecorder()
+		handler.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, path, nil))
+		if deleted.Code != http.StatusNoContent || deleted.Body.Len() != 0 {
+			t.Fatalf("DELETE %s = %d body=%q, want indistinguishable 204", path, deleted.Code, deleted.Body.String())
+		}
+	}
+	if _, found, err := st.GetPublicChatShareBySlug(t.Context(), foreign.Slug); err != nil || !found {
+		t.Fatalf("local owner removed foreign share: found=%v err=%v", found, err)
+	}
+}
+
 func TestBuildPublicChatShareInputIncludesOnlyCitedOriginalURLs(t *testing.T) {
 	turn := ChatTranscriptTurn{
 		ID:       "chat:turn-cited",
@@ -875,6 +949,12 @@ func TestPublicShareBypassesAuthOnlyForSharePages(t *testing.T) {
 		t.Fatalf("expected public share HEAD 200 with empty body, got %d body=%q", head.Code, head.Body.String())
 	}
 
+	publicDelete := httptest.NewRecorder()
+	handler.ServeHTTP(publicDelete, httptest.NewRequest(http.MethodDelete, "/share/"+share.Slug, nil))
+	if publicDelete.Code != http.StatusMethodNotAllowed || publicDelete.Header().Get("Allow") != "GET, HEAD" {
+		t.Fatalf("expected public share DELETE 405 with GET/HEAD Allow, got %d allow=%q body=%q", publicDelete.Code, publicDelete.Header().Get("Allow"), publicDelete.Body.String())
+	}
+
 	publicMiss := httptest.NewRecorder()
 	handler.ServeHTTP(publicMiss, httptest.NewRequest(http.MethodGet, "/share/"+share.Slug+"/extra", nil))
 	if publicMiss.Code != http.StatusNotFound {
@@ -889,6 +969,7 @@ func TestPublicShareBypassesAuthOnlyForSharePages(t *testing.T) {
 		{method: http.MethodGet, path: "/api/bootstrap"},
 		{method: http.MethodGet, path: "/api/chat/shares"},
 		{method: http.MethodPost, path: "/api/chat/shares", body: `{"turn":{"status":"ready","answer":"hello"}}`},
+		{method: http.MethodDelete, path: "/api/chat/shares/" + share.Slug},
 	}
 	for _, tt := range apiRoutes {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {

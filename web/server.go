@@ -244,6 +244,7 @@ func (s *server) newMux() http.Handler {
 	appMux.HandleFunc("/api/research/trace-compare", s.handleResearchTraceCompare)
 	appMux.HandleFunc("/api/chat/transcripts", s.handleChatTranscriptSave)
 	appMux.HandleFunc("/api/chat/shares", s.handleChatShares)
+	appMux.HandleFunc("/api/chat/shares/", s.handleChatShareDelete)
 	appMux.HandleFunc("/api/links", s.handleLinks)
 	appMux.HandleFunc("/api/tag", s.handleTag)
 	appMux.HandleFunc("/api/media/signed-url", s.handleMediaSignedURL)

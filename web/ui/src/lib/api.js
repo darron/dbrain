@@ -218,6 +218,12 @@ export function listChatShares() {
   return fetchJSON("/api/chat/shares");
 }
 
+export function deleteChatShare(slug) {
+  return fetchJSON(`/api/chat/shares/${encodeURIComponent(String(slug || ""))}`, {
+    method: "DELETE"
+  });
+}
+
 export function listResearchTraces(options = {}) {
   const params = new URLSearchParams();
   params.set("limit", String(options.limit || 25));
