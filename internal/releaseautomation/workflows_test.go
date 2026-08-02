@@ -251,9 +251,19 @@ func TestStableReleaseWorkflowPolicyRejectsSecurityMutations(t *testing.T) {
 			new:  "cancel-in-progress: true",
 		},
 		{
-			name: "disable reciprocal formula conflict repair",
-			old:  `stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'`,
-			new:  `disabledConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'`,
+			name: "disable legacy formula conflict cleanup",
+			old:  exactStableConflictCleanup(),
+			new:  `text = text`,
+		},
+		{
+			name: "disable redundant stable version cleanup",
+			old:  exactStableVersionCleanup(),
+			new:  `text = text`,
+		},
+		{
+			name: "disable stable semantic test indentation",
+			old:  exactStableSemanticTestIndentation(),
+			new:  `semantic_test = semantic_test.chomp`,
 		},
 	}
 	for _, mutation := range mutations {
@@ -429,7 +439,9 @@ func validateStableReleaseWorkflow(text string) error {
 	p.require(updateFormula != nil, "stable release workflow must contain the formula update step")
 	if updateFormula != nil {
 		updateRun := normalizeRun(scalarValue(mappingNode(updateFormula, "run")))
-		p.require(strings.Contains(updateRun, exactStableConflictRepair()), "stable formula updater must maintain the reciprocal dbrain-test conflict")
+		p.require(strings.Contains(updateRun, exactStableConflictCleanup()), "stable formula updater must remove the legacy dbrain-test conflict")
+		p.require(strings.Contains(updateRun, exactStableVersionCleanup()), "stable formula updater must remove a redundant explicit stable version")
+		p.require(strings.Contains(updateRun, exactStableSemanticTestIndentation()), "stable formula updater must indent the injected semantic test inside the formula test block")
 		for _, required := range []string{`license all_of: ["MIT", "Apache-2.0"]`, `pkgshare.install "THIRD_PARTY_NOTICES.md", "LICENSE-USearch"`, "semantic status --json", `"state": "supported_ready"`, `"state": "unsupported"`} {
 			p.require(strings.Contains(updateRun, required), "stable formula updater must contain %q", required)
 		}
@@ -448,13 +460,16 @@ if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi`
 }
 
-func exactStableConflictRepair() string {
-	return `stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'
-unless text.match?(/^\s*conflicts_with\s+"dbrain-test"(?:,.*)?$/)
-  platform = text.match(/^  if OS\.mac\?\n/)
-  abort("stable formula is missing its platform anchor") unless platform
-  text = text.sub(platform[0], "#{stableConflict}\n\n#{platform[0]}")
-end`
+func exactStableConflictCleanup() string {
+	return `text = text.gsub(/^[ \t]*conflicts_with[ \t]+"dbrain-test"(?:,[^\n]*)?\n(?:\n)?/, "")`
+}
+
+func exactStableVersionCleanup() string {
+	return `text = text.gsub(/^[ \t]*version[ \t]+"[^"]+"\n(?:\n)?/, "")`
+}
+
+func exactStableSemanticTestIndentation() string {
+	return `semantic_test = "\n" + semantic_test.lines.map { |line| "    #{line}" }.join.chomp`
 }
 
 func jobTransitivelyNeeds(jobs *yaml.Node, from, target string, seen map[string]bool) bool {
