@@ -13,6 +13,15 @@ development date for the change set.
   is empty. Non-force selection also evaluates the shared pending predicate
   only once, while force mode retains all runnable unpruned photos.
 
+### Faster native release verification (2026-08-01)
+
+- **Scoped native race coverage**: macOS arm64 release and candidate builds still
+  run the complete `usearch`-tagged test suite, then apply race instrumentation
+  only to packages whose compiled sources change under the `usearch` build tag.
+  Release policy tests keep that package list synchronized with build-constrained
+  source files, avoiding a second full-repository race run without weakening the
+  tagged compatibility gate.
+
 ### Homebrew 6 tap-trust compatibility (2026-08-01)
 
 - **Public installs no longer load an untrusted sibling formula**: Stable and
