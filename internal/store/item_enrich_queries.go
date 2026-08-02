@@ -60,16 +60,17 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 		limit = 100
 	}
 
+	where := xPhotoOCRPendingWhere()
+	if force {
+		where = xPhotoOCRRunnableMediaExistsWhere
+	}
+
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
 		WHERE ` + xItemSourceTypeWhere + `
 			AND external_id != ''
-			AND ` + xPhotoOCRRunnableMediaExistsWhere
-	if !force {
-		query += ` AND ` + xPhotoOCRPendingWhere()
-	}
-	query += `
+			AND ` + where + `
 		ORDER BY last_seen_at DESC, id DESC
 		LIMIT ?`
 
