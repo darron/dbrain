@@ -255,10 +255,22 @@ func (s *Store) CompleteRetrievalIndexGeneration(ctx context.Context, input Comp
 			}
 		}
 	}
+	membersBySegment := make(map[string][]RetrievalIndexSegmentMember, len(input.Segments))
 	for _, member := range input.Members {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO retrieval_index_segment_members (segment_hash,ordinal,chunk_id,revision,vector_hash) VALUES (?,?,?,?,?)`,
-			member.SegmentHash, member.Ordinal, member.ChunkID, member.Revision, member.VectorHash); err != nil {
+		membersBySegment[member.SegmentHash] = append(membersBySegment[member.SegmentHash], member)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO retrieval_index_segment_members (segment_hash,ordinal,chunk_id,revision,vector_hash)
+			VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING`, member.SegmentHash, member.Ordinal, member.ChunkID, member.Revision, member.VectorHash); err != nil {
 			return fmt.Errorf("insert retrieval index segment member %s: %w", member.ChunkID, err)
+		}
+	}
+	for _, segment := range input.Segments {
+		members := membersBySegment[segment.SegmentHash]
+		if len(members) == 0 {
+			continue
+		}
+		if err := proveRetrievalSegmentMembersTx(ctx, tx, segment.SegmentHash, members); err != nil {
+			return err
 		}
 	}
 	indexed, err := proveGenerationSegmentsTx(ctx, tx, input.Generation.GenerationID, input.Segments)
@@ -299,6 +311,39 @@ func (s *Store) CompleteRetrievalIndexGeneration(ctx context.Context, input Comp
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit retrieval generation activation: %w", err)
+	}
+	return nil
+}
+
+func proveRetrievalSegmentMembersTx(ctx context.Context, tx *sql.Tx, segmentHash string, expected []RetrievalIndexSegmentMember) error {
+	wantByOrdinal := make(map[uint64]RetrievalIndexSegmentMember, len(expected))
+	for _, member := range expected {
+		wantByOrdinal[member.Ordinal] = member
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT segment_hash,ordinal,chunk_id,revision,vector_hash
+		FROM retrieval_index_segment_members WHERE segment_hash=?`, segmentHash)
+	if err != nil {
+		return fmt.Errorf("list retrieval index segment %s members: %w", segmentHash, err)
+	}
+	defer func() { _ = rows.Close() }()
+	seen := 0
+	for rows.Next() {
+		var stored RetrievalIndexSegmentMember
+		if err := rows.Scan(&stored.SegmentHash, &stored.Ordinal, &stored.ChunkID, &stored.Revision, &stored.VectorHash); err != nil {
+			return fmt.Errorf("scan retrieval index segment %s member: %w", segmentHash, err)
+		}
+		want, exists := wantByOrdinal[stored.Ordinal]
+		if !exists || stored != want {
+			return fmt.Errorf("retrieval index segment %s conflicts with immutable stored membership", segmentHash)
+		}
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate retrieval index segment %s members: %w", segmentHash, err)
+	}
+	if seen != len(expected) {
+		return fmt.Errorf("retrieval index segment %s has %d immutable stored members, want %d", segmentHash, seen, len(expected))
 	}
 	return nil
 }
