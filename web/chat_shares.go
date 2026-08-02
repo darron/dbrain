@@ -123,6 +123,28 @@ func (s *server) handleChatShareList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *server) handleChatShareDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeMethodNotAllowed(w, http.MethodDelete)
+		return
+	}
+	slug, ok := chatShareSlugFromPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	owner, ok := s.chatShareOwner(r)
+	if !ok {
+		writeMessage(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if err := s.store.DeletePublicChatShareByOwner(r.Context(), slug, owner.Provider, owner.Subject); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *server) handlePublicShare(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeMethodNotAllowed(w, http.MethodGet, http.MethodHead)
@@ -985,6 +1007,14 @@ func protectedShareRoutePath(path string) bool {
 
 func publicShareSlugFromPath(path string) (string, bool) {
 	slug := strings.TrimPrefix(path, "/share/")
+	if slug == path || slug == "" || strings.Contains(slug, "/") || !shareSlugPattern.MatchString(slug) {
+		return "", false
+	}
+	return slug, true
+}
+
+func chatShareSlugFromPath(path string) (string, bool) {
+	slug := strings.TrimPrefix(path, "/api/chat/shares/")
 	if slug == path || slug == "" || strings.Contains(slug, "/") || !shareSlugPattern.MatchString(slug) {
 		return "", false
 	}

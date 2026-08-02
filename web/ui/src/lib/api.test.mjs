@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compareResearchTrace, getAuditHistory, getAuditLatest, getAuditRun, listResearchTraces, researchBrain, startAuditRun } from "./api.js";
+import { compareResearchTrace, deleteChatShare, getAuditHistory, getAuditLatest, getAuditRun, listResearchTraces, researchBrain, startAuditRun } from "./api.js";
 
 test("researchBrain passes AbortSignal to fetch without serializing it into JSON", async () => {
   const originalFetch = globalThis.fetch;
@@ -32,6 +32,30 @@ test("researchBrain passes AbortSignal to fetch without serializing it into JSON
   assert.equal(body.limit, 5);
   assert.equal(body.use_model_planner, false);
   assert.equal(Object.hasOwn(body, "signal"), false);
+});
+
+test("deleteChatShare sends an encoded same-origin DELETE request", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (url, options = {}) => {
+    captured = { url, options };
+    return {
+      ok: true,
+      status: 204,
+      json: async () => {
+        throw new SyntaxError("empty response");
+      }
+    };
+  };
+
+  try {
+    await deleteChatShare("slug/with spaces");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.url, "/api/chat/shares/slug%2Fwith%20spaces");
+  assert.equal(captured.options.method, "DELETE");
 });
 
 test("trace lab API helpers use safe JSON request shapes", async () => {
