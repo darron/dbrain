@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/store"
@@ -17,7 +18,8 @@ func renderItemDocument(item itemDoc, snapshot store.OKFExportSnapshot, opts Exp
 		Description: itemDescription(item.Item),
 		Resource:    firstNonEmpty(item.Item.CanonicalURL, "dbrain://"+item.ConceptID),
 		Tags:        itemTags(item.Item),
-		Timestamp:   timestampForItem(item.Item),
+		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
+		Sources:     sourceReferences(item.Item.CanonicalURL, itemTitle(item.Item)),
 		Fields: []Field{
 			{Name: "dbrain_concept_id", Value: item.ConceptID},
 			{Name: "dbrain_kind", Value: "item"},
@@ -44,7 +46,6 @@ func renderItemDocument(item itemDoc, snapshot store.OKFExportSnapshot, opts Exp
 	if err != nil {
 		return Document{}, nil, err
 	}
-	writeItemCitations(&body, item.Item)
 	doc.Body = strings.TrimSpace(body.String()) + "\n"
 	return doc, omitted, nil
 }
@@ -219,13 +220,6 @@ func writeItemRelated(b *strings.Builder, item itemDoc, snapshot store.OKFExport
 	return omitted, nil
 }
 
-func writeItemCitations(b *strings.Builder, item model.Item) {
-	if strings.TrimSpace(item.CanonicalURL) == "" {
-		return
-	}
-	writeSection(b, "Citations", "[1] "+MarkdownLink("Original URL", item.CanonicalURL))
-}
-
 func sortedUnique(values []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(values))
@@ -242,4 +236,11 @@ func sortedUnique(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func sourceReferences(resource, title string) []SourceReference {
+	if strings.TrimSpace(resource) == "" {
+		return nil
+	}
+	return []SourceReference{{Resource: resource, Title: title}}
 }

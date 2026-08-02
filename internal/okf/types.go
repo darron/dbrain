@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	OKFVersion     = "0.1"
-	ProfilePrivate = "private"
+	OKFVersion       = "0.2"
+	legacyOKFVersion = "0.1"
+	ProfilePrivate   = "private"
 
 	manifestFileName = ".dbrain-okf-manifest.json"
 )
@@ -78,9 +79,20 @@ type Document struct {
 	Description string
 	Resource    string
 	Tags        []string
-	Timestamp   string
+	Generated   Generated
+	Sources     []SourceReference
 	Fields      []Field
 	Body        string
+}
+
+type Generated struct {
+	By string
+	At string
+}
+
+type SourceReference struct {
+	Resource string
+	Title    string
 }
 
 type Manifest struct {

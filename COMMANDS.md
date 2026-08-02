@@ -576,6 +576,9 @@ Writes a deterministic private Open Knowledge Format bundle from the local
 SQLite brain. The default output directory is the configured `okf/current`
 projection beside the rendered vault. Export uses a lock, staging directory,
 validation, and atomic replacement before publishing the new bundle.
+New exports target OKF 0.2, declare the version on the root index, and record
+generation and source provenance in frontmatter. Validation continues to accept
+existing dbrain OKF 0.1 bundles.
 
 ```sh
 dbrain okf export

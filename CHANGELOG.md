@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Open Knowledge Format 0.2 exports (2026-08-02)
+
+- **Current OKF metadata**: New bundles declare OKF 0.2 at the root index and
+  use `generated` and `sources` frontmatter instead of the superseded v0.1
+  `timestamp` field and body citation lists. dbrain emits only provenance it
+  can substantiate and does not invent verification or attestation claims.
+- **Legacy bundle compatibility**: Inspection and validation continue to accept
+  dbrain OKF 0.1 manifests while newly generated bundles target 0.2.
+
 ### Homebrew 6 tap-trust compatibility (2026-08-01)
 
 - **Public installs no longer load an untrusted sibling formula**: Stable and

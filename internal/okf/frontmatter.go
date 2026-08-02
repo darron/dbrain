@@ -42,8 +42,11 @@ func renderFrontmatter(doc Document) (string, error) {
 	if len(doc.Tags) > 0 {
 		fields = append(fields, Field{Name: "tags", Value: doc.Tags})
 	}
-	if value := strings.TrimSpace(doc.Timestamp); value != "" {
-		fields = append(fields, Field{Name: "timestamp", Value: value})
+	if strings.TrimSpace(doc.Generated.By) != "" {
+		fields = append(fields, Field{Name: "generated", Value: doc.Generated})
+	}
+	if len(doc.Sources) > 0 {
+		fields = append(fields, Field{Name: "sources", Value: doc.Sources})
 	}
 	fields = append(fields, doc.Fields...)
 
@@ -100,9 +103,37 @@ func yamlNodeForValue(value any) (*yaml.Node, error) {
 			node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: entry})
 		}
 		return node, nil
+	case Generated:
+		node := &yaml.Node{Kind: yaml.MappingNode}
+		appendStringMapping(node, "by", v.By)
+		appendStringMapping(node, "at", v.At)
+		return node, nil
+	case []SourceReference:
+		node := &yaml.Node{Kind: yaml.SequenceNode}
+		for _, source := range v {
+			if strings.TrimSpace(source.Resource) == "" {
+				continue
+			}
+			entry := &yaml.Node{Kind: yaml.MappingNode}
+			appendStringMapping(entry, "resource", source.Resource)
+			appendStringMapping(entry, "title", source.Title)
+			node.Content = append(node.Content, entry)
+		}
+		return node, nil
 	default:
 		return nil, fmt.Errorf("unsupported value type %T", value)
 	}
+}
+
+func appendStringMapping(node *yaml.Node, name, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
 }
 
 func shouldSkipFrontmatterValue(value any) bool {

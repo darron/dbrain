@@ -29,7 +29,7 @@ func TestInspectBundleReturnsOnlyAggregateValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectBundle: %v", err)
 	}
-	if !got.ManifestValid || got.ExportedAt != time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC) || got.DocumentCount != 1 || got.BrokenLinkCount != 1 || got.ValidationErrorCount != 1 || !got.TraversalComplete {
+	if !got.ManifestValid || got.ExportedAt != time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC) || got.DocumentCount != 1 || got.BrokenLinkCount != 1 || got.ValidationErrorCount != 0 || !got.TraversalComplete {
 		t.Fatalf("unexpected inspection summary: %+v", got)
 	}
 	payload, err := json.Marshal(got)
@@ -260,7 +260,8 @@ func TestInspectBundleValidatesManifestIdentity(t *testing.T) {
 		profile   string
 		wantValid bool
 	}{
-		{name: "current_private", version: "0.1", profile: ProfilePrivate, wantValid: true},
+		{name: "legacy_private", version: "0.1", profile: ProfilePrivate, wantValid: true},
+		{name: "current_private", version: "0.2", profile: ProfilePrivate, wantValid: true},
 		{name: "missing_version", version: "", profile: ProfilePrivate},
 		{name: "unsupported_version", version: "9.9", profile: ProfilePrivate},
 		{name: "missing_profile", version: "0.1", profile: ""},
@@ -295,6 +296,93 @@ func TestInspectBundleValidatesManifestIdentity(t *testing.T) {
 				t.Fatalf("Conformant = %t, want %t: %+v", validation.Conformant, tc.wantValid, validation)
 			}
 		})
+	}
+}
+
+func TestValidateBundleAllowsVersionFrontmatterOnlyOnRootIndex(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeInspectionManifestVersion(t, dir, "0.2", "2026-07-13T18:00:00Z", nil)
+	if err := os.WriteFile(filepath.Join(dir, "index.md"), []byte("---\nokf_version: \"0.2\"\n---\n# Index\n"), 0o600); err != nil {
+		t.Fatalf("write root index: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nested", "index.md"), []byte("# Nested Index\n"), 0o600); err != nil {
+		t.Fatalf("write nested index: %v", err)
+	}
+
+	result, err := ValidateBundle(dir)
+	if err != nil {
+		t.Fatalf("ValidateBundle: %v", err)
+	}
+	if !result.Conformant {
+		t.Fatalf("root version frontmatter rejected: %+v", result)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "nested", "index.md"), []byte("---\nokf_version: \"0.2\"\n---\n# Nested Index\n"), 0o600); err != nil {
+		t.Fatalf("write nested version frontmatter: %v", err)
+	}
+	result, err = ValidateBundle(dir)
+	if err != nil {
+		t.Fatalf("ValidateBundle nested: %v", err)
+	}
+	if result.Conformant {
+		t.Fatalf("nested index frontmatter accepted: %+v", result)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "nested", "index.md"), []byte("# Nested Index\n"), 0o600); err != nil {
+		t.Fatalf("restore nested index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.md"), []byte("---\nokf_version: \"0.1\"\n---\n# Index\n"), 0o600); err != nil {
+		t.Fatalf("write mismatched root version: %v", err)
+	}
+	result, err = ValidateBundle(dir)
+	if err != nil {
+		t.Fatalf("ValidateBundle mismatch: %v", err)
+	}
+	if result.Conformant {
+		t.Fatalf("root index and manifest version mismatch accepted: %+v", result)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "index.md"), []byte("---\nokf_version: \"0.2\"\ntype: Index\n---\n# Index\n"), 0o600); err != nil {
+		t.Fatalf("write root index with extra frontmatter: %v", err)
+	}
+	result, err = ValidateBundle(dir)
+	if err != nil {
+		t.Fatalf("ValidateBundle extra root metadata: %v", err)
+	}
+	if result.Conformant {
+		t.Fatalf("extra root index frontmatter accepted: %+v", result)
+	}
+}
+
+func TestValidateBundleAcceptsRootRelativeAndBrokenConceptLinks(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeInspectionManifestVersion(t, dir, "0.2", "2026-07-13T18:00:00Z", []ManifestConcept{
+		{Path: "concepts/one.md", Type: "Thing"},
+		{Path: "concepts/two.md", Type: "Thing"},
+	})
+	if err := os.MkdirAll(filepath.Join(dir, "concepts"), 0o755); err != nil {
+		t.Fatalf("mkdir concepts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "concepts", "one.md"), []byte("---\ntype: Thing\n---\n[Root relative](/concepts/two.md)\n[Missing](/concepts/missing.md)\n"), 0o600); err != nil {
+		t.Fatalf("write first concept: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "concepts", "two.md"), []byte("---\ntype: Thing\n---\n# Two\n"), 0o600); err != nil {
+		t.Fatalf("write second concept: %v", err)
+	}
+
+	result, err := ValidateBundle(dir)
+	if err != nil {
+		t.Fatalf("ValidateBundle: %v", err)
+	}
+	if !result.Conformant || result.BrokenInternalLinks != 1 || len(result.Errors) != 0 {
+		t.Fatalf("root-relative or broken links rejected a v0.2 bundle: %+v", result)
 	}
 }
 
@@ -392,7 +480,12 @@ func openInspectionRoot(t *testing.T, dir string) *vaultfs.Root {
 
 func writeInspectionManifest(t *testing.T, dir string, exportedAt string, concepts []ManifestConcept) {
 	t.Helper()
-	payload, err := json.Marshal(Manifest{OKFVersion: "0.1", Profile: ProfilePrivate, ExportedAt: exportedAt, Concepts: concepts})
+	writeInspectionManifestVersion(t, dir, OKFVersion, exportedAt, concepts)
+}
+
+func writeInspectionManifestVersion(t *testing.T, dir, version, exportedAt string, concepts []ManifestConcept) {
+	t.Helper()
+	payload, err := json.Marshal(Manifest{OKFVersion: version, Profile: ProfilePrivate, ExportedAt: exportedAt, Concepts: concepts})
 	if err != nil {
 		t.Fatalf("marshal manifest: %v", err)
 	}

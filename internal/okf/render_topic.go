@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/darron/dbrain/internal/topics"
 )
 
-func renderTopicDocument(topic topicDoc, _ ExportOptions, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string) (Document, []OmittedLink, error) {
+func renderTopicDocument(topic topicDoc, opts ExportOptions, pathByConceptID map[string]string, conceptIDBySourceKey map[string]string) (Document, []OmittedLink, error) {
 	doc := Document{
 		Path:        topic.Path,
 		Type:        "Topic",
@@ -16,6 +17,7 @@ func renderTopicDocument(topic topicDoc, _ ExportOptions, pathByConceptID map[st
 		Description: topicDescription(topic.Topic),
 		Resource:    "dbrain://" + topic.ConceptID,
 		Tags:        topicTags(topic.Topic),
+		Generated:   generatedMetadata(opts, opts.Now.UTC().Format(time.RFC3339)),
 		Fields: []Field{
 			{Name: "dbrain_concept_id", Value: topic.ConceptID},
 			{Name: "dbrain_kind", Value: "topic"},

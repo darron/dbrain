@@ -138,6 +138,9 @@ func writeBundle(root string, bundle Bundle) error {
 		var body string
 		if filepath.Base(full) == "index.md" {
 			body = strings.TrimRight(doc.Body, " \t\r\n") + "\n"
+			if doc.Path == "index.md" {
+				body = "---\nokf_version: \"" + OKFVersion + "\"\n---\n" + body
+			}
 		} else {
 			body, err = RenderDocument(doc)
 			if err != nil {

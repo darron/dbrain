@@ -67,22 +67,6 @@ func itemYear(item model.Item) string {
 	return "undated"
 }
 
-func timestampForItem(item model.Item) string {
-	for _, value := range []string{item.PublishedAt, item.SavedAt} {
-		if normalized := normalizeTimestamp(value); normalized != "" {
-			return normalized
-		}
-	}
-	return ""
-}
-
-func timestampForSource(source model.SourceDocument) string {
-	if !source.CreatedAt.IsZero() {
-		return source.CreatedAt.UTC().Format(time.RFC3339)
-	}
-	return ""
-}
-
 func timeString(value time.Time) string {
 	if value.IsZero() {
 		return ""
