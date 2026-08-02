@@ -154,8 +154,6 @@ var testFormulaTemplate = template.Must(template.New("formula").Parse(`class Dbr
   version "{{.Candidate.FormulaVersion}}"
   license all_of: ["MIT", "Apache-2.0"]
 
-  conflicts_with "dbrain", because: "both install the dbrain binary"
-
   if OS.mac?
     if Hardware::CPU.arm?
       url "{{.ReleaseBase}}/dbrain_{{.Candidate.ReleaseTag}}_darwin_arm64.tar.gz"

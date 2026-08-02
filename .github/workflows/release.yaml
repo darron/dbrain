@@ -353,12 +353,8 @@ jobs:
           ruby <<'RUBY'
           formula_path = File.join("homebrew-tap", ENV.fetch("TAP_FORMULA_PATH"))
           text = File.read(formula_path)
-          stableConflict = '  conflicts_with "dbrain-test", because: "both install the dbrain binary"'
-          unless text.match?(/^\s*conflicts_with\s+"dbrain-test"(?:,.*)?$/)
-            platform = text.match(/^  if OS\.mac\?\n/)
-            abort("stable formula is missing its platform anchor") unless platform
-            text = text.sub(platform[0], "#{stableConflict}\n\n#{platform[0]}")
-          end
+          text = text.gsub(/^[ \t]*conflicts_with[ \t]+"dbrain-test"(?:,[^\n]*)?\n(?:\n)?/, "")
+          text = text.gsub(/^[ \t]*version[ \t]+"[^"]+"\n(?:\n)?/, "")
           if text.match?(/^  license "MIT"\s*$/)
             text = text.sub(/^  license "MIT"\s*$/, '  license all_of: ["MIT", "Apache-2.0"]')
           end
@@ -389,9 +385,9 @@ jobs:
                   assert_match '"state": "unsupported"', status
                 end
             RUBY_TEST
+            semantic_test = "\n" + semantic_test.lines.map { |line| "    #{line}" }.join.chomp
             text = text.sub(test_end[0], "#{semantic_test}#{test_end[0]}")
           end
-          version = ENV.fetch("VERSION")
           version_tag = ENV.fetch("VERSION_TAG")
           release_base = ENV.fetch("RELEASE_BASE")
           targets = {
@@ -400,10 +396,6 @@ jobs:
             "linux_amd64" => ENV.fetch("LINUX_AMD64_SHA"),
             "linux_arm64" => ENV.fetch("LINUX_ARM64_SHA"),
           }
-
-          if text.match?(/^\s*version\s+"/)
-            text = text.sub(/^\s*version\s+"[^"]+"/, "  version \"#{version}\"")
-          end
 
           targets.each do |target, sha|
             os, arch = target.split("_", 2)

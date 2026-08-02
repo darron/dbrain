@@ -5,6 +5,19 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Homebrew 6 tap-trust compatibility (2026-08-01)
+
+- **Public installs no longer load an untrusted sibling formula**: Stable and
+  test formulae no longer declare cross-formula `conflicts_with` metadata.
+  Homebrew 6 trusts only the fully qualified formula requested from a
+  third-party tap, so loading the sibling formula during dependency resolution
+  prevented a clean `brew install darron/tap/dbrain`.
+- **Explicit switching remains the safety boundary**: Stable and test releases
+  still install the same `dbrain` executable. The documented `brew unlink` and
+  `brew link` sequence remains required when moving between their separate
+  kegs, and release automation now removes legacy conflict metadata rather than
+  restoring it.
+
 ### Faster current-schema test databases (2026-08-01)
 
 - **Checkpointed SQLite fixtures**: Tests that need an isolated current-schema

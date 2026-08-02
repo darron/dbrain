@@ -35,7 +35,6 @@ func TestRenderTestFormula(t *testing.T) {
 		"class DbrainTest < Formula",
 		`version "0.0.184.1"`,
 		`license all_of: ["MIT", "Apache-2.0"]`,
-		`conflicts_with "dbrain", because: "both install the dbrain binary"`,
 		`bin.install "dbrain"`,
 		`pkgshare.install "THIRD_PARTY_NOTICES.md", "LICENSE-USearch"`,
 		`semantic status --json`,
@@ -54,6 +53,7 @@ func TestRenderTestFormula(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		`conflicts_with "dbrain"`,
 		"uninstall do", "post_uninstall", "zap do", ".config/dbrain",
 		".local/share/dbrain", "LaunchAgents", "launchctl", "rm_rf",
 	} {
