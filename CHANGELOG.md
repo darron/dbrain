@@ -51,6 +51,15 @@ development date for the change set.
   successful delete, and clear stale per-chat-turn share links for the removed
   slug.
 
+### Faster X media transcription candidate selection (2026-08-02)
+
+- **Item-first runnable-media lookup**: X media transcription candidate
+  selection now resolves each item's media links before loading its video
+  assets, avoiding repeated scans of the global media download-retry index when
+  the transcription backlog is empty. Non-force selection also evaluates the
+  shared pending predicate only once while preserving retry, force, and pruned
+  media semantics.
+
 ### Faster X photo OCR candidate selection (2026-08-02)
 
 - **Item-first runnable-media lookup**: X photo OCR candidate selection now
