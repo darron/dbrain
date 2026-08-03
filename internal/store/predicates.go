@@ -21,8 +21,9 @@ const xMediaTranscriptionAnyMediaExistsWhere = `EXISTS (
 const xMediaTranscriptionRunnableMediaExistsWhere = `EXISTS (
 	SELECT 1
 	FROM item_media_links l
-	JOIN media_assets a ON a.id = l.media_asset_id
+	CROSS JOIN media_assets a
 	WHERE l.item_id = items.id
+		AND a.id = l.media_asset_id
 		AND a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 		AND a.local_path != ''
 		AND a.local_pruned_at = ''

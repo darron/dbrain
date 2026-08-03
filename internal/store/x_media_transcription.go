@@ -21,24 +21,22 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 	}
 
 	pendingWhere, pendingArgs := xMediaTranscriptionPendingWhere(time.Now().UTC())
+	where := xMediaTranscriptionRunnableMediaExistsWhere
+	var args []any
+	if !force {
+		where = pendingWhere
+		args = pendingArgs
+	}
 
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
 		WHERE ` + xItemSourceTypeWhere + `
 			AND external_id != ''
-			AND ` + xMediaTranscriptionRunnableMediaExistsWhere
-	if !force {
-		query += ` AND ` + pendingWhere
-	}
-	query += `
+			AND ` + where + `
 		ORDER BY last_seen_at DESC, id DESC
 		LIMIT ?`
 
-	args := append([]any{}, pendingArgs...)
-	if force {
-		args = nil
-	}
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
