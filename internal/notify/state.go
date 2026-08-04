@@ -57,9 +57,25 @@ type Incident struct {
 	RecoveryNotifiedAt    time.Time     `json:"recovery_notified_at,omitempty"`
 }
 
+type IncidentSnapshot struct {
+	ID          string      `json:"id"`
+	FailureType FailureType `json:"failure_type"`
+	FirstSeenAt time.Time   `json:"first_seen_at"`
+	LastSeenAt  time.Time   `json:"last_seen_at"`
+	Occurrences int         `json:"occurrences"`
+}
+
+type EventFacts struct {
+	Kind             EventKind          `json:"kind"`
+	Operation        Operation          `json:"operation"`
+	Incidents        []IncidentSnapshot `json:"incidents"`
+	SuppressionAfter time.Duration      `json:"suppression_after"`
+	CreatedAt        time.Time          `json:"created_at"`
+}
+
 type Envelope struct {
-	Notification Notification              `json:"notification"`
-	Deliveries   map[string]DeliveryRecord `json:"deliveries"`
+	Event      EventFacts                `json:"event"`
+	Deliveries map[string]DeliveryRecord `json:"deliveries"`
 }
 
 type DeliveryRecord struct {
@@ -183,11 +199,8 @@ func observeSuccess(state *State, decision *Decision, outcome Outcome, options O
 	if len(resolved) == 0 {
 		return nil
 	}
-	notification, err := BuildRecoveryMessage(resolved, createdAt, options.RepeatAfter)
-	if err != nil {
-		return err
-	}
-	return enqueueNotification(state, decision, notification, options.Providers)
+	event := eventFactsFromIncidents(EventRecovery, resolved, options.RepeatAfter, createdAt)
+	return enqueueEvent(state, decision, event, options.Providers)
 }
 
 func newIncident(operation Operation, failureType FailureType, observedAt time.Time) Incident {
@@ -205,31 +218,54 @@ func newIncident(operation Operation, failureType FailureType, observedAt time.T
 }
 
 func enqueueIncidentNotification(state *State, decision *Decision, incident Incident, kind EventKind, options Options) error {
-	var notification Notification
-	var err error
 	switch kind {
-	case EventFailure:
-		notification, err = BuildFailureMessage(incident, options.RepeatAfter)
-	case EventReminder:
-		notification, err = BuildReminderMessage(incident, options.RepeatAfter)
+	case EventFailure, EventReminder:
 	default:
 		return fmt.Errorf("invalid incident event kind")
 	}
-	if err != nil {
-		return err
-	}
-	return enqueueNotification(state, decision, notification, options.Providers)
+	event := eventFactsFromIncidents(kind, []Incident{incident}, options.RepeatAfter, incident.LastSeenAt)
+	return enqueueEvent(state, decision, event, options.Providers)
 }
 
-func enqueueNotification(state *State, decision *Decision, notification Notification, providers []string) error {
+func eventFactsFromIncidents(kind EventKind, incidents []Incident, repeatAfter time.Duration, createdAt time.Time) EventFacts {
+	incidents = append([]Incident(nil), incidents...)
+	if kind == EventRecovery {
+		sort.Slice(incidents, func(left int, right int) bool {
+			return failureCatalogIndex(incidents[left].FailureType) < failureCatalogIndex(incidents[right].FailureType)
+		})
+	}
+	event := EventFacts{
+		Kind:             kind,
+		Operation:        OperationScheduledSyncAll,
+		Incidents:        make([]IncidentSnapshot, 0, len(incidents)),
+		SuppressionAfter: repeatAfter,
+		CreatedAt:        createdAt.UTC(),
+	}
+	for _, incident := range incidents {
+		event.Incidents = append(event.Incidents, IncidentSnapshot{
+			ID:          incident.ID,
+			FailureType: incident.FailureType,
+			FirstSeenAt: incident.FirstSeenAt.UTC(),
+			LastSeenAt:  incident.LastSeenAt.UTC(),
+			Occurrences: incident.Occurrences,
+		})
+	}
+	return event
+}
+
+func enqueueEvent(state *State, decision *Decision, event EventFacts, providers []string) error {
 	if len(state.Outbox) >= maxStateEnvelopes {
 		return fmt.Errorf("notification outbox exceeds limit")
+	}
+	notification, err := DeriveNotification(event)
+	if err != nil {
+		return err
 	}
 	deliveries := make(map[string]DeliveryRecord, len(providers))
 	for _, provider := range providers {
 		deliveries[provider] = DeliveryRecord{Status: DeliveryPending}
 	}
-	state.Outbox = append(state.Outbox, Envelope{Notification: notification, Deliveries: deliveries})
+	state.Outbox = append(state.Outbox, Envelope{Event: event, Deliveries: deliveries})
 	decision.Notifications = append(decision.Notifications, notification)
 	return nil
 }
@@ -259,6 +295,86 @@ func validateOptions(options Options) error {
 			return fmt.Errorf("duplicate notification provider")
 		}
 		seen[provider] = struct{}{}
+	}
+	return nil
+}
+
+func ValidateEventFacts(event EventFacts) error {
+	if event.Operation != OperationScheduledSyncAll {
+		return fmt.Errorf("invalid notification event operation")
+	}
+	if event.CreatedAt.IsZero() || event.CreatedAt.Location() != time.UTC {
+		return fmt.Errorf("invalid notification event creation time")
+	}
+	if len(event.Incidents) > maxNotificationItems {
+		return fmt.Errorf("notification event incident count exceeds limit")
+	}
+	switch event.Kind {
+	case EventFailure, EventReminder:
+		if len(event.Incidents) != 1 || event.SuppressionAfter <= 0 {
+			return fmt.Errorf("invalid notification incident event facts")
+		}
+	case EventRecovery:
+		if len(event.Incidents) == 0 || event.SuppressionAfter <= 0 {
+			return fmt.Errorf("invalid notification recovery event facts")
+		}
+	case EventTest:
+		if len(event.Incidents) != 0 || event.SuppressionAfter != 0 {
+			return fmt.Errorf("invalid notification test event facts")
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid notification event kind")
+	}
+
+	seenIDs := make(map[string]struct{}, len(event.Incidents))
+	seenTypes := make(map[FailureType]struct{}, len(event.Incidents))
+	previousCatalogIndex := -1
+	for _, incident := range event.Incidents {
+		if _, ok := LookupFailure(incident.FailureType); !ok {
+			return fmt.Errorf("unknown notification event failure type")
+		}
+		if incident.FirstSeenAt.IsZero() || incident.FirstSeenAt.Location() != time.UTC ||
+			incident.LastSeenAt.Location() != time.UTC ||
+			incident.LastSeenAt.Before(incident.FirstSeenAt) ||
+			event.CreatedAt.Before(incident.LastSeenAt) ||
+			incident.Occurrences < 1 {
+			return fmt.Errorf("invalid notification event incident chronology")
+		}
+		if incident.ID != deterministicIncidentID(event.Operation, incident.FailureType, incident.FirstSeenAt) {
+			return fmt.Errorf("notification event incident id is not deterministic")
+		}
+		if _, exists := seenIDs[incident.ID]; exists {
+			return fmt.Errorf("notification event repeats incident id")
+		}
+		seenIDs[incident.ID] = struct{}{}
+		if _, exists := seenTypes[incident.FailureType]; exists {
+			return fmt.Errorf("notification event repeats failure type")
+		}
+		seenTypes[incident.FailureType] = struct{}{}
+		if event.Kind == EventRecovery {
+			catalogIndex := failureCatalogIndex(incident.FailureType)
+			if catalogIndex <= previousCatalogIndex {
+				return fmt.Errorf("notification recovery event is not in catalog order")
+			}
+			previousCatalogIndex = catalogIndex
+		}
+	}
+
+	incident := event.Incidents[0]
+	switch event.Kind {
+	case EventFailure:
+		if incident.Occurrences != 1 ||
+			!incident.FirstSeenAt.Equal(incident.LastSeenAt) ||
+			!incident.LastSeenAt.Equal(event.CreatedAt) {
+			return fmt.Errorf("invalid notification failure event facts")
+		}
+	case EventReminder:
+		if incident.Occurrences < 2 ||
+			!incident.LastSeenAt.Equal(event.CreatedAt) ||
+			!incident.LastSeenAt.After(incident.FirstSeenAt) {
+			return fmt.Errorf("invalid notification reminder event facts")
+		}
 	}
 	return nil
 }
@@ -304,7 +420,7 @@ func ValidateState(state State) error {
 		}
 	}
 	for _, envelope := range state.Outbox {
-		if err := ValidateNotification(envelope.Notification); err != nil {
+		if _, err := DeriveNotification(envelope.Event); err != nil {
 			return err
 		}
 		if len(envelope.Deliveries) == 0 || len(envelope.Deliveries) > maxProviders {
@@ -459,9 +575,8 @@ func cloneState(state State) State {
 	}
 	cloned.Outbox = make([]Envelope, len(state.Outbox))
 	for index, envelope := range state.Outbox {
-		cloned.Outbox[index].Notification = envelope.Notification
-		cloned.Outbox[index].Notification.IncidentIDs = append([]string(nil), envelope.Notification.IncidentIDs...)
-		cloned.Outbox[index].Notification.FailureTypes = append([]FailureType(nil), envelope.Notification.FailureTypes...)
+		cloned.Outbox[index].Event = envelope.Event
+		cloned.Outbox[index].Event.Incidents = append([]IncidentSnapshot(nil), envelope.Event.Incidents...)
 		cloned.Outbox[index].Deliveries = make(map[string]DeliveryRecord, len(envelope.Deliveries))
 		for provider, record := range envelope.Deliveries {
 			cloned.Outbox[index].Deliveries[provider] = record

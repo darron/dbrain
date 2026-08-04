@@ -3,6 +3,7 @@ package notify
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -356,7 +357,7 @@ func TestObserveHourlyFlapProducesAtMostOneFailureAndRecoveryInsideSixHours(t *t
 	}
 }
 
-func TestObserveNotificationAndIncidentIDsAreDistinctAndPersistedForRetry(t *testing.T) {
+func TestEnvelopePersistsOnlyTypedEventFactsAndDerivesCanonicalNotification(t *testing.T) {
 	state, decision, err := Observe(EmptyState(), stateFailed(FailureAppleNotesPermission, 0), stateOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -366,12 +367,38 @@ func TestObserveNotificationAndIncidentIDsAreDistinctAndPersistedForRetry(t *tes
 	if incident.ID == notification.ID || notification.IncidentIDs[0] != incident.ID {
 		t.Fatalf("incident ID %q and notification %#v are not separate", incident.ID, notification)
 	}
-	if len(state.Outbox) != 1 || !reflect.DeepEqual(state.Outbox[0].Notification, notification) {
-		t.Fatalf("persisted envelope reconstructed notification: %#v", state.Outbox)
+	if len(state.Outbox) != 1 {
+		t.Fatalf("persisted envelope count = %d", len(state.Outbox))
 	}
-	retry := state.Outbox[0]
-	if retry.Notification.ID != notification.ID || retry.Notification.Body != notification.Body || retry.Notification.CreatedAt != notification.CreatedAt {
-		t.Fatalf("retry changed persisted notification: %#v", retry)
+	derived, err := DeriveNotification(state.Outbox[0].Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(derived, notification) {
+		t.Fatalf("derived notification = %#v, want %#v", derived, notification)
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{`"notification"`, `"title"`, `"body"`, "dbrain scheduled sync failed", "Full Disk Access"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("persisted envelope contains rendered notification content %q: %s", forbidden, encoded)
+		}
+	}
+	var restored State
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateState(restored); err != nil {
+		t.Fatalf("restored typed event state is invalid: %v", err)
+	}
+	retry, err := DeriveNotification(restored.Outbox[0].Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(retry, notification) {
+		t.Fatalf("retry derivation changed notification: %#v", retry)
 	}
 }
 
@@ -450,12 +477,20 @@ func TestValidateStateRejectsForgedIncidentIdentityAndChronology(t *testing.T) {
 	}
 }
 
-func TestPersistedAndDeliverableBoundariesRejectForgedNotificationFields(t *testing.T) {
+func TestValidateStateRejectsForgedTypedEventFacts(t *testing.T) {
 	failureState, _, err := Observe(EmptyState(), stateFailed(FailureStoreOpen, 0), stateOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	reminderState, _, err := Observe(failureState, stateFailed(FailureStoreOpen, 6*time.Hour), stateOptions())
+	recoveryState, _, err := Observe(EmptyState(), stateFailed(FailureAppleNotesPermission, 0), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryState, _, err = Observe(recoveryState, stateFailed(FailureStoreOpen, time.Hour), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryState, _, err = Observe(recoveryState, stateSuccess(2*time.Hour), stateOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,60 +498,103 @@ func TestPersistedAndDeliverableBoundariesRejectForgedNotificationFields(t *test
 		name          string
 		state         State
 		envelopeIndex int
-		mutate        func(*Notification)
+		mutate        func(*EventFacts)
 	}{
-		{name: "notification ID", state: failureState, mutate: func(notification *Notification) {
-			notification.ID = "ntf_000000000000000000000000"
+		{name: "digest-shaped forged failure incident ID", state: failureState, mutate: func(event *EventFacts) {
+			event.Incidents[0].ID = "inc_000000000000000000000000"
 		}},
-		{name: "incident ID", state: failureState, mutate: func(notification *Notification) {
-			notification.IncidentIDs[0] = "inc_000000000000000000000000"
+		{name: "unknown failure type", state: failureState, mutate: func(event *EventFacts) {
+			event.Incidents[0].FailureType = "sync.raw.secret"
 		}},
-		{name: "title", state: failureState, mutate: func(notification *Notification) {
-			notification.Title = "dbrain scheduled sync failed: /private/secret/path"
+		{name: "zero occurrence count", state: failureState, mutate: func(event *EventFacts) {
+			event.Incidents[0].Occurrences = 0
 		}},
-		{name: "body", state: failureState, mutate: func(notification *Notification) {
-			notification.Body = "provider token: secret-value"
+		{name: "zero suppression", state: failureState, mutate: func(event *EventFacts) {
+			event.SuppressionAfter = 0
 		}},
-		{name: "first timestamp", state: failureState, mutate: func(notification *Notification) {
-			notification.FirstSeenAt = notification.FirstSeenAt.Add(-time.Second)
+		{name: "negative suppression", state: failureState, mutate: func(event *EventFacts) {
+			event.SuppressionAfter = -time.Hour
 		}},
-		{name: "last timestamp", state: failureState, mutate: func(notification *Notification) {
-			notification.LastSeenAt = notification.LastSeenAt.Add(time.Second)
+		{name: "last seen before first", state: failureState, mutate: func(event *EventFacts) {
+			event.Incidents[0].LastSeenAt = event.Incidents[0].FirstSeenAt.Add(-time.Second)
 		}},
-		{name: "created timestamp", state: failureState, mutate: func(notification *Notification) {
-			notification.CreatedAt = notification.CreatedAt.Add(time.Second)
+		{name: "created before last seen", state: failureState, mutate: func(event *EventFacts) {
+			event.CreatedAt = event.Incidents[0].LastSeenAt.Add(-time.Second)
 		}},
-		{name: "noncanonical timestamp location", state: failureState, mutate: func(notification *Notification) {
-			location := time.FixedZone("forged", -7*60*60)
-			notification.FirstSeenAt = notification.FirstSeenAt.In(location)
-			notification.LastSeenAt = notification.LastSeenAt.In(location)
-			notification.CreatedAt = notification.CreatedAt.In(location)
+		{name: "too many incident snapshots", state: recoveryState, envelopeIndex: 2, mutate: func(event *EventFacts) {
+			event.Incidents = make([]IncidentSnapshot, 65)
 		}},
-		{name: "zero failure count", state: failureState, mutate: func(notification *Notification) {
-			notification.Occurrences = 0
+		{name: "digest-shaped forged recovery incident ID", state: recoveryState, envelopeIndex: 2, mutate: func(event *EventFacts) {
+			event.Incidents[0].ID = "inc_000000000000000000000000"
 		}},
-		{name: "zero reminder count", state: reminderState, envelopeIndex: 1, mutate: func(notification *Notification) {
-			notification.Occurrences = 0
+		{name: "duplicate recovery incident", state: recoveryState, envelopeIndex: 2, mutate: func(event *EventFacts) {
+			event.Incidents[1] = event.Incidents[0]
 		}},
-		{name: "zero suppression", state: failureState, mutate: func(notification *Notification) {
-			notification.SuppressionAfter = 0
-		}},
-		{name: "forged positive suppression", state: failureState, mutate: func(notification *Notification) {
-			notification.SuppressionAfter = 7 * time.Hour
+		{name: "recovery not in catalog order", state: recoveryState, envelopeIndex: 2, mutate: func(event *EventFacts) {
+			event.Incidents[0], event.Incidents[1] = event.Incidents[1], event.Incidents[0]
 		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := cloneState(test.state)
-			test.mutate(&candidate.Outbox[test.envelopeIndex].Notification)
-			forged := candidate.Outbox[test.envelopeIndex].Notification
-			if err := ValidateNotification(forged); err == nil {
-				t.Fatalf("forged deliverable notification accepted: %#v", forged)
-			}
+			test.mutate(&candidate.Outbox[test.envelopeIndex].Event)
 			if err := ValidateState(candidate); err == nil {
-				t.Fatalf("forged persisted notification accepted: %#v", forged)
+				t.Fatalf("forged event facts accepted: %#v", candidate.Outbox[test.envelopeIndex].Event)
 			}
 		})
+	}
+}
+
+func TestDeriveNotificationUsesValidatedTypedFactsAndCatalogOnly(t *testing.T) {
+	state, _, err := Observe(EmptyState(), stateFailed(FailureAppleNotesPermission, 0), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DeriveNotification(state.Outbox[0].Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBody := "dbrain scheduled sync failed: Apple Notes permission denied.\n" +
+		"Occurrences: 1.\n" +
+		"First observed: 2026-08-03T23:35:08Z.\n" +
+		"Action: Grant Full Disk Access to the installed dbrain service binary, then restart the service.\n" +
+		"Further notifications for this error type are suppressed for 6h.\n" +
+		"Incident: inc_c52c70e4db1a4174bb4b7ec9"
+	if got.ID != "ntf_2cb3af6bfda48ce2fdcf319b" || got.Title != "dbrain scheduled sync failed: Apple Notes permission denied" || got.Body != wantBody {
+		t.Fatalf("derived notification = %#v", got)
+	}
+	forged := state.Outbox[0].Event
+	forged.Incidents[0].ID = "inc_000000000000000000000000"
+	if _, err := DeriveNotification(forged); err == nil {
+		t.Fatal("derived notification from invalid event facts")
+	}
+}
+
+func TestValidateStateAllowsHistoricalEventFactsAfterEpisodeReplacement(t *testing.T) {
+	state, _, err := Observe(EmptyState(), stateFailed(FailureStoreOpen, 0), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err = Observe(state, stateSuccess(time.Hour), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldIncidentID := state.Outbox[0].Event.Incidents[0].ID
+	state, _, err = Observe(state, stateFailed(FailureStoreOpen, 6*time.Hour), stateOptions())
+	if err != nil {
+		t.Fatalf("historical pending envelopes invalidated by replacement: %v", err)
+	}
+	current := incidentFor(t, state, FailureStoreOpen)
+	if current.ID == oldIncidentID {
+		t.Fatal("test did not create a replacement episode")
+	}
+	if err := ValidateState(state); err != nil {
+		t.Fatalf("historical event facts rejected: %v", err)
+	}
+	for index := range state.Outbox {
+		if _, err := DeriveNotification(state.Outbox[index].Event); err != nil {
+			t.Fatalf("derive historical envelope %d: %v", index, err)
+		}
 	}
 }
 

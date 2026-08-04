@@ -9,6 +9,46 @@ import (
 	"time"
 )
 
+func DeriveNotification(event EventFacts) (Notification, error) {
+	if err := ValidateEventFacts(event); err != nil {
+		return Notification{}, err
+	}
+	incidents := make([]Incident, len(event.Incidents))
+	for index, snapshot := range event.Incidents {
+		incidents[index] = Incident{
+			ID:          snapshot.ID,
+			Operation:   event.Operation,
+			FailureType: snapshot.FailureType,
+			FirstSeenAt: snapshot.FirstSeenAt,
+			LastSeenAt:  snapshot.LastSeenAt,
+			Occurrences: snapshot.Occurrences,
+		}
+	}
+	switch event.Kind {
+	case EventFailure:
+		return BuildFailureMessage(incidents[0], event.SuppressionAfter)
+	case EventReminder:
+		return BuildReminderMessage(incidents[0], event.SuppressionAfter)
+	case EventRecovery:
+		return BuildRecoveryMessage(incidents, event.CreatedAt, event.SuppressionAfter)
+	case EventTest:
+		notification := Notification{
+			ID:        deterministicNotificationID(EventTest, nil, event.CreatedAt),
+			Kind:      EventTest,
+			Operation: event.Operation,
+			Title:     "dbrain notification test",
+			Body:      "dbrain notification delivery test.",
+			CreatedAt: event.CreatedAt,
+		}
+		if err := ValidateNotification(notification); err != nil {
+			return Notification{}, err
+		}
+		return notification, nil
+	default:
+		return Notification{}, fmt.Errorf("invalid notification event kind")
+	}
+}
+
 func BuildFailureMessage(incident Incident, repeatAfter time.Duration) (Notification, error) {
 	notification, err := buildFailureMessage(incident, repeatAfter)
 	if err != nil {
