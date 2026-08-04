@@ -30,6 +30,8 @@ const (
 	readinessCheckpointPrefix  = "readiness:state="
 )
 
+var errDanglingNativeRootVerification = errors.New("dangling semantic root verification failed")
+
 type PipelineOptions struct {
 	Profile         embedding.Profile
 	Provider        embedding.Provider
@@ -52,6 +54,8 @@ type PipelineStore interface {
 	RetrievalPurgeEpoch(context.Context) (int64, error)
 	RetrievalDatabaseID(context.Context) (string, error)
 	RetrievalEmbeddingProfile(context.Context, string) (store.RetrievalEmbeddingProfileRow, error)
+	RetrievalDanglingGenerationRecovery(context.Context, string) (*store.RetrievalDanglingGenerationRecovery, error)
+	ReactivateRetrievalDanglingGeneration(context.Context, store.RetrievalDanglingGenerationRecovery) error
 	SemanticReadinessSnapshotAt(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
 }
 
@@ -352,6 +356,13 @@ func (p *pipeline) executeCompaction(
 			profileErr,
 		)
 	}
+	if err := p.recoverDanglingGeneration(ctx, run); err != nil {
+		code := ErrorCompaction
+		if errors.Is(err, errDanglingNativeRootVerification) {
+			code = ErrorNativeRoot
+		}
+		return outcome, pipelineStageError(code, run, outcome, err)
+	}
 	result, err := p.runCompact(
 		ctx,
 		p.store,
@@ -389,6 +400,42 @@ func (p *pipeline) executeCompaction(
 		return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
 	}
 	return outcome, nil
+}
+
+func (p *pipeline) recoverDanglingGeneration(ctx context.Context, run store.SemanticRefreshRun) error {
+	candidate, err := p.store.RetrievalDanglingGenerationRecovery(ctx, p.profileID)
+	if err != nil || candidate == nil {
+		return err
+	}
+	if candidate.ProfileID != p.profileID || candidate.PurgeEpoch != run.PurgeEpoch ||
+		candidate.Dimensions != p.options.Profile.Dimensions ||
+		candidate.BackendVersion != semanticindex.USearchVersion {
+		return fmt.Errorf("dangling semantic root does not match the active refresh run")
+	}
+	databaseID, err := p.store.RetrievalDatabaseID(ctx)
+	if err != nil {
+		return err
+	}
+	if err := p.options.Native.VerifyRoot(ctx, RootExpectation{
+		CacheDir:         p.options.CacheDir,
+		DatabaseID:       databaseID,
+		ProfileID:        candidate.ProfileID,
+		GenerationID:     candidate.GenerationID,
+		DescriptorSHA256: candidate.DescriptorSHA256,
+		SnapshotRevision: candidate.SnapshotRevision,
+		PurgeEpoch:       candidate.PurgeEpoch,
+		Dimensions:       candidate.Dimensions,
+		BackendVersion:   candidate.BackendVersion,
+	}); err != nil {
+		return errors.Join(
+			errDanglingNativeRootVerification,
+			fmt.Errorf("verify dangling semantic root before recovery: %w", err),
+		)
+	}
+	if err := p.store.ReactivateRetrievalDanglingGeneration(ctx, *candidate); err != nil {
+		return fmt.Errorf("reactivate verified dangling semantic root: %w", err)
+	}
+	return nil
 }
 
 func (p *pipeline) executeVerify(

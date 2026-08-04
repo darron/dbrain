@@ -276,7 +276,7 @@ func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotent
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 4 ||
+	if len(events) != 6 ||
 		events[0].Phase != MigrationStarted ||
 		events[1].Phase != MigrationApplied ||
 		events[0].Version != semanticRefreshRunsArchiveMigrationVersion ||
@@ -288,8 +288,14 @@ func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotent
 		events[2].Version != retrievalProjectionStagingEpochVersion ||
 		events[3].Version != retrievalProjectionStagingEpochVersion ||
 		events[2].Name != retrievalProjectionStagingEpochName ||
-		events[3].Name != retrievalProjectionStagingEpochName {
-		t.Fatalf("v27-v28 migration events=%+v", events)
+		events[3].Name != retrievalProjectionStagingEpochName ||
+		events[4].Phase != MigrationStarted ||
+		events[5].Phase != MigrationApplied ||
+		events[4].Version != semanticSegmentedDirtyTriggerVersion ||
+		events[5].Version != semanticSegmentedDirtyTriggerVersion ||
+		events[4].Name != semanticSegmentedDirtyTriggerName ||
+		events[5].Name != semanticSegmentedDirtyTriggerName {
+		t.Fatalf("v27-v29 migration events=%+v", events)
 	}
 	got, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
 	if err != nil || got == nil {

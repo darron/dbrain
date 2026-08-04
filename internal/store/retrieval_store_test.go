@@ -2023,7 +2023,7 @@ func TestPendingParentIsExcludedFromEverySemanticVectorSelectorAndHydration(t *t
 	if _, err := st.db.Exec(`UPDATE sources SET title='mutated projected title' WHERE source_key='source:pending-selector'`); err != nil {
 		t.Fatal(err)
 	}
-	assertRetrievalGenerationStale(t, st, "pending-selector-generation")
+	assertGenerationActiveForTest(t, st, "pending-selector-generation")
 
 	ready, err := st.ListReadyEmbeddings(ctx, "pending-selector-profile", 10)
 	if err != nil {
@@ -2084,7 +2084,7 @@ func TestProjectedMutationDirtiesOnceAndIrrelevantItemMutationDoesNot(t *testing
 	assertProjectionPendingAtRevision(t, st, "item", "item:projected-mutation", before+2)
 }
 
-func TestMarkRetrievalParentDirtyTxAllocatesOnceAndInvalidatesLegacyGeneration(t *testing.T) {
+func TestMarkRetrievalParentDirtyTxAllocatesOnceAndPreservesActiveSegmentedGeneration(t *testing.T) {
 	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
@@ -2121,7 +2121,7 @@ func TestMarkRetrievalParentDirtyTxAllocatesOnceAndInvalidatesLegacyGeneration(t
 	if revision != before+1 || projectionRevisionForTest(t, st) != before+1 {
 		t.Fatalf("named dirty revision=%d watermark=%d want %d", revision, projectionRevisionForTest(t, st), before+1)
 	}
-	assertRetrievalGenerationStale(t, st, "named-dirty-generation")
+	assertGenerationActiveForTest(t, st, "named-dirty-generation")
 }
 
 func markProjectionCurrentForTest(t *testing.T, st *Store, kind, sourceKey string) int64 {

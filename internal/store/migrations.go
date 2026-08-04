@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	currentSchemaVersion                       = 28
+	currentSchemaVersion                       = 29
 	auditProvenanceMigrationVersion            = 12
 	auditProvenanceMigrationName               = "audit_provenance_v1"
 	retrievalMigrationVersion                  = 13
@@ -44,6 +44,8 @@ const (
 	semanticRefreshRunsArchiveMigrationName    = "semantic_refresh_runs_v25_compatibility_archive"
 	retrievalProjectionStagingEpochVersion     = 28
 	retrievalProjectionStagingEpochName        = "retrieval_projection_staging_expected_purge_epoch"
+	semanticSegmentedDirtyTriggerVersion       = 29
+	semanticSegmentedDirtyTriggerName          = "retrieval_segmented_dirty_trigger_repair"
 )
 
 type schemaMigration struct {
@@ -281,6 +283,13 @@ var schemaMigrations = []schemaMigration{
 		Name:    retrievalProjectionStagingEpochName,
 		Run: func(s *Store) error {
 			return s.ensureRetrievalProjectionStagingPurgeEpoch()
+		},
+	},
+	{
+		Version: semanticSegmentedDirtyTriggerVersion,
+		Name:    semanticSegmentedDirtyTriggerName,
+		Run: func(s *Store) error {
+			return s.ensureSemanticProjectionDirtyTriggers()
 		},
 	},
 }

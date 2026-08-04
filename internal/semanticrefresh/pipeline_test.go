@@ -680,6 +680,130 @@ func TestPipelineCompactionRunsOneBoundedPlanPerExecute(t *testing.T) {
 	}
 }
 
+func TestPipelineCompactionRecoversVerifiedDanglingRootBeforePlanning(t *testing.T) {
+	h := newPipelineHarness(t)
+	candidate := store.RetrievalDanglingGenerationRecovery{
+		ProfileID: h.profileID, GenerationID: "semantic-root-v1:dangling",
+		DescriptorSHA256: "root-descriptor", BackendVersion: semanticindex.USearchVersion,
+		SnapshotRevision: 47, PurgeEpoch: 1, Dimensions: h.options.Profile.Dimensions,
+		IndexedChunkCount: 5_000,
+	}
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{ProfileID: h.profileID, ActiveGenerationID: candidate.GenerationID}, nil
+	}
+	h.store.danglingRecovery = func(context.Context, string) (*store.RetrievalDanglingGenerationRecovery, error) {
+		copy := candidate
+		return &copy, nil
+	}
+	reactivated := false
+	h.store.reactivateDangling = func(_ context.Context, got store.RetrievalDanglingGenerationRecovery) error {
+		if got != candidate {
+			t.Fatalf("reactivation candidate=%+v want=%+v", got, candidate)
+		}
+		reactivated = true
+		return nil
+	}
+	h.store.databaseID = func(context.Context) (string, error) { return "database-1", nil }
+	h.pipeline.runCompact = func(context.Context, semanticbuild.CompactionStore, semanticbuild.StreamingSegmentPayloadBuilder, semanticbuild.CompactionOptions) (semanticbuild.CompactionResult, error) {
+		if !reactivated {
+			t.Fatal("compaction planned before dangling root was reactivated")
+		}
+		return semanticbuild.CompactionResult{Plan: semanticbuild.SegmentCompactionPlan{
+			Kind: semanticbuild.SegmentCompactionNone, Inputs: []semanticbuild.SegmentCompactionInput{}, Outputs: []semanticbuild.SegmentCompactionOutput{},
+		}}, nil
+	}
+
+	outcome := h.execute(t, pipelineRun(store.SemanticRefreshCompaction, 1))
+	if !reactivated || outcome.NextStage != store.SemanticRefreshVerify || len(h.native.expectations) != 1 {
+		t.Fatalf("reactivated=%t outcome=%+v expectations=%+v", reactivated, outcome, h.native.expectations)
+	}
+	want := RootExpectation{
+		CacheDir: h.options.CacheDir, DatabaseID: "database-1", ProfileID: h.profileID,
+		GenerationID: candidate.GenerationID, DescriptorSHA256: candidate.DescriptorSHA256,
+		SnapshotRevision: candidate.SnapshotRevision, PurgeEpoch: candidate.PurgeEpoch,
+		Dimensions: candidate.Dimensions, BackendVersion: candidate.BackendVersion,
+	}
+	if got := h.native.expectations[0]; got != want {
+		t.Fatalf("recovery root expectation=%+v want=%+v", got, want)
+	}
+}
+
+func TestPipelineCompactionDoesNotReactivateUnverifiedDanglingRoot(t *testing.T) {
+	h := newPipelineHarness(t)
+	candidate := store.RetrievalDanglingGenerationRecovery{
+		ProfileID: h.profileID, GenerationID: "semantic-root-v1:dangling",
+		DescriptorSHA256: "root-descriptor", BackendVersion: semanticindex.USearchVersion,
+		SnapshotRevision: 47, PurgeEpoch: 1, Dimensions: h.options.Profile.Dimensions,
+		IndexedChunkCount: 5_000,
+	}
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{ProfileID: h.profileID, ActiveGenerationID: candidate.GenerationID}, nil
+	}
+	h.store.danglingRecovery = func(context.Context, string) (*store.RetrievalDanglingGenerationRecovery, error) {
+		copy := candidate
+		return &copy, nil
+	}
+	reactivated := false
+	h.store.reactivateDangling = func(context.Context, store.RetrievalDanglingGenerationRecovery) error {
+		reactivated = true
+		return nil
+	}
+	h.native.verifyErr = errors.New("native root is missing")
+	compactCalls := 0
+	h.pipeline.runCompact = func(context.Context, semanticbuild.CompactionStore, semanticbuild.StreamingSegmentPayloadBuilder, semanticbuild.CompactionOptions) (semanticbuild.CompactionResult, error) {
+		compactCalls++
+		return semanticbuild.CompactionResult{}, nil
+	}
+
+	outcome, err := h.pipeline.Execute(t.Context(), pipelineRun(store.SemanticRefreshCompaction, 1))
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorNativeRoot ||
+		!errors.Is(err, h.native.verifyErr) || reactivated || compactCalls != 0 {
+		t.Fatalf("outcome=%+v err=%v reactivated=%t compact_calls=%d", outcome, err, reactivated, compactCalls)
+	}
+}
+
+func TestPipelineCompactionRejectsDanglingRootFromDifferentBackendVersion(t *testing.T) {
+	h := newPipelineHarness(t)
+	candidate := store.RetrievalDanglingGenerationRecovery{
+		ProfileID: h.profileID, GenerationID: "semantic-root-v1:old-backend",
+		DescriptorSHA256: "root-descriptor", BackendVersion: "older-usearch",
+		SnapshotRevision: 47, PurgeEpoch: 1, Dimensions: h.options.Profile.Dimensions,
+		IndexedChunkCount: 5_000,
+	}
+	h.store.profile = func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error) {
+		return store.RetrievalEmbeddingProfileRow{ProfileID: h.profileID, ActiveGenerationID: candidate.GenerationID}, nil
+	}
+	h.store.danglingRecovery = func(context.Context, string) (*store.RetrievalDanglingGenerationRecovery, error) {
+		copy := candidate
+		return &copy, nil
+	}
+	reactivated := false
+	h.store.reactivateDangling = func(context.Context, store.RetrievalDanglingGenerationRecovery) error {
+		reactivated = true
+		return nil
+	}
+	compactCalls := 0
+	h.pipeline.runCompact = func(context.Context, semanticbuild.CompactionStore, semanticbuild.StreamingSegmentPayloadBuilder, semanticbuild.CompactionOptions) (semanticbuild.CompactionResult, error) {
+		compactCalls++
+		return semanticbuild.CompactionResult{}, nil
+	}
+
+	outcome, err := h.pipeline.Execute(t.Context(), pipelineRun(store.SemanticRefreshCompaction, 1))
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.Code != ErrorCompaction ||
+		len(h.native.expectations) != 0 || reactivated || compactCalls != 0 {
+		t.Fatalf(
+			"outcome=%+v err=%v expectations=%+v reactivated=%t compact_calls=%d",
+			outcome,
+			err,
+			h.native.expectations,
+			reactivated,
+			compactCalls,
+		)
+	}
+}
+
 func TestPipelineVerifyUsesBoundedCursorPagesWithoutCounterRepair(t *testing.T) {
 	h := newPipelineHarness(t)
 	var calls int
@@ -1261,11 +1385,27 @@ func pipelineReadySnapshot(profileID string) semanticreadiness.Snapshot {
 
 type pipelineTestStore struct {
 	PipelineStore
-	profile      func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error)
-	workRevision func(context.Context) (int64, error)
-	purgeEpoch   func(context.Context) (int64, error)
-	databaseID   func(context.Context) (string, error)
-	readiness    func(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
+	profile            func(context.Context, string) (store.RetrievalEmbeddingProfileRow, error)
+	workRevision       func(context.Context) (int64, error)
+	purgeEpoch         func(context.Context) (int64, error)
+	databaseID         func(context.Context) (string, error)
+	readiness          func(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
+	danglingRecovery   func(context.Context, string) (*store.RetrievalDanglingGenerationRecovery, error)
+	reactivateDangling func(context.Context, store.RetrievalDanglingGenerationRecovery) error
+}
+
+func (s *pipelineTestStore) RetrievalDanglingGenerationRecovery(ctx context.Context, profileID string) (*store.RetrievalDanglingGenerationRecovery, error) {
+	if s.danglingRecovery == nil {
+		return nil, nil
+	}
+	return s.danglingRecovery(ctx, profileID)
+}
+
+func (s *pipelineTestStore) ReactivateRetrievalDanglingGeneration(ctx context.Context, candidate store.RetrievalDanglingGenerationRecovery) error {
+	if s.reactivateDangling == nil {
+		return fmt.Errorf("unexpected dangling retrieval generation recovery")
+	}
+	return s.reactivateDangling(ctx, candidate)
 }
 
 func (s *pipelineTestStore) RetrievalEmbeddingProfile(ctx context.Context, profileID string) (store.RetrievalEmbeddingProfileRow, error) {

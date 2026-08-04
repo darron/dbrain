@@ -82,6 +82,65 @@ func TestProjectedMutationRollbackRestoresAuthoritativeAndRetrievalState(t *test
 	}
 }
 
+func TestMigration29ReplacesLegacyDirtyTriggersWithoutInvalidatingActiveRoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openCurrentTestStoreAtPath(t, path)
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:v29-trigger-repair")
+	chunk := testRetrievalChunk("v29-trigger-repair-chunk", "source", "source:v29-trigger-repair", 0, "v29-trigger-repair-hash", "source text")
+	if _, err := st.ReplaceRetrievalChunks(ctx, "source", "source:v29-trigger-repair", []retrievalchunk.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	markProjectionCurrentForTest(t, st, "source", "source:v29-trigger-repair")
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, "v29-trigger-repair-profile", chunk.TextHash)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalIndexGeneration(ctx, RetrievalIndexGenerationRow{
+		GenerationID: "v29-trigger-repair-generation", ProfileID: "v29-trigger-repair-profile",
+		Backend: "exact", BackendVersion: "v1", Dimensions: 2,
+		DistanceMetric: "cosine", BuildStatus: RetrievalGenerationCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedActiveRetrievalGenerationForTest(t, st, "v29-trigger-repair-generation")
+	for _, trigger := range semanticProjectionDirtyTriggersV17 {
+		if _, err := st.db.Exec(`DROP TRIGGER IF EXISTS ` + trigger.name); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.db.Exec(trigger.sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.db.Exec(`DELETE FROM schema_migrations WHERE version=?`, semanticSegmentedDirtyTriggerVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`PRAGMA user_version=28`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	for _, trigger := range semanticProjectionDirtyTriggers {
+		var definition string
+		if err := st.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?`, trigger.name).Scan(&definition); err != nil {
+			t.Fatal(err)
+		}
+		if normalizeSQLiteTriggerSQL(definition) != normalizeSQLiteTriggerSQL(trigger.sql) {
+			t.Fatalf("migration 29 did not install canonical trigger %s", trigger.name)
+		}
+	}
+	if _, err := st.db.Exec(`UPDATE sources SET title='metadata changed' WHERE source_key='source:v29-trigger-repair'`); err != nil {
+		t.Fatal(err)
+	}
+	assertGenerationActiveForTest(t, st, "v29-trigger-repair-generation")
+}
+
 func TestProjectedEnrichmentTransitionsDirtyExactlyAffectedParentsOnce(t *testing.T) {
 	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
