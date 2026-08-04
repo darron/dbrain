@@ -491,20 +491,20 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 ) (err error) {
 	resolvedFlags, err := resolveSyncAllFlags(cfg.RootDir, flags)
 	if err != nil {
-		return err
+		return wrapScheduledSyncBoundary(scheduledBoundaryConfigResolution, err)
 	}
 	metricsRun, closeMetrics, err := openSyncMetrics(cfg, "scheduler:interval")
 	if err != nil {
-		return err
+		return wrapScheduledSyncBoundary(scheduledBoundaryMetricsOpen, err)
 	}
 	defer func() {
 		if closeErr := closeMetrics(); err == nil && closeErr != nil {
-			err = closeErr
+			err = wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr)
 		}
 	}()
 	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
 	if err != nil {
-		return err
+		return wrapScheduledSyncBoundary(scheduledBoundaryStoreOpen, err)
 	}
 	defer func() {
 		if st != nil {
@@ -514,7 +514,7 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 
 	options, err := syncOptionsFromFlags(ctx, cfg, resolvedFlags, newLogger(false, logOut), logOut)
 	if err != nil {
-		return err
+		return wrapScheduledSyncBoundary(scheduledBoundaryOptions, err)
 	}
 	options.Metrics = metricsRun
 	stats, err := runSyncAll(ctx, cfg, st, options)
@@ -527,30 +527,35 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 	}
 	if err := st.Close(); err != nil {
 		st = nil
-		return err
+		return wrapScheduledSyncBoundary(scheduledBoundaryStoreClose, err)
 	}
 	st = nil
 	if err := closeMetrics(); err != nil {
 		closeMetrics = func() error { return nil }
-		return err
+		return wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, err)
 	}
 	closeMetrics = func() error { return nil }
 
 	if err := logScheduledSyncStats(logOut, stats); err != nil {
-		return err
+		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, err)
 	}
 	result, err := runConfiguredSemanticRefresh(
 		ctx,
 		cfg,
 		deps,
 		func(progress semanticrefresh.Progress) error {
-			return writeSemanticRefreshProgress(logOut, progress)
+			if err := writeSemanticRefreshProgress(logOut, progress); err != nil {
+				return wrapScheduledSyncBoundary(scheduledBoundaryOutput, err)
+			}
+			return nil
 		},
 	)
 	if err != nil {
 		return err
 	}
-	logScheduledSemanticRefreshResult(logOut, result)
+	if err := logScheduledSemanticRefreshResult(logOut, result); err != nil {
+		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, err)
+	}
 	return nil
 }
 
@@ -559,32 +564,44 @@ func logScheduledSyncStats(logOut io.Writer, stats syncjob.Stats) error {
 		return nil
 	}
 	if stats.XBookmarks != nil {
-		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: x_bookmarks created=%d updated=%d unchanged=%d\n", stats.XBookmarks.Stats.Created, stats.XBookmarks.Stats.Updated, stats.XBookmarks.Stats.Unchanged)
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: x_bookmarks created=%d updated=%d unchanged=%d\n", stats.XBookmarks.Stats.Created, stats.XBookmarks.Stats.Updated, stats.XBookmarks.Stats.Unchanged); err != nil {
+			return err
+		}
 	}
 	if stats.X != nil {
-		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: x hydrated=%d rendered=%d missing=%d\n", stats.X.Stats.Hydrated, stats.X.Stats.Rendered, stats.X.Stats.Missing)
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: x hydrated=%d rendered=%d missing=%d\n", stats.X.Stats.Hydrated, stats.X.Stats.Rendered, stats.X.Stats.Missing); err != nil {
+			return err
+		}
 	}
 	if stats.Links != nil {
-		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: links scanned=%d sources_queued=%d errors=%d\n", stats.Links.Stats.ItemsScanned, stats.Links.Stats.SourcesQueued, stats.Links.Stats.Errors)
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: links scanned=%d sources_queued=%d errors=%d\n", stats.Links.Stats.ItemsScanned, stats.Links.Stats.SourcesQueued, stats.Links.Stats.Errors); err != nil {
+			return err
+		}
 	}
 	if stats.Sources != nil {
-		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: sources cycles=%d summarized=%d errors=%d\n", stats.Sources.Stats.WorkCycles, stats.Sources.Stats.SourcesSummarized, stats.Sources.Stats.Errors)
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: sources cycles=%d summarized=%d errors=%d\n", stats.Sources.Stats.WorkCycles, stats.Sources.Stats.SourcesSummarized, stats.Sources.Stats.Errors); err != nil {
+			return err
+		}
 	}
 	if stats.Categorize != nil {
-		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: categorize succeeded=%d skipped=%d errors=%d\n", stats.Categorize.Stats.Succeeded, stats.Categorize.Stats.Skipped, stats.Categorize.Stats.Errors)
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: categorize succeeded=%d skipped=%d errors=%d\n", stats.Categorize.Stats.Succeeded, stats.Categorize.Stats.Skipped, stats.Categorize.Stats.Errors); err != nil {
+			return err
+		}
 	}
 	if stats.OKFExport != nil {
-		_, _ = fmt.Fprintf(logOut, "scheduler sync all stage: okf bundle=%s concepts=%d errors=%d\n", stats.OKFExport.Stats.Bundle, stats.OKFExport.Stats.ConceptsWritten, len(stats.OKFExport.Stats.Errors))
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: okf bundle=%s concepts=%d errors=%d\n", stats.OKFExport.Stats.Bundle, stats.OKFExport.Stats.ConceptsWritten, len(stats.OKFExport.Stats.Errors)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func logScheduledSemanticRefreshResult(logOut io.Writer, result semanticrefresh.Result) {
+func logScheduledSemanticRefreshResult(logOut io.Writer, result semanticrefresh.Result) error {
 	if logOut == nil {
-		return
+		return nil
 	}
 	if result.Outcome == semanticrefresh.OutcomeSkipped {
-		_, _ = fmt.Fprintf(
+		_, err := fmt.Fprintf(
 			logOut,
 			"scheduler semantic refresh: skipped reason=%s capability=%s backend=%s version=%s\n",
 			safeSemanticRefreshOutputField(result.SkipReason, 64),
@@ -592,21 +609,21 @@ func logScheduledSemanticRefreshResult(logOut io.Writer, result semanticrefresh.
 			safeSemanticRefreshOutputField(result.Capability.Backend, 64),
 			safeSemanticRefreshOutputField(result.Capability.Version, 64),
 		)
-		return
+		return err
 	}
 
 	run := result.Run
 	if run == nil {
-		_, _ = fmt.Fprintf(
+		_, err := fmt.Fprintf(
 			logOut,
 			"scheduler semantic refresh: completed capability=%s backend=%s version=%s run= profile= generation= state= stage= readiness=\n",
 			safeSemanticRefreshOutputField(string(result.Capability.State), 64),
 			safeSemanticRefreshOutputField(result.Capability.Backend, 64),
 			safeSemanticRefreshOutputField(result.Capability.Version, 64),
 		)
-		return
+		return err
 	}
-	_, _ = fmt.Fprintf(
+	_, err := fmt.Fprintf(
 		logOut,
 		"scheduler semantic refresh: completed capability=%s backend=%s version=%s run=%s profile=%s generation=%s state=%s stage=%s readiness=%s\n",
 		safeSemanticRefreshOutputField(string(result.Capability.State), 64),
@@ -619,4 +636,5 @@ func logScheduledSemanticRefreshResult(logOut io.Writer, result semanticrefresh.
 		safeSemanticRefreshOutputField(string(run.Stage), 64),
 		safeSemanticRefreshOutputField(run.ReadinessState, 64),
 	)
+	return err
 }
