@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -214,11 +215,12 @@ type syncScheduler struct {
 	opts    schedulerSyncConfig
 	logOut  io.Writer
 	runSync func(context.Context, config.Config, syncAllFlags, io.Writer) error
-	postRun func(context.Context)
+	postRun func(context.Context, scheduledSyncOutcome)
 
 	mu     sync.Mutex
 	status schedulerstate.SyncAllStatus
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func newSyncScheduler(cfg config.Config, opts schedulerSyncConfig, logOut io.Writer) *syncScheduler {
@@ -247,9 +249,11 @@ func (s *syncScheduler) Start(ctx context.Context) {
 		return
 	}
 	childCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	s.cancel = cancel
+	s.done = done
 	s.mu.Unlock()
-	go s.loop(childCtx)
+	go s.loop(childCtx, done)
 }
 
 func (s *syncScheduler) Stop() {
@@ -258,11 +262,20 @@ func (s *syncScheduler) Stop() {
 	}
 	s.mu.Lock()
 	cancel := s.cancel
-	s.cancel = nil
+	done := s.done
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	if done != nil {
+		<-done
+	}
+	s.mu.Lock()
+	if s.done == done {
+		s.cancel = nil
+		s.done = nil
+	}
+	s.mu.Unlock()
 }
 
 func (s *syncScheduler) Status() schedulerstate.SyncAllStatus {
@@ -274,12 +287,27 @@ func (s *syncScheduler) Status() schedulerstate.SyncAllStatus {
 	return s.status
 }
 
-func (s *syncScheduler) loop(ctx context.Context) {
+func (s *syncScheduler) loop(ctx context.Context, done chan struct{}) {
 	emitSchedulerSyncMarker(s.cfg, "scheduler.sync.enabled")
+	var runs sync.WaitGroup
+	defer close(done)
 	defer emitSchedulerSyncMarker(s.cfg, "scheduler.sync.stopped")
+	defer runs.Wait()
+	launch := func(reason string) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		runs.Add(1)
+		go func() {
+			defer runs.Done()
+			s.runAndPost(ctx, reason)
+		}()
+	}
 	_, _ = fmt.Fprintf(s.logOut, "scheduler sync all enabled: interval=%s run_on_start=%t\n", s.opts.Interval, s.opts.RunOnStart)
 	if s.opts.RunOnStart {
-		go s.runAndPost(ctx, "startup")
+		launch("startup")
 	}
 
 	delay := s.nextDelay()
@@ -291,7 +319,7 @@ func (s *syncScheduler) loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			go s.runAndPost(ctx, "interval")
+			launch("interval")
 			delay := s.nextDelay()
 			s.setNextRunAt(time.Now().UTC().Add(delay))
 			timer.Reset(delay)
@@ -312,12 +340,13 @@ func (s *syncScheduler) nextDelay() time.Duration {
 }
 
 func (s *syncScheduler) runAndPost(ctx context.Context, reason string) {
-	if s.run(ctx, reason) && s.postRun != nil {
-		s.postRun(ctx)
+	outcome, actual := s.run(ctx, reason)
+	if actual && s.postRun != nil {
+		s.postRun(ctx, outcome)
 	}
 }
 
-func (s *syncScheduler) run(ctx context.Context, reason string) bool {
+func (s *syncScheduler) run(ctx context.Context, reason string) (scheduledSyncOutcome, bool) {
 	s.mu.Lock()
 	if s.status.Running {
 		emitSchedulerSyncMarker(s.cfg, "scheduler.sync.overlap_skipped")
@@ -327,7 +356,7 @@ func (s *syncScheduler) run(ctx context.Context, reason string) bool {
 		s.status.LastFinishedAt = time.Now().UTC()
 		s.mu.Unlock()
 		_, _ = fmt.Fprintf(s.logOut, "scheduler sync all skipped: previous run still active\n")
-		return false
+		return scheduledSyncOutcome{}, false
 	}
 	lock, err := acquireSyncAllLock(s.cfg, "scheduler:"+reason)
 	if err != nil {
@@ -339,7 +368,7 @@ func (s *syncScheduler) run(ctx context.Context, reason string) bool {
 		s.status.LastFinishedAt = now
 		s.mu.Unlock()
 		_, _ = fmt.Fprintf(s.logOut, "scheduler sync all skipped: %v\n", err)
-		return false
+		return scheduledSyncOutcome{}, false
 	}
 	start := time.Now().UTC()
 	s.status.Running = true
@@ -365,13 +394,38 @@ func (s *syncScheduler) run(ctx context.Context, reason string) bool {
 		runSync = runScheduledSyncAllUnlocked
 	}
 	if err := runSync(ctx, s.cfg, s.opts.Flags, s.logOut); err != nil {
-		s.finishRun("error", err.Error())
+		finishedAt := time.Now().UTC()
+		status := scheduledSyncStatusError
+		if isScheduledSyncCancellation(err) {
+			status = scheduledSyncStatusCancelled
+		}
+		s.finishRunAt(string(status), err.Error(), finishedAt)
 		_, _ = fmt.Fprintf(s.logOut, "scheduler sync all failed: duration=%s error=%v\n", time.Since(start).Round(time.Second), err)
+		return scheduledSyncOutcome{
+			Reason:     reason,
+			Status:     status,
+			StartedAt:  start,
+			FinishedAt: finishedAt,
+			Err:        err,
+		}, true
+	}
+	finishedAt := time.Now().UTC()
+	s.finishRunAt(string(scheduledSyncStatusOK), "", finishedAt)
+	_, _ = fmt.Fprintf(s.logOut, "scheduler sync all finished: duration=%s\n", time.Since(start).Round(time.Second))
+	return scheduledSyncOutcome{
+		Reason:     reason,
+		Status:     scheduledSyncStatusOK,
+		StartedAt:  start,
+		FinishedAt: finishedAt,
+	}, true
+}
+
+func isScheduledSyncCancellation(err error) bool {
+	if errors.Is(err, context.Canceled) {
 		return true
 	}
-	s.finishRun("ok", "")
-	_, _ = fmt.Fprintf(s.logOut, "scheduler sync all finished: duration=%s\n", time.Since(start).Round(time.Second))
-	return true
+	var refreshErr *semanticrefresh.RefreshError
+	return errors.As(err, &refreshErr) && refreshErr.Code == semanticrefresh.ErrorCancelled
 }
 
 func emitSchedulerSyncMarker(cfg config.Config, name string) {
@@ -399,11 +453,11 @@ func (s *syncScheduler) setNextRunAt(at time.Time) {
 	s.mu.Unlock()
 }
 
-func (s *syncScheduler) finishRun(status string, errorText string) {
+func (s *syncScheduler) finishRunAt(status string, errorText string, finishedAt time.Time) {
 	s.mu.Lock()
 	s.status.LastStatus = status
 	s.status.LastError = errorText
-	s.status.LastFinishedAt = time.Now().UTC()
+	s.status.LastFinishedAt = finishedAt
 	s.mu.Unlock()
 }
 

@@ -215,7 +215,9 @@ func buildRemoteSchedulersWithMetaAndAuditRuntime(ctx context.Context, cfg confi
 			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit metrics: %w", metricsErr)
 		}
 		schedulers.audit.emitCompleted = scheduledAuditMetricEmitter(metricsConfig)
-		schedulers.syncAll.postRun = schedulers.audit.AfterSync
+		schedulers.syncAll.postRun = func(ctx context.Context, _ scheduledSyncOutcome) {
+			schedulers.audit.AfterSync(ctx)
+		}
 	}
 	return schedulers, nil
 }
