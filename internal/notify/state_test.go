@@ -721,3 +721,23 @@ func TestValidateStateRejectsUnsafePerProviderDeliverySummary(t *testing.T) {
 		})
 	}
 }
+
+func TestCloneStateCopiesLastDeliveries(t *testing.T) {
+	source := EmptyState()
+	source.LastDeliveries["buzz"] = DeliverySummary{
+		NotificationID: "ntf_012345678901234567890123",
+		Provider:       "buzz",
+		Kind:           EventFailure,
+		Status:         DeliveryAccepted,
+		At:             stateAt(0),
+	}
+	cloned := cloneState(source)
+	summary := cloned.LastDeliveries["buzz"]
+	summary.Status = DeliveryPermanentError
+	summary.ErrorCode = "buzz_auth_rejected"
+	cloned.LastDeliveries["buzz"] = summary
+
+	if got := source.LastDeliveries["buzz"]; got.Status != DeliveryAccepted || got.ErrorCode != "" {
+		t.Fatalf("source delivery summary mutated through clone: %#v", got)
+	}
+}

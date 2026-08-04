@@ -609,6 +609,10 @@ func cloneState(state State) State {
 	for key, incident := range state.Incidents {
 		cloned.Incidents[key] = incident
 	}
+	cloned.LastDeliveries = make(map[string]DeliverySummary, len(state.LastDeliveries))
+	for provider, summary := range state.LastDeliveries {
+		cloned.LastDeliveries[provider] = summary
+	}
 	cloned.Outbox = make([]Envelope, len(state.Outbox))
 	for index, envelope := range state.Outbox {
 		cloned.Outbox[index].Event = envelope.Event
