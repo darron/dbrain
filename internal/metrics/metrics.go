@@ -40,6 +40,61 @@ type AuditStatusCounts struct {
 	Pass, Warn, Fail, Unknown, Skipped int
 }
 
+var notificationMetricProviders = map[string]struct{}{
+	"buzz":  {},
+	"slack": {},
+}
+
+var notificationMetricKinds = map[string]struct{}{
+	"failure": {}, "reminder": {}, "recovery": {}, "test": {},
+}
+
+var notificationMetricStatuses = map[string]struct{}{
+	"accepted": {}, "temporary_error": {}, "permanent_error": {}, "ambiguous": {}, "retired": {}, "canceled": {},
+}
+
+var notificationMetricFailureTypes = map[string]struct{}{
+	"none": {}, "multiple": {},
+	"sync.config_resolution.failed": {}, "sync.metrics.open.failed": {}, "sync.metrics.close.failed": {},
+	"sync.store.open.failed": {}, "sync.store.close.failed": {}, "sync.options.failed": {},
+	"sync.output.failed": {}, "sync.apple_notes.permission_denied": {}, "sync.unknown": {},
+	"sync.stage.apple_notes.failed": {}, "sync.stage.safari_tabs.failed": {},
+	"sync.stage.x_frontier.failed": {}, "sync.stage.x_media.failed": {},
+	"sync.stage.x_photo_ocr.failed": {}, "sync.stage.github.failed": {},
+	"sync.stage.youtube.failed": {}, "sync.stage.feeds.failed": {},
+	"sync.stage.sources.failed": {}, "sync.stage.categorize.failed": {},
+	"sync.stage.media_archive.failed": {}, "sync.stage.okf_export.failed": {},
+	"sync.semantic.semantic_backend_broken": {}, "sync.semantic.semantic_run_conflict": {},
+	"sync.semantic.semantic_projection_failed": {}, "sync.semantic.semantic_embedding_failed": {},
+	"sync.semantic.semantic_embedding_circuit_open": {}, "sync.semantic.semantic_flush_failed": {},
+	"sync.semantic.semantic_compaction_failed": {}, "sync.semantic.semantic_verify_failed": {},
+	"sync.semantic.semantic_native_root_failed": {}, "sync.semantic.semantic_readiness_not_ready": {},
+	"sync.semantic.semantic_lock_unavailable": {},
+}
+
+func NotificationDeliveryCompletedEvent(provider, kind, failureType, status string, duration time.Duration) Event {
+	if _, ok := notificationMetricProviders[provider]; !ok {
+		provider = "unknown"
+	}
+	if _, ok := notificationMetricKinds[kind]; !ok {
+		kind = "unknown"
+	}
+	if _, ok := notificationMetricFailureTypes[failureType]; !ok {
+		failureType = "sync.unknown"
+	}
+	if _, ok := notificationMetricStatuses[status]; !ok {
+		status = "unknown"
+	}
+	return Event{
+		"event":        "notification.delivery.completed",
+		"provider":     provider,
+		"kind":         kind,
+		"failure_type": failureType,
+		"status":       status,
+		"duration_ms":  DurationMillis(duration),
+	}
+}
+
 func AuditRunCompletedEvent(profile, status string, duration time.Duration, counts AuditStatusCounts) Event {
 	return Event{
 		"event": "audit.run.completed", "profile": profile, "status": status,

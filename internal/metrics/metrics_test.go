@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -189,6 +190,44 @@ func TestAuditRunCompletedEventUsesPrivacySafeAllowlist(t *testing.T) {
 	for _, forbidden := range []string{"audit_id", "check", "evidence", "identifier", "path", "url", "credential", "provider", "error", "transcript", "ocr"} {
 		if strings.Contains(strings.ToLower(string(data)), forbidden) {
 			t.Fatalf("audit metric contains %q: %s", forbidden, data)
+		}
+	}
+}
+
+func TestNotificationDeliveryCompletedEventUsesClosedContentFreeFields(t *testing.T) {
+	event := NotificationDeliveryCompletedEvent("buzz", "failure", "sync.store.open.failed", "accepted", 1500*time.Millisecond)
+	want := Event{
+		"event": "notification.delivery.completed", "provider": "buzz", "kind": "failure",
+		"failure_type": "sync.store.open.failed", "status": "accepted", "duration_ms": int64(1500),
+	}
+	if !reflect.DeepEqual(event, want) {
+		t.Fatalf("event = %#v, want %#v", event, want)
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"body", "destination", "relay", "channel", "external_id", "error", "secret", "token", "url"} {
+		if strings.Contains(strings.ToLower(string(data)), forbidden) {
+			t.Fatalf("notification metric contains %q: %s", forbidden, data)
+		}
+	}
+}
+
+func TestNotificationDeliveryCompletedEventRejectsValuesOutsideClosedAllowlists(t *testing.T) {
+	event := NotificationDeliveryCompletedEvent(
+		"https://relay.example/token", "raw-body", "private/path", "error: secret", time.Second,
+	)
+	if event["provider"] != "unknown" || event["kind"] != "unknown" || event["failure_type"] != "sync.unknown" || event["status"] != "unknown" {
+		t.Fatalf("untrusted metric values survived: %#v", event)
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"relay.example", "token", "raw-body", "private/path", "secret"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("notification metric leaked %q: %s", forbidden, data)
 		}
 	}
 }
