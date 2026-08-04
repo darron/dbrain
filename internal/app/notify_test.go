@@ -433,7 +433,15 @@ func TestNotifyCommandTestSlackDeliversDirectlyWithoutStateMutation(t *testing.T
 	}
 
 	stdout := runNotifyCommandWithDependencies(t, root, deps, "test", "slack", "--json")
-	if !strings.Contains(stdout, `"provider":"slack"`) || !strings.Contains(stdout, `"correlation_id":"correlation-id"`) || strings.Contains(stdout, "message_id") {
+	var result struct {
+		Provider      string `json:"provider"`
+		Status        string `json:"status"`
+		CorrelationID string `json:"correlation_id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode Slack JSON acceptance: %v\n%s", err, stdout)
+	}
+	if result.Provider != "slack" || result.Status != "accepted" || result.CorrelationID != "correlation-id" || strings.Contains(stdout, "message_id") {
 		t.Fatalf("Slack JSON acceptance = %q", stdout)
 	}
 	if len(delivered) != 1 || delivered[0].Kind != notify.EventTest || delivered[0].Body != "dbrain notification delivery test." || !delivered[0].CreatedAt.Equal(now) {
