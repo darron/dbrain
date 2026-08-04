@@ -183,11 +183,10 @@ func observeSuccess(state *State, decision *Decision, outcome Outcome, options O
 	if len(resolved) == 0 {
 		return nil
 	}
-	notification, err := BuildRecoveryMessage(resolved, createdAt)
+	notification, err := BuildRecoveryMessage(resolved, createdAt, options.RepeatAfter)
 	if err != nil {
 		return err
 	}
-	notification.SuppressionAfter = options.RepeatAfter
 	return enqueueNotification(state, decision, notification, options.Providers)
 }
 

@@ -59,33 +59,28 @@ func TestCatalogGeneratesOnlyKnownSyncStages(t *testing.T) {
 }
 
 func TestValidateNotificationEnforcesExplicitBounds(t *testing.T) {
-	valid := Notification{
-		ID:               strings.Repeat("a", 64),
-		IncidentIDs:      []string{strings.Repeat("b", 64)},
-		Kind:             EventFailure,
-		Operation:        OperationScheduledSyncAll,
-		FailureTypes:     []FailureType{FailureAppleNotesPermission},
-		Title:            strings.Repeat("t", 160),
-		Body:             strings.Repeat("b", 4096),
-		Occurrences:      1,
-		FirstSeenAt:      time.Date(2026, 8, 3, 23, 35, 8, 0, time.UTC),
-		LastSeenAt:       time.Date(2026, 8, 3, 23, 35, 8, 0, time.UTC),
-		CreatedAt:        time.Date(2026, 8, 3, 23, 35, 8, 0, time.UTC),
-		SuppressionAfter: 6 * time.Hour,
-	}
-	if err := ValidateNotification(valid); err != nil {
-		t.Fatalf("valid notification rejected: %v", err)
+	observedAt := time.Date(2026, 8, 3, 23, 35, 8, 0, time.UTC)
+	valid, err := BuildFailureMessage(Incident{
+		ID:          "inc_c52c70e4db1a4174bb4b7ec9",
+		Operation:   OperationScheduledSyncAll,
+		FailureType: FailureAppleNotesPermission,
+		FirstSeenAt: observedAt,
+		LastSeenAt:  observedAt,
+		Occurrences: 1,
+	}, 6*time.Hour)
+	if err != nil {
+		t.Fatal(err)
 	}
 	tests := []struct {
 		name   string
 		mutate func(*Notification)
 	}{
-		{name: "notification ID bytes", mutate: func(n *Notification) { n.ID += "x" }},
-		{name: "incident ID bytes", mutate: func(n *Notification) { n.IncidentIDs[0] += "x" }},
+		{name: "notification ID bytes", mutate: func(n *Notification) { n.ID = strings.Repeat("a", 65) }},
+		{name: "incident ID bytes", mutate: func(n *Notification) { n.IncidentIDs[0] = strings.Repeat("b", 65) }},
 		{name: "incident count", mutate: func(n *Notification) { n.IncidentIDs = make([]string, 65) }},
 		{name: "failure type count", mutate: func(n *Notification) { n.FailureTypes = make([]FailureType, 65) }},
-		{name: "title bytes", mutate: func(n *Notification) { n.Title += "x" }},
-		{name: "body bytes", mutate: func(n *Notification) { n.Body += "x" }},
+		{name: "title bytes", mutate: func(n *Notification) { n.Title = strings.Repeat("t", 161) }},
+		{name: "body bytes", mutate: func(n *Notification) { n.Body = strings.Repeat("b", 4097) }},
 		{name: "invalid UTF-8 title", mutate: func(n *Notification) { n.Title = string([]byte{0xff}) }},
 		{name: "invalid UTF-8 body", mutate: func(n *Notification) { n.Body = string([]byte{0xff}) }},
 		{name: "mismatched incident and type lists", mutate: func(n *Notification) { n.FailureTypes = nil }},

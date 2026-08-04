@@ -450,6 +450,76 @@ func TestValidateStateRejectsForgedIncidentIdentityAndChronology(t *testing.T) {
 	}
 }
 
+func TestPersistedAndDeliverableBoundariesRejectForgedNotificationFields(t *testing.T) {
+	failureState, _, err := Observe(EmptyState(), stateFailed(FailureStoreOpen, 0), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reminderState, _, err := Observe(failureState, stateFailed(FailureStoreOpen, 6*time.Hour), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name          string
+		state         State
+		envelopeIndex int
+		mutate        func(*Notification)
+	}{
+		{name: "notification ID", state: failureState, mutate: func(notification *Notification) {
+			notification.ID = "ntf_000000000000000000000000"
+		}},
+		{name: "incident ID", state: failureState, mutate: func(notification *Notification) {
+			notification.IncidentIDs[0] = "inc_000000000000000000000000"
+		}},
+		{name: "title", state: failureState, mutate: func(notification *Notification) {
+			notification.Title = "dbrain scheduled sync failed: /private/secret/path"
+		}},
+		{name: "body", state: failureState, mutate: func(notification *Notification) {
+			notification.Body = "provider token: secret-value"
+		}},
+		{name: "first timestamp", state: failureState, mutate: func(notification *Notification) {
+			notification.FirstSeenAt = notification.FirstSeenAt.Add(-time.Second)
+		}},
+		{name: "last timestamp", state: failureState, mutate: func(notification *Notification) {
+			notification.LastSeenAt = notification.LastSeenAt.Add(time.Second)
+		}},
+		{name: "created timestamp", state: failureState, mutate: func(notification *Notification) {
+			notification.CreatedAt = notification.CreatedAt.Add(time.Second)
+		}},
+		{name: "noncanonical timestamp location", state: failureState, mutate: func(notification *Notification) {
+			location := time.FixedZone("forged", -7*60*60)
+			notification.FirstSeenAt = notification.FirstSeenAt.In(location)
+			notification.LastSeenAt = notification.LastSeenAt.In(location)
+			notification.CreatedAt = notification.CreatedAt.In(location)
+		}},
+		{name: "zero failure count", state: failureState, mutate: func(notification *Notification) {
+			notification.Occurrences = 0
+		}},
+		{name: "zero reminder count", state: reminderState, envelopeIndex: 1, mutate: func(notification *Notification) {
+			notification.Occurrences = 0
+		}},
+		{name: "zero suppression", state: failureState, mutate: func(notification *Notification) {
+			notification.SuppressionAfter = 0
+		}},
+		{name: "forged positive suppression", state: failureState, mutate: func(notification *Notification) {
+			notification.SuppressionAfter = 7 * time.Hour
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := cloneState(test.state)
+			test.mutate(&candidate.Outbox[test.envelopeIndex].Notification)
+			forged := candidate.Outbox[test.envelopeIndex].Notification
+			if err := ValidateNotification(forged); err == nil {
+				t.Fatalf("forged deliverable notification accepted: %#v", forged)
+			}
+			if err := ValidateState(candidate); err == nil {
+				t.Fatalf("forged persisted notification accepted: %#v", forged)
+			}
+		})
+	}
+}
+
 func TestValidateStateRejectsImpossibleAcceptedDelivery(t *testing.T) {
 	valid, _, err := Observe(EmptyState(), stateFailed(FailureStoreOpen, 0), stateOptions())
 	if err != nil {

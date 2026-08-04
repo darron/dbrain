@@ -3,12 +3,24 @@ package notify
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 )
 
 func BuildFailureMessage(incident Incident, repeatAfter time.Duration) (Notification, error) {
+	notification, err := buildFailureMessage(incident, repeatAfter)
+	if err != nil {
+		return Notification{}, err
+	}
+	if err := ValidateNotification(notification); err != nil {
+		return Notification{}, err
+	}
+	return notification, nil
+}
+
+func buildFailureMessage(incident Incident, repeatAfter time.Duration) (Notification, error) {
 	definition, ok := LookupFailure(incident.FailureType)
 	if !ok {
 		return Notification{}, fmt.Errorf("unknown failure type")
@@ -36,13 +48,21 @@ func BuildFailureMessage(incident Incident, repeatAfter time.Duration) (Notifica
 		incident.ID,
 	)
 	notification.ID = deterministicNotificationID(notification.Kind, notification.IncidentIDs, notification.CreatedAt)
+	return notification, nil
+}
+
+func BuildReminderMessage(incident Incident, repeatAfter time.Duration) (Notification, error) {
+	notification, err := buildReminderMessage(incident, repeatAfter)
+	if err != nil {
+		return Notification{}, err
+	}
 	if err := ValidateNotification(notification); err != nil {
 		return Notification{}, err
 	}
 	return notification, nil
 }
 
-func BuildReminderMessage(incident Incident, repeatAfter time.Duration) (Notification, error) {
+func buildReminderMessage(incident Incident, repeatAfter time.Duration) (Notification, error) {
 	definition, ok := LookupFailure(incident.FailureType)
 	if !ok {
 		return Notification{}, fmt.Errorf("unknown failure type")
@@ -72,13 +92,21 @@ func BuildReminderMessage(incident Incident, repeatAfter time.Duration) (Notific
 		incident.ID,
 	)
 	notification.ID = deterministicNotificationID(notification.Kind, notification.IncidentIDs, notification.CreatedAt)
+	return notification, nil
+}
+
+func BuildRecoveryMessage(incidents []Incident, createdAt time.Time, repeatAfter time.Duration) (Notification, error) {
+	notification, err := buildRecoveryMessage(incidents, createdAt, repeatAfter, true)
+	if err != nil {
+		return Notification{}, err
+	}
 	if err := ValidateNotification(notification); err != nil {
 		return Notification{}, err
 	}
 	return notification, nil
 }
 
-func BuildRecoveryMessage(incidents []Incident, createdAt time.Time) (Notification, error) {
+func buildRecoveryMessage(incidents []Incident, createdAt time.Time, repeatAfter time.Duration, validateIncidentIDs bool) (Notification, error) {
 	if len(incidents) == 0 {
 		return Notification{}, fmt.Errorf("recovery requires incidents")
 	}
@@ -87,15 +115,17 @@ func BuildRecoveryMessage(incidents []Incident, createdAt time.Time) (Notificati
 		return failureCatalogIndex(incidents[left].FailureType) < failureCatalogIndex(incidents[right].FailureType)
 	})
 	notification := Notification{
-		Kind:      EventRecovery,
-		Operation: OperationScheduledSyncAll,
-		Title:     "dbrain scheduled sync recovered",
-		CreatedAt: createdAt.UTC(),
+		Kind:             EventRecovery,
+		Operation:        OperationScheduledSyncAll,
+		Title:            "dbrain scheduled sync recovered",
+		CreatedAt:        createdAt.UTC(),
+		SuppressionAfter: repeatAfter,
 	}
 	lines := []string{"dbrain scheduled sync recovered.", "Resolved:"}
 	for _, incident := range incidents {
 		definition, ok := LookupFailure(incident.FailureType)
-		if !ok || incident.Operation != OperationScheduledSyncAll {
+		if !ok || incident.Operation != OperationScheduledSyncAll ||
+			(validateIncidentIDs && incident.ID != deterministicIncidentID(incident.Operation, incident.FailureType, incident.FirstSeenAt)) {
 			return Notification{}, fmt.Errorf("invalid recovered incident")
 		}
 		notification.IncidentIDs = append(notification.IncidentIDs, incident.ID)
@@ -111,10 +141,106 @@ func BuildRecoveryMessage(incidents []Incident, createdAt time.Time) (Notificati
 	}
 	notification.Body = strings.Join(lines, "\n")
 	notification.ID = deterministicNotificationID(notification.Kind, notification.IncidentIDs, notification.CreatedAt)
-	if err := ValidateNotification(notification); err != nil {
-		return Notification{}, err
-	}
 	return notification, nil
+}
+
+func canonicalNotification(notification Notification) (Notification, error) {
+	switch notification.Kind {
+	case EventFailure:
+		if len(notification.IncidentIDs) != 1 || len(notification.FailureTypes) != 1 ||
+			notification.Occurrences != 1 ||
+			!notification.FirstSeenAt.Equal(notification.LastSeenAt) ||
+			!notification.LastSeenAt.Equal(notification.CreatedAt) ||
+			notification.IncidentIDs[0] != deterministicIncidentID(notification.Operation, notification.FailureTypes[0], notification.FirstSeenAt) {
+			return Notification{}, fmt.Errorf("invalid canonical failure notification")
+		}
+		return buildFailureMessage(incidentFromNotification(notification, 0), notification.SuppressionAfter)
+	case EventReminder:
+		if len(notification.IncidentIDs) != 1 || len(notification.FailureTypes) != 1 ||
+			notification.Occurrences < 2 ||
+			!notification.LastSeenAt.Equal(notification.CreatedAt) ||
+			notification.IncidentIDs[0] != deterministicIncidentID(notification.Operation, notification.FailureTypes[0], notification.FirstSeenAt) {
+			return Notification{}, fmt.Errorf("invalid canonical reminder notification")
+		}
+		return buildReminderMessage(incidentFromNotification(notification, 0), notification.SuppressionAfter)
+	case EventRecovery:
+		if err := validateRecoveryIdentity(notification); err != nil {
+			return Notification{}, err
+		}
+		incidents := make([]Incident, len(notification.IncidentIDs))
+		for index := range incidents {
+			occurrences := 0
+			if index == 0 {
+				occurrences = notification.Occurrences
+			}
+			incidents[index] = incidentFromNotification(notification, index)
+			incidents[index].Occurrences = occurrences
+		}
+		return buildRecoveryMessage(incidents, notification.CreatedAt, notification.SuppressionAfter, false)
+	case EventTest:
+		if len(notification.IncidentIDs) != 0 || len(notification.FailureTypes) != 0 ||
+			notification.Occurrences != 0 || !notification.FirstSeenAt.IsZero() ||
+			!notification.LastSeenAt.IsZero() || notification.CreatedAt.IsZero() ||
+			notification.SuppressionAfter != 0 {
+			return Notification{}, fmt.Errorf("invalid canonical test notification")
+		}
+		return Notification{
+			ID:        deterministicNotificationID(EventTest, nil, notification.CreatedAt),
+			Kind:      EventTest,
+			Operation: OperationScheduledSyncAll,
+			Title:     "dbrain notification test",
+			Body:      "dbrain notification delivery test.",
+			CreatedAt: notification.CreatedAt.UTC(),
+		}, nil
+	default:
+		return Notification{}, fmt.Errorf("invalid notification kind")
+	}
+}
+
+func incidentFromNotification(notification Notification, index int) Incident {
+	return Incident{
+		ID:          notification.IncidentIDs[index],
+		Operation:   notification.Operation,
+		FailureType: notification.FailureTypes[index],
+		FirstSeenAt: notification.FirstSeenAt,
+		LastSeenAt:  notification.LastSeenAt,
+		Occurrences: notification.Occurrences,
+	}
+}
+
+func validateRecoveryIdentity(notification Notification) error {
+	if len(notification.IncidentIDs) == 0 || len(notification.IncidentIDs) != len(notification.FailureTypes) {
+		return fmt.Errorf("invalid canonical recovery notification")
+	}
+	previousCatalogIndex := -1
+	seenIncidentIDs := make(map[string]struct{}, len(notification.IncidentIDs))
+	for index, incidentID := range notification.IncidentIDs {
+		catalogIndex := failureCatalogIndex(notification.FailureTypes[index])
+		if catalogIndex <= previousCatalogIndex {
+			return fmt.Errorf("recovery notification is not in catalog order")
+		}
+		previousCatalogIndex = catalogIndex
+		if _, exists := seenIncidentIDs[incidentID]; exists {
+			return fmt.Errorf("recovery notification repeats incident")
+		}
+		seenIncidentIDs[incidentID] = struct{}{}
+	}
+	return nil
+}
+
+func equalNotification(left Notification, right Notification) bool {
+	return left.ID == right.ID &&
+		slices.Equal(left.IncidentIDs, right.IncidentIDs) &&
+		left.Kind == right.Kind &&
+		left.Operation == right.Operation &&
+		slices.Equal(left.FailureTypes, right.FailureTypes) &&
+		left.Title == right.Title &&
+		left.Body == right.Body &&
+		left.Occurrences == right.Occurrences &&
+		left.FirstSeenAt.Equal(right.FirstSeenAt) &&
+		left.LastSeenAt.Equal(right.LastSeenAt) &&
+		left.CreatedAt.Equal(right.CreatedAt) &&
+		left.SuppressionAfter == right.SuppressionAfter
 }
 
 func failureCatalogIndex(failureType FailureType) int {

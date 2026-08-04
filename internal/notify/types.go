@@ -91,7 +91,7 @@ func ValidateOutcome(outcome Outcome) error {
 }
 
 func ValidateNotification(notification Notification) error {
-	if len(notification.ID) == 0 || len(notification.ID) > maxNotificationIDBytes {
+	if len(notification.ID) > maxNotificationIDBytes || !validDigestID(notification.ID, "ntf_") {
 		return fmt.Errorf("invalid notification id")
 	}
 	if notification.Operation != OperationScheduledSyncAll {
@@ -109,7 +109,7 @@ func ValidateNotification(notification Notification) error {
 		return fmt.Errorf("notification incident and failure type counts differ")
 	}
 	for _, id := range notification.IncidentIDs {
-		if len(id) == 0 || len(id) > maxIncidentIDBytes {
+		if len(id) > maxIncidentIDBytes || !validDigestID(id, "inc_") {
 			return fmt.Errorf("invalid incident id")
 		}
 	}
@@ -124,8 +124,28 @@ func ValidateNotification(notification Notification) error {
 	if len(notification.Body) == 0 || len(notification.Body) > maxNotificationBody || !utf8.ValidString(notification.Body) {
 		return fmt.Errorf("invalid notification body")
 	}
-	if notification.Occurrences < 0 {
+	if notification.Kind != EventTest && notification.Occurrences < 1 {
 		return fmt.Errorf("invalid notification occurrence count")
+	}
+	if notification.Kind != EventTest && notification.SuppressionAfter <= 0 {
+		return fmt.Errorf("invalid notification suppression interval")
+	}
+	if notification.Kind != EventTest && (notification.FirstSeenAt.IsZero() ||
+		notification.LastSeenAt.Before(notification.FirstSeenAt) ||
+		notification.CreatedAt.Before(notification.LastSeenAt)) {
+		return fmt.Errorf("invalid notification chronology")
+	}
+	if (!notification.FirstSeenAt.IsZero() && notification.FirstSeenAt.Location() != time.UTC) ||
+		(!notification.LastSeenAt.IsZero() && notification.LastSeenAt.Location() != time.UTC) ||
+		(!notification.CreatedAt.IsZero() && notification.CreatedAt.Location() != time.UTC) {
+		return fmt.Errorf("notification timestamps are not canonical UTC")
+	}
+	canonical, err := canonicalNotification(notification)
+	if err != nil {
+		return err
+	}
+	if !equalNotification(notification, canonical) {
+		return fmt.Errorf("notification is not canonical")
 	}
 	return nil
 }
