@@ -132,7 +132,7 @@ func TestSendWebhookMarksResponseReadFailureAmbiguous(t *testing.T) {
 	client := newTestClient(t, func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       failingReadCloser{data: []byte("ok"), err: errors.New("provider response secret")},
+			Body:       &failingReadCloser{data: []byte("ok"), err: errors.New("provider response secret")},
 			Header:     make(http.Header),
 		}, nil
 	})
@@ -217,7 +217,7 @@ type failingReadCloser struct {
 	err  error
 }
 
-func (r failingReadCloser) Read(p []byte) (int, error) {
+func (r *failingReadCloser) Read(p []byte) (int, error) {
 	if len(r.data) == 0 {
 		return 0, r.err
 	}
@@ -226,7 +226,7 @@ func (r failingReadCloser) Read(p []byte) (int, error) {
 	return n, r.err
 }
 
-func (failingReadCloser) Close() error { return nil }
+func (*failingReadCloser) Close() error { return nil }
 
 func newTestClient(t *testing.T, do doerFunc) Client {
 	t.Helper()
