@@ -250,6 +250,21 @@ func TestSendWebhookMarksWroteRequestErrorTemporary(t *testing.T) {
 	assertDeliveryError(t, err, DeliveryTemporary, "slack_delivery_failed")
 }
 
+func TestSendWebhookKeepsSuccessfulWriteAmbiguousAfterLaterWriteError(t *testing.T) {
+	t.Parallel()
+	client := newTestClient(t, func(request *http.Request) (*http.Response, error) {
+		trace := httptrace.ContextClientTrace(request.Context())
+		if trace == nil || trace.WroteRequest == nil {
+			t.Fatal("request has no WroteRequest trace")
+		}
+		trace.WroteRequest(httptrace.WroteRequestInfo{})
+		trace.WroteRequest(httptrace.WroteRequestInfo{Err: context.Canceled})
+		return nil, context.DeadlineExceeded
+	})
+	_, err := client.SendWebhook(t.Context(), testWebhookURL, Message{Text: "body"})
+	assertDeliveryError(t, err, DeliveryAmbiguous, "slack_delivery_failed")
+}
+
 func TestSendWebhookRejectsCanceledContextBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())

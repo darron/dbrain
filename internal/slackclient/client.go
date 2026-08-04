@@ -12,6 +12,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/darron/dbrain/internal/safehttp"
@@ -124,12 +125,14 @@ func (c *client) SendWebhook(ctx context.Context, webhookURL string, message Mes
 		return Receipt{}, permanent("slack_invalid_payload", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	wroteRequest := false
+	var wroteRequest atomic.Bool
 	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			// A write error means the transport did not successfully dispatch the
-			// request, so it remains safe for the manager to retry.
-			wroteRequest = info.Err == nil
+			// Transports may retry and report more than one write. Once a write
+			// succeeds, later failures cannot make delivery safe to retry.
+			if info.Err == nil {
+				wroteRequest.Store(true)
+			}
 		},
 	}))
 
@@ -150,7 +153,7 @@ func (c *client) SendWebhook(ctx context.Context, webhookURL string, message Mes
 		if safehttp.IsPolicyError(err) {
 			return Receipt{}, permanent("slack_delivery_failed", err)
 		}
-		if !wroteRequest {
+		if !wroteRequest.Load() {
 			return Receipt{}, temporary("slack_delivery_failed", err)
 		}
 		return Receipt{}, ambiguous("slack_delivery_failed", err)
