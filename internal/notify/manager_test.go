@@ -378,6 +378,173 @@ func TestManagerFullOutboxRetiresRemovedProviderBeforeEnqueue(t *testing.T) {
 	}
 }
 
+func TestManagerFullActiveProviderOutboxDeliversPersistedWorkBeforeEnqueue(t *testing.T) {
+	store := newManagerStore(t)
+	options := managerOptions()
+	options.Providers = []string{"buzz"}
+	state := EmptyState()
+	wantOrder := make([]string, 0, maxStateEnvelopes+1)
+	for index := 0; index < maxStateEnvelopes; index++ {
+		var err error
+		state, _, err = Observe(state, managerFailed(FailureStoreOpen, time.Duration(index)*6*time.Hour), options)
+		if err != nil {
+			t.Fatalf("fill outbox at %d: %v", index, err)
+		}
+		notification, err := DeriveNotification(state.Outbox[index].Event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantOrder = append(wantOrder, notification.ID)
+	}
+	if err := store.Replace(state); err != nil {
+		t.Fatal(err)
+	}
+
+	now := stateAt(time.Duration(maxStateEnvelopes) * 6 * time.Hour)
+	var delivered []Notification
+	provider := &fakeProvider{name: "buzz", deliver: func(_ context.Context, notification Notification) (Receipt, error) {
+		persisted, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundPending := false
+		for _, envelope := range persisted.Outbox {
+			derived, deriveErr := DeriveNotification(envelope.Event)
+			if deriveErr != nil {
+				t.Fatal(deriveErr)
+			}
+			if derived.ID == notification.ID && envelope.Deliveries["buzz"].Status == DeliveryPending {
+				foundPending = true
+				break
+			}
+		}
+		if !foundPending {
+			t.Fatalf("delivery %q was not persisted as pending: %#v", notification.ID, persisted.Outbox)
+		}
+		delivered = append(delivered, notification)
+		return Receipt{Provider: "buzz", ExternalID: notification.ID, AcceptedAt: now}, nil
+	}}
+	manager := NewManager(managerOptions(), store, []Provider{provider}, WithClock(func() time.Time { return now }))
+	if err := manager.Observe(t.Context(), managerFailed(FailureStoreOpen, time.Duration(maxStateEnvelopes)*6*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	persisted, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	incident := persisted.Incidents[incidentKey(OperationScheduledSyncAll, FailureStoreOpen)]
+	if incident.Occurrences != maxStateEnvelopes+1 || !incident.LastFailureEnqueuedAt.Equal(now) {
+		t.Fatalf("current settlement was discarded: %#v", incident)
+	}
+	if len(persisted.Outbox) != 0 {
+		t.Fatalf("delivered outbox was not reclaimed: %#v", persisted.Outbox)
+	}
+	if len(delivered) != maxStateEnvelopes+1 {
+		t.Fatalf("delivered %d notifications, want %d", len(delivered), maxStateEnvelopes+1)
+	}
+	gotPersistedOrder := make([]string, maxStateEnvelopes)
+	for index := 0; index < maxStateEnvelopes; index++ {
+		gotPersistedOrder[index] = delivered[index].ID
+	}
+	if !slices.Equal(gotPersistedOrder, wantOrder) {
+		t.Fatalf("persisted delivery order = %v, want oldest first: %v", gotPersistedOrder, wantOrder)
+	}
+	current := delivered[len(delivered)-1]
+	if current.Kind != EventReminder || current.Occurrences != maxStateEnvelopes+1 || persisted.LastDelivery.NotificationID != current.ID {
+		t.Fatalf("current settlement delivery = %#v, last=%#v", current, persisted.LastDelivery)
+	}
+}
+
+func TestManagerFullAmbiguousOutboxDoesNotRetryWithoutSafeReminder(t *testing.T) {
+	store := newManagerStore(t)
+	options := managerOptions()
+	options.Providers = []string{"buzz"}
+	state := EmptyState()
+	for index := 0; index < maxStateEnvelopes; index++ {
+		var err error
+		state, _, err = Observe(state, managerFailed(FailureStoreOpen, time.Duration(index)*6*time.Hour), options)
+		if err != nil {
+			t.Fatalf("fill outbox at %d: %v", index, err)
+		}
+		state.Outbox[index].Deliveries["buzz"] = DeliveryRecord{
+			Status:        DeliveryAmbiguous,
+			Attempts:      1,
+			LastAttemptAt: stateAt(time.Duration(index) * 6 * time.Hour),
+			ErrorCode:     "buzz_publish_timeout",
+		}
+	}
+	if err := store.Replace(state); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls int
+	provider := &fakeProvider{name: "buzz", deliver: func(context.Context, Notification) (Receipt, error) {
+		calls++
+		return Receipt{}, errors.New("ambiguous delivery must not be retried")
+	}}
+	manager := NewManager(managerOptions(), store, []Provider{provider})
+	err := manager.Observe(t.Context(), managerFailed(FailureAppleNotesPermission, time.Duration(maxStateEnvelopes)*6*time.Hour))
+	if err == nil || err.Error() != "notification_state_transition_failed" {
+		t.Fatalf("Observe error = %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("ambiguous deliveries retried during capacity recovery: %d", calls)
+	}
+	persisted, loadErr := store.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !reflect.DeepEqual(persisted, state) {
+		t.Fatalf("capacity failure mutated ambiguous outbox:\n got: %#v\nwant: %#v", persisted, state)
+	}
+}
+
+func TestManagerFullAmbiguousOutboxRetriesOnlyMatchingDueReminder(t *testing.T) {
+	store := newManagerStore(t)
+	options := managerOptions()
+	options.Providers = []string{"buzz"}
+	state := EmptyState()
+	for index := 0; index < maxStateEnvelopes; index++ {
+		var err error
+		state, _, err = Observe(state, managerFailed(FailureStoreOpen, time.Duration(index)*6*time.Hour), options)
+		if err != nil {
+			t.Fatalf("fill outbox at %d: %v", index, err)
+		}
+		state.Outbox[index].Deliveries["buzz"] = DeliveryRecord{
+			Status:        DeliveryAmbiguous,
+			Attempts:      1,
+			LastAttemptAt: stateAt(time.Duration(index) * 6 * time.Hour),
+			ErrorCode:     "buzz_publish_timeout",
+		}
+	}
+	if err := store.Replace(state); err != nil {
+		t.Fatal(err)
+	}
+
+	now := stateAt(time.Duration(maxStateEnvelopes) * 6 * time.Hour)
+	var delivered []Notification
+	provider := &fakeProvider{name: "buzz", deliver: func(_ context.Context, notification Notification) (Receipt, error) {
+		delivered = append(delivered, notification)
+		return Receipt{Provider: "buzz", ExternalID: notification.ID, AcceptedAt: now}, nil
+	}}
+	manager := NewManager(managerOptions(), store, []Provider{provider}, WithClock(func() time.Time { return now }))
+	if err := manager.Observe(t.Context(), managerFailed(FailureStoreOpen, time.Duration(maxStateEnvelopes)*6*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if len(delivered) != maxStateEnvelopes+1 {
+		t.Fatalf("matching reminder delivered %d notifications, want %d", len(delivered), maxStateEnvelopes+1)
+	}
+	for index, notification := range delivered[:maxStateEnvelopes] {
+		if notification.IncidentIDs[0] != state.Outbox[index].Event.Incidents[0].ID {
+			t.Fatalf("delivery %d retried unrelated ambiguous incident: %#v", index, notification)
+		}
+	}
+	if current := delivered[len(delivered)-1]; current.Kind != EventReminder || current.Occurrences != maxStateEnvelopes+1 {
+		t.Fatalf("current reminder = %#v", current)
+	}
+}
+
 func TestManagerCancelledDeliveryLeavesValidPendingState(t *testing.T) {
 	store := newManagerStore(t)
 	ctx, cancel := context.WithCancel(t.Context())

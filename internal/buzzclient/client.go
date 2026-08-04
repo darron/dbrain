@@ -379,8 +379,12 @@ func signChecked(ctx context.Context, signer nostr.Signer, event *nostr.Event, c
 	if !validPublicKey(pubKey) {
 		return "", permanent("buzz_signer_invalid", nil)
 	}
+	unsigned := snapshotUnsignedEvent(event)
 	if err := signer.SignEvent(ctx, event); err != nil {
 		return "", signerOperationError(ctx, code, err)
+	}
+	if !sameUnsignedEvent(event, unsigned) {
+		return "", permanent("buzz_signer_mutated", nil)
 	}
 	after, err := signer.GetPublicKey(ctx)
 	if err != nil {
@@ -394,6 +398,41 @@ func signChecked(ctx context.Context, signer nostr.Signer, event *nostr.Event, c
 		return "", permanent("buzz_signature_invalid", err)
 	}
 	return pubKey, nil
+}
+
+func snapshotUnsignedEvent(event *nostr.Event) nostr.Event {
+	snapshot := nostr.Event{
+		CreatedAt: event.CreatedAt,
+		Kind:      event.Kind,
+		Content:   event.Content,
+	}
+	if event.Tags != nil {
+		snapshot.Tags = make(nostr.Tags, len(event.Tags))
+		for index, tag := range event.Tags {
+			if tag != nil {
+				snapshot.Tags[index] = append(nostr.Tag(nil), tag...)
+			}
+		}
+	}
+	return snapshot
+}
+
+func sameUnsignedEvent(event *nostr.Event, snapshot nostr.Event) bool {
+	if event.CreatedAt != snapshot.CreatedAt || event.Kind != snapshot.Kind || event.Content != snapshot.Content ||
+		(event.Tags == nil) != (snapshot.Tags == nil) || len(event.Tags) != len(snapshot.Tags) {
+		return false
+	}
+	for index, tag := range event.Tags {
+		if (tag == nil) != (snapshot.Tags[index] == nil) || len(tag) != len(snapshot.Tags[index]) {
+			return false
+		}
+		for valueIndex, value := range tag {
+			if value != snapshot.Tags[index][valueIndex] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func signerOperationError(ctx context.Context, code string, cause error) error {

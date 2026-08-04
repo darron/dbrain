@@ -40,9 +40,14 @@ type CoolingIncidentStatus struct {
 }
 
 func BuildStatus(config Config, state State) (Status, error) {
+	return buildStatusAt(config, state, time.Now())
+}
+
+func buildStatusAt(config Config, state State, now time.Time) (Status, error) {
 	if config.RepeatAfter <= 0 || ValidateState(state) != nil {
 		return Status{}, ErrStatusInvalid
 	}
+	now = now.UTC()
 	status := Status{
 		Enabled:          config.Enabled,
 		RepeatAfter:      config.RepeatAfter.String(),
@@ -90,10 +95,14 @@ func BuildStatus(config Config, state State) (Status, error) {
 				LastSeenAt:  incident.LastSeenAt.UTC(),
 			})
 		case IncidentCooling:
+			rearmsAt := incident.LastFailureEnqueuedAt.Add(config.RepeatAfter).UTC()
+			if !now.Before(rearmsAt) {
+				continue
+			}
 			status.CoolingIncidents = append(status.CoolingIncidents, CoolingIncidentStatus{
 				FailureType: incident.FailureType,
 				Occurrences: incident.Occurrences,
-				RearmsAt:    incident.LastFailureEnqueuedAt.Add(config.RepeatAfter).UTC(),
+				RearmsAt:    rearmsAt,
 			})
 		}
 	}

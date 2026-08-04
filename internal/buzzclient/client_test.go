@@ -166,6 +166,25 @@ func (s failingSigner) GetPublicKey(context.Context) (string, error) { return s.
 
 func (s failingSigner) SignEvent(context.Context, *nostr.Event) error { return s.signErr }
 
+type mutatingSigner struct {
+	signer     nostr.Signer
+	mutateCall int
+	calls      int
+	mutate     func(*nostr.Event)
+}
+
+func (s *mutatingSigner) GetPublicKey(ctx context.Context) (string, error) {
+	return s.signer.GetPublicKey(ctx)
+}
+
+func (s *mutatingSigner) SignEvent(ctx context.Context, event *nostr.Event) error {
+	s.calls++
+	if s.calls == s.mutateCall {
+		s.mutate(event)
+	}
+	return s.signer.SignEvent(ctx, event)
+}
+
 func validMessage(createdAt time.Time) ChannelMessage {
 	return ChannelMessage{ChannelID: testChannelID, Content: "scheduled sync failed", CreatedAt: createdAt}
 }

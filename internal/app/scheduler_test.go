@@ -864,7 +864,8 @@ func TestSyncSchedulerRunMapsCancellationOutcomes(t *testing.T) {
 			if err := cfg.EnsureDirs(); err != nil {
 				t.Fatal(err)
 			}
-			s := newSyncScheduler(cfg, schedulerSyncConfig{Enabled: true, Interval: time.Hour}, io.Discard)
+			var logs bytes.Buffer
+			s := newSyncScheduler(cfg, schedulerSyncConfig{Enabled: true, Interval: time.Hour}, &logs)
 			s.runSync = func(context.Context, config.Config, syncAllFlags, io.Writer) error { return test.err }
 
 			outcome, actual := s.run(t.Context(), "shutdown")
@@ -874,6 +875,9 @@ func TestSyncSchedulerRunMapsCancellationOutcomes(t *testing.T) {
 			status := s.Status()
 			if status.Running || status.LastStatus != string(scheduledSyncStatusCancelled) || !status.LastFinishedAt.Equal(outcome.FinishedAt) {
 				t.Fatalf("cancelled status = %#v outcome=%#v", status, outcome)
+			}
+			if !strings.Contains(logs.String(), "scheduler sync all cancelled:") || strings.Contains(logs.String(), "scheduler sync all failed:") {
+				t.Fatalf("cancellation log = %q", logs.String())
 			}
 		})
 	}

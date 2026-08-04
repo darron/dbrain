@@ -38,26 +38,35 @@ func LoadConfig(rootDir string) (Config, error) {
 	if !config.Enabled {
 		return config, nil
 	}
-	if config.Buzz.Enabled, err = notificationBool(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_ENABLED", false); err != nil {
+	if config.RepeatAfter, err = loadRepeatAfter(rootDir); err != nil {
 		return Config{}, err
 	}
-	if config.Buzz.AllowPrivateOrigin, err = notificationBool(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_ALLOW_PRIVATE_ORIGIN", false); err != nil {
+	if config.Buzz, err = LoadBuzzConfig(rootDir); err != nil {
 		return Config{}, err
 	}
-	if value, ok := runtimeenv.Lookup(rootDir, "DBRAIN_NOTIFICATIONS_REPEAT_AFTER"); ok {
-		config.RepeatAfter, err = time.ParseDuration(value)
-		if err != nil || config.RepeatAfter <= 0 {
-			return Config{}, fmt.Errorf("notifications.repeat_after must be a positive duration")
-		}
-	}
-	config.Buzz.RelayURL = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_RELAY_URL")
-	config.Buzz.ChannelID = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID")
-	config.Buzz.PrivateKeyRef = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_PRIVATE_KEY_REF")
 	if !config.Buzz.Enabled {
 		return Config{}, fmt.Errorf("notifications requires at least one enabled provider")
 	}
-	if err := config.Buzz.validate(); err != nil {
+	return config, nil
+}
+
+// LoadInspectionConfig loads the redacted operator view independently from the
+// automatic-delivery kill switch. Unlike LoadConfig, it validates the repeat
+// interval and any explicitly enabled provider even when delivery is disabled.
+func LoadInspectionConfig(rootDir string) (Config, error) {
+	config := Config{}
+	var err error
+	if config.Enabled, err = notificationBool(rootDir, "DBRAIN_NOTIFICATIONS_ENABLED", false); err != nil {
 		return Config{}, err
+	}
+	if config.RepeatAfter, err = loadRepeatAfter(rootDir); err != nil {
+		return Config{}, err
+	}
+	if config.Buzz, err = LoadBuzzConfig(rootDir); err != nil {
+		return Config{}, err
+	}
+	if config.Enabled && !config.Buzz.Enabled {
+		return Config{}, fmt.Errorf("notifications requires at least one enabled provider")
 	}
 	return config, nil
 }
@@ -84,6 +93,18 @@ func LoadBuzzConfig(rootDir string) (BuzzConfig, error) {
 		return BuzzConfig{}, err
 	}
 	return config, nil
+}
+
+func loadRepeatAfter(rootDir string) (time.Duration, error) {
+	repeatAfter := defaultRepeatAfter
+	if value, ok := runtimeenv.Lookup(rootDir, "DBRAIN_NOTIFICATIONS_REPEAT_AFTER"); ok {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("notifications.repeat_after must be a positive duration")
+		}
+		repeatAfter = parsed
+	}
+	return repeatAfter, nil
 }
 
 func notificationBool(rootDir, key string, fallback bool) (bool, error) {

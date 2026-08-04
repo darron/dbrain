@@ -45,7 +45,7 @@ func TestBuzzProviderResolvesHexAndNsecOnlyDuringDelivery(t *testing.T) {
 				if err != nil || pubKey != wantPubKey {
 					t.Fatalf("signer public key = %q, %v", pubKey, err)
 				}
-				if message.ChannelID != "9ecb8b70-2e5d-4f17-8a29-7736c2866dc2" || message.Content != "safe notification body" || message.CreatedAt != createdAt {
+				if message.ChannelID != "9ecb8b70-2e5d-4f17-8a29-7736c2866dc2" || message.Content != "dbrain notification delivery test." || message.CreatedAt != createdAt {
 					t.Fatalf("message = %#v", message)
 				}
 				event := nostr.Event{CreatedAt: nostr.Timestamp(createdAt.Unix()), Kind: 9, Content: message.Content}
@@ -61,7 +61,7 @@ func TestBuzzProviderResolvesHexAndNsecOnlyDuringDelivery(t *testing.T) {
 			if resolverCalls != 0 {
 				t.Fatal("secret resolved during provider construction")
 			}
-			receipt, err := provider.Deliver(t.Context(), buzzTestNotification(createdAt))
+			receipt, err := provider.Deliver(t.Context(), buzzTestNotification(t, createdAt))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,11 +88,47 @@ func TestBuzzProviderRejectsPublicAndMalformedKeysWithSafeError(t *testing.T) {
 			t.Fatal("client called for invalid private key")
 			return buzzclient.Receipt{}, nil
 		}))
-		_, err := provider.Deliver(t.Context(), buzzTestNotification(time.Now().UTC()))
+		_, err := provider.Deliver(t.Context(), buzzTestNotification(t, time.Now().UTC()))
 		assertNotifyDeliveryError(t, err, DeliveryErrorPermanent, "buzz_private_key_invalid")
 		if strings.Contains(fmt.Sprintf("%#v", err), resolved) && resolved != "" {
 			t.Fatalf("error retained invalid key %q: %#v", resolved, err)
 		}
+	}
+}
+
+func TestBuzzProviderRejectsNonCanonicalNotificationBeforeDependencies(t *testing.T) {
+	t.Parallel()
+	createdAt := time.Date(2026, 8, 4, 13, 10, 0, 0, time.UTC)
+	forged := buzzTestNotification(t, createdAt)
+	forged.Body = "forged raw notification secret-marker"
+	tests := []struct {
+		name         string
+		notification Notification
+	}{
+		{name: "forged canonical body", notification: forged},
+		{name: "raw body only", notification: Notification{Body: "raw arbitrary text secret-marker"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var resolverCalls int
+			var clientCalls int
+			provider := newBuzzProvider(BuzzConfig{ChannelID: "9ecb8b70-2e5d-4f17-8a29-7736c2866dc2", PrivateKeyRef: "env:BUZZ_KEY"}, func(context.Context, string) (string, error) {
+				resolverCalls++
+				return buzzTestSecretHex, nil
+			}, buzzClientFunc(func(context.Context, nostr.Signer, buzzclient.ChannelMessage) (buzzclient.Receipt, error) {
+				clientCalls++
+				return buzzclient.Receipt{}, nil
+			}))
+
+			_, err := provider.Deliver(t.Context(), test.notification)
+			assertNotifyDeliveryError(t, err, DeliveryErrorPermanent, "buzz_notification_invalid")
+			if resolverCalls != 0 || clientCalls != 0 {
+				t.Fatalf("invalid notification reached dependencies: resolver=%d client=%d", resolverCalls, clientCalls)
+			}
+			if formatted := fmt.Sprintf("%v\n%+v\n%#v", err, err, err); strings.Contains(formatted, "secret-marker") || strings.Contains(formatted, test.notification.Body) {
+				t.Fatalf("invalid-notification error leaked raw body: %s", formatted)
+			}
+		})
 	}
 }
 
@@ -106,7 +142,7 @@ func TestBuzzProviderSanitizesSecretResolutionAndClientErrors(t *testing.T) {
 	resolutionProvider := newBuzzProvider(BuzzConfig{PrivateKeyRef: "env:BUZZ_KEY"}, func(context.Context, string) (string, error) {
 		return "", errors.New(leak)
 	}, nil)
-	_, resolutionErr := resolutionProvider.Deliver(t.Context(), buzzTestNotification(time.Now().UTC()))
+	_, resolutionErr := resolutionProvider.Deliver(t.Context(), buzzTestNotification(t, time.Now().UTC()))
 	assertNotifyDeliveryError(t, resolutionErr, DeliveryErrorTemporary, "buzz_private_key_resolve_failed")
 
 	clientProvider := newBuzzProvider(BuzzConfig{ChannelID: "9ecb8b70-2e5d-4f17-8a29-7736c2866dc2", PrivateKeyRef: "env:BUZZ_KEY"}, func(context.Context, string) (string, error) {
@@ -114,7 +150,7 @@ func TestBuzzProviderSanitizesSecretResolutionAndClientErrors(t *testing.T) {
 	}, buzzClientFunc(func(context.Context, nostr.Signer, buzzclient.ChannelMessage) (buzzclient.Receipt, error) {
 		return buzzclient.Receipt{}, buzzclient.NewDeliveryError(buzzclient.DeliveryAmbiguous, "buzz_publish_timeout", errors.New(leak))
 	}))
-	_, clientErr := clientProvider.Deliver(t.Context(), buzzTestNotification(time.Now().UTC()))
+	_, clientErr := clientProvider.Deliver(t.Context(), buzzTestNotification(t, time.Now().UTC()))
 	assertNotifyDeliveryError(t, clientErr, DeliveryErrorAmbiguous, "buzz_publish_timeout")
 
 	for _, value := range []any{resolutionProvider, clientProvider, resolutionErr, clientErr} {
@@ -173,7 +209,7 @@ func TestBuzzProviderMapsReusableClientDeliveryKinds(t *testing.T) {
 		}, buzzClientFunc(func(context.Context, nostr.Signer, buzzclient.ChannelMessage) (buzzclient.Receipt, error) {
 			return buzzclient.Receipt{}, buzzclient.NewDeliveryError(test.clientKind, "buzz_safe_code", errors.New("raw relay rejection"))
 		}))
-		_, err := provider.Deliver(t.Context(), buzzTestNotification(time.Now().UTC()))
+		_, err := provider.Deliver(t.Context(), buzzTestNotification(t, time.Now().UTC()))
 		assertNotifyDeliveryError(t, err, test.notifyKind, "buzz_safe_code")
 	}
 }
@@ -197,8 +233,17 @@ func TestBuiltinRegistryBindsActualBuzzFactory(t *testing.T) {
 	}
 }
 
-func buzzTestNotification(createdAt time.Time) Notification {
-	return Notification{Body: "safe notification body", CreatedAt: createdAt}
+func buzzTestNotification(t *testing.T, createdAt time.Time) Notification {
+	t.Helper()
+	notification, err := DeriveNotification(EventFacts{
+		Kind:      EventTest,
+		Operation: OperationScheduledSyncAll,
+		CreatedAt: createdAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return notification
 }
 
 func assertNotifyDeliveryError(t *testing.T, err error, kind DeliveryErrorKind, code string) {

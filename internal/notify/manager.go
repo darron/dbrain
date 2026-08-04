@@ -145,6 +145,7 @@ func (m *Manager) Observe(ctx context.Context, outcome Outcome) error {
 		return nil
 	}
 
+	deliveryFailed := false
 	m.stateMu.Lock()
 	state, err := m.store.Load()
 	if err != nil {
@@ -157,6 +158,33 @@ func (m *Manager) Observe(ctx context.Context, outcome Outcome) error {
 	}
 	pruneTerminalEnvelopes(&state)
 	next, decision, err := Observe(state, outcome, m.options)
+	if errors.Is(err, errOutboxCapacity) {
+		capacityAmbiguousIncidentIDs := ambiguousIncidentIDsForCapacityError(err)
+		if persistErr := m.store.Replace(state); persistErr != nil {
+			m.stateMu.Unlock()
+			return managerCodeError("notification_state_persist_failed")
+		}
+		m.stateMu.Unlock()
+
+		for _, provider := range m.providers {
+			if provider != nil && m.deliverProvider(ctx, provider, capacityAmbiguousIncidentIDs) {
+				deliveryFailed = true
+			}
+		}
+
+		m.stateMu.Lock()
+		state, err = m.store.Load()
+		if err != nil {
+			m.stateMu.Unlock()
+			return managerCodeError("notification_state_load_failed")
+		}
+		if err := retireRemovedProviders(&state, m.providersByName, m.now().UTC()); err != nil {
+			m.stateMu.Unlock()
+			return managerCodeError("notification_state_transition_failed")
+		}
+		pruneTerminalEnvelopes(&state)
+		next, decision, err = Observe(state, outcome, m.options)
+	}
 	if err != nil {
 		m.stateMu.Unlock()
 		return managerCodeError("notification_state_transition_failed")
@@ -176,19 +204,30 @@ func (m *Manager) Observe(ctx context.Context, outcome Outcome) error {
 			}
 		}
 	}
-	var failed bool
 	for _, provider := range m.providers {
 		if provider == nil {
 			continue
 		}
 		if m.deliverProvider(ctx, provider, ambiguousIncidentIDs) {
-			failed = true
+			deliveryFailed = true
 		}
 	}
-	if failed {
+	if deliveryFailed {
 		return managerCodeError("notification_delivery_failed")
 	}
 	return nil
+}
+
+func ambiguousIncidentIDsForCapacityError(err error) map[string]struct{} {
+	var capacityErr *outboxCapacityError
+	if !errors.As(err, &capacityErr) || capacityErr.event.Kind != EventReminder {
+		return nil
+	}
+	incidentIDs := make(map[string]struct{}, len(capacityErr.event.Incidents))
+	for _, incident := range capacityErr.event.Incidents {
+		incidentIDs[incident.ID] = struct{}{}
+	}
+	return incidentIDs
 }
 
 func (m *Manager) deliverProvider(ctx context.Context, provider Provider, ambiguousIncidentIDs map[string]struct{}) bool {

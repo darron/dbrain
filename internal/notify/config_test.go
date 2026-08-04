@@ -121,6 +121,51 @@ notifications:
 	}
 }
 
+func TestNotificationInspectionConfigLoadsRepeatAfterWhileAutomaticDeliveryDisabled(t *testing.T) {
+	root := t.TempDir()
+	writeNotificationConfig(t, root, `
+notifications:
+  enabled: false
+  repeat_after: 12h
+  buzz:
+    enabled: true
+    relay_url: "wss://relay.example"
+    channel_id: "00000000-0000-4000-8000-000000000001"
+    private_key_ref: "keychain://dbrain/notifications-buzz"
+`)
+
+	config, err := LoadInspectionConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Enabled || config.RepeatAfter != 12*time.Hour || !config.Buzz.Enabled {
+		t.Fatalf("inspection config = %#v", config)
+	}
+	global, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.Enabled || global.RepeatAfter != defaultRepeatAfter || global.Buzz.Enabled {
+		t.Fatalf("remote kill-switch config changed = %#v", global)
+	}
+}
+
+func TestNotificationInspectionConfigRejectsMalformedRepeatAfterWhileDisabled(t *testing.T) {
+	root := t.TempDir()
+	writeNotificationConfig(t, root, `
+notifications:
+  enabled: false
+  repeat_after: not-a-duration
+`)
+
+	if _, err := LoadInspectionConfig(root); err == nil || !strings.Contains(err.Error(), "repeat_after") {
+		t.Fatalf("inspection config error = %v", err)
+	}
+	if _, err := LoadConfig(root); err != nil {
+		t.Fatalf("remote kill switch stopped ignoring nested settings: %v", err)
+	}
+}
+
 func TestNotificationConfigRejectsInvalidEnabledConfiguration(t *testing.T) {
 	validBuzz := `
   buzz:

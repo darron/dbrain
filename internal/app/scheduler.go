@@ -400,7 +400,11 @@ func (s *syncScheduler) run(ctx context.Context, reason string) (scheduledSyncOu
 			status = scheduledSyncStatusCancelled
 		}
 		s.finishRunAt(string(status), err.Error(), finishedAt)
-		_, _ = fmt.Fprintf(s.logOut, "scheduler sync all failed: duration=%s error=%v\n", time.Since(start).Round(time.Second), err)
+		if status == scheduledSyncStatusCancelled {
+			_, _ = fmt.Fprintf(s.logOut, "scheduler sync all cancelled: duration=%s\n", time.Since(start).Round(time.Second))
+		} else {
+			_, _ = fmt.Fprintf(s.logOut, "scheduler sync all failed: duration=%s error=%v\n", time.Since(start).Round(time.Second), err)
+		}
 		return scheduledSyncOutcome{
 			Reason:     reason,
 			Status:     status,

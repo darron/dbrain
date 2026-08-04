@@ -151,6 +151,60 @@ func TestObserveCancellationIsExactNoOp(t *testing.T) {
 	requireStateNotifications(t, decision)
 }
 
+func TestObserveCancellationDoesNotPruneExpiredCoolingIncident(t *testing.T) {
+	state, _, err := Observe(EmptyState(), stateFailed(FailureStoreOpen, 0), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err = Observe(state, stateSuccess(time.Hour), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := Outcome{Operation: OperationScheduledSyncAll, Status: OutcomeCancelled, StartedAt: stateAt(7 * time.Hour), FinishedAt: stateAt(7 * time.Hour)}
+	afterState, decision, err := Observe(state, cancelled, stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := json.Marshal(afterState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("expired cooling incident was pruned by cancellation:\nbefore=%s\nafter=%s", before, after)
+	}
+	requireStateNotifications(t, decision)
+}
+
+func TestObservePrunesCoolingIncidentAtRearmBoundary(t *testing.T) {
+	state, _, err := Observe(EmptyState(), stateFailed(FailureStoreOpen, 0), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err = Observe(state, stateSuccess(time.Hour), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err = Observe(state, stateSuccess(6*time.Hour-time.Nanosecond), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incidentFor(t, state, FailureStoreOpen).Phase != IncidentCooling {
+		t.Fatal("cooling incident pruned before its rearm boundary")
+	}
+	state, decision, err := Observe(state, stateSuccess(6*time.Hour), stateOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireStateNotifications(t, decision)
+	if _, exists := state.Incidents[incidentKey(OperationScheduledSyncAll, FailureStoreOpen)]; exists {
+		t.Fatalf("cooling incident survived its rearm boundary: %#v", state.Incidents)
+	}
+}
+
 func TestObserveFlapInsideRepeatWindowReusesIncidentWithoutChatter(t *testing.T) {
 	state, failure, err := Observe(EmptyState(), stateFailed(FailureAppleNotesPermission, 0), stateOptions())
 	if err != nil {

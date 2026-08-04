@@ -299,15 +299,9 @@ func loadNotifyCommandConfig(ctx context.Context, root *rootOptions) (config.Con
 	}
 	cleanupSnapshot := runtimeenv.RegisterConfigSnapshot(cfg.RootDir, configSnapshot, dotenvSnapshot)
 	defer cleanupSnapshot()
-	notificationConfig, err := notify.LoadConfig(cfg.RootDir)
+	notificationConfig, err := notify.LoadInspectionConfig(cfg.RootDir)
 	if err != nil {
 		return config.Config{}, notify.Config{}, err
-	}
-	if !notificationConfig.Enabled {
-		notificationConfig.Buzz, err = notify.LoadBuzzConfig(cfg.RootDir)
-		if err != nil {
-			return config.Config{}, notify.Config{}, err
-		}
 	}
 	return cfg, notificationConfig, nil
 }

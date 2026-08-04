@@ -20,6 +20,16 @@ const (
 	maxStateBytes     = 1 << 20
 )
 
+var errOutboxCapacity = fmt.Errorf("notification outbox exceeds limit")
+
+type outboxCapacityError struct {
+	event EventFacts
+}
+
+func (e *outboxCapacityError) Error() string { return errOutboxCapacity.Error() }
+
+func (e *outboxCapacityError) Unwrap() error { return errOutboxCapacity }
+
 type IncidentPhase string
 
 const (
@@ -125,6 +135,7 @@ func Observe(state State, outcome Outcome, options Options) (State, Decision, er
 		return state, Decision{}, fmt.Errorf("notification outcome has no completion timestamp")
 	}
 	next := cloneState(state)
+	pruneExpiredCoolingIncidents(&next, outcome.FinishedAt.UTC(), options.RepeatAfter)
 	decision := Decision{}
 	var err error
 	switch outcome.Status {
@@ -140,6 +151,14 @@ func Observe(state State, outcome Outcome, options Options) (State, Decision, er
 		return state, Decision{}, err
 	}
 	return next, decision, nil
+}
+
+func pruneExpiredCoolingIncidents(state *State, observedAt time.Time, repeatAfter time.Duration) {
+	for key, incident := range state.Incidents {
+		if incident.Phase == IncidentCooling && !observedAt.Before(incident.LastFailureEnqueuedAt.Add(repeatAfter)) {
+			delete(state.Incidents, key)
+		}
+	}
 }
 
 func observeFailure(state *State, decision *Decision, outcome Outcome, options Options) error {
@@ -255,7 +274,7 @@ func eventFactsFromIncidents(kind EventKind, incidents []Incident, repeatAfter t
 
 func enqueueEvent(state *State, decision *Decision, event EventFacts, providers []string) error {
 	if len(state.Outbox) >= maxStateEnvelopes {
-		return fmt.Errorf("notification outbox exceeds limit")
+		return &outboxCapacityError{event: event}
 	}
 	notification, err := DeriveNotification(event)
 	if err != nil {

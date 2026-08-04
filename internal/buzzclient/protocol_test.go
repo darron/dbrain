@@ -53,6 +53,62 @@ func TestBuzzClientAUTHThenPublishesSignedChannelEvent(t *testing.T) {
 	}
 }
 
+func TestBuzzClientRejectsSignerMutationOfUnsignedProtocolFields(t *testing.T) {
+	t.Parallel()
+	mutations := []struct {
+		name   string
+		mutate func(*nostr.Event)
+	}{
+		{name: "kind", mutate: func(event *nostr.Event) { event.Kind++ }},
+		{name: "created at", mutate: func(event *nostr.Event) { event.CreatedAt++ }},
+		{name: "tags", mutate: func(event *nostr.Event) { event.Tags[0][1] = "mutated-secret-tag" }},
+		{name: "content", mutate: func(event *nostr.Event) { event.Content = "mutated-secret-content" }},
+	}
+	stages := []struct {
+		name       string
+		mutateCall int
+		handler    relayHandler
+	}{
+		{
+			name:       "AUTH",
+			mutateCall: 1,
+			handler: func(ctx context.Context, conn *websocket.Conn, _ string) {
+				relayWriteEnvelope(t, ctx, conn, []any{"AUTH", "challenge"})
+				_, _, _ = conn.Read(ctx)
+			},
+		},
+		{
+			name:       "kind 9 message",
+			mutateCall: 2,
+			handler: func(ctx context.Context, conn *websocket.Conn, _ string) {
+				relayWriteEnvelope(t, ctx, conn, []any{"AUTH", "challenge"})
+				auth := readEventEnvelope(t, ctx, conn, "AUTH")
+				relayWriteEnvelope(t, ctx, conn, []any{"OK", auth.ID, true, ""})
+				_, _, _ = conn.Read(ctx)
+			},
+		},
+	}
+	for _, stage := range stages {
+		for _, mutation := range mutations {
+			t.Run(stage.name+" "+mutation.name, func(t *testing.T) {
+				fixture := newRelayFixture(t, stage.handler)
+				client := fixture.client(Options{RelayURL: fixture.relayURL, AllowPrivateOrigin: true, Timeout: time.Second}, time.Now)
+				plain, err := keyer.NewPlainKeySigner(testSecretKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				signer := &mutatingSigner{signer: plain, mutateCall: stage.mutateCall, mutate: mutation.mutate}
+				_, err = client.SendChannelMessage(t.Context(), signer, validMessage(time.Now().UTC()))
+				fixture.wait()
+				assertDeliveryError(t, err, DeliveryPermanent, "buzz_signer_mutated")
+				if formatted := fmt.Sprintf("%v\n%+v\n%#v", err, err, err); strings.Contains(formatted, "mutated-secret") {
+					t.Fatalf("mutation error leaked signer-controlled data: %s", formatted)
+				}
+			})
+		}
+	}
+}
+
 func TestBuzzClientDeterministicMessageEventID(t *testing.T) {
 	t.Parallel()
 	createdAt := time.Date(2026, 8, 3, 18, 10, 11, 987654321, time.UTC)

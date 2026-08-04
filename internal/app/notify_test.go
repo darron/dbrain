@@ -258,6 +258,34 @@ func TestNotifyCommandStatusReportsConfiguredBuzzWhileAutomaticNotificationsDisa
 	}
 }
 
+func TestNotifyCommandStatusReportsConfiguredRepeatAfterWhileAutomaticNotificationsDisabled(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	writeNotificationAppConfig(t, cfg, false)
+	configBody, err := os.ReadFile(cfg.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ConfigPath, []byte(strings.Replace(string(configBody), "repeat_after: 6h", "repeat_after: 12h", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := runRootCommand(t, root, "notify", "status", "--json")
+	var status notify.Status
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, stdout)
+	}
+	if status.Enabled || status.RepeatAfter != "12h0m0s" {
+		t.Fatalf("disabled configured status = %#v", status)
+	}
+}
+
 func TestNotifyCommandStatusShowsSafePersistedState(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

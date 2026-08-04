@@ -45,6 +45,9 @@ func newBuiltinBuzzProvider(_ context.Context, config Config) (Provider, bool, e
 func (p *buzzProvider) Name() string { return "buzz" }
 
 func (p *buzzProvider) Deliver(ctx context.Context, notification Notification) (Receipt, error) {
+	if err := ValidateNotification(notification); err != nil {
+		return Receipt{}, NewDeliveryError(DeliveryErrorPermanent, "buzz_notification_invalid", errors.New("buzz_notification_invalid"))
+	}
 	if p == nil || p.resolve == nil {
 		return Receipt{}, NewDeliveryError(DeliveryErrorTemporary, "buzz_provider_unavailable", errors.New("buzz_provider_unavailable"))
 	}

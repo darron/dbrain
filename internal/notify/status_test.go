@@ -78,7 +78,7 @@ func TestBuildStatusReportsCoolingRearmAndPendingDeliveries(t *testing.T) {
 		ErrorCode:     "buzz_connect_failed",
 	}
 
-	got, err := BuildStatus(Config{Enabled: true, RepeatAfter: 6 * time.Hour, Buzz: BuzzConfig{Enabled: true}}, state)
+	got, err := buildStatusAt(Config{Enabled: true, RepeatAfter: 6 * time.Hour, Buzz: BuzzConfig{Enabled: true}}, state, stateAt(2*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +90,34 @@ func TestBuildStatusReportsCoolingRearmAndPendingDeliveries(t *testing.T) {
 	}
 	if len(got.OpenIncidents) != 0 {
 		t.Fatalf("open incidents = %#v", got.OpenIncidents)
+	}
+}
+
+func TestBuildStatusOmitsCoolingIncidentAtRearmBoundary(t *testing.T) {
+	options := stateOptions()
+	state, _, err := Observe(EmptyState(), stateFailed(FailureStoreOpen, 0), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err = Observe(state, stateSuccess(time.Hour), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Enabled: true, RepeatAfter: 6 * time.Hour, Buzz: BuzzConfig{Enabled: true}}
+
+	before, err := buildStatusAt(config, state, stateAt(6*time.Hour-time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before.CoolingIncidents) != 1 {
+		t.Fatalf("cooling incidents before boundary = %#v", before.CoolingIncidents)
+	}
+	atBoundary, err := buildStatusAt(config, state, stateAt(6*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atBoundary.CoolingIncidents) != 0 {
+		t.Fatalf("expired cooling incidents = %#v", atBoundary.CoolingIncidents)
 	}
 }
 
