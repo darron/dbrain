@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Typed scheduled-sync failure notifications (2026-08-03)
+
+- **Typed, flap-safe incidents**: The still-running `serve remote` scheduler can
+  now turn settled hard failures into per-error incidents, suppress identical
+  recurrences for configurable `notifications.repeat_after` intervals, remind
+  with accumulated counts, and consolidate recovery without rapid flap chatter.
+- **Durable Buzz/Nostr delivery**: A dedicated-key Buzz provider authenticates
+  with NIP-42 and publishes signed kind-9 channel events after durable
+  per-provider state is recorded. New `dbrain notify test buzz` and `dbrain
+  notify status` commands support pre-enable delivery testing and redacted
+  operational inspection.
+
 ### Idempotent semantic segment recovery (2026-08-02)
 
 - **Stale ANN segments can be reused safely**: Semantic refresh now treats an

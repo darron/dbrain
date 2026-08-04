@@ -14,6 +14,11 @@ func configValuePaths(key string) [][]string {
 	if strings.EqualFold(key, "DBRAIN_USER_AGENT") {
 		paths = append(paths, []string{"http", "user_agent"})
 	}
+	if short, ok := strings.CutPrefix(key, "DBRAIN_NOTIFICATIONS_BUZZ_"); ok {
+		paths = append(paths, []string{"notifications", "buzz", strings.ToLower(strings.Trim(short, "_"))})
+	} else if short, ok := strings.CutPrefix(key, "DBRAIN_NOTIFICATIONS_"); ok {
+		paths = append(paths, []string{"notifications", strings.ToLower(strings.Trim(short, "_"))})
+	}
 	if short, ok := strings.CutPrefix(key, "DBRAIN_APPLE_NOTES_"); ok {
 		paths = append(paths, []string{"apple_notes", strings.ToLower(strings.Trim(short, "_"))})
 	}

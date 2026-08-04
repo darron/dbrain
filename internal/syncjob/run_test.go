@@ -516,8 +516,9 @@ func TestRunEmitsCategorizeStageMetricsOnError(t *testing.T) {
 	runItemCategorize = func(_ context.Context, _ config.Config, _ *store.Store, _ itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.ItemResult, error) {
 		return itemcategorize.Stats{Queued: 1, Succeeded: 1, Applied: 1}, nil, nil
 	}
+	cause := errors.New("source categorize failed")
 	runSourceCategorize = func(_ context.Context, _ config.Config, _ *store.Store, _ itemcategorize.Options) (itemcategorize.Stats, []itemcategorize.SourceResult, error) {
-		return itemcategorize.Stats{Queued: 1, Errors: 1}, nil, errors.New("source categorize failed")
+		return itemcategorize.Stats{Queued: 1, Errors: 1}, nil, cause
 	}
 
 	_, err = Run(context.Background(), cfg, st, Options{
@@ -530,8 +531,12 @@ func TestRunEmitsCategorizeStageMetricsOnError(t *testing.T) {
 			Sink:       sink,
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "source categorize failed") {
-		t.Fatalf("Run err = %v, want source categorize failed", err)
+	var stageErr *StageError
+	if !errors.As(err, &stageErr) || stageErr.Stage() != "categorize" || !errors.Is(err, cause) {
+		t.Fatalf("Run stage err = %#v, want categorize identity and original cause", err)
+	}
+	if err.Error() != "categorize sources: source categorize failed" {
+		t.Fatalf("Run err = %v, want existing categorized error text", err)
 	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("metrics close: %v", err)

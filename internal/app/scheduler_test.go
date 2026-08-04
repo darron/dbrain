@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -714,8 +716,12 @@ func TestSyncSchedulerSemanticFailureSetsErrorStatusAndReleasesLock(t *testing.T
 		return runScheduledSyncAllUnlockedWithSemanticDeps(ctx, cfg, flags, logOut, deps)
 	}
 
-	if actual := s.run(t.Context(), "semantic-failure"); !actual {
+	outcome, actual := s.run(t.Context(), "semantic-failure")
+	if !actual {
 		t.Fatal("semantic failure was not recorded as an actual scheduler run")
+	}
+	if outcome.Status != scheduledSyncStatusError || !errors.Is(outcome.Err, refreshErr) {
+		t.Fatalf("semantic failure outcome = %#v", outcome)
 	}
 	status := s.Status()
 	if status.Running || status.LastStatus != "error" || status.LastError != semanticrefresh.ErrorVerify {
@@ -753,8 +759,11 @@ func TestSyncSchedulerPostRunAuditFollowsSemanticFailureSettlement(t *testing.T)
 		return refreshErr
 	}
 	audits := 0
-	s.postRun = func(context.Context) {
+	s.postRun = func(_ context.Context, outcome scheduledSyncOutcome) {
 		audits++
+		if outcome.Status != scheduledSyncStatusError || !errors.Is(outcome.Err, refreshErr) {
+			t.Errorf("audit outcome = %#v", outcome)
+		}
 		status := s.Status()
 		if status.Running || status.LastStatus != "error" || status.LastError != semanticrefresh.ErrorEmbedding {
 			t.Errorf("audit observed unsettled scheduler status: %#v", status)
@@ -770,6 +779,190 @@ func TestSyncSchedulerPostRunAuditFollowsSemanticFailureSettlement(t *testing.T)
 	s.runAndPost(t.Context(), "semantic-failure")
 	if audits != 1 {
 		t.Fatalf("post-run audits = %d, want 1", audits)
+	}
+}
+
+func TestSyncSchedulerPostRunReceivesSettledFailureOutcome(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	s := newSyncScheduler(cfg, schedulerSyncConfig{Enabled: true, Interval: time.Hour}, io.Discard)
+	s.runSync = func(context.Context, config.Config, syncAllFlags, io.Writer) error {
+		return syncjob.WrapStageError("apple_notes", fs.ErrPermission)
+	}
+	var got scheduledSyncOutcome
+	s.postRun = func(_ context.Context, outcome scheduledSyncOutcome) { got = outcome }
+
+	s.runAndPost(t.Context(), "interval")
+
+	if got.Status != scheduledSyncStatusError || got.Reason != "interval" || got.StartedAt.IsZero() || got.FinishedAt.IsZero() {
+		t.Fatalf("outcome = %#v", got)
+	}
+	if !errors.Is(got.Err, fs.ErrPermission) {
+		t.Fatalf("outcome error = %v, want permission cause", got.Err)
+	}
+	if s.Status().Running {
+		t.Fatal("post-run hook ran before settlement")
+	}
+	lock, err := acquireSyncAllLock(cfg, "outcome-probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = lock.Close()
+}
+
+func TestSyncSchedulerRunReturnsSettledSuccessOutcome(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	s := newSyncScheduler(cfg, schedulerSyncConfig{Enabled: true, Interval: time.Hour}, io.Discard)
+	s.runSync = func(context.Context, config.Config, syncAllFlags, io.Writer) error { return nil }
+
+	outcome, actual := s.run(t.Context(), "interval")
+	if !actual || outcome.Status != scheduledSyncStatusOK || outcome.Reason != "interval" || outcome.Err != nil {
+		t.Fatalf("success outcome = %#v actual=%t", outcome, actual)
+	}
+	status := s.Status()
+	if status.Running || status.LastStatus != string(scheduledSyncStatusOK) || !status.LastFinishedAt.Equal(outcome.FinishedAt) {
+		t.Fatalf("settled success status = %#v outcome=%#v", status, outcome)
+	}
+}
+
+func TestSyncSchedulerRunMapsCancellationOutcomes(t *testing.T) {
+	semanticCancelled := semanticrefresh.NewError(
+		semanticrefresh.ErrorCancelled,
+		store.SemanticRefreshRun{},
+		"",
+		semanticrefresh.Debt{},
+		nil,
+	)
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "direct context cancellation", err: context.Canceled},
+		{name: "wrapped context cancellation", err: fmt.Errorf("sync interrupted: %w", context.Canceled)},
+		{name: "semantic cancellation without unwrap cause", err: semanticCancelled},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg, err := config.Load(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			s := newSyncScheduler(cfg, schedulerSyncConfig{Enabled: true, Interval: time.Hour}, &logs)
+			s.runSync = func(context.Context, config.Config, syncAllFlags, io.Writer) error { return test.err }
+
+			outcome, actual := s.run(t.Context(), "shutdown")
+			if !actual || outcome.Status != scheduledSyncStatusCancelled || !errors.Is(outcome.Err, test.err) {
+				t.Fatalf("cancelled outcome = %#v actual=%t", outcome, actual)
+			}
+			status := s.Status()
+			if status.Running || status.LastStatus != string(scheduledSyncStatusCancelled) || !status.LastFinishedAt.Equal(outcome.FinishedAt) {
+				t.Fatalf("cancelled status = %#v outcome=%#v", status, outcome)
+			}
+			if !strings.Contains(logs.String(), "scheduler sync all cancelled:") || strings.Contains(logs.String(), "scheduler sync all failed:") {
+				t.Fatalf("cancellation log = %q", logs.String())
+			}
+		})
+	}
+}
+
+func TestSyncSchedulerSkipsOverlapWithoutPostRun(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSyncScheduler(cfg, schedulerSyncConfig{Enabled: true, Interval: time.Hour}, io.Discard)
+	s.status.Running = true
+	called := false
+	s.postRun = func(context.Context, scheduledSyncOutcome) { called = true }
+
+	outcome, actual := s.run(t.Context(), "overlap")
+	if actual || outcome != (scheduledSyncOutcome{}) {
+		t.Fatalf("overlap outcome = %#v actual=%t", outcome, actual)
+	}
+	s.runAndPost(t.Context(), "overlap")
+	if called {
+		t.Fatal("overlap skip invoked post-run hook")
+	}
+}
+
+func TestSyncSchedulerStopWaitsForInflightRunAndPostRun(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	s := newSyncScheduler(cfg, schedulerSyncConfig{
+		Enabled:    true,
+		Interval:   time.Hour,
+		RunOnStart: true,
+	}, io.Discard)
+	runStarted := make(chan struct{})
+	postStarted := make(chan struct{})
+	releasePost := make(chan struct{})
+	s.runSync = func(ctx context.Context, _ config.Config, _ syncAllFlags, _ io.Writer) error {
+		close(runStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	s.postRun = func(_ context.Context, outcome scheduledSyncOutcome) {
+		if outcome.Status != scheduledSyncStatusCancelled {
+			t.Errorf("shutdown outcome = %#v", outcome)
+		}
+		if s.Status().Running {
+			t.Error("post-run transition began before scheduler status settled")
+		}
+		close(postStarted)
+		<-releasePost
+	}
+
+	s.Start(t.Context())
+	select {
+	case <-runStarted:
+	case <-time.After(time.Second):
+		t.Fatal("startup run did not begin")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		s.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-postStarted:
+	case <-time.After(time.Second):
+		t.Fatal("post-run transition did not begin")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before post-run transition completed")
+	default:
+	}
+	close(releasePost)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not wait for the settled run")
 	}
 }
 
@@ -808,7 +1001,10 @@ func TestSyncSchedulerStatusTracksRuns(t *testing.T) {
 	}
 
 	s.setNextRunAt(time.Now().UTC().Add(time.Hour))
-	s.run(context.Background(), "test")
+	outcome, actual := s.run(context.Background(), "test")
+	if !actual || outcome.Status != scheduledSyncStatusOK {
+		t.Fatalf("successful outcome = %#v actual=%t", outcome, actual)
+	}
 
 	after := s.Status()
 	if after.Running {
@@ -841,7 +1037,10 @@ func TestSyncSchedulerSkipsWhenSyncAllLockHeld(t *testing.T) {
 		Enabled:  true,
 		Interval: time.Hour,
 	}, &out)
-	s.run(context.Background(), "test")
+	outcome, actual := s.run(context.Background(), "test")
+	if actual || outcome != (scheduledSyncOutcome{}) {
+		t.Fatalf("lock skip outcome = %#v actual=%t", outcome, actual)
+	}
 
 	after := s.Status()
 	if after.Running {

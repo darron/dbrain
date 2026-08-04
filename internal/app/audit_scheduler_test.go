@@ -278,7 +278,7 @@ func TestSyncPostRunAuditHookRunsOnlyAfterActualResultAndLockSettlement(t *testi
 	s := newSyncScheduler(cfg, schedulerSyncConfig{Enabled: true, Interval: time.Hour}, io.Discard)
 	s.runSync = func(context.Context, config.Config, syncAllFlags, io.Writer) error { return errors.New("sync failed") }
 	hooked := make(chan struct{}, 1)
-	s.postRun = func(context.Context) {
+	s.postRun = func(context.Context, scheduledSyncOutcome) {
 		if s.Status().Running {
 			t.Error("audit hook ran before sync status settled")
 		}

@@ -117,13 +117,17 @@ func defaultSyncStagePlan() []syncStage {
 }
 
 func runSyncStagePlan(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
-	for _, stage := range defaultSyncStagePlan() {
+	return runSyncStagePlanWithPlan(ctx, cfg, st, opts, stats, defaultSyncStagePlan())
+}
+
+func runSyncStagePlanWithPlan(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats, plan []syncStage) error {
+	for _, stage := range plan {
 		if !stage.Enabled(opts) {
 			continue
 		}
 		if err := stage.Run(ctx, cfg, st, opts, stats); err != nil {
 			emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, err)
-			return err
+			return WrapStageError(string(stage.ID), err)
 		}
 		emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, nil)
 	}

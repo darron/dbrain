@@ -127,6 +127,45 @@ func TestShippedConfigTemplatesExposeSemanticRetrievalDefaults(t *testing.T) {
 	}
 }
 
+func TestShippedConfigTemplatesKeepNotificationDefaultsInParity(t *testing.T) {
+	rootSample, err := os.ReadFile(filepath.Join("..", "..", "config.yaml.sample"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readNotifications := func(name string, data []byte) map[string]any {
+		t.Helper()
+		var document map[string]any
+		if err := yaml.Unmarshal(data, &document); err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		notifications, ok := document["notifications"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s is missing notifications config", name)
+		}
+		return notifications
+	}
+
+	root := readNotifications("root sample", rootSample)
+	installer := readNotifications("installer sample", DefaultConfigTemplate)
+	if !reflect.DeepEqual(root, installer) {
+		t.Fatalf("root and installer notification config differ\nroot=%#v\ninstaller=%#v", root, installer)
+	}
+	want := map[string]any{
+		"enabled":      false,
+		"repeat_after": "6h",
+		"buzz": map[string]any{
+			"enabled":              false,
+			"relay_url":            "",
+			"channel_id":           "",
+			"private_key_ref":      "",
+			"allow_private_origin": false,
+		},
+	}
+	if !reflect.DeepEqual(root, want) {
+		t.Fatalf("notification defaults = %#v, want %#v", root, want)
+	}
+}
+
 func TestRunCreatesExplicitBaseLayoutAndConfigFromSelections(t *testing.T) {
 	t.Parallel()
 

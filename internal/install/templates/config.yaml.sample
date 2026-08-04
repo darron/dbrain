@@ -78,6 +78,16 @@ metrics:
   include_subject_keys: false # DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS; raw item/source keys are omitted by default
   strict: false # DBRAIN_METRICS_STRICT; fail the command on write errors after startup succeeds
 
+notifications:
+  enabled: false
+  repeat_after: "6h"
+  buzz:
+    enabled: false
+    relay_url: ""
+    channel_id: ""
+    private_key_ref: "" # typed env:, op://, or keychain:// ref; never put the private key here
+    allow_private_origin: false
+
 openrouter:
   base_url: "https://openrouter.ai/api/v1" # DBRAIN_OPENROUTER_BASE_URL, OPENROUTER_BASE_URL
   api_key: "" # DBRAIN_OPENROUTER_API_KEY, OPENROUTER_API_KEY; secret ref supported
