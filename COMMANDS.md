@@ -54,6 +54,8 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain launchd restart`
 - `dbrain launchd uninstall`
 - `dbrain link add <url>`
+- `dbrain notify status`
+- `dbrain notify test buzz`
 - `dbrain ocr x-photos`
 - `dbrain okf export`
 - `dbrain okf validate <dir>`
@@ -129,6 +131,7 @@ Available Commands:
   install     Run first-time local dbrain setup
   launchd     Install or print a macOS launchd service for dbrain
   link        Add and manage manually submitted links
+  notify      Inspect and test hard-failure notifications
   okf         Export and inspect Open Knowledge Format bundles
   ocr         Extract text from downloaded images
   repair      Repair derived local artifacts
@@ -184,6 +187,89 @@ in `README.md`.
 dbrain config env
 dbrain config env --markdown
 ```
+
+### `dbrain notify`
+
+Inspects redacted typed-incident state and explicitly tests configured
+notification providers. These commands use the normal target resolution, so
+pass the same `--config-file` or `--root` used by the `serve remote` process you
+intend to inspect.
+
+```sh
+dbrain --config-file ~/.config/dbrain/config.yaml notify status
+dbrain --config-file ~/.config/dbrain/config.yaml notify status --json
+dbrain --config-file ~/.config/dbrain/config.yaml notify test buzz
+dbrain --config-file ~/.config/dbrain/config.yaml notify test buzz --json
+```
+
+`notify status` is read-only: it does not create or chmod notification state
+when no state exists. Human and JSON output report whether automatic delivery
+is enabled, the effective repeat interval, configured provider names, typed open
+and cooling incidents, pending delivery count, and redacted last provider
+status. Status never reports the relay URL, channel UUID, secret reference,
+private key, notification body, or external event ID.
+
+`notify test buzz` sends one clearly labeled synthetic kind-9 message directly
+through the Buzz provider without creating or changing incident/outbox state.
+It is deliberately available while `notifications.enabled` is false, provided
+`notifications.buzz.enabled` and the complete provider config are set. JSON
+success has this shape:
+
+```json
+{"provider":"buzz","status":"accepted","external_id":"<nostr-event-id>","accepted_at":"<rfc3339>"}
+```
+
+`accepted` means the relay returned a positive Nostr `OK`; it is not a human
+delivery or read receipt. The command makes a real network publish when the
+provider is configured. An unconfigured provider exits with
+`notification_provider_not_configured` and performs no relay call.
+
+Keep the global switch off during provider onboarding:
+
+```yaml
+notifications:
+  enabled: false
+  repeat_after: "6h"
+  buzz:
+    enabled: true
+    relay_url: "wss://buzz.example"
+    channel_id: "00000000-0000-4000-8000-000000000001"
+    private_key_ref: "op://Private/dbrain-notifications-buzz/private-key"
+    allow_private_origin: false
+```
+
+Use a dedicated Nostr identity, admit its public key to the relay/channel when
+required, and keep its 64-character hexadecimal secret or `nsec` behind a typed
+`env:`, `op://`, or `keychain://` reference. Inline private keys are rejected.
+The relay must be an origin-only `wss://` URL; private/localhost origins require
+the exact-origin opt-in. Buzz channel IDs are UUIDs for this integration even
+though generic NIP-29 group identifiers are not necessarily UUIDs. Buzz's
+[NOSTR guide](https://github.com/block/buzz/blob/main/NOSTR.md) defines its
+NIP-42 authentication, kind-9, required `h` tag, membership, and UUID contract.
+Kind-9 channel content is not end-to-end encrypted.
+
+After the provider test succeeds, production activation is separate: set
+`notifications.enabled: true`, restart the installed launchd service, then run
+`notify status --json` using the same explicit production config. Repository
+builds and sample edits do not activate the installed process.
+
+Automatic incidents come only from hard failures settled by the still-running
+scheduled `sync all` process. The first occurrence of a typed error sends
+immediately; `repeat_after` suppresses that same type independently, accumulates
+occurrences, and sends one reminder at the boundary. A different type remains
+eligible immediately. Success consolidates recovery for notified open types.
+If a type fails again during its cooling window, it reopens silently, so rapid
+fail/recover flaps cannot generate two messages per cycle. Notification delivery
+failure does not fail sync or prevent the post-sync audit.
+
+Manual syncs, lock/overlap skips, graceful cancellation, and tolerated per-item
+errors do not notify. Process death, startup failure before readiness, and
+scheduler stalls need a separate watchdog and are deferred. Slack delivery,
+human acknowledgements/read receipts, and inbound Buzz commands are also
+deferred.
+
+See [Scheduled hard-failure notifications](README.md#scheduled-hard-failure-notifications)
+for the complete onboarding and activation sequence.
 
 ### `dbrain audit`
 
@@ -834,6 +920,9 @@ Disk Access for Apple Notes, either grant access to the binary/service context
 that launchd runs or set `scheduler.sync_all.skip_apple_notes: true`.
 Scheduled runs use the same `metrics.*` config as manual `sync all` and mark
 their metric envelope with `invocation: "scheduler:interval"`.
+Typed hard-failure notification behavior and its explicit provider setup live
+under [`dbrain notify`](#dbrain-notify). Notifications do not monitor the
+`serve remote` process itself.
 
 `dbrain doctor full-disk-access` helps with the macOS approval loop. It reads
 the LaunchAgent plist, reports the binary that launchd runs, optionally probes

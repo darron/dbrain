@@ -224,6 +224,7 @@ Common entry points:
 - `dbrain search <query>`
 - `dbrain get <source-key-or-id>`
 - `dbrain config env`
+- `dbrain notify status --json`
 
 ## Safety And Trust Model
 
@@ -347,6 +348,91 @@ export DBRAIN_ROOT=.
 
 Resolution order for config layout is `--config-file`, `--root`,
 `DBRAIN_CONFIG_FILE`, `DBRAIN_ROOT`, then XDG defaults.
+
+### Scheduled hard-failure notifications
+
+`serve remote` can report typed hard failures from its scheduled `sync all`
+process through built-in notification providers. Automatic delivery is disabled
+by default. Configure and test the provider while the global switch remains off,
+then activate the installed service as a separate operator step:
+
+```yaml
+notifications:
+  enabled: false
+  repeat_after: "6h"
+  buzz:
+    enabled: true
+    relay_url: "wss://buzz.example"
+    channel_id: "00000000-0000-4000-8000-000000000001"
+    private_key_ref: "keychain://dbrain/notifications-buzz"
+    allow_private_origin: false
+```
+
+1. Create a dedicated, least-privilege Nostr identity for the dbrain service.
+2. Admit its public key to the Buzz relay and target channel as that deployment
+   requires.
+3. Store the private key in Keychain, 1Password, or an environment variable
+   visible to the launchd service. `private_key_ref` must be an `env:`, `op://`,
+   or `keychain://` reference; never put the private key itself in YAML. The
+   resolved value must be a 64-character hexadecimal secret or an `nsec`.
+4. Configure an origin-only `wss://` relay URL, the Buzz channel UUID, and the
+   typed secret reference. Keep `allow_private_origin: false` unless this exact
+   relay is intentionally on localhost, a private IP, or CGNAT.
+5. With `notifications.enabled: false` and `notifications.buzz.enabled: true`,
+   run the explicit provider test against the intended production config:
+
+   ```sh
+   dbrain --config-file ~/.config/dbrain/config.yaml notify test buzz
+   ```
+
+   This sends a clearly labeled synthetic message. Success proves only that the
+   relay returned `OK` and accepted the event; it is not a delivery or read
+   receipt from a person.
+6. After the provider test succeeds, set `notifications.enabled: true` and
+   restart the installed launchd service separately:
+
+   ```sh
+   dbrain --config-file ~/.config/dbrain/config.yaml launchd restart
+   ```
+
+7. Inspect the same explicit production boundary after restart:
+
+   ```sh
+   dbrain --config-file ~/.config/dbrain/config.yaml notify status --json
+   ```
+
+Buzz uses NIP-42 authentication and signs a NIP-29 kind-9 channel event with an
+`h=<channel UUID>` tag. Buzz requires that channel identifier to be a UUID even
+though generic NIP-29 group identifiers need not be UUIDs; see Buzz's
+[NOSTR guide](https://github.com/block/buzz/blob/main/NOSTR.md) for its current
+kind/tag and membership contract. Kind-9 channel content is not end-to-end
+encrypted. Use a channel whose membership and relay retention policy are
+appropriate for operational incident text.
+
+The first failure for each scheduled operation and typed error notifies
+immediately. `notifications.repeat_after` is one positive Go duration, `6h` by
+default, applied independently to each error type: identical recurrences are
+counted but suppressed until that type's boundary, while a different type can
+notify immediately. At the boundary, one reminder includes the accumulated
+count and begins a new suppression window. A fully successful scheduled sync
+closes open incidents and can send one consolidated recovery. If the same type
+fails again inside its prior window, it reopens silently; rapid fail/recover
+flaps therefore cannot bypass suppression or produce a recovery for every
+success.
+
+Only hard failures settled by the still-running `serve remote` scheduled-sync
+process enter this state machine. Manual `sync all`, overlap/lock skips,
+graceful cancellation, and tolerated per-item errors do not notify. Provider
+delivery state is recorded durably before the attempt; retry behavior then
+follows the typed provider/error policy. A delivery failure does not change the
+sync result or prevent the post-sync audit. Redacted incident and per-provider
+state lives under `<log_dir>/notifications/state.json`.
+
+This is not a process watchdog. Independent detection of process death,
+pre-readiness startup failure, or a stalled scheduler is deferred, as are the
+Slack provider and human acknowledgement/read receipts. Editing a checkout or
+sample config also does not activate an installed process; release, installation,
+production configuration, and service restart remain explicit operator steps.
 
 To inspect the resolved installation without repairing or mutating it, run:
 
@@ -651,6 +737,13 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SAFARI_TABS_DEVICE` | `safari_tabs.device` | `` | Safari iCloud device name or UUID to import during `sync all`. |
 | `DBRAIN_SAFARI_TABS_LIMIT` | `safari_tabs.limit` | `0` | Maximum Safari tabs to import after filtering; 0 means all matching tabs. |
 | `DBRAIN_SAFARI_TABS_OLDER_THAN` | `safari_tabs.older_than` | `0` | Only import Safari tabs last viewed before this duration ago, for example `168h`. |
+| `DBRAIN_NOTIFICATIONS_ENABLED` | `notifications.enabled` | `false` | Enable configured hard-failure notification providers for scheduled `sync all` settlements. |
+| `DBRAIN_NOTIFICATIONS_REPEAT_AFTER` | `notifications.repeat_after` | `6h` | Positive interval before the same typed, still-failing incident sends a reminder. |
+| `DBRAIN_NOTIFICATIONS_BUZZ_ENABLED` | `notifications.buzz.enabled` | `false` | Configure the Buzz provider; it can be tested explicitly while automatic notifications remain disabled. |
+| `DBRAIN_NOTIFICATIONS_BUZZ_RELAY_URL` | `notifications.buzz.relay_url` | `` | Origin-only `wss://` Buzz relay URL. |
+| `DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID` | `notifications.buzz.channel_id` | `` | Buzz channel UUID used in the required kind-9 `h` tag. |
+| `DBRAIN_NOTIFICATIONS_BUZZ_PRIVATE_KEY_REF` | `notifications.buzz.private_key_ref` | `` | Nostr private-key reference; must use `env:`, `op://`, or `keychain://`, never an inline secret. |
+| `DBRAIN_NOTIFICATIONS_BUZZ_ALLOW_PRIVATE_ORIGIN` | `notifications.buzz.allow_private_origin` | `false` | Permit only the exact configured localhost, private-IP, or CGNAT relay origin. |
 | `DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP` | `audit.require.sqlite_backup` | `false` | Require remote SQLite backup configuration and freshness in production health audits. |
 | `DBRAIN_AUDIT_ENABLED` | `audit.enabled` | `false` | Schedule read-only fast and standard production audits from `serve remote`. |
 | `DBRAIN_AUDIT_POST_SYNC_FAST` | `audit.post_sync_fast` | `true` | Run a fast audit after each actual scheduled sync result and lock settlement. |

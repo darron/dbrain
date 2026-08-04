@@ -78,6 +78,16 @@ metrics:
   include_subject_keys: false # DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS; raw item/source keys are omitted by default
   strict: false # DBRAIN_METRICS_STRICT; fail the command on write errors after startup succeeds
 
+notifications:
+  enabled: false
+  repeat_after: "6h"
+  buzz:
+    enabled: false
+    relay_url: ""
+    channel_id: ""
+    private_key_ref: "" # typed env:, op://, or keychain:// ref; never put the private key here
+    allow_private_origin: false
+
 audit:
   enabled: false # DBRAIN_AUDIT_ENABLED; schedule private read-only audits from serve remote
   post_sync_fast: true # DBRAIN_AUDIT_POST_SYNC_FAST; run fast after each completed scheduled sync attempt
