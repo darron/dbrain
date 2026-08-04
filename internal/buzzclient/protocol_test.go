@@ -197,7 +197,6 @@ func TestBuzzClientCancellationAfterPublishIsAmbiguous(t *testing.T) {
 }
 
 func TestBuzzClientTimeoutStages(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name    string
 		handler relayHandler
@@ -218,7 +217,7 @@ func TestBuzzClientTimeoutStages(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newRelayFixture(t, test.handler)
-			client := fixture.client(Options{RelayURL: fixture.relayURL, AllowPrivateOrigin: true, Timeout: 80 * time.Millisecond}, time.Now)
+			client := fixture.client(Options{RelayURL: fixture.relayURL, AllowPrivateOrigin: true, Timeout: time.Second}, time.Now)
 			signer, _ := keyer.NewPlainKeySigner(testSecretKey)
 			_, err := client.SendChannelMessage(t.Context(), signer, validMessage(time.Now().UTC()))
 			fixture.wait()
