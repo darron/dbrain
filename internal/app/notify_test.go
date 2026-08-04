@@ -35,10 +35,16 @@ type fakePostSyncAuditor struct {
 func (f fakePostSyncAuditor) AfterSync(ctx context.Context) { f.afterSync(ctx) }
 
 type fakeAppNotificationProvider struct {
+	name    string
 	deliver func(context.Context, notify.Notification) (notify.Receipt, error)
 }
 
-func (p fakeAppNotificationProvider) Name() string { return "buzz" }
+func (p fakeAppNotificationProvider) Name() string {
+	if p.name == "" {
+		return "buzz"
+	}
+	return p.name
+}
 
 func (p fakeAppNotificationProvider) Deliver(ctx context.Context, notification notify.Notification) (notify.Receipt, error) {
 	return p.deliver(ctx, notification)
@@ -234,7 +240,7 @@ func TestNotifyCommandStatusJSONIsReadOnlyAndNoCreateWhenDisabled(t *testing.T) 
 	}
 }
 
-func TestNotifyCommandStatusReportsConfiguredBuzzWhileAutomaticNotificationsDisabled(t *testing.T) {
+func TestNotifyCommandStatusReportsConfiguredProvidersWhileAutomaticNotificationsDisabled(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -250,7 +256,7 @@ func TestNotifyCommandStatusReportsConfiguredBuzzWhileAutomaticNotificationsDisa
 	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
 		t.Fatalf("decode status: %v\n%s", err, stdout)
 	}
-	if status.Enabled || len(status.Providers) != 1 || status.Providers[0].Name != "buzz" || !status.Providers[0].Configured {
+	if status.Enabled || len(status.Providers) != 2 || status.Providers[0].Name != "buzz" || status.Providers[1].Name != "slack" || !status.Providers[0].Configured || !status.Providers[1].Configured {
 		t.Fatalf("disabled configured status = %#v", status)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.LogDir, "notifications")); !errors.Is(err, os.ErrNotExist) {
@@ -316,13 +322,23 @@ func TestNotifyCommandStatusShowsSafePersistedState(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
 		t.Fatalf("decode status: %v\n%s", err, stdout)
 	}
-	if len(status.OpenIncidents) != 1 || len(status.Providers) != 1 || status.Providers[0].LastStatus != "accepted" {
+	if len(status.OpenIncidents) != 1 || len(status.Providers) != 2 || status.Providers[0].LastStatus != "accepted" || status.Providers[1].Name != "slack" {
 		t.Fatalf("status = %#v", status)
 	}
 	for _, forbidden := range []string{"froese.communities.buzz.xyz", "00000000-0000-4000-8000-000000000001", "env:TEST_BUZZ_KEY", "event-id-not-in-status"} {
 		if strings.Contains(stdout, forbidden) {
 			t.Fatalf("status leaked %q: %s", forbidden, stdout)
 		}
+	}
+}
+
+func TestWriteNotifyStatusUsesProviderNeutralAcceptedWording(t *testing.T) {
+	t.Parallel()
+	acceptedAt := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	writeNotifyStatus(&out, notify.Status{Providers: []notify.ProviderStatus{{Name: "slack", LastStatus: "accepted", LastAcceptedAt: &acceptedAt}}})
+	if got := out.String(); !strings.Contains(got, "last delivery status: accepted at 2026-08-04T12:00:00Z") || strings.Contains(got, "last relay status") {
+		t.Fatalf("status output = %q", got)
 	}
 }
 
@@ -402,6 +418,86 @@ func TestNotifyCommandTestBuzzSanitizesProviderErrors(t *testing.T) {
 	}
 }
 
+func TestNotifyCommandTestSlackDeliversDirectlyWithoutStateMutation(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	writeNotificationAppConfig(t, cfg, false)
+	now := time.Date(2026, 8, 4, 15, 0, 0, 0, time.UTC)
+	var delivered []notify.Notification
+	var builtConfig notify.Config
+	deps := notifyCommandDependencies{
+		now: func() time.Time { return now },
+		buildProviders: func(_ context.Context, config notify.Config) ([]notify.Provider, error) {
+			builtConfig = config
+			return []notify.Provider{fakeAppNotificationProvider{name: "slack", deliver: func(_ context.Context, notification notify.Notification) (notify.Receipt, error) {
+				delivered = append(delivered, notification)
+				return notify.Receipt{Provider: "slack", ExternalID: "correlation-id", AcceptedAt: now}, nil
+			}}}, nil
+		},
+	}
+
+	stdout := runNotifyCommandWithDependencies(t, root, deps, "test", "slack", "--json")
+	var result struct {
+		Provider      string `json:"provider"`
+		Status        string `json:"status"`
+		CorrelationID string `json:"correlation_id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode Slack JSON acceptance: %v\n%s", err, stdout)
+	}
+	if result.Provider != "slack" || result.Status != "accepted" || result.CorrelationID != "correlation-id" || strings.Contains(stdout, "message_id") {
+		t.Fatalf("Slack JSON acceptance = %q", stdout)
+	}
+	if len(delivered) != 1 || delivered[0].Kind != notify.EventTest || delivered[0].Body != "dbrain notification delivery test." || !delivered[0].CreatedAt.Equal(now) {
+		t.Fatalf("delivered = %#v", delivered)
+	}
+	if !builtConfig.Enabled || !builtConfig.Slack.Enabled || builtConfig.Buzz.Enabled {
+		t.Fatalf("explicit Slack test did not enable registry construction: %#v", builtConfig)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.LogDir, "notifications")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("direct Slack test mutated notification state: %v", err)
+	}
+
+	human := runNotifyCommandWithDependencies(t, root, deps, "test", "slack")
+	if !strings.Contains(human, "Slack webhook accepted the test notification") || !strings.Contains(human, "correlation_id=correlation-id") || strings.Contains(strings.ToLower(human), "message_id") || strings.Contains(strings.ToLower(human), "read") {
+		t.Fatalf("inaccurate Slack acceptance label = %q", human)
+	}
+}
+
+func TestNotifyCommandTestSlackSanitizesProviderErrors(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	writeNotificationAppConfig(t, cfg, false)
+	deps := notifyCommandDependencies{
+		now: time.Now,
+		buildProviders: func(context.Context, notify.Config) ([]notify.Provider, error) {
+			return []notify.Provider{fakeAppNotificationProvider{name: "slack", deliver: func(context.Context, notify.Notification) (notify.Receipt, error) {
+				return notify.Receipt{}, errors.New("private Slack webhook and secret text")
+			}}}, nil
+		},
+	}
+	cmd := newNotifyCommandWithDependencies(&rootOptions{root: root}, deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"test", "slack"})
+	err = cmd.ExecuteContext(t.Context())
+	if err == nil || strings.Contains(err.Error(), "private Slack") || err.Error() != "notification_delivery_failed" {
+		t.Fatalf("sanitized error = %v", err)
+	}
+}
+
 func TestNotifyCommandRejectsInvalidBuzzConfigWhileAutomaticNotificationsDisabled(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -447,6 +543,9 @@ func writeNotificationAppConfig(t *testing.T, cfg config.Config, globallyEnabled
     relay_url: wss://froese.communities.buzz.xyz
     channel_id: 00000000-0000-4000-8000-000000000001
     private_key_ref: env:TEST_BUZZ_KEY
+  slack:
+    enabled: true
+    webhook_url_ref: env:TEST_SLACK_WEBHOOK
 `, globallyEnabled)
 	if err := os.WriteFile(cfg.ConfigPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

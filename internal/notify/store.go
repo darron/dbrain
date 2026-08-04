@@ -135,6 +135,20 @@ func decodeState(data []byte) (State, error) {
 		}
 		return State{}, err
 	}
+	if state.Schema == StateSchemaV1 {
+		if state.LastDeliveries != nil {
+			return State{}, fmt.Errorf("invalid v1 notification delivery summaries")
+		}
+		if err := validateDeliverySummary(state.LastDelivery); err != nil {
+			return State{}, err
+		}
+		state.LastDeliveries = map[string]DeliverySummary{}
+		if state.LastDelivery != (DeliverySummary{}) {
+			state.LastDeliveries[state.LastDelivery.Provider] = state.LastDelivery
+		}
+		state.LastDelivery = DeliverySummary{}
+		state.Schema = StateSchemaV2
+	}
 	if err := ValidateState(state); err != nil {
 		return State{}, err
 	}

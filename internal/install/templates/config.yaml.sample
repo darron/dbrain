@@ -87,6 +87,9 @@ notifications:
     channel_id: ""
     private_key_ref: "" # typed env:, op://, or keychain:// ref; never put the private key here
     allow_private_origin: false
+  slack:
+    enabled: false
+    webhook_url_ref: "" # typed env:, op://, or keychain:// ref; never put the webhook URL here
 
 openrouter:
   base_url: "https://openrouter.ai/api/v1" # DBRAIN_OPENROUTER_BASE_URL, OPENROUTER_BASE_URL

@@ -87,6 +87,9 @@ notifications:
     channel_id: ""
     private_key_ref: "" # typed env:, op://, or keychain:// ref; never put the private key here
     allow_private_origin: false
+  slack:
+    enabled: false
+    webhook_url_ref: "" # typed env:, op://, or keychain:// ref; never put the webhook URL here
 
 audit:
   enabled: false # DBRAIN_AUDIT_ENABLED; schedule private read-only audits from serve remote

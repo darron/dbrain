@@ -149,6 +149,7 @@ func TestNotificationPathsMapAllNotificationSettings(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, `
 notifications:
+  slack_enabled: false
   enabled: true
   repeat_after: 6h
   buzz:
@@ -157,6 +158,9 @@ notifications:
     channel_id: 00000000-0000-4000-8000-000000000001
     private_key_ref: keychain://dbrain/notifications-buzz
     allow_private_origin: true
+  slack:
+    enabled: true
+    webhook_url_ref: keychain://dbrain/notifications-slack
 `)
 	want := map[string]string{
 		"DBRAIN_NOTIFICATIONS_ENABLED":                   "true",
@@ -166,6 +170,8 @@ notifications:
 		"DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID":           "00000000-0000-4000-8000-000000000001",
 		"DBRAIN_NOTIFICATIONS_BUZZ_PRIVATE_KEY_REF":      "keychain://dbrain/notifications-buzz",
 		"DBRAIN_NOTIFICATIONS_BUZZ_ALLOW_PRIVATE_ORIGIN": "true",
+		"DBRAIN_NOTIFICATIONS_SLACK_ENABLED":             "true",
+		"DBRAIN_NOTIFICATIONS_SLACK_WEBHOOK_URL_REF":     "keychain://dbrain/notifications-slack",
 	}
 	for key, expected := range want {
 		if got := FirstNonEmpty(root, key); got != expected {

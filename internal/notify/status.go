@@ -58,13 +58,13 @@ func buildStatusAt(config Config, state State, now time.Time) (Status, error) {
 	for _, name := range configuredProviderNames(config) {
 		provider := ProviderStatus{Name: name, Configured: true}
 		var latestAt time.Time
-		if state.LastDelivery.Provider == name {
-			provider.LastStatus = string(state.LastDelivery.Status)
-			provider.LastErrorCode = state.LastDelivery.ErrorCode
-			latestAt = state.LastDelivery.At.UTC()
+		if summary, ok := state.LastDeliveries[name]; ok {
+			provider.LastStatus = string(summary.Status)
+			provider.LastErrorCode = summary.ErrorCode
+			latestAt = summary.At.UTC()
 			provider.LastAttemptAt = timePointer(latestAt)
-			if state.LastDelivery.Status == DeliveryAccepted && !state.LastDelivery.At.IsZero() {
-				acceptedAt := state.LastDelivery.At.UTC()
+			if summary.Status == DeliveryAccepted && !summary.At.IsZero() {
+				acceptedAt := summary.At.UTC()
 				provider.LastAcceptedAt = &acceptedAt
 			}
 		}

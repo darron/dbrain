@@ -109,6 +109,23 @@ func TestStoreRejectsSymlinkState(t *testing.T) {
 	}
 }
 
+func TestDecodeStatePromotesV1LastDeliveryToPerProviderSummary(t *testing.T) {
+	state, err := decodeState([]byte(`{"schema":"dbrain.notifications.state.v1","incidents":{},"outbox":[],"last_delivery":{"notification_id":"ntf_012345678901234567890123","provider":"buzz","kind":"failure","status":"accepted","at":"2026-08-04T00:00:00Z"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Schema != StateSchemaV2 {
+		t.Fatalf("schema = %q, want %q", state.Schema, StateSchemaV2)
+	}
+	if state.LastDelivery != (DeliverySummary{}) {
+		t.Fatalf("legacy last delivery retained: %#v", state.LastDelivery)
+	}
+	got, ok := state.LastDeliveries["buzz"]
+	if !ok || got.Provider != "buzz" || got.Status != DeliveryAccepted || got.NotificationID != "ntf_012345678901234567890123" {
+		t.Fatalf("promoted provider delivery = %#v", state.LastDeliveries)
+	}
+}
+
 func TestStoreRejectsSymlinkDirectory(t *testing.T) {
 	logDir := t.TempDir()
 	outside := t.TempDir()
@@ -142,7 +159,7 @@ func TestStoreRejectsUnknownFieldsTrailingJSONAndInvalidSchema(t *testing.T) {
 	}{
 		{name: "unknown field", body: `{"schema":"dbrain.notifications.state.v1","incidents":{},"outbox":[],"body":"secret"}`},
 		{name: "trailing JSON", body: `{"schema":"dbrain.notifications.state.v1","incidents":{},"outbox":[]} {}`},
-		{name: "invalid schema", body: `{"schema":"dbrain.notifications.state.v2","incidents":{},"outbox":[]}`},
+		{name: "invalid schema", body: `{"schema":"dbrain.notifications.state.v3","incidents":{},"outbox":[]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			logDir := t.TempDir()

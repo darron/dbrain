@@ -195,9 +195,9 @@ func TestAuditRunCompletedEventUsesPrivacySafeAllowlist(t *testing.T) {
 }
 
 func TestNotificationDeliveryCompletedEventUsesClosedContentFreeFields(t *testing.T) {
-	event := NotificationDeliveryCompletedEvent("buzz", "failure", "sync.store.open.failed", "accepted", 1500*time.Millisecond)
+	event := NotificationDeliveryCompletedEvent("slack", "failure", "sync.store.open.failed", "accepted", 1500*time.Millisecond)
 	want := Event{
-		"event": "notification.delivery.completed", "provider": "buzz", "kind": "failure",
+		"event": "notification.delivery.completed", "provider": "slack", "kind": "failure",
 		"failure_type": "sync.store.open.failed", "status": "accepted", "duration_ms": int64(1500),
 	}
 	if !reflect.DeepEqual(event, want) {

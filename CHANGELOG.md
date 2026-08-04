@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Slack scheduled-sync failure notifications (2026-08-04)
+
+- **Typed-secret Slack delivery**: Scheduled hard-failure incidents can now
+  fan out to Slack Incoming Webhooks using a `webhook_url_ref` backed by
+  `env:`, `op://`, or `keychain://`, alongside the existing Buzz provider.
+  Slack delivery accepts only Slack's official webhook hosts, records durable
+  per-provider outbox state, and exposes `dbrain notify test slack` for a
+  global-off onboarding test before explicit production activation.
+
 ### Typed scheduled-sync failure notifications (2026-08-03)
 
 - **Typed, flap-safe incidents**: The still-running `serve remote` scheduler can

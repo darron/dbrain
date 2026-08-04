@@ -28,6 +28,8 @@ func configEnvSpecs() []envSpec {
 		{Key: "DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID", ConfigPath: "notifications.buzz.channel_id", Default: "", Description: "Buzz channel UUID."},
 		{Key: "DBRAIN_NOTIFICATIONS_BUZZ_PRIVATE_KEY_REF", ConfigPath: "notifications.buzz.private_key_ref", Default: "", Description: "Typed private-key reference: env:, op://, or keychain://."},
 		{Key: "DBRAIN_NOTIFICATIONS_BUZZ_ALLOW_PRIVATE_ORIGIN", ConfigPath: "notifications.buzz.allow_private_origin", Default: "false", Description: "Allow a localhost, private-IP, or CGNAT Buzz relay origin."},
+		{Key: "DBRAIN_NOTIFICATIONS_SLACK_ENABLED", ConfigPath: "notifications.slack.enabled", Default: "false", Description: "Enable the Slack incoming-webhook notification provider."},
+		{Key: "DBRAIN_NOTIFICATIONS_SLACK_WEBHOOK_URL_REF", ConfigPath: "notifications.slack.webhook_url_ref", Default: "", Description: "Typed Slack incoming-webhook URL reference: env:, op://, or keychain://."},
 		{Key: "DBRAIN_SUMMARY_MODEL / SUMMARIZE_MODEL", ConfigPath: "summary.model", Default: "", Description: "Default model for summarize-backed source and answer synthesis."},
 		{Key: "DBRAIN_SUMMARY_LANGUAGE / DBRAIN_OUTPUT_LANGUAGE / SUMMARIZE_LANGUAGE", ConfigPath: "summary.language", Default: "en", Description: "Output language for summaries; use auto to match source language."},
 		{Key: "DBRAIN_CATEGORIZE_MODEL", ConfigPath: "categorize.model", Default: "openrouter/google/gemini-2.5-flash", Description: "Default LLM model for item/source categorization."},
