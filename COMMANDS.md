@@ -200,6 +200,8 @@ dbrain --config-file ~/.config/dbrain/config.yaml notify status
 dbrain --config-file ~/.config/dbrain/config.yaml notify status --json
 dbrain --config-file ~/.config/dbrain/config.yaml notify test buzz
 dbrain --config-file ~/.config/dbrain/config.yaml notify test buzz --json
+dbrain --config-file ~/.config/dbrain/config.yaml notify test slack
+dbrain --config-file ~/.config/dbrain/config.yaml notify test slack --json
 ```
 
 `notify status` is read-only: it does not create or chmod notification state
@@ -224,6 +226,15 @@ delivery or read receipt. The command makes a real network publish when the
 provider is configured. An unconfigured provider exits with
 `notification_provider_not_configured` and performs no relay call.
 
+`notify test slack` likewise sends one clearly labeled synthetic message
+directly through the configured Slack Incoming Webhook without creating or
+changing incident/outbox state. It works while `notifications.enabled` is
+false, provided `notifications.slack.enabled` and `webhook_url_ref` are set.
+Slack success means only that the webhook HTTP request was accepted. The JSON
+result calls its dbrain-local notification ID `correlation_id`; Slack Incoming
+Webhooks do not supply a remote message ID, and acceptance is not a delivery,
+human acknowledgement, or read receipt.
+
 Keep the global switch off during provider onboarding:
 
 ```yaml
@@ -236,6 +247,9 @@ notifications:
     channel_id: "00000000-0000-4000-8000-000000000001"
     private_key_ref: "op://Private/dbrain-notifications-buzz/private-key"
     allow_private_origin: false
+  slack:
+    enabled: true
+    webhook_url_ref: "keychain://dbrain/notifications-slack-webhook"
 ```
 
 Use a dedicated Nostr identity, admit its public key to the relay/channel when
@@ -247,6 +261,13 @@ though generic NIP-29 group identifiers are not necessarily UUIDs. Buzz's
 [NOSTR guide](https://github.com/block/buzz/blob/main/NOSTR.md) defines its
 NIP-42 authentication, kind-9, required `h` tag, membership, and UUID contract.
 Kind-9 channel content is not end-to-end encrypted.
+
+For Slack, `webhook_url_ref` is required and must be a typed secret reference:
+`env:DBRAIN_SLACK_WEBHOOK`, `op://Private/dbrain-notifications-slack/webhook-url`,
+or `keychain://dbrain/notifications-slack-webhook`. Do not put a webhook URL in
+YAML. Its resolved value must be an HTTPS Slack Incoming Webhook on the
+official `hooks.slack.com` or `hooks.slack-gov.com` host; arbitrary, private,
+and localhost webhook origins are rejected.
 
 After the provider test succeeds, production activation is separate: set
 `notifications.enabled: true`, restart the installed launchd service, then run
@@ -260,13 +281,17 @@ occurrences, and sends one reminder at the boundary. A different type remains
 eligible immediately. Success consolidates recovery for notified open types.
 If a type fails again during its cooling window, it reopens silently, so rapid
 fail/recover flaps cannot generate two messages per cycle. Notification delivery
-failure does not fail sync or prevent the post-sync audit.
+failure does not fail sync or prevent the post-sync audit. Delivery records are
+durable before provider attempts: temporary failures remain pending for retry,
+permanent failures stop retrying, and ambiguous outcomes remain recorded without
+asserting that Slack posted or did not post a message. With Buzz and Slack both
+enabled, every future eligible incident has one delivery path for each provider;
+failure in one path does not prevent an attempt through the other.
 
 Manual syncs, lock/overlap skips, graceful cancellation, and tolerated per-item
 errors do not notify. Process death, startup failure before readiness, and
-scheduler stalls need a separate watchdog and are deferred. Slack delivery,
-human acknowledgements/read receipts, and inbound Buzz commands are also
-deferred.
+scheduler stalls need a separate watchdog and are deferred. Human
+acknowledgements/read receipts and inbound Buzz commands are also deferred.
 
 See [Scheduled hard-failure notifications](README.md#scheduled-hard-failure-notifications)
 for the complete onboarding and activation sequence.

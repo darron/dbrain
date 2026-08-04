@@ -366,6 +366,9 @@ notifications:
     channel_id: "00000000-0000-4000-8000-000000000001"
     private_key_ref: "keychain://dbrain/notifications-buzz"
     allow_private_origin: false
+  slack:
+    enabled: true
+    webhook_url_ref: "keychain://dbrain/notifications-slack-webhook"
 ```
 
 1. Create a dedicated, least-privilege Nostr identity for the dbrain service.
@@ -378,24 +381,35 @@ notifications:
 4. Configure an origin-only `wss://` relay URL, the Buzz channel UUID, and the
    typed secret reference. Keep `allow_private_origin: false` unless this exact
    relay is intentionally on localhost, a private IP, or CGNAT.
-5. With `notifications.enabled: false` and `notifications.buzz.enabled: true`,
-   run the explicit provider test against the intended production config:
+5. Configure Slack with `webhook_url_ref`, never an inline webhook URL. It
+   accepts the same typed secret-reference forms: `env:DBRAIN_SLACK_WEBHOOK`,
+   `op://Private/dbrain-notifications-slack/webhook-url`, or
+   `keychain://dbrain/notifications-slack-webhook`. The resolved webhook must
+   use Slack's official incoming-webhook host, `hooks.slack.com` or
+   `hooks.slack-gov.com`, over HTTPS; other hosts and private origins are not
+   accepted.
+6. With `notifications.enabled: false` and the provider being tested enabled,
+   run its explicit test against the intended production config:
 
    ```sh
    dbrain --config-file ~/.config/dbrain/config.yaml notify test buzz
+   dbrain --config-file ~/.config/dbrain/config.yaml notify test slack
    ```
 
-   This sends a clearly labeled synthetic message. Success proves only that the
-   relay returned `OK` and accepted the event; it is not a delivery or read
-   receipt from a person.
-6. After the provider test succeeds, set `notifications.enabled: true` and
+   Each command sends a clearly labeled synthetic message without changing the
+   incident/outbox state. Buzz success means its relay returned `OK`; Slack
+   success means Slack accepted the webhook HTTP request. Neither result is a
+   user delivery, message, acknowledgement, or read-receipt claim. Slack has
+   no remote message ID here: its reported correlation ID is dbrain's local
+   notification ID.
+7. After the provider test succeeds, set `notifications.enabled: true` and
    restart the installed launchd service separately:
 
    ```sh
    dbrain --config-file ~/.config/dbrain/config.yaml launchd restart
    ```
 
-7. Inspect the same explicit production boundary after restart:
+8. Inspect the same explicit production boundary after restart:
 
    ```sh
    dbrain --config-file ~/.config/dbrain/config.yaml notify status --json
@@ -424,15 +438,20 @@ Only hard failures settled by the still-running `serve remote` scheduled-sync
 process enter this state machine. Manual `sync all`, overlap/lock skips,
 graceful cancellation, and tolerated per-item errors do not notify. Provider
 delivery state is recorded durably before the attempt; retry behavior then
-follows the typed provider/error policy. A delivery failure does not change the
+follows the typed provider/error policy: temporary failures remain pending for
+retry, permanent failures do not, and ambiguous transport outcomes are retained
+without claiming that Slack did or did not post a message. A provider failure
+does not stop the other enabled provider: with Buzz and Slack both enabled,
+each future incident fans out to both. A delivery failure does not change the
 sync result or prevent the post-sync audit. Redacted incident and per-provider
-state lives under `<log_dir>/notifications/state.json`.
+outbox state lives under `<log_dir>/notifications/state.json`.
 
 This is not a process watchdog. Independent detection of process death,
 pre-readiness startup failure, or a stalled scheduler is deferred, as are the
-Slack provider and human acknowledgement/read receipts. Editing a checkout or
-sample config also does not activate an installed process; release, installation,
-production configuration, and service restart remain explicit operator steps.
+human acknowledgement/read receipts. Editing a checkout or sample config also
+does not activate an installed process; release, installation, production
+configuration, setting `notifications.enabled: true`, and service restart
+remain explicit operator steps.
 
 To inspect the resolved installation without repairing or mutating it, run:
 
