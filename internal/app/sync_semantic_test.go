@@ -47,12 +47,17 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 		_ syncjob.Options,
 	) (syncjob.Stats, error) {
 		sourceCalls++
-		if sourceCalls == 1 {
+		if sourceCalls == 1 || sourceCalls == 3 {
+			notePath := "items/initial-backfill.md"
+			if sourceCalls == 3 {
+				notePath = "items/initial-backfill-moved.md"
+			}
 			seedSyncSemanticBackfillItem(
 				t,
 				ctx,
 				st,
 				syncSemanticDistinctFlushText(store.RetrievalSegmentTarget),
+				notePath,
 				now,
 			)
 		}
@@ -286,7 +291,6 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = finalStore.Close() }()
 	finalProfile, err := finalStore.RetrievalEmbeddingProfile(t.Context(), profileID)
 	if err != nil {
 		t.Fatal(err)
@@ -315,6 +319,58 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 	if decision := semanticreadiness.Evaluate(runtimeSnapshot); decision.State != semanticreadiness.StateReady {
 		t.Fatalf("final runtime readiness=%+v snapshot=%+v", decision, runtimeSnapshot)
 	}
+	if err := finalStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	thirdCommand := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
+	var thirdOutput bytes.Buffer
+	thirdCommand.SetOut(&thirdOutput)
+	thirdCommand.SetErr(io.Discard)
+	thirdCommand.SilenceUsage = true
+	thirdCommand.SetArgs(syncSemanticTestArgs(true))
+	if err := thirdCommand.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("third ExecuteContext after projected metadata update: %v output=%s", err, thirdOutput.String())
+	}
+	thirdDocument := decodeOneSyncJSONDocument(t, thirdOutput.Bytes())
+	var refreshed semanticRefreshResultOutput
+	if err := json.Unmarshal(thirdDocument["semantic"], &refreshed); err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.Outcome != semanticrefresh.OutcomeCompleted || refreshed.Run == nil ||
+		refreshed.Run.State != store.SemanticRefreshRunCompleted ||
+		refreshed.Run.ReadinessState != "ready" {
+		t.Fatalf("metadata-only follow-up result=%+v want completed ready", refreshed)
+	}
+	if refreshed.Run.CurrentGenerationID != firstProfile.ActiveGenerationID ||
+		refreshed.Run.Counters.FlushedVectors != 0 {
+		t.Fatalf("metadata-only follow-up rebuilt root: first=%q follow-up=%+v", firstProfile.ActiveGenerationID, refreshed.Run)
+	}
+	thirdProviderCalls, thirdProviderTexts, thirdDuplicateTexts := provider.snapshot()
+	if thirdProviderCalls != finalProviderCalls || thirdProviderTexts != finalProviderTexts || thirdDuplicateTexts != 0 {
+		t.Fatalf(
+			"metadata-only follow-up repeated embedding work: before=%d/%d after=%d/%d duplicates=%d",
+			finalProviderCalls,
+			finalProviderTexts,
+			thirdProviderCalls,
+			thirdProviderTexts,
+			thirdDuplicateTexts,
+		)
+	}
+	thirdStore, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = thirdStore.Close() }()
+	thirdProfile, err := thirdStore.RetrievalEmbeddingProfile(t.Context(), profileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thirdProfile.ActiveGenerationID != firstProfile.ActiveGenerationID ||
+		thirdProfile.ActiveIndexedCount != store.RetrievalSegmentTarget ||
+		thirdProfile.L0ReadyCount != 2 {
+		t.Fatalf("metadata-only follow-up profile=%+v", thirdProfile)
+	}
 
 	progressMu.Lock()
 	firstProgress := append([]semanticrefresh.Progress(nil), progressByRun[1]...)
@@ -337,8 +393,8 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 			t.Fatalf("resumed progress stages=%v missing %s", syncSemanticProgressStages(secondProgress), stage)
 		}
 	}
-	if sourceCalls != 2 || refreshCalls != 2 {
-		t.Fatalf("source calls=%d refresh calls=%d want two real command executions", sourceCalls, refreshCalls)
+	if sourceCalls != 3 || refreshCalls != 3 {
+		t.Fatalf("source calls=%d refresh calls=%d want three real command executions", sourceCalls, refreshCalls)
 	}
 }
 
@@ -1306,10 +1362,11 @@ func seedSyncSemanticBackfillItem(
 	ctx context.Context,
 	st *store.Store,
 	text string,
+	notePath string,
 	now time.Time,
 ) {
 	t.Helper()
-	digest := sha256.Sum256([]byte(text))
+	digest := sha256.Sum256([]byte(text + "\x00" + notePath))
 	_, err := st.UpsertItem(ctx, model.Item{
 		SourceKey:    "sync-semantic:initial-backfill",
 		SourceType:   "sync_semantic_test",
@@ -1318,7 +1375,7 @@ func seedSyncSemanticBackfillItem(
 		Title:        "Initial semantic backfill",
 		Text:         text,
 		ContentHash:  hex.EncodeToString(digest[:]),
-		NotePath:     "items/initial-backfill.md",
+		NotePath:     notePath,
 		RawJSON:      "{}",
 		ImportedAt:   now,
 		UpdatedAt:    now,

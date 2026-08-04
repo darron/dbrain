@@ -64,8 +64,8 @@ var semanticProjectionDirtyTriggersV17 = []retrievalConstraintTrigger{
 }
 
 var semanticProjectionDirtyTriggers = []retrievalConstraintTrigger{
-	projectionDirtyInsertTrigger("trg_retrieval_items_dirty_insert", "items", "item", "NEW.source_key", "1"),
-	projectionDirtyUpdateTrigger(
+	segmentedProjectionDirtyInsertTrigger("trg_retrieval_items_dirty_insert", "items", "item", "NEW.source_key", "1"),
+	segmentedProjectionDirtyUpdateTrigger(
 		"trg_retrieval_items_dirty_update", "items", "item",
 		"source_key, title, source_type, author_name, author_handle, text, x_post_text, ocr_text, article_title, article_text, summary_text, note_path",
 		"OLD.source_key", "NEW.source_key",
@@ -82,9 +82,9 @@ var semanticProjectionDirtyTriggers = []retrievalConstraintTrigger{
 			OR OLD.summary_text IS NOT NEW.summary_text
 			OR OLD.note_path IS NOT NEW.note_path`,
 	),
-	projectionDirtyDeleteTrigger("trg_retrieval_items_dirty_delete", "items", "item", "OLD.source_key", "1"),
-	projectionDirtyInsertTrigger("trg_retrieval_sources_dirty_insert", "sources", "source", "NEW.source_key", "1"),
-	projectionDirtyUpdateTrigger(
+	segmentedProjectionDirtyDeleteTrigger("trg_retrieval_items_dirty_delete", "items", "item", "OLD.source_key", "1"),
+	segmentedProjectionDirtyInsertTrigger("trg_retrieval_sources_dirty_insert", "sources", "source", "NEW.source_key", "1"),
+	segmentedProjectionDirtyUpdateTrigger(
 		"trg_retrieval_sources_dirty_update", "sources", "source",
 		"source_key, title, source_type, domain, extracted_text, summary_text, note_path",
 		"OLD.source_key", "NEW.source_key",
@@ -96,13 +96,13 @@ var semanticProjectionDirtyTriggers = []retrievalConstraintTrigger{
 			OR OLD.summary_text IS NOT NEW.summary_text
 			OR OLD.note_path IS NOT NEW.note_path`,
 	),
-	projectionDirtyDeleteTrigger("trg_retrieval_sources_dirty_delete", "sources", "source", "OLD.source_key", "1"),
-	projectionDirtyInsertTrigger(
+	segmentedProjectionDirtyDeleteTrigger("trg_retrieval_sources_dirty_delete", "sources", "source", "OLD.source_key", "1"),
+	segmentedProjectionDirtyInsertTrigger(
 		"trg_retrieval_item_enrichments_dirty_insert", "item_enrichments", "item",
 		"(SELECT source_key FROM items WHERE id = NEW.item_id)", projectedEnrichmentRoleSQL("NEW.role"),
 	),
-	projectionDirtyEnrichmentUpdateTrigger(),
-	projectionDirtyDeleteTrigger(
+	segmentedProjectionDirtyEnrichmentUpdateTrigger(),
+	segmentedProjectionDirtyDeleteTrigger(
 		"trg_retrieval_item_enrichments_dirty_delete", "item_enrichments", "item",
 		"(SELECT source_key FROM items WHERE id = OLD.item_id)", projectedEnrichmentRoleSQL("OLD.role"),
 	),
@@ -200,46 +200,23 @@ func (s *Store) ensureSemanticProjectionDirtyTriggerDefinitions(triggers []retri
 	return nil
 }
 
-// MarkRetrievalParentDirtyTx allocates a durable work revision and invalidates
-// legacy generations containing the parent's old chunks in the caller's
-// transaction. Authoritative item, source, and enrichment writes are covered
+// MarkRetrievalParentDirtyTx allocates a durable work revision in the caller's
+// transaction. Active segmented generations remain usable while projection and
+// embedding work moves changed vectors through the exact L0 tail. Authoritative
+// item, source, and enrichment writes are covered
 // independently by database triggers; callers should use this named seam only
 // when they need the allocated revision without performing such a write.
 func MarkRetrievalParentDirtyTx(ctx context.Context, tx *sql.Tx, kind, sourceKey string) (int64, error) {
 	kind = strings.TrimSpace(kind)
 	sourceKey = strings.TrimSpace(sourceKey)
-	revision, err := allocateRetrievalParentDirtyTx(ctx, tx, kind, sourceKey)
-	if err != nil {
-		return 0, err
-	}
-	if err := markRetrievalParentGenerationsStaleTx(ctx, tx, kind, sourceKey); err != nil {
-		return 0, err
-	}
-	return revision, nil
-}
-
-func markRetrievalParentGenerationsStaleTx(ctx context.Context, tx *sql.Tx, kind, sourceKey string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE retrieval_index_generations
-		SET build_status = 'stale', active = 0, activated_at = '', updated_at = ?
-		WHERE build_status != 'stale'
-			AND profile_id IN (
-				SELECT DISTINCT embedding.profile_id
-				FROM retrieval_embeddings embedding
-				JOIN retrieval_chunks chunk ON chunk.chunk_id = embedding.chunk_id
-				WHERE chunk.parent_kind = ? AND chunk.parent_source_key = ?
-			)`, now, kind, sourceKey); err != nil {
-		return fmt.Errorf("mark retrieval generations stale for parent %s %s: %w", kind, sourceKey, err)
-	}
-	return nil
+	return allocateRetrievalParentDirtyTx(ctx, tx, kind, sourceKey)
 }
 
 func projectedEnrichmentRoleSQL(role string) string {
 	return role + ` IN ('summary', 'ocr', 'x_media_transcript')`
 }
 
-func projectionDirtyInsertTrigger(name, table, kind, key, when string) retrievalConstraintTrigger {
+func segmentedProjectionDirtyInsertTrigger(name, table, kind, key, when string) retrievalConstraintTrigger {
 	return retrievalConstraintTrigger{
 		name:  name,
 		table: table,
@@ -252,7 +229,7 @@ func projectionDirtyInsertTrigger(name, table, kind, key, when string) retrieval
 	}
 }
 
-func projectionDirtyDeleteTrigger(name, table, kind, key, when string) retrievalConstraintTrigger {
+func segmentedProjectionDirtyDeleteTrigger(name, table, kind, key, when string) retrievalConstraintTrigger {
 	return retrievalConstraintTrigger{
 		name:  name,
 		table: table,
@@ -262,6 +239,88 @@ func projectionDirtyDeleteTrigger(name, table, kind, key, when string) retrieval
 			BEGIN
 				%s
 			END`, name, table, when, key, projectionDirtySQL(kind, key)),
+	}
+}
+
+func segmentedProjectionDirtyUpdateTrigger(name, table, kind, columns, oldKey, newKey, when string) retrievalConstraintTrigger {
+	return retrievalConstraintTrigger{
+		name:  name,
+		table: table,
+		sql: fmt.Sprintf(`CREATE TRIGGER %s
+			AFTER UPDATE OF %s ON %s
+			WHEN %s
+			BEGIN
+				UPDATE retrieval_state
+				SET projection_work_revision = projection_work_revision + 1, updated_at = %s
+				WHERE singleton = 1;
+				%s
+				%s
+			END`,
+			name, columns, table, when, retrievalDirtyTimestampSQL,
+			projectionLedgerUpsertSQL(kind, oldKey, fmt.Sprintf("%s IS NOT %s", oldKey, newKey)),
+			projectionLedgerUpsertSQL(kind, newKey, "1")),
+	}
+}
+
+func segmentedProjectionDirtyEnrichmentUpdateTrigger() retrievalConstraintTrigger {
+	const oldKey = "(SELECT source_key FROM items WHERE id = OLD.item_id)"
+	const newKey = "(SELECT source_key FROM items WHERE id = NEW.item_id)"
+	oldProjected := projectedEnrichmentRoleSQL("OLD.role")
+	newProjected := projectedEnrichmentRoleSQL("NEW.role")
+	return retrievalConstraintTrigger{
+		name:  "trg_retrieval_item_enrichments_dirty_update",
+		table: "item_enrichments",
+		sql: fmt.Sprintf(`CREATE TRIGGER trg_retrieval_item_enrichments_dirty_update
+			AFTER UPDATE OF item_id, role, text ON item_enrichments
+			WHEN (OLD.item_id IS NOT NEW.item_id OR OLD.role IS NOT NEW.role OR OLD.text IS NOT NEW.text)
+				AND ((%s) OR (%s))
+			BEGIN
+				UPDATE retrieval_state
+				SET projection_work_revision = projection_work_revision + 1, updated_at = %s
+				WHERE singleton = 1;
+				%s
+				%s
+			END`,
+			oldProjected, newProjected, retrievalDirtyTimestampSQL,
+			projectionLedgerUpsertSQL("item", oldKey, oldProjected),
+			projectionLedgerUpsertSQL("item", newKey, newProjected)),
+	}
+}
+
+func projectionDirtySQL(kind, key string) string {
+	return fmt.Sprintf(`UPDATE retrieval_state
+				SET projection_work_revision = projection_work_revision + 1, updated_at = %s
+				WHERE singleton = 1;
+				%s`,
+		retrievalDirtyTimestampSQL,
+		projectionLedgerUpsertSQL(kind, key, "1"))
+}
+
+// The v17 builders are immutable migration history. They intentionally include
+// the generation invalidation that migration 29 replaces for segmented roots.
+func projectionDirtyInsertTrigger(name, table, kind, key, when string) retrievalConstraintTrigger {
+	return retrievalConstraintTrigger{
+		name:  name,
+		table: table,
+		sql: fmt.Sprintf(`CREATE TRIGGER %s
+			AFTER INSERT ON %s
+			WHEN (%s) AND trim(COALESCE(%s, '')) != ''
+			BEGIN
+				%s
+			END`, name, table, when, key, projectionDirtySQLV17(kind, key)),
+	}
+}
+
+func projectionDirtyDeleteTrigger(name, table, kind, key, when string) retrievalConstraintTrigger {
+	return retrievalConstraintTrigger{
+		name:  name,
+		table: table,
+		sql: fmt.Sprintf(`CREATE TRIGGER %s
+			AFTER DELETE ON %s
+			WHEN (%s) AND trim(COALESCE(%s, '')) != ''
+			BEGIN
+				%s
+			END`, name, table, when, key, projectionDirtySQLV17(kind, key)),
 	}
 }
 
@@ -318,7 +377,7 @@ func projectionDirtyEnrichmentUpdateTrigger() retrievalConstraintTrigger {
 	}
 }
 
-func projectionDirtySQL(kind, key string) string {
+func projectionDirtySQLV17(kind, key string) string {
 	return fmt.Sprintf(`UPDATE retrieval_state
 				SET projection_work_revision = projection_work_revision + 1, updated_at = %s
 				WHERE singleton = 1;

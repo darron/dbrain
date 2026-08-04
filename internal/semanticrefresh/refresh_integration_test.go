@@ -3,6 +3,7 @@ package semanticrefresh
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -395,6 +396,134 @@ func TestRefreshIntegrationResumesAfterActivatedFlushWithoutDuplicateProviderOrF
 		"verify-1",
 		"verify-2",
 	})
+}
+
+func TestRefreshIntegrationResumesCompactionByRecoveringDanglingRoot(t *testing.T) {
+	const (
+		segmentTarget    = 8
+		segmentHardLimit = 2 * segmentTarget
+	)
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	now := time.Date(2026, 8, 4, 22, 0, 0, 0, time.UTC)
+	seedRefreshItem(t, st, "dangling-resume", refreshDistinctFlushText(segmentTarget), now)
+	watermark := refreshWorkRevision(t, st)
+	epoch := refreshPurgeEpoch(t, st)
+	provider := newRefreshProvider("dangling-resume-v1")
+	native := &refreshNative{expectedBuildRows: segmentTarget}
+	cacheDir := t.TempDir()
+	executor, err := NewPipeline(st, PipelineOptions{
+		Profile:         provider.profile(),
+		Provider:        provider,
+		Native:          native,
+		CacheDir:        cacheDir,
+		ExactMaxChunks:  semanticreadiness.DefaultExactMaxChunks,
+		ProjectionBatch: 1,
+		EmbeddingBatch:  segmentTarget,
+		Now:             func() time.Time { return now },
+		Sleep:           func(context.Context, time.Duration) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline, ok := executor.(*pipeline)
+	if !ok {
+		t.Fatalf("executor type=%T, want *pipeline", executor)
+	}
+	pipeline.effectiveSegmentTarget = segmentTarget
+	pipeline.effectiveSegmentHardLimit = segmentHardLimit
+	executor = lockRefreshIntegrationPipeline(t, st, cacheDir, executor)
+	ids := &refreshRunIDSequence{}
+	request := refreshIntegrationRequest(provider.profile(), epoch, watermark, now, ids.next)
+	initial, err := Run(t.Context(), st, executor, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Run == nil || initial.Run.State != store.SemanticRefreshRunCompleted ||
+		initial.Run.CurrentGenerationID == "" ||
+		initial.Run.Counters.FlushedVectors != segmentTarget {
+		t.Fatalf("initial result=%+v", initial)
+	}
+	initialProviderCalls, initialProviderTexts := provider.snapshot()
+	if builds, verifies := native.snapshot(); builds != 1 || verifies != 1 {
+		t.Fatalf("initial native builds=%d verifies=%d", builds, verifies)
+	}
+
+	direct, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = direct.Close() }()
+	if _, err := direct.Exec(`
+		UPDATE retrieval_index_generations
+		SET build_status='stale',active=0,activated_at=''
+		WHERE generation_id=?`, initial.Run.CurrentGenerationID); err != nil {
+		t.Fatal(err)
+	}
+	profileID, err := provider.profile().ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck, resumed, err := st.StartOrResumeSemanticRefreshRun(t.Context(), store.StartSemanticRefreshRunInput{
+		RunID: ids.nextMust(t), ProfileID: profileID, PurgeEpoch: epoch,
+		ProjectionWatermark: watermark, Now: now.Add(time.Minute),
+	})
+	if err != nil || resumed {
+		t.Fatalf("stuck run=%+v resumed=%t err=%v", stuck, resumed, err)
+	}
+	stuck, err = st.UpdateSemanticRefreshRun(t.Context(), store.SemanticRefreshRunUpdate{
+		RunID: stuck.RunID, ExpectedVersion: stuck.Version,
+		Stage: store.SemanticRefreshCompaction, State: store.SemanticRefreshRunFailed,
+		Checkpoint: "compaction:generation", ErrorCode: ErrorCompaction,
+		Now: now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resumedRequest := refreshIntegrationRequest(
+		provider.profile(), epoch, watermark, now.Add(3*time.Minute), ids.next,
+	)
+	completed, err := Run(t.Context(), st, executor, resumedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Run == nil || completed.Run.RunID != stuck.RunID ||
+		completed.Run.State != store.SemanticRefreshRunCompleted ||
+		completed.Run.CurrentGenerationID != initial.Run.CurrentGenerationID ||
+		completed.Run.ReadinessState != string(semanticreadiness.StateReady) {
+		t.Fatalf("recovered result=%+v stuck=%+v", completed, stuck)
+	}
+	if calls, texts := provider.snapshot(); calls != initialProviderCalls || texts != initialProviderTexts {
+		t.Fatalf(
+			"recovery repeated provider work: initial=%d/%d recovered=%d/%d",
+			initialProviderCalls,
+			initialProviderTexts,
+			calls,
+			texts,
+		)
+	}
+	if builds, verifies := native.snapshot(); builds != 1 || verifies != 3 {
+		t.Fatalf("recovered native builds=%d verifies=%d", builds, verifies)
+	}
+	var status string
+	var active int
+	if err := direct.QueryRow(`
+		SELECT build_status,active FROM retrieval_index_generations
+		WHERE generation_id=?`, initial.Run.CurrentGenerationID).Scan(&status, &active); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(store.RetrievalGenerationCompleted) || active != 1 {
+		t.Fatalf("recovered generation status=%q active=%d", status, active)
+	}
 }
 
 func refreshDistinctFlushText(windows int) string {

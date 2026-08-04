@@ -5,6 +5,17 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Semantic refresh root continuity (2026-08-04)
+
+- **Incremental updates preserve the active ANN root**: Projection-dirty writes
+  no longer mark a valid segmented generation stale while leaving its profile
+  pointer behind. Changed vectors continue through the exact L0 tail until the
+  normal bounded flush and compaction thresholds are reached.
+- **Existing dangling roots recover safely**: A resumed refresh can repair the
+  legacy stale-pointer state only after proving the SQLite segment catalog and
+  membership counts and verifying the immutable native root on disk. Missing or
+  inconsistent roots still fail closed instead of being activated blindly.
+
 ### Slack scheduled-sync failure notifications (2026-08-04)
 
 - **Typed-secret Slack delivery**: Scheduled hard-failure incidents can now
