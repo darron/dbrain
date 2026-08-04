@@ -80,9 +80,6 @@ func decodeBuzzSigner(raw string) (nostr.Signer, error) {
 		if err != nil || len(decoded) != 32 {
 			return nil, errors.New("invalid private key")
 		}
-		for index := range decoded {
-			decoded[index] = 0
-		}
 		return plainBuzzSigner(secret)
 	}
 	prefix, value, err := nip19.Decode(secret)
