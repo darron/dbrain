@@ -127,6 +127,61 @@ func TestSendWebhookBoundsResponseRead(t *testing.T) {
 	assertDeliveryError(t, err, DeliveryPermanent, "slack_delivery_failed")
 }
 
+func TestSendWebhookMarksResponseReadFailureAmbiguous(t *testing.T) {
+	t.Parallel()
+	client := newTestClient(t, func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       failingReadCloser{data: []byte("ok"), err: errors.New("provider response secret")},
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	_, err := client.SendWebhook(t.Context(), testWebhookURL, Message{Text: "body"})
+	assertDeliveryError(t, err, DeliveryAmbiguous, "slack_delivery_failed")
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("error leaked response detail: %v", err)
+	}
+}
+
+func TestSendWebhookBoundsPayloadBeforeDispatch(t *testing.T) {
+	t.Parallel()
+	const maxPayloadBytes = 40 << 10
+	const jsonEnvelopeBytes = len(`{"text":""}`)
+	tests := []struct {
+		name         string
+		text         string
+		wantDispatch bool
+	}{
+		{name: "boundary", text: strings.Repeat("x", maxPayloadBytes-jsonEnvelopeBytes), wantDispatch: true},
+		{name: "over limit", text: strings.Repeat("x", maxPayloadBytes-jsonEnvelopeBytes+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dispatches := 0
+			client := newTestClient(t, func(*http.Request) (*http.Response, error) {
+				dispatches++
+				return response(http.StatusOK, "ok"), nil
+			})
+
+			_, err := client.SendWebhook(t.Context(), testWebhookURL, Message{Text: test.text})
+			if test.wantDispatch {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if dispatches != 1 {
+					t.Fatalf("dispatches = %d, want 1", dispatches)
+				}
+				return
+			}
+			assertDeliveryError(t, err, DeliveryPermanent, "slack_invalid_payload")
+			if dispatches != 0 {
+				t.Fatalf("dispatches = %d, want 0", dispatches)
+			}
+		})
+	}
+}
+
 func TestSendWebhookMarksPostDispatchTimeoutAmbiguous(t *testing.T) {
 	t.Parallel()
 	client := newTestClient(t, func(*http.Request) (*http.Response, error) { return nil, context.DeadlineExceeded })
@@ -156,6 +211,22 @@ func (fn doerFunc) Do(request *http.Request) (*http.Response, error) { return fn
 func response(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewBufferString(body)), Header: make(http.Header)}
 }
+
+type failingReadCloser struct {
+	data []byte
+	err  error
+}
+
+func (r failingReadCloser) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, r.err
+}
+
+func (failingReadCloser) Close() error { return nil }
 
 func newTestClient(t *testing.T, do doerFunc) Client {
 	t.Helper()

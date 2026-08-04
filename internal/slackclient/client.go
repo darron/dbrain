@@ -3,6 +3,7 @@
 package slackclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,8 +17,9 @@ import (
 )
 
 const (
-	transportTimeout = 5 * time.Second
-	maxResponseBytes = 4096
+	transportTimeout       = 5 * time.Second
+	maxResponseBytes       = 4096
+	maxWebhookPayloadBytes = 40 << 10
 )
 
 type Message struct {
@@ -107,6 +109,9 @@ func (c *client) SendWebhook(ctx context.Context, webhookURL string, message Mes
 	if err := ctx.Err(); err != nil {
 		return Receipt{}, temporary("slack_delivery_failed", err)
 	}
+	if len(message.Text) > maxWebhookPayloadBytes {
+		return Receipt{}, permanent("slack_invalid_payload", nil)
+	}
 
 	body, err := json.Marshal(struct {
 		Text string `json:"text"`
@@ -114,7 +119,10 @@ func (c *client) SendWebhook(ctx context.Context, webhookURL string, message Mes
 	if err != nil {
 		return Receipt{}, permanent("slack_invalid_payload", err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, strings.NewReader(string(body)))
+	if len(body) > maxWebhookPayloadBytes {
+		return Receipt{}, permanent("slack_invalid_payload", nil)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
 		return Receipt{}, permanent("slack_invalid_payload", err)
 	}
@@ -143,7 +151,10 @@ func (c *client) SendWebhook(ctx context.Context, webhookURL string, message Mes
 		return Receipt{}, ambiguous("slack_delivery_failed", nil)
 	}
 	defer func() { _ = response.Body.Close() }()
-	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if readErr != nil {
+		return Receipt{}, ambiguous("slack_delivery_failed", readErr)
+	}
 	if len(responseBody) > maxResponseBytes {
 		return Receipt{}, responseError(response.StatusCode, "")
 	}
