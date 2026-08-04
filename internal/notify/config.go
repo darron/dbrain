@@ -35,6 +35,9 @@ func LoadConfig(rootDir string) (Config, error) {
 	if config.Enabled, err = notificationBool(rootDir, "DBRAIN_NOTIFICATIONS_ENABLED", false); err != nil {
 		return Config{}, err
 	}
+	if !config.Enabled {
+		return config, nil
+	}
 	if config.Buzz.Enabled, err = notificationBool(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_ENABLED", false); err != nil {
 		return Config{}, err
 	}
@@ -50,9 +53,6 @@ func LoadConfig(rootDir string) (Config, error) {
 	config.Buzz.RelayURL = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_RELAY_URL")
 	config.Buzz.ChannelID = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID")
 	config.Buzz.PrivateKeyRef = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_PRIVATE_KEY_REF")
-	if !config.Enabled {
-		return config, nil
-	}
 	if !config.Buzz.Enabled {
 		return Config{}, fmt.Errorf("notifications requires at least one enabled provider")
 	}

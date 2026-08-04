@@ -52,6 +52,29 @@ func TestNotificationConfigDisabledMayBeAbsentAndDefaultsRepeatAfter(t *testing.
 	}
 }
 
+func TestNotificationConfigDisabledIgnoresMalformedNestedSettings(t *testing.T) {
+	root := t.TempDir()
+	writeNotificationConfig(t, root, `
+notifications:
+  enabled: false
+  repeat_after: not-a-duration
+  buzz:
+    enabled: maybe
+    relay_url: https://credentials:are@not-checked.example/path?query=yes#fragment
+    channel_id: not-a-uuid
+    private_key_ref: inline-secret
+    allow_private_origin: maybe
+`)
+
+	got, err := LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig disabled config: %v", err)
+	}
+	if got.Enabled || got.RepeatAfter != 6*time.Hour {
+		t.Fatalf("disabled config = %#v", got)
+	}
+}
+
 func TestNotificationConfigRejectsInvalidEnabledConfiguration(t *testing.T) {
 	validBuzz := `
   buzz:
