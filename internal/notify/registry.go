@@ -22,6 +22,9 @@ func BuiltinRegistry() Registry {
 	if err := registry.Register("buzz", newBuiltinBuzzProvider); err != nil {
 		panic(err)
 	}
+	if err := registry.Register("slack", newBuiltinSlackProvider); err != nil {
+		panic(err)
+	}
 	return registry
 }
 
@@ -70,9 +73,12 @@ func (r Registry) Build(ctx context.Context, config Config) ([]Provider, error) 
 }
 
 func configuredProviderNames(config Config) []string {
-	names := make([]string, 0, 1)
+	names := make([]string, 0, 2)
 	if config.Buzz.Enabled {
 		names = append(names, "buzz")
+	}
+	if config.Slack.Enabled {
+		names = append(names, "slack")
 	}
 	sort.Strings(names)
 	return names

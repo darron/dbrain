@@ -19,6 +19,7 @@ type Config struct {
 	Enabled     bool
 	RepeatAfter time.Duration
 	Buzz        BuzzConfig
+	Slack       SlackConfig
 }
 
 type BuzzConfig struct {
@@ -27,6 +28,11 @@ type BuzzConfig struct {
 	ChannelID          string
 	PrivateKeyRef      string
 	AllowPrivateOrigin bool
+}
+
+type SlackConfig struct {
+	Enabled       bool
+	WebhookURLRef string
 }
 
 func LoadConfig(rootDir string) (Config, error) {
@@ -44,7 +50,10 @@ func LoadConfig(rootDir string) (Config, error) {
 	if config.Buzz, err = LoadBuzzConfig(rootDir); err != nil {
 		return Config{}, err
 	}
-	if !config.Buzz.Enabled {
+	if config.Slack, err = LoadSlackConfig(rootDir); err != nil {
+		return Config{}, err
+	}
+	if !config.Buzz.Enabled && !config.Slack.Enabled {
 		return Config{}, fmt.Errorf("notifications requires at least one enabled provider")
 	}
 	return config, nil
@@ -65,8 +74,30 @@ func LoadInspectionConfig(rootDir string) (Config, error) {
 	if config.Buzz, err = LoadBuzzConfig(rootDir); err != nil {
 		return Config{}, err
 	}
-	if config.Enabled && !config.Buzz.Enabled {
+	if config.Slack, err = LoadSlackConfig(rootDir); err != nil {
+		return Config{}, err
+	}
+	if config.Enabled && !config.Buzz.Enabled && !config.Slack.Enabled {
 		return Config{}, fmt.Errorf("notifications requires at least one enabled provider")
+	}
+	return config, nil
+}
+
+// LoadSlackConfig loads and validates the Slack provider independently from
+// the global notification kill switch. Webhook credentials remain typed
+// references until a delivery attempt resolves them.
+func LoadSlackConfig(rootDir string) (SlackConfig, error) {
+	config := SlackConfig{}
+	var err error
+	if config.Enabled, err = notificationBool(rootDir, "DBRAIN_NOTIFICATIONS_SLACK_ENABLED", false); err != nil {
+		return SlackConfig{}, err
+	}
+	if !config.Enabled {
+		return config, nil
+	}
+	config.WebhookURLRef = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_SLACK_WEBHOOK_URL_REF")
+	if err := config.validate(); err != nil {
+		return SlackConfig{}, err
 	}
 	return config, nil
 }
@@ -128,6 +159,13 @@ func (c BuzzConfig) validate() error {
 	}
 	if err := validateTypedSecretRef(c.PrivateKeyRef); err != nil {
 		return fmt.Errorf("notifications.buzz.private_key_ref %w", err)
+	}
+	return nil
+}
+
+func (c SlackConfig) validate() error {
+	if err := validateTypedSecretRef(c.WebhookURLRef); err != nil {
+		return fmt.Errorf("notifications.slack.webhook_url_ref %w", err)
 	}
 	return nil
 }

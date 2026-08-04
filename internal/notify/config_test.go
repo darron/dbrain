@@ -20,15 +20,20 @@ notifications:
     channel_id: "00000000-0000-4000-8000-000000000001"
     private_key_ref: "keychain://dbrain/yaml-buzz"
     allow_private_origin: false
+  slack:
+    enabled: true
+    webhook_url_ref: "keychain://dbrain/yaml-slack"
 `)
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(strings.Join([]string{
 		"DBRAIN_NOTIFICATIONS_REPEAT_AFTER=8h",
 		"DBRAIN_NOTIFICATIONS_BUZZ_RELAY_URL=wss://dotenv.example",
+		"DBRAIN_NOTIFICATIONS_SLACK_WEBHOOK_URL_REF=keychain://dbrain/dotenv-slack",
 	}, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DBRAIN_NOTIFICATIONS_REPEAT_AFTER", "9h")
 	t.Setenv("DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID", "00000000-0000-4000-8000-000000000002")
+	t.Setenv("DBRAIN_NOTIFICATIONS_SLACK_WEBHOOK_URL_REF", "keychain://dbrain/environment-slack")
 
 	got, err := LoadConfig(root)
 	if err != nil {
@@ -39,6 +44,61 @@ notifications:
 	}
 	if got.Buzz.RelayURL != "wss://dotenv.example" || got.Buzz.ChannelID != "00000000-0000-4000-8000-000000000002" {
 		t.Fatalf("loaded Buzz config = %#v", got.Buzz)
+	}
+	if !got.Slack.Enabled || got.Slack.WebhookURLRef != "keychain://dbrain/environment-slack" {
+		t.Fatalf("loaded Slack config = %#v", got.Slack)
+	}
+}
+
+func TestNotificationConfigLoadsSlackOnly(t *testing.T) {
+	root := t.TempDir()
+	writeNotificationConfig(t, root, `
+notifications:
+  enabled: true
+  slack:
+    enabled: true
+    webhook_url_ref: "env:DBRAIN_SLACK_WEBHOOK"
+`)
+
+	got, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled || got.Buzz.Enabled || !got.Slack.Enabled || got.Slack.WebhookURLRef != "env:DBRAIN_SLACK_WEBHOOK" {
+		t.Fatalf("config = %#v", got)
+	}
+}
+
+func TestSlackConfigRejectsInlineWebhookURL(t *testing.T) {
+	root := t.TempDir()
+	writeNotificationConfig(t, root, `
+notifications:
+  slack:
+    enabled: true
+    webhook_url_ref: "https://hooks.slack.com/services/T000/B000/secret"
+`)
+
+	_, err := LoadSlackConfig(root)
+	if err == nil || !strings.Contains(err.Error(), "webhook_url_ref") || strings.Contains(err.Error(), "hooks.slack.com") {
+		t.Fatalf("LoadSlackConfig error = %v", err)
+	}
+}
+
+func TestNotificationInspectionConfigValidatesEnabledSlackWhileGloballyDisabled(t *testing.T) {
+	root := t.TempDir()
+	writeNotificationConfig(t, root, `
+notifications:
+  enabled: false
+  slack:
+    enabled: true
+    webhook_url_ref: "inline-secret"
+`)
+
+	if _, err := LoadConfig(root); err != nil {
+		t.Fatalf("global disabled LoadConfig: %v", err)
+	}
+	if _, err := LoadInspectionConfig(root); err == nil || !strings.Contains(err.Error(), "webhook_url_ref") {
+		t.Fatalf("inspection config error = %v", err)
 	}
 }
 
@@ -64,6 +124,9 @@ notifications:
     channel_id: not-a-uuid
     private_key_ref: inline-secret
     allow_private_origin: maybe
+  slack:
+    enabled: maybe
+    webhook_url_ref: https://hooks.slack.com/services/T000/B000/secret
 `)
 
 	got, err := LoadConfig(root)
