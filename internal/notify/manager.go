@@ -155,6 +155,7 @@ func (m *Manager) Observe(ctx context.Context, outcome Outcome) error {
 		m.stateMu.Unlock()
 		return managerCodeError("notification_state_transition_failed")
 	}
+	pruneTerminalEnvelopes(&state)
 	next, decision, err := Observe(state, outcome, m.options)
 	if err != nil {
 		m.stateMu.Unlock()

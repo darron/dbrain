@@ -331,6 +331,53 @@ func TestManagerRetiresRemovedProviderWithoutAddingCurrentProviderHistorically(t
 	}
 }
 
+func TestManagerFullOutboxRetiresRemovedProviderBeforeEnqueue(t *testing.T) {
+	store := newManagerStore(t)
+	removedOptions := Options{RepeatAfter: 6 * time.Hour, Providers: []string{"removed"}}
+	state := EmptyState()
+	for index := 0; index < maxStateEnvelopes; index++ {
+		var err error
+		state, _, err = Observe(state, managerFailed(FailureStoreOpen, time.Duration(index)*6*time.Hour), removedOptions)
+		if err != nil {
+			t.Fatalf("fill outbox at %d: %v", index, err)
+		}
+	}
+	if len(state.Outbox) != maxStateEnvelopes {
+		t.Fatalf("outbox length = %d, want %d", len(state.Outbox), maxStateEnvelopes)
+	}
+	if err := store.Replace(state); err != nil {
+		t.Fatal(err)
+	}
+
+	now := stateAt(time.Duration(maxStateEnvelopes) * 6 * time.Hour)
+	var calls int
+	provider := &fakeProvider{name: "buzz", deliver: func(_ context.Context, notification Notification) (Receipt, error) {
+		calls++
+		persisted, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(persisted.Outbox) != 1 || persisted.Outbox[0].Deliveries["buzz"].Status != DeliveryPending {
+			t.Fatalf("retired capacity not reclaimed before delivery: %#v", persisted.Outbox)
+		}
+		return Receipt{Provider: "buzz", ExternalID: notification.ID, AcceptedAt: now}, nil
+	}}
+	manager := NewManager(managerOptions(), store, []Provider{provider}, WithClock(func() time.Time { return now }))
+	if err := manager.Observe(t.Context(), managerFailed(FailureStoreOpen, time.Duration(maxStateEnvelopes)*6*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want 1", calls)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Outbox) != 0 || state.LastDelivery.Provider != "buzz" || state.LastDelivery.Status != DeliveryAccepted {
+		t.Fatalf("state after reclaimed delivery = %#v", state)
+	}
+}
+
 func TestManagerCancelledDeliveryLeavesValidPendingState(t *testing.T) {
 	store := newManagerStore(t)
 	ctx, cancel := context.WithCancel(t.Context())
