@@ -3,9 +3,11 @@ package slackclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"testing"
 	"time"
@@ -40,15 +42,21 @@ func TestSendWebhookPostsEscapedTextAndReturnsAcceptanceTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	receipt, err := client.SendWebhook(t.Context(), testWebhookURL, Message{Text: "A&B<C>"})
+	receipt, err := client.SendWebhook(t.Context(), testWebhookURL, Message{Text: "A&B<C> <!channel> <@USER> <https://example.test/path|label>"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotMethod != http.MethodPost || gotContentType != "application/json" || gotURL != testWebhookURL {
 		t.Fatalf("request = method:%q content-type:%q url:%q", gotMethod, gotContentType, gotURL)
 	}
-	if got, want := string(gotBody), `{"text":"A\u0026B\u003cC\u003e"}`; got != want {
-		t.Fatalf("body = %q, want %q", got, want)
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatalf("decode outbound JSON: %v", err)
+	}
+	if got, want := payload.Text, "A&amp;B&lt;C&gt; &lt;!channel&gt; &lt;@USER&gt; &lt;https://example.test/path|label&gt;"; got != want {
+		t.Fatalf("Slack-visible text = %q, want %q", got, want)
 	}
 	if receipt != (Receipt{AcceptedAt: now}) {
 		t.Fatalf("receipt = %#v, want accepted time %s", receipt, now)
@@ -67,6 +75,8 @@ func TestSendWebhookRejectsInvalidOfficialServiceURLsWithoutDispatch(t *testing.
 		"https://hooks.slack.com/services/a/b",
 		"https://hooks.slack.com/services/a/b/c/d",
 		"https://hooks.slack.com/services/a//c",
+		"https://hooks.slack.com/services/./b/c",
+		"https://hooks.slack.com/services/a/../c",
 	} {
 		t.Run(webhookURL, func(t *testing.T) {
 			dispatched := false
@@ -86,6 +96,23 @@ func TestSendWebhookRejectsInvalidOfficialServiceURLsWithoutDispatch(t *testing.
 				t.Fatalf("error leaked webhook: %v", err)
 			}
 		})
+	}
+}
+
+func TestSendWebhookAllowsGovSlackOrigin(t *testing.T) {
+	t.Parallel()
+	const webhookURL = "https://hooks.slack-gov.com/services/T00000000/B00000000/secret-token"
+	client, err := New(Options{HTTPClientFactory: func(policy safehttp.Policy) HTTPDoer {
+		if got, want := policy.AllowedOrigins, []string{"https://hooks.slack-gov.com:443"}; !equalStrings(got, want) {
+			t.Fatalf("allowed origins = %#v, want %#v", got, want)
+		}
+		return doerFunc(func(*http.Request) (*http.Response, error) { return response(http.StatusOK, "ok"), nil })
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SendWebhook(t.Context(), webhookURL, Message{Text: "body"}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -182,14 +209,45 @@ func TestSendWebhookBoundsPayloadBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestSendWebhookMarksPostDispatchTimeoutAmbiguous(t *testing.T) {
+func TestSendWebhookMarksPreDispatchFailureTemporary(t *testing.T) {
 	t.Parallel()
 	client := newTestClient(t, func(*http.Request) (*http.Response, error) { return nil, context.DeadlineExceeded })
+	_, err := client.SendWebhook(t.Context(), testWebhookURL, Message{Text: "body"})
+	assertDeliveryError(t, err, DeliveryTemporary, "slack_delivery_failed")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestSendWebhookMarksPostDispatchFailureAmbiguous(t *testing.T) {
+	t.Parallel()
+	client := newTestClient(t, func(request *http.Request) (*http.Response, error) {
+		trace := httptrace.ContextClientTrace(request.Context())
+		if trace == nil || trace.WroteRequest == nil {
+			t.Fatal("request has no WroteRequest trace")
+		}
+		trace.WroteRequest(httptrace.WroteRequestInfo{})
+		return nil, context.DeadlineExceeded
+	})
 	_, err := client.SendWebhook(t.Context(), testWebhookURL, Message{Text: "body"})
 	assertDeliveryError(t, err, DeliveryAmbiguous, "slack_delivery_failed")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want deadline exceeded", err)
 	}
+}
+
+func TestSendWebhookMarksWroteRequestErrorTemporary(t *testing.T) {
+	t.Parallel()
+	client := newTestClient(t, func(request *http.Request) (*http.Response, error) {
+		trace := httptrace.ContextClientTrace(request.Context())
+		if trace == nil || trace.WroteRequest == nil {
+			t.Fatal("request has no WroteRequest trace")
+		}
+		trace.WroteRequest(httptrace.WroteRequestInfo{Err: context.Canceled})
+		return nil, context.Canceled
+	})
+	_, err := client.SendWebhook(t.Context(), testWebhookURL, Message{Text: "body"})
+	assertDeliveryError(t, err, DeliveryTemporary, "slack_delivery_failed")
 }
 
 func TestSendWebhookRejectsCanceledContextBeforeDispatch(t *testing.T) {
@@ -246,4 +304,8 @@ func assertDeliveryError(t *testing.T, err error, kind DeliveryErrorKind, code s
 	if deliveryErr.Kind != kind || deliveryErr.Code != code || deliveryErr.Error() != code {
 		t.Fatalf("delivery error = %#v, want kind=%q code=%q", deliveryErr, kind, code)
 	}
+}
+
+func equalStrings(left, right []string) bool {
+	return len(left) == len(right) && (len(left) == 0 || left[0] == right[0])
 }

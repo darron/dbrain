@@ -758,6 +758,8 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SAFARI_TABS_OLDER_THAN` | `safari_tabs.older_than` | `0` | Only import Safari tabs last viewed before this duration ago, for example `168h`. |
 | `DBRAIN_NOTIFICATIONS_ENABLED` | `notifications.enabled` | `false` | Enable configured hard-failure notification providers for scheduled `sync all` settlements. |
 | `DBRAIN_NOTIFICATIONS_REPEAT_AFTER` | `notifications.repeat_after` | `6h` | Positive interval before the same typed, still-failing incident sends a reminder. |
+| `DBRAIN_NOTIFICATIONS_SLACK_ENABLED` | `notifications.slack.enabled` | `false` | Configure the Slack Incoming Webhook provider; it can be tested explicitly while automatic notifications remain disabled. |
+| `DBRAIN_NOTIFICATIONS_SLACK_WEBHOOK_URL_REF` | `notifications.slack.webhook_url_ref` | `` | Incoming Webhook URL reference; must use `env:`, `op://`, or `keychain://`, never an inline secret. |
 | `DBRAIN_NOTIFICATIONS_BUZZ_ENABLED` | `notifications.buzz.enabled` | `false` | Configure the Buzz provider; it can be tested explicitly while automatic notifications remain disabled. |
 | `DBRAIN_NOTIFICATIONS_BUZZ_RELAY_URL` | `notifications.buzz.relay_url` | `` | Origin-only `wss://` Buzz relay URL. |
 | `DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID` | `notifications.buzz.channel_id` | `` | Buzz channel UUID used in the required kind-9 `h` tag. |

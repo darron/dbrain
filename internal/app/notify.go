@@ -371,7 +371,7 @@ func writeNotifyStatus(out io.Writer, status notify.Status) {
 	for _, provider := range status.Providers {
 		_, _ = fmt.Fprintf(out, "Provider %s: configured", provider.Name)
 		if provider.LastStatus == "accepted" && provider.LastAcceptedAt != nil {
-			_, _ = fmt.Fprintf(out, "; last relay status: accepted at %s", provider.LastAcceptedAt.Format(time.RFC3339))
+			_, _ = fmt.Fprintf(out, "; last delivery status: accepted at %s", provider.LastAcceptedAt.Format(time.RFC3339))
 		} else if provider.LastStatus != "" {
 			_, _ = fmt.Fprintf(out, "; last delivery status: %s", provider.LastStatus)
 			if provider.LastErrorCode != "" {

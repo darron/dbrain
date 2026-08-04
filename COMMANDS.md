@@ -56,6 +56,7 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain link add <url>`
 - `dbrain notify status`
 - `dbrain notify test buzz`
+- `dbrain notify test slack`
 - `dbrain ocr x-photos`
 - `dbrain okf export`
 - `dbrain okf validate <dir>`

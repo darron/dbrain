@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"time"
@@ -109,13 +110,9 @@ func (c *client) SendWebhook(ctx context.Context, webhookURL string, message Mes
 	if err := ctx.Err(); err != nil {
 		return Receipt{}, temporary("slack_delivery_failed", err)
 	}
-	if len(message.Text) > maxWebhookPayloadBytes {
-		return Receipt{}, permanent("slack_invalid_payload", nil)
-	}
-
 	body, err := json.Marshal(struct {
 		Text string `json:"text"`
-	}{Text: message.Text})
+	}{Text: escapeSlackText(message.Text)})
 	if err != nil {
 		return Receipt{}, permanent("slack_invalid_payload", err)
 	}
@@ -127,6 +124,14 @@ func (c *client) SendWebhook(ctx context.Context, webhookURL string, message Mes
 		return Receipt{}, permanent("slack_invalid_payload", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	wroteRequest := false
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			// A write error means the transport did not successfully dispatch the
+			// request, so it remains safe for the manager to retry.
+			wroteRequest = info.Err == nil
+		},
+	}))
 
 	httpClient := c.httpClientFactory(safehttp.Policy{
 		Timeout:               transportTimeout,
@@ -144,6 +149,9 @@ func (c *client) SendWebhook(ctx context.Context, webhookURL string, message Mes
 	if err != nil {
 		if safehttp.IsPolicyError(err) {
 			return Receipt{}, permanent("slack_delivery_failed", err)
+		}
+		if !wroteRequest {
+			return Receipt{}, temporary("slack_delivery_failed", err)
 		}
 		return Receipt{}, ambiguous("slack_delivery_failed", err)
 	}
@@ -177,10 +185,14 @@ func validateWebhookURL(raw string) (string, error) {
 		return "", errors.New("invalid Slack webhook URL")
 	}
 	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
-	if len(parts) != 4 || parts[0] != "services" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+	if len(parts) != 4 || parts[0] != "services" || parts[1] == "" || parts[2] == "" || parts[3] == "" || parts[1] == "." || parts[1] == ".." || parts[2] == "." || parts[2] == ".." || parts[3] == "." || parts[3] == ".." {
 		return "", errors.New("invalid Slack webhook URL")
 	}
 	return "https://" + host + ":443", nil
+}
+
+func escapeSlackText(text string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
 }
 
 func responseError(status int, responseBody string) error {

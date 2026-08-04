@@ -332,6 +332,16 @@ func TestNotifyCommandStatusShowsSafePersistedState(t *testing.T) {
 	}
 }
 
+func TestWriteNotifyStatusUsesProviderNeutralAcceptedWording(t *testing.T) {
+	t.Parallel()
+	acceptedAt := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	writeNotifyStatus(&out, notify.Status{Providers: []notify.ProviderStatus{{Name: "slack", LastStatus: "accepted", LastAcceptedAt: &acceptedAt}}})
+	if got := out.String(); !strings.Contains(got, "last delivery status: accepted at 2026-08-04T12:00:00Z") || strings.Contains(got, "last relay status") {
+		t.Fatalf("status output = %q", got)
+	}
+}
+
 func TestNotifyCommandTestBuzzDeliversDirectlyWithoutStateMutation(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
