@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -183,7 +184,7 @@ func TestNotificationWiringEnabledConstructsNotifierAndPrivateStateDirectory(t *
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	writeEnabledNotificationConfig(t, cfg)
+	writeNotificationAppConfig(t, cfg, true)
 
 	schedulers, err := buildRemoteSchedulers(t.Context(), cfg, io.Discard)
 	if err != nil {
@@ -233,6 +234,30 @@ func TestNotifyCommandStatusJSONIsReadOnlyAndNoCreateWhenDisabled(t *testing.T) 
 	}
 }
 
+func TestNotifyCommandStatusReportsConfiguredBuzzWhileAutomaticNotificationsDisabled(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	writeNotificationAppConfig(t, cfg, false)
+
+	stdout := runRootCommand(t, root, "notify", "status", "--json")
+	var status notify.Status
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, stdout)
+	}
+	if status.Enabled || len(status.Providers) != 1 || status.Providers[0].Name != "buzz" || !status.Providers[0].Configured {
+		t.Fatalf("disabled configured status = %#v", status)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.LogDir, "notifications")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("configured read-only status created notification state: %v", err)
+	}
+}
+
 func TestNotifyCommandStatusShowsSafePersistedState(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -242,7 +267,7 @@ func TestNotifyCommandStatusShowsSafePersistedState(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	writeEnabledNotificationConfig(t, cfg)
+	writeNotificationAppConfig(t, cfg, true)
 	store, err := notify.OpenStore(cfg.LogDir)
 	if err != nil {
 		t.Fatal(err)
@@ -282,12 +307,14 @@ func TestNotifyCommandTestBuzzDeliversDirectlyWithoutStateMutation(t *testing.T)
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	writeEnabledNotificationConfig(t, cfg)
+	writeNotificationAppConfig(t, cfg, false)
 	now := time.Date(2026, 8, 3, 23, 35, 8, 0, time.UTC)
 	var delivered []notify.Notification
+	var builtConfig notify.Config
 	deps := notifyCommandDependencies{
 		now: func() time.Time { return now },
-		buildProviders: func(context.Context, notify.Config) ([]notify.Provider, error) {
+		buildProviders: func(_ context.Context, config notify.Config) ([]notify.Provider, error) {
+			builtConfig = config
 			return []notify.Provider{fakeAppNotificationProvider{deliver: func(_ context.Context, notification notify.Notification) (notify.Receipt, error) {
 				delivered = append(delivered, notification)
 				return notify.Receipt{Provider: "buzz", ExternalID: "event-id", AcceptedAt: now}, nil
@@ -305,6 +332,9 @@ func TestNotifyCommandTestBuzzDeliversDirectlyWithoutStateMutation(t *testing.T)
 	}
 	if len(delivered) != 1 || delivered[0].Kind != notify.EventTest || delivered[0].Body != "dbrain notification delivery test." || !delivered[0].CreatedAt.Equal(now) {
 		t.Fatalf("delivered = %#v", delivered)
+	}
+	if !builtConfig.Enabled || !builtConfig.Buzz.Enabled {
+		t.Fatalf("explicit provider test did not enable registry construction: %#v", builtConfig)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.LogDir, "notifications")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("direct provider test mutated notification state: %v", err)
@@ -325,7 +355,7 @@ func TestNotifyCommandTestBuzzSanitizesProviderErrors(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	writeEnabledNotificationConfig(t, cfg)
+	writeNotificationAppConfig(t, cfg, true)
 	deps := notifyCommandDependencies{
 		now: time.Now,
 		buildProviders: func(context.Context, notify.Config) ([]notify.Provider, error) {
@@ -344,17 +374,52 @@ func TestNotifyCommandTestBuzzSanitizesProviderErrors(t *testing.T) {
 	}
 }
 
-func writeEnabledNotificationConfig(t *testing.T, cfg config.Config) {
-	t.Helper()
+func TestNotifyCommandRejectsInvalidBuzzConfigWhileAutomaticNotificationsDisabled(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
 	body := `notifications:
-  enabled: true
+  enabled: false
+  buzz:
+    enabled: true
+    relay_url: https://user:private@relay.example/path
+    channel_id: not-a-uuid
+    private_key_ref: inline-secret
+`
+	if err := os.WriteFile(cfg.ConfigPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"status", "--json"}, {"test", "buzz", "--json"}} {
+		cmd := NewRootCommand()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(append([]string{"--root", root, "--no-caffeinate", "--no-debug", "notify"}, args...))
+		err := cmd.ExecuteContext(t.Context())
+		if err == nil || strings.Contains(err.Error(), "user:private") || strings.Contains(err.Error(), "inline-secret") {
+			t.Fatalf("notify %v safe config error = %v", args, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cfg.LogDir, "notifications")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid provider config created notification state: %v", err)
+	}
+}
+
+func writeNotificationAppConfig(t *testing.T, cfg config.Config, globallyEnabled bool) {
+	t.Helper()
+	body := fmt.Sprintf(`notifications:
+  enabled: %t
   repeat_after: 6h
   buzz:
     enabled: true
     relay_url: wss://froese.communities.buzz.xyz
     channel_id: 00000000-0000-4000-8000-000000000001
     private_key_ref: env:TEST_BUZZ_KEY
-`
+`, globallyEnabled)
 	if err := os.WriteFile(cfg.ConfigPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

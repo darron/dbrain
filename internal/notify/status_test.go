@@ -93,6 +93,85 @@ func TestBuildStatusReportsCoolingRearmAndPendingDeliveries(t *testing.T) {
 	}
 }
 
+func TestBuildStatusUsesLatestAttemptedOutboxDelivery(t *testing.T) {
+	tests := []struct {
+		name            string
+		outboxStatus    DeliveryStatus
+		errorCode       string
+		withPriorAccept bool
+		wantStatus      string
+	}{
+		{name: "first temporary failure", outboxStatus: DeliveryPending, errorCode: "buzz_connect_failed", wantStatus: "pending"},
+		{name: "first ambiguous failure", outboxStatus: DeliveryAmbiguous, errorCode: "buzz_publish_timeout", wantStatus: "ambiguous"},
+		{name: "new temporary failure overrides prior acceptance", outboxStatus: DeliveryPending, errorCode: "buzz_connect_failed", withPriorAccept: true, wantStatus: "pending"},
+		{name: "new ambiguous failure overrides prior acceptance", outboxStatus: DeliveryAmbiguous, errorCode: "buzz_publish_timeout", withPriorAccept: true, wantStatus: "ambiguous"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := stateOptions()
+			state := EmptyState()
+			if test.withPriorAccept {
+				var err error
+				state, _, err = Observe(state, stateFailed(FailureStoreOpen, 0), options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				acceptedNotification, err := DeriveNotification(state.Outbox[0].Event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state.Outbox[0].Deliveries["buzz"] = DeliveryRecord{
+					Status:        DeliveryAccepted,
+					Attempts:      1,
+					LastAttemptAt: stateAt(time.Hour),
+					Receipt: Receipt{
+						Provider: "buzz", ExternalID: "accepted-event", AcceptedAt: stateAt(time.Hour),
+					},
+				}
+				state.LastDelivery = DeliverySummary{
+					NotificationID: acceptedNotification.ID,
+					Provider:       "buzz",
+					Kind:           EventFailure,
+					Status:         DeliveryAccepted,
+					At:             stateAt(time.Hour),
+				}
+				state, _, err = Observe(state, stateFailed(FailureAppleNotesPermission, 2*time.Hour), options)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var err error
+				state, _, err = Observe(state, stateFailed(FailureAppleNotesPermission, 0), options)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			latest := len(state.Outbox) - 1
+			state.Outbox[latest].Deliveries["buzz"] = DeliveryRecord{
+				Status:        test.outboxStatus,
+				Attempts:      1,
+				LastAttemptAt: stateAt(3 * time.Hour),
+				ErrorCode:     test.errorCode,
+			}
+
+			got, err := BuildStatus(Config{Enabled: true, RepeatAfter: 6 * time.Hour, Buzz: BuzzConfig{Enabled: true}}, state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Providers) != 1 {
+				t.Fatalf("providers = %#v", got.Providers)
+			}
+			provider := got.Providers[0]
+			if provider.LastStatus != test.wantStatus || provider.LastErrorCode != test.errorCode || provider.LastAttemptAt == nil || !provider.LastAttemptAt.Equal(stateAt(3*time.Hour)) {
+				t.Fatalf("provider status = %#v", provider)
+			}
+			if provider.LastAcceptedAt != nil {
+				t.Fatalf("stale acceptance survived newer attempt: %#v", provider)
+			}
+		})
+	}
+}
+
 func TestBuildStatusRejectsInvalidStateWithoutLeakingErrorText(t *testing.T) {
 	state := EmptyState()
 	state.Outbox = append(state.Outbox, Envelope{Deliveries: map[string]DeliveryRecord{

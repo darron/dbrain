@@ -235,10 +235,12 @@ func newNotifyTestBuzzCommand(root *rootOptions, dependencies notifyCommandDepen
 			if err != nil {
 				return err
 			}
-			if !notificationConfig.Enabled || !notificationConfig.Buzz.Enabled {
+			if !notificationConfig.Buzz.Enabled {
 				return errors.New("notification_provider_not_configured")
 			}
-			providers, err := dependencies.buildProviders(cmd.Context(), notificationConfig)
+			providerConfig := notificationConfig
+			providerConfig.Enabled = true
+			providers, err := dependencies.buildProviders(cmd.Context(), providerConfig)
 			if err != nil {
 				return errors.New("notification_provider_invalid")
 			}
@@ -301,6 +303,12 @@ func loadNotifyCommandConfig(ctx context.Context, root *rootOptions) (config.Con
 	if err != nil {
 		return config.Config{}, notify.Config{}, err
 	}
+	if !notificationConfig.Enabled {
+		notificationConfig.Buzz, err = notify.LoadBuzzConfig(cfg.RootDir)
+		if err != nil {
+			return config.Config{}, notify.Config{}, err
+		}
+	}
 	return cfg, notificationConfig, nil
 }
 
@@ -343,6 +351,9 @@ func writeNotifyStatus(out io.Writer, status notify.Status) {
 			_, _ = fmt.Fprintf(out, "; last delivery status: %s", provider.LastStatus)
 			if provider.LastErrorCode != "" {
 				_, _ = fmt.Fprintf(out, " error_code=%s", provider.LastErrorCode)
+			}
+			if provider.LastAttemptAt != nil {
+				_, _ = fmt.Fprintf(out, " attempted_at=%s", provider.LastAttemptAt.Format(time.RFC3339))
 			}
 		}
 		_, _ = fmt.Fprintln(out)

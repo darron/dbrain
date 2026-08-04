@@ -22,6 +22,7 @@ type ProviderStatus struct {
 	Configured     bool       `json:"configured"`
 	LastStatus     string     `json:"last_status,omitempty"`
 	LastErrorCode  string     `json:"last_error_code,omitempty"`
+	LastAttemptAt  *time.Time `json:"last_attempt_at,omitempty"`
 	LastAcceptedAt *time.Time `json:"last_accepted_at,omitempty"`
 }
 
@@ -51,11 +52,29 @@ func BuildStatus(config Config, state State) (Status, error) {
 	}
 	for _, name := range configuredProviderNames(config) {
 		provider := ProviderStatus{Name: name, Configured: true}
+		var latestAt time.Time
 		if state.LastDelivery.Provider == name {
 			provider.LastStatus = string(state.LastDelivery.Status)
 			provider.LastErrorCode = state.LastDelivery.ErrorCode
+			latestAt = state.LastDelivery.At.UTC()
+			provider.LastAttemptAt = timePointer(latestAt)
 			if state.LastDelivery.Status == DeliveryAccepted && !state.LastDelivery.At.IsZero() {
 				acceptedAt := state.LastDelivery.At.UTC()
+				provider.LastAcceptedAt = &acceptedAt
+			}
+		}
+		for _, envelope := range state.Outbox {
+			delivery, ok := envelope.Deliveries[name]
+			if !ok || delivery.Attempts == 0 || delivery.LastAttemptAt.Before(latestAt) {
+				continue
+			}
+			latestAt = delivery.LastAttemptAt.UTC()
+			provider.LastStatus = string(delivery.Status)
+			provider.LastErrorCode = delivery.ErrorCode
+			provider.LastAttemptAt = timePointer(latestAt)
+			provider.LastAcceptedAt = nil
+			if delivery.Status == DeliveryAccepted {
+				acceptedAt := delivery.Receipt.AcceptedAt.UTC()
 				provider.LastAcceptedAt = &acceptedAt
 			}
 		}
@@ -92,4 +111,8 @@ func BuildStatus(config Config, state State) (Status, error) {
 		return failureCatalogIndex(status.CoolingIncidents[left].FailureType) < failureCatalogIndex(status.CoolingIncidents[right].FailureType)
 	})
 	return status, nil
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
 }

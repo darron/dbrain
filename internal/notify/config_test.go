@@ -75,6 +75,52 @@ notifications:
 	}
 }
 
+func TestBuzzConfigLoadsValidProviderWhileNotificationsDisabled(t *testing.T) {
+	root := t.TempDir()
+	writeNotificationConfig(t, root, `
+notifications:
+  enabled: false
+  buzz:
+    enabled: true
+    relay_url: "wss://relay.example"
+    channel_id: "00000000-0000-4000-8000-000000000001"
+    private_key_ref: "keychain://dbrain/notifications-buzz"
+`)
+
+	global, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.Enabled || global.Buzz.Enabled {
+		t.Fatalf("global kill switch parsed nested provider: %#v", global)
+	}
+	buzz, err := LoadBuzzConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !buzz.Enabled || buzz.RelayURL != "wss://relay.example" || buzz.ChannelID != "00000000-0000-4000-8000-000000000001" || buzz.PrivateKeyRef != "keychain://dbrain/notifications-buzz" {
+		t.Fatalf("Buzz inspection config = %#v", buzz)
+	}
+}
+
+func TestBuzzConfigRejectsMalformedEnabledProviderWhileNotificationsDisabled(t *testing.T) {
+	root := t.TempDir()
+	writeNotificationConfig(t, root, `
+notifications:
+  enabled: false
+  buzz:
+    enabled: true
+    relay_url: "https://user:private@relay.example/path"
+    channel_id: "not-a-uuid"
+    private_key_ref: "inline-secret"
+`)
+
+	_, err := LoadBuzzConfig(root)
+	if err == nil || strings.Contains(err.Error(), "user:private") || strings.Contains(err.Error(), "inline-secret") {
+		t.Fatalf("safe Buzz config error = %v", err)
+	}
+}
+
 func TestNotificationConfigRejectsInvalidEnabledConfiguration(t *testing.T) {
 	validBuzz := `
   buzz:

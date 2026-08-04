@@ -62,6 +62,30 @@ func LoadConfig(rootDir string) (Config, error) {
 	return config, nil
 }
 
+// LoadBuzzConfig loads and validates the Buzz provider independently from the
+// global notification kill switch. It is intended for read-only inspection and
+// explicit provider tests; automatic delivery must continue to use LoadConfig.
+func LoadBuzzConfig(rootDir string) (BuzzConfig, error) {
+	config := BuzzConfig{}
+	var err error
+	if config.Enabled, err = notificationBool(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_ENABLED", false); err != nil {
+		return BuzzConfig{}, err
+	}
+	if !config.Enabled {
+		return config, nil
+	}
+	if config.AllowPrivateOrigin, err = notificationBool(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_ALLOW_PRIVATE_ORIGIN", false); err != nil {
+		return BuzzConfig{}, err
+	}
+	config.RelayURL = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_RELAY_URL")
+	config.ChannelID = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID")
+	config.PrivateKeyRef = runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_NOTIFICATIONS_BUZZ_PRIVATE_KEY_REF")
+	if err := config.validate(); err != nil {
+		return BuzzConfig{}, err
+	}
+	return config, nil
+}
+
 func notificationBool(rootDir, key string, fallback bool) (bool, error) {
 	value, ok := runtimeenv.Lookup(rootDir, key)
 	if !ok {
