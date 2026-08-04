@@ -17,10 +17,12 @@ func NewRegistry() Registry {
 	return Registry{factories: make(map[string]Factory)}
 }
 
-// BuiltinRegistry is completed by Task 5, which binds the real Buzz factory.
-// Keeping it closed now prevents scheduler code from learning provider details.
 func BuiltinRegistry() Registry {
-	return NewRegistry()
+	registry := NewRegistry()
+	if err := registry.Register("buzz", newBuiltinBuzzProvider); err != nil {
+		panic(err)
+	}
+	return registry
 }
 
 func (r *Registry) Register(name string, factory Factory) error {
