@@ -160,6 +160,10 @@ func TestShippedConfigTemplatesKeepNotificationDefaultsInParity(t *testing.T) {
 			"private_key_ref":      "",
 			"allow_private_origin": false,
 		},
+		"slack": map[string]any{
+			"enabled":         false,
+			"webhook_url_ref": "",
+		},
 	}
 	if !reflect.DeepEqual(root, want) {
 		t.Fatalf("notification defaults = %#v, want %#v", root, want)

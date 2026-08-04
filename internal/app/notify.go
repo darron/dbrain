@@ -213,6 +213,7 @@ func newNotifyTestCommand(root *rootOptions, dependencies notifyCommandDependenc
 		RunE:        helpCommand,
 	}
 	cmd.AddCommand(newNotifyTestBuzzCommand(root, dependencies))
+	cmd.AddCommand(newNotifyTestSlackCommand(root, dependencies))
 	return cmd
 }
 
@@ -224,10 +225,18 @@ type notifyTestResult struct {
 }
 
 func newNotifyTestBuzzCommand(root *rootOptions, dependencies notifyCommandDependencies) *cobra.Command {
+	return newNotifyTestProviderCommand(root, dependencies, "buzz", "Send a synthetic test message to the configured Buzz relay", "Buzz relay", "event_id", "external_id")
+}
+
+func newNotifyTestSlackCommand(root *rootOptions, dependencies notifyCommandDependencies) *cobra.Command {
+	return newNotifyTestProviderCommand(root, dependencies, "slack", "Send a synthetic test message to the configured Slack webhook", "Slack webhook", "correlation_id", "correlation_id")
+}
+
+func newNotifyTestProviderCommand(root *rootOptions, dependencies notifyCommandDependencies, providerName, short, acceptanceLabel, receiptLabel, jsonReceiptLabel string) *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
-		Use:         "buzz",
-		Short:       "Send a synthetic test message to the configured Buzz relay",
+		Use:         providerName,
+		Short:       short,
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{skipKeepAwakeAnnotation: "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -235,16 +244,15 @@ func newNotifyTestBuzzCommand(root *rootOptions, dependencies notifyCommandDepen
 			if err != nil {
 				return err
 			}
-			if !notificationConfig.Buzz.Enabled {
+			if !notificationProviderConfigured(notificationConfig, providerName) {
 				return errors.New("notification_provider_not_configured")
 			}
-			providerConfig := notificationConfig
-			providerConfig.Enabled = true
+			providerConfig := configuredNotifyTestProvider(notificationConfig, providerName)
 			providers, err := dependencies.buildProviders(cmd.Context(), providerConfig)
 			if err != nil {
 				return errors.New("notification_provider_invalid")
 			}
-			provider := providerNamed(providers, "buzz")
+			provider := providerNamed(providers, providerName)
 			if provider == nil {
 				return errors.New("notification_provider_not_configured")
 			}
@@ -258,24 +266,47 @@ func newNotifyTestBuzzCommand(root *rootOptions, dependencies notifyCommandDepen
 				return errors.New("notification_test_invalid")
 			}
 			receipt, err := provider.Deliver(cmd.Context(), notification)
-			if err != nil || !validNotifyTestReceipt(receipt, "buzz") {
+			if err != nil || !validNotifyTestReceipt(receipt, providerName) {
 				return errors.New("notification_delivery_failed")
 			}
 			result := notifyTestResult{
-				Provider:   "buzz",
+				Provider:   providerName,
 				Status:     "accepted",
 				ExternalID: receipt.ExternalID,
 				AcceptedAt: receipt.AcceptedAt.UTC(),
 			}
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), result)
+				return writeJSON(cmd.OutOrStdout(), map[string]any{
+					"provider":       result.Provider,
+					"status":         result.Status,
+					jsonReceiptLabel: result.ExternalID,
+					"accepted_at":    result.AcceptedAt,
+				})
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Buzz relay accepted the test notification: event_id=%s accepted_at=%s\n", result.ExternalID, result.AcceptedAt.Format(time.RFC3339))
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s accepted the test notification: %s=%s accepted_at=%s\n", acceptanceLabel, receiptLabel, result.ExternalID, result.AcceptedAt.Format(time.RFC3339))
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print relay acceptance as JSON")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print provider acceptance as JSON")
 	return cmd
+}
+
+func notificationProviderConfigured(config notify.Config, provider string) bool {
+	switch provider {
+	case "buzz":
+		return config.Buzz.Enabled
+	case "slack":
+		return config.Slack.Enabled
+	default:
+		return false
+	}
+}
+
+func configuredNotifyTestProvider(config notify.Config, provider string) notify.Config {
+	config.Enabled = true
+	config.Buzz.Enabled = provider == "buzz" && config.Buzz.Enabled
+	config.Slack.Enabled = provider == "slack" && config.Slack.Enabled
+	return config
 }
 
 func loadNotifyCommandConfig(ctx context.Context, root *rootOptions) (config.Config, notify.Config, error) {
