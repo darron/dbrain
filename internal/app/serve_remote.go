@@ -131,6 +131,7 @@ type remoteSchedulers struct {
 	syncAll          *syncScheduler
 	sqliteArchive    *sqliteArchiveScheduler
 	audit            *auditScheduler
+	notifier         notificationObserver
 	auditReports     *audit.ReportStore
 	auditRunner      func(context.Context, audit.Profile, time.Duration) (audit.Report, error)
 	auditSince       time.Duration
@@ -215,10 +216,18 @@ func buildRemoteSchedulersWithMetaAndAuditRuntime(ctx context.Context, cfg confi
 			return remoteSchedulers{}, fmt.Errorf("configure scheduled audit metrics: %w", metricsErr)
 		}
 		schedulers.audit.emitCompleted = scheduledAuditMetricEmitter(metricsConfig)
-		schedulers.syncAll.postRun = func(ctx context.Context, _ scheduledSyncOutcome) {
-			schedulers.audit.AfterSync(ctx)
-		}
 	}
+	notificationLogOut := newTimestampedLineWriter(logOut, time.Now)
+	notifier, err := buildRemoteNotificationObserver(ctx, cfg, notificationLogOut)
+	if err != nil {
+		return remoteSchedulers{}, err
+	}
+	schedulers.notifier = notifier
+	var postSyncAudit postSyncAuditor
+	if auditOpts.Enabled {
+		postSyncAudit = schedulers.audit
+	}
+	schedulers.syncAll.postRun = composePostRun(notifier, postSyncAudit, notificationLogOut)
 	return schedulers, nil
 }
 
