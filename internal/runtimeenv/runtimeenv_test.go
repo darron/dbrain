@@ -143,6 +143,37 @@ safari_tabs:
 	}
 }
 
+func TestNotificationPathsMapAllNotificationSettings(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeConfig(t, root, `
+notifications:
+  enabled: true
+  repeat_after: 6h
+  buzz:
+    enabled: true
+    relay_url: wss://relay.example
+    channel_id: 00000000-0000-4000-8000-000000000001
+    private_key_ref: keychain://dbrain/notifications-buzz
+    allow_private_origin: true
+`)
+	want := map[string]string{
+		"DBRAIN_NOTIFICATIONS_ENABLED":                   "true",
+		"DBRAIN_NOTIFICATIONS_REPEAT_AFTER":              "6h",
+		"DBRAIN_NOTIFICATIONS_BUZZ_ENABLED":              "true",
+		"DBRAIN_NOTIFICATIONS_BUZZ_RELAY_URL":            "wss://relay.example",
+		"DBRAIN_NOTIFICATIONS_BUZZ_CHANNEL_ID":           "00000000-0000-4000-8000-000000000001",
+		"DBRAIN_NOTIFICATIONS_BUZZ_PRIVATE_KEY_REF":      "keychain://dbrain/notifications-buzz",
+		"DBRAIN_NOTIFICATIONS_BUZZ_ALLOW_PRIVATE_ORIGIN": "true",
+	}
+	for key, expected := range want {
+		if got := FirstNonEmpty(root, key); got != expected {
+			t.Fatalf("FirstNonEmpty(%s) = %q, want %q", key, got, expected)
+		}
+	}
+}
+
 func TestFirstNonEmptyReadsHTTPUserAgentConfigValue(t *testing.T) {
 	t.Parallel()
 
