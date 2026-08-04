@@ -61,6 +61,24 @@ func TestBuildStatusExposesBoundedSafeIncidentAndProviderFields(t *testing.T) {
 	}
 }
 
+func TestBuildStatusReadsRetainedProviderSummaryAfterEnvelopePruning(t *testing.T) {
+	state := EmptyState()
+	state.LastDeliveries["buzz"] = DeliverySummary{
+		NotificationID: "ntf_012345678901234567890123",
+		Provider:       "buzz",
+		Kind:           EventFailure,
+		Status:         DeliveryAccepted,
+		At:             stateAt(time.Hour),
+	}
+	got, err := BuildStatus(Config{Enabled: true, RepeatAfter: 6 * time.Hour, Buzz: BuzzConfig{Enabled: true}}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Providers) != 1 || got.Providers[0].LastStatus != "accepted" || !got.Providers[0].LastAttemptAt.Equal(stateAt(time.Hour)) || !got.Providers[0].LastAcceptedAt.Equal(stateAt(time.Hour)) {
+		t.Fatalf("providers = %#v", got.Providers)
+	}
+}
+
 func TestBuildStatusReportsCoolingRearmAndPendingDeliveries(t *testing.T) {
 	options := stateOptions()
 	state, _, err := Observe(EmptyState(), stateFailed(FailureStoreOpen, 0), options)
@@ -156,7 +174,7 @@ func TestBuildStatusUsesLatestAttemptedOutboxDelivery(t *testing.T) {
 						Provider: "buzz", ExternalID: "accepted-event", AcceptedAt: stateAt(time.Hour),
 					},
 				}
-				state.LastDelivery = DeliverySummary{
+				state.LastDeliveries["buzz"] = DeliverySummary{
 					NotificationID: acceptedNotification.ID,
 					Provider:       "buzz",
 					Kind:           EventFailure,

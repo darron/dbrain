@@ -350,10 +350,10 @@ func updateMatchingDelivery(state *State, hintedIndex int, event EventFacts, pro
 			if status == DeliveryAccepted {
 				at = receipt.AcceptedAt
 			}
-			state.LastDelivery = DeliverySummary{
+			recordDeliverySummary(state, DeliverySummary{
 				NotificationID: notification.ID, Provider: provider, Kind: event.Kind,
 				Status: status, ErrorCode: current.ErrorCode, At: at.UTC(),
-			}
+			})
 		}
 		return true
 	}
@@ -412,13 +412,20 @@ func retireRemovedProviders(state *State, configured map[string]Provider, at tim
 			record.ErrorCode = ""
 			record.Receipt = Receipt{}
 			envelope.Deliveries[provider] = record
-			state.LastDelivery = DeliverySummary{
+			recordDeliverySummary(state, DeliverySummary{
 				NotificationID: notification.ID, Provider: provider, Kind: envelope.Event.Kind,
 				Status: DeliveryRetired, At: at.UTC(),
-			}
+			})
 		}
 	}
 	return nil
+}
+
+func recordDeliverySummary(state *State, summary DeliverySummary) {
+	if state.LastDeliveries == nil {
+		state.LastDeliveries = make(map[string]DeliverySummary)
+	}
+	state.LastDeliveries[summary.Provider] = summary
 }
 
 func pruneTerminalEnvelopes(state *State) {

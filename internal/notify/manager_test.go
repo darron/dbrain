@@ -69,8 +69,38 @@ func TestManagerPersistsBeforeDeliveryAndAcknowledgesAfterAcceptance(t *testing.
 	if len(persisted.Outbox) != 0 {
 		t.Fatalf("accepted envelope not pruned: %#v", persisted.Outbox)
 	}
-	if persisted.LastDelivery.Provider != "buzz" || persisted.LastDelivery.Status != DeliveryAccepted || persisted.LastDelivery.NotificationID == "" {
-		t.Fatalf("last delivery = %#v", persisted.LastDelivery)
+	if persisted.LastDeliveries["buzz"].Provider != "buzz" || persisted.LastDeliveries["buzz"].Status != DeliveryAccepted || persisted.LastDeliveries["buzz"].NotificationID == "" {
+		t.Fatalf("last deliveries = %#v", persisted.LastDeliveries)
+	}
+}
+
+func TestManagerRetainsLatestTerminalSummaryForEachProvider(t *testing.T) {
+	store := newManagerStore(t)
+	now := stateAt(0)
+	providers := []Provider{
+		&fakeProvider{name: "buzz", deliver: func(context.Context, Notification) (Receipt, error) {
+			return Receipt{Provider: "buzz", ExternalID: "buzz-event", AcceptedAt: now}, nil
+		}},
+		&fakeProvider{name: "slack", deliver: func(context.Context, Notification) (Receipt, error) {
+			return Receipt{Provider: "slack", ExternalID: "slack-event", AcceptedAt: now}, nil
+		}},
+	}
+	manager := NewManager(managerOptions(), store, providers, WithClock(func() time.Time { return now }))
+	if err := manager.Observe(t.Context(), managerFailed(FailureAppleNotesPermission, 0)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Outbox) != 0 {
+		t.Fatalf("terminal envelopes retained: %#v", state.Outbox)
+	}
+	for _, name := range []string{"buzz", "slack"} {
+		summary, ok := state.LastDeliveries[name]
+		if !ok || summary.Provider != name || summary.Status != DeliveryAccepted || summary.NotificationID == "" {
+			t.Fatalf("last delivery for %s = %#v", name, state.LastDeliveries)
+		}
 	}
 }
 
@@ -148,7 +178,7 @@ func TestManagerRetriesPendingProviderOnSuppressedObservationUsingPersistedFacts
 		t.Fatal(err)
 	}
 	incident := state.Incidents[incidentKey(OperationScheduledSyncAll, FailureStoreOpen)]
-	if incident.Occurrences != 2 || len(state.Outbox) != 0 || state.LastDelivery.Status != DeliveryAccepted {
+	if incident.Occurrences != 2 || len(state.Outbox) != 0 || state.LastDeliveries["buzz"].Status != DeliveryAccepted {
 		t.Fatalf("state after suppressed retry = %#v", state)
 	}
 }
@@ -224,7 +254,7 @@ func TestManagerPermanentErrorIsTerminalAndDoesNotHotLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || len(state.Outbox) != 0 || state.LastDelivery.Status != DeliveryPermanentError || state.LastDelivery.ErrorCode != "buzz_auth_rejected" {
+	if calls != 1 || len(state.Outbox) != 0 || state.LastDeliveries["buzz"].Status != DeliveryPermanentError || state.LastDeliveries["buzz"].ErrorCode != "buzz_auth_rejected" {
 		t.Fatalf("calls=%d state=%#v", calls, state)
 	}
 }
@@ -326,7 +356,7 @@ func TestManagerRetiresRemovedProviderWithoutAddingCurrentProviderHistorically(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 0 || len(state.Outbox) != 0 || state.LastDelivery.Provider != "removed" || state.LastDelivery.Status != DeliveryRetired {
+	if calls != 0 || len(state.Outbox) != 0 || state.LastDeliveries["removed"].Provider != "removed" || state.LastDeliveries["removed"].Status != DeliveryRetired {
 		t.Fatalf("calls=%d state=%#v", calls, state)
 	}
 }
@@ -373,7 +403,7 @@ func TestManagerFullOutboxRetiresRemovedProviderBeforeEnqueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.Outbox) != 0 || state.LastDelivery.Provider != "buzz" || state.LastDelivery.Status != DeliveryAccepted {
+	if len(state.Outbox) != 0 || state.LastDeliveries["buzz"].Provider != "buzz" || state.LastDeliveries["buzz"].Status != DeliveryAccepted {
 		t.Fatalf("state after reclaimed delivery = %#v", state)
 	}
 }
@@ -451,8 +481,8 @@ func TestManagerFullActiveProviderOutboxDeliversPersistedWorkBeforeEnqueue(t *te
 		t.Fatalf("persisted delivery order = %v, want oldest first: %v", gotPersistedOrder, wantOrder)
 	}
 	current := delivered[len(delivered)-1]
-	if current.Kind != EventReminder || current.Occurrences != maxStateEnvelopes+1 || persisted.LastDelivery.NotificationID != current.ID {
-		t.Fatalf("current settlement delivery = %#v, last=%#v", current, persisted.LastDelivery)
+	if current.Kind != EventReminder || current.Occurrences != maxStateEnvelopes+1 || persisted.LastDeliveries["buzz"].NotificationID != current.ID {
+		t.Fatalf("current settlement delivery = %#v, last=%#v", current, persisted.LastDeliveries)
 	}
 }
 

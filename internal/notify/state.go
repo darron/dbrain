@@ -10,7 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-const StateSchemaV1 = "dbrain.notifications.state.v1"
+const (
+	StateSchemaV1 = "dbrain.notifications.state.v1"
+	StateSchemaV2 = "dbrain.notifications.state.v2"
+)
 
 const (
 	maxStateIncidents = 64
@@ -48,10 +51,13 @@ const (
 )
 
 type State struct {
-	Schema       string              `json:"schema"`
-	Incidents    map[string]Incident `json:"incidents"`
-	Outbox       []Envelope          `json:"outbox"`
-	LastDelivery DeliverySummary     `json:"last_delivery,omitempty"`
+	Schema    string              `json:"schema"`
+	Incidents map[string]Incident `json:"incidents"`
+	Outbox    []Envelope          `json:"outbox"`
+	// LastDelivery is retained only to decode v1 state. Canonical v2 state must
+	// leave it empty and use LastDeliveries instead.
+	LastDelivery   DeliverySummary            `json:"last_delivery,omitempty"`
+	LastDeliveries map[string]DeliverySummary `json:"last_deliveries"`
 }
 
 type Incident struct {
@@ -115,7 +121,7 @@ type Decision struct {
 }
 
 func EmptyState() State {
-	return State{Schema: StateSchemaV1, Incidents: map[string]Incident{}, Outbox: []Envelope{}}
+	return State{Schema: StateSchemaV2, Incidents: map[string]Incident{}, Outbox: []Envelope{}, LastDeliveries: map[string]DeliverySummary{}}
 }
 
 func Observe(state State, outcome Outcome, options Options) (State, Decision, error) {
@@ -399,8 +405,14 @@ func ValidateEventFacts(event EventFacts) error {
 }
 
 func ValidateState(state State) error {
-	if state.Schema != StateSchemaV1 {
+	if state.Schema != StateSchemaV2 {
 		return fmt.Errorf("invalid notification state schema")
+	}
+	if state.LastDelivery != (DeliverySummary{}) {
+		return fmt.Errorf("legacy notification delivery summary is not empty")
+	}
+	if state.LastDeliveries == nil || len(state.LastDeliveries) > maxProviders {
+		return fmt.Errorf("invalid notification delivery summary map")
 	}
 	if state.Incidents == nil || len(state.Incidents) > maxStateIncidents {
 		return fmt.Errorf("invalid notification incident map")
@@ -459,8 +471,13 @@ func ValidateState(state State) error {
 			}
 		}
 	}
-	if err := validateDeliverySummary(state.LastDelivery); err != nil {
-		return err
+	for provider, summary := range state.LastDeliveries {
+		if !validProviderName(provider) || provider != summary.Provider {
+			return fmt.Errorf("invalid notification delivery summary provider")
+		}
+		if err := validateDeliverySummary(summary); err != nil {
+			return err
+		}
 	}
 	encoded, err := json.Marshal(state)
 	if err != nil {

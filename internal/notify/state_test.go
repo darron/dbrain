@@ -689,25 +689,32 @@ func TestDeliverySummaryRetainsTerminalErrorCode(t *testing.T) {
 	}
 }
 
-func TestValidateStateRejectsUnsafeLastDelivery(t *testing.T) {
+func TestValidateStateRejectsUnsafePerProviderDeliverySummary(t *testing.T) {
 	valid := EmptyState()
 	tests := []struct {
-		name    string
-		summary DeliverySummary
+		name     string
+		provider string
+		summary  DeliverySummary
+		legacy   DeliverySummary
 	}{
-		{name: "missing notification ID", summary: DeliverySummary{Provider: "buzz", Kind: EventFailure, Status: DeliveryAccepted, At: stateAt(0)}},
-		{name: "unbounded provider", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: string(make([]byte, 65)), Kind: EventFailure, Status: DeliveryAccepted, At: stateAt(0)}},
-		{name: "invalid kind", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: "raw", Status: DeliveryAccepted, At: stateAt(0)}},
-		{name: "pending is not terminal", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryPending, At: stateAt(0)}},
-		{name: "accepted with error", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryAccepted, ErrorCode: "buzz_error", At: stateAt(0)}},
-		{name: "permanent without error", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryPermanentError, At: stateAt(0)}},
-		{name: "unsafe error code", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryPermanentError, ErrorCode: "provider secret text", At: stateAt(0)}},
-		{name: "zero time", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryAccepted}},
+		{name: "legacy summary remains on canonical state", legacy: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryAccepted, At: stateAt(0)}},
+		{name: "missing notification ID", provider: "buzz", summary: DeliverySummary{Provider: "buzz", Kind: EventFailure, Status: DeliveryAccepted, At: stateAt(0)}},
+		{name: "map key does not match provider", provider: "slack", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryAccepted, At: stateAt(0)}},
+		{name: "unbounded provider", provider: string(make([]byte, 65)), summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: string(make([]byte, 65)), Kind: EventFailure, Status: DeliveryAccepted, At: stateAt(0)}},
+		{name: "invalid kind", provider: "buzz", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: "raw", Status: DeliveryAccepted, At: stateAt(0)}},
+		{name: "pending is not terminal", provider: "buzz", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryPending, At: stateAt(0)}},
+		{name: "accepted with error", provider: "buzz", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryAccepted, ErrorCode: "buzz_error", At: stateAt(0)}},
+		{name: "permanent without error", provider: "buzz", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryPermanentError, At: stateAt(0)}},
+		{name: "unsafe error code", provider: "buzz", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryPermanentError, ErrorCode: "provider secret text", At: stateAt(0)}},
+		{name: "zero time", provider: "buzz", summary: DeliverySummary{NotificationID: "ntf_012345678901234567890123", Provider: "buzz", Kind: EventFailure, Status: DeliveryAccepted}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := valid
-			candidate.LastDelivery = test.summary
+			if test.summary != (DeliverySummary{}) {
+				candidate.LastDeliveries = map[string]DeliverySummary{test.provider: test.summary}
+			}
+			candidate.LastDelivery = test.legacy
 			if err := ValidateState(candidate); err == nil {
 				t.Fatalf("unsafe delivery summary accepted: %#v", test.summary)
 			}
