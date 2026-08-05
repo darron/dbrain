@@ -769,6 +769,45 @@ func TestAuditOutputSchemaAcceptsBothPersistedReportVersions(t *testing.T) {
 	}
 }
 
+func TestAuditOutputSchemaClosesSemanticEvidenceValues(t *testing.T) {
+	evidence := auditEvidenceSchema()["properties"].(map[string]interface{})
+	for name, value := range map[string]interface{}{
+		"profile_id":           "/Users/alice/private-profile",
+		"active_generation_id": "checkpoint:private-run",
+		"readiness":            "the backend said everything is fine",
+		"semantic_error_code":  "raw provider error: secret",
+	} {
+		if err := validateJSONSchemaValue(evidence[name].(map[string]interface{}), value); err == nil {
+			t.Fatalf("semantic %s accepted unbounded value %q", name, value)
+		}
+	}
+	stages := evidence["stages"].(map[string]interface{})
+	for _, value := range []interface{}{
+		[]interface{}{},
+		[]interface{}{
+			map[string]interface{}{"stage": "projection", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "embedding", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "flush", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "compaction", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "verification", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "readiness", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "extra", "status": "succeeded", "duration_seconds": float64(1)},
+		},
+		[]interface{}{
+			map[string]interface{}{"stage": "not-a-stage", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "embedding", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "flush", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "compaction", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "verification", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "readiness", "status": "succeeded", "duration_seconds": float64(1)},
+		},
+	} {
+		if err := validateJSONSchemaValue(stages, value); err == nil {
+			t.Fatalf("semantic stages accepted invalid shape: %#v", value)
+		}
+	}
+}
+
 func TestAuditRejectsValidReportAboveOutputCeiling(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	report := auditTestReport(t, audit.ProfileFast, now)

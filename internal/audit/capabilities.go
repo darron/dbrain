@@ -159,9 +159,10 @@ type SemanticInspector interface {
 
 type SemanticAuditSnapshot struct {
 	Configured, CapabilityAvailable bool
-	Backend, ProfileID              string
-	ActiveGenerationID              string
-	Readiness                       string
+	Backend                         SemanticBackend
+	ProfileID                       SemanticIdentifier
+	ActiveGenerationID              SemanticIdentifier
+	Readiness                       SemanticReadiness
 	DirtyParentCount                int
 	PendingParentCount              int
 	DueEmbeddingCount               int
@@ -175,10 +176,10 @@ type SemanticAuditSnapshot struct {
 }
 
 type SemanticRefreshSnapshot struct {
-	State                                                         string
+	State                                                         SemanticRefreshState
 	StartedAt, CompletedAt, FailureAt                             time.Time
 	Duration                                                      time.Duration
-	ErrorCode                                                     string
+	ErrorCode                                                     SemanticErrorCode
 	ProjectedParentCount, EmbeddedChunkCount                      int
 	FlushedVectorCount, CompactedVectorCount, VerifiedVectorCount int
 	SuccessorRunCount                                             int
@@ -186,7 +187,57 @@ type SemanticRefreshSnapshot struct {
 }
 
 type SemanticStageSnapshot struct {
-	Stage    string
-	Status   string
+	Stage    SemanticStage
+	Status   SemanticStageStatus
 	Duration time.Duration
+}
+
+type SemanticBackend string
+type SemanticIdentifier string
+type SemanticReadiness string
+type SemanticRefreshState string
+type SemanticErrorCode string
+type SemanticStage string
+type SemanticStageStatus string
+
+func (v SemanticBackend) Valid() bool { return v == "ollama" || v == "none" || v == "unsupported" }
+func (v SemanticReadiness) Valid() bool {
+	switch v {
+	case "ready", "catching_up", "needs_projection", "needs_embeddings", "needs_index", "retry_scheduled", "building", "stale", "degraded_blocked", "corrupt", "disabled", "unavailable":
+		return true
+	default:
+		return false
+	}
+}
+func (v SemanticRefreshState) Valid() bool {
+	switch v {
+	case "succeeded", "failed", "canceled", "running", "skipped", "unsupported", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+func (v SemanticStage) Valid() bool {
+	switch v {
+	case "projection", "embedding", "flush", "compaction", "verification", "readiness":
+		return true
+	default:
+		return false
+	}
+}
+func (v SemanticStageStatus) Valid() bool {
+	switch v {
+	case "succeeded", "failed", "canceled", "skipped", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+func (v SemanticErrorCode) Valid() bool {
+	switch v {
+	case "semantic_backend_broken", "semantic_run_conflict", "semantic_projection_failed", "semantic_embedding_failed", "semantic_embedding_circuit_open", "semantic_flush_failed", "semantic_compaction_failed", "semantic_verify_failed", "semantic_native_root_failed", "semantic_readiness_not_ready", "semantic_lock_unavailable", "semantic_refresh_cancelled", "semantic_refresh_failed":
+		return true
+	default:
+		return false
+	}
 }

@@ -1,6 +1,9 @@
 package audit
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -41,6 +44,32 @@ func TestRegistryContainsExactClosedV2SetInOutputOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry order mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestRegistryContainsFrozenExactV1SetInOutputOrder(t *testing.T) {
+	legacy, ok := RegistryForSchema(SchemaV1)
+	if !ok {
+		t.Fatal("v1 registry unavailable")
+	}
+	if len(legacy) != 55 {
+		t.Fatalf("legacy registry length = %d, want 55", len(legacy))
+	}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(encoded)); got != "7d940fdb788d38880b90d5929c4da6d0f7454a876cc703aa8eb0e251ec907ea5" {
+		t.Fatalf("frozen v1 registry contract changed: %s", got)
+	}
+}
+
+func TestV2RegistryMutationCannotAlterFrozenV1EvidenceContract(t *testing.T) {
+	v2 := Registry()
+	v2[0].EvidenceFields["layout"] = EvidenceInteger
+	legacy, ok := RegistryForSchema(SchemaV1)
+	if !ok || legacy[0].EvidenceFields["layout"] != EvidenceEnum {
+		t.Fatalf("v1 registry was mutated through v2 copy: %#v", legacy[0])
 	}
 }
 
