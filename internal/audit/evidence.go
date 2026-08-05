@@ -10,6 +10,8 @@ const (
 	EvidenceDaily          EvidenceKind = "daily"
 	EvidenceByKind         EvidenceKind = "by_kind"
 	EvidenceMissingByField EvidenceKind = "missing_by_field"
+	EvidenceIdentifier     EvidenceKind = "identifier"
+	EvidenceSemanticStages EvidenceKind = "semantic_stages"
 )
 
 type ErrorCode string

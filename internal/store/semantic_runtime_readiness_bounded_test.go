@@ -8,8 +8,47 @@ import (
 	"testing"
 	"time"
 
+	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 )
+
+func TestAuditReadSnapshotSemanticRuntimeReadinessRetainsPinnedBoundedView(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brain.db")
+	writer := openCurrentTestStoreAtPath(t, path)
+	defer func() { _ = writer.Close() }()
+	seedRetrievalSource(t, writer, "source:semantic-before-snapshot")
+
+	reader, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	snapshot, err := reader.BeginAuditReadSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	first, err := snapshot.SemanticRuntimeReadinessSnapshotAt(t.Context(), readinessTestProfile(), 25_000, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.UpsertItem(t.Context(), model.Item{
+		SourceKey: "source:semantic-after-snapshot", SourceType: "web", ExternalID: "after",
+		CanonicalURL: "https://example.invalid/after", ContentHash: "after", ImportedAt: now,
+		UpdatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := snapshot.SemanticRuntimeReadinessSnapshotAt(t.Context(), readinessTestProfile(), 25_000, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ExpectedParents != second.ExpectedParents || first.DirtyParents != second.DirtyParents {
+		t.Fatalf("semantic runtime snapshot changed: first=%+v second=%+v", first, second)
+	}
+}
 
 func TestSemanticRuntimeReadinessRejectsPlausibleDirtyCounterUndercounts(t *testing.T) {
 	tests := []struct {

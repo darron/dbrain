@@ -472,6 +472,7 @@ func buildAuditDependencies(ctx context.Context, cfg config.Config, snapshot *st
 	}
 	if snapshot != nil {
 		deps.Store = auditSnapshotAdapter{snapshot: snapshot}
+		deps.Semantic = newAuditSemanticInspector(cfg.RootDir, snapshot)
 	}
 	if metricsCfg, err := metrics.ResolveConfig(cfg.RootDir, cfg.LogDir); err == nil && metricsCfg.Enabled && strings.TrimSpace(metricsCfg.Path) != "" {
 		deps.Metrics = metrics.NewReader(metricsCfg.Path)
@@ -630,13 +631,13 @@ func auditNeedsSnapshot(req audit.Request) bool {
 			if !ok {
 				continue
 			}
-			if entry.Category == audit.CategoryPipeline || id == audit.CheckBoundaryDatabase || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote || (req.Profile == audit.ProfileDeep && id == audit.CheckDurabilityMediaRemoteOnly) || (req.Profile == audit.ProfileDeep && strings.HasPrefix(string(id), "upstream.")) {
+			if entry.Category == audit.CategoryPipeline || entry.Category == audit.CategorySemantic || id == audit.CheckBoundaryDatabase || id == audit.CheckDurabilityMediaLocalCoverage || id == audit.CheckDurabilityMediaRemote || (req.Profile == audit.ProfileDeep && id == audit.CheckDurabilityMediaRemoteOnly) || (req.Profile == audit.ProfileDeep && strings.HasPrefix(string(id), "upstream.")) {
 				return true
 			}
 		}
 		return false
 	}
-	return auditRequestMayIncludeCategory(req, audit.CategoryBoundary) || auditRequestMayIncludeCategory(req, audit.CategoryPipeline) || auditRequestMayIncludeCategory(req, audit.CategoryDurability) || (req.Profile == audit.ProfileDeep && auditRequestMayIncludeCategory(req, audit.CategoryImports))
+	return auditRequestMayIncludeCategory(req, audit.CategoryBoundary) || auditRequestMayIncludeCategory(req, audit.CategoryPipeline) || auditRequestMayIncludeCategory(req, audit.CategorySemantic) || auditRequestMayIncludeCategory(req, audit.CategoryDurability) || (req.Profile == audit.ProfileDeep && auditRequestMayIncludeCategory(req, audit.CategoryImports))
 }
 
 func auditRequestSelectsCheck(req audit.Request, id audit.CheckID) bool {

@@ -69,6 +69,7 @@ func newMCPAuditServerDependenciesWithReports(ctx context.Context, cfg config.Co
 		defer func() { _ = snapshot.Close() }()
 		deps := base
 		deps.Store = auditSnapshotAdapter{snapshot: snapshot}
+		deps.Semantic = newAuditSemanticInspector(cfg.RootDir, snapshot)
 		deps.Features.DatabaseOpenedQueryOnly = true
 		return audit.Run(runCtx, audit.Request{Profile: audit.ProfileFast, Since: mcpAuditSince}, deps)
 	}

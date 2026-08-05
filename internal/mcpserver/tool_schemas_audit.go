@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"github.com/darron/dbrain/internal/audit"
@@ -33,7 +34,7 @@ func auditOutputSchema() map[string]interface{} {
 
 func auditReportProperties() map[string]interface{} {
 	return map[string]interface{}{
-		"schema":       enumSchema("Stable audit schema.", audit.SchemaV1),
+		"schema":       enumSchema("Stable audit schema.", audit.SchemaV1, audit.SchemaV2),
 		"audit_id":     scalarSchema("string", "Opaque audit run identifier."),
 		"profile":      enumSchema("Exact audit profile.", "fast", "standard"),
 		"scope":        auditScopeSchema(),
@@ -53,7 +54,7 @@ func auditReportRequired() []string {
 
 func auditScopeSchema() map[string]interface{} {
 	return closedObjectSchema(map[string]interface{}{
-		"categories":   arraySchema(enumSchema("Audit category.", "boundary", "scheduler", "imports", "pipeline", "durability")),
+		"categories":   arraySchema(enumSchema("Audit category.", "boundary", "scheduler", "imports", "pipeline", "semantic", "durability")),
 		"sources":      arraySchema(enumSchema("Configured import source.", "apple-notes", "feeds", "github-stars", "safari-tabs", "x-bookmarks", "youtube-liked", "youtube-watch-later")),
 		"check_ids":    arraySchema(scalarSchema("string", "Stable check identifier.")),
 		"filtered":     scalarSchema("boolean", "Whether report scope was filtered."),
@@ -91,7 +92,7 @@ func auditSummarySchema() map[string]interface{} {
 func auditCheckSchema() map[string]interface{} {
 	return closedObjectSchema(map[string]interface{}{
 		"id":          scalarSchema("string", "Stable registry check identifier."),
-		"category":    enumSchema("Audit category.", "boundary", "scheduler", "imports", "pipeline", "durability"),
+		"category":    enumSchema("Audit category.", "boundary", "scheduler", "imports", "pipeline", "semantic", "durability"),
 		"status":      auditStatusSchema(true),
 		"confidence":  auditConfidenceSchema(),
 		"required":    scalarSchema("boolean", "Whether check contributes to required health."),
@@ -117,20 +118,44 @@ func auditEvidenceSchema() map[string]interface{} {
 			if _, exists := properties[name]; exists {
 				continue
 			}
-			properties[name] = auditEvidenceValueSchema(kind)
+			properties[name] = auditEvidenceValueSchema(name, kind)
 		}
 	}
 	return closedObjectSchema(properties)
 }
 
-func auditEvidenceValueSchema(kind audit.EvidenceKind) map[string]interface{} {
+func auditEvidenceValueSchema(name string, kind audit.EvidenceKind) map[string]interface{} {
 	switch kind {
 	case audit.EvidenceInteger:
 		return nonnegativeIntegerSchema()
 	case audit.EvidenceBoolean:
 		return scalarSchema("boolean", "")
-	case audit.EvidenceTimestamp, audit.EvidenceEnum:
+	case audit.EvidenceTimestamp:
 		return scalarSchema("string", "")
+	case audit.EvidenceEnum:
+		if values, ok := semanticEvidenceEnums[name]; ok {
+			return enumSchema("Closed semantic audit value.", values...)
+		}
+		return scalarSchema("string", "")
+	case audit.EvidenceIdentifier:
+		if name == "profile_id" {
+			return map[string]interface{}{"type": "string", "maxLength": 85, "pattern": `^embedding-profile-v1:[0-9a-f]{64}$`}
+		}
+		if name == "active_generation_id" {
+			return map[string]interface{}{"type": "string", "maxLength": 49, "pattern": `^(?:none|semantic-root-v1:[0-9a-f]{32})$`}
+		}
+		return map[string]interface{}{"type": "string", "maxLength": 128, "pattern": `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`}
+	case audit.EvidenceSemanticStages:
+		stages := []string{"projection", "embedding", "flush", "compaction", "verification", "readiness"}
+		prefix := make([]interface{}, 0, len(stages))
+		for _, stage := range stages {
+			prefix = append(prefix, closedObjectSchema(map[string]interface{}{
+				"stage":            enumSchema("Fixed semantic refresh stage.", stage),
+				"status":           enumSchema("Closed semantic stage outcome.", "succeeded", "failed", "canceled", "skipped", "unknown"),
+				"duration_seconds": nonnegativeIntegerSchema(),
+			}, "stage", "status", "duration_seconds"))
+		}
+		return map[string]interface{}{"type": "array", "minItems": len(stages), "maxItems": len(stages), "prefixItems": prefix, "items": false}
 	case audit.EvidenceDaily:
 		return arraySchema(closedObjectSchema(map[string]interface{}{
 			"day": scalarSchema("string", "UTC day."), "created": nonnegativeIntegerSchema(), "updated": nonnegativeIntegerSchema(),
@@ -148,6 +173,14 @@ func auditEvidenceValueSchema(kind audit.EvidenceKind) map[string]interface{} {
 	default:
 		return map[string]interface{}{"type": "null"}
 	}
+}
+
+var semanticEvidenceEnums = map[string][]string{
+	"capability":          {"available", "disabled", "unsupported", "unavailable"},
+	"backend":             {"ollama", "none", "unsupported"},
+	"readiness":           {"ready", "catching_up", "needs_projection", "needs_embeddings", "needs_index", "retry_scheduled", "building", "stale", "degraded_blocked", "corrupt", "disabled", "unavailable"},
+	"refresh_state":       {"succeeded", "failed", "canceled", "running", "skipped", "unsupported", "unknown"},
+	"semantic_error_code": {"semantic_backend_broken", "semantic_run_conflict", "semantic_projection_failed", "semantic_embedding_failed", "semantic_embedding_circuit_open", "semantic_flush_failed", "semantic_compaction_failed", "semantic_verify_failed", "semantic_native_root_failed", "semantic_readiness_not_ready", "semantic_lock_unavailable", "semantic_refresh_cancelled", "semantic_refresh_failed"},
 }
 
 func auditStatusSchema(includeSkipped bool) map[string]interface{} {
@@ -178,6 +211,14 @@ func validateJSONSchemaValue(schema map[string]interface{}, value interface{}) e
 	}
 	if value == nil {
 		return nil
+	}
+	if text, ok := value.(string); ok {
+		if max, ok := schema["maxLength"].(int); ok && len(text) > max {
+			return fmt.Errorf("string exceeds max length")
+		}
+		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(text) {
+			return fmt.Errorf("string does not match pattern")
+		}
 	}
 	if values, ok := schema["enum"].([]interface{}); ok {
 		matched := false
@@ -220,6 +261,23 @@ func validateJSONSchemaValue(schema map[string]interface{}, value interface{}) e
 			}
 		}
 	case []interface{}:
+		if min, ok := schema["minItems"].(int); ok && len(typed) < min {
+			return fmt.Errorf("array has fewer than %d items", min)
+		}
+		if max, ok := schema["maxItems"].(int); ok && len(typed) > max {
+			return fmt.Errorf("array has more than %d items", max)
+		}
+		if prefix, ok := schema["prefixItems"].([]interface{}); ok {
+			for index, child := range typed {
+				if index >= len(prefix) {
+					return fmt.Errorf("item %d is forbidden", index)
+				}
+				if err := validateJSONSchemaValue(prefix[index].(map[string]interface{}), child); err != nil {
+					return fmt.Errorf("item %d: %w", index, err)
+				}
+			}
+			return nil
+		}
 		items, _ := schema["items"].(map[string]interface{})
 		for index, child := range typed {
 			if err := validateJSONSchemaValue(items, child); err != nil {

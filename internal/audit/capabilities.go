@@ -41,8 +41,12 @@ type Features struct {
 	SQLiteCredentialConfigured        bool
 	SQLiteResolutionError             bool
 	OKFEnabled                        bool
-	Timeouts                          map[TimeoutClass]time.Duration
-	RemoteRequestTimeout              time.Duration
+	// SemanticConfigured is intentionally separate from feature eligibility:
+	// semantic audit checks stay visible when disabled or unsupported.
+	SemanticConfigured          bool
+	SemanticCapabilityAvailable bool
+	Timeouts                    map[TimeoutClass]time.Duration
+	RemoteRequestTimeout        time.Duration
 }
 
 type KindPartition struct {
@@ -142,6 +146,114 @@ type Dependencies struct {
 	Media          MediaArchiveInspector
 	MediaErrorCode ErrorCode
 	OKF            OKFInspector
+	Semantic       SemanticInspector
 	Runtime        RuntimeVersion
 	Clock          func() time.Time
+}
+
+// SemanticInspector is the bounded query-only seam populated by the app
+// adapter. It deliberately carries only evidence fields declared by the v2
+// registry; raw run IDs, paths, checkpoints, and error text do not cross it.
+type SemanticInspector interface {
+	InspectAuditSemantic(context.Context) (SemanticAuditSnapshot, error)
+}
+
+type SemanticAuditSnapshot struct {
+	Configured, CapabilityAvailable bool
+	Backend                         SemanticBackend
+	ProfileID                       SemanticProfileIdentifier
+	ActiveGenerationID              SemanticGenerationIdentifier
+	Readiness                       SemanticReadiness
+	DirtyParentCount                int
+	PendingParentCount              int
+	DueEmbeddingCount               int
+	BlockedEmbeddingCount           int
+	FailedEmbeddingCount            int
+	IndexedVectorCount              int
+	L0VectorCount                   int
+	TombstoneCount                  int
+	SegmentCount                    int
+	Latest                          SemanticRefreshSnapshot
+}
+
+type SemanticRefreshSnapshot struct {
+	State                                                         SemanticRefreshState
+	StartedAt, CompletedAt, FailureAt                             time.Time
+	Duration                                                      time.Duration
+	ErrorCode                                                     SemanticErrorCode
+	CountersComplete                                              bool
+	ProjectedParentCount, EmbeddedChunkCount                      int
+	FlushedVectorCount, CompactedVectorCount, VerifiedVectorCount int
+	SuccessorRunCount                                             int
+	Stages                                                        []SemanticStageSnapshot
+}
+
+type SemanticStageSnapshot struct {
+	Stage    SemanticStage
+	Status   SemanticStageStatus
+	Duration time.Duration
+}
+
+type SemanticBackend string
+type SemanticGenerationIdentifier string
+type SemanticProfileIdentifier string
+type SemanticIdentifier string
+type SemanticReadiness string
+type SemanticRefreshState string
+type SemanticErrorCode string
+type SemanticStage string
+type SemanticStageStatus string
+
+// Valid applies the same closed, content-free identifier boundary enforced
+// for semantic evidence before adapters bind store values to audit snapshots.
+func (v SemanticIdentifier) Valid() bool { return semanticIdentifierPattern.MatchString(string(v)) }
+
+func (v SemanticGenerationIdentifier) Valid() bool {
+	return semanticGenerationIdentifierPattern.MatchString(string(v))
+}
+
+func (v SemanticProfileIdentifier) Valid() bool {
+	return semanticProfileIdentifierPattern.MatchString(string(v))
+}
+
+func (v SemanticBackend) Valid() bool { return v == "ollama" || v == "none" || v == "unsupported" }
+func (v SemanticReadiness) Valid() bool {
+	switch v {
+	case "ready", "catching_up", "needs_projection", "needs_embeddings", "needs_index", "retry_scheduled", "building", "stale", "degraded_blocked", "corrupt", "disabled", "unavailable":
+		return true
+	default:
+		return false
+	}
+}
+func (v SemanticRefreshState) Valid() bool {
+	switch v {
+	case "succeeded", "failed", "canceled", "running", "skipped", "unsupported", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+func (v SemanticStage) Valid() bool {
+	switch v {
+	case "projection", "embedding", "flush", "compaction", "verification", "readiness":
+		return true
+	default:
+		return false
+	}
+}
+func (v SemanticStageStatus) Valid() bool {
+	switch v {
+	case "succeeded", "failed", "canceled", "skipped", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+func (v SemanticErrorCode) Valid() bool {
+	switch v {
+	case "semantic_backend_broken", "semantic_run_conflict", "semantic_projection_failed", "semantic_embedding_failed", "semantic_embedding_circuit_open", "semantic_flush_failed", "semantic_compaction_failed", "semantic_verify_failed", "semantic_native_root_failed", "semantic_readiness_not_ready", "semantic_lock_unavailable", "semantic_refresh_cancelled", "semantic_refresh_failed":
+		return true
+	default:
+		return false
+	}
 }

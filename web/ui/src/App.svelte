@@ -8,6 +8,7 @@
   import AuditImporters from "./components/AuditImporters.svelte";
   import AuditOverview from "./components/AuditOverview.svelte";
   import AuditPipeline from "./components/AuditPipeline.svelte";
+  import AuditSemantic from "./lib/AuditSemantic.svelte";
   import DetailPanel from "./components/DetailPanel.svelte";
   import GraphView from "./components/GraphView.svelte";
   import MarkdownView from "./components/MarkdownView.svelte";
@@ -16,7 +17,7 @@
   import ResultList from "./components/ResultList.svelte";
   import StatsBar from "./components/StatsBar.svelte";
   import { addLink, compareResearchTrace, createChatShare, deleteChatShare, getAuditHistory, getAuditLatest, getAuditRun, getBootstrap, getLookup, getSourceActivity, listChatShares, listResearchTraces, researchBrain, runResearch as runResearchRunner, saveChatTranscript, searchBrain, startAuditRun, synthesizeResearch } from "./lib/api.js";
-  import { applyRunMonitoringUnknown, applyRunStatus, auditRunBlocksStart, freshnessDeadlineElapsed, freshnessRefreshDelayMs, markEnvelopeStale, overallHealth, runGenerationStableRead, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline } from "./lib/audit.js";
+  import { applyRunMonitoringUnknown, applyRunStatus, auditRunBlocksStart, freshnessDeadlineElapsed, freshnessRefreshDelayMs, markEnvelopeStale, overallHealth, runGenerationStableRead, selectDurability, selectFindings, selectHistory, selectImporters, selectOverview, selectPipeline, selectSemantic } from "./lib/audit.js";
   import { buildChatRetrievalQuestion, buildChatTraceContinuity, mergeResearchPackForChat, normalizeStoredChatSession } from "./lib/chat.js";
   import { confirmShareDeletion, createShareListGeneration, nextShareDeleteState, removeDeletedShareReferences } from "./lib/chatShares.js";
   import { normalizeLookupKey } from "./lib/sourceKeys.js";
@@ -175,6 +176,7 @@
   $: auditOverview = selectOverview(standardEnvelope);
   $: auditImporters = selectImporters(standardEnvelope?.report);
   $: auditPipeline = selectPipeline(standardEnvelope?.report);
+  $: auditSemantic = selectSemantic(standardEnvelope?.report);
   $: auditDurability = selectDurability(standardEnvelope?.report);
   $: auditFindings = selectFindings(standardEnvelope?.report);
   $: auditHistory = selectHistory(standardHistoryResponse);
@@ -2088,6 +2090,7 @@
         <AuditPipeline stages={auditPipeline} />
       </div>
 
+      <AuditSemantic semantic={auditSemantic} />
       <AuditDurability cards={auditDurability} />
       <AuditFindings findings={auditFindings} />
       <AuditHistory history={auditHistory} loading={auditHistoryState === "loading"} error={auditHistoryError} />

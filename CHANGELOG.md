@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Semantic audit and admin visibility (2026-08-05)
+
+- **Bounded semantic audit evidence**: Standard reports now use
+  `dbrain.audit.v2` to expose semantic retrieval readiness, the latest attached
+  refresh, and fixed stage activity without including paths, raw identifiers,
+  or unbounded metric data. The authenticated System page renders the same
+  semantic section; stored `dbrain.audit.v1` reports remain supported as
+  explicitly legacy reports.
+
 ### Unified sync and semantic refresh observability (2026-08-04)
 
 - **One truthful sync boundary**: `sync all` now keeps its lock, progress UI,

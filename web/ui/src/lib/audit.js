@@ -55,11 +55,19 @@ const DURABILITY = [
   ["durability.okf_freshness", "okf", "OKF export freshness"],
   ["durability.okf_validation", "okf", "OKF validation"]
 ];
+const SEMANTIC_STAGES = ["projection", "embedding", "flush", "compaction", "verification", "readiness"];
+const SEMANTIC_CAPABILITIES = new Set(["disabled", "available", "unsupported", "unavailable"]);
+const SEMANTIC_BACKENDS = new Set(["none", "ollama", "unsupported"]);
+const SEMANTIC_READINESS = new Set(["ready", "catching_up", "needs_projection", "needs_embeddings", "needs_index", "retry_scheduled", "building", "stale", "degraded_blocked", "corrupt", "disabled", "unavailable"]);
+const SEMANTIC_REFRESH_STATES = new Set(["unknown", "succeeded", "failed", "canceled", "running", "skipped", "unsupported"]);
+const SEMANTIC_STAGE_STATUSES = new Set(["unknown", "succeeded", "failed", "canceled", "skipped"]);
+const SEMANTIC_ERROR_CODES = new Set(["semantic_backend_broken", "semantic_run_conflict", "semantic_projection_failed", "semantic_embedding_failed", "semantic_embedding_circuit_open", "semantic_flush_failed", "semantic_compaction_failed", "semantic_verify_failed", "semantic_native_root_failed", "semantic_readiness_not_ready", "semantic_lock_unavailable", "semantic_refresh_cancelled", "semantic_refresh_failed", "unavailable", "timeout", "canceled", "interrupted", "read_error", "parse_error", "budget_exhausted", "configuration_error", "credential_resolution_error", "destination_rejected", "listing_incomplete", "manifest_error", "database_error"]);
+const STANDARD_AUDIT_SCHEMAS = new Set(["dbrain.audit.v1", "dbrain.audit.v2"]);
 
 export function overallHealth(envelope) {
   const report = envelope?.report || null;
   if (!report) return { state: "absent", status: "unknown", reason: envelope?.freshness?.reason || "not_found", report: null };
-  if (report.schema !== "dbrain.audit.v1") return { state: "unknown", status: "unknown", reason: "invalid_schema", report };
+  if (!STANDARD_AUDIT_SCHEMAS.has(report.schema)) return { state: "unknown", status: "unknown", reason: "invalid_schema", report };
   if (report.profile !== "standard") return { state: "unknown", status: "unknown", reason: "not_standard", report };
   if (!report.scope?.whole_system || report.scope?.filtered) return { state: "unknown", status: "unknown", reason: "invalid_scope", report };
   if (envelope?.freshness?.status !== "current") {
@@ -217,9 +225,28 @@ export function selectPipeline(report) {
   });
 }
 
+export function selectSemantic(report) {
+  if (report?.schema !== "dbrain.audit.v2") return { state: "legacy", current: null, latest: null, stages: [] };
+  const checks = checkMap(report);
+  const readiness = checks.get("semantic.current_readiness");
+  const latest = checks.get("semantic.latest_attached_refresh");
+  const stageSummary = checks.get("semantic.stage_summary");
+  if (!readiness && !latest && !stageSummary) return { state: "incomplete", current: null, latest: null, stages: [] };
+
+  const current = readiness ? semanticCurrent(readiness.evidence) : null;
+  const activity = latest ? semanticLatest(latest.evidence, latest.error_code) : null;
+  const stages = stageSummary ? semanticStages(stageSummary.evidence?.stages) : [];
+  let state = "incomplete";
+  if (current?.capability === "disabled") state = "disabled";
+  else if (current?.capability === "unsupported") state = "unsupported";
+  else if (current?.capability === "unavailable") state = "unavailable";
+  else if (current?.capability === "available" && activity && stages.length === SEMANTIC_STAGES.length) state = "available";
+  return { state, current, latest: activity, stages };
+}
+
 export function selectOverview(envelope) {
   const report = envelope?.report;
-  if (!report || report.schema !== "dbrain.audit.v1" || report.profile !== "standard" || !report.scope?.whole_system || report.scope?.filtered) return null;
+  if (!report || !STANDARD_AUDIT_SCHEMAS.has(report.schema) || report.profile !== "standard" || !report.scope?.whole_system || report.scope?.filtered) return null;
   const latestSync = checkMap(report).get("scheduler.latest_sync");
   return {
     auditID: String(report.audit_id || ""),
@@ -360,4 +387,61 @@ function pickNumbers(source, keys) {
 function safeThreshold(value) {
   if (!value || typeof value !== "object") return null;
   return pickNumbers(value, ["warn_after_seconds", "fail_after_seconds"]);
+}
+
+function semanticCurrent(evidence) {
+  return {
+    configured: typeof evidence?.configured === "boolean" ? evidence.configured : null,
+    capability: safeEnum(evidence?.capability, SEMANTIC_CAPABILITIES, "unavailable"),
+    backend: safeEnum(evidence?.backend, SEMANTIC_BACKENDS, "none"),
+    profileID: safeProfileIdentifier(evidence?.profile_id),
+    activeGenerationID: safeGenerationIdentifier(evidence?.active_generation_id),
+    readiness: safeEnum(evidence?.readiness, SEMANTIC_READINESS, "unavailable"),
+    debt: pickNumbers(evidence, ["dirty_parent_count", "pending_parent_count", "due_embedding_count", "blocked_embedding_count", "failed_embedding_count"]),
+    shape: pickNumbers(evidence, ["indexed_vector_count", "l0_vector_count", "tombstone_count", "segment_count"])
+  };
+}
+
+function semanticLatest(evidence, errorCode) {
+  return {
+    refreshState: safeEnum(evidence?.refresh_state, SEMANTIC_REFRESH_STATES, "unknown"),
+    startedAt: safeTimestamp(evidence?.started_at), completedAt: safeTimestamp(evidence?.completed_at), failureAt: safeTimestamp(evidence?.failure_at),
+    ageSeconds: numberOrNull(evidence?.age_seconds), durationSeconds: numberOrNull(evidence?.duration_seconds),
+    errorCode: safeEnum(evidence?.semantic_error_code, SEMANTIC_ERROR_CODES, safeEnum(errorCode, SEMANTIC_ERROR_CODES, "")),
+    counts: {
+      projectedParents: numberOrNull(evidence?.projected_parent_count), embeddedChunks: numberOrNull(evidence?.embedded_chunk_count),
+      flushedVectors: numberOrNull(evidence?.flushed_vector_count), compactedVectors: numberOrNull(evidence?.compacted_vector_count),
+      verifiedVectors: numberOrNull(evidence?.verified_vector_count), successorRuns: numberOrNull(evidence?.successor_run_count)
+    }
+  };
+}
+
+function semanticStages(value) {
+  if (!Array.isArray(value) || value.length !== SEMANTIC_STAGES.length) return [];
+  const rows = new Map();
+  for (const row of value) {
+    if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).length !== 3 || !SEMANTIC_STAGES.includes(row.stage) || !SEMANTIC_STAGE_STATUSES.has(row.status) || numberOrNull(row.duration_seconds) == null || rows.has(row.stage)) return [];
+    rows.set(row.stage, { stage: row.stage, status: row.status, durationSeconds: row.duration_seconds });
+  }
+  return SEMANTIC_STAGES.map((stage) => rows.get(stage)).filter(Boolean);
+}
+
+function safeEnum(value, allowed, fallback) {
+  return typeof value === "string" && allowed.has(value) ? value : fallback;
+}
+
+function safeProfileIdentifier(value) {
+  return typeof value === "string" && /^(?:none|embedding-profile-v1:[0-9a-f]{64})$/.test(value) ? value : "";
+}
+
+function safeGenerationIdentifier(value) {
+  return typeof value === "string" && /^(?:none|semantic-root-v1:[0-9a-f]{32})$/.test(value) ? value : "";
+}
+
+function safeIdentifier(value) {
+  return typeof value === "string" && /^(?:none|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.test(value) ? value : "";
+}
+
+function safeTimestamp(value) {
+  return typeof value === "string" && value.length <= 35 && value.endsWith("Z") && !Number.isNaN(Date.parse(value)) ? value : "";
 }

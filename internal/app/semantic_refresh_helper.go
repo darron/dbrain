@@ -29,6 +29,7 @@ type semanticRefreshDeps struct {
 	nativeLifecycle func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error)
 	runRefresh      func(context.Context, semanticrefresh.RunLedger, semanticrefresh.StageExecutor, semanticrefresh.Request) (semanticrefresh.Result, error)
 	now             func() time.Time
+	startedAt       time.Time
 	embeddingBatch  int
 }
 
@@ -58,7 +59,10 @@ func runConfiguredSemanticRefresh(
 	progress semanticrefresh.ProgressCallback,
 ) (result semanticrefresh.Result, resultErr error) {
 	deps = completeSemanticRefreshDeps(deps)
-	startedAt := deps.now()
+	startedAt := deps.startedAt.UTC()
+	if startedAt.IsZero() {
+		startedAt = deps.now()
+	}
 	defer func() {
 		result.StartedAt = startedAt
 		result.CompletedAt = deps.now()

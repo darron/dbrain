@@ -93,6 +93,7 @@ type Snapshot struct {
 	ObservedL0ReadyCount                 int       `json:"observed_l0_ready_count"`
 	ActiveIndexedCount                   int       `json:"active_indexed_count"`
 	ActiveTombstones                     int       `json:"active_tombstones"`
+	ActiveSegmentCount                   int       `json:"active_segment_count"`
 	ActiveGenerationID                   string    `json:"active_generation_id"`
 	ActiveGenerationValid                bool      `json:"active_generation_valid"`
 	ActiveSnapshotRevision               int64     `json:"active_snapshot_revision"`

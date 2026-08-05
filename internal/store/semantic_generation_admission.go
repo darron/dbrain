@@ -57,7 +57,7 @@ const activeSemanticGenerationSegmentCatalogQuery = `
 
 func proveActiveSemanticGenerationMetadata(
 	ctx context.Context,
-	tx *sql.Tx,
+	q sqlQueryer,
 	profile embedding.Profile,
 	snapshot *semanticreadiness.Snapshot,
 ) error {
@@ -67,6 +67,7 @@ func proveActiveSemanticGenerationMetadata(
 	snapshot.ActiveGenerationBackendVersion = ""
 	snapshot.ActiveGenerationDistanceMetric = ""
 	snapshot.ActiveGenerationDimensions = 0
+	snapshot.ActiveSegmentCount = 0
 	snapshot.ActiveGenerationRootDescriptorSHA256 = ""
 	if snapshot.ActiveGenerationID == "" {
 		snapshot.ActiveGenerationValid = true
@@ -79,7 +80,7 @@ func proveActiveSemanticGenerationMetadata(
 
 	var generationProfileID, buildStatus, sourceManifestHash, relativeCachePath string
 	var active, indexedChunkCount int
-	err := tx.QueryRowContext(ctx, activeSemanticGenerationMetadataQuery, snapshot.ActiveGenerationID).Scan(
+	err := q.QueryRowContext(ctx, activeSemanticGenerationMetadataQuery, snapshot.ActiveGenerationID).Scan(
 		&generationProfileID, &active, &buildStatus, &snapshot.ActiveGenerationBackend,
 		&snapshot.ActiveGenerationBackendVersion, &snapshot.ActiveGenerationDimensions,
 		&snapshot.ActiveGenerationDistanceMetric, &indexedChunkCount, &sourceManifestHash, &relativeCachePath,
@@ -118,11 +119,12 @@ func proveActiveSemanticGenerationMetadata(
 	}
 
 	var segmentCount, segmentIndexedCount, segmentMismatches int
-	if err := tx.QueryRowContext(ctx, activeSemanticGenerationSegmentsQuery, snapshot.ActiveGenerationID).Scan(
+	if err := q.QueryRowContext(ctx, activeSemanticGenerationSegmentsQuery, snapshot.ActiveGenerationID).Scan(
 		&segmentCount, &segmentIndexedCount, &segmentMismatches,
 	); err != nil {
 		return fmt.Errorf("prove active semantic generation segments: %w", err)
 	}
+	snapshot.ActiveSegmentCount = segmentCount
 	switch {
 	case segmentCount == 0:
 		return fail("active generation has no segments")
@@ -135,10 +137,10 @@ func proveActiveSemanticGenerationMetadata(
 	}
 
 	var databaseID string
-	if err := tx.QueryRowContext(ctx, `SELECT database_id FROM retrieval_state WHERE singleton=1`).Scan(&databaseID); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT database_id FROM retrieval_state WHERE singleton=1`).Scan(&databaseID); err != nil {
 		return fmt.Errorf("read active semantic generation database ID: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx, activeSemanticGenerationSegmentCatalogQuery, snapshot.ActiveGenerationID)
+	rows, err := q.QueryContext(ctx, activeSemanticGenerationSegmentCatalogQuery, snapshot.ActiveGenerationID)
 	if err != nil {
 		return fmt.Errorf("read active semantic generation segment catalog: %w", err)
 	}

@@ -462,13 +462,18 @@ dbrain audit github-stars --json
 dbrain audit apple-notes --json
 ```
 
-The stable `dbrain.audit.v1` report covers target/build identity, SQLite
-integrity, scheduler continuity, importer polling/arrivals, pipeline
-partitions/provenance, media durability, SQLite backup age, and OKF health.
-The command uses a query-only SQLite snapshot and bounded metrics/remote
-metadata reads. Exit codes are 0 pass, 1 warn, 2 fail, and 3 unknown or
-bootstrap/configuration failure. See [COMMANDS.md](COMMANDS.md#dbrain-audit)
-for profiles, category scopes, privacy rules, and flags.
+The current stable `dbrain.audit.v2` report covers target/build identity,
+SQLite integrity, scheduler continuity, importer polling/arrivals, pipeline
+partitions/provenance, semantic retrieval readiness and bounded refresh-stage
+activity, media durability, SQLite backup age, and OKF health. Semantic
+readiness and the latest attached refresh are required only when semantic
+retrieval is both configured and supported; the fixed six-stage activity
+summary is informational. Stored `dbrain.audit.v1` reports remain readable as
+legacy reports and intentionally have no semantic section. The command uses a
+query-only SQLite snapshot and bounded metrics/remote metadata reads. Exit
+codes are 0 pass, 1 warn, 2 fail, and 3 unknown or bootstrap/configuration
+failure. See [COMMANDS.md](COMMANDS.md#dbrain-audit) for profiles, category
+scopes, privacy rules, and flags.
 
 Local stdio agents, and remote agents using bearer-authenticated HTTP/tsnet,
 can read the same bounded report through MCP `dbrain_audit`. Its default `fast`
@@ -502,9 +507,12 @@ The authenticated **System** page presents the current exact-profile standard
 report as the sole whole-system health authority. It keeps a fast local refresh
 separate, renders poll cadence separately from arrivals, preserves current,
 pending, blocked, terminal, failed, and unknown pipeline outcomes, and uses the
-exact media, SQLite archive, and OKF audit checks for durability. Stale or
-absent standard reports remain visibly unknown; a newer fast pass cannot make
-them current. The legacy `backlog.drained` signal remains available as
+exact semantic, media, SQLite archive, and OKF audit checks for whole-system
+health. Its semantic section keeps readiness separate from refresh activity and
+uses only bounded report evidence; v1 reports show an explicit legacy
+unavailable state instead of invented semantic health. Stale or absent standard
+reports remain visibly unknown; a newer fast pass cannot make them current. The
+legacy `backlog.drained` signal remains available as
 **Source backlog drained** and is explicitly scoped to X hydration, link
 discovery, source extraction, and source summary—not whole-system health.
 

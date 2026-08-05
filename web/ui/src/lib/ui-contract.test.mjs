@@ -10,7 +10,9 @@ const statsSource = readFileSync(resolve(here, "../components/StatsBar.svelte"),
 const overviewSource = readFileSync(resolve(here, "../components/AuditOverview.svelte"), "utf8");
 const pipelineSource = readFileSync(resolve(here, "../components/AuditPipeline.svelte"), "utf8");
 const durabilitySource = readFileSync(resolve(here, "../components/AuditDurability.svelte"), "utf8");
-const auditComponentNames = ["AuditOverview", "AuditImporters", "AuditPipeline", "AuditDurability", "AuditFindings", "AuditHistory"];
+const semanticSource = readFileSync(resolve(here, "../lib/AuditSemantic.svelte"), "utf8");
+const appCSS = readFileSync(resolve(here, "../app.css"), "utf8");
+const auditComponentNames = ["AuditOverview", "AuditImporters", "AuditPipeline", "AuditSemantic", "AuditDurability", "AuditFindings", "AuditHistory"];
 
 test("chat is default and research is absent from primary mode tabs", () => {
   assert.match(appSource, /let inputMode = "chat"/);
@@ -59,6 +61,16 @@ test("admin audit surface loads saved reports only and cancels polling on destro
   assert.match(overviewSource, /status unavailable · audit may still be running/);
   assert.match(pipelineSource, /pending age \{stage\.pendingStatus\}/);
   assert.match(durabilitySource, /Disabled by configuration/);
+  assert.match(appSource, /<AuditSemantic semantic=\{auditSemantic\}/);
+  assert.ok(appSource.indexOf("<AuditPipeline") < appSource.indexOf("<AuditSemantic") && appSource.indexOf("<AuditSemantic") < appSource.indexOf("<AuditDurability"), "semantic audit is full-width between pipeline/import cadence and durability");
+  assert.match(semanticSource, /Semantic audit unavailable in this legacy report/);
+  assert.match(semanticSource, /\{#each semantic\.stages as stage\}/);
+  assert.match(semanticSource, /Successful zero-work remains a healthy refresh/);
+  assert.match(appCSS, /\.audit-semantic\s*\{[^}]*grid-column:\s*1\s*\/\s*-1;[^}]*width:\s*100%;[^}]*min-width:\s*0;/);
+  assert.match(appCSS, /\.semantic-health-grid, \.semantic-activity-grid, \.semantic-stage-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(appCSS, /@media \(max-width: 1100px\)[\s\S]*\.semantic-health-grid, \.semantic-activity-grid, \.semantic-stage-grid\s*\{[^}]*repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(appCSS, /@media \(max-width: 760px\)[\s\S]*\.semantic-health-grid,[\s\S]*\.semantic-stage-grid,[\s\S]*grid-template-columns:\s*1fr/);
+  assert.match(appCSS, /\.semantic-identifier\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*word-break:\s*break-word;/);
 });
 
 test("legacy drained signal is explicitly scoped away from whole-system health", () => {
@@ -69,7 +81,7 @@ test("legacy drained signal is explicitly scoped away from whole-system health",
 
 test("audit components render text without raw HTML", () => {
   for (const name of auditComponentNames) {
-    const source = readFileSync(resolve(here, `../components/${name}.svelte`), "utf8");
+    const source = name === "AuditSemantic" ? semanticSource : readFileSync(resolve(here, `../components/${name}.svelte`), "utf8");
     assert.doesNotMatch(source, /\{@html/);
     assert.doesNotMatch(source, /https?:\/\//);
   }

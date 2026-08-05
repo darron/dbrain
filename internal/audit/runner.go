@@ -17,35 +17,40 @@ var ErrDeepUnsupported = errors.New("deep audit requires the explicit RunDeep CL
 var errCapabilityUnavailable = errors.New("audit capability unavailable")
 
 type runState struct {
-	now                    time.Time
-	req                    Request
-	deps                   Dependencies
-	database               DatabaseInspection
-	databaseIdentityErr    error
-	databaseIntegrityErr   error
-	metrics                metrics.Window
-	metricsErr             error
-	pipeline               map[PipelineStage]PipelineEvidence
-	pipelineErr            error
-	provenance             map[CheckID]ProvenanceEvidence
-	provenanceErr          error
-	local                  MediaLocalEvidence
-	localErr               error
-	media                  []ArchivedMediaRecord
-	mediaErr               error
-	okfFast, okfFull       OKFInspection
-	okfFastErr, okfFullErr error
-	archives               SQLiteArchiveListing
-	archivesErr            error
-	deep                   *DeepDependencies
-	deepMedia              deepMediaResult
-	deepMediaErr           error
-	deepMediaErrorCode     ErrorCode
-	deepArchive            DeepArchiveResult
-	deepArchiveErr         error
-	deepCleanupComplete    bool
-	deepCleanupAttempted   bool
-	upstream               map[Source]upstreamObservation
+	now                             time.Time
+	req                             Request
+	deps                            Dependencies
+	database                        DatabaseInspection
+	databaseIdentityErr             error
+	databaseIntegrityErr            error
+	metrics                         metrics.Window
+	metricsErr                      error
+	semantic                        SemanticAuditSnapshot
+	semanticErr                     error
+	semanticActivityPresent         bool
+	semanticTerminalIncomplete      bool
+	semanticStageActivityIncomplete bool
+	pipeline                        map[PipelineStage]PipelineEvidence
+	pipelineErr                     error
+	provenance                      map[CheckID]ProvenanceEvidence
+	provenanceErr                   error
+	local                           MediaLocalEvidence
+	localErr                        error
+	media                           []ArchivedMediaRecord
+	mediaErr                        error
+	okfFast, okfFull                OKFInspection
+	okfFastErr, okfFullErr          error
+	archives                        SQLiteArchiveListing
+	archivesErr                     error
+	deep                            *DeepDependencies
+	deepMedia                       deepMediaResult
+	deepMediaErr                    error
+	deepMediaErrorCode              ErrorCode
+	deepArchive                     DeepArchiveResult
+	deepArchiveErr                  error
+	deepCleanupComplete             bool
+	deepCleanupAttempted            bool
+	upstream                        map[Source]upstreamObservation
 }
 
 func (s *runState) observedAt() time.Time {
@@ -77,6 +82,7 @@ func init() {
 	bind([]CheckID{CheckPipelineHydrationPartition, CheckPipelineHydrationPendingAge, CheckPipelineExtractionPartition, CheckPipelineExtractionPendingAge, CheckPipelineSummaryPartition, CheckPipelineSummaryPendingAge, CheckPipelineTranscriptionPartition, CheckPipelineTranscriptionPendingAge, CheckPipelineOCRPartition, CheckPipelineOCRPendingAge, CheckPipelineItemSummaryProvenance, CheckPipelineItemOCRProvenance, CheckPipelineXMediaTranscriptProvenance, CheckPipelineSourceSummaryProvenance}, executePipeline)
 	bind([]CheckID{CheckDurabilityMediaLocalCoverage, CheckDurabilityMediaRemote, CheckDurabilitySQLiteBackupConfiguration, CheckDurabilitySQLiteBackupAge, CheckDurabilityOKFFreshness, CheckDurabilityOKFValidation}, executeDurability)
 	bind([]CheckID{CheckDurabilityMediaRemoteOnly, CheckDurabilitySQLiteRestore}, executeDeep)
+	bind([]CheckID{CheckSemanticCurrentReadiness, CheckSemanticLatestAttachedRefresh, CheckSemanticStageSummary}, executeSemantic)
 	for id := range upstreamCheckSources {
 		executors[id] = executeUpstream
 	}
@@ -228,13 +234,24 @@ func (s *runState) load(ctx context.Context) {
 			s.databaseIntegrityErr = errCapabilityUnavailable
 		}
 	}
-	if selectedCategory(CategoryScheduler) || selectedCategory(CategoryImports) {
+	needSemantic := selectedCategory(CategorySemantic)
+	if selectedCategory(CategoryScheduler) || selectedCategory(CategoryImports) || needSemantic {
 		if s.deps.Metrics != nil {
 			s.metrics, s.metricsErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutMetricsOrManifest, s.deps.Features.Timeouts), func(child context.Context) (metrics.Window, error) {
 				return s.deps.Metrics.Read(child, s.now.Add(-s.req.Since))
 			})
 		} else {
 			s.metricsErr = errCapabilityUnavailable
+		}
+	}
+	if needSemantic {
+		if s.deps.Semantic == nil {
+			s.semanticErr = errCapabilityUnavailable
+		} else {
+			s.semantic, s.semanticErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery, s.deps.Features.Timeouts), s.deps.Semantic.InspectAuditSemantic)
+		}
+		if s.semanticErr == nil && s.metricsErr == nil {
+			s.semanticActivityPresent, s.semanticTerminalIncomplete, s.semanticStageActivityIncomplete = attachSemanticActivity(&s.semantic, s.metrics.Semantic, s.now)
 		}
 	}
 	needPipeline := false
@@ -341,7 +358,7 @@ func effectiveScope(req Request) Scope {
 	declareExactChecks := len(req.CheckIDs) > 0 || (filtered && strings.TrimSpace(req.ExpectCommit) != "")
 	s := Scope{Categories: []Category{}, Sources: []Source{}, CheckIDs: []CheckID{}, Filtered: filtered, WholeSystem: !filtered}
 	if !filtered {
-		s.Categories = []Category{CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability}
+		s.Categories = []Category{CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability, CategorySemantic}
 		s.Sources = append(s.Sources, allSources...)
 		return s
 	}
@@ -420,6 +437,8 @@ func isRequired(e RegistryEntry, f Features, req Request) bool {
 		return f.SQLiteBackupSchedulerEnabled || f.SQLiteBackupAuditRequired
 	case RequiredOKF:
 		return f.OKFEnabled
+	case RequiredSemantic:
+		return f.SemanticConfigured && f.SemanticCapabilityAvailable
 	default:
 		return false
 	}
@@ -448,6 +467,8 @@ func featureEnabled(e RegistryEntry, f Features, req Request) bool {
 		return f.SQLiteBackupSchedulerEnabled || f.SQLiteBackupAuditRequired
 	case RequiredOKF:
 		return f.OKFEnabled
+	case RequiredSemantic:
+		return true
 	}
 	if e.ID == CheckDurabilitySQLiteBackupConfiguration {
 		return f.SQLiteArchiveCapabilityConfigured

@@ -5,18 +5,143 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/darron/dbrain/internal/audit"
+	"github.com/darron/dbrain/internal/embedding"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/okf"
+	"github.com/darron/dbrain/internal/semanticbuild"
+	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
+	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/sqlitearchive"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vaultfs"
 )
 
 type auditSnapshotAdapter struct{ snapshot *store.AuditReadSnapshot }
+
+type auditSemanticInspector struct {
+	rootDir           string
+	resolveDiagnostic func(string) (semanticconfig.Config, error)
+	capability        func() semanticindex.Capability
+	readRuntime       func(context.Context, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
+	now               func() time.Time
+}
+
+func newAuditSemanticInspector(rootDir string, snapshot *store.AuditReadSnapshot) audit.SemanticInspector {
+	if snapshot == nil {
+		return nil
+	}
+	return auditSemanticInspector{
+		rootDir: rootDir, resolveDiagnostic: semanticconfig.ResolveDiagnostic,
+		capability: semanticindex.RuntimeCapability, readRuntime: snapshot.SemanticRuntimeReadinessSnapshotAt,
+		now: func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (i auditSemanticInspector) InspectAuditSemantic(ctx context.Context) (audit.SemanticAuditSnapshot, error) {
+	resolve := i.resolveDiagnostic
+	if resolve == nil {
+		resolve = semanticconfig.ResolveDiagnostic
+	}
+	semantic, err := resolve(i.rootDir)
+	if err != nil {
+		return audit.SemanticAuditSnapshot{}, err
+	}
+	configured := strings.TrimSpace(semantic.Model) != "" && semantic.Dimensions > 0
+	if !configured || semantic.Mode == semanticconfig.ModeOff {
+		return audit.SemanticAuditSnapshot{Configured: configured, Backend: "none", Readiness: "disabled"}, nil
+	}
+	profile := semanticbuild.Profile(embedding.Info{
+		Provider: string(semantic.Provider), Model: semantic.Model, Dimensions: semantic.Dimensions,
+	})
+	profileID, err := profile.ID()
+	if err != nil {
+		return audit.SemanticAuditSnapshot{}, err
+	}
+	capability := i.capability
+	if capability == nil {
+		capability = semanticindex.RuntimeCapability
+	}
+	runtimeCapability := capability()
+	base := audit.SemanticAuditSnapshot{Configured: true, ProfileID: audit.SemanticProfileIdentifier(profileID)}
+	switch runtimeCapability.State {
+	case semanticindex.CapabilityUnsupported:
+		base.Backend, base.Readiness = "unsupported", "unavailable"
+		return base, nil
+	case semanticindex.CapabilitySupportedBroken:
+		base.Backend, base.Readiness = "ollama", "unavailable"
+		return base, nil
+	case semanticindex.CapabilitySupportedReady:
+		base.CapabilityAvailable, base.Backend = true, "ollama"
+	default:
+		base.Backend, base.Readiness = "ollama", "unavailable"
+		return base, nil
+	}
+	if i.readRuntime == nil {
+		base.Readiness = "unavailable"
+		return base, nil
+	}
+	now := time.Now().UTC()
+	if i.now != nil {
+		now = i.now().UTC()
+	}
+	runtimeSnapshot, err := i.readRuntime(ctx, profile, semantic.ExactFallbackMaxChunks, now)
+	if err != nil {
+		if errors.Is(err, store.ErrRetrievalUnavailable) {
+			base.Readiness = "unavailable"
+			return base, nil
+		}
+		return audit.SemanticAuditSnapshot{}, err
+	}
+	runtimeSnapshot.Configured = true
+	runtimeSnapshot.Enabled = true
+	runtimeSnapshot.ExactMaxChunks = semantic.ExactFallbackMaxChunks
+	runtimeSnapshot.Now = now
+	decision := semanticreadiness.Evaluate(runtimeSnapshot)
+	if runtimeSnapshot.ActiveGenerationID != "" {
+		if admitted, _ := runtimeCapability.Admit(runtimeSnapshot.ActiveGenerationBackend, runtimeSnapshot.ActiveGenerationBackendVersion); !admitted {
+			decision.State = semanticreadiness.StateUnavailable
+		}
+	}
+	base.ActiveGenerationID = boundedAuditSemanticIdentifier(runtimeSnapshot.ActiveGenerationID)
+	if runtimeSnapshot.ActiveGenerationID != "" && base.ActiveGenerationID == "" {
+		decision.State = semanticreadiness.StateCorrupt
+	}
+	base.Readiness = audit.SemanticReadiness(decision.State)
+	base.DirtyParentCount = nonnegativeAuditSemanticCount(runtimeSnapshot.DirtyParents)
+	base.PendingParentCount = nonnegativeAuditSemanticCount(runtimeSnapshot.PendingParents)
+	base.DueEmbeddingCount = saturatingAuditSemanticSum(runtimeSnapshot.PendingEmbeddings, runtimeSnapshot.DueRetries)
+	base.BlockedEmbeddingCount = nonnegativeAuditSemanticCount(runtimeSnapshot.BlockedEmbeddings)
+	base.FailedEmbeddingCount = nonnegativeAuditSemanticCount(runtimeSnapshot.ErrorEmbeddings)
+	base.IndexedVectorCount = nonnegativeAuditSemanticCount(runtimeSnapshot.ActiveIndexedCount)
+	base.L0VectorCount = nonnegativeAuditSemanticCount(runtimeSnapshot.L0ReadyCount)
+	base.TombstoneCount = nonnegativeAuditSemanticCount(runtimeSnapshot.ActiveTombstones)
+	base.SegmentCount = nonnegativeAuditSemanticCount(runtimeSnapshot.ActiveSegmentCount)
+	return base, nil
+}
+
+func boundedAuditSemanticIdentifier(value string) audit.SemanticGenerationIdentifier {
+	identifier := audit.SemanticGenerationIdentifier(value)
+	if !identifier.Valid() {
+		return ""
+	}
+	return identifier
+}
+
+func nonnegativeAuditSemanticCount(value int) int { return max(value, 0) }
+
+func saturatingAuditSemanticSum(left, right int) int {
+	left, right = nonnegativeAuditSemanticCount(left), nonnegativeAuditSemanticCount(right)
+	if left > math.MaxInt-right {
+		return math.MaxInt
+	}
+	return left + right
+}
 
 func (a auditSnapshotAdapter) Pipeline(ctx context.Context) (map[audit.PipelineStage]audit.PipelineEvidence, error) {
 	partitions, err := a.snapshot.PipelinePartitions(ctx)

@@ -1102,6 +1102,22 @@ p { margin: 0; }
 .audit-durability-check p { margin: 0.12rem 0; color: var(--text); font: 0.68rem "SFMono-Regular", "Cascadia Mono", monospace; overflow-wrap: anywhere; }
 .audit-durability-check small { color: var(--text-lo); font-size: 0.6rem; overflow-wrap: anywhere; }
 
+.audit-semantic { grid-column: 1 / -1; width: 100%; min-width: 0; }
+.semantic-health-grid, .semantic-activity-grid, .semantic-stage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; min-width: 0; }
+.semantic-activity-grid, .semantic-stage-grid { margin-top: 0.6rem; }
+.semantic-health-card, .semantic-panel, .semantic-stage { min-width: 0; padding: 0.7rem; border: 1px solid var(--border); background: rgba(6, 14, 9, 0.76); }
+.semantic-health-card strong { display: block; margin: 0.15rem 0; color: var(--text-hi); font: 700 1.05rem/1.2 "Avenir Next Condensed", "DIN Condensed", sans-serif; letter-spacing: 0.04em; overflow-wrap: anywhere; }
+.semantic-health-card small, .semantic-stage small, .semantic-timestamps { color: var(--text-lo); font: 0.64rem "SFMono-Regular", "Cascadia Mono", monospace; overflow-wrap: anywhere; }
+.semantic-identifier { font-family: "SFMono-Regular", "Cascadia Mono", monospace !important; font-size: 0.74rem !important; overflow-wrap: anywhere; word-break: break-word; }
+.semantic-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0.5rem 0 0; border: 1px solid var(--border); background: var(--border); }
+.semantic-facts div { min-width: 0; padding: 0.4rem; background: rgba(8, 17, 12, 0.96); }
+.semantic-facts dt { color: var(--text-lo); font-size: 0.57rem; text-transform: uppercase; overflow-wrap: anywhere; }
+.semantic-facts dd { margin: 0.1rem 0 0; color: var(--text-hi); font: 0.78rem "SFMono-Regular", "Cascadia Mono", monospace; }
+.semantic-stage { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.35rem 0.45rem; align-items: baseline; }
+.semantic-stage strong { min-width: 0; color: var(--text-hi); font-size: 0.75rem; overflow-wrap: anywhere; }
+.semantic-stage small { grid-column: 2; }
+.semantic-timestamps { margin: 0.65rem 0 0; }
+
 .audit-findings-layout { display: grid; grid-template-columns: minmax(15rem, 0.75fr) minmax(0, 1.25fr); gap: 0.75rem; min-width: 0; }
 .audit-findings-list { display: grid; align-content: start; gap: 0.35rem; min-width: 0; margin: 0; padding: 0; list-style: none; }
 .audit-findings-list li { min-width: 0; }
@@ -2272,6 +2288,7 @@ textarea { resize: vertical; }
 
   .audit-two-column { grid-template-columns: 1fr; }
   .audit-importer-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .semantic-health-grid, .semantic-activity-grid, .semantic-stage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
   .operations-grid {
     grid-template-columns: 1fr;
@@ -2518,6 +2535,9 @@ textarea { resize: vertical; }
   .audit-importer-grid,
   .audit-pipeline-grid,
   .audit-durability-grid,
+  .semantic-health-grid,
+  .semantic-activity-grid,
+  .semantic-stage-grid,
   .audit-findings-layout { grid-template-columns: 1fr; }
   .audit-evidence { grid-template-columns: 1fr; }
   .audit-history-list li > div { display: grid; gap: 0.12rem; }

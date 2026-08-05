@@ -750,6 +750,76 @@ func TestAuditStructuredOutputMatchesSchemaAndPrivacyBounds(t *testing.T) {
 	}
 }
 
+func TestAuditOutputSchemaAcceptsBothPersistedReportVersions(t *testing.T) {
+	properties := auditReportProperties()
+	schema, ok := properties["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("audit report schema property = %#v", properties["schema"])
+	}
+	if err := validateJSONSchemaValue(schema, audit.SchemaV1); err != nil {
+		t.Fatalf("v1 report schema rejected: %v", err)
+	}
+	if err := validateJSONSchemaValue(schema, audit.SchemaV2); err != nil {
+		t.Fatalf("v2 report schema rejected: %v", err)
+	}
+	check := auditCheckSchema()
+	category := check["properties"].(map[string]interface{})["category"].(map[string]interface{})
+	if err := validateJSONSchemaValue(category, "semantic"); err != nil {
+		t.Fatalf("semantic audit category rejected: %v", err)
+	}
+}
+
+func TestAuditOutputSchemaClosesSemanticEvidenceValues(t *testing.T) {
+	evidence := auditEvidenceSchema()["properties"].(map[string]interface{})
+	const profileID = "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const generationID = "semantic-root-v1:0123456789abcdef0123456789abcdef"
+	if err := validateJSONSchemaValue(evidence["profile_id"].(map[string]interface{}), profileID); err != nil {
+		t.Fatalf("canonical semantic profile ID rejected: %v", err)
+	}
+	if err := validateJSONSchemaValue(evidence["active_generation_id"].(map[string]interface{}), generationID); err != nil {
+		t.Fatalf("canonical semantic generation ID rejected: %v", err)
+	}
+	for name, value := range map[string]interface{}{
+		"profile_id":          "/Users/alice/private-profile",
+		"readiness":           "the backend said everything is fine",
+		"semantic_error_code": "raw provider error: secret",
+	} {
+		if err := validateJSONSchemaValue(evidence[name].(map[string]interface{}), value); err == nil {
+			t.Fatalf("semantic %s accepted unbounded value %q", name, value)
+		}
+	}
+	for _, value := range []string{"generation-current", "semantic-root-v1:0123456789abcdef0123456789abcdeF", "checkpoint:private-run", "/private/root"} {
+		if err := validateJSONSchemaValue(evidence["active_generation_id"].(map[string]interface{}), value); err == nil {
+			t.Fatalf("semantic active_generation_id accepted non-canonical value %q", value)
+		}
+	}
+	stages := evidence["stages"].(map[string]interface{})
+	for _, value := range []interface{}{
+		[]interface{}{},
+		[]interface{}{
+			map[string]interface{}{"stage": "projection", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "embedding", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "flush", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "compaction", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "verification", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "readiness", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "extra", "status": "succeeded", "duration_seconds": float64(1)},
+		},
+		[]interface{}{
+			map[string]interface{}{"stage": "not-a-stage", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "embedding", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "flush", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "compaction", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "verification", "status": "succeeded", "duration_seconds": float64(1)},
+			map[string]interface{}{"stage": "readiness", "status": "succeeded", "duration_seconds": float64(1)},
+		},
+	} {
+		if err := validateJSONSchemaValue(stages, value); err == nil {
+			t.Fatalf("semantic stages accepted invalid shape: %#v", value)
+		}
+	}
+}
+
 func TestAuditRejectsValidReportAboveOutputCeiling(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	report := auditTestReport(t, audit.ProfileFast, now)

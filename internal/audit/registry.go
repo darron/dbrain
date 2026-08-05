@@ -34,11 +34,12 @@ const (
 	RequiredMediaRemote     RequiredCondition = "media_remote_enabled"
 	RequiredSQLiteBackup    RequiredCondition = "sqlite_backup_required"
 	RequiredOKF             RequiredCondition = "okf_enabled"
+	RequiredSemantic        RequiredCondition = "semantic_enabled_supported"
 )
 
 func (r RequiredCondition) Valid() bool {
 	switch r {
-	case RequiredAlways, RequiredNever, RequiredScheduler, RequiredSourceScheduler, RequiredSource, RequiredStage, RequiredMediaLocal, RequiredMediaRemote, RequiredSQLiteBackup, RequiredOKF:
+	case RequiredAlways, RequiredNever, RequiredScheduler, RequiredSourceScheduler, RequiredSource, RequiredStage, RequiredMediaLocal, RequiredMediaRemote, RequiredSQLiteBackup, RequiredOKF, RequiredSemantic:
 		return true
 	default:
 		return false
@@ -121,6 +122,9 @@ const (
 	CheckUpstreamFeedsParity                 CheckID = "upstream.feeds.parity"
 	CheckDurabilityMediaRemoteOnly           CheckID = "durability.media_remote_only"
 	CheckDurabilitySQLiteRestore             CheckID = "durability.sqlite_restore"
+	CheckSemanticCurrentReadiness            CheckID = "semantic.current_readiness"
+	CheckSemanticLatestAttachedRefresh       CheckID = "semantic.latest_attached_refresh"
+	CheckSemanticStageSummary                CheckID = "semantic.stage_summary"
 )
 
 var profilesAll = []Profile{ProfileFast, ProfileStandard, ProfileDeep}
@@ -135,7 +139,7 @@ func fields(entries ...any) map[string]EvidenceKind {
 	return out
 }
 
-var registry = []RegistryEntry{
+var legacyRegistry = []RegistryEntry{
 	{ID: CheckBoundaryConfig, Category: CategoryBoundary, Profiles: profilesAll, RequiredWhen: RequiredAlways, Timeout: TimeoutBootstrap, EvidenceFields: fields("layout", EvidenceEnum, "config_source", EvidenceEnum, "verified", EvidenceBoolean)},
 	{ID: CheckBoundaryRuntime, Category: CategoryBoundary, Profiles: profilesAll, RequiredWhen: RequiredAlways, Timeout: TimeoutLocalQuery, EvidenceFields: fields("release_known", EvidenceBoolean, "commit_known", EvidenceBoolean, "platform_known", EvidenceBoolean, "git_status", EvidenceEnum, "expected_commit_matched", EvidenceBoolean)},
 	{ID: CheckBoundarySecurityBaseline, Category: CategoryBoundary, Profiles: profilesAll, RequiredWhen: RequiredAlways, Timeout: TimeoutLocalQuery, EvidenceFields: fields("baseline_id", EvidenceEnum, "baseline_epoch", EvidenceInteger, "minimum_epoch", EvidenceInteger)},
@@ -150,9 +154,11 @@ var registry = []RegistryEntry{
 	{ID: CheckMetricsWindow, Category: CategoryScheduler, Profiles: profilesAll, RequiredWhen: RequiredScheduler, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("requested_seconds", EvidenceInteger, "covered_seconds", EvidenceInteger, "completed_attempt_count", EvidenceInteger, "latest_attempt_present", EvidenceBoolean, "latest_completed_present", EvidenceBoolean, "parse_error_count", EvidenceInteger)},
 }
 
+var registry []RegistryEntry
+
 func init() {
 	appendSource := func(source Source, poll, arrivals CheckID) {
-		registry = append(registry,
+		legacyRegistry = append(legacyRegistry,
 			RegistryEntry{ID: poll, Category: CategoryImports, Source: source, Profiles: profilesAll, RequiredWhen: RequiredSourceScheduler, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("attempted_at", EvidenceTimestamp, "succeeded_at", EvidenceTimestamp, "age_seconds", EvidenceInteger, "warn_after_seconds", EvidenceInteger, "fail_after_seconds", EvidenceInteger, "attempt_count", EvidenceInteger, "success_count", EvidenceInteger, "failure_count", EvidenceInteger)},
 			RegistryEntry{ID: arrivals, Category: CategoryImports, Source: source, Profiles: profilesAll, RequiredWhen: RequiredNever, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("quiet_seconds", EvidenceInteger, "daily", EvidenceDaily)},
 		)
@@ -168,16 +174,16 @@ func init() {
 	partitionFields := fields("total", EvidenceInteger, "current", EvidenceInteger, "pending", EvidenceInteger, "blocked", EvidenceInteger, "terminal", EvidenceInteger, "failed", EvidenceInteger, "unknown", EvidenceInteger, "partition_valid", EvidenceBoolean, "by_kind", EvidenceByKind)
 	pendingFields := fields("pending_count", EvidenceInteger, "oldest_pending_age_seconds", EvidenceInteger, "warn_after_seconds", EvidenceInteger, "fail_after_seconds", EvidenceInteger)
 	for _, pair := range [][2]CheckID{{CheckPipelineHydrationPartition, CheckPipelineHydrationPendingAge}, {CheckPipelineExtractionPartition, CheckPipelineExtractionPendingAge}, {CheckPipelineSummaryPartition, CheckPipelineSummaryPendingAge}, {CheckPipelineTranscriptionPartition, CheckPipelineTranscriptionPendingAge}, {CheckPipelineOCRPartition, CheckPipelineOCRPendingAge}} {
-		registry = append(registry,
+		legacyRegistry = append(legacyRegistry,
 			RegistryEntry{ID: pair[0], Category: CategoryPipeline, Profiles: profilesAll, RequiredWhen: RequiredStage, Timeout: TimeoutLocalQuery, EvidenceFields: partitionFields},
 			RegistryEntry{ID: pair[1], Category: CategoryPipeline, Profiles: profilesAll, RequiredWhen: RequiredStage, Timeout: TimeoutLocalQuery, EvidenceFields: pendingFields},
 		)
 	}
 	provenanceFields := fields("successful_count", EvidenceInteger, "complete_count", EvidenceInteger, "legacy_missing_count", EvidenceInteger, "post_cutover_missing_count", EvidenceInteger, "cutover_at", EvidenceTimestamp, "missing_by_field", EvidenceMissingByField)
 	for _, id := range []CheckID{CheckPipelineItemSummaryProvenance, CheckPipelineItemOCRProvenance, CheckPipelineXMediaTranscriptProvenance, CheckPipelineSourceSummaryProvenance} {
-		registry = append(registry, RegistryEntry{ID: id, Category: CategoryPipeline, Profiles: profilesAll, RequiredWhen: RequiredStage, Timeout: TimeoutLocalQuery, EvidenceFields: provenanceFields})
+		legacyRegistry = append(legacyRegistry, RegistryEntry{ID: id, Category: CategoryPipeline, Profiles: profilesAll, RequiredWhen: RequiredStage, Timeout: TimeoutLocalQuery, EvidenceFields: provenanceFields})
 	}
-	registry = append(registry,
+	legacyRegistry = append(legacyRegistry,
 		RegistryEntry{ID: CheckDurabilityMediaLocalCoverage, Category: CategoryDurability, Profiles: profilesAll, RequiredWhen: RequiredMediaLocal, Timeout: TimeoutLocalQuery, EvidenceFields: fields("eligible_local_count", EvidenceInteger, "uncovered_pruned_count", EvidenceInteger, "orphan_count", EvidenceInteger)},
 		RegistryEntry{ID: CheckDurabilityMediaRemote, Category: CategoryDurability, Profiles: profilesStandardDeep, RequiredWhen: RequiredMediaRemote, Timeout: TimeoutRemoteMetadata, EvidenceFields: fields("population_count", EvidenceInteger, "checked_count", EvidenceInteger, "recent_population_count", EvidenceInteger, "recent_checked_count", EvidenceInteger, "older_population_count", EvidenceInteger, "older_checked_count", EvidenceInteger, "missing_count", EvidenceInteger, "size_mismatch_count", EvidenceInteger, "invalid_timestamp_count", EvidenceInteger, "sample_mode", EvidenceEnum, "inventory_complete", EvidenceBoolean)},
 		RegistryEntry{ID: CheckDurabilitySQLiteBackupConfiguration, Category: CategoryDurability, Profiles: profilesAll, RequiredWhen: RequiredNever, Timeout: TimeoutLocalQuery, EvidenceFields: fields("capability_configured", EvidenceBoolean, "scheduler_enabled", EvidenceBoolean, "audit_required", EvidenceBoolean, "configuration_state", EvidenceEnum)},
@@ -190,11 +196,20 @@ func init() {
 		id     CheckID
 	}{{SourceAppleNotes, CheckUpstreamAppleNotesParity}, {SourceSafariTabs, CheckUpstreamSafariTabsParity}, {SourceXBookmarks, CheckUpstreamXBookmarksParity}, {SourceGitHubStars, CheckUpstreamGitHubStarsParity}, {SourceYouTubeLiked, CheckUpstreamYouTubeLikedParity}, {SourceYouTubeWatchLater, CheckUpstreamYouTubeWatchLaterParity}, {SourceFeeds, CheckUpstreamFeedsParity}}
 	for _, item := range parities {
-		registry = append(registry, RegistryEntry{ID: item.id, Category: CategoryImports, Source: item.source, Profiles: profilesDeep, RequiredWhen: RequiredSource, Timeout: TimeoutUpstreamInventory, EvidenceFields: fields("upstream_count", EvidenceInteger, "matched_local_count", EvidenceInteger, "missing_local_count", EvidenceInteger, "page_count", EvidenceInteger, "inventory_complete", EvidenceBoolean)})
+		legacyRegistry = append(legacyRegistry, RegistryEntry{ID: item.id, Category: CategoryImports, Source: item.source, Profiles: profilesDeep, RequiredWhen: RequiredSource, Timeout: TimeoutUpstreamInventory, EvidenceFields: fields("upstream_count", EvidenceInteger, "matched_local_count", EvidenceInteger, "missing_local_count", EvidenceInteger, "page_count", EvidenceInteger, "inventory_complete", EvidenceBoolean)})
 	}
-	registry = append(registry,
+	legacyRegistry = append(legacyRegistry,
 		RegistryEntry{ID: CheckDurabilityMediaRemoteOnly, Category: CategoryDurability, Profiles: profilesDeep, RequiredWhen: RequiredNever, Timeout: TimeoutRemoteMetadata, EvidenceFields: fields("remote_only_count", EvidenceInteger, "inventory_complete", EvidenceBoolean)},
 		RegistryEntry{ID: CheckDurabilitySQLiteRestore, Category: CategoryDurability, Profiles: profilesDeep, RequiredWhen: RequiredSQLiteBackup, Timeout: TimeoutDeepStream, EvidenceFields: fields("compressed_bytes", EvidenceInteger, "decompressed_bytes", EvidenceInteger, "quick_check", EvidenceEnum, "foreign_key_violation_count", EvidenceInteger, "schema_compatibility", EvidenceEnum, "migration_compatibility", EvidenceEnum, "archive_authenticity", EvidenceEnum, "cleanup_complete", EvidenceBoolean)},
+	)
+	for i := range legacyRegistry {
+		legacyRegistry[i].index = i
+	}
+	registry = cloneRegistryEntries(legacyRegistry)
+	registry = append(registry,
+		RegistryEntry{ID: CheckSemanticCurrentReadiness, Category: CategorySemantic, Profiles: profilesAll, RequiredWhen: RequiredSemantic, Timeout: TimeoutLocalQuery, EvidenceFields: fields("configured", EvidenceBoolean, "capability", EvidenceEnum, "backend", EvidenceEnum, "profile_id", EvidenceIdentifier, "active_generation_id", EvidenceIdentifier, "readiness", EvidenceEnum, "dirty_parent_count", EvidenceInteger, "pending_parent_count", EvidenceInteger, "due_embedding_count", EvidenceInteger, "blocked_embedding_count", EvidenceInteger, "failed_embedding_count", EvidenceInteger, "indexed_vector_count", EvidenceInteger, "l0_vector_count", EvidenceInteger, "tombstone_count", EvidenceInteger, "segment_count", EvidenceInteger)},
+		RegistryEntry{ID: CheckSemanticLatestAttachedRefresh, Category: CategorySemantic, Profiles: profilesAll, RequiredWhen: RequiredSemantic, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("refresh_state", EvidenceEnum, "started_at", EvidenceTimestamp, "completed_at", EvidenceTimestamp, "age_seconds", EvidenceInteger, "duration_seconds", EvidenceInteger, "failure_at", EvidenceTimestamp, "semantic_error_code", EvidenceEnum, "projected_parent_count", EvidenceInteger, "embedded_chunk_count", EvidenceInteger, "flushed_vector_count", EvidenceInteger, "compacted_vector_count", EvidenceInteger, "verified_vector_count", EvidenceInteger, "successor_run_count", EvidenceInteger)},
+		RegistryEntry{ID: CheckSemanticStageSummary, Category: CategorySemantic, Profiles: profilesAll, RequiredWhen: RequiredNever, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("stages", EvidenceSemanticStages)},
 	)
 	for i := range registry {
 		registry[i].index = i
@@ -202,13 +217,41 @@ func init() {
 }
 
 func Registry() []RegistryEntry {
-	out := make([]RegistryEntry, len(registry))
-	copy(out, registry)
+	return cloneRegistryEntries(registry)
+}
+
+// RegistryForSchema returns the exact registry valid for persisted reports of
+// the supplied schema. V1 is frozen so old reports cannot acquire new checks.
+func RegistryForSchema(schema string) ([]RegistryEntry, bool) {
+	switch schema {
+	case SchemaV1:
+		return cloneRegistryEntries(legacyRegistry), true
+	case SchemaV2:
+		return Registry(), true
+	default:
+		return nil, false
+	}
+}
+
+func cloneRegistryEntries(entries []RegistryEntry) []RegistryEntry {
+	out := make([]RegistryEntry, len(entries))
+	for index, entry := range entries {
+		out[index] = entry
+		out[index].Profiles = append([]Profile(nil), entry.Profiles...)
+		out[index].EvidenceFields = make(map[string]EvidenceKind, len(entry.EvidenceFields))
+		for key, kind := range entry.EvidenceFields {
+			out[index].EvidenceFields[key] = kind
+		}
+	}
 	return out
 }
 
 func Lookup(id CheckID) (RegistryEntry, bool) {
-	for _, entry := range registry {
+	return lookupRegistryEntry(registry, id)
+}
+
+func lookupRegistryEntry(entries []RegistryEntry, id CheckID) (RegistryEntry, bool) {
+	for _, entry := range entries {
 		if entry.ID == id {
 			return entry, true
 		}
