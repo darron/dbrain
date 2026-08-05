@@ -62,11 +62,12 @@ const SEMANTIC_READINESS = new Set(["ready", "catching_up", "needs_projection", 
 const SEMANTIC_REFRESH_STATES = new Set(["unknown", "succeeded", "failed", "canceled", "running", "skipped", "unsupported"]);
 const SEMANTIC_STAGE_STATUSES = new Set(["unknown", "succeeded", "failed", "canceled", "skipped"]);
 const SEMANTIC_ERROR_CODES = new Set(["semantic_backend_broken", "semantic_run_conflict", "semantic_projection_failed", "semantic_embedding_failed", "semantic_embedding_circuit_open", "semantic_flush_failed", "semantic_compaction_failed", "semantic_verify_failed", "semantic_native_root_failed", "semantic_readiness_not_ready", "semantic_lock_unavailable", "semantic_refresh_cancelled", "semantic_refresh_failed", "unavailable", "timeout", "canceled", "interrupted", "read_error", "parse_error", "budget_exhausted", "configuration_error", "credential_resolution_error", "destination_rejected", "listing_incomplete", "manifest_error", "database_error"]);
+const STANDARD_AUDIT_SCHEMAS = new Set(["dbrain.audit.v1", "dbrain.audit.v2"]);
 
 export function overallHealth(envelope) {
   const report = envelope?.report || null;
   if (!report) return { state: "absent", status: "unknown", reason: envelope?.freshness?.reason || "not_found", report: null };
-  if (report.schema !== "dbrain.audit.v1") return { state: "unknown", status: "unknown", reason: "invalid_schema", report };
+  if (!STANDARD_AUDIT_SCHEMAS.has(report.schema)) return { state: "unknown", status: "unknown", reason: "invalid_schema", report };
   if (report.profile !== "standard") return { state: "unknown", status: "unknown", reason: "not_standard", report };
   if (!report.scope?.whole_system || report.scope?.filtered) return { state: "unknown", status: "unknown", reason: "invalid_scope", report };
   if (envelope?.freshness?.status !== "current") {
@@ -245,7 +246,7 @@ export function selectSemantic(report) {
 
 export function selectOverview(envelope) {
   const report = envelope?.report;
-  if (!report || report.schema !== "dbrain.audit.v1" || report.profile !== "standard" || !report.scope?.whole_system || report.scope?.filtered) return null;
+  if (!report || !STANDARD_AUDIT_SCHEMAS.has(report.schema) || report.profile !== "standard" || !report.scope?.whole_system || report.scope?.filtered) return null;
   const latestSync = checkMap(report).get("scheduler.latest_sync");
   return {
     auditID: String(report.audit_id || ""),

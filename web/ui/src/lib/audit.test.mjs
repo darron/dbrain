@@ -82,6 +82,21 @@ test("only a current unfiltered whole-system standard report establishes overall
   assert.equal(overallHealth(wrongSchema).reason, "invalid_schema");
 });
 
+test("standard overview and health accept the v1 and v2 audit envelopes only", () => {
+  const v1 = envelope();
+  const v2 = envelope();
+  v2.report.schema = "dbrain.audit.v2";
+  const future = envelope();
+  future.report.schema = "dbrain.audit.v3";
+
+  assert.equal(overallHealth(v1).state, "current");
+  assert.equal(overallHealth(v2).state, "current");
+  assert.equal(selectOverview(v1)?.auditID, "report-standard");
+  assert.equal(selectOverview(v2)?.auditID, "report-standard");
+  assert.equal(overallHealth(future).reason, "invalid_schema");
+  assert.equal(selectOverview(future), null);
+});
+
 test("absent and stale standard reports remain visibly unknown at freshness boundaries", () => {
   assert.deepEqual(overallHealth({ report: null, freshness: { status: "unknown", reason: "not_found", deadline_seconds: 43200 } }), {
     state: "absent", status: "unknown", reason: "not_found", report: null
