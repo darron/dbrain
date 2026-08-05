@@ -39,6 +39,51 @@ func TestEvidencePrivacyRejectsUnknownKeysAndContentStrings(t *testing.T) {
 	}
 }
 
+func TestSemanticEvidenceIsBoundedAndClosed(t *testing.T) {
+	readiness := Evidence{
+		"configured": true, "capability": "available", "backend": "ollama", "profile_id": "nomic-embed-text-v1.5",
+		"active_generation_id": "root-20260714", "readiness": "ready", "dirty_parent_count": 0, "pending_parent_count": 0,
+		"due_embedding_count": 0, "blocked_embedding_count": 0, "failed_embedding_count": 0, "indexed_vector_count": 8,
+		"l0_vector_count": 2, "tombstone_count": 0, "segment_count": 1,
+	}
+	if err := ValidateEvidence("semantic.current_readiness", readiness); err != nil {
+		t.Fatalf("valid semantic readiness rejected: %v", err)
+	}
+	latest := Evidence{
+		"refresh_state": "succeeded", "started_at": "2026-07-14T01:02:03Z", "completed_at": "2026-07-14T01:02:08Z",
+		"age_seconds": 12, "duration_seconds": 5, "projected_parent_count": 1, "embedded_chunk_count": 2,
+		"flushed_vector_count": 2, "compacted_vector_count": 0, "verified_vector_count": 2, "successor_run_count": 0,
+	}
+	if err := ValidateEvidence("semantic.latest_attached_refresh", latest); err != nil {
+		t.Fatalf("valid semantic latest refresh rejected: %v", err)
+	}
+	stages := Evidence{"stages": []map[string]any{
+		{"stage": "projection", "status": "succeeded", "duration_seconds": 1},
+		{"stage": "embedding", "status": "succeeded", "duration_seconds": 2},
+		{"stage": "flush", "status": "succeeded", "duration_seconds": 0},
+		{"stage": "compaction", "status": "succeeded", "duration_seconds": 0},
+		{"stage": "verification", "status": "succeeded", "duration_seconds": 1},
+		{"stage": "readiness", "status": "succeeded", "duration_seconds": 1},
+	}}
+	if err := ValidateEvidence("semantic.stage_summary", stages); err != nil {
+		t.Fatalf("valid semantic stages rejected: %v", err)
+	}
+	for name, evidence := range []Evidence{
+		{"profile_id": "/private/profile"},
+		{"readiness": "free-form diagnosis"},
+		{"segment_count": -1},
+		{"stages": []map[string]any{{"stage": "projection", "status": "succeeded", "duration_seconds": -1}}},
+	} {
+		id := CheckID("semantic.current_readiness")
+		if name == 3 {
+			id = "semantic.stage_summary"
+		}
+		if err := ValidateEvidence(id, evidence); err == nil {
+			t.Fatalf("semantic evidence case %d was accepted: %#v", name, evidence)
+		}
+	}
+}
+
 func FuzzEvidenceRejectsArbitraryStrings(f *testing.F) {
 	for _, seed := range []string{"/tmp/x", "https://x", "secret", "title", "transcript"} {
 		f.Add(seed)

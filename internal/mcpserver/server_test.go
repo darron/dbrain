@@ -750,6 +750,25 @@ func TestAuditStructuredOutputMatchesSchemaAndPrivacyBounds(t *testing.T) {
 	}
 }
 
+func TestAuditOutputSchemaAcceptsBothPersistedReportVersions(t *testing.T) {
+	properties := auditReportProperties()
+	schema, ok := properties["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("audit report schema property = %#v", properties["schema"])
+	}
+	if err := validateJSONSchemaValue(schema, audit.SchemaV1); err != nil {
+		t.Fatalf("v1 report schema rejected: %v", err)
+	}
+	if err := validateJSONSchemaValue(schema, audit.SchemaV2); err != nil {
+		t.Fatalf("v2 report schema rejected: %v", err)
+	}
+	check := auditCheckSchema()
+	category := check["properties"].(map[string]interface{})["category"].(map[string]interface{})
+	if err := validateJSONSchemaValue(category, "semantic"); err != nil {
+		t.Fatalf("semantic audit category rejected: %v", err)
+	}
+}
+
 func TestAuditRejectsValidReportAboveOutputCeiling(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	report := auditTestReport(t, audit.ProfileFast, now)

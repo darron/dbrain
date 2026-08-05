@@ -341,7 +341,7 @@ func effectiveScope(req Request) Scope {
 	declareExactChecks := len(req.CheckIDs) > 0 || (filtered && strings.TrimSpace(req.ExpectCommit) != "")
 	s := Scope{Categories: []Category{}, Sources: []Source{}, CheckIDs: []CheckID{}, Filtered: filtered, WholeSystem: !filtered}
 	if !filtered {
-		s.Categories = []Category{CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability}
+		s.Categories = []Category{CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability, CategorySemantic}
 		s.Sources = append(s.Sources, allSources...)
 		return s
 	}

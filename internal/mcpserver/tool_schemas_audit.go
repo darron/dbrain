@@ -33,7 +33,7 @@ func auditOutputSchema() map[string]interface{} {
 
 func auditReportProperties() map[string]interface{} {
 	return map[string]interface{}{
-		"schema":       enumSchema("Stable audit schema.", audit.SchemaV1),
+		"schema":       enumSchema("Stable audit schema.", audit.SchemaV1, audit.SchemaV2),
 		"audit_id":     scalarSchema("string", "Opaque audit run identifier."),
 		"profile":      enumSchema("Exact audit profile.", "fast", "standard"),
 		"scope":        auditScopeSchema(),
@@ -53,7 +53,7 @@ func auditReportRequired() []string {
 
 func auditScopeSchema() map[string]interface{} {
 	return closedObjectSchema(map[string]interface{}{
-		"categories":   arraySchema(enumSchema("Audit category.", "boundary", "scheduler", "imports", "pipeline", "durability")),
+		"categories":   arraySchema(enumSchema("Audit category.", "boundary", "scheduler", "imports", "pipeline", "semantic", "durability")),
 		"sources":      arraySchema(enumSchema("Configured import source.", "apple-notes", "feeds", "github-stars", "safari-tabs", "x-bookmarks", "youtube-liked", "youtube-watch-later")),
 		"check_ids":    arraySchema(scalarSchema("string", "Stable check identifier.")),
 		"filtered":     scalarSchema("boolean", "Whether report scope was filtered."),
@@ -91,7 +91,7 @@ func auditSummarySchema() map[string]interface{} {
 func auditCheckSchema() map[string]interface{} {
 	return closedObjectSchema(map[string]interface{}{
 		"id":          scalarSchema("string", "Stable registry check identifier."),
-		"category":    enumSchema("Audit category.", "boundary", "scheduler", "imports", "pipeline", "durability"),
+		"category":    enumSchema("Audit category.", "boundary", "scheduler", "imports", "pipeline", "semantic", "durability"),
 		"status":      auditStatusSchema(true),
 		"confidence":  auditConfidenceSchema(),
 		"required":    scalarSchema("boolean", "Whether check contributes to required health."),
@@ -129,8 +129,14 @@ func auditEvidenceValueSchema(kind audit.EvidenceKind) map[string]interface{} {
 		return nonnegativeIntegerSchema()
 	case audit.EvidenceBoolean:
 		return scalarSchema("boolean", "")
-	case audit.EvidenceTimestamp, audit.EvidenceEnum:
+	case audit.EvidenceTimestamp, audit.EvidenceEnum, audit.EvidenceIdentifier:
 		return scalarSchema("string", "")
+	case audit.EvidenceSemanticStages:
+		return arraySchema(closedObjectSchema(map[string]interface{}{
+			"stage":            scalarSchema("string", "Fixed semantic refresh stage."),
+			"status":           scalarSchema("string", "Closed semantic stage outcome."),
+			"duration_seconds": nonnegativeIntegerSchema(),
+		}, "stage", "status", "duration_seconds"))
 	case audit.EvidenceDaily:
 		return arraySchema(closedObjectSchema(map[string]interface{}{
 			"day": scalarSchema("string", "UTC day."), "created": nonnegativeIntegerSchema(), "updated": nonnegativeIntegerSchema(),

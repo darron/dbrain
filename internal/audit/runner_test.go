@@ -134,8 +134,8 @@ func TestRunStandardEmitsCompleteRegistryInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Checks) != 55 {
-		t.Fatalf("checks = %d, want 55", len(report.Checks))
+	if len(report.Checks) != 58 {
+		t.Fatalf("checks = %d, want 58", len(report.Checks))
 	}
 	applicable, excluded := 0, 0
 	for i, check := range report.Checks {
@@ -148,14 +148,47 @@ func TestRunStandardEmitsCompleteRegistryInOrder(t *testing.T) {
 			applicable++
 		}
 	}
-	if applicable != 46 || excluded != 9 {
-		t.Fatalf("membership = %d/%d, want 46/9", applicable, excluded)
+	if applicable != 49 || excluded != 9 {
+		t.Fatalf("membership = %d/%d, want 49/9", applicable, excluded)
 	}
 	if err := ValidateReport(report); err != nil {
 		t.Fatalf("ValidateReport: %v", err)
 	}
-	if report.Scope.Filtered || !report.Scope.WholeSystem || len(report.Scope.Categories) != 5 || len(report.Scope.Sources) != 7 || report.Scope.CheckIDs == nil {
+	if report.Scope.Filtered || !report.Scope.WholeSystem || len(report.Scope.Categories) != 6 || len(report.Scope.Sources) != 7 || report.Scope.CheckIDs == nil {
 		t.Fatalf("scope = %#v", report.Scope)
+	}
+}
+
+func TestFrozenV1WholeSystemReportRemainsValidWithoutSemanticChecks(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	report, err := Run(context.Background(), Request{Profile: ProfileStandard, Since: 7 * 24 * time.Hour}, passingDependencies(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report.Schema = SchemaV1
+	report.Scope.Categories = []Category{CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability}
+	report.Checks = report.Checks[:55]
+	FinalizeReport(&report)
+	if err := ValidateReport(report); err != nil {
+		t.Fatalf("frozen v1 whole-system report rejected: %v", err)
+	}
+
+	report.Checks = append(report.Checks, Check{ID: "semantic.current_readiness", Category: CategorySemantic})
+	if err := ValidateReport(report); err == nil {
+		t.Fatal("v1 report accepted a semantic v2 check")
+	}
+}
+
+func TestSemanticChecksRemainVisibleWhenSemanticIsNotConfigured(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	deps := passingDependencies(now)
+	deps.Features.SemanticConfigured = false
+	report, err := Run(context.Background(), Request{Profile: ProfileFast, CheckIDs: []CheckID{"semantic.current_readiness"}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Checks) != 1 || report.Checks[0].Status != StatusUnknown || report.Checks[0].SkipReason != "" {
+		t.Fatalf("disabled semantic check was hidden instead of observed as unavailable: %#v", report.Checks)
 	}
 }
 
@@ -330,7 +363,7 @@ func TestRunMissingRuntimeCapabilitiesEmitsUnknownRatherThanOmitting(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Checks) != 55 {
+	if len(report.Checks) != 58 {
 		t.Fatalf("checks = %d", len(report.Checks))
 	}
 	for _, check := range report.Checks {
@@ -653,7 +686,7 @@ func TestRunRejectsDeepUntilDeepExecutorsExist(t *testing.T) {
 
 func TestStandardCompletenessEveryApplicableRegistryEntryHasExecutor(t *testing.T) {
 	for _, entry := range Registry() {
-		if entry.InProfile(ProfileStandard) && !HasExecutor(entry.ID) {
+		if entry.InProfile(ProfileStandard) && entry.Category != CategorySemantic && !HasExecutor(entry.ID) {
 			t.Fatalf("standard check %q has no executor", entry.ID)
 		}
 	}

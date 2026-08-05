@@ -121,6 +121,9 @@ const (
 	CheckUpstreamFeedsParity                 CheckID = "upstream.feeds.parity"
 	CheckDurabilityMediaRemoteOnly           CheckID = "durability.media_remote_only"
 	CheckDurabilitySQLiteRestore             CheckID = "durability.sqlite_restore"
+	CheckSemanticCurrentReadiness            CheckID = "semantic.current_readiness"
+	CheckSemanticLatestAttachedRefresh       CheckID = "semantic.latest_attached_refresh"
+	CheckSemanticStageSummary                CheckID = "semantic.stage_summary"
 )
 
 var profilesAll = []Profile{ProfileFast, ProfileStandard, ProfileDeep}
@@ -149,6 +152,8 @@ var registry = []RegistryEntry{
 	{ID: CheckSchedulerContinuity, Category: CategoryScheduler, Profiles: profilesStandardDeep, RequiredWhen: RequiredScheduler, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("observed_attempt_count", EvidenceInteger, "gap_count", EvidenceInteger, "explained_gap_count", EvidenceInteger, "unexplained_gap_count", EvidenceInteger, "largest_gap_seconds", EvidenceInteger, "warn_after_seconds", EvidenceInteger, "fail_after_seconds", EvidenceInteger)},
 	{ID: CheckMetricsWindow, Category: CategoryScheduler, Profiles: profilesAll, RequiredWhen: RequiredScheduler, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("requested_seconds", EvidenceInteger, "covered_seconds", EvidenceInteger, "completed_attempt_count", EvidenceInteger, "latest_attempt_present", EvidenceBoolean, "latest_completed_present", EvidenceBoolean, "parse_error_count", EvidenceInteger)},
 }
+
+var legacyRegistry []RegistryEntry
 
 func init() {
 	appendSource := func(source Source, poll, arrivals CheckID) {
@@ -199,6 +204,15 @@ func init() {
 	for i := range registry {
 		registry[i].index = i
 	}
+	legacyRegistry = append([]RegistryEntry(nil), registry...)
+	registry = append(registry,
+		RegistryEntry{ID: CheckSemanticCurrentReadiness, Category: CategorySemantic, Profiles: profilesAll, RequiredWhen: RequiredNever, Timeout: TimeoutLocalQuery, EvidenceFields: fields("configured", EvidenceBoolean, "capability", EvidenceEnum, "backend", EvidenceEnum, "profile_id", EvidenceIdentifier, "active_generation_id", EvidenceIdentifier, "readiness", EvidenceEnum, "dirty_parent_count", EvidenceInteger, "pending_parent_count", EvidenceInteger, "due_embedding_count", EvidenceInteger, "blocked_embedding_count", EvidenceInteger, "failed_embedding_count", EvidenceInteger, "indexed_vector_count", EvidenceInteger, "l0_vector_count", EvidenceInteger, "tombstone_count", EvidenceInteger, "segment_count", EvidenceInteger)},
+		RegistryEntry{ID: CheckSemanticLatestAttachedRefresh, Category: CategorySemantic, Profiles: profilesAll, RequiredWhen: RequiredNever, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("refresh_state", EvidenceEnum, "started_at", EvidenceTimestamp, "completed_at", EvidenceTimestamp, "age_seconds", EvidenceInteger, "duration_seconds", EvidenceInteger, "failure_at", EvidenceTimestamp, "semantic_error_code", EvidenceEnum, "projected_parent_count", EvidenceInteger, "embedded_chunk_count", EvidenceInteger, "flushed_vector_count", EvidenceInteger, "compacted_vector_count", EvidenceInteger, "verified_vector_count", EvidenceInteger, "successor_run_count", EvidenceInteger)},
+		RegistryEntry{ID: CheckSemanticStageSummary, Category: CategorySemantic, Profiles: profilesAll, RequiredWhen: RequiredNever, Timeout: TimeoutMetricsOrManifest, EvidenceFields: fields("stages", EvidenceSemanticStages)},
+	)
+	for i := range registry {
+		registry[i].index = i
+	}
 }
 
 func Registry() []RegistryEntry {
@@ -207,8 +221,25 @@ func Registry() []RegistryEntry {
 	return out
 }
 
+// RegistryForSchema returns the exact registry valid for persisted reports of
+// the supplied schema. V1 is frozen so old reports cannot acquire new checks.
+func RegistryForSchema(schema string) ([]RegistryEntry, bool) {
+	switch schema {
+	case SchemaV1:
+		return append([]RegistryEntry(nil), legacyRegistry...), true
+	case SchemaV2:
+		return Registry(), true
+	default:
+		return nil, false
+	}
+}
+
 func Lookup(id CheckID) (RegistryEntry, bool) {
-	for _, entry := range registry {
+	return lookupRegistryEntry(registry, id)
+}
+
+func lookupRegistryEntry(entries []RegistryEntry, id CheckID) (RegistryEntry, bool) {
+	for _, entry := range entries {
 		if entry.ID == id {
 			return entry, true
 		}

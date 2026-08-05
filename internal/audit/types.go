@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-const SchemaV1 = "dbrain.audit.v1"
+const (
+	SchemaV1 = "dbrain.audit.v1"
+	SchemaV2 = "dbrain.audit.v2"
+)
 
 type Profile string
 
@@ -26,12 +29,13 @@ const (
 	CategoryScheduler  Category = "scheduler"
 	CategoryImports    Category = "imports"
 	CategoryPipeline   Category = "pipeline"
+	CategorySemantic   Category = "semantic"
 	CategoryDurability Category = "durability"
 )
 
 func (c Category) Valid() bool {
 	switch c {
-	case CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability:
+	case CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategorySemantic, CategoryDurability:
 		return true
 	default:
 		return false
@@ -193,7 +197,7 @@ var platformPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 
 func NewReport(profile Profile, started time.Time) Report {
 	return Report{
-		Schema:     SchemaV1,
+		Schema:     SchemaV2,
 		Profile:    profile,
 		Scope:      Scope{Categories: []Category{}, Sources: []Source{}, CheckIDs: []CheckID{}, WholeSystem: true},
 		StartedAt:  started.UTC(),
@@ -245,7 +249,8 @@ func summarize(checks []Check) Summary {
 }
 
 func ValidateReport(report Report) error {
-	if report.Schema != SchemaV1 {
+	registry, ok := RegistryForSchema(report.Schema)
+	if !ok {
 		return fmt.Errorf("unsupported audit schema %q", report.Schema)
 	}
 	if !report.Profile.Valid() {
@@ -274,7 +279,7 @@ func ValidateReport(report Report) error {
 		}
 	}
 	for _, id := range report.Scope.CheckIDs {
-		if _, ok := Lookup(id); !ok {
+		if _, ok := lookupRegistryEntry(registry, id); !ok {
 			return fmt.Errorf("invalid check id %q", id)
 		}
 	}
@@ -287,19 +292,19 @@ func ValidateReport(report Report) error {
 	if !report.Confidence.Valid() {
 		return fmt.Errorf("invalid overall confidence %q", report.Confidence)
 	}
-	expected := expectedRegistryEntries(report.Scope)
-	if err := validateScopeMembers(report.Scope, expected); err != nil {
+	expected := expectedRegistryEntries(report.Scope, registry)
+	if err := validateScopeMembers(report.Scope, expected, registry); err != nil {
 		return err
 	}
 	if len(report.Checks) != len(expected) {
 		return fmt.Errorf("checks do not match declared scope: got %d want %d", len(report.Checks), len(expected))
 	}
-	if report.Scope.WholeSystem && len(report.Checks) != 55 {
-		return fmt.Errorf("whole-system report must contain all 55 checks")
+	if report.Scope.WholeSystem && len(report.Checks) != len(registry) {
+		return fmt.Errorf("whole-system report must contain all %d checks", len(registry))
 	}
 	lastIndex := -1
 	for i, check := range report.Checks {
-		entry, ok := Lookup(check.ID)
+		entry, ok := lookupRegistryEntry(registry, check.ID)
 		if !ok {
 			return fmt.Errorf("checks[%d]: unknown id %q", i, check.ID)
 		}
@@ -344,7 +349,7 @@ func ValidateReport(report Report) error {
 		if check.ErrorCode != "" && !check.ErrorCode.Valid() {
 			return fmt.Errorf("checks[%d]: invalid error code", i)
 		}
-		if err := ValidateEvidence(check.ID, check.Evidence); err != nil {
+		if err := validateEvidenceForEntry(entry, check.Evidence); err != nil {
 			return fmt.Errorf("checks[%d]: %w", i, err)
 		}
 		if check.Status != StatusUnknown && check.Status != StatusSkipped {
@@ -379,11 +384,15 @@ func ValidateReport(report Report) error {
 	return nil
 }
 
-func validateScopeMembers(scope Scope, expected []RegistryEntry) error {
+func validateScopeMembers(scope Scope, expected, registry []RegistryEntry) error {
 	wantCategories := []Category{}
 	wantSources := []Source{}
 	if scope.WholeSystem {
-		wantCategories = []Category{CategoryBoundary, CategoryScheduler, CategoryImports, CategoryPipeline, CategoryDurability}
+		for _, entry := range registry {
+			if !containsCategory(wantCategories, entry.Category) {
+				wantCategories = append(wantCategories, entry.Category)
+			}
+		}
 		wantSources = append(wantSources, allSources...)
 		if len(scope.CheckIDs) != 0 {
 			return fmt.Errorf("whole-system scope must not declare check filters")
@@ -414,12 +423,12 @@ func validateScopeMembers(scope Scope, expected []RegistryEntry) error {
 	return nil
 }
 
-func expectedRegistryEntries(scope Scope) []RegistryEntry {
+func expectedRegistryEntries(scope Scope, registry []RegistryEntry) []RegistryEntry {
 	if scope.WholeSystem {
-		return Registry()
+		return append([]RegistryEntry(nil), registry...)
 	}
 	out := make([]RegistryEntry, 0)
-	for _, entry := range Registry() {
+	for _, entry := range registry {
 		if len(scope.CheckIDs) > 0 {
 			if containsCheck(scope.CheckIDs, entry.ID) {
 				out = append(out, entry)
@@ -438,7 +447,7 @@ func expectedRegistryEntries(scope Scope) []RegistryEntry {
 }
 
 func validateRequiredEvidence(entry RegistryEntry, status Status, evidence Evidence) error {
-	optional := map[string]bool{"latest_success_at": true, "succeeded_at": true, "oldest_pending_age_seconds": true, "exported_at": true}
+	optional := map[string]bool{"latest_success_at": true, "succeeded_at": true, "oldest_pending_age_seconds": true, "exported_at": true, "failure_at": true, "semantic_error_code": true}
 	if entry.ID == CheckDurabilitySQLiteRestore && status == StatusFail {
 		// A bounded deep restore can terminate before a later phase is
 		// observed. Those phase-specific fields must be omitted rather than

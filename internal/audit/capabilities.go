@@ -41,8 +41,11 @@ type Features struct {
 	SQLiteCredentialConfigured        bool
 	SQLiteResolutionError             bool
 	OKFEnabled                        bool
-	Timeouts                          map[TimeoutClass]time.Duration
-	RemoteRequestTimeout              time.Duration
+	// SemanticConfigured is intentionally separate from feature eligibility:
+	// semantic audit checks stay visible when disabled or unsupported.
+	SemanticConfigured   bool
+	Timeouts             map[TimeoutClass]time.Duration
+	RemoteRequestTimeout time.Duration
 }
 
 type KindPartition struct {
@@ -142,6 +145,48 @@ type Dependencies struct {
 	Media          MediaArchiveInspector
 	MediaErrorCode ErrorCode
 	OKF            OKFInspector
+	Semantic       SemanticInspector
 	Runtime        RuntimeVersion
 	Clock          func() time.Time
+}
+
+// SemanticInspector is the bounded query-only seam populated by the app
+// adapter. It deliberately carries only evidence fields declared by the v2
+// registry; raw run IDs, paths, checkpoints, and error text do not cross it.
+type SemanticInspector interface {
+	InspectAuditSemantic(context.Context) (SemanticAuditSnapshot, error)
+}
+
+type SemanticAuditSnapshot struct {
+	Configured, CapabilityAvailable bool
+	Backend, ProfileID              string
+	ActiveGenerationID              string
+	Readiness                       string
+	DirtyParentCount                int
+	PendingParentCount              int
+	DueEmbeddingCount               int
+	BlockedEmbeddingCount           int
+	FailedEmbeddingCount            int
+	IndexedVectorCount              int
+	L0VectorCount                   int
+	TombstoneCount                  int
+	SegmentCount                    int
+	Latest                          SemanticRefreshSnapshot
+}
+
+type SemanticRefreshSnapshot struct {
+	State                                                         string
+	StartedAt, CompletedAt, FailureAt                             time.Time
+	Duration                                                      time.Duration
+	ErrorCode                                                     string
+	ProjectedParentCount, EmbeddedChunkCount                      int
+	FlushedVectorCount, CompactedVectorCount, VerifiedVectorCount int
+	SuccessorRunCount                                             int
+	Stages                                                        []SemanticStageSnapshot
+}
+
+type SemanticStageSnapshot struct {
+	Stage    string
+	Status   string
+	Duration time.Duration
 }

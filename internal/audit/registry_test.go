@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestRegistryContainsExactClosedV1SetInOutputOrder(t *testing.T) {
+func TestRegistryContainsExactClosedV2SetInOutputOrder(t *testing.T) {
 	want := []CheckID{
 		"boundary.config", "boundary.runtime", "boundary.security_baseline", "boundary.database",
 		"integrity.schema_identity", "integrity.migration_compatibility", "integrity.sqlite_quick_check", "integrity.foreign_keys",
@@ -29,10 +29,11 @@ func TestRegistryContainsExactClosedV1SetInOutputOrder(t *testing.T) {
 		"upstream.apple_notes.parity", "upstream.safari_tabs.parity", "upstream.x_bookmarks.parity",
 		"upstream.github_stars.parity", "upstream.youtube_liked.parity", "upstream.youtube_watch_later.parity", "upstream.feeds.parity",
 		"durability.media_remote_only", "durability.sqlite_restore",
+		"semantic.current_readiness", "semantic.latest_attached_refresh", "semantic.stage_summary",
 	}
 	registry := Registry()
-	if len(registry) != 55 {
-		t.Fatalf("registry length = %d, want 55", len(registry))
+	if len(registry) != 58 {
+		t.Fatalf("registry length = %d, want 58", len(registry))
 	}
 	got := make([]CheckID, len(registry))
 	for i, entry := range registry {
@@ -43,7 +44,7 @@ func TestRegistryContainsExactClosedV1SetInOutputOrder(t *testing.T) {
 	}
 }
 
-func TestRegistryStandardMembershipIs46ApplicableAnd9ProfileExcluded(t *testing.T) {
+func TestRegistryStandardMembershipIs49ApplicableAnd9ProfileExcluded(t *testing.T) {
 	applicable := 0
 	excluded := 0
 	for _, entry := range Registry() {
@@ -53,8 +54,8 @@ func TestRegistryStandardMembershipIs46ApplicableAnd9ProfileExcluded(t *testing.
 			excluded++
 		}
 	}
-	if applicable != 46 || excluded != 9 {
-		t.Fatalf("standard membership = %d applicable, %d excluded; want 46/9", applicable, excluded)
+	if applicable != 49 || excluded != 9 {
+		t.Fatalf("standard membership = %d applicable, %d excluded; want 49/9", applicable, excluded)
 	}
 }
 

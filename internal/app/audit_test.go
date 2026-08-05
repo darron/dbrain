@@ -94,7 +94,7 @@ func TestMCPAuditDependenciesRunOnlyTheFullLocalFastProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run MCP fast audit: %v", err)
 	}
-	if report.Profile != audit.ProfileFast || !report.Scope.WholeSystem || report.Scope.Filtered || len(report.Checks) != 55 {
+	if report.Profile != audit.ProfileFast || !report.Scope.WholeSystem || report.Scope.Filtered || len(report.Checks) != 58 {
 		t.Fatalf("MCP fast report is not the full exact profile: %#v", report.Scope)
 	}
 }
@@ -257,7 +257,7 @@ func TestAuditCLIDatabaseOpenFailureIsExitThreeWithoutReport(t *testing.T) {
 	if !errors.As(err, &exit) || exit.Code != 3 || exit.Silent {
 		t.Fatalf("error = %#v", err)
 	}
-	if strings.Contains(out.String(), audit.SchemaV1) {
+	if strings.Contains(out.String(), audit.SchemaV2) {
 		t.Fatalf("bootstrap failure emitted report: %s", out.String())
 	}
 }
@@ -312,7 +312,7 @@ func TestAuditCLIEmitsCompleteStandardReportBeforeHealthExit(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, out.String())
 	}
-	if report.Schema != audit.SchemaV1 || len(report.Checks) != 55 || !report.Boundary.DatabaseVerified {
+	if report.Schema != audit.SchemaV2 || len(report.Checks) != 58 || !report.Boundary.DatabaseVerified {
 		t.Fatalf("report boundary/checks = %#v checks=%d", report.Boundary, len(report.Checks))
 	}
 
@@ -362,7 +362,7 @@ func TestAuditCLIDeepSyntheticNoRemoteSmoke(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode deep report: %v\n%s", err, out.String())
 	}
-	if report.Profile != audit.ProfileDeep || len(report.Checks) != 55 || !report.Boundary.DatabaseVerified {
+	if report.Profile != audit.ProfileDeep || len(report.Checks) != 58 || !report.Boundary.DatabaseVerified {
 		t.Fatalf("deep report boundary/checks = %#v checks=%d", report.Boundary, len(report.Checks))
 	}
 	for _, check := range report.Checks {
@@ -1167,7 +1167,7 @@ func TestAuditSourceCommandIgnoresUnrelatedDeepArchiveLimits(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v output=%s", err, out.String())
 	}
-	if report.Schema != audit.SchemaV1 || report.Profile != audit.ProfileDeep {
+	if report.Schema != audit.SchemaV2 || report.Profile != audit.ProfileDeep {
 		t.Fatalf("report schema/profile = %q/%q", report.Schema, report.Profile)
 	}
 }
@@ -1238,7 +1238,7 @@ func TestAuditGitHubStarsMissingTokenEmitsPortableUnknownReport(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v output=%s", err, out.String())
 	}
-	if report.Schema != audit.SchemaV1 || report.Profile != audit.ProfileDeep {
+	if report.Schema != audit.SchemaV2 || report.Profile != audit.ProfileDeep {
 		t.Fatalf("report schema/profile = %q/%q", report.Schema, report.Profile)
 	}
 	parityFound := false
