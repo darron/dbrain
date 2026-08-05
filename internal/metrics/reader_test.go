@@ -156,6 +156,22 @@ func TestReaderFailsClosedForMissingSemanticStagesOrCountersAndAcceptsVerifiedZe
 		t.Fatalf("partial semantic activity = %#v", window.Semantic)
 	}
 
+	events = []map[string]any{{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "missing-counter", "emitted_at": base.Format(time.RFC3339), "started_at": base.Format(time.RFC3339)}}
+	events = append(events, semanticMetricLifecycle("missing-counter", base.Add(time.Second), true)...)
+	for _, event := range events {
+		if event["stage"] == "readiness" {
+			delete(event["counts"].(map[string]int), "successor_runs")
+		}
+	}
+	writeMetricEvents(t, path, events)
+	window, err = NewReader(path).Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !window.Semantic.Present || !window.Semantic.Incomplete || window.Semantic.Latest.State != "unknown" {
+		t.Fatalf("missing-counter semantic activity = %#v", window.Semantic)
+	}
+
 	events = []map[string]any{{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "zero", "emitted_at": base.Format(time.RFC3339), "started_at": base.Format(time.RFC3339)}}
 	events = append(events, semanticMetricLifecycle("zero", base.Add(time.Second), true)...)
 	for _, event := range events {
@@ -176,12 +192,12 @@ func TestReaderFailsClosedForMissingSemanticStagesOrCountersAndAcceptsVerifiedZe
 }
 
 func TestReaderMakesSemanticActivityIncompleteForMalformedOrOversizedMetricLines(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "metrics.jsonl")
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	events := []map[string]any{{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "parent", "emitted_at": base.Format(time.RFC3339), "started_at": base.Format(time.RFC3339)}}
-	events = append(events, semanticMetricLifecycle("parent", base.Add(time.Second), true)...)
-	writeMetricEvents(t, path, events)
 	for _, malformed := range []string{"{\n", strings.Repeat("x", 513) + "\n"} {
+		path := filepath.Join(t.TempDir(), "metrics.jsonl")
+		events := []map[string]any{{"schema": SchemaVersion, "event": "sync.run.started", "run_id": "parent", "emitted_at": base.Format(time.RFC3339), "started_at": base.Format(time.RFC3339)}}
+		events = append(events, semanticMetricLifecycle("parent", base.Add(time.Second), true)...)
+		writeMetricEvents(t, path, events)
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
