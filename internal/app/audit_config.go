@@ -109,8 +109,17 @@ func resolveAuditRuntime(cfg config.Config, meta auditConfigMeta) (auditRuntimeC
 		return auditRuntimeConfig{}, err
 	}
 	features.SemanticConfigured = semantic.Mode != semanticconfig.ModeOff && strings.TrimSpace(semantic.Model) != "" && semantic.Dimensions > 0
-	features.SemanticCapabilityAvailable = semanticindex.RuntimeCapability().State == semanticindex.CapabilitySupportedReady
+	features.SemanticCapabilityAvailable = semanticCapabilitySupportsAuditHealth(semanticindex.RuntimeCapability().State)
 	return auditRuntimeConfig{Features: features, Flags: flags}, nil
+}
+
+func semanticCapabilitySupportsAuditHealth(state semanticindex.CapabilityState) bool {
+	switch state {
+	case semanticindex.CapabilitySupportedReady, semanticindex.CapabilitySupportedBroken:
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveAuditTimeoutOverrides(root string) (map[audit.TimeoutClass]time.Duration, time.Duration, error) {

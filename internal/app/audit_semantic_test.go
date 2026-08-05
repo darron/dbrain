@@ -171,9 +171,29 @@ func TestResolveAuditRuntimeSetsSemanticRequirednessFromEnabledConfigAndCapabili
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCapability := semanticindex.RuntimeCapability().State == semanticindex.CapabilitySupportedReady
+	capabilityState := semanticindex.RuntimeCapability().State
+	wantCapability := capabilityState == semanticindex.CapabilitySupportedReady || capabilityState == semanticindex.CapabilitySupportedBroken
 	if !resolved.Features.SemanticConfigured || resolved.Features.SemanticCapabilityAvailable != wantCapability {
 		t.Fatalf("semantic audit features=%#v want capability=%t", resolved.Features, wantCapability)
+	}
+}
+
+func TestSemanticCapabilityRequirednessTreatsBrokenAsSupported(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		state semanticindex.CapabilityState
+		want  bool
+	}{
+		{name: "ready", state: semanticindex.CapabilitySupportedReady, want: true},
+		{name: "broken", state: semanticindex.CapabilitySupportedBroken, want: true},
+		{name: "unsupported", state: semanticindex.CapabilityUnsupported, want: false},
+		{name: "unknown", state: semanticindex.CapabilityState("unknown"), want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := semanticCapabilitySupportsAuditHealth(test.state); got != test.want {
+				t.Fatalf("semantic capability %q supported=%t want=%t", test.state, got, test.want)
+			}
+		})
 	}
 }
 

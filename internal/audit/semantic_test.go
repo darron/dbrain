@@ -99,6 +99,93 @@ func TestSemanticSuccessfulZeroWorkRefreshPasses(t *testing.T) {
 	}
 }
 
+func TestSemanticSupportedBrokenRuntimeRemainsRequiredAndFailsOverall(t *testing.T) {
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	deps := semanticAuditDependencies(now, metrics.SemanticActivity{})
+	deps.Semantic = fakeSemanticInspector{snapshot: SemanticAuditSnapshot{
+		Configured: true, Backend: "ollama", Readiness: "unavailable",
+		ProfileID: "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}}
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, CheckIDs: []CheckID{CheckSemanticCurrentReadiness}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForTest(t, report, CheckSemanticCurrentReadiness)
+	if !check.Required || check.Status != StatusFail || report.Status != StatusFail || check.Evidence["capability"] != "unavailable" {
+		t.Fatalf("supported-broken semantic health did not fail required audit: report=%#v check=%#v", report, check)
+	}
+}
+
+func TestSemanticTerminalRefreshRejectsMissingFutureOrInconsistentTimestamps(t *testing.T) {
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	startedAt := now.Add(-2 * time.Minute)
+	completedAt := now.Add(-time.Minute)
+	valid := metrics.SemanticRefreshRecord{
+		State: "succeeded", StartedAt: startedAt, CompletedAt: completedAt,
+		Duration: time.Minute, Stages: successfulMetricStages(),
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*metrics.SemanticRefreshRecord)
+	}{
+		{name: "missing started", mutate: func(v *metrics.SemanticRefreshRecord) { v.StartedAt = time.Time{} }},
+		{name: "missing completed", mutate: func(v *metrics.SemanticRefreshRecord) { v.CompletedAt = time.Time{} }},
+		{name: "future completed", mutate: func(v *metrics.SemanticRefreshRecord) { v.CompletedAt = now.Add(time.Second) }},
+		{name: "completed before started", mutate: func(v *metrics.SemanticRefreshRecord) { v.CompletedAt = v.StartedAt.Add(-time.Second) }},
+		{name: "failed without failure time", mutate: func(v *metrics.SemanticRefreshRecord) {
+			v.State, v.ErrorCode = "failed", "semantic_refresh_failed"
+		}},
+		{name: "failure before started", mutate: func(v *metrics.SemanticRefreshRecord) {
+			v.State, v.ErrorCode, v.FailureAt = "failed", "semantic_refresh_failed", v.StartedAt.Add(-time.Second)
+		}},
+		{name: "failure after completed", mutate: func(v *metrics.SemanticRefreshRecord) {
+			v.State, v.ErrorCode, v.FailureAt = "failed", "semantic_refresh_failed", v.CompletedAt.Add(time.Second)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			record := valid
+			test.mutate(&record)
+			deps := semanticAuditDependencies(now, metrics.SemanticActivity{Present: true, Latest: record})
+			report, err := Run(t.Context(), Request{Profile: ProfileStandard, CheckIDs: []CheckID{CheckSemanticLatestAttachedRefresh}}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := checkByIDForTest(t, report, CheckSemanticLatestAttachedRefresh)
+			if check.Status != StatusUnknown || !check.Required {
+				t.Fatalf("invalid terminal timestamps passed health: %#v", check)
+			}
+			if _, leakedNegativeAge := check.Evidence["age_seconds"]; leakedNegativeAge {
+				t.Fatalf("invalid terminal timestamps emitted age evidence: %#v", check.Evidence)
+			}
+		})
+	}
+}
+
+func TestSemanticStageSummaryCanonicalizesReorderedCompleteStages(t *testing.T) {
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	stages := successfulMetricStages()
+	stages = []metrics.SemanticStageRecord{stages[5], stages[2], stages[0], stages[4], stages[1], stages[3]}
+	deps := semanticAuditDependencies(now, metrics.SemanticActivity{Present: true, Latest: metrics.SemanticRefreshRecord{
+		State: "succeeded", StartedAt: now.Add(-time.Minute), CompletedAt: now,
+		Duration: time.Minute, Stages: stages,
+	}})
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, CheckIDs: []CheckID{CheckSemanticStageSummary}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := checkByIDForTest(t, report, CheckSemanticStageSummary)
+	want := []string{"projection", "embedding", "flush", "compaction", "verification", "readiness"}
+	got, ok := check.Evidence["stages"].([]map[string]any)
+	if !ok || len(got) != len(want) {
+		t.Fatalf("stage evidence=%#v", check.Evidence["stages"])
+	}
+	for index, stage := range got {
+		if stage["stage"] != want[index] {
+			t.Fatalf("stage[%d]=%#v want=%s", index, stage, want[index])
+		}
+	}
+}
+
 func TestSemanticMissingOrIncompleteMetricsIsUnknownWhenRequired(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {

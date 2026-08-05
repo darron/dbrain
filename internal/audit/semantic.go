@@ -179,7 +179,7 @@ func semanticCapabilityEvidence(snapshot SemanticAuditSnapshot) (string, bool) {
 	}
 }
 
-func attachSemanticActivity(snapshot *SemanticAuditSnapshot, activity metrics.SemanticActivity) (present, incomplete bool) {
+func attachSemanticActivity(snapshot *SemanticAuditSnapshot, activity metrics.SemanticActivity, now time.Time) (present, incomplete bool) {
 	if !activity.Present {
 		return false, false
 	}
@@ -191,7 +191,7 @@ func attachSemanticActivity(snapshot *SemanticAuditSnapshot, activity metrics.Se
 		Duration:    activity.Latest.Duration,
 		ErrorCode:   SemanticErrorCode(activity.Latest.ErrorCode),
 	}
-	valid := latest.State.Valid() && latest.Duration >= 0
+	valid := latest.State.Valid() && latest.Duration >= 0 && semanticRefreshTimestampsValid(latest, now)
 	counters := activity.Latest.Counters
 	values := []int64{counters.ProjectedParents, counters.EmbeddedChunks, counters.FlushedVectors, counters.CompactedVectors, counters.VerifiedVectors, counters.SuccessorRuns}
 	converted := make([]int, len(values))
@@ -220,23 +220,43 @@ func convertSemanticStages(values []metrics.SemanticStageRecord, valid bool) ([]
 	if len(values) != len(semanticStageOrder) {
 		return unknownSemanticStageSnapshots(), false
 	}
-	out := make([]SemanticStageSnapshot, 0, len(values))
-	seen := make(map[SemanticStage]bool, len(values))
+	byStage := make(map[SemanticStage]SemanticStageSnapshot, len(values))
 	for _, value := range values {
 		stage := SemanticStage(value.Stage)
 		status := SemanticStageStatus(value.Status)
-		if !stage.Valid() || !status.Valid() || seen[stage] || value.Duration < 0 {
+		if !stage.Valid() || !status.Valid() || value.Duration < 0 {
 			valid = false
 		}
-		seen[stage] = true
-		out = append(out, SemanticStageSnapshot{Stage: stage, Status: status, Duration: value.Duration})
+		if _, duplicate := byStage[stage]; duplicate {
+			valid = false
+		}
+		byStage[stage] = SemanticStageSnapshot{Stage: stage, Status: status, Duration: value.Duration}
 	}
+	out := make([]SemanticStageSnapshot, 0, len(semanticStageOrder))
 	for _, stage := range semanticStageOrder {
-		if !seen[stage] {
+		value, ok := byStage[stage]
+		if !ok {
 			valid = false
+			value = SemanticStageSnapshot{Stage: stage, Status: "unknown"}
 		}
+		out = append(out, value)
 	}
 	return out, valid
+}
+
+func semanticRefreshTimestampsValid(latest SemanticRefreshSnapshot, now time.Time) bool {
+	switch latest.State {
+	case "succeeded", "skipped", "failed", "canceled":
+		if latest.StartedAt.IsZero() || latest.CompletedAt.IsZero() || latest.CompletedAt.Before(latest.StartedAt) || latest.CompletedAt.After(now) {
+			return false
+		}
+	default:
+		return true
+	}
+	if latest.State == "failed" || latest.State == "canceled" {
+		return !latest.FailureAt.IsZero() && !latest.FailureAt.Before(latest.StartedAt) && !latest.FailureAt.After(latest.CompletedAt)
+	}
+	return latest.FailureAt.IsZero()
 }
 
 func semanticLatestEvidence(latest SemanticRefreshSnapshot, now time.Time) Evidence {

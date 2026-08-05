@@ -250,7 +250,7 @@ func (s *runState) load(ctx context.Context) {
 			s.semantic, s.semanticErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery, s.deps.Features.Timeouts), s.deps.Semantic.InspectAuditSemantic)
 		}
 		if s.semanticErr == nil && s.metricsErr == nil {
-			s.semanticActivityPresent, s.semanticActivityIncomplete = attachSemanticActivity(&s.semantic, s.metrics.Semantic)
+			s.semanticActivityPresent, s.semanticActivityIncomplete = attachSemanticActivity(&s.semantic, s.metrics.Semantic, s.now)
 		}
 	}
 	needPipeline := false
