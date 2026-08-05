@@ -70,6 +70,11 @@ func emitSemanticRefreshMetrics(
 	}
 	if resultErr != nil {
 		terminal["error"] = metrics.ErrorObject(resultErr)
+		terminal["semantic_error_code"] = "semantic_refresh_failed"
+		var refreshErr *semanticrefresh.RefreshError
+		if errors.As(resultErr, &refreshErr) {
+			terminal["semantic_error_code"] = refreshErr.Error()
+		}
 	}
 	emitErr = errors.Join(emitErr, run.Emit(terminal))
 	return emitErr

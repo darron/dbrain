@@ -49,6 +49,83 @@ func TestReaderReconstructsRunsPollsArrivalsAndExplicitMarkers(t *testing.T) {
 	}
 }
 
+func TestReaderReconstructsLatestAttachedSemanticRefreshWithoutPrivateFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	writeMetricEvents(t, path, []map[string]any{
+		{"schema": SchemaVersion, "event": "semantic.refresh.started", "run_id": "parent-run", "emitted_at": base.Format(time.RFC3339), "started_at": base.Format(time.RFC3339)},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(500 * time.Millisecond).Format(time.RFC3339), "stage": "projection", "status": "ok", "duration_ms": 50, "counts": map[string]int{"projected_parents": 1}},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(time.Second).Format(time.RFC3339), "stage": "projection", "status": "ok", "duration_ms": 100, "counts": map[string]int{"projected_parents": 2}},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(2 * time.Second).Format(time.RFC3339), "stage": "embedding", "status": "ok", "duration_ms": 200, "counts": map[string]int{"embedded_chunks": 3}},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(3 * time.Second).Format(time.RFC3339), "stage": "flush", "status": "ok", "duration_ms": 300, "counts": map[string]int{"flushed_vectors": 4}},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(4 * time.Second).Format(time.RFC3339), "stage": "compaction", "status": "ok", "duration_ms": 400, "counts": map[string]int{"compacted_vectors": 5}},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(5 * time.Second).Format(time.RFC3339), "stage": "verify", "status": "ok", "duration_ms": 500, "counts": map[string]int{"verified_vectors": 6}},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(6 * time.Second).Format(time.RFC3339), "stage": "readiness", "status": "ok", "duration_ms": 600, "counts": map[string]int{"successor_runs": 7}},
+		{"schema": SchemaVersion, "event": "semantic.refresh.completed", "run_id": "parent-run", "emitted_at": base.Add(7 * time.Second).Format(time.RFC3339), "started_at": base.Format(time.RFC3339), "completed_at": base.Add(7 * time.Second).Format(time.RFC3339), "duration_ms": 7000, "status": "ok", "outcome": "completed", "semantic_run_ids": []string{"must-not-cross-boundary"}, "error": map[string]string{"message": "/private/error"}},
+	})
+
+	window, err := NewReader(path).Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity := window.Semantic
+	if !activity.Present || activity.Incomplete || activity.Latest.State != "succeeded" || !activity.Latest.StartedAt.Equal(base) || !activity.Latest.CompletedAt.Equal(base.Add(7*time.Second)) || activity.Latest.Duration != 7*time.Second {
+		t.Fatalf("semantic activity = %#v", activity)
+	}
+	if got := activity.Latest.Stages; len(got) != 6 || got[0].Stage != "projection" || got[0].Duration != 100*time.Millisecond || got[4].Stage != "verification" || got[5].Duration != 600*time.Millisecond {
+		t.Fatalf("semantic stages = %#v", got)
+	}
+	if got := activity.Latest.Counters; got.ProjectedParents != 2 || got.EmbeddedChunks != 3 || got.FlushedVectors != 4 || got.CompactedVectors != 5 || got.VerifiedVectors != 6 || got.SuccessorRuns != 7 {
+		t.Fatalf("semantic counters = %#v", got)
+	}
+	encoded, err := json.Marshal(activity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{"parent-run", "must-not-cross-boundary", "/private/error"} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("semantic activity leaked %q: %s", private, encoded)
+		}
+	}
+}
+
+func TestReaderMarksInvalidOrPartialSemanticActivityUnknown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	writeMetricEvents(t, path, []map[string]any{
+		{"schema": SchemaVersion, "event": "semantic.refresh.started", "run_id": "parent-run", "emitted_at": base.Format(time.RFC3339), "started_at": base.Format(time.RFC3339)},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(time.Second).Format(time.RFC3339), "stage": "forged", "status": "ok", "duration_ms": 1},
+		{"schema": SchemaVersion, "event": "semantic.stage.completed", "run_id": "parent-run", "emitted_at": base.Add(2 * time.Second).Format(time.RFC3339), "stage": "projection", "status": "ok", "duration_ms": -1, "counts": map[string]int{"projected_parents": -1}},
+		{"schema": SchemaVersion, "event": "semantic.refresh.completed", "run_id": "parent-run", "emitted_at": base.Add(3 * time.Second).Format(time.RFC3339), "started_at": base.Format(time.RFC3339), "completed_at": base.Add(3 * time.Second).Format(time.RFC3339), "duration_ms": 3000, "status": "ok", "outcome": "completed"},
+	})
+	reader := NewReader(path)
+	reader.MaxEvents = 2
+	window, err := reader.Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !window.EventBudgetExhausted || !window.Semantic.Present || !window.Semantic.Incomplete || window.Semantic.Latest.State != "unknown" || window.Semantic.Latest.Counters.ProjectedParents != 0 {
+		t.Fatalf("semantic partial activity = %#v", window.Semantic)
+	}
+
+	reader.MaxEvents = 20
+	window, err = reader.Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !window.Semantic.Present || !window.Semantic.Incomplete || window.Semantic.Latest.State != "unknown" || window.Semantic.Latest.Counters.ProjectedParents != 0 {
+		t.Fatalf("semantic invalid activity = %#v", window.Semantic)
+	}
+}
+
+func TestSemanticDurationRejectsOverflowAndNegativeValues(t *testing.T) {
+	for _, value := range []any{json.Number("9223372036854775807"), json.Number("-1"), "1"} {
+		if _, ok := semanticDuration(value); ok {
+			t.Fatalf("semanticDuration(%#v) accepted invalid value", value)
+		}
+	}
+}
+
 func TestReaderRejectsNonRegularDescriptorAfterNonblockingOpen(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("named pipes use Unix filesystem semantics")
