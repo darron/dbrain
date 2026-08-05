@@ -554,11 +554,14 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 		return boundaryErr
 	}
 	reporter := newSemanticProgressReporter(logOut, time.Now)
-	metricsErr := emitSemanticRefreshStarted(metricsRun, time.Now())
+	semanticStartedAt := time.Now().UTC()
+	metricsErr := emitSemanticRefreshStarted(metricsRun, semanticStartedAt)
+	refreshDeps := deps
+	refreshDeps.startedAt = semanticStartedAt
 	result, err := runConfiguredSemanticRefresh(
 		ctx,
 		cfg,
-		deps,
+		refreshDeps,
 		func(progress semanticrefresh.Progress) error {
 			if reportErr := reporter.Report(progress); reportErr != nil {
 				return wrapScheduledSyncBoundary(scheduledBoundaryOutput, reportErr)

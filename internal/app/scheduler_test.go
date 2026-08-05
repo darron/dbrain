@@ -288,6 +288,67 @@ metrics:
 	}
 }
 
+func TestRunScheduledSyncAllSemanticMetricsReuseObservedStart(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+metrics:
+  enabled: true
+  path: scheduled-semantic-start.jsonl
+  strict: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		at := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+		return syncjob.Stats{StartedAt: at, CompletedAt: at}, nil
+	}
+	completedAt := time.Date(2030, 1, 2, 3, 4, 5, 678900000, time.UTC)
+	deps := semanticRefreshDeps{
+		resolve: func(string) (semanticconfig.Config, error) {
+			return semanticRefreshTestConfig(semanticconfig.ModeOff), nil
+		},
+		now: func() time.Time { return completedAt },
+	}
+	if err := runScheduledSyncAllUnlockedWithSemanticDeps(
+		t.Context(), cfg, scheduledSyncSemanticTestFlags(), io.Discard, deps,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(root, "logs", "scheduled-semantic-start.jsonl")
+	events := readAppMetricEvents(t, path)
+	var startedAt, terminalStartedAt string
+	for _, event := range events {
+		switch event["event"] {
+		case "semantic.refresh.started":
+			startedAt, _ = event["started_at"].(string)
+		case "semantic.refresh.completed":
+			terminalStartedAt, _ = event["started_at"].(string)
+		}
+	}
+	if startedAt == "" || terminalStartedAt == "" || startedAt != terminalStartedAt {
+		t.Fatalf("scheduler semantic start mismatch: started=%q terminal=%q", startedAt, terminalStartedAt)
+	}
+	window, err := metrics.NewReader(path).Read(t.Context(), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !window.Semantic.Present || window.Semantic.TerminalIncomplete || window.Semantic.CountersIncomplete || window.Semantic.Latest.State != "skipped" {
+		t.Fatalf("scheduled semantic lifecycle=%#v", window.Semantic)
+	}
+}
+
 func TestRunScheduledSyncAllSourceErrorClosesStoreAndSkipsSemanticRefresh(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
