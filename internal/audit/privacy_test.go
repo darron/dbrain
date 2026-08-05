@@ -84,6 +84,20 @@ func TestSemanticEvidenceIsBoundedAndClosed(t *testing.T) {
 	}
 }
 
+func TestSemanticIdentifierSeamUsesEvidencePrivacyBounds(t *testing.T) {
+	for value, want := range map[SemanticIdentifier]bool{
+		"nomic-embed-text-v1.5":  true,
+		"root-20260714":          true,
+		"/Users/alice/private":   false,
+		"checkpoint:private-run": false,
+		"":                       false,
+	} {
+		if got := value.Valid(); got != want {
+			t.Fatalf("SemanticIdentifier(%q).Valid() = %t, want %t", value, got, want)
+		}
+	}
+}
+
 func FuzzEvidenceRejectsArbitraryStrings(f *testing.F) {
 	for _, seed := range []string{"/tmp/x", "https://x", "secret", "title", "transcript"} {
 		f.Add(seed)

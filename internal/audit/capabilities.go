@@ -200,6 +200,10 @@ type SemanticErrorCode string
 type SemanticStage string
 type SemanticStageStatus string
 
+// Valid applies the same closed, content-free identifier boundary enforced
+// for semantic evidence before adapters bind store values to audit snapshots.
+func (v SemanticIdentifier) Valid() bool { return semanticIdentifierPattern.MatchString(string(v)) }
+
 func (v SemanticBackend) Valid() bool { return v == "ollama" || v == "none" || v == "unsupported" }
 func (v SemanticReadiness) Valid() bool {
 	switch v {
