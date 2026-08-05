@@ -119,6 +119,169 @@ func TestRunMaterializesFeedEntryAndUnchangedBodySkipsEntries(t *testing.T) {
 	}
 }
 
+func TestChangedFeedPreservesExistingItemSavedAtAndUserTags(t *testing.T) {
+	ctx := context.Background()
+	cfg, st := openFeedTestStore(t)
+	body1 := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Feed</title>
+    <link>https://example.com/</link>
+    <description>Feed description</description>
+    <item>
+      <guid>post-1</guid>
+      <title>Stable post</title>
+      <link>https://example.com/post-1</link>
+      <description>Stable body</description>
+    </item>
+    <item>
+      <guid>post-2</guid>
+      <title>Changing post</title>
+      <link>https://example.com/post-2</link>
+      <description>Initial body</description>
+    </item>
+    <item>
+      <guid>post-3</guid>
+      <title>Untagged stable post</title>
+      <link>https://example.com/post-3</link>
+      <description>Stable untagged body</description>
+    </item>
+  </channel>
+</rss>`)
+	body2 := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Feed</title>
+    <link>https://example.com/</link>
+    <description>Feed description</description>
+    <item>
+      <guid>post-1</guid>
+      <title>Stable post</title>
+      <link>https://example.com/post-1</link>
+      <description>Stable body</description>
+    </item>
+    <item>
+      <guid>post-2</guid>
+      <title>Changing post</title>
+      <link>https://example.com/post-2</link>
+      <description>Changed body</description>
+    </item>
+    <item>
+      <guid>post-3</guid>
+      <title>Untagged stable post</title>
+      <link>https://example.com/post-3</link>
+      <description>Stable untagged body</description>
+    </item>
+  </channel>
+</rss>`)
+	fetcher := &fakeFetcher{results: []FetchResult{
+		{
+			RequestURL:        "https://example.com/feed.xml",
+			FinalURL:          "https://example.com/feed.xml",
+			HTTPStatus:        http.StatusOK,
+			DecodedBody:       body1,
+			DecodedBodyHash:   sha256Hex(body1),
+			WireResponseBytes: body1,
+			DecodedSizeBytes:  int64(len(body1)),
+		},
+		{
+			RequestURL:        "https://example.com/feed.xml",
+			FinalURL:          "https://example.com/feed.xml",
+			HTTPStatus:        http.StatusOK,
+			DecodedBody:       body2,
+			DecodedBodyHash:   sha256Hex(body2),
+			WireResponseBytes: body2,
+			DecodedSizeBytes:  int64(len(body2)),
+		},
+	}}
+
+	feed, _, stats, err := Add(ctx, cfg, st, "https://example.com/feed.xml", AddOptions{
+		Fetch:   true,
+		Import:  true,
+		Fetcher: fetcher,
+		Now:     fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if stats.ItemsCreated != 3 {
+		t.Fatalf("initial items created = %d, want 3", stats.ItemsCreated)
+	}
+
+	stableKey := "feed-entry:" + shortHash(feed.FeedKey+"|guid:post-1")
+	changedKey := "feed-entry:" + shortHash(feed.FeedKey+"|guid:post-2")
+	untaggedKey := "feed-entry:" + shortHash(feed.FeedKey+"|guid:post-3")
+	stableBefore, err := st.GetItem(ctx, stableKey)
+	if err != nil {
+		t.Fatalf("GetItem stable before refresh: %v", err)
+	}
+	changedBefore, err := st.GetItem(ctx, changedKey)
+	if err != nil {
+		t.Fatalf("GetItem changed before refresh: %v", err)
+	}
+	if err := st.SaveItemUserTags(ctx, stableBefore.ID, "generated"); err != nil {
+		t.Fatalf("SaveItemUserTags stable: %v", err)
+	}
+	if err := st.SaveItemUserTags(ctx, changedBefore.ID, "generated-change"); err != nil {
+		t.Fatalf("SaveItemUserTags changed: %v", err)
+	}
+
+	feed.UserTags = "feedtag"
+	stats, err = CheckFeed(ctx, cfg, st, feed, Options{
+		Fetcher: fetcher,
+		Now:     func() time.Time { return fixedNow().Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatalf("CheckFeed changed: %v", err)
+	}
+	if stats.ItemsUnchanged != 2 || stats.ItemsUpdated != 1 || stats.ItemsCreated != 0 {
+		t.Fatalf("changed feed stats = %+v, want two unchanged and one updated item", stats)
+	}
+
+	stableAfter, err := st.GetItem(ctx, stableKey)
+	if err != nil {
+		t.Fatalf("GetItem stable after refresh: %v", err)
+	}
+	changedAfter, err := st.GetItem(ctx, changedKey)
+	if err != nil {
+		t.Fatalf("GetItem changed after refresh: %v", err)
+	}
+	untaggedAfter, err := st.GetItem(ctx, untaggedKey)
+	if err != nil {
+		t.Fatalf("GetItem untagged after refresh: %v", err)
+	}
+	if stableAfter.SavedAt != stableBefore.SavedAt {
+		t.Fatalf("stable SavedAt = %q, want original %q", stableAfter.SavedAt, stableBefore.SavedAt)
+	}
+	if changedAfter.SavedAt != changedBefore.SavedAt {
+		t.Fatalf("changed SavedAt = %q, want original %q", changedAfter.SavedAt, changedBefore.SavedAt)
+	}
+	if stableAfter.UserTags != "generated,feedtag" {
+		t.Fatalf("stable UserTags = %q, want preserved tags", stableAfter.UserTags)
+	}
+	if changedAfter.UserTags != "generated-change,feedtag" {
+		t.Fatalf("changed UserTags = %q, want existing and feed tags merged", changedAfter.UserTags)
+	}
+	if untaggedAfter.UserTags != "feedtag" {
+		t.Fatalf("previously untagged UserTags = %q, want configured feed tag", untaggedAfter.UserTags)
+	}
+	tagged, err := st.SearchUserTags(ctx, "feedtag", 10)
+	if err != nil {
+		t.Fatalf("SearchUserTags feedtag: %v", err)
+	}
+	if len(tagged) != 3 {
+		t.Fatalf("feedtag search results = %d, want all refreshed items", len(tagged))
+	}
+
+	candidates, err := st.ListItemsForCategorize(ctx, 0, false)
+	if err != nil {
+		t.Fatalf("ListItemsForCategorize: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("categorization candidates = %d, want 0", len(candidates))
+	}
+}
+
 func TestAddFetchesMetadataWithoutImportUnlessRequested(t *testing.T) {
 	ctx := context.Background()
 	cfg, st := openFeedTestStore(t)

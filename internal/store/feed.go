@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/darron/dbrain/internal/itemhash"
@@ -635,18 +636,20 @@ func lookupFeedEntryMatchTx(ctx context.Context, tx *sql.Tx, where string, args 
 func (s *Store) upsertItemTx(ctx context.Context, tx *sql.Tx, item model.Item) (model.UpsertResult, error) {
 	var existingID int64
 	var existingHash string
+	var existingSavedAt string
+	var existingUserTags string
 	var existingArticleTitle string
 	var existingArticleText string
 	var existingSummary itemSummaryFields
 	var existingOCR itemOCRFields
 	row := tx.QueryRowContext(ctx, `SELECT
-		id, content_hash, article_title, article_text,
+		id, content_hash, saved_at, user_tags, article_title, article_text,
 		summary_text, summary_json, summary_status, summary_error, summary_model, summary_prompt_version, summary_tool, summary_tool_version, summary_input_hash, summarized_at,
 		ocr_text, ocr_json, ocr_status, ocr_error, ocr_model, ocr_tool, ocr_tool_version, ocr_input_hash, ocr_at
 		FROM items
 		WHERE source_key = ?`, item.SourceKey)
 	switch scanErr := row.Scan(
-		&existingID, &existingHash, &existingArticleTitle, &existingArticleText,
+		&existingID, &existingHash, &existingSavedAt, &existingUserTags, &existingArticleTitle, &existingArticleText,
 		&existingSummary.Text, &existingSummary.JSON, &existingSummary.Status, &existingSummary.Error, &existingSummary.Model, &existingSummary.PromptVersion, &existingSummary.Tool, &existingSummary.ToolVersion, &existingSummary.InputHash, &existingSummary.At,
 		&existingOCR.Text, &existingOCR.JSON, &existingOCR.Status, &existingOCR.Error, &existingOCR.Model, &existingOCR.Tool, &existingOCR.ToolVersion, &existingOCR.InputHash, &existingOCR.At,
 	); {
@@ -683,13 +686,21 @@ func (s *Store) upsertItemTx(ctx context.Context, tx *sql.Tx, item model.Item) (
 		return model.UpsertResult{}, fmt.Errorf("load feed item %s: %w", item.SourceKey, scanErr)
 	default:
 	}
-	if preserveExistingItemEnrichmentFields(&item, existingArticleTitle, existingArticleText, existingSummary, existingOCR) {
-		item.ContentHash = itemhash.Compute(item)
+	if existingSavedAt != "" {
+		item.SavedAt = existingSavedAt
 	}
+	item.UserTags = mergeFeedItemUserTags(existingUserTags, item.UserTags)
+	preserveExistingItemEnrichmentFields(&item, existingArticleTitle, existingArticleText, existingSummary, existingOCR)
+	item.ContentHash = itemhash.Compute(item)
 	if existingHash == item.ContentHash {
-		if _, execErr := tx.ExecContext(ctx, `UPDATE items SET last_seen_at = ?, synced_at = ?, raw_json = ? WHERE id = ?`,
-			item.LastSeenAt.Format(time.RFC3339), item.SyncedAt, item.RawJSON, existingID); execErr != nil {
+		if _, execErr := tx.ExecContext(ctx, `UPDATE items SET last_seen_at = ?, synced_at = ?, raw_json = ?, user_tags = ? WHERE id = ?`,
+			item.LastSeenAt.Format(time.RFC3339), item.SyncedAt, item.RawJSON, item.UserTags, existingID); execErr != nil {
 			return model.UpsertResult{}, fmt.Errorf("touch feed item %s: %w", item.SourceKey, execErr)
+		}
+		if item.UserTags != existingUserTags {
+			if err := s.syncItemFTSByIDTx(ctx, tx, existingID); err != nil {
+				return model.UpsertResult{}, err
+			}
 		}
 		return model.UpsertResult{Status: model.UpsertUnchanged, ItemID: existingID, NotePath: item.NotePath}, nil
 	}
@@ -715,6 +726,29 @@ func (s *Store) upsertItemTx(ctx context.Context, tx *sql.Tx, item model.Item) (
 		return model.UpsertResult{}, err
 	}
 	return model.UpsertResult{Status: model.UpsertUpdated, ItemID: existingID, NotePath: item.NotePath}, nil
+}
+
+// Feed-level tags are additive. Existing per-item tags remain authoritative,
+// while tags still configured on the feed are enforced on every refresh.
+func mergeFeedItemUserTags(existing, incoming string) string {
+	seen := make(map[string]struct{})
+	merged := make([]string, 0)
+	for _, value := range []string{existing, incoming} {
+		for _, tag := range strings.FieldsFunc(value, func(r rune) bool {
+			return r == ',' || r == '\n'
+		}) {
+			tag = strings.TrimSpace(tag)
+			if tag == "" {
+				continue
+			}
+			if _, ok := seen[tag]; ok {
+				continue
+			}
+			seen[tag] = struct{}{}
+			merged = append(merged, tag)
+		}
+	}
+	return strings.Join(merged, ",")
 }
 
 func insertItemSourceLinkTx(ctx context.Context, tx *sql.Tx, itemID, sourceID int64, originalURL string) (bool, error) {
