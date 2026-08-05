@@ -220,19 +220,24 @@ func TestRefreshErrorMarshalBoundsExportedFieldsAtOutputBoundary(t *testing.T) {
 }
 
 func TestResultJSONUsesBoundedAggregateDebt(t *testing.T) {
+	startedAt := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	result := Result{
 		Outcome:    OutcomeSkipped,
 		SkipReason: "semantic_mode_off",
 		Capability: semanticindex.Capability{
 			State: semanticindex.CapabilityUnsupported,
 		},
-		Debt: Debt{DirtyParents: 4, Indexed: 3, L0Ready: 2},
+		Debt:        Debt{DirtyParents: 4, Indexed: 3, L0Ready: 2},
+		StartedAt:   startedAt,
+		CompletedAt: startedAt.Add(2 * time.Second),
+		Duration:    2 * time.Second,
+		Stages:      []StageStats{},
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		t.Fatalf("marshal Result: %v", err)
 	}
-	const want = `{"outcome":"skipped","skip_reason":"semantic_mode_off","capability":{"state":"unsupported"},"remaining_debt":{"dirty_parents":4,"pending_embeddings":0,"due_retries":0,"scheduled_retries":0,"blocked_embeddings":0,"failed_embeddings":0,"indexed":3,"l0_ready":2,"tombstones":0,"segments":0}}`
+	const want = `{"outcome":"skipped","skip_reason":"semantic_mode_off","capability":{"state":"unsupported"},"remaining_debt":{"dirty_parents":4,"pending_embeddings":0,"due_retries":0,"scheduled_retries":0,"blocked_embeddings":0,"failed_embeddings":0,"indexed":3,"l0_ready":2,"tombstones":0,"segments":0},"started_at":"2026-08-04T12:00:00Z","completed_at":"2026-08-04T12:00:02Z","duration":2000000000,"stages":[]}`
 	if string(encoded) != want {
 		t.Fatalf("Result JSON = %s, want %s", encoded, want)
 	}

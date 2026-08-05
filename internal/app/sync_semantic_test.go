@@ -148,8 +148,15 @@ func TestSyncFamilyAutomaticInitialBackfillResumesCommittedWork(t *testing.T) {
 		t.Fatalf("first refresh error=%#v want %q", cancelled, semanticrefresh.ErrorCancelled)
 	}
 	firstDocument := decodeOneSyncJSONDocument(t, firstOutput.Bytes())
-	if _, exists := firstDocument["semantic"]; exists {
-		t.Fatal("cancelled initial backfill emitted successful semantic result")
+	if _, exists := firstDocument["semantic_error"]; !exists {
+		t.Fatal("cancelled initial backfill omitted semantic_error")
+	}
+	var firstSemantic semanticRefreshResultOutput
+	if err := json.Unmarshal(firstDocument["semantic"], &firstSemantic); err != nil {
+		t.Fatalf("decode cancelled semantic lifecycle: %v", err)
+	}
+	if firstSemantic.Outcome == semanticrefresh.OutcomeCompleted {
+		t.Fatalf("cancelled initial backfill emitted completed semantic outcome: %+v", firstSemantic)
 	}
 
 	profileID, err := semanticbuild.Profile(provider.Info()).ID()
@@ -657,8 +664,8 @@ func TestSyncFamilyJSONFailureFlattensSourceStatsAndPreservesRefreshError(t *tes
 
 	document := decodeOneSyncJSONDocument(t, stdout.Bytes())
 	assertFlattenedSyncFields(t, document, stats, "semantic_error")
-	if _, exists := document["semantic"]; exists {
-		t.Fatal("JSON failure unexpectedly contained semantic")
+	if _, exists := document["semantic"]; !exists {
+		t.Fatal("JSON failure omitted semantic lifecycle")
 	}
 	var encodedError semanticrefresh.RefreshError
 	if err := json.Unmarshal(document["semantic_error"], &encodedError); err != nil {
@@ -674,7 +681,7 @@ func TestSyncFamilyJSONFailureFlattensSourceStatsAndPreservesRefreshError(t *tes
 	}
 }
 
-func TestSyncFamilyHumanOutputIncludesSourceSummaryThenSemanticOutcome(t *testing.T) {
+func TestSyncFamilyHumanOutputEndsWithUnifiedSummaryIncludingSemanticOutcome(t *testing.T) {
 	tests := []struct {
 		name       string
 		deps       func() semanticRefreshDeps
@@ -692,7 +699,7 @@ func TestSyncFamilyHumanOutputIncludesSourceSummaryThenSemanticOutcome(t *testin
 					return completedSyncSemanticResult(), nil
 				})
 			},
-			wantResult: "Semantic refresh: completed",
+			wantResult: "status=completed",
 		},
 		{
 			name: "mode off",
@@ -706,7 +713,7 @@ func TestSyncFamilyHumanOutputIncludesSourceSummaryThenSemanticOutcome(t *testin
 					},
 				}
 			},
-			wantResult: "Semantic refresh: skipped reason=semantic_mode_off",
+			wantResult: "reason=semantic_mode_off",
 		},
 		{
 			name: "unsupported",
@@ -720,7 +727,7 @@ func TestSyncFamilyHumanOutputIncludesSourceSummaryThenSemanticOutcome(t *testin
 					},
 				}
 			},
-			wantResult: "Semantic refresh: skipped reason=native_backend_unsupported",
+			wantResult: "reason=native_backend_unsupported",
 		},
 	}
 	for _, test := range tests {
@@ -741,10 +748,11 @@ func TestSyncFamilyHumanOutputIncludesSourceSummaryThenSemanticOutcome(t *testin
 				t.Fatalf("ExecuteContext: %v", err)
 			}
 			output := stdout.String()
-			summaryIndex := strings.Index(output, "Sync Summary")
-			semanticIndex := strings.Index(output, test.wantResult)
-			if summaryIndex < 0 || semanticIndex < 0 || summaryIndex >= semanticIndex {
-				t.Fatalf("human output did not order source summary before semantic result:\n%s", output)
+			if !strings.Contains(output, "Sync Summary") || !strings.Contains(output, "Semantic Refresh") || !strings.Contains(output, test.wantResult) {
+				t.Fatalf("unified summary omitted semantic outcome:\n%s", output)
+			}
+			if strings.Contains(output, "Semantic refresh:") {
+				t.Fatalf("human output appended a duplicate raw semantic terminal block:\n%s", output)
 			}
 		})
 	}
@@ -1309,8 +1317,28 @@ func assertFlattenedSyncFields(
 	if err := json.Unmarshal(encodedStats, &sourceFields); err != nil {
 		t.Fatal(err)
 	}
-	if len(document) != len(sourceFields)+1 {
-		t.Fatalf("JSON keys = %v, want source keys plus only %q", reflect.ValueOf(document).MapKeys(), semanticKey)
+	extraKeys := 1
+	if semanticKey == "semantic_error" {
+		extraKeys = 2
+	}
+	if len(document) != len(sourceFields)+extraKeys {
+		t.Fatalf("JSON keys = %v, want source keys plus semantic lifecycle and %q", reflect.ValueOf(document).MapKeys(), semanticKey)
+	}
+	if rawSemantic, exists := document["semantic"]; exists {
+		var semantic struct {
+			Duration time.Duration `json:"duration"`
+		}
+		if err := json.Unmarshal(rawSemantic, &semantic); err != nil {
+			t.Fatal(err)
+		}
+		stats = completeSyncStatsWithSemantic(stats, semanticrefresh.Result{Duration: semantic.Duration})
+		encodedStats, err = json.Marshal(stats)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(encodedStats, &sourceFields); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for key, want := range sourceFields {
 		got, exists := document[key]

@@ -240,7 +240,17 @@ func TestSemanticRefreshCommandCompletionAndProgressOutput(t *testing.T) {
 		}
 		var result map[string]json.RawMessage
 		decodeOneJSONDocument(t, stdout, &result)
-		requireExactJSONKeys(t, result, "outcome", "capability", "run", "remaining_debt")
+		requireExactJSONKeys(t, result,
+			"outcome", "capability", "run", "remaining_debt",
+			"started_at", "completed_at", "duration", "stages",
+		)
+		var stages []semanticRefreshStageOutput
+		if err := json.Unmarshal(result["stages"], &stages); err != nil {
+			t.Fatalf("decode stages: %v; output=%s", err, stdout)
+		}
+		if stages == nil || len(stages) != 0 {
+			t.Fatalf("stages=%#v, want bounded non-nil empty aggregate for fake runner", stages)
+		}
 		var run map[string]json.RawMessage
 		if err := json.Unmarshal(result["run"], &run); err != nil {
 			t.Fatalf("decode run: %v; output=%s", err, stdout)

@@ -28,6 +28,7 @@ type semanticRefreshDeps struct {
 	provider        func(semanticconfig.Config) (embedding.Provider, error)
 	nativeLifecycle func(semanticconfig.Config) (semanticrefresh.NativeLifecycle, error)
 	runRefresh      func(context.Context, semanticrefresh.RunLedger, semanticrefresh.StageExecutor, semanticrefresh.Request) (semanticrefresh.Result, error)
+	now             func() time.Time
 	embeddingBatch  int
 }
 
@@ -46,6 +47,7 @@ func defaultSemanticRefreshDeps() semanticRefreshDeps {
 		},
 		nativeLifecycle: newSemanticNativeLifecycle,
 		runRefresh:      semanticrefresh.Run,
+		now:             time.Now,
 	}
 }
 
@@ -54,9 +56,20 @@ func runConfiguredSemanticRefresh(
 	cfg config.Config,
 	deps semanticRefreshDeps,
 	progress semanticrefresh.ProgressCallback,
-) (semanticrefresh.Result, error) {
+) (result semanticrefresh.Result, resultErr error) {
 	deps = completeSemanticRefreshDeps(deps)
-	result := semanticrefresh.Result{}
+	startedAt := deps.now()
+	defer func() {
+		result.StartedAt = startedAt
+		result.CompletedAt = deps.now()
+		if result.CompletedAt.Before(startedAt) {
+			result.CompletedAt = startedAt
+		}
+		result.Duration = result.CompletedAt.Sub(startedAt)
+		if result.Stages == nil {
+			result.Stages = []semanticrefresh.StageStats{}
+		}
+	}()
 	if ctx == nil {
 		return result, semanticrefresh.NewError(
 			semanticrefresh.ErrorBackendBroken,
@@ -272,6 +285,8 @@ func runConfiguredSemanticRefresh(
 	if err := ctx.Err(); err != nil {
 		return cancelledConfiguredSemanticRefresh(result, err)
 	}
+	tracker := newSemanticStageTracker(deps.now)
+	executor = tracker.Wrap(executor)
 
 	result, err = deps.runRefresh(ctx, st, executor, semanticrefresh.Request{
 		ProfileID:           profileID,
@@ -279,8 +294,11 @@ func runConfiguredSemanticRefresh(
 		ProjectionWatermark: projectionWatermark,
 		Capability:          capability,
 		Progress:            progress,
-		Now:                 time.Now,
+		Now:                 deps.now,
 	})
+	if len(result.Stages) == 0 {
+		result.Stages = tracker.Stages()
+	}
 	result.Capability = publicSemanticRefreshCapability(capability)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return cancelledConfiguredSemanticRefresh(result, errors.Join(ctxErr, err))
@@ -323,6 +341,9 @@ func completeSemanticRefreshDeps(deps semanticRefreshDeps) semanticRefreshDeps {
 	}
 	if deps.runRefresh == nil {
 		deps.runRefresh = defaults.runRefresh
+	}
+	if deps.now == nil {
+		deps.now = defaults.now
 	}
 	return deps
 }

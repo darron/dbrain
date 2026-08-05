@@ -198,6 +198,32 @@ func TestConfiguredSemanticRefreshAdmission(t *testing.T) {
 	}
 }
 
+func TestConfiguredSemanticRefreshRecordsLifecycleForSkippedOutcome(t *testing.T) {
+	startedAt := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(3 * time.Second)
+	times := []time.Time{startedAt, completedAt}
+	result, err := runConfiguredSemanticRefresh(t.Context(), config.Config{}, semanticRefreshDeps{
+		resolve: func(string) (semanticconfig.Config, error) {
+			return semanticRefreshTestConfig(semanticconfig.ModeOff), nil
+		},
+		capability: semanticRefreshReadyCapability,
+		now: func() time.Time {
+			value := times[0]
+			times = times[1:]
+			return value
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StartedAt != startedAt || result.CompletedAt != completedAt || result.Duration != 3*time.Second {
+		t.Fatalf("lifecycle = %+v", result)
+	}
+	if result.Stages == nil || len(result.Stages) != 0 {
+		t.Fatalf("stages = %#v, want non-nil empty slice", result.Stages)
+	}
+}
+
 func TestConfiguredSemanticRefreshCapturesStoreStateAndClosesAfterRun(t *testing.T) {
 	dbPath := t.TempDir() + "/brain.db"
 	storefixture.PrepareCurrent(t, dbPath)
@@ -372,6 +398,12 @@ func TestConfiguredSemanticRefreshWrapsEveryExecutorUnitWithDatabaseLocks(t *tes
 	}
 	if result.Outcome != semanticrefresh.OutcomeCompleted {
 		t.Fatalf("result=%+v", result)
+	}
+	if len(result.Stages) != 1 ||
+		result.Stages[0].Stage != store.SemanticRefreshProjection ||
+		result.Stages[0].Status != "error" ||
+		result.Stages[0].Duration < 30*time.Millisecond {
+		t.Fatalf("lock-wait stage telemetry=%+v, want measured projection failure including lock wait", result.Stages)
 	}
 }
 

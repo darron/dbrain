@@ -162,6 +162,39 @@ func TestRunEmitsMetricsRunAndStageEvents(t *testing.T) {
 	}
 }
 
+func TestRunParentOwnsCompletionEmitsPipelineBoundaryOnly(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailStage})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	_, err = Run(t.Context(), cfg, st, Options{
+		ParentOwnsRunCompletion: true,
+		Metrics: metrics.RunContext{
+			RunID:      "sync_parent_owned",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readSyncMetricEvents(t, metricsPath)
+	if got := metricEventNames(events); !slices.Equal(got, []string{"sync.run.started", "sync.pipeline.completed"}) {
+		t.Fatalf("metric events = %v, want parent-owned pipeline boundary without final run completion", got)
+	}
+	if events[1]["status"] != "ok" {
+		t.Fatalf("pipeline status = %#v, want ok", events[1]["status"])
+	}
+}
+
 func TestRunEmitsResolvedModelConfigInMetrics(t *testing.T) {
 	t.Setenv("DBRAIN_CATEGORIZE_MODEL", "ollama/test-categorize")
 	t.Setenv("DBRAIN_OCR_MODEL", "ollama/test-ocr")

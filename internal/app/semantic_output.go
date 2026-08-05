@@ -32,11 +32,26 @@ type semanticRefreshRunOutput struct {
 }
 
 type semanticRefreshResultOutput struct {
-	Outcome    semanticrefresh.Outcome   `json:"outcome"`
-	SkipReason string                    `json:"skip_reason,omitempty"`
-	Capability semanticindex.Capability  `json:"capability"`
-	Run        *semanticRefreshRunOutput `json:"run,omitempty"`
-	Debt       semanticrefresh.Debt      `json:"remaining_debt"`
+	Outcome     semanticrefresh.Outcome      `json:"outcome"`
+	SkipReason  string                       `json:"skip_reason,omitempty"`
+	Capability  semanticindex.Capability     `json:"capability"`
+	Run         *semanticRefreshRunOutput    `json:"run,omitempty"`
+	Debt        semanticrefresh.Debt         `json:"remaining_debt"`
+	StartedAt   string                       `json:"started_at"`
+	CompletedAt string                       `json:"completed_at"`
+	Duration    time.Duration                `json:"duration"`
+	Stages      []semanticRefreshStageOutput `json:"stages"`
+}
+
+type semanticRefreshStageOutput struct {
+	Stage         store.SemanticRefreshStage    `json:"stage"`
+	Duration      time.Duration                 `json:"duration"`
+	Units         int                           `json:"units"`
+	Status        string                        `json:"status"`
+	RunIDs        []string                      `json:"run_ids"`
+	Counters      store.SemanticRefreshCounters `json:"counters"`
+	RemainingDebt semanticrefresh.Debt          `json:"remaining_debt"`
+	ErrorCode     string                        `json:"error_code,omitempty"`
 }
 
 type semanticStatusOutput struct {
@@ -76,12 +91,35 @@ func newSemanticRefreshRunOutput(run *store.SemanticRefreshRun) *semanticRefresh
 }
 
 func newSemanticRefreshResultOutput(result semanticrefresh.Result) semanticRefreshResultOutput {
+	stages := make([]semanticRefreshStageOutput, 0, len(result.Stages))
+	for _, stage := range result.Stages {
+		runIDs := make([]string, 0, len(stage.RunIDs))
+		for _, runID := range stage.RunIDs {
+			if value := safeSemanticRefreshOutputField(runID, 64); value != "" {
+				runIDs = append(runIDs, value)
+			}
+		}
+		stages = append(stages, semanticRefreshStageOutput{
+			Stage:         stage.Stage,
+			Duration:      stage.Duration,
+			Units:         stage.Units,
+			Status:        safeSemanticRefreshOutputField(stage.Status, 64),
+			RunIDs:        runIDs,
+			Counters:      stage.Counters,
+			RemainingDebt: stage.RemainingDebt,
+			ErrorCode:     safeSemanticRefreshOutputField(stage.ErrorCode, 64),
+		})
+	}
 	return semanticRefreshResultOutput{
-		Outcome:    result.Outcome,
-		SkipReason: safeSemanticRefreshOutputField(result.SkipReason, 64),
-		Capability: result.Capability,
-		Run:        newSemanticRefreshRunOutput(result.Run),
-		Debt:       result.Debt,
+		Outcome:     result.Outcome,
+		SkipReason:  safeSemanticRefreshOutputField(result.SkipReason, 64),
+		Capability:  result.Capability,
+		Run:         newSemanticRefreshRunOutput(result.Run),
+		Debt:        result.Debt,
+		StartedAt:   semanticRefreshTimestamp(result.StartedAt),
+		CompletedAt: semanticRefreshTimestamp(result.CompletedAt),
+		Duration:    result.Duration,
+		Stages:      stages,
 	}
 }
 

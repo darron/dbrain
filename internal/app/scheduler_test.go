@@ -277,8 +277,14 @@ metrics:
 		t.Fatalf("unexpected metrics context: %+v", captured.Metrics)
 	}
 	events := readAppMetricEvents(t, filepath.Join(root, "logs", "scheduled-metrics.jsonl"))
-	if len(events) != 1 || events[0]["invocation"] != "scheduler:interval" {
+	wantEvents := []string{"test.scheduler.metrics", "semantic.refresh.started", "semantic.refresh.completed", "sync.run.completed"}
+	if len(events) != len(wantEvents) {
 		t.Fatalf("unexpected metrics events: %#v", events)
+	}
+	for index, want := range wantEvents {
+		if events[index]["event"] != want || events[index]["invocation"] != "scheduler:interval" {
+			t.Fatalf("metrics event %d = %#v, want %q under scheduler invocation", index, events[index], want)
+		}
 	}
 }
 
@@ -380,8 +386,8 @@ metrics:
 		if !sourceMetrics.Enabled() {
 			t.Fatal("source sync did not receive the enabled metrics sink")
 		}
-		if emitErr := sourceMetrics.Emit(metrics.Event{"event": "test.after_source_cleanup"}); emitErr == nil {
-			t.Fatal("semantic admission observed source metrics sink still open")
+		if emitErr := sourceMetrics.Emit(metrics.Event{"event": "test.semantic_boundary"}); emitErr != nil {
+			t.Fatalf("semantic admission did not retain source metrics sink: %v", emitErr)
 		}
 		return resolve(rootDir)
 	}
@@ -398,6 +404,9 @@ metrics:
 	}
 	if refreshes != 1 {
 		t.Fatalf("semantic refreshes = %d, want 1", refreshes)
+	}
+	if emitErr := sourceMetrics.Emit(metrics.Event{"event": "test.after_full_completion"}); emitErr == nil {
+		t.Fatal("full scheduled sync left metrics sink open")
 	}
 	if count := strings.Count(out.String(), "scheduler semantic refresh:"); count != 1 {
 		t.Fatalf("semantic terminal log lines = %d, want 1:\n%s", count, out.String())
@@ -442,7 +451,7 @@ func TestRunScheduledSyncAllUnsupportedSemanticRefreshLogsOneExplicitSkip(t *tes
 	); err != nil {
 		t.Fatalf("scheduled sync: %v", err)
 	}
-	want := "scheduler semantic refresh: skipped reason=native_backend_unsupported capability=unsupported backend= version=\n"
+	want := "scheduler semantic refresh: skipped reason=native_backend_unsupported capability=unsupported duration="
 	if count := strings.Count(out.String(), "scheduler semantic refresh:"); count != 1 {
 		t.Fatalf("semantic terminal log lines = %d, want 1:\n%s", count, out.String())
 	}
@@ -529,14 +538,14 @@ func TestRunScheduledSyncAllStreamsBoundedPeriodicSemanticProgress(t *testing.T)
 		t.Fatalf("scheduled sync: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	progressLines := make([]string, 0, 2)
+	progressLines := make([]string, 0, 1)
 	for _, line := range lines {
-		if strings.HasPrefix(line, "Semantic refresh progress:") {
+		if strings.HasPrefix(line, "Semantic embedding progress:") {
 			progressLines = append(progressLines, line)
 		}
 	}
-	if len(progressLines) != 2 {
-		t.Fatalf("semantic progress lines = %d, want initial plus five-second heartbeat:\n%s", len(progressLines), out.String())
+	if len(progressLines) != 1 {
+		t.Fatalf("semantic progress lines = %d, want one initial line with identical five-second snapshot suppressed:\n%s", len(progressLines), out.String())
 	}
 	for _, line := range progressLines {
 		if len(line) > 1024 {
@@ -544,10 +553,9 @@ func TestRunScheduledSyncAllStreamsBoundedPeriodicSemanticProgress(t *testing.T)
 		}
 	}
 	for _, want := range []string{
-		"run=run-progress profile=profile-progress stage=embedding checkpoint=embedding:batch-1",
-		"at=2026-07-28T12:00:00Z",
-		"run= profile= stage=embedding checkpoint=",
-		"at=2026-07-28T12:00:05Z",
+		"==> semantic embedding",
+		"Semantic embedding progress: embedded_chunks=3 pending_embeddings=8",
+		"Semantic embedding complete: embedded_chunks=3 pending_embeddings=8",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("semantic progress omitted %q:\n%s", want, out.String())

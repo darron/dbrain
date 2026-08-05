@@ -82,6 +82,16 @@ func isClassifiedCancellation(err error) bool {
 }
 
 func classifyScheduledFailure(err error) notify.FailureType {
+	// Preserve errors.Join branch order so the primary operation failure wins
+	// over a secondary cleanup failure from metrics or output settlement.
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if failureType := classifyScheduledFailure(child); failureType != notify.FailureUnknown {
+				return failureType
+			}
+		}
+		return notify.FailureUnknown
+	}
 	var stageErr *syncjob.StageError
 	if errors.As(err, &stageErr) {
 		if stageErr.Stage() == "apple_notes" && errors.Is(err, fs.ErrPermission) {
