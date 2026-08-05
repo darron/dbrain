@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Stable feed item refreshes (2026-08-04)
+
+- **Existing feed entries keep their identity and tags**: Reprocessing a changed
+  feed now preserves each materialized item's original saved time and generated
+  user tags while merging configured feed-level tags. Unchanged entries no
+  longer appear newly modified or trigger repeated LLM categorization merely
+  because another entry changed the feed response.
+
 ### Semantic refresh root continuity (2026-08-04)
 
 - **Incremental updates preserve the active ANN root**: Projection-dirty writes
