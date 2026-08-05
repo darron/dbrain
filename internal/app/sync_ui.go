@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -16,33 +17,41 @@ import (
 )
 
 type syncProgressUI struct {
-	out     io.Writer
-	tty     bool
-	mu      sync.Mutex
-	done    chan struct{}
-	active  bool
-	message string
-	current int64
-	total   int64
-	started time.Time
-	spin    spinner.Model
-	bar     progress.Model
-	success lipgloss.Style
-	accent  lipgloss.Style
-	muted   lipgloss.Style
-	header  lipgloss.Style
-	debug   lipgloss.Style
-	info    lipgloss.Style
-	warn    lipgloss.Style
-	err     lipgloss.Style
-	attr    lipgloss.Style
-	lineBuf bytes.Buffer
-	logBuf  bytes.Buffer
+	out                     io.Writer
+	tty                     bool
+	mu                      sync.Mutex
+	done                    chan struct{}
+	active                  bool
+	semantic                bool
+	message                 string
+	current                 int64
+	total                   int64
+	totalKnown              bool
+	started                 time.Time
+	now                     func() time.Time
+	semanticBaselineCurrent int64
+	semanticBaselineAt      time.Time
+	semanticETA             time.Duration
+	semanticETAKnown        bool
+	spin                    spinner.Model
+	bar                     progress.Model
+	success                 lipgloss.Style
+	accent                  lipgloss.Style
+	muted                   lipgloss.Style
+	header                  lipgloss.Style
+	debug                   lipgloss.Style
+	info                    lipgloss.Style
+	warn                    lipgloss.Style
+	err                     lipgloss.Style
+	attr                    lipgloss.Style
+	lineBuf                 bytes.Buffer
+	logBuf                  bytes.Buffer
 }
 
 func newSyncProgressUI(out io.Writer) *syncProgressUI {
 	ui := &syncProgressUI{
 		out: out,
+		now: time.Now,
 		spin: spinner.New(
 			spinner.WithSpinner(spinner.MiniDot),
 			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("39"))),
@@ -65,6 +74,17 @@ func newSyncProgressUI(out io.Writer) *syncProgressUI {
 		ui.tty = isatty.IsTerminal(file.Fd())
 	}
 	return ui
+}
+
+func boundedProgressETA(elapsed time.Duration, advanced, remaining int64) (time.Duration, bool) {
+	if elapsed <= 0 || advanced <= 0 || remaining <= 0 {
+		return 0, false
+	}
+	estimate := float64(elapsed) * float64(remaining) / float64(advanced)
+	if estimate <= 0 || estimate > float64(math.MaxInt64) {
+		return 0, false
+	}
+	return time.Duration(estimate), true
 }
 
 func (ui *syncProgressUI) Write(p []byte) (int, error) {

@@ -10,10 +10,10 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
-type semanticStageExecutorFunc func(context.Context, store.SemanticRefreshRun) (semanticrefresh.StageOutcome, error)
+type semanticStageExecutorFunc func(context.Context, store.SemanticRefreshRun, semanticrefresh.StageProgressCallback) (semanticrefresh.StageOutcome, error)
 
-func (f semanticStageExecutorFunc) Execute(ctx context.Context, run store.SemanticRefreshRun) (semanticrefresh.StageOutcome, error) {
-	return f(ctx, run)
+func (f semanticStageExecutorFunc) Execute(ctx context.Context, run store.SemanticRefreshRun, progress semanticrefresh.StageProgressCallback) (semanticrefresh.StageOutcome, error) {
+	return f(ctx, run, progress)
 }
 
 func TestSemanticStageTrackerAggregatesRepeatedExecutionUnits(t *testing.T) {
@@ -25,7 +25,7 @@ func TestSemanticStageTrackerAggregatesRepeatedExecutionUnits(t *testing.T) {
 		return value
 	}
 	generated := []int64{8, 12}
-	executor := semanticStageExecutorFunc(func(_ context.Context, run store.SemanticRefreshRun) (semanticrefresh.StageOutcome, error) {
+	executor := semanticStageExecutorFunc(func(_ context.Context, run store.SemanticRefreshRun, _ semanticrefresh.StageProgressCallback) (semanticrefresh.StageOutcome, error) {
 		value := generated[0]
 		generated = generated[1:]
 		return semanticrefresh.StageOutcome{
@@ -38,12 +38,12 @@ func TestSemanticStageTrackerAggregatesRepeatedExecutionUnits(t *testing.T) {
 	measured := tracker.Wrap(executor)
 
 	first := store.SemanticRefreshRun{RunID: "run-a", Stage: store.SemanticRefreshEmbedding, Counters: store.SemanticRefreshCounters{EmbeddedChunks: 5}}
-	if _, err := measured.Execute(t.Context(), first); err != nil {
+	if _, err := measured.Execute(t.Context(), first, nil); err != nil {
 		t.Fatalf("first Execute: %v", err)
 	}
 	second := first
 	second.Counters.EmbeddedChunks = 8
-	if _, err := measured.Execute(t.Context(), second); err != nil {
+	if _, err := measured.Execute(t.Context(), second, nil); err != nil {
 		t.Fatalf("second Execute: %v", err)
 	}
 
@@ -63,5 +63,33 @@ func TestSemanticStageTrackerAggregatesRepeatedExecutionUnits(t *testing.T) {
 	}
 	if !slices.Equal(stage.RunIDs, []string{"run-a"}) {
 		t.Fatalf("run IDs = %#v", stage.RunIDs)
+	}
+}
+
+func TestSemanticStageTrackerForwardsProgressObserver(t *testing.T) {
+	want := semanticrefresh.StageWork{Current: 3, Total: 7, TotalKnown: true}
+	executor := semanticStageExecutorFunc(func(_ context.Context, _ store.SemanticRefreshRun, progress semanticrefresh.StageProgressCallback) (semanticrefresh.StageOutcome, error) {
+		if progress == nil {
+			t.Fatal("progress callback is nil")
+		}
+		if err := progress(want); err != nil {
+			return semanticrefresh.StageOutcome{}, err
+		}
+		return semanticrefresh.StageOutcome{}, nil
+	})
+	measured := newSemanticStageTracker(time.Now).Wrap(executor)
+	var got semanticrefresh.StageWork
+
+	if _, err := measured.Execute(t.Context(), store.SemanticRefreshRun{
+		RunID: "run-a",
+		Stage: store.SemanticRefreshEmbedding,
+	}, func(work semanticrefresh.StageWork) error {
+		got = work
+		return nil
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got != want {
+		t.Fatalf("progress work = %+v, want %+v", got, want)
 	}
 }

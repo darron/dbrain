@@ -34,6 +34,18 @@ func syncStageLabel(stage string) string {
 		return "Archiving finalized media"
 	case "categorize items", "categorize items and sources":
 		return "Categorizing items and sources"
+	case "semantic projection":
+		return "Semantic projection"
+	case "semantic embedding":
+		return "Semantic embedding"
+	case "semantic flush":
+		return "Semantic flush"
+	case "semantic compaction":
+		return "Semantic compaction"
+	case "semantic verify":
+		return "Semantic verification"
+	case "semantic readiness":
+		return "Semantic readiness"
 	default:
 		if strings.HasPrefix(stage, "x settle pass") {
 			return "Settling X frontier"
@@ -43,7 +55,7 @@ func syncStageLabel(stage string) string {
 }
 
 func (ui *syncProgressUI) applyDebugProgressLocked(line string) {
-	if !ui.active {
+	if !ui.active || ui.semantic {
 		return
 	}
 	fields := parseKeyValueFields(line)

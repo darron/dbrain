@@ -544,7 +544,7 @@ func runSemanticSourceTransaction(ctx context.Context, scope *semanticlock.Scope
 func runSemanticProjectionStageHolder(ctx context.Context, scope *semanticlock.Scope) error {
 	fmt.Println("ATTEMPTING_MAINTENANCE_EXCLUSIVE")
 	executor, err := semanticrefresh.NewLockedPipeline(
-		semanticLockStageExecutorFunc(func(context.Context, store.SemanticRefreshRun) (semanticrefresh.StageOutcome, error) {
+		semanticLockStageExecutorFunc(func(context.Context, store.SemanticRefreshRun, semanticrefresh.StageProgressCallback) (semanticrefresh.StageOutcome, error) {
 			if err := appendSemanticLockEvent(os.Getenv(semanticLockHelperLabel)); err != nil {
 				return semanticrefresh.StageOutcome{}, err
 			}
@@ -561,7 +561,7 @@ func runSemanticProjectionStageHolder(ctx context.Context, scope *semanticlock.S
 	}
 	if _, err := executor.Execute(ctx, store.SemanticRefreshRun{
 		RunID: "subprocess-projection", Stage: store.SemanticRefreshProjection,
-	}); err != nil {
+	}, nil); err != nil {
 		return err
 	}
 	fmt.Println("DONE")
@@ -612,6 +612,7 @@ func runSemanticActivation(ctx context.Context, scope *semanticlock.Scope, hold 
 		semanticLockStageExecutorFunc(func(
 			ctx context.Context,
 			run store.SemanticRefreshRun,
+			_ semanticrefresh.StageProgressCallback,
 		) (semanticrefresh.StageOutcome, error) {
 			return runSemanticActivationStage(ctx, run, hold)
 		}),
@@ -623,7 +624,7 @@ func runSemanticActivation(ctx context.Context, scope *semanticlock.Scope, hold 
 	fmt.Println("ATTEMPTING_ACTIVATION_STAGE")
 	if _, err := executor.Execute(ctx, store.SemanticRefreshRun{
 		RunID: "subprocess-activation", Stage: store.SemanticRefreshFlush,
-	}); err != nil {
+	}, nil); err != nil {
 		return err
 	}
 	fmt.Println("DONE")
@@ -686,13 +687,14 @@ func runSemanticActivationStage(
 	return semanticrefresh.StageOutcome{CurrentGenerationID: generationID}, nil
 }
 
-type semanticLockStageExecutorFunc func(context.Context, store.SemanticRefreshRun) (semanticrefresh.StageOutcome, error)
+type semanticLockStageExecutorFunc func(context.Context, store.SemanticRefreshRun, semanticrefresh.StageProgressCallback) (semanticrefresh.StageOutcome, error)
 
 func (f semanticLockStageExecutorFunc) Execute(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress semanticrefresh.StageProgressCallback,
 ) (semanticrefresh.StageOutcome, error) {
-	return f(ctx, run)
+	return f(ctx, run, progress)
 }
 
 type semanticLockEmbeddingProvider struct{}

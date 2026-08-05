@@ -381,7 +381,7 @@ func TestConfiguredSemanticRefreshWrapsEveryExecutorUnitWithDatabaseLocks(t *tes
 				Stage:   store.SemanticRefreshProjection,
 				State:   store.SemanticRefreshRunRunning,
 				Version: 1,
-			})
+			}, nil)
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("executor err=%v want maintenance wait deadline", err)
 			}
@@ -850,7 +850,7 @@ func (*semanticRefreshTestSession) Close() error {
 
 type semanticRefreshCompletingExecutor struct{}
 
-func (semanticRefreshCompletingExecutor) Execute(context.Context, store.SemanticRefreshRun) (semanticrefresh.StageOutcome, error) {
+func (semanticRefreshCompletingExecutor) Execute(context.Context, store.SemanticRefreshRun, semanticrefresh.StageProgressCallback) (semanticrefresh.StageOutcome, error) {
 	return semanticrefresh.StageOutcome{
 		NextStage:  store.SemanticRefreshReadiness,
 		Checkpoint: "readiness:state=ready",

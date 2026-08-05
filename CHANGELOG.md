@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Semantic sync progress bars (2026-08-05)
+
+- **Visible semantic progress**: Interactive `sync all` now renders projection,
+  embedding, flush, compaction, verification, and readiness as in-place bars
+  with stage-local counts, percentage, elapsed time, and an approximate ETA
+  once measurable throughput exists. Redirected and scheduled output stays
+  bounded, and failed or cancelled refreshes no longer look successfully
+  completed.
+
 ### Semantic audit and admin visibility (2026-08-05)
 
 - **Bounded semantic audit evidence**: Standard reports now use

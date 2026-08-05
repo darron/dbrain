@@ -171,7 +171,7 @@ func runOneLedgerRun(
 			)
 			return result, nil, store.SemanticRefreshRun{}, Debt{}, terminalErr
 		}
-		outcome, executeErr := executor.Execute(emitter.Context(), run)
+		outcome, executeErr := executor.Execute(emitter.Context(), run, emitter.PublishWork)
 		var generationErr error
 		outcome, generationErr = sanitizeStageOutcomeGeneration(run, outcome)
 		if executeErr == nil {
@@ -212,7 +212,7 @@ func runOneLedgerRun(
 		releaseStage()
 
 		var publishErr error
-		if ctx.Err() == nil && !stageOutcomeIsZero(outcome) {
+		if ctx.Err() == nil && executeErr == nil && !stageOutcomeIsZero(outcome) {
 			publishErr = emitter.Publish(run, debt)
 		}
 

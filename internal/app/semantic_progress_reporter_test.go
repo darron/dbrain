@@ -10,6 +10,125 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
+type recordingSemanticProgressTarget struct {
+	bytes.Buffer
+	events []recordedSemanticProgressEvent
+}
+
+type recordedSemanticProgressEvent struct {
+	kind     string
+	snapshot semanticProgressSnapshot
+}
+
+func (t *recordingSemanticProgressTarget) startSemanticProgress(snapshot semanticProgressSnapshot) error {
+	t.events = append(t.events, recordedSemanticProgressEvent{kind: "start", snapshot: snapshot})
+	return nil
+}
+
+func (t *recordingSemanticProgressTarget) updateSemanticProgress(snapshot semanticProgressSnapshot) error {
+	t.events = append(t.events, recordedSemanticProgressEvent{kind: "update", snapshot: snapshot})
+	return nil
+}
+
+func (t *recordingSemanticProgressTarget) finishSemanticProgress(snapshot semanticProgressSnapshot, success bool) error {
+	kind := "failure"
+	if success {
+		kind = "success"
+	}
+	t.events = append(t.events, recordedSemanticProgressEvent{kind: kind, snapshot: snapshot})
+	return nil
+}
+
+func TestSemanticProgressReporterUsesTypedTargetWithoutSerializingProgress(t *testing.T) {
+	now := time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC)
+	target := &recordingSemanticProgressTarget{}
+	reporter := newSemanticProgressReporter(target, func() time.Time { return now })
+	progress := semanticrefresh.Progress{
+		Stage: store.SemanticRefreshEmbedding,
+		Work:  semanticrefresh.StageWork{Current: 16, Total: 64, TotalKnown: true},
+	}
+
+	if err := reporter.Report(progress); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if err := reporter.Finish(true); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	if got := target.String(); got != "" {
+		t.Fatalf("typed target received serialized output %q", got)
+	}
+	if len(target.events) != 3 || target.events[0].kind != "start" ||
+		target.events[1].kind != "update" || target.events[2].kind != "success" {
+		t.Fatalf("typed events = %#v, want start, update, success", target.events)
+	}
+	for _, event := range target.events {
+		if event.snapshot.stage != store.SemanticRefreshEmbedding ||
+			event.snapshot.work != progress.Work {
+			t.Fatalf("typed event = %#v, want embedding work %+v", event, progress.Work)
+		}
+	}
+}
+
+func TestSemanticProgressReporterFailureDoesNotCompleteTypedStage(t *testing.T) {
+	now := time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC)
+	target := &recordingSemanticProgressTarget{}
+	reporter := newSemanticProgressReporter(target, func() time.Time { return now })
+	if err := reporter.Report(semanticrefresh.Progress{
+		Stage: store.SemanticRefreshEmbedding,
+		Work:  semanticrefresh.StageWork{Current: 16, Total: 64, TotalKnown: true},
+	}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if err := reporter.Finish(false); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	if len(target.events) != 3 || target.events[2].kind != "failure" {
+		t.Fatalf("typed events = %#v, want terminal failure", target.events)
+	}
+	for _, event := range target.events {
+		if event.kind == "success" {
+			t.Fatalf("failed stage emitted success: %#v", target.events)
+		}
+	}
+}
+
+func TestSemanticProgressReporterStageTransitionFinishesLatestObservedWork(t *testing.T) {
+	base := time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC)
+	now := base
+	target := &recordingSemanticProgressTarget{}
+	reporter := newSemanticProgressReporter(target, func() time.Time { return now })
+	progress := semanticrefresh.Progress{
+		Stage: store.SemanticRefreshEmbedding,
+		Work:  semanticrefresh.StageWork{Current: 0, Total: 100, TotalKnown: true},
+	}
+	if err := reporter.Report(progress); err != nil {
+		t.Fatalf("initial report: %v", err)
+	}
+	now = base.Add(time.Second)
+	progress.Work.Current = 100
+	if err := reporter.Report(progress); err != nil {
+		t.Fatalf("coalesced final report: %v", err)
+	}
+	now = base.Add(2 * time.Second)
+	if err := reporter.Report(semanticrefresh.Progress{
+		Stage: store.SemanticRefreshFlush,
+		Work:  semanticrefresh.StageWork{Current: 0, Total: 10, TotalKnown: true},
+	}); err != nil {
+		t.Fatalf("transition report: %v", err)
+	}
+
+	if len(target.events) != 5 {
+		t.Fatalf("typed events = %#v, want embedding start/update/success then flush start/update", target.events)
+	}
+	transition := target.events[2]
+	if transition.kind != "success" || transition.snapshot.stage != store.SemanticRefreshEmbedding ||
+		transition.snapshot.work.Current != 100 {
+		t.Fatalf("transition terminal event = %#v, want final observed embedding work", transition)
+	}
+}
+
 func TestSemanticProgressReporterStartsTransitionsAndFinishesStages(t *testing.T) {
 	now := time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC)
 	var output bytes.Buffer
@@ -42,7 +161,7 @@ func TestSemanticProgressReporterStartsTransitionsAndFinishesStages(t *testing.T
 	if err := reporter.Report(embedding); err != nil {
 		t.Fatalf("report embedding: %v", err)
 	}
-	if err := reporter.Finish(); err != nil {
+	if err := reporter.Finish(true); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 
@@ -122,7 +241,7 @@ func TestSemanticProgressReporterSanitizesStageAndReadiness(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("report: %v", err)
 	}
-	if err := reporter.Finish(); err != nil {
+	if err := reporter.Finish(true); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 
@@ -141,10 +260,10 @@ func TestSemanticProgressReporterFinishIsIdempotent(t *testing.T) {
 	if err := reporter.Report(semanticrefresh.Progress{Stage: store.SemanticRefreshFlush}); err != nil {
 		t.Fatalf("report: %v", err)
 	}
-	if err := reporter.Finish(); err != nil {
+	if err := reporter.Finish(true); err != nil {
 		t.Fatalf("first finish: %v", err)
 	}
-	if err := reporter.Finish(); err != nil {
+	if err := reporter.Finish(true); err != nil {
 		t.Fatalf("second finish: %v", err)
 	}
 	if got := strings.Count(output.String(), "Semantic flush complete:"); got != 1 {

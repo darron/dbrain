@@ -1286,8 +1286,12 @@ successful semantic skip; they do not open a writable semantic store or create
 provider/native dependencies. A supported-but-broken backend, cancellation, or
 any supported enabled refresh failure returns a typed non-zero error after the
 committed source summary. A supported enabled success returns only when the
-refresh ends `ready`. Human output streams bounded refresh progress and then a
-completion, skip, or error line. `sync all --json` emits exactly one flattened
+refresh ends `ready`. Interactive human output renders each semantic stage as
+an in-place progress bar with completed/total work, percentage, elapsed time,
+and an approximate ETA after throughput is measurable. Stage totals may expand
+as retry work or compaction passes are discovered. Redirected and scheduled
+output retains bounded progress lines, and failures or cancellation never
+render a successful completion. `sync all --json` emits exactly one flattened
 sync document, with either a `semantic` result or `semantic_error` object.
 
 The existing coarse `sync-all.lock` spans the whole source-plus-semantic sync

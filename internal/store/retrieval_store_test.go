@@ -664,6 +664,32 @@ func TestListDirtyRetrievalParentsIsDeterministicThroughWatermarkAndIncludesClea
 	}
 }
 
+func TestCountDirtyRetrievalParentsHonorsPinnedWatermark(t *testing.T) {
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedRetrievalSource(t, st, "source:count-before")
+	seedRetrievalSource(t, st, "source:count-at")
+	seedRetrievalSource(t, st, "source:count-after")
+	dirtyRetrievalParentForTest(t, st, "source", "source:count-before", nil)
+	watermark := dirtyRetrievalParentForTest(t, st, "source", "source:count-at", nil)
+	dirtyRetrievalParentForTest(t, st, "source", "source:count-after", nil)
+
+	count, err := st.CountDirtyRetrievalParents(ctx, watermark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("count=%d want 2", count)
+	}
+	if count, err := st.CountDirtyRetrievalParents(ctx, 0); err != nil || count != 0 {
+		t.Fatalf("zero watermark count=%d err=%v", count, err)
+	}
+	if _, err := st.CountDirtyRetrievalParents(ctx, -1); err == nil {
+		t.Fatal("negative watermark unexpectedly accepted")
+	}
+}
+
 func TestApplyRetrievalProjectionAtomicallyReplacesOccurrencesAndOnlyObsoleteEmbeddings(t *testing.T) {
 	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
@@ -1771,6 +1797,48 @@ func TestListRetrievalVectorsPagesLeanRows(t *testing.T) {
 	next, err := st.ListRetrievalVectors(ctx, "vector-profile", VectorPage{AfterChunkID: page[0].ChunkID, Limit: 1})
 	if err != nil || len(next) != 1 || next[0].ChunkID != "vector-b" {
 		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
+func TestCountRetrievalVectorsCountsReadyRowsForProfile(t *testing.T) {
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	chunks := []retrievalchunk.Chunk{
+		testRetrievalChunk("count-vector-a", "item", "item:count-vectors", 0, "hash-a", "alpha"),
+		testRetrievalChunk("count-vector-b", "item", "item:count-vectors", 1, "hash-b", "bravo"),
+	}
+	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:count-vectors", chunks); err != nil {
+		t.Fatal(err)
+	}
+	for _, chunk := range chunks {
+		if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunk.ID, "count-vector-profile", chunk.TextHash)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.db.Exec(`UPDATE retrieval_embeddings SET status='blocked' WHERE chunk_id=?`, chunks[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(chunks[1].ID, "other-profile", chunks[1].TextHash)); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := st.CountRetrievalVectors(ctx, "count-vector-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("count=%d want 1", count)
+	}
+	remaining, err := st.CountRetrievalVectorsAfter(ctx, "count-vector-profile", chunks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("remaining=%d want 0", remaining)
+	}
+	if _, err := st.CountRetrievalVectors(ctx, " "); err == nil {
+		t.Fatal("blank profile unexpectedly accepted")
 	}
 }
 

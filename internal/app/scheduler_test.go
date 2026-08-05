@@ -627,6 +627,69 @@ func TestRunScheduledSyncAllStreamsBoundedPeriodicSemanticProgress(t *testing.T)
 	}
 }
 
+func TestRunScheduledSyncAllSemanticProgressFailureDoesNotRenderCompletion(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncjob.Stats{}, nil
+	}
+	run := store.SemanticRefreshRun{RunID: "run-scheduled-progress-failure", Stage: store.SemanticRefreshEmbedding}
+	refreshErr := semanticrefresh.NewError(
+		semanticrefresh.ErrorEmbedding,
+		run,
+		"not_ready",
+		semanticrefresh.Debt{PendingEmbeddings: 75},
+		errors.New("private embedding failure"),
+	)
+	deps := successfulSyncSemanticDeps(func(
+		_ context.Context,
+		_ semanticrefresh.RunLedger,
+		_ semanticrefresh.StageExecutor,
+		request semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		if request.Progress == nil {
+			t.Fatal("scheduled semantic refresh omitted progress callback")
+		}
+		if err := request.Progress(semanticrefresh.Progress{
+			Stage: store.SemanticRefreshEmbedding,
+			Work:  semanticrefresh.StageWork{Current: 25, Total: 100, TotalKnown: true},
+			Debt:  semanticrefresh.Debt{PendingEmbeddings: 75},
+		}); err != nil {
+			t.Fatalf("scheduled progress callback: %v", err)
+		}
+		return semanticrefresh.Result{Run: &run}, refreshErr
+	})
+
+	var out bytes.Buffer
+	err = runScheduledSyncAllUnlockedWithSemanticDeps(
+		t.Context(),
+		cfg,
+		scheduledSyncSemanticTestFlags(),
+		&out,
+		deps,
+	)
+	if !errors.Is(err, refreshErr) {
+		t.Fatalf("scheduled sync error = %v, want semantic refresh failure", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Semantic embedding failed:") {
+		t.Fatalf("scheduled semantic progress omitted terminal failure:\n%s", got)
+	}
+	if strings.Contains(got, "Semantic embedding complete:") {
+		t.Fatalf("scheduled semantic progress failure rendered completion:\n%s", got)
+	}
+}
+
 func TestRunScheduledSyncAllSemanticFailuresPreserveStableTypedCodes(t *testing.T) {
 	tests := []struct {
 		name     string

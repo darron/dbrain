@@ -699,6 +699,7 @@ type semanticRefreshBlockingExecutor struct {
 func (e semanticRefreshBlockingExecutor) Execute(
 	ctx context.Context,
 	_ store.SemanticRefreshRun,
+	_ semanticrefresh.StageProgressCallback,
 ) (semanticrefresh.StageOutcome, error) {
 	select {
 	case e.entered <- struct{}{}:
