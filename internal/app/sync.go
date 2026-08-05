@@ -38,11 +38,14 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 				progressOut = completed.ui
 			}
 			reporter := newSemanticProgressReporter(progressOut, time.Now)
-			metricsErr := emitSemanticRefreshStarted(completed.metrics, time.Now())
+			semanticStartedAt := time.Now().UTC()
+			metricsErr := emitSemanticRefreshStarted(completed.metrics, semanticStartedAt)
+			refreshDeps := deps
+			refreshDeps.startedAt = semanticStartedAt
 			result, err := runConfiguredSemanticRefresh(
 				cmd.Context(),
 				completed.cfg,
-				deps,
+				refreshDeps,
 				reporter.Callback(),
 			)
 			err = errors.Join(err, reporter.Finish())

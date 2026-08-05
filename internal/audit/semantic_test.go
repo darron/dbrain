@@ -99,6 +99,35 @@ func TestSemanticSuccessfulZeroWorkRefreshPasses(t *testing.T) {
 	}
 }
 
+func TestSemanticLatestHealthSurvivesIncompleteActivityDetails(t *testing.T) {
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	completedAt := now.Add(-time.Minute)
+	deps := semanticAuditDependencies(now, metrics.SemanticActivity{
+		Present: true, Incomplete: true, StageActivityIncomplete: true, CountersIncomplete: true,
+		Latest: metrics.SemanticRefreshRecord{
+			State: "succeeded", StartedAt: completedAt.Add(-time.Second), CompletedAt: completedAt,
+			Duration: time.Second, Stages: unknownMetricStages(),
+		},
+	})
+	report, err := Run(t.Context(), Request{Profile: ProfileStandard, CheckIDs: []CheckID{CheckSemanticLatestAttachedRefresh, CheckSemanticStageSummary}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := checkByIDForTest(t, report, CheckSemanticLatestAttachedRefresh)
+	stages := checkByIDForTest(t, report, CheckSemanticStageSummary)
+	if latest.Status != StatusPass || latest.Evidence["refresh_state"] != "succeeded" {
+		t.Fatalf("incomplete activity erased terminal health: %#v", latest)
+	}
+	for _, key := range []string{"projected_parent_count", "embedded_chunk_count", "flushed_vector_count", "compacted_vector_count", "verified_vector_count", "successor_run_count"} {
+		if _, leakedUnknownCounter := latest.Evidence[key]; leakedUnknownCounter {
+			t.Fatalf("unverified counter %q emitted: %#v", key, latest.Evidence)
+		}
+	}
+	if stages.Status != StatusUnknown || stages.Required {
+		t.Fatalf("incomplete stage activity became health: %#v", stages)
+	}
+}
+
 func TestSemanticSupportedBrokenRuntimeRemainsRequiredAndFailsOverall(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	deps := semanticAuditDependencies(now, metrics.SemanticActivity{})
@@ -271,7 +300,7 @@ func readySemanticSnapshot() SemanticAuditSnapshot {
 	return SemanticAuditSnapshot{
 		Configured: true, CapabilityAvailable: true, Backend: "ollama",
 		ProfileID:          "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		ActiveGenerationID: "generation-abc", Readiness: "ready", IndexedVectorCount: 12,
+		ActiveGenerationID: "semantic-root-v1:0123456789abcdef0123456789abcdef", Readiness: "ready", IndexedVectorCount: 12,
 		L0VectorCount: 2, TombstoneCount: 1, SegmentCount: 3,
 	}
 }

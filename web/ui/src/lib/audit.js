@@ -231,7 +231,7 @@ export function selectSemantic(report) {
   const readiness = checks.get("semantic.current_readiness");
   const latest = checks.get("semantic.latest_attached_refresh");
   const stageSummary = checks.get("semantic.stage_summary");
-  if (!readiness && !latest && !stageSummary) return { state: "legacy", current: null, latest: null, stages: [] };
+  if (!readiness && !latest && !stageSummary) return { state: "incomplete", current: null, latest: null, stages: [] };
 
   const current = readiness ? semanticCurrent(readiness.evidence) : null;
   const activity = latest ? semanticLatest(latest.evidence, latest.error_code) : null;
@@ -395,7 +395,7 @@ function semanticCurrent(evidence) {
     capability: safeEnum(evidence?.capability, SEMANTIC_CAPABILITIES, "unavailable"),
     backend: safeEnum(evidence?.backend, SEMANTIC_BACKENDS, "none"),
     profileID: safeProfileIdentifier(evidence?.profile_id),
-    activeGenerationID: safeIdentifier(evidence?.active_generation_id),
+    activeGenerationID: safeGenerationIdentifier(evidence?.active_generation_id),
     readiness: safeEnum(evidence?.readiness, SEMANTIC_READINESS, "unavailable"),
     debt: pickNumbers(evidence, ["dirty_parent_count", "pending_parent_count", "due_embedding_count", "blocked_embedding_count", "failed_embedding_count"]),
     shape: pickNumbers(evidence, ["indexed_vector_count", "l0_vector_count", "tombstone_count", "segment_count"])
@@ -432,6 +432,10 @@ function safeEnum(value, allowed, fallback) {
 
 function safeProfileIdentifier(value) {
   return typeof value === "string" && /^(?:none|embedding-profile-v1:[0-9a-f]{64})$/.test(value) ? value : "";
+}
+
+function safeGenerationIdentifier(value) {
+  return typeof value === "string" && /^(?:none|semantic-root-v1:[0-9a-f]{32})$/.test(value) ? value : "";
 }
 
 function safeIdentifier(value) {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/semanticrefresh"
+	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 )
 
@@ -67,6 +68,7 @@ func emitSemanticRefreshMetrics(
 		"backend":        result.Capability.Backend,
 		"version":        result.Capability.Version,
 		"remaining_debt": result.Debt,
+		"counts":         terminalSemanticRefreshCounters(result),
 	}
 	if resultErr != nil {
 		terminal["error"] = metrics.ErrorObject(resultErr)
@@ -78,6 +80,13 @@ func emitSemanticRefreshMetrics(
 	}
 	emitErr = errors.Join(emitErr, run.Emit(terminal))
 	return emitErr
+}
+
+func terminalSemanticRefreshCounters(result semanticrefresh.Result) store.SemanticRefreshCounters {
+	if result.Run == nil {
+		return store.SemanticRefreshCounters{}
+	}
+	return result.Run.Counters
 }
 
 func emitFullSyncCompletion(

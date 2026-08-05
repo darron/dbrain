@@ -17,6 +17,7 @@ const (
 
 var dayPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 var semanticIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+var semanticGenerationIdentifierPattern = regexp.MustCompile(`^semantic-root-v1:[0-9a-f]{32}$`)
 var semanticProfileIdentifierPattern = regexp.MustCompile(`^embedding-profile-v1:[0-9a-f]{64}$`)
 
 var enumValues = map[string]map[string]bool{
@@ -111,8 +112,14 @@ func validateEvidenceValue(key string, kind EvidenceKind, value any) error {
 	case EvidenceIdentifier:
 		text, ok := value.(string)
 		pattern := semanticIdentifierPattern
-		if key == "profile_id" {
+		switch key {
+		case "profile_id":
 			pattern = semanticProfileIdentifierPattern
+		case "active_generation_id":
+			if text == "none" {
+				return nil
+			}
+			pattern = semanticGenerationIdentifierPattern
 		}
 		if !ok || !pattern.MatchString(text) {
 			return fmt.Errorf("must be a bounded content-free identifier")

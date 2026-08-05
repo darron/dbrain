@@ -41,9 +41,10 @@ func TestEvidencePrivacyRejectsUnknownKeysAndContentStrings(t *testing.T) {
 
 func TestSemanticEvidenceIsBoundedAndClosed(t *testing.T) {
 	const profileID = "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const generationID = "semantic-root-v1:0123456789abcdef0123456789abcdef"
 	readiness := Evidence{
 		"configured": true, "capability": "available", "backend": "ollama", "profile_id": profileID,
-		"active_generation_id": "root-20260714", "readiness": "ready", "dirty_parent_count": 0, "pending_parent_count": 0,
+		"active_generation_id": generationID, "readiness": "ready", "dirty_parent_count": 0, "pending_parent_count": 0,
 		"due_embedding_count": 0, "blocked_embedding_count": 0, "failed_embedding_count": 0, "indexed_vector_count": 8,
 		"l0_vector_count": 2, "tombstone_count": 0, "segment_count": 1,
 	}
@@ -81,6 +82,25 @@ func TestSemanticEvidenceIsBoundedAndClosed(t *testing.T) {
 		}
 		if err := ValidateEvidence(id, evidence); err == nil {
 			t.Fatalf("semantic evidence case %d was accepted: %#v", name, evidence)
+		}
+	}
+}
+
+func TestSemanticGenerationEvidenceAcceptsOnlyCanonicalFactoryIDs(t *testing.T) {
+	const canonical = "semantic-root-v1:0123456789abcdef0123456789abcdef"
+	base := Evidence{"active_generation_id": canonical}
+	if err := ValidateEvidence(CheckSemanticCurrentReadiness, base); err != nil {
+		t.Fatalf("canonical generation ID rejected: %v", err)
+	}
+	for _, value := range []string{
+		"generation-current",
+		"semantic-root-v1:0123456789abcdef0123456789abcde",
+		"semantic-root-v1:0123456789abcdef0123456789abcdeF",
+		"checkpoint:private-run",
+		"/private/generation",
+	} {
+		if err := ValidateEvidence(CheckSemanticCurrentReadiness, Evidence{"active_generation_id": value}); err == nil {
+			t.Fatalf("non-canonical generation ID accepted: %q", value)
 		}
 	}
 }

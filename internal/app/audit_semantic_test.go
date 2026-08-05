@@ -17,6 +17,7 @@ import (
 
 func TestAuditSemanticInspectorUsesClosedConfigCapabilityAndBoundedRuntimeTruth(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	const generationID = "semantic-root-v1:0123456789abcdef0123456789abcdef"
 	baseConfig := semanticconfig.Config{
 		Mode: semanticconfig.ModeOn, Provider: semanticconfig.ProviderOllama, Model: "nomic-embed-text",
 		Dimensions: 768, IndexBackend: semanticconfig.IndexBackendExact, ExactFallbackMaxChunks: 25_000,
@@ -53,7 +54,7 @@ func TestAuditSemanticInspectorUsesClosedConfigCapabilityAndBoundedRuntimeTruth(
 			runtime: semanticreadiness.Snapshot{
 				Available: true, ProfileID: expectedProfileID, ProfileExists: true, ProfileProvenanceValid: true,
 				GlobalPurgeEpoch: 1, ProfilePurgeEpoch: 1, LatestRevision: 1, ObservedLatestRevision: 1,
-				ActiveGenerationID: "generation-current", ActiveGenerationValid: true,
+				ActiveGenerationID: generationID, ActiveGenerationValid: true,
 				ActiveGenerationBackend: "usearch", ActiveGenerationBackendVersion: "2.26.0",
 				ActiveIndexedCount: 100, L0ReadyCount: 2, ObservedL0ReadyCount: 2,
 				ActiveTombstones: 1, ActiveSegmentCount: 7,
@@ -84,7 +85,7 @@ func TestAuditSemanticInspectorUsesClosedConfigCapabilityAndBoundedRuntimeTruth(
 				t.Fatalf("semantic inspection=%#v runtime_called=%t", got, runtimeCalled)
 			}
 			if test.wantRuntimeCalled {
-				if string(got.ProfileID) != expectedProfileID || got.ActiveGenerationID != "generation-current" || got.IndexedVectorCount != 100 || got.L0VectorCount != 2 || got.TombstoneCount != 1 || got.SegmentCount != 7 {
+				if string(got.ProfileID) != expectedProfileID || string(got.ActiveGenerationID) != generationID || got.IndexedVectorCount != 100 || got.L0VectorCount != 2 || got.TombstoneCount != 1 || got.SegmentCount != 7 {
 					t.Fatalf("bounded semantic runtime evidence=%#v", got)
 				}
 			}

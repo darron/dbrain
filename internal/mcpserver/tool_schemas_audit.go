@@ -141,6 +141,9 @@ func auditEvidenceValueSchema(name string, kind audit.EvidenceKind) map[string]i
 		if name == "profile_id" {
 			return map[string]interface{}{"type": "string", "maxLength": 85, "pattern": `^embedding-profile-v1:[0-9a-f]{64}$`}
 		}
+		if name == "active_generation_id" {
+			return map[string]interface{}{"type": "string", "maxLength": 49, "pattern": `^(?:none|semantic-root-v1:[0-9a-f]{32})$`}
+		}
 		return map[string]interface{}{"type": "string", "maxLength": 128, "pattern": `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`}
 	case audit.EvidenceSemanticStages:
 		stages := []string{"projection", "embedding", "flush", "compaction", "verification", "readiness"}

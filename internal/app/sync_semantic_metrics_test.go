@@ -142,4 +142,7 @@ metrics:
 			t.Fatalf("event %d = %#v, want %q", index, events[index], want)
 		}
 	}
+	if events[2]["started_at"] != events[3]["started_at"] {
+		t.Fatalf("semantic producer sampled inconsistent starts: started=%#v terminal=%#v", events[2], events[3])
+	}
 }

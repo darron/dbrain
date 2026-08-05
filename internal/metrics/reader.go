@@ -51,9 +51,12 @@ type Window struct {
 // SemanticActivity is the bounded, content-free semantic refresh view attached
 // to the newest parent sync run observed in this metrics window.
 type SemanticActivity struct {
-	Present    bool
-	Incomplete bool
-	Latest     SemanticRefreshRecord
+	Present                 bool
+	Incomplete              bool
+	TerminalIncomplete      bool
+	StageActivityIncomplete bool
+	CountersIncomplete      bool
+	Latest                  SemanticRefreshRecord
 }
 
 type SemanticRefreshRecord struct {
@@ -78,6 +81,7 @@ type SemanticStageRecord struct {
 }
 
 var semanticStageOrder = []string{"projection", "embedding", "flush", "compaction", "verification", "readiness"}
+var semanticCounterKeys = []string{"projected_parents", "embedded_chunks", "flushed_vectors", "compacted_vectors", "verified_vectors", "successor_runs"}
 
 var semanticErrorCodes = map[string]struct{}{
 	"semantic_backend_broken": {}, "semantic_run_conflict": {}, "semantic_projection_failed": {},
@@ -89,9 +93,11 @@ var semanticErrorCodes = map[string]struct{}{
 
 type semanticRefreshInternal struct {
 	SemanticRefreshRecord
-	started, terminal, invalid bool
-	stages                     map[string]bool
-	counters                   map[string]bool
+	started, terminal                           bool
+	terminalInvalid, stageInvalid, countInvalid bool
+	startedEventAt                              time.Time
+	stages                                      map[string]bool
+	counters                                    map[string]bool
 }
 
 func (w Window) String() string {
@@ -272,16 +278,25 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		}
 		switch name {
 		case "semantic.refresh.started":
-			if semanticRecord == nil || semanticRecord.started {
+			if semanticRecord == nil {
+				return true
+			}
+			startedAt, ok := eventTime(event, "started_at")
+			if !ok {
+				semanticRecord.terminalInvalid = true
+				return true
+			}
+			if semanticRecord.started {
+				if !semanticRecord.startedEventAt.Equal(startedAt) {
+					semanticRecord.terminalInvalid = true
+				}
 				return true
 			}
 			semanticRecord.started = true
-			startedAt, ok := eventTime(event, "started_at")
-			if !ok {
-				semanticRecord.invalid = true
-				return true
+			semanticRecord.startedEventAt = startedAt
+			if semanticRecord.terminal && !semanticRecord.StartedAt.Equal(startedAt) {
+				semanticRecord.terminalInvalid = true
 			}
-			semanticRecord.StartedAt = startedAt
 		case "semantic.stage.completed":
 			collectSemanticStage(semanticRecord, event)
 		case "semantic.refresh.completed":
@@ -390,49 +405,91 @@ func collectSemanticStage(record *semanticRefreshInternal, event map[string]any)
 	}
 	stage, ok := canonicalSemanticStage(event["stage"])
 	if !ok {
-		record.invalid = true
-		return
-	}
-	if record.stages[stage] { // reverse reader sees the newest duplicate first.
+		record.stageInvalid = true
 		return
 	}
 	status, ok := semanticStageStatus(event["status"])
 	duration, durationOK := semanticDuration(event["duration_ms"])
 	if !ok || !durationOK {
-		record.invalid = true
+		record.stageInvalid = true
+		return
+	}
+	if record.stages[stage] { // reverse reader sees the newest duplicate first.
+		for _, existing := range record.Stages {
+			if existing.Stage == stage && (existing.Status != status || existing.Duration != duration) {
+				record.stageInvalid = true
+			}
+		}
 		return
 	}
 	record.stages[stage] = true
 	record.Stages = append(record.Stages, SemanticStageRecord{Stage: stage, Status: status, Duration: duration})
-	collectSemanticCounters(record, event["counts"])
 }
 
 func collectSemanticTerminal(record *semanticRefreshInternal, event map[string]any) {
-	if record == nil || record.terminal { // reverse reader sees the newest duplicate first.
+	if record == nil {
 		return
 	}
-	record.terminal = true
 	startedAt, startedOK := eventTime(event, "started_at")
 	completedAt, completedOK := eventTime(event, "completed_at")
 	duration, durationOK := semanticDuration(event["duration_ms"])
-	state, stateOK := semanticRefreshState(event["status"], event["outcome"])
-	if !startedOK || !completedOK || !durationOK || !stateOK {
-		record.invalid = true
+	code, _ := event["semantic_error_code"].(string)
+	state, stateOK := semanticRefreshState(event["status"], event["outcome"], code)
+	if !startedOK || !completedOK || !durationOK || !stateOK || !semanticLifecycleDurationValid(startedAt, completedAt, duration) {
+		record.terminalInvalid = true
 		return
 	}
-	record.StartedAt, record.CompletedAt, record.Duration, record.State = startedAt, completedAt, duration, state
-	if state == "failed" {
-		code, ok := event["semantic_error_code"].(string)
-		if !ok {
-			record.invalid = true
-			return
-		}
+	candidate := SemanticRefreshRecord{State: state, StartedAt: startedAt, CompletedAt: completedAt, Duration: duration}
+	if state == "failed" || state == "canceled" {
 		if _, ok := semanticErrorCodes[code]; !ok {
-			record.invalid = true
+			record.terminalInvalid = true
 			return
 		}
-		record.ErrorCode, record.FailureAt = code, completedAt
+		candidate.ErrorCode, candidate.FailureAt = code, completedAt
+	} else if code != "" {
+		record.terminalInvalid = true
+		return
 	}
+	counters, countersOK := semanticCounters(event["counts"])
+	if record.terminal { // reverse reader retains the newest duplicate but proves older duplicates agree.
+		if !sameSemanticTerminal(record.SemanticRefreshRecord, candidate) {
+			record.terminalInvalid = true
+		}
+		if !countersOK || !semanticCountersComplete(record) || record.Counters != counters {
+			record.countInvalid = true
+		}
+		return
+	}
+	record.terminal = true
+	record.State, record.StartedAt, record.CompletedAt = candidate.State, candidate.StartedAt, candidate.CompletedAt
+	record.FailureAt, record.Duration, record.ErrorCode = candidate.FailureAt, candidate.Duration, candidate.ErrorCode
+	if record.started && !record.startedEventAt.Equal(startedAt) {
+		record.terminalInvalid = true
+	}
+	if !countersOK {
+		record.countInvalid = true
+		return
+	}
+	record.Counters = counters
+	for _, key := range semanticCounterKeys {
+		record.counters[key] = true
+	}
+}
+
+func sameSemanticTerminal(left, right SemanticRefreshRecord) bool {
+	return left.State == right.State && left.StartedAt.Equal(right.StartedAt) && left.CompletedAt.Equal(right.CompletedAt) &&
+		left.FailureAt.Equal(right.FailureAt) && left.Duration == right.Duration && left.ErrorCode == right.ErrorCode
+}
+
+func semanticLifecycleDurationValid(startedAt, completedAt time.Time, duration time.Duration) bool {
+	if completedAt.Before(startedAt) {
+		return false
+	}
+	delta := completedAt.Sub(startedAt) - duration
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta < time.Millisecond
 }
 
 func canonicalSemanticStage(value any) (string, bool) {
@@ -462,7 +519,7 @@ func semanticStageStatus(value any) (string, bool) {
 	}
 }
 
-func semanticRefreshState(statusValue, outcomeValue any) (string, bool) {
+func semanticRefreshState(statusValue, outcomeValue any, errorCode string) (string, bool) {
 	status, _ := statusValue.(string)
 	outcome, _ := outcomeValue.(string)
 	switch status {
@@ -471,6 +528,9 @@ func semanticRefreshState(statusValue, outcomeValue any) (string, bool) {
 			return "succeeded", true
 		}
 	case "error":
+		if errorCode == "semantic_refresh_cancelled" {
+			return "canceled", true
+		}
 		return "failed", true
 	case "skipped":
 		return "skipped", true
@@ -495,28 +555,28 @@ func isSemanticLifecycleEvent(name string) bool {
 	}
 }
 
-func collectSemanticCounters(record *semanticRefreshInternal, value any) {
+func semanticCounters(value any) (SemanticRefreshCounters, bool) {
+	var counters SemanticRefreshCounters
 	counts, ok := value.(map[string]any)
 	if !ok {
-		record.invalid = true
-		return
+		return counters, false
 	}
 	for key, target := range map[string]*int64{
-		"projected_parents": &record.Counters.ProjectedParents, "embedded_chunks": &record.Counters.EmbeddedChunks,
-		"flushed_vectors": &record.Counters.FlushedVectors, "compacted_vectors": &record.Counters.CompactedVectors,
-		"verified_vectors": &record.Counters.VerifiedVectors, "successor_runs": &record.Counters.SuccessorRuns,
+		"projected_parents": &counters.ProjectedParents, "embedded_chunks": &counters.EmbeddedChunks,
+		"flushed_vectors": &counters.FlushedVectors, "compacted_vectors": &counters.CompactedVectors,
+		"verified_vectors": &counters.VerifiedVectors, "successor_runs": &counters.SuccessorRuns,
 	} {
 		value, present := counts[key]
-		if !present || record.counters[key] {
-			continue
+		if !present {
+			return SemanticRefreshCounters{}, false
 		}
 		n, valid := integer(value)
 		if !valid || n < 0 {
-			record.invalid = true
-			continue
+			return SemanticRefreshCounters{}, false
 		}
-		*target, record.counters[key] = n, true
+		*target = n
 	}
+	return counters, true
 }
 
 // latestSemanticActivity considers only lifecycle records attached to a real
@@ -549,25 +609,38 @@ func latestSemanticActivity(records map[string]*semanticRefreshInternal, runs ma
 	for _, stage := range latest.Stages {
 		stages[stage.Stage] = stage
 	}
-	latest.Stages = latest.Stages[:0]
+	record := latest.SemanticRefreshRecord
+	record.Stages = make([]SemanticStageRecord, 0, len(semanticStageOrder))
 	for _, stage := range semanticStageOrder {
 		if value, ok := stages[stage]; ok {
-			latest.Stages = append(latest.Stages, value)
+			record.Stages = append(record.Stages, value)
 		} else {
-			latest.Stages = append(latest.Stages, SemanticStageRecord{Stage: stage, Status: "unknown"})
+			record.Stages = append(record.Stages, SemanticStageRecord{Stage: stage, Status: "unknown"})
 		}
 	}
-	incomplete := uncertain || latest.invalid || !latest.started || !latest.terminal || len(stages) != len(semanticStageOrder) || !semanticCountersComplete(latest)
-	if incomplete {
-		latest.State = "unknown"
-		latest.ErrorCode = ""
-		latest.FailureAt = time.Time{}
+	terminalIncomplete := uncertain || latest.terminalInvalid || !latest.started || !latest.terminal
+	stageIncomplete := uncertain || latest.stageInvalid || len(stages) != len(semanticStageOrder)
+	countersIncomplete := uncertain || latest.countInvalid || !semanticCountersComplete(latest)
+	if terminalIncomplete {
+		record.State = "unknown"
+		record.StartedAt = time.Time{}
+		record.CompletedAt = time.Time{}
+		record.Duration = 0
+		record.ErrorCode = ""
+		record.FailureAt = time.Time{}
 	}
-	return SemanticActivity{Present: true, Incomplete: incomplete, Latest: latest.SemanticRefreshRecord}
+	return SemanticActivity{
+		Present:                 true,
+		Incomplete:              terminalIncomplete || stageIncomplete || countersIncomplete,
+		TerminalIncomplete:      terminalIncomplete,
+		StageActivityIncomplete: stageIncomplete,
+		CountersIncomplete:      countersIncomplete,
+		Latest:                  record,
+	}
 }
 
 func semanticCountersComplete(record *semanticRefreshInternal) bool {
-	for _, key := range []string{"projected_parents", "embedded_chunks", "flushed_vectors", "compacted_vectors", "verified_vectors", "successor_runs"} {
+	for _, key := range semanticCounterKeys {
 		if !record.counters[key] {
 			return false
 		}

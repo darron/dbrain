@@ -162,7 +162,7 @@ type SemanticAuditSnapshot struct {
 	Configured, CapabilityAvailable bool
 	Backend                         SemanticBackend
 	ProfileID                       SemanticProfileIdentifier
-	ActiveGenerationID              SemanticIdentifier
+	ActiveGenerationID              SemanticGenerationIdentifier
 	Readiness                       SemanticReadiness
 	DirtyParentCount                int
 	PendingParentCount              int
@@ -181,6 +181,7 @@ type SemanticRefreshSnapshot struct {
 	StartedAt, CompletedAt, FailureAt                             time.Time
 	Duration                                                      time.Duration
 	ErrorCode                                                     SemanticErrorCode
+	CountersComplete                                              bool
 	ProjectedParentCount, EmbeddedChunkCount                      int
 	FlushedVectorCount, CompactedVectorCount, VerifiedVectorCount int
 	SuccessorRunCount                                             int
@@ -194,6 +195,7 @@ type SemanticStageSnapshot struct {
 }
 
 type SemanticBackend string
+type SemanticGenerationIdentifier string
 type SemanticProfileIdentifier string
 type SemanticIdentifier string
 type SemanticReadiness string
@@ -205,6 +207,10 @@ type SemanticStageStatus string
 // Valid applies the same closed, content-free identifier boundary enforced
 // for semantic evidence before adapters bind store values to audit snapshots.
 func (v SemanticIdentifier) Valid() bool { return semanticIdentifierPattern.MatchString(string(v)) }
+
+func (v SemanticGenerationIdentifier) Valid() bool {
+	return semanticGenerationIdentifierPattern.MatchString(string(v))
+}
 
 func (v SemanticProfileIdentifier) Valid() bool {
 	return semanticProfileIdentifierPattern.MatchString(string(v))

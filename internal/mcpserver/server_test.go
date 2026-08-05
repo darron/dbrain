@@ -772,17 +772,25 @@ func TestAuditOutputSchemaAcceptsBothPersistedReportVersions(t *testing.T) {
 func TestAuditOutputSchemaClosesSemanticEvidenceValues(t *testing.T) {
 	evidence := auditEvidenceSchema()["properties"].(map[string]interface{})
 	const profileID = "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const generationID = "semantic-root-v1:0123456789abcdef0123456789abcdef"
 	if err := validateJSONSchemaValue(evidence["profile_id"].(map[string]interface{}), profileID); err != nil {
 		t.Fatalf("canonical semantic profile ID rejected: %v", err)
 	}
+	if err := validateJSONSchemaValue(evidence["active_generation_id"].(map[string]interface{}), generationID); err != nil {
+		t.Fatalf("canonical semantic generation ID rejected: %v", err)
+	}
 	for name, value := range map[string]interface{}{
-		"profile_id":           "/Users/alice/private-profile",
-		"active_generation_id": "checkpoint:private-run",
-		"readiness":            "the backend said everything is fine",
-		"semantic_error_code":  "raw provider error: secret",
+		"profile_id":          "/Users/alice/private-profile",
+		"readiness":           "the backend said everything is fine",
+		"semantic_error_code": "raw provider error: secret",
 	} {
 		if err := validateJSONSchemaValue(evidence[name].(map[string]interface{}), value); err == nil {
 			t.Fatalf("semantic %s accepted unbounded value %q", name, value)
+		}
+	}
+	for _, value := range []string{"generation-current", "semantic-root-v1:0123456789abcdef0123456789abcdeF", "checkpoint:private-run", "/private/root"} {
+		if err := validateJSONSchemaValue(evidence["active_generation_id"].(map[string]interface{}), value); err == nil {
+			t.Fatalf("semantic active_generation_id accepted non-canonical value %q", value)
 		}
 	}
 	stages := evidence["stages"].(map[string]interface{})

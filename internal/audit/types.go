@@ -448,6 +448,13 @@ func expectedRegistryEntries(scope Scope, registry []RegistryEntry) []RegistryEn
 
 func validateRequiredEvidence(entry RegistryEntry, status Status, evidence Evidence) error {
 	optional := map[string]bool{"latest_success_at": true, "succeeded_at": true, "oldest_pending_age_seconds": true, "exported_at": true, "failure_at": true, "semantic_error_code": true}
+	if entry.ID == CheckSemanticLatestAttachedRefresh {
+		// Terminal lifecycle health remains actionable when an older or damaged
+		// metrics record cannot prove the optional activity counters.
+		for _, key := range []string{"projected_parent_count", "embedded_chunk_count", "flushed_vector_count", "compacted_vector_count", "verified_vector_count", "successor_run_count"} {
+			optional[key] = true
+		}
+	}
 	if entry.ID == CheckDurabilitySQLiteRestore && status == StatusFail {
 		// A bounded deep restore can terminate before a later phase is
 		// observed. Those phase-specific fields must be omitted rather than

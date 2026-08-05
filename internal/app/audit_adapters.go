@@ -125,8 +125,8 @@ func (i auditSemanticInspector) InspectAuditSemantic(ctx context.Context) (audit
 	return base, nil
 }
 
-func boundedAuditSemanticIdentifier(value string) audit.SemanticIdentifier {
-	identifier := audit.SemanticIdentifier(value)
+func boundedAuditSemanticIdentifier(value string) audit.SemanticGenerationIdentifier {
+	identifier := audit.SemanticGenerationIdentifier(value)
 	if !identifier.Valid() {
 		return ""
 	}

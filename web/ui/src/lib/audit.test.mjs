@@ -375,7 +375,7 @@ test("semantic selector admits only the registered v2 evidence contract", () => 
   fixture.schema = "dbrain.audit.v2";
   fixture.checks.push(
     check("semantic.current_readiness", "semantic", "warn", {
-      configured: true, capability: "available", backend: "ollama", profile_id: "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", active_generation_id: "generation-2026",
+      configured: true, capability: "available", backend: "ollama", profile_id: "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", active_generation_id: "semantic-root-v1:0123456789abcdef0123456789abcdef",
       readiness: "catching_up", dirty_parent_count: 4, pending_parent_count: 3, due_embedding_count: 2, blocked_embedding_count: 1,
       failed_embedding_count: 0, indexed_vector_count: 55, l0_vector_count: 6, tombstone_count: 7, segment_count: 8,
       raw_error: "must not render"
@@ -395,6 +395,7 @@ test("semantic selector admits only the registered v2 evidence contract", () => 
   const semantic = selectSemantic(fixture);
   assert.equal(semantic.state, "available");
   assert.equal(semantic.current.profileID, "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+	assert.equal(semantic.current.activeGenerationID, "semantic-root-v1:0123456789abcdef0123456789abcdef");
   assert.equal(semantic.current.readiness, "catching_up");
   assert.deepEqual(semantic.latest.counts, { projectedParents: 2, embeddedChunks: 3, flushedVectors: 4, compactedVectors: 5, verifiedVectors: 6, successorRuns: 0 });
   assert.deepEqual(semantic.stages.map((row) => [row.stage, row.status, row.durationSeconds]), [
@@ -410,6 +411,10 @@ test("semantic selector keeps legacy disabled unsupported and incomplete states 
   const legacyWithForgedSemanticEvidence = report();
   legacyWithForgedSemanticEvidence.checks.push(check("semantic.current_readiness", "semantic", "pass", { configured: true, capability: "available", backend: "ollama", readiness: "ready" }));
   assert.deepEqual(selectSemantic(legacyWithForgedSemanticEvidence), { state: "legacy", current: null, latest: null, stages: [] });
+
+	const v2WithoutSemanticChecks = report();
+	v2WithoutSemanticChecks.schema = "dbrain.audit.v2";
+	assert.deepEqual(selectSemantic(v2WithoutSemanticChecks), { state: "incomplete", current: null, latest: null, stages: [] });
 
   const disabled = report();
   disabled.schema = "dbrain.audit.v2";

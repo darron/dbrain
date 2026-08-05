@@ -17,39 +17,40 @@ var ErrDeepUnsupported = errors.New("deep audit requires the explicit RunDeep CL
 var errCapabilityUnavailable = errors.New("audit capability unavailable")
 
 type runState struct {
-	now                        time.Time
-	req                        Request
-	deps                       Dependencies
-	database                   DatabaseInspection
-	databaseIdentityErr        error
-	databaseIntegrityErr       error
-	metrics                    metrics.Window
-	metricsErr                 error
-	semantic                   SemanticAuditSnapshot
-	semanticErr                error
-	semanticActivityPresent    bool
-	semanticActivityIncomplete bool
-	pipeline                   map[PipelineStage]PipelineEvidence
-	pipelineErr                error
-	provenance                 map[CheckID]ProvenanceEvidence
-	provenanceErr              error
-	local                      MediaLocalEvidence
-	localErr                   error
-	media                      []ArchivedMediaRecord
-	mediaErr                   error
-	okfFast, okfFull           OKFInspection
-	okfFastErr, okfFullErr     error
-	archives                   SQLiteArchiveListing
-	archivesErr                error
-	deep                       *DeepDependencies
-	deepMedia                  deepMediaResult
-	deepMediaErr               error
-	deepMediaErrorCode         ErrorCode
-	deepArchive                DeepArchiveResult
-	deepArchiveErr             error
-	deepCleanupComplete        bool
-	deepCleanupAttempted       bool
-	upstream                   map[Source]upstreamObservation
+	now                             time.Time
+	req                             Request
+	deps                            Dependencies
+	database                        DatabaseInspection
+	databaseIdentityErr             error
+	databaseIntegrityErr            error
+	metrics                         metrics.Window
+	metricsErr                      error
+	semantic                        SemanticAuditSnapshot
+	semanticErr                     error
+	semanticActivityPresent         bool
+	semanticTerminalIncomplete      bool
+	semanticStageActivityIncomplete bool
+	pipeline                        map[PipelineStage]PipelineEvidence
+	pipelineErr                     error
+	provenance                      map[CheckID]ProvenanceEvidence
+	provenanceErr                   error
+	local                           MediaLocalEvidence
+	localErr                        error
+	media                           []ArchivedMediaRecord
+	mediaErr                        error
+	okfFast, okfFull                OKFInspection
+	okfFastErr, okfFullErr          error
+	archives                        SQLiteArchiveListing
+	archivesErr                     error
+	deep                            *DeepDependencies
+	deepMedia                       deepMediaResult
+	deepMediaErr                    error
+	deepMediaErrorCode              ErrorCode
+	deepArchive                     DeepArchiveResult
+	deepArchiveErr                  error
+	deepCleanupComplete             bool
+	deepCleanupAttempted            bool
+	upstream                        map[Source]upstreamObservation
 }
 
 func (s *runState) observedAt() time.Time {
@@ -250,7 +251,7 @@ func (s *runState) load(ctx context.Context) {
 			s.semantic, s.semanticErr = inspectWithTimeout(ctx, timeoutFor(s.req.Profile, TimeoutLocalQuery, s.deps.Features.Timeouts), s.deps.Semantic.InspectAuditSemantic)
 		}
 		if s.semanticErr == nil && s.metricsErr == nil {
-			s.semanticActivityPresent, s.semanticActivityIncomplete = attachSemanticActivity(&s.semantic, s.metrics.Semantic, s.now)
+			s.semanticActivityPresent, s.semanticTerminalIncomplete, s.semanticStageActivityIncomplete = attachSemanticActivity(&s.semantic, s.metrics.Semantic, s.now)
 		}
 	}
 	needPipeline := false

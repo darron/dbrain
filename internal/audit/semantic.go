@@ -159,7 +159,11 @@ func semanticActivityUnknown(s *runState, entry RegistryEntry, stages bool) *Che
 		check.ErrorCode = ErrorUnavailable
 		return &check
 	}
-	if s.semanticActivityIncomplete {
+	incomplete := s.semanticTerminalIncomplete
+	if stages {
+		incomplete = s.semanticStageActivityIncomplete
+	}
+	if incomplete {
 		check := baseCheck(entry, s.now, StatusUnknown, ConfidenceUnknown, evidence)
 		return &check
 	}
@@ -179,9 +183,17 @@ func semanticCapabilityEvidence(snapshot SemanticAuditSnapshot) (string, bool) {
 	}
 }
 
-func attachSemanticActivity(snapshot *SemanticAuditSnapshot, activity metrics.SemanticActivity, now time.Time) (present, incomplete bool) {
+func attachSemanticActivity(snapshot *SemanticAuditSnapshot, activity metrics.SemanticActivity, now time.Time) (present, terminalIncomplete, stageIncomplete bool) {
 	if !activity.Present {
-		return false, false
+		return false, false, false
+	}
+	terminalIncomplete = activity.TerminalIncomplete
+	stageIncomplete = activity.StageActivityIncomplete
+	countersIncomplete := activity.CountersIncomplete
+	// Preserve the pre-split contract for synthetic callers that only set the
+	// legacy aggregate bit. The metrics reader always supplies the detailed bits.
+	if activity.Incomplete && !terminalIncomplete && !stageIncomplete && !countersIncomplete {
+		terminalIncomplete, stageIncomplete, countersIncomplete = true, true, true
 	}
 	latest := SemanticRefreshSnapshot{
 		State:       SemanticRefreshState(activity.Latest.State),
@@ -191,13 +203,20 @@ func attachSemanticActivity(snapshot *SemanticAuditSnapshot, activity metrics.Se
 		Duration:    activity.Latest.Duration,
 		ErrorCode:   SemanticErrorCode(activity.Latest.ErrorCode),
 	}
-	valid := latest.State.Valid() && latest.Duration >= 0 && semanticRefreshTimestampsValid(latest, now)
+	terminalValid := latest.State.Valid() && latest.Duration >= 0 && semanticRefreshTimestampsValid(latest, now)
+	switch latest.State {
+	case "failed", "canceled":
+		terminalValid = terminalValid && latest.ErrorCode.Valid()
+	case "succeeded", "skipped":
+		terminalValid = terminalValid && latest.ErrorCode == ""
+	}
 	counters := activity.Latest.Counters
 	values := []int64{counters.ProjectedParents, counters.EmbeddedChunks, counters.FlushedVectors, counters.CompactedVectors, counters.VerifiedVectors, counters.SuccessorRuns}
 	converted := make([]int, len(values))
+	countersValid := !countersIncomplete
 	for index, value := range values {
 		if value < 0 || uint64(value) > uint64(math.MaxInt) {
-			valid = false
+			countersValid = false
 			continue
 		}
 		converted[index] = int(value)
@@ -206,14 +225,23 @@ func attachSemanticActivity(snapshot *SemanticAuditSnapshot, activity metrics.Se
 	latest.FlushedVectorCount, latest.CompactedVectorCount = converted[2], converted[3]
 	latest.VerifiedVectorCount, latest.SuccessorRunCount = converted[4], converted[5]
 	if latest.ErrorCode != "" && !latest.ErrorCode.Valid() {
-		valid = false
+		terminalValid = false
 	}
-	latest.Stages, valid = convertSemanticStages(activity.Latest.Stages, valid)
-	if !valid {
-		latest = SemanticRefreshSnapshot{State: "unknown", Stages: unknownSemanticStageSnapshots()}
+	var stagesValid bool
+	latest.Stages, stagesValid = convertSemanticStages(activity.Latest.Stages, true)
+	stageIncomplete = stageIncomplete || !stagesValid
+	latest.CountersComplete = countersValid
+	terminalIncomplete = terminalIncomplete || !terminalValid
+	if terminalIncomplete {
+		latest.State = "unknown"
+		latest.StartedAt = time.Time{}
+		latest.CompletedAt = time.Time{}
+		latest.FailureAt = time.Time{}
+		latest.Duration = 0
+		latest.ErrorCode = ""
 	}
 	snapshot.Latest = latest
-	return true, activity.Incomplete || !valid
+	return true, terminalIncomplete, stageIncomplete
 }
 
 func convertSemanticStages(values []metrics.SemanticStageRecord, valid bool) ([]SemanticStageSnapshot, bool) {
@@ -261,14 +289,16 @@ func semanticRefreshTimestampsValid(latest SemanticRefreshSnapshot, now time.Tim
 
 func semanticLatestEvidence(latest SemanticRefreshSnapshot, now time.Time) Evidence {
 	evidence := Evidence{
-		"refresh_state":          string(latest.State),
-		"duration_seconds":       seconds(latest.Duration),
-		"projected_parent_count": latest.ProjectedParentCount,
-		"embedded_chunk_count":   latest.EmbeddedChunkCount,
-		"flushed_vector_count":   latest.FlushedVectorCount,
-		"compacted_vector_count": latest.CompactedVectorCount,
-		"verified_vector_count":  latest.VerifiedVectorCount,
-		"successor_run_count":    latest.SuccessorRunCount,
+		"refresh_state":    string(latest.State),
+		"duration_seconds": seconds(latest.Duration),
+	}
+	if latest.CountersComplete {
+		evidence["projected_parent_count"] = latest.ProjectedParentCount
+		evidence["embedded_chunk_count"] = latest.EmbeddedChunkCount
+		evidence["flushed_vector_count"] = latest.FlushedVectorCount
+		evidence["compacted_vector_count"] = latest.CompactedVectorCount
+		evidence["verified_vector_count"] = latest.VerifiedVectorCount
+		evidence["successor_run_count"] = latest.SuccessorRunCount
 	}
 	if !latest.StartedAt.IsZero() {
 		evidence["started_at"] = latest.StartedAt.UTC().Format(time.RFC3339)
