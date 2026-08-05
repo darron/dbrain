@@ -1,18 +1,43 @@
 package app
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/runlock"
 	"github.com/darron/dbrain/internal/syncjob"
 )
 
 type syncCommandCompleted struct {
-	cfg     config.Config
-	stats   syncjob.Stats
-	jsonOut bool
-	lock    *runlock.Lock
+	cfg          config.Config
+	stats        syncjob.Stats
+	jsonOut      bool
+	lock         *runlock.Lock
+	metrics      metrics.RunContext
+	closeMetrics func() error
+	ui           *syncProgressUI
+}
+
+func (c *syncCommandCompleted) close() error {
+	if c == nil {
+		return nil
+	}
+	if c.ui != nil {
+		c.ui.Close()
+		c.ui = nil
+	}
+	var closeErr error
+	if c.closeMetrics != nil {
+		closeErr = errors.Join(closeErr, c.closeMetrics())
+		c.closeMetrics = nil
+	}
+	if c.lock != nil {
+		closeErr = errors.Join(closeErr, c.lock.Close())
+		c.lock = nil
+	}
+	return closeErr
 }
 
 type syncCommandCompletion struct {
@@ -29,7 +54,7 @@ func (s *syncCommandCompletion) reset() {
 	s.completed = nil
 	s.mu.Unlock()
 	if stale != nil {
-		_ = stale.lock.Close()
+		_ = stale.close()
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 )
 
 var runSyncAll = syncjob.Run
+var closeSyncStore = func(st *store.Store) error { return st.Close() }
 
 func newSyncCommand(root *rootOptions) *cobra.Command {
 	return newSyncCommandWithSemanticDeps(root, defaultSemanticRefreshDeps())
@@ -24,56 +25,74 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 		Use:   "sync",
 		Short: "Run multi-stage refresh flows",
 		RunE:  helpCommand,
-		PersistentPostRunE: func(cmd *cobra.Command, _ []string) error {
+		PersistentPostRunE: func(cmd *cobra.Command, _ []string) (returnErr error) {
 			completed := completion.consume()
 			if completed == nil {
 				return nil
 			}
 			defer func() {
-				_ = completed.lock.Close()
+				returnErr = errors.Join(returnErr, completed.close())
 			}()
-			started := time.Now()
+			progressOut := cmd.ErrOrStderr()
+			if completed.ui != nil {
+				progressOut = completed.ui
+			}
+			reporter := newSemanticProgressReporter(progressOut, time.Now)
+			metricsErr := emitSemanticRefreshStarted(completed.metrics, time.Now())
 			result, err := runConfiguredSemanticRefresh(
 				cmd.Context(),
 				completed.cfg,
 				deps,
-				func(progress semanticrefresh.Progress) error {
-					return writeSemanticRefreshProgress(cmd.ErrOrStderr(), progress)
-				},
+				reporter.Callback(),
 			)
-			elapsed := time.Since(started)
+			err = errors.Join(err, reporter.Finish())
+			elapsed := result.Duration
+			completed.stats = completeSyncStatsWithSemantic(completed.stats, result)
+			metricsErr = errors.Join(metricsErr, emitFullSyncCompletion(completed.metrics, completed.stats, result, err))
+			if completed.closeMetrics != nil {
+				metricsErr = errors.Join(metricsErr, completed.closeMetrics())
+				completed.closeMetrics = nil
+			}
+			if completed.ui != nil {
+				completed.ui.Close()
+				completed.ui = nil
+			}
 			if err != nil {
 				var refreshErr *semanticrefresh.RefreshError
 				if !errors.As(err, &refreshErr) {
-					return err
+					return errors.Join(err, metricsErr)
 				}
 				if completed.jsonOut {
 					if writeErr := writeSyncSemanticErrorJSON(
 						cmd.OutOrStdout(),
 						completed.stats,
+						result,
 						refreshErr,
 					); writeErr != nil {
-						return writeErr
+						return errors.Join(writeErr, metricsErr)
 					}
-					return &ExitError{Code: 1, Err: refreshErr, Silent: true}
+					return &ExitError{Code: 1, Err: errors.Join(refreshErr, metricsErr), Silent: true}
 				}
-				if writeErr := writeSyncStats(cmd.OutOrStdout(), completed.stats); writeErr != nil {
-					return writeErr
+				if writeErr := writeSyncStatsWithSemantic(cmd.OutOrStdout(), completed.stats, result, refreshErr); writeErr != nil {
+					return errors.Join(writeErr, metricsErr)
 				}
 				return &ExitError{
 					Code:   1,
-					Err:    semanticRefreshHumanError{refreshErr: refreshErr, elapsed: elapsed},
+					Err:    errors.Join(semanticRefreshHumanError{refreshErr: refreshErr, elapsed: elapsed}, metricsErr),
 					Silent: false,
 				}
+			}
+			if metricsErr != nil {
+				return metricsErr
 			}
 
 			if completed.jsonOut {
 				return writeSyncSemanticResultJSON(cmd.OutOrStdout(), completed.stats, result)
 			}
-			if err := writeSyncStats(cmd.OutOrStdout(), completed.stats); err != nil {
+			if err := writeSyncStatsWithSemantic(cmd.OutOrStdout(), completed.stats, result, nil); err != nil {
 				return err
 			}
-			return writeSemanticRefreshResult(cmd.OutOrStdout(), result, elapsed)
+			return nil
 		},
 	}
 	cmd.AddCommand(newSyncAllCommandWithCompletion(root, completion))
@@ -116,7 +135,11 @@ func newSyncAllCommandWithCompletion(root *rootOptions, completion *syncCommandC
 				emitSyncMetricsSkipped(metricsRun, err)
 				return err
 			}
-			defer func() { _ = lock.Close() }()
+			defer func() {
+				if lock != nil {
+					_ = lock.Close()
+				}
+			}()
 
 			progress := cmd.ErrOrStderr()
 			logWriter := cmd.ErrOrStderr()
@@ -139,22 +162,53 @@ func newSyncAllCommandWithCompletion(root *rootOptions, completion *syncCommandC
 			if err != nil {
 				return err
 			}
-			defer func() { _ = st.Close() }()
+			defer func() { _ = closeSyncStore(st) }()
 
 			options, err := syncOptionsFromFlags(cmd.Context(), cfg, resolvedFlags, newLogger(commandDebugEnabled(cmd), logWriter), progress)
 			if err != nil {
 				return err
 			}
 			options.Metrics = metricsRun
+			options.ParentOwnsRunCompletion = completion != nil
 			stats, err := runSyncAll(cmd.Context(), cfg, st, options)
 			if err != nil {
+				if completion != nil {
+					syncjob.EmitRunCompleted(metricsRun, stats, err)
+				}
+				if closeErr := closeMetrics(); closeErr != nil {
+					closeMetrics = func() error { return nil }
+					return errors.Join(err, closeErr)
+				}
+				closeMetrics = func() error { return nil }
 				return err
 			}
 
-			if err := st.Close(); err != nil {
-				return err
+			if closeErr := closeSyncStore(st); closeErr != nil {
+				if completion != nil {
+					syncjob.EmitRunCompleted(metricsRun, stats, closeErr)
+				}
+				if metricsCloseErr := closeMetrics(); metricsCloseErr != nil {
+					closeErr = errors.Join(closeErr, metricsCloseErr)
+				}
+				closeMetrics = func() error { return nil }
+				return closeErr
 			}
 			st = nil
+			if completion != nil {
+				completion.record(syncCommandCompleted{
+					cfg:          cfg,
+					stats:        stats,
+					jsonOut:      resolvedFlags.jsonOut,
+					lock:         lock,
+					metrics:      metricsRun,
+					closeMetrics: closeMetrics,
+					ui:           syncUI,
+				})
+				lock = nil
+				syncUI = nil
+				closeMetrics = func() error { return nil }
+				return nil
+			}
 			if syncUI != nil {
 				syncUI.Close()
 				syncUI = nil
@@ -163,17 +217,6 @@ func newSyncAllCommandWithCompletion(root *rootOptions, completion *syncCommandC
 				return err
 			}
 			closeMetrics = func() error { return nil }
-
-			if completion != nil {
-				completion.record(syncCommandCompleted{
-					cfg:     cfg,
-					stats:   stats,
-					jsonOut: resolvedFlags.jsonOut,
-					lock:    lock,
-				})
-				lock = nil
-				return nil
-			}
 			if resolvedFlags.jsonOut {
 				return writeJSON(cmd.OutOrStdout(), stats)
 			}

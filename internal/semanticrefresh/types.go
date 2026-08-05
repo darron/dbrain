@@ -40,11 +40,26 @@ type Progress struct {
 }
 
 type Result struct {
-	Outcome    Outcome                   `json:"outcome"`
-	SkipReason string                    `json:"skip_reason,omitempty"`
-	Capability semanticindex.Capability  `json:"capability"`
-	Run        *store.SemanticRefreshRun `json:"run,omitempty"`
-	Debt       Debt                      `json:"remaining_debt"`
+	Outcome     Outcome                   `json:"outcome"`
+	SkipReason  string                    `json:"skip_reason,omitempty"`
+	Capability  semanticindex.Capability  `json:"capability"`
+	Run         *store.SemanticRefreshRun `json:"run,omitempty"`
+	Debt        Debt                      `json:"remaining_debt"`
+	StartedAt   time.Time                 `json:"started_at"`
+	CompletedAt time.Time                 `json:"completed_at"`
+	Duration    time.Duration             `json:"duration"`
+	Stages      []StageStats              `json:"stages"`
+}
+
+type StageStats struct {
+	Stage         store.SemanticRefreshStage    `json:"stage"`
+	Duration      time.Duration                 `json:"duration"`
+	Units         int                           `json:"units"`
+	Status        string                        `json:"status"`
+	RunIDs        []string                      `json:"run_ids"`
+	Counters      store.SemanticRefreshCounters `json:"counters"`
+	RemainingDebt Debt                          `json:"remaining_debt"`
+	ErrorCode     string                        `json:"error_code,omitempty"`
 }
 
 type RootExpectation struct {

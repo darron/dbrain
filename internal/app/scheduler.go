@@ -415,7 +415,13 @@ func (s *syncScheduler) run(ctx context.Context, reason string) (scheduledSyncOu
 	}
 	finishedAt := time.Now().UTC()
 	s.finishRunAt(string(scheduledSyncStatusOK), "", finishedAt)
-	_, _ = fmt.Fprintf(s.logOut, "scheduler sync all finished: duration=%s\n", time.Since(start).Round(time.Second))
+	_, _ = fmt.Fprintf(
+		s.logOut,
+		"scheduler sync all completed: started=%s completed=%s duration=%s status=ok\n",
+		start.Format(time.RFC3339),
+		finishedAt.Format(time.RFC3339),
+		finishedAt.Sub(start).Round(time.Second),
+	)
 	return scheduledSyncOutcome{
 		Reason:     reason,
 		Status:     scheduledSyncStatusOK,
@@ -502,8 +508,8 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 		return wrapScheduledSyncBoundary(scheduledBoundaryMetricsOpen, err)
 	}
 	defer func() {
-		if closeErr := closeMetrics(); err == nil && closeErr != nil {
-			err = wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr)
+		if closeErr := closeMetrics(); closeErr != nil {
+			err = errors.Join(err, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
 		}
 	}()
 	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
@@ -521,44 +527,62 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 		return wrapScheduledSyncBoundary(scheduledBoundaryOptions, err)
 	}
 	options.Metrics = metricsRun
+	options.ParentOwnsRunCompletion = true
 	stats, err := runSyncAll(ctx, cfg, st, options)
 	if err != nil {
 		_ = st.Close()
 		st = nil
-		_ = closeMetrics()
+		syncjob.EmitRunCompleted(metricsRun, stats, err)
+		closeErr := closeMetrics()
 		closeMetrics = func() error { return nil }
+		if closeErr != nil {
+			return errors.Join(err, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
+		}
 		return err
 	}
 	if err := st.Close(); err != nil {
 		st = nil
-		return wrapScheduledSyncBoundary(scheduledBoundaryStoreClose, err)
+		boundaryErr := wrapScheduledSyncBoundary(scheduledBoundaryStoreClose, err)
+		syncjob.EmitRunCompleted(metricsRun, stats, boundaryErr)
+		return boundaryErr
 	}
 	st = nil
-	if err := closeMetrics(); err != nil {
-		closeMetrics = func() error { return nil }
-		return wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, err)
-	}
-	closeMetrics = func() error { return nil }
 
 	if err := logScheduledSyncStats(logOut, stats); err != nil {
-		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, err)
+		boundaryErr := wrapScheduledSyncBoundary(scheduledBoundaryOutput, err)
+		syncjob.EmitRunCompleted(metricsRun, stats, boundaryErr)
+		return boundaryErr
 	}
+	reporter := newSemanticProgressReporter(logOut, time.Now)
+	metricsErr := emitSemanticRefreshStarted(metricsRun, time.Now())
 	result, err := runConfiguredSemanticRefresh(
 		ctx,
 		cfg,
 		deps,
 		func(progress semanticrefresh.Progress) error {
-			if err := writeSemanticRefreshProgress(logOut, progress); err != nil {
-				return wrapScheduledSyncBoundary(scheduledBoundaryOutput, err)
+			if reportErr := reporter.Report(progress); reportErr != nil {
+				return wrapScheduledSyncBoundary(scheduledBoundaryOutput, reportErr)
 			}
 			return nil
 		},
 	)
-	if err != nil {
-		return err
+	if finishErr := reporter.Finish(); finishErr != nil {
+		err = errors.Join(err, wrapScheduledSyncBoundary(scheduledBoundaryOutput, finishErr))
 	}
-	if err := logScheduledSemanticRefreshResult(logOut, result); err != nil {
-		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, err)
+	stats = completeSyncStatsWithSemantic(stats, result)
+	metricsErr = errors.Join(metricsErr, emitFullSyncCompletion(metricsRun, stats, result, err))
+	if closeErr := closeMetrics(); closeErr != nil {
+		metricsErr = errors.Join(metricsErr, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
+	}
+	closeMetrics = func() error { return nil }
+	if err != nil {
+		return errors.Join(err, metricsErr)
+	}
+	if metricsErr != nil {
+		return metricsErr
+	}
+	if outputErr := logScheduledSemanticRefreshResult(logOut, result); outputErr != nil {
+		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, outputErr)
 	}
 	return nil
 }
@@ -607,38 +631,19 @@ func logScheduledSemanticRefreshResult(logOut io.Writer, result semanticrefresh.
 	if result.Outcome == semanticrefresh.OutcomeSkipped {
 		_, err := fmt.Fprintf(
 			logOut,
-			"scheduler semantic refresh: skipped reason=%s capability=%s backend=%s version=%s\n",
+			"scheduler semantic refresh: skipped reason=%s capability=%s duration=%s\n",
 			safeSemanticRefreshOutputField(result.SkipReason, 64),
 			safeSemanticRefreshOutputField(string(result.Capability.State), 64),
-			safeSemanticRefreshOutputField(result.Capability.Backend, 64),
-			safeSemanticRefreshOutputField(result.Capability.Version, 64),
-		)
-		return err
-	}
-
-	run := result.Run
-	if run == nil {
-		_, err := fmt.Fprintf(
-			logOut,
-			"scheduler semantic refresh: completed capability=%s backend=%s version=%s run= profile= generation= state= stage= readiness=\n",
-			safeSemanticRefreshOutputField(string(result.Capability.State), 64),
-			safeSemanticRefreshOutputField(result.Capability.Backend, 64),
-			safeSemanticRefreshOutputField(result.Capability.Version, 64),
+			semanticRefreshElapsed(result.Duration),
 		)
 		return err
 	}
 	_, err := fmt.Fprintf(
 		logOut,
-		"scheduler semantic refresh: completed capability=%s backend=%s version=%s run=%s profile=%s generation=%s state=%s stage=%s readiness=%s\n",
+		"scheduler semantic refresh: completed capability=%s duration=%s stages=%d\n",
 		safeSemanticRefreshOutputField(string(result.Capability.State), 64),
-		safeSemanticRefreshOutputField(result.Capability.Backend, 64),
-		safeSemanticRefreshOutputField(result.Capability.Version, 64),
-		safeSemanticRefreshOutputField(run.RunID, 64),
-		safeSemanticRefreshOutputField(run.ProfileID, 192),
-		safeSemanticRefreshOutputField(run.CurrentGenerationID, 64),
-		safeSemanticRefreshOutputField(string(run.State), 64),
-		safeSemanticRefreshOutputField(string(run.Stage), 64),
-		safeSemanticRefreshOutputField(run.ReadinessState, 64),
+		semanticRefreshElapsed(result.Duration),
+		len(result.Stages),
 	)
 	return err
 }

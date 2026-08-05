@@ -77,36 +77,37 @@ type Options struct {
 	SourceIdleExitAfter time.Duration
 	SourceMaxCycles     int
 
-	Browser               string
-	Profile               string
-	Force                 bool
-	Summarize             bool
-	Model                 string
-	OCRModel              string
-	ArchiveMediaEnabled   bool
-	ArchiveMediaLimit     int
-	ArchiveProvider       string
-	ArchiveBucket         string
-	ArchivePublicBaseURL  string
-	ArchiveEndpoint       string
-	ArchiveRegion         string
-	ArchiveAccessKeyID    string
-	ArchiveSecretKey      string
-	ArchiveSessionToken   string
-	CategorizeEnabled     bool
-	CategorizeLimit       int
-	CategorizeConcurrency int
-	CategorizeModel       string
-	CategorizeTimeout     time.Duration
-	CategorizeImages      bool
-	OKFExportEnabled      bool
-	OKFMediaProxyBaseURL  string
-	CLI                   string
-	Length                string
-	Timeout               time.Duration
-	Logger                *slog.Logger
-	Progress              io.Writer
-	Metrics               metrics.RunContext
+	Browser                 string
+	Profile                 string
+	Force                   bool
+	Summarize               bool
+	Model                   string
+	OCRModel                string
+	ArchiveMediaEnabled     bool
+	ArchiveMediaLimit       int
+	ArchiveProvider         string
+	ArchiveBucket           string
+	ArchivePublicBaseURL    string
+	ArchiveEndpoint         string
+	ArchiveRegion           string
+	ArchiveAccessKeyID      string
+	ArchiveSecretKey        string
+	ArchiveSessionToken     string
+	CategorizeEnabled       bool
+	CategorizeLimit         int
+	CategorizeConcurrency   int
+	CategorizeModel         string
+	CategorizeTimeout       time.Duration
+	CategorizeImages        bool
+	OKFExportEnabled        bool
+	OKFMediaProxyBaseURL    string
+	CLI                     string
+	Length                  string
+	Timeout                 time.Duration
+	Logger                  *slog.Logger
+	Progress                io.Writer
+	Metrics                 metrics.RunContext
+	ParentOwnsRunCompletion bool
 }
 
 type Stats struct {

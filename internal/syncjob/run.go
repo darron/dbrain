@@ -27,13 +27,15 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 
 	if err := runSyncStagePlan(ctx, cfg, st, stages, &stats); err != nil {
 		stats = finishStats(stats)
-		emitSyncRunCompleted(opts.Metrics, stats, err)
+		emitSyncCompletion(opts.Metrics, stats, err, opts.ParentOwnsRunCompletion)
 		return stats, err
 	}
 
 	stats = finishStats(stats)
-	emitSyncRunCompleted(opts.Metrics, stats, nil)
-	progressf(stages.Common.Progress, "Sync completed in %s\n", stats.Duration)
+	emitSyncCompletion(opts.Metrics, stats, nil, opts.ParentOwnsRunCompletion)
+	if !opts.ParentOwnsRunCompletion {
+		progressf(stages.Common.Progress, "Sync completed in %s\n", stats.Duration)
+	}
 	return stats, nil
 }
 

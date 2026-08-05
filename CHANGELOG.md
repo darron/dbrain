@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Unified sync and semantic refresh observability (2026-08-04)
+
+- **One truthful sync boundary**: `sync all` now keeps its lock, progress UI,
+  metrics run, completion timestamp, and duration open through configured
+  semantic refresh work instead of reporting the source pipeline as finished
+  early.
+- **First-class semantic stages**: Projection, embedding, flush, compaction,
+  verification, and readiness now have bounded progress output, aggregate stage
+  timings and counters, JSON lifecycle data, metrics events, and rows in the
+  final sync summary. Scheduled syncs use the same lifecycle without dumping
+  raw semantic checkpoints and identifiers into logs.
+
 ### Stable feed item refreshes (2026-08-04)
 
 - **Existing feed entries keep their identity and tags**: Reprocessing a changed

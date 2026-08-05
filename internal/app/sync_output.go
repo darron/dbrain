@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 
 	"github.com/darron/dbrain/internal/semanticrefresh"
+	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/syncjob"
 )
 
@@ -20,6 +22,7 @@ type syncSemanticResultOutput struct {
 
 type syncSemanticErrorOutput struct {
 	syncjob.Stats
+	Semantic      semanticRefreshResultOutput   `json:"semantic"`
 	SemanticError *semanticrefresh.RefreshError `json:"semantic_error"`
 }
 
@@ -37,15 +40,26 @@ func writeSyncSemanticResultJSON(
 func writeSyncSemanticErrorJSON(
 	dst io.Writer,
 	stats syncjob.Stats,
+	result semanticrefresh.Result,
 	refreshErr *semanticrefresh.RefreshError,
 ) error {
 	return writeJSON(dst, syncSemanticErrorOutput{
 		Stats:         stats,
+		Semantic:      newSemanticRefreshResultOutput(result),
 		SemanticError: refreshErr,
 	})
 }
 
 func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.Stats) error {
+	return writeSyncStatsWithSemantic(dst, stats, semanticrefresh.Result{}, nil)
+}
+
+func writeSyncStatsWithSemantic(
+	dst interface{ Write([]byte) (int, error) },
+	stats syncjob.Stats,
+	semantic semanticrefresh.Result,
+	semanticErr error,
+) error {
 	if _, err := fmt.Fprintf(dst, "\nSync Summary\n"); err != nil {
 		return err
 	}
@@ -60,6 +74,7 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 	}
 
 	rows := syncSummaryRows(stats)
+	rows = append(rows, semanticSyncSummaryRows(semantic, semanticErr)...)
 	t := table.New().
 		Border(lipgloss.NormalBorder()).
 		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("240"))).
@@ -86,6 +101,81 @@ func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.S
 		return err
 	}
 	return nil
+}
+
+func completeSyncStatsWithSemantic(stats syncjob.Stats, result semanticrefresh.Result) syncjob.Stats {
+	duration := nonnegativeDuration(result.Duration)
+	stats.CompletedAt = stats.CompletedAt.Add(duration)
+	stats.Duration = nonnegativeDuration(stats.CompletedAt.Sub(stats.StartedAt))
+	return stats
+}
+
+func semanticSyncSummaryRows(result semanticrefresh.Result, resultErr error) [][]string {
+	if len(result.Stages) == 0 {
+		if result.Outcome == "" && result.SkipReason == "" && resultErr == nil {
+			return nil
+		}
+		status := string(result.Outcome)
+		if status == "" {
+			status = "error"
+		}
+		secondary := fmt.Sprintf("status=%s capability=%s", status, emptyDash(string(result.Capability.State)))
+		if result.SkipReason != "" {
+			secondary += " reason=" + safeSemanticRefreshOutputField(result.SkipReason, 64)
+		}
+		errorsCount := "0"
+		if resultErr != nil {
+			errorsCount = "1"
+		}
+		return [][]string{{"Semantic Refresh", formatSyncDuration(result.Duration), "units=0", secondary, errorsCount}}
+	}
+
+	rows := make([][]string, 0, len(result.Stages))
+	for _, stage := range result.Stages {
+		primary, secondary := semanticStageSummaryCounts(stage)
+		if stage.Units > 1 {
+			secondary = fmt.Sprintf("units=%d %s", stage.Units, secondary)
+		}
+		errorsCount := "0"
+		if stage.Status == "error" || stage.ErrorCode != "" {
+			errorsCount = "1"
+		}
+		rows = append(rows, []string{
+			"Semantic " + semanticStageDisplayName(stage.Stage),
+			formatSyncDuration(stage.Duration),
+			primary,
+			strings.TrimSpace(secondary),
+			errorsCount,
+		})
+	}
+	return rows
+}
+
+func semanticStageSummaryCounts(stage semanticrefresh.StageStats) (string, string) {
+	switch stage.Stage {
+	case "projection":
+		return fmt.Sprintf("parents=%d", stage.Counters.ProjectedParents), fmt.Sprintf("dirty=%d", stage.RemainingDebt.DirtyParents)
+	case "embedding":
+		return fmt.Sprintf("chunks=%d", stage.Counters.EmbeddedChunks), fmt.Sprintf("pending=%d retries=%d blocked=%d failed=%d", stage.RemainingDebt.PendingEmbeddings, stage.RemainingDebt.DueRetries, stage.RemainingDebt.BlockedEmbeddings, stage.RemainingDebt.FailedEmbeddings)
+	case "flush":
+		return fmt.Sprintf("vectors=%d", stage.Counters.FlushedVectors), fmt.Sprintf("indexed=%d l0=%d", stage.RemainingDebt.Indexed, stage.RemainingDebt.L0Ready)
+	case "compaction":
+		return fmt.Sprintf("vectors=%d", stage.Counters.CompactedVectors), fmt.Sprintf("segments=%d l0=%d", stage.RemainingDebt.Segments, stage.RemainingDebt.L0Ready)
+	case "verify":
+		return fmt.Sprintf("vectors=%d", stage.Counters.VerifiedVectors), fmt.Sprintf("indexed=%d segments=%d", stage.RemainingDebt.Indexed, stage.RemainingDebt.Segments)
+	case "readiness":
+		return fmt.Sprintf("indexed=%d", stage.RemainingDebt.Indexed), fmt.Sprintf("dirty=%d pending=%d failed=%d", stage.RemainingDebt.DirtyParents, stage.RemainingDebt.PendingEmbeddings, stage.RemainingDebt.FailedEmbeddings)
+	default:
+		return fmt.Sprintf("units=%d", stage.Units), "status=" + emptyDash(stage.Status)
+	}
+}
+
+func semanticStageDisplayName(stage store.SemanticRefreshStage) string {
+	value := string(stage)
+	if value == "" {
+		return "Refresh"
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 func syncSummaryRows(stats syncjob.Stats) [][]string {

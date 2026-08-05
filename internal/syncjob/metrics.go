@@ -39,13 +39,28 @@ func emitSyncRunStarted(run metrics.RunContext, startedAt time.Time, opts Option
 	})
 }
 
-func emitSyncRunCompleted(run metrics.RunContext, stats Stats, runErr error) {
+func emitSyncCompletion(run metrics.RunContext, stats Stats, runErr error, parentOwnsCompletion bool) {
+	if parentOwnsCompletion {
+		emitSyncCompletedEvent(run, "sync.pipeline.completed", stats, runErr)
+		return
+	}
+	EmitRunCompleted(run, stats, runErr)
+}
+
+// EmitRunCompleted records the terminal boundary for the full sync execution.
+// Callers that set Options.ParentOwnsRunCompletion must invoke this after their
+// attached work settles.
+func EmitRunCompleted(run metrics.RunContext, stats Stats, runErr error) {
+	emitSyncCompletedEvent(run, "sync.run.completed", stats, runErr)
+}
+
+func emitSyncCompletedEvent(run metrics.RunContext, eventName string, stats Stats, runErr error) {
 	if !run.Enabled() {
 		return
 	}
 	status := "ok"
 	event := metrics.Event{
-		"event":        "sync.run.completed",
+		"event":        eventName,
 		"status":       status,
 		"started_at":   stats.StartedAt.UTC().Format(time.RFC3339Nano),
 		"completed_at": stats.CompletedAt.UTC().Format(time.RFC3339Nano),
