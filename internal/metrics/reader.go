@@ -575,13 +575,6 @@ func semanticCountersComplete(record *semanticRefreshInternal) bool {
 	return true
 }
 
-func semanticRecordAt(record *semanticRefreshInternal) time.Time {
-	if !record.CompletedAt.IsZero() {
-		return record.CompletedAt
-	}
-	return record.StartedAt
-}
-
 func readLinesReverse(ctx context.Context, f *os.File, start, end int64, block int, visit func([]byte, int64) bool) (int64, error) {
 	var carry []byte
 	fileEnd := end
