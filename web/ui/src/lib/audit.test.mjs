@@ -20,7 +20,8 @@ import {
   selectHistory,
   selectImporters,
   selectOverview,
-  selectPipeline
+  selectPipeline,
+  selectSemantic
 } from "./audit.js";
 
 function report(profile = "standard") {
@@ -352,6 +353,82 @@ test("pipeline card severity includes pending-age check status", () => {
   assert.equal(ocr.partitionStatus, "pass");
   assert.equal(ocr.pendingStatus, "fail");
   assert.equal(ocr.status, "fail");
+});
+
+test("semantic selector admits only the registered v2 evidence contract", () => {
+  const fixture = report();
+  fixture.checks.push(
+    check("semantic.current_readiness", "semantic", "warn", {
+      configured: true, capability: "available", backend: "ollama", profile_id: "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", active_generation_id: "generation-2026",
+      readiness: "catching_up", dirty_parent_count: 4, pending_parent_count: 3, due_embedding_count: 2, blocked_embedding_count: 1,
+      failed_embedding_count: 0, indexed_vector_count: 55, l0_vector_count: 6, tombstone_count: 7, segment_count: 8,
+      raw_error: "must not render"
+    }),
+    check("semantic.latest_attached_refresh", "semantic", "pass", {
+      refresh_state: "succeeded", started_at: "2026-07-14T00:55:00Z", completed_at: "2026-07-14T00:56:00Z", age_seconds: 300,
+      duration_seconds: 60, projected_parent_count: 2, embedded_chunk_count: 3, flushed_vector_count: 4, compacted_vector_count: 5,
+      verified_vector_count: 6, successor_run_count: 0, semantic_error_code: "", host_path: "/private/no"
+    }),
+    check("semantic.stage_summary", "semantic", "pass", { stages: [
+      { stage: "projection", status: "succeeded", duration_seconds: 1 }, { stage: "embedding", status: "succeeded", duration_seconds: 2 },
+      { stage: "flush", status: "succeeded", duration_seconds: 3 }, { stage: "compaction", status: "succeeded", duration_seconds: 4 },
+      { stage: "verification", status: "succeeded", duration_seconds: 5 }, { stage: "readiness", status: "succeeded", duration_seconds: 6 }
+    ] })
+  );
+
+  const semantic = selectSemantic(fixture);
+  assert.equal(semantic.state, "available");
+  assert.equal(semantic.current.profileID, "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  assert.equal(semantic.current.readiness, "catching_up");
+  assert.deepEqual(semantic.latest.counts, { projectedParents: 2, embeddedChunks: 3, flushedVectors: 4, compactedVectors: 5, verifiedVectors: 6, successorRuns: 0 });
+  assert.deepEqual(semantic.stages.map((row) => [row.stage, row.status, row.durationSeconds]), [
+    ["projection", "succeeded", 1], ["embedding", "succeeded", 2], ["flush", "succeeded", 3], ["compaction", "succeeded", 4], ["verification", "succeeded", 5], ["readiness", "succeeded", 6]
+  ]);
+  assert.equal(Object.hasOwn(semantic.current, "raw_error"), false);
+  assert.equal(Object.hasOwn(semantic.latest, "host_path"), false);
+});
+
+test("semantic selector keeps legacy disabled unsupported and incomplete states visible", () => {
+  assert.deepEqual(selectSemantic(report()), { state: "legacy", current: null, latest: null, stages: [] });
+
+  const disabled = report();
+  disabled.checks.push(
+    check("semantic.current_readiness", "semantic", "unknown", { configured: false, capability: "disabled", backend: "none", readiness: "disabled" }),
+    check("semantic.latest_attached_refresh", "semantic", "unknown", { refresh_state: "skipped" }),
+    check("semantic.stage_summary", "semantic", "pass", { stages: [
+      { stage: "projection", status: "skipped", duration_seconds: 0 }, { stage: "embedding", status: "skipped", duration_seconds: 0 },
+      { stage: "flush", status: "skipped", duration_seconds: 0 }, { stage: "compaction", status: "skipped", duration_seconds: 0 },
+      { stage: "verification", status: "skipped", duration_seconds: 0 }, { stage: "readiness", status: "skipped", duration_seconds: 0 }
+    ] })
+  );
+  const selected = selectSemantic(disabled);
+  assert.equal(selected.state, "disabled");
+  assert.equal(selected.latest.refreshState, "skipped");
+  assert.equal(selected.stages.length, 6);
+
+  const unsupported = report();
+  unsupported.checks.push(check("semantic.current_readiness", "semantic", "unknown", { configured: true, capability: "unsupported", backend: "unsupported", readiness: "unavailable" }));
+  assert.equal(selectSemantic(unsupported).state, "unsupported");
+
+  const incomplete = report();
+  incomplete.checks.push(check("semantic.current_readiness", "semantic", "unknown", { configured: true, capability: "available", backend: "ollama", readiness: "ready" }));
+  assert.equal(selectSemantic(incomplete).state, "incomplete");
+  assert.deepEqual(selectSemantic(incomplete).stages, []);
+});
+
+test("semantic selector rejects malformed or unregistered evidence without crashing", () => {
+  const malformed = report();
+  malformed.checks.push(
+    check("semantic.current_readiness", "semantic", "pass", { configured: "yes", capability: "available", backend: "ollama", readiness: "ready", profile_id: "profile-2026" }),
+    check("semantic.latest_attached_refresh", "semantic", "unknown", { refresh_state: "forged", duration_seconds: -1, semantic_error_code: "https://private.invalid" }),
+    check("semantic.stage_summary", "semantic", "unknown", { stages: [{ stage: "forged", status: "ok", duration_seconds: 1 }] })
+  );
+  const selected = selectSemantic(malformed);
+  assert.equal(selected.state, "incomplete");
+  assert.equal(selected.current.configured, null);
+  assert.equal(selected.current.profileID, "");
+  assert.equal(selected.latest.refreshState, "unknown");
+  assert.deepEqual(selected.stages, []);
 });
 
 test("overview derives build layout last audit and last sync only from the standard report", () => {
