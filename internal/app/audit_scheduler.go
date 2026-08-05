@@ -328,6 +328,7 @@ func newScheduledAuditRunner(ctx context.Context, cfg config.Config, features au
 		defer func() { _ = snapshot.Close() }()
 		deps := base
 		deps.Store = auditSnapshotAdapter{snapshot: snapshot}
+		deps.Semantic = newAuditSemanticInspector(cfg.RootDir, snapshot)
 		deps.Features.DatabaseOpenedQueryOnly = true
 		return audit.Run(runCtx, audit.Request{Profile: profile, Since: since}, deps)
 	}, nil

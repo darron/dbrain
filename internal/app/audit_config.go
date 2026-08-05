@@ -10,6 +10,8 @@ import (
 	"github.com/darron/dbrain/internal/audit"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/runtimeenv"
+	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticindex"
 )
 
 type auditConfigMeta struct {
@@ -102,6 +104,12 @@ func resolveAuditRuntime(cfg config.Config, meta auditConfigMeta) (auditRuntimeC
 		Timeouts:                          timeouts,
 		RemoteRequestTimeout:              remoteRequestTimeout,
 	}
+	semantic, err := semanticconfig.ResolveDiagnostic(cfg.RootDir)
+	if err != nil {
+		return auditRuntimeConfig{}, err
+	}
+	features.SemanticConfigured = semantic.Mode != semanticconfig.ModeOff && strings.TrimSpace(semantic.Model) != "" && semantic.Dimensions > 0
+	features.SemanticCapabilityAvailable = semanticindex.RuntimeCapability().State == semanticindex.CapabilitySupportedReady
 	return auditRuntimeConfig{Features: features, Flags: flags}, nil
 }
 

@@ -43,9 +43,10 @@ type Features struct {
 	OKFEnabled                        bool
 	// SemanticConfigured is intentionally separate from feature eligibility:
 	// semantic audit checks stay visible when disabled or unsupported.
-	SemanticConfigured   bool
-	Timeouts             map[TimeoutClass]time.Duration
-	RemoteRequestTimeout time.Duration
+	SemanticConfigured          bool
+	SemanticCapabilityAvailable bool
+	Timeouts                    map[TimeoutClass]time.Duration
+	RemoteRequestTimeout        time.Duration
 }
 
 type KindPartition struct {
@@ -160,7 +161,7 @@ type SemanticInspector interface {
 type SemanticAuditSnapshot struct {
 	Configured, CapabilityAvailable bool
 	Backend                         SemanticBackend
-	ProfileID                       SemanticIdentifier
+	ProfileID                       SemanticProfileIdentifier
 	ActiveGenerationID              SemanticIdentifier
 	Readiness                       SemanticReadiness
 	DirtyParentCount                int
@@ -193,6 +194,7 @@ type SemanticStageSnapshot struct {
 }
 
 type SemanticBackend string
+type SemanticProfileIdentifier string
 type SemanticIdentifier string
 type SemanticReadiness string
 type SemanticRefreshState string
@@ -203,6 +205,10 @@ type SemanticStageStatus string
 // Valid applies the same closed, content-free identifier boundary enforced
 // for semantic evidence before adapters bind store values to audit snapshots.
 func (v SemanticIdentifier) Valid() bool { return semanticIdentifierPattern.MatchString(string(v)) }
+
+func (v SemanticProfileIdentifier) Valid() bool {
+	return semanticProfileIdentifierPattern.MatchString(string(v))
+}
 
 func (v SemanticBackend) Valid() bool { return v == "ollama" || v == "none" || v == "unsupported" }
 func (v SemanticReadiness) Valid() bool {

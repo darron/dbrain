@@ -369,7 +369,7 @@ func ValidateReport(report Report) error {
 				return fmt.Errorf("checks[%d]: always-optional check must not be required", i)
 			case entry.RequiredWhen == RequiredAlways && check.Status == StatusSkipped:
 				return fmt.Errorf("checks[%d]: always-required in-profile check must be evaluated", i)
-			case entry.RequiredWhen != RequiredNever && check.Status != StatusSkipped && !check.Required:
+			case entry.RequiredWhen != RequiredNever && entry.RequiredWhen != RequiredSemantic && check.Status != StatusSkipped && !check.Required:
 				return fmt.Errorf("checks[%d]: applicable evaluated check must be required", i)
 			}
 		}

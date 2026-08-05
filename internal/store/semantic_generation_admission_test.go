@@ -29,6 +29,7 @@ func TestSemanticReadinessActiveGenerationMetadata(t *testing.T) {
 			}
 			if !snapshot.ActiveGenerationValid ||
 				snapshot.ActiveGenerationID != generationID ||
+				snapshot.ActiveSegmentCount != 1 ||
 				snapshot.ActiveGenerationBackend != "usearch" ||
 				snapshot.ActiveGenerationBackendVersion != "2.26.0" ||
 				snapshot.ActiveGenerationDistanceMetric != "cosine" ||
@@ -70,6 +71,9 @@ func TestSemanticReadinessActiveGenerationSegmentCatalogSafetyCeiling(t *testing
 						t.Fatalf("active generation valid=%t want=%t snapshot=%+v", snapshot.ActiveGenerationValid, tc.wantValid, snapshot)
 					}
 					if tc.wantValid {
+						if snapshot.ActiveSegmentCount != tc.segments {
+							t.Fatalf("active segment count=%d want=%d", snapshot.ActiveSegmentCount, tc.segments)
+						}
 						if snapshot.ActiveGenerationRootDescriptorSHA256 != sourceManifestHash {
 							t.Fatalf("root descriptor hash=%q want=%q", snapshot.ActiveGenerationRootDescriptorSHA256, sourceManifestHash)
 						}

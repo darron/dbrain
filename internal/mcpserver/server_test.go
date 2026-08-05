@@ -771,6 +771,10 @@ func TestAuditOutputSchemaAcceptsBothPersistedReportVersions(t *testing.T) {
 
 func TestAuditOutputSchemaClosesSemanticEvidenceValues(t *testing.T) {
 	evidence := auditEvidenceSchema()["properties"].(map[string]interface{})
+	const profileID = "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := validateJSONSchemaValue(evidence["profile_id"].(map[string]interface{}), profileID); err != nil {
+		t.Fatalf("canonical semantic profile ID rejected: %v", err)
+	}
 	for name, value := range map[string]interface{}{
 		"profile_id":           "/Users/alice/private-profile",
 		"active_generation_id": "checkpoint:private-run",

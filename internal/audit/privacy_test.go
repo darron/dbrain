@@ -40,8 +40,9 @@ func TestEvidencePrivacyRejectsUnknownKeysAndContentStrings(t *testing.T) {
 }
 
 func TestSemanticEvidenceIsBoundedAndClosed(t *testing.T) {
+	const profileID = "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	readiness := Evidence{
-		"configured": true, "capability": "available", "backend": "ollama", "profile_id": "nomic-embed-text-v1.5",
+		"configured": true, "capability": "available", "backend": "ollama", "profile_id": profileID,
 		"active_generation_id": "root-20260714", "readiness": "ready", "dirty_parent_count": 0, "pending_parent_count": 0,
 		"due_embedding_count": 0, "blocked_embedding_count": 0, "failed_embedding_count": 0, "indexed_vector_count": 8,
 		"l0_vector_count": 2, "tombstone_count": 0, "segment_count": 1,
@@ -94,6 +95,20 @@ func TestSemanticIdentifierSeamUsesEvidencePrivacyBounds(t *testing.T) {
 	} {
 		if got := value.Valid(); got != want {
 			t.Fatalf("SemanticIdentifier(%q).Valid() = %t, want %t", value, got, want)
+		}
+	}
+}
+
+func TestSemanticProfileIdentifierAcceptsOnlyCanonicalProfileIDs(t *testing.T) {
+	for value, want := range map[SemanticProfileIdentifier]bool{
+		"embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": true,
+		"embedding-profile-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": false,
+		"nomic-embed-text-v1.5":  false,
+		"checkpoint:private-run": false,
+		"/Users/alice/private":   false,
+	} {
+		if got := value.Valid(); got != want {
+			t.Fatalf("SemanticProfileIdentifier(%q).Valid() = %t, want %t", value, got, want)
 		}
 	}
 }
