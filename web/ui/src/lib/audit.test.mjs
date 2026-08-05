@@ -357,6 +357,7 @@ test("pipeline card severity includes pending-age check status", () => {
 
 test("semantic selector admits only the registered v2 evidence contract", () => {
   const fixture = report();
+  fixture.schema = "dbrain.audit.v2";
   fixture.checks.push(
     check("semantic.current_readiness", "semantic", "warn", {
       configured: true, capability: "available", backend: "ollama", profile_id: "embedding-profile-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", active_generation_id: "generation-2026",
@@ -391,7 +392,12 @@ test("semantic selector admits only the registered v2 evidence contract", () => 
 test("semantic selector keeps legacy disabled unsupported and incomplete states visible", () => {
   assert.deepEqual(selectSemantic(report()), { state: "legacy", current: null, latest: null, stages: [] });
 
+  const legacyWithForgedSemanticEvidence = report();
+  legacyWithForgedSemanticEvidence.checks.push(check("semantic.current_readiness", "semantic", "pass", { configured: true, capability: "available", backend: "ollama", readiness: "ready" }));
+  assert.deepEqual(selectSemantic(legacyWithForgedSemanticEvidence), { state: "legacy", current: null, latest: null, stages: [] });
+
   const disabled = report();
+  disabled.schema = "dbrain.audit.v2";
   disabled.checks.push(
     check("semantic.current_readiness", "semantic", "unknown", { configured: false, capability: "disabled", backend: "none", readiness: "disabled" }),
     check("semantic.latest_attached_refresh", "semantic", "unknown", { refresh_state: "skipped" }),
@@ -407,10 +413,12 @@ test("semantic selector keeps legacy disabled unsupported and incomplete states 
   assert.equal(selected.stages.length, 6);
 
   const unsupported = report();
+  unsupported.schema = "dbrain.audit.v2";
   unsupported.checks.push(check("semantic.current_readiness", "semantic", "unknown", { configured: true, capability: "unsupported", backend: "unsupported", readiness: "unavailable" }));
   assert.equal(selectSemantic(unsupported).state, "unsupported");
 
   const incomplete = report();
+  incomplete.schema = "dbrain.audit.v2";
   incomplete.checks.push(check("semantic.current_readiness", "semantic", "unknown", { configured: true, capability: "available", backend: "ollama", readiness: "ready" }));
   assert.equal(selectSemantic(incomplete).state, "incomplete");
   assert.deepEqual(selectSemantic(incomplete).stages, []);
@@ -418,6 +426,7 @@ test("semantic selector keeps legacy disabled unsupported and incomplete states 
 
 test("semantic selector rejects malformed or unregistered evidence without crashing", () => {
   const malformed = report();
+  malformed.schema = "dbrain.audit.v2";
   malformed.checks.push(
     check("semantic.current_readiness", "semantic", "pass", { configured: "yes", capability: "available", backend: "ollama", readiness: "ready", profile_id: "profile-2026" }),
     check("semantic.latest_attached_refresh", "semantic", "unknown", { refresh_state: "forged", duration_seconds: -1, semantic_error_code: "https://private.invalid" }),

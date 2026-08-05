@@ -1102,6 +1102,7 @@ p { margin: 0; }
 .audit-durability-check p { margin: 0.12rem 0; color: var(--text); font: 0.68rem "SFMono-Regular", "Cascadia Mono", monospace; overflow-wrap: anywhere; }
 .audit-durability-check small { color: var(--text-lo); font-size: 0.6rem; overflow-wrap: anywhere; }
 
+.audit-semantic { grid-column: 1 / -1; width: 100%; min-width: 0; }
 .semantic-health-grid, .semantic-activity-grid, .semantic-stage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; min-width: 0; }
 .semantic-activity-grid, .semantic-stage-grid { margin-top: 0.6rem; }
 .semantic-health-card, .semantic-panel, .semantic-stage { min-width: 0; padding: 0.7rem; border: 1px solid var(--border); background: rgba(6, 14, 9, 0.76); }

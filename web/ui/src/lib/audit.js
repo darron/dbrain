@@ -225,7 +225,7 @@ export function selectPipeline(report) {
 }
 
 export function selectSemantic(report) {
-  if (report?.schema !== "dbrain.audit.v1") return { state: "legacy", current: null, latest: null, stages: [] };
+  if (report?.schema !== "dbrain.audit.v2") return { state: "legacy", current: null, latest: null, stages: [] };
   const checks = checkMap(report);
   const readiness = checks.get("semantic.current_readiness");
   const latest = checks.get("semantic.latest_attached_refresh");
